@@ -1,0 +1,144 @@
+name: WordPress plugin release
+
+# Reusable. Publishes a WordPress plugin to wordpress.org when a release tag
+# X.Y.Z is pushed: validates the tag and the version markers, extracts the
+# version's changelog, groups what was merged since the previous release by
+# type (✨ features, 🐛 fixes…), commits trunk + tags/X.Y.Z + assets to SVN
+# (files in .distignore never ship; .wordpress-org/ goes to /assets) and
+# creates the GitHub release with those notes and the zip.
+#
+# Release tags are permanent (tag protection): a failed deploy is fixed and
+# re-run, never re-tagged. `dry-run: true` rehearses everything but the SVN
+# commit, and leaves the GitHub release as a draft.
+#
+#   on:
+#     push:
+#       tags: ['*']
+#   permissions:
+#     contents: write
+#   jobs:
+#     release:
+#       uses: DiluxOne/.github/.github/workflows/plugin-release-wp.yml@v1
+#       with:
+#         slug: diluxone-offload
+#         version-constant: DILUXONE_OFFLOAD_VERSION   # optional
+#         dry-run: false                               # true rehearses without committing
+#       secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      slug:
+        description: wordpress.org slug (the SVN path).
+        type: string
+        required: true
+      main-file:
+        description: Main plugin file. Defaults to <slug>.php.
+        type: string
+        default: ''
+      version-constant:
+        description: PHP constant that must equal the tag. Empty to skip.
+        type: string
+        default: ''
+      dry-run:
+        description: Check out SVN and prepare the commit without committing it. For rehearsing a release from a scratch repository.
+        type: boolean
+        default: false
+    secrets:
+      SVN_USERNAME:
+        required: true
+      SVN_PASSWORD:
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Deploy to wordpress.org
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Tag is X.Y.Z
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          if ! [[ "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Tag '$tag' is not X.Y.Z. Only X.Y.Z tags are protected, so delete this one and push the right one."
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Version markers equal the tag
+        env:
+          MAIN: ${{ inputs.main-file != '' && inputs.main-file || format('{0}.php', inputs.slug) }}
+          CONSTANT: ${{ inputs.version-constant }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF#refs/tags/}"
+          stable=$(grep -oP '^Stable tag:\s*\K\S+' readme.txt)
+          version=$(grep -oP '^\s*\*\s*Version:\s*\K\S+' "$MAIN")
+          fail=0
+          [ "$stable" = "$tag" ] || { echo "::error file=readme.txt::Stable tag $stable is not $tag."; fail=1; }
+          [ "$version" = "$tag" ] || { echo "::error file=$MAIN::Version $version is not $tag."; fail=1; }
+          if [ -n "$CONSTANT" ]; then
+            constant=$(grep -oP "${CONSTANT}',\s*'\K[^']+" "$MAIN")
+            [ "$constant" = "$tag" ] || { echo "::error file=$MAIN::$CONSTANT $constant is not $tag."; fail=1; }
+          fi
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::Nothing reached wordpress.org. This tag is permanent: fix the markers in a PR and release the next patch version."
+            exit 1
+          fi
+
+      - name: This version's changelog
+        # Before touching SVN: a release without its changelog stops here.
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          awk -v head="= ${tag} =" '$0 == head { found = 1; next } found && /^=/ { exit } found { print }' readme.txt > "$RUNNER_TEMP/notes.md"
+          grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md" || { echo "::error file=readme.txt::No '= ${tag} =' changelog entry."; exit 1; }
+
+      - name: What was merged, grouped by type
+        # Appended to the release notes: every commit since the release this
+        # tag follows (the nearest release tag among its ancestors, so a
+        # hotfix on an older line compares against that line), grouped by
+        # its Conventional Commit type. Nobody writes the emoji; the type
+        # decides it. Nothing is appended when no commit matches a type.
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          prev=$(git describe --tags --abbrev=0 --match '[0-9]*.[0-9]*.[0-9]*' "${tag}^" 2>/dev/null || true)
+          [ -n "$prev" ] || exit 0
+          git log --format='%s' "$prev..$tag" > "$RUNNER_TEMP/subjects.txt"
+          groups=""
+          for group in "feat|✨ Features" "fix|🐛 Fixes" "perf|⚡ Performance" "docs|📝 Documentation" "refactor|♻️ Refactoring" "test|✅ Tests" "build|📦 Build and dependencies" "ci|👷 CI" "chore|🔧 Maintenance" "revert|⏪ Reverts"; do
+            type="${group%%|*}"; title="${group#*|}"
+            lines=$(grep -E "^${type}(\\([^)]*\\))?!?: " "$RUNNER_TEMP/subjects.txt" | sed -E "s/^${type}(\\(([^)]*)\\))?(!?): /- \\3**\\2** /; s/^- !/- ⚠️ **breaking** /; s/\\*\\*\\*\\* //" || true)
+            if [ -n "$lines" ]; then groups+=$(printf '\n### %s\n\n%s\n' "$title" "$lines")$'\n'; fi
+          done
+          if [ -n "$groups" ]; then
+            printf '\n## What was merged since %s\n%s' "$prev" "$groups" >> "$RUNNER_TEMP/notes.md"
+          fi
+          cat "$RUNNER_TEMP/notes.md"
+
+      - name: Deploy to SVN
+        id: deploy
+        uses: 10up/action-wordpress-plugin-deploy@54bd289b8525fd23a5c365ec369185f2966529c2 # 2.3.0
+        with:
+          generate-zip: true
+          # The action runs `if $INPUT_DRY_RUN`: pass exactly true or false.
+          dry-run: ${{ inputs.dry-run && 'true' || 'false' }}
+        env:
+          SVN_USERNAME: ${{ secrets.SVN_USERNAME }}
+          SVN_PASSWORD: ${{ secrets.SVN_PASSWORD }}
+          SLUG: ${{ inputs.slug }}
+
+      - name: GitHub release
+        if: steps.deploy.outputs.zip-path != ''
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          files: ${{ steps.deploy.outputs.zip-path }}
+          body_path: ${{ runner.temp }}/notes.md
+          # A rehearsal leaves a draft to inspect, never a published release.
+          draft: ${{ inputs.dry-run }}

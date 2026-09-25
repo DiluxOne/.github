@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 🔒 Report a security vulnerability
+    url: https://github.com/DiluxOne/.github/security/advisories/new
+    about: Privately, through GitHub's vulnerability reporting. Never a public issue.
+  - name: 💬 Support
+    url: https://github.com/DiluxOne/.github/blob/main/SUPPORT.md
+    about: Where questions about using a product go.

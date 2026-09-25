@@ -1,0 +1,20 @@
+name: Release
+
+# Pushing a tag X.Y.Z publishes this plugin to wordpress.org, through the
+# shared workflow in DiluxOne/.github. Fill in slug and version-constant. Release tags are permanent: a failed
+# deploy is fixed and re-run, never re-tagged.
+
+on:
+  push:
+    tags: ['*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: DiluxOne/.github/.github/workflows/plugin-release-wp.yml@v1
+    with:
+      slug: my-plugin
+      version-constant: MY_PLUGIN_VERSION
+    secrets: inherit

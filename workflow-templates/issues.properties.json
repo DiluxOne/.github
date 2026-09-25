@@ -1,0 +1,8 @@
+{
+  "name": "Issues (DiluxOne)",
+  "description": "Claude triages every new issue from the roadmap and the docs, and tries to reproduce a reported bug with a failing unit test.",
+  "iconName": "octicon check",
+  "categories": [
+    "Automation"
+  ]
+}

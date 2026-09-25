@@ -1,0 +1,9 @@
+{
+  "name": "Pull request, WordPress plugin (DiluxOne)",
+  "description": "Conventions, the WordPress plugin checks and tests, Claude review and auto-merge from DiluxOne/.github.",
+  "iconName": "octicon check",
+  "categories": [
+    "Code quality",
+    "Testing"
+  ]
+}

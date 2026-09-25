@@ -1,0 +1,8 @@
+{
+  "name": "Pull request (DiluxOne)",
+  "description": "Conventions, Claude review and auto-merge from DiluxOne/.github. Add your own checks as jobs.",
+  "iconName": "octicon check",
+  "categories": [
+    "Code quality"
+  ]
+}

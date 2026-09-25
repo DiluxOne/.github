@@ -1,0 +1,122 @@
+name: Auto-merge
+
+# Reusable. Turns GitHub's native auto-merge on for a pull request the review
+# rated low risk and low complexity, and off for any other. GitHub then
+# squash-merges it on its own once every required check is green and every
+# review conversation is resolved: this workflow never merges directly.
+#
+# It also sets the commit body to the PR description verbatim (GitHub's own
+# squash message hard-wraps it at 72 columns). The body is taken when
+# auto-merge is enabled, so the caller must re-run on `edited`, or a later
+# edit of the description would not reach main.
+#
+# All of these must hold, or a human merges:
+#   - the policy says `auto-merge: true` (the review passes it on as `enabled`);
+#   - the policy floor is low (only low-risk-eligible paths changed);
+#   - the review rated it low risk, low complexity, not blocking;
+#   - the author is in the policy's trusted-authors list.
+#
+# The dilux-bot App enables it, so the resulting push to main triggers the
+# post-merge workflows (a GITHUB_TOKEN merge would not).
+#
+#   on:
+#     pull_request:
+#       types: [opened, edited, synchronize, reopened, ready_for_review]
+#   jobs:
+#     auto-merge:
+#       needs: review
+#       if: always() && needs.review.result != 'skipped'
+#       uses: DiluxOne/.github/.github/workflows/auto-merge.yml@v1
+#       with:
+#         risk: ${{ needs.review.outputs.risk }}
+#         complexity: ${{ needs.review.outputs.complexity }}
+#         floor: ${{ needs.review.outputs.floor }}
+#         trusted: ${{ needs.review.outputs.trusted }}
+#         blocking: ${{ needs.review.outputs.blocking }}
+#         enabled: ${{ needs.review.outputs.auto-merge }}
+#       secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      risk:
+        type: string
+        default: ''
+      complexity:
+        type: string
+        default: ''
+      floor:
+        type: string
+        default: ''
+      trusted:
+        type: string
+        default: 'false'
+      blocking:
+        type: string
+        default: 'true'
+      enabled:
+        description: The policy's auto-merge setting, from the review's outputs.
+        type: string
+        default: 'false'
+    secrets:
+      DILUX_BOT_PRIVATE_KEY:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  decide:
+    name: Auto-merge decision
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: dilux-bot token
+        id: bot
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+
+      - name: Enable or disable
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          PR: ${{ github.event.pull_request.number }}
+          SWITCH: ${{ inputs.enabled }}
+          RISK: ${{ inputs.risk }}
+          COMPLEXITY: ${{ inputs.complexity }}
+          FLOOR: ${{ inputs.floor }}
+          TRUSTED: ${{ inputs.trusted }}
+          BLOCKING: ${{ inputs.blocking }}
+        run: |
+          set -euo pipefail
+          why=""
+          [ "$SWITCH" = true ] || why="the policy has auto-merge off"
+          [ -n "$why" ] || [ "$FLOOR" = low ] || why="policy floor is ${FLOOR:-unknown}"
+          [ -n "$why" ] || [ "$RISK" = low ] || why="risk is ${RISK:-unknown}"
+          [ -n "$why" ] || [ "$COMPLEXITY" = low ] || why="complexity is ${COMPLEXITY:-unknown}"
+          [ -n "$why" ] || [ "$BLOCKING" = false ] || why="the review is blocking"
+          [ -n "$why" ] || [ "$TRUSTED" = true ] || why="the author is not in trusted-authors"
+          if [ -z "$why" ]; then
+            # The description goes in verbatim: GitHub's own squash message
+            # hard-wraps it at 72 columns. Disabling first refreshes it after
+            # an edit (every edit re-runs this job).
+            # Descriptions edited in the web UI come back with CRLF endings.
+            body=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq .body | tr -d '\r')
+            # Keep the branch commits' co-authors, as GitHub's own message does.
+            # Same as scripts/squash-merge.sh, which maintainers use by hand.
+            messages=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/commits" --paginate --jq '.[].commit.message')
+            coauthors=$(printf '%s\n' "$messages" | tr -d '\r' | grep -iE '^co-authored-by:' | awk '!seen[tolower($0)]++' || true)
+            if [ -n "$coauthors" ]; then
+              if [ -n "$body" ]; then body+=$'\n\n'; fi
+              body+=$'---------\n\n'"$coauthors"
+            fi
+            gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --disable-auto >/dev/null 2>&1 || true
+            gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --auto --squash --body "$body"
+            echo "Auto-merge enabled: GitHub merges once every required check is green."
+          else
+            gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --disable-auto >/dev/null 2>&1 || true
+            echo "A human merges this one: $why."
+          fi

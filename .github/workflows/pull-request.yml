@@ -1,0 +1,58 @@
+name: Pull request
+
+# This repository's own pipeline: the same conventions and review every
+# DiluxOne repository uses, plus a workflow linter. The reusable workflows are
+# called from this commit (./.github/workflows/...), but the review profiles and
+# policy are read from main, so a pull request cannot rewrite the rules that
+# review it.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  conventions:
+    uses: ./.github/workflows/conventions.yml
+
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Lint workflows
+        run: |
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
+          ./actionlint -color
+
+  review:
+    needs: [conventions, actionlint]
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    uses: ./.github/workflows/claude-review.yml
+    with:
+      profile: general
+      central-ref: main
+    secrets: inherit
+
+  auto-merge:
+    needs: review
+    if: always() && needs.review.result != 'skipped'
+    uses: ./.github/workflows/auto-merge.yml
+    with:
+      risk: ${{ needs.review.outputs.risk }}
+      complexity: ${{ needs.review.outputs.complexity }}
+      floor: ${{ needs.review.outputs.floor }}
+      trusted: ${{ needs.review.outputs.trusted }}
+      blocking: ${{ needs.review.outputs.blocking }}
+      enabled: ${{ needs.review.outputs.auto-merge }}
+    secrets: inherit

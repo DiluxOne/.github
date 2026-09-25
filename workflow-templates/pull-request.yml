@@ -1,0 +1,46 @@
+name: Pull request
+
+# Every check a pull request to this repository goes through, from the shared
+# workflows in DiluxOne/.github: conventions, then the Claude review and the
+# auto-merge decision. Add this repository's own quality gates as jobs and
+# list them in `needs:` of the review, so it never reviews code that does not
+# build. Fill in retired-names and the profile.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+  push:
+    branches: [$default-branch]
+
+permissions:
+  contents: read
+
+jobs:
+  conventions:
+    uses: DiluxOne/.github/.github/workflows/conventions.yml@v1
+    with:
+      retired-names: '' # e.g. 'old product name|OLD_PREFIX_'; empty to skip
+
+  review:
+    needs: [conventions]
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    uses: DiluxOne/.github/.github/workflows/claude-review.yml@v1
+    with:
+      profile: general
+    secrets: inherit
+
+  auto-merge:
+    needs: review
+    if: always() && needs.review.result != 'skipped'
+    uses: DiluxOne/.github/.github/workflows/auto-merge.yml@v1
+    with:
+      risk: ${{ needs.review.outputs.risk }}
+      complexity: ${{ needs.review.outputs.complexity }}
+      floor: ${{ needs.review.outputs.floor }}
+      trusted: ${{ needs.review.outputs.trusted }}
+      blocking: ${{ needs.review.outputs.blocking }}
+      enabled: ${{ needs.review.outputs.auto-merge }}
+    secrets: inherit

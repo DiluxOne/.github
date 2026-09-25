@@ -1,0 +1,18 @@
+# The actions these workflows use are pinned by commit; Dependabot keeps the
+# pins current. Titles come out as "ci(deps): Bump …", which conventions.yml
+# accepts.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: America/Argentina/Buenos_Aires
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
+      include: scope

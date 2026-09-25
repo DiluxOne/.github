@@ -1,0 +1,138 @@
+name: Conventions
+
+# Reusable. The rules in CONTRIBUTING.md a machine can decide, on every pull
+# request: branch name, pull request title (it becomes the squashed commit on
+# main), every commit the branch adds (no Claude-Session trailer), and a
+# description whose required sections are filled in (it becomes the commit
+# body) and that carries no "Generated with" footer (AI is disclosed with
+# the one sober line instead). Plus a docs check whenever the caller runs (pull requests and
+# pushes to main): relative Markdown links resolve, and no retired product
+# name comes back.
+#
+#   on:
+#     pull_request:
+#       types: [opened, edited, synchronize, reopened, ready_for_review]
+#   jobs:
+#     conventions:
+#       uses: DiluxOne/.github/.github/workflows/conventions.yml@v1
+#       with:
+#         retired-names: 'offload\+|dilux cloud'   # optional
+#         required-sections: 'What changes,Why'   # the default
+#         max-header: 100                         # the default
+
+on:
+  workflow_call:
+    inputs:
+      retired-names:
+        description: Case-insensitive extended regex of names that must not appear in tracked files. Empty to skip.
+        type: string
+        default: ''
+      required-sections:
+        description: Comma-separated text of the description headings that must have content (matched inside "## " headings). Empty to skip.
+        type: string
+        default: 'What changes,Why'
+      max-header:
+        description: Maximum length of a PR title or commit header.
+        type: number
+        default: 100
+
+permissions:
+  contents: read
+
+jobs:
+  conventions:
+    name: Conventions (branch, title, commits)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check branch, title and commits
+        env:
+          # Through env, never interpolated into the script: a title is
+          # attacker-controlled text.
+          BRANCH: ${{ github.head_ref }}
+          TITLE: ${{ github.event.pull_request.title }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.sha }}
+          MAX_HEADER: ${{ inputs.max-header }}
+          BODY: ${{ github.event.pull_request.body }}
+          AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+          SECTIONS: ${{ inputs.required-sections }}
+        run: |
+          set -euo pipefail
+          TYPES='feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert'
+          HEADER_RE="^(${TYPES})(\([a-z0-9._/-]+\))?!?: [^ ].*[^.]$"
+          BRANCH_RE="^((${TYPES})/[a-z0-9][a-z0-9._-]*|dependabot/.+)$"
+          fail=0
+          error() { echo "::error::$1"; fail=1; }
+          check_header() {
+            if ! [[ "$2" =~ $HEADER_RE ]]; then
+              error "$1 is not a Conventional Commit header (\"type(scope): subject\", type one of ${TYPES//|/, }, no trailing period): \"$2\""
+            elif (( ${#2} > MAX_HEADER )); then
+              error "$1 is ${#2} characters; the limit is ${MAX_HEADER}: \"$2\""
+            fi
+          }
+          [[ "$BRANCH" =~ $BRANCH_RE ]] || error "Branch \"$BRANCH\" must be <type>/<kebab-case-description>, type one of ${TYPES//|/, }."
+          check_header "The pull request title" "$TITLE"
+          while read -r sha; do
+            [ -z "$sha" ] && continue
+            check_header "Commit ${sha:0:7}" "$(git log -1 --format=%s "$sha")"
+            if git log -1 --format=%B "$sha" | grep -qiE '^Claude-Session:'; then
+              error "Commit ${sha:0:7} carries a Claude-Session trailer; session links stay out of the history."
+            fi
+          done < <(git rev-list --no-merges "${BASE}..${HEAD_REF}")
+          # The description becomes the commit body on main: its required
+          # sections must say something. Bots (Dependabot) write their own.
+          section() { printf '%s\n' "$BODY" | awk -v h="$1" 'index($0, h) && /^## / { on = 1; next } /^## / { on = 0 } on' | sed 's/<!--.*-->//g' | tr -d '[:space:]'; }
+          # AI involvement is disclosed in one sober line, not a product ad
+          # (CONTRIBUTING.md, "Saying that AI was involved").
+          if printf '%s\n' "$BODY" | grep -qiE 'generated (with|by) \[?(claude|copilot|chatgpt|cursor|codex)'; then
+            error "Replace the \"Generated with …\" footer with the AI line, e.g. \"🤖 AI-assisted · Claude Opus 5.5 (Anthropic)\"."
+          fi
+          if [ "$AUTHOR_TYPE" != Bot ] && [ -n "$SECTIONS" ]; then
+            IFS=, read -ra required <<< "$SECTIONS"
+            for h in "${required[@]}"; do
+              [ -n "$(section "$h")" ] || error "The description's \"$h\" section is empty."
+            done
+          fi
+          if [ "$fail" -ne 0 ]; then
+            echo "See CONTRIBUTING.md: \"Branch names\", \"Commit messages and PR titles\", \"Writing the pull request\" and \"Saying that AI was involved\"."
+            exit 1
+          fi
+          echo "Conventions OK."
+
+  docs:
+    name: Docs (links and names)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Relative links resolve
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          args: --offline --no-progress --exclude-path node_modules --exclude-path vendor './**/*.md' './.github/**/*.md'
+          fail: true
+
+      - name: No retired product names
+        if: inputs.retired-names != ''
+        env:
+          RETIRED: ${{ inputs.retired-names }}
+          # The calling workflow declares the names, so it is the one file
+          # exempt: github.workflow_ref names the caller, not this file.
+          CALLER: ${{ github.workflow_ref }}
+        run: |
+          EXEMPT="${CALLER#*/*/}"; EXEMPT="${EXEMPT%@*}"
+          if git grep -nIiE "$RETIRED" -- . ":!$EXEMPT"; then
+            echo "::error::A retired product name is back (see the lines above)."
+            exit 1
+          fi

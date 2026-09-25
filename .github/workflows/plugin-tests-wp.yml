@@ -1,0 +1,103 @@
+name: WordPress plugin tests (slow)
+
+# Reusable. The slow suites for a WordPress plugin, on wp-env: PHPUnit
+# integration tests (optionally on a multisite network) and Playwright E2E.
+# Separate from plugin-checks-wp.yml so they run alongside the review
+# instead of in front of it. A suite a repository does not have is turned
+# off with its input; its job then shows as skipped (a skipped job counts as
+# passing for a required check).
+#
+# The calling repository provides `.wp-env.json`, `phpunit-integration.xml`,
+# the npm dependencies (`@wordpress/env`, `@playwright/test`) and a Playwright
+# config that writes its results to `build/e2e-results`; wp-env mounts the
+# checkout under the repository's name.
+#
+#   jobs:
+#     tests:
+#       uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v1
+
+on:
+  workflow_call:
+    inputs:
+      integration:
+        description: Run PHPUnit integration tests on wp-env.
+        type: boolean
+        default: true
+      multisite:
+        description: Convert the wp-env tests site into a network for the integration tests.
+        type: boolean
+        default: true
+      e2e:
+        description: Run Playwright end-to-end tests on wp-env.
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    name: Integration tests (wp-env)
+    if: inputs.integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '20'
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: '8.5'
+          coverage: none
+          tools: composer:v2
+      - run: composer install --no-interaction --prefer-dist --no-progress
+      - run: npm install --no-audit --no-fund
+      - run: npx wp-env start
+      - name: Multisite network
+        if: inputs.multisite
+        env:
+          REPO: ${{ github.event.repository.name }}
+        run: |
+          npx wp-env run tests-cli wp core multisite-convert --title="Tests network"
+          npx wp-env run tests-cli wp plugin activate "$REPO" --network
+      - name: PHPUnit (integration)
+        # wp-env mounts the checkout under the repository's name.
+        env:
+          REPO: ${{ github.event.repository.name }}
+        run: npx wp-env run tests-cli sh -c "cd wp-content/plugins/$REPO && php vendor/bin/phpunit -c phpunit-integration.xml"
+      - if: always()
+        run: npx wp-env stop
+
+  e2e:
+    name: E2E (Playwright)
+    if: inputs.e2e
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '20'
+      - run: npm install --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - run: npx wp-env start
+      - name: Activate the plugin
+        env:
+          REPO: ${{ github.event.repository.name }}
+        run: npx wp-env run cli wp plugin activate "$REPO"
+      - run: npx playwright test
+        env:
+          CI: 'true'
+      - if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-results
+          path: build/e2e-results
+          retention-days: 7
+      - if: always()
+        run: npx wp-env stop

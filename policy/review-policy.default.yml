@@ -1,0 +1,55 @@
+# Organisation-wide review policy. Every repository's .github/review-policy.yml
+# is added on top of this (lists are concatenated, scalars override).
+# Read by scripts/policy.py before the reviewer runs; nothing the reviewer
+# says can lower what these rules decide.
+
+# Who may have a pull request merged without a human. Anyone else, always
+# a human. A repository can narrow or widen this list.
+trusted-authors:
+  - soydiloreto
+  - dependabot[bot]
+
+# A changed file matching any of these makes the pull request high risk.
+# Anything that changes how code is built, checked, released or reviewed,
+# or what an agent is told to do, is here.
+high-risk:
+  - ".github/**"
+  - "AGENTS.md"
+  - "CLAUDE.md"
+  - ".claude/**"
+  - "Makefile"
+  - ".distignore"
+  - "composer.json"
+  - "package.json"
+
+# Which reviewer each risk level gets: the model id as the API names it and
+# the reasoning effort (low, medium, high, xhigh, max). A repository overrides
+# any level, or any single key of a level, in its own .github/review-policy.yml;
+# what it leaves out stays as here. Replies to @dilux-bot and the weekly
+# learnings use the `high` reviewer.
+review:
+  low:    { model: claude-sonnet-5, effort: low }
+  medium: { model: claude-opus-5-5, effort: medium }
+  high:   { model: claude-opus-5-5, effort: medium }
+
+# The most one review run may spend, in USD. A repository can lower or raise it.
+budget-usd: 3
+
+# Whether a pull request that meets every condition (low floor, low risk, low
+# complexity, not blocking, trusted author, all checks green) merges on its
+# own. false here stops it everywhere; a repository can turn it off for
+# itself, never on while this says false.
+auto-merge: true
+
+# A pull request can be rated low risk only if every changed file matches
+# one of these. Everything else starts at medium.
+low-risk-eligible:
+  - "**/*.md"
+  - "docs/**"
+  - "tests/**"
+  - "package-lock.json"
+  - "composer.lock"
+  - ".wordpress-org/**"
+  - "languages/*.po"
+  - "languages/*.mo"
+  - "languages/*.pot"

@@ -1,0 +1,55 @@
+name: Pull request
+
+# Every check a pull request to this WordPress plugin goes through, from the
+# shared workflows in DiluxOne/.github: conventions, the fast quality gates,
+# then the Claude review and the auto-merge decision, with the slow wp-env
+# suites running alongside the review. Fill in slug, version-constant and
+# retired-names.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+  push:
+    branches: [$default-branch]
+
+permissions:
+  contents: read
+
+jobs:
+  conventions:
+    uses: DiluxOne/.github/.github/workflows/conventions.yml@v1
+    with:
+      retired-names: '' # e.g. 'old product name|OLD_PREFIX_'; empty to skip
+
+  checks:
+    uses: DiluxOne/.github/.github/workflows/plugin-checks-wp.yml@v1
+    with:
+      slug: my-plugin
+      version-constant: MY_PLUGIN_VERSION
+
+  tests:
+    uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v1
+
+  review:
+    needs: [conventions, checks]
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    uses: DiluxOne/.github/.github/workflows/claude-review.yml@v1
+    with:
+      profile: plugin-wp
+    secrets: inherit
+
+  auto-merge:
+    needs: review
+    if: always() && needs.review.result != 'skipped'
+    uses: DiluxOne/.github/.github/workflows/auto-merge.yml@v1
+    with:
+      risk: ${{ needs.review.outputs.risk }}
+      complexity: ${{ needs.review.outputs.complexity }}
+      floor: ${{ needs.review.outputs.floor }}
+      trusted: ${{ needs.review.outputs.trusted }}
+      blocking: ${{ needs.review.outputs.blocking }}
+      enabled: ${{ needs.review.outputs.auto-merge }}
+    secrets: inherit

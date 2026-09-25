@@ -1,0 +1,239 @@
+name: WordPress plugin checks (fast)
+
+# Reusable. The fast quality gates for a WordPress plugin published on
+# wordpress.org: PHP syntax and unit tests on every supported PHP, PHPCS,
+# PHPStan, Psalm taint analysis, i18n, Plugin Check on the shipped tree, and
+# readme/version alignment. Each job is its own status check.
+#
+# The slow wp-env suites (integration, E2E) are plugin-tests-wp.yml, a
+# separate workflow, so a caller can start the review as soon as these pass
+# (`needs:`) and no job ever shows up as skipped under a required name.
+#
+# The calling repository provides composer scripts `test:unit`, `lint`,
+# `stan` and `psalm:taint`, a `.distignore` listing what never ships, and a
+# `readme.txt`.
+#
+#   jobs:
+#     checks:
+#       uses: DiluxOne/.github/.github/workflows/plugin-checks-wp.yml@v1
+#       with:
+#         slug: diluxone-offload
+#         version-constant: DILUXONE_OFFLOAD_VERSION   # optional
+#         main-file: diluxone-offload.php              # default <slug>.php
+#         php-versions: '["7.4","8.0","8.1","8.2","8.3","8.4","8.5"]'  # the default
+#     tests:
+#       uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v1
+#     review:
+#       needs: [checks]          # the review waits for the fast gates only
+#       uses: DiluxOne/.github/.github/workflows/claude-review.yml@v1
+#       with:
+#         profile: plugin-wp
+#       secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      slug:
+        description: wordpress.org slug and text domain.
+        type: string
+        required: true
+      main-file:
+        description: Main plugin file. Defaults to <slug>.php.
+        type: string
+        default: ''
+      version-constant:
+        description: PHP constant that must equal the Version header. Empty to skip.
+        type: string
+        default: ''
+      php-versions:
+        description: JSON array of PHP versions for syntax and unit tests, from the plugin's minimum to the latest release.
+        type: string
+        default: '["7.4","8.0","8.1","8.2","8.3","8.4","8.5"]'
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    name: PHP ${{ matrix.php }} syntax
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ${{ fromJSON(inputs.php-versions) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          tools: none
+      - name: php -l on every shipped PHP file
+        # Only what ships has to parse on the oldest PHP; tests and dev
+        # tooling run on the PHP their own tools require.
+        env:
+          SLUG: ${{ inputs.slug }}
+        run: |
+          mkdir -p "build/$SLUG"
+          rsync -a --exclude-from=.distignore --exclude=build ./ "build/$SLUG/"
+          find "build/$SLUG" -type f -name '*.php' -print0 | xargs -0 -n1 php -l >/dev/null
+
+  unit:
+    name: PHP ${{ matrix.php }} unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ${{ fromJSON(inputs.php-versions) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          tools: composer:v2
+      - name: Composer cache directory
+        id: cache-dir
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.cache-dir.outputs.dir }}
+          key: composer-${{ runner.os }}-php-${{ matrix.php }}-${{ hashFiles('composer.json') }}
+          restore-keys: composer-${{ runner.os }}-php-${{ matrix.php }}-
+      - run: composer install --no-interaction --prefer-dist --no-progress
+      - run: composer test:unit
+
+  static:
+    name: ${{ matrix.gate.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        gate:
+          # The latest PHP, except where the tool version that still supports
+          # the plugin's minimum PHP cannot run on it (Psalm 5 stops at 8.3).
+          - { name: PHPCS (WordPress Coding Standards), script: lint, php: '8.5' }
+          - { name: PHPStan, script: stan, php: '8.5' }
+          - { name: Psalm taint analysis, script: 'psalm:taint', php: '8.3' }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: ${{ matrix.gate.php }}
+          coverage: none
+          tools: composer:v2
+      - name: Composer cache directory
+        id: cache-dir
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.cache-dir.outputs.dir }}
+          key: composer-${{ runner.os }}-php-${{ matrix.gate.php }}-${{ hashFiles('composer.json') }}
+          restore-keys: composer-${{ runner.os }}-php-${{ matrix.gate.php }}-
+      - run: composer install --no-interaction --prefer-dist --no-progress
+      - run: composer ${{ matrix.gate.script }}
+
+  i18n:
+    name: i18n (wp i18n make-pot)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: '8.5'
+          coverage: none
+          tools: wp-cli
+      - name: Build the shipped tree
+        env:
+          SLUG: ${{ inputs.slug }}
+        run: |
+          mkdir -p "build/$SLUG"
+          rsync -a --exclude-from=.distignore --exclude=build ./ "build/$SLUG/"
+      - name: Extract strings; any warning fails
+        env:
+          SLUG: ${{ inputs.slug }}
+        run: |
+          set +e
+          out=$(wp i18n make-pot "build/$SLUG" "build/$SLUG.pot" --slug="$SLUG" --domain="$SLUG" 2>&1); status=$?
+          set -e
+          echo "$out"
+          [ "$status" -eq 0 ] || exit "$status"
+          if printf '%s\n' "$out" | grep -E '^(Warning|Error):' >&2; then
+            echo "::error::wp i18n make-pot reported warnings (missing translator comments, dynamic domains, concatenated strings)."
+            exit 1
+          fi
+          count=$(grep -c '^msgid "' "build/$SLUG.pot" || true)
+          [ "$count" -gt 1 ] || { echo "::error::No translatable strings extracted."; exit 1; }
+          echo "Extracted $count strings."
+
+  plugin-check:
+    name: WordPress Plugin Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the shipped tree (what wordpress.org receives)
+        env:
+          SLUG: ${{ inputs.slug }}
+        run: |
+          mkdir -p "build/$SLUG"
+          rsync -a --exclude-from=.distignore --exclude=build ./ "build/$SLUG/"
+      - uses: wordpress/plugin-check-action@10857da14b6c2246d15402b3e69f777edcf8c12e # v1.1.9
+        with:
+          # Checking the built tree, not the repository, means no exclude
+          # lists to keep in sync: only what ships is checked.
+          build-dir: build/${{ inputs.slug }}
+          slug: ${{ inputs.slug }}
+          categories: plugin_repo,security,performance,accessibility,general
+          include-experimental: true
+          # main carries a -dev Version between releases; the readme job
+          # enforces the relaxed rule and the release workflow the strict one.
+          ignore-codes: stable_tag_mismatch
+
+  readme:
+    name: readme.txt and versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Headers, version alignment, changelog
+        env:
+          MAIN: ${{ inputs.main-file != '' && inputs.main-file || format('{0}.php', inputs.slug) }}
+          CONSTANT: ${{ inputs.version-constant }}
+        run: |
+          set -euo pipefail
+          for h in "Contributors" "Tags" "Requires at least" "Tested up to" "Requires PHP" "Stable tag" "License"; do
+            grep -qE "^${h}:" readme.txt || { echo "::error file=readme.txt::Missing header: ${h}"; exit 1; }
+          done
+          ! grep -qE '^\s*\*\s*Tested up to:' "$MAIN" || { echo "::error file=$MAIN::Tested up to belongs only in readme.txt."; exit 1; }
+          stable=$(grep -oP '^Stable tag:\s*\K\S+' readme.txt)
+          version=$(grep -oP '^\s*\*\s*Version:\s*\K\S+' "$MAIN")
+          base=$(printf '%s' "$version" | sed -E 's/-(dev|alpha|beta|rc)([.0-9]*)?$//')
+          if [ "$version" = "$base" ]; then
+            [ "$stable" = "$base" ] || { echo "::error::Version $version has no pre-release suffix, so Stable tag ($stable) must equal it."; exit 1; }
+          else
+            [ "$(printf '%s\n%s\n' "$stable" "$base" | sort -V | tail -1)" = "$base" ] || { echo "::error::Version $version is behind Stable tag $stable."; exit 1; }
+          fi
+          if [ -n "$CONSTANT" ]; then
+            constant=$(grep -oP "${CONSTANT}',\s*'\K[^']+" "$MAIN")
+            [ "$constant" = "$version" ] || { echo "::error file=$MAIN::$CONSTANT ($constant) differs from Version ($version)."; exit 1; }
+          fi
+          grep -qE "^=\s*${stable}\s*=" readme.txt || { echo "::error file=readme.txt::No '= ${stable} =' changelog entry."; exit 1; }
+          echo "readme.txt OK: Stable tag $stable, Version $version."
+

@@ -1,0 +1,8 @@
+{
+  "name": "Release, WordPress plugin (DiluxOne)",
+  "description": "On a tag X.Y.Z, publish the plugin to wordpress.org and create the GitHub release.",
+  "iconName": "octicon check",
+  "categories": [
+    "Deployment"
+  ]
+}

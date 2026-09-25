@@ -1,0 +1,5 @@
+# Everything in this repository decides how every other DiluxOne repository is
+# built, checked, reviewed and released: every change is high risk and a human
+# merges it.
+high-risk:
+  - "**"
