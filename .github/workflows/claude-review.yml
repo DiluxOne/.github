@@ -149,7 +149,11 @@ jobs:
           REPO_POLICY="$RUNNER_TEMP/repo-policy.yml"
           git show "$BASE:.github/review-policy.yml" > "$REPO_POLICY" 2>/dev/null || : > "$REPO_POLICY"
           export REPO_POLICY
-          CHANGED_FILES="$(gh pr diff "$PR" --repo "$GITHUB_REPOSITORY" --name-only)"
+          # The files API, not `gh pr diff --name-only`: GitHub refuses to
+          # render a diff above 20 000 lines (HTTP 406), and a translation
+          # or lock-file change gets there easily. The list of paths has no
+          # such limit.
+          CHANGED_FILES="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --jq '.[].filename')"
           export CHANGED_FILES
           python3 .dx-central/scripts/policy.py
 
