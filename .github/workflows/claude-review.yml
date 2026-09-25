@@ -151,9 +151,20 @@ jobs:
           export REPO_POLICY
           # The files API, not `gh pr diff --name-only`: GitHub refuses to
           # render a diff above 20 000 lines (HTTP 406), and a translation
-          # or lock-file change gets there easily. The list of paths has no
-          # such limit.
-          CHANGED_FILES="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --jq '.[].filename')"
+          # or lock-file change gets there easily. The files endpoint has a
+          # cap of its own, 3 000 entries, and reaches it silently, so the
+          # count is checked against the pull request's own total and the
+          # step fails closed when they differ: a floor computed on a
+          # partial list could miss a high-risk path. A rename lists both
+          # its paths, so moving a file out of a high-risk directory counts.
+          FILES_JSON="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --slurp)"
+          LISTED="$(jq '[.[][]] | length' <<< "$FILES_JSON")"
+          TOTAL="$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json changedFiles --jq .changedFiles)"
+          if [ "$LISTED" != "$TOTAL" ]; then
+            echo "::error::The files API listed $LISTED of the pull request's $TOTAL changed files; the policy is not computed on a partial list."
+            exit 1
+          fi
+          CHANGED_FILES="$(jq -r '.[][] | .filename, (.previous_filename // empty)' <<< "$FILES_JSON")"
           export CHANGED_FILES
           python3 .dx-central/scripts/policy.py
 
