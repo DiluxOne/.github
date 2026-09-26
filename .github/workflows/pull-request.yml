@@ -54,5 +54,6 @@ jobs:
       floor: ${{ needs.review.outputs.floor }}
       trusted: ${{ needs.review.outputs.trusted }}
       blocking: ${{ needs.review.outputs.blocking }}
+      description-ok: ${{ needs.review.outputs.description-ok }}
       enabled: ${{ needs.review.outputs.auto-merge }}
     secrets: inherit

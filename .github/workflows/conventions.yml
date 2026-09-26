@@ -64,6 +64,7 @@ jobs:
           BODY: ${{ github.event.pull_request.body }}
           AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
           SECTIONS: ${{ inputs.required-sections }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
         run: |
           set -euo pipefail
           TYPES='feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert'
@@ -80,6 +81,19 @@ jobs:
           }
           [[ "$BRANCH" =~ $BRANCH_RE ]] || error "Branch \"$BRANCH\" must be <type>/<kebab-case-description>, type one of ${TYPES//|/, }."
           check_header "The pull request title" "$TITLE"
+          # The type:* label is the review's reading of the diff (or a person's
+          # override); the title, which becomes the commit on main, must say the
+          # same. The review corrects the title itself; this catches a later
+          # hand edit that undoes it.
+          typelabel=$(tr ',' '\n' <<<"$LABELS" | grep -m1 '^type:' | sed 's/^type://' || true)
+          if [ -n "$typelabel" ] && [[ "$TITLE" =~ ^([a-z]+)(\([^)]*\))?(!?): ]]; then
+            token=${BASH_REMATCH[1]}; bang=${BASH_REMATCH[3]}
+            if [ "$typelabel" = breaking ]; then
+              [ "$bang" = '!' ] || error "The pull request is labelled type:breaking, so its title needs the \"!\" of a breaking change: \"$token$bang:\"."
+            elif [ "$token" != "$typelabel" ]; then
+              error "The pull request is labelled type:$typelabel but its title says \"$token:\"; the title must carry the labelled type (the review sets it; change the label if the review is wrong)."
+            fi
+          fi
           while read -r sha; do
             [ -z "$sha" ] && continue
             check_header "Commit ${sha:0:7}" "$(git log -1 --format=%s "$sha")"

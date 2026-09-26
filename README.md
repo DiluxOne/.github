@@ -17,7 +17,7 @@ request template, issue forms) unless it has its own. The rules for contributors
    the repository's `.github/review-policy.yml`). Then Claude reviews it with
    the [review profiles](review-profiles/) and the repository's `AGENTS.md`
    and `docs/architecture.md`: inline comments for blockers and majors (each a
-   thread to resolve), `risk:*` and `complexity:*` labels, one summary comment
+   thread to resolve), `risk:*`, `complexity:*` and `type:*` labels (the type of the change read from the diff, which also corrects the title's type token; a person's own `type:*` label wins), one summary comment
    with what the run cost, red when blocking. It can raise the risk, never
    lower it. It reads the whole change once and only what you pushed since
    its last look after that, spends nothing when the same commit is re-run,
@@ -130,7 +130,7 @@ callers are [`pull-request.yml`](.github/workflows/pull-request.yml) and
 | --- | --- | --- |
 | Secret | `ANTHROPIC_API_KEY` | Review, replies and learnings. Also a Dependabot secret, so Dependabot's pull requests are reviewed. |
 | Secret | `DILUX_BOT_PRIVATE_KEY` | The `dilux-bot` GitHub App's key. Also a Dependabot secret. |
-| Secret (environment, not organisation) | `SVN_USERNAME`, `SVN_PASSWORD` | wordpress.org SVN, in each plugin repository's `wordpress-org` environment. The release and the credentials check declare that environment on their job; callers pass no secrets. The environment's policy admits `X.Y.Z` tags and `main`: a pull request's job can never name it; a job running on `main` can only through a workflow that was merged into `main` by a reviewed pull request, which is the trust boundary of everything else here. |
+| Secret (environment, not organisation) | `SVN_USERNAME`, `SVN_PASSWORD` | wordpress.org SVN, in each plugin repository's `wordpress-org` environment. The release and the credentials check declare that environment on their job; their callers pass `secrets: inherit`, the one way an environment's secrets reach a called job (it hands over every secret, which is why those two workflows run only on `X.Y.Z` tags or by hand from `main`, and call a pinned commit). The environment's policy admits `X.Y.Z` tags and `main`: a pull request's job can never name it; a job running on `main` can only through a workflow that was merged into `main` by a reviewed pull request, which is the trust boundary of everything else here. |
 | Variable | `DILUX_BOT_CLIENT_ID` | The App's client ID. |
 
 Models, effort, budget and auto-merge are not variables: they live in the

@@ -33,6 +33,7 @@ name: Auto-merge
 #         floor: ${{ needs.review.outputs.floor }}
 #         trusted: ${{ needs.review.outputs.trusted }}
 #         blocking: ${{ needs.review.outputs.blocking }}
+#         description-ok: ${{ needs.review.outputs.description-ok }}
 #         enabled: ${{ needs.review.outputs.auto-merge }}
 #       secrets: inherit
 
@@ -58,6 +59,10 @@ on:
         description: The policy's auto-merge setting, from the review's outputs.
         type: string
         default: 'false'
+      description-ok:
+        description: Whether the review found the description to match the code, from the review's outputs. A pull request whose text misdescribes its diff is never merged on its own.
+        type: string
+        default: 'true'
     secrets:
       DILUX_BOT_PRIVATE_KEY:
         required: true
@@ -92,6 +97,7 @@ jobs:
           FLOOR: ${{ inputs.floor }}
           TRUSTED: ${{ inputs.trusted }}
           BLOCKING: ${{ inputs.blocking }}
+          DESCRIPTION_OK: ${{ inputs.description-ok }}
         run: |
           set -euo pipefail
           why=""
@@ -101,6 +107,7 @@ jobs:
           [ -n "$why" ] || [ "$COMPLEXITY" = low ] || why="complexity is ${COMPLEXITY:-unknown}"
           [ -n "$why" ] || [ "$BLOCKING" = false ] || why="the review is blocking"
           [ -n "$why" ] || [ "$TRUSTED" = true ] || why="the author is not in trusted-authors"
+          [ -n "$why" ] || [ "$DESCRIPTION_OK" = true ] || why="the description does not match the code"
           if [ -z "$why" ]; then
             # The description goes in verbatim: GitHub's own squash message
             # hard-wraps it at 72 columns. Disabling first refreshes it after
