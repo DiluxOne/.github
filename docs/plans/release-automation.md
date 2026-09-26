@@ -1,6 +1,6 @@
 # Release automation: the type of a change, the next version, the tag
 
-Status: proposal, 2026-09-26, reviewed for security, cost and against the tools the market uses. Decision of the maintainer: the release is approved as a **deployment** (the job on `main` builds, waits for approval in the `wordpress-org` environment, then tags and publishes), not as a release pull request; sections C and E are being rewritten to that; the security fixes the review asked for ship first (DiluxOne/.github#3). Not implemented yet.
+Status: decided 2026-09-26, reviewed for security, cost and against the tools the market uses. The release is approved as a **deployment** (the job on `main` builds, waits for approval in the `wordpress-org` environment, then tags and publishes), not as a release pull request. Shipped so far: the security fixes (DiluxOne/.github#3), the type of a change by the review (#4), nothing runs twice, `next-version.py`. Pending: the stamped development builds and the release job itself.
 
 ## Goals, in the maintainer's words
 
@@ -16,7 +16,7 @@ Status: proposal, 2026-09-26, reviewed for security, cost and against the tools 
 - **semantic-release**: same analysis, no PR: it tags and publishes on every push to `main`. No human gate.
 - **conventional-changelog / commitlint**: the format rule and the changelog generator behind both.
 
-This design is release-please with two changes: the type comes from the AI's reading of the diff (labels), not from the human's commit message; and the release PR is recognised by the pipeline so it does not re-run the slow suites.
+This design is release-please with two changes: the type comes from the AI's reading of the diff (labels), not from the human's commit message; and there is no release pull request at all: the release is a deployment approved in a GitHub environment, so nothing is committed to `main` for a release and nothing runs twice.
 
 ## A. The type of a change
 
@@ -27,42 +27,41 @@ This design is release-please with two changes: the type comes from the AI's rea
 
 ## B. The next version, and the dev version
 
-- `scripts/next-version.py` (central) is deterministic: from the labels of the pull requests merged into `main` since the last tag, `breaking` → major, `feat` → minor, `fix`/`perf` → patch, everything else → nothing to release; a `version:*` label overrides. It prints the pending bump, the next version and the list of pull requests per type. The AI does not pick the number; it picks the type. The number is auditable from the labels.
-- **Dev builds.** Nothing about the version is stored on `main` beyond the marker the release doc already prescribes (`X.Y.Z-dev` in the plugin header, set by the bump-back PR after a release). Every build that is not a release (`make dist`, `make deploy-test`, the CI artifact) stamps `Version: <next>-dev.<N>` where `<next>` comes from `next-version.py` and `N` is the number of commits since the last tag, and writes the short commit into the plugin's Status › System screen. The maintainer who installs a build sees `2.1.0-dev.14` and knows a minor release is pending and which build it is. When the release ships, `2.1.0-dev.14 < 2.1.0` for PHP, so the site updates normally.
+- `scripts/next-version.py` (central) is deterministic: from the labels of the pull requests merged into `main` since the last tag, `breaking` → major, `feat` → minor, `fix`/`perf` → patch, everything else → nothing to release; a `version:*` label overrides. It prints the pending bump, the next version and the pull requests grouped by the bump each asks for. The AI does not pick the number; it picks the type. The number is auditable from the labels.
+- **Dev builds.** Nothing about the version is stored on `main`: the three markers stay at the last released version, and the release job stamps them in the build it publishes, so there is no bump-back commit after a release. Every build that is not a release (`make dist`, `make deploy-test`, the CI artifact) stamps `Version: <next>-dev.<N>` where `<next>` comes from `next-version.py` and `N` is the number of commits since the last tag, and writes the short commit into the plugin's Status › System screen. The maintainer who installs a build sees `2.1.0-dev.14` and knows a minor release is pending and which build it is. When the release ships, `2.1.0-dev.14 < 2.1.0` for PHP, so the site updates normally.
 - Because the number is derived, there is no chicken and egg: the dev version and the release version come from the same labels, and an override label changes both.
 
-## C. The release pull request
+## C. The release is a deployment
 
-- `release-proposal.yml` (central, reusable) runs on every push to `main` of each repository. It runs `next-version.py`; if nothing is pending it exits. Otherwise it opens or updates **one** pull request from the branch `release/X.Y.Z`, authored by the bot, that changes only the files the repository's policy lists under `release-files:` (Offload: `diluxone-offload.php` and `readme.txt`; a generic repository: `CHANGELOG.md` and its version file). Claude (Sonnet, `low`) writes the changelog entry and a one-paragraph justification that names the pull requests per type and checks the roadmap for a version the maintainer already announced; if the computed bump disagrees with the roadmap, it says so in the pull request instead of choosing.
-- The repository's policy decides what happens next, per kind of bump:
+- `plugin-release-wp.yml` gains a second entry: besides a tag `X.Y.Z`, the caller runs it on every push to `main` (the same workflow that runs the suites, so nothing runs twice). A `release` job runs `next-version.py`: nothing pending, it ends there. Something pending, it builds the tree from that commit with the three version markers stamped to `X.Y.Z`, validates them, and reaches the step that needs the `wordpress-org` environment. The environment has a required reviewer, so the run waits there, visible in the Actions tab and in the run's summary (the version, the bump and the pull requests per type that justify it). Approve, and the job tags the commit `X.Y.Z` with the release App's token, commits to SVN and creates the GitHub release; reject, and nothing happens. Merges keep landing meanwhile: a later push starts a new run that supersedes the waiting one (`concurrency`, cancel in progress), computed from all of `main` again.
+- The repository's policy decides, per kind of bump, whether a human must approve:
 
   ```yaml
   release:
-    patch: propose   # propose | auto | off
-    minor: propose
-    major: propose
+    patch: approve   # approve | auto | off
+    minor: approve
+    major: approve
   ```
 
-  `propose` opens the pull request and waits for a human merge; `auto` merges it as soon as its checks pass (the same auto-merge job, gated on this policy, never on the review's risk rating); `off` never opens one. The organisation default is `propose` everywhere; a repository can only move to `auto` for `patch` unless the organisation policy allows more.
-- A comment `@dilux-bot version: 3.0.0` on the release pull request re-labels the relevant pull request with `version:major` and re-runs the proposal.
+  `approve` waits in the environment; `auto` runs in a second environment the caller names (`auto-environment`), with the same secrets and no reviewers, so that the key that creates the tag is then held by a job nobody approved: a repository turns `auto` on only for the bumps it is willing to publish unattended, and only when the organisation policy allows it; `off` never releases. The organisation default is `approve` everywhere.
+- A comment `@dilux-bot version: 3.0.0` on a pull request re-labels it with `version:major` (or minor, or patch) and the next push to `main` computes from that. The roadmap check stays: the job reads `docs/roadmap.md`, and when the roadmap names a version for what is pending that the labels do not reach, the summary says so and a person decides with a label.
 
-## D. What runs on the release pull request
+## D. What the release job does not do
 
-- The `What changed` job (already in `plugin-tests-wp.yml` and `plugin-checks-wp.yml`) answers `code=false` when the pull request's author is the bot **and** every changed file matches the repository's `release-files:` list. The rule is a list in the policy, so the central knows nothing about WordPress. Integration, end-to-end and the real-storage suites are skipped; the fast checks, the strict version alignment (all three markers equal) and Plugin Check run.
-- The review of a bot release pull request is Sonnet at `low` effort, or skipped when the repository's policy says `review-release: false` (default: run; the review reads only two files).
-- The full pipeline ran on `main` when the last real change merged (push-to-main runs everything). The release pull request adds no code, so nothing needs to run again. The version alignment check is the one thing that must run, and does.
+- It never runs the suites: the commit it releases is the head of `main`, whose tree the pull request's checks ran on (section on `changes.sh` in the README). It runs the version alignment on the stamped tree, Plugin Check on the built tree, and the SVN commit. About two minutes before the approval, one after.
+- It never writes to `main`: the version markers on `main` stay at the last released version (the stamp lives in the build, not in the repository), so there is no bump-back commit, no release branch and no release pull request to keep current.
+- It never reads a description or a comment as an instruction: the version comes from labels, the labels from the review of the diff or from a person.
 
 ## E. The tag and the publication
 
-- On push to `main`, the central checks whether the pushed commit is the squash merge of a pull request from a `release/*` branch authored by the bot (GitHub's commit → associated pull requests API). If it is, it creates the tag `X.Y.Z` on that commit with the App's token. The existing release workflow (`plugin-release-wp.yml`) fires on the tag as today: strict validation of the markers against the tag, build from the tagged commit, deploy, GitHub release with notes grouped by `type:*` label.
-- Rulesets: creating tags matching `X.Y.Z` is allowed to administrators and to a dedicated release App (`dilux-release`, `contents: write` and nothing else, its key an environment secret) only, never to `dilux-bot`; moving or deleting them to nobody; `main` takes no pushes from anyone; pull requests must be up to date with `main` before merging; every check is required.
-- The release workflow refuses a tag whose commit is not the merge of a bot `release/*` pull request, and a tag whose version does not equal the pull request's branch. So the only path to a published version is: real change → full pipeline on its pull request → merge → full pipeline on `main` → bot release pull request → human (or policy) merge → tag by the App → publish. No step can be skipped by a person, a label or a comment.
+- The tag `X.Y.Z` is created by the release job itself, on the commit it built, with the token of the dedicated release App (`dilux-release`, `contents: write` and nothing else, its private key a secret of the release environments, so only a job that passed the environment (its reviewers, or the policy's `auto` for that bump) ever holds it). `dilux-bot` cannot create tags. Administrators can, by hand, as today: the tag then runs the same workflow through the same environment, so the by-hand path is the same pipeline with the version typed instead of computed, and the strict marker validation refuses a tag that does not match what `next-version.py` says is pending.
+- Rulesets, all in place: creating tags matching `X.Y.Z` is allowed to administrators and to the release App only; moving or deleting them to nobody; `main` takes no pushes from anyone; pull requests must be up to date with `main` before merging; every check is required.
+- So the only path to a published version is: real change → full pipeline on its pull request → merge → push to `main` (suites skipped because the tree was tested, alignment and Plugin Check run) → version computed from labels → a person approves the deployment (or the policy does, per bump) → tag by the App → publish. No step can be skipped by a label, a comment, a fork or a description.
 
 ## F. Costs
 
 - Type classification: no extra call; it is a field of the review that already runs.
-- Release proposal: one Sonnet call per push to `main` with something pending (cents), and none when nothing is pending or the open release pull request is already current.
-- Release pull request checks: seconds (fast gates + version alignment + Plugin Check, about two minutes).
+- Release job: no model call at all; about two minutes of runner per push to `main` with something pending, none otherwise.
 - Tag and publication: unchanged.
 - Reviews in general: unchanged in mechanism (model by risk, incremental after the first); a cap of three automatic reviews per pull request, after which the `review:full` label re-arms it.
 
@@ -73,16 +72,15 @@ This design is release-please with two changes: the type comes from the AI's rea
 | `claude-review.yml`, review profiles | `type` in the record; label and retitle |
 | `conventions.yml` | unchanged (format still enforced); the labels script |
 | `scripts/next-version.py`, `scripts/labels.sh` | new |
-| `release-proposal.yml` | new reusable workflow; caller in each repository's `main` push workflow |
-| `plugin-tests-wp.yml`, `plugin-checks-wp.yml`, `scripts/changes.sh` | the release-files rule |
-| `plugin-release-wp.yml` | provenance check of the tag; notes grouped by label |
-| `policy/review-policy.default.yml` | `release:`, `release-files:`, `review-release:` |
+| `plugin-release-wp.yml` | the `release` job on push to `main`: compute, build, stamp, wait for the environment, tag with the App, publish |
+| `plugin-tests-wp.yml`, `plugin-checks-wp.yml`, `scripts/changes.sh` | a push to `main` skips the suites when the tree was tested (done) |
+| `policy/review-policy.default.yml` | `release:` per bump |
 | README, workflow templates | adoption steps; the tag ruleset |
-| Offload | `release-files:` in its policy; the dev stamp in `make dist` / `deploy-test`; Status › System shows the build; `docs/release.md` rewritten |
+| Offload | the dev stamp in `make dist` / `deploy-test`; Status › System shows the build; `release.yml` runs on push to `main` too; `docs/release.md` rewritten |
 
 ## Open questions for the reviewers
 
 1. Security: is there any path by which a version reaches wordpress.org without the full pipeline having run on exactly that tree? Labels, comments, a fork, a human with admin rights, a stale open release pull request.
-2. Cost: does anything still run twice for one change? Is the release pull request really cheap, given it changes a `.php` file?
+2. Cost: does anything still run twice for one change? Is the release job really cheap?
 3. Market: what do release-please and semantic-release do that this design lacks, and what do they warn against (monorepos, pre-releases, the bump-back commit, squash merges and commit parsing)?
 4. The dev version: does deriving it from labels instead of storing it break anything (readme check, WordPress' update logic, `version_compare`, a site with a stamped build when the real release has a different number than the one stamped)?
