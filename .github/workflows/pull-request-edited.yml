@@ -18,9 +18,9 @@ jobs:
     permissions:
       contents: read
       pull-requests: read # the pull request's timeline, for the base-branch check on `edited`
-    uses: DiluxOne/.github/.github/workflows/conventions.yml@v2
+    uses: ./.github/workflows/conventions.yml
     with:
-      retired-names: '' # the same value as in pull-request.yml
+      retired-names: ''
 
   review:
     needs: [conventions]
@@ -28,15 +28,15 @@ jobs:
       contents: read
       pull-requests: write
       issues: write
-    uses: DiluxOne/.github/.github/workflows/claude-review.yml@v2
+    uses: ./.github/workflows/claude-review.yml
     with:
-      profile: general # the same profile as in pull-request.yml (plugin-wp for a WordPress plugin)
+      profile: general
     secrets: inherit
 
   auto-merge:
     needs: review
     if: always() && needs.review.result != 'skipped'
-    uses: DiluxOne/.github/.github/workflows/auto-merge.yml@v2
+    uses: ./.github/workflows/auto-merge.yml
     with:
       risk: ${{ needs.review.outputs.risk }}
       complexity: ${{ needs.review.outputs.complexity }}

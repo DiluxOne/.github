@@ -43,9 +43,9 @@ merge of a pull request of this repository, that its tree is the one that
 pull request's checks ran on and that every check there passed; any doubt
 runs everything. A pull request whose base branch changed after its last
 push fails the conventions on every edit until a push runs the suites
-against the new base. Once a week (and on
-*Run workflow*) everything runs against today's WordPress and tools, and a
-failure opens one `ci:weekly` issue.
+against the new base. Once a week everything runs against today's
+WordPress and tools, and a failure opens one `ci:weekly` issue; *Run
+workflow* runs everything by hand, and its failure is in the run alone.
 
 ## Adopt it in a new repository
 
@@ -106,6 +106,24 @@ failure opens one `ci:weekly` issue.
    (never organisation secrets). Dependabot alerts and
    updates, private vulnerability reporting. The `dilux-bot` App must be
    installed on the repository. The labels are created by the review itself.
+
+## Migrating a repository from `v1` to `v2`
+
+`v2` asks its callers for more than `v1` did, so a caller left on the old
+templates fails to start once it points at `v2`:
+
+1. Replace `pull-request.yml` / `pull-request-wp.yml` with the current
+   templates: the `conventions` job grants `pull-requests: read`, the
+   `checks` and `tests` jobs grant `pull-requests: read` and `checks: read`,
+   `edited` is gone from the trigger, the WordPress one has the weekly
+   `schedule`, `workflow_dispatch` and the `weekly-failure` job, and
+   `auto-merge` receives `description-ok`.
+2. Add `pull-request-edited.yml`.
+3. For a plugin, replace `release-wp.yml`: it runs on `main` and `X.Y.Z` tags,
+   grants `pull-requests: read`, passes `secrets: inherit` and starts as a
+   rehearsal (`dry-run: true`). The environment needs the release App's key
+   and client id besides the SVN credentials.
+4. Point every `uses:` at `@v2` (the release workflow at its commit).
 
 ## Reusable workflows
 

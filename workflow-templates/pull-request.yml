@@ -23,7 +23,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read # the pull request's timeline, for the base-branch check on `edited`
-    uses: DiluxOne/.github/.github/workflows/conventions.yml@v1
+    uses: DiluxOne/.github/.github/workflows/conventions.yml@v2
     with:
       retired-names: '' # e.g. 'old product name|OLD_PREFIX_'; empty to skip
 
@@ -33,7 +33,7 @@ jobs:
       contents: read
       pull-requests: write
       issues: write
-    uses: DiluxOne/.github/.github/workflows/claude-review.yml@v1
+    uses: DiluxOne/.github/.github/workflows/claude-review.yml@v2
     with:
       profile: general
     secrets: inherit
@@ -41,7 +41,7 @@ jobs:
   auto-merge:
     needs: review
     if: always() && needs.review.result != 'skipped'
-    uses: DiluxOne/.github/.github/workflows/auto-merge.yml@v1
+    uses: DiluxOne/.github/.github/workflows/auto-merge.yml@v2
     with:
       risk: ${{ needs.review.outputs.risk }}
       complexity: ${{ needs.review.outputs.complexity }}
