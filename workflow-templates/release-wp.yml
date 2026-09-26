@@ -6,7 +6,12 @@ name: Release
 # something is pending, it waits for approval in the `wordpress-org`
 # environment, then stamps, deploys, tags and creates the release. A tag
 # X.Y.Z an administrator pushes by hand goes through the same job, and must
-# be the version the labels say is next. Fill in slug and version-constant.
+# be the version the labels say is next. While the readme's newest changelog
+# entry starts with the line `Unreleased.` nothing waits for approval: the
+# version is not ready, and the pull request that removes that line releases
+# it. Every push to main also uploads a development build (the shipped tree
+# stamped <next>-dev.<N>) as the run's artifact. Fill in slug and
+# version-constant.
 #
 # The environment holds the SVN credentials and the release App's key
 # (DILUX_RELEASE_PRIVATE_KEY, with the variable DILUX_RELEASE_CLIENT_ID).

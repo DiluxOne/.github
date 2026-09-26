@@ -30,10 +30,21 @@ name: WordPress plugin release
 # created itself arrives with its release already there, so that run stops.
 #
 # The readme's newest changelog entry names the version: `= X.Y.Z =` equal to
-# the computed one, or `= Unreleased =`, which the job renames in the build (a
-# first line saying just "Unreleased." goes too). A different number is a
-# disagreement between the roadmap and the labels, and the job refuses until
-# a person settles it with a version:* label or the readme.
+# the computed one, or `= Unreleased =`, which the job renames in the build. A
+# different number is a disagreement between the roadmap and the labels, and
+# the job refuses until a person settles it with a version:* label or the
+# readme. The same entry says whether the version is ready: while its first
+# line is exactly `Unreleased.`, the version job ends green with "Not ready"
+# and no deployment waits for anyone, however many pull requests merged. The
+# notes under that line are written as the changes merge; the pull request
+# that removes the line is the decision to release. A tag pushed by hand is
+# refused the same way.
+#
+# Every push to main also produces a development build, whatever the labels
+# or the readme say: the tree that ships (minus .distignore) with the three
+# markers stamped `<next>-dev.<N>` and a `Build: <commit>` header, as the
+# run's artifact `<slug>-<next>-dev.<N>`, kept 30 days, for anyone to install
+# and try what is coming. Nothing is committed or tagged for it.
 #
 # Release tags are permanent (tag protection): a failed deploy is fixed and
 # re-run, never re-tagged. `dry-run: true` rehearses everything but the SVN
@@ -54,6 +65,7 @@ name: WordPress plugin release
 #       tags: ['[0-9]+.[0-9]+.[0-9]+']
 #   permissions:
 #     contents: write
+#     pull-requests: read # the labels of what merged decide the version
 #   jobs:
 #     release:
 #       uses: DiluxOne/.github/.github/workflows/plugin-release-wp.yml@<sha> # vX.Y.Z
@@ -98,6 +110,9 @@ on:
       version:
         description: The version released, or empty when nothing was.
         value: ${{ jobs.release.outputs.version }}
+      dev:
+        description: The development version of this commit, <next>-dev.<N>; the artifact of the development build is named <slug>-<dev>.
+        value: ${{ jobs.version.outputs.dev }}
 
 permissions:
   contents: write
@@ -113,6 +128,7 @@ jobs:
     outputs:
       version: ${{ steps.next.outputs.version }}
       environment: ${{ steps.next.outputs.environment }}
+      dev: ${{ steps.next.outputs.dev }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -132,8 +148,7 @@ jobs:
           BASE: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          echo "version=" >> "$GITHUB_OUTPUT"
-          echo "environment=$ENVIRONMENT" >> "$GITHUB_OUTPUT"
+          { echo "version="; echo "dev="; echo "environment=$ENVIRONMENT"; } >> "$GITHUB_OUTPUT"
           # On a tag run the tag itself is already the newest X.Y.Z: it is
           # left out, so the labels are read from the last release before it.
           exclude=""; case "$GITHUB_REF" in refs/tags/*) exclude="${GITHUB_REF#refs/tags/}";; esac
@@ -151,6 +166,16 @@ jobs:
           next=$(python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$BASE" ${exclude:+--exclude-tag "$exclude"} --json)
           bump=$(jq -r .bump <<<"$next"); pending=$(jq -r .pending <<<"$next"); coming=$(jq -r .next <<<"$next"); last=$(jq -r .last <<<"$next")
           per_type=$(jq -r '.pulls | to_entries[] | "\(.key): " + (.value | map("#\(.)") | join(", "))' <<<"$next")
+          jq -r '"dev=" + .dev' <<<"$next" >> "$GITHUB_OUTPUT"
+          # The readme says whether the version is ready: the first line under
+          # the newest changelog entry, exactly `Unreleased.`, holds it. The
+          # notes below that line are written as the changes merge; the pull
+          # request that removes the line is the decision to release.
+          held=false
+          if [ -f readme.txt ]; then
+            first=$(awk '/^== Changelog ==$/ { c = 1; next } c && /^= .* =$/ { h = 1; next } h && NF { print; exit }' readme.txt)
+            if [ "$first" = "Unreleased." ]; then held=true; fi
+          fi
 
           case "$GITHUB_REF" in
             refs/tags/*)
@@ -161,12 +186,21 @@ jobs:
                 printf '%s\n' "$per_type" >&2
                 exit 1
               fi
+              if [ "$held" = true ]; then
+                echo "::error file=readme.txt::Tag $tag cannot be released: the newest changelog entry still starts with 'Unreleased.'. A typed number cannot skip the readiness either: remove that line in a pull request, then re-run."
+                exit 1
+              fi
               version=$tag
               ;;
             *)
               # shellcheck disable=SC2016 # backticks in the Markdown of the summary, not commands.
               if [ "$pending" != true ]; then
                 printf '## Nothing to release\n\nSince %s nothing merged asks for a version: no `type:breaking`, `type:feat`, `type:fix` or `type:perf` label, no `version:*` label.\n\n%s\n' "$last" "${per_type:-_no pull requests_}" >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
+              # shellcheck disable=SC2016 # backticks in the Markdown of the summary, not commands.
+              if [ "$held" = true ]; then
+                printf '## Not ready\n\nThe labels of what merged give a **%s** release after %s (%s), but the newest changelog entry in `readme.txt` still starts with `Unreleased.`: the version is not ready and nothing waits for approval. Write the notes under that line as the changes merge; the pull request that removes the line releases it.\n\n%s\n' "$bump" "$last" "$coming" "$per_type" >> "$GITHUB_STEP_SUMMARY"
                 exit 0
               fi
               # The policy decides, per bump, whether a person approves.
@@ -193,6 +227,57 @@ jobs:
           esac
           echo "version=$version" >> "$GITHUB_OUTPUT"
           printf '## Release %s\n\nA **%s** release after %s, from the labels of what merged:\n\n%s\n\nApprove the deployment to publish it; reject it and nothing happens. A later push to main computes again.\n' "$version" "$bump" "$last" "$per_type" >> "$GITHUB_STEP_SUMMARY"
+
+  development-build:
+    name: Development build
+    needs: version
+    # Every push to main, whatever the labels or the readme say: the tree
+    # that ships, stamped with the version that is coming and the commit it
+    # was built from, for anyone to install and try. Never on a tag: a
+    # release is its own build. No secrets, no write: nothing is committed
+    # or tagged for it.
+    if: startsWith(github.ref, 'refs/heads/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      DEV: ${{ needs.version.outputs.dev }}
+      SLUG: ${{ inputs.slug }}
+      MAIN: ${{ inputs.main-file != '' && inputs.main-file || format('{0}.php', inputs.slug) }}
+      CONSTANT: ${{ inputs.version-constant }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Stamp the development version and pack the tree
+        # The same three markers the release stamps, to <next>-dev.<N>, plus
+        # a `Build:` header line (absent in the tree) with the commit: a
+        # site shows both under Plugins and wherever the plugin reads its
+        # headers. The zip holds the plugin folder, named after the slug,
+        # the way WordPress installs it.
+        run: |
+          set -euo pipefail
+          [ -n "$DEV" ] || { echo "::error::The version job gave no development version."; exit 1; }
+          build=${GITHUB_SHA:0:7}
+          sed -i -E "s/^(\s*\*\s*Version:\s*).*$/\1$DEV\n * Build: $build/" "$MAIN"
+          if [ -n "$CONSTANT" ]; then sed -i -E "s/^(define\(\s*'${CONSTANT}',\s*').*('\s*\);)$/\1$DEV\2/" "$MAIN"; fi
+          sed -i -E "s/^(Stable tag:\s*).*$/\1$DEV/" readme.txt
+          grep -qE "^\s*\*\s*Version:\s*$DEV$" "$MAIN" || { echo "::error file=$MAIN::The Version header did not take $DEV."; exit 1; }
+          grep -qE "^Stable tag:\s*$DEV$" readme.txt || { echo "::error file=readme.txt::Stable tag did not take $DEV."; exit 1; }
+          exclude=(); [ -f .distignore ] && exclude=(--exclude-from=.distignore)
+          mkdir -p "$RUNNER_TEMP/dist"
+          rsync -rc "${exclude[@]}" --exclude=.git --exclude=.github ./ "$RUNNER_TEMP/dist/$SLUG/" --delete
+          # shellcheck disable=SC2016 # backticks in the Markdown of the summary, not commands.
+          printf '## Development build %s\n\nThe tree that ships, stamped `%s` from commit `%s`, is the artifact **%s** of this run (download it from the summary of the run, unzip, install the `%s` folder as a plugin). Not a release: nothing was committed or tagged.\n' "$DEV" "$DEV" "$build" "$SLUG-$DEV" "$SLUG" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.slug }}-${{ needs.version.outputs.dev }}
+          path: ${{ runner.temp }}/dist
+          retention-days: 30
+          if-no-files-found: error
 
   release:
     name: Deploy to wordpress.org
@@ -258,18 +343,13 @@ jobs:
       - name: Stamp the version markers
         if: steps.still.outputs.go == 'true'
         # The checkout, never the repository: the three markers become the
-        # version, and the readme's `= Unreleased =` entry takes its number.
+        # version, and a readme entry headed `= Unreleased =` takes its number.
         run: |
           set -euo pipefail
           sed -i -E "s/^(\s*\*\s*Version:\s*).*$/\1$VERSION/" "$MAIN"
           if [ -n "$CONSTANT" ]; then sed -i -E "s/^(define\(\s*'${CONSTANT}',\s*').*('\s*\);)$/\1$VERSION\2/" "$MAIN"; fi
           sed -i -E "s/^(Stable tag:\s*).*$/\1$VERSION/" readme.txt
-          if grep -q '^= Unreleased =$' readme.txt; then
-            sed -i -E "s/^= Unreleased =$/= $VERSION =/" readme.txt
-            sed -i -E "/^= $VERSION =$/{n;/^Unreleased\.?$/d}" readme.txt
-          elif grep -q "^= $VERSION =$" readme.txt; then
-            sed -i -E "/^= $VERSION =$/{n;/^Unreleased\.?$/d}" readme.txt
-          fi
+          sed -i -E "s/^= Unreleased =$/= $VERSION =/" readme.txt
           git --no-pager diff --stat
 
       - name: Version markers equal the version
@@ -300,6 +380,10 @@ jobs:
           fi
           awk -v head="= ${VERSION} =" '$0 == head { found = 1; next } found && /^=/ { exit } found { print }' readme.txt > "$RUNNER_TEMP/notes.md"
           grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md" || { echo "::error file=readme.txt::The '= ${VERSION} =' changelog entry is empty."; exit 1; }
+          if grep -qx 'Unreleased\.' "$RUNNER_TEMP/notes.md"; then
+            echo "::error file=readme.txt::The '= ${VERSION} =' changelog entry still says 'Unreleased.': the version is not ready. Nothing reached wordpress.org."
+            exit 1
+          fi
 
       - name: What was merged, grouped by type
         if: steps.still.outputs.go == 'true'
