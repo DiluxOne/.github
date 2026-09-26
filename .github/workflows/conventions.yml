@@ -14,7 +14,7 @@ name: Conventions
 #       types: [opened, synchronize, reopened, ready_for_review]  # and pull-request-edited.yml on `edited`
 #   jobs:
 #     conventions:
-#       uses: DiluxOne/.github/.github/workflows/conventions.yml@v1
+#       uses: DiluxOne/.github/.github/workflows/conventions.yml@v2
 #       with:
 #         retired-names: 'offload\+|dilux cloud'   # optional
 #         required-sections: 'What changes,Why'   # the default

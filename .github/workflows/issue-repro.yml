@@ -32,7 +32,7 @@ name: Issue reproduction
 #   jobs:
 #     repro:
 #       permissions: { actions: read, contents: write, issues: write, pull-requests: write }
-#       uses: DiluxOne/.github/.github/workflows/issue-repro.yml@v1
+#       uses: DiluxOne/.github/.github/workflows/issue-repro.yml@v2
 #       secrets: inherit
 
 on:
@@ -49,7 +49,7 @@ on:
       central-ref:
         description: Ref of DiluxOne/.github to read the policy from.
         type: string
-        default: v1
+        default: v2
     secrets:
       ANTHROPIC_API_KEY:
         required: true

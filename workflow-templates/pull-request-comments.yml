@@ -19,7 +19,7 @@ jobs:
       contents: read
       pull-requests: write
       issues: write
-    uses: DiluxOne/.github/.github/workflows/review-reply.yml@v1
+    uses: DiluxOne/.github/.github/workflows/review-reply.yml@v2
     with:
       profile: general # or plugin-wp for a WordPress plugin
     secrets: inherit

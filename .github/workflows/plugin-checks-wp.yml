@@ -18,17 +18,17 @@ name: WordPress plugin checks (fast)
 #
 #   jobs:
 #     checks:
-#       uses: DiluxOne/.github/.github/workflows/plugin-checks-wp.yml@v1
+#       uses: DiluxOne/.github/.github/workflows/plugin-checks-wp.yml@v2
 #       with:
 #         slug: diluxone-offload
 #         version-constant: DILUXONE_OFFLOAD_VERSION   # optional
 #         main-file: diluxone-offload.php              # default <slug>.php
 #         php-versions: '["7.4","8.0","8.1","8.2","8.3","8.4","8.5"]'  # the default
 #     tests:
-#       uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v1
+#       uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v2
 #     review:
 #       needs: [checks]          # the review waits for the fast gates only
-#       uses: DiluxOne/.github/.github/workflows/claude-review.yml@v1
+#       uses: DiluxOne/.github/.github/workflows/claude-review.yml@v2
 #       with:
 #         profile: plugin-wp
 #       secrets: inherit
@@ -55,7 +55,7 @@ on:
       central-ref:
         description: Ref of DiluxOne/.github to read the policy from.
         type: string
-        default: v1
+        default: v2
 
 permissions:
   contents: read

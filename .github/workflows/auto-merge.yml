@@ -28,7 +28,7 @@ name: Auto-merge
 #     auto-merge:
 #       needs: review
 #       if: always() && needs.review.result != 'skipped'
-#       uses: DiluxOne/.github/.github/workflows/auto-merge.yml@v1
+#       uses: DiluxOne/.github/.github/workflows/auto-merge.yml@v2
 #       with:
 #         risk: ${{ needs.review.outputs.risk }}
 #         complexity: ${{ needs.review.outputs.complexity }}

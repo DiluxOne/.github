@@ -16,7 +16,7 @@ name: SVN credentials check
 #     workflow_dispatch:
 #   jobs:
 #     check:
-#       uses: DiluxOne/.github/.github/workflows/svn-auth-check.yml@v1
+#       uses: DiluxOne/.github/.github/workflows/svn-auth-check.yml@v2
 
 on:
   workflow_call:

@@ -127,7 +127,7 @@ templates fails to start once it points at `v2`:
 
 ## Reusable workflows
 
-Call them pinned to `@v1`; a breaking change ships as `v2`. A stack suffix
+Call them pinned to `@v2`; a breaking change ships as `v2`. A stack suffix
 (`-wp`) appears only when the steps are specific to that stack.
 
 | Workflow | Does | Inputs |
@@ -173,11 +173,12 @@ workflow of a repository from its Actions tab.
 
 ## Changing this repository
 
-Every place the bot's token is minted asks only for what that job does: the review, the replies and the triage get `contents: read` while the model runs; `contents: write` is minted only by the merge, the reproduction push, the weekly learnings, and the step that resolves review threads after the model has finished (resolving a thread is a write on the repository), which nothing that read the pull request's text ever holds. Tags are not creatable by the App at all: the ruleset an adopting repository sets at step 3 allows `X.Y.Z` tag creation to administrators only, and this repository's `v*` tags (the moving `v1`, a future `v2`) can be created, moved or deleted only by administrators (ruleset `moving tags`: creation, update, deletion). The wordpress.org credentials live in the repository environment `wordpress-org`, whose deployment policy admits only `X.Y.Z` tags and `main`, so no pull request or branch job can read them; the check `svn-auth-check.yml` runs inside that environment.
+Every place the bot's token is minted asks only for what that job does: the review, the replies and the triage get `contents: read` while the model runs; `contents: write` is minted only by the merge, the reproduction push, the weekly learnings, and the step that resolves review threads after the model has finished (resolving a thread is a write on the repository), which nothing that read the pull request's text ever holds. Tags are not creatable by `dilux-bot` at all: the ruleset an adopting repository sets at step 3 allows `X.Y.Z` tag creation to administrators and the release App only, and this repository's `v*` tags (the moving `v2`, the frozen `v1`) can be created, moved or deleted only by administrators (ruleset `moving tags`: creation, update, deletion). The wordpress.org credentials live in the repository environment `wordpress-org`, whose deployment policy admits only `X.Y.Z` tags and `main`, so no pull request or branch job can read them; the check `svn-auth-check.yml` runs inside that environment.
 
 Everything here is high risk: a human merges every change. After merging, move
-`v1` (or cut `v2` for a breaking change) and tag the exact version. Moving `v1`
-also ships the review profiles and the default policy, which every repository
-reads from that tag. A run that already exists keeps the workflow it was
-created with: re-running a failed job after `v1` moved re-runs the old
-workflow. Reopen the pull request, or push to it, for a run on the new one.
+`v2` (or cut `v3` for a breaking change: `scripts/next-version.py --tag-prefix v`
+says which) and tag the exact version. Moving `v2` also ships the review
+profiles and the default policy, which every repository reads from that tag.
+A run that already exists keeps the workflow it was created with: re-running
+a failed job after `v2` moved re-runs the old workflow. Reopen the pull
+request, or push to it, for a run on the new one. `v1` stays where it is.

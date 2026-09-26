@@ -19,7 +19,7 @@ jobs:
     permissions:
       contents: read
       issues: write
-    uses: DiluxOne/.github/.github/workflows/issue-triage.yml@v1
+    uses: DiluxOne/.github/.github/workflows/issue-triage.yml@v2
     with:
       support-url: https://example.com/support
     secrets: inherit
@@ -30,5 +30,5 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: DiluxOne/.github/.github/workflows/issue-repro.yml@v1
+    uses: DiluxOne/.github/.github/workflows/issue-repro.yml@v2
     secrets: inherit

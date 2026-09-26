@@ -14,7 +14,7 @@ name: WordPress plugin tests (slow)
 #
 #   jobs:
 #     tests:
-#       uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v1
+#       uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v2
 
 on:
   workflow_call:
@@ -34,7 +34,7 @@ on:
       central-ref:
         description: Ref of DiluxOne/.github to read the policy from.
         type: string
-        default: v1
+        default: v2
 
 permissions:
   contents: read

@@ -37,7 +37,7 @@ name: Claude review
 # qualifying pull requests merge on their own all come from the policy files
 # (policy/review-policy.default.yml here, .github/review-policy.yml in the
 # repository, read from its base branch). Inputs: profile (the stack profile),
-# central-ref (where the profiles and policy are read from, default v1),
+# central-ref (where the profiles and policy are read from, default v2),
 # max-auto-reviews.
 #
 #   on:
@@ -47,7 +47,7 @@ name: Claude review
 #     review:
 #       needs: [conventions, checks]
 #       permissions: { contents: read, pull-requests: write, issues: write }
-#       uses: DiluxOne/.github/.github/workflows/claude-review.yml@v1
+#       uses: DiluxOne/.github/.github/workflows/claude-review.yml@v2
 #       with:
 #         profile: plugin-wp
 #       secrets: inherit
@@ -62,7 +62,7 @@ on:
       central-ref:
         description: Ref of DiluxOne/.github to read the profiles and policy from.
         type: string
-        default: v1
+        default: v2
       max-auto-reviews:
         description: Automatic reviews per pull request before the next push needs the review:full label.
         type: number
