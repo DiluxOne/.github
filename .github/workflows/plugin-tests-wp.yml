@@ -31,14 +31,52 @@ on:
         description: Run Playwright end-to-end tests on wp-env.
         type: boolean
         default: true
+      central-ref:
+        description: Ref of DiluxOne/.github to read the policy from.
+        type: string
+        default: v1
 
 permissions:
   contents: read
 
 jobs:
+  changes:
+    name: What changed
+    # The slow, paid part of a pull request runs only when it changes code:
+    # the `code` and `plugin-check` lists of the policy (the organisation's
+    # defaults plus the repository's .github/review-policy.yml, read from
+    # the base branch so a change cannot exempt itself). Anything else
+    # (docs, translations, a readme) gets the fast checks and the review.
+    # A push to main runs everything. The gates below run on !cancelled()
+    # and treat a missing answer as "run", so this job failing (or an older
+    # central without the script) never skips a suite; a job skipped by
+    # the answer satisfies the ruleset.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.changes.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The merge commit and its two parents: enough for the diff.
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref }}
+          path: .dx-central
+          persist-credentials: false
+      - id: changes
+        env:
+          EVENT: ${{ github.event_name }}
+          DEFAULT_POLICY: .dx-central/policy/review-policy.default.yml
+        run: bash .dx-central/scripts/changes.sh
+
   integration:
     name: Integration tests (wp-env)
-    if: inputs.integration
+    needs: changes
+    if: ${{ !cancelled() && inputs.integration && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -73,7 +111,8 @@ jobs:
 
   e2e:
     name: E2E (Playwright)
-    if: inputs.e2e
+    needs: changes
+    if: ${{ !cancelled() && inputs.e2e && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
