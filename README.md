@@ -35,13 +35,22 @@ request template, issue forms) unless it has its own. The rules for contributors
 Mention `@dilux-bot` in a review thread or in the conversation and Claude
 answers there; it resolves its own thread when the point is settled.
 
+Nothing runs twice for one change. An edit of the title or the description
+re-runs only the conventions, the review (free on a commit it already read)
+and the auto-merge decision, never the suites. A push to `main` runs the slow
+suites only when it must: the job verifies that the commit is the squash
+merge of a pull request of this repository and that its tree is the one that
+pull request's checks ran on; any doubt runs everything. Once a week (and on
+*Run workflow*) everything runs against today's WordPress and tools, and a
+failure opens one `ci:weekly` issue.
+
 ## Adopt it in a new repository
 
 1. **Workflows.** Copy the callers from [`workflow-templates/`](workflow-templates/)
    (they also appear under *Actions → New workflow* in every repository of the
    organisation): `pull-request.yml` or `pull-request-wp.yml`,
-   `pull-request-comments.yml`, `issues.yml` and, for a plugin,
-   `release-wp.yml`. Fill in `slug`, `version-constant`, `retired-names` and
+   `pull-request-edited.yml`, `pull-request-comments.yml`, `issues.yml` and,
+   for a plugin, `release-wp.yml`. Fill in `slug`, `version-constant`, `retired-names` and
    `support-url`.
 2. **Policy and rules.** Add `.github/review-policy.yml`. Every review
    setting lives in this file and in the organisation's
@@ -71,7 +80,8 @@ answers there; it resolves its own thread when the point is settled.
    and a repository's own real-storage workflow if it gates on the same
    answer), and skips Plugin Check unless a `plugin-check` file such as
    `readme.txt` or a hidden file changed. The fast checks and the review always run; a push
-   to `main` always runs everything. The defaults cover a WordPress plugin;
+   to `main` runs the suites only when its tree was not tested already, and
+   the weekly run always runs them. The defaults cover a WordPress plugin;
    a repository only adds what is peculiar to it.
 
    Then an `AGENTS.md` with the rules the review must hold the code to, and
@@ -104,10 +114,11 @@ Call them pinned to `@v1`; a breaking change ships as `v2`. A stack suffix
 | [`conventions.yml`](.github/workflows/conventions.yml) | Branch, title, commits, description sections, no "Generated with" footer, relative doc links, retired names. | `retired-names`, `required-sections`, `max-header` |
 | [`claude-review.yml`](.github/workflows/claude-review.yml) | The review described above. Outputs `risk`, `complexity`, `floor`, `trusted`, `blocking`. | `profile`, `central-ref`, `max-auto-reviews` |
 | [`review-reply.yml`](.github/workflows/review-reply.yml) | Answers `@dilux-bot` mentions from members and collaborators, with the strong model. | `profile`, `central-ref` |
-| [`auto-merge.yml`](.github/workflows/auto-merge.yml) | Turns GitHub's auto-merge on or off from the review's outputs and commits the description verbatim. The caller runs it on `edited` too. | the five review outputs |
+| [`auto-merge.yml`](.github/workflows/auto-merge.yml) | Turns GitHub's auto-merge on or off from the review's outputs and commits the description verbatim. `pull-request-edited.yml` runs it on `edited` too. | the five review outputs |
 | [`scripts/next-version.py`](scripts/next-version.py) | Not a workflow: the next version of a repository from the `type:*` labels of the pull requests merged since the last `X.Y.Z` tag (a `version:major|minor|patch` label a person sets wins): breaking → major, feat → minor, fix or perf → patch, anything else nothing to release. Also the development version, `<next>-dev.<N>`, N the commits since the tag. `--json` for machines, `--test` for its own tests. | `--repo`, `--base`, `--tag-prefix` |
 | [`plugin-checks-wp.yml`](.github/workflows/plugin-checks-wp.yml) | Fast gates for a WordPress plugin: syntax and unit tests on every PHP from the minimum to the latest, PHPCS, PHPStan, Psalm taint, i18n, Plugin Check on the shipped tree, readme and versions. Needs the composer scripts `test:unit`, `lint`, `stan`, `psalm:taint`, a `.distignore` and a `readme.txt`. | `slug`, `main-file`, `version-constant`, `php-versions` |
 | [`plugin-tests-wp.yml`](.github/workflows/plugin-tests-wp.yml) | Slow suites on wp-env: PHPUnit integration (multisite) and Playwright E2E. Needs `.wp-env.json`, `phpunit-integration.xml` and a Playwright config that writes to `build/e2e-results`. | `integration`, `multisite`, `e2e` |
+| [`weekly-failure.yml`](.github/workflows/weekly-failure.yml) | When the scheduled full run fails: opens one `ci:weekly` issue with the run, or adds the run to the one already open. | none |
 | [`issue-triage.yml`](.github/workflows/issue-triage.yml) | When an issue opens: classifies it with the roadmap and the docs (bug to reproduce, needs info, by design, pro feature, enhancement, question, duplicate, security), applies the label and posts one reply; never closes. On a schedule, closes `needs-info` issues nobody answered. Light model. | every repository |
 | [`issue-repro.yml`](.github/workflows/issue-repro.yml) | When an issue gets `bug:unconfirmed` (or `repro:again`): Claude writes one unit test that fails if the bug exists (no shell), a second job with no secrets and a read-only token runs it, a third with the bot token pushes the file the first job produced (hash-checked) and reports. Fails: `bug:confirmed` plus a draft PR with the test. Passes: `could-not-reproduce` and a question to the reporter. At most 5 a day. | repositories with unit tests |
 | [`plugin-release-wp.yml`](.github/workflows/plugin-release-wp.yml) | The release as a deployment. On a push to `main`: computes the next version from the `type:*` labels of what merged (`scripts/next-version.py`); nothing pending, or the policy's `release.<bump>: off`, ends there. Otherwise waits for the reviewers of the repository's environment (the summary shows the version, the bump and the pull requests), then stamps the three version markers in the checkout, validates them and the changelog (`= X.Y.Z =` or `= Unreleased =` renamed), deploys to wordpress.org SVN, creates the tag with the release App's token and the GitHub release with the changelog and what was merged, grouped by type. On a tag `X.Y.Z` pushed by hand: the same, and the tag must be the version the labels say is next. `dry-run` rehearses everything but the SVN commit, the tag and the release (the notes go to the summary). The caller passes `secrets: inherit` and runs only on `main` and `X.Y.Z` tags. | `slug`, `main-file`, `version-constant`, `dry-run`, `environment`, `auto-environment`, `central-ref` |

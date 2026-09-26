@@ -7,10 +7,18 @@ name: Pull request
 # retired-names.
 
 on:
+  # An edit of the title or description is handled by pull-request-edited.yml
+  # (conventions, review and the auto-merge decision only), so the suites keep
+  # the verdict they gave the code.
   pull_request:
-    types: [opened, edited, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [$default-branch]
+  # Once a week, and by hand, everything runs whatever changed: the suites
+  # against today's WordPress and tools. A failure opens (or updates) one issue.
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -54,3 +62,11 @@ jobs:
       description-ok: ${{ needs.review.outputs.description-ok }}
       enabled: ${{ needs.review.outputs.auto-merge }}
     secrets: inherit
+
+  weekly-failure:
+    needs: [checks, tests]
+    if: github.event_name == 'schedule' && contains(needs.*.result, 'failure')
+    permissions:
+      contents: read
+      issues: write
+    uses: DiluxOne/.github/.github/workflows/weekly-failure.yml@v1

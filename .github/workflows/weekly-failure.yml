@@ -1,0 +1,38 @@
+name: Weekly failure
+
+# Called by a repository's pull-request workflow when its scheduled run fails:
+# opens one issue with the link to the run, or adds the link to the issue that
+# is already open, so a suite that breaks on a Monday is recorded where the
+# work is and nobody has to read the Actions tab. The label `ci:weekly` marks
+# the issue; closing it ends the thread and the next failure opens a new one.
+
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  report:
+    name: Record the failure
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          gh label create ci:weekly --repo "$GITHUB_REPOSITORY" --color B60205 --description "The weekly full run failed" --force >/dev/null
+          body="The scheduled run of the full pipeline failed on $(date -u +%F) at \`${SHA:0:7}\`: $RUN_URL"
+          open=$(gh issue list --repo "$GITHUB_REPOSITORY" --label ci:weekly --state open --json number --jq '.[0].number // empty')
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --repo "$GITHUB_REPOSITORY" --body "$body"
+            echo "Added to #$open."
+          else
+            note="Nothing merged caused this: the run tests the code of \`main\` as it was already tested, against today's WordPress, PHP and tools. Read the run, fix what drifted in a pull request, and close this issue when a scheduled run is green again."
+            gh issue create --repo "$GITHUB_REPOSITORY" --label ci:weekly --title "The weekly full run failed" --body "$(printf '%s\n\n%s' "$body" "$note")"
+          fi

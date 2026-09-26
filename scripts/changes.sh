@@ -13,8 +13,9 @@
 # policy is read from that parent. Nothing here depends on the event's
 # shas, which can lag behind the merge ref.
 #
-# Expects: EVENT, DEFAULT_POLICY, GITHUB_OUTPUT, RUNNER_TEMP; the repository
-# checked out at fetch-depth 2, and DiluxOne/.github under .dx-central.
+# Expects: EVENT, DEFAULT_POLICY, GITHUB_OUTPUT, RUNNER_TEMP; on a push, HEAD_SHA
+# and GH_TOKEN (read) too; the repository checked out at fetch-depth 2, and
+# DiluxOne/.github under .dx-central.
 set -euo pipefail
 
 everything() {
@@ -23,8 +24,41 @@ everything() {
   echo "$1: everything runs"
 }
 
+tested() {
+  echo "code=false" >> "$GITHUB_OUTPUT"
+  echo "plugin_check=false" >> "$GITHUB_OUTPUT"
+  echo "$1: the slow suites do not run again"
+}
+
+# A push to main after a squash merge carries exactly the tree the pull
+# request's run tested: the ruleset requires the branch to be up to date,
+# so the squash commit's tree equals the head's. The job checks that
+# rather than trusting it: the pull request the commit came from must be
+# merged, from this repository (a fork's code never had the real suite),
+# and its head's tree must equal this commit's tree. Then nothing needs to
+# run again. Any doubt, or an API that does not answer, runs everything.
+if [ "${EVENT:-}" = "push" ] && [ -n "${HEAD_SHA:-}" ] && [ -n "${GH_TOKEN:-}" ]; then
+  # shellcheck disable=SC2016 # jq variables, not shell ones.
+  pr=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/pulls" 2>/dev/null \
+        | jq -r --arg sha "$HEAD_SHA" --arg repo "$GITHUB_REPOSITORY" \
+          '[.[] | select(.merged_at != null and .merge_commit_sha == $sha and (.head.repo.full_name // "") == $repo)] | first // empty | "\(.number) \(.head.sha)"' 2>/dev/null || true)
+  if [ -n "$pr" ]; then
+    number=${pr%% *}; head=${pr##* }
+    tree_here=$(git rev-parse "HEAD^{tree}" 2>/dev/null || true)
+    tree_pr=$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$head" --jq .tree.sha 2>/dev/null || true)
+    if [ -n "$tree_here" ] && [ "$tree_here" = "$tree_pr" ]; then
+      tested "this commit is the squash merge of #$number and its tree is the one #$number's checks ran on"
+      exit 0
+    fi
+    everything "this commit's tree differs from what #$number tested"
+    exit 0
+  fi
+  everything "no merged pull request of this repository produced this commit"
+  exit 0
+fi
+
 if [ "${EVENT:-}" != "pull_request" ]; then
-  everything "not a pull request"
+  everything "a ${EVENT:-?} run"
   exit 0
 fi
 
