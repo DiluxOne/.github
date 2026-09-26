@@ -84,8 +84,13 @@ answers there; it resolves its own thread when the point is settled.
    resolved, required checks green and up to date, named
    `conventions / Conventions (branch, title, commits)`,
    `conventions / Docs (links and names)`, `review / Claude review` and, for a
-   plugin, every `checks / …` and `tests / …` job. A ruleset on tags: `X.Y.Z` A second tag ruleset allows **creating** `X.Y.Z` tags to administrators only (bypass actor: the Administrator role), so no token the workflows hold can publish. An environment `wordpress-org` with a deployment policy of tag `*.*.*` plus branch `main`, holding `SVN_USERNAME` and `SVN_PASSWORD` as environment secrets (not organisation secrets).
-   and `vX.Y.Z` can be neither deleted nor moved. Dependabot alerts and
+   plugin, every `checks / …` and `tests / …` job. Two rulesets on tags
+   `X.Y.Z`: one that lets only administrators create them (bypass actor:
+   the Administrator role), so no token the workflows hold can publish; one
+   under which nobody can delete or move them. For a plugin, an environment
+   `wordpress-org` with a deployment policy of tag `*.*.*` plus branch
+   `main`, holding `SVN_USERNAME` and `SVN_PASSWORD` as environment secrets
+   (never organisation secrets). Dependabot alerts and
    updates, private vulnerability reporting. The `dilux-bot` App must be
    installed on the repository. The labels are created by the review itself.
 
@@ -125,7 +130,7 @@ callers are [`pull-request.yml`](.github/workflows/pull-request.yml) and
 | --- | --- | --- |
 | Secret | `ANTHROPIC_API_KEY` | Review, replies and learnings. Also a Dependabot secret, so Dependabot's pull requests are reviewed. |
 | Secret | `DILUX_BOT_PRIVATE_KEY` | The `dilux-bot` GitHub App's key. Also a Dependabot secret. |
-| Secret (environment, not organisation) | `SVN_USERNAME`, `SVN_PASSWORD` | wordpress.org SVN, in each plugin repository's `wordpress-org` environment. The release and the credentials check declare that environment on their job; callers pass no secrets. The environment's policy admits `X.Y.Z` tags and `main`: only a workflow merged into `main` can name it, and a pull request's job never can. |
+| Secret (environment, not organisation) | `SVN_USERNAME`, `SVN_PASSWORD` | wordpress.org SVN, in each plugin repository's `wordpress-org` environment. The release and the credentials check declare that environment on their job; callers pass no secrets. The environment's policy admits `X.Y.Z` tags and `main`: a pull request's job can never name it; a job running on `main` can only through a workflow that was merged into `main` by a reviewed pull request, which is the trust boundary of everything else here. |
 | Variable | `DILUX_BOT_CLIENT_ID` | The App's client ID. |
 
 Models, effort, budget and auto-merge are not variables: they live in the
@@ -135,7 +140,7 @@ workflow of a repository from its Actions tab.
 
 ## Changing this repository
 
-Every place the bot's token is minted asks only for what that job does: the review, the replies and the triage get `contents: read`; only the merge, the reproduction push and the weekly learnings get `contents: write`. Tags are not creatable by the App at all: the ruleset an adopting repository sets at step 3 allows `X.Y.Z` tag creation to administrators only, and this repository's `v*` tags (the moving `v1`, a future `v2`) can be created, moved or deleted only by administrators (ruleset `moving tags`: creation, update, deletion). The wordpress.org credentials live in the repository environment `wordpress-org`, whose deployment policy admits only `X.Y.Z` tags and `main`, so no pull request or branch job can read them; the check `svn-auth-check.yml` runs inside that environment.
+Every place the bot's token is minted asks only for what that job does: the review, the replies and the triage get `contents: read` while the model runs; `contents: write` is minted only by the merge, the reproduction push, the weekly learnings, and the step that resolves review threads after the model has finished (resolving a thread is a write on the repository), which nothing that read the pull request's text ever holds. Tags are not creatable by the App at all: the ruleset an adopting repository sets at step 3 allows `X.Y.Z` tag creation to administrators only, and this repository's `v*` tags (the moving `v1`, a future `v2`) can be created, moved or deleted only by administrators (ruleset `moving tags`: creation, update, deletion). The wordpress.org credentials live in the repository environment `wordpress-org`, whose deployment policy admits only `X.Y.Z` tags and `main`, so no pull request or branch job can read them; the check `svn-auth-check.yml` runs inside that environment.
 
 Everything here is high risk: a human merges every change. After merging, move
 `v1` (or cut `v2` for a breaking change) and tag the exact version. Moving `v1`
