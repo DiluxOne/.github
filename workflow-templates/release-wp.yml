@@ -9,8 +9,9 @@ name: Release
 # be the version the labels say is next. While the readme's newest changelog
 # entry starts with the line `Unreleased.` nothing waits for approval: the
 # version is not ready, and the pull request that removes that line releases
-# it. Every push to main also uploads a development build (the shipped tree
-# stamped <next>-dev.<N>) as the run's artifact. Fill in slug and
+# it. Every push to main also publishes a development build (the shipped
+# tree stamped <next>-dev.<N>) as the one "Development build" pre-release on
+# the moving tag `dev`, replaced each time. Fill in slug and
 # version-constant.
 #
 # The environment holds the SVN credentials and the release App's key

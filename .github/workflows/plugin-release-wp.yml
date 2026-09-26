@@ -40,11 +40,21 @@ name: WordPress plugin release
 # that removes the line is the decision to release. A tag pushed by hand is
 # refused the same way.
 #
-# Every push to main also produces a development build, whatever the labels
+# Every push to main also publishes a development build, whatever the labels
 # or the readme say: the tree that ships (minus .distignore) with the three
-# markers (and a `= Unreleased =` heading) stamped `<next>-dev.<N>` and a `Build: <commit>` header, as the
-# run's artifact `<slug>-<next>-dev.<N>`, kept 30 days, for anyone to install
-# and try what is coming. Nothing is committed or tagged for it.
+# markers (and a `= Unreleased =` heading) stamped `<next>-dev.<N>` and a
+# `Build: <commit>` header, as ONE GitHub pre-release named "Development
+# build" on the moving tag `dev-tag` (default `dev`), replaced on every push:
+# the tag moves to the commit, the release notes say the version, the commit
+# and the changelog that is coming, and the asset `<slug>.zip` keeps its URL,
+# `…/releases/download/<dev-tag>/<slug>.zip`. There is no history of
+# development builds (the commit in the `Build:` header rebuilds any of
+# them); releases X.Y.Z are untouched and "Latest" stays the last of them.
+# The moving tag must be left free by the repository's tag rulesets (the
+# adoption guide's cover X.Y.Z only) and never publishes anything to
+# wordpress.org. In a rehearsal (`dry-run: true`) the build is made and its
+# notes go to the summary, but no tag moves and no pre-release is published:
+# a rehearsal publishes nothing, as documented.
 #
 # Release tags are permanent (tag protection): a failed deploy is fixed and
 # re-run, never re-tagged. `dry-run: true` rehearses everything but the SVN
@@ -106,12 +116,16 @@ on:
         description: The ref of DiluxOne/.github whose scripts and policy to use.
         type: string
         default: v2
+      dev-tag:
+        description: The moving tag of the "Development build" pre-release that every push to main replaces. Empty publishes no development build.
+        type: string
+        default: dev
     outputs:
       version:
         description: The version released, or empty when nothing was.
         value: ${{ jobs.release.outputs.version }}
       dev:
-        description: The development version of this commit, <next>-dev.<N>; the artifact of the development build is named <slug>-<dev>.
+        description: The development version of this commit, <next>-dev.<N>, the one the "Development build" pre-release carries.
         value: ${{ jobs.version.outputs.dev }}
 
 permissions:
@@ -233,19 +247,26 @@ jobs:
     name: Development build
     # Every push to main, whatever the labels or the readme say, and
     # whatever happens to the version job: the tree that ships, stamped with
-    # the version that is coming and the commit it was built from, for
-    # anyone to install and try. It computes the development version itself
-    # so that it does not depend on the release's job. Never on a tag: a
-    # release is its own build. No secrets, no write: nothing is committed
-    # or tagged for it.
-    if: startsWith(github.ref, 'refs/heads/')
+    # the version that is coming and the commit it was built from, published
+    # as the one "Development build" pre-release for anyone to install and
+    # try. It computes the development version itself so that it does not
+    # depend on the release's job. Never on a tag: a release is its own
+    # build, and only from the default branch: a push there replaces the
+    # public pre-release. No secrets; contents: write only to move the `dev`
+    # tag and replace that pre-release, which publishes nothing to
+    # wordpress.org. In a rehearsal the build is made and nothing is published.
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && inputs.dev-tag != ''
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      contents: read
+      contents: write
       pull-requests: read # the labels of what merged
+    concurrency:
+      group: development-build-${{ github.repository }}
+      cancel-in-progress: false
     env:
       SLUG: ${{ inputs.slug }}
+      DEV_TAG: ${{ inputs.dev-tag }}
       MAIN: ${{ inputs.main-file != '' && inputs.main-file || format('{0}.php', inputs.slug) }}
       CONSTANT: ${{ inputs.version-constant }}
     steps:
@@ -279,9 +300,11 @@ jobs:
         # Plugins and wherever the plugin reads its headers. The zip holds
         # the plugin folder, named after the slug, the way WordPress installs
         # it.
+        id: pack
         run: |
           set -euo pipefail
           build=${GITHUB_SHA:0:7}
+          echo "build=$build" >> "$GITHUB_OUTPUT"
           bash .dx-central/scripts/stamp-version.sh . "$DEV" "$MAIN" "$CONSTANT" "$build"
           # The central's checkout leaves before the tree is packed: nothing
           # that is not the plugin may end up in the build.
@@ -289,15 +312,54 @@ jobs:
           exclude=(); [ -f .distignore ] && exclude=(--exclude-from=.distignore)
           mkdir -p "$RUNNER_TEMP/dist"
           rsync -rc "${exclude[@]}" --exclude=.git --exclude=.github ./ "$RUNNER_TEMP/dist/$SLUG/" --delete
-          # shellcheck disable=SC2016 # backticks in the Markdown of the summary, not commands.
-          printf '## Development build %s\n\nThe tree that ships, stamped `%s` from commit `%s`, is the artifact **%s** of this run (download it from the summary of the run, unzip, install the `%s` folder as a plugin). Not a release: nothing was committed or tagged.\n' "$DEV" "$DEV" "$build" "$SLUG-$DEV" "$SLUG" >> "$GITHUB_STEP_SUMMARY"
+          (cd "$RUNNER_TEMP/dist" && zip -qr "$RUNNER_TEMP/$SLUG.zip" "$SLUG")
+          # The notes: what this build is, and the changelog that is coming
+          # (the newest entry of the readme, without its `Unreleased.` line).
+          # shellcheck disable=SC2016 # backticks in the Markdown of the notes, not commands.
+          {
+            printf 'Development build **%s** of DiluxOne %s, from commit %s. Not a release: it is replaced on every push to `%s`, it is not on wordpress.org, and a site that installs it updates to the release when it is published.\n\n' "$DEV" "$SLUG" "[\`$build\`]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$GITHUB_SHA)" "${GITHUB_REF#refs/heads/}"
+            printf '**Install:** download `%s.zip` below, then in WordPress: Plugins → Add New → Upload Plugin. Status › System shows the version and the build.\n\n' "$SLUG"
+            notes=$(awk '/^== Changelog ==$/ { c = 1; next } c && /^= .* =$/ { if (h) exit; h = 1; next } h && !/^Unreleased\.?$/ && (p || NF) { p = 1; print }' readme.txt | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}')
+            if [ -n "$(printf '%s' "$notes" | tr -d '[:space:]')" ]; then printf '**Coming in the next version:**\n%s\n' "$notes"; fi
+          } > "$RUNNER_TEMP/dev-notes.md"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ${{ inputs.slug }}-${{ steps.dev.outputs.dev }}
-          path: ${{ runner.temp }}/dist
-          retention-days: 30
-          if-no-files-found: error
+      - name: The notes, in a rehearsal
+        if: inputs.dry-run
+        env:
+          DEV: ${{ steps.dev.outputs.dev }}
+        run: |
+          # shellcheck disable=SC2016 # backticks in the Markdown of the summary, not commands.
+          printf '## Development build %s (rehearsal)\n\nBuilt, not published: `dry-run: true`. The pre-release would say:\n\n' "$DEV" >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/dev-notes.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the pre-release on the moving tag
+        if: ${{ !inputs.dry-run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEV: ${{ steps.dev.outputs.dev }}
+          BUILD: ${{ steps.pack.outputs.build }}
+          BASE: ${{ github.event.repository.default_branch }}
+        # Only when this commit is still the head of the default branch (a
+        # re-run of an old run must not move the tag back). The zip is
+        # uploaded before the notes, the title and the tag change, so a
+        # failed upload leaves the previous build whole; the tag moves last.
+        run: |
+          set -euo pipefail
+          head=$(gh api "repos/$GITHUB_REPOSITORY/commits/$BASE" --jq .sha)
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            printf '## Development build %s\n\nNot published: %s is no longer the head of %s (a newer push publishes its own build).\n' "$DEV" "$BUILD" "$BASE" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          title="Development build $DEV"
+          if ! gh release view "$DEV_TAG" --repo "$GITHUB_REPOSITORY" --json id --jq .id >/dev/null 2>&1; then
+            gh release create "$DEV_TAG" --repo "$GITHUB_REPOSITORY" --title "$title" --notes-file "$RUNNER_TEMP/dev-notes.md" --prerelease --latest=false --target "$GITHUB_SHA" >/dev/null
+          fi
+          gh release upload "$DEV_TAG" "$RUNNER_TEMP/$SLUG.zip" --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$DEV_TAG" --repo "$GITHUB_REPOSITORY" --title "$title" --notes-file "$RUNNER_TEMP/dev-notes.md" --prerelease --latest=false --target "$GITHUB_SHA" >/dev/null
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$DEV_TAG" -f sha="$GITHUB_SHA" -F force=true --jq .object.sha
+          url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$DEV_TAG"
+          # shellcheck disable=SC2016 # backticks in the Markdown of the summary, not commands.
+          printf '## Development build %s\n\nPublished as the pre-release [%s](%s), replacing the previous one: tag `%s` now points at `%s`, the asset is `%s.zip`. Not a release: nothing reached wordpress.org.\n' "$DEV" "$title" "$url" "$DEV_TAG" "$BUILD" "$SLUG" >> "$GITHUB_STEP_SUMMARY"
 
   release:
     name: Deploy to wordpress.org
