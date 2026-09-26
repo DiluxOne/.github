@@ -11,6 +11,13 @@ name: WordPress plugin release
 # re-run, never re-tagged. `dry-run: true` rehearses everything but the SVN
 # commit, and leaves the GitHub release as a draft.
 #
+# The deploy job runs in the calling repository's environment (`environment`,
+# default `wordpress-org`), and that is where SVN_USERNAME and SVN_PASSWORD
+# live: as environment secrets, never as repository or organisation secrets.
+# The environment's deployment policy admits only X.Y.Z tags (and main, for
+# the credentials check), so no job of a pull request or a branch can read
+# them. The caller passes no secrets.
+#
 #   on:
 #     push:
 #       tags: ['*']
@@ -23,7 +30,6 @@ name: WordPress plugin release
 #         slug: diluxone-offload
 #         version-constant: DILUXONE_OFFLOAD_VERSION   # optional
 #         dry-run: false                               # true rehearses without committing
-#       secrets: inherit
 
 on:
   workflow_call:
@@ -48,11 +54,6 @@ on:
         description: The repository environment the deploy job runs in. Its deployment policy should allow only X.Y.Z tags, and the SVN secrets live in it, so no job of a pull request or branch can ever read them.
         type: string
         default: wordpress-org
-    secrets:
-      SVN_USERNAME:
-        required: true
-      SVN_PASSWORD:
-        required: true
 
 permissions:
   contents: write

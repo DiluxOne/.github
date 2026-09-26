@@ -8,9 +8,10 @@ name: Claude review reply
 # Always the `high` reviewer of the policy files (the repository's, else the
 # organisation's).
 #
-# Only members of the organisation and collaborators can wake the bot, and only
-# on pull requests from branches of the repository itself: a fork's code never
-# runs with the organisation's keys.
+# Only people who can write to the repository can wake the bot (checked
+# against the repository, not against author_association), and only on pull
+# requests from branches of the repository itself: a fork's code never runs
+# with the organisation's keys.
 #
 #   on:
 #     issue_comment:
@@ -70,9 +71,12 @@ jobs:
           permission-issues: write
 
       - name: The commenter can write to this repository
+        id: who
         # author_association says MEMBER for anyone in the organisation and
         # COLLABORATOR for a read-only collaborator; neither is permission to
-        # direct the bot. The repository's own answer is what counts.
+        # direct the bot. The repository's own answer is what counts. Someone
+        # without it is ignored quietly: a red run on the pull request would
+        # be noise about a comment, not about the code.
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           LOGIN: ${{ github.event.comment.user.login }}
@@ -80,12 +84,13 @@ jobs:
           set -euo pipefail
           role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$LOGIN/permission" --jq .role_name 2>/dev/null || echo none)
           case "$role" in
-            admin|maintain|write) echo "$LOGIN may direct the bot ($role)." ;;
-            *) echo "::warning::$LOGIN has $role permission on this repository; the bot answers only people who can write to it."; exit 1 ;;
+            admin|maintain|write) echo "ok=true" >> "$GITHUB_OUTPUT"; echo "$LOGIN may direct the bot ($role)." ;;
+            *) echo "ok=false" >> "$GITHUB_OUTPUT"; echo "::notice::$LOGIN has $role permission on this repository; the bot answers only people who can write to it." ;;
           esac
 
       - name: Pull request and thread
         id: pr
+        if: steps.who.outputs.ok == 'true'
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           SLUG: ${{ steps.bot.outputs.app-slug }}

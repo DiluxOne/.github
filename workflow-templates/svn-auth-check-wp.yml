@@ -1,0 +1,15 @@
+name: SVN credentials check
+
+# Run by hand after rotating the wordpress.org SVN password: proves the
+# secrets in the `wordpress-org` environment authenticate, without
+# publishing anything.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    uses: DiluxOne/.github/.github/workflows/svn-auth-check.yml@v1

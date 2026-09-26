@@ -1,6 +1,6 @@
 # Release automation: the type of a change, the next version, the tag
 
-Status: proposal, 2026-09-26. Not implemented. Reviewed for security, cost and against the tools the market uses before any code is written.
+Status: proposal, 2026-09-26, reviewed for security, cost and against the tools the market uses. Decision of the maintainer: the release is approved as a **deployment** (the job on `main` builds, waits for approval in the `wordpress-org` environment, then tags and publishes), not as a release pull request; sections C and E are being rewritten to that; the security fixes the review asked for ship first (DiluxOne/.github#3). Not implemented yet.
 
 ## Goals, in the maintainer's words
 
@@ -55,7 +55,7 @@ This design is release-please with two changes: the type comes from the AI's rea
 ## E. The tag and the publication
 
 - On push to `main`, the central checks whether the pushed commit is the squash merge of a pull request from a `release/*` branch authored by the bot (GitHub's commit → associated pull requests API). If it is, it creates the tag `X.Y.Z` on that commit with the App's token. The existing release workflow (`plugin-release-wp.yml`) fires on the tag as today: strict validation of the markers against the tag, build from the tagged commit, deploy, GitHub release with notes grouped by `type:*` label.
-- Rulesets: creating or moving tags matching `X.Y.Z` is allowed to the App only; `main` takes no pushes from anyone; pull requests must be up to date with `main` before merging; every check is required.
+- Rulesets: creating tags matching `X.Y.Z` is allowed to administrators and to a dedicated release App (`dilux-release`, `contents: write` and nothing else, its key an environment secret) only, never to `dilux-bot`; moving or deleting them to nobody; `main` takes no pushes from anyone; pull requests must be up to date with `main` before merging; every check is required.
 - The release workflow refuses a tag whose commit is not the merge of a bot `release/*` pull request, and a tag whose version does not equal the pull request's branch. So the only path to a published version is: real change → full pipeline on its pull request → merge → full pipeline on `main` → bot release pull request → human (or policy) merge → tag by the App → publish. No step can be skipped by a person, a label or a comment.
 
 ## F. Costs
