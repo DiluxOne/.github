@@ -1,15 +1,25 @@
 name: Release
 
-# Pushing a tag X.Y.Z publishes this plugin to wordpress.org, through the
-# shared workflow in DiluxOne/.github. Fill in slug and version-constant.
-# Release tags are permanent: a failed deploy is fixed and re-run, never
-# re-tagged. The SVN credentials live in the repository environment
-# `wordpress-org` (deployable from X.Y.Z tags and main only); nothing is
-# passed from here.
+# Publishes this plugin to wordpress.org through the shared workflow in
+# DiluxOne/.github, as a deployment: on every push to main the workflow
+# computes the next version from the type:* labels of what merged; when
+# something is pending, it waits for approval in the `wordpress-org`
+# environment, then stamps, deploys, tags and creates the release. A tag
+# X.Y.Z an administrator pushes by hand goes through the same job, and must
+# be the version the labels say is next. Fill in slug and version-constant.
+#
+# The environment holds the SVN credentials and the release App's key
+# (DILUX_RELEASE_PRIVATE_KEY, with the variable DILUX_RELEASE_CLIENT_ID).
+# A called workflow only sees the secrets its caller hands over, and an
+# environment's secrets can only be handed over with `secrets: inherit`,
+# which passes every repository and organisation secret too. That is why
+# this workflow runs only on main and X.Y.Z tags and calls the shared
+# workflow at a fixed commit (Dependabot keeps the pin current; a bump of it
+# is reviewed as the secret-bearing change it is).
 
 on:
   push:
-    # Only X.Y.Z tags, which only an administrator can create.
+    branches: [$default-branch]
     tags: ['[0-9]+.[0-9]+.[0-9]+']
 
 permissions:
@@ -17,7 +27,9 @@ permissions:
 
 jobs:
   release:
-    uses: DiluxOne/.github/.github/workflows/plugin-release-wp.yml@v1
+    uses: DiluxOne/.github/.github/workflows/plugin-release-wp.yml@v1 # pin this to a commit
     with:
       slug: my-plugin
       version-constant: MY_PLUGIN_VERSION
+      dry-run: true # rehearse first: everything but the SVN commit and the tag
+    secrets: inherit

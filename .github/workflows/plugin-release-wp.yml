@@ -1,35 +1,61 @@
 name: WordPress plugin release
 
-# Reusable. Publishes a WordPress plugin to wordpress.org when a release tag
-# X.Y.Z is pushed: validates the tag and the version markers, extracts the
-# version's changelog, groups what was merged since the previous release by
-# type (✨ features, 🐛 fixes…), commits trunk + tags/X.Y.Z + assets to SVN
-# (files in .distignore never ship; .wordpress-org/ goes to /assets) and
-# creates the GitHub release with those notes and the zip.
+# Reusable. Publishes a WordPress plugin to wordpress.org as a deployment
+# the maintainer approves, from the version the labels of what merged say
+# is next; or from a tag X.Y.Z an administrator pushes by hand, which is
+# the same pipeline with the version typed instead of computed.
+#
+# On a push to main, the `version` job runs scripts/next-version.py: the
+# type:* labels of the pull requests merged since the last X.Y.Z tag give
+# the bump (breaking → major, feat → minor, fix or perf → patch; a
+# version:* label a person set wins). Nothing pending, or the policy's
+# `release:` says `off` for that bump: the run ends there, green, and the
+# summary says why. Something pending: the `release` job waits for the
+# environment's reviewers (the summary shows the version, the bump and the
+# pull requests that justify it), then stamps the three version markers to
+# X.Y.Z in the checkout, validates them, commits trunk + tags/X.Y.Z +
+# assets to SVN, creates the tag with the release App's token and the
+# GitHub release with the changelog and what was merged, grouped by type.
+# Nothing is ever committed to main: the markers there stay at the last
+# released version and every development build stamps itself.
+#
+# On a tag X.Y.Z: the same, except that the tag is the version, it must be
+# the one the labels say is next (a typed number cannot skip the pipeline),
+# and no tag is created. A tag this workflow created itself starts a second
+# run, which finds the GitHub release already there and stops.
+#
+# The readme's newest changelog entry names the version: `= X.Y.Z =` equal to
+# the computed one, or `= Unreleased =`, which the job renames in the build (a
+# first line saying just "Unreleased." goes too). A different number is a
+# disagreement between the roadmap and the labels, and the job refuses until
+# a person settles it with a version:* label or the readme.
 #
 # Release tags are permanent (tag protection): a failed deploy is fixed and
 # re-run, never re-tagged. `dry-run: true` rehearses everything but the SVN
-# commit, and leaves the GitHub release as a draft.
+# commit and the tag, and leaves the GitHub release as a draft.
 #
-# The deploy job runs in the calling repository's environment (`environment`,
-# default `wordpress-org`), and that is where SVN_USERNAME and SVN_PASSWORD
-# live: as environment secrets, never as repository or organisation secrets.
-# The environment's deployment policy admits only X.Y.Z tags (and main, for
-# the credentials check), so no job of a pull request or a branch can read
-# them. The caller passes no secrets.
+# The release job runs in the calling repository's environment
+# (`environment`, default `wordpress-org`), and that is where the SVN
+# credentials and the release App's key live: as environment secrets, never
+# as repository or organisation secrets. The environment's deployment policy
+# admits main and X.Y.Z tags, and its required reviewers are the approval.
+# The caller passes `secrets: inherit`, which is why it runs only on main and
+# on X.Y.Z tags, and calls this workflow at a fixed commit.
 #
 #   on:
 #     push:
-#       tags: ['*']
+#       branches: [main]
+#       tags: ['[0-9]+.[0-9]+.[0-9]+']
 #   permissions:
 #     contents: write
 #   jobs:
 #     release:
-#       uses: DiluxOne/.github/.github/workflows/plugin-release-wp.yml@v1
+#       uses: DiluxOne/.github/.github/workflows/plugin-release-wp.yml@<sha> # vX.Y.Z
 #       with:
 #         slug: diluxone-offload
 #         version-constant: DILUXONE_OFFLOAD_VERSION   # optional
 #         dry-run: false                               # true rehearses without committing
+#       secrets: inherit
 
 on:
   workflow_call:
@@ -43,80 +69,194 @@ on:
         type: string
         default: ''
       version-constant:
-        description: PHP constant that must equal the tag. Empty to skip.
+        description: PHP constant that must equal the version. Empty to skip.
         type: string
         default: ''
       dry-run:
-        description: Check out SVN and prepare the commit without committing it. For rehearsing a release from a scratch repository.
+        description: Check out SVN and prepare the commit without committing it, create no tag, leave the GitHub release as a draft. For rehearsing.
         type: boolean
         default: false
       environment:
-        description: The repository environment the deploy job runs in. Its deployment policy should allow only X.Y.Z tags, and the SVN secrets live in it, so no job of a pull request or branch can ever read them.
+        description: The repository environment the release job runs in. Its deployment policy should allow main and X.Y.Z tags, its required reviewers are the approval, and the SVN secrets and the release App's key live in it.
         type: string
         default: wordpress-org
+      auto-environment:
+        description: 'The environment used instead when the policy says release.<bump>: auto (same secrets, no reviewers). Empty means auto behaves like approve.'
+        type: string
+        default: ''
+      central-ref:
+        description: The ref of DiluxOne/.github whose scripts and policy to use.
+        type: string
+        default: v1
+    outputs:
+      version:
+        description: The version released, or empty when nothing was.
+        value: ${{ jobs.release.outputs.version }}
 
 permissions:
   contents: write
 
 jobs:
+  version:
+    name: What is next
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+      environment: ${{ steps.next.outputs.environment }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref }}
+          path: .dx-central
+          persist-credentials: false
+      - id: next
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          AUTO_ENVIRONMENT: ${{ inputs.auto-environment }}
+          DEFAULT_POLICY: .dx-central/policy/review-policy.default.yml
+        run: |
+          set -euo pipefail
+          echo "version=" >> "$GITHUB_OUTPUT"
+          echo "environment=$ENVIRONMENT" >> "$GITHUB_OUTPUT"
+          next=$(python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "${GITHUB_REF_NAME}" --json 2>/dev/null \
+                 || python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --json)
+          bump=$(jq -r .bump <<<"$next"); pending=$(jq -r .pending <<<"$next"); coming=$(jq -r .next <<<"$next"); last=$(jq -r .last <<<"$next")
+          per_type=$(jq -r '.pulls | to_entries[] | "\(.key): " + (.value | map("#\(.)") | join(", "))' <<<"$next")
+
+          case "$GITHUB_REF" in
+            refs/tags/*)
+              tag="${GITHUB_REF#refs/tags/}"
+              if ! [[ "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "::error::Tag '$tag' is not X.Y.Z; nothing runs for it."; exit 1
+              fi
+              if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null | grep -q false; then
+                echo "Release $tag already exists: this tag was created by the release that published it. Nothing to do." | tee -a "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
+              if [ "$pending" != true ] || [ "$tag" != "$coming" ]; then
+                if [ "$pending" = true ]; then expected="the labels say $coming is next"; else expected="nothing merged since $last asks for a version"; fi
+                echo "::error::Tag $tag cannot be released: $expected. A typed number cannot skip the pipeline: label a merged pull request version:major, version:minor or version:patch so the labels reach $tag, then re-run."
+                printf '%s\n' "$per_type" >&2
+                exit 1
+              fi
+              version=$tag
+              ;;
+            *)
+              # shellcheck disable=SC2016 # backticks in the Markdown of the summary, not commands.
+              if [ "$pending" != true ]; then
+                printf '## Nothing to release\n\nSince %s nothing merged asks for a version: no `type:breaking`, `type:feat`, `type:fix` or `type:perf` label, no `version:*` label.\n\n%s\n' "$last" "${per_type:-_no pull requests_}" >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
+              # The policy decides, per bump, whether a person approves.
+              mode=$(python3 - "$DEFAULT_POLICY" .github/review-policy.yml "$bump" <<'PY'
+          import sys; sys.path.insert(0, ".dx-central/scripts"); import policy
+          d = policy.load_yaml(sys.argv[1]) or {}; r = policy.load_yaml(sys.argv[2]) or {}
+          rel = {**(d.get("release") or {}), **(r.get("release") or {})}
+          mode = str(rel.get(sys.argv[3], "approve"))
+          if mode == "auto" and not d.get("auto-allowed", False):
+              sys.stderr.write("::warning::release.%s: auto is not allowed by the organisation policy (auto-allowed: false); a person approves.\n" % sys.argv[3])
+              mode = "approve"
+          print(mode)
+          PY
+              )
+              # shellcheck disable=SC2016 # backticks in the Markdown of the summary, not commands.
+              case "$mode" in
+                off) printf '## Not released\n\nA %s release (%s) is pending but the policy says `release.%s: off`.\n\n%s\n' "$bump" "$coming" "$bump" "$per_type" >> "$GITHUB_STEP_SUMMARY"; exit 0 ;;
+                auto) [ -n "$AUTO_ENVIRONMENT" ] && echo "environment=$AUTO_ENVIRONMENT" >> "$GITHUB_OUTPUT" ;;
+                approve) ;;
+                *) echo "::error::release.$bump is '$mode'; it must be approve, auto or off."; exit 1 ;;
+              esac
+              version=$coming
+              ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          printf '## Release %s\n\nA **%s** release after %s, from the labels of what merged:\n\n%s\n\nApprove the deployment to publish it; reject it and nothing happens. A later push to main computes again.\n' "$version" "$bump" "$last" "$per_type" >> "$GITHUB_STEP_SUMMARY"
+
   release:
     name: Deploy to wordpress.org
+    needs: version
+    if: needs.version.outputs.version != ''
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    environment: ${{ inputs.environment }}
+    environment: ${{ needs.version.outputs.environment }}
+    # One release at a time; a run waiting for approval is never cancelled by
+    # a newer push (the approver decides), and a run deploying is never
+    # cancelled at all.
+    concurrency:
+      group: release-${{ github.repository }}
+      cancel-in-progress: false
+    outputs:
+      version: ${{ needs.version.outputs.version }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      MAIN: ${{ inputs.main-file != '' && inputs.main-file || format('{0}.php', inputs.slug) }}
+      CONSTANT: ${{ inputs.version-constant }}
     steps:
-      - name: Tag is X.Y.Z
-        run: |
-          tag="${GITHUB_REF#refs/tags/}"
-          if ! [[ "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Tag '$tag' is not X.Y.Z. Only X.Y.Z tags are protected, so delete this one and push the right one."
-            exit 1
-          fi
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Version markers equal the tag
-        env:
-          MAIN: ${{ inputs.main-file != '' && inputs.main-file || format('{0}.php', inputs.slug) }}
-          CONSTANT: ${{ inputs.version-constant }}
+      - name: Stamp the version markers
+        # The checkout, never the repository: the three markers become the
+        # version, and the readme's `= Unreleased =` entry takes its number.
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF#refs/tags/}"
+          sed -i -E "s/^(\s*\*\s*Version:\s*).*$/\1$VERSION/" "$MAIN"
+          if [ -n "$CONSTANT" ]; then sed -i -E "s/^(define\(\s*'${CONSTANT}',\s*').*('\s*\);)$/\1$VERSION\2/" "$MAIN"; fi
+          sed -i -E "s/^(Stable tag:\s*).*$/\1$VERSION/" readme.txt
+          if grep -q '^= Unreleased =$' readme.txt; then
+            sed -i -E "s/^= Unreleased =$/= $VERSION =/" readme.txt
+            sed -i -E "/^= $VERSION =$/{n;/^Unreleased\.?$/d}" readme.txt
+          elif grep -q "^= $VERSION =$" readme.txt; then
+            sed -i -E "/^= $VERSION =$/{n;/^Unreleased\.?$/d}" readme.txt
+          fi
+          git --no-pager diff --stat
+
+      - name: Version markers equal the version
+        run: |
+          set -euo pipefail
           stable=$(grep -oP '^Stable tag:\s*\K\S+' readme.txt)
           version=$(grep -oP '^\s*\*\s*Version:\s*\K\S+' "$MAIN")
           fail=0
-          [ "$stable" = "$tag" ] || { echo "::error file=readme.txt::Stable tag $stable is not $tag."; fail=1; }
-          [ "$version" = "$tag" ] || { echo "::error file=$MAIN::Version $version is not $tag."; fail=1; }
+          [ "$stable" = "$VERSION" ] || { echo "::error file=readme.txt::Stable tag $stable is not $VERSION."; fail=1; }
+          [ "$version" = "$VERSION" ] || { echo "::error file=$MAIN::Version $version is not $VERSION."; fail=1; }
           if [ -n "$CONSTANT" ]; then
             constant=$(grep -oP "${CONSTANT}',\s*'\K[^']+" "$MAIN")
-            [ "$constant" = "$tag" ] || { echo "::error file=$MAIN::$CONSTANT $constant is not $tag."; fail=1; }
+            [ "$constant" = "$VERSION" ] || { echo "::error file=$MAIN::$CONSTANT $constant is not $VERSION."; fail=1; }
           fi
-          if [ "$fail" -ne 0 ]; then
-            echo "::error::Nothing reached wordpress.org. This tag is permanent: fix the markers in a PR and release the next patch version."
-            exit 1
-          fi
+          [ "$fail" -eq 0 ] || { echo "::error::Nothing reached wordpress.org: a marker did not take the version. Fix the file's shape in a pull request."; exit 1; }
 
       - name: This version's changelog
-        # Before touching SVN: a release without its changelog stops here.
+        # Before touching SVN: a release without its changelog stops here,
+        # and so does a readme that announces another version.
         run: |
-          tag="${GITHUB_REF#refs/tags/}"
-          awk -v head="= ${tag} =" '$0 == head { found = 1; next } found && /^=/ { exit } found { print }' readme.txt > "$RUNNER_TEMP/notes.md"
-          grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md" || { echo "::error file=readme.txt::No '= ${tag} =' changelog entry."; exit 1; }
+          set -euo pipefail
+          newest=$(grep -m1 -oP '^= \K[0-9]+\.[0-9]+\.[0-9]+(?= =$)' readme.txt || true)
+          if [ "$newest" != "$VERSION" ]; then
+            echo "::error file=readme.txt::The newest changelog entry is '= ${newest:-none} =' but the labels of what merged give $VERSION. Either the readme announces a version the labels do not reach (add version:major, version:minor or version:patch to a merged pull request) or the labels went further than the readme (write the entry, or head it '= Unreleased ='). Nothing reached wordpress.org."
+            exit 1
+          fi
+          awk -v head="= ${VERSION} =" '$0 == head { found = 1; next } found && /^=/ { exit } found { print }' readme.txt > "$RUNNER_TEMP/notes.md"
+          grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md" || { echo "::error file=readme.txt::The '= ${VERSION} =' changelog entry is empty."; exit 1; }
 
       - name: What was merged, grouped by type
-        # Appended to the release notes: every commit since the release this
-        # tag follows (the nearest release tag among its ancestors, so a
-        # hotfix on an older line compares against that line), grouped by
-        # its Conventional Commit type. Nobody writes the emoji; the type
-        # decides it. Nothing is appended when no commit matches a type.
+        # Appended to the release notes: every commit since the nearest
+        # release tag among this commit's ancestors (a hotfix on an older
+        # line compares against that line), grouped by its Conventional
+        # Commit type. Nobody writes the emoji; the type decides it.
         run: |
-          tag="${GITHUB_REF#refs/tags/}"
-          prev=$(git describe --tags --abbrev=0 --match '[0-9]*.[0-9]*.[0-9]*' "${tag}^" 2>/dev/null || true)
+          prev=$(git describe --tags --abbrev=0 --match '[0-9]*.[0-9]*.[0-9]*' --exclude "$VERSION" HEAD 2>/dev/null || true)
           [ -n "$prev" ] || exit 0
-          git log --format='%s' "$prev..$tag" > "$RUNNER_TEMP/subjects.txt"
+          git log --format='%s' "$prev..HEAD" > "$RUNNER_TEMP/subjects.txt"
           groups=""
           for group in "feat|✨ Features" "fix|🐛 Fixes" "perf|⚡ Performance" "docs|📝 Documentation" "refactor|♻️ Refactoring" "test|✅ Tests" "build|📦 Build and dependencies" "ci|👷 CI" "chore|🔧 Maintenance" "revert|⏪ Reverts"; do
             type="${group%%|*}"; title="${group#*|}"
@@ -139,12 +279,39 @@ jobs:
           SVN_USERNAME: ${{ secrets.SVN_USERNAME }}
           SVN_PASSWORD: ${{ secrets.SVN_PASSWORD }}
           SLUG: ${{ inputs.slug }}
+          VERSION: ${{ needs.version.outputs.version }}
+
+      - name: The release App's token
+        # Only after SVN took the version, only on main, never in a rehearsal:
+        # the one token that can create a release tag, held by the one step
+        # that does it. The App has contents: write and nothing else, and its
+        # key lives in the environment, so only an approved job ever sees it.
+        if: ${{ !inputs.dry-run && startsWith(github.ref, 'refs/heads/') }}
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DILUX_RELEASE_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_RELEASE_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+
+      - name: Tag the commit
+        if: ${{ steps.app.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$VERSION" -f sha="$GITHUB_SHA" >/dev/null
+          echo "Tagged $GITHUB_SHA as $VERSION."
 
       - name: GitHub release
         if: steps.deploy.outputs.zip-path != ''
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
+          tag_name: ${{ needs.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
           files: ${{ steps.deploy.outputs.zip-path }}
           body_path: ${{ runner.temp }}/notes.md
           # A rehearsal leaves a draft to inspect, never a published release.
           draft: ${{ inputs.dry-run }}
+          token: ${{ steps.app.outputs.token || github.token }}
