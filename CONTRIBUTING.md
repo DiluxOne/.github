@@ -75,7 +75,7 @@ Nobody types a version number. The `type:*` label the review sets on each merged
 
 - **Every push to `main` produces a development build**, the shipped tree stamped `<next>-dev.<N>`, as an artifact of the *Release* run in the Actions tab. Anyone can download it and try what is coming; it is not a release.
 - **The changelog is written as the changes merge.** A pull request that changes what a user sees adds its bullet to the newest entry of `readme.txt` (`= X.Y.Z =`, first line `Unreleased.`), in the same pull request.
-- **The maintainer decides when it is ready** by removing the `Unreleased.` line in a pull request. That push to `main` waits for approval in the repository's `wordpress-org` environment; only its required reviewers can approve, and approving publishes. Until then, however many pull requests merge, nothing waits for anyone and nothing is published.
+- **The maintainer decides when it is ready** by removing the `Unreleased.` line in a pull request. That push to `main` waits for approval in the repository's `wordpress-org` environment; only its required reviewers can approve, and approving publishes (a repository's policy can set a kind of bump to `auto`, published without waiting, or `off`, never published; the organisation default is to wait). Until then, however many pull requests merge, nothing waits for anyone and nothing is published.
 - **Outside contributors** need nothing more than the pull request: your change ships in the next version with its bullet in the changelog. You cannot approve a release, and you do not need to.
 
 ## AI tools

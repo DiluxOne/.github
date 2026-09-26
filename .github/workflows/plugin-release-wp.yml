@@ -34,7 +34,7 @@ name: WordPress plugin release
 # different number is a disagreement between the roadmap and the labels, and
 # the job refuses until a person settles it with a version:* label or the
 # readme. The same entry says whether the version is ready: while its first
-# line is exactly `Unreleased.`, the version job ends green with "Not ready"
+# line is `Unreleased.` (scripts/release-ready.sh), the version job ends green with "Not ready"
 # and no deployment waits for anyone, however many pull requests merged. The
 # notes under that line are written as the changes merge; the pull request
 # that removes the line is the decision to release. A tag pushed by hand is
@@ -173,8 +173,8 @@ jobs:
           # request that removes the line is the decision to release.
           held=false
           if [ -f readme.txt ]; then
-            first=$(awk '/^== Changelog ==$/ { c = 1; next } c && /^= .* =$/ { h = 1; next } h && NF { print; exit }' readme.txt)
-            if [ "$first" = "Unreleased." ]; then held=true; fi
+            rc=0; bash .dx-central/scripts/release-ready.sh readme.txt || rc=$?
+            case "$rc" in 0|2) ;; 1) held=true ;; *) echo "::error::release-ready.sh failed ($rc)."; exit 1 ;; esac
           fi
 
           case "$GITHUB_REF" in
@@ -230,10 +230,11 @@ jobs:
 
   development-build:
     name: Development build
-    needs: version
-    # Every push to main, whatever the labels or the readme say: the tree
-    # that ships, stamped with the version that is coming and the commit it
-    # was built from, for anyone to install and try. Never on a tag: a
+    # Every push to main, whatever the labels or the readme say, and
+    # whatever happens to the version job: the tree that ships, stamped with
+    # the version that is coming and the commit it was built from, for
+    # anyone to install and try. It computes the development version itself
+    # so that it does not depend on the release's job. Never on a tag: a
     # release is its own build. No secrets, no write: nothing is committed
     # or tagged for it.
     if: startsWith(github.ref, 'refs/heads/')
@@ -241,8 +242,8 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      pull-requests: read # the labels of what merged
     env:
-      DEV: ${{ needs.version.outputs.dev }}
       SLUG: ${{ inputs.slug }}
       MAIN: ${{ inputs.main-file != '' && inputs.main-file || format('{0}.php', inputs.slug) }}
       CONSTANT: ${{ inputs.version-constant }}
@@ -250,8 +251,30 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref }}
+          path: .dx-central
+          persist-credentials: false
+
+      - name: The development version
+        id: dev
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          dev=$(python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$BASE" --json | jq -r .dev)
+          [ -n "$dev" ] || { echo "::error::next-version.py gave no development version."; exit 1; }
+          echo "dev=$dev" >> "$GITHUB_OUTPUT"
+          # The central's checkout leaves before the tree is packed: nothing
+          # that is not the plugin may end up in the build.
+          rm -rf .dx-central
 
       - name: Stamp the development version and pack the tree
+        env:
+          DEV: ${{ steps.dev.outputs.dev }}
         # The same three markers the release stamps, to <next>-dev.<N>, plus
         # a `Build:` header line (absent in the tree) with the commit: a
         # site shows both under Plugins and wherever the plugin reads its
@@ -259,7 +282,6 @@ jobs:
         # the way WordPress installs it.
         run: |
           set -euo pipefail
-          [ -n "$DEV" ] || { echo "::error::The version job gave no development version."; exit 1; }
           build=${GITHUB_SHA:0:7}
           sed -i -E "s/^(\s*\*\s*Version:\s*).*$/\1$DEV\n * Build: $build/" "$MAIN"
           if [ -n "$CONSTANT" ]; then sed -i -E "s/^(define\(\s*'${CONSTANT}',\s*').*('\s*\);)$/\1$DEV\2/" "$MAIN"; fi
@@ -274,7 +296,7 @@ jobs:
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ inputs.slug }}-${{ needs.version.outputs.dev }}
+          name: ${{ inputs.slug }}-${{ steps.dev.outputs.dev }}
           path: ${{ runner.temp }}/dist
           retention-days: 30
           if-no-files-found: error
@@ -380,7 +402,7 @@ jobs:
           fi
           awk -v head="= ${VERSION} =" '$0 == head { found = 1; next } found && /^=/ { exit } found { print }' readme.txt > "$RUNNER_TEMP/notes.md"
           grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md" || { echo "::error file=readme.txt::The '= ${VERSION} =' changelog entry is empty."; exit 1; }
-          if grep -qx 'Unreleased\.' "$RUNNER_TEMP/notes.md"; then
+          if grep -qxE 'Unreleased\.?' "$RUNNER_TEMP/notes.md"; then
             echo "::error file=readme.txt::The '= ${VERSION} =' changelog entry still says 'Unreleased.': the version is not ready. Nothing reached wordpress.org."
             exit 1
           fi

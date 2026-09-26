@@ -45,6 +45,7 @@ jobs:
         with:
           persist-credentials: false
       - run: python3 scripts/next-version.py --test
+      - run: bash scripts/release-ready.sh --test
 
   review:
     needs: [conventions, actionlint, scripts]
