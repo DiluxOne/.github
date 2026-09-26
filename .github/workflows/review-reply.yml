@@ -65,6 +65,24 @@ jobs:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }}
+          permission-contents: read
+          permission-pull-requests: write
+          permission-issues: write
+
+      - name: The commenter can write to this repository
+        # author_association says MEMBER for anyone in the organisation and
+        # COLLABORATOR for a read-only collaborator; neither is permission to
+        # direct the bot. The repository's own answer is what counts.
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          LOGIN: ${{ github.event.comment.user.login }}
+        run: |
+          set -euo pipefail
+          role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$LOGIN/permission" --jq .role_name 2>/dev/null || echo none)
+          case "$role" in
+            admin|maintain|write) echo "$LOGIN may direct the bot ($role)." ;;
+            *) echo "::warning::$LOGIN has $role permission on this repository; the bot answers only people who can write to it."; exit 1 ;;
+          esac
 
       - name: Pull request and thread
         id: pr

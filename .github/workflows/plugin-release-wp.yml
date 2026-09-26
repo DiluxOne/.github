@@ -44,6 +44,10 @@ on:
         description: Check out SVN and prepare the commit without committing it. For rehearsing a release from a scratch repository.
         type: boolean
         default: false
+      environment:
+        description: The repository environment the deploy job runs in. Its deployment policy should allow only X.Y.Z tags, and the SVN secrets live in it, so no job of a pull request or branch can ever read them.
+        type: string
+        default: wordpress-org
     secrets:
       SVN_USERNAME:
         required: true
@@ -58,6 +62,7 @@ jobs:
     name: Deploy to wordpress.org
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    environment: ${{ inputs.environment }}
     steps:
       - name: Tag is X.Y.Z
         run: |
