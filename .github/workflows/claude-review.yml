@@ -466,7 +466,7 @@ jobs:
           # person set a type:* label by hand: then theirs stands. The bot
           # only ever replaces a type:* label it set itself.
           # shellcheck disable=SC2016 # jq variable, not a shell one.
-          human=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/timeline" --paginate --jq --arg bot "$BOT" '[.[] | select(.event == "labeled" and ((.label.name // "") | startswith("type:")) and .actor.login != $bot) | .label.name] | last // ""')
+          human=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/timeline" --paginate | jq -r --arg bot "$BOT" '[.[] | select(.event == "labeled" and ((.label.name // "") | startswith("type:")) and .actor.login != $bot) | .label.name] | last // ""')
           current=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(startswith("type:"))] | join(",")')
           if [ -n "$human" ] && [[ ",$current," == *",$human,"* ]]; then
             type=${human#type:}
