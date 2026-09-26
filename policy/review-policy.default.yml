@@ -41,6 +41,18 @@ budget-usd: 3
 # itself, never on while this says false.
 auto-merge: true
 
+# Whether a release waits for a person. When a push to main leaves a version
+# pending (from the type:* labels of what merged, see scripts/next-version.py),
+# the release job either waits for the reviewers of the repository's release
+# environment (approve), runs through a second environment without reviewers
+# that the caller names (auto), or does nothing (off). Per kind of bump. A
+# repository may set a bump to auto only if this file allows it (auto-allowed).
+release:
+  patch: approve
+  minor: approve
+  major: approve
+auto-allowed: false
+
 # A pull request can be rated low risk only if every changed file matches
 # one of these. Everything else starts at medium.
 low-risk-eligible:
