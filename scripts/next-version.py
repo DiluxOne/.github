@@ -22,7 +22,9 @@ comes, is at least that; `pending` says which case it is.
     next-version.py --test
 
 Needs `gh` logged in (or GH_TOKEN). Exit 0 with the answer, 2 on a bad
-argument, 1 when GitHub could not be read: a version is never guessed.
+argument, 1 when GitHub could not be read or a pull request carries a
+`version:*` label that is not major, minor or patch: a version is never
+guessed.
 """
 
 import argparse
