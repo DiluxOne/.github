@@ -1,0 +1,6 @@
+{
+  "name": "SVN credentials check (WordPress plugin)",
+  "description": "Checks the release environment's wordpress.org SVN credentials without publishing.",
+  "iconName": "octicon key",
+  "categories": ["Deployment"]
+}

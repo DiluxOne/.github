@@ -1,14 +1,30 @@
 name: SVN credentials check
 
-# Proves that SVN_USERNAME / SVN_PASSWORD (organisation secrets) authenticate
-# against the wordpress.org plugin SVN, without publishing anything.
+# Reusable. Proves that the SVN_USERNAME / SVN_PASSWORD of a repository's
+# release environment authenticate against the wordpress.org plugin SVN,
+# without publishing anything: it opens a commit activity (the first step of
+# a commit, where the server checks credentials) and deletes it straight
+# away. No revision is created and no plugin changes.
 #
-# It opens a commit activity (the first step of a commit, where the server
-# checks credentials) and deletes it straight away. No revision is created and
-# no plugin changes. Run it by hand after rotating the SVN password.
+# The job runs in the calling repository's environment, the same one the
+# release uses, so the secrets it checks are the ones a release would use.
+# That environment's deployment policy must allow `main` as well as the
+# release tags (Settings › Environments). Call it by hand after rotating the
+# SVN password:
+#
+#   on:
+#     workflow_dispatch:
+#   jobs:
+#     check:
+#       uses: DiluxOne/.github/.github/workflows/svn-auth-check.yml@v1
 
 on:
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      environment:
+        description: The repository environment that holds SVN_USERNAME and SVN_PASSWORD.
+        type: string
+        default: wordpress-org
 
 permissions:
   contents: read
@@ -18,6 +34,7 @@ jobs:
     name: SVN credentials check
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    environment: ${{ inputs.environment }}
     steps:
       - name: Open and abort a transaction
         env:
@@ -25,18 +42,15 @@ jobs:
           SVN_PASSWORD: ${{ secrets.SVN_PASSWORD }}
         run: |
           set -euo pipefail
-          [ -n "${SVN_USERNAME}" ] || { echo "::error::SVN_USERNAME is empty or not visible to this repository."; exit 1; }
-          [ -n "${SVN_PASSWORD}" ] || { echo "::error::SVN_PASSWORD is empty or not visible to this repository."; exit 1; }
-          # A DAV activity is where a commit starts and where the server checks
-          # credentials. Created (201) means the login works; it is deleted at
-          # once and nothing is ever committed.
+          [ -n "${SVN_USERNAME}" ] || { echo "::error::SVN_USERNAME is empty in this environment."; exit 1; }
+          [ -n "${SVN_PASSWORD}" ] || { echo "::error::SVN_PASSWORD is empty in this environment."; exit 1; }
           act="https://plugins.svn.wordpress.org/!svn/act/$(cat /proc/sys/kernel/random/uuid)"
           code=$(curl -sS -o /dev/null -w '%{http_code}' -u "${SVN_USERNAME}:${SVN_PASSWORD}" -X MKACTIVITY "${act}")
-          if [ "${code}" = 201 ]; then
+          if [ "$code" = "201" ]; then
             curl -sS -o /dev/null -u "${SVN_USERNAME}:${SVN_PASSWORD}" -X DELETE "${act}" || true
           fi
-          case "${code}" in
+          case "$code" in
             201) echo "Credentials accepted for ${SVN_USERNAME}: a commit activity was opened and deleted, nothing committed." ;;
-            401) echo "::error::HTTP 401: wordpress.org rejected the username or password."; exit 1 ;;
-            *)   echo "::error::Unexpected HTTP ${code}."; exit 1 ;;
+            401|403) echo "::error::wordpress.org refused the credentials (HTTP $code). Set a new SVN password in the profile and update the environment secret."; exit 1 ;;
+            *) echo "::error::Unexpected HTTP $code from the SVN server."; exit 1 ;;
           esac

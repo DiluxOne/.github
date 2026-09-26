@@ -119,6 +119,9 @@ jobs:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }}
+          permission-contents: read
+          permission-pull-requests: write
+          permission-issues: write
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -449,14 +452,10 @@ jobs:
           [ -n "$current" ] && gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label "$current" >/dev/null
           gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label "risk:$risk,complexity:$complexity" >/dev/null
 
-          # Resolve only threads that really are the bot's open ones.
-          resolved=0
-          for t in $(jq -r --slurpfile open "$RUNNER_TEMP/open-threads.json" '.resolved_threads[] | select(. as $id | $open[0] | map(.id) | index($id))' <<<"$OUT"); do
-            # shellcheck disable=SC2016 # GraphQL variable, not a shell one.
-            gh api graphql -f id="$t" -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }' >/dev/null
-            resolved=$((resolved + 1))
-          done
-          echo "Resolved $resolved of the bot's earlier threads."
+          # Only threads that really are the bot's open ones; resolved in the
+          # next step, with a token the model never held.
+          jq -r --slurpfile open "$RUNNER_TEMP/open-threads.json" '.resolved_threads[] | select(. as $id | $open[0] | map(.id) | index($id))' <<<"$OUT" > "$RUNNER_TEMP/resolve.txt"
+          echo "$(wc -l < "$RUNNER_TEMP/resolve.txt") of the bot's earlier threads to resolve."
 
           # What the run cost, from Claude Code's execution log.
           cost=""; turns=""
@@ -494,3 +493,33 @@ jobs:
             echo "::error::The review found a blocking problem; see the summary comment."
             exit 1
           fi
+
+      - name: Resolve the bot's earlier threads
+        # Resolving a review thread needs write access to the repository, so
+        # this token is minted after the model has run and is used only by the
+        # loop below: nothing that read the pull request's text ever holds it.
+        # !cancelled(): a blocking verdict fails its step on purpose, and the
+        # threads it says are settled still get resolved.
+        if: ${{ !cancelled() && (steps.verdict.outcome == 'success' || steps.verdict.outcome == 'failure') }}
+        id: resolver
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+      - if: ${{ !cancelled() && steps.resolver.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ steps.resolver.outputs.token }}
+        run: |
+          set -euo pipefail
+          resolved=0
+          [ -s "$RUNNER_TEMP/resolve.txt" ] || { echo "Nothing to resolve."; exit 0; }
+          while IFS= read -r t; do
+            [ -n "$t" ] || continue
+            # shellcheck disable=SC2016 # GraphQL variable, not a shell one.
+            gh api graphql -f id="$t" -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }' >/dev/null
+            resolved=$((resolved + 1))
+          done < "$RUNNER_TEMP/resolve.txt"
+          echo "Resolved $resolved of the bot's earlier threads."

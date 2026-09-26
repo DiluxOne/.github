@@ -83,6 +83,8 @@ jobs:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }}
+          permission-contents: read
+          permission-issues: write
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -227,6 +229,8 @@ jobs:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }}
+          permission-contents: read
+          permission-issues: write
       - env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           DAYS: ${{ inputs.stale-days }}

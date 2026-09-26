@@ -8,9 +8,10 @@ name: Claude review reply
 # Always the `high` reviewer of the policy files (the repository's, else the
 # organisation's).
 #
-# Only members of the organisation and collaborators can wake the bot, and only
-# on pull requests from branches of the repository itself: a fork's code never
-# runs with the organisation's keys.
+# Only people who can write to the repository can wake the bot (checked
+# against the repository, not against author_association), and only on pull
+# requests from branches of the repository itself: a fork's code never runs
+# with the organisation's keys.
 #
 #   on:
 #     issue_comment:
@@ -65,9 +66,31 @@ jobs:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }}
+          permission-contents: read
+          permission-pull-requests: write
+          permission-issues: write
+
+      - name: The commenter can write to this repository
+        id: who
+        # author_association says MEMBER for anyone in the organisation and
+        # COLLABORATOR for a read-only collaborator; neither is permission to
+        # direct the bot. The repository's own answer is what counts. Someone
+        # without it is ignored quietly: a red run on the pull request would
+        # be noise about a comment, not about the code.
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          LOGIN: ${{ github.event.comment.user.login }}
+        run: |
+          set -euo pipefail
+          role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$LOGIN/permission" --jq .role_name 2>/dev/null || echo none)
+          case "$role" in
+            admin|maintain|write) echo "ok=true" >> "$GITHUB_OUTPUT"; echo "$LOGIN may direct the bot ($role)." ;;
+            *) echo "ok=false" >> "$GITHUB_OUTPUT"; echo "::notice::$LOGIN has $role permission on this repository; the bot answers only people who can write to it." ;;
+          esac
 
       - name: Pull request and thread
         id: pr
+        if: steps.who.outputs.ok == 'true'
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           SLUG: ${{ steps.bot.outputs.app-slug }}
@@ -179,6 +202,7 @@ jobs:
             --json-schema '{"type":"object","additionalProperties":false,"required":["reply","resolve"],"properties":{"reply":{"type":"string","maxLength":4000},"resolve":{"type":"boolean"}}}'
 
       - name: Post the reply
+        id: post
         if: steps.pr.outputs.run == 'true'
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
@@ -206,6 +230,29 @@ jobs:
           fi
           if [ "$resolve" = true ] && [ "$BOT_THREAD" = true ] && [ -n "$THREAD" ]; then
             # shellcheck disable=SC2016 # GraphQL variable, not a shell one.
-            gh api graphql -f id="$THREAD" -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }' >/dev/null
-            echo "Thread resolved."
+            # Resolved in the next step, with a token the model never held.
+            echo "resolve=true" >> "$GITHUB_OUTPUT"
+            echo "$THREAD" > "$RUNNER_TEMP/resolve.txt"
           fi
+
+      - name: Resolve the thread
+        # Resolving a review thread needs write access to the repository; this
+        # token is minted after the model has run and used only here.
+        if: steps.post.outputs.resolve == 'true'
+        id: resolver
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+      - if: steps.resolver.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ steps.resolver.outputs.token }}
+        run: |
+          set -euo pipefail
+          t=$(cat "$RUNNER_TEMP/resolve.txt")
+          # shellcheck disable=SC2016 # GraphQL variable, not a shell one.
+          gh api graphql -f id="$t" -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }' >/dev/null
+          echo "Thread resolved."
