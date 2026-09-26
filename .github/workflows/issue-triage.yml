@@ -8,11 +8,13 @@ name: Issue triage
 #
 #   bug:unconfirmed       a bug report with enough to try to reproduce it
 #                         (issue-repro.yml picks it up from this label)
-#   needs-info            a bug report missing versions, steps or logs, or
-#                         made on a version that is not current (older than
-#                         the released one, or a development build older than
-#                         the current pre-release): the reply asks for them,
-#                         or to update and say whether it is still there
+#   needs-info            a bug report missing versions, steps or logs: the
+#                         reply asks for them. A report with steps made on an
+#                         older version (an older release, or a development
+#                         build older than the current pre-release) is still
+#                         bug:unconfirmed: the reproduction runs on the
+#                         current code and its reply says whether it is still
+#                         there, instead of asking the reporter to update
 #   by-design             works as documented, or a known limitation
 #   pro-feature           needs the paid service or add-on the roadmap names
 #   enhancement           a feature request (+ exists-in-pro when the roadmap
@@ -163,13 +165,14 @@ jobs:
             roadmap and the docs cannot settle the classification.
 
             Pick exactly one category:
-            - bug_unconfirmed: a defect report with steps, versions and what was expected.
-            - needs_info: a defect report missing what a maintainer needs to try it (say what),
-              or one made on a version that is not current: a plugin version older than the
-              released one, or a development build (X.Y.Z-dev.N) older than the current one (see
-              "Current versions"). Then ask, kindly, to update to the released version or to
-              install the current development build (give its link) and to say whether the
-              problem is still there; many reports come from sites that never updated.
+            - bug_unconfirmed: a defect report with steps, versions and what was expected,
+              whatever version it names. A report made on an older release, or on a development
+              build (X.Y.Z-dev.N) older than the current one (see "Current versions"), still goes
+              here: the reproduction runs on the current code and settles whether the bug is
+              still there. In that case say in the reply which version is current and that the
+              attempt runs on it; never ask to update instead of reproducing.
+            - needs_info: a defect report missing what a maintainer needs to try it (say what).
+              When the version it names is not current, name the current one too.
             - by_design: works as documented, or a known limitation from the roadmap.
             - pro_feature: it needs the paid service or add-on the roadmap names.
             - enhancement: a request for something new (exists_in_pro when a paid product has it).
