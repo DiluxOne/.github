@@ -113,6 +113,9 @@ workflow* runs everything by hand, and its failure is in the run alone.
    reporting. The `dilux-bot` App must be installed on the repository. The
    labels are created by the review itself.
 
+   The tag rulesets cover `X.Y.Z` only, so the moving tag `dev` of the
+   development build stays free for the workflow's own token.
+
    Then the readme: the newest entry under `== Changelog ==` is headed
    `= X.Y.Z =` (or `= Unreleased =`) and its first line is `Unreleased.`
    while the version is not ready. Every pull request that changes what a
