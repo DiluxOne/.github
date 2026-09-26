@@ -58,11 +58,21 @@ answers there; it resolves its own thread when the point is settled.
      - "src/billing/**"
    low-risk-eligible:
      - "examples/**"
+   code:
+     - "bin/**"
    review:
      medium: { model: claude-sonnet-5, effort: medium }
    budget-usd: 2
    auto-merge: true
    ```
+
+   `code` and `plugin-check` decide what runs: a pull request that changes
+   no file matching `code` skips the slow suites (integration, end-to-end,
+   and a repository's own real-storage workflow if it gates on the same
+   answer), and skips Plugin Check unless a `plugin-check` file such as
+   `readme.txt` changed. The fast checks and the review always run; a push
+   to `main` always runs everything. The defaults cover a WordPress plugin;
+   a repository only adds what is peculiar to it.
 
    Then an `AGENTS.md` with the rules the review must hold the code to, and
    a `docs/roadmap.md` that says what is free, what is paid, what is planned,
@@ -127,4 +137,6 @@ workflow of a repository from its Actions tab.
 Everything here is high risk: a human merges every change. After merging, move
 `v1` (or cut `v2` for a breaking change) and tag the exact version. Moving `v1`
 also ships the review profiles and the default policy, which every repository
-reads from that tag.
+reads from that tag. A run that already exists keeps the workflow it was
+created with: re-running a failed job after `v1` moved re-runs the old
+workflow. Reopen the pull request, or push to it, for a run on the new one.

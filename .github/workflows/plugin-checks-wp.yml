@@ -7,7 +7,10 @@ name: WordPress plugin checks (fast)
 #
 # The slow wp-env suites (integration, E2E) are plugin-tests-wp.yml, a
 # separate workflow, so a caller can start the review as soon as these pass
-# (`needs:`) and no job ever shows up as skipped under a required name.
+# (`needs:`). Plugin Check is the one slow job here; it is skipped when the
+# pull request changes neither code nor a file it reads (the `code` and
+# `plugin-check` lists of the policy), and a skipped job satisfies the
+# ruleset.
 #
 # The calling repository provides composer scripts `test:unit`, `lint`,
 # `stan` and `psalm:taint`, a `.distignore` listing what never ships, and a
@@ -49,6 +52,10 @@ on:
         description: JSON array of PHP versions for syntax and unit tests, from the plugin's minimum to the latest release.
         type: string
         default: '["7.4","8.0","8.1","8.2","8.3","8.4","8.5"]'
+      central-ref:
+        description: Ref of DiluxOne/.github to read the policy from.
+        type: string
+        default: v1
 
 permissions:
   contents: read
@@ -178,8 +185,61 @@ jobs:
           [ "$count" -gt 1 ] || { echo "::error::No translatable strings extracted."; exit 1; }
           echo "Extracted $count strings."
 
+  changes:
+    name: What changed
+    # The slow, paid part of a pull request runs only when it changes code:
+    # the `code` and `plugin-check` lists of the policy (the organisation's
+    # defaults plus the repository's .github/review-policy.yml, read from
+    # the base branch so a change cannot exempt itself). Anything else
+    # (docs, translations, a readme) gets the fast checks and the review.
+    # A push to main runs everything. Skipped jobs satisfy the ruleset.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.changes.outputs.code }}
+      plugin_check: ${{ steps.changes.outputs.plugin_check }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref }}
+          path: .dx-central
+          persist-credentials: false
+      - id: changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          DEFAULT_POLICY: .dx-central/policy/review-policy.default.yml
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "plugin_check=true" >> "$GITHUB_OUTPUT"
+            echo "not a pull request: everything runs"
+            exit 0
+          fi
+          REPO_POLICY="$RUNNER_TEMP/repo-policy.yml"
+          gh api "repos/$GITHUB_REPOSITORY/contents/.github/review-policy.yml?ref=$BASE" --jq .content 2>/dev/null | base64 -d > "$REPO_POLICY" || : > "$REPO_POLICY"
+          export REPO_POLICY
+          # The files API stops at 3 000 entries without an error; a list
+          # that does not match the pull request's total is discarded, and
+          # an empty list makes the script run everything.
+          FILES_JSON="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --slurp)"
+          LISTED="$(jq '[.[][]] | length' <<< "$FILES_JSON")"
+          TOTAL="$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json changedFiles --jq .changedFiles)"
+          CHANGED_FILES=""
+          if [ "$LISTED" = "$TOTAL" ]; then
+            CHANGED_FILES="$(jq -r '.[][] | .filename, (.previous_filename // empty)' <<< "$FILES_JSON")"
+          fi
+          export CHANGED_FILES
+          POLICY_MODE=changes python3 .dx-central/scripts/policy.py
+
   plugin-check:
     name: WordPress Plugin Check
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || needs.changes.outputs.plugin_check == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

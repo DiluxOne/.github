@@ -16,6 +16,17 @@ the pull request's changed files against them, and writes to $GITHUB_OUTPUT:
 With POLICY_LEVEL=low|medium|high set, the floor is that level (a job that
 has no diff, such as the issue triage, asks for the reviewer of a level).
 
+With POLICY_MODE=changes it answers a different question from the same
+files and writes instead:
+
+  code          true | false   a changed file matches a `code` pattern
+  plugin_check  true | false   a changed file matches a `plugin-check` pattern
+  reasons       one line saying which files decided it
+
+That is what the slow suites and Plugin Check are gated on. When no file
+could be listed the answer is true for both: an unknown change runs
+everything.
+
 Every review setting lives in these two files and nowhere else: `review:`
 (`{low|medium|high: {model, effort}}`), `budget-usd:` and `auto-merge:`. The
 repository's value wins key by key; what it leaves out stays as the default.
@@ -69,10 +80,34 @@ def matches(path, patterns):
     return any(glob_to_regex(p).match(path) for p in patterns)
 
 
+def changes(defaults, repo, files):
+    code = defaults.get("code", []) + repo.get("code", [])
+    plugin_check = defaults.get("plugin-check", []) + repo.get("plugin-check", [])
+    if not files:
+        hit_code, hit_check = True, True
+        reasons = "no changed files could be listed; everything runs"
+    else:
+        code_hits = [f for f in files if matches(f, code)]
+        check_hits = [f for f in files if matches(f, plugin_check)]
+        hit_code, hit_check = bool(code_hits), bool(check_hits)
+        if code_hits:
+            reasons = "code changed: " + ", ".join(code_hits[:5]) + (" …" if len(code_hits) > 5 else "")
+        elif check_hits:
+            reasons = "no code changed; Plugin Check reads: " + ", ".join(check_hits[:5])
+        else:
+            reasons = "no code changed"
+    with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+        fh.write(f"code={'true' if hit_code else 'false'}\nplugin_check={'true' if hit_check else 'false'}\nreasons={reasons}\n")
+    print(f"code={'true' if hit_code else 'false'} plugin_check={'true' if hit_check else 'false'} ({reasons})")
+    return 0
+
+
 def main():
     defaults = load_yaml(os.environ["DEFAULT_POLICY"])
     repo = load_yaml(os.environ.get("REPO_POLICY", ".github/review-policy.yml"))
     files = [f for f in os.environ.get("CHANGED_FILES", "").splitlines() if f.strip()]
+    if os.environ.get("POLICY_MODE", "") == "changes":
+        return changes(defaults, repo, files)
     author = os.environ.get("PR_AUTHOR", "")
     forced = os.environ.get("POLICY_LEVEL", "")
     if forced and forced not in ("low", "medium", "high"):

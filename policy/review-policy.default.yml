@@ -53,3 +53,30 @@ low-risk-eligible:
   - "languages/*.po"
   - "languages/*.mo"
   - "languages/*.pot"
+
+# What counts as code: a pull request that changes none of these runs only
+# the fast checks and the review; the slow suites (integration, end-to-end,
+# real storage) are skipped, and Plugin Check runs only if `plugin-check`
+# below matches. A push to main always runs everything. A repository adds
+# to this list in its .github/review-policy.yml.
+code:
+  - "**/*.php"
+  - "**/*.js"
+  - "**/*.ts"
+  - "**/*.css"
+  - "assets/**"
+  - "templates/**"
+  - "tests/**"
+  - "composer.*"
+  - "package.json"
+  - "package-lock.json"
+  - ".wp-env*.json"
+  - "phpunit*.xml*"
+  - "playwright*.ts"
+  - "Makefile"
+  - ".distignore"
+  - ".github/workflows/**"
+
+# Files that are not code but that wordpress.org's Plugin Check reads.
+plugin-check:
+  - "readme.txt"
