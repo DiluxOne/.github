@@ -41,9 +41,9 @@ and the auto-merge decision, never the suites. A push to `main` runs the slow
 suites only when it must: the job verifies that the commit is the squash
 merge of a pull request of this repository, that its tree is the one that
 pull request's checks ran on and that every check there passed; any doubt
-runs everything. A pull request whose base branch changed after its suites
-last ran fails the conventions on every edit until a push runs them against
-the new base. Once a week (and on
+runs everything. A pull request whose base branch changed after its last
+push fails the conventions on every edit until a push runs the suites
+against the new base. Once a week (and on
 *Run workflow*) everything runs against today's WordPress and tools, and a
 failure opens one `ci:weekly` issue.
 

@@ -47,37 +47,34 @@ jobs:
     if: github.event_name == 'pull_request'
     permissions:
       contents: read
-      actions: read # the runs of this head, for the base-branch check
+      pull-requests: read # the pull request's timeline, for the base-branch check
     steps:
-      - name: The base branch did not change since the suites ran
+      - name: No base-branch change since the last push
         # `edited` also fires when the base branch changes. The suites ran on
         # a merge with the old base and, on `edited`, do not run again
         # (pull-request-edited.yml), so this check fails until a push starts
         # them on the new merge: on every `edited` event, not only the one
         # that changed the base, because a later title edit re-runs this job
-        # under the same id and would replace the failure. The facts come
-        # from GitHub: the newest base_ref_changed event of the pull request
-        # must be older than the newest pull_request run of this head by a
-        # workflow other than the one running now (the full one).
+        # under the same id and would replace the failure. The fact comes
+        # from the pull request's timeline, which is chronological: the last
+        # base_ref_changed event must come before the last commit pushed
+        # (committed, or head_ref_force_pushed). No run of any workflow is
+        # consulted, so it holds whatever workflows the repository has.
         if: github.event.action == 'edited'
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
           BASE: ${{ github.event.pull_request.base.ref }}
-          ME: ${{ github.workflow_ref }}
         run: |
           set -euo pipefail
-          retarget=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/timeline" --paginate | jq -r -s '[.[][] | select(.event == "base_ref_changed") | .created_at] | max // ""')
-          [ -n "$retarget" ] || { echo "The base branch never changed."; exit 0; }
-          me=${ME#*/}; me=${me#*/}; me=${me%@*}
-          # shellcheck disable=SC2016 # jq variable, not a shell one.
-          full=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$HEAD&event=pull_request&per_page=100" | jq -r --arg me "$me" '[.workflow_runs[] | select(.path != $me) | .created_at] | max // ""')
-          if [ -z "$full" ] || [[ "$retarget" > "$full" ]]; then
-            echo "::error::The base branch changed (to $BASE, at $retarget) after the suites last ran on ${HEAD:0:7}${full:+ ($full)}. Push a commit (or merge the base) so they run against the new base."
+          order=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/timeline" --paginate | jq -r -s '[.[][] | .event] | to_entries | map(select(.value == "base_ref_changed" or .value == "committed" or .value == "head_ref_force_pushed")) | {retarget: (map(select(.value == "base_ref_changed") | .key) | max), pushed: (map(select(.value != "base_ref_changed") | .key) | max)} | "\(.retarget // -1) \(.pushed // -1)"')
+          retarget=${order% *}; pushed=${order#* }
+          if [ "$retarget" -lt 0 ]; then echo "The base branch never changed."; exit 0; fi
+          if [ "$retarget" -gt "$pushed" ]; then
+            echo "::error::The base branch changed (now $BASE) after the last push, so the suites ran against the old base. Push a commit (or merge the base) so they run against the new one."
             exit 1
           fi
-          echo "The base changed at $retarget and the full checks ran on ${HEAD:0:7} at $full: fine."
+          echo "The base changed and a push followed it: the suites ran against the current base."
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
