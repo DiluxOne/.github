@@ -21,6 +21,7 @@ set -euo pipefail
 # no entry under `== Changelog ==`.
 first_entry() {
   awk '
+    { sub(/\r$/, "") }
     /^== Changelog ==$/ { c = 1; next }
     c && /^= .* =$/ { if (h) exit; h = 1; heading = $0; next }
     h && NF { out = heading "\t" $0; exit }
@@ -59,6 +60,7 @@ if [ "${1:-}" = "--test" ]; then
   test_case "ready: Unreleased. as a bullet is a bullet" 0 $'== Changelog ==\n\n= 2.0.0 =\n* Unreleased.' || fail=1
   test_case "no entry"                                2 $'== Description ==\nNothing here.' || fail=1
   test_case "no changelog section"                    2 $'= 2.0.0 =\nUnreleased.' || fail=1
+  test_case "held: CRLF line endings"                 1 $'== Changelog ==\r\n\r\n= 2.0.0 =\r\nUnreleased.\r\n' || fail=1
   [ "$fail" -eq 0 ] && echo "all tests passed"
   exit "$fail"
 fi

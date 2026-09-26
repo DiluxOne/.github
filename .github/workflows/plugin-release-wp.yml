@@ -167,10 +167,11 @@ jobs:
           bump=$(jq -r .bump <<<"$next"); pending=$(jq -r .pending <<<"$next"); coming=$(jq -r .next <<<"$next"); last=$(jq -r .last <<<"$next")
           per_type=$(jq -r '.pulls | to_entries[] | "\(.key): " + (.value | map("#\(.)") | join(", "))' <<<"$next")
           jq -r '"dev=" + .dev' <<<"$next" >> "$GITHUB_OUTPUT"
-          # The readme says whether the version is ready: the first line under
-          # the newest changelog entry, exactly `Unreleased.`, holds it. The
-          # notes below that line are written as the changes merge; the pull
-          # request that removes the line is the decision to release.
+          # The readme says whether the version is ready: a first line
+          # `Unreleased.` (or `Unreleased`) under the newest changelog entry
+          # holds it. The notes below that line are written as the changes
+          # merge; the pull request that removes the line is the decision to
+          # release.
           held=false
           if [ -f readme.txt ]; then
             rc=0; bash .dx-central/scripts/release-ready.sh readme.txt || rc=$?
@@ -265,29 +266,24 @@ jobs:
           BASE: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          dev=$(python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$BASE" --json | jq -r .dev)
-          [ -n "$dev" ] || { echo "::error::next-version.py gave no development version."; exit 1; }
+          dev=$(python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$BASE" --json | jq -er .dev)
           echo "dev=$dev" >> "$GITHUB_OUTPUT"
-          # The central's checkout leaves before the tree is packed: nothing
-          # that is not the plugin may end up in the build.
-          rm -rf .dx-central
 
       - name: Stamp the development version and pack the tree
         env:
           DEV: ${{ steps.dev.outputs.dev }}
-        # The same three markers the release stamps, to <next>-dev.<N>, plus
-        # a `Build:` header line (absent in the tree) with the commit: a
-        # site shows both under Plugins and wherever the plugin reads its
-        # headers. The zip holds the plugin folder, named after the slug,
-        # the way WordPress installs it.
+        # The same three markers the release stamps (scripts/stamp-version.sh),
+        # to <next>-dev.<N>, plus a `Build:` header line (absent in the tree)
+        # with the commit: a site shows both under Plugins and wherever the
+        # plugin reads its headers. The zip holds the plugin folder, named
+        # after the slug, the way WordPress installs it.
         run: |
           set -euo pipefail
           build=${GITHUB_SHA:0:7}
-          sed -i -E "s/^(\s*\*\s*Version:\s*).*$/\1$DEV\n * Build: $build/" "$MAIN"
-          if [ -n "$CONSTANT" ]; then sed -i -E "s/^(define\(\s*'${CONSTANT}',\s*').*('\s*\);)$/\1$DEV\2/" "$MAIN"; fi
-          sed -i -E "s/^(Stable tag:\s*).*$/\1$DEV/" readme.txt
-          grep -qE "^\s*\*\s*Version:\s*$DEV$" "$MAIN" || { echo "::error file=$MAIN::The Version header did not take $DEV."; exit 1; }
-          grep -qE "^Stable tag:\s*$DEV$" readme.txt || { echo "::error file=readme.txt::Stable tag did not take $DEV."; exit 1; }
+          bash .dx-central/scripts/stamp-version.sh . "$DEV" "$MAIN" "$CONSTANT" "$build"
+          # The central's checkout leaves before the tree is packed: nothing
+          # that is not the plugin may end up in the build.
+          rm -rf .dx-central
           exclude=(); [ -f .distignore ] && exclude=(--exclude-from=.distignore)
           mkdir -p "$RUNNER_TEMP/dist"
           rsync -rc "${exclude[@]}" --exclude=.git --exclude=.github ./ "$RUNNER_TEMP/dist/$SLUG/" --delete
@@ -357,44 +353,30 @@ jobs:
           again=$(python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$BASE" ${exclude:+--exclude-tag "$exclude"} --json | jq -r 'if .pending then .next else "" end')
           [ "$again" = "$VERSION" ] || { echo "::error::The labels now give '${again:-nothing}' where $VERSION was approved; something merged or was relabelled meanwhile. Nothing reached wordpress.org; the next push to $BASE computes again."; exit 1; }
           echo "Still $VERSION, on $BASE, no tag yet."
-          # The central's checkout has done its work; it leaves the workspace
-          # now, because the deploy action copies the workspace minus
-          # .distignore into SVN, and nothing that is not the plugin may ship.
-          rm -rf .dx-central
 
       - name: Stamp the version markers
         if: steps.still.outputs.go == 'true'
         # The checkout, never the repository: the three markers become the
-        # version, and a readme entry headed `= Unreleased =` takes its number.
+        # version, and a readme entry headed `= Unreleased =` takes its number
+        # (scripts/stamp-version.sh, which fails when a marker did not take
+        # it: nothing reaches wordpress.org from a file whose shape changed).
         run: |
           set -euo pipefail
-          sed -i -E "s/^(\s*\*\s*Version:\s*).*$/\1$VERSION/" "$MAIN"
-          if [ -n "$CONSTANT" ]; then sed -i -E "s/^(define\(\s*'${CONSTANT}',\s*').*('\s*\);)$/\1$VERSION\2/" "$MAIN"; fi
-          sed -i -E "s/^(Stable tag:\s*).*$/\1$VERSION/" readme.txt
-          sed -i -E "s/^= Unreleased =$/= $VERSION =/" readme.txt
+          bash .dx-central/scripts/stamp-version.sh . "$VERSION" "$MAIN" "$CONSTANT"
           git --no-pager diff --stat
-
-      - name: Version markers equal the version
-        if: steps.still.outputs.go == 'true'
-        run: |
-          set -euo pipefail
-          stable=$(grep -oP '^Stable tag:\s*\K\S+' readme.txt)
-          version=$(grep -oP '^\s*\*\s*Version:\s*\K\S+' "$MAIN")
-          fail=0
-          [ "$stable" = "$VERSION" ] || { echo "::error file=readme.txt::Stable tag $stable is not $VERSION."; fail=1; }
-          [ "$version" = "$VERSION" ] || { echo "::error file=$MAIN::Version $version is not $VERSION."; fail=1; }
-          if [ -n "$CONSTANT" ]; then
-            constant=$(grep -oP "${CONSTANT}',\s*'\K[^']+" "$MAIN")
-            [ "$constant" = "$VERSION" ] || { echo "::error file=$MAIN::$CONSTANT $constant is not $VERSION."; fail=1; }
-          fi
-          [ "$fail" -eq 0 ] || { echo "::error::Nothing reached wordpress.org: a marker did not take the version. Fix the file's shape in a pull request."; exit 1; }
 
       - name: This version's changelog
         if: steps.still.outputs.go == 'true'
         # Before touching SVN: a release without its changelog stops here,
-        # and so does a readme that announces another version.
+        # and so does a readme that announces another version or is still
+        # held (the version job holds it first; this is the second guard).
         run: |
           set -euo pipefail
+          rc=0; bash .dx-central/scripts/release-ready.sh readme.txt || rc=$?
+          if [ "$rc" -eq 1 ]; then
+            echo "::error file=readme.txt::The newest changelog entry still says 'Unreleased.': the version is not ready. Nothing reached wordpress.org."
+            exit 1
+          fi
           newest=$(grep -m1 -oP '^= \K[0-9]+\.[0-9]+\.[0-9]+(?= =$)' readme.txt || true)
           if [ "$newest" != "$VERSION" ]; then
             echo "::error file=readme.txt::The newest changelog entry is '= ${newest:-none} =' but the labels of what merged give $VERSION. Either the readme announces a version the labels do not reach (add version:major, version:minor or version:patch to a merged pull request) or the labels went further than the readme (write the entry, or head it '= Unreleased ='). Nothing reached wordpress.org."
@@ -402,10 +384,6 @@ jobs:
           fi
           awk -v head="= ${VERSION} =" '$0 == head { found = 1; next } found && /^=/ { exit } found { print }' readme.txt > "$RUNNER_TEMP/notes.md"
           grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md" || { echo "::error file=readme.txt::The '= ${VERSION} =' changelog entry is empty."; exit 1; }
-          if grep -qxE 'Unreleased\.?' "$RUNNER_TEMP/notes.md"; then
-            echo "::error file=readme.txt::The '= ${VERSION} =' changelog entry still says 'Unreleased.': the version is not ready. Nothing reached wordpress.org."
-            exit 1
-          fi
 
       - name: What was merged, grouped by type
         if: steps.still.outputs.go == 'true'
@@ -427,6 +405,13 @@ jobs:
             printf '\n## What was merged since %s\n%s' "$prev" "$groups" >> "$RUNNER_TEMP/notes.md"
           fi
           cat "$RUNNER_TEMP/notes.md"
+
+      - name: Only the plugin ships
+        if: steps.still.outputs.go == 'true'
+        # The central's checkout has done its work; it leaves the workspace
+        # now, because the deploy action copies the workspace minus
+        # .distignore into SVN, and nothing that is not the plugin may ship.
+        run: rm -rf .dx-central
 
       - name: Deploy to SVN
         if: steps.still.outputs.go == 'true'
