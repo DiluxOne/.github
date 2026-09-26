@@ -47,9 +47,10 @@ jobs:
     # defaults plus the repository's .github/review-policy.yml, read from
     # the base branch so a change cannot exempt itself). Anything else
     # (docs, translations, a readme) gets the fast checks and the review.
-    # A push to main runs everything. The gates below treat a missing
-    # answer as "run", so an older policy script never skips a suite, and
-    # a skipped job satisfies the ruleset.
+    # A push to main runs everything. The gates below run on !cancelled()
+    # and treat a missing answer as "run", so this job failing (or an older
+    # central without the script) never skips a suite; a job skipped by
+    # the answer satisfies the ruleset.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -57,7 +58,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          # The merge commit and its two parents: enough for the diff.
+          fetch-depth: 2
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -68,15 +70,13 @@ jobs:
       - id: changes
         env:
           EVENT: ${{ github.event_name }}
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
           DEFAULT_POLICY: .dx-central/policy/review-policy.default.yml
         run: bash .dx-central/scripts/changes.sh
 
   integration:
     name: Integration tests (wp-env)
     needs: changes
-    if: inputs.integration && needs.changes.outputs.code != 'false'
+    if: ${{ !cancelled() && inputs.integration && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -112,7 +112,7 @@ jobs:
   e2e:
     name: E2E (Playwright)
     needs: changes
-    if: inputs.e2e && needs.changes.outputs.code != 'false'
+    if: ${{ !cancelled() && inputs.e2e && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
