@@ -31,9 +31,9 @@ jobs:
   release:
     # Pin the commit of the DiluxOne/.github release you adopt (not the moving
     # tag): `@<sha> # vX.Y.Z`. Dependabot proposes the bump when the central releases.
-    uses: DiluxOne/.github/.github/workflows/plugin-release-wp.yml@v1
+    uses: DiluxOne/.github/.github/workflows/plugin-release-wp.yml@v2
     with:
       slug: my-plugin
       version-constant: MY_PLUGIN_VERSION
-      dry-run: true # rehearse first: everything but the SVN commit and the tag
+      dry-run: true # rehearse first: everything but the SVN commit, the tag and the release
     secrets: inherit

@@ -37,7 +37,8 @@ name: WordPress plugin release
 #
 # Release tags are permanent (tag protection): a failed deploy is fixed and
 # re-run, never re-tagged. `dry-run: true` rehearses everything but the SVN
-# commit and the tag, and leaves the GitHub release as a draft.
+# commit, the tag and the release, and shows the release notes in the run's
+# summary.
 #
 # The release job runs in the calling repository's environment
 # (`environment`, default `wordpress-org`), and that is where the SVN
@@ -78,7 +79,7 @@ on:
         type: string
         default: ''
       dry-run:
-        description: Check out SVN and prepare the commit without committing it, create no tag, leave the GitHub release as a draft. For rehearsing.
+        description: Check out SVN and prepare the commit without committing it, create no tag and no release, show the notes in the summary. For rehearsing.
         type: boolean
         default: false
       environment:
@@ -92,7 +93,7 @@ on:
       central-ref:
         description: The ref of DiluxOne/.github whose scripts and policy to use.
         type: string
-        default: v1
+        default: v2
     outputs:
       version:
         description: The version released, or empty when nothing was.
@@ -136,20 +137,24 @@ jobs:
           # On a tag run the tag itself is already the newest X.Y.Z: it is
           # left out, so the labels are read from the last release before it.
           exclude=""; case "$GITHUB_REF" in refs/tags/*) exclude="${GITHUB_REF#refs/tags/}";; esac
+          # A tag that already has its release (the job creates both in one
+          # call) needs nothing: that is checked before anything else runs.
+          if [ -n "$exclude" ]; then
+            if ! [[ "$exclude" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::Tag '$exclude' is not X.Y.Z; nothing runs for it."; exit 1
+            fi
+            if gh release view "$exclude" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null | grep -q false; then
+              echo "Release $exclude already exists: this tag was created together with the release that published it. Nothing to do." | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          fi
           next=$(python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$BASE" ${exclude:+--exclude-tag "$exclude"} --json)
           bump=$(jq -r .bump <<<"$next"); pending=$(jq -r .pending <<<"$next"); coming=$(jq -r .next <<<"$next"); last=$(jq -r .last <<<"$next")
           per_type=$(jq -r '.pulls | to_entries[] | "\(.key): " + (.value | map("#\(.)") | join(", "))' <<<"$next")
 
           case "$GITHUB_REF" in
             refs/tags/*)
-              tag="${GITHUB_REF#refs/tags/}"
-              if ! [[ "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-                echo "::error::Tag '$tag' is not X.Y.Z; nothing runs for it."; exit 1
-              fi
-              if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null | grep -q false; then
-                echo "Release $tag already exists: this tag was created together with the release that published it. Nothing to do." | tee -a "$GITHUB_STEP_SUMMARY"
-                exit 0
-              fi
+              tag="$exclude"
               if [ "$pending" != true ] || [ "$tag" != "$coming" ]; then
                 if [ "$pending" = true ]; then expected="the labels say $coming is next"; else expected="nothing merged since $last asks for a version"; fi
                 echo "::error::Tag $tag cannot be released: $expected. A typed number cannot skip the pipeline: label a merged pull request version:major, version:minor or version:patch so the labels reach $tag, then re-run."
@@ -234,9 +239,10 @@ jobs:
           set -euo pipefail
           echo "go=true" >> "$GITHUB_OUTPUT"
           case "$GITHUB_REF" in refs/tags/*) on_tag=true;; *) on_tag=false;; esac
-          if [ "$on_tag" = false ] && git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null 2>&1; then
+          # The checkout has every tag (fetch-depth 0), so no call is needed.
+          if [ "$on_tag" = false ] && git rev-parse -q --verify "refs/tags/$VERSION^{commit}" >/dev/null; then
             echo "go=false" >> "$GITHUB_OUTPUT"
-            printf '## Already released\n\nTag %s exists: a run that waited ahead of this one released it. Nothing to do.\n' "$VERSION" >> "$GITHUB_STEP_SUMMARY"
+            printf '## Already released\n\nTag %s exists: a run that waited ahead of this one released it, without what this run merged. Re-run this workflow (or push to %s) to compute the next version from the labels again.\n' "$VERSION" "$BASE" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           git merge-base --is-ancestor "$GITHUB_SHA" "origin/$BASE" || { echo "::error::$GITHUB_SHA is not on $BASE; a release is a commit of $BASE."; exit 1; }
@@ -340,20 +346,39 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-contents: write
 
+      - name: The zip, when the deploy action made none
+        # The deploy action stops early, with no zip, when SVN already has
+        # tags/X.Y.Z: a re-run after the release step failed. The release
+        # still needs its file, so it is built here the way the action
+        # builds it (the checkout minus .distignore).
+        if: steps.still.outputs.go == 'true' && !inputs.dry-run && steps.deploy.outputs.zip-path == ''
+        id: zip
+        env:
+          SLUG: ${{ inputs.slug }}
+        run: |
+          set -euo pipefail
+          rsync -rc --exclude-from=.distignore --exclude=.git --exclude=.github --exclude=.dx-central ./ "$RUNNER_TEMP/$SLUG/" --delete
+          (cd "$RUNNER_TEMP" && zip -qr "$SLUG.zip" "$SLUG")
+          echo "path=$RUNNER_TEMP/$SLUG.zip" >> "$GITHUB_OUTPUT"
+
+      - name: The release notes, in a rehearsal
+        if: steps.still.outputs.go == 'true' && inputs.dry-run
+        run: |
+          printf '## Rehearsal of %s\n\nNothing was committed to SVN, no tag and no release were created. The notes would be:\n\n' "$VERSION" >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/notes.md" >> "$GITHUB_STEP_SUMMARY"
+
       - name: GitHub release, and the tag with it
         # One API call creates the tag on the commit and the release, so no
         # tag ever exists without its release (the tag run this starts finds
         # the release and stops) and no release without its tag. If SVN took
         # the version but this step failed, Re-run jobs: the deploy action
-        # sees tags/X.Y.Z already on SVN and skips to here. A rehearsal makes
-        # a draft, which creates no tag.
-        if: steps.still.outputs.go == 'true' && steps.deploy.outputs.zip-path != ''
+        # sees tags/X.Y.Z already on SVN, the zip is rebuilt above, and the
+        # release is created then.
+        if: steps.still.outputs.go == 'true' && !inputs.dry-run
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ needs.version.outputs.version }}
           target_commitish: ${{ github.sha }}
-          files: ${{ steps.deploy.outputs.zip-path }}
+          files: ${{ steps.deploy.outputs.zip-path || steps.zip.outputs.path }}
           body_path: ${{ runner.temp }}/notes.md
-          # A rehearsal leaves a draft to inspect, never a published release.
-          draft: ${{ inputs.dry-run }}
           token: ${{ steps.app.outputs.token || github.token }}
