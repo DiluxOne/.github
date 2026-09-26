@@ -378,7 +378,7 @@ jobs:
             `type`, the kind of change the diff really is, by the Conventional Commits meaning
             (breaking when a user or a caller must change something to keep working; feat when
             behaviour is added; fix when wrong behaviour is corrected, whatever the title says;
-            docs, test, ci, build, chore, refactor, perf when that is all it is); and
+            docs, test, ci, build, chore, style, refactor, perf, revert when that is all it is); and
             `description_matches`, true only if the description's "What changes" and "Why"
             describe what the diff does, with nothing claimed that the code does not do and no
             behaviour change left unsaid. When they disagree, say in the summary in one line
@@ -392,12 +392,13 @@ jobs:
             --max-turns 60
             --max-budget-usd ${{ steps.policy.outputs.budget || '3' }}
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(git diff:*),Bash(git log:*),Read,Glob,Grep"
-            --json-schema '{"type":"object","additionalProperties":false,"required":["risk","complexity","blocking","type","description_matches","summary","findings","lessons","resolved_threads"],"properties":{"risk":{"type":"string","enum":["low","medium","high"]},"type":{"type":"string","enum":["breaking","feat","fix","perf","refactor","docs","test","ci","build","chore"]},"description_matches":{"type":"boolean"},"complexity":{"type":"string","enum":["low","medium","high"]},"blocking":{"type":"boolean"},"summary":{"type":"string","maxLength":1500},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","file","title"],"properties":{"severity":{"type":"string","enum":["blocker","major","minor"]},"file":{"type":"string"},"line":{"type":"integer"},"title":{"type":"string","maxLength":200}}}},"lessons":{"type":"array","items":{"type":"string","maxLength":300}},"resolved_threads":{"type":"array","items":{"type":"string"}}}}'
+            --json-schema '{"type":"object","additionalProperties":false,"required":["risk","complexity","blocking","type","description_matches","summary","findings","lessons","resolved_threads"],"properties":{"risk":{"type":"string","enum":["low","medium","high"]},"type":{"type":"string","enum":["breaking","feat","fix","perf","refactor","style","docs","test","ci","build","chore","revert"]},"description_matches":{"type":"boolean"},"complexity":{"type":"string","enum":["low","medium","high"]},"blocking":{"type":"boolean"},"summary":{"type":"string","maxLength":1500},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","file","title"],"properties":{"severity":{"type":"string","enum":["blocker","major","minor"]},"file":{"type":"string"},"line":{"type":"integer"},"title":{"type":"string","maxLength":200}}}},"lessons":{"type":"array","items":{"type":"string","maxLength":300}},"resolved_threads":{"type":"array","items":{"type":"string"}}}}'
 
       - name: Verdict (labels, summary, result)
         id: verdict
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
+          BODY: ${{ github.event.pull_request.body }}
           BOT: ${{ steps.bot.outputs.app-slug }}[bot]
           PR: ${{ github.event.pull_request.number }}
           OUT: ${{ steps.claude.outputs.structured_output }}
@@ -428,7 +429,14 @@ jobs:
           rank() { case "$1" in low) echo 0;; medium) echo 1;; *) echo 2;; esac; }
           if [ "$MODE" = reuse ] || [ "$MODE" = capped ]; then
             risk=$(jq -r .risk "$previous"); complexity=$(jq -r .complexity "$previous"); blocking=$(jq -r .blocking "$previous")
-            { echo "type=$(jq -r '.type // "chore"' "$previous")"; echo "description_ok=$(jq -r '.description_matches // true' "$previous")"; } >> "$GITHUB_OUTPUT"
+            # jq's // treats false as missing: the boolean is tested, not defaulted.
+            dmatch=$(jq -r 'if .description_matches == false then "false" else "true" end' "$previous")
+            # The verdict judged one description. A different one now has not
+            # been read by anyone: it does not merge on its own until a push or
+            # the review:full label brings a new review.
+            text=$(printf '%s' "$BODY" | tr -d '\r' | sha256sum | cut -c1-16)
+            edited=false; if [ "$(jq -r '.text // ""' "$previous")" != "$text" ] && [ "$MODE" = reuse ]; then edited=true; dmatch=false; fi
+            { echo "type=$(jq -r '.type // "chore"' "$previous")"; echo "description_ok=$dmatch"; } >> "$GITHUB_OUTPUT"
             if [ "$(rank "$FLOOR")" -gt "$(rank "$risk")" ]; then risk=$FLOOR; fi
             if [ "$MODE" = capped ] && [ "$risk" = low ]; then
               # Nobody reviewed these commits: they never merge on their own.
@@ -437,6 +445,15 @@ jobs:
             { echo "risk=$risk"; echo "complexity=$complexity"; echo "blocking=$blocking"; } >> "$GITHUB_OUTPUT"
             if [ "$MODE" = reuse ]; then
               echo "Commit ${SHA:0:7} was already reviewed: verdict reused (risk $risk, complexity $complexity, blocking $blocking). Nothing spent."
+              if [ "$edited" = true ]; then
+                echo "::notice::The description changed since the review, so it counts as unchecked: no auto-merge until a push or the review:full label brings a new review."
+                # shellcheck disable=SC2016 # jq variable, not a shell one.
+                body=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate | jq -r --arg bot "$BOT" '.[] | select(.user.login == $bot and (.body | startswith("<!-- dx-review -->"))) | .body' | head -1)
+                if ! grep -q "description changed since" <<<"$body"; then
+                  note="> ✍️ The description changed since this review, so nobody has checked it against the code: no auto-merge until a push or the \`review:full\` label brings a new review."
+                  post "$(printf '%s\n' "$body" | sed "0,/^<!-- dx-review -->/s//<!-- dx-review -->\n$note\n/")"
+                fi
+              fi
             else
               echo "::warning::$COUNT automatic reviews already ran on this pull request; the verdict from ${LAST:0:7} stands and auto-merge is off. Add the review:full label for another review."
               # shellcheck disable=SC2016 # jq variable, not a shell one.
@@ -458,7 +475,8 @@ jobs:
             exit 1
           fi
           model_risk=$(jq -r .risk <<<"$OUT"); complexity=$(jq -r .complexity <<<"$OUT"); blocking=$(jq -r .blocking <<<"$OUT")
-          type=$(jq -r '.type // "chore"' <<<"$OUT"); dmatch=$(jq -r '.description_matches // true' <<<"$OUT")
+          type=$(jq -r '.type // "chore"' <<<"$OUT"); dmatch=$(jq -r 'if .description_matches == false then "false" else "true" end' <<<"$OUT")
+          text=$(printf '%s' "$BODY" | tr -d '\r' | sha256sum | cut -c1-16)
           risk=$model_risk
           if [ "$(rank "$FLOOR")" -gt "$(rank "$model_risk")" ]; then risk=$FLOOR; fi
 
@@ -466,7 +484,7 @@ jobs:
           # person set a type:* label by hand: then theirs stands. The bot
           # only ever replaces a type:* label it set itself.
           # shellcheck disable=SC2016 # jq variable, not a shell one.
-          human=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/timeline" --paginate | jq -r --arg bot "$BOT" '[.[] | select(.event == "labeled" and ((.label.name // "") | startswith("type:")) and .actor.login != $bot) | .label.name] | last // ""')
+          human=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/timeline" --paginate | jq -r -s --arg bot "$BOT" '[.[][] | select(.event == "labeled" and ((.label.name // "") | startswith("type:")) and .actor.login != $bot) | .label.name] | last // ""')
           current=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(startswith("type:"))] | join(",")')
           if [ -n "$human" ] && [[ ",$current," == *",$human,"* ]]; then
             type=${human#type:}
@@ -496,7 +514,9 @@ jobs:
             token=${BASH_REMATCH[1]}; scope=${BASH_REMATCH[2]}; subject=${BASH_REMATCH[4]}
             if [ "$type" = breaking ]; then want="$token"; bang='!'; else want="$type"; bang=''; fi
             retitled="${want}${scope}${bang}: ${subject}"
-            if [ "$retitled" != "$title" ]; then
+            if [ "$retitled" != "$title" ] && [ "${#retitled}" -gt 100 ]; then
+              echo "::warning::The title should start with \"${want}${scope}${bang}:\" but that makes it longer than 100 characters; shorten it yourself. The conventions check will ask for it."
+            elif [ "$retitled" != "$title" ]; then
               gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --title "$retitled" >/dev/null
               echo "Title corrected to \"$retitled\"."
             fi
@@ -523,8 +543,8 @@ jobs:
           # The changed files travel with the record: the weekly learning job
           # uses them as evidence for a repository's safe and risky paths.
           files=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json files --jq '[.files[].path] | .[:300]' 2>/dev/null || echo '[]')
-          record=$(jq -c --arg risk "$risk" --arg floor "$FLOOR" --arg sha "$SHA" --arg model "$MODEL" --arg mode "$MODE" --argjson count "$count" --arg cost "${cost:-}" --argjson files "$files" --arg type "$type" \
-            '{risk:$risk, model_risk:.risk, floor:$floor, complexity, blocking, type:$type, description_matches:.description_matches, lessons, findings, sha:$sha, model:$model, mode:$mode, count:$count, cost:$cost, files:$files}' <<<"$OUT")
+          record=$(jq -c --arg risk "$risk" --arg floor "$FLOOR" --arg sha "$SHA" --arg model "$MODEL" --arg mode "$MODE" --argjson count "$count" --arg cost "${cost:-}" --argjson files "$files" --arg type "$type" --arg text "$text" \
+            '{risk:$risk, model_risk:.risk, floor:$floor, complexity, blocking, type:$type, description_matches:.description_matches, text:$text, lessons, findings, sha:$sha, model:$model, mode:$mode, count:$count, cost:$cost, files:$files}' <<<"$OUT")
           body=$(cat <<EOF
           <!-- dx-review -->
           ### Claude review · risk **$risk** · complexity **$complexity** · type **$type**$blk

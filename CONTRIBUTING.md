@@ -57,10 +57,11 @@ Every pull request runs the conventions check (branch name, PR title, every comm
 
 Pull requests from branches of the repository (not drafts, not forks) are reviewed by Claude, which comments inline on blockers and majors, lists minor findings in its summary and labels the risk and complexity.
 
-- The first review reads the whole change; later ones read only what you pushed since, so keep pushes meaningful. Editing the title or description does not trigger a new review.
+- The first review reads the whole change; later ones read only what you pushed since, so keep pushes meaningful. Editing the title or description does not trigger a new review; an edited description counts as unchecked (no auto-merge) until the next push or the `review:full` label.
+- The review decides the type of the change from the diff and sets it as a `type:*` label; it corrects the title's type to match (the version number is computed from these labels). If it is wrong, set a different `type:*` label yourself: the bot keeps a label a person set.
 - Low-risk changes (docs, tests, lockfiles) get the light model; everything else the strong one.
 - After 5 automatic reviews the next push keeps the last verdict and a human merges: add the `review:full` label, then push or re-run the review, to ask for another full pass.
-- It merges on its own only when the change touches only low-risk paths, the review rated it low risk and low complexity without blocking, the author is a trusted maintainer (or Dependabot), every required check is green and the policy has auto-merge on. Anything else, a maintainer merges.
+- It merges on its own only when the change touches only low-risk paths, the review rated it low risk and low complexity without blocking, the description matches the code (nothing claimed the diff does not do, no behaviour change left unsaid), the author is a trusted maintainer (or Dependabot), every required check is green and the policy has auto-merge on. Anything else, a maintainer merges.
 
 A maintainer merging by hand runs `scripts/squash-merge.sh <owner/repo> <number>` from a checkout of [DiluxOne/.github](https://github.com/DiluxOne/.github): it commits the description as written plus the branch's `Co-authored-by` trailers, because GitHub's own squash message hard-wraps at 72 columns. Auto-merge does the same.
 
