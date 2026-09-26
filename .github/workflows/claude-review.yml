@@ -42,7 +42,7 @@ name: Claude review
 #
 #   on:
 #     pull_request:
-#       types: [opened, edited, synchronize, reopened, ready_for_review]
+#       types: [opened, synchronize, reopened, ready_for_review]  # and pull-request-edited.yml on `edited`
 #   jobs:
 #     review:
 #       needs: [conventions, checks]

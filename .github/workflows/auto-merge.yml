@@ -7,7 +7,7 @@ name: Auto-merge
 #
 # It also sets the commit body to the PR description verbatim (GitHub's own
 # squash message hard-wraps it at 72 columns). The body is taken when
-# auto-merge is enabled, so the caller must re-run on `edited`, or a later
+# auto-merge is enabled, so pull-request-edited.yml runs this on `edited`, or a later
 # edit of the description would not reach main.
 #
 # All of these must hold, or a human merges:
@@ -23,7 +23,7 @@ name: Auto-merge
 #
 #   on:
 #     pull_request:
-#       types: [opened, edited, synchronize, reopened, ready_for_review]
+#       types: [opened, synchronize, reopened, ready_for_review]  # and pull-request-edited.yml on `edited`
 #   jobs:
 #     auto-merge:
 #       needs: review

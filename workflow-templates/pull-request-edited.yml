@@ -27,7 +27,7 @@ jobs:
       issues: write
     uses: DiluxOne/.github/.github/workflows/claude-review.yml@v1
     with:
-      profile: plugin-wp # the same profile as in pull-request.yml
+      profile: general # the same profile as in pull-request.yml (plugin-wp for a WordPress plugin)
     secrets: inherit
 
   auto-merge:

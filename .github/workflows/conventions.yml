@@ -11,7 +11,7 @@ name: Conventions
 #
 #   on:
 #     pull_request:
-#       types: [opened, edited, synchronize, reopened, ready_for_review]
+#       types: [opened, synchronize, reopened, ready_for_review]  # and pull-request-edited.yml on `edited`
 #   jobs:
 #     conventions:
 #       uses: DiluxOne/.github/.github/workflows/conventions.yml@v1
@@ -46,6 +46,17 @@ jobs:
     timeout-minutes: 5
     if: github.event_name == 'pull_request'
     steps:
+      - name: The base branch did not change under the checks
+        # `edited` also fires when the base branch changes. The suites ran on
+        # a merge with the old base and, on `edited`, do not run again
+        # (pull-request-edited.yml), so this check fails until a push starts
+        # them on the new merge. Same job id as before: the failure replaces
+        # the earlier pass.
+        if: github.event.action == 'edited' && github.event.changes.base != null
+        run: |
+          echo "::error::The base branch changed to ${{ github.event.pull_request.base.ref }}. The suites ran against the old base; push a commit (or merge the base) so they run again."
+          exit 1
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

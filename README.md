@@ -39,8 +39,10 @@ Nothing runs twice for one change. An edit of the title or the description
 re-runs only the conventions, the review (free on a commit it already read)
 and the auto-merge decision, never the suites. A push to `main` runs the slow
 suites only when it must: the job verifies that the commit is the squash
-merge of a pull request of this repository and that its tree is the one that
-pull request's checks ran on; any doubt runs everything. Once a week (and on
+merge of a pull request of this repository, that its tree is the one that
+pull request's checks ran on and that every check there passed; any doubt
+runs everything. A pull request whose base branch changes fails the
+conventions until a push runs the suites against the new base. Once a week (and on
 *Run workflow*) everything runs against today's WordPress and tools, and a
 failure opens one `ci:weekly` issue.
 

@@ -35,8 +35,9 @@ tested() {
 # so the squash commit's tree equals the head's. The job checks that
 # rather than trusting it: the pull request the commit came from must be
 # merged, from this repository (a fork's code never had the real suite),
-# and its head's tree must equal this commit's tree. Then nothing needs to
-# run again. Any doubt, or an API that does not answer, runs everything.
+# its head's tree must equal this commit's tree, and every check on that
+# head must have passed. Then nothing needs to run again. Any doubt, or an
+# API that does not answer, runs everything.
 if [ "${EVENT:-}" = "push" ] && [ -n "${HEAD_SHA:-}" ] && [ -n "${GH_TOKEN:-}" ]; then
   # shellcheck disable=SC2016 # jq variables, not shell ones.
   pr=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/pulls" 2>/dev/null \
@@ -46,11 +47,20 @@ if [ "${EVENT:-}" = "push" ] && [ -n "${HEAD_SHA:-}" ] && [ -n "${GH_TOKEN:-}" ]
     number=${pr%% *}; head=${pr##* }
     tree_here=$(git rev-parse "HEAD^{tree}" 2>/dev/null || true)
     tree_pr=$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$head" --jq .tree.sha 2>/dev/null || true)
-    if [ -n "$tree_here" ] && [ "$tree_here" = "$tree_pr" ]; then
-      tested "this commit is the squash merge of #$number and its tree is the one #$number's checks ran on"
+    if [ -z "$tree_here" ] || [ "$tree_here" != "$tree_pr" ]; then
+      everything "this commit's tree differs from what #$number tested"
       exit 0
     fi
-    everything "this commit's tree differs from what #$number tested"
+    # The checks of that head must all have passed (a merge that bypassed the
+    # ruleset, or a suite that was still running, is not a tested tree).
+    # shellcheck disable=SC2016 # jq variable, not a shell one.
+    bad=$(gh api "repos/$GITHUB_REPOSITORY/commits/$head/check-runs?per_page=100" --paginate 2>/dev/null \
+          | jq -r -s '[.[].check_runs[] | select(.status != "completed" or (.conclusion | IN("success", "skipped", "neutral") | not)) | .name] | unique | join(", ")' 2>/dev/null || echo "?")
+    if [ -n "$bad" ]; then
+      everything "the checks of #$number's head did not all pass ($bad)"
+      exit 0
+    fi
+    tested "this commit is the squash merge of #$number, its tree is the one #$number's checks ran on, and they passed"
     exit 0
   fi
   everything "no merged pull request of this repository produced this commit"

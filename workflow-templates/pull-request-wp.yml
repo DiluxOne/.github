@@ -30,12 +30,18 @@ jobs:
       retired-names: '' # e.g. 'old product name|OLD_PREFIX_'; empty to skip
 
   checks:
+    permissions:
+      contents: read
+      pull-requests: read # the push to main looks up the pull request it came from
     uses: DiluxOne/.github/.github/workflows/plugin-checks-wp.yml@v1
     with:
       slug: my-plugin
       version-constant: MY_PLUGIN_VERSION
 
   tests:
+    permissions:
+      contents: read
+      pull-requests: read
     uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v1
 
   review:
@@ -65,7 +71,7 @@ jobs:
 
   weekly-failure:
     needs: [checks, tests]
-    if: github.event_name == 'schedule' && contains(needs.*.result, 'failure')
+    if: ${{ !cancelled() && github.event_name == 'schedule' && contains(needs.*.result, 'failure') }}
     permissions:
       contents: read
       issues: write
