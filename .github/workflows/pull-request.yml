@@ -17,6 +17,9 @@ permissions:
 
 jobs:
   conventions:
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/conventions.yml
 
   actionlint:

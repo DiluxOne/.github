@@ -20,6 +20,9 @@ permissions:
 
 jobs:
   conventions:
+    permissions:
+      contents: read
+      actions: read # the runs of this head, for the base-branch check on `edited`
     uses: DiluxOne/.github/.github/workflows/conventions.yml@v1
     with:
       retired-names: '' # e.g. 'old product name|OLD_PREFIX_'; empty to skip

@@ -54,8 +54,12 @@ if [ "${EVENT:-}" = "push" ] && [ -n "${HEAD_SHA:-}" ] && [ -n "${GH_TOKEN:-}" ]
     # The checks of that head must all have passed (a merge that bypassed the
     # ruleset, or a suite that was still running, is not a tested tree).
     # shellcheck disable=SC2016 # jq variable, not a shell one.
-    bad=$(gh api "repos/$GITHUB_REPOSITORY/commits/$head/check-runs?per_page=100" --paginate 2>/dev/null \
-          | jq -r -s '[.[].check_runs[] | select(.status != "completed" or (.conclusion | IN("success", "skipped", "neutral") | not)) | .name] | unique | join(", ")' 2>/dev/null || echo "?")
+    runs=$(gh api "repos/$GITHUB_REPOSITORY/commits/$head/check-runs?per_page=100" --paginate 2>/dev/null | jq -s '[.[].check_runs[]]' 2>/dev/null || echo "")
+    if [ -z "$runs" ] || [ "$(jq length <<<"$runs")" -eq 0 ]; then
+      everything "the checks of #$number's head could not be read, or there were none"
+      exit 0
+    fi
+    bad=$(jq -r '[.[] | select(.status != "completed" or (.conclusion | IN("success", "skipped", "neutral") | not)) | .name] | unique | join(", ")' <<<"$runs")
     if [ -n "$bad" ]; then
       everything "the checks of #$number's head did not all pass ($bad)"
       exit 0

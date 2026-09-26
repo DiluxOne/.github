@@ -57,7 +57,8 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
-      pull-requests: read # the pull request behind a push to main, and its checks
+      pull-requests: read # the pull request behind a push to main
+      checks: read # and the checks of its head
     outputs:
       code: ${{ steps.changes.outputs.code }}
     steps:

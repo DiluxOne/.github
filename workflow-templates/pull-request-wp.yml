@@ -25,6 +25,9 @@ permissions:
 
 jobs:
   conventions:
+    permissions:
+      contents: read
+      actions: read # the runs of this head, for the base-branch check on `edited`
     uses: DiluxOne/.github/.github/workflows/conventions.yml@v1
     with:
       retired-names: '' # e.g. 'old product name|OLD_PREFIX_'; empty to skip
@@ -33,6 +36,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read # the push to main looks up the pull request it came from
+      checks: read # and the checks of its head
     uses: DiluxOne/.github/.github/workflows/plugin-checks-wp.yml@v1
     with:
       slug: my-plugin
@@ -42,6 +46,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      checks: read
     uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v1
 
   review:
