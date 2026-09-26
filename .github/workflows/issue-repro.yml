@@ -242,7 +242,7 @@ jobs:
           {
             echo "summary=$(jq -r '.summary // ""' <<<"$OUT" 2>/dev/null | tr '\n' ' ' || true)"
             echo "needs=$(jq -r '.needs_from_reporter // ""' <<<"$OUT" 2>/dev/null | tr '\n' ' ' || true)"
-            echo "reported=$(jq -r '.reported_version // ""' <<<"$OUT" 2>/dev/null | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+(-dev\.[0-9]+)?' || true)"
+            echo "reported=$(jq -r '.reported_version // ""' <<<"$OUT" 2>/dev/null | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+(-dev\.[0-9]+)?' | head -n1 || true)"
           } >> "$GITHUB_OUTPUT"
           cost=""; if [ -n "$EXECUTION_FILE" ] && [ -f "$EXECUTION_FILE" ]; then cost=$(jq -r '[.[] | select(.type == "result")] | last | .total_cost_usd // empty' "$EXECUTION_FILE" 2>/dev/null || true); fi
           echo "cost=$cost" >> "$GITHUB_OUTPUT"
@@ -370,12 +370,20 @@ jobs:
           needs=${NEEDS:-the exact steps and the result you expected}
           # When the report named a version, the verdict says what it was
           # tested on: the current code, which the development build carries.
+          # The "may have been fixed since" sentence goes out only when the
+          # reported version is older than the current development build.
           on_current=""; since=""
           if [ -n "$REPORTED" ]; then
-            dev=""; if [ -n "$DEV_TAG" ]; then dev=$(gh release view "$DEV_TAG" --repo "$GITHUB_REPOSITORY" --json name --jq .name 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+-dev\.[0-9]+' || true); fi
+            dev=""; if [ -n "$DEV_TAG" ]; then dev=$(gh release view "$DEV_TAG" --repo "$GITHUB_REPOSITORY" --json name --jq .name 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+-dev\.[0-9]+' | head -n1 || true); fi
             current="the current code"; [ -n "$dev" ] && current="the current code (development build ${BT}${dev}${BT}, $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$DEV_TAG)"
             on_current=" You saw it on ${BT}${REPORTED}${BT}; this ran on $current, so the bug is there now, whatever version first showed it."
-            since=" You saw it on ${BT}${REPORTED}${BT}; this ran on $current. If the bug was there in ${BT}${REPORTED}${BT}, it may have been fixed since: please install the current development build and say whether it is still there."
+            older=false
+            if [ -n "$dev" ] && [ "$REPORTED" != "$dev" ] && [ "$(printf '%s\n%s\n' "$REPORTED" "$dev" | sort -V | head -n1)" = "$REPORTED" ]; then older=true; fi
+            if [ "$older" = true ]; then
+              since=" You saw it on ${BT}${REPORTED}${BT}; this ran on $current. If the bug was there in ${BT}${REPORTED}${BT}, it may have been fixed since: please install the current development build and say whether it is still there."
+            else
+              since=" You saw it on ${BT}${REPORTED}${BT}; this ran on $current."
+            fi
           fi
 
           if [ "$WROTE" != true ]; then
