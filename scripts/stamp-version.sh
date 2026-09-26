@@ -8,9 +8,11 @@
 # <version>; a changelog heading `= Unreleased =` becomes `= <version> =`.
 # With <build>, a `Build: <build>` header line is added right under
 # `Version:` (the tree never has one): a development build records the
-# commit it was made from. Every marker is checked afterwards; a marker
-# that did not take the version fails the script, so a file whose shape
-# changed is caught before anything ships. Nothing outside <dir> is touched.
+# commit it was made from. readme.txt is brought to LF line endings first,
+# so a CRLF readme is stamped, matched and read like any other. Every marker
+# is checked afterwards; a marker that did not take the version fails the
+# script, so a file whose shape changed is caught before anything ships.
+# Nothing outside <dir> is touched.
 #
 #   stamp-version.sh --test
 #
@@ -21,6 +23,7 @@ stamp() {
   local dir=$1 version=$2 main=$3 constant=${4:-} build=${5:-} fail=0
   [ -f "$dir/$main" ] || { echo "::error::$dir/$main does not exist." >&2; return 1; }
   [ -f "$dir/readme.txt" ] || { echo "::error::$dir/readme.txt does not exist." >&2; return 1; }
+  sed -i 's/\r$//' "$dir/readme.txt"
   if [ -n "$build" ]; then
     sed -i -E "s/^(\s*\*\s*Version:\s*).*$/\1$version\n * Build: $build/" "$dir/$main"
   else
@@ -78,6 +81,9 @@ if [ "${1:-}" = "--test" ]; then
   check "a missing constant fails"     "! stamp '$t/p' 2.0.0 my-plugin.php OTHER_CONSTANT 2>/dev/null"
   fresh "2.0.0"; rm "$t/p/readme.txt"
   check "a missing readme fails"       "! stamp '$t/p' 2.0.0 my-plugin.php 2>/dev/null"
+
+  fresh "Unreleased"; sed -i 's/$/\r/' "$t/p/readme.txt"; stamp "$t/p" 2.0.0 my-plugin.php >/dev/null
+  check "CRLF readme: stamped, renamed and LF afterwards" "grep -qx 'Stable tag: 2.0.0' '$t/p/readme.txt' && grep -qx '= 2.0.0 =' '$t/p/readme.txt' && ! grep -q \$'\r' '$t/p/readme.txt'"
 
   [ "$fail" -eq 0 ] && echo "all tests passed"
   exit "$fail"

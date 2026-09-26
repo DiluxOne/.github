@@ -42,7 +42,7 @@ name: WordPress plugin release
 #
 # Every push to main also produces a development build, whatever the labels
 # or the readme say: the tree that ships (minus .distignore) with the three
-# markers stamped `<next>-dev.<N>` and a `Build: <commit>` header, as the
+# markers (and a `= Unreleased =` heading) stamped `<next>-dev.<N>` and a `Build: <commit>` header, as the
 # run's artifact `<slug>-<next>-dev.<N>`, kept 30 days, for anyone to install
 # and try what is coming. Nothing is committed or tagged for it.
 #
@@ -272,11 +272,13 @@ jobs:
       - name: Stamp the development version and pack the tree
         env:
           DEV: ${{ steps.dev.outputs.dev }}
-        # The same three markers the release stamps (scripts/stamp-version.sh),
-        # to <next>-dev.<N>, plus a `Build:` header line (absent in the tree)
-        # with the commit: a site shows both under Plugins and wherever the
-        # plugin reads its headers. The zip holds the plugin folder, named
-        # after the slug, the way WordPress installs it.
+        # What the release stamps, the dev build stamps too, to <next>-dev.<N>
+        # (scripts/stamp-version.sh: the three markers, a `= Unreleased =`
+        # heading, the readme brought to LF), plus a `Build:` header line
+        # (absent in the tree) with the commit: a site shows both under
+        # Plugins and wherever the plugin reads its headers. The zip holds
+        # the plugin folder, named after the slug, the way WordPress installs
+        # it.
         run: |
           set -euo pipefail
           build=${GITHUB_SHA:0:7}
@@ -357,9 +359,10 @@ jobs:
       - name: Stamp the version markers
         if: steps.still.outputs.go == 'true'
         # The checkout, never the repository: the three markers become the
-        # version, and a readme entry headed `= Unreleased =` takes its number
-        # (scripts/stamp-version.sh, which fails when a marker did not take
-        # it: nothing reaches wordpress.org from a file whose shape changed).
+        # version, a readme entry headed `= Unreleased =` takes its number and
+        # the readme is brought to LF (scripts/stamp-version.sh, which fails
+        # when a marker did not take it: nothing reaches wordpress.org from a
+        # file whose shape changed).
         run: |
           set -euo pipefail
           bash .dx-central/scripts/stamp-version.sh . "$VERSION" "$MAIN" "$CONSTANT"
