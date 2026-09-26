@@ -465,6 +465,7 @@ jobs:
           # The type of the change is the review's, read from the diff, unless a
           # person set a type:* label by hand: then theirs stands. The bot
           # only ever replaces a type:* label it set itself.
+          # shellcheck disable=SC2016 # jq variable, not a shell one.
           human=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/timeline" --paginate --jq --arg bot "$BOT" '[.[] | select(.event == "labeled" and ((.label.name // "") | startswith("type:")) and .actor.login != $bot) | .label.name] | last // ""')
           current=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(startswith("type:"))] | join(",")')
           if [ -n "$human" ] && [[ ",$current," == *",$human,"* ]]; then
@@ -490,7 +491,8 @@ jobs:
           # the author's; only the type token (and the `!` of a breaking
           # change) is corrected.
           title=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json title --jq .title)
-          if [[ "$title" =~ ^([a-z]+)(\([^)]*\))?(!?):\ (.*)$ ]]; then
+          title_re='^([a-z]+)(\([^)]*\))?(!?): (.*)$'
+          if [[ "$title" =~ $title_re ]]; then
             token=${BASH_REMATCH[1]}; scope=${BASH_REMATCH[2]}; subject=${BASH_REMATCH[4]}
             if [ "$type" = breaking ]; then want="$token"; bang='!'; else want="$type"; bang=''; fi
             retitled="${want}${scope}${bang}: ${subject}"

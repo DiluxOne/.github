@@ -86,7 +86,8 @@ jobs:
           # same. The review corrects the title itself; this catches a later
           # hand edit that undoes it.
           typelabel=$(tr ',' '\n' <<<"$LABELS" | grep -m1 '^type:' | sed 's/^type://' || true)
-          if [ -n "$typelabel" ] && [[ "$TITLE" =~ ^([a-z]+)(\([^)]*\))?(!?): ]]; then
+          TYPE_RE='^([a-z]+)(\([^)]*\))?(!?): '
+          if [ -n "$typelabel" ] && [[ "$TITLE" =~ $TYPE_RE ]]; then
             token=${BASH_REMATCH[1]}; bang=${BASH_REMATCH[3]}
             if [ "$typelabel" = breaking ]; then
               [ "$bang" = '!' ] || error "The pull request is labelled type:breaking, so its title needs the \"!\" of a breaking change: \"$token$bang:\"."
