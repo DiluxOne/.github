@@ -56,6 +56,35 @@ the change breaks it).
 - **medium**: several files or one subtle change; needs care to follow.
 - **high**: large, cross-cutting, or with non-obvious interactions.
 
+## The type of the change
+
+`type` is what the diff really is, by the Conventional Commits meaning, whatever
+the title or the description say:
+
+- **breaking**: a user, a site or a caller must change something to keep
+  working (a setting that changes meaning, a removed option, a renamed hook,
+  a new minimum requirement).
+- **feat**: behaviour is added that a user can notice.
+- **fix**: wrong behaviour is corrected. A pull request titled `test:` that
+  also corrects a bug is a `fix`.
+- **perf**, **refactor**: behaviour is unchanged; speed or shape improved.
+- **revert**: an earlier change is undone, whatever it was.
+- **docs**, **test**, **ci**, **build**, **chore**, **style**: no runtime
+  behaviour changes.
+
+The highest kind present wins: a docs change with one fix is a `fix`; a fix
+with one new behaviour is a `feat`; anything breaking is `breaking`. The type
+sets the `type:*` label and corrects the title's type token, and the next
+version is computed from those labels, so read the diff, not the words.
+
+## Whether the description matches
+
+`description_matches` is true only when the description's "What changes" and
+"Why" describe what the diff does: nothing claimed that the code does not do,
+no behaviour change left unsaid, no number or path that is wrong. A mismatch
+is not a block, but a pull request whose text misdescribes its diff is never
+merged on its own; say in one line what the description gets wrong.
+
 ## Blocking
 
 Set `blocking` to true only for a problem that must not reach `main`:

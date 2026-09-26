@@ -14,6 +14,8 @@ name: Auto-merge
 #   - the policy says `auto-merge: true` (the review passes it on as `enabled`);
 #   - the policy floor is low (only low-risk-eligible paths changed);
 #   - the review rated it low risk, low complexity, not blocking;
+#   - the review found the description to match the code (and nobody edited
+#     the description after that review);
 #   - the author is in the policy's trusted-authors list.
 #
 # The dilux-bot App enables it, so the resulting push to main triggers the
@@ -33,6 +35,7 @@ name: Auto-merge
 #         floor: ${{ needs.review.outputs.floor }}
 #         trusted: ${{ needs.review.outputs.trusted }}
 #         blocking: ${{ needs.review.outputs.blocking }}
+#         description-ok: ${{ needs.review.outputs.description-ok }}
 #         enabled: ${{ needs.review.outputs.auto-merge }}
 #       secrets: inherit
 
@@ -58,6 +61,10 @@ on:
         description: The policy's auto-merge setting, from the review's outputs.
         type: string
         default: 'false'
+      description-ok:
+        description: Whether the review found the description to match the code, from the review's outputs. A pull request whose text misdescribes its diff is never merged on its own; a caller that does not pass this never auto-merges either.
+        type: string
+        default: ''
     secrets:
       DILUX_BOT_PRIVATE_KEY:
         required: true
@@ -92,6 +99,7 @@ jobs:
           FLOOR: ${{ inputs.floor }}
           TRUSTED: ${{ inputs.trusted }}
           BLOCKING: ${{ inputs.blocking }}
+          DESCRIPTION_OK: ${{ inputs.description-ok }}
         run: |
           set -euo pipefail
           why=""
@@ -101,6 +109,8 @@ jobs:
           [ -n "$why" ] || [ "$COMPLEXITY" = low ] || why="complexity is ${COMPLEXITY:-unknown}"
           [ -n "$why" ] || [ "$BLOCKING" = false ] || why="the review is blocking"
           [ -n "$why" ] || [ "$TRUSTED" = true ] || why="the author is not in trusted-authors"
+          [ -n "$why" ] || [ -n "$DESCRIPTION_OK" ] || why="the caller does not pass the review's description verdict (description-ok)"
+          [ -n "$why" ] || [ "$DESCRIPTION_OK" = true ] || why="the description does not match the code, or changed after the review"
           if [ -z "$why" ]; then
             # The description goes in verbatim: GitHub's own squash message
             # hard-wraps it at 72 columns. Disabling first refreshes it after
