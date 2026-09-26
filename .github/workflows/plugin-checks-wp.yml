@@ -18,17 +18,17 @@ name: WordPress plugin checks (fast)
 #
 #   jobs:
 #     checks:
-#       uses: DiluxOne/.github/.github/workflows/plugin-checks-wp.yml@v1
+#       uses: DiluxOne/.github/.github/workflows/plugin-checks-wp.yml@v2
 #       with:
 #         slug: diluxone-offload
 #         version-constant: DILUXONE_OFFLOAD_VERSION   # optional
 #         main-file: diluxone-offload.php              # default <slug>.php
 #         php-versions: '["7.4","8.0","8.1","8.2","8.3","8.4","8.5"]'  # the default
 #     tests:
-#       uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v1
+#       uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v2
 #     review:
 #       needs: [checks]          # the review waits for the fast gates only
-#       uses: DiluxOne/.github/.github/workflows/claude-review.yml@v1
+#       uses: DiluxOne/.github/.github/workflows/claude-review.yml@v2
 #       with:
 #         profile: plugin-wp
 #       secrets: inherit
@@ -55,7 +55,7 @@ on:
       central-ref:
         description: Ref of DiluxOne/.github to read the policy from.
         type: string
-        default: v1
+        default: v2
 
 permissions:
   contents: read
@@ -192,12 +192,18 @@ jobs:
     # defaults plus the repository's .github/review-policy.yml, read from
     # the base branch so a change cannot exempt itself). Anything else
     # (docs, translations, a readme) gets the fast checks and the review.
-    # A push to main runs everything. The gates below run on !cancelled()
+    # A push to main runs everything unless the commit is the squash merge of a
+    # pull request of this repository whose checks ran on this very tree; a
+    # weekly scheduled run covers drift. The gates below run on !cancelled()
     # and treat a missing answer as "run", so this job failing (or an older
     # central without the script) never skips a suite; a job skipped by
     # the answer satisfies the ruleset.
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read # the pull request behind a push to main
+      checks: read # and the checks of its head
     outputs:
       code: ${{ steps.changes.outputs.code }}
       plugin_check: ${{ steps.changes.outputs.plugin_check }}
@@ -216,6 +222,8 @@ jobs:
       - id: changes
         env:
           EVENT: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
           DEFAULT_POLICY: .dx-central/policy/review-policy.default.yml
         run: bash .dx-central/scripts/changes.sh
 

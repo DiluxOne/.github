@@ -11,10 +11,10 @@ name: Conventions
 #
 #   on:
 #     pull_request:
-#       types: [opened, edited, synchronize, reopened, ready_for_review]
+#       types: [opened, synchronize, reopened, ready_for_review]  # and pull-request-edited.yml on `edited`
 #   jobs:
 #     conventions:
-#       uses: DiluxOne/.github/.github/workflows/conventions.yml@v1
+#       uses: DiluxOne/.github/.github/workflows/conventions.yml@v2
 #       with:
 #         retired-names: 'offload\+|dilux cloud'   # optional
 #         required-sections: 'What changes,Why'   # the default
@@ -45,7 +45,37 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: read # the pull request's timeline, for the base-branch check
     steps:
+      - name: No base-branch change since the last push
+        # `edited` also fires when the base branch changes. The suites ran on
+        # a merge with the old base and, on `edited`, do not run again
+        # (pull-request-edited.yml), so this check fails until a push starts
+        # them on the new merge: on every `edited` event, not only the one
+        # that changed the base, because a later title edit re-runs this job
+        # under the same id and would replace the failure. The fact comes
+        # from the pull request's timeline, which is chronological: the last
+        # base_ref_changed event must come before the last commit pushed
+        # (committed, or head_ref_force_pushed). No run of any workflow is
+        # consulted, so it holds whatever workflows the repository has.
+        if: github.event.action == 'edited'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          order=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/timeline" --paginate | jq -r -s '[.[][] | .event] | to_entries | map(select(.value == "base_ref_changed" or .value == "committed" or .value == "head_ref_force_pushed")) | {retarget: (map(select(.value == "base_ref_changed") | .key) | max), pushed: (map(select(.value != "base_ref_changed") | .key) | max)} | "\(.retarget // -1) \(.pushed // -1)"')
+          retarget=${order% *}; pushed=${order#* }
+          if [ "$retarget" -lt 0 ]; then echo "The base branch never changed."; exit 0; fi
+          if [ "$retarget" -gt "$pushed" ]; then
+            echo "::error::The base branch changed (now $BASE) after the last push, so the suites ran against the old base. Push a commit (or merge the base) so they run against the new one."
+            exit 1
+          fi
+          echo "The base changed and a push followed it: the suites ran against the current base."
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

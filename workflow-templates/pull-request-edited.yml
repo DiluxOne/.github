@@ -1,19 +1,14 @@
-name: Pull request
+name: Pull request edited
 
-# Every check a pull request to this repository goes through, from the shared
-# workflows in DiluxOne/.github: conventions, then the Claude review and the
-# auto-merge decision. Add this repository's own quality gates as jobs and
-# list them in `needs:` of the review, so it never reviews code that does not
-# build. Fill in retired-names and the profile.
+# When the title or the description changes: the conventions, the review (which
+# spends nothing on a commit it already read; it re-checks that the description
+# still matches the code) and the auto-merge decision. Nothing else: the suites
+# gave the code its verdict already and keep it. Same job ids as pull-request.yml
+# so the rulesets see one set of checks.
 
 on:
-  # An edit of the title or description is handled by pull-request-edited.yml
-  # (conventions, review and the auto-merge decision only), so the suites keep
-  # the verdict they gave the code.
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-  push:
-    branches: [$default-branch]
+    types: [edited]
 
 permissions:
   contents: read
@@ -25,7 +20,7 @@ jobs:
       pull-requests: read # the pull request's timeline, for the base-branch check on `edited`
     uses: DiluxOne/.github/.github/workflows/conventions.yml@v2
     with:
-      retired-names: '' # e.g. 'old product name|OLD_PREFIX_'; empty to skip
+      retired-names: '' # the same value as in pull-request.yml
 
   review:
     needs: [conventions]
@@ -35,7 +30,7 @@ jobs:
       issues: write
     uses: DiluxOne/.github/.github/workflows/claude-review.yml@v2
     with:
-      profile: general
+      profile: general # the same profile as in pull-request.yml (plugin-wp for a WordPress plugin)
     secrets: inherit
 
   auto-merge:
@@ -48,6 +43,6 @@ jobs:
       floor: ${{ needs.review.outputs.floor }}
       trusted: ${{ needs.review.outputs.trusted }}
       blocking: ${{ needs.review.outputs.blocking }}
-      description-ok: ${{ needs.review.outputs.description-ok }}
       enabled: ${{ needs.review.outputs.auto-merge }}
+      description-ok: ${{ needs.review.outputs.description-ok }}
     secrets: inherit

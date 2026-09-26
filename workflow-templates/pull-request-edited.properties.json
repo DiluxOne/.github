@@ -1,0 +1,8 @@
+{
+  "name": "Pull request edited (DiluxOne)",
+  "description": "Conventions, Claude review and auto-merge again when a pull request's title or description changes, without the suites.",
+  "iconName": "octicon pencil",
+  "categories": [
+    "Code quality"
+  ]
+}
