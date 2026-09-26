@@ -498,7 +498,9 @@ jobs:
         # Resolving a review thread needs write access to the repository, so
         # this token is minted after the model has run and is used only by the
         # loop below: nothing that read the pull request's text ever holds it.
-        if: steps.verdict.outcome == 'success' || steps.verdict.outcome == 'failure'
+        # !cancelled(): a blocking verdict fails its step on purpose, and the
+        # threads it says are settled still get resolved.
+        if: ${{ !cancelled() && (steps.verdict.outcome == 'success' || steps.verdict.outcome == 'failure') }}
         id: resolver
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
@@ -507,7 +509,7 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-contents: write
           permission-pull-requests: write
-      - if: steps.resolver.outcome == 'success'
+      - if: ${{ !cancelled() && steps.resolver.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ steps.resolver.outputs.token }}
         run: |
