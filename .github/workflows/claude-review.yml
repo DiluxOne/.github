@@ -445,14 +445,17 @@ jobs:
             { echo "risk=$risk"; echo "complexity=$complexity"; echo "blocking=$blocking"; } >> "$GITHUB_OUTPUT"
             if [ "$MODE" = reuse ]; then
               echo "Commit ${SHA:0:7} was already reviewed: verdict reused (risk $risk, complexity $complexity, blocking $blocking). Nothing spent."
+              # shellcheck disable=SC2016 # jq variable, not a shell one.
+              body=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate | jq -r --arg bot "$BOT" '.[] | select(.user.login == $bot and (.body | startswith("<!-- dx-review -->"))) | .body' | head -1)
               if [ "$edited" = true ]; then
                 echo "::notice::The description changed since the review, so it counts as unchecked: no auto-merge until a push or the review:full label brings a new review."
-                # shellcheck disable=SC2016 # jq variable, not a shell one.
-                body=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate | jq -r --arg bot "$BOT" '.[] | select(.user.login == $bot and (.body | startswith("<!-- dx-review -->"))) | .body' | head -1)
                 if ! grep -q "description changed since" <<<"$body"; then
                   note="> ✍️ The description changed since this review, so nobody has checked it against the code: no auto-merge until a push or the \`review:full\` label brings a new review."
                   post "$(printf '%s\n' "$body" | sed "0,/^<!-- dx-review -->/s//<!-- dx-review -->\n$note\n/")"
                 fi
+              elif grep -q "description changed since" <<<"$body"; then
+                # Back to the text the review read: the note goes.
+                post "$(grep -v "description changed since" <<<"$body")"
               fi
             else
               echo "::warning::$COUNT automatic reviews already ran on this pull request; the verdict from ${LAST:0:7} stands and auto-merge is off. Add the review:full label for another review."
@@ -497,30 +500,12 @@ jobs:
             gh label create "$l" --color "$c" --description "Set by the Claude review" --repo "$GITHUB_REPOSITORY" --force >/dev/null
           done
           gh label create "review:full" --color 5319E7 --description "Ask the Claude review for a full pass on the next push" --repo "$GITHUB_REPOSITORY" --force >/dev/null
-          for t in breaking feat fix perf refactor docs test ci build chore; do
+          for t in breaking feat fix perf refactor style docs test ci build chore revert; do
             gh label create "type:$t" --color 0075CA --description "The kind of change, read from the diff by the Claude review" --repo "$GITHUB_REPOSITORY" --force >/dev/null
           done
           current=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name|select(startswith("risk:") or startswith("complexity:") or startswith("type:") or . == "review:full")]|join(",")')
           [ -n "$current" ] && gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label "$current" >/dev/null
           gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label "risk:$risk,complexity:$complexity,type:$type" >/dev/null
-
-          # The title follows the type: it becomes the commit on main, and the
-          # conventions check requires the two to agree. Scope and subject are
-          # the author's; only the type token (and the `!` of a breaking
-          # change) is corrected.
-          title=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json title --jq .title)
-          title_re='^([a-z]+)(\([^)]*\))?(!?): (.*)$'
-          if [[ "$title" =~ $title_re ]]; then
-            token=${BASH_REMATCH[1]}; scope=${BASH_REMATCH[2]}; subject=${BASH_REMATCH[4]}
-            if [ "$type" = breaking ]; then want="$token"; bang='!'; else want="$type"; bang=''; fi
-            retitled="${want}${scope}${bang}: ${subject}"
-            if [ "$retitled" != "$title" ] && [ "${#retitled}" -gt 100 ]; then
-              echo "::warning::The title should start with \"${want}${scope}${bang}:\" but that makes it longer than 100 characters; shorten it yourself. The conventions check will ask for it."
-            elif [ "$retitled" != "$title" ]; then
-              gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --title "$retitled" >/dev/null
-              echo "Title corrected to \"$retitled\"."
-            fi
-          fi
 
           # Only threads that really are the bot's open ones; resolved in the
           # next step, with a token the model never held.
@@ -594,3 +579,32 @@ jobs:
             resolved=$((resolved + 1))
           done < "$RUNNER_TEMP/resolve.txt"
           echo "Resolved $resolved of the bot's earlier threads."
+      - name: Correct the title's type
+        # Last on purpose: the bot's own edit of the title starts the next run
+        # of the caller (an `edited` event), which cancels this one. Done here,
+        # nothing is left to cancel, and that run reuses this verdict for free.
+        # The title becomes the commit on main, and the conventions check
+        # requires it to carry the labelled type. Scope and subject are the
+        # author's; only the type token (and the `!` of a breaking change) is
+        # corrected.
+        if: ${{ !cancelled() && steps.resolver.outcome == 'success' && steps.verdict.outputs.type != '' }}
+        env:
+          GH_TOKEN: ${{ steps.resolver.outputs.token }}
+          PR: ${{ github.event.pull_request.number }}
+          TYPE: ${{ steps.verdict.outputs.type }}
+        run: |
+          set -euo pipefail
+          title=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json title --jq .title)
+          title_re='^([a-z]+)(\([^)]*\))?(!?): (.*)$'
+          [[ "$title" =~ $title_re ]] || { echo "The title is not a Conventional Commit header; the conventions check says so."; exit 0; }
+          token=${BASH_REMATCH[1]}; scope=${BASH_REMATCH[2]}; subject=${BASH_REMATCH[4]}
+          if [ "$TYPE" = breaking ]; then want="$token"; bang='!'; else want="$TYPE"; bang=''; fi
+          retitled="${want}${scope}${bang}: ${subject}"
+          if [ "$retitled" = "$title" ]; then
+            echo "The title already carries the type."
+          elif [ "${#retitled}" -gt 100 ]; then
+            echo "::warning::The title should start with \"${want}${scope}${bang}:\" but that makes it longer than 100 characters; shorten it yourself. The conventions check will ask for it."
+          else
+            gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --title "$retitled" >/dev/null
+            echo "Title corrected to \"$retitled\"."
+          fi

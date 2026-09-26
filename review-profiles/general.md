@@ -68,7 +68,9 @@ the title or the description say:
 - **fix**: wrong behaviour is corrected. A pull request titled `test:` that
   also corrects a bug is a `fix`.
 - **perf**, **refactor**: behaviour is unchanged; speed or shape improved.
-- **docs**, **test**, **ci**, **build**, **chore**: no runtime behaviour changes.
+- **revert**: an earlier change is undone, whatever it was.
+- **docs**, **test**, **ci**, **build**, **chore**, **style**: no runtime
+  behaviour changes.
 
 The highest kind present wins: a docs change with one fix is a `fix`; a fix
 with one new behaviour is a `feat`; anything breaking is `breaking`. The type
