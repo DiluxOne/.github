@@ -377,8 +377,11 @@ jobs:
             dev=""; if [ -n "$DEV_TAG" ]; then dev=$(gh release view "$DEV_TAG" --repo "$GITHUB_REPOSITORY" --json name --jq .name 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+-dev\.[0-9]+' | head -n1 || true); fi
             current="the current code"; [ -n "$dev" ] && current="the current code (development build ${BT}${dev}${BT}, $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$DEV_TAG)"
             on_current=" You saw it on ${BT}${REPORTED}${BT}; this ran on $current, so the bug is there now, whatever version first showed it."
+            # Older means an earlier version than the build's base X.Y.Z: a
+            # report on the release the current dev build grows from (X.Y.Z
+            # against X.Y.Z-dev.N, right after a release) is not older.
             older=false
-            if [ -n "$dev" ] && [ "$REPORTED" != "$dev" ] && [ "$(printf '%s\n%s\n' "$REPORTED" "$dev" | sort -V | head -n1)" = "$REPORTED" ]; then older=true; fi
+            if [ -n "$dev" ] && [ "$REPORTED" != "$dev" ] && [ "$REPORTED" != "${dev%%-dev.*}" ] && [ "$(printf '%s\n%s\n' "$REPORTED" "$dev" | sort -V | head -n1)" = "$REPORTED" ]; then older=true; fi
             if [ "$older" = true ]; then
               since=" You saw it on ${BT}${REPORTED}${BT}; this ran on $current. If the bug was there in ${BT}${REPORTED}${BT}, it may have been fixed since: please install the current development build and say whether it is still there."
             else
