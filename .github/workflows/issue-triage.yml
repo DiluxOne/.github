@@ -8,8 +8,11 @@ name: Issue triage
 #
 #   bug:unconfirmed       a bug report with enough to try to reproduce it
 #                         (issue-repro.yml picks it up from this label)
-#   needs-info            a bug report missing versions, steps or logs: the
-#                         reply asks for them
+#   needs-info            a bug report missing versions, steps or logs, or
+#                         made on a version that is not current (older than
+#                         the released one, or a development build older than
+#                         the current pre-release): the reply asks for them,
+#                         or to update and say whether it is still there
 #   by-design             works as documented, or a known limitation
 #   pro-feature           needs the paid service or add-on the roadmap names
 #   enhancement           a feature request (+ exists-in-pro when the roadmap
@@ -43,6 +46,10 @@ on:
         description: Where usage questions go (a forum, a help page).
         type: string
         required: true
+      dev-tag:
+        description: The moving tag of the repository's "Development build" pre-release (as in plugin-release-wp.yml), so the triage knows the current development version. Empty when the repository publishes none.
+        type: string
+        default: dev
       roadmap:
         description: The roadmap file that says what is free, paid, planned and not planned.
         type: string
@@ -114,6 +121,7 @@ jobs:
           AUTHOR: ${{ github.event.issue.user.login }}
           ROADMAP: ${{ inputs.roadmap }}
           SUPPORT_URL: ${{ inputs.support-url }}
+          DEV_TAG: ${{ inputs.dev-tag }}
         run: |
           set -euo pipefail
           {
@@ -129,6 +137,13 @@ jobs:
             for f in "$ROADMAP" README.md readme.txt; do
               if [ -f "$f" ]; then echo; echo "## Repository file: $f"; echo; head -c 60000 "$f"; fi
             done
+            echo; echo "## Current versions"; echo
+            released=$(grep -oP '^Stable tag:\s*\K\S+' readme.txt 2>/dev/null || true)
+            echo "- Released (wordpress.org, the readme's Stable tag): ${released:-unknown}"
+            if [ -n "$DEV_TAG" ]; then
+              dev=$(gh release view "$DEV_TAG" --repo "$GITHUB_REPOSITORY" --json name --jq .name 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+-dev\.[0-9]+' || true)
+              echo "- Development build (GitHub pre-release $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$DEV_TAG): ${dev:-none published}"
+            fi
             echo; echo "## Where usage questions go"; echo; echo "$SUPPORT_URL"
           } > .dx-central/brief.md
           echo "Brief: $(wc -c < .dx-central/brief.md) bytes."
@@ -149,7 +164,12 @@ jobs:
 
             Pick exactly one category:
             - bug_unconfirmed: a defect report with steps, versions and what was expected.
-            - needs_info: a defect report missing what a maintainer needs to try it (say what).
+            - needs_info: a defect report missing what a maintainer needs to try it (say what),
+              or one made on a version that is not current: a plugin version older than the
+              released one, or a development build (X.Y.Z-dev.N) older than the current one (see
+              "Current versions"). Then ask, kindly, to update to the released version or to
+              install the current development build (give its link) and to say whether the
+              problem is still there; many reports come from sites that never updated.
             - by_design: works as documented, or a known limitation from the roadmap.
             - pro_feature: it needs the paid service or add-on the roadmap names.
             - enhancement: a request for something new (exists_in_pro when a paid product has it).
