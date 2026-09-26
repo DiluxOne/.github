@@ -27,7 +27,7 @@ This design is release-please with two changes: the type comes from the AI's rea
 
 ## B. The next version, and the dev version
 
-- `scripts/next-version.py` (central) is deterministic: from the labels of the pull requests merged into `main` since the last tag, `breaking` → major, `feat` → minor, `fix`/`perf` → patch, everything else → nothing to release; a `version:*` label overrides. It prints the pending bump, the next version and the list of pull requests per type. The AI does not pick the number; it picks the type. The number is auditable from the labels.
+- `scripts/next-version.py` (central) is deterministic: from the labels of the pull requests merged into `main` since the last tag, `breaking` → major, `feat` → minor, `fix`/`perf` → patch, everything else → nothing to release; a `version:*` label overrides. It prints the pending bump, the next version and the pull requests grouped by the bump each asks for. The AI does not pick the number; it picks the type. The number is auditable from the labels.
 - **Dev builds.** Nothing about the version is stored on `main`: the three markers stay at the last released version, and the release job stamps them in the build it publishes, so there is no bump-back commit after a release. Every build that is not a release (`make dist`, `make deploy-test`, the CI artifact) stamps `Version: <next>-dev.<N>` where `<next>` comes from `next-version.py` and `N` is the number of commits since the last tag, and writes the short commit into the plugin's Status › System screen. The maintainer who installs a build sees `2.1.0-dev.14` and knows a minor release is pending and which build it is. When the release ships, `2.1.0-dev.14 < 2.1.0` for PHP, so the site updates normally.
 - Because the number is derived, there is no chicken and egg: the dev version and the release version come from the same labels, and an override label changes both.
 
@@ -43,7 +43,7 @@ This design is release-please with two changes: the type comes from the AI's rea
     major: approve
   ```
 
-  `approve` waits in the environment; `auto` runs through it (the environment's reviewers are the gate, so `auto` means the caller passes a second environment without reviewers, named in the policy); `off` never releases. The organisation default is `approve` everywhere.
+  `approve` waits in the environment; `auto` runs in a second environment the caller names (`auto-environment`), with the same secrets and no reviewers, so that the key that creates the tag is then held by a job nobody approved: a repository turns `auto` on only for the bumps it is willing to publish unattended, and only when the organisation policy allows it; `off` never releases. The organisation default is `approve` everywhere.
 - A comment `@dilux-bot version: 3.0.0` on a pull request re-labels it with `version:major` (or minor, or patch) and the next push to `main` computes from that. The roadmap check stays: the job reads `docs/roadmap.md`, and when the roadmap names a version for what is pending that the labels do not reach, the summary says so and a person decides with a label.
 
 ## D. What the release job does not do
@@ -54,7 +54,7 @@ This design is release-please with two changes: the type comes from the AI's rea
 
 ## E. The tag and the publication
 
-- The tag `X.Y.Z` is created by the release job itself, on the commit it built, with the token of the dedicated release App (`dilux-release`, `contents: write` and nothing else, its private key a secret of the `wordpress-org` environment, so only a job that passed the environment's reviewers ever holds it). `dilux-bot` cannot create tags. Administrators can, by hand, as today: the tag then runs the same workflow through the same environment, so the by-hand path is the same pipeline with the version typed instead of computed, and the strict marker validation refuses a tag that does not match what `next-version.py` says is pending.
+- The tag `X.Y.Z` is created by the release job itself, on the commit it built, with the token of the dedicated release App (`dilux-release`, `contents: write` and nothing else, its private key a secret of the release environments, so only a job that passed the environment (its reviewers, or the policy's `auto` for that bump) ever holds it). `dilux-bot` cannot create tags. Administrators can, by hand, as today: the tag then runs the same workflow through the same environment, so the by-hand path is the same pipeline with the version typed instead of computed, and the strict marker validation refuses a tag that does not match what `next-version.py` says is pending.
 - Rulesets, all in place: creating tags matching `X.Y.Z` is allowed to administrators and to the release App only; moving or deleting them to nobody; `main` takes no pushes from anyone; pull requests must be up to date with `main` before merging; every check is required.
 - So the only path to a published version is: real change → full pipeline on its pull request → merge → push to `main` (suites skipped because the tree was tested, alignment and Plugin Check run) → version computed from labels → a person approves the deployment (or the policy does, per bump) → tag by the App → publish. No step can be skipped by a label, a comment, a fork or a description.
 

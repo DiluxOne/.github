@@ -51,8 +51,11 @@ def bump_of(labels):
     A version:* label set by a person wins over the review's type:*.
     """
     forced = [l[len("version:"):] for l in labels if l.startswith("version:")]
+    for b in forced:
+        if b not in ("major", "minor", "patch"):
+            raise ValueError("the label version:%s is not version:major, version:minor or version:patch" % b)
     if forced:
-        return max(forced, key=lambda b: RANK.get(b, 0)) if all(b in RANK for b in forced) else "none"
+        return max(forced, key=RANK.__getitem__)
     types = [l[len("type:"):] for l in labels if l.startswith("type:")]
     return max((BUMP_OF_TYPE.get(t, "none") for t in types), key=RANK.__getitem__, default="none")
 
@@ -73,7 +76,10 @@ def decide(last, pulls, commits_since):
     per_type = {}
     bump = "none"
     for number, labels in pulls:
-        b = bump_of(labels)
+        try:
+            b = bump_of(labels)
+        except ValueError as e:
+            raise ValueError("#%d: %s" % (number, e))
         per_type.setdefault(b, []).append(number)
         if RANK[b] > RANK[bump]:
             bump = b
@@ -112,17 +118,22 @@ def read_github(repo, base, prefix):
         shas = shas if len(shas) == commits_since else None
         merged_after = compare["base_commit"]["commit"]["committer"]["date"]
     else:
-        # No release yet: every merged pull request counts, and N starts at 0.
-        commits_since, shas, merged_after = 0, None, None
-    query = "repo:%s is:pr is:merged base:%s" % (repo, base)
-    if merged_after:
-        query += " merged:>=" + merged_after
-    pulls_raw = json.loads(gh("pr", "list", "--repo", repo, "--state", "merged", "--base", base, "--limit", "500",
-                              "--search", query.replace("repo:%s " % repo, ""), "--json", "number,labels,mergeCommit"))
+        # No release yet: every merged pull request counts, and N counts
+        # every commit on the branch (the last page number at one per page).
+        head = gh("api", "-i", "repos/%s/commits?sha=%s&per_page=1" % (repo, base))
+        m = re.search(r'[?&]page=(\d+)>; rel="last"', head)
+        commits_since = int(m.group(1)) if m else 1
+        shas, merged_after = None, None
+    pages = json.loads(gh("api", "repos/%s/pulls?state=closed&base=%s&per_page=100" % (repo, base), "--paginate", "--slurp"))
     pulls = []
-    for p in pulls_raw:
-        sha = (p.get("mergeCommit") or {}).get("oid")
-        if shas is not None and (sha not in shas):
+    for p in (p for page in pages for p in page):
+        if not p.get("merged_at"):
+            continue
+        if shas is not None:
+            if p.get("merge_commit_sha") not in shas:
+                continue
+        elif merged_after and not p["merged_at"] > merged_after:
+            # Past what compare lists: by date, strictly after the tag's commit.
             continue
         pulls.append((p["number"], [l["name"] for l in p["labels"]]))
     return last, sorted(pulls), commits_since
@@ -149,7 +160,8 @@ def self_test():
             self.assertEqual(bump_of([]), "none")
             self.assertEqual(bump_of(["type:docs", "version:major"]), "major")
             self.assertEqual(bump_of(["type:breaking", "version:patch"]), "patch")
-            self.assertEqual(bump_of(["version:nonsense"]), "none")
+            with self.assertRaises(ValueError):
+                bump_of(["version:nonsense", "type:breaking"])
 
         def test_decide(self):
             d = decide((1, 0, 0), [(4, ["type:test"]), (5, ["type:ci"]), (6, ["type:ci"])], 3)
@@ -187,7 +199,11 @@ def main():
         self_test()
     repo = a.repo or gh("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner").strip()
     last, pulls, commits_since = read_github(repo, a.base, a.tag_prefix)
-    d = decide(last, pulls, commits_since)
+    try:
+        d = decide(last, pulls, commits_since)
+    except ValueError as e:
+        sys.stderr.write("error: %s\n" % e)
+        sys.exit(1)
     if a.json:
         print(json.dumps(d, indent=2))
         return
