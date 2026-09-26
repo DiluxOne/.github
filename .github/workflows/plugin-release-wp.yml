@@ -250,6 +250,10 @@ jobs:
           again=$(python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$BASE" ${exclude:+--exclude-tag "$exclude"} --json | jq -r 'if .pending then .next else "" end')
           [ "$again" = "$VERSION" ] || { echo "::error::The labels now give '${again:-nothing}' where $VERSION was approved; something merged or was relabelled meanwhile. Nothing reached wordpress.org; the next push to $BASE computes again."; exit 1; }
           echo "Still $VERSION, on $BASE, no tag yet."
+          # The central's checkout has done its work; it leaves the workspace
+          # now, because the deploy action copies the workspace minus
+          # .distignore into SVN, and nothing that is not the plugin may ship.
+          rm -rf .dx-central
 
       - name: Stamp the version markers
         if: steps.still.outputs.go == 'true'
@@ -350,14 +354,15 @@ jobs:
         # The deploy action stops early, with no zip, when SVN already has
         # tags/X.Y.Z: a re-run after the release step failed. The release
         # still needs its file, so it is built here the way the action
-        # builds it (the checkout minus .distignore).
+        # builds it (the checkout minus .distignore, when there is one).
         if: steps.still.outputs.go == 'true' && !inputs.dry-run && steps.deploy.outputs.zip-path == ''
         id: zip
         env:
           SLUG: ${{ inputs.slug }}
         run: |
           set -euo pipefail
-          rsync -rc --exclude-from=.distignore --exclude=.git --exclude=.github --exclude=.dx-central ./ "$RUNNER_TEMP/$SLUG/" --delete
+          exclude=(); [ -f .distignore ] && exclude=(--exclude-from=.distignore)
+          rsync -rc "${exclude[@]}" --exclude=.git --exclude=.github ./ "$RUNNER_TEMP/$SLUG/" --delete
           (cd "$RUNNER_TEMP" && zip -qr "$SLUG.zip" "$SLUG")
           echo "path=$RUNNER_TEMP/$SLUG.zip" >> "$GITHUB_OUTPUT"
 
