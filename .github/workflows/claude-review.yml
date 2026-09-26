@@ -446,7 +446,7 @@ jobs:
             if [ "$MODE" = reuse ]; then
               echo "Commit ${SHA:0:7} was already reviewed: verdict reused (risk $risk, complexity $complexity, blocking $blocking). Nothing spent."
               # shellcheck disable=SC2016 # jq variable, not a shell one.
-              body=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate | jq -r --arg bot "$BOT" '.[] | select(.user.login == $bot and (.body | startswith("<!-- dx-review -->"))) | .body' | head -1)
+              body=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate | jq -r --arg bot "$BOT" '[.[] | select(.user.login == $bot and (.body | startswith("<!-- dx-review -->"))) | .body] | first // ""')
               if [ "$edited" = true ]; then
                 echo "::notice::The description changed since the review, so it counts as unchecked: no auto-merge until a push or the review:full label brings a new review."
                 if ! grep -q "description changed since" <<<"$body"; then
@@ -460,7 +460,7 @@ jobs:
             else
               echo "::warning::$COUNT automatic reviews already ran on this pull request; the verdict from ${LAST:0:7} stands and auto-merge is off. Add the review:full label for another review."
               # shellcheck disable=SC2016 # jq variable, not a shell one.
-              body=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate | jq -r --arg bot "$BOT" '.[] | select(.user.login == $bot and (.body | startswith("<!-- dx-review -->"))) | .body' | head -1)
+              body=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate | jq -r --arg bot "$BOT" '[.[] | select(.user.login == $bot and (.body | startswith("<!-- dx-review -->"))) | .body] | first // ""')
               if ! grep -q "review:full" <<<"$body"; then
                 note="> ⏸️ $COUNT automatic reviews already ran here, so ${SHA:0:7} was not reviewed: the verdict from ${LAST:0:7} stands and a human merges. Add the \`review:full\` label for another review."
                 post "$(printf '%s\n' "$body" | sed "0,/^<!-- dx-review -->/s//<!-- dx-review -->\n$note\n/")"
