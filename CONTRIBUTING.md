@@ -69,6 +69,15 @@ Every conversation must be resolved before a pull request merges, the review's i
 
 Pull requests from **forks** are not reviewed automatically: the review runs with the organisation's keys, and no code from outside the repository runs with them. A maintainer reviews and merges them.
 
+## How a change becomes a version
+
+Nobody types a version number. The `type:*` label the review sets on each merged pull request decides the next one (`type:breaking` → major, `type:feat` → minor, `type:fix` or `type:perf` → patch; a maintainer's `version:major|minor|patch` label wins), and `main` keeps the last released version in its files between releases. In a repository that publishes (a WordPress plugin):
+
+- **Every push to `main` produces a development build**, the shipped tree stamped `<next>-dev.<N>`, as an artifact of the *Release* run in the Actions tab. Anyone can download it and try what is coming; it is not a release.
+- **The changelog is written as the changes merge.** A pull request that changes what a user sees adds its bullet to the newest entry of `readme.txt` (`= X.Y.Z =`, first line `Unreleased.`), in the same pull request.
+- **The maintainer decides when it is ready** by removing the `Unreleased.` line in a pull request. That push to `main` waits for approval in the repository's `wordpress-org` environment; only its required reviewers can approve, and approving publishes (a repository's policy can set a kind of bump to `auto`, published without waiting, or `off`, never published; the organisation default is to wait). Until then, however many pull requests merge, nothing waits for anyone and nothing is published.
+- **Outside contributors** need nothing more than the pull request: your change ships in the next version with its bullet in the changelog. You cannot approve a release, and you do not need to.
+
 ## AI tools
 
 Use any tool you like; you sign the commit and you own every line. Read what you submit, run the tests yourself, and never paste secrets into an AI service. Agents follow the repository's `AGENTS.md`.

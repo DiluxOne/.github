@@ -102,10 +102,23 @@ workflow* runs everything by hand, and its failure is in the run alone.
    the Administrator role), so no token the workflows hold can publish; one
    under which nobody can delete or move them. For a plugin, an environment
    `wordpress-org` with a deployment policy of tag `*.*.*` plus branch
-   `main`, holding `SVN_USERNAME` and `SVN_PASSWORD` as environment secrets
-   (never organisation secrets). Dependabot alerts and
-   updates, private vulnerability reporting. The `dilux-bot` App must be
-   installed on the repository. The labels are created by the review itself.
+   `main`, **required reviewers** (the maintainers who may publish; without
+   one the deployment does not wait for anyone), and, as environment secrets
+   (never organisation secrets), `SVN_USERNAME`, `SVN_PASSWORD` and the
+   release App's `DILUX_RELEASE_PRIVATE_KEY`, with `DILUX_RELEASE_CLIENT_ID`
+   as an environment variable. The `dilux-release` App (one for the
+   organisation, `contents: write` and nothing else) is installed on the
+   repository and added to the bypass list of the tag-creation ruleset, as
+   an Integration. Dependabot alerts and updates, private vulnerability
+   reporting. The `dilux-bot` App must be installed on the repository. The
+   labels are created by the review itself.
+
+   Then the readme: the newest entry under `== Changelog ==` is headed
+   `= X.Y.Z =` (or `= Unreleased =`) and its first line is `Unreleased.`
+   while the version is not ready. Every pull request that changes what a
+   user sees adds its bullet under that line; the pull request that removes
+   the line is the release decision, and the next push to `main` waits for
+   the environment's reviewers.
 
 ## Migrating a repository from `v1` to `v2`
 
@@ -136,13 +149,15 @@ Call them pinned to `@v2`; a breaking change ships as `v2`. A stack suffix
 | [`claude-review.yml`](.github/workflows/claude-review.yml) | The review described above. Outputs `risk`, `complexity`, `floor`, `trusted`, `blocking`. | `profile`, `central-ref`, `max-auto-reviews` |
 | [`review-reply.yml`](.github/workflows/review-reply.yml) | Answers `@dilux-bot` mentions from members and collaborators, with the strong model. | `profile`, `central-ref` |
 | [`auto-merge.yml`](.github/workflows/auto-merge.yml) | Turns GitHub's auto-merge on or off from the review's outputs and commits the description verbatim. `pull-request-edited.yml` runs it on `edited` too. | the five review outputs |
+| [`scripts/release-ready.sh`](scripts/release-ready.sh) | Not a workflow: whether a readme's newest changelog entry is ready (exit 0) or held by a first line `Unreleased.` (exit 1); `--test` for its own tests. The release job's hold. | the readme |
+| [`scripts/stamp-version.sh`](scripts/stamp-version.sh) | Not a workflow: stamps a plugin tree with a version (the `Version:` header, the constant, `Stable tag:`, a `= Unreleased =` heading; with a build, a `Build:` header line) and fails when a marker did not take it. The release and the development build stamp with it; `--test` for its own tests. | `<dir> <version> <main-file> [<constant>] [<build>]` |
 | [`scripts/next-version.py`](scripts/next-version.py) | Not a workflow: the next version of a repository from the `type:*` labels of the pull requests merged since the last `X.Y.Z` tag (a `version:major|minor|patch` label a person sets wins): breaking → major, feat → minor, fix or perf → patch, anything else nothing to release. Also the development version, `<next>-dev.<N>`, N the commits since the tag. `--json` for machines, `--test` for its own tests. | `--repo`, `--base`, `--tag-prefix` |
 | [`plugin-checks-wp.yml`](.github/workflows/plugin-checks-wp.yml) | Fast gates for a WordPress plugin: syntax and unit tests on every PHP from the minimum to the latest, PHPCS, PHPStan, Psalm taint, i18n, Plugin Check on the shipped tree, readme and versions. Needs the composer scripts `test:unit`, `lint`, `stan`, `psalm:taint`, a `.distignore` and a `readme.txt`. | `slug`, `main-file`, `version-constant`, `php-versions` |
 | [`plugin-tests-wp.yml`](.github/workflows/plugin-tests-wp.yml) | Slow suites on wp-env: PHPUnit integration (multisite) and Playwright E2E. Needs `.wp-env.json`, `phpunit-integration.xml` and a Playwright config that writes to `build/e2e-results`. | `integration`, `multisite`, `e2e` |
 | [`weekly-failure.yml`](.github/workflows/weekly-failure.yml) | When the scheduled full run fails: opens one `ci:weekly` issue with the run, or adds the run to the one already open. | none |
 | [`issue-triage.yml`](.github/workflows/issue-triage.yml) | When an issue opens: classifies it with the roadmap and the docs (bug to reproduce, needs info, by design, pro feature, enhancement, question, duplicate, security), applies the label and posts one reply; never closes. On a schedule, closes `needs-info` issues nobody answered. Light model. | every repository |
 | [`issue-repro.yml`](.github/workflows/issue-repro.yml) | When an issue gets `bug:unconfirmed` (or `repro:again`): Claude writes one unit test that fails if the bug exists (no shell), a second job with no secrets and a read-only token runs it, a third with the bot token pushes the file the first job produced (hash-checked) and reports. Fails: `bug:confirmed` plus a draft PR with the test. Passes: `could-not-reproduce` and a question to the reporter. At most 5 a day. | repositories with unit tests |
-| [`plugin-release-wp.yml`](.github/workflows/plugin-release-wp.yml) | The release as a deployment. On a push to `main`: computes the next version from the `type:*` labels of what merged (`scripts/next-version.py`); nothing pending, or the policy's `release.<bump>: off`, ends there. Otherwise waits for the reviewers of the repository's environment (the summary shows the version, the bump and the pull requests), then stamps the three version markers in the checkout, validates them and the changelog (`= X.Y.Z =` or `= Unreleased =` renamed), deploys to wordpress.org SVN, creates the tag with the release App's token and the GitHub release with the changelog and what was merged, grouped by type. On a tag `X.Y.Z` pushed by hand: the same, and the tag must be the version the labels say is next. `dry-run` rehearses everything but the SVN commit, the tag and the release (the notes go to the summary). The caller passes `secrets: inherit` and runs only on `main` and `X.Y.Z` tags. | `slug`, `main-file`, `version-constant`, `dry-run`, `environment`, `auto-environment`, `central-ref` |
+| [`plugin-release-wp.yml`](.github/workflows/plugin-release-wp.yml) | The release as a deployment. On a push to `main`: computes the next version from the `type:*` labels of what merged (`scripts/next-version.py`); nothing pending, the policy's `release.<bump>: off`, or a readme whose newest changelog entry still starts with the line `Unreleased.` (the version is not ready), ends there, green, and the summary says why. Otherwise waits for the reviewers of the repository's environment (the summary shows the version, the bump and the pull requests), then stamps the three version markers in the checkout, validates them and the changelog (`= X.Y.Z =` or `= Unreleased =` renamed), deploys to wordpress.org SVN, creates the tag with the release App's token and the GitHub release with the changelog and what was merged, grouped by type. On a tag `X.Y.Z` pushed by hand: the same, and the tag must be the version the labels say is next and the readme must be ready. Every push to `main` also uploads a development build, the shipped tree stamped `<next>-dev.<N>` with a `Build: <commit>` header, as the artifact `<slug>-<next>-dev.<N>` (30 days). `dry-run` rehearses everything but the SVN commit, the tag and the release (the notes go to the summary). The caller passes `secrets: inherit` and runs only on `main` and `X.Y.Z` tags. Outputs `version` and `dev`. | `slug`, `main-file`, `version-constant`, `dry-run`, `environment`, `auto-environment`, `central-ref` |
 
 Only here: [`review-learnings.yml`](.github/workflows/review-learnings.yml)
 (every Monday: finds with one search the pull requests the bot reviewed
