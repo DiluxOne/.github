@@ -62,8 +62,15 @@ low-risk-eligible:
 code:
   - "**/*.php"
   - "**/*.js"
+  - "**/*.mjs"
+  - "**/*.jsx"
   - "**/*.ts"
+  - "**/*.tsx"
   - "**/*.css"
+  - "**/*.scss"
+  - "**/*.html"
+  - "**/block.json"
+  - "**/theme.json"
   - "assets/**"
   - "templates/**"
   - "tests/**"
@@ -77,6 +84,8 @@ code:
   - ".distignore"
   - ".github/workflows/**"
 
-# Files that are not code but that wordpress.org's Plugin Check reads.
+# Files that are not code but that wordpress.org's Plugin Check reads or
+# objects to: the readme, and any hidden file, which must not ship.
 plugin-check:
   - "readme.txt"
+  - "**/.*"

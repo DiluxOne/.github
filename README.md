@@ -70,7 +70,7 @@ answers there; it resolves its own thread when the point is settled.
    no file matching `code` skips the slow suites (integration, end-to-end,
    and a repository's own real-storage workflow if it gates on the same
    answer), and skips Plugin Check unless a `plugin-check` file such as
-   `readme.txt` changed. The fast checks and the review always run; a push
+   `readme.txt` or a hidden file changed. The fast checks and the review always run; a push
    to `main` always runs everything. The defaults cover a WordPress plugin;
    a repository only adds what is peculiar to it.
 

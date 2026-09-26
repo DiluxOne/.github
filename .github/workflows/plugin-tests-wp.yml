@@ -47,12 +47,18 @@ jobs:
     # defaults plus the repository's .github/review-policy.yml, read from
     # the base branch so a change cannot exempt itself). Anything else
     # (docs, translations, a readme) gets the fast checks and the review.
-    # A push to main runs everything. Skipped jobs satisfy the ruleset.
+    # A push to main runs everything. The gates below treat a missing
+    # answer as "run", so an older policy script never skips a suite, and
+    # a skipped job satisfies the ruleset.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       code: ${{ steps.changes.outputs.code }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
@@ -61,39 +67,16 @@ jobs:
           persist-credentials: false
       - id: changes
         env:
-          GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
-          PR: ${{ github.event.pull_request.number }}
           BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
           DEFAULT_POLICY: .dx-central/policy/review-policy.default.yml
-        run: |
-          set -euo pipefail
-          if [ "$EVENT" != "pull_request" ]; then
-            echo "code=true" >> "$GITHUB_OUTPUT"
-            echo "plugin_check=true" >> "$GITHUB_OUTPUT"
-            echo "not a pull request: everything runs"
-            exit 0
-          fi
-          REPO_POLICY="$RUNNER_TEMP/repo-policy.yml"
-          gh api "repos/$GITHUB_REPOSITORY/contents/.github/review-policy.yml?ref=$BASE" --jq .content 2>/dev/null | base64 -d > "$REPO_POLICY" || : > "$REPO_POLICY"
-          export REPO_POLICY
-          # The files API stops at 3 000 entries without an error; a list
-          # that does not match the pull request's total is discarded, and
-          # an empty list makes the script run everything.
-          FILES_JSON="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --slurp)"
-          LISTED="$(jq '[.[][]] | length' <<< "$FILES_JSON")"
-          TOTAL="$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json changedFiles --jq .changedFiles)"
-          CHANGED_FILES=""
-          if [ "$LISTED" = "$TOTAL" ]; then
-            CHANGED_FILES="$(jq -r '.[][] | .filename, (.previous_filename // empty)' <<< "$FILES_JSON")"
-          fi
-          export CHANGED_FILES
-          POLICY_MODE=changes python3 .dx-central/scripts/policy.py
+        run: bash .dx-central/scripts/changes.sh
 
   integration:
     name: Integration tests (wp-env)
     needs: changes
-    if: inputs.integration && needs.changes.outputs.code == 'true'
+    if: inputs.integration && needs.changes.outputs.code != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -129,7 +112,7 @@ jobs:
   e2e:
     name: E2E (Playwright)
     needs: changes
-    if: inputs.e2e && needs.changes.outputs.code == 'true'
+    if: inputs.e2e && needs.changes.outputs.code != 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
