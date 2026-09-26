@@ -202,6 +202,7 @@ jobs:
             --json-schema '{"type":"object","additionalProperties":false,"required":["reply","resolve"],"properties":{"reply":{"type":"string","maxLength":4000},"resolve":{"type":"boolean"}}}'
 
       - name: Post the reply
+        id: post
         if: steps.pr.outputs.run == 'true'
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
@@ -229,6 +230,29 @@ jobs:
           fi
           if [ "$resolve" = true ] && [ "$BOT_THREAD" = true ] && [ -n "$THREAD" ]; then
             # shellcheck disable=SC2016 # GraphQL variable, not a shell one.
-            gh api graphql -f id="$THREAD" -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }' >/dev/null
-            echo "Thread resolved."
+            # Resolved in the next step, with a token the model never held.
+            echo "resolve=true" >> "$GITHUB_OUTPUT"
+            echo "$THREAD" > "$RUNNER_TEMP/resolve.txt"
           fi
+
+      - name: Resolve the thread
+        # Resolving a review thread needs write access to the repository; this
+        # token is minted after the model has run and used only here.
+        if: steps.post.outputs.resolve == 'true'
+        id: resolver
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+      - if: steps.resolver.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ steps.resolver.outputs.token }}
+        run: |
+          set -euo pipefail
+          t=$(cat "$RUNNER_TEMP/resolve.txt")
+          # shellcheck disable=SC2016 # GraphQL variable, not a shell one.
+          gh api graphql -f id="$t" -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }' >/dev/null
+          echo "Thread resolved."
