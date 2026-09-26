@@ -172,12 +172,11 @@ jobs:
         if: inputs.retired-names != ''
         env:
           RETIRED: ${{ inputs.retired-names }}
-          # The calling workflow declares the names, so it is the one file
-          # exempt: github.workflow_ref names the caller, not this file.
-          CALLER: ${{ github.workflow_ref }}
         run: |
-          EXEMPT="${CALLER#*/*/}"; EXEMPT="${EXEMPT%@*}"
-          if git grep -nIiE "$RETIRED" -- . ":!$EXEMPT"; then
+          # Every caller declares the names on a `retired-names:` line (the
+          # main workflow and pull-request-edited.yml alike): those lines are
+          # the exemption, not one file.
+          if git grep -nIiE "$RETIRED" -- . | grep -vE '^[^:]+:[0-9]+:\s*retired-names:'; then
             echo "::error::A retired product name is back (see the lines above)."
             exit 1
           fi
