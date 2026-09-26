@@ -39,10 +39,20 @@ export REPO_POLICY
 
 # -z: paths are NUL-separated and never quoted, so a name with a space or
 # an accent survives. Each record is a status (M, A, D, R100, …) followed
-# by one path, or two for a rename or a copy; the statuses are dropped.
-if ! CHANGED_FILES="$(git diff -z --name-status -M "$BASE" HEAD | tr '\0' '\n' | grep -vE '^[ACDMRTUXB][0-9]{0,3}$' || true)"; then
+# by one path, or by two for a rename or a copy; the records are walked,
+# not filtered, so a file that happens to be called "M" is a file.
+DIFF="$RUNNER_TEMP/changes.diff"
+if ! git diff -z --name-status -M "$BASE" HEAD > "$DIFF"; then
   everything "the diff could not be read"
   exit 0
 fi
+CHANGED_FILES="$(
+  while IFS= read -r -d '' status; do
+    IFS= read -r -d '' path && printf '%s\n' "$path"
+    case "$status" in
+      R*|C*) IFS= read -r -d '' path && printf '%s\n' "$path" ;;
+    esac
+  done < "$DIFF"
+)"
 export CHANGED_FILES
 POLICY_MODE=changes python3 .dx-central/scripts/policy.py
