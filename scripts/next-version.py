@@ -18,7 +18,7 @@ where N counts the commits on the base branch since the last tag. When nothing
 is pending the coming version is the next patch, because a release, when it
 comes, is at least that; `pending` says which case it is.
 
-    next-version.py [--repo OWNER/REPO] [--base main] [--tag-prefix v] [--json]
+    next-version.py [--repo OWNER/REPO] [--base main] [--tag-prefix v] [--exclude-tag X.Y.Z] [--json]
     next-version.py --test
 
 Needs `gh` logged in (or GH_TOKEN). Exit 0 with the answer, 2 on a bad
@@ -107,9 +107,11 @@ def gh(*args):
     return out.stdout
 
 
-def read_github(repo, base, prefix):
+def read_github(repo, base, prefix, exclude=None):
+    """The facts from GitHub. `exclude` is a tag to leave out of the search
+    for the last release: the one being released right now, when it exists."""
     tags = json.loads(gh("api", "repos/%s/tags" % repo, "--paginate", "--slurp"))
-    versions = [v for page in tags for v in (parse(t["name"], prefix) for t in page) if v]
+    versions = [v for page in tags for v in (parse(t["name"], prefix) for t in page if t["name"] != exclude) if v]
     last = max(versions) if versions else (0, 0, 0)
     if versions:
         compare = json.loads(gh("api", "repos/%s/compare/%s%d.%d.%d...%s" % ((repo, prefix) + last + (base,))))
@@ -194,13 +196,14 @@ def main():
     ap.add_argument("--repo", help="OWNER/REPO (default: the repository of the current directory)")
     ap.add_argument("--base", default="main")
     ap.add_argument("--tag-prefix", default="", help="what precedes X.Y.Z in the release tags (this repository: v)")
+    ap.add_argument("--exclude-tag", default=None, help="a tag to ignore when looking for the last release: the one being released")
     ap.add_argument("--json", action="store_true", help="print the answer as JSON")
     ap.add_argument("--test", action="store_true", help="run the self-tests and exit")
     a = ap.parse_args()
     if a.test:
         self_test()
     repo = a.repo or gh("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner").strip()
-    last, pulls, commits_since = read_github(repo, a.base, a.tag_prefix)
+    last, pulls, commits_since = read_github(repo, a.base, a.tag_prefix, a.exclude_tag)
     try:
         d = decide(last, pulls, commits_since)
     except ValueError as e:

@@ -14,15 +14,20 @@ name: WordPress plugin release
 # environment's reviewers (the summary shows the version, the bump and the
 # pull requests that justify it), then stamps the three version markers to
 # X.Y.Z in the checkout, validates them, commits trunk + tags/X.Y.Z +
-# assets to SVN, creates the tag with the release App's token and the
-# GitHub release with the changelog and what was merged, grouped by type.
-# Nothing is ever committed to main: the markers there stay at the last
-# released version and every development build stamps itself.
+# assets to SVN, then creates the tag and the GitHub release in one call
+# with the release App's token, with the changelog and what was merged,
+# grouped by type. Nothing is ever committed to main: the markers there
+# stay at the last released version and every development build stamps
+# itself. After the approval the job checks again that this is still the
+# release to make: the tag does not exist, the labels still give this
+# version, the commit is on the default branch. A push made while a run
+# waited for approval queues behind it (one release at a time) and, once
+# the first shipped, finds the tag and stops.
 #
 # On a tag X.Y.Z: the same, except that the tag is the version, it must be
 # the one the labels say is next (a typed number cannot skip the pipeline),
-# and no tag is created. A tag this workflow created itself starts a second
-# run, which finds the GitHub release already there and stops.
+# and the release is created on the existing tag. A tag this workflow
+# created itself arrives with its release already there, so that run stops.
 #
 # The readme's newest changelog entry names the version: `= X.Y.Z =` equal to
 # the computed one, or `= Unreleased =`, which the job renames in the build (a
@@ -103,6 +108,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      pull-requests: read # the labels of what merged
     outputs:
       version: ${{ steps.next.outputs.version }}
       environment: ${{ steps.next.outputs.environment }}
@@ -122,12 +128,15 @@ jobs:
           ENVIRONMENT: ${{ inputs.environment }}
           AUTO_ENVIRONMENT: ${{ inputs.auto-environment }}
           DEFAULT_POLICY: .dx-central/policy/review-policy.default.yml
+          BASE: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           echo "version=" >> "$GITHUB_OUTPUT"
           echo "environment=$ENVIRONMENT" >> "$GITHUB_OUTPUT"
-          next=$(python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "${GITHUB_REF_NAME}" --json 2>/dev/null \
-                 || python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --json)
+          # On a tag run the tag itself is already the newest X.Y.Z: it is
+          # left out, so the labels are read from the last release before it.
+          exclude=""; case "$GITHUB_REF" in refs/tags/*) exclude="${GITHUB_REF#refs/tags/}";; esac
+          next=$(python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$BASE" ${exclude:+--exclude-tag "$exclude"} --json)
           bump=$(jq -r .bump <<<"$next"); pending=$(jq -r .pending <<<"$next"); coming=$(jq -r .next <<<"$next"); last=$(jq -r .last <<<"$next")
           per_type=$(jq -r '.pulls | to_entries[] | "\(.key): " + (.value | map("#\(.)") | join(", "))' <<<"$next")
 
@@ -138,7 +147,7 @@ jobs:
                 echo "::error::Tag '$tag' is not X.Y.Z; nothing runs for it."; exit 1
               fi
               if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null | grep -q false; then
-                echo "Release $tag already exists: this tag was created by the release that published it. Nothing to do." | tee -a "$GITHUB_STEP_SUMMARY"
+                echo "Release $tag already exists: this tag was created together with the release that published it. Nothing to do." | tee -a "$GITHUB_STEP_SUMMARY"
                 exit 0
               fi
               if [ "$pending" != true ] || [ "$tag" != "$coming" ]; then
@@ -204,8 +213,40 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref }}
+          path: .dx-central
+          persist-credentials: false
+
+      - name: Still the release to make
+        # Time passed while a person decided. The version is computed again
+        # and must be the one approved; the commit must be on the default
+        # branch; and the tag must not exist yet (it does after a release
+        # shipped from a run that waited ahead of this one: then there is
+        # nothing left to do, and every step below is skipped).
+        id: still
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          echo "go=true" >> "$GITHUB_OUTPUT"
+          case "$GITHUB_REF" in refs/tags/*) on_tag=true;; *) on_tag=false;; esac
+          if [ "$on_tag" = false ] && git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null 2>&1; then
+            echo "go=false" >> "$GITHUB_OUTPUT"
+            printf '## Already released\n\nTag %s exists: a run that waited ahead of this one released it. Nothing to do.\n' "$VERSION" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git merge-base --is-ancestor "$GITHUB_SHA" "origin/$BASE" || { echo "::error::$GITHUB_SHA is not on $BASE; a release is a commit of $BASE."; exit 1; }
+          exclude=""; if [ "$on_tag" = true ]; then exclude="$VERSION"; fi
+          again=$(python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$BASE" ${exclude:+--exclude-tag "$exclude"} --json | jq -r 'if .pending then .next else "" end')
+          [ "$again" = "$VERSION" ] || { echo "::error::The labels now give '${again:-nothing}' where $VERSION was approved; something merged or was relabelled meanwhile. Nothing reached wordpress.org; the next push to $BASE computes again."; exit 1; }
+          echo "Still $VERSION, on $BASE, no tag yet."
 
       - name: Stamp the version markers
+        if: steps.still.outputs.go == 'true'
         # The checkout, never the repository: the three markers become the
         # version, and the readme's `= Unreleased =` entry takes its number.
         run: |
@@ -222,6 +263,7 @@ jobs:
           git --no-pager diff --stat
 
       - name: Version markers equal the version
+        if: steps.still.outputs.go == 'true'
         run: |
           set -euo pipefail
           stable=$(grep -oP '^Stable tag:\s*\K\S+' readme.txt)
@@ -236,6 +278,7 @@ jobs:
           [ "$fail" -eq 0 ] || { echo "::error::Nothing reached wordpress.org: a marker did not take the version. Fix the file's shape in a pull request."; exit 1; }
 
       - name: This version's changelog
+        if: steps.still.outputs.go == 'true'
         # Before touching SVN: a release without its changelog stops here,
         # and so does a readme that announces another version.
         run: |
@@ -249,6 +292,7 @@ jobs:
           grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md" || { echo "::error file=readme.txt::The '= ${VERSION} =' changelog entry is empty."; exit 1; }
 
       - name: What was merged, grouped by type
+        if: steps.still.outputs.go == 'true'
         # Appended to the release notes: every commit since the nearest
         # release tag among this commit's ancestors (a hotfix on an older
         # line compares against that line), grouped by its Conventional
@@ -269,6 +313,7 @@ jobs:
           cat "$RUNNER_TEMP/notes.md"
 
       - name: Deploy to SVN
+        if: steps.still.outputs.go == 'true'
         id: deploy
         uses: 10up/action-wordpress-plugin-deploy@54bd289b8525fd23a5c365ec369185f2966529c2 # 2.3.0
         with:
@@ -286,7 +331,7 @@ jobs:
         # the one token that can create a release tag, held by the one step
         # that does it. The App has contents: write and nothing else, and its
         # key lives in the environment, so only an approved job ever sees it.
-        if: ${{ !inputs.dry-run && startsWith(github.ref, 'refs/heads/') }}
+        if: ${{ steps.still.outputs.go == 'true' && !inputs.dry-run && startsWith(github.ref, 'refs/heads/') }}
         id: app
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
@@ -295,17 +340,14 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-contents: write
 
-      - name: Tag the commit
-        if: ${{ steps.app.outcome == 'success' }}
-        env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
-        run: |
-          set -euo pipefail
-          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$VERSION" -f sha="$GITHUB_SHA" >/dev/null
-          echo "Tagged $GITHUB_SHA as $VERSION."
-
-      - name: GitHub release
-        if: steps.deploy.outputs.zip-path != ''
+      - name: GitHub release, and the tag with it
+        # One API call creates the tag on the commit and the release, so no
+        # tag ever exists without its release (the tag run this starts finds
+        # the release and stops) and no release without its tag. If SVN took
+        # the version but this step failed, Re-run jobs: the deploy action
+        # sees tags/X.Y.Z already on SVN and skips to here. A rehearsal makes
+        # a draft, which creates no tag.
+        if: steps.still.outputs.go == 'true' && steps.deploy.outputs.zip-path != ''
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ needs.version.outputs.version }}
