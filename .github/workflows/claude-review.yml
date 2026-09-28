@@ -377,8 +377,11 @@ jobs:
             Two more verdicts, both about the whole pull request (not only the new commits):
             `type`, the kind of change the diff really is, by the Conventional Commits meaning
             (breaking when a user or a caller must change something to keep working; feat when
-            behaviour is added; fix when wrong behaviour is corrected, whatever the title says;
-            docs, test, ci, build, chore, style, refactor, perf, revert when that is all it is); and
+            behaviour is added, however large, since size is not breakage; fix when wrong behaviour
+            is corrected, whatever the title says; docs, test, ci, build, chore, style, refactor,
+            perf, revert when that is all it is). When a feat looks like a new capability (a new
+            provider, a flow the product did not have), say so in one line of the summary as a
+            suggestion of the version:major label; the maintainer decides it, never you. And
             `description_matches`, true only if the description's "What changes" and "Why"
             describe what the diff does, with nothing claimed that the code does not do and no
             behaviour change left unsaid. When they disagree, say in the summary in one line

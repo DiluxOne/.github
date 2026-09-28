@@ -12,12 +12,15 @@ name: WordPress plugin release
 # `release:` says `off` for that bump: the run ends there, green, and the
 # summary says why. Something pending: the `release` job waits for the
 # environment's reviewers (the summary shows the version, the bump and the
-# pull requests that justify it), then stamps the three version markers to
-# X.Y.Z in the checkout, validates them, commits trunk + tags/X.Y.Z +
-# assets to SVN, then creates the tag and the GitHub release in one call
-# with the release App's token, with the changelog and what was merged,
-# grouped by type. Nothing is ever committed to main: the markers there
-# stay at the last released version and every development build stamps
+# pull requests that justify it), then checks that the three version markers
+# already say X.Y.Z (the release pull request, the one that removed the
+# `Unreleased.` line, set them: scripts/release-markers.sh prepare), commits
+# trunk + tags/X.Y.Z + assets to SVN, then creates the tag and the GitHub
+# release in one call with the release App's token, with the changelog and
+# what was merged, grouped by type. Nothing is ever committed to main by
+# this workflow: the markers there say the last released version, or the
+# one being released once its pull request merged (the checks' readme job
+# holds every pull request to that), and every development build stamps
 # itself. After the approval the job checks again that this is still the
 # release to make: the tag does not exist, the labels still give this
 # version, the commit is on the default branch. A push made while a run
@@ -418,15 +421,18 @@ jobs:
           [ "$again" = "$VERSION" ] || { echo "::error::The labels now give '${again:-nothing}' where $VERSION was approved; something merged or was relabelled meanwhile. Nothing reached wordpress.org; the next push to $BASE computes again."; exit 1; }
           echo "Still $VERSION, on $BASE, no tag yet."
 
-      - name: Stamp the version markers
+      - name: The markers say this version
         if: steps.still.outputs.go == 'true'
-        # The checkout, never the repository: the three markers become the
-        # version, a readme entry headed `= Unreleased =` takes its number and
-        # the readme is brought to LF (scripts/stamp-version.sh, which fails
-        # when a marker did not take it: nothing reaches wordpress.org from a
-        # file whose shape changed).
+        # The release pull request set the three markers and the changelog
+        # heading to this version, so main already says what ships: nothing
+        # reaches wordpress.org from a commit that names another version
+        # (scripts/release-markers.sh). The stamp that follows then changes
+        # nothing but the readme's line endings (LF), and fails when a marker
+        # does not hold the version: a file whose shape changed.
         run: |
           set -euo pipefail
+          last=$(git tag -l '[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -vxF "$VERSION" | head -1 || true)
+          bash .dx-central/scripts/release-markers.sh check . "$MAIN" "$CONSTANT" "${last:-0.0.0}" "$VERSION" true
           bash .dx-central/scripts/stamp-version.sh . "$VERSION" "$MAIN" "$CONSTANT"
           git --no-pager diff --stat
 
