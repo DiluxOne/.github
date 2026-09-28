@@ -33,8 +33,8 @@ name: WordPress plugin release
 # created itself arrives with its release already there, so that run stops.
 #
 # The readme's newest changelog entry names the version: `= X.Y.Z =` equal to
-# the computed one, or `= Unreleased =`, which the job renames in the build. A
-# different number is a disagreement between the roadmap and the labels, and
+# the computed one (while it is held it may be headed `= Unreleased =`; the
+# release pull request renames it with the markers). A different number is a disagreement between the roadmap and the labels, and
 # the job refuses until a person settles it with a version:* label or the
 # readme. The same entry says whether the version is ready: while its first
 # line is `Unreleased.` (scripts/release-ready.sh), the version job ends green with "Not ready"
@@ -450,7 +450,7 @@ jobs:
           fi
           newest=$(grep -m1 -oP '^= \K[0-9]+\.[0-9]+\.[0-9]+(?= =$)' readme.txt || true)
           if [ "$newest" != "$VERSION" ]; then
-            echo "::error file=readme.txt::The newest changelog entry is '= ${newest:-none} =' but the labels of what merged give $VERSION. Either the readme announces a version the labels do not reach (add version:major, version:minor or version:patch to a merged pull request) or the labels went further than the readme (write the entry, or head it '= Unreleased ='). Nothing reached wordpress.org."
+            echo "::error file=readme.txt::The newest changelog entry is '= ${newest:-none} =' but the labels of what merged give $VERSION. Either the readme announces a version the labels do not reach (add version:major, version:minor or version:patch to a merged pull request) or the labels went further than the readme (head the entry and set the markers to $VERSION in a pull request). Nothing reached wordpress.org."
             exit 1
           fi
           awk -v head="= ${VERSION} =" '$0 == head { found = 1; next } found && /^=/ { exit } found { print }' readme.txt > "$RUNNER_TEMP/notes.md"

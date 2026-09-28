@@ -308,9 +308,14 @@ jobs:
           MAIN: ${{ inputs.main-file != '' && inputs.main-file || format('{0}.php', inputs.slug) }}
           CONSTANT: ${{ inputs.version-constant }}
           BASE: ${{ github.event.repository.default_branch }}
+          PULL: ${{ github.event.pull_request.number }}
+        # In a pull request its own labels count as if it had merged, so the
+        # release pull request is checked against the version it will
+        # release, its own version:* label included (set it before the last
+        # push: a label alone does not re-run the checks).
         run: |
           set -euo pipefail
-          next=$(python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$BASE" --json)
+          next=$(python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$BASE" ${PULL:+--with-pull "$PULL"} --json)
           bash .dx-central/scripts/release-markers.sh check . "$MAIN" "$CONSTANT" \
             "$(jq -r .last <<<"$next")" "$(jq -r .next <<<"$next")" "$(jq -r .pending <<<"$next")"
 

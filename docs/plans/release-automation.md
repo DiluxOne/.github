@@ -2,6 +2,8 @@
 
 Status: decided 2026-09-26, reviewed for security, cost and against the tools the market uses. The release is approved as a **deployment** (the job on `main` builds, waits for approval in the `wordpress-org` environment, then tags and publishes), not as a release pull request. Shipped so far: the security fixes (DiluxOne/.github#3), the type of a change by the review (#4), nothing runs twice, `next-version.py`. Pending: the stamped development builds and the release job itself.
 
+Amended 2026-09-28 (DiluxOne/.github#12): the version markers on `main` no longer stay at the last released version while the release job stamps only its build. The pull request that removes `Unreleased.` (the release decision, already a pull request) also sets the markers to the version it releases, the checks hold every pull request to them and the release job refuses a commit that names another version; still no bot pull request and no bump-back commit. Where this plan says the markers stay at the last release or that nothing about the version is stored on `main`, read it that way.
+
 ## Goals, in the maintainer's words
 
 1. The type of every change (feature, fix, docs, breaking) is decided by the AI from the diff, not by whoever typed the title, and is visible as a label.

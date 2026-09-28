@@ -13,9 +13,11 @@
 # <last> is the last X.Y.Z released, <next> the version the labels give and
 # <pending> whether anything asks for it (true/false), all three from
 # scripts/next-version.py. The markers must equal <next> when something is
-# pending and the readme is ready (a release pull request, or main after it
-# merged and before the release job ran), and <last> otherwise. When <next>
-# is the target the newest changelog entry must be headed `= <next> =`.
+# pending, the readme is ready and its newest entry is not the one of <last>
+# (a release pull request, or main after it merged and before the release
+# job ran), and <last> otherwise: a fix merged after a release, before
+# anyone opened the next entry, releases nothing yet. When <next> is the
+# target the newest changelog entry must be headed `= <next> =`.
 # With no release yet (<last> is 0.0.0) there is nothing to compare with and
 # the check passes. Prints what it compared; exits 1 on a mismatch, with an
 # error annotation saying what to set.
@@ -52,7 +54,7 @@ check() {
   rc=0; heading=$(bash "$here/release-ready.sh" "$dir/readme.txt") || rc=$?
   case "$rc" in 0|2) ;; 1) held=true ;; *) echo "::error::release-ready.sh failed ($rc)." >&2; return 1 ;; esac
   heading=${heading%%	*}
-  if [ "$pending" = true ] && [ "$held" = false ]; then
+  if [ "$pending" = true ] && [ "$held" = false ] && [ "$heading" != "= $last =" ]; then
     expected=$next; why="this releases $next (the readme is ready and the labels give $next)"
   else
     expected=$last; why="$last is the last release and nothing is being released"
@@ -74,8 +76,10 @@ check() {
     fail=1
   fi
   if [ "$fail" -ne 0 ]; then
-    if [ "$expected" = "$next" ]; then
+    if [ "$expected" = "$next" ] && [ "$held" = true ]; then
       echo "The release pull request sets them: scripts/release-markers.sh prepare <dir> $next <main-file> [<constant>], from a checkout of DiluxOne/.github." >&2
+    elif [ "$expected" = "$next" ]; then
+      echo "The readme is ready, so this releases $next: set the three markers and the newest changelog heading to $next, or, if $next is not the version meant, settle it with a version:* label or put the 'Unreleased.' line back." >&2
     else
       echo "Set the three markers to $expected in a pull request of their own: main records the version it was released as." >&2
     fi
@@ -132,6 +136,9 @@ if [ "${1:-}" = "--test" ]; then
   fails "ready and pending: heading is another version"  c 2.0.0 2.1.0 true
   tree 2.0.0 2.0.0 "* Shipped."
   ok    "after the release: markers at it"               c 2.0.0 2.0.1 false
+  ok    "a fix merged after the release, no new entry"   c 2.0.0 2.0.1 true
+  tree 2.0.1 2.0.0 "* Shipped."
+  fails "that fix does not move the markers"             c 2.0.0 2.0.1 true
   tree 1.0.0 2.0.0 "* Shipped."
   fails "after the release: markers never moved"         c 2.0.0 2.0.1 false
   tree 2.0.0 2.0.0 "* Shipped."; sed -i "s/'MY_VERSION', '2.0.0'/'MY_VERSION', '1.0.0'/" "$t/p/my-plugin.php"
