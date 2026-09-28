@@ -103,6 +103,14 @@ def decide(last, pulls, commits_since):
     }
 
 
+def with_pull(pulls, number, labels):
+    """`pulls` with an open pull request's labels counted as if it had
+    merged; a pull request already among them counts once."""
+    if number in {n for n, _ in pulls}:
+        return pulls
+    return sorted(pulls + [(number, labels)])
+
+
 def gh(*args):
     out = subprocess.run(["gh", *args], capture_output=True, text=True)
     if out.returncode != 0:
@@ -184,6 +192,12 @@ def self_test():
             d = decide((0, 0, 0), [], 0)
             self.assertEqual((d["last"], d["next"], d["dev"]), ("0.0.0", "0.0.1", "0.0.1-dev.0"))
 
+        def test_with_pull(self):
+            merged = [(3, ["type:feat"])]
+            self.assertEqual(decide((2, 0, 0), with_pull(merged, 9, ["version:major"]), 4)["next"], "3.0.0")
+            self.assertEqual(decide((2, 0, 0), with_pull(merged, 9, ["type:chore"]), 4)["next"], "2.1.0")
+            self.assertEqual(with_pull(merged, 3, ["version:major"]), merged)
+
         def test_monotonic(self):
             # A bigger bump only ever raises the coming version.
             last = (1, 4, 2)
@@ -211,7 +225,7 @@ def main():
     last, pulls, commits_since = read_github(repo, a.base, a.tag_prefix, a.exclude_tag)
     if a.with_pull and a.with_pull not in {n for n, _ in pulls}:
         labels = json.loads(gh("api", "repos/%s/pulls/%d" % (repo, a.with_pull), "--jq", "[.labels[].name]"))
-        pulls = sorted(pulls + [(a.with_pull, labels)])
+        pulls = with_pull(pulls, a.with_pull, labels)
     try:
         d = decide(last, pulls, commits_since)
     except ValueError as e:

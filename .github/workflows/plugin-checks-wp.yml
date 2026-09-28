@@ -311,8 +311,12 @@ jobs:
           PULL: ${{ github.event.pull_request.number }}
         # In a pull request its own labels count as if it had merged, so the
         # release pull request is checked against the version it will
-        # release, its own version:* label included (set it before the last
-        # push: a label alone does not re-run the checks).
+        # release, its own version:* label included. A label alone does not
+        # re-run the checks: set version:* before the last push. The review's
+        # type:* arrives after this job ran, which is why the release pull
+        # request contains nothing but the hold and the markers (a chore,
+        # no bump of its own); anything that slips through is still refused
+        # by the release job before SVN.
         run: |
           set -euo pipefail
           next=$(python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$BASE" ${PULL:+--with-pull "$PULL"} --json)
