@@ -12,12 +12,15 @@ name: WordPress plugin release
 # `release:` says `off` for that bump: the run ends there, green, and the
 # summary says why. Something pending: the `release` job waits for the
 # environment's reviewers (the summary shows the version, the bump and the
-# pull requests that justify it), then stamps the three version markers to
-# X.Y.Z in the checkout, validates them, commits trunk + tags/X.Y.Z +
-# assets to SVN, then creates the tag and the GitHub release in one call
-# with the release App's token, with the changelog and what was merged,
-# grouped by type. Nothing is ever committed to main: the markers there
-# stay at the last released version and every development build stamps
+# pull requests that justify it), then checks that the three version markers
+# already say X.Y.Z (the release pull request, the one that removed the
+# `Unreleased.` line, set them: scripts/release-markers.sh prepare), commits
+# trunk + tags/X.Y.Z + assets to SVN, then creates the tag and the GitHub
+# release in one call with the release App's token, with the changelog and
+# what was merged, grouped by type. Nothing is ever committed to main by
+# this workflow: the markers there say the last released version, or the
+# one being released once its pull request merged (the checks' readme job
+# holds every pull request to that), and every development build stamps
 # itself. After the approval the job checks again that this is still the
 # release to make: the tag does not exist, the labels still give this
 # version, the commit is on the default branch. A push made while a run
@@ -30,8 +33,8 @@ name: WordPress plugin release
 # created itself arrives with its release already there, so that run stops.
 #
 # The readme's newest changelog entry names the version: `= X.Y.Z =` equal to
-# the computed one, or `= Unreleased =`, which the job renames in the build. A
-# different number is a disagreement between the roadmap and the labels, and
+# the computed one (while it is held it may be headed `= Unreleased =`; the
+# release pull request renames it with the markers). A different number is a disagreement between the roadmap and the labels, and
 # the job refuses until a person settles it with a version:* label or the
 # readme. The same entry says whether the version is ready: while its first
 # line is `Unreleased.` (scripts/release-ready.sh), the version job ends green with "Not ready"
@@ -418,15 +421,18 @@ jobs:
           [ "$again" = "$VERSION" ] || { echo "::error::The labels now give '${again:-nothing}' where $VERSION was approved; something merged or was relabelled meanwhile. Nothing reached wordpress.org; the next push to $BASE computes again."; exit 1; }
           echo "Still $VERSION, on $BASE, no tag yet."
 
-      - name: Stamp the version markers
+      - name: The markers say this version
         if: steps.still.outputs.go == 'true'
-        # The checkout, never the repository: the three markers become the
-        # version, a readme entry headed `= Unreleased =` takes its number and
-        # the readme is brought to LF (scripts/stamp-version.sh, which fails
-        # when a marker did not take it: nothing reaches wordpress.org from a
-        # file whose shape changed).
+        # The release pull request set the three markers and the changelog
+        # heading to this version, so main already says what ships: nothing
+        # reaches wordpress.org from a commit that names another version
+        # (scripts/release-markers.sh). The stamp that follows then changes
+        # nothing but the readme's line endings (LF), and fails when a marker
+        # does not hold the version: a file whose shape changed.
         run: |
           set -euo pipefail
+          last=$(git tag -l '[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -vxF "$VERSION" | head -1 || true)
+          bash .dx-central/scripts/release-markers.sh check . "$MAIN" "$CONSTANT" "${last:-0.0.0}" "$VERSION" true
           bash .dx-central/scripts/stamp-version.sh . "$VERSION" "$MAIN" "$CONSTANT"
           git --no-pager diff --stat
 
@@ -444,7 +450,7 @@ jobs:
           fi
           newest=$(grep -m1 -oP '^= \K[0-9]+\.[0-9]+\.[0-9]+(?= =$)' readme.txt || true)
           if [ "$newest" != "$VERSION" ]; then
-            echo "::error file=readme.txt::The newest changelog entry is '= ${newest:-none} =' but the labels of what merged give $VERSION. Either the readme announces a version the labels do not reach (add version:major, version:minor or version:patch to a merged pull request) or the labels went further than the readme (write the entry, or head it '= Unreleased ='). Nothing reached wordpress.org."
+            echo "::error file=readme.txt::The newest changelog entry is '= ${newest:-none} =' but the labels of what merged give $VERSION. Either the readme announces a version the labels do not reach (add version:major, version:minor or version:patch to a merged pull request) or the labels went further than the readme (head the entry and set the markers to $VERSION in a pull request). Nothing reached wordpress.org."
             exit 1
           fi
           awk -v head="= ${VERSION} =" '$0 == head { found = 1; next } found && /^=/ { exit } found { print }' readme.txt > "$RUNNER_TEMP/notes.md"

@@ -18,7 +18,11 @@ where N counts the commits on the base branch since the last tag. When nothing
 is pending the coming version is the next patch, because a release, when it
 comes, is at least that; `pending` says which case it is.
 
-    next-version.py [--repo OWNER/REPO] [--base main] [--tag-prefix v] [--exclude-tag X.Y.Z] [--json]
+With --with-pull N the labels of pull request N count as if it had merged:
+the checks of an open pull request (the one that releases, above all) see
+the version it will release once it merges, its own version:* label included.
+
+    next-version.py [--repo OWNER/REPO] [--base main] [--tag-prefix v] [--exclude-tag X.Y.Z] [--with-pull N] [--json]
     next-version.py --test
 
 Needs `gh` logged in (or GH_TOKEN). Exit 0 with the answer, 2 on a bad
@@ -97,6 +101,14 @@ def decide(last, pulls, commits_since):
         "commits_since": commits_since,
         "pulls": {k: sorted(v) for k, v in per_type.items()},
     }
+
+
+def with_pull(pulls, number, labels):
+    """`pulls` with an open pull request's labels counted as if it had
+    merged; a pull request already among them counts once."""
+    if number in {n for n, _ in pulls}:
+        return pulls
+    return sorted(pulls + [(number, labels)])
 
 
 def gh(*args):
@@ -180,6 +192,12 @@ def self_test():
             d = decide((0, 0, 0), [], 0)
             self.assertEqual((d["last"], d["next"], d["dev"]), ("0.0.0", "0.0.1", "0.0.1-dev.0"))
 
+        def test_with_pull(self):
+            merged = [(3, ["type:feat"])]
+            self.assertEqual(decide((2, 0, 0), with_pull(merged, 9, ["version:major"]), 4)["next"], "3.0.0")
+            self.assertEqual(decide((2, 0, 0), with_pull(merged, 9, ["type:chore"]), 4)["next"], "2.1.0")
+            self.assertEqual(with_pull(merged, 3, ["version:major"]), merged)
+
         def test_monotonic(self):
             # A bigger bump only ever raises the coming version.
             last = (1, 4, 2)
@@ -197,6 +215,7 @@ def main():
     ap.add_argument("--base", default="main")
     ap.add_argument("--tag-prefix", default="", help="what precedes X.Y.Z in the release tags (this repository: v)")
     ap.add_argument("--exclude-tag", default=None, help="a tag to ignore when looking for the last release: the one being released")
+    ap.add_argument("--with-pull", type=int, default=None, help="an open pull request whose labels count as if it had merged")
     ap.add_argument("--json", action="store_true", help="print the answer as JSON")
     ap.add_argument("--test", action="store_true", help="run the self-tests and exit")
     a = ap.parse_args()
@@ -204,6 +223,9 @@ def main():
         self_test()
     repo = a.repo or gh("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner").strip()
     last, pulls, commits_since = read_github(repo, a.base, a.tag_prefix, a.exclude_tag)
+    if a.with_pull and a.with_pull not in {n for n, _ in pulls}:
+        labels = json.loads(gh("api", "repos/%s/pulls/%d" % (repo, a.with_pull), "--jq", "[.labels[].name]"))
+        pulls = with_pull(pulls, a.with_pull, labels)
     try:
         d = decide(last, pulls, commits_since)
     except ValueError as e:

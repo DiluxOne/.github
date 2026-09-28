@@ -3,7 +3,8 @@ name: WordPress plugin checks (fast)
 # Reusable. The fast quality gates for a WordPress plugin published on
 # wordpress.org: PHP syntax and unit tests on every supported PHP, PHPCS,
 # PHPStan, Psalm taint analysis, i18n, Plugin Check on the shipped tree, and
-# readme/version alignment. Each job is its own status check.
+# readme/version alignment, and the version markers against what was
+# released (scripts/release-markers.sh). Each job is its own status check.
 #
 # The slow wp-env suites (integration, E2E) are plugin-tests-wp.yml, a
 # separate workflow, so a caller can start the review as soon as these pass
@@ -251,17 +252,27 @@ jobs:
           slug: ${{ inputs.slug }}
           categories: plugin_repo,security,performance,accessibility,general
           include-experimental: true
-          # main carries a -dev Version between releases; the readme job
-          # enforces the relaxed rule and the release workflow the strict one.
+          # The shipped tree here is the checkout, whose markers the readme
+          # job holds to the released version (or the one being released);
+          # the release workflow checks them again before SVN.
           ignore-codes: stable_tag_mismatch
 
   readme:
     name: readme.txt and versions
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read # the labels of what merged give the version being released
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref }}
+          path: .dx-central
           persist-credentials: false
       - name: Headers, version alignment, changelog
         env:
@@ -287,4 +298,28 @@ jobs:
           fi
           grep -qE "^=\s*${stable}\s*=" readme.txt || { echo "::error file=readme.txt::No '= ${stable} =' changelog entry."; exit 1; }
           echo "readme.txt OK: Stable tag $stable, Version $version."
+      - name: The markers name the released version
+        # The three markers say the last version released, or, in the pull
+        # request that releases the next one (it removes the `Unreleased.`
+        # line) and on main after it merged, that next one; never a version
+        # that is not one (scripts/release-markers.sh).
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAIN: ${{ inputs.main-file != '' && inputs.main-file || format('{0}.php', inputs.slug) }}
+          CONSTANT: ${{ inputs.version-constant }}
+          BASE: ${{ github.event.repository.default_branch }}
+          PULL: ${{ github.event.pull_request.number }}
+        # In a pull request its own labels count as if it had merged, so the
+        # release pull request is checked against the version it will
+        # release, its own version:* label included. A label alone does not
+        # re-run the checks: set version:* before the last push. The review's
+        # type:* arrives after this job ran, which is why the release pull
+        # request contains nothing but the hold and the markers (a chore,
+        # no bump of its own); anything that slips through is still refused
+        # by the release job before SVN.
+        run: |
+          set -euo pipefail
+          next=$(python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$BASE" ${PULL:+--with-pull "$PULL"} --json)
+          bash .dx-central/scripts/release-markers.sh check . "$MAIN" "$CONSTANT" \
+            "$(jq -r .last <<<"$next")" "$(jq -r .next <<<"$next")" "$(jq -r .pending <<<"$next")"
 

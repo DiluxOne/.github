@@ -4,7 +4,10 @@ name: Release
 # DiluxOne/.github, as a deployment: on every push to main the workflow
 # computes the next version from the type:* labels of what merged; when
 # something is pending, it waits for approval in the `wordpress-org`
-# environment, then stamps, deploys, tags and creates the release. A tag
+# environment, then checks that the version markers say it (the release pull
+# request, the one that removes the `Unreleased.` line, sets them with
+# scripts/release-markers.sh prepare), deploys, tags and creates the
+# release. A tag
 # X.Y.Z an administrator pushes by hand goes through the same job, and must
 # be the version the labels say is next. While the readme's newest changelog
 # entry starts with the line `Unreleased.` nothing waits for approval: the

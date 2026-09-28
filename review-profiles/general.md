@@ -77,6 +77,15 @@ with one new behaviour is a `feat`; anything breaking is `breaking`. The type
 sets the `type:*` label and corrects the title's type token, and the next
 version is computed from those labels, so read the diff, not the words.
 
+Size is not breakage. A large feature that keeps everything working is a
+`feat`, however big; `breaking` is only for a change someone has to act on.
+The organisation numbers a big new capability (a new provider, a flow the
+product did not have) as a major, but that is the maintainer's call, made
+with the `version:major` label (CONTRIBUTING.md, "How a change becomes a
+version"): when a `feat` looks like one, say so in one line of the summary
+("looks like a new capability: `version:major` if the maintainer agrees"),
+and never set that label or change the type for it.
+
 ## Whether the description matches
 
 `description_matches` is true only when the description's "What changes" and

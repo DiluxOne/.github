@@ -71,11 +71,26 @@ Pull requests from **forks** are not reviewed automatically: the review runs wit
 
 ## How a change becomes a version
 
-Nobody types a version number. The `type:*` label the review sets on each merged pull request decides the next one (`type:breaking` → major, `type:feat` → minor, `type:fix` or `type:perf` → patch; a maintainer's `version:major|minor|patch` label wins), and `main` keeps the last released version in its files between releases. In a repository that publishes (a WordPress plugin):
+Every DiluxOne repository numbers its versions `X.Y.Z`, always three numbers, no suffix, by what a change means to the people who use it:
+
+| Part | When | Who decides |
+| --- | --- | --- |
+| **Major** `X.0.0` | A big new capability (a new provider, a new flow the product did not have), **or** any change that breaks something that worked | The maintainer, with the `version:major` label on the pull request. A breaking change (`type:breaking`, `!` in the title) forces it on its own |
+| **Minor** `x.Y.0` | Additions and improvements to what already exists, compatible with it | Automatic: `type:feat` |
+| **Patch** `x.y.Z` | Bug fixes, security fixes and performance, with no new behaviour | Automatic: `type:fix`, `type:perf` |
+
+Two rules come with it:
+
+- **A breaking change ships only in a major**, and a minor before it announces it ("this is going away in the next major"). Breaking means a user, a site or a caller has to change something to keep working: a new minimum requirement, a removed option, a setting that changes meaning, a renamed hook, data that cannot go back to the previous version.
+- **Every major says in its changelog** `Breaking changes: none`, or lists them with what to do.
+
+"Big" is a person's call: the review suggests `version:major` when a pull request looks like a new capability, and never sets it. A big `feat` is still a `feat`, not a breaking change.
+
+Nobody types a version number. The `type:*` label the review sets on each merged pull request decides the next one (`type:breaking` → major, `type:feat` → minor, `type:fix` or `type:perf` → patch; a maintainer's `version:major|minor|patch` label wins). `main` names a real version in its files: the last one released, or, from the moment the pull request that releases the next one merges, that next one; the checks hold every pull request to it. In a repository that publishes (a WordPress plugin):
 
 - **Every push to `main` publishes a development build**, the shipped tree stamped `<next>-dev.<N>`, as the one *Development build* pre-release in the repository's Releases, replaced each time (no history: the commit in its notes rebuilds any of them). Anyone can download it and try what is coming; it is not a release, and "Latest" stays the last published version.
 - **The changelog is written as the changes merge.** A pull request that changes what a user sees adds its bullet to the newest entry of `readme.txt` (`= X.Y.Z =`, first line `Unreleased.`), in the same pull request.
-- **The maintainer decides when it is ready** by removing the `Unreleased.` line in a pull request. That push to `main` waits for approval in the repository's `wordpress-org` environment; only its required reviewers can approve, and approving publishes (a repository's policy can set a kind of bump to `auto`, published without waiting, or `off`, never published; the organisation default is to wait). Until then, however many pull requests merge, nothing waits for anyone and nothing is published.
+- **The maintainer decides when it is ready** by removing the `Unreleased.` line in a pull request, which also sets the version markers to the version being released (`scripts/release-markers.sh prepare`). That push to `main` waits for approval in the repository's `wordpress-org` environment; only its required reviewers can approve, and approving publishes (a repository's policy can set a kind of bump to `auto`, published without waiting, or `off`, never published; the organisation default is to wait). Until then, however many pull requests merge, nothing waits for anyone and nothing is published.
 - **Outside contributors** need nothing more than the pull request: your change ships in the next version with its bullet in the changelog. You cannot approve a release, and you do not need to.
 
 ## AI tools
