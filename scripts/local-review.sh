@@ -15,12 +15,56 @@
 #   --profile    review-profiles/<name>.md (default: the `profile:` the repository's
 #                pull-request workflow passes, else general)
 #   --no-claude  stop after writing the brief (to hand it to another reviewer or agent)
+#   --test       self-test against scratch repositories (never runs the review)
 #
 # Run from the repository to review. Exit 1 when a convention is broken or the
 # review finds a blocker or a major problem.
 set -euo pipefail
 
 CENTRAL=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+
+# One case: a scratch repository with a base commit on origin/main and a
+# branch set up by $setup; expect the exit code and, when given, a line of
+# the output. Always --no-claude: the self-test never spends a review.
+test_case() {
+  local name=$1 want=$2 grep_for=$3 setup=$4; shift 4
+  local dir out got
+  dir=$(mktemp -d)
+  out=$(
+    cd "$dir" && git init -q && git config user.email t@t && git config user.name t
+    git commit -q --allow-empty -m "chore: base" && git branch -q -M main && git update-ref refs/remotes/origin/main HEAD
+    git checkout -q -b docs/change
+    eval "$setup"
+    bash "$CENTRAL/scripts/local-review.sh" --no-claude "$@" 2>&1
+  ) && got=0 || got=$?
+  rm -rf "$dir"
+  if [ "$got" != "$want" ]; then echo "FAIL $name (want exit $want, got $got)"; printf '%s\n' "$out" | sed 's/^/     /'; return 1; fi
+  if [ -n "$grep_for" ] && ! grep -qF -- "$grep_for" <<<"$out"; then echo "FAIL $name (no \"$grep_for\" in the output)"; printf '%s\n' "$out" | sed 's/^/     /'; return 1; fi
+  echo "ok   $name"
+}
+
+if [ "${1:-}" = "--test" ]; then
+  commit='echo hi > a.md && git add a.md && git commit -q -m "docs(readme): a line"'
+  wf() { printf 'mkdir -p .github/workflows && printf %%s %q > .github/workflows/pr.yml && git add -A && git commit -q -m "ci(pr): a workflow" && %s' "$1" "$commit"; }
+  good=$'## What changes\n\nA line.\n\n## Why\n\nA reason.\n'
+  empty=$'## What changes\n\nA line.\n\n## Why\n\n'
+  fail=0
+  test_case "no profile, no origin remote: general, and it runs to the brief" 0 "Brief:" "$commit" || fail=1
+  test_case "a profile the workflow passes is used"      0 "profile plugin-wp" "$(wf $'jobs:\n  review:\n    with:\n      profile: plugin-wp\n')" --title "docs(readme): two commits" || fail=1
+  test_case "a quoted profile is read without quotes"    0 "profile plugin-wp" "$(wf $'jobs:\n  review:\n    with:\n      profile: \'plugin-wp\'\n')" --title "docs(readme): two commits" || fail=1
+  test_case "--profile wins over the workflow"           0 "profile general" "$(wf $'jobs:\n  review:\n    with:\n      profile: plugin-wp\n')" --title "docs(readme): two commits" --profile general || fail=1
+  test_case "no commit on the branch"                    1 "adds no commit" ":" || fail=1
+  test_case "two commits and no --title"                 64 "say the pull request title" "$commit && echo b > b.md && git add b.md && git commit -q -m 'docs(readme): another'" || fail=1
+  test_case "a commit that is not a header"              1 "not a Conventional Commit header" 'echo hi > a.md && git add a.md && git commit -q -m "Added a line"' || fail=1
+  bodies=$(mktemp -d); printf %s "$good" > "$bodies/good.md"; printf %s "$empty" > "$bodies/empty.md"
+  test_case "a description with an empty Why"            1 "section is empty" "$commit" --body-file "$bodies/empty.md" || fail=1
+  test_case "a description filled in"                    0 "Conventions OK." "$commit" --body-file "$bodies/good.md" || fail=1
+  test_case "the origin remote names the repository"    0 "Review brief: o/r," "git remote add origin https://github.com/o/r.git && $commit" --no-claude || fail=1
+  rm -rf "$bodies"
+  test_case "an unknown option"                          64 "usage:" "$commit" --nope || fail=1
+  [ "$fail" -eq 0 ] && echo "all tests passed"
+  exit "$fail"
+fi
 base=origin/main title='' body_file='' profile='' use_claude=1
 while [ $# -gt 0 ]; do
   case $1 in
@@ -46,8 +90,10 @@ fi
 body=''
 if [ -n "$body_file" ]; then body=$(cat "$body_file"); fi
 if [ -z "$profile" ]; then
-  # No match is the usual case outside a plugin: `|| true`, or set -e ends the script here.
-  profile=$( { grep -hoE '^\s+profile:\s*[a-z0-9-]+' .github/workflows/*.yml 2>/dev/null || true; } | head -1 | awk '{print $2}')
+  # The first `profile:` a workflow passes, quoted or not. No match is the
+  # usual case outside a plugin: `|| true`, or set -e ends the script here.
+  profile=$( { grep -hE '^[[:space:]]+profile:' .github/workflows/*.yml 2>/dev/null || true; } | head -1 \
+    | sed -E "s/^[[:space:]]+profile:[[:space:]]*['\"]?([A-Za-z0-9_-]*).*/\\1/")
   profile=${profile:-general}
 fi
 work=$(mktemp -d "${TMPDIR:-/tmp}/dx-review.XXXXXX")
@@ -67,11 +113,13 @@ DEFAULT_POLICY="$CENTRAL/policy/review-policy.default.yml" REPO_POLICY=.github/r
 get() { sed -n "s/^$1=//p" "$work/policy.out" | tail -1; }
 floor=$(get floor) reasons=$(get reasons) model=$(get model) effort=$(get effort)
 
-echo; echo "== Brief"
-REPO=$(git remote get-url origin 2>/dev/null | sed -E 's#(\.git)?$##; s#.*[:/]([^/]+/[^/]+)$#\1#') \
+echo; echo "== Brief (profile $profile)"
+# owner/name from the origin remote, or the directory's name without one.
+repo=$(git remote get-url origin 2>/dev/null | sed -E 's#(\.git)?$##; s#.*[:/]([^/]+/[^/]+)$#\1#' || true)
+REPO=${repo:-$(basename "$(git rev-parse --show-toplevel)")} \
   TITLE=$title BODY=$body BASE=$BASE HEAD=$HEAD FLOOR=$floor REASONS=$reasons PROFILE=$profile \
   CENTRAL=$CENTRAL WORK=$work OUT="$work/brief.md" bash "$CENTRAL/scripts/review-brief.sh"
-echo "$work/brief.md"
+echo "$work/brief.md: $(head -1 "$work/brief.md")"
 
 if [ "$use_claude" -eq 0 ]; then
   echo; echo "Review not run (--no-claude). Hand the brief above to the reviewer."

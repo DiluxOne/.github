@@ -24,6 +24,10 @@ Rules for any coding agent working in `DiluxOne/.github`.
   "Review before the pull request") and fix what it finds. Do not push, open a
   pull request or re-run a workflow unless the maintainer asked for it: every
   push to an open pull request is a paid review.
+- A problem a review finds (local or on GitHub) that a test could have
+  caught comes with that test, in the same pull request: what was found once
+  is not left to the next review to find again. Every script carries its
+  `--test`, run by the scripts job.
 - Keep `README.md`, `CONTRIBUTING.md`, the review profiles, the workflow
   templates and the workflow header comments in step with what the workflows
   do, in the same PR.
