@@ -7,7 +7,7 @@
 # GitHub should find clean too, so it is reviewed there once, not in rounds.
 #
 #   local-review.sh [--base <ref>] [--title <title>] [--body-file <file>]
-#                   [--profile <name>] [--no-claude] [--full]
+#                   [--profile <name>] [--no-claude] [--full] [--model <id>]
 #
 #   --base       what the branch goes into (default origin/main)
 #   --title      the pull request title (default: the subject of the branch's only commit)
@@ -16,6 +16,7 @@
 #                pull-request workflow passes, else general)
 #   --no-claude  stop after writing the brief (to hand it to another reviewer or agent)
 #   --full       review the whole change again, not only what changed since the last run
+#   --model      the reviewer's model instead of the one the policy picks for the floor
 #   --test       self-test against scratch repositories (never runs the review)
 #
 # Run from the repository to review. The findings go to .git/dx-review/findings.md
@@ -109,13 +110,16 @@ FAKE
     "FAKE_VERDICT='$(verdict docs true "$major")' $run >/dev/null; echo fix >> a.md && git commit -qam 'docs(readme): the fix' && FAKE_VERDICT='$(verdict docs true '[]')' LOCAL_REVIEW_CLAUDE=\$fake bash \"\$CENTRAL/scripts/local-review.sh\" --title 'docs(readme): a line' 2>&1" || fail=1
   review_case "the next run shows the reviewer its earlier findings" 0 "a real problem" \
     "FAKE_VERDICT='$(verdict docs true "$major")' $run >/dev/null; echo fix >> a.md && git commit -qam 'docs(readme): the fix' && brief=\$(bash \"\$CENTRAL/scripts/local-review.sh\" --title 'docs(readme): a line' --no-claude 2>&1 | sed -n 's/^\\(.*brief.md\\): .*/\\1/p') && grep -A3 'Your earlier findings' \"\$brief\"" || fail=1
+  review_case "--model picks the reviewer's model" 0 "== Review (claude-fable-5-1," \
+    "FAKE_VERDICT='$(verdict docs true '[]')' LOCAL_REVIEW_CLAUDE=\$fake bash \"\$CENTRAL/scripts/local-review.sh\" --model claude-fable-5-1 2>&1" || fail=1
+  test_case "a --model that is not a model id"           64 "is not a model id" "$commit" --model 'rm -rf /' || fail=1
   review_case "--full reviews the whole change again" 0 "(profile general, full)" \
     "FAKE_VERDICT='$(verdict docs true '[]')' $run >/dev/null; echo fix >> a.md && git commit -qam 'docs(readme): more' && FAKE_VERDICT='$(verdict docs true '[]')' LOCAL_REVIEW_CLAUDE=\$fake bash \"\$CENTRAL/scripts/local-review.sh\" --title 'docs(readme): a line' --full 2>&1" || fail=1
   rm -f "$fake"
   [ "$fail" -eq 0 ] && echo "all tests passed"
   exit "$fail"
 fi
-base=origin/main title='' body_file='' profile='' use_claude=1 full=0
+base=origin/main title='' body_file='' profile='' use_claude=1 full=0 model_override=''
 while [ $# -gt 0 ]; do
   case $1 in
     --base) base=$2; shift 2 ;;
@@ -124,7 +128,8 @@ while [ $# -gt 0 ]; do
     --profile) profile=$2; shift 2 ;;
     --no-claude) use_claude=0; shift ;;
     --full) full=1; shift ;;
-    *) echo "usage: local-review.sh [--base <ref>] [--title <title>] [--body-file <file>] [--profile <name>] [--no-claude] [--full]" >&2; exit 64 ;;
+    --model) model_override=$2; shift 2 ;;
+    *) echo "usage: local-review.sh [--base <ref>] [--title <title>] [--body-file <file>] [--profile <name>] [--no-claude] [--full] [--model <id>]" >&2; exit 64 ;;
   esac
 done
 
@@ -163,6 +168,10 @@ DEFAULT_POLICY="$CENTRAL/policy/review-policy.default.yml" REPO_POLICY=.github/r
   CHANGED_FILES=$changed GITHUB_OUTPUT="$work/policy.out" python3 "$CENTRAL/scripts/policy.py"
 get() { sed -n "s/^$1=//p" "$work/policy.out" | tail -1; }
 floor=$(get floor) reasons=$(get reasons) model=$(get model) effort=$(get effort)
+if [ -n "$model_override" ]; then
+  [[ "$model_override" =~ ^[a-z0-9][a-z0-9.-]*$ ]] || { echo "--model '$model_override' is not a model id." >&2; exit 64; }
+  model=$model_override
+fi
 
 # What the last run found, kept in the repository's .git (never committed),
 # like the review threads of a pull request: the next run reviews only what
