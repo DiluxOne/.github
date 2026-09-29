@@ -54,7 +54,7 @@ CI fails a pull request whose "What changes" or "Why" is empty (bots' are exempt
 
 ## Review before the pull request
 
-[`scripts/local-review.sh`](scripts/local-review.sh) runs, on your machine, what the pull request will be checked on: the conventions ([`scripts/conventions.sh`](scripts/conventions.sh), the same script CI runs), the risk floor ([`scripts/policy.py`](scripts/policy.py)), and the Claude review on the same brief ([`scripts/review-brief.sh`](scripts/review-brief.sh): the review profiles, the repository's `AGENTS.md` and `docs/architecture.md`, the description and the diff), through the Claude Code CLI on your own account. From the repository, with a checkout of this one:
+[`scripts/local-review.sh`](scripts/local-review.sh) runs, on your machine, what the pull request will be checked on: the conventions ([`scripts/conventions.sh`](scripts/conventions.sh), the same script CI runs), the risk floor ([`scripts/policy.py`](scripts/policy.py)), and the Claude review on the same brief ([`scripts/review-brief.sh`](scripts/review-brief.sh): the review profiles, the repository's `AGENTS.md` and `docs/architecture.md`, the description and the diff), through the Claude Code CLI on your own account. It needs git, bash (the 3.2 of macOS will do), jq, python3 with yq or PyYAML (`brew install jq yq` on macOS) and, for the review itself, the Claude Code CLI. From the repository, with a checkout of this one:
 
 ```bash
 bash ../.github/scripts/local-review.sh --body-file pr.md   # the description you will paste
