@@ -21,7 +21,9 @@ Rules for any coding agent working in `DiluxOne/.github`.
   `🤖 AI-generated · Claude Opus 5.5 (Anthropic)`. Never "Generated with …".
 - Never push to `main`, create or move tags, or change organisation settings.
 - Before a pull request exists, run `scripts/local-review.sh` (CONTRIBUTING.md,
-  "Review before the pull request") and fix what it finds. Do not push, open a
+  "Review before the pull request"), fix every blocker and major listed in
+  `.git/dx-review/findings.md` (and the minors that are cheap), commit, and
+  run it again until it says "Ready for a pull request". Do not push, open a
   pull request or re-run a workflow unless the maintainer asked for it: every
   push to an open pull request is a paid review.
 - A problem a review finds (local or on GitHub) that a test could have
