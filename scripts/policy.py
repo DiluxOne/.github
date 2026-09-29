@@ -214,6 +214,8 @@ def self_test():
         # (name, defaults, repo policy, files, extra env, expected outputs, expected exit)
         ("docs only is low", default, "", ["docs/a.md", "README.md"], {}, {"floor": "low", "model": "claude-sonnet-5"}, 0),
         ("tests and translations only are low", default, "", ["tests/Unit/ATest.php", "languages/x.pot"], {}, {"floor": "low"}, 0),
+        ("compiled translations are not low: nobody can read them", default, "", ["languages/x-es_AR.mo"], {}, {"floor": "medium"}, 0),
+        ("their sources and template are", default, "", ["languages/x-es_AR.po", "languages/x.pot"], {}, {"floor": "low"}, 0),
         ("code is medium", default, "", ["includes/a.php"], {}, {"floor": "medium"}, 0),
         ("docs plus code is medium", default, "", ["docs/a.md", "includes/a.php"], {}, {"floor": "medium"}, 0),
         ("a workflow is high", default, "", [".github/workflows/a.yml"], {}, {"floor": "high"}, 0),

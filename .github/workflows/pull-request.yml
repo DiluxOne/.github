@@ -54,6 +54,28 @@ jobs:
       - run: bash scripts/local-review.sh --test
       - run: python3 scripts/policy.py --test
 
+  # The scripts a contributor runs on their own machine, on a stock macOS:
+  # its bash is 3.2 and its tools are BSD's, so what only works with GNU
+  # tools (sha256sum, sed -i without a suffix, …) fails here, not on a
+  # contributor's laptop.
+  scripts-macos:
+    name: Scripts on macOS (the contributor's tools)
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Every `bash` the scripts call is the stock one too, not Homebrew's.
+      - run: |
+          mkdir -p "$RUNNER_TEMP/stock" && ln -sf /bin/bash "$RUNNER_TEMP/stock/bash"
+          echo "$RUNNER_TEMP/stock" >> "$GITHUB_PATH"
+      - run: bash --version | head -1
+      - run: /bin/bash scripts/conventions.sh --test
+      - run: /bin/bash scripts/review-brief.sh --test
+      - run: /bin/bash scripts/local-review.sh --test
+      - run: python3 scripts/policy.py --test
+
   review:
     needs: [conventions, actionlint, scripts]
     permissions:

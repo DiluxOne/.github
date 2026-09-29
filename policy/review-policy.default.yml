@@ -63,8 +63,9 @@ low-risk-eligible:
   - "composer.lock"
   - ".wordpress-org/**"
   - "languages/*.po"
-  - "languages/*.mo"
   - "languages/*.pot"
+  # Not languages/*.mo: compiled, it ships in the plugin, and the reviewer
+  # cannot read it (it is left out of the brief), so a person approves it.
 
 # What counts as code: a pull request that changes none of these runs only
 # the fast checks and the review; the slow suites (integration, end-to-end,
