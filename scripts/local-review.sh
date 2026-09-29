@@ -114,6 +114,8 @@ FAKE
     "FAKE_VERDICT='$(verdict fix true '[]')' $run >/dev/null; FAKE_VERDICT='$(verdict docs true '[]')' LOCAL_REVIEW_CLAUDE=\$fake bash \"\$CENTRAL/scripts/local-review.sh\" --title 'docs(readme): a line, retitled' 2>&1" || fail=1
   review_case "--no-claude on the commit already reviewed builds the whole brief" 0 "(profile general, full)" \
     "FAKE_VERDICT='$(verdict docs true '[]')' $run >/dev/null; bash \"\$CENTRAL/scripts/local-review.sh\" --no-claude 2>&1" || fail=1
+  review_case "another model on the same commit is a new review" 0 "== Review (claude-fable-5-1," \
+    "FAKE_VERDICT='$(verdict docs true '[]')' $run >/dev/null; FAKE_VERDICT='$(verdict docs true '[]')' LOCAL_REVIEW_CLAUDE=\$fake bash \"\$CENTRAL/scripts/local-review.sh\" --model claude-fable-5-1 2>&1" || fail=1
   review_case "--model picks the reviewer's model" 0 "== Review (claude-fable-5-1," \
     "FAKE_VERDICT='$(verdict docs true '[]')' LOCAL_REVIEW_CLAUDE=\$fake bash \"\$CENTRAL/scripts/local-review.sh\" --model claude-fable-5-1 2>&1" || fail=1
   test_case "a --model that is not a model id"           64 "is not a model id" "$commit" --model 'rm -rf /' || fail=1
@@ -183,9 +185,11 @@ fi
 state="$(git rev-parse --git-dir)/dx-review"
 mkdir -p "$state"
 last_json="$state/last.json" findings_md="$state/findings.md"
-# The title and the description are reviewed too: a new one on the same
-# commit (a retitle, a description fixed) is a new review, not the old answer.
-input=$(printf '%s\n%s' "$title" "$body" | sha256sum | cut -d' ' -f1)
+# Everything that changes the answer keys it, besides the commit: the title
+# and the description (a retitle is a new review, not the old answer), the
+# model, the profile and the base. git hash-object hashes anywhere git runs
+# (sha256sum is not on macOS).
+input=$(printf '%s\n' "$title" "$body" "$model" "$profile" "$BASE" | git hash-object --stdin)
 mode=full last=''
 if [ "$full" -eq 0 ] && [ -f "$last_json" ] && [ "$(jq -r '.branch // ""' "$last_json")" = "$branch" ]; then
   last=$(jq -r '.sha // ""' "$last_json")
