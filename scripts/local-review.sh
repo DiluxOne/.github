@@ -46,7 +46,8 @@ fi
 body=''
 if [ -n "$body_file" ]; then body=$(cat "$body_file"); fi
 if [ -z "$profile" ]; then
-  profile=$(grep -hoE '^\s+profile:\s*[a-z0-9-]+' .github/workflows/*.yml 2>/dev/null | head -1 | awk '{print $2}')
+  # No match is the usual case outside a plugin: `|| true`, or set -e ends the script here.
+  profile=$( { grep -hoE '^\s+profile:\s*[a-z0-9-]+' .github/workflows/*.yml 2>/dev/null || true; } | head -1 | awk '{print $2}')
   profile=${profile:-general}
 fi
 work=$(mktemp -d "${TMPDIR:-/tmp}/dx-review.XXXXXX")
