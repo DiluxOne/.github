@@ -103,13 +103,17 @@ FAKE
   review_case "a title of another type than the change is not ready" 1 "retitle it" \
     "FAKE_VERDICT='$(verdict fix true '[]')' $run" || fail=1
   review_case "a description that does not match is not ready" 1 "does not match the code" \
-    "printf '## What changes\n\nx\n\n## Why\n\ny\n' > ../body.md; FAKE_VERDICT='$(verdict docs false '[]')' LOCAL_REVIEW_CLAUDE=\$fake bash \"\$CENTRAL/scripts/local-review.sh\" --body-file ../body.md 2>&1" || fail=1
+    "printf '## What changes\n\nx\n\n## Why\n\ny\n' > .git/body.md; FAKE_VERDICT='$(verdict docs false '[]')' LOCAL_REVIEW_CLAUDE=\$fake bash \"\$CENTRAL/scripts/local-review.sh\" --body-file .git/body.md 2>&1" || fail=1
   review_case "nothing new since the last run: the same answer, no review spent" 1 "Already reviewed" \
     "FAKE_VERDICT='$(verdict docs true "$major")' $run >/dev/null; FAKE_FAIL_IF_CALLED=1 $run" || fail=1
   review_case "a commit since the last run is reviewed incrementally" 0 "incremental" \
     "FAKE_VERDICT='$(verdict docs true "$major")' $run >/dev/null; echo fix >> a.md && git commit -qam 'docs(readme): the fix' && FAKE_VERDICT='$(verdict docs true '[]')' LOCAL_REVIEW_CLAUDE=\$fake bash \"\$CENTRAL/scripts/local-review.sh\" --title 'docs(readme): a line' 2>&1" || fail=1
   review_case "the next run shows the reviewer its earlier findings" 0 "a real problem" \
     "FAKE_VERDICT='$(verdict docs true "$major")' $run >/dev/null; echo fix >> a.md && git commit -qam 'docs(readme): the fix' && brief=\$(bash \"\$CENTRAL/scripts/local-review.sh\" --title 'docs(readme): a line' --no-claude 2>&1 | sed -n 's/^\\(.*brief.md\\): .*/\\1/p') && grep -A3 'Your earlier findings' \"\$brief\"" || fail=1
+  review_case "a new title on the same commit is reviewed again, not answered from the file" 0 "Ready for a pull request" \
+    "FAKE_VERDICT='$(verdict fix true '[]')' $run >/dev/null; FAKE_VERDICT='$(verdict docs true '[]')' LOCAL_REVIEW_CLAUDE=\$fake bash \"\$CENTRAL/scripts/local-review.sh\" --title 'docs(readme): a line, retitled' 2>&1" || fail=1
+  review_case "--no-claude on the commit already reviewed builds the whole brief" 0 "(profile general, full)" \
+    "FAKE_VERDICT='$(verdict docs true '[]')' $run >/dev/null; bash \"\$CENTRAL/scripts/local-review.sh\" --no-claude 2>&1" || fail=1
   review_case "--model picks the reviewer's model" 0 "== Review (claude-fable-5-1," \
     "FAKE_VERDICT='$(verdict docs true '[]')' LOCAL_REVIEW_CLAUDE=\$fake bash \"\$CENTRAL/scripts/local-review.sh\" --model claude-fable-5-1 2>&1" || fail=1
   test_case "a --model that is not a model id"           64 "is not a model id" "$commit" --model 'rm -rf /' || fail=1
@@ -179,16 +183,21 @@ fi
 state="$(git rev-parse --git-dir)/dx-review"
 mkdir -p "$state"
 last_json="$state/last.json" findings_md="$state/findings.md"
+# The title and the description are reviewed too: a new one on the same
+# commit (a retitle, a description fixed) is a new review, not the old answer.
+input=$(printf '%s\n%s' "$title" "$body" | sha256sum | cut -d' ' -f1)
 mode=full last=''
 if [ "$full" -eq 0 ] && [ -f "$last_json" ] && [ "$(jq -r '.branch // ""' "$last_json")" = "$branch" ]; then
   last=$(jq -r '.sha // ""' "$last_json")
-  if [ "$last" = "$HEAD" ] && [ "$use_claude" -eq 1 ]; then
+  if [ "$last" = "$HEAD" ] && [ "$use_claude" -eq 1 ] && [ "$(jq -r '.input // ""' "$last_json")" = "$input" ]; then
     echo; echo "== Review"
     echo "Already reviewed at ${HEAD:0:7}, nothing new since: the findings are still in $findings_md (--full to review again)."
     jq -e '.ready == true' "$last_json" >/dev/null && [ "$conventions" -eq 0 ] && { echo "Ready for a pull request."; exit 0; }
     echo "Not ready: fix what $findings_md lists, commit, and run again."; exit 1
   fi
-  if [ -n "$last" ] && git merge-base --is-ancestor "$last" "$HEAD" 2>/dev/null; then mode=incremental; else last=''; fi
+  # Incremental only when there are commits since; on the same commit, the
+  # whole change again (with the new title or description).
+  if [ -n "$last" ] && [ "$last" != "$HEAD" ] && git merge-base --is-ancestor "$last" "$HEAD" 2>/dev/null; then mode=incremental; else last=''; fi
 fi
 
 echo; echo "== Brief (profile $profile, $mode)"
@@ -230,7 +239,9 @@ verdict=$(jq -c '.structured_output // empty' "$work/review.json")
 # What stops the pull request on GitHub stops it here too: a broken
 # convention, a blocker or a major, a description the review says does not
 # match the code, and a title whose type is not the one the review reads
-# from the diff (GitHub relabels it, and the conventions check then fails).
+# from the diff (on GitHub the review retitles the pull request, an edit
+# after the fact to a title that becomes the commit on main and decides
+# the version; here it is set right before the pull request exists).
 reasons_not=()
 [ "$conventions" -eq 0 ] || reasons_not+=("a convention is broken (above)")
 serious=$(jq '[.findings[] | select(.severity == "blocker" or .severity == "major")] | length' <<<"$verdict")
@@ -244,7 +255,7 @@ if [ "$read_type" = breaking ]; then want_type_ok=$([[ "$title_type" == *'!' ]] 
 [ "$want_type_ok" -eq 1 ] || reasons_not+=("the title says \"${title_type:-?}\" but the change is \"$read_type\": retitle it")
 ready=true; [ ${#reasons_not[@]} -eq 0 ] || ready=false
 
-jq --arg sha "$HEAD" --arg branch "$branch" --argjson ready "$ready" '. + {sha: $sha, branch: $branch, ready: $ready}' <<<"$verdict" > "$last_json"
+jq --arg sha "$HEAD" --arg branch "$branch" --arg input "$input" --argjson ready "$ready" '. + {sha: $sha, branch: $branch, input: $input, ready: $ready}' <<<"$verdict" > "$last_json"
 {
   echo "# Local review of $branch at ${HEAD:0:7} ($mode)"
   echo
