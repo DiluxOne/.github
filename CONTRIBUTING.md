@@ -12,8 +12,9 @@ Thanks for helping. This is the default guide for every DiluxOne repository; a r
 
 1. Create a branch from `main`: in your fork if you are an outside contributor, in the repository itself if you are a maintainer.
 2. Make the change, with tests, and update any doc that describes what you changed.
-3. Open a pull request against `main` and fill in the template (see "Writing the pull request" below).
-4. Wait for CI. Pull requests are squash-merged: the PR title becomes the commit title on `main` and the PR description becomes its body.
+3. Review it locally before you push (see "Review before the pull request" below): every review on GitHub costs money and a round of waiting, so the pull request should arrive clean.
+4. Open a pull request against `main` and fill in the template (see "Writing the pull request" below).
+5. Wait for CI. Pull requests are squash-merged: the PR title becomes the commit title on `main` and the PR description becomes its body.
 
 Nothing reaches `main` without a green pull request, maintainers included.
 
@@ -50,6 +51,16 @@ The description becomes the commit body on `main`, so it is part of the project'
 - Short paragraphs, no walls of text, no copy of the diff. Friendly and direct.
 
 CI fails a pull request whose "What changes" or "Why" is empty (bots' are exempt).
+
+## Review before the pull request
+
+[`scripts/local-review.sh`](scripts/local-review.sh) runs, on your machine, what the pull request will be checked on: the conventions ([`scripts/conventions.sh`](scripts/conventions.sh), the checks CI makes), the risk floor ([`scripts/policy.py`](scripts/policy.py)), and the Claude review on the brief CI builds ([`scripts/review-brief.sh`](scripts/review-brief.sh): the review profiles, the repository's `AGENTS.md` and `docs/architecture.md`, the description and the diff), through the Claude Code CLI on your own account. From the repository, with a checkout of this one:
+
+```bash
+bash ../.github/scripts/local-review.sh --body-file pr.md   # the description you will paste
+```
+
+The docs check CI also runs (relative links resolve, no retired product name) is not part of it. It reviews the branch against `origin/main`; the title is the branch's only commit, or `--title`. It ends with "Ready for a pull request" or with what to fix; `--no-claude` stops at the brief, for another reviewer or agent to read. A repository may wrap it in its own target (for a plugin, `make pre-pr`, which also runs the test suites). CI still reviews the pull request: a branch that came out clean here should pass there in one round.
 
 ## What CI checks
 
