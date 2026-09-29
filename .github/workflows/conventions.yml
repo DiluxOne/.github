@@ -20,7 +20,8 @@ name: Conventions
 #         retired-names: 'offload\+|dilux cloud'   # optional
 #         required-sections: 'What changes,Why'   # the default
 #         max-header: 100                         # the default
-#         central-ref: v2                         # the default: where the script is read from
+#         central-ref: v2                         # the default: where the script is read from;
+#                                                 # keep it on the ref the workflow is pinned at
 
 on:
   workflow_call:

@@ -2,9 +2,10 @@ name: Pull request
 
 # This repository's own pipeline: the same conventions and review every
 # DiluxOne repository uses, plus a workflow linter. The reusable workflows are
-# called from this commit (./.github/workflows/...), but the review profiles and
-# policy are read from main, so a pull request cannot rewrite the rules that
-# review it.
+# called from this commit (./.github/workflows/...), but the review profiles,
+# the policy and the brief script are read from main, so a pull request cannot
+# rewrite the rules that review it. The conventions script comes from the pull
+# request itself: it can change conventions.yml anyway.
 
 on:
   # An edit of the title or description is handled by pull-request-edited.yml.
@@ -49,6 +50,9 @@ jobs:
       - run: bash scripts/stamp-version.sh --test
       - run: bash scripts/release-markers.sh --test
       - run: bash scripts/conventions.sh --test
+      - run: bash scripts/review-brief.sh --test
+      - run: bash scripts/local-review.sh --test
+      - run: python3 scripts/policy.py --test
 
   review:
     needs: [conventions, actionlint, scripts]

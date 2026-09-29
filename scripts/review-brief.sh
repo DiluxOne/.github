@@ -18,8 +18,54 @@
 #   PREVIOUS_JSON            incremental only: the last verdict ({"findings": [...]})
 #   OPEN_THREADS, SETTLED_THREADS   JSON files of the review threads; none before a pull request
 #
-# Run from the repository under review.
+# Run from the repository under review. `review-brief.sh --test` checks it
+# against scratch repositories.
 set -euo pipefail
+
+if [ "${1:-}" = "--test" ]; then
+  self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/review-brief.sh
+  central=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+  dir=$(mktemp -d); fail=0
+  check() { if grep -qF -- "$2" "$dir/brief.md"; then echo "ok   $1"; else echo "FAIL $1 (no \"$2\")"; fail=1; fi; }
+  lacks() { if grep -qF -- "$2" "$dir/brief.md"; then echo "FAIL $1 (\"$2\" is there)"; fail=1; else echo "ok   $1"; fi; }
+  build() { ( cd "$dir/repo" && REPO=o/r TITLE="fix(a): b" BODY="the body" BASE=$1 HEAD=$2 FLOOR=$3 REASONS=why PROFILE=general CENTRAL=$central WORK=$dir/work OUT=$dir/brief.md "${@:4}" bash "$self" >/dev/null ); }
+  (
+    mkdir "$dir/repo" && cd "$dir/repo" && git init -q && git config user.email t@t && git config user.name t
+    echo "# Rules of the repo" > AGENTS.md; seq 1 40 > whole.txt; echo keep > small.txt
+    git add -A && git commit -q -m "chore: base"
+  )
+  base=$(git -C "$dir/repo" rev-parse HEAD)
+  (
+    cd "$dir/repo"
+    echo changed >> small.txt; seq 101 140 > whole.txt; printf 'x' > lang.mo; echo '{"lockedDependency": 1}' > package-lock.json
+    git add -A && git commit -q -m "fix(a): b"
+  )
+  head=$(git -C "$dir/repo" rev-parse HEAD)
+  build "$base" "$head" high
+  check "the description is in"                  "the body"
+  check "a changed line is in the diff"          "+changed"
+  check "a rewritten file comes as new content"  "### Rewritten: whole.txt"
+  check "binaries and lock files are listed"     "- lang.mo"
+  check "lock files are listed as not shown"     "- package-lock.json"
+  lacks "lock file content is not in the diff"   "lockedDependency"
+  check "the repository's rules at a high floor" "## Repository file: AGENTS.md"
+  check "the policy floor is stated"             'no lower than "high"'
+  build "$base" "$head" low
+  lacks "no repository rules at a low floor"     "## Repository file: AGENTS.md"
+  lacks "no threads before a pull request"       "### Open threads"
+  check "no pull request number yet"             "a change before its pull request"
+  echo '{"findings":[{"severity":"major","file":"small.txt","line":2,"title":"an earlier finding"}]}' > "$dir/prev.json"; echo '[]' > "$dir/threads.json"
+  build "$base" "$head" high env PR=7 MODE=incremental RANGE="$base..$head" LAST="$base" PREVIOUS_JSON="$dir/prev.json" OPEN_THREADS="$dir/threads.json" SETTLED_THREADS="$dir/threads.json"
+  check "incremental: the earlier findings"      "an earlier finding"
+  check "incremental: the open threads"          "### Open threads"
+  check "a pull request number when there is one" "pull request #7"
+  ( cd "$dir/repo" && head -c 300000 /dev/zero | tr '\0' 'a' | fold -w 100 > big.txt && git add -A && git commit -q -m "fix(a): big" )
+  build "$base" "$(git -C "$dir/repo" rev-parse HEAD)" high
+  check "a diff over the limit is not inlined"    "larger than 250000 bytes"
+  rm -rf "$dir"
+  [ "$fail" -eq 0 ] && echo "all tests passed"
+  exit "$fail"
+fi
 
 : "${REPO:?}" "${BASE:?}" "${HEAD:?}" "${FLOOR:?}" "${PROFILE:?}" "${CENTRAL:?}" "${WORK:?}" "${OUT:?}"
 MODE=${MODE:-full}
