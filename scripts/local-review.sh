@@ -116,6 +116,10 @@ FAKE
     "FAKE_VERDICT='$(verdict docs true '[]')' $run >/dev/null; bash \"\$CENTRAL/scripts/local-review.sh\" --no-claude 2>&1" || fail=1
   review_case "another model on the same commit is a new review" 0 "== Review (claude-fable-5-1," \
     "FAKE_VERDICT='$(verdict docs true '[]')' $run >/dev/null; FAKE_VERDICT='$(verdict docs true '[]')' LOCAL_REVIEW_CLAUDE=\$fake bash \"\$CENTRAL/scripts/local-review.sh\" --model claude-fable-5-1 2>&1" || fail=1
+  review_case "another profile on the same commit is a new review" 0 "(profile plugin-wp, full)" \
+    "FAKE_VERDICT='$(verdict docs true '[]')' $run >/dev/null; FAKE_VERDICT='$(verdict docs true '[]')' LOCAL_REVIEW_CLAUDE=\$fake bash \"\$CENTRAL/scripts/local-review.sh\" --profile plugin-wp 2>&1" || fail=1
+  review_case "another base on the same commit is a new review" 0 "(profile general, full)" \
+    "FAKE_VERDICT='$(verdict docs true '[]')' $run >/dev/null; git checkout -q main && git commit -q --allow-empty -m 'chore: main moves on' && git checkout -q docs/change && FAKE_VERDICT='$(verdict docs true '[]')' LOCAL_REVIEW_CLAUDE=\$fake bash \"\$CENTRAL/scripts/local-review.sh\" --base main 2>&1" || fail=1
   review_case "--model picks the reviewer's model" 0 "== Review (claude-fable-5-1," \
     "FAKE_VERDICT='$(verdict docs true '[]')' LOCAL_REVIEW_CLAUDE=\$fake bash \"\$CENTRAL/scripts/local-review.sh\" --model claude-fable-5-1 2>&1" || fail=1
   test_case "a --model that is not a model id"           64 "is not a model id" "$commit" --model 'rm -rf /' || fail=1
