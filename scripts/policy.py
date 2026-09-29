@@ -43,6 +43,7 @@ import fnmatch
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -50,8 +51,19 @@ import sys
 def load_yaml(path):
     if not os.path.exists(path):
         return {}
-    out = subprocess.run(["yq", "-o=json", ".", path], check=True, capture_output=True, text=True).stdout
-    return json.loads(out or "{}") or {}
+    # yq on the runners; PyYAML where yq is not installed (a contributor's
+    # machine, through scripts/local-review.sh). Both read the same files;
+    # PyYAML reads YAML 1.1 (yes/no/on/off are booleans), so the policy files
+    # write booleans as true/false only.
+    if shutil.which("yq"):
+        out = subprocess.run(["yq", "-o=json", ".", path], check=True, capture_output=True, text=True).stdout
+        return json.loads(out or "{}") or {}
+    try:
+        import yaml
+    except ImportError:
+        sys.exit("policy.py needs yq or PyYAML to read " + path)
+    with open(path, encoding="utf-8") as fh:
+        return yaml.safe_load(fh) or {}
 
 
 def glob_to_regex(pattern):
