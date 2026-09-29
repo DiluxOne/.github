@@ -2,9 +2,9 @@
 # The conventions every pull request is held to: the branch name, the title
 # and every commit header (Conventional Commits, at most MAX_HEADER long), no
 # session links in commits, the description's required sections filled in,
-# and the AI line instead of a "Generated with" footer: what the conventions
-# workflow checks on a pull request, for scripts/local-review.sh to check
-# before one is opened.
+# and the AI line instead of a "Generated with" footer. The conventions
+# workflow runs it on a pull request, scripts/local-review.sh before one is
+# opened, so both give the same answer.
 #
 # Environment: BRANCH, TITLE, BODY, BASE and HEAD_REF (the commits between
 # them are checked), MAX_HEADER (default 100), SECTIONS (comma-separated

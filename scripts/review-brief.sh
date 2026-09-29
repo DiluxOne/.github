@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Builds the review brief: the one file the reviewer reads, as the Claude
-# review on a pull request builds it (claude-review.yml), for the review
-# before one is opened (scripts/local-review.sh), so what a contributor
-# checks locally is what the pull request will be checked on.
+# Builds the review brief: the one file the reviewer reads. The same script
+# serves the Claude review on a pull request (claude-review.yml) and the
+# review before one is opened (scripts/local-review.sh), so what a
+# contributor checks locally is what the pull request will be checked on.
 #
 # Environment:
 #   REPO, TITLE, BODY        the repository and the change's title and description
