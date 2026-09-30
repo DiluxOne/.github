@@ -47,12 +47,14 @@ runs everything. A pull request whose base branch changed after its last
 push fails the conventions on every edit until a push runs the suites
 against the new base. The conventions read the labels as they are when
 they run, not as the event carried them, so a re-run sees the `type:*`
-label the review set since; and they compare the title's type with it only
-once the review has read the commit (its last record names the commit), so
-a push that changes the title waits for the review's new reading instead of
-failing on the old label. An edit and a push that land on one commit review
-in separate concurrency groups: neither cancels the other, since a
-cancelled run leaves a cancelled check that blocks the merge. Once a week everything runs against today's
+label the review set since; they compare the title's type with it once the
+review has read the commit (the review App's last record names it) or has
+reached its cap, so a push that changes the title waits for the review's
+new reading instead of failing on the old label. An edit's review runs in a
+concurrency group of its own: it cancels nothing and nothing cancels it (a
+cancelled run leaves a cancelled check that blocks the merge), and it
+spends nothing, reusing the verdict on a commit the review read and
+leaving a commit it has not read to its push's run. Once a week everything runs against today's
 WordPress and tools, and a failure opens one `ci:weekly` issue; *Run
 workflow* runs everything by hand, and its failure is in the run alone.
 

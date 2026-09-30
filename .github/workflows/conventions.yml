@@ -38,6 +38,10 @@ on:
         description: Maximum length of a PR title or commit header.
         type: number
         default: 100
+      review-bot:
+        description: The login of the App that posts the Claude review; only its comments carry a record the conventions trust.
+        type: string
+        default: 'dilux-bot[bot]'
       central-ref:
         description: Ref of DiluxOne/.github to read the conventions script from.
         type: string
@@ -99,7 +103,7 @@ jobs:
           path: .dx-central
           persist-credentials: false
 
-      - name: The labels and the last review, as they are now
+      - name: The labels and the review's comments, as they are now
         id: live
         env:
           GH_TOKEN: ${{ github.token }}
@@ -107,16 +111,17 @@ jobs:
           EVENT_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
         # The event carries the labels of the moment it fired, and a re-run
         # replays that event: a type:* label the review changed since would
-        # read as the old one. Ask for them now, with the commit the last
-        # review read; without read access to the pull request, the event's.
+        # read as the old one. Ask for them now, and for the comments, where
+        # the review's last record says which commit it read.
         run: |
-          if pr=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels,comments 2>/dev/null); then
-            labels=$(jq -r '[.labels[].name] | join(",")' <<<"$pr")
-            reviewed=$(jq -r '[.comments[].body | capture("<!-- dx-review-record (?<r>\\{.*\\}) -->").r | fromjson? | .sha // empty] | last // ""' <<<"$pr")
+          if labels=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/labels" --jq '[.[].name] | join(",")') \
+             && gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate > "$RUNNER_TEMP/comments.json"; then
+            echo "labels=$labels" >> "$GITHUB_OUTPUT"
           else
-            labels=$EVENT_LABELS; reviewed=""
+            echo "::warning::Could not read the pull request's labels and comments (the caller's job needs pull-requests: read); the event's labels are used, and a re-run may see a type:* label the review has changed since."
+            echo "labels=$EVENT_LABELS" >> "$GITHUB_OUTPUT"
+            echo '[]' > "$RUNNER_TEMP/comments.json"
           fi
-          { echo "labels=$labels"; echo "reviewed=$reviewed"; } >> "$GITHUB_OUTPUT"
 
       - name: Check branch, title and commits
         env:
@@ -131,7 +136,8 @@ jobs:
           AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
           SECTIONS: ${{ inputs.required-sections }}
           LABELS: ${{ steps.live.outputs.labels }}
-          REVIEWED_SHA: ${{ steps.live.outputs.reviewed }}
+          COMMENTS_FILE: ${{ runner.temp }}/comments.json
+          REVIEW_BOT: ${{ inputs.review-bot }}
         run: bash .dx-central/scripts/conventions.sh
 
   docs:

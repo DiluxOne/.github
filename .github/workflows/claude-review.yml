@@ -109,13 +109,15 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository &&
       !github.event.pull_request.draft
     # An edit of the title or description and a push can land on the same
-    # commit a second apart. Each gets its own group, so neither cancels the
-    # other: a cancelled run leaves a cancelled check on the commit, which
-    # blocks the merge even when the other run passed. A push still cancels
-    # the review of the push before it (a check on an older commit blocks
-    # nothing); an edit waits instead of cancelling.
+    # commit a second apart, and a cancelled run leaves a cancelled check on
+    # the commit that blocks the merge even when the other run passed. So an
+    # edit runs in a group of its own run: it cancels nothing and nothing
+    # cancels it (it spends nothing: it reuses the verdict on a commit the
+    # review read, and waits for the push's review on one it has not). A push
+    # still cancels the review of the push before it, whose check sits on an
+    # older commit and blocks nothing.
     concurrency:
-      group: claude-review-${{ github.repository }}-${{ github.event.pull_request.number }}-${{ github.event.action == 'edited' && 'edited' || 'code' }}
+      group: claude-review-${{ github.repository }}-${{ github.event.pull_request.number }}-${{ github.event.action == 'edited' && github.run_id || 'code' }}
       cancel-in-progress: ${{ github.event.action != 'edited' }}
     outputs:
       risk: ${{ steps.verdict.outputs.risk }}
@@ -194,6 +196,7 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           HEAD: ${{ github.event.pull_request.head.sha }}
           BASE: ${{ github.event.pull_request.base.sha }}
+          ACTION: ${{ github.event.action }}
           FLOOR: ${{ steps.policy.outputs.floor }}
           MAX_AUTO: ${{ inputs.max-auto-reviews }}
           MODEL: ${{ steps.policy.outputs.model }}
@@ -219,6 +222,10 @@ jobs:
             mode=full
           elif [ "$last" = "$HEAD" ] && [ "$has_verdict" = yes ]; then
             mode=reuse
+          elif [ "$ACTION" = edited ]; then
+            # The push's own run reviews this commit (or its review was
+            # capped): an edit does not pay for a second one.
+            mode=pending
           elif [ -n "$last" ] && [ "$count" -ge "$MAX_AUTO" ] && [ "$has_verdict" = yes ]; then
             mode=capped
           elif [ -n "$last" ] && git cat-file -e "$last^{commit}" 2>/dev/null \
@@ -370,6 +377,11 @@ jobs:
           }
           previous="$RUNNER_TEMP/previous.json"
 
+          if [ "$MODE" = pending ]; then
+            echo "::notice::The review of ${SHA:0:7} runs from its push; this edit is read there, or by the next review. Nothing spent."
+            exit 0
+          fi
+
           rank() { case "$1" in low) echo 0;; medium) echo 1;; *) echo 2;; esac; }
           if [ "$MODE" = reuse ] || [ "$MODE" = capped ]; then
             risk=$(jq -r .risk "$previous"); complexity=$(jq -r .complexity "$previous"); blocking=$(jq -r .blocking "$previous")
@@ -472,8 +484,10 @@ jobs:
           # The changed files travel with the record: the weekly learning job
           # uses them as evidence for a repository's safe and risky paths.
           files=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json files --jq '[.files[].path] | .[:300]' 2>/dev/null || echo '[]')
-          record=$(jq -c --arg risk "$risk" --arg floor "$FLOOR" --arg sha "$SHA" --arg model "$MODEL" --arg mode "$MODE" --argjson count "$count" --arg cost "${cost:-}" --argjson files "$files" --arg type "$type" --arg text "$text" \
-            '{risk:$risk, model_risk:.risk, floor:$floor, complexity, blocking, type:$type, description_matches:.description_matches, text:$text, lessons, findings, sha:$sha, model:$model, mode:$mode, count:$count, cost:$cost, files:$files}' <<<"$OUT")
+          # `max` lets the conventions tell a capped review (no new reading
+          # will come) from one still to run on a new commit.
+          record=$(jq -c --arg risk "$risk" --arg floor "$FLOOR" --arg sha "$SHA" --arg model "$MODEL" --arg mode "$MODE" --argjson count "$count" --argjson max "${MAX_AUTO:-5}" --arg cost "${cost:-}" --argjson files "$files" --arg type "$type" --arg text "$text" \
+            '{risk:$risk, model_risk:.risk, floor:$floor, complexity, blocking, type:$type, description_matches:.description_matches, text:$text, lessons, findings, sha:$sha, model:$model, mode:$mode, count:$count, max:$max, cost:$cost, files:$files}' <<<"$OUT")
           body=$(cat <<EOF
           <!-- dx-review -->
           ### Claude review · risk **$risk** · complexity **$complexity** · type **$type**$blk

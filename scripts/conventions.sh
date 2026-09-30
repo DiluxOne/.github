@@ -9,18 +9,38 @@
 # Environment: BRANCH, TITLE, BODY, BASE and HEAD_REF (the commits between
 # them are checked), MAX_HEADER (default 100), SECTIONS (comma-separated
 # headings, default "What changes,Why"; empty skips), LABELS (comma-separated,
-# optional), REVIEWED_SHA (the commit the last review read, optional),
-# AUTHOR_TYPE (Bot skips the sections). Run from the repository.
+# optional), COMMENTS_FILE and REVIEW_BOT (the pull request's comments as the
+# REST API lists them, and the login of the App whose review records count;
+# optional), AUTHOR_TYPE (Bot skips the sections). Run from the repository.
 #
 #   conventions.sh          check (exit 1 on any broken rule)
 #   conventions.sh --test   self-test against a scratch repository
 set -euo pipefail
 
+# Whether the review is still to read HEAD_REF: its last record (only the
+# review App's own comment counts, and only a 40-hex commit) names another
+# commit, and the review is not capped (count below max, 5 by default: a
+# capped review reads no new commit, so its label stands). Without a
+# readable record the comparison runs: nothing here can switch it off.
+review_pending() {
+  local record sha count max
+  [ -n "$COMMENTS_FILE" ] && [ -s "$COMMENTS_FILE" ] || return 1
+  # shellcheck disable=SC2016 # jq variables, not shell ones.
+  record=$(jq -r --arg bot "$REVIEW_BOT" '[.[] | select(.user.login == $bot and (.body | startswith("<!-- dx-review -->"))) | .body] | last // ""' "$COMMENTS_FILE" 2>/dev/null \
+    | sed -n 's/^.*<!-- dx-review-record \(.*\) -->.*$/\1/p' | tail -1 || true)
+  sha=$(jq -r '.sha // ""' <<<"${record:-null}" 2>/dev/null || true)
+  count=$(jq -r '.count // 0' <<<"${record:-null}" 2>/dev/null || echo 0)
+  max=$(jq -r '.max // 5' <<<"${record:-null}" 2>/dev/null || echo 5)
+  [[ "$sha" =~ ^[0-9a-f]{40}$ ]] && [[ "$count" =~ ^[0-9]+$ ]] && [[ "$max" =~ ^[0-9]+$ ]] || return 1
+  [ "$sha" != "$HEAD_REF" ] && [ "$count" -lt "$max" ]
+}
+
 check() {
   MAX_HEADER=${MAX_HEADER:-100}
   SECTIONS=${SECTIONS-What changes,Why}
   LABELS=${LABELS:-}
-  REVIEWED_SHA=${REVIEWED_SHA:-}
+  COMMENTS_FILE=${COMMENTS_FILE:-}
+  REVIEW_BOT=${REVIEW_BOT:-dilux-bot[bot]}
   AUTHOR_TYPE=${AUTHOR_TYPE:-User}
   TYPES='feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert'
   HEADER_RE="^(${TYPES})(\([a-z0-9._/-]+\))?!?: [^ ].*[^.]$"
@@ -44,8 +64,8 @@ check() {
   # (it runs after this check and relabels), the comparison waits.
   typelabel=$(tr ',' '\n' <<<"$LABELS" | grep -m1 '^type:' | sed 's/^type://' || true)
   TYPE_RE='^([a-z]+)(\([^)]*\))?(!?): '
-  if [ -n "$typelabel" ] && [ -n "$REVIEWED_SHA" ] && [ "$REVIEWED_SHA" != "$HEAD_REF" ]; then
-    echo "The review has not read ${HEAD_REF:0:7} yet (last: ${REVIEWED_SHA:0:7}); the title's type is checked against its reading once it has."
+  if [ -n "$typelabel" ] && review_pending; then
+    echo "The review has not read ${HEAD_REF:0:7} yet; the title's type is checked against its reading once it has."
   elif [ -n "$typelabel" ] && [[ "$TITLE" =~ $TYPE_RE ]]; then
     token=${BASH_REMATCH[1]}; bang=${BASH_REMATCH[3]}
     if [ "$typelabel" = breaking ]; then
@@ -85,14 +105,17 @@ check() {
 # One case: a scratch repository whose branch adds one commit with this
 # message; expect 0 (passes) or 1 (fails).
 test_case() {
-  local name=$1 want=$2 branch=$3 title=$4 message=$5 body=$6 labels=${7:-} reviewed=${8:-} got dir
+  local name=$1 want=$2 branch=$3 title=$4 message=$5 body=$6 labels=${7:-} comments=${8:-} got dir
   dir=$(mktemp -d)
   (
     cd "$dir" && git init -q && git config user.email t@t && git config user.name t
     git commit -q --allow-empty -m "chore: base" && git checkout -q -b topic
     git commit -q --allow-empty -m "$message"
-    [ "$reviewed" = head ] && reviewed=$(git rev-parse HEAD)
-    BRANCH=$branch TITLE=$title BODY=$body LABELS=$labels REVIEWED_SHA=$reviewed BASE=$(git rev-parse HEAD~1) HEAD_REF=$(git rev-parse HEAD) check >/dev/null 2>&1
+    file=""
+    if [ -n "$comments" ]; then
+      file=$(mktemp); printf '%s' "${comments//HEADSHA/$(git rev-parse HEAD)}" > "$file"
+    fi
+    BRANCH=$branch TITLE=$title BODY=$body LABELS=$labels COMMENTS_FILE=$file REVIEW_BOT='dilux-bot[bot]' BASE=$(git rev-parse HEAD~1) HEAD_REF=$(git rev-parse HEAD) check >/dev/null 2>&1
   ) && got=0 || got=1
   rm -rf "$dir"
   if [ "$got" = "$want" ]; then echo "ok   $name"; else echo "FAIL $name (want $want, got $got)"; return 1; fi
@@ -112,8 +135,13 @@ if [ "${1:-}" = "--test" ]; then
   test_case "fails: an empty Why"                 1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" $'## 📝 What changes\n\nA thing.\n\n## 💡 Why\n\n<!-- say why -->' || fail=1
   test_case "fails: a Generated with footer"      1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good"$'\n🤖 Generated with [Claude Code](https://claude.com/claude-code)' || fail=1
   test_case "fails: title type unlike the label"  1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" || fail=1
-  test_case "fails: unlike the label the review set on this commit" 1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" head || fail=1
-  test_case "passes: a label from a commit the review has not read" 0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" 0123456789abcdef0123456789abcdef01234567 || fail=1
+  rec() { printf '[{"user":{"login":"%s"},"body":"<!-- dx-review -->\\n<!-- dx-review-record {\\"sha\\":\\"%s\\",\\"count\\":%s%s} -->"}]' "$1" "$2" "$3" "$4"; }
+  other=0123456789abcdef0123456789abcdef01234567
+  test_case "fails: unlike the label the review set on this commit" 1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" "$(rec 'dilux-bot[bot]' HEADSHA 1 '')" || fail=1
+  test_case "passes: a label from a commit the review has not read" 0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" "$(rec 'dilux-bot[bot]' "$other" 1 '')" || fail=1
+  test_case "fails: a record anyone else posted counts for nothing" 1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" "$(rec 'someone' "$other" 1 '')" || fail=1
+  test_case "fails: a capped review reads no new commit"          1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" "$(rec 'dilux-bot[bot]' "$other" 5 ',\\"max\\":5')" || fail=1
+  test_case "fails: a record whose sha is not a commit"           1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" "$(rec 'dilux-bot[bot]' 'abc\\nx' 1 '')" || fail=1
   [ "$fail" -eq 0 ] && echo "all tests passed"
   exit "$fail"
 fi
