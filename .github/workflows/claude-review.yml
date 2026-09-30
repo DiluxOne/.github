@@ -6,8 +6,9 @@ name: Claude review
 #   1. A deterministic policy (scripts/policy.py) decides the lowest risk the
 #      PR can have from its paths alone: the reviewer can raise it, never
 #      lower it. The floor also picks the model and the effort: a low floor
-#      (docs, tests, lockfiles) goes to the light model at low effort,
-#      anything else to the strong one, as the policy files say; a repository
+#      (docs, tests, lockfiles) goes to the light model at low effort, a
+#      medium one to the light model at medium effort, a high one to the
+#      strong model, as the policy files say; a repository
 #      overrides any level in its .github/review-policy.yml (`review:`), which
 #      is read from the base branch so a change cannot pick its own reviewer. At a low floor the brief carries the profiles and the diff
 #      only; AGENTS.md and docs/architecture.md are added above it.

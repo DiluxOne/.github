@@ -86,7 +86,7 @@ is in the run alone.
    code:
      - "bin/**"
    review:
-     medium: { model: claude-sonnet-5, effort: medium }
+     high: { model: claude-opus-5-5, effort: high }
    budget-usd: 2
    auto-merge: true
    ```

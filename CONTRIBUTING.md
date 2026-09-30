@@ -70,7 +70,7 @@ Pull requests from branches of the repository (not drafts, not forks) are review
 
 - The first review reads the whole change; later ones read only what you pushed since, so keep pushes meaningful. Editing the title or description does not trigger a new review; an edited description counts as unchecked (no auto-merge) until the next push or the `review:full` label.
 - The review decides the type of the change from the diff and sets it as a `type:*` label; it corrects the title's type to match (the version number is computed from these labels). If it is wrong, set a different `type:*` label yourself: the bot keeps a label a person set.
-- Low-risk changes (docs, tests, lockfiles) get the light model; everything else the strong one.
+- Low- and medium-risk changes get the light model (low effort for docs, tests and lockfiles, medium for ordinary code); high-risk ones the strong one.
 - After 5 automatic reviews the next push keeps the last verdict and a human merges: add the `review:full` label, then push or re-run the review, to ask for another full pass.
 - It merges on its own only when the change touches only low-risk paths, the review rated it low risk and low complexity without blocking, the description matches the code (nothing claimed the diff does not do, no behaviour change left unsaid), the author is a trusted maintainer (or Dependabot), every required check is green and the policy has auto-merge on. Anything else, a maintainer merges.
 
@@ -118,7 +118,7 @@ When AI took part, say so in one sober line at the end of the pull request descr
 
 - **AI-assisted:** a person wrote or directed the change and an AI helped.
 - **AI-generated:** an AI wrote the change and a person reviewed it.
-- Several models: `🤖 AI-generated · Claude Opus 5.5, Claude Sonnet 5 (Anthropic)`.
+- Several models: `🤖 AI-generated · Claude Opus 5.5, Claude Sonnet 5.5 (Anthropic)`.
 - The same line closes any issue or pull request comment an agent writes for someone.
 - No product advertising: CI rejects a description that says "Generated with Claude Code" or similar.
 
