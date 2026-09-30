@@ -28,8 +28,8 @@ high-risk:
 # what it leaves out stays as here. Replies to @dilux-bot and the weekly
 # learnings use the `high` reviewer.
 review:
-  low:    { model: claude-sonnet-5, effort: low }
-  medium: { model: claude-opus-5-5, effort: medium }
+  low:    { model: claude-sonnet-5-5, effort: low }
+  medium: { model: claude-sonnet-5-5, effort: medium }
   high:   { model: claude-opus-5-5, effort: medium }
 
 # The most one review run may spend, in USD. A repository can lower or raise it.

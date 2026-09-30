@@ -118,7 +118,7 @@ When AI took part, say so in one sober line at the end of the pull request descr
 
 - **AI-assisted:** a person wrote or directed the change and an AI helped.
 - **AI-generated:** an AI wrote the change and a person reviewed it.
-- Several models: `🤖 AI-generated · Claude Opus 5.5, Claude Sonnet 5 (Anthropic)`.
+- Several models: `🤖 AI-generated · Claude Opus 5.5, Claude Sonnet 5.5 (Anthropic)`.
 - The same line closes any issue or pull request comment an agent writes for someone.
 - No product advertising: CI rejects a description that says "Generated with Claude Code" or similar.
 
