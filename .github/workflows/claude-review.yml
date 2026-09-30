@@ -103,14 +103,25 @@ jobs:
   review:
     name: Claude review
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # An edit may wait for its push's review, which itself can take the 30
+    # minutes a review job has: an edit's job gets longer to outlast it.
+    timeout-minutes: ${{ github.event.action == 'edited' && 60 || 30 }}
     if: >-
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       !github.event.pull_request.draft
+    # An edit of the title or description and a push can land on the same
+    # commit a second apart, and a cancelled run leaves a cancelled check on
+    # the commit that blocks the merge even when the other run passed. So an
+    # edit runs in a group of its own run: it cancels nothing and nothing
+    # cancels it (it spends nothing: it reuses the verdict on a commit the
+    # review read, and waits for the push's review of one it has not, then
+    # reuses that; with no such review it fails). A push
+    # still cancels the review of the push before it, whose check sits on an
+    # older commit and blocks nothing.
     concurrency:
-      group: claude-review-${{ github.repository }}-${{ github.event.pull_request.number }}
-      cancel-in-progress: true
+      group: claude-review-${{ github.repository }}-${{ github.event.pull_request.number }}-${{ github.event.action == 'edited' && github.run_id || 'code' }}
+      cancel-in-progress: ${{ github.event.action != 'edited' }}
     outputs:
       risk: ${{ steps.verdict.outputs.risk }}
       complexity: ${{ steps.verdict.outputs.complexity }}
@@ -188,6 +199,7 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           HEAD: ${{ github.event.pull_request.head.sha }}
           BASE: ${{ github.event.pull_request.base.sha }}
+          ACTION: ${{ github.event.action }}
           FLOOR: ${{ steps.policy.outputs.floor }}
           MAX_AUTO: ${{ inputs.max-auto-reviews }}
           MODEL: ${{ steps.policy.outputs.model }}
@@ -215,6 +227,30 @@ jobs:
             mode=reuse
           elif [ -n "$last" ] && [ "$count" -ge "$MAX_AUTO" ] && [ "$has_verdict" = yes ]; then
             mode=capped
+          elif [ "$ACTION" = edited ]; then
+            # An edit on a commit its push's run is still reviewing: it pays
+            # for no second review. It waits for that run's record of this
+            # commit and reuses its verdict (the edited description is then
+            # compared with the one the review read), and fails when none
+            # comes: a green check without a verdict would replace the push
+            # run's own under the same name.
+            # Up to 50 minutes: longer than a push's review job (30) can run.
+            for _ in $(seq 1 100); do
+              sleep 30
+              record=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
+                | jq -r --arg bot "$BOT" '.[] | select(.user.login == $bot and (.body | startswith("<!-- dx-review -->"))) | .body' \
+                | grep -oP '<!-- dx-review-record \K.*(?= -->)' | tail -1 || true)
+              printf '%s' "${record:-null}" | jq . > "$RUNNER_TEMP/previous.json" 2>/dev/null || echo null > "$RUNNER_TEMP/previous.json"
+              if [ "$(jq -r '.sha // empty' "$RUNNER_TEMP/previous.json")" = "$HEAD" ] \
+                 && [ "$(jq -r 'if .risk and .complexity and (.blocking != null) then "yes" else "no" end' "$RUNNER_TEMP/previous.json")" = yes ]; then
+                mode=reuse; break
+              fi
+            done
+            if [ "$mode" != reuse ]; then
+              echo "::error::No review of ${HEAD:0:7} came from its push within 50 minutes; push again, or re-run that review."
+              exit 1
+            fi
+            last=$HEAD; count=$(jq -r '.count // 0' "$RUNNER_TEMP/previous.json")
           elif [ -n "$last" ] && git cat-file -e "$last^{commit}" 2>/dev/null \
                && git merge-base --is-ancestor "$last" "$HEAD" \
                && [ -z "$(git rev-list --merges "$last..$HEAD")" ]; then
@@ -284,7 +320,11 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ steps.bot.outputs.token }}
-          allowed_bots: 'dependabot[bot]'
+          # Dependabot's pull requests, and the organisation's own App's (the
+          # weekly review-learnings proposals, the reproduction drafts): the
+          # action refuses any other bot as the actor, and the review of those
+          # ended without a verdict.
+          allowed_bots: dependabot[bot],${{ steps.bot.outputs.app-slug }}
           prompt: |
             You are the code reviewer for ${{ github.repository }}, pull request #${{ github.event.pull_request.number }}.
 
@@ -462,8 +502,10 @@ jobs:
           # The changed files travel with the record: the weekly learning job
           # uses them as evidence for a repository's safe and risky paths.
           files=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json files --jq '[.files[].path] | .[:300]' 2>/dev/null || echo '[]')
-          record=$(jq -c --arg risk "$risk" --arg floor "$FLOOR" --arg sha "$SHA" --arg model "$MODEL" --arg mode "$MODE" --argjson count "$count" --arg cost "${cost:-}" --argjson files "$files" --arg type "$type" --arg text "$text" \
-            '{risk:$risk, model_risk:.risk, floor:$floor, complexity, blocking, type:$type, description_matches:.description_matches, text:$text, lessons, findings, sha:$sha, model:$model, mode:$mode, count:$count, cost:$cost, files:$files}' <<<"$OUT")
+          # `max` lets the conventions tell a capped review (no new reading
+          # will come) from one still to run on a new commit.
+          record=$(jq -c --arg risk "$risk" --arg floor "$FLOOR" --arg sha "$SHA" --arg model "$MODEL" --arg mode "$MODE" --argjson count "$count" --argjson max "${MAX_AUTO:-5}" --arg cost "${cost:-}" --argjson files "$files" --arg type "$type" --arg text "$text" \
+            '{risk:$risk, model_risk:.risk, floor:$floor, complexity, blocking, type:$type, description_matches:.description_matches, text:$text, lessons, findings, sha:$sha, model:$model, mode:$mode, count:$count, max:$max, cost:$cost, files:$files}' <<<"$OUT")
           body=$(cat <<EOF
           <!-- dx-review -->
           ### Claude review · risk **$risk** · complexity **$complexity** · type **$type**$blk
