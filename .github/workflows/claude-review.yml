@@ -108,9 +108,15 @@ jobs:
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       !github.event.pull_request.draft
+    # An edit of the title or description and a push can land on the same
+    # commit a second apart. Each gets its own group, so neither cancels the
+    # other: a cancelled run leaves a cancelled check on the commit, which
+    # blocks the merge even when the other run passed. A push still cancels
+    # the review of the push before it (a check on an older commit blocks
+    # nothing); an edit waits instead of cancelling.
     concurrency:
-      group: claude-review-${{ github.repository }}-${{ github.event.pull_request.number }}
-      cancel-in-progress: true
+      group: claude-review-${{ github.repository }}-${{ github.event.pull_request.number }}-${{ github.event.action == 'edited' && 'edited' || 'code' }}
+      cancel-in-progress: ${{ github.event.action != 'edited' }}
     outputs:
       risk: ${{ steps.verdict.outputs.risk }}
       complexity: ${{ steps.verdict.outputs.complexity }}
@@ -284,7 +290,11 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ steps.bot.outputs.token }}
-          allowed_bots: 'dependabot[bot]'
+          # Dependabot's pull requests, and the organisation's own App's (the
+          # weekly review-learnings proposals, the reproduction drafts): the
+          # action refuses any other bot as the actor, and the review of those
+          # ended without a verdict.
+          allowed_bots: dependabot[bot],${{ steps.bot.outputs.app-slug }}
           prompt: |
             You are the code reviewer for ${{ github.repository }}, pull request #${{ github.event.pull_request.number }}.
 

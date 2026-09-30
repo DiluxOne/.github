@@ -99,6 +99,25 @@ jobs:
           path: .dx-central
           persist-credentials: false
 
+      - name: The labels and the last review, as they are now
+        id: live
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          EVENT_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        # The event carries the labels of the moment it fired, and a re-run
+        # replays that event: a type:* label the review changed since would
+        # read as the old one. Ask for them now, with the commit the last
+        # review read; without read access to the pull request, the event's.
+        run: |
+          if pr=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels,comments 2>/dev/null); then
+            labels=$(jq -r '[.labels[].name] | join(",")' <<<"$pr")
+            reviewed=$(jq -r '[.comments[].body | capture("<!-- dx-review-record (?<r>\\{.*\\}) -->").r | fromjson? | .sha // empty] | last // ""' <<<"$pr")
+          else
+            labels=$EVENT_LABELS; reviewed=""
+          fi
+          { echo "labels=$labels"; echo "reviewed=$reviewed"; } >> "$GITHUB_OUTPUT"
+
       - name: Check branch, title and commits
         env:
           # Through env, never interpolated into the script: a title is
@@ -111,7 +130,8 @@ jobs:
           BODY: ${{ github.event.pull_request.body }}
           AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
           SECTIONS: ${{ inputs.required-sections }}
-          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          LABELS: ${{ steps.live.outputs.labels }}
+          REVIEWED_SHA: ${{ steps.live.outputs.reviewed }}
         run: bash .dx-central/scripts/conventions.sh
 
   docs:

@@ -9,7 +9,8 @@
 # Environment: BRANCH, TITLE, BODY, BASE and HEAD_REF (the commits between
 # them are checked), MAX_HEADER (default 100), SECTIONS (comma-separated
 # headings, default "What changes,Why"; empty skips), LABELS (comma-separated,
-# optional), AUTHOR_TYPE (Bot skips the sections). Run from the repository.
+# optional), REVIEWED_SHA (the commit the last review read, optional),
+# AUTHOR_TYPE (Bot skips the sections). Run from the repository.
 #
 #   conventions.sh          check (exit 1 on any broken rule)
 #   conventions.sh --test   self-test against a scratch repository
@@ -19,6 +20,7 @@ check() {
   MAX_HEADER=${MAX_HEADER:-100}
   SECTIONS=${SECTIONS-What changes,Why}
   LABELS=${LABELS:-}
+  REVIEWED_SHA=${REVIEWED_SHA:-}
   AUTHOR_TYPE=${AUTHOR_TYPE:-User}
   TYPES='feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert'
   HEADER_RE="^(${TYPES})(\([a-z0-9._/-]+\))?!?: [^ ].*[^.]$"
@@ -37,10 +39,14 @@ check() {
   # The type:* label is the review's reading of the diff (or a person's
   # override); the title, which becomes the commit on main, must say the
   # same. The review corrects the title itself; this catches a later
-  # hand edit that undoes it.
+  # hand edit that undoes it. A label the review set on an earlier commit
+  # is not its reading of this one: until the review has read this commit
+  # (it runs after this check and relabels), the comparison waits.
   typelabel=$(tr ',' '\n' <<<"$LABELS" | grep -m1 '^type:' | sed 's/^type://' || true)
   TYPE_RE='^([a-z]+)(\([^)]*\))?(!?): '
-  if [ -n "$typelabel" ] && [[ "$TITLE" =~ $TYPE_RE ]]; then
+  if [ -n "$typelabel" ] && [ -n "$REVIEWED_SHA" ] && [ "$REVIEWED_SHA" != "$HEAD_REF" ]; then
+    echo "The review has not read ${HEAD_REF:0:7} yet (last: ${REVIEWED_SHA:0:7}); the title's type is checked against its reading once it has."
+  elif [ -n "$typelabel" ] && [[ "$TITLE" =~ $TYPE_RE ]]; then
     token=${BASH_REMATCH[1]}; bang=${BASH_REMATCH[3]}
     if [ "$typelabel" = breaking ]; then
       [ "$bang" = '!' ] || error "The pull request is labelled type:breaking, so its title needs the \"!\" of a breaking change: \"$token$bang:\"."
@@ -79,13 +85,14 @@ check() {
 # One case: a scratch repository whose branch adds one commit with this
 # message; expect 0 (passes) or 1 (fails).
 test_case() {
-  local name=$1 want=$2 branch=$3 title=$4 message=$5 body=$6 labels=${7:-} got dir
+  local name=$1 want=$2 branch=$3 title=$4 message=$5 body=$6 labels=${7:-} reviewed=${8:-} got dir
   dir=$(mktemp -d)
   (
     cd "$dir" && git init -q && git config user.email t@t && git config user.name t
     git commit -q --allow-empty -m "chore: base" && git checkout -q -b topic
     git commit -q --allow-empty -m "$message"
-    BRANCH=$branch TITLE=$title BODY=$body LABELS=$labels BASE=$(git rev-parse HEAD~1) HEAD_REF=$(git rev-parse HEAD) check >/dev/null 2>&1
+    [ "$reviewed" = head ] && reviewed=$(git rev-parse HEAD)
+    BRANCH=$branch TITLE=$title BODY=$body LABELS=$labels REVIEWED_SHA=$reviewed BASE=$(git rev-parse HEAD~1) HEAD_REF=$(git rev-parse HEAD) check >/dev/null 2>&1
   ) && got=0 || got=1
   rm -rf "$dir"
   if [ "$got" = "$want" ]; then echo "ok   $name"; else echo "FAIL $name (want $want, got $got)"; return 1; fi
@@ -105,6 +112,8 @@ if [ "${1:-}" = "--test" ]; then
   test_case "fails: an empty Why"                 1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" $'## 📝 What changes\n\nA thing.\n\n## 💡 Why\n\n<!-- say why -->' || fail=1
   test_case "fails: a Generated with footer"      1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good"$'\n🤖 Generated with [Claude Code](https://claude.com/claude-code)' || fail=1
   test_case "fails: title type unlike the label"  1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" || fail=1
+  test_case "fails: unlike the label the review set on this commit" 1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" head || fail=1
+  test_case "passes: a label from a commit the review has not read" 0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" 0123456789abcdef0123456789abcdef01234567 || fail=1
   [ "$fail" -eq 0 ] && echo "all tests passed"
   exit "$fail"
 fi

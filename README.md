@@ -26,7 +26,8 @@ request template, issue forms) unless it has its own. The rules for contributors
    base branch, so a change cannot pick its own reviewer), skips the
    repository's code rules for text-only changes, and after `max-auto-reviews`
    (5) keeps the last verdict until the `review:full` label asks for more.
-   Drafts and forks are not reviewed.
+   Drafts and forks are not reviewed; pull requests Dependabot or the
+   organisation's App open are (`allowed_bots`).
 3. **Merge.** A human, with [`scripts/squash-merge.sh`](scripts/squash-merge.sh)
    `<owner/repo> <number>` (description verbatim, co-authors kept), or
    GitHub's auto-merge when the floor is low, the verdict is low risk and low
@@ -44,7 +45,14 @@ merge of a pull request of this repository, that its tree is the one that
 pull request's checks ran on and that every check there passed; any doubt
 runs everything. A pull request whose base branch changed after its last
 push fails the conventions on every edit until a push runs the suites
-against the new base. Once a week everything runs against today's
+against the new base. The conventions read the labels as they are when
+they run, not as the event carried them, so a re-run sees the `type:*`
+label the review set since; and they compare the title's type with it only
+once the review has read the commit (its last record names the commit), so
+a push that changes the title waits for the review's new reading instead of
+failing on the old label. An edit and a push that land on one commit review
+in separate concurrency groups: neither cancels the other, since a
+cancelled run leaves a cancelled check that blocks the merge. Once a week everything runs against today's
 WordPress and tools, and a failure opens one `ci:weekly` issue; *Run
 workflow* runs everything by hand, and its failure is in the run alone.
 
