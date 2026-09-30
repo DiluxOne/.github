@@ -5,7 +5,8 @@ name: Conventions
 # main), every commit the branch adds (no Claude-Session trailer), and a
 # description whose required sections are filled in (it becomes the commit
 # body) and that carries no "Generated with" footer (AI is disclosed with
-# the one sober line instead). Plus a docs check whenever the caller runs (pull requests and
+# the one sober line instead). The checks themselves are scripts/conventions.sh,
+# which scripts/local-review.sh runs before a pull request is opened. Plus a docs check whenever the caller runs (pull requests and
 # pushes to main): relative Markdown links resolve, and no retired product
 # name comes back.
 #
@@ -19,6 +20,8 @@ name: Conventions
 #         retired-names: 'offload\+|dilux cloud'   # optional
 #         required-sections: 'What changes,Why'   # the default
 #         max-header: 100                         # the default
+#         central-ref: v2                         # the default: where the script is read from;
+#                                                 # keep it on the ref the workflow is pinned at
 
 on:
   workflow_call:
@@ -35,6 +38,14 @@ on:
         description: Maximum length of a PR title or commit header.
         type: number
         default: 100
+      review-bot:
+        description: The login of the App that posts the Claude review; only its comments carry a record the conventions trust.
+        type: string
+        default: 'dilux-bot[bot]'
+      central-ref:
+        description: Ref of DiluxOne/.github to read the conventions script from.
+        type: string
+        default: v2
 
 permissions:
   contents: read
@@ -82,6 +93,36 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Checkout the conventions script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          # This repository's own pull requests check themselves with their
+          # own script: they can change this workflow anyway.
+          ref: ${{ github.repository == 'DiluxOne/.github' && github.event.pull_request.head.sha || inputs.central-ref }}
+          path: .dx-central
+          persist-credentials: false
+
+      - name: The labels and the review's comments, as they are now
+        id: live
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          EVENT_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        # The event carries the labels of the moment it fired, and a re-run
+        # replays that event: a type:* label the review changed since would
+        # read as the old one. Ask for them now, and for the comments, where
+        # the review's last record says which commit it read.
+        run: |
+          if labels=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/labels" --jq '[.[].name] | join(",")') \
+             && gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate > "$RUNNER_TEMP/comments.json"; then
+            echo "labels=$labels" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Could not read the pull request's labels and comments (the caller's job needs pull-requests: read); the event's labels are used, and a re-run may see a type:* label the review has changed since."
+            echo "labels=$EVENT_LABELS" >> "$GITHUB_OUTPUT"
+            echo '[]' > "$RUNNER_TEMP/comments.json"
+          fi
+
       - name: Check branch, title and commits
         env:
           # Through env, never interpolated into the script: a title is
@@ -94,63 +135,10 @@ jobs:
           BODY: ${{ github.event.pull_request.body }}
           AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
           SECTIONS: ${{ inputs.required-sections }}
-          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
-        run: |
-          set -euo pipefail
-          TYPES='feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert'
-          HEADER_RE="^(${TYPES})(\([a-z0-9._/-]+\))?!?: [^ ].*[^.]$"
-          BRANCH_RE="^((${TYPES})/[a-z0-9][a-z0-9._-]*|dependabot/.+)$"
-          fail=0
-          error() { echo "::error::$1"; fail=1; }
-          check_header() {
-            if ! [[ "$2" =~ $HEADER_RE ]]; then
-              error "$1 is not a Conventional Commit header (\"type(scope): subject\", type one of ${TYPES//|/, }, no trailing period): \"$2\""
-            elif (( ${#2} > MAX_HEADER )); then
-              error "$1 is ${#2} characters; the limit is ${MAX_HEADER}: \"$2\""
-            fi
-          }
-          [[ "$BRANCH" =~ $BRANCH_RE ]] || error "Branch \"$BRANCH\" must be <type>/<kebab-case-description>, type one of ${TYPES//|/, }."
-          check_header "The pull request title" "$TITLE"
-          # The type:* label is the review's reading of the diff (or a person's
-          # override); the title, which becomes the commit on main, must say the
-          # same. The review corrects the title itself; this catches a later
-          # hand edit that undoes it.
-          typelabel=$(tr ',' '\n' <<<"$LABELS" | grep -m1 '^type:' | sed 's/^type://' || true)
-          TYPE_RE='^([a-z]+)(\([^)]*\))?(!?): '
-          if [ -n "$typelabel" ] && [[ "$TITLE" =~ $TYPE_RE ]]; then
-            token=${BASH_REMATCH[1]}; bang=${BASH_REMATCH[3]}
-            if [ "$typelabel" = breaking ]; then
-              [ "$bang" = '!' ] || error "The pull request is labelled type:breaking, so its title needs the \"!\" of a breaking change: \"$token$bang:\"."
-            elif [ "$token" != "$typelabel" ]; then
-              error "The pull request is labelled type:$typelabel but its title says \"$token:\"; the title must carry the labelled type (the review sets it; change the label if the review is wrong)."
-            fi
-          fi
-          while read -r sha; do
-            [ -z "$sha" ] && continue
-            check_header "Commit ${sha:0:7}" "$(git log -1 --format=%s "$sha")"
-            if git log -1 --format=%B "$sha" | grep -qiE '^Claude-Session:'; then
-              error "Commit ${sha:0:7} carries a Claude-Session trailer; session links stay out of the history."
-            fi
-          done < <(git rev-list --no-merges "${BASE}..${HEAD_REF}")
-          # The description becomes the commit body on main: its required
-          # sections must say something. Bots (Dependabot) write their own.
-          section() { printf '%s\n' "$BODY" | awk -v h="$1" 'index($0, h) && /^## / { on = 1; next } /^## / { on = 0 } on' | sed 's/<!--.*-->//g' | tr -d '[:space:]'; }
-          # AI involvement is disclosed in one sober line, not a product ad
-          # (CONTRIBUTING.md, "Saying that AI was involved").
-          if printf '%s\n' "$BODY" | grep -qiE 'generated (with|by) \[?(claude|copilot|chatgpt|cursor|codex)'; then
-            error "Replace the \"Generated with …\" footer with the AI line, e.g. \"🤖 AI-assisted · Claude Opus 5.5 (Anthropic)\"."
-          fi
-          if [ "$AUTHOR_TYPE" != Bot ] && [ -n "$SECTIONS" ]; then
-            IFS=, read -ra required <<< "$SECTIONS"
-            for h in "${required[@]}"; do
-              [ -n "$(section "$h")" ] || error "The description's \"$h\" section is empty."
-            done
-          fi
-          if [ "$fail" -ne 0 ]; then
-            echo "See CONTRIBUTING.md: \"Branch names\", \"Commit messages and PR titles\", \"Writing the pull request\" and \"Saying that AI was involved\"."
-            exit 1
-          fi
-          echo "Conventions OK."
+          LABELS: ${{ steps.live.outputs.labels }}
+          COMMENTS_FILE: ${{ runner.temp }}/comments.json
+          REVIEW_BOT: ${{ inputs.review-bot }}
+        run: bash .dx-central/scripts/conventions.sh
 
   docs:
     name: Docs (links and names)

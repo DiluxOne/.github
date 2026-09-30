@@ -2,9 +2,10 @@ name: Pull request
 
 # This repository's own pipeline: the same conventions and review every
 # DiluxOne repository uses, plus a workflow linter. The reusable workflows are
-# called from this commit (./.github/workflows/...), but the review profiles and
-# policy are read from main, so a pull request cannot rewrite the rules that
-# review it.
+# called from this commit (./.github/workflows/...), but the review profiles,
+# the policy and the brief script are read from main, so a pull request cannot
+# rewrite the rules that review it. The conventions script comes from the pull
+# request itself: it can change conventions.yml anyway.
 
 on:
   # An edit of the title or description is handled by pull-request-edited.yml.
@@ -48,6 +49,32 @@ jobs:
       - run: bash scripts/release-ready.sh --test
       - run: bash scripts/stamp-version.sh --test
       - run: bash scripts/release-markers.sh --test
+      - run: bash scripts/conventions.sh --test
+      - run: bash scripts/review-brief.sh --test
+      - run: bash scripts/local-review.sh --test
+      - run: python3 scripts/policy.py --test
+
+  # The scripts a contributor runs on their own machine, on a stock macOS:
+  # its bash is 3.2 and its tools are BSD's, so what only works with GNU
+  # tools (sha256sum, sed -i without a suffix, …) fails here, not on a
+  # contributor's laptop.
+  scripts-macos:
+    name: Scripts on macOS (the contributor's tools)
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Every `bash` the scripts call is the stock one too, not Homebrew's.
+      - run: |
+          mkdir -p "$RUNNER_TEMP/stock" && ln -sf /bin/bash "$RUNNER_TEMP/stock/bash"
+          echo "$RUNNER_TEMP/stock" >> "$GITHUB_PATH"
+      - run: bash --version | head -1
+      - run: /bin/bash scripts/conventions.sh --test
+      - run: /bin/bash scripts/review-brief.sh --test
+      - run: /bin/bash scripts/local-review.sh --test
+      - run: python3 scripts/policy.py --test
 
   review:
     needs: [conventions, actionlint, scripts]

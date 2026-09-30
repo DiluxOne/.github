@@ -14,7 +14,8 @@ request template, issue forms) unless it has its own. The rules for contributors
 2. **Review.** [`scripts/policy.py`](scripts/policy.py) sets the lowest risk
    the change can have from its paths alone
    ([`policy/review-policy.default.yml`](policy/review-policy.default.yml) plus
-   the repository's `.github/review-policy.yml`). Then Claude reviews it with
+   the repository's `.github/review-policy.yml`; `policy.py --test` checks
+   its rules). Then Claude reviews it with
    the [review profiles](review-profiles/) and the repository's `AGENTS.md`
    and `docs/architecture.md`: inline comments for blockers and majors (each a
    thread to resolve), `risk:*`, `complexity:*` and `type:*` labels (the type of the change read from the diff, which also corrects the title's type token; a person's own `type:*` label wins), one summary comment
@@ -25,7 +26,8 @@ request template, issue forms) unless it has its own. The rules for contributors
    base branch, so a change cannot pick its own reviewer), skips the
    repository's code rules for text-only changes, and after `max-auto-reviews`
    (5) keeps the last verdict until the `review:full` label asks for more.
-   Drafts and forks are not reviewed.
+   Drafts and forks are not reviewed; pull requests Dependabot or the
+   organisation's App open are (`allowed_bots`).
 3. **Merge.** A human, with [`scripts/squash-merge.sh`](scripts/squash-merge.sh)
    `<owner/repo> <number>` (description verbatim, co-authors kept), or
    GitHub's auto-merge when the floor is low, the verdict is low risk and low
@@ -36,16 +38,27 @@ Mention `@dilux-bot` in a review thread or in the conversation and Claude
 answers there; it resolves its own thread when the point is settled.
 
 Nothing runs twice for one change. An edit of the title or the description
-re-runs only the conventions, the review (free on a commit it already read)
-and the auto-merge decision, never the suites. A push to `main` runs the slow
-suites only when it must: the job verifies that the commit is the squash
-merge of a pull request of this repository, that its tree is the one that
-pull request's checks ran on and that every check there passed; any doubt
-runs everything. A pull request whose base branch changed after its last
-push fails the conventions on every edit until a push runs the suites
-against the new base. Once a week everything runs against today's
-WordPress and tools, and a failure opens one `ci:weekly` issue; *Run
-workflow* runs everything by hand, and its failure is in the run alone.
+re-runs only the conventions, the review (free on a commit it already
+read) and the auto-merge decision, never the suites. A push to `main` runs
+the slow suites only when it must: the job verifies that the commit is the
+squash merge of a pull request of this repository, that its tree is the
+one that pull request's checks ran on and that every check there passed;
+any doubt runs everything. A pull request whose base branch changed after
+its last push fails the conventions on every edit until a push runs the
+suites against the new base. The conventions read the labels as they are
+when they run, not as the event carried them, so a re-run sees the
+`type:*` label the review set since; they compare the title's type with it
+once the review has read the commit (the review App's last record names
+it) or has reached its cap, so a push that changes the title waits for the
+review's new reading instead of failing on the old label. An edit's review
+runs in a concurrency group of its own: it cancels nothing and nothing
+cancels it, since a cancelled run leaves a cancelled check that blocks the
+merge. It spends nothing: on a commit the review read it reuses the
+verdict, and on one its push's run is still reviewing it waits for that
+verdict and reuses it, or fails when none comes. Once a week everything
+runs against today's WordPress and tools, and a failure opens one
+`ci:weekly` issue; *Run workflow* runs everything by hand, and its failure
+is in the run alone.
 
 ## Adopt it in a new repository
 
@@ -150,10 +163,13 @@ Call them pinned to `@v2`; a breaking change ships as `v2`. A stack suffix
 
 | Workflow | Does | Inputs |
 | --- | --- | --- |
-| [`conventions.yml`](.github/workflows/conventions.yml) | Branch, title, commits, description sections, no "Generated with" footer, relative doc links, retired names. | `retired-names`, `required-sections`, `max-header` |
+| [`conventions.yml`](.github/workflows/conventions.yml) | Branch, title, commits, description sections, no "Generated with" footer (all in `scripts/conventions.sh`), relative doc links, retired names. Reads the labels and the review App's last record live, so a re-run sees today's `type:*` label. | `retired-names`, `required-sections`, `max-header`, `central-ref`, `review-bot` |
 | [`claude-review.yml`](.github/workflows/claude-review.yml) | The review described above. Outputs `risk`, `complexity`, `floor`, `trusted`, `blocking`. | `profile`, `central-ref`, `max-auto-reviews` |
 | [`review-reply.yml`](.github/workflows/review-reply.yml) | Answers `@dilux-bot` mentions from members and collaborators, with the strong model. | `profile`, `central-ref` |
 | [`auto-merge.yml`](.github/workflows/auto-merge.yml) | Turns GitHub's auto-merge on or off from the review's outputs and commits the description verbatim. `pull-request-edited.yml` runs it on `edited` too. | the five review outputs |
+| [`scripts/conventions.sh`](scripts/conventions.sh) | Not a workflow: the conventions a pull request is held to (branch, title, every commit header, no session trailer, description sections, no "Generated with" footer). `conventions.yml` runs it on a pull request, `local-review.sh` before one; `--test` for its own tests. | env: `BRANCH`, `TITLE`, `BODY`, `BASE`, `HEAD_REF`, `COMMENTS_FILE`, `REVIEW_BOT`, `MAX_HEADER`, `SECTIONS`, `LABELS`, `AUTHOR_TYPE` |
+| [`scripts/review-brief.sh`](scripts/review-brief.sh) | Not a workflow: the review brief, the one file the Claude review reads (profiles, `AGENTS.md`, `docs/architecture.md`, policy floor, description, diff). `claude-review.yml` and `local-review.sh` build it with the same script; `--test` for its own tests. | env: see the script's header |
+| [`scripts/local-review.sh`](scripts/local-review.sh) | Not a workflow: the pull request's checks before it exists, on a contributor's machine: conventions, policy floor, brief, and the review through the local Claude Code CLI; the findings go to `.git/dx-review/findings.md` and the next run is incremental. See CONTRIBUTING.md, "Review before the pull request"; `--test` for its own tests (never runs the review). | `--base`, `--title`, `--body-file`, `--profile`, `--no-claude`, `--full`, `--model` |
 | [`scripts/release-ready.sh`](scripts/release-ready.sh) | Not a workflow: whether a readme's newest changelog entry is ready (exit 0) or held by a first line `Unreleased.` (exit 1); `--test` for its own tests. The release job's hold. | the readme |
 | [`scripts/release-markers.sh`](scripts/release-markers.sh) | Not a workflow: `check` holds the three version markers to a real version (the last one released, or the next one in the pull request that releases it and on `main` after it merged; the checks' readme job and the release job run it); `prepare` turns a tree into its release pull request (removes the `Unreleased.` line, stamps the markers); `--test` for its own tests. | `check <dir> <main-file> <constant> <last> <next> <pending>`, `prepare <dir> <version> <main-file> [<constant>]` |
 | [`scripts/stamp-version.sh`](scripts/stamp-version.sh) | Not a workflow: stamps a plugin tree with a version (the `Version:` header, the constant, `Stable tag:`, a `= Unreleased =` heading; with a build, a `Build:` header line) and fails when a marker did not take it. The release and the development build stamp with it; `--test` for its own tests. | `<dir> <version> <main-file> [<constant>] [<build>]` |
