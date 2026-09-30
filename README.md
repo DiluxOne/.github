@@ -38,25 +38,27 @@ Mention `@dilux-bot` in a review thread or in the conversation and Claude
 answers there; it resolves its own thread when the point is settled.
 
 Nothing runs twice for one change. An edit of the title or the description
-re-runs only the conventions, the review (free on a commit it already read)
-and the auto-merge decision, never the suites. A push to `main` runs the slow
-suites only when it must: the job verifies that the commit is the squash
-merge of a pull request of this repository, that its tree is the one that
-pull request's checks ran on and that every check there passed; any doubt
-runs everything. A pull request whose base branch changed after its last
-push fails the conventions on every edit until a push runs the suites
-against the new base. The conventions read the labels as they are when
-they run, not as the event carried them, so a re-run sees the `type:*`
-label the review set since; they compare the title's type with it once the
-review has read the commit (the review App's last record names it) or has
-reached its cap, so a push that changes the title waits for the review's
-new reading instead of failing on the old label. An edit's review runs in a
-concurrency group of its own: it cancels nothing and nothing cancels it (a
-cancelled run leaves a cancelled check that blocks the merge), and it
-spends nothing, reusing the verdict on a commit the review read and
-leaving a commit it has not read to its push's run. Once a week everything runs against today's
-WordPress and tools, and a failure opens one `ci:weekly` issue; *Run
-workflow* runs everything by hand, and its failure is in the run alone.
+re-runs only the conventions, the review (free on a commit it already
+read) and the auto-merge decision, never the suites. A push to `main` runs
+the slow suites only when it must: the job verifies that the commit is the
+squash merge of a pull request of this repository, that its tree is the
+one that pull request's checks ran on and that every check there passed;
+any doubt runs everything. A pull request whose base branch changed after
+its last push fails the conventions on every edit until a push runs the
+suites against the new base. The conventions read the labels as they are
+when they run, not as the event carried them, so a re-run sees the
+`type:*` label the review set since; they compare the title's type with it
+once the review has read the commit (the review App's last record names
+it) or has reached its cap, so a push that changes the title waits for the
+review's new reading instead of failing on the old label. An edit's review
+runs in a concurrency group of its own: it cancels nothing and nothing
+cancels it, since a cancelled run leaves a cancelled check that blocks the
+merge. It spends nothing: on a commit the review read it reuses the
+verdict, and on one its push's run is still reviewing it waits for that
+verdict and reuses it, or fails when none comes. Once a week everything
+runs against today's WordPress and tools, and a failure opens one
+`ci:weekly` issue; *Run workflow* runs everything by hand, and its failure
+is in the run alone.
 
 ## Adopt it in a new repository
 

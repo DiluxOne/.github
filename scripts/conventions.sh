@@ -142,6 +142,7 @@ if [ "${1:-}" = "--test" ]; then
   test_case "fails: a record anyone else posted counts for nothing" 1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" "$(rec 'someone' "$other" 1 '')" || fail=1
   test_case "fails: a capped review reads no new commit"          1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" "$(rec 'dilux-bot[bot]' "$other" 5 ',\\"max\\":5')" || fail=1
   test_case "fails: a record whose sha is not a commit"           1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" "$(rec 'dilux-bot[bot]' 'abc\\nx' 1 '')" || fail=1
+  test_case "passes: the last page's record (paginated arrays)"    0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" "$(rec 'dilux-bot[bot]' HEADSHA 1 '')$(rec 'dilux-bot[bot]' "$other" 2 '')" || fail=1
   [ "$fail" -eq 0 ] && echo "all tests passed"
   exit "$fail"
 fi

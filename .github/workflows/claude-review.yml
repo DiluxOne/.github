@@ -113,7 +113,8 @@ jobs:
     # the commit that blocks the merge even when the other run passed. So an
     # edit runs in a group of its own run: it cancels nothing and nothing
     # cancels it (it spends nothing: it reuses the verdict on a commit the
-    # review read, and waits for the push's review on one it has not). A push
+    # review read, and waits for the push's review of one it has not, then
+    # reuses that; with no such review it fails). A push
     # still cancels the review of the push before it, whose check sits on an
     # older commit and blocks nothing.
     concurrency:
@@ -222,12 +223,31 @@ jobs:
             mode=full
           elif [ "$last" = "$HEAD" ] && [ "$has_verdict" = yes ]; then
             mode=reuse
-          elif [ "$ACTION" = edited ]; then
-            # The push's own run reviews this commit (or its review was
-            # capped): an edit does not pay for a second one.
-            mode=pending
           elif [ -n "$last" ] && [ "$count" -ge "$MAX_AUTO" ] && [ "$has_verdict" = yes ]; then
             mode=capped
+          elif [ "$ACTION" = edited ]; then
+            # An edit on a commit its push's run is still reviewing: it pays
+            # for no second review. It waits for that run's record of this
+            # commit and reuses its verdict (the edited description is then
+            # compared with the one the review read), and fails when none
+            # comes: a green check without a verdict would replace the push
+            # run's own under the same name.
+            for _ in $(seq 1 50); do
+              sleep 30
+              record=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
+                | jq -r --arg bot "$BOT" '.[] | select(.user.login == $bot and (.body | startswith("<!-- dx-review -->"))) | .body' \
+                | grep -oP '<!-- dx-review-record \K.*(?= -->)' | tail -1 || true)
+              printf '%s' "${record:-null}" | jq . > "$RUNNER_TEMP/previous.json" 2>/dev/null || echo null > "$RUNNER_TEMP/previous.json"
+              if [ "$(jq -r '.sha // empty' "$RUNNER_TEMP/previous.json")" = "$HEAD" ] \
+                 && [ "$(jq -r 'if .risk and .complexity and (.blocking != null) then "yes" else "no" end' "$RUNNER_TEMP/previous.json")" = yes ]; then
+                mode=reuse; break
+              fi
+            done
+            if [ "$mode" != reuse ]; then
+              echo "::error::No review of ${HEAD:0:7} came from its push within 25 minutes; push again, or re-run that review."
+              exit 1
+            fi
+            last=$HEAD; count=$(jq -r '.count // 0' "$RUNNER_TEMP/previous.json")
           elif [ -n "$last" ] && git cat-file -e "$last^{commit}" 2>/dev/null \
                && git merge-base --is-ancestor "$last" "$HEAD" \
                && [ -z "$(git rev-list --merges "$last..$HEAD")" ]; then
@@ -376,11 +396,6 @@ jobs:
             fi
           }
           previous="$RUNNER_TEMP/previous.json"
-
-          if [ "$MODE" = pending ]; then
-            echo "::notice::The review of ${SHA:0:7} runs from its push; this edit is read there, or by the next review. Nothing spent."
-            exit 0
-          fi
 
           rank() { case "$1" in low) echo 0;; medium) echo 1;; *) echo 2;; esac; }
           if [ "$MODE" = reuse ] || [ "$MODE" = capped ]; then
