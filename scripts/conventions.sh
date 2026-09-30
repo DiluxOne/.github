@@ -135,12 +135,18 @@ if [ "${1:-}" = "--test" ]; then
   test_case "fails: an empty Why"                 1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" $'## 📝 What changes\n\nA thing.\n\n## 💡 Why\n\n<!-- say why -->' || fail=1
   test_case "fails: a Generated with footer"      1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good"$'\n🤖 Generated with [Claude Code](https://claude.com/claude-code)' || fail=1
   test_case "fails: title type unlike the label"  1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" || fail=1
-  rec() { printf '[{"user":{"login":"%s"},"body":"<!-- dx-review -->\\n<!-- dx-review-record {\\"sha\\":\\"%s\\",\\"count\\":%s%s} -->"}]' "$1" "$2" "$3" "$4"; }
+  # One page of comments holding the review App's record: login, sha, count
+  # and, optionally, the cap.
+  rec() {
+    local max=""; [ -n "${4:-}" ] && max=",\\\"max\\\":$4"
+    printf '[{"user":{"login":"%s"},"body":"<!-- dx-review -->\\n<!-- dx-review-record {\\"sha\\":\\"%s\\",\\"count\\":%s%s} -->"}]' "$1" "$2" "$3" "$max"
+  }
   other=0123456789abcdef0123456789abcdef01234567
   test_case "fails: unlike the label the review set on this commit" 1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" "$(rec 'dilux-bot[bot]' HEADSHA 1 '')" || fail=1
   test_case "passes: a label from a commit the review has not read" 0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" "$(rec 'dilux-bot[bot]' "$other" 1 '')" || fail=1
   test_case "fails: a record anyone else posted counts for nothing" 1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" "$(rec 'someone' "$other" 1 '')" || fail=1
-  test_case "fails: a capped review reads no new commit"          1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" "$(rec 'dilux-bot[bot]' "$other" 5 ',\\"max\\":5')" || fail=1
+  test_case "fails: a capped review reads no new commit"          1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" "$(rec 'dilux-bot[bot]' "$other" 3 3)" || fail=1
+  test_case "passes: under a cap of its own, the review is still to come" 0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" "$(rec 'dilux-bot[bot]' "$other" 3 8)" || fail=1
   test_case "fails: a record whose sha is not a commit"           1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" "$(rec 'dilux-bot[bot]' 'abc\\nx' 1 '')" || fail=1
   test_case "passes: the last page's record (paginated arrays)"    0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" "$(rec 'dilux-bot[bot]' HEADSHA 1 '')$(rec 'dilux-bot[bot]' "$other" 2 '')" || fail=1
   [ "$fail" -eq 0 ] && echo "all tests passed"
