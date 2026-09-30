@@ -122,3 +122,5 @@ in the last 7 days; a human merges them.
   claim is correct: say what would settle it, and expect the caller-visible
   contract (trigger, inputs) in the workflow's header comment in the same
   pull request.
+- When a pull request says it moves to a new version of a pinned workflow, check that the pin itself moved (the `uses:` SHA and every `central-ref`-style default), not only the comments and docs. Docs that describe a safeguard of the new version are wrong while the pin still points at the old one.
+- With a paginated or capped API (`gh api --paginate`, a files list), check that aggregates run over all pages (`jq -s`, not per page) and that a partial result fails the step instead of passing as complete.
