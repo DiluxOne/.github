@@ -38,10 +38,14 @@ test_case() {
   local dir out got
   dir=$(mktemp -d)
   out=$(
-    cd "$dir" && git init -q && git config user.email t@t && git config user.name t
-    git commit -q --allow-empty -m "chore: base" && git branch -q -M main && git update-ref refs/remotes/origin/main HEAD
-    git checkout -q -b docs/change
-    eval "$setup"
+    cd "$dir" || exit 97
+    # The scratch repository is built in a shell of its own: errexit is off
+    # inside $( ) && …, so a broken setup would otherwise go unnoticed.
+    bash -euo pipefail -c '
+      git init -q && git config user.email t@t && git config user.name t
+      git commit -q --allow-empty -m "chore: base" && git branch -q -M main && git update-ref refs/remotes/origin/main HEAD
+      git checkout -q -b docs/change
+      eval "$1"' _ "$setup" || { echo "the setup failed"; exit 97; }
     bash "$CENTRAL/scripts/local-review.sh" --no-claude "$@" 2>&1
   ) && got=0 || got=$?
   rm -rf "$dir"
@@ -59,6 +63,8 @@ if [ "${1:-}" = "--test" ]; then
   test_case "no profile, no origin remote: general, and it runs to the brief" 0 "Brief:" "$commit" || fail=1
   test_case "a profile the workflow passes is used"      0 "profile plugin-wp" "$(wf $'jobs:\n  review:\n    with:\n      profile: plugin-wp\n')" --title "docs(readme): two commits" || fail=1
   test_case "a quoted profile is read without quotes"    0 "profile plugin-wp" "$(wf $'jobs:\n  review:\n    with:\n      profile: \'plugin-wp\'\n')" --title "docs(readme): two commits" || fail=1
+  test_case "a profile with a comment after it is used"  0 "profile plugin-wp" "$(wf $'jobs:\n  review:\n    with:\n      profile: plugin-wp  # the stack\n')" --title "docs(readme): two commits" || fail=1
+  test_case "a profile that is not a literal is general, and says so" 0 "is not a literal" "$(wf $'jobs:\n  review:\n    with:\n      profile: ${{ inputs.profile }}\n')" --title "docs(readme): two commits" || fail=1
   test_case "--profile wins over the workflow"           0 "profile general" "$(wf $'jobs:\n  review:\n    with:\n      profile: plugin-wp\n')" --title "docs(readme): two commits" --profile general || fail=1
   test_case "no commit on the branch"                    1 "adds no commit" ":" || fail=1
   test_case "two commits and no --title"                 64 "say the pull request title" "$commit && echo b > b.md && git add b.md && git commit -q -m 'docs(readme): another'" || fail=1
@@ -66,7 +72,7 @@ if [ "${1:-}" = "--test" ]; then
   bodies=$(mktemp -d); printf %s "$good" > "$bodies/good.md"; printf %s "$empty" > "$bodies/empty.md"
   test_case "a description with an empty Why"            1 "section is empty" "$commit" --body-file "$bodies/empty.md" || fail=1
   test_case "a description filled in"                    0 "Conventions OK." "$commit" --body-file "$bodies/good.md" || fail=1
-  test_case "the origin remote names the repository"    0 "Review brief: o/r," "git remote add origin https://github.com/o/r.git && $commit" --no-claude || fail=1
+  test_case "the origin remote names the repository"    0 "Review brief: o/r," "git remote add origin https://github.com/o/r.git && $commit" || fail=1
   rm -rf "$bodies"
   test_case "an unknown option"                          64 "usage:" "$commit" --nope || fail=1
 
@@ -158,8 +164,13 @@ if [ -n "$body_file" ]; then body=$(cat "$body_file"); fi
 if [ -z "$profile" ]; then
   # The first `profile:` a workflow passes, quoted or not. No match is the
   # usual case outside a plugin: `|| true`, or set -e ends the script here.
-  profile=$( { grep -hE '^[[:space:]]+profile:' .github/workflows/*.yml 2>/dev/null || true; } | head -1 \
-    | sed -E "s/^[[:space:]]+profile:[[:space:]]*['\"]?([A-Za-z0-9_-]*).*/\\1/")
+  line=$( { grep -hE '^[[:space:]]+profile:' .github/workflows/*.yml 2>/dev/null || true; } | head -1)
+  profile=$(sed -E "s/^[[:space:]]+profile:[[:space:]]*['\"]?([A-Za-z0-9_-]*).*/\\1/" <<<"$line")
+  raw=$(sed -E 's/^[[:space:]]+profile:[[:space:]]*//; s/[[:space:]]+#.*$//; s/[[:space:]]+$//' <<<"$line")
+  if [ -n "$line" ] && { [ -z "$profile" ] || [ "${raw//[\'\"]/}" != "$profile" ]; }; then
+    echo "The workflow's profile: ($raw) is not a literal this script can read: the review uses general. Pass --profile to say which." >&2
+    profile=''
+  fi
   profile=${profile:-general}
 fi
 work=$(mktemp -d "${TMPDIR:-/tmp}/dx-review.XXXXXX")
