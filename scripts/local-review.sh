@@ -65,6 +65,7 @@ if [ "${1:-}" = "--test" ]; then
   test_case "a quoted profile is read without quotes"    0 "profile plugin-wp" "$(wf $'jobs:\n  review:\n    with:\n      profile: \'plugin-wp\'\n')" --title "docs(readme): two commits" || fail=1
   test_case "a profile with a comment after it is used"  0 "profile plugin-wp" "$(wf $'jobs:\n  review:\n    with:\n      profile: plugin-wp  # the stack\n')" --title "docs(readme): two commits" || fail=1
   test_case "an input declaring profile: is not the value" 0 "profile plugin-wp" "$(wf $'on:\n  workflow_call:\n    inputs:\n      profile:\n        type: string\njobs:\n  review:\n    with:\n      profile: plugin-wp\n')" --title "docs(readme): two commits" || fail=1
+  test_case "a flow-style input declaration is not the value" 0 "profile plugin-wp" "$(wf $'on:\n  workflow_call:\n    inputs:\n      profile: { type: string }\njobs:\n  review:\n    with:\n      profile: plugin-wp\n')" --title "docs(readme): two commits" || fail=1
   test_case "a profile that is not a literal is general, and says so" 0 "is not a literal" "$(wf $'jobs:\n  review:\n    with:\n      profile: ${{ inputs.profile }}\n')" --title "docs(readme): two commits" || fail=1
   test_case "--profile wins over the workflow"           0 "profile general" "$(wf $'jobs:\n  review:\n    with:\n      profile: plugin-wp\n')" --title "docs(readme): two commits" --profile general || fail=1
   test_case "no commit on the branch"                    1 "adds no commit" ":" || fail=1
@@ -165,8 +166,9 @@ if [ -n "$body_file" ]; then body=$(cat "$body_file"); fi
 if [ -z "$profile" ]; then
   # The first `profile:` a workflow passes, quoted or not. No match is the
   # usual case outside a plugin: `|| true`, or set -e ends the script here.
-  # Only a `profile:` with a value: a bare key is an input's declaration.
-  line=$( { grep -hE '^[[:space:]]+profile:[[:space:]]*[^[:space:]#]' .github/workflows/*.yml 2>/dev/null || true; } | head -1)
+  # Only a `profile:` with a value: a bare key, or a `{ type: … }` map, is an
+  # input's declaration.
+  line=$( { grep -hE '^[[:space:]]+profile:[[:space:]]*[^[:space:]#{]' .github/workflows/*.yml 2>/dev/null || true; } | head -1)
   profile=$(sed -E "s/^[[:space:]]+profile:[[:space:]]*['\"]?([A-Za-z0-9_-]*).*/\\1/" <<<"$line")
   raw=$(sed -E 's/^[[:space:]]+profile:[[:space:]]*//; s/[[:space:]]+#.*$//; s/[[:space:]]+$//' <<<"$line")
   if [ -n "$line" ] && { [ -z "$profile" ] || [ "${raw//[\'\"]/}" != "$profile" ]; }; then
