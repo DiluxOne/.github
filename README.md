@@ -159,7 +159,10 @@ templates fails to start once it points at `v2`:
 ## Reusable workflows
 
 Call them pinned to `@v2`; a breaking change ships as `v2`. A stack suffix
-(`-wp`) appears only when the steps are specific to that stack.
+(`-wp`) appears only when the steps are specific to that stack. A workflow
+with a `central-ref` input reads the scripts, profiles and policy at that
+ref (default `v2`), not at the ref of its `uses:` line: a caller that pins
+`uses:` to a version passes the same version as `central-ref`.
 
 | Workflow | Does | Inputs |
 | --- | --- | --- |
