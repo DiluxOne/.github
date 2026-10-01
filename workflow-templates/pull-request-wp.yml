@@ -4,7 +4,9 @@ name: Pull request
 # shared workflows in DiluxOne/.github: conventions, the fast quality gates,
 # then the Claude review and the auto-merge decision, with the slow wp-env
 # suites running alongside the review. Fill in slug, version-constant and
-# retired-names.
+# retired-names, and declare the kind in .github/review-policy.yml
+# (`kind: wordpress-plugin`): its rules and settings live in
+# DiluxOne/.github's kinds/wordpress-plugin/.
 
 on:
   # An edit of the title or description is handled by pull-request-edited.yml
@@ -41,6 +43,8 @@ jobs:
     with:
       slug: my-plugin
       version-constant: MY_PLUGIN_VERSION
+      # translations-complete: true               # the plugin ships languages/*.po
+      # codeql-languages: javascript-typescript   # CodeQL on the plugin's scripts
 
   tests:
     permissions:
@@ -48,6 +52,13 @@ jobs:
       pull-requests: read
       checks: read
     uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v2
+    # One check per target and suite. Left out: integration on a network,
+    # and `npx playwright test` on a single site.
+    # with:
+    #   integration-targets: '["single","network"]'
+    #   e2e-suites: >-
+    #     [{"name":"single","site":"single","run":"npx playwright test"},
+    #      {"name":"network","site":"network","run":"npx playwright test -c playwright.network.config.ts","results":"build/e2e-network-results"}]
 
   review:
     needs: [conventions, checks]
@@ -57,7 +68,7 @@ jobs:
       issues: write
     uses: DiluxOne/.github/.github/workflows/claude-review.yml@v2
     with:
-      profile: plugin-wp
+      profile: plugin-wp # the wordpress-plugin kind's profile; `kind: wordpress-plugin` in .github/review-policy.yml does the same
     secrets: inherit
 
   auto-merge:

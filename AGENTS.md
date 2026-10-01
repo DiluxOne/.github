@@ -8,6 +8,12 @@ Rules for any coding agent working in `DiluxOne/.github`.
 - Workflows are reusable (`on: workflow_call`) unless they are specific to this
   repository. Name them after what they do; add a stack suffix (`-wp`) only
   when the steps are stack-specific.
+- Nothing is hard-wired to one kind of project. What is specific to a kind
+  (its review profile, rules, settings, the list of its workflows) lives in
+  its pack, `kinds/<kind>/`, as data; scripts and workflows read it from
+  there. A rejection a review sends back becomes one entry in the kind's
+  `rules.yml`, with its source and its fixtures, never a new script or
+  workflow (`kinds/README.md`).
 - Pin every third-party action to a full commit SHA with the version in a
   comment (`uses: owner/action@<sha> # vX.Y.Z`). Declare the minimum
   `permissions:`. Pass untrusted text (titles, branch names) through `env:`,
@@ -30,6 +36,6 @@ Rules for any coding agent working in `DiluxOne/.github`.
   caught comes with that test, in the same pull request: what was found once
   is not left to the next review to find again. Every script carries its
   `--test`, run by the scripts job.
-- Keep `README.md`, `CONTRIBUTING.md`, the review profiles, the workflow
-  templates and the workflow header comments in step with what the workflows
-  do, in the same PR.
+- Keep `README.md`, `CONTRIBUTING.md`, `kinds/README.md`, the review
+  profiles, the packs, the workflow templates and the workflow header
+  comments in step with what the workflows do, in the same PR.

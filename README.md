@@ -10,13 +10,16 @@ request template, issue forms) unless it has its own. The rules for contributors
 
 1. **Checks.** The conventions (branch name, title, every commit, the
    description's required sections, no "Generated with" footer, relative doc
-   links) and the stack's fast gates. Deterministic, no AI.
+   links) and the fast gates of the repository's kind of project, among them
+   its review rules: what that kind's reviewers sent back before, as data
+   ([`kinds/`](kinds/)). Deterministic, no AI.
 2. **Review.** [`scripts/policy.py`](scripts/policy.py) sets the lowest risk
    the change can have from its paths alone
    ([`policy/review-policy.default.yml`](policy/review-policy.default.yml) plus
    the repository's `.github/review-policy.yml`; `policy.py --test` checks
    its rules). Then Claude reviews it with
-   the [review profiles](review-profiles/) and the repository's `AGENTS.md`
+   the [review profiles](review-profiles/) (general, and the kind's
+   `kinds/<kind>/review-profile.md`) and the repository's `AGENTS.md`
    and `docs/architecture.md`: inline comments for blockers and majors (each a
    thread to resolve), `risk:*`, `complexity:*` and `type:*` labels (the type of the change read from the diff, which also corrects the title's type token; a person's own `type:*` label wins), one summary comment
    with what the run cost, red when blocking. It can raise the risk, never
@@ -60,6 +63,18 @@ runs against today's WordPress and tools, and a failure opens one
 `ci:weekly` issue; *Run workflow* runs everything by hand, and its failure
 is in the run alone.
 
+## Kinds of project
+
+Nothing here is hard-wired to one stack. What is specific to a kind of
+project (its review profile, the rules its reviewers taught us, the settings
+of its gates, the workflows of its battery) lives in a pack under
+[`kinds/`](kinds/), as data, and a repository declares its kind with
+`kind:` in its `.github/review-policy.yml`. Every rejection a review sends
+back becomes one entry in the kind's `rules.yml`, with fixtures, never a new
+script or workflow. [`kinds/README.md`](kinds/README.md) explains the model,
+how to add a rule and how to add a kind; the one kind today is
+[`wordpress-plugin`](kinds/wordpress-plugin/).
+
 ## Adopt it in a new repository
 
 1. **Workflows.** Copy the callers from [`workflow-templates/`](workflow-templates/)
@@ -79,6 +94,7 @@ is in the run alone.
    differs:
 
    ```yaml
+   kind: wordpress-plugin   # kinds/<kind>/: adds its review profile, its rules and settings
    high-risk:
      - "src/billing/**"
    low-risk-eligible:
@@ -98,7 +114,13 @@ is in the run alone.
    `readme.txt` or a hidden file changed. The fast checks and the review always run; a push
    to `main` runs the suites only when its tree was not tested already, and
    the weekly run always runs them. The defaults cover a WordPress plugin;
-   a repository only adds what is peculiar to it.
+   a repository only adds what is peculiar to it. `kind-settings:` adds to
+   the lists of its kind's settings (for a plugin, Plugin Check's
+   `ignore-codes`), never replaces a value; the checks read it from the base
+   branch ([`kinds/README.md`](kinds/README.md)). A plugin that suppresses a
+   nonce, sanitising, SQL or filesystem check lists each suppression, with
+   its reason, in `.github/review-suppressions.yml`
+   ([`kinds/wordpress-plugin/suppressions.md`](kinds/wordpress-plugin/suppressions.md)).
 
    Then an `AGENTS.md` with the rules the review must hold the code to, and
    a `docs/roadmap.md` that says what is free, what is paid, what is planned,
@@ -110,7 +132,12 @@ is in the run alone.
    resolved, required checks green and up to date, named
    `conventions / Conventions (branch, title, commits)`,
    `conventions / Docs (links and names)`, `review / Claude review` and, for a
-   plugin, every `checks / …` and `tests / …` job. Two rulesets on tags
+   plugin, every `checks / …` and `tests / …` job: among them
+   `checks / Review rules (wordpress-plugin)`, `checks / WordPress Plugin Check`,
+   `checks / Translations complete (languages/*.po)` and `checks / CodeQL`
+   (skipped, so passing, unless their input is on) and one `tests / …` per
+   target and suite, named as the
+   [`plugin-tests-wp.yml`](.github/workflows/plugin-tests-wp.yml) row below says. Two rulesets on tags
    `X.Y.Z`: one that lets only administrators create them (bypass actor:
    the Administrator role), so no token the workflows hold can publish; one
    under which nobody can delete or move them. For a plugin, an environment
@@ -156,6 +183,25 @@ templates fails to start once it points at `v2`:
    and client id besides the SVN credentials.
 4. Point every `uses:` at `@v2` (the release workflow at its commit).
 
+### What moving `v2` to the packs changes for a plugin
+
+Nothing in a caller has to change, but the checks of a plugin get stricter
+the moment `v2` moves, and each of these is red until the plugin complies:
+
+- **Plugin Check is strict** (the pack's `strict: true`): a warning fails, as
+  it does for the reviewer.
+- **`checks / Review rules (wordpress-plugin)`** is a new check: an escaping
+  suppression, a menu among WordPress's own, a handler that reads the
+  request before its nonce or capability check, a nonce action built from
+  input, a PHPCS config that teaches custom functions or silences a
+  security check, a whole superglobal handed to a function, and every
+  nonce, sanitising, SQL or filesystem suppression not listed with its
+  reason in `.github/review-suppressions.yml` (`review-rules.php
+  --suggest-suppressions` writes the list to fill in). Add it to the
+  ruleset once it is green.
+- `translations-complete` and `codeql-languages` are off unless the caller
+  turns them on; their checks are skipped.
+
 ## Reusable workflows
 
 Call them pinned to `@v2`; a breaking change ships as `v2`. A stack suffix
@@ -167,19 +213,21 @@ ref (default `v2`), not at the ref of its `uses:` line: a caller that pins
 | Workflow | Does | Inputs |
 | --- | --- | --- |
 | [`conventions.yml`](.github/workflows/conventions.yml) | Branch, title, commits, description sections, no "Generated with" footer (all in `scripts/conventions.sh`), relative doc links, retired names. Reads the labels and the review App's last record live, so a re-run sees today's `type:*` label. | `retired-names`, `required-sections`, `max-header`, `central-ref`, `review-bot` |
-| [`claude-review.yml`](.github/workflows/claude-review.yml) | The review described above. Outputs `risk`, `complexity`, `floor`, `trusted`, `blocking`. | `profile`, `central-ref`, `max-auto-reviews` |
-| [`review-reply.yml`](.github/workflows/review-reply.yml) | Answers `@dilux-bot` mentions from members and collaborators, with the high-risk reviewer. | `profile`, `central-ref` |
+| [`claude-review.yml`](.github/workflows/claude-review.yml) | The review described above. `profile` (default `general`) names a kind or a pack's alias (`plugin-wp`); with `general`, the kind the repository's policy declares adds its profile. Outputs `risk`, `complexity`, `floor`, `trusted`, `blocking`. | `profile`, `central-ref`, `max-auto-reviews` |
+| [`review-reply.yml`](.github/workflows/review-reply.yml) | Answers `@dilux-bot` mentions from members and collaborators, with the high-risk reviewer, on the same profiles as the review. | `profile`, `central-ref` |
 | [`auto-merge.yml`](.github/workflows/auto-merge.yml) | Turns GitHub's auto-merge on or off from the review's outputs and commits the description verbatim. `pull-request-edited.yml` runs it on `edited` too. | the five review outputs |
 | [`scripts/conventions.sh`](scripts/conventions.sh) | Not a workflow: the conventions a pull request is held to (branch, title, every commit header, no session trailer, description sections, no "Generated with" footer). `conventions.yml` runs it on a pull request, `local-review.sh` before one; `--test` for its own tests. | env: `BRANCH`, `TITLE`, `BODY`, `BASE`, `HEAD_REF`, `COMMENTS_FILE`, `REVIEW_BOT`, `MAX_HEADER`, `SECTIONS`, `LABELS`, `AUTHOR_TYPE` |
 | [`scripts/review-brief.sh`](scripts/review-brief.sh) | Not a workflow: the review brief, the one file the Claude review reads (profiles, `AGENTS.md`, `docs/architecture.md`, policy floor, description, diff). `claude-review.yml` and `local-review.sh` build it with the same script; `--test` for its own tests. | env: see the script's header |
 | [`scripts/local-review.sh`](scripts/local-review.sh) | Not a workflow: the pull request's checks before it exists, on a contributor's machine: conventions, policy floor, brief, and the review through the local Claude Code CLI; the findings go to `.git/dx-review/findings.md` and the next run is incremental. See CONTRIBUTING.md, "Review before the pull request"; `--test` for its own tests (never runs the review). | `--base`, `--title`, `--body-file`, `--profile`, `--no-claude`, `--full`, `--model` |
 | [`scripts/release-ready.sh`](scripts/release-ready.sh) | Not a workflow: whether a readme's newest changelog entry is ready (exit 0) or held by a first line `Unreleased.` (exit 1); `--test` for its own tests. The release job's hold. | the readme |
 | [`scripts/release-markers.sh`](scripts/release-markers.sh) | Not a workflow: `check` holds the three version markers to a real version (the last one released, or the next one in the pull request that releases it and on `main` after it merged; the checks' readme job and the release job run it); `prepare` turns a tree into its release pull request (removes the `Unreleased.` line, stamps the markers); `--test` for its own tests. | `check <dir> <main-file> <constant> <last> <next> <pending>`, `prepare <dir> <version> <main-file> [<constant>]` |
-| [`scripts/wp-review-patterns.php`](scripts/wp-review-patterns.php) | Not a workflow: what wordpress.org's plugin review flags and Plugin Check does not, read with PHP's tokenizer. Fails on an `EscapeOutput` suppression and on `add_menu_page()` with a position among WordPress's own menus; annotates a nonce said to be checked elsewhere and an admin notice that never asks which screen it is on. The checks' `review-patterns` job runs it on the shipped tree; `--test` for its own tests. | `<dir>`, `--test` |
+| [`scripts/review-rules.php`](scripts/review-rules.php) | Not a workflow: the review rules engine. Runs a kind's `kinds/<kind>/rules.yml` (what that kind's reviewers sent back, as data) with generic rule types (comment, call argument, hook callback, forbidden call, forbidden config, suppression allow-list) and language adapters (PHP, on its tokenizer); code rules read the shipped tree, config rules the repository. An error fails, a warning annotates. The checks' `Review rules (<kind>)` job runs it; `--suggest-suppressions` prints the entries `.github/review-suppressions.yml` is missing; `--test` runs its own tests and every rule's fixtures. See [`kinds/README.md`](kinds/README.md). | `--kind`, `--rules`, `--repo`, `--tree`, `--format`, `--only`, `--suggest-suppressions`, `--test` |
+| [`scripts/kind.sh`](scripts/kind.sh) | Not a workflow: the kind a check runs for and its settings (the pack's, plus the repository's `kind-settings`), from the policy on the base branch, through `policy.py`'s `POLICY_MODE=kind`; `--test` for its own tests. | env: `KIND_DEFAULT`, `DEFAULT_POLICY` |
+| [`scripts/test-targets.py`](scripts/test-targets.py) | Not a workflow: turns `plugin-tests-wp.yml`'s inputs into one job per integration target and E2E suite, each with a stable check name, and refuses an input that is not one; `--test` for its own tests. | env: the workflow's inputs |
 | [`scripts/stamp-version.sh`](scripts/stamp-version.sh) | Not a workflow: stamps a plugin tree with a version (the `Version:` header, the constant, `Stable tag:`, a `= Unreleased =` heading; with a build, a `Build:` header line) and fails when a marker did not take it. The release and the development build stamp with it; `--test` for its own tests. | `<dir> <version> <main-file> [<constant>] [<build>]` |
 | [`scripts/next-version.py`](scripts/next-version.py) | Not a workflow: the next version of a repository from the `type:*` labels of the pull requests merged since the last `X.Y.Z` tag (a `version:major|minor|patch` label a person sets wins): breaking → major, feat → minor, fix or perf → patch, anything else nothing to release. Also the development version, `<next>-dev.<N>`, N the commits since the tag. `--json` for machines, `--test` for its own tests. | `--repo`, `--base`, `--tag-prefix` |
-| [`plugin-checks-wp.yml`](.github/workflows/plugin-checks-wp.yml) | Fast gates for a WordPress plugin: syntax and unit tests on every PHP from the minimum to the latest, PHPCS, PHPStan, Psalm taint, i18n, Plugin Check on the shipped tree, the wordpress.org review patterns Plugin Check misses (`scripts/wp-review-patterns.php`), readme and versions (the markers against what was released: `scripts/release-markers.sh`). Needs the composer scripts `test:unit`, `lint`, `stan`, `psalm:taint`, a `.distignore` and a `readme.txt`. | `slug`, `main-file`, `version-constant`, `php-versions` |
-| [`plugin-tests-wp.yml`](.github/workflows/plugin-tests-wp.yml) | Slow suites on wp-env: PHPUnit integration (multisite) and Playwright E2E. Needs `.wp-env.json`, `phpunit-integration.xml` and a Playwright config that writes to `build/e2e-results`. | `integration`, `multisite`, `e2e` |
+| [`plugin-checks-wp.yml`](.github/workflows/plugin-checks-wp.yml) | The fast gates of the `wordpress-plugin` kind: syntax and unit tests on every PHP from the minimum to the latest, PHPCS, PHPStan, Psalm taint, i18n, Plugin Check on the shipped tree (strict: a warning fails; categories and ignored codes from the pack, plus the repository's `kind-settings`), `Review rules (wordpress-plugin)` (the kind's `rules.yml`, `scripts/review-rules.php`), readme and versions (the markers against what was released: `scripts/release-markers.sh`). Opt-in: `translations-complete: true` adds `Translations complete (languages/*.po)` (every shipped `.po` parses, has nothing fuzzy and, merged with the strings of today's code, misses none); `codeql-languages: javascript-typescript` adds `CodeQL` (security-extended queries; a result fails the check; nothing is uploaded to code scanning, which would need `security-events: write` from every caller). Needs the composer scripts `test:unit`, `lint`, `stan`, `psalm:taint`, a `.distignore` and a `readme.txt`. | `slug`, `main-file`, `version-constant`, `php-versions`, `kind`, `translations-complete`, `codeql-languages`, `central-ref` |
+| [`plugin-tests-wp.yml`](.github/workflows/plugin-tests-wp.yml) | Slow suites on wp-env, one job and one check per target. Integration: `integration-targets: '["single","network"]'` runs PHPUnit on a single site (`Integration (single site)`) and on the tests site turned into a network (`Integration (network)`); left out, the old single job `Integration tests (wp-env)`, on the network unless `multisite: false`. E2E: `e2e-suites` is a JSON list of `{name, site, run, results?, timeout?}`, each its own job `E2E (<name>)`: `site` `single` is the development site with the plugin activated, `network` the tests site turned into a subdirectory network (WordPress's rewrite rules, the plugin network-activated); `run` is the repository's command (`npx playwright test -c playwright.network.config.ts`, an npm script); `results` the folder kept when it fails. Left out, the old single job `E2E (Playwright)`, `npx playwright test` on the development site. A suite turned off, or a pull request without code, keeps its jobs, green, with nothing run (a job skipped before its matrix expands would report a name no ruleset can require). Needs `.wp-env.json`, `phpunit-integration.xml` and Playwright configs. | `integration`, `multisite`, `integration-targets`, `e2e`, `e2e-suites`, `central-ref` |
 | [`weekly-failure.yml`](.github/workflows/weekly-failure.yml) | When the scheduled full run fails: opens one `ci:weekly` issue with the run, or adds the run to the one already open. | none |
 | [`issue-triage.yml`](.github/workflows/issue-triage.yml) | When an issue opens: classifies it with the roadmap and the docs (bug to reproduce, needs info, by design, pro feature, enhancement, question, duplicate, security), applies the label and posts one reply; never closes. A report with steps made on an older version (an older release, or a development build older than the current pre-release) is still a bug to reproduce: the reproduction runs on the current code and says whether it is still there, instead of asking the reporter to update; the reply names the current version. On a schedule, closes `needs-info` issues nobody answered. Light model. | every repository (`dev-tag`) |
 | [`issue-repro.yml`](.github/workflows/issue-repro.yml) | When an issue gets `bug:unconfirmed` (or `repro:again`): Claude writes one unit test that fails if the bug exists (no shell), a second job with no secrets and a read-only token runs it, a third with the bot token pushes the file the first job produced (hash-checked) and reports. Fails: `bug:confirmed` plus a draft PR with the test. Passes: `could-not-reproduce` and a question to the reporter; when the report named an older version, the reply says the current code (the development build, linked) may already have the fix and asks to try it. Both verdicts say what they ran on. At most 5 a day. | repositories with unit tests (`dev-tag`) |
