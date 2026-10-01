@@ -1,20 +1,48 @@
 name: WordPress plugin tests (slow)
 
 # Reusable. The slow suites for a WordPress plugin, on wp-env: PHPUnit
-# integration tests (optionally on a multisite network) and Playwright E2E.
-# Separate from plugin-checks-wp.yml so they run alongside the review
-# instead of in front of it. A suite a repository does not have is turned
-# off with its input; its job then shows as skipped (a skipped job counts as
-# passing for a required check).
+# integration tests and Playwright E2E, each target its own job and its own
+# status check. Separate from plugin-checks-wp.yml so they run alongside the
+# review instead of in front of it. A suite a repository does not have is
+# turned off with its input; its job then shows as skipped (a skipped job
+# counts as passing for a required check).
+#
+# What runs (scripts/test-targets.py turns the inputs into the jobs):
+#
+#   integration-targets  '["single","network"]': one job per target, checks
+#                        "Integration (single site)" and "Integration (network)".
+#                        Left out, the old single job "Integration tests
+#                        (wp-env)", on the network unless `multisite: false`.
+#   e2e-suites           a JSON list of {name, site, run, results?, timeout?}:
+#                        one job per suite, check "E2E (<name>)". `site` single
+#                        is the development site with the plugin activated;
+#                        network is the tests site turned into a subdirectory
+#                        network (WordPress's rewrite rules written, the plugin
+#                        network-activated). `run` is the command, from the
+#                        checkout (`npx playwright test -c playwright.network.config.ts`,
+#                        `DU_SNAPSHOTS=1 npx playwright test --project=visual`);
+#                        `results` the folder kept when it fails (default
+#                        build/e2e-results). Left out, the old single job
+#                        "E2E (Playwright)": `npx playwright test` on the
+#                        development site.
+#
+# The ports, the mu-plugins and the PHP version are the repository's
+# `.wp-env.json`; nothing here knows them. Each job is a fresh runner, so a
+# single-site target needs no throwaway environment of its own.
 #
 # The calling repository provides `.wp-env.json`, `phpunit-integration.xml`,
-# the npm dependencies (`@wordpress/env`, `@playwright/test`) and a Playwright
-# config that writes its results to `build/e2e-results`; wp-env mounts the
+# the npm dependencies (`@wordpress/env`, `@playwright/test`) and Playwright
+# configs that write their results where `results` says; wp-env mounts the
 # checkout under the repository's name.
 #
 #   jobs:
 #     tests:
 #       uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v2
+#       with:                                   # all optional
+#         integration-targets: '["single","network"]'
+#         e2e-suites: >-
+#           [{"name":"single","site":"single","run":"npx playwright test"},
+#            {"name":"network","site":"network","run":"npx playwright test -c playwright.network.config.ts","results":"build/e2e-network-results"}]
 
 on:
   workflow_call:
@@ -24,13 +52,21 @@ on:
         type: boolean
         default: true
       multisite:
-        description: Convert the wp-env tests site into a network for the integration tests.
+        description: With integration-targets left out, run the one integration job on a network (true) or a single site (false).
         type: boolean
         default: true
       e2e:
         description: Run Playwright end-to-end tests on wp-env.
         type: boolean
         default: true
+      integration-targets:
+        description: 'JSON list of where the integration suite runs, "single" and/or "network", one job each. Empty keeps the old single job (on the network unless multisite is false).'
+        type: string
+        default: ''
+      e2e-suites:
+        description: 'JSON list of end-to-end suites, {name, site (single|network), run, results?, timeout?}, one job each, named "E2E (<name>)". Empty keeps the old single "E2E (Playwright)" job.'
+        type: string
+        default: ''
       central-ref:
         description: Ref of DiluxOne/.github to read the policy from.
         type: string
@@ -61,6 +97,8 @@ jobs:
       checks: read # and the checks of its head
     outputs:
       code: ${{ steps.changes.outputs.code }}
+      integration: ${{ steps.plan.outputs.integration }}
+      e2e: ${{ steps.plan.outputs.e2e }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -73,6 +111,15 @@ jobs:
           ref: ${{ inputs.central-ref }}
           path: .dx-central
           persist-credentials: false
+      - name: The jobs to run (one per target and suite)
+        id: plan
+        env:
+          INTEGRATION: ${{ inputs.integration }}
+          MULTISITE: ${{ inputs.multisite }}
+          INTEGRATION_TARGETS: ${{ inputs.integration-targets }}
+          E2E: ${{ inputs.e2e }}
+          E2E_SUITES: ${{ inputs.e2e-suites }}
+        run: python3 .dx-central/scripts/test-targets.py
       - id: changes
         env:
           EVENT: ${{ github.event_name }}
@@ -82,69 +129,136 @@ jobs:
         run: bash .dx-central/scripts/changes.sh
 
   integration:
-    name: Integration tests (wp-env)
+    name: ${{ matrix.target.check }}
     needs: changes
-    if: ${{ !cancelled() && inputs.integration && needs.changes.outputs.code != 'false' }}
+    # Always there, so its check carries the name a ruleset requires (a job
+    # skipped before its matrix expands reports an unexpanded name). When
+    # the suite is off, or no code changed, every step is skipped and the
+    # job is green.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.changes.outputs.integration) }}
+    env:
+      GO: ${{ matrix.target.enabled && needs.changes.outputs.code != 'false' }}
     steps:
+      - if: env.GO != 'true'
+        run: echo "Nothing to run here (suite off, or no code changed)."
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: env.GO == 'true'
         with:
           node-version: '20'
       - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        if: env.GO == 'true'
         with:
           php-version: '8.5'
           coverage: none
           tools: composer:v2
       - run: composer install --no-interaction --prefer-dist --no-progress
+        if: env.GO == 'true'
       - run: npm install --no-audit --no-fund
+        if: env.GO == 'true'
       - run: npx wp-env start
+        if: env.GO == 'true'
       - name: Multisite network
-        if: inputs.multisite
+        if: env.GO == 'true' && matrix.target.site == 'network'
         env:
           REPO: ${{ github.event.repository.name }}
         run: |
           npx wp-env run tests-cli wp core multisite-convert --title="Tests network"
           npx wp-env run tests-cli wp plugin activate "$REPO" --network
       - name: PHPUnit (integration)
+        if: env.GO == 'true'
         # wp-env mounts the checkout under the repository's name.
         env:
           REPO: ${{ github.event.repository.name }}
         run: npx wp-env run tests-cli sh -c "cd wp-content/plugins/$REPO && php vendor/bin/phpunit -c phpunit-integration.xml"
-      - if: always()
+      - if: always() && env.GO == 'true'
         run: npx wp-env stop
 
   e2e:
-    name: E2E (Playwright)
+    name: ${{ matrix.suite.check }}
     needs: changes
-    if: ${{ !cancelled() && inputs.e2e && needs.changes.outputs.code != 'false' }}
+    # Always there, like the integration jobs, for the same reason.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: ${{ matrix.suite.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ${{ fromJSON(needs.changes.outputs.e2e) }}
+    env:
+      GO: ${{ matrix.suite.enabled && needs.changes.outputs.code != 'false' }}
     steps:
+      - if: env.GO != 'true'
+        run: echo "Nothing to run here (suite off, or no code changed)."
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: env.GO == 'true'
         with:
           node-version: '20'
       - run: npm install --no-audit --no-fund
+        if: env.GO == 'true'
       - run: npx playwright install --with-deps chromium
+        if: env.GO == 'true'
       - run: npx wp-env start
-      - name: Activate the plugin
+        if: env.GO == 'true'
+      - name: Activate the plugin (single site)
+        if: env.GO == 'true' && matrix.suite.site == 'single'
         env:
           REPO: ${{ github.event.repository.name }}
         run: npx wp-env run cli wp plugin activate "$REPO"
-      - run: npx playwright test
+      - name: A subdirectory network on the tests site, the plugin network-activated
+        if: env.GO == 'true' && matrix.suite.site == 'network'
+        # WordPress's own rewrite rules for a subdirectory network: without
+        # them a site's /wp-admin/ is a 404 and a browser cannot reach the
+        # other sites of the network.
+        env:
+          REPO: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          npx wp-env run tests-cli wp core is-installed --network >/dev/null 2>&1 \
+            || npx wp-env run tests-cli wp core multisite-convert --title="Tests network"
+          # Written into the checkout, which wp-env mounts as the plugin's
+          # folder, and copied from there inside the container.
+          mkdir -p build
+          cat > build/dx-network.htaccess <<'HTACCESS'
+          # BEGIN WordPress Multisite
+          RewriteEngine On
+          RewriteBase /
+          RewriteRule ^index\.php$ - [L]
+          RewriteRule ^([_0-9a-zA-Z-]+/)?wp-admin$ $1wp-admin/ [R=301,L]
+          RewriteCond %{REQUEST_FILENAME} -f [OR]
+          RewriteCond %{REQUEST_FILENAME} -d
+          RewriteRule ^ - [L]
+          RewriteRule ^([_0-9a-zA-Z-]+/)?(wp-(content|admin|includes).*) $2 [L]
+          RewriteRule ^([_0-9a-zA-Z-]+/)?(.*\.php)$ $2 [L]
+          RewriteRule . index.php [L]
+          # END WordPress Multisite
+          HTACCESS
+          npx wp-env run tests-cli bash -c "cp /var/www/html/wp-content/plugins/$REPO/build/dx-network.htaccess /var/www/html/.htaccess"
+          npx wp-env run tests-cli wp plugin activate "$REPO" --network
+      - name: Run the suite
+        if: env.GO == 'true'
         env:
           CI: 'true'
-      - if: failure()
+          RUN: ${{ matrix.suite.run }}
+        run: |
+          mkdir -p build
+          bash -c "$RUN"
+      - if: failure() && env.GO == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: playwright-results
-          path: build/e2e-results
+          name: ${{ matrix.suite.artifact }}
+          path: ${{ matrix.suite.results }}
           retention-days: 7
-      - if: always()
+      - if: always() && env.GO == 'true'
         run: npx wp-env stop
