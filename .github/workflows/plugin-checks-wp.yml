@@ -2,9 +2,11 @@ name: WordPress plugin checks (fast)
 
 # Reusable. The fast quality gates for a WordPress plugin published on
 # wordpress.org: PHP syntax and unit tests on every supported PHP, PHPCS,
-# PHPStan, Psalm taint analysis, i18n, Plugin Check on the shipped tree, and
-# readme/version alignment, and the version markers against what was
-# released (scripts/release-markers.sh). Each job is its own status check.
+# PHPStan, Psalm taint analysis, i18n, Plugin Check on the shipped tree, the
+# patterns wordpress.org's review flags that Plugin Check does not
+# (scripts/wp-review-patterns.php), readme/version alignment, and the
+# version markers against what was released (scripts/release-markers.sh).
+# Each job is its own status check.
 #
 # The slow wp-env suites (integration, E2E) are plugin-tests-wp.yml, a
 # separate workflow, so a caller can start the review as soon as these pass
@@ -256,6 +258,38 @@ jobs:
           # job holds to the released version (or the one being released);
           # the release workflow checks them again before SVN.
           ignore-codes: stable_tag_mismatch
+
+  review-patterns:
+    name: wordpress.org review patterns
+    # What the Plugin Review Team flags and Plugin Check does not: output
+    # escaping suppressed with a phpcs comment ("escaped inside" reads as
+    # unescaped to the review), a top-level menu among WordPress's own, a
+    # nonce said to be checked somewhere else, a notice on every screen. The
+    # first two fail; the other two are annotated for a person to look at.
+    # Every rule is a finding from a real review (scripts/wp-review-patterns.php).
+    # Cheap, so it runs on every pull request, on the shipped tree only.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref }}
+          path: .dx-central
+          persist-credentials: false
+      - name: Build the shipped tree (what wordpress.org receives)
+        env:
+          SLUG: ${{ inputs.slug }}
+        run: |
+          mkdir -p "build/$SLUG"
+          rsync -a --exclude-from=.distignore --exclude=build --exclude=.dx-central ./ "build/$SLUG/"
+      - name: Check the patterns the review flags
+        env:
+          SLUG: ${{ inputs.slug }}
+        run: php .dx-central/scripts/wp-review-patterns.php "build/$SLUG"
 
   readme:
     name: readme.txt and versions
