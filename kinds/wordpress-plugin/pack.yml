@@ -1,0 +1,38 @@
+# The wordpress-plugin kind: a plugin published on wordpress.org.
+# A repository opts in with `kind: wordpress-plugin` in its
+# .github/review-policy.yml. What each key means: kinds/README.md.
+
+name: WordPress plugin
+
+# Names a caller may still pass as `profile:` for this kind (the review
+# profile's name before kinds existed). One-line lists.
+aliases: [plugin-wp]
+
+# The reusable workflows that make up this kind's battery, in
+# .github/workflows/. GitHub cannot choose a reusable workflow from data, so
+# a repository's caller names them (workflow-templates/pull-request-wp.yml
+# and release-wp.yml); they read their rules and settings from this pack.
+workflows:
+  - plugin-checks-wp.yml
+  - plugin-tests-wp.yml
+  - plugin-release-wp.yml
+
+# The engines this kind's checks run, and the language adapter of each.
+adapters:
+  - engine: scripts/review-rules.php
+    rules: rules.yml
+    languages: [php]
+
+# What the workflows read from here. A repository can add to a list in its
+# own policy (`kind-settings:`), never replace a value: it adds an
+# exception, it does not turn a gate off (scripts/policy.py).
+settings:
+  plugin-check:
+    # Every warning fails, as it does for the reviewer.
+    strict: true
+    categories: [plugin_repo, security, performance, accessibility, general]
+    include-experimental: true
+    # Codes that can never be right on the tree the checks build:
+    # stable_tag_mismatch, because the checkout's markers are held to the
+    # released version by the readme job, and checked again before SVN.
+    ignore-codes: [stable_tag_mismatch]

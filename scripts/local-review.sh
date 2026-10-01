@@ -12,8 +12,9 @@
 #   --base       what the branch goes into (default origin/main)
 #   --title      the pull request title (default: the subject of the branch's only commit)
 #   --body-file  the pull request description; without it the description is not checked
-#   --profile    review-profiles/<name>.md (default: the `profile:` the repository's
-#                pull-request workflow passes, else general)
+#   --profile    general, a kind or a pack's alias (scripts/policy.py --profile; default:
+#                the `profile:` the repository's pull-request workflow passes, else
+#                general); a `kind:` in the repository's policy adds that kind's profile
 #   --no-claude  stop after writing the brief (to hand it to another reviewer or agent)
 #   --full       review the whole change again, not only what changed since the last run
 #   --model      the reviewer's model instead of the one the policy picks for the floor
@@ -192,7 +193,7 @@ changed=$(git diff --name-status -M "$BASE...$HEAD" | awk -F'\t' '{ for (i = 2; 
 DEFAULT_POLICY="$CENTRAL/policy/review-policy.default.yml" REPO_POLICY=.github/review-policy.yml \
   CHANGED_FILES=$changed GITHUB_OUTPUT="$work/policy.out" python3 "$CENTRAL/scripts/policy.py"
 get() { sed -n "s/^$1=//p" "$work/policy.out" | tail -1; }
-floor=$(get floor) reasons=$(get reasons) model=$(get model) effort=$(get effort)
+floor=$(get floor) reasons=$(get reasons) model=$(get model) effort=$(get effort) kind=$(get kind)
 if [ -n "$model_override" ]; then
   [[ "$model_override" =~ ^[a-z0-9][a-z0-9.-]*$ ]] || { echo "--model '$model_override' is not a model id." >&2; exit 64; }
   model=$model_override
@@ -208,7 +209,7 @@ last_json="$state/last.json" findings_md="$state/findings.md"
 # and the description (a retitle is a new review, not the old answer), the
 # model, the profile and the base. git hash-object hashes anywhere git runs
 # (sha256sum is not on macOS).
-input=$(printf '%s\n' "$title" "$body" "$model" "$profile" "$BASE" | git hash-object --stdin)
+input=$(printf '%s\n' "$title" "$body" "$model" "$profile" "$kind" "$BASE" | git hash-object --stdin)
 mode=full last=''
 if [ "$full" -eq 0 ] && [ -f "$last_json" ] && [ "$(jq -r '.branch // ""' "$last_json")" = "$branch" ]; then
   last=$(jq -r '.sha // ""' "$last_json")
@@ -223,11 +224,11 @@ if [ "$full" -eq 0 ] && [ -f "$last_json" ] && [ "$(jq -r '.branch // ""' "$last
   if [ -n "$last" ] && [ "$last" != "$HEAD" ] && git merge-base --is-ancestor "$last" "$HEAD" 2>/dev/null; then mode=incremental; else last=''; fi
 fi
 
-echo; echo "== Brief (profile $profile, $mode)"
+echo; echo "== Brief (profile $profile${kind:+, kind $kind}, $mode)"
 # owner/name from the origin remote, or the directory's name without one.
 repo=$(git remote get-url origin 2>/dev/null | sed -E 's#(\.git)?$##; s#.*[:/]([^/]+/[^/]+)$#\1#' || true)
 REPO=${repo:-$(basename "$(git rev-parse --show-toplevel)")} \
-  TITLE=$title BODY=$body BASE=$BASE HEAD=$HEAD FLOOR=$floor REASONS=$reasons PROFILE=$profile \
+  TITLE=$title BODY=$body BASE=$BASE HEAD=$HEAD FLOOR=$floor REASONS=$reasons PROFILE=$profile KIND=$kind \
   MODE=$mode RANGE="$last..$HEAD" LAST=$last PREVIOUS_JSON=$last_json \
   CENTRAL=$CENTRAL WORK=$work OUT="$work/brief.md" bash "$CENTRAL/scripts/review-brief.sh"
 echo "$work/brief.md: $(head -1 "$work/brief.md")"

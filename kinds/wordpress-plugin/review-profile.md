@@ -1,8 +1,11 @@
-# Review profile: WordPress plugin (`plugin-wp`)
+# Review profile: WordPress plugin (kind `wordpress-plugin`, alias `plugin-wp`)
 
 For plugins published on wordpress.org. Every rule comes from the Plugin
 Review Team's guidelines or from a real rejection; the automated tools
-passed each time, so check them by reading the code.
+passed each time, so check them by reading the code. What a script can
+check is also a rule in `rules.yml` beside this file, run on every pull
+request (`Review rules (wordpress-plugin)`); this profile is for what only
+reading can find.
 
 ## Input, output, permissions
 

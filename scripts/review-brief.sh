@@ -8,8 +8,11 @@
 #   REPO, TITLE, BODY        the repository and the change's title and description
 #   BASE, HEAD               commits the change goes from and to
 #   FLOOR, REASONS           the policy's risk floor and why (scripts/policy.py)
-#   PROFILE                  stack profile in review-profiles/, or general
-#   CENTRAL                  a checkout of DiluxOne/.github (for review-profiles/)
+#   PROFILE                  the profile the workflow names: general, a kind, or a
+#                            pack's alias (plugin-wp); scripts/policy.py --profile
+#   KIND                     the repository's kind (its policy's `kind:`), optional:
+#                            with PROFILE general, the kind's profile is added
+#   CENTRAL                  a checkout of DiluxOne/.github (profiles, kinds/)
 #   WORK                     a scratch directory
 #   OUT                      where the brief goes
 #   PR                       the pull request number; empty before there is one
@@ -62,6 +65,13 @@ if [ "${1:-}" = "--test" ]; then
   ( cd "$dir/repo" && head -c 300000 /dev/zero | tr '\0' 'a' | fold -w 100 > big.txt && git add -A && git commit -q -m "fix(a): big" )
   build "$base" "$(git -C "$dir/repo" rev-parse HEAD)" high
   check "a diff over the limit is not inlined"    "larger than 250000 bytes"
+  build "$base" "$head" high env PROFILE=plugin-wp
+  check "the old profile name reads the kind's profile" "Review profile: WordPress plugin"
+  build "$base" "$head" high env KIND=wordpress-plugin
+  check "a declared kind adds its profile to general" "Review profile: WordPress plugin"
+  build "$base" "$head" high
+  lacks "no kind, general only"                   "Review profile: WordPress plugin"
+  if ( build "$base" "$head" high env PROFILE=no-such-profile ) 2>/dev/null; then echo "FAIL a profile that does not exist fails"; fail=1; else echo "ok   a profile that does not exist fails"; fi
   rm -rf "$dir"
   [ "$fail" -eq 0 ] && echo "all tests passed"
   exit "$fail"
@@ -70,6 +80,16 @@ fi
 : "${REPO:?}" "${BASE:?}" "${HEAD:?}" "${FLOOR:?}" "${PROFILE:?}" "${CENTRAL:?}" "${WORK:?}" "${OUT:?}"
 MODE=${MODE:-full}
 mkdir -p "$WORK"
+
+# The kind's profile: the one the workflow names, or, when it names only
+# general, the one of the kind the repository declares. A name that is
+# neither fails here, before anything is reviewed without its rules.
+profile=$PROFILE
+if [ "$profile" = general ] && [ -n "${KIND:-}" ]; then profile=$KIND; fi
+profile_file=''
+if [ "$profile" != general ]; then
+  profile_file=$(python3 "$CENTRAL/scripts/policy.py" --profile "$profile")
+fi
 
 # Never shown to the model: generated and binary-ish files.
 noise=(':!*.lock' ':!package-lock.json' ':!yarn.lock' ':!pnpm-lock.yaml' ':!composer.lock' ':!*.min.js' ':!*.min.css' ':!*.map' ':!*.mo' ':!*.po' ':!*.pot' ':!*.svg' ':!*.png' ':!*.jpg' ':!*.gif' ':!*.pdf' ':!*.woff' ':!*.woff2' ':!dist/**' ':!build/**' ':!vendor/**' ':!node_modules/**')
@@ -103,7 +123,7 @@ limit=250000
   echo "## Rules"
   echo
   cat "$CENTRAL/review-profiles/general.md"
-  if [ "$PROFILE" != general ]; then echo; cat "$CENTRAL/review-profiles/$PROFILE.md"; fi
+  if [ "$profile" != general ]; then echo; cat "$CENTRAL/$profile_file"; fi
   # Text-only changes (a low floor) do not need the code rules.
   if [ "$FLOOR" != low ]; then
     for f in AGENTS.md docs/architecture.md; do

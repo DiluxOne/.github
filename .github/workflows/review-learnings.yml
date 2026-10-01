@@ -4,7 +4,8 @@ name: Review learnings
 # the organisation (verdicts, lessons, changed files, whether anything was
 # reverted afterwards) and proposes, as pull requests a human approves:
 #
-#   - in this repository: new rules for review-profiles/*.md, from lessons
+#   - in this repository: new rules for review-profiles/*.md and
+#     kinds/*/review-profile.md, from lessons
 #     that repeated in the last 7 days;
 #   - in each repository concerned: changes to its .github/review-policy.yml
 #     (a path that behaved as low risk `min-evidence` times, default 5, to join the safe list, or
@@ -150,11 +151,14 @@ jobs:
             complexity, blocking, lessons, findings, files (the changed paths).
 
             The rules live in layers. review-profiles/general.md applies to every repository;
-            review-profiles/<stack>.md to one kind of project; policy/review-policy.default.yml is
+            kinds/<kind>/review-profile.md to one kind of project; policy/review-policy.default.yml is
             the organisation's path policy; each repository's .github/review-policy.yml (in
             work/<name>/) adds its own high-risk and low-risk-eligible paths; its AGENTS.md holds
             its own rules. A change goes in the narrowest layer that fits. You may edit only:
-            review-profiles/*.md, work/<name>/.github/review-policy.yml and work/<name>/AGENTS.md.
+            review-profiles/*.md, kinds/*/review-profile.md, work/<name>/.github/review-policy.yml
+            and work/<name>/AGENTS.md. A lesson a script could check (a call, a comment, a config
+            line) is better as a rule in kinds/<kind>/rules.yml: say so in the pull request's
+            description for a person to write it with its fixtures; do not edit rules files.
 
             Propose only what evidence supports:
 
@@ -189,7 +193,7 @@ jobs:
             --effort ${{ steps.policy.outputs.effort }}
             --max-turns 60
             --max-budget-usd ${{ steps.policy.outputs.budget }}
-            --allowedTools "Read,Glob,Grep,Edit(review-profiles/*.md),Write(review-profiles/*.md),Edit(work/*/.github/review-policy.yml),Write(work/*/.github/review-policy.yml),Edit(work/*/AGENTS.md),Write(work/*/AGENTS.md)"
+            --allowedTools "Read,Glob,Grep,Edit(review-profiles/*.md),Write(review-profiles/*.md),Edit(kinds/*/review-profile.md),Write(kinds/*/review-profile.md),Edit(work/*/.github/review-policy.yml),Write(work/*/.github/review-policy.yml),Edit(work/*/AGENTS.md),Write(work/*/AGENTS.md)"
             --json-schema '{"type":"object","additionalProperties":false,"required":["proposals"],"properties":{"proposals":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["repo","changes","why","if_approved"],"properties":{"repo":{"type":"string"},"changes":{"type":"string","maxLength":2000},"why":{"type":"string","maxLength":3000},"if_approved":{"type":"string","maxLength":1000}}}}}}'
 
       - name: Open the pull requests
@@ -220,7 +224,7 @@ jobs:
           for i in $(jq -r '.proposals | keys[]' <<<"$OUT"); do
             repo=$(jq -r ".proposals[$i].repo" <<<"$OUT")
             if [ "$repo" = central ] || [ "$repo" = "${GITHUB_REPOSITORY#*/}" ]; then
-              dir=.; name=${GITHUB_REPOSITORY#*/}; title="docs(review): weekly review lessons $today"; allowed='review-profiles/[^/]+\.md'
+              dir=.; name=${GITHUB_REPOSITORY#*/}; title="docs(review): weekly review lessons $today"; allowed='review-profiles/[^/]+\.md|kinds/[^/]+/review-profile\.md'
             else
               dir="work/$repo"; name=$repo; title="chore(review): weekly review policy proposal $today"; allowed='\.github/review-policy\.yml|AGENTS\.md'
             fi
