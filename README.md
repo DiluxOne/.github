@@ -86,7 +86,7 @@ is in the run alone.
    code:
      - "bin/**"
    review:
-     high: { model: claude-opus-5-5, effort: high }
+     high: { model: claude-sonnet-5-5, effort: xhigh }
    budget-usd: 2
    auto-merge: true
    ```
@@ -168,7 +168,7 @@ ref (default `v2`), not at the ref of its `uses:` line: a caller that pins
 | --- | --- | --- |
 | [`conventions.yml`](.github/workflows/conventions.yml) | Branch, title, commits, description sections, no "Generated with" footer (all in `scripts/conventions.sh`), relative doc links, retired names. Reads the labels and the review App's last record live, so a re-run sees today's `type:*` label. | `retired-names`, `required-sections`, `max-header`, `central-ref`, `review-bot` |
 | [`claude-review.yml`](.github/workflows/claude-review.yml) | The review described above. Outputs `risk`, `complexity`, `floor`, `trusted`, `blocking`. | `profile`, `central-ref`, `max-auto-reviews` |
-| [`review-reply.yml`](.github/workflows/review-reply.yml) | Answers `@dilux-bot` mentions from members and collaborators, with the strong model. | `profile`, `central-ref` |
+| [`review-reply.yml`](.github/workflows/review-reply.yml) | Answers `@dilux-bot` mentions from members and collaborators, with the high-risk reviewer. | `profile`, `central-ref` |
 | [`auto-merge.yml`](.github/workflows/auto-merge.yml) | Turns GitHub's auto-merge on or off from the review's outputs and commits the description verbatim. `pull-request-edited.yml` runs it on `edited` too. | the five review outputs |
 | [`scripts/conventions.sh`](scripts/conventions.sh) | Not a workflow: the conventions a pull request is held to (branch, title, every commit header, no session trailer, description sections, no "Generated with" footer). `conventions.yml` runs it on a pull request, `local-review.sh` before one; `--test` for its own tests. | env: `BRANCH`, `TITLE`, `BODY`, `BASE`, `HEAD_REF`, `COMMENTS_FILE`, `REVIEW_BOT`, `MAX_HEADER`, `SECTIONS`, `LABELS`, `AUTHOR_TYPE` |
 | [`scripts/review-brief.sh`](scripts/review-brief.sh) | Not a workflow: the review brief, the one file the Claude review reads (profiles, `AGENTS.md`, `docs/architecture.md`, policy floor, description, diff). `claude-review.yml` and `local-review.sh` build it with the same script; `--test` for its own tests. | env: see the script's header |

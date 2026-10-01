@@ -30,7 +30,7 @@ high-risk:
 review:
   low:    { model: claude-sonnet-5-5, effort: low }
   medium: { model: claude-sonnet-5-5, effort: medium }
-  high:   { model: claude-opus-5-5, effort: medium }
+  high:   { model: claude-sonnet-5-5, effort: high }
 
 # The most one review run may spend, in USD. A repository can lower or raise it.
 budget-usd: 3

@@ -4,7 +4,7 @@ name: Issue triage
 # README, readme.txt, docs/roadmap.md and the open issues, classifies it and
 # does one thing: applies a label and posts one reply. It never closes an
 # issue, never promises a fix and never gives a date. The `low` reviewer of
-# the policy (the light model) does this work.
+# the policy (the low-risk reviewer) does this work.
 #
 #   bug:unconfirmed       a bug report with enough to try to reproduce it
 #                         (issue-repro.yml picks it up from this label)

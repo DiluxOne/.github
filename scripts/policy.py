@@ -208,7 +208,7 @@ def self_test():
     here = os.path.dirname(os.path.abspath(__file__))
     default = os.path.join(here, "..", "policy", "review-policy.default.yml")
     with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False, encoding="utf-8") as fh:
-        fh.write("auto-merge: false\nreview:\n  low: {model: claude-sonnet-5-5}\n  medium: {model: claude-sonnet-5-5}\n  high: {model: claude-opus-5-5}\n")
+        fh.write("auto-merge: false\nreview:\n  low: {model: claude-sonnet-5-5}\n  medium: {model: claude-sonnet-5-5}\n  high: {model: claude-sonnet-5-5}\n")
         org_off = fh.name
     cases = [
         # (name, defaults, repo policy, files, extra env, expected outputs, expected exit)
@@ -217,7 +217,7 @@ def self_test():
         ("compiled translations are not low: nobody can read them", default, "", ["languages/x-es_AR.mo"], {}, {"floor": "medium"}, 0),
         ("their sources and template are", default, "", ["languages/x-es_AR.po", "languages/x.pot"], {}, {"floor": "low"}, 0),
         ("code is medium", default, "", ["includes/a.php"], {}, {"floor": "medium", "model": "claude-sonnet-5-5", "effort": "medium"}, 0),
-        ("a workflow gets the strong reviewer", default, "", [".github/workflows/a.yml"], {}, {"floor": "high", "model": "claude-opus-5-5"}, 0),
+        ("a workflow gets high effort", default, "", [".github/workflows/a.yml"], {}, {"floor": "high", "model": "claude-sonnet-5-5", "effort": "high"}, 0),
         ("docs plus code is medium", default, "", ["docs/a.md", "includes/a.php"], {}, {"floor": "medium"}, 0),
         ("a workflow is high", default, "", [".github/workflows/a.yml"], {}, {"floor": "high"}, 0),
         ("AGENTS.md is high, though it is Markdown", default, "", ["AGENTS.md"], {}, {"floor": "high"}, 0),
