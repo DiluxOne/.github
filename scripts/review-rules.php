@@ -1003,21 +1003,26 @@ final class RR_Php_File {
 		return stripcslashes( $inner );
 	}
 
+	/** @var array<int, string>|null line => its code, built once */
+	private ?array $code_lines = null;
+
 	/** The source line $line, without its comments and with whitespace collapsed. */
 	public function code_on_line( int $line ): string {
-		$out = '';
+		if ( null === $this->code_lines ) {
+			$this->code_lines = array();
 
-		foreach ( $this->t as $token ) {
-			if ( $token[2] > $line ) {
-				break;
+			foreach ( $this->t as $token ) {
+				if ( T_COMMENT !== $token[0] && T_DOC_COMMENT !== $token[0] && T_OPEN_TAG !== $token[0] && T_CLOSE_TAG !== $token[0] ) {
+					$this->code_lines[ $token[2] ] = ( $this->code_lines[ $token[2] ] ?? '' ) . $token[1];
+				}
 			}
 
-			if ( $token[2] === $line && T_COMMENT !== $token[0] && T_DOC_COMMENT !== $token[0] && T_OPEN_TAG !== $token[0] && T_CLOSE_TAG !== $token[0] ) {
-				$out .= $token[1];
+			foreach ( $this->code_lines as $n => $code ) {
+				$this->code_lines[ $n ] = trim( (string) preg_replace( '/\s+/', ' ', $code ) );
 			}
 		}
 
-		return trim( (string) preg_replace( '/\s+/', ' ', $out ) );
+		return $this->code_lines[ $line ] ?? '';
 	}
 }
 
@@ -1270,6 +1275,7 @@ final class RR_Rules_Error extends RuntimeException {}
 
 const RR_TYPES      = array( 'comment', 'call-arg', 'hook-callback', 'forbidden-call', 'forbidden-config', 'suppression-allowlist' );
 const RR_SEVERITIES = array( 'error', 'warning', 'notice' );
+const RR_FINGERPRINT_LINES    = 3;
 const RR_DEFAULT_SUPERGLOBALS = array( '$_GET', '$_POST', '$_REQUEST', '$_COOKIE', '$_FILES', '$_SERVER', '$_ENV' );
 
 /**
@@ -1479,10 +1485,10 @@ function rr_run( array $set, string $repo, string $tree, ?array $only = null ): 
 		foreach ( $found as $f ) {
 			$findings[] = array(
 				'rule'     => (string) $rule['id'],
-				'severity' => (string) $rule['severity'],
+				'severity' => (string) ( $f['severity'] ?? $rule['severity'] ),
 				'file'     => $f['file'],
 				'line'     => $f['line'],
-				'message'  => rr_message( (string) $rule['message'], $f['vars'] ?? array() ),
+				'message'  => rr_message( (string) ( $f['message'] ?? $rule['message'] ), $f['vars'] ?? array() ),
 			);
 		}
 	}
@@ -1893,10 +1899,13 @@ function rr_body_missing( array $rule, RR_Php_File $file, int $open, int $close 
  * Every linter suppression in a file: the comment's line, the checks it
  * names ('*' when it names none) and the fingerprint of the code it covers.
  *
- * The fingerprint is the first 12 hex digits of the SHA-1 of the covered
- * line's code, comments left out and whitespace collapsed: the line the
- * comment ends (a trailing `// phpcs:ignore`), or else the next line with
- * code. Moving the line keeps it; changing the code it covers does not.
+ * The fingerprint is the first 12 hex digits of the SHA-1 of the code the
+ * suppression covers: the line the comment ends (a trailing
+ * `// phpcs:ignore`), or else the next line with code, and the two lines
+ * with code after it, comments left out and whitespace collapsed. Moving the
+ * block keeps it; changing that code does not. Two suppressions in front of
+ * the same code share a fingerprint, and each needs an entry of its own:
+ * entries are matched one to one.
  *
  * @return list<array{line: int, sniffs: list<string>, fingerprint: string, covered: string}>
  */
@@ -1911,28 +1920,37 @@ function rr_suppressions( RR_Php_File $file ): array {
 
 		$list   = trim( (string) preg_replace( '/(\s--\s.*|\*\/.*)$/s', '', ' ' . $m[1] ) );
 		$sniffs = '' === $list ? array( '*' ) : array_values( array_filter( array_map( 'trim', explode( ',', $list ) ) ) );
-		$own    = $file->code_on_line( $comment['line'] );
-		$line   = $comment['line'];
+		$line   = null;
+		$window = array();
 
-		if ( '' === $own ) {
-			for ( $l = $comment['line'] + 1; $l <= $lines; $l++ ) {
-				if ( '' !== $file->code_on_line( $l ) ) {
-					$own  = $file->code_on_line( $l );
-					$line = $l;
-					break;
-				}
+		for ( $l = $comment['line']; $l <= $lines && count( $window ) < RR_FINGERPRINT_LINES; $l++ ) {
+			$code = $file->code_on_line( $l );
+
+			if ( '' !== $code ) {
+				$line     = $line ?? $l;
+				$window[] = $code;
 			}
 		}
 
 		$out[] = array(
 			'line'        => $comment['line'],
 			'sniffs'      => $sniffs,
-			'fingerprint' => substr( sha1( $own ), 0, 12 ),
-			'covered'     => $line,
+			'fingerprint' => rr_fingerprint( $window ),
+			'covered'     => $line ?? $comment['line'],
 		);
 	}
 
 	return $out;
+}
+
+/**
+ * The fingerprint of the code lines a suppression covers. The checker and
+ * --suggest-suppressions both get it from rr_suppressions(), never apart.
+ *
+ * @param list<string> $lines code, comments left out, whitespace collapsed
+ */
+function rr_fingerprint( array $lines ): string {
+	return substr( sha1( implode( "\n", $lines ) ), 0, 12 );
 }
 
 /**
@@ -2002,11 +2020,14 @@ function rr_suppression_allowlist( array $rule, RR_Php_Adapter $adapter, string 
 					continue;
 				}
 
+				// One entry per suppression: the first matching entry no other
+				// suppression has taken, so identical blocks need one each.
 				$listed = null;
 
 				foreach ( $entries as $n => $entry ) {
-					if ( $entry['file'] === $path && $entry['sniff'] === $sniff && $entry['fingerprint'] === $s['fingerprint'] ) {
+					if ( ! isset( $used[ $n ] ) && $entry['file'] === $path && $entry['sniff'] === $sniff && $entry['fingerprint'] === $s['fingerprint'] ) {
 						$listed = $n;
+						break;
 					}
 				}
 
@@ -2029,6 +2050,29 @@ function rr_suppression_allowlist( array $rule, RR_Php_Adapter $adapter, string 
 		}
 	}
 
+	// A reason that points somewhere else is no more a reason in the list
+	// than in the comment (`reason-pattern`, with its own message and severity).
+	if ( isset( $rule['reason-pattern'] ) ) {
+		$pattern = rr_regex( (string) $rule['reason-pattern'], (string) ( $rule['flags'] ?? '' ) );
+
+		foreach ( $entries as $entry ) {
+			if ( preg_match( $pattern, $entry['reason'] ) ) {
+				$out[] = array(
+					'file'     => $relative,
+					'line'     => $entry['line'],
+					'severity' => (string) ( $rule['reason-severity'] ?? 'warning' ),
+					'message'  => (string) ( $rule['reason-message'] ?? 'This reason says the check happens somewhere else.' ),
+					'vars'     => array(
+						'sniff'       => $entry['sniff'],
+						'fingerprint' => $entry['fingerprint'],
+						'entry'       => '',
+						'list'        => $relative,
+					),
+				);
+			}
+		}
+	}
+
 	foreach ( $entries as $n => $entry ) {
 		if ( isset( $used[ $n ] ) ) {
 			continue;
@@ -2041,9 +2085,11 @@ function rr_suppression_allowlist( array $rule, RR_Php_Adapter $adapter, string 
 		}
 
 		$out[] = array(
-			'file' => $relative,
-			'line' => $entry['line'],
-			'vars' => array(
+			'file'    => $relative,
+			'line'    => $entry['line'],
+			'message' => (string) ( $rule['stale-message'] ?? ( $cannot ? 'This entry lists {sniff}, which can never be allow-listed: remove it and fix the line.' : 'This entry is stale: no suppression of {sniff} in {file} covers code with fingerprint {fingerprint} any more (the code changed or went away). Remove it, or list the suppression as it is now (--suggest-suppressions).' ) ),
+			'vars'    => array(
+				'file'        => $entry['file'],
 				'sniff'       => $entry['sniff'],
 				'fingerprint' => $entry['fingerprint'],
 				'entry'       => $cannot ? 'this entry: that check can never be allow-listed' : sprintf( 'this entry: no suppression of %s in %s covers code with fingerprint %s any more (the line changed or went away)', $entry['sniff'], $entry['file'], $entry['fingerprint'] ),
@@ -2070,7 +2116,7 @@ function rr_suggest_suppressions( array $set, string $repo, string $tree ): stri
 			if ( isset( $f['vars']['entry'] ) && 0 === strpos( $f['vars']['entry'], '{' ) ) {
 				$file  = $adapter->files[ $f['file'] ] ?? null;
 				$code  = null !== $file ? rr_covered_code( $file, $f['line'] ) : '';
-				$yaml .= sprintf( "  - file: %s\n    sniff: %s\n    fingerprint: %s\n    reason: \"TODO: why this is safe (%s:%d: %s)\"\n", $f['file'], $f['vars']['sniff'], $f['vars']['fingerprint'], $f['file'], $f['line'], str_replace( '"', "'", mb_substr( $code, 0, 80 ) ) );
+				$yaml .= sprintf( "  - file: %s\n    sniff: %s\n    fingerprint: %s\n    reason: \"TODO: why this is safe (%s:%d: %s)\"\n", $f['file'], $f['vars']['sniff'], $f['vars']['fingerprint'], $f['file'], $f['line'], str_replace( '"', "'", substr( $code, 0, 80 ) ) );
 			}
 		}
 	}
@@ -2490,7 +2536,11 @@ PHP;
 	$file = new RR_Php_File( 'a.php', "<?php\necho 1; // phpcs:ignore A.B.C, D.E -- why\n\n// phpcs:disable F.G\n\n  \$x  =  1;\n// phpcs:ignore\nfoo();\n// phpcs:ignoreFile\n" );
 	$sup  = rr_suppressions( $file );
 	$check( 'php: suppressions, their checks and the line they cover', 3 === count( $sup ) && array( 'A.B.C', 'D.E' ) === $sup[0]['sniffs'] && array( 'F.G' ) === $sup[1]['sniffs'] && 6 === $sup[1]['covered'] && array( '*' ) === $sup[2]['sniffs'], json_encode( $sup ) );
-	$check( 'php: the fingerprint ignores whitespace', substr( sha1( '$x = 1;' ), 0, 12 ) === $sup[1]['fingerprint'], $sup[1]['fingerprint'] );
+	$check( 'php: the fingerprint is the covered code and the two code lines after it, whitespace collapsed', rr_fingerprint( array( '$x = 1;', 'foo();' ) ) === $sup[1]['fingerprint'], $sup[1]['fingerprint'] );
+
+	$same = "<?php\n// phpcs:disable A.B -- why\n\$in = f( \$g );\nq( 1 );\n// phpcs:enable\n\n// phpcs:disable A.B -- why\n\$in = f( \$g );\nq( 2 );\n// phpcs:enable\n";
+	$sup  = rr_suppressions( new RR_Php_File( 'a.php', $same ) );
+	$check( 'php: identical blocks in front of different code have different fingerprints', 2 === count( $sup ) && $sup[0]['fingerprint'] !== $sup[1]['fingerprint'], json_encode( $sup ) );
 
 	// The rules files: one that is wrong is refused with its reason.
 	foreach ( array(

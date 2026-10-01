@@ -125,7 +125,7 @@ single-quoted YAML keeps backslashes as they are (`'\$_GET'`).
 | `forbidden-call` | a function call | `functions` | `{function}` |
 | `hook-callback` | the function a hook is registered with (`'fn'`, `'Class::m'`, `array( $this, 'm' )`, `[ __CLASS__, 'm' ]`, `[ self::class, 'm' ]`, a closure, an arrow function, `$this->m( ... )`), resolved anywhere in the tree | `hooks` (globs over the hook's name; a part built at runtime reads as `*`), `registrars` (default `add_action`, `add_filter`), `public-hooks` (a callback also registered on one of these is skipped), `top-level-only` (a registration inside a function body is conditional, and skipped), `superglobals`, `ignore-keys` (a superglobal read whose literal key matches is not a read), `require`: a list of `calls: [...]` with `before-first: superglobal-read` and `when-no-read: pass`, or `contains: regex` with a `label`; either with `unless-calls: [...]` | `{hook}`, `{callback}`, `{missing}` |
 | `forbidden-config` | configuration files in the repository (scope `repo`) | `files` (globs), `pattern` | `{match}` |
-| `suppression-allowlist` | every `phpcs:ignore` / `phpcs:disable` | `sniffs` (the checks whose suppression must be listed), `never` (checks that can never be listed), `file` (the list, default `.github/review-suppressions.yml`) | `{sniff}`, `{fingerprint}`, `{entry}`, `{list}` |
+| `suppression-allowlist` | every `phpcs:ignore` / `phpcs:disable` | `sniffs` (the checks whose suppression must be listed), `never` (checks that can never be listed), `file` (the list, default `.github/review-suppressions.yml`), `reason-pattern` with `reason-severity` and `reason-message` (a reason in the list that matches is reported), `stale-message` | `{sniff}`, `{fingerprint}`, `{entry}`, `{list}` |
 
 A callback the tree does not define (a function of another plugin, a method
 two classes share) is not read: the rule says nothing rather than guess.
@@ -143,11 +143,15 @@ suppressions:
     reason: Which tab to draw; nothing is saved and nothing is printed from it.
 ```
 
-The fingerprint is the first 12 hex digits of the SHA-1 of the line the
-comment covers (the line it ends, or the next line with code), comments left
-out and whitespace collapsed: moving the line keeps it, changing the code it
-covers does not. An entry that matches nothing any more (the line changed or
-went away) fails as stale, so the list never says more than the code does.
+The fingerprint is the first 12 hex digits of the SHA-1 of the code the
+comment covers: the line it ends (a trailing `// phpcs:ignore`), or else the
+next line with code, and the two lines with code after it, comments left out
+and whitespace collapsed. Moving the block keeps it, changing that code does
+not. Entries are matched one to one: two identical blocks in one file share a
+fingerprint and need an entry each. An entry that matches nothing any more
+(the code changed or went away) fails as stale, so the list never says more
+than the code does. A `reason` that points somewhere else ("the caller
+verifies it", "checked below") is a warning, as it is in the comment.
 A bare `phpcs:ignore` (no check named) and the checks under `never` cannot be
 listed at all. The file lives under `.github/`, so a pull request that adds
 an entry is high risk and a person reads the reason.

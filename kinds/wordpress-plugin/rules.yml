@@ -394,6 +394,15 @@ rules:
     sniffs: '^WordPress\.(Security\.(NonceVerification|ValidatedSanitizedInput)|DB\.PreparedSQL|WP\.AlternativeFunctions)'
     never: '^WordPress\.Security\.EscapeOutput'
     file: .github/review-suppressions.yml
+    # A reason in the list that points somewhere else is no more a reason
+    # than the same words in the comment (the nonce-elsewhere rule).
+    reason-pattern: '(\bcallers?\b|\bverif\w*\s+(it|this|them|above|below|elsewhere|first|by|in)\b|\bchecked\s+(above|below|elsewhere|by|in)\b|\b(panel|dispatcher|handler|router)s?\s+(verif|check)\w*)'
+    reason-severity: warning
+    reason-message: >
+      The reason given for {sniff} says the check happens somewhere else. A
+      reviewer reads the line and its reason on their own: say why this line
+      is safe in its own terms, or move the check into the function.
+    flags: i
     message: >
       {sniff} is suppressed here and {list} does not account for it. Add
       {entry} with the reason a reviewer would accept, or fix the line. Plugin
@@ -424,6 +433,40 @@ rules:
                 sniff: WordPress.Security.EscapeOutput.OutputNotEscaped
                 fingerprint: c55a8742d2b6
                 reason: Escaped inside.
+        # Two identical blocks, one entry: the second is unlisted.
+        - fixture.php: |
+            <?php
+            function my_purge_a( $group ) {
+                global $wpdb;
+                // phpcs:disable WordPress.DB.PreparedSQL.NotPrepared -- the IN list is placeholders only, filled by prepare().
+                $in = my_placeholders( $group );
+                $wpdb->query( $wpdb->prepare( "DELETE FROM %i WHERE id IN ( {$in} )", array_merge( array( 'my_log' ), $group ) ) );
+                // phpcs:enable
+            }
+            function my_purge_b( $group ) {
+                global $wpdb;
+                // phpcs:disable WordPress.DB.PreparedSQL.NotPrepared -- the IN list is placeholders only, filled by prepare().
+                $in = my_placeholders( $group );
+                $wpdb->query( $wpdb->prepare( "DELETE FROM %i WHERE id IN ( {$in} )", array_merge( array( 'my_log' ), $group ) ) );
+                // phpcs:enable
+            }
+          .github/review-suppressions.yml: |
+            suppressions:
+              - file: fixture.php
+                sniff: WordPress.DB.PreparedSQL.NotPrepared
+                fingerprint: c97a88c8c60f
+                reason: The IN list is placeholders only, filled by prepare().
+        # A reason that points somewhere else (a warning).
+        - fixture.php: |
+            <?php
+            // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- which tab to draw; nothing is saved.
+            $tab = isset( $_GET['tab'] ) ? sanitize_key( wp_unslash( $_GET['tab'] ) ) : '';
+          .github/review-suppressions.yml: |
+            suppressions:
+              - file: fixture.php
+                sniff: WordPress.Security.NonceVerification.Recommended
+                fingerprint: c55a8742d2b6
+                reason: The caller verifies the nonce.
       pass:
         - fixture.php: |
             <?php
@@ -435,6 +478,33 @@ rules:
                 sniff: WordPress.Security.NonceVerification.Recommended
                 fingerprint: c55a8742d2b6
                 reason: Which tab to draw; nothing is saved.
+        # Two identical blocks, an entry each: both listed, neither stale.
+        - fixture.php: |
+            <?php
+            function my_purge_a( $group ) {
+                global $wpdb;
+                // phpcs:disable WordPress.DB.PreparedSQL.NotPrepared -- the IN list is placeholders only, filled by prepare().
+                $in = my_placeholders( $group );
+                $wpdb->query( $wpdb->prepare( "DELETE FROM %i WHERE id IN ( {$in} )", array_merge( array( 'my_log' ), $group ) ) );
+                // phpcs:enable
+            }
+            function my_purge_b( $group ) {
+                global $wpdb;
+                // phpcs:disable WordPress.DB.PreparedSQL.NotPrepared -- the IN list is placeholders only, filled by prepare().
+                $in = my_placeholders( $group );
+                $wpdb->query( $wpdb->prepare( "DELETE FROM %i WHERE id IN ( {$in} )", array_merge( array( 'my_log' ), $group ) ) );
+                // phpcs:enable
+            }
+          .github/review-suppressions.yml: |
+            suppressions:
+              - file: fixture.php
+                sniff: WordPress.DB.PreparedSQL.NotPrepared
+                fingerprint: c97a88c8c60f
+                reason: The IN list is placeholders only, filled by prepare().
+              - file: fixture.php
+                sniff: WordPress.DB.PreparedSQL.NotPrepared
+                fingerprint: c97a88c8c60f
+                reason: The IN list is placeholders only, filled by prepare().
         - |
           <?php
           // phpcs:ignore WordPress.Files.FileName -- the name wordpress.org gave the plugin.
