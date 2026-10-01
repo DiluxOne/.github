@@ -1,12 +1,19 @@
 name: WordPress plugin checks (fast)
 
-# Reusable. The fast quality gates for a WordPress plugin published on
-# wordpress.org: PHP syntax and unit tests on every supported PHP, PHPCS,
-# PHPStan, Psalm taint analysis, i18n, Plugin Check on the shipped tree, the
-# patterns wordpress.org's review flags that Plugin Check does not
-# (scripts/wp-review-patterns.php), readme/version alignment, and the
-# version markers against what was released (scripts/release-markers.sh).
-# Each job is its own status check.
+# Reusable. The fast quality gates of the wordpress-plugin kind
+# (kinds/wordpress-plugin/pack.yml): PHP syntax and unit tests on every
+# supported PHP, PHPCS, PHPStan, Psalm taint analysis, i18n, Plugin Check on
+# the shipped tree, the kind's review rules (what wordpress.org's review sends
+# back and Plugin Check misses: kinds/wordpress-plugin/rules.yml, run by
+# scripts/review-rules.php), readme/version alignment, and the version
+# markers against what was released (scripts/release-markers.sh). Opt-in:
+# the shipped translations complete, CodeQL. Each job is its own status check.
+#
+# The kind's settings (Plugin Check's strictness, categories and the codes it
+# never reports) and its rules come from the pack, not from this file; a
+# repository adds codes in its policy (`kind-settings:`), read from the base
+# branch so a pull request cannot exempt itself. GitHub cannot choose a
+# reusable workflow from data, so this file is the kind's battery by name.
 #
 # The slow wp-env suites (integration, E2E) are plugin-tests-wp.yml, a
 # separate workflow, so a caller can start the review as soon as these pass
@@ -27,6 +34,8 @@ name: WordPress plugin checks (fast)
 #         version-constant: DILUXONE_OFFLOAD_VERSION   # optional
 #         main-file: diluxone-offload.php              # default <slug>.php
 #         php-versions: '["7.4","8.0","8.1","8.2","8.3","8.4","8.5"]'  # the default
+#         translations-complete: true                  # optional: languages/*.po complete
+#         codeql-languages: javascript-typescript      # optional: CodeQL on the code
 #     tests:
 #       uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v2
 #     review:
@@ -59,6 +68,18 @@ on:
         description: Ref of DiluxOne/.github to read the policy from.
         type: string
         default: v2
+      kind:
+        description: The kind of project whose rules and settings these checks read (kinds/<kind>/). A repository whose policy declares another kind fails.
+        type: string
+        default: wordpress-plugin
+      translations-complete:
+        description: Fail when a locale the plugin ships (languages/*.po) is malformed, fuzzy, or misses a string the code has.
+        type: boolean
+        default: false
+      codeql-languages:
+        description: CodeQL languages to analyse (comma-separated, e.g. javascript-typescript); empty skips the job. Results fail the check; nothing is uploaded to code scanning.
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -239,40 +260,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          persist-credentials: false
-      - name: Build the shipped tree (what wordpress.org receives)
-        env:
-          SLUG: ${{ inputs.slug }}
-        run: |
-          mkdir -p "build/$SLUG"
-          rsync -a --exclude-from=.distignore --exclude=build ./ "build/$SLUG/"
-      - uses: wordpress/plugin-check-action@10857da14b6c2246d15402b3e69f777edcf8c12e # v1.1.9
-        with:
-          # Checking the built tree, not the repository, means no exclude
-          # lists to keep in sync: only what ships is checked.
-          build-dir: build/${{ inputs.slug }}
-          slug: ${{ inputs.slug }}
-          categories: plugin_repo,security,performance,accessibility,general
-          include-experimental: true
-          # The shipped tree here is the checkout, whose markers the readme
-          # job holds to the released version (or the one being released);
-          # the release workflow checks them again before SVN.
-          ignore-codes: stable_tag_mismatch
-
-  review-patterns:
-    name: wordpress.org review patterns
-    # What the Plugin Review Team flags and Plugin Check does not: output
-    # escaping suppressed with a phpcs comment ("escaped inside" reads as
-    # unescaped to the review), a top-level menu among WordPress's own, a
-    # nonce said to be checked somewhere else, a notice on every screen. The
-    # first two fail; the other two are annotated for a person to look at.
-    # Every rule is a finding from a real review (scripts/wp-review-patterns.php).
-    # Cheap, so it runs on every pull request, on the shipped tree only.
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
+          # The base, for its policy.
+          fetch-depth: 2
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -280,16 +269,156 @@ jobs:
           ref: ${{ inputs.central-ref }}
           path: .dx-central
           persist-credentials: false
+      - name: The kind's settings
+        id: kind
+        env:
+          KIND_DEFAULT: ${{ inputs.kind }}
+          DEFAULT_POLICY: .dx-central/policy/review-policy.default.yml
+        run: bash .dx-central/scripts/kind.sh
       - name: Build the shipped tree (what wordpress.org receives)
         env:
           SLUG: ${{ inputs.slug }}
         run: |
           mkdir -p "build/$SLUG"
           rsync -a --exclude-from=.distignore --exclude=build --exclude=.dx-central ./ "build/$SLUG/"
-      - name: Check the patterns the review flags
+      - uses: wordpress/plugin-check-action@10857da14b6c2246d15402b3e69f777edcf8c12e # v1.1.9
+        with:
+          # Checking the built tree, not the repository, means no exclude
+          # lists to keep in sync: only what ships is checked.
+          build-dir: build/${{ inputs.slug }}
+          slug: ${{ inputs.slug }}
+          # From the pack (kinds/<kind>/pack.yml, `settings.plugin-check`):
+          # strict fails on every warning, as the reviewer does; the codes
+          # ignored are the pack's plus the repository's own additions.
+          categories: ${{ join(fromJSON(steps.kind.outputs.settings)['plugin-check'].categories, ',') }}
+          include-experimental: ${{ fromJSON(steps.kind.outputs.settings)['plugin-check'].include-experimental }}
+          strict: ${{ fromJSON(steps.kind.outputs.settings)['plugin-check'].strict }}
+          ignore-codes: ${{ join(fromJSON(steps.kind.outputs.settings)['plugin-check'].ignore-codes, ',') }}
+
+  review-rules:
+    name: Review rules (${{ inputs.kind }})
+    # What the kind's reviewers send back and the other gates miss, as data:
+    # kinds/<kind>/rules.yml, each rule a finding from a real review, run by
+    # the generic engine scripts/review-rules.php. Code rules read the
+    # shipped tree; config rules (phpcs.xml) the repository; suppressions
+    # are checked against the repository's .github/review-suppressions.yml.
+    # An error fails, a warning is annotated. Cheap: every pull request.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref }}
+          path: .dx-central
+          persist-credentials: false
+      - name: The kind
+        id: kind
+        env:
+          KIND_DEFAULT: ${{ inputs.kind }}
+          DEFAULT_POLICY: .dx-central/policy/review-policy.default.yml
+        run: bash .dx-central/scripts/kind.sh
+      - name: Build the shipped tree (what wordpress.org receives)
         env:
           SLUG: ${{ inputs.slug }}
-        run: php .dx-central/scripts/wp-review-patterns.php "build/$SLUG"
+        run: |
+          mkdir -p "build/$SLUG"
+          rsync -a --exclude-from=.distignore --exclude=build --exclude=.dx-central ./ "build/$SLUG/"
+      - name: Check the rules
+        env:
+          SLUG: ${{ inputs.slug }}
+          KIND: ${{ steps.kind.outputs.kind }}
+        run: php .dx-central/scripts/review-rules.php --kind "$KIND" --repo . --tree "build/$SLUG"
+
+  translations:
+    name: Translations complete (languages/*.po)
+    # Opt-in (`translations-complete: true`). The i18n job says every string
+    # can be translated; this says the locales the plugin ships have been:
+    # each languages/*.po parses, has nothing fuzzy, and, merged with the
+    # strings the shipped code has today, misses none. Off, the job is
+    # skipped, which satisfies a ruleset.
+    if: inputs.translations-complete
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: '8.5'
+          coverage: none
+          tools: wp-cli
+      - name: gettext
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq gettext
+      - name: Every shipped locale complete
+        env:
+          SLUG: ${{ inputs.slug }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(languages/*.po)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::translations-complete is on and languages/ has no .po file to check."
+            exit 1
+          fi
+          mkdir -p "build/$SLUG"
+          rsync -a --exclude-from=.distignore --exclude=build ./ "build/$SLUG/"
+          wp i18n make-pot "build/$SLUG" "build/$SLUG.pot" --slug="$SLUG" --domain="$SLUG" >/dev/null
+          fail=0
+          for po in "${files[@]}"; do
+            # As it is: parses, and nothing fuzzy or untranslated.
+            own=$(msgfmt --check --statistics -o /dev/null "$po" 2>&1) || { echo "::error file=$po::$own"; fail=1; continue; }
+            # Against today's code: a string the code has and the file does
+            # not is untranslated here (no fuzzy matching: a guess is not a
+            # translation).
+            merged=$(mktemp)
+            msgmerge --quiet --no-fuzzy-matching --no-wrap -o "$merged" "$po" "build/$SLUG.pot"
+            now=$(msgfmt --statistics -o /dev/null "$merged" 2>&1)
+            printf '%-40s %s | against the code: %s\n' "$po" "$own" "$now"
+            case "$own $now" in
+              *untranslated*|*fuzzy*) echo "::error file=$po::Incomplete: $now (update it from the code, translate, compile the .mo)."; fail=1 ;;
+            esac
+          done
+          [ "$fail" -eq 0 ] && echo "Every shipped locale is complete."
+          exit "$fail"
+
+  codeql:
+    name: CodeQL
+    # Opt-in (`codeql-languages: javascript-typescript`, comma-separated for
+    # more). The security-extended queries on the repository; any result
+    # fails the check and is annotated. Nothing goes to code scanning: that
+    # needs `security-events: write`, which a reusable workflow can only
+    # use when every caller grants it, and existing callers do not.
+    if: inputs.codeql-languages != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          languages: ${{ inputs.codeql-languages }}
+          queries: security-extended
+      - uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          upload: never
+          output: build/codeql
+      - name: Any result fails
+        run: |
+          set -euo pipefail
+          count=0
+          for sarif in build/codeql/*.sarif; do
+            jq -r '.runs[] | .results[]? | "::error file=\(.locations[0].physicalLocation.artifactLocation.uri // ""),line=\(.locations[0].physicalLocation.region.startLine // 1),title=CodeQL \(.ruleId)::\(.message.text | gsub("\n"; " "))"' "$sarif"
+            count=$((count + $(jq '[.runs[] | .results[]?] | length' "$sarif")))
+          done
+          echo "$count result(s)."
+          [ "$count" -eq 0 ]
 
   readme:
     name: readme.txt and versions

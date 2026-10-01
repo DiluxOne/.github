@@ -53,7 +53,9 @@ jobs:
       - run: bash scripts/review-brief.sh --test
       - run: bash scripts/local-review.sh --test
       - run: python3 scripts/policy.py --test
-      - run: php scripts/wp-review-patterns.php --test
+      - run: php scripts/review-rules.php --test
+      - run: python3 scripts/test-targets.py --test
+      - run: bash scripts/kind.sh --test
 
   # The scripts a contributor runs on their own machine, on a stock macOS:
   # its bash is 3.2 and its tools are BSD's, so what only works with GNU
