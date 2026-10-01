@@ -27,7 +27,10 @@ passed each time, so check them by reading the code.
   it" or "checked below" next to a `NonceVerification` suppression is a
   finding: the reviewer reads the line on its own. The nonce action is
   static; one built from an input read before the check reads unverified
-  input.
+  input. The check is written with WordPress's own functions in that
+  function: a helper registered in `phpcs.xml` as a custom nonce verifier or
+  escaper satisfies the repository's PHPCS but not Plugin Check, which is
+  what wordpress.org runs and which ignores the repository's config.
 - **SQL goes through `$wpdb->prepare()`,** including `LIKE` with
   `$wpdb->esc_like()`.
 
