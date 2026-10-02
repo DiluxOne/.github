@@ -2600,6 +2600,7 @@ PHP;
 		'an unknown type'  => "rules:\n  - id: a\n    type: magic\n    severity: error\n    message: m\n    source: s\n    fixtures: { }\n",
 		'no source'        => "rules:\n  - id: a\n    type: comment\n    severity: error\n    message: m\n    pattern: x\n",
 		'a bad regex'      => "rules:\n  - id: a\n    type: comment\n    severity: error\n    message: m\n    source: s\n    pattern: '('\n    fixtures:\n      fail: [x]\n      pass: [y]\n",
+		'a bad writes'     => "rules:\n  - id: a\n    type: hook-callback\n    severity: error\n    message: m\n    source: s\n    hooks: ['admin_post_*']\n    require:\n      - calls: [check_admin_referer]\n        before-first: superglobal-read\n        when-no-read: pass\n        writes: ['(']\n    fixtures:\n      fail: [x]\n      pass: [y]\n",
 	) as $name => $bad ) {
 		$dir = rr_scratch( array( 'rules.yml' => $bad ) );
 
