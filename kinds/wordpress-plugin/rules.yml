@@ -151,6 +151,15 @@ rules:
           }
         - |
           <?php
+          add_action( 'admin_post_my_wipe', 'my_wipe' );
+          function my_wipe() {
+              global $wpdb;
+              $wpdb->query( "DELETE FROM {$wpdb->prefix}my_log" );
+              wp_safe_redirect( admin_url() );
+              exit;
+          }
+        - |
+          <?php
           add_action( 'admin_post_my_empty', 'my_empty' );
           function my_empty() {
               delete_option( 'my_log' );

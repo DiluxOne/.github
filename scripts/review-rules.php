@@ -1372,6 +1372,16 @@ function rr_load_rules( string $path ): array {
 			}
 		}
 
+		// A regex taken from the rules is compiled now, so a typo fails the
+		// self-test instead of matching nothing at run time.
+		foreach ( (array) ( $rule['require'] ?? array() ) as $need ) {
+			foreach ( (array) ( ( (array) $need )['writes'] ?? array() ) as $pattern ) {
+				if ( false === @preg_match( '/' . str_replace( '/', '\\/', (string) $pattern ) . '/i', '' ) ) {
+					throw new RR_Rules_Error( "$where ($id): `writes` holds \"$pattern\", which is not a valid regular expression." );
+				}
+			}
+		}
+
 		$rules[] = $rule;
 	}
 
@@ -1877,11 +1887,16 @@ function rr_body_missing( array $rule, RR_Php_File $file, int $open, int $close 
 				// to act on, when the rule says so (a router that redirects).
 				if ( null === $read && 'superglobal-read' === ( $need['before-first'] ?? '' ) && 'pass' === ( $need['when-no-read'] ?? 'fail' ) ) {
 					// … unless it writes: a forged request acts all the same.
+					// Method calls count (`$wpdb->query()`, a session
+					// manager's `->destroy_all()`), matched without their
+					// `->` or `::`.
 					$writes = null;
 
-					foreach ( $calls as $call ) {
+					foreach ( $file->calls( $open, $close, true ) as $call ) {
+						$name = ltrim( (string) $call['name'], '->:' );
+
 						foreach ( (array) ( $need['writes'] ?? array() ) as $pattern ) {
-							if ( preg_match( '/' . str_replace( '/', '\\/', (string) $pattern ) . '/i', $call['name'] ) ) {
+							if ( preg_match( '/' . str_replace( '/', '\\/', (string) $pattern ) . '/i', $name ) ) {
 								$writes = $call['name'];
 								break 2;
 							}
@@ -1892,7 +1907,7 @@ function rr_body_missing( array $rule, RR_Php_File $file, int $open, int $close 
 						continue;
 					}
 
-					return sprintf( 'it reads nothing of the request but calls %s() with no call to %s', $writes, $label );
+					return sprintf( 'it reads nothing of the request but calls %s() with no call to %s', ltrim( $writes, '->:' ), $label );
 				}
 
 				return "no call to $label";
