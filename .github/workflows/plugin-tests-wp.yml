@@ -141,10 +141,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: ${{ fromJSON(needs.changes.outputs.integration) }}
+        # The plan comes from the `changes` job; if that job failed there is
+        # none, and one entry that fails loudly stands in for it (its name is
+        # no check a ruleset requires, so the pull request stays blocked).
+        target: ${{ fromJSON(needs.changes.outputs.integration || '[{"check":"No test plan (What changed failed)","enabled":false,"timeout":5,"noplan":true}]') }}
     env:
       GO: ${{ matrix.target.enabled && needs.changes.outputs.code != 'false' }}
     steps:
+      - if: matrix.target.noplan
+        run: |
+          echo "::error::The What changed job failed, so there is no test plan: fix it and re-run."
+          exit 1
       - if: env.GO != 'true'
         run: echo "Nothing to run here (suite off, or no code changed)."
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -192,10 +199,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: ${{ fromJSON(needs.changes.outputs.e2e) }}
+        # The plan comes from the `changes` job; if that job failed there is
+        # none, and one entry that fails loudly stands in for it (its name is
+        # no check a ruleset requires, so the pull request stays blocked).
+        suite: ${{ fromJSON(needs.changes.outputs.e2e || '[{"check":"No test plan (What changed failed)","enabled":false,"timeout":5,"noplan":true}]') }}
     env:
       GO: ${{ matrix.suite.enabled && needs.changes.outputs.code != 'false' }}
     steps:
+      - if: matrix.suite.noplan
+        run: |
+          echo "::error::The What changed job failed, so there is no test plan: fix it and re-run."
+          exit 1
       - if: env.GO != 'true'
         run: echo "Nothing to run here (suite off, or no code changed)."
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

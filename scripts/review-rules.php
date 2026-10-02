@@ -1282,7 +1282,7 @@ const RR_DEFAULT_SUPERGLOBALS = array( '$_GET', '$_POST', '$_REQUEST', '$_COOKIE
  * A rules file, read and checked: every rule has what its type needs, so a
  * typo in a rules file fails the self-test instead of silently passing code.
  *
- * @return array{language: string, exclude: list<string>, rules: list<array<string, mixed>>}
+ * @return array{language: string, exclude: list<string>, exclude-checkout: list<string>, rules: list<array<string, mixed>>}
  */
 function rr_load_rules( string $path ): array {
 	if ( ! is_file( $path ) ) {
@@ -1301,6 +1301,7 @@ function rr_load_rules( string $path ): array {
 
 	$language = (string) ( $data['language'] ?? 'php' );
 	$exclude  = array_values( array_map( 'strval', (array) ( $data['exclude'] ?? array() ) ) );
+	$checkout = array_values( array_map( 'strval', (array) ( $data['exclude-checkout'] ?? array() ) ) );
 	$seen     = array();
 	$rules    = array();
 
@@ -1375,9 +1376,10 @@ function rr_load_rules( string $path ): array {
 	}
 
 	return array(
-		'language' => $language,
-		'exclude'  => $exclude,
-		'rules'    => $rules,
+		'language'         => $language,
+		'exclude'          => $exclude,
+		'exclude-checkout' => $checkout,
+		'rules'            => $rules,
 	);
 }
 
@@ -1434,7 +1436,7 @@ function rr_read_dir( string $dir, array $exclude, ?array $extensions, ?array $i
 /**
  * Every finding of a set of rules.
  *
- * @param array{language: string, exclude: list<string>, rules: list<array<string, mixed>>} $set
+ * @param array{language: string, exclude: list<string>, exclude-checkout: list<string>, rules: list<array<string, mixed>>} $set
  * @return list<array{rule: string, severity: string, file: string, line: int, message: string}>
  */
 function rr_run( array $set, string $repo, string $tree, ?array $only = null ): array {
@@ -1456,7 +1458,7 @@ function rr_run( array $set, string $repo, string $tree, ?array $only = null ): 
 
 			if ( ! isset( $adapters[ $key ] ) ) {
 				$root             = 'repo' === $rule['scope'] ? $repo : $tree;
-				$adapters[ $key ] = rr_adapter( $language, rr_read_dir( $root, $set['exclude'], rr_adapter_extensions( $language ) ) );
+				$adapters[ $key ] = rr_adapter( $language, rr_read_dir( $root, rr_excludes( $set, $repo, $root ), rr_adapter_extensions( $language ) ) );
 			}
 
 			$adapter = $adapters[ $key ];
@@ -1732,7 +1734,9 @@ function rr_forbidden_config( array $rule, array $files ): array {
  *                  conditional (hooked when that function decides) and skipped
  *   require        a list; each item either
  *                    calls: [fn, …] (+ before-first: superglobal-read, and
- *                    when-no-read: pass to let a body that reads nothing go)
+ *                    when-no-read: pass to let a body that reads nothing go,
+ *                    and writes: [regex, …], the calls that make such a
+ *                    body act on the request anyway, so it does not go)
  *                    contains: regex over the body's source (+ label)
  *                  and, on either, unless-calls: [fn, …], a body that
  *                  calls one of these is exempt from that item
@@ -1872,7 +1876,23 @@ function rr_body_missing( array $rule, RR_Php_File $file, int $open, int $close 
 				// A body that never reads the request has nothing unverified
 				// to act on, when the rule says so (a router that redirects).
 				if ( null === $read && 'superglobal-read' === ( $need['before-first'] ?? '' ) && 'pass' === ( $need['when-no-read'] ?? 'fail' ) ) {
-					continue;
+					// … unless it writes: a forged request acts all the same.
+					$writes = null;
+
+					foreach ( $calls as $call ) {
+						foreach ( (array) ( $need['writes'] ?? array() ) as $pattern ) {
+							if ( preg_match( '/' . str_replace( '/', '\\/', (string) $pattern ) . '/i', $call['name'] ) ) {
+								$writes = $call['name'];
+								break 2;
+							}
+						}
+					}
+
+					if ( null === $writes ) {
+						continue;
+					}
+
+					return sprintf( 'it reads nothing of the request but calls %s() with no call to %s', $writes, $label );
 				}
 
 				return "no call to $label";
@@ -2101,6 +2121,21 @@ function rr_suppression_allowlist( array $rule, RR_Php_Adapter $adapter, string 
 	return $out;
 }
 
+/**
+ * What is not read under a root: always `exclude`, and `exclude-checkout`
+ * too when the root is the repository's checkout rather than the shipped
+ * tree — tests and build output live in a checkout, while a shipped tree
+ * holds only what ships, a `build/` of compiled assets included.
+ *
+ * @param array{exclude: list<string>, exclude-checkout?: list<string>} $set
+ * @return list<string>
+ */
+function rr_excludes( array $set, string $repo, string $root ): array {
+	$same = realpath( $repo ) === realpath( $root );
+
+	return array_values( array_merge( $set['exclude'], $same ? (array) ( $set['exclude-checkout'] ?? array() ) : array() ) );
+}
+
 /** The entries the suppressions file is missing, as YAML to paste and fill in. */
 function rr_suggest_suppressions( array $set, string $repo, string $tree ): string {
 	$yaml = '';
@@ -2110,7 +2145,7 @@ function rr_suggest_suppressions( array $set, string $repo, string $tree ): stri
 			continue;
 		}
 
-		$adapter = rr_adapter( $rule['language'], rr_read_dir( $tree, $set['exclude'], rr_adapter_extensions( $rule['language'] ) ) );
+		$adapter = rr_adapter( $rule['language'], rr_read_dir( $tree, rr_excludes( $set, $repo, $tree ), rr_adapter_extensions( $rule['language'] ) ) );
 
 		foreach ( rr_suppression_allowlist( $rule, $adapter, $repo ) as $f ) {
 			if ( isset( $f['vars']['entry'] ) && 0 === strpos( $f['vars']['entry'], '{' ) ) {
@@ -2157,9 +2192,11 @@ function rr_report( array $findings, string $format, string $prefix ): void {
 
 		if ( 'github' === $format ) {
 			$level = 'notice' === $f['severity'] ? 'notice' : $f['severity'];
-			// Annotation properties and messages escape %, CR and LF.
-			$esc = static fn( string $s ): string => str_replace( array( '%', "\r", "\n" ), array( '%25', '%0D', '%0A' ), $s );
-			printf( "::%s file=%s,line=%d,title=%s::%s\n", $level, $esc( $prefix . $f['file'] ), $f['line'], $esc( $f['rule'] ), $esc( $f['message'] ) );
+			// A message escapes %, CR and LF; a property (file, title) also
+			// the ',' and ':' that would end it.
+			$esc  = static fn( string $s ): string => str_replace( array( '%', "\r", "\n" ), array( '%25', '%0D', '%0A' ), $s );
+			$prop = static fn( string $s ): string => str_replace( array( ',', ':' ), array( '%2C', '%3A' ), $esc( $s ) );
+			printf( "::%s file=%s,line=%d,title=%s::%s\n", $level, $prop( $prefix . $f['file'] ), $f['line'], $prop( $f['rule'] ), $esc( $f['message'] ) );
 		} else {
 			printf( "%s:%d  %s  %s: %s\n", $prefix . $f['file'], $f['line'], $f['severity'], $f['rule'], $f['message'] );
 		}
@@ -2574,6 +2611,23 @@ PHP;
 	$exit = rr_main( array( 'review-rules.php', '--rules', $dir . '/rules.yml', '--repo', $dir, '--format', 'text', '--prefix', 'p/' ) );
 	$out  = (string) ob_get_clean();
 	$check( 'cli: an error exits 1, names the file with its prefix, skips what is excluded', 1 === $exit && false !== strpos( $out, 'p/src/a.php:2' ) && false === strpos( $out, 'vendor' ), "exit $exit: $out" );
+
+	// exclude-checkout: skipped on the checkout, read on a shipped tree.
+	$both = rr_scratch(
+		array(
+			'rules.yml'          => "exclude-checkout: ['**/build/**']\n" . $rules,
+			'build/c.php'        => "<?php\nx();\n",
+			'ship/build/c.php'   => "<?php\nx();\n",
+		)
+	);
+	ob_start();
+	$on_checkout = rr_main( array( 'review-rules.php', '--rules', $both . '/rules.yml', '--repo', $both, '--format', 'text', '--only', 'no-x' ) );
+	$said_checkout = (string) ob_get_clean();
+	ob_start();
+	$on_tree = rr_main( array( 'review-rules.php', '--rules', $both . '/rules.yml', '--repo', $both, '--tree', $both . '/ship', '--format', 'text', '--only', 'no-x' ) );
+	$said_tree = (string) ob_get_clean();
+	$check( 'exclude-checkout: skipped on the checkout, read on a shipped tree', false === strpos( $said_checkout, 'build/c.php' ) && 1 === $on_tree && false !== strpos( $said_tree, 'build/c.php' ), "checkout $on_checkout: $said_checkout | tree $on_tree: $said_tree" );
+	rr_rmdir( $both );
 	ob_start();
 	$exit = rr_main( array( 'review-rules.php', '--rules', $dir . '/rules.yml', '--repo', $dir, '--tree', $dir . '/vendor', '--format', 'json' ) );
 	$out  = (string) ob_get_clean();

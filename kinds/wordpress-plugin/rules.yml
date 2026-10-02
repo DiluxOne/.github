@@ -10,16 +10,20 @@
 # The language adapter every rule here reads with, unless it names another.
 language: php
 
-# Never read, wherever the tree comes from: what does not ship. On the
-# shipped tree (the workflow builds it from .distignore) there is none of it;
-# on a checkout it is skipped here.
+# Never read, wherever the tree comes from: dependencies and hidden folders.
 exclude:
   - "**/vendor/**"
   - "**/node_modules/**"
+  - "**/.*/**"
+
+# Not read when the tree is the repository's checkout (a run on the checkout,
+# `make review-rules`): tests and build output, which never ship. On the
+# shipped tree the workflow builds from .distignore they are read like
+# anything else, so a plugin that ships a build/ folder has it checked.
+exclude-checkout:
   - "**/tests/**"
   - "**/test/**"
   - "**/build/**"
-  - "**/.*/**"
 
 rules:
   - id: escape-suppressed
@@ -112,9 +116,12 @@ rules:
     require:
       - calls: [check_ajax_referer, check_admin_referer, wp_verify_nonce]
         before-first: superglobal-read
-        # A handler that reads nothing of the request (a router that only
-        # redirects) has nothing unverified to act on.
+        # A handler that reads nothing of the request and writes nothing (a
+        # router that only redirects) has nothing to protect. One that reads
+        # nothing but writes — emptying a log, closing every session — acts
+        # on a forged request all the same, so it checks a nonce too.
         when-no-read: pass
+        writes: ['^(update|delete|add)_(site_|network_|user_|post_|term_|comment_|blog_)?(option|meta|transient|metadata)$', '^wp_(insert|update|delete|trash|set)_', '^wp_(destroy|clear|schedule|unschedule|mail)', '^(set|delete)_(site_)?transient$', '^(query|insert|update|delete|replace)$', '^destroy(_all|_others)?$', '^(wpmu|wp)_delete_user$', '^remove_user_from_blog$', '^add_user_to_blog$', '^(grant|revoke)_super_admin$', '^unlink$', '^file_put_contents$']
     ignore-keys: '(?i)(nonce|^security$)'
     message: >
       {callback}, the handler of {hook}, does not check a nonce before it
@@ -141,6 +148,14 @@ rules:
                   $this->verify();
                   update_option( 'my', sanitize_text_field( wp_unslash( $_POST['v'] ?? '' ) ) );
               }
+          }
+        - |
+          <?php
+          add_action( 'admin_post_my_empty', 'my_empty' );
+          function my_empty() {
+              delete_option( 'my_log' );
+              wp_safe_redirect( admin_url() );
+              exit;
           }
       pass:
         - |
