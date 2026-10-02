@@ -1,0 +1,535 @@
+# What wordpress.org's plugin review sends back and Plugin Check does not
+# catch, as rules scripts/review-rules.php checks on every pull request.
+#
+# Every entry is a finding from a real review: `source` says which one. A new
+# rejection is a new entry here, with its fixtures (the shortest code that
+# must trip it and the closest code that must not), never a new script or
+# workflow. How to write one: kinds/README.md, "Adding a rule after a
+# rejection". `php scripts/review-rules.php --test` runs every fixture.
+
+# The language adapter every rule here reads with, unless it names another.
+language: php
+
+# Never read, wherever the tree comes from: dependencies and hidden folders.
+exclude:
+  - "**/vendor/**"
+  - "**/node_modules/**"
+  - "**/.*/**"
+
+# Not read when the tree is the repository's checkout (a run on the checkout,
+# `make review-rules`): tests and build output, which never ship. On the
+# shipped tree the workflow builds from .distignore they are read like
+# anything else, so a plugin that ships a build/ folder has it checked.
+exclude-checkout:
+  - "**/tests/**"
+  - "**/test/**"
+  - "**/build/**"
+
+rules:
+  - id: escape-suppressed
+    type: comment
+    severity: error
+    pattern: 'phpcs:(ignore|disable)\b[^\n]*WordPress\.Security\.EscapeOutput'
+    message: >
+      Output escaping is suppressed here. wordpress.org reads this as unescaped
+      output whatever the reason says ("escaped inside", "our own markup"):
+      escape at this line, with wp_kses() and an allow-list for markup built as
+      a string, or a template that prints itself.
+    source: wordpress.org plugin review, DiluxOne Users+ round 1 (T10), 2026-10-01
+    fixtures:
+      fail:
+        - |
+          <?php
+          echo $x; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped inside.
+        - |
+          <?php
+          // phpcs:disable WordPress.Security.EscapeOutput
+          echo $x;
+      pass:
+        - |
+          <?php
+          echo wp_kses( $x, $allowed );
+        - |
+          <?php
+          $a = 1; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- which tab to draw.
+
+  - id: menu-position
+    type: call-arg
+    severity: error
+    functions: [add_menu_page]
+    argument: 7
+    argument-name: position
+    when:
+      below: 100
+    message: >
+      {function}() asks for position {value}, among WordPress's own menus.
+      wordpress.org flags it ("high position for your admin dashboard menu
+      item", a visibility tactic): leave the position out, or move the screen
+      under Settings or Tools.
+    source: wordpress.org plugin review, DiluxOne Users+ round 1 (T10), 2026-10-01
+    fixtures:
+      fail:
+        - "<?php add_menu_page( 'A', 'A', 'manage_options', 'a', 'cb', 'dashicons-groups', 22 );"
+        - "<?php \\add_menu_page( 'A', 'A', 'manage_options', 'a', 'cb', 'dashicons-groups', 22 );"
+        - |
+          <?php
+          add_menu_page(
+              __( 'A', 'a' ),
+              'A',
+              'manage_options',
+              'a',
+              array( $this, 'cb' ),
+              'dashicons-groups',
+              MY_POSITION
+          );
+        - "<?php add_menu_page( 'A', 'A', 'm', 'a', 'cb', position: 3 );"
+      pass:
+        - "<?php add_menu_page( 'A', 'A', 'manage_options', 'a', 'cb', 'dashicons-groups' );"
+        - "<?php add_menu_page( 'A', 'A', 'manage_options', 'a', 'cb', '', null );"
+        - "<?php add_menu_page( 'A', 'A', 'manage_options', 'a', 'cb', '', 100 );"
+        - "<?php $doc = \"add_menu_page( 'A', 'A', 'm', 'a', 'cb', '', 2 )\";"
+        - "<?php function add_menu_page( $a, $b, $c, $d, $e, $f, $g ) {}"
+
+  - id: nonce-elsewhere
+    type: comment
+    severity: warning
+    pattern: 'phpcs:(ignore|disable)\b[^\n]*WordPress\.Security\.NonceVerification[^\n]*--[^\n]*(\bcallers?\b|\bverif\w*\s+(it|this|them|above|below|elsewhere|first|by|in)\b|\bchecked\s+(above|below|elsewhere|by|in)\b|\b(panel|dispatcher|handler|router)s?\s+(verif|check)\w*)'
+    flags: i
+    message: >
+      The nonce is said to be checked somewhere else. A reviewer reads this
+      line on its own: verify the nonce and the capability in this function,
+      before the first read.
+    source: wordpress.org plugin review, DiluxOne Users+ round 1 (T10), 2026-10-01
+    fixtures:
+      fail:
+        - "<?php\n// phpcs:disable WordPress.Security.NonceVerification.Missing -- the panel verifies it.\n"
+        - "<?php\n$a = $_POST['a']; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the caller checks the nonce.\n"
+        - "<?php\n$a = $_POST['a']; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Verified above.\n"
+      pass:
+        - "<?php\n$a = $_GET['tab']; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- which tab to draw; nothing is saved.\n"
+        - "<?php\n$open = isset( $_GET['panel'] ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- it only decides whether the panel is open; nothing is written by looking.\n"
+
+  - id: handler-nonce-first
+    type: hook-callback
+    severity: error
+    hooks: ["wp_ajax_*", "admin_post_*"]
+    require:
+      - calls: [check_ajax_referer, check_admin_referer, wp_verify_nonce]
+        before-first: superglobal-read
+        # A handler that reads nothing of the request and writes nothing (a
+        # router that only redirects) has nothing to protect. One that reads
+        # nothing but writes — emptying a log, closing every session — acts
+        # on a forged request all the same, so it checks a nonce too.
+        when-no-read: pass
+        writes: ['^(update|delete|add)_(site_|network_|user_|post_|term_|comment_|blog_)?(option|meta|transient|metadata)$', '^wp_(insert|update|delete|trash|set)_', '^wp_(destroy|clear|schedule|unschedule|mail)', '^(set|delete)_(site_)?transient$', '^(query|insert|update|delete|replace)$', '^destroy(_all|_others)?$', '^(wpmu|wp)_delete_user$', '^remove_user_from_blog$', '^add_user_to_blog$', '^(grant|revoke)_super_admin$', '^unlink$', '^file_put_contents$']
+    ignore-keys: '(?i)(nonce|^security$)'
+    message: >
+      {callback}, the handler of {hook}, does not check a nonce before it
+      reads the request ({missing}). wordpress.org wants the check in the
+      handler itself, with WordPress's own function, before the first read: a
+      helper or a check somewhere else reads as no check.
+    source: wordpress.org plugin review, DiluxOne Users+ round 1 (T10), 2026-10-01
+    fixtures:
+      fail:
+        - |
+          <?php
+          add_action( 'wp_ajax_my_save', 'my_save' );
+          function my_save() {
+              $id = absint( $_POST['id'] );
+              check_ajax_referer( 'my_save' );
+          }
+        - |
+          <?php
+          class My_Admin {
+              public function __construct() {
+                  add_action( 'admin_post_my_save', array( $this, 'save' ) );
+              }
+              public function save() {
+                  $this->verify();
+                  update_option( 'my', sanitize_text_field( wp_unslash( $_POST['v'] ?? '' ) ) );
+              }
+          }
+        - |
+          <?php
+          add_action( 'admin_post_my_wipe', 'my_wipe' );
+          function my_wipe() {
+              global $wpdb;
+              $wpdb->query( "DELETE FROM {$wpdb->prefix}my_log" );
+              wp_safe_redirect( admin_url() );
+              exit;
+          }
+        - |
+          <?php
+          add_action( 'admin_post_my_empty', 'my_empty' );
+          function my_empty() {
+              delete_option( 'my_log' );
+              wp_safe_redirect( admin_url() );
+              exit;
+          }
+      pass:
+        - |
+          <?php
+          add_action( 'wp_ajax_my_save', 'my_save' );
+          function my_save() {
+              check_ajax_referer( 'my_save', 'nonce' );
+              if ( ! current_user_can( 'manage_options' ) ) { wp_die(); }
+              $id = absint( $_POST['id'] ?? 0 );
+          }
+        - |
+          <?php
+          add_action( 'admin_post_my_save', [ __CLASS__, 'save' ] );
+          class My_Admin {
+              public static function save() {
+                  if ( ! isset( $_POST['_wpnonce'] ) || ! wp_verify_nonce( sanitize_key( wp_unslash( $_POST['_wpnonce'] ) ), 'my_save' ) ) { wp_die(); }
+                  $v = sanitize_text_field( wp_unslash( $_POST['v'] ?? '' ) );
+              }
+          }
+        - |
+          <?php
+          add_action( 'wp_ajax_elsewhere', 'defined_in_another_plugin' );
+        - |
+          <?php
+          add_action( 'admin_post_my_form', 'my_to_hub', 0 );
+          function my_to_hub() {
+              wp_safe_redirect( my_hub_url() );
+              exit;
+          }
+
+  - id: handler-capability-first
+    type: hook-callback
+    severity: error
+    hooks: ["wp_ajax_*", "admin_post_*"]
+    public-hooks: ["wp_ajax_nopriv_*", "admin_post_nopriv_*"]
+    require:
+      - calls: [current_user_can, current_user_can_for_site, current_user_can_for_blog, is_super_admin]
+        before-first: superglobal-read
+        # A handler that acts on the signed-in person's own account (their
+        # sessions, their photo, their notifications) is authorised by being
+        # that person: the review has not asked those for a capability.
+        unless-calls: [get_current_user_id, wp_get_current_user]
+    ignore-keys: '(?i)(nonce|^security$)'
+    message: >
+      {callback}, the handler of {hook}, does not check what the user may do
+      before it reads the request ({missing}). Check current_user_can() in the
+      handler, before the first read; a helper that checks it reads as no
+      check. A handler also open to visitors (wp_ajax_nopriv_) and one that
+      acts only on the signed-in person's own account are exempt.
+    source: wordpress.org plugin review, DiluxOne Users+ round 1 (T10), 2026-10-01
+    fixtures:
+      fail:
+        - |
+          <?php
+          add_action( 'wp_ajax_my_save', 'my_save' );
+          function my_save() {
+              check_ajax_referer( 'my_save' );
+              update_option( 'my', sanitize_text_field( wp_unslash( $_POST['v'] ?? '' ) ) );
+          }
+        - |
+          <?php
+          add_action( 'admin_post_my_save', 'my_save' );
+          function my_save() {
+              check_admin_referer( 'my_save' );
+              my_authorize();
+              update_option( 'my', sanitize_text_field( wp_unslash( $_POST['v'] ?? '' ) ) );
+          }
+      pass:
+        - |
+          <?php
+          add_action( 'wp_ajax_my_save', 'my_save' );
+          function my_save() {
+              check_ajax_referer( 'my_save' );
+              if ( ! current_user_can( 'manage_options' ) ) { wp_die(); }
+              update_option( 'my', sanitize_text_field( wp_unslash( $_POST['v'] ?? '' ) ) );
+          }
+        - |
+          <?php
+          add_action( 'admin_post_my_photo', 'my_photo' );
+          function my_photo() {
+              check_admin_referer( 'my_photo' );
+              $alt = sanitize_text_field( wp_unslash( $_POST['alt'] ?? '' ) );
+              update_user_meta( get_current_user_id(), 'my_photo_alt', $alt );
+          }
+        - |
+          <?php
+          add_action( 'wp_ajax_my_form', 'my_form' );
+          add_action( 'wp_ajax_nopriv_my_form', 'my_form' );
+          function my_form() {
+              check_ajax_referer( 'my_form' );
+              $email = sanitize_email( wp_unslash( $_POST['email'] ?? '' ) );
+          }
+
+  - id: nonce-action-static
+    type: call-arg
+    severity: error
+    functions:
+      check_admin_referer: 1
+      check_ajax_referer: 1
+      wp_verify_nonce: 2
+    when:
+      contains-superglobal: true
+    message: >
+      The nonce action of {function}() is built from the request ({value}): the
+      check reads input it has not verified yet. Use a fixed action, or one
+      built from data the code already trusts.
+    source: wordpress.org plugin review, DiluxOne Users+ round 1 (T10), 2026-10-01
+    fixtures:
+      fail:
+        - "<?php check_admin_referer( 'delete_' . $_GET['id'] );"
+        - "<?php wp_verify_nonce( $nonce, 'delete_' . absint( $_POST['id'] ) );"
+      pass:
+        - "<?php check_admin_referer( 'delete_item' );"
+        - "<?php wp_verify_nonce( sanitize_key( wp_unslash( $_POST['_wpnonce'] ?? '' ) ), 'delete_item' );"
+
+  - id: notice-unscoped
+    type: hook-callback
+    severity: warning
+    hooks: [admin_notices, network_admin_notices, all_admin_notices, user_admin_notices]
+    top-level-only: true
+    require:
+      - contains: 'get_current_screen|\$pagenow|\[\s*[''"]pagenow[''"]\s*\]|\$hook_suffix|current_screen|is-dismissible|_here\s*\(|screen\w*\s*\('
+        label: no question about which screen it is on
+    message: >
+      {callback} is an admin notice with {missing}. Show it on the plugin's own
+      screens, the dashboard or the plugins list (guideline 11), make it
+      dismissible, or hook it from a load-<screen> action.
+    source: wordpress.org plugin review, DiluxOne Users+ round 1 (T10), 2026-10-01
+    fixtures:
+      fail:
+        - |
+          <?php
+          function my_notice() { echo '<div class="notice"><p>Hi</p></div>'; }
+          add_action( 'admin_notices', 'my_notice' );
+      pass:
+        - |
+          <?php
+          function my_notice() { if ( 'my' !== get_current_screen()->id ) { return; } echo 'x'; }
+          add_action( 'admin_notices', 'my_notice' );
+        - |
+          <?php
+          function my_notice() { if ( 'index.php' !== $GLOBALS['pagenow'] ) { return; } echo 'x'; }
+          add_action( 'network_admin_notices', 'my_notice' );
+        - |
+          <?php
+          function my_notice() { echo '<div class="notice is-dismissible"></div>'; }
+          add_action( 'admin_notices', 'my_notice' );
+        - |
+          <?php
+          function my_notice() { echo 'x'; }
+          function my_hook() { add_action( 'admin_notices', 'my_notice' ); }
+          add_action( 'load-index.php', 'my_hook' );
+
+  - id: phpcs-custom-functions
+    type: forbidden-config
+    severity: error
+    files: ["**/phpcs.xml", "**/phpcs.xml.dist", "**/.phpcs.xml", "**/.phpcs.xml.dist"]
+    pattern: 'name\s*=\s*"custom(NonceVerification|Escaping|Sanitizing|UnslashingSanitizing|AutoEscaped)Functions"'
+    message: >
+      The PHPCS config teaches WordPress Coding Standards a function of the
+      plugin's own ({match}). Plugin Check, which is what wordpress.org runs,
+      ignores the repository's config: the check passes here and fails there.
+      Call WordPress's own nonce, escaping and sanitizing functions where the
+      request is read or the output printed.
+    source: wordpress.org plugin review, DiluxOne Users+ round 1 (T10), 2026-10-01
+    fixtures:
+      fail:
+        - |
+          <?xml version="1.0"?>
+          <ruleset name="x">
+            <rule ref="WordPress.Security.NonceVerification">
+              <properties>
+                <property name="customNonceVerificationFunctions" type="array">
+                  <element value="my_verify"/>
+                </property>
+              </properties>
+            </rule>
+          </ruleset>
+      pass:
+        - |
+          <?xml version="1.0"?>
+          <ruleset name="x">
+            <!-- No customEscapingFunctions: Plugin Check would not see them. -->
+            <rule ref="WordPress"/>
+          </ruleset>
+
+  - id: phpcs-security-silenced
+    type: forbidden-config
+    severity: error
+    files: ["**/phpcs.xml", "**/phpcs.xml.dist", "**/.phpcs.xml", "**/.phpcs.xml.dist"]
+    pattern: '<rule\s+ref\s*=\s*"WordPress\.(Security|DB)\.[^"]*"\s*>(?:(?!</rule>).)*?<severity>\s*0\s*</severity>|<exclude\s+name\s*=\s*"WordPress\.(Security|DB)(\.[^"]*)?"'
+    flags: s
+    message: >
+      The PHPCS config turns off a security or database check ({match}). The
+      repository's PHPCS goes green while Plugin Check, which wordpress.org
+      runs with every check on, fails. Fix the code, or suppress the one line
+      with a reason listed in .github/review-suppressions.yml.
+    source: wordpress.org plugin review, DiluxOne Users+ round 1 (T10), 2026-10-01
+    fixtures:
+      fail:
+        - |
+          <ruleset name="x">
+            <rule ref="WordPress.Security.EscapeOutput.OutputNotEscaped">
+              <severity>0</severity>
+            </rule>
+          </ruleset>
+        - |
+          <ruleset name="x">
+            <rule ref="WordPress">
+              <exclude name="WordPress.DB.PreparedSQL"/>
+            </rule>
+          </ruleset>
+      pass:
+        - |
+          <ruleset name="x">
+            <rule ref="WordPress">
+              <exclude name="WordPress.Files.FileName"/>
+            </rule>
+            <rule ref="WordPress.WP.I18n">
+              <severity>0</severity>
+            </rule>
+          </ruleset>
+
+  - id: superglobal-whole
+    type: call-arg
+    severity: error
+    functions: ["*"]
+    argument: any
+    except-functions: [array_key_exists, key_exists, is_array, count]
+    superglobals: [_GET, _POST, _REQUEST, _COOKIE, _FILES]
+    when:
+      is-superglobal: true
+    message: >
+      A whole superglobal is passed to {function}(). The review cites it as
+      unsanitized input every time, however careful the function is
+      ("processing the whole input"): read, unslash and sanitize the fields
+      you need where you read them, and pass those.
+    source: wordpress.org plugin review, DiluxOne Offload rounds, 2026; the Plugin Review Team's common issue "Processing the whole input"
+    fixtures:
+      fail:
+        - "<?php $data = wp_unslash( $_POST );"
+        - "<?php My_Settings::from_post( $_POST );"
+      pass:
+        - "<?php $id = absint( $_POST['id'] ?? 0 );"
+        - "<?php if ( array_key_exists( 'id', $_POST ) ) {}"
+        - "<?php $n = count( $_FILES );"
+
+  - id: suppression-unlisted
+    type: suppression-allowlist
+    severity: error
+    sniffs: '^WordPress\.(Security\.(NonceVerification|ValidatedSanitizedInput)|DB\.PreparedSQL|WP\.AlternativeFunctions)'
+    never: '^WordPress\.Security\.EscapeOutput'
+    file: .github/review-suppressions.yml
+    # A reason in the list that points somewhere else is no more a reason
+    # than the same words in the comment (the nonce-elsewhere rule).
+    reason-pattern: '(\bcallers?\b|\bverif\w*\s+(it|this|them|above|below|elsewhere|first|by|in)\b|\bchecked\s+(above|below|elsewhere|by|in)\b|\b(panel|dispatcher|handler|router)s?\s+(verif|check)\w*)'
+    reason-severity: warning
+    reason-message: >
+      The reason given for {sniff} says the check happens somewhere else. A
+      reviewer reads the line and its reason on their own: say why this line
+      is safe in its own terms, or move the check into the function.
+    flags: i
+    message: >
+      {sniff} is suppressed here and {list} does not account for it. Add
+      {entry} with the reason a reviewer would accept, or fix the line. Plugin
+      Check honours the comment; the reviewer and the review's own scan do not.
+    source: wordpress.org plugin review, DiluxOne Users+ round 1 (T10), 2026-10-01
+    fixtures:
+      fail:
+        - |
+          <?php
+          // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- which tab to draw; nothing is saved.
+          $tab = isset( $_GET['tab'] ) ? sanitize_key( wp_unslash( $_GET['tab'] ) ) : '';
+        - fixture.php: |
+            <?php
+            // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- which tab to draw; nothing is saved.
+            $tab = isset( $_GET['tab'] ) ? sanitize_key( wp_unslash( $_GET['page'] ) ) : '';
+          .github/review-suppressions.yml: |
+            suppressions:
+              - file: fixture.php
+                sniff: WordPress.Security.NonceVerification.Recommended
+                fingerprint: c55a8742d2b6
+                reason: Which tab to draw; nothing is saved.
+        - fixture.php: |
+            <?php
+            echo $x;
+          .github/review-suppressions.yml: |
+            suppressions:
+              - file: fixture.php
+                sniff: WordPress.Security.EscapeOutput.OutputNotEscaped
+                fingerprint: c55a8742d2b6
+                reason: Escaped inside.
+        # Two identical blocks, one entry: the second is unlisted.
+        - fixture.php: |
+            <?php
+            function my_purge_a( $group ) {
+                global $wpdb;
+                // phpcs:disable WordPress.DB.PreparedSQL.NotPrepared -- the IN list is placeholders only, filled by prepare().
+                $in = my_placeholders( $group );
+                $wpdb->query( $wpdb->prepare( "DELETE FROM %i WHERE id IN ( {$in} )", array_merge( array( 'my_log' ), $group ) ) );
+                // phpcs:enable
+            }
+            function my_purge_b( $group ) {
+                global $wpdb;
+                // phpcs:disable WordPress.DB.PreparedSQL.NotPrepared -- the IN list is placeholders only, filled by prepare().
+                $in = my_placeholders( $group );
+                $wpdb->query( $wpdb->prepare( "DELETE FROM %i WHERE id IN ( {$in} )", array_merge( array( 'my_log' ), $group ) ) );
+                // phpcs:enable
+            }
+          .github/review-suppressions.yml: |
+            suppressions:
+              - file: fixture.php
+                sniff: WordPress.DB.PreparedSQL.NotPrepared
+                fingerprint: c97a88c8c60f
+                reason: The IN list is placeholders only, filled by prepare().
+        # A reason that points somewhere else (a warning).
+        - fixture.php: |
+            <?php
+            // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- which tab to draw; nothing is saved.
+            $tab = isset( $_GET['tab'] ) ? sanitize_key( wp_unslash( $_GET['tab'] ) ) : '';
+          .github/review-suppressions.yml: |
+            suppressions:
+              - file: fixture.php
+                sniff: WordPress.Security.NonceVerification.Recommended
+                fingerprint: c55a8742d2b6
+                reason: The caller verifies the nonce.
+      pass:
+        - fixture.php: |
+            <?php
+            // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- which tab to draw; nothing is saved.
+            $tab = isset( $_GET['tab'] ) ? sanitize_key( wp_unslash( $_GET['tab'] ) ) : '';
+          .github/review-suppressions.yml: |
+            suppressions:
+              - file: fixture.php
+                sniff: WordPress.Security.NonceVerification.Recommended
+                fingerprint: c55a8742d2b6
+                reason: Which tab to draw; nothing is saved.
+        # Two identical blocks, an entry each: both listed, neither stale.
+        - fixture.php: |
+            <?php
+            function my_purge_a( $group ) {
+                global $wpdb;
+                // phpcs:disable WordPress.DB.PreparedSQL.NotPrepared -- the IN list is placeholders only, filled by prepare().
+                $in = my_placeholders( $group );
+                $wpdb->query( $wpdb->prepare( "DELETE FROM %i WHERE id IN ( {$in} )", array_merge( array( 'my_log' ), $group ) ) );
+                // phpcs:enable
+            }
+            function my_purge_b( $group ) {
+                global $wpdb;
+                // phpcs:disable WordPress.DB.PreparedSQL.NotPrepared -- the IN list is placeholders only, filled by prepare().
+                $in = my_placeholders( $group );
+                $wpdb->query( $wpdb->prepare( "DELETE FROM %i WHERE id IN ( {$in} )", array_merge( array( 'my_log' ), $group ) ) );
+                // phpcs:enable
+            }
+          .github/review-suppressions.yml: |
+            suppressions:
+              - file: fixture.php
+                sniff: WordPress.DB.PreparedSQL.NotPrepared
+                fingerprint: c97a88c8c60f
+                reason: The IN list is placeholders only, filled by prepare().
+              - file: fixture.php
+                sniff: WordPress.DB.PreparedSQL.NotPrepared
+                fingerprint: c97a88c8c60f
+                reason: The IN list is placeholders only, filled by prepare().
+        - |
+          <?php
+          // phpcs:ignore WordPress.Files.FileName -- the name wordpress.org gave the plugin.
+          $a = 1;

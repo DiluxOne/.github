@@ -21,22 +21,22 @@ name: Claude review reply
 #   jobs:
 #     reply:
 #       permissions: { contents: read, pull-requests: write, issues: write }
-#       uses: DiluxOne/.github/.github/workflows/review-reply.yml@v2
+#       uses: DiluxOne/.github/.github/workflows/review-reply.yml@v3
 #       with:
-#         profile: plugin-wp
+#         profile: plugin-wp   # optional: `kind: wordpress-plugin` in the policy does the same
 #       secrets: inherit
 
 on:
   workflow_call:
     inputs:
       profile:
-        description: Stack profile in review-profiles/ (without .md), added to general.md.
+        description: The review profile added to general.md. A kind (wordpress-plugin) or a pack's alias (plugin-wp); general, the default, adds the kind the repository's policy declares (`kind:`), if any.
         type: string
-        required: true
+        default: general
       central-ref:
         description: Ref of DiluxOne/.github to read the profiles from.
         type: string
-        default: v2
+        default: v3
     secrets:
       ANTHROPIC_API_KEY:
         required: true
@@ -168,6 +168,19 @@ jobs:
           export REPO_POLICY CHANGED_FILES=""
           python3 .dx-central/scripts/policy.py
 
+      - name: The review profile (the input, or the repository's kind)
+        id: profile
+        if: steps.pr.outputs.run == 'true'
+        env:
+          PROFILE: ${{ inputs.profile }}
+          KIND: ${{ steps.policy.outputs.kind }}
+        run: |
+          set -euo pipefail
+          name=$PROFILE
+          if [ "$name" = general ] && [ -n "$KIND" ]; then name=$KIND; fi
+          path=$(python3 .dx-central/scripts/policy.py --profile "$name")
+          echo "path=$path" >> "$GITHUB_OUTPUT"
+
       - name: Reply
         id: claude
         if: steps.pr.outputs.run == 'true'
@@ -182,7 +195,7 @@ jobs:
             Someone mentioned you. The conversation is in .dx-central/thread.json: the last
             comment is the one addressed to you.
 
-            Read .dx-central/review-profiles/general.md, .dx-central/review-profiles/${{ inputs.profile }}.md,
+            Read .dx-central/review-profiles/general.md, .dx-central/${{ steps.profile.outputs.path }},
             and the repository's AGENTS.md and docs/architecture.md when they exist. Look at the
             code (`gh pr diff ${{ steps.pr.outputs.pr }}`, and any file) before you answer.
 

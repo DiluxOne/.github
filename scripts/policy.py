@@ -23,7 +23,30 @@ files and writes instead:
   plugin_check  true | false   a changed file matches a `plugin-check` pattern
   reasons       one line saying which files decided it
 
-That is what the slow suites and Plugin Check are gated on. `policy.py --test`
+That is what the slow suites and Plugin Check are gated on.
+
+The repository says what kind of project it is with `kind:` (a directory of
+kinds/ in this repository, e.g. `kind: wordpress-plugin`): the review then
+adds that kind's review profile, and the kind's checks read its rules and
+settings. Every mode writes `kind` (empty when the repository declares
+none); a kind that does not exist fails. With POLICY_MODE=kind it writes,
+for the checks of a kind:
+
+  kind      the repository's kind, else KIND_DEFAULT (the workflow's own);
+            both given and different fails: the workflow runs another
+            kind's battery
+  rules     kinds/<kind>/rules.yml, relative to this repository
+  profile   kinds/<kind>/review-profile.md
+  settings  the pack's `settings` (kinds/<kind>/pack.yml) as compact JSON,
+            with the repository's `kind-settings` added: a list in it is
+            appended to the pack's, a map merged key by key; a single value
+            cannot replace the pack's (a repository adds exceptions, it does
+            not turn a gate off), and says so
+
+`policy.py --profile <name>` prints the review profile a workflow's
+`profile:` names, relative to this repository: `general`, a kind, an alias
+a pack declares (`plugin-wp` is the wordpress-plugin kind), or a file left
+in review-profiles/. `policy.py --test`
 checks these rules against the organisation's default policy. When no file
 could be listed the answer is true for both: an unknown change runs
 everything.
@@ -65,6 +88,80 @@ def load_yaml(path):
         sys.exit("policy.py needs yq or PyYAML to read " + path)
     with open(path, encoding="utf-8") as fh:
         return yaml.safe_load(fh) or {}
+
+
+CENTRAL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+KIND_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
+
+
+def pack_path(kind):
+    return os.path.join(CENTRAL, "kinds", kind, "pack.yml")
+
+
+def check_kind(kind):
+    """The kind as a string, '' for none; None (after an error) when it is not one."""
+    if kind in (None, ""):
+        return ""
+    kind = str(kind)
+    if not KIND_RE.fullmatch(kind) or not os.path.isfile(pack_path(kind)):
+        known = sorted(d for d in os.listdir(os.path.join(CENTRAL, "kinds")) if os.path.isfile(pack_path(d))) if os.path.isdir(os.path.join(CENTRAL, "kinds")) else []
+        print(f"::error::kind '{kind}' is not a kind of project this organisation knows ({', '.join(known) or 'none'}); see kinds/README.md.")
+        return None
+    return kind
+
+
+def merge_settings(pack, repo, where="kind-settings"):
+    """The pack's settings with the repository's additions: lists append, maps merge, single values stay the pack's."""
+    out = dict(pack or {})
+    for key, value in (repo or {}).items():
+        if key not in out:
+            if isinstance(value, (list, dict)):
+                out[key] = value
+            else:
+                print(f"::warning::{where}.{key}: a single value cannot be set by a repository; ignored.")
+        elif isinstance(out[key], list) and isinstance(value, list):
+            out[key] = out[key] + [v for v in value if v not in out[key]]
+        elif isinstance(out[key], dict) and isinstance(value, dict):
+            out[key] = merge_settings(out[key], value, f"{where}.{key}")
+        else:
+            print(f"::warning::{where}.{key}: a repository can add to the pack's lists, not replace its values; ignored.")
+    return out
+
+
+def kind_mode(repo):
+    declared = check_kind(repo.get("kind"))
+    fallback = check_kind(os.environ.get("KIND_DEFAULT", ""))
+    if declared is None or fallback is None:
+        return 1
+    if declared and fallback and declared != fallback:
+        print(f"::error::the repository declares kind '{declared}', and this workflow runs the checks of '{fallback}'. Call the workflows its pack names (kinds/{declared}/pack.yml).")
+        return 1
+    kind = declared or fallback
+    if not kind:
+        print("::error::no kind: the repository declares none (kind: in .github/review-policy.yml) and the workflow names none.")
+        return 1
+    pack = load_yaml(pack_path(kind))
+    settings = merge_settings(pack.get("settings") or {}, repo.get("kind-settings") or {})
+    with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+        fh.write(f"kind={kind}\nrules=kinds/{kind}/rules.yml\nprofile=kinds/{kind}/review-profile.md\nsettings={json.dumps(settings, separators=(',', ':'), sort_keys=True)}\n")
+    print(f"kind={kind} settings={json.dumps(settings, sort_keys=True)}")
+    return 0
+
+
+def profile_path(name):
+    """The review profile a `profile:` names, relative to this repository, or None."""
+    if name == "general":
+        return "review-profiles/general.md"
+    if KIND_RE.fullmatch(name or ""):
+        if os.path.isfile(os.path.join(CENTRAL, "kinds", name, "review-profile.md")):
+            return f"kinds/{name}/review-profile.md"
+        kinds_dir = os.path.join(CENTRAL, "kinds")
+        for kind in sorted(os.listdir(kinds_dir)) if os.path.isdir(kinds_dir) else []:
+            if os.path.isfile(pack_path(kind)) and name in (load_yaml(pack_path(kind)).get("aliases") or []):
+                return f"kinds/{kind}/review-profile.md"
+        if os.path.isfile(os.path.join(CENTRAL, "review-profiles", name + ".md")):
+            return f"review-profiles/{name}.md"
+    return None
 
 
 def glob_to_regex(pattern):
@@ -119,6 +216,13 @@ def main():
     defaults = load_yaml(os.environ["DEFAULT_POLICY"])
     repo = load_yaml(os.environ.get("REPO_POLICY", ".github/review-policy.yml"))
     files = [f for f in os.environ.get("CHANGED_FILES", "").splitlines() if f.strip()]
+    if os.environ.get("POLICY_MODE", "") == "kind":
+        return kind_mode(repo)
+    kind = check_kind(repo.get("kind"))
+    if kind is None:
+        return 1
+    with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+        fh.write(f"kind={kind}\n")
     if os.environ.get("POLICY_MODE", "") == "changes":
         return changes(defaults, repo, files)
     author = os.environ.get("PR_AUTHOR", "")
@@ -188,7 +292,7 @@ def run_case(defaults_path, repo_text, files, **env):
         open(out_path, "w").close()
         saved = dict(os.environ)
         os.environ.update({"DEFAULT_POLICY": defaults_path, "REPO_POLICY": repo_path, "CHANGED_FILES": "\n".join(files), "GITHUB_OUTPUT": out_path})
-        for key in ("PR_AUTHOR", "POLICY_LEVEL", "POLICY_MODE"):
+        for key in ("PR_AUTHOR", "POLICY_LEVEL", "POLICY_MODE", "KIND_DEFAULT"):
             os.environ.pop(key, None)
         os.environ.update(env)
         try:
@@ -238,6 +342,15 @@ def self_test():
         ("changes: PHP is code", default, "", ["includes/a.php"], {"POLICY_MODE": "changes"}, {"code": "true"}, 0),
         ("changes: docs are not code", default, "", ["docs/a.md"], {"POLICY_MODE": "changes"}, {"code": "false"}, 0),
         ("changes: nothing listed runs everything", default, "", [], {"POLICY_MODE": "changes"}, {"code": "true", "plugin_check": "true"}, 0),
+        ("no kind declared: kind is empty", default, "", ["docs/a.md"], {}, {"kind": "", "floor": "low"}, 0),
+        ("a declared kind is exposed", default, "kind: wordpress-plugin\n", ["docs/a.md"], {}, {"kind": "wordpress-plugin"}, 0),
+        ("a declared kind is exposed in changes mode too", default, "kind: wordpress-plugin\n", ["a.php"], {"POLICY_MODE": "changes"}, {"kind": "wordpress-plugin", "code": "true"}, 0),
+        ("a kind that does not exist fails", default, "kind: cobol-mainframe\n", ["docs/a.md"], {}, {}, 1),
+        ("a kind that is not a name fails", default, "kind: \"../etc\"\n", ["docs/a.md"], {}, {}, 1),
+        ("kind: the workflow's kind when the repository declares none", default, "", [], {"POLICY_MODE": "kind", "KIND_DEFAULT": "wordpress-plugin"}, {"kind": "wordpress-plugin", "rules": "kinds/wordpress-plugin/rules.yml", "profile": "kinds/wordpress-plugin/review-profile.md"}, 0),
+        ("kind: the declared one, the same as the workflow's", default, "kind: wordpress-plugin\n", [], {"POLICY_MODE": "kind", "KIND_DEFAULT": "wordpress-plugin"}, {"kind": "wordpress-plugin"}, 0),
+        ("kind: a declared kind the workflow does not run fails", default, "kind: wordpress-plugin\n", [], {"POLICY_MODE": "kind", "KIND_DEFAULT": "node-app"}, {}, 1),
+        ("kind: no kind anywhere fails", default, "", [], {"POLICY_MODE": "kind"}, {}, 1),
     ]
     failed = 0
     for name, defaults_path, repo_text, files, env, want, want_code in cases:
@@ -249,12 +362,53 @@ def self_test():
         else:
             print(f"ok   {name}")
     os.unlink(org_off)
+    failed += settings_tests()
     if not failed:
         print("all tests passed")
     return 1 if failed else 0
 
 
+def settings_tests():
+    """The pack's settings and a repository's additions; the profile names."""
+    failed = 0
+
+    def check(name, ok, detail=""):
+        nonlocal failed
+        print(("ok   " if ok else "FAIL ") + name + ("" if ok else f": {detail}"))
+        failed += 0 if ok else 1
+
+    code, out = run_case(os.path.join(CENTRAL, "policy", "review-policy.default.yml"), "kind: wordpress-plugin\nkind-settings:\n  plugin-check:\n    ignore-codes: [one_more_code]\n    strict: false\n", [], POLICY_MODE="kind")
+    settings = json.loads(out.get("settings", "{}"))
+    pc = settings.get("plugin-check", {})
+    check("kind: the pack's Plugin Check settings", code == 0 and pc.get("strict") is True and "stable_tag_mismatch" in pc.get("ignore-codes", []), out)
+    check("kind: a repository adds an ignore code", "one_more_code" in pc.get("ignore-codes", []), pc)
+    check("kind: a repository cannot turn strict off", pc.get("strict") is True, pc)
+    merged = merge_settings({"a": [1], "b": {"c": [2], "d": "x"}}, {"a": [1, 3], "b": {"c": [4], "d": "y"}, "e": [5], "f": "z"})
+    check("settings: lists append without repeats, maps merge, single values stay", merged == {"a": [1, 3], "b": {"c": [2, 4], "d": "x"}, "e": [5]}, merged)
+    for name, want in (("general", "review-profiles/general.md"), ("wordpress-plugin", "kinds/wordpress-plugin/review-profile.md"), ("plugin-wp", "kinds/wordpress-plugin/review-profile.md"), ("nothing-here", None), ("../AGENTS", None)):
+        got = profile_path(name)
+        check(f"profile: {name} is {want}", got == want, got)
+        if got:
+            check(f"profile: {got} exists", os.path.isfile(os.path.join(CENTRAL, got)))
+    for kind in sorted(os.listdir(os.path.join(CENTRAL, "kinds"))):
+        if not os.path.isfile(pack_path(kind)):
+            continue
+        pack = load_yaml(pack_path(kind))
+        check(f"pack {kind}: names its battery, adapters and rules", isinstance(pack.get("workflows"), list) and pack.get("workflows") and isinstance(pack.get("adapters"), list) and os.path.isfile(os.path.join(CENTRAL, "kinds", kind, "rules.yml")), pack)
+        for wf in pack.get("workflows") or []:
+            check(f"pack {kind}: its workflow {wf} exists", os.path.isfile(os.path.join(CENTRAL, ".github", "workflows", wf)))
+        check(f"pack {kind}: its review profile exists", os.path.isfile(os.path.join(CENTRAL, "kinds", kind, "review-profile.md")))
+    return failed
+
+
 if __name__ == "__main__":
     if sys.argv[1:] == ["--test"]:
         sys.exit(self_test())
+    if len(sys.argv) == 3 and sys.argv[1] == "--profile":
+        path = profile_path(sys.argv[2])
+        if path is None:
+            print(f"No review profile is called '{sys.argv[2]}': general, a kind in kinds/, or an alias a pack declares.", file=sys.stderr)
+            sys.exit(1)
+        print(path)
+        sys.exit(0)
     sys.exit(main())

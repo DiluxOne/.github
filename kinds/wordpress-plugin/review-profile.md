@@ -1,8 +1,11 @@
-# Review profile: WordPress plugin (`plugin-wp`)
+# Review profile: WordPress plugin (kind `wordpress-plugin`, alias `plugin-wp`)
 
 For plugins published on wordpress.org. Every rule comes from the Plugin
 Review Team's guidelines or from a real rejection; the automated tools
-passed each time, so check them by reading the code.
+passed each time, so check them by reading the code. What a script can
+check is also a rule in `rules.yml` beside this file, run on every pull
+request (`Review rules (wordpress-plugin)`); this profile is for what only
+reading can find.
 
 ## Input, output, permissions
 
@@ -14,8 +17,23 @@ passed each time, so check them by reading the code.
 - **Output is escaped late,** with the escaper for its context
   (`esc_html`, `esc_attr`, `esc_url`, `wp_kses`); translated strings too
   (`esc_html__`).
+- **No `phpcs:ignore` of `EscapeOutput`, whatever the reason given.** The
+  review reads "escaped inside" or "our own markup" as unescaped output.
+  Markup built as a string is printed through `wp_kses()` with an allow-list
+  at the line that echoes it; a template prints itself rather than being
+  returned and echoed; a function that prints by itself
+  (`wp_dropdown_pages()`, `get_avatar()` echoed) is no exception. An
+  allow-list needs a test proving it strips nothing the plugin prints.
 - **Every AJAX / REST / admin-post handler checks a nonce and a
-  capability** (`check_ajax_referer` + `current_user_can`).
+  capability** (`check_ajax_referer` + `current_user_can`), **in the
+  handler, before the first read** of the request. "The caller verifies
+  it" or "checked below" next to a `NonceVerification` suppression is a
+  finding: the reviewer reads the line on its own. The nonce action is
+  static; one built from an input read before the check reads unverified
+  input. The check is written with WordPress's own functions in that
+  function: a helper registered in `phpcs.xml` as a custom nonce verifier or
+  escaper satisfies the repository's PHPCS but not Plugin Check, which is
+  what wordpress.org runs and which ignores the repository's config.
 - **SQL goes through `$wpdb->prepare()`,** including `LIKE` with
   `$wpdb->esc_like()`.
 
@@ -45,6 +63,15 @@ passed each time, so check them by reading the code.
 - **Multisite:** activation per site and for sites added later; uninstall
   cleans every site (`get_sites( [ 'number' => 0 ] )`).
 - **Uninstall removes what the plugin created,** nothing else.
+
+## The admin is a workspace (guideline 11)
+
+- **No top-level menu among WordPress's own:** `add_menu_page()` without a
+  position, or a submenu under Settings / Tools. A position like 22 or 71 is
+  flagged as "a visibility tactic".
+- **Notices speak on the plugin's own screens, the dashboard or the plugins
+  list,** and are dismissible unless they are urgent. One on every screen of
+  the admin reads as nagging, even when it is true.
 
 ## Code and packaging
 

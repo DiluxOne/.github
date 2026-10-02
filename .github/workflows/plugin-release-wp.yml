@@ -118,7 +118,7 @@ on:
       central-ref:
         description: The ref of DiluxOne/.github whose scripts and policy to use.
         type: string
-        default: v2
+        default: v3
       dev-tag:
         description: The moving tag of the "Development build" pre-release that every push to main replaces. Empty publishes no development build.
         type: string
