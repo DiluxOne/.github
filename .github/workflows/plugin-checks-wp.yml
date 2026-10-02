@@ -274,6 +274,7 @@ jobs:
         env:
           KIND_DEFAULT: ${{ inputs.kind }}
           DEFAULT_POLICY: .dx-central/policy/review-policy.default.yml
+          EVENT: ${{ github.event_name }}
         run: bash .dx-central/scripts/kind.sh
       - name: Build the shipped tree (what wordpress.org receives)
         env:
@@ -321,6 +322,7 @@ jobs:
         env:
           KIND_DEFAULT: ${{ inputs.kind }}
           DEFAULT_POLICY: .dx-central/policy/review-policy.default.yml
+          EVENT: ${{ github.event_name }}
         run: bash .dx-central/scripts/kind.sh
       - name: Build the shipped tree (what wordpress.org receives)
         env:

@@ -185,8 +185,9 @@ templates fails to start once it points at `v2`:
 
 ### What moving `v2` to the packs changes for a plugin
 
-Nothing in a caller has to change, but the checks of a plugin get stricter
-the moment `v2` moves, and each of these is red until the plugin complies:
+The callers' files stay as they are, but each plugin has to change before
+it is green again: the checks get stricter the moment `v2` moves, and each
+of these is red until the plugin complies:
 
 - **Plugin Check is strict** (the pack's `strict: true`): a warning fails, as
   it does for the reviewer.
@@ -201,6 +202,12 @@ the moment `v2` moves, and each of these is red until the plugin complies:
   ruleset once it is green.
 - `translations-complete` and `codeql-languages` are off unless the caller
   turns them on; their checks are skipped.
+
+The repository's policy, `kind-settings:` included, is read from the base
+branch on a pull request, so a pull request cannot exempt itself: one that
+needs a new Plugin Check ignore code cannot turn its own check green. Add
+the code to `.github/review-policy.yml` in a pull request of its own first,
+merged by a person; the pull request that needed it then passes.
 
 ## Reusable workflows
 

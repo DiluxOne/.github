@@ -4,13 +4,15 @@
 # it stands on the base branch. A pull request cannot declare its own kind or
 # add its own exceptions (`kind-settings:`): they apply once merged.
 #
-# The checkout is the pull request's merge commit at depth 2, so its first
-# parent is the base branch; on a push, the parent is the commit before. A
-# checkout without a parent (a first commit, depth 1) reads the policy of
-# the commit itself.
+# On a pull request the checkout is its merge commit at depth 2, so its
+# first parent is the base branch. On a push, the weekly run or a run by hand
+# (EVENT is not pull_request) the checkout is the commit being checked, whose
+# policy is already merged, and that is the one read; so is the policy of a
+# checkout without a parent (a first commit, depth 1).
 #
 # Expects: DEFAULT_POLICY, GITHUB_OUTPUT, RUNNER_TEMP, KIND_DEFAULT (the
-# workflow's kind), and DiluxOne/.github under .dx-central (or CENTRAL).
+# workflow's kind), EVENT (github.event_name; pull_request when unset), and
+# DiluxOne/.github under .dx-central (or CENTRAL).
 # Writes kind, rules, profile and settings to $GITHUB_OUTPUT.
 #
 # `kind.sh --test` checks it against a scratch repository.
@@ -37,6 +39,9 @@ if [ "${1:-}" = "--test" ]; then
   has "the pack's settings"                   '"strict":true'
   has "the base's exceptions"                 "from_the_base"
   lacks "never the change's own exceptions"   "from_the_change"
+  ( cd "$dir" && : > out && GITHUB_OUTPUT=$dir/out RUNNER_TEMP=$dir DEFAULT_POLICY=$here/../policy/review-policy.default.yml KIND_DEFAULT=wordpress-plugin EVENT=push bash "$here/kind.sh" >/dev/null 2>&1 ) || { echo "FAIL kind.sh failed on a push"; fail=1; }
+  has "on a push, the merged policy"          "from_the_change"
+  lacks "on a push, never the commit before"  "from_the_base"
   ( cd "$dir" && git checkout -q --orphan lone && git commit -q -m "chore: lone" )
   run wordpress-plugin || { echo "FAIL kind.sh failed without a parent"; fail=1; }
   has "without a parent, the commit's own policy" "from_the_change"
@@ -48,7 +53,11 @@ fi
 
 central=${CENTRAL:-.dx-central}
 REPO_POLICY="$RUNNER_TEMP/kind-policy.yml"
-if git rev-parse --verify -q HEAD^1 >/dev/null; then
+# On a pull request the checkout is the merge commit, and its first parent is
+# the base branch: the policy comes from there, so a change cannot exempt
+# itself. On a push to main, the weekly run or a run by hand the checkout is
+# the commit being checked and its policy is already merged: read it as it is.
+if [ "${EVENT:-pull_request}" = "pull_request" ] && git rev-parse --verify -q HEAD^1 >/dev/null; then
   git show "HEAD^1:.github/review-policy.yml" > "$REPO_POLICY" 2>/dev/null || : > "$REPO_POLICY"
 else
   git show "HEAD:.github/review-policy.yml" > "$REPO_POLICY" 2>/dev/null || : > "$REPO_POLICY"
