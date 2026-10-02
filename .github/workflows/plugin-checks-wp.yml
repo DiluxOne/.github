@@ -185,7 +185,18 @@ jobs:
         with:
           php-version: '8.5'
           coverage: none
-          tools: wp-cli
+      # setup-php's `tools: wp-cli` asks for a release asset named wp-cli.phar,
+      # which wp-cli's releases do not carry (it answered 404 on 2 October 2026). The
+      # release is downloaded by name and checked against its SHA-512, the same
+      # value wp-cli publishes in wp-cli/builds (wp-cli-release.phar.sha512).
+      - name: WP-CLI 2.12.0
+        env:
+          WP_CLI_SHA512: be928f6b8ca1e8dfb9d2f4b75a13aa4aee0896f8a9a0a1c45cd5d2c98605e6172e6d014dda2e27f88c98befc16c040cbb2bd1bfa121510ea5cdf5f6a30fe8832
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/wp" https://github.com/wp-cli/wp-cli/releases/download/v2.12.0/wp-cli-2.12.0.phar
+          echo "$WP_CLI_SHA512  $RUNNER_TEMP/wp" | sha512sum -c -
+          sudo install -m 0755 "$RUNNER_TEMP/wp" /usr/local/bin/wp
+          wp --version
       - name: Build the shipped tree
         env:
           SLUG: ${{ inputs.slug }}
@@ -354,7 +365,18 @@ jobs:
         with:
           php-version: '8.5'
           coverage: none
-          tools: wp-cli
+      # setup-php's `tools: wp-cli` asks for a release asset named wp-cli.phar,
+      # which wp-cli's releases do not carry (it answered 404 on 2 October 2026). The
+      # release is downloaded by name and checked against its SHA-512, the same
+      # value wp-cli publishes in wp-cli/builds (wp-cli-release.phar.sha512).
+      - name: WP-CLI 2.12.0
+        env:
+          WP_CLI_SHA512: be928f6b8ca1e8dfb9d2f4b75a13aa4aee0896f8a9a0a1c45cd5d2c98605e6172e6d014dda2e27f88c98befc16c040cbb2bd1bfa121510ea5cdf5f6a30fe8832
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/wp" https://github.com/wp-cli/wp-cli/releases/download/v2.12.0/wp-cli-2.12.0.phar
+          echo "$WP_CLI_SHA512  $RUNNER_TEMP/wp" | sha512sum -c -
+          sudo install -m 0755 "$RUNNER_TEMP/wp" /usr/local/bin/wp
+          wp --version
       - name: gettext
         run: sudo apt-get update -qq && sudo apt-get install -y -qq gettext
       - name: Every shipped locale complete
