@@ -183,11 +183,18 @@ templates fails to start once it points at `v2`:
    and client id besides the SVN credentials.
 4. Point every `uses:` at `@v2` (the release workflow at its commit).
 
-### What moving `v2` to the packs changes for a plugin
+## Migrating a repository from `v2` to `v3`
 
-The callers' files stay as they are, but each plugin has to change before
-it is green again: the checks get stricter the moment `v2` moves, and each
-of these is red until the plugin complies:
+`v3` brings the kinds and their packs. A repository moves when it is ready; `v2` stays where it is for the ones that are not.
+
+1. Declare the kind in `.github/review-policy.yml`: `kind: wordpress-plugin`.
+2. Add `.github/review-suppressions.yml` (`review-rules.php --suggest-suppressions` writes the list; every reason is written by a person) and fix what the rules find.
+3. Point every `uses:` at `@v3` (the release workflow at its commit), and set the new tests inputs if the repository has more than one suite.
+4. Once green, require `checks / Review rules (<kind>)` and the per-target `tests / …` checks in the `main` ruleset.
+
+### What `v3` changes for a plugin
+
+Each of these is red until the plugin complies:
 
 - **Plugin Check is strict** (the pack's `strict: true`): a warning fails, as
   it does for the reviewer.
@@ -211,10 +218,10 @@ merged by a person; the pull request that needed it then passes.
 
 ## Reusable workflows
 
-Call them pinned to `@v2`; a breaking change ships as `v2`. A stack suffix
+Call them pinned to `@v3`; a breaking change ships as the next major (`v4`), and the previous one stays where it is. A stack suffix
 (`-wp`) appears only when the steps are specific to that stack. A workflow
 with a `central-ref` input reads the scripts, profiles and policy at that
-ref (default `v2`), not at the ref of its `uses:` line: a caller that pins
+ref (default `v3`), not at the ref of its `uses:` line: a caller that pins
 `uses:` to a version passes the same version as `central-ref`.
 
 | Workflow | Does | Inputs |
@@ -269,12 +276,13 @@ workflow of a repository from its Actions tab.
 
 ## Changing this repository
 
-Every place the bot's token is minted asks only for what that job does: the review, the replies and the triage get `contents: read` while the model runs; `contents: write` is minted only by the merge, the reproduction push, the weekly learnings, and the step that resolves review threads after the model has finished (resolving a thread is a write on the repository), which nothing that read the pull request's text ever holds. Tags are not creatable by `dilux-bot` at all: the ruleset an adopting repository sets at step 3 allows `X.Y.Z` tag creation to administrators and the release App only, and this repository's `v*` tags (the moving `v2`, the frozen `v1`) can be created, moved or deleted only by administrators (ruleset `moving tags`: creation, update, deletion). The wordpress.org credentials live in the repository environment `wordpress-org`, whose deployment policy admits only `X.Y.Z` tags and `main`, so no pull request or branch job can read them; the check `svn-auth-check.yml` runs inside that environment.
+Every place the bot's token is minted asks only for what that job does: the review, the replies and the triage get `contents: read` while the model runs; `contents: write` is minted only by the merge, the reproduction push, the weekly learnings, and the step that resolves review threads after the model has finished (resolving a thread is a write on the repository), which nothing that read the pull request's text ever holds. Tags are not creatable by `dilux-bot` at all: the ruleset an adopting repository sets at step 3 allows `X.Y.Z` tag creation to administrators and the release App only, and this repository's `v*` tags (the moving `v3`, the frozen `v2` and `v1`) can be created, moved or deleted only by administrators (ruleset `moving tags`: creation, update, deletion). The wordpress.org credentials live in the repository environment `wordpress-org`, whose deployment policy admits only `X.Y.Z` tags and `main`, so no pull request or branch job can read them; the check `svn-auth-check.yml` runs inside that environment.
 
 Everything here is high risk: a human merges every change. After merging, move
-`v2` (or cut `v3` for a breaking change: `scripts/next-version.py --tag-prefix v`
-says which) and tag the exact version. Moving `v2` also ships the review
-profiles and the default policy, which every repository reads from that tag.
-A run that already exists keeps the workflow it was created with: re-running
-a failed job after `v2` moved re-runs the old workflow. Reopen the pull
-request, or push to it, for a run on the new one. `v1` stays where it is.
+`v3` (or cut `v4` for a breaking change: `scripts/next-version.py --tag-prefix v`
+says which) and tag the exact version. Moving `v3` also ships the review
+profiles, the packs and the default policy, which every repository on `v3`
+reads from that tag. A run that already exists keeps the workflow it was
+created with: re-running a failed job after `v3` moved re-runs the old
+workflow. Reopen the pull request, or push to it, for a run on the new one.
+`v2` and `v1` stay where they are.

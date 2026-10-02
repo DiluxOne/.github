@@ -37,7 +37,7 @@ name: WordPress plugin tests (slow)
 #
 #   jobs:
 #     tests:
-#       uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v2
+#       uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v3
 #       with:                                   # all optional
 #         integration-targets: '["single","network"]'
 #         e2e-suites: >-
@@ -70,7 +70,7 @@ on:
       central-ref:
         description: Ref of DiluxOne/.github to read the policy from.
         type: string
-        default: v2
+        default: v3
 
 permissions:
   contents: read

@@ -41,9 +41,9 @@ name: Claude review
 # kind of project, kinds/<kind>/review-profile.md; a `kind:` in the policy
 # adds it on its own, and `plugin-wp` still names the WordPress one),
 # central-ref (where the profiles, the policy and scripts/review-brief.sh
-# are read from, default v2: a caller that pins `uses:` to a version, say
-# @v2.7.0, passes the same version here, or the workflow runs at its pin
-# while the policy and the brief follow v2),
+# are read from, default v3: a caller that pins `uses:` to a version, say
+# @v3.0.0, passes the same version here, or the workflow runs at its pin
+# while the policy and the brief follow v3),
 # max-auto-reviews.
 #
 #   on:
@@ -53,7 +53,7 @@ name: Claude review
 #     review:
 #       needs: [conventions, checks]
 #       permissions: { contents: read, pull-requests: write, issues: write }
-#       uses: DiluxOne/.github/.github/workflows/claude-review.yml@v2
+#       uses: DiluxOne/.github/.github/workflows/claude-review.yml@v3
 #       with:
 #         profile: plugin-wp   # optional: `kind: wordpress-plugin` in the policy does the same
 #       secrets: inherit
@@ -68,7 +68,7 @@ on:
       central-ref:
         description: Ref of DiluxOne/.github to read the profiles and policy from.
         type: string
-        default: v2
+        default: v3
       max-auto-reviews:
         description: Automatic reviews per pull request before the next push needs the review:full label.
         type: number

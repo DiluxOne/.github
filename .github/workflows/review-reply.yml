@@ -21,7 +21,7 @@ name: Claude review reply
 #   jobs:
 #     reply:
 #       permissions: { contents: read, pull-requests: write, issues: write }
-#       uses: DiluxOne/.github/.github/workflows/review-reply.yml@v2
+#       uses: DiluxOne/.github/.github/workflows/review-reply.yml@v3
 #       with:
 #         profile: plugin-wp   # optional: `kind: wordpress-plugin` in the policy does the same
 #       secrets: inherit
@@ -36,7 +36,7 @@ on:
       central-ref:
         description: Ref of DiluxOne/.github to read the profiles from.
         type: string
-        default: v2
+        default: v3
     secrets:
       ANTHROPIC_API_KEY:
         required: true

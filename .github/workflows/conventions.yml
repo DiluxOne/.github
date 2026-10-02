@@ -15,12 +15,12 @@ name: Conventions
 #       types: [opened, synchronize, reopened, ready_for_review]  # and pull-request-edited.yml on `edited`
 #   jobs:
 #     conventions:
-#       uses: DiluxOne/.github/.github/workflows/conventions.yml@v2
+#       uses: DiluxOne/.github/.github/workflows/conventions.yml@v3
 #       with:
 #         retired-names: 'offload\+|dilux cloud'   # optional
 #         required-sections: 'What changes,Why'   # the default
 #         max-header: 100                         # the default
-#         central-ref: v2                         # the default: where the script is read from;
+#         central-ref: v3                         # the default: where the script is read from;
 #                                                 # keep it on the ref the workflow is pinned at
 
 on:
@@ -45,7 +45,7 @@ on:
       central-ref:
         description: Ref of DiluxOne/.github to read the conventions script from.
         type: string
-        default: v2
+        default: v3
 
 permissions:
   contents: read
