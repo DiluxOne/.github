@@ -12,6 +12,9 @@ the pull request's changed files against them, and writes to $GITHUB_OUTPUT:
   effort    the reasoning effort for this floor
   budget    the most one review run may spend, in USD
   auto_merge  true | false     whether qualifying pull requests merge on their own
+  paid_repository, paid_owner, paid_name, paid_path   the private roadmap of the paid add-on
+            (`paid-roadmap:` in the repository's policy), which the issue
+            triage reads to classify and never quotes; empty when none
 
 With POLICY_LEVEL=low|medium|high set, the floor is that level (a job that
 has no diff, such as the issue triage, asks for the reviewer of a level).
@@ -308,8 +311,15 @@ def main():
     # turn auto-merge off for itself, never on when the organisation says no.
     auto_merge = defaults.get("auto-merge", False) is True and repo.get("auto-merge", True) is not False
     auto_merge = "true" if auto_merge else "false"
+    paid = repo.get("paid-roadmap") or {}
+    paid_repository, paid_path = str(paid.get("repository") or ""), str(paid.get("path") or "docs/roadmap.md")
+    if paid_repository and (not re.fullmatch(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+", paid_repository) or not re.fullmatch(r"[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*", paid_path) or ".." in paid_path.split("/")):
+        print(f"::error::paid-roadmap '{paid_repository}:{paid_path}' is not an owner/repository and a relative path.")
+        return 1
+    if not paid_repository:
+        paid_path = ""
     with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
-        fh.write(f"floor={floor}\ntrusted={trusted}\nreasons={reasons}\nmodel={model}\neffort={effort}\nbudget={budget}\nauto_merge={auto_merge}\n")
+        fh.write(f"floor={floor}\ntrusted={trusted}\nreasons={reasons}\nmodel={model}\neffort={effort}\nbudget={budget}\nauto_merge={auto_merge}\npaid_repository={paid_repository}\npaid_owner={paid_repository.split('/')[0] if paid_repository else ''}\npaid_name={paid_repository.split('/')[-1] if paid_repository else ''}\npaid_path={paid_path}\n")
     print(f"floor={floor} trusted={trusted} ({reasons}) model={model} effort={effort} budget={budget} auto-merge={auto_merge}")
 
 
@@ -391,6 +401,10 @@ def self_test():
         ("kind: the declared one, the same as the workflow's", default, "kind: wordpress-plugin\n", [], {"POLICY_MODE": "kind", "KIND_DEFAULT": "wordpress-plugin"}, {"kind": "wordpress-plugin"}, 0),
         ("kind: a declared kind the workflow does not run fails", default, "kind: wordpress-plugin\n", [], {"POLICY_MODE": "kind", "KIND_DEFAULT": "node-app"}, {}, 1),
         ("kind: no kind anywhere fails", default, "", [], {"POLICY_MODE": "kind"}, {}, 1),
+        ("paid-roadmap: none by default", default, "", ["docs/a.md"], {}, {"paid_repository": "", "paid_path": ""}, 0),
+        ("paid-roadmap: the add-on's roadmap", default, "paid-roadmap:\n  repository: DiluxOne/x-pro-wordpress\n", ["docs/a.md"], {}, {"paid_repository": "DiluxOne/x-pro-wordpress", "paid_owner": "DiluxOne", "paid_name": "x-pro-wordpress", "paid_path": "docs/roadmap.md"}, 0),
+        ("paid-roadmap: a path out of the repository fails", default, "paid-roadmap:\n  repository: DiluxOne/x-pro-wordpress\n  path: ../../etc/passwd\n", ["docs/a.md"], {}, {}, 1),
+        ("paid-roadmap: a repository that is not one fails", default, "paid-roadmap:\n  repository: \"x; rm -rf /\"\n", ["docs/a.md"], {}, {}, 1),
         ("issue-gate: required with the accepted label by default", default, "", [], {"POLICY_MODE": "issue-gate"}, {"required": "true", "label": "accepted"}, 0),
         ("issue-gate: a repository cannot turn it off", default, "issue-gate:\n  required: false\n", [], {"POLICY_MODE": "issue-gate"}, {"required": "true"}, 0),
         ("issue-gate: nor change the label", default, "issue-gate:\n  label: yes-please\n", [], {"POLICY_MODE": "issue-gate"}, {"label": "accepted"}, 0),
