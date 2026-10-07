@@ -6,7 +6,9 @@ name: Conventions
 # description whose required sections are filled in (it becomes the commit
 # body) and that carries no "Generated with" footer (AI is disclosed with
 # the one sober line instead), and that it closes an issue a maintainer
-# accepted (scripts/issue-gate.sh; the organisation's policy, `issue-gate`).
+# accepted (scripts/issue-gate.sh; the organisation's policy, `issue-gate`);
+# that a docs pull request changes only documentation; and that one from an
+# author who is not trusted stays under `max-changed-lines-untrusted`.
 # The checks themselves are scripts/conventions.sh,
 # which scripts/local-review.sh runs before a pull request is opened. Plus a docs check whenever the caller runs (pull requests and
 # pushes to main): relative Markdown links resolve, and no retired product
@@ -107,10 +109,11 @@ jobs:
           path: .dx-central
           persist-credentials: false
 
-      - name: The accepted-issue gate, as the base branch's policy says
+      - name: The accepted-issue gate and the size limit, as the base branch's policy says
         id: gate
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         # Read from the base branch, never the pull request's own copy: a
         # pull request cannot exempt itself by editing the policy.
         run: |
@@ -162,6 +165,8 @@ jobs:
           LABELS: ${{ steps.live.outputs.labels }}
           COMMENTS_FILE: ${{ runner.temp }}/comments.json
           REVIEW_BOT: ${{ inputs.review-bot }}
+          # Empty for a trusted author: the policy's max-changed-lines-untrusted.
+          MAX_LINES: ${{ steps.gate.outputs.max_lines }}
         run: bash .dx-central/scripts/conventions.sh
 
   docs:

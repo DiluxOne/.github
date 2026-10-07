@@ -24,7 +24,9 @@ request template, issue forms) unless it has its own. The rules for contributors
    edit the description, or re-run the job.
 1. **Checks.** The conventions (branch name, title, every commit, the
    description's required sections, no "Generated with" footer, relative doc
-   links) and the fast gates of the repository's kind of project, among them
+   links, a `docs` title that changes only documentation, and at most
+   `max-changed-lines-untrusted` (600) lines from an author who is not
+   trusted) and the fast gates of the repository's kind of project, among them
    its review rules: what that kind's reviewers sent back before, as data
    ([`kinds/`](kinds/)). Deterministic, no AI.
 2. **Review.** [`scripts/policy.py`](scripts/policy.py) sets the lowest risk

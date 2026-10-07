@@ -23,6 +23,14 @@ issue-gate:
   label: accepted
   optional: false
 
+# The most lines a pull request from an author who is not trusted may change
+# (added plus removed; lock files and translations aside). A change that big
+# is split into smaller ones, or a maintainer takes it over: a large diff is
+# where a feature hides inside a fix, and where a review costs the most.
+# A repository can lower it, never raise it; 0 is no limit, and only this
+# file can say that.
+max-changed-lines-untrusted: 600
+
 # A changed file matching any of these makes the pull request high risk.
 # Anything that changes how code is built, checked, released or reviewed,
 # or what an agent is told to do, is here.

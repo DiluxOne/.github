@@ -50,6 +50,9 @@ With POLICY_MODE=issue-gate it writes, for the conventions check:
 
   required  true | false   a pull request must close an accepted issue
   label     the label that accepts an issue
+  trusted   true | false   PR_AUTHOR is a trusted author
+  max_lines the most lines PR_AUTHOR's pull request may change; empty when
+            the author is trusted or there is no limit
 
 The organisation's `issue-gate` decides both; a repository can set
 `required: false` only when the organisation's says `optional: true`.
@@ -177,8 +180,23 @@ def issue_gate(defaults, repo):
         return 1
     if "label" in mine and mine.get("label") != label:
         print("::warning::issue-gate.label is the organisation's; a repository cannot change it, ignored.")
+    trusted = os.environ.get("PR_AUTHOR", "") in repo.get("trusted-authors", defaults.get("trusted-authors", []))
+    max_lines = ""
+    try:
+        org_max = int(defaults.get("max-changed-lines-untrusted", 0) or 0)
+        mine_max = int(repo.get("max-changed-lines-untrusted", org_max) or 0)
+    except (TypeError, ValueError):
+        print("::warning::max-changed-lines-untrusted is not a number; the organisation's value is used.")
+        org_max = int(defaults.get("max-changed-lines-untrusted", 0) or 0)
+        mine_max = org_max
+    if org_max > 0:
+        limit = mine_max if 0 < mine_max < org_max else org_max
+        if mine_max != limit and "max-changed-lines-untrusted" in repo:
+            print("::warning::max-changed-lines-untrusted: a repository can lower the limit, not raise or remove it; ignored.")
+        if not trusted:
+            max_lines = str(limit)
     with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
-        fh.write(f"required={'true' if required else 'false'}\nlabel={label}\n")
+        fh.write(f"required={'true' if required else 'false'}\nlabel={label}\ntrusted={'true' if trusted else 'false'}\nmax_lines={max_lines}\n")
     print(f"issue-gate required={'true' if required else 'false'} label={label}")
     return 0
 
@@ -410,6 +428,11 @@ def self_test():
         ("issue-gate: nor change the label", default, "issue-gate:\n  label: yes-please\n", [], {"POLICY_MODE": "issue-gate"}, {"label": "accepted"}, 0),
         ("issue-gate: off where the organisation lets it be", gate_optional, "issue-gate:\n  required: false\n", [], {"POLICY_MODE": "issue-gate"}, {"required": "false"}, 0),
         ("issue-gate: a label that is not one fails", gate_bad, "", [], {"POLICY_MODE": "issue-gate"}, {}, 1),
+        ("size: an untrusted author gets the organisation's limit", default, "", [], {"POLICY_MODE": "issue-gate", "PR_AUTHOR": "someone"}, {"trusted": "false", "max_lines": "600"}, 0),
+        ("size: a trusted author has none", default, "", [], {"POLICY_MODE": "issue-gate", "PR_AUTHOR": "soydiloreto"}, {"trusted": "true", "max_lines": ""}, 0),
+        ("size: a repository lowers it", default, "max-changed-lines-untrusted: 200\n", [], {"POLICY_MODE": "issue-gate", "PR_AUTHOR": "someone"}, {"max_lines": "200"}, 0),
+        ("size: but cannot raise it", default, "max-changed-lines-untrusted: 5000\n", [], {"POLICY_MODE": "issue-gate", "PR_AUTHOR": "someone"}, {"max_lines": "600"}, 0),
+        ("size: nor remove it", default, "max-changed-lines-untrusted: 0\n", [], {"POLICY_MODE": "issue-gate", "PR_AUTHOR": "someone"}, {"max_lines": "600"}, 0),
     ]
     failed = 0
     for name, defaults_path, repo_text, files, env, want, want_code in cases:
