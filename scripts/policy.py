@@ -43,6 +43,14 @@ for the checks of a kind:
             cannot replace the pack's (a repository adds exceptions, it does
             not turn a gate off), and says so
 
+With POLICY_MODE=issue-gate it writes, for the conventions check:
+
+  required  true | false   a pull request must close an accepted issue
+  label     the label that accepts an issue
+
+The organisation's `issue-gate` decides both; a repository can set
+`required: false` only when the organisation's says `optional: true`.
+
 `policy.py --profile <name>` prints the review profile a workflow's
 `profile:` names, relative to this repository: `general`, a kind, an alias
 a pack declares (`plugin-wp` is the wordpress-plugin kind), or a file left
@@ -148,6 +156,30 @@ def kind_mode(repo):
     return 0
 
 
+LABEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 :._/-]{0,49}")
+
+
+def issue_gate(defaults, repo):
+    org = defaults.get("issue-gate") or {}
+    mine = repo.get("issue-gate") or {}
+    required = org.get("required", False) is True
+    if mine.get("required") is False and required:
+        if org.get("optional") is True:
+            required = False
+        else:
+            print("::warning::issue-gate.required: the organisation does not let a repository turn the gate off; ignored.")
+    label = str(org.get("label") or "accepted")
+    if not LABEL_RE.fullmatch(label):
+        print(f"::error::issue-gate.label '{label}' is not a label name.")
+        return 1
+    if "label" in mine and mine.get("label") != label:
+        print("::warning::issue-gate.label is the organisation's; a repository cannot change it, ignored.")
+    with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+        fh.write(f"required={'true' if required else 'false'}\nlabel={label}\n")
+    print(f"issue-gate required={'true' if required else 'false'} label={label}")
+    return 0
+
+
 def profile_path(name):
     """The review profile a `profile:` names, relative to this repository, or None."""
     if name == "general":
@@ -225,6 +257,8 @@ def main():
         fh.write(f"kind={kind}\n")
     if os.environ.get("POLICY_MODE", "") == "changes":
         return changes(defaults, repo, files)
+    if os.environ.get("POLICY_MODE", "") == "issue-gate":
+        return issue_gate(defaults, repo)
     author = os.environ.get("PR_AUTHOR", "")
     forced = os.environ.get("POLICY_LEVEL", "")
     if forced and forced not in ("low", "medium", "high"):
@@ -314,6 +348,12 @@ def self_test():
     with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False, encoding="utf-8") as fh:
         fh.write("auto-merge: false\nreview:\n  low: {model: claude-sonnet-5-5}\n  medium: {model: claude-sonnet-5-5}\n  high: {model: claude-sonnet-5-5}\n")
         org_off = fh.name
+    with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False, encoding="utf-8") as fh:
+        fh.write("issue-gate:\n  required: true\n  label: accepted\n  optional: true\n")
+        gate_optional = fh.name
+    with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False, encoding="utf-8") as fh:
+        fh.write("issue-gate:\n  required: true\n  label: \"$(id)\"\n")
+        gate_bad = fh.name
     cases = [
         # (name, defaults, repo policy, files, extra env, expected outputs, expected exit)
         ("docs only is low", default, "", ["docs/a.md", "README.md"], {}, {"floor": "low", "model": "claude-sonnet-5-5"}, 0),
@@ -351,6 +391,11 @@ def self_test():
         ("kind: the declared one, the same as the workflow's", default, "kind: wordpress-plugin\n", [], {"POLICY_MODE": "kind", "KIND_DEFAULT": "wordpress-plugin"}, {"kind": "wordpress-plugin"}, 0),
         ("kind: a declared kind the workflow does not run fails", default, "kind: wordpress-plugin\n", [], {"POLICY_MODE": "kind", "KIND_DEFAULT": "node-app"}, {}, 1),
         ("kind: no kind anywhere fails", default, "", [], {"POLICY_MODE": "kind"}, {}, 1),
+        ("issue-gate: required with the accepted label by default", default, "", [], {"POLICY_MODE": "issue-gate"}, {"required": "true", "label": "accepted"}, 0),
+        ("issue-gate: a repository cannot turn it off", default, "issue-gate:\n  required: false\n", [], {"POLICY_MODE": "issue-gate"}, {"required": "true"}, 0),
+        ("issue-gate: nor change the label", default, "issue-gate:\n  label: yes-please\n", [], {"POLICY_MODE": "issue-gate"}, {"label": "accepted"}, 0),
+        ("issue-gate: off where the organisation lets it be", gate_optional, "issue-gate:\n  required: false\n", [], {"POLICY_MODE": "issue-gate"}, {"required": "false"}, 0),
+        ("issue-gate: a label that is not one fails", gate_bad, "", [], {"POLICY_MODE": "issue-gate"}, {}, 1),
     ]
     failed = 0
     for name, defaults_path, repo_text, files, env, want, want_code in cases:
@@ -361,7 +406,8 @@ def self_test():
             print(f"FAIL {name}: exit {code} (want {want_code}), {wrong or outputs}")
         else:
             print(f"ok   {name}")
-    os.unlink(org_off)
+    for path in (org_off, gate_optional, gate_bad):
+        os.unlink(path)
     failed += settings_tests()
     if not failed:
         print("all tests passed")

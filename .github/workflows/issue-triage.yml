@@ -36,7 +36,7 @@ name: Issue triage
 #   jobs:
 #     triage:
 #       permissions: { contents: read, issues: write }
-#       uses: DiluxOne/.github/.github/workflows/issue-triage.yml@v3
+#       uses: DiluxOne/.github/.github/workflows/issue-triage.yml@v4
 #       with:
 #         support-url: https://wordpress.org/support/plugin/diluxone-offload/
 #       secrets: inherit
@@ -67,7 +67,7 @@ on:
       central-ref:
         description: Ref of DiluxOne/.github to read the policy from.
         type: string
-        default: v3
+        default: v4
     secrets:
       ANTHROPIC_API_KEY:
         required: true

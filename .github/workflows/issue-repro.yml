@@ -35,7 +35,7 @@ name: Issue reproduction
 #   jobs:
 #     repro:
 #       permissions: { actions: read, contents: write, issues: write, pull-requests: write }
-#       uses: DiluxOne/.github/.github/workflows/issue-repro.yml@v3
+#       uses: DiluxOne/.github/.github/workflows/issue-repro.yml@v4
 #       secrets: inherit
 
 on:
@@ -52,7 +52,7 @@ on:
       central-ref:
         description: Ref of DiluxOne/.github to read the policy from.
         type: string
-        default: v3
+        default: v4
       dev-tag:
         description: The moving tag of the repository's "Development build" pre-release (as in plugin-release-wp.yml), linked when a report names an older version. Empty when the repository publishes none.
         type: string

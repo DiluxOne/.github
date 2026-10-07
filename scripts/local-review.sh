@@ -58,7 +58,8 @@ test_case() {
 if [ "${1:-}" = "--test" ]; then
   commit='echo hi > a.md && git add a.md && git commit -q -m "docs(readme): a line"'
   wf() { printf 'mkdir -p .github/workflows && printf %%s %q > .github/workflows/pr.yml && git add -A && git commit -q -m "ci(pr): a workflow" && %s' "$1" "$commit"; }
-  good=$'## What changes\n\nA line.\n\n## Why\n\nA reason.\n'
+  good=$'## What changes\n\nA line.\n\n## Why\n\nA reason. Closes #1.\n'
+  noissue=$'## What changes\n\nA line.\n\n## Why\n\nA reason.\n'
   empty=$'## What changes\n\nA line.\n\n## Why\n\n'
   fail=0
   test_case "no profile, no origin remote: general, and it runs to the brief" 0 "Brief:" "$commit" || fail=1
@@ -72,9 +73,10 @@ if [ "${1:-}" = "--test" ]; then
   test_case "no commit on the branch"                    1 "adds no commit" ":" || fail=1
   test_case "two commits and no --title"                 64 "say the pull request title" "$commit && echo b > b.md && git add b.md && git commit -q -m 'docs(readme): another'" || fail=1
   test_case "a commit that is not a header"              1 "not a Conventional Commit header" 'echo hi > a.md && git add a.md && git commit -q -m "Added a line"' || fail=1
-  bodies=$(mktemp -d); printf %s "$good" > "$bodies/good.md"; printf %s "$empty" > "$bodies/empty.md"
+  bodies=$(mktemp -d); printf %s "$good" > "$bodies/good.md"; printf %s "$empty" > "$bodies/empty.md"; printf %s "$noissue" > "$bodies/noissue.md"
   test_case "a description with an empty Why"            1 "section is empty" "$commit" --body-file "$bodies/empty.md" || fail=1
   test_case "a description filled in"                    0 "Conventions OK." "$commit" --body-file "$bodies/good.md" || fail=1
+  test_case "a description that closes no issue"         1 "closes no issue" "$commit" --body-file "$bodies/noissue.md" || fail=1
   test_case "the origin remote names the repository"    0 "Review brief: o/r," "git remote add origin https://github.com/o/r.git && $commit" || fail=1
   rm -rf "$bodies"
   test_case "an unknown option"                          64 "usage:" "$commit" --nope || fail=1
@@ -112,7 +114,7 @@ FAKE
   review_case "a title of another type than the change is not ready" 1 "retitle it" \
     "FAKE_VERDICT='$(verdict fix true '[]')' $run" || fail=1
   review_case "a description that does not match is not ready" 1 "does not match the code" \
-    "printf '## What changes\n\nx\n\n## Why\n\ny\n' > .git/body.md; FAKE_VERDICT='$(verdict docs false '[]')' LOCAL_REVIEW_CLAUDE=\$fake bash \"\$CENTRAL/scripts/local-review.sh\" --body-file .git/body.md 2>&1" || fail=1
+    "printf '## What changes\n\nx\n\n## Why\n\ny, closes #1\n' > .git/body.md; FAKE_VERDICT='$(verdict docs false '[]')' LOCAL_REVIEW_CLAUDE=\$fake bash \"\$CENTRAL/scripts/local-review.sh\" --body-file .git/body.md 2>&1" || fail=1
   review_case "nothing new since the last run: the same answer, no review spent" 1 "Already reviewed" \
     "FAKE_VERDICT='$(verdict docs true "$major")' $run >/dev/null; FAKE_FAIL_IF_CALLED=1 $run" || fail=1
   review_case "a commit since the last run is reviewed incrementally" 0 "incremental" \
@@ -186,6 +188,17 @@ sections="What changes,Why"
 conventions=0
 BRANCH=$branch TITLE=$title BODY=$body BASE=$BASE HEAD_REF=$HEAD SECTIONS=$sections \
   bash "$CENTRAL/scripts/conventions.sh" || conventions=1
+# The accepted-issue gate asks GitHub whether the issue is accepted, which
+# only CI can do once the pull request exists; here, the description must at
+# least close an issue.
+: > "$work/gate.out"
+DEFAULT_POLICY="$CENTRAL/policy/review-policy.default.yml" REPO_POLICY=.github/review-policy.yml \
+  POLICY_MODE=issue-gate GITHUB_OUTPUT="$work/gate.out" python3 "$CENTRAL/scripts/policy.py" >/dev/null || true
+if [ -n "$body_file" ] && grep -q '^required=true' "$work/gate.out" \
+  && ! printf '%s\n' "$body" | grep -qiE '(^|[^[:alnum:]])(close[sd]?|fix(e[sd])?|resolve[sd]?):? #[0-9]+'; then
+  echo "::error::The description closes no issue: write \"Closes #<number>\" for the accepted issue (CONTRIBUTING.md, \"Start from an issue\"); CI checks that it is accepted."
+  conventions=1
+fi
 
 echo; echo "== Policy"
 changed=$(git diff --name-status -M "$BASE...$HEAD" | awk -F'\t' '{ for (i = 2; i <= NF; i++) print $i }')

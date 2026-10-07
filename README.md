@@ -8,6 +8,20 @@ request template, issue forms) unless it has its own. The rules for contributors
 
 ## What happens on a pull request
 
+0. **An accepted issue first.** Every pull request, a maintainer's too,
+   closes an issue a maintainer accepted: the description says
+   `Closes #12` (or the issue is linked under *Development*), and the issue
+   is open, in the same repository and carries the `accepted` label, added
+   by a person. A bot's label never counts, so no automation can accept an
+   issue, and only people with triage access or more can label one. Bots'
+   own pull requests (Dependabot, releases) are exempt. This is where a
+   feature that is already planned, or that belongs to a paid add-on, is
+   stopped: before anyone writes it, by not accepting its issue. The gate
+   is a deterministic step of the conventions check
+   ([`scripts/issue-gate.sh`](scripts/issue-gate.sh), the policy's
+   `issue-gate`, read from the base branch), so it runs on forks too, with
+   a read-only token. Accepting the issue later does not re-run the check:
+   edit the description, or re-run the job.
 1. **Checks.** The conventions (branch name, title, every commit, the
    description's required sections, no "Generated with" footer, relative doc
    links) and the fast gates of the repository's kind of project, among them
@@ -83,6 +97,7 @@ how to add a rule and how to add a kind; the one kind today is
    `pull-request-edited.yml`, `pull-request-comments.yml`, `issues.yml` and,
    for a plugin, `release-wp.yml`. Fill in `slug`, `version-constant`, `retired-names` and
    `support-url`.
+   The `conventions` job grants `issues: read`, for the accepted-issue gate.
 2. **Policy and rules.** Add `.github/review-policy.yml`. Every review
    setting lives in this file and in the organisation's
    [`policy/review-policy.default.yml`](policy/review-policy.default.yml),
@@ -151,7 +166,10 @@ how to add a rule and how to add a kind; the one kind today is
    repository and added to the bypass list of the tag-creation ruleset, as
    an Integration. Dependabot alerts and updates, private vulnerability
    reporting. The `dilux-bot` App must be installed on the repository. The
-   labels are created by the review itself.
+   review creates its own labels; create `accepted` by hand (the label a
+   maintainer puts on an issue to accept it), and keep the triage role, the
+   only one below write that can label, for people you trust to accept
+   work.
 
    The tag rulesets cover `X.Y.Z` only, so the moving tag `dev` of the
    development build stays free for the workflow's own token.
@@ -218,12 +236,27 @@ That pull request is red on the same strict check, for the same reason, so
 an administrator merges it past the required check, deliberately; the pull
 request that needed the code then passes.
 
+## Migrating a repository from `v3` to `v4`
+
+`v4` brings the accepted-issue gate: from the moment a repository points at
+`v4`, every pull request that is not a bot's must close an accepted issue.
+
+1. Create the `accepted` label.
+2. Grant `issues: read` to the `conventions` job in `pull-request.yml` (or
+   `pull-request-wp.yml`) and `pull-request-edited.yml`; without it the
+   workflow fails to start.
+3. Point every `uses:` and `central-ref:` at `@v4` (the release workflow at
+   its commit).
+4. Before the first pull request on `v4`, open its issue and accept it. A
+   pull request already open needs one too: write `Closes #<number>` in its
+   description.
+
 ## Reusable workflows
 
-Call them pinned to `@v3`; a breaking change ships as the next major (`v4`), and the previous one stays where it is. A stack suffix
+Call them pinned to `@v4`; a breaking change ships as the next major (`v5`), and the previous one stays where it is. A stack suffix
 (`-wp`) appears only when the steps are specific to that stack. A workflow
 with a `central-ref` input reads the scripts, profiles and policy at that
-ref (default `v3`), not at the ref of its `uses:` line: a caller that pins
+ref (default `v4`), not at the ref of its `uses:` line: a caller that pins
 `uses:` to a version passes the same version as `central-ref`.
 
 | Workflow | Does | Inputs |
@@ -278,13 +311,13 @@ workflow of a repository from its Actions tab.
 
 ## Changing this repository
 
-Every place the bot's token is minted asks only for what that job does: the review, the replies and the triage get `contents: read` while the model runs; `contents: write` is minted only by the merge, the reproduction push, the weekly learnings, and the step that resolves review threads after the model has finished (resolving a thread is a write on the repository), which nothing that read the pull request's text ever holds. Tags are not creatable by `dilux-bot` at all: the ruleset an adopting repository sets at step 3 allows `X.Y.Z` tag creation to administrators and the release App only, and this repository's `v*` tags (the moving `v3`, the frozen `v2` and `v1`) can be created, moved or deleted only by administrators (ruleset `moving tags`: creation, update, deletion). The wordpress.org credentials live in the repository environment `wordpress-org`, whose deployment policy admits only `X.Y.Z` tags and `main`, so no pull request or branch job can read them; the check `svn-auth-check.yml` runs inside that environment.
+Every place the bot's token is minted asks only for what that job does: the review, the replies and the triage get `contents: read` while the model runs; `contents: write` is minted only by the merge, the reproduction push, the weekly learnings, and the step that resolves review threads after the model has finished (resolving a thread is a write on the repository), which nothing that read the pull request's text ever holds. Tags are not creatable by `dilux-bot` at all: the ruleset an adopting repository sets at step 3 allows `X.Y.Z` tag creation to administrators and the release App only, and this repository's `v*` tags (the moving `v4`, the frozen `v3`, `v2` and `v1`) can be created, moved or deleted only by administrators (ruleset `moving tags`: creation, update, deletion). The wordpress.org credentials live in the repository environment `wordpress-org`, whose deployment policy admits only `X.Y.Z` tags and `main`, so no pull request or branch job can read them; the check `svn-auth-check.yml` runs inside that environment.
 
 Everything here is high risk: a human merges every change. After merging, move
-`v3` (or cut `v4` for a breaking change: `scripts/next-version.py --tag-prefix v`
-says which) and tag the exact version. Moving `v3` also ships the review
-profiles, the packs and the default policy, which every repository on `v3`
+`v4` (or cut `v5` for a breaking change: `scripts/next-version.py --tag-prefix v`
+says which) and tag the exact version. Moving `v4` also ships the review
+profiles, the packs and the default policy, which every repository on `v4`
 reads from that tag. A run that already exists keeps the workflow it was
-created with: re-running a failed job after `v3` moved re-runs the old
+created with: re-running a failed job after `v4` moved re-runs the old
 workflow. Reopen the pull request, or push to it, for a run on the new one.
-`v2` and `v1` stay where they are.
+`v3`, `v2` and `v1` stay where they are.

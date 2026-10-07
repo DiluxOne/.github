@@ -9,6 +9,20 @@ trusted-authors:
   - soydiloreto
   - dependabot[bot]
 
+# Every pull request starts from an issue a maintainer accepted: its
+# description closes it ("Closes #12", or linked under Development), the issue
+# is in the same repository, open, and carries this label, added by a person
+# (anyone who can label: triage, write, maintain or admin), never by a bot.
+# Features and fixes alike, maintainers included; only bots (Dependabot, the
+# release pull requests) are exempt. It is how a feature that is planned, or
+# that belongs to a paid add-on, is stopped before anyone writes it: the
+# maintainer does not accept the issue. A repository can turn the gate off
+# only when this file says it may (`optional: true`).
+issue-gate:
+  required: true
+  label: accepted
+  optional: false
+
 # A changed file matching any of these makes the pull request high risk.
 # Anything that changes how code is built, checked, released or reviewed,
 # or what an agent is told to do, is here.
