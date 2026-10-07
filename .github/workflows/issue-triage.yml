@@ -7,12 +7,12 @@ name: Issue triage
 # the policy (the low-risk reviewer) does this work.
 #
 #   bug:unconfirmed       a bug report with enough to try to reproduce it
-#                         (issue-repro.yml picks it up from this label)
+#                         (a maintainer starts issue-repro.yml with repro:run)
 #   needs-info            a bug report missing versions, steps or logs: the
 #                         reply asks for them. A report with steps made on an
 #                         older version (an older release, or a development
 #                         build older than the current pre-release) is still
-#                         bug:unconfirmed: the reproduction runs on the
+#                         bug:unconfirmed: a reproduction runs on the
 #                         current code and its reply says whether it is still
 #                         there, instead of asking the reporter to update
 #   by-design             works as documented, or a known limitation
@@ -236,9 +236,9 @@ jobs:
             - bug_unconfirmed: a defect report with steps, versions and what was expected,
               whatever version it names. A report made on an older release, or on a development
               build (X.Y.Z-dev.N) older than the current one (see "Current versions"), still goes
-              here: the reproduction runs on the current code and settles whether the bug is
-              still there. In that case say in the reply which version is current and that the
-              attempt runs on it; never ask to update instead of reproducing.
+              here: a maintainer can have it reproduced on the current code, which settles whether
+              the bug is still there. In that case say in the reply which version is current and
+              that a maintainer will look at it there; never ask to update instead.
             - needs_info: a defect report missing what a maintainer needs to try it (say what).
               When the version it names is not current, name the current one too.
             - by_design: works as documented, or a known limitation from the roadmap.
@@ -294,7 +294,7 @@ jobs:
             gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label needs-triage >/dev/null 2>&1 || true
             exit 0
           fi
-          for l in "bug:unconfirmed|D93F0B|A bug report the reproduction job will try" "needs-info|E4E669|Waiting for versions, steps or logs" "by-design|BFDADC|Works as documented, or a known limitation" "pro-feature|5319E7|Needs the paid service or add-on" "planned|0E8A16|Already planned" "exists-in-pro|5319E7|A paid product already has it" "question|D876E3|A usage question; the support channel has it" "security|B60205|A vulnerability; report it privately" "enhancement|A2EEEF|New feature or request" "duplicate|CFD3D7|An open issue already covers it" "needs-triage|E4E669|Not looked at yet"; do
+          for l in "bug:unconfirmed|D93F0B|A bug report worth a reproduction attempt (repro:run starts one)" "needs-info|E4E669|Waiting for versions, steps or logs" "by-design|BFDADC|Works as documented, or a known limitation" "pro-feature|5319E7|Needs the paid service or add-on" "planned|0E8A16|Already planned" "exists-in-pro|5319E7|A paid product already has it" "question|D876E3|A usage question; the support channel has it" "security|B60205|A vulnerability; report it privately" "enhancement|A2EEEF|New feature or request" "duplicate|CFD3D7|An open issue already covers it" "needs-triage|E4E669|Not looked at yet"; do
             IFS='|' read -r name color desc <<<"$l"
             gh label create "$name" --repo "$GITHUB_REPOSITORY" --color "$color" --description "$desc" --force >/dev/null
           done
