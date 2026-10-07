@@ -265,6 +265,9 @@ request that needed the code then passes.
 4. Before the first pull request on `v4`, open its issue and accept it. A
    pull request already open needs one too: write `Closes #<number>` in its
    description.
+5. Reproductions change trigger: the triage's `bug:unconfirmed` no longer
+   starts one; someone with write access adds `repro:run` (created on the
+   first report; create it by hand to use it before) or `repro:again`.
 
 ## Reusable workflows
 

@@ -338,10 +338,19 @@ jobs:
           fi
           tail -25 "$RUNNER_TEMP/phpunit.txt"
           tail -25 "$RUNNER_TEMP/phpunit.txt" > "$RUNNER_TEMP/handover/phpunit-tail.txt"
+          # Only PHPUnit's own verdicts count: exit 1 with a failure and no
+          # error is the bug; exit 0 with "OK" is a pass. An error (a wrong
+          # class, a missing stub), a timeout (124), a kill (137, memory), a
+          # PHP fatal (255) or anything else proves nothing about the bug.
           if grep -qE '^(Errors|ERRORS)|There w(as|ere) [0-9]+ errors?' "$RUNNER_TEMP/phpunit.txt"; then
-            # An error (a wrong class, a missing stub) proves nothing about the bug.
             echo "outcome=broken" >> "$GITHUB_OUTPUT"
-          elif [ "$rc" -ne 0 ]; then echo "outcome=reproduced" >> "$GITHUB_OUTPUT"; else echo "outcome=passed" >> "$GITHUB_OUTPUT"; fi
+          elif [ "$rc" -eq 1 ] && grep -qE '^FAILURES!' "$RUNNER_TEMP/phpunit.txt"; then
+            echo "outcome=reproduced" >> "$GITHUB_OUTPUT"
+          elif [ "$rc" -eq 0 ] && grep -qE '^OK \(' "$RUNNER_TEMP/phpunit.txt"; then
+            echo "outcome=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::PHPUnit gave no verdict (exit $rc)."; echo "outcome=broken" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
@@ -476,6 +485,6 @@ jobs:
             g commit -q -m "test(repro): attempt for #$NUMBER" -m "Written by the reproduction job from the report in #$NUMBER; it passes on main, so the report could not be reproduced this way." -m "🤖 AI-generated · $MODEL (Anthropic)"
             g push -q -f -u origin "$branch"
             gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label could-not-reproduce >/dev/null
-            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'I could not reproduce this. I wrote a unit test from the report (%s, on the branch %s) and it passes on %s: %s%s\n\nWhat would help: %s\n\nIf you add that, put the %s label (or a maintainer will) and I try again.\n\n%s' "$code_test" "${BT}${branch}${BT}" "$code_main" "$SUMMARY" "$since" "$needs" "$code_again" "$sign")" >/dev/null
+            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'I could not reproduce this. I wrote a unit test from the report (%s, on the branch %s) and it passes on %s: %s%s\n\nWhat would help: %s\n\nIf you add that here, a maintainer can ask for another attempt (the %s label).\n\n%s' "$code_test" "${BT}${branch}${BT}" "$code_main" "$SUMMARY" "$since" "$needs" "$code_again" "$sign")" >/dev/null
             echo "Not reproduced."
           fi
