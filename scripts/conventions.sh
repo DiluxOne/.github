@@ -14,11 +14,12 @@
 # optional), AUTHOR_TYPE (Bot skips the sections), MAX_LINES (the most lines
 # the branch may change, lock files and translations aside; empty for no
 # limit: CI sets it for authors who are not trusted; composer.lock,
-# package-lock.json and anything under a languages/ directory do not count).
+# package-lock.json and the .po, .pot and .mo files of a languages/ directory
+# do not count).
 # Run from the repository.
 #
-# A pull request titled docs may change only documentation: Markdown, docs/,
-# readme.txt, licence files and the issue and pull request templates. That is
+# A pull request titled docs may change only documentation: Markdown, the
+# images under docs/, readme.txt, licence files and the issue templates. That is
 # where a code change would hide behind the lightest review.
 #
 #   conventions.sh          check (exit 1 on any broken rule)
@@ -88,7 +89,7 @@ check() {
   if [[ "$TITLE" =~ $DOCS_RE ]]; then
     while IFS= read -r f; do
       case "$f" in
-        ''|*.md|docs/*|readme.txt|LICENSE|LICENSE.*|COPYING|.github/ISSUE_TEMPLATE/*) ;;
+        ''|*.md|docs/*.png|docs/*.jpg|docs/*.jpeg|docs/*.gif|docs/*.webp|readme.txt|LICENSE|LICENSE.*|COPYING|.github/ISSUE_TEMPLATE/*) ;;
         *) error "The title says docs, but $f is not documentation: give the title the type of the change it carries." ;;
       esac
     # --no-renames: a code file renamed into a .md shows as the code file
@@ -97,7 +98,7 @@ check() {
   fi
   # A size an author who is not trusted may change at once.
   if [[ "$MAX_LINES" =~ ^[0-9]+$ ]] && [ "$MAX_LINES" -gt 0 ]; then
-    changed=$(git diff --numstat "${BASE}...${HEAD_REF}" | awk -F'\t' '$3 !~ /(^|\/)(composer\.lock|package-lock\.json)$/ && $3 !~ /(^|\/)languages\// && $1 != "-" { n += $1 + $2 } END { print n + 0 }')
+    changed=$(git diff --numstat "${BASE}...${HEAD_REF}" | awk -F'\t' '$3 !~ /(^|\/)(composer\.lock|package-lock\.json)$/ && $3 !~ /(^|\/)languages\/[^\/]+\.(po|pot|mo)$/ && $1 != "-" { n += $1 + $2 } END { print n + 0 }')
     if [ "$changed" -gt "$MAX_LINES" ]; then
       error "This pull request changes $changed lines; one from an author outside the maintainers may change at most $MAX_LINES. Split it into smaller pull requests, each closing its accepted issue, or ask a maintainer to take it over."
     fi
@@ -199,6 +200,9 @@ if [ "${1:-}" = "--test" ]; then
     BRANCH=docs/x TITLE="docs: notes" BODY=$good BASE=$(git rev-parse HEAD~1) HEAD_REF=$(git rev-parse HEAD) check >/dev/null 2>&1
   ); then echo "FAIL fails: docs that rename code into Markdown (want 1, got 0)"; fail=1; else echo "ok   fails: docs that rename code into Markdown"; fi
   rm -rf "$dir"
+  test_case "passes: translations at any depth do not count" 0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "" "" "includes/a.php:50,includes/languages/x.po:500" 100 || fail=1
+  test_case "fails: code under languages/ counts"  1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "" "" "languages/loader.php:500" 100 || fail=1
+  test_case "fails: a script under docs/ is not docs" 1 docs/guide "docs(guide): a thing" "docs(guide): a thing" "$good" "" "" "docs/build.sh:3" || fail=1
   test_case "passes: no limit for a trusted author" 0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "" "" "includes/a.php:5000" "" || fail=1
   [ "$fail" -eq 0 ] && echo "all tests passed"
   exit "$fail"

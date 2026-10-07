@@ -24,7 +24,8 @@ issue-gate:
   optional: false
 
 # The most lines a pull request from an author who is not trusted may change
-# (added plus removed; composer.lock, package-lock.json and languages/ aside). A change that big
+# (added plus removed; composer.lock, package-lock.json and the .po, .pot and
+# .mo files under languages/ aside). A change that big
 # is split into smaller ones, or a maintainer takes it over: a large diff is
 # where a feature hides inside a fix, and where a review costs the most.
 # A repository can lower it, never raise it; 0 is no limit, and only this

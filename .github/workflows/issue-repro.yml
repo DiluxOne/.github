@@ -120,7 +120,10 @@ jobs:
           set -euo pipefail
           # The repository's own answer, now, not the event's: a label from
           # a triager or a read-only collaborator starts nothing.
-          role=$(GH_TOKEN=$BOT_TOKEN gh api "repos/$GITHUB_REPOSITORY/collaborators/$LOGIN/permission" --jq .role_name 2>/dev/null || echo none)
+          if ! role=$(GH_TOKEN=$BOT_TOKEN gh api "repos/$GITHUB_REPOSITORY/collaborators/$LOGIN/permission" --jq .role_name 2>"$RUNNER_TEMP/role.err"); then
+            echo "::warning::Could not check $LOGIN's permission ($(head -c 200 "$RUNNER_TEMP/role.err")); no reproduction runs. Add the label again to retry."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
           case "$role" in
             admin|maintain|write) echo "$LOGIN asked for a reproduction ($role)." ;;
             *) echo "::notice::$LOGIN has $role permission on this repository; only people who can write to it start a reproduction."; echo "run=false" >> "$GITHUB_OUTPUT"; exit 0 ;;

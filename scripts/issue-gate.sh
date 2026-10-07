@@ -28,6 +28,7 @@ QUERY='query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       closingIssuesReferences(first: 10) {
+        totalCount
         nodes {
           number
           state
@@ -86,7 +87,12 @@ check() {
     echo "::error::Could not read the issues this pull request closes ($(jq -c '.errors' "$answer" | head -c 300)). The caller's conventions job needs issues: read and pull-requests: read."
     return 1
   fi
-  local lines ok=0 n v
+  local lines ok=0 n v total
+  total=$(jq -r '.data.repository.pullRequest.closingIssuesReferences.totalCount // 0' "$answer")
+  if [ "$total" -gt 10 ]; then
+    echo "::error::This pull request closes $total issues; the gate reads at most 10. Split it, one pull request per accepted issue or a few."
+    return 1
+  fi
   lines=$(verdicts "$answer")
   while read -r n v; do
     [ -z "$n" ] && continue
@@ -138,6 +144,7 @@ if [ "${1:-}" = "--test" ]; then
   { issue 3 "$repo" OPEN bug ""; issue 12 "$repo" OPEN accepted LabeledEvent:accepted:User; } | answer | case_ "passes: one accepted among several" 0 || fail=1
   issue 12 "$repo" OPEN accepted LabeledEvent:approved:User,LabeledEvent:accepted:Bot | answer | case_ "fails: a person's event for another label does not count" 1 || fail=1
   echo '{"errors":[{"message":"Resource not accessible by integration"}]}' | case_ "fails: an answer that is an error" 1 || fail=1
+  echo '{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"totalCount":11,"nodes":[]}}}}}' | case_ "fails: more closing issues than it reads" 1 || fail=1
   echo '{}' | WHO=Bot case_ "passes: a bot's pull request" 0 || fail=1
   echo '{}' | REQ=false case_ "passes: the gate is off" 0 || fail=1
   [ "$fail" -eq 0 ] && echo "all tests passed"
