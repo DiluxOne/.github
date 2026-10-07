@@ -46,9 +46,12 @@ act() {
   if [ "$category" = duplicate ] && [[ "$dup" =~ ^[1-9][0-9]{0,5}$ ]] && [ "$dup" != "$NUMBER" ] \
      && [ "$(gh issue view "$dup" --repo "$GITHUB_REPOSITORY" --json state --jq .state 2>/dev/null)" = OPEN ]; then
     reply="$reply"$'\n\n'"Duplicate of #$dup."
+  else
+    dup=""
   fi
   if [ "$category" = security ]; then reply="$reply"$'\n\n'"@$MAINTAINER"; fi
-  record=$(jq -c --arg cost "${COST:-}" --arg summary "${SUMMARY:-}" '{category, exists_in_pro: (.exists_in_pro // false), duplicate_of: (.duplicate_of // null), summary: $summary, cost: $cost}' <<<"$VERDICT")
+  # The record is public too: only the checked duplicate goes in it.
+  record=$(jq -c --arg cost "${COST:-}" --arg summary "${SUMMARY:-}" --arg dup "$dup" '{category, exists_in_pro: (.exists_in_pro == true), duplicate_of: (if $dup == "" then null else ($dup | tonumber) end), summary: $summary, cost: $cost}' <<<"$VERDICT")
   gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '%s\n\n<sub>🤖 AI triage · %s (Anthropic)</sub>\n<!-- dx-triage-record %s -->' "$reply" "$MODEL" "$record")" >/dev/null
   if [ "$category" = security ]; then gh issue lock "$NUMBER" --repo "$GITHUB_REPOSITORY" --reason off-topic >/dev/null; fi
   echo "Issue #$NUMBER: $category ($label)${COST:+, \$$COST}."
@@ -72,6 +75,9 @@ if [ "${1:-}" = "--test" ]; then
   VERDICT='{"category":"duplicate","duplicate_of":3}' REPLY=x SUMMARY=s t "a duplicate names the original" "Duplicate of #3"
   VERDICT='{"category":"duplicate","duplicate_of":4}' REPLY=x SUMMARY=s t "a closed original is not named" "issue comment 7 --repo o/r --body x  <sub>"
   VERDICT='{"category":"duplicate","duplicate_of":31337}' REPLY=x SUMMARY=s t "a number that is no open issue names nothing" "issue comment 7 --repo o/r --body x  <sub>"
+  VERDICT='{"category":"duplicate","duplicate_of":31337}' REPLY=x SUMMARY=s t "nor does the record carry it" '"duplicate_of":null'
+  VERDICT='{"category":"needs_info","duplicate_of":3}' REPLY=x SUMMARY=s t "a number outside a duplicate is not recorded" '"duplicate_of":null'
+  VERDICT='{"category":"duplicate","duplicate_of":3}' REPLY=x SUMMARY=s t "a real duplicate is recorded" '"duplicate_of":3'
   VERDICT='{"category":"security"}' REPLY=x SUMMARY=s t "a security report is locked" "issue lock 7"
   VERDICT='' REPLY=x SUMMARY=s t "no verdict waits for a person" "--add-label needs-triage"
   VERDICT='{"category":"nonsense"}' REPLY=x SUMMARY=s t "an unknown category waits for a person" "--add-label needs-triage"
