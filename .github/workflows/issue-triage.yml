@@ -245,6 +245,11 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ github.token }}
+          # Never in the step summary or the log: this run may have read the
+          # paid add-on's roadmap. Both are the action's defaults; set here so
+          # a new version cannot change them under us.
+          display_report: "false"
+          show_full_output: "false"
           prompt: |
             You triage issues for ${{ github.repository }}. Read ${{ steps.brief.outputs.file }}, whole: the
             issue, the other open issues, the roadmap (what is free, paid, planned, not planned,
@@ -306,7 +311,9 @@ jobs:
           EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
         run: |
           set -euo pipefail
-          verdict=$(jq -c 'select(.category | type == "string") | {category, exists_in_pro: (.exists_in_pro // false), duplicate_of: (.duplicate_of // null)}' <<<"${OUT:-null}" 2>/dev/null || true)
+          # Only values from the schema's enums, a boolean and a small issue
+          # number leave this job; anything else is dropped.
+          verdict=$(jq -c 'select(.category | IN("bug_unconfirmed","needs_info","by_design","pro_feature","planned","enhancement","question","duplicate","security")) | {category, exists_in_pro: (.exists_in_pro == true), duplicate_of: (if (.duplicate_of | type) == "number" and .duplicate_of > 0 and .duplicate_of < 1000000 then (.duplicate_of | floor) else null end)}' <<<"${OUT:-null}" 2>/dev/null || true)
           language=$(jq -r '.language // "en"' <<<"${OUT:-null}" 2>/dev/null || echo en)
           case "$language" in en|es|pt|other) ;; *) language=en ;; esac
           cost=""; if [ -n "$EXECUTION_FILE" ] && [ -f "$EXECUTION_FILE" ]; then cost=$(jq -r '[.[] | select(.type == "result")] | last | .total_cost_usd // empty' "$EXECUTION_FILE" 2>/dev/null || true); fi

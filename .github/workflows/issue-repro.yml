@@ -29,6 +29,9 @@ name: Issue reproduction
 #           environment and the checkout read-only, so the test can reach
 #           neither the runner's own tokens nor anything outside. Whatever
 #           it does dies with the container; its output is untrusted text.
+#           The container is the stock php:<version>-cli image: a test that
+#           needs an extension it lacks (mysqli, gd, intl, zip) reports
+#           broken, not a verdict on the bug.
 #   report  a fresh runner with the bot token pushes the test file as the
 #           write job produced it, opens the draft pull request, labels and
 #           comments. It never executes repository code (hooks off).
@@ -327,6 +330,12 @@ jobs:
             timeout 600 php vendor/bin/phpunit --no-coverage --do-not-cache-result "$test" > "$RUNNER_TEMP/phpunit.txt" 2>&1
           rc=$?
           set -e
+          # 125 to 127: docker could not run the test at all, which says
+          # nothing about the bug.
+          if [ "$rc" -ge 125 ] && [ "$rc" -le 127 ]; then
+            echo "::warning::The container did not run the test (exit $rc)."; tail -5 "$RUNNER_TEMP/phpunit.txt" || true
+            echo "outcome=broken" >> "$GITHUB_OUTPUT"; exit 0
+          fi
           tail -25 "$RUNNER_TEMP/phpunit.txt"
           tail -25 "$RUNNER_TEMP/phpunit.txt" > "$RUNNER_TEMP/handover/phpunit-tail.txt"
           if grep -qE '^(Errors|ERRORS)|There w(as|ere) [0-9]+ errors?' "$RUNNER_TEMP/phpunit.txt"; then
