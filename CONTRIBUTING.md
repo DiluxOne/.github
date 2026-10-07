@@ -10,7 +10,7 @@ Thanks for helping. This is the default guide for every DiluxOne repository; a r
 
 ## Start from an issue
 
-Every change starts as an issue: features, fixes and docs alike, maintainers included. Open one with the repository's template (or find the one that already describes it) and wait until a maintainer accepts it, which they do by adding the `accepted` label. Then write the code, and say `Closes #<number>` in the pull request's description. CI fails a pull request that closes no accepted issue; bots' own pull requests (Dependabot, releases) are exempt.
+Every change starts as an issue: features, fixes and docs alike, maintainers included. Open one with the repository's template (or find the one that already describes it) and wait until a maintainer accepts it, which they do by adding the `accepted` label. The template sets the issue's type (`type:fix` for a bug, `type:feat` for a feature, `type:docs`, `type:chore` for maintenance), and the pull request's type must fit it: a `feat` closes a `type:feat` issue, a `fix` a `type:fix` one. Then write the code, and say `Closes #<number>` in the pull request's description. CI fails a pull request that closes no accepted issue; bots' own pull requests (Dependabot, releases) are exempt.
 
 Why: it is the cheapest moment to agree on what to build. A feature that is already planned, that belongs to a paid add-on, or that the project will not do is answered on the issue, before anyone spends time on code. An issue that is not accepted is not a "no" to the person, only to the change as proposed; the reply says why when it can.
 

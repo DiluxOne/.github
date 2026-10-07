@@ -7,6 +7,13 @@
 # untrusted issue text) can accept an issue. Only people with triage access or
 # more can label an issue, so the label is a maintainer's decision.
 #
+# The issue's type must fit the pull request's: a feat or breaking pull
+# request closes an issue labelled type:feat (or type:breaking), a fix one an
+# issue labelled type:fix. The issue forms set that label; a maintainer
+# corrects it when accepting. Any other type (docs, refactor, test, ci,
+# build, chore, perf, style, revert) may close any accepted issue. So an
+# accepted bug report cannot carry a feature in.
+#
 # Bots (Dependabot, release pull requests) are exempt. With REQUIRED other
 # than true, the gate is off and says so.
 #
@@ -14,7 +21,8 @@
 # One into another branch links its issue by hand, under Development in the
 # pull request's sidebar; the gate reads both.
 #
-# Environment: REQUIRED (true|false), LABEL, AUTHOR_TYPE (User|Bot),
+# Environment: REQUIRED (true|false), LABEL, TITLE (the pull request's
+# Conventional Commit title), AUTHOR_TYPE (User|Bot),
 # GITHUB_REPOSITORY (owner/name), PR (the pull request's number), GH_TOKEN
 # (issues: read and pull-requests: read). ISSUE_GATE_JSON, a file holding the
 # GraphQL answer, replaces the call (the self-test uses it).
@@ -48,10 +56,10 @@ QUERY='query($owner: String!, $name: String!, $number: Int!) {
 }'
 
 # The issues the pull request closes, one line each: "<number> <verdict>",
-# verdict one of ok, other-repo, closed, no-label, bot-label.
+# verdict one of ok, other-repo, closed, no-label, bot-label, wrong-type.
 verdicts() {
   # shellcheck disable=SC2016 # jq variables, not shell ones.
-  jq -r --arg repo "$GITHUB_REPOSITORY" --arg label "$LABEL" '
+  jq -r --arg repo "$GITHUB_REPOSITORY" --arg label "$LABEL" --argjson need "$(needed_types)" '
     (.data.repository.pullRequest.closingIssuesReferences.nodes // [])[]
     | . as $i
     | ([.timelineItems.nodes[]? | select(.label.name == $label)] | last) as $last
@@ -60,7 +68,22 @@ verdicts() {
         elif .state != "OPEN" then "closed"
         elif ([.labels.nodes[]?.name] | index($label)) == null then "no-label"
         elif $last == null or $last.__typename != "LabeledEvent" or $last.actor.__typename != "User" then "bot-label"
+        elif ($need | length) > 0 and ([.labels.nodes[]?.name] - ($need | map("type:" + .)) | length) == ([.labels.nodes[]?.name] | length) then "wrong-type"
         else "ok" end)' "$1"
+}
+
+# The issue types the pull request's title needs, as a JSON array: ["feat",
+# "breaking"] for a feature or a breaking change, ["fix"] for a fix, [] for
+# anything else.
+needed_types() {
+  local re='^([a-z]+)(\([^)]*\))?(!?): '
+  if [[ "${TITLE:-}" =~ $re ]]; then
+    if [ "${BASH_REMATCH[3]}" = '!' ] || [ "${BASH_REMATCH[1]}" = feat ]; then echo '["feat","breaking"]'
+    elif [ "${BASH_REMATCH[1]}" = fix ]; then echo '["fix"]'
+    else echo '[]'; fi
+  else
+    echo '[]'
+  fi
 }
 
 check() {
@@ -102,6 +125,7 @@ check() {
       closed) echo "#$n is closed; the issue must be open." ;;
       no-label) echo "#$n has no \"$LABEL\" label yet: a maintainer has not accepted it." ;;
       bot-label) echo "#$n got its \"$LABEL\" label from a bot; only a person accepts an issue." ;;
+      wrong-type) echo "#$n is not labelled $(needed_types | jq -r 'map("type:" + .) | join(" or ")'), the type this pull request's title says; a $(needed_types | jq -r '.[0]') needs an issue of its own kind (or a maintainer relabels the issue)." ;;
     esac
   done <<< "$lines"
   if [ "$ok" -eq 1 ]; then
@@ -128,7 +152,7 @@ if [ "${1:-}" = "--test" ]; then
   case_() {
     local name=$1 want=$2 file got
     file=$(mktemp); cat > "$file"
-    ( REQUIRED=${REQ:-true} LABEL=accepted AUTHOR_TYPE=${WHO:-User} GITHUB_REPOSITORY=$repo PR=1 ISSUE_GATE_JSON=$file check >/dev/null 2>&1 ) && got=0 || got=1
+    ( REQUIRED=${REQ:-true} LABEL=accepted TITLE=${T:-"docs: a thing"} AUTHOR_TYPE=${WHO:-User} GITHUB_REPOSITORY=$repo PR=1 ISSUE_GATE_JSON=$file check >/dev/null 2>&1 ) && got=0 || got=1
     rm -f "$file"
     if [ "$got" = "$want" ]; then echo "ok   $name"; else echo "FAIL $name (want $want, got $got)"; return 1; fi
   }
@@ -145,6 +169,15 @@ if [ "${1:-}" = "--test" ]; then
   issue 12 "$repo" OPEN accepted LabeledEvent:approved:User,LabeledEvent:accepted:Bot | answer | case_ "fails: a person's event for another label does not count" 1 || fail=1
   echo '{"errors":[{"message":"Resource not accessible by integration"}]}' | case_ "fails: an answer that is an error" 1 || fail=1
   echo '{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"totalCount":11,"nodes":[]}}}}}' | case_ "fails: more closing issues than it reads" 1 || fail=1
+  issue 12 "$repo" OPEN accepted,type:feat LabeledEvent:accepted:User | answer | T="feat(x): a thing" case_ "passes: a feature closing a feature issue" 0 || fail=1
+  issue 12 "$repo" OPEN accepted,type:fix LabeledEvent:accepted:User | answer | T="feat(x): a thing" case_ "fails: a feature closing a bug report" 1 || fail=1
+  issue 12 "$repo" OPEN accepted LabeledEvent:accepted:User | answer | T="feat: a thing" case_ "fails: a feature closing an issue with no type" 1 || fail=1
+  issue 12 "$repo" OPEN accepted,type:fix LabeledEvent:accepted:User | answer | T="fix!: a thing" case_ "fails: a breaking fix needs a feature or breaking issue" 1 || fail=1
+  issue 12 "$repo" OPEN accepted,type:breaking LabeledEvent:accepted:User | answer | T="refactor!: a thing" case_ "passes: a breaking change closing a breaking issue" 0 || fail=1
+  issue 12 "$repo" OPEN accepted,type:fix LabeledEvent:accepted:User | answer | T="fix(x): a thing" case_ "passes: a fix closing a bug report" 0 || fail=1
+  issue 12 "$repo" OPEN accepted,type:feat LabeledEvent:accepted:User | answer | T="fix(x): a thing" case_ "fails: a fix closing a feature issue" 1 || fail=1
+  issue 12 "$repo" OPEN accepted,type:fix LabeledEvent:accepted:User | answer | T="test(x): a thing" case_ "passes: tests may close any accepted issue" 0 || fail=1
+  { issue 3 "$repo" OPEN accepted,type:fix LabeledEvent:accepted:User; issue 12 "$repo" OPEN accepted,type:feat LabeledEvent:accepted:User; } | answer | T="feat: a thing" case_ "passes: one fitting issue among several" 0 || fail=1
   echo '{}' | WHO=Bot case_ "passes: a bot's pull request" 0 || fail=1
   echo '{}' | REQ=false case_ "passes: the gate is off" 0 || fail=1
   [ "$fail" -eq 0 ] && echo "all tests passed"

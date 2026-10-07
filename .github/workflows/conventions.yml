@@ -127,6 +127,7 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           REQUIRED: ${{ steps.gate.outputs.required }}
           LABEL: ${{ steps.gate.outputs.label }}
+          TITLE: ${{ github.event.pull_request.title }}
           AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
         run: bash .dx-central/scripts/issue-gate.sh
 
