@@ -34,9 +34,9 @@ name: Issue triage
 # names it in its policy (`paid-roadmap:` in .github/review-policy.yml). The
 # triage then reads it, with a token for that repository alone, to tell a
 # request that belongs to the add-on or is already planned, and replies
-# neutrally: the reply never quotes, links or paraphrases it, and
-# scripts/confidential.py refuses a reply or summary that repeats a run of
-# its words, posting a plain one instead.
+# neutrally: a paid or planned request gets fixed text (in English, Spanish
+# or Portuguese), never the model's, and scripts/confidential.py refuses any
+# other reply or summary that repeats a run of its words.
 #
 # At most `max-per-day` issues are classified in 24 hours; past that, an
 # issue gets needs-triage and waits for a person, so a flood of issues
@@ -160,6 +160,9 @@ jobs:
       # to fetch its roadmap into the brief; the model never holds it.
       - name: dilux-bot token for the paid add-on's roadmap
         id: paid
+        # The App not installed on the add-on's repository costs the triage
+        # that roadmap, never the triage itself.
+        continue-on-error: true
         if: steps.cap.outputs.over != 'true' && steps.policy.outputs.paid_name != '' && steps.policy.outputs.paid_owner == github.repository_owner
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
@@ -259,7 +262,8 @@ jobs:
             and pro_feature quote or link the line of the public roadmap or the docs. For question point
             at the support channel. For security ask the author to report it privately (the
             repository's Security tab, "Report a vulnerability") and to remove details from here.
-            Do not sign the reply: the workflow adds the AI line.
+            Do not sign the reply: the workflow adds the AI line. Say in `language` which language
+            the issue is written in (en, es, pt, or other).
 
             When the brief has a CONFIDENTIAL section, it is for you alone. Your reply and summary
             are public: never quote it, link it, name it or paraphrase it, and never say what the
@@ -276,7 +280,7 @@ jobs:
             --max-turns 12
             --max-budget-usd 0.5
             --allowedTools "Read,Glob,Grep"
-            --json-schema '{"type":"object","additionalProperties":false,"required":["category","reply","summary"],"properties":{"category":{"type":"string","enum":["bug_unconfirmed","needs_info","by_design","pro_feature","planned","enhancement","question","duplicate","security"]},"exists_in_pro":{"type":"boolean"},"duplicate_of":{"type":"integer"},"missing":{"type":"array","items":{"type":"string","maxLength":120}},"reply":{"type":"string","maxLength":2500},"summary":{"type":"string","maxLength":300}}}'
+            --json-schema '{"type":"object","additionalProperties":false,"required":["category","reply","summary","language"],"properties":{"language":{"type":"string","enum":["en","es","pt","other"]},"category":{"type":"string","enum":["bug_unconfirmed","needs_info","by_design","pro_feature","planned","enhancement","question","duplicate","security"]},"exists_in_pro":{"type":"boolean"},"duplicate_of":{"type":"integer"},"missing":{"type":"array","items":{"type":"string","maxLength":120}},"reply":{"type":"string","maxLength":2500},"summary":{"type":"string","maxLength":300}}}'
 
       - name: Act (label, reply, lock)
         if: steps.cap.outputs.over != 'true'
@@ -313,18 +317,34 @@ jobs:
           gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "$label" --remove-label needs-triage >/dev/null 2>&1 || gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "$label" >/dev/null
           reply=$(jq -r .reply <<<"$OUT")
           summary=$(jq -r .summary <<<"$OUT")
-          # The paid add-on's roadmap stays private whatever the model wrote:
-          # a reply or summary that repeats it is replaced by a plain one.
+          # The paid add-on's roadmap stays private whatever the model wrote.
+          # When it was read, the two answers that come from it are fixed
+          # text, never the model's (a translated or reworded line of the
+          # roadmap would pass any filter), and any other reply or summary
+          # that repeats a run of its words is replaced by a plain one.
           if [ -s .dx-central/paid-roadmap.md ]; then
-            printf '%s\n%s\n' "$reply" "$summary" > "$RUNNER_TEMP/public.txt"
-            if ! python3 .dx-central/scripts/confidential.py .dx-central/paid-roadmap.md "$RUNNER_TEMP/public.txt"; then
-              case $category in
-                pro_feature) reply="Thanks for the suggestion. This is not planned for the free plugin.";;
-                planned) reply="Thanks for the suggestion. This is already planned.";;
-                *) reply="Thanks for the report. A maintainer will take a look.";;
+            lang=$(jq -r '.language // "en"' <<<"$OUT")
+            neutral() {
+              case "$1:$lang" in
+                pro_feature:es) echo "¡Gracias por la sugerencia! Esto no está planeado para el plugin gratuito.";;
+                pro_feature:pt) echo "Obrigado pela sugestão! Isso não está planejado para o plugin gratuito.";;
+                pro_feature:*) echo "Thanks for the suggestion! This is not planned for the free plugin.";;
+                planned:es) echo "¡Gracias por la sugerencia! Esto ya está planificado.";;
+                planned:pt) echo "Obrigado pela sugestão! Isso já está planejado.";;
+                planned:*) echo "Thanks for the suggestion! This is already planned.";;
+                *:es) echo "¡Gracias! Un maintainer lo va a revisar.";;
+                *:pt) echo "Obrigado! Um maintainer vai dar uma olhada.";;
+                *) echo "Thanks! A maintainer will take a look.";;
               esac
-              summary=$category
-            fi
+            }
+            case $category in
+              pro_feature|planned) reply=$(neutral "$category"); summary=$category;;
+              *)
+                printf '%s\n%s\n' "$reply" "$summary" > "$RUNNER_TEMP/public.txt"
+                if ! python3 .dx-central/scripts/confidential.py .dx-central/paid-roadmap.md "$RUNNER_TEMP/public.txt"; then
+                  reply=$(neutral "$category"); summary=$category
+                fi;;
+            esac
           fi
           if [ "$category" = duplicate ] && [ "$(jq -r '.duplicate_of // 0' <<<"$OUT")" != 0 ]; then reply="$reply"$'\n\n'"Duplicate of #$(jq -r .duplicate_of <<<"$OUT")."; fi
           if [ "$category" = security ]; then reply="$reply"$'\n\n'"@$MAINTAINER"; fi

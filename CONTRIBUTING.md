@@ -72,7 +72,7 @@ The docs check CI also runs (relative links resolve, no retired product name) is
 
 ## What CI checks
 
-Every pull request runs the conventions check (branch name, PR title, every commit, the description and the accepted issue it closes) and the project's quality gates. A pull request titled `docs` may change only documentation (Markdown, `docs/`, `readme.txt`, licence files, the issue templates). One from someone outside the maintainers may change at most 600 lines, lock files and translations aside: split a bigger change into smaller pull requests, each with its accepted issue.
+Every pull request runs the conventions check (branch name, PR title, every commit, the description and the accepted issue it closes) and the project's quality gates. A pull request titled `docs` may change only documentation (Markdown, `docs/`, `readme.txt`, licence files, the issue templates). One from someone outside the maintainers may change at most 600 lines, not counting `composer.lock`, `package-lock.json` and `languages/`: split a bigger change into smaller pull requests, each with its accepted issue.
 
 Pull requests from branches of the repository (not drafts, not forks) are reviewed by Claude, which comments inline on blockers and majors, lists minor findings in its summary and labels the risk and complexity.
 

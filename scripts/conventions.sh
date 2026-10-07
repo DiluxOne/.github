@@ -13,7 +13,9 @@
 # REST API lists them, and the login of the App whose review records count;
 # optional), AUTHOR_TYPE (Bot skips the sections), MAX_LINES (the most lines
 # the branch may change, lock files and translations aside; empty for no
-# limit: CI sets it for authors who are not trusted). Run from the repository.
+# limit: CI sets it for authors who are not trusted; composer.lock,
+# package-lock.json and anything under a languages/ directory do not count).
+# Run from the repository.
 #
 # A pull request titled docs may change only documentation: Markdown, docs/,
 # readme.txt, licence files and the issue and pull request templates. That is
@@ -89,11 +91,13 @@ check() {
         ''|*.md|docs/*|readme.txt|LICENSE|LICENSE.*|COPYING|.github/ISSUE_TEMPLATE/*) ;;
         *) error "The title says docs, but $f is not documentation: give the title the type of the change it carries." ;;
       esac
-    done < <(git diff --name-only "${BASE}...${HEAD_REF}")
+    # --no-renames: a code file renamed into a .md shows as the code file
+    # deleted, which is not documentation.
+    done < <(git diff --no-renames --name-only "${BASE}...${HEAD_REF}")
   fi
   # A size an author who is not trusted may change at once.
   if [[ "$MAX_LINES" =~ ^[0-9]+$ ]] && [ "$MAX_LINES" -gt 0 ]; then
-    changed=$(git diff --numstat "${BASE}...${HEAD_REF}" | awk -F'\t' '$3 !~ /(^|\/)(composer\.lock|package-lock\.json)$/ && $3 !~ /^languages\// && $1 != "-" { n += $1 + $2 } END { print n + 0 }')
+    changed=$(git diff --numstat "${BASE}...${HEAD_REF}" | awk -F'\t' '$3 !~ /(^|\/)(composer\.lock|package-lock\.json)$/ && $3 !~ /(^|\/)languages\// && $1 != "-" { n += $1 + $2 } END { print n + 0 }')
     if [ "$changed" -gt "$MAX_LINES" ]; then
       error "This pull request changes $changed lines; one from an author outside the maintainers may change at most $MAX_LINES. Split it into smaller pull requests, each closing its accepted issue, or ask a maintainer to take it over."
     fi
@@ -186,6 +190,15 @@ if [ "${1:-}" = "--test" ]; then
   test_case "passes: under the size limit"         0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "" "" "includes/a.php:50" 100 || fail=1
   test_case "fails: over the size limit"           1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "" "" "includes/a.php:150" 100 || fail=1
   test_case "passes: lock files and translations do not count" 0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "" "" "includes/a.php:50,composer.lock:500,languages/x.po:500" 100 || fail=1
+  # A docs title over a code file renamed into a .md: the base has the code.
+  dir=$(mktemp -d)
+  if (
+    cd "$dir" && git init -q && git config user.email t@t && git config user.name t
+    mkdir includes && seq 1 40 > includes/a.php && git add . && git commit -q -m "chore: base" && git checkout -q -b docs/x
+    git mv includes/a.php notes.md && git commit -q -m "docs: notes"
+    BRANCH=docs/x TITLE="docs: notes" BODY=$good BASE=$(git rev-parse HEAD~1) HEAD_REF=$(git rev-parse HEAD) check >/dev/null 2>&1
+  ); then echo "FAIL fails: docs that rename code into Markdown (want 1, got 0)"; fail=1; else echo "ok   fails: docs that rename code into Markdown"; fi
+  rm -rf "$dir"
   test_case "passes: no limit for a trusted author" 0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "" "" "includes/a.php:5000" "" || fail=1
   [ "$fail" -eq 0 ] && echo "all tests passed"
   exit "$fail"
