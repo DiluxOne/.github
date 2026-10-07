@@ -87,7 +87,7 @@ on:
         type: number
         default: 14
       max-per-day:
-        description: Issues classified in 24 hours at most; past that, an issue gets needs-triage and waits for a person.
+        description: Triage runs in 24 hours at most (one per issue a person opens, counted as it opens); past that, an issue gets needs-triage and waits for a person.
         type: number
         default: 20
       central-ref:
@@ -148,30 +148,32 @@ jobs:
           POLICY_LEVEL: low
         run: python3 .dx-central/scripts/policy.py
 
-      - name: At most max-per-day classifications in 24 hours
+      - name: At most max-per-day triage runs in 24 hours
         id: cap
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
           MAX: ${{ inputs.max-per-day }}
-          BOT_TOKEN: ${{ steps.bot.outputs.token }}
           NUMBER: ${{ github.event.issue.number }}
-        # Runs, not replies: a triage job counts from the moment it starts,
-        # so a burst of issues opened at once sees itself, and one whose
-        # classification failed counts too.
+        # Every issue a person opens starts one triage run, so the issues
+        # opened in the last 24 hours, this one aside, are the runs before
+        # it: a burst sees itself, and a failed classification counts too.
+        # When GitHub cannot say, the issue waits for a person: the cap
+        # fails closed.
         run: |
           set -euo pipefail
           since=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)
-          n=0
-          for id in $(gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=issues&created=>=$since&per_page=100" --paginate --jq ".workflow_runs[] | select(.id < $GITHUB_RUN_ID) | .id"); do
-            n=$((n + $(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" --paginate --jq '[.jobs[] | select(.name | endswith("Triage")) | select(.conclusion != "skipped")] | length')))
-          done
+          if n=$(gh api -X GET search/issues -f q="repo:$GITHUB_REPOSITORY is:issue created:>=$since" --jq '.total_count' 2>/dev/null) && [[ "$n" =~ ^[0-9]+$ ]]; then
+            n=$((n > 0 ? n - 1 : 0))
+          else
+            n=$MAX; echo "::warning::Could not count today's issues; #$NUMBER waits for a person."
+          fi
           if [ "$n" -ge "$MAX" ]; then
-            echo "::warning::$n triage runs in the last 24 hours (the limit is $MAX); #$NUMBER waits for a person."
-            GH_TOKEN=$BOT_TOKEN gh label create needs-triage --repo "$GITHUB_REPOSITORY" --color E4E669 --description "Not looked at yet" --force >/dev/null
-            GH_TOKEN=$BOT_TOKEN gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label needs-triage >/dev/null
+            echo "::warning::$n issues opened in the last 24 hours before this one (the limit is $MAX); #$NUMBER waits for a person."
+            gh label create needs-triage --repo "$GITHUB_REPOSITORY" --color E4E669 --description "Not looked at yet" --force >/dev/null
+            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label needs-triage >/dev/null
             echo "over=true" >> "$GITHUB_OUTPUT"
           else
-            echo "$n triage runs in the last 24 hours (limit $MAX)."
+            echo "$n issues opened in the last 24 hours before this one (limit $MAX)."
           fi
 
       # A token for the paid add-on's repository alone, read-only, used only
