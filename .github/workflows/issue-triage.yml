@@ -42,8 +42,11 @@ name: Issue triage
 # by a run that reads the public brief alone. What a run never read, no prompt
 # in the issue can make it leak.
 #
-# At most `max-per-day` triage runs in 24 hours, counted from the moment
-# each starts; past that, an issue gets needs-triage and waits for a person,
+# At most `max-per-day` issues in 24 hours get an AI triage, counted with
+# GitHub's issue search (every issue opened, a bot's too, so the count errs
+# high; a just-opened issue may not be indexed yet, so it can also err low by
+# a few); past that, or when the count fails, an issue gets needs-triage and
+# waits for a person,
 # so a flood of issues cannot run up the bill. The brief and the labelling
 # are scripts/triage-brief.sh and scripts/triage-act.sh, shared by both jobs.
 #
@@ -154,16 +157,16 @@ jobs:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           MAX: ${{ inputs.max-per-day }}
           NUMBER: ${{ github.event.issue.number }}
-        # Every issue a person opens starts one triage run, so the issues
-        # opened in the last 24 hours, this one aside, are the runs before
-        # it: a burst sees itself, and a failed classification counts too.
+        # The issues opened in the last 24 hours, this one aside, stand for
+        # the triage runs before it: a failed classification counts too, and
+        # a bot's issue (which starts none) as well, so the count errs high.
         # When GitHub cannot say, the issue waits for a person: the cap
         # fails closed.
         run: |
           set -euo pipefail
           since=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)
-          if n=$(gh api -X GET search/issues -f q="repo:$GITHUB_REPOSITORY is:issue created:>=$since" --jq '.total_count' 2>/dev/null) && [[ "$n" =~ ^[0-9]+$ ]]; then
-            n=$((n > 0 ? n - 1 : 0))
+          if n=$(gh api -X GET search/issues -f q="repo:$GITHUB_REPOSITORY is:issue created:>=$since" -f per_page=100 --jq "[.items[] | select(.number != $NUMBER)] | length" 2>/dev/null) && [[ "$n" =~ ^[0-9]+$ ]]; then
+            :
           else
             n=$MAX; echo "::warning::Could not count today's issues; #$NUMBER waits for a person."
           fi
