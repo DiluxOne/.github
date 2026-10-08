@@ -284,8 +284,10 @@ jobs:
     # shipped tree is fetched here, with a dilux-bot token that reads those
     # repositories alone, in a job that never checks out the code under
     # check: the key never shares a job with a pull request's code. A fork's
-    # pull request gets no secret, and this job fails for it.
-    if: inputs.requires-plugins-from != ''
+    # pull request gets no secret, and this job fails for it. It runs when
+    # Plugin Check does.
+    needs: changes
+    if: ${{ !cancelled() && inputs.requires-plugins-from != '' && (needs.changes.outputs.code != 'false' || needs.changes.outputs.plugin_check != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
