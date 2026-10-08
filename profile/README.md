@@ -13,7 +13,8 @@ updates and support.
 
 | Plugin | What it does |
 | --- | --- |
-| [DiluxOne Offload](https://wordpress.org/plugins/diluxone-offload/) | Moves the media library to Azure Blob Storage through a PHP stream wrapper: no URL rewriting, no database migration. |
+| [DiluxOne Offload](https://wordpress.org/plugins/diluxone-offload/) | Moves the media library to Azure Blob Storage or any S3-compatible storage (Amazon S3, Cloudflare R2, Google Cloud Storage and more) through a PHP stream wrapper: no URL rewriting, no database migration. |
+| [DiluxOne Multisite User Sync](https://wordpress.org/plugins/wpm-user-sync/) | Adds your WordPress Multisite users to your sites, automatically or on demand: new users, new sites, role changes. |
 
 ### Working with us
 
