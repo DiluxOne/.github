@@ -181,10 +181,38 @@ def sync_files(repo, conf, block, dry):
     print(f"  issue #{number} (accept it) and {pr}")
 
 
-def drift(repo, conf, labels, block):
+USES_RE = re.compile(r"DiluxOne/\.github/\.github/workflows/[\w.-]+@v(\d+)\b")
+
+
+def current_major():
+    """The newest major of the shared workflows: the highest vN tag here."""
+    tags = json.loads(gh("api", f"repos/{ORG}/.github/git/matching-refs/tags/v").stdout)
+    majors = [int(m.group(1)) for t in tags if (m := re.fullmatch(r"refs/tags/v(\d+)", t["ref"]))]
+    return max(majors) if majors else 0
+
+
+def old_versions(texts, current):
+    """The majors older than the current one that these workflow files call."""
+    return sorted({int(v) for t in texts for v in USES_RE.findall(t) if int(v) < current})
+
+
+def drift(repo, conf, labels, block, current=0):
     """What differs in a repository from what this repository keeps, as lines."""
     full = f"{ORG}/{repo['name']}"
     found = []
+    if current:
+        listing = gh("api", f"repos/{full}/contents/.github/workflows", check=False)
+        texts = []
+        if listing.returncode == 0:
+            for entry in json.loads(listing.stdout):
+                if entry.get("name", "").endswith((".yml", ".yaml")):
+                    out = gh("api", f"repos/{full}/contents/{entry['path']}", "-H", "Accept: application/vnd.github.raw", check=False)
+                    texts.append(out.stdout if out.returncode == 0 else "")
+        old = old_versions(texts, current)
+        if not any(USES_RE.search(t) for t in texts):
+            found.append("calls none of the shared workflows (README, \"Adopt it in a new repository\")")
+        if old:
+            found.append(f"calls the shared workflows at {', '.join('@v' + str(v) for v in old)}; the current is @v{current} (README, \"Migrating a repository\")")
     have = {l["name"]: l for l in json.loads(gh("label", "list", "--repo", full, "--limit", "1000", "--json", "name,color,description").stdout)}
     for label in labels:
         name = str(label["name"])
@@ -289,6 +317,10 @@ def self_test():
     check("drift: a file that differs", "`.github/CODEOWNERS` differs" in text, lines)
     check("drift: AGENTS.md without the block", "does not carry the organisation's current block" in text, lines)
     check("drift: a setting in step is not reported", "allow_squash_merge" not in text, lines)
+    files = ["uses: DiluxOne/.github/.github/workflows/conventions.yml@v3", "uses: DiluxOne/.github/.github/workflows/issue-triage.yml@v5", "uses: actions/checkout@v7"]
+    check("versions: an older major is found", old_versions(files, 5) == [3], old_versions(files, 5))
+    check("versions: the current major is not", old_versions(files[1:], 5) == [], old_versions(files[1:], 5))
+    check("versions: another owner's action is not", old_versions(["uses: actions/checkout@v2"], 5) == [], "")
     if not failed:
         print("all tests passed")
     return 1 if failed else 0
@@ -316,9 +348,10 @@ def main(argv):
         report = [f"# Repositories out of step with {ORG}/.github", "",
                   "What differs from `labels.yml`, `repos.yml` and `agents-block.md`. Labels and settings: `python3 scripts/sync-repos.py all`; files: the pull requests it opens.", ""]
         dirty = 0
+        current = current_major()
         for repo in repos:
             try:
-                lines = drift(repo, conf, labels, block)
+                lines = drift(repo, conf, labels, block, current)
             except RuntimeError as exc:
                 lines = [f"could not be checked: {exc}"]
             if lines:

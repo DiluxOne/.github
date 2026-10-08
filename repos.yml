@@ -22,6 +22,7 @@ projects:
   diluxone-support-wordpress: 6
   diluxone-commerce-wordpress: 7
   diluxone-slider-wordpress: 8
+  diluxone-mail-wordpress: 10
   .github: 9
   diluxone-wp-test: 9
 
