@@ -56,6 +56,7 @@ if [ "${1:-}" = "--test" ]; then
   if fetch "base=Other/base-repo@main"; then echo "FAIL another owner is refused"; fail=1; else echo "ok   another owner is refused"; fi
   if fetch "Org/base-repo@main"; then echo "FAIL a line without its slug is refused"; fail=1; else echo "ok   a line without its slug is refused"; fi
   if fetch "Base=Org/base-repo@main"; then echo "FAIL a slug that is not one is refused"; fail=1; else echo "ok   a slug that is not one is refused"; fi
+  if fetch "base=Org/base-repo@--upload-pack=touch"; then echo "FAIL a ref that reads as an option is refused"; fail=1; else echo "ok   a ref that reads as an option is refused"; fi
   if fetch "base=Org/base-repo@no-such-ref"; then echo "FAIL a ref that is not there fails"; fail=1; else echo "ok   a ref that is not there fails"; fi
   if fetch ""; then echo "FAIL nothing to fetch fails"; fail=1; else echo "ok   nothing to fetch fails"; fi
   ok "repos: the names, once, for the token"  '[ "$(REQUIRES="a=Org/one@main
@@ -78,7 +79,7 @@ parse() {
   while IFS= read -r line; do
     line=$(printf '%s' "$line" | tr -d '[:space:]')
     [ -n "$line" ] || continue
-    if ! [[ "$line" =~ ^([a-z0-9][a-z0-9-]*)=([A-Za-z0-9-]+)/([A-Za-z0-9._-]+)@([A-Za-z0-9._/-]+)$ ]]; then
+    if ! [[ "$line" =~ ^([a-z0-9][a-z0-9-]*)=([A-Za-z0-9-]+)/([A-Za-z0-9._-]+)@([A-Za-z0-9][A-Za-z0-9._/-]*)$ ]]; then
       echo "::error::requires-plugins-from: \"$line\" is not <slug>=<owner>/<repo>@<ref>." >&2; return 1
     fi
     [ "${BASH_REMATCH[2]}" = "$OWNER" ] || { echo "::error::requires-plugins-from: ${BASH_REMATCH[2]}/${BASH_REMATCH[3]} is not a repository of $OWNER." >&2; return 1; }
@@ -108,6 +109,7 @@ case "$mode" in
       git -C "$src" init -q
       # The token goes in a header for this fetch alone, never in a URL or a config file.
       auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+      echo "::add-mask::$auth"
       git -C "$src" -c "http.extraheader=AUTHORIZATION: basic $auth" fetch -q --depth 1 "$base/$owner/$repo" "$ref" \
         || { echo "::error::requires-plugins-from: $owner/$repo@$ref could not be fetched (does the ref exist, and can dilux-bot read the repository?)." >&2; exit 1; }
       git -C "$src" checkout -q FETCH_HEAD
