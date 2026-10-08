@@ -479,6 +479,7 @@ def settings_tests():
     own = load_yaml(os.path.join(CENTRAL, ".github", "review-policy.yml"))
     default_policy = load_yaml(os.path.join(CENTRAL, "policy", "review-policy.default.yml"))
     tracked = subprocess.run(["git", "-C", CENTRAL, "ls-files"], capture_output=True, text=True).stdout.split()
+    check("this repository: its tracked files could be listed", bool(tracked), "git ls-files returned nothing")
     if tracked:
         high = default_policy.get("high-risk", []) + own.get("high-risk", [])
         low = default_policy.get("low-risk-eligible", []) + own.get("low-risk-eligible", [])
