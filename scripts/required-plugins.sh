@@ -56,7 +56,7 @@ if [ "${1:-}" = "--test" ]; then
   if fetch "base=Other/base-repo@main"; then echo "FAIL another owner is refused"; fail=1; else echo "ok   another owner is refused"; fi
   if fetch "Org/base-repo@main"; then echo "FAIL a line without its slug is refused"; fail=1; else echo "ok   a line without its slug is refused"; fi
   if fetch "Base=Org/base-repo@main"; then echo "FAIL a slug that is not one is refused"; fail=1; else echo "ok   a slug that is not one is refused"; fi
-  if fetch "base=Org/base-repo@--upload-pack=touch"; then echo "FAIL a ref that reads as an option is refused"; fail=1; else echo "ok   a ref that reads as an option is refused"; fi
+  ok "a ref that reads as an option is refused" 'grep -q "is not <slug>=" <(REQUIRES="base=Org/base-repo@-x" OWNER=Org GH_TOKEN=t GIT_BASE=file://$dir/git bash "$here/required-plugins.sh" fetch "$dir/out" 2>&1)'
   if fetch "base=Org/base-repo@no-such-ref"; then echo "FAIL a ref that is not there fails"; fail=1; else echo "ok   a ref that is not there fails"; fi
   if fetch ""; then echo "FAIL nothing to fetch fails"; fail=1; else echo "ok   nothing to fetch fails"; fi
   ok "repos: the names, once, for the token"  '[ "$(REQUIRES="a=Org/one@main
