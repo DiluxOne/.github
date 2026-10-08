@@ -53,6 +53,7 @@ jobs:
       - run: bash scripts/review-brief.sh --test
       - run: bash scripts/local-review.sh --test
       - run: python3 scripts/policy.py --test
+      - run: bash scripts/required-plugins.sh --test
       - run: php scripts/review-rules.php --test
       - run: python3 scripts/test-targets.py --test
       - run: bash scripts/kind.sh --test
