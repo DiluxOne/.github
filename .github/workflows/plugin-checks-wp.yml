@@ -74,7 +74,7 @@ on:
         type: boolean
         default: false
       codeql-languages:
-        description: CodeQL languages to analyse (comma-separated, e.g. javascript-typescript); empty skips the job. Results fail the check; nothing is uploaded to code scanning.
+        description: CodeQL languages to analyse (comma-separated, e.g. javascript-typescript); empty skips the job, and so does a private repository (CodeQL needs Code Security there). Results fail the check; nothing is uploaded to code scanning.
         type: string
         default: ''
 
@@ -415,7 +415,11 @@ jobs:
     # fails the check and is annotated. Nothing goes to code scanning: that
     # needs `security-events: write`, which a reusable workflow can only
     # use when every caller grants it, and existing callers do not.
-    if: inputs.codeql-languages != ''
+    # Skipped in a private repository: the CodeQL action needs the paid Code
+    # Security add-on there, even with nothing uploaded. A skipped required
+    # check passes, so the review is not held back; it runs again once the
+    # repository is public.
+    if: inputs.codeql-languages != '' && !github.event.repository.private
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
