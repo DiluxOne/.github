@@ -182,11 +182,14 @@ def sync_files(repo, conf, block, dry):
 
 
 USES_RE = re.compile(r"DiluxOne/\.github/\.github/workflows/[\w.-]+@v(\d+)\b")
+# Any call of a shared workflow, a version tag or a pinned commit alike.
+CALLS_RE = re.compile(r"DiluxOne/\.github/\.github/workflows/[\w.-]+@\S+")
 
 
 def current_major():
     """The newest major of the shared workflows: the highest vN tag here."""
-    tags = json.loads(gh("api", f"repos/{ORG}/.github/git/matching-refs/tags/v").stdout)
+    tags = json.loads(gh("api", "--paginate", "--slurp", f"repos/{ORG}/.github/git/matching-refs/tags/v").stdout)
+    tags = [t for page in tags for t in page] if tags and isinstance(tags[0], list) else tags
     majors = [int(m.group(1)) for t in tags if (m := re.fullmatch(r"refs/tags/v(\d+)", t["ref"]))]
     return max(majors) if majors else 0
 
@@ -203,13 +206,15 @@ def drift(repo, conf, labels, block, current=0):
     if current:
         listing = gh("api", f"repos/{full}/contents/.github/workflows", check=False)
         texts = []
+        if listing.returncode != 0 and "404" not in listing.stderr:
+            raise RuntimeError(f"could not list its workflows: {listing.stderr.strip()[:200]}")
         if listing.returncode == 0:
             for entry in json.loads(listing.stdout):
                 if entry.get("name", "").endswith((".yml", ".yaml")):
-                    out = gh("api", f"repos/{full}/contents/{entry['path']}", "-H", "Accept: application/vnd.github.raw", check=False)
-                    texts.append(out.stdout if out.returncode == 0 else "")
+                    out = gh("api", f"repos/{full}/contents/{entry['path']}", "-H", "Accept: application/vnd.github.raw")
+                    texts.append(out.stdout)
         old = old_versions(texts, current)
-        if not any(USES_RE.search(t) for t in texts) and repo["name"] not in (conf.get("no-workflows") or []):
+        if not any(CALLS_RE.search(t) for t in texts) and repo["name"] not in (conf.get("no-workflows") or []):
             found.append("calls none of the shared workflows (README, \"Adopt it in a new repository\")")
         if old:
             found.append(f"calls the shared workflows at {', '.join('@v' + str(v) for v in old)}; the current is @v{current} (README, \"Migrating a repository\")")
@@ -321,6 +326,7 @@ def self_test():
     check("versions: an older major is found", old_versions(files, 5) == [3], old_versions(files, 5))
     check("versions: the current major is not", old_versions(files[1:], 5) == [], old_versions(files[1:], 5))
     check("versions: another owner's action is not", old_versions(["uses: actions/checkout@v2"], 5) == [], "")
+    check("calls: a pinned commit counts as calling the shared workflows", bool(CALLS_RE.search("uses: DiluxOne/.github/.github/workflows/plugin-release-wp.yml@0123456789abcdef0123456789abcdef01234567")), "")
     if not failed:
         print("all tests passed")
     return 1 if failed else 0
