@@ -111,7 +111,7 @@ def sync_settings(repo, conf, dry):
 
 def sync_files(repo, conf, block, dry):
     full = f"{ORG}/{repo['name']}"
-    open_prs = json.loads(gh("pr", "list", "--repo", full, "--state", "open", "--json", "headRefName").stdout)
+    open_prs = json.loads(gh("pr", "list", "--repo", full, "--state", "open", "--limit", "500", "--json", "headRefName").stdout)
     if any(p["headRefName"].endswith("-org-shared-files") for p in open_prs):
         print("  a pull request for the shared files is already open; skipped")
         return
@@ -119,7 +119,13 @@ def sync_files(repo, conf, block, dry):
 
     def read(path):
         out = gh("api", f"repos/{full}/contents/{path}?ref={default}", "-H", "Accept: application/vnd.github.raw", check=False)
-        return out.stdout if out.returncode == 0 else None
+        if out.returncode == 0:
+            return out.stdout
+        if "404" in out.stderr or "Not Found" in out.stderr:
+            return None
+        # A rate limit or a server error is not a missing file: stop rather
+        # than propose overwriting what is there.
+        raise RuntimeError(f"could not read {path}: {out.stderr.strip()[:200]}")
 
     wanted = {}
     for path, content in (conf.get("files") or {}).items():
@@ -220,7 +226,12 @@ def main(argv):
     labels = load_yaml(os.path.join(CENTRAL, "labels.yml"))
     block = open(os.path.join(CENTRAL, "agents-block.md"), encoding="utf-8").read()
     failures = 0
-    for repo in repositories(only, conf.get("exclude") or []):
+    repos = repositories(only, conf.get("exclude") or [])
+    missing = sorted(set(only) - {r["name"] for r in repos})
+    if missing:
+        print(f"No such repository (or archived, or excluded): {', '.join(missing)}")
+        return 1
+    for repo in repos:
         print(f"{ORG}/{repo['name']}")
         try:
             if what in ("labels", "all"):

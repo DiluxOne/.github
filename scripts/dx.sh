@@ -72,8 +72,11 @@ cmd_start() {
   [ "$accepted" = true ] || die "#$n is not accepted yet: wait until a maintainer adds the \"accepted\" label."
   type=${type:-$(type_for "$kind")}
   branch="$type/$n-$(slug "$title")"
-  git fetch -q origin
-  base=$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)
+  # From the upstream's default branch, also in a fork, whose own may be
+  # behind.
+  default=$(gh api "repos/$up" --jq .default_branch)
+  git fetch -q "https://github.com/$up.git" "$default"
+  base=FETCH_HEAD
   git switch -q -c "$branch" "$base"
   mkdir -p "$(git rev-parse --git-dir)/dx"
   cat > "$(git rev-parse --git-dir)/dx/pr.md" <<EOF
