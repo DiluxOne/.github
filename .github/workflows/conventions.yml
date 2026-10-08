@@ -5,7 +5,11 @@ name: Conventions
 # main), every commit the branch adds (no Claude-Session trailer), and a
 # description whose required sections are filled in (it becomes the commit
 # body) and that carries no "Generated with" footer (AI is disclosed with
-# the one sober line instead). The checks themselves are scripts/conventions.sh,
+# the one sober line instead), and that it closes an issue a maintainer
+# accepted (scripts/issue-gate.sh; the organisation's policy, `issue-gate`);
+# that a docs pull request changes only documentation; and that one from an
+# author who is not trusted stays under `max-changed-lines-untrusted`.
+# The checks themselves are scripts/conventions.sh,
 # which scripts/local-review.sh runs before a pull request is opened. Plus a docs check whenever the caller runs (pull requests and
 # pushes to main): relative Markdown links resolve, and no retired product
 # name comes back.
@@ -15,12 +19,13 @@ name: Conventions
 #       types: [opened, synchronize, reopened, ready_for_review]  # and pull-request-edited.yml on `edited`
 #   jobs:
 #     conventions:
-#       uses: DiluxOne/.github/.github/workflows/conventions.yml@v3
+#       permissions: { contents: read, pull-requests: read, issues: read }
+#       uses: DiluxOne/.github/.github/workflows/conventions.yml@v4
 #       with:
 #         retired-names: 'offload\+|dilux cloud'   # optional
 #         required-sections: 'What changes,Why'   # the default
 #         max-header: 100                         # the default
-#         central-ref: v3                         # the default: where the script is read from;
+#         central-ref: v4                         # the default: where the script is read from;
 #                                                 # keep it on the ref the workflow is pinned at
 
 on:
@@ -45,7 +50,7 @@ on:
       central-ref:
         description: Ref of DiluxOne/.github to read the conventions script from.
         type: string
-        default: v3
+        default: v4
 
 permissions:
   contents: read
@@ -59,6 +64,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read # the pull request's timeline, for the base-branch check
+      issues: read # the issues the pull request closes, for the accepted-issue gate
     steps:
       - name: No base-branch change since the last push
         # `edited` also fires when the base branch changes. The suites ran on
@@ -103,6 +109,28 @@ jobs:
           path: .dx-central
           persist-credentials: false
 
+      - name: The accepted-issue gate and the size limit, as the base branch's policy says
+        id: gate
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        # Read from the base branch, never the pull request's own copy: a
+        # pull request cannot exempt itself by editing the policy.
+        run: |
+          git show "$BASE:.github/review-policy.yml" > "$RUNNER_TEMP/repo-policy.yml" 2>/dev/null || : > "$RUNNER_TEMP/repo-policy.yml"
+          DEFAULT_POLICY=.dx-central/policy/review-policy.default.yml REPO_POLICY="$RUNNER_TEMP/repo-policy.yml" \
+            POLICY_MODE=issue-gate python3 .dx-central/scripts/policy.py
+
+      - name: An accepted issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REQUIRED: ${{ steps.gate.outputs.required }}
+          LABEL: ${{ steps.gate.outputs.label }}
+          TITLE: ${{ github.event.pull_request.title }}
+          AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+        run: bash .dx-central/scripts/issue-gate.sh
+
       - name: The labels and the review's comments, as they are now
         id: live
         env:
@@ -138,6 +166,8 @@ jobs:
           LABELS: ${{ steps.live.outputs.labels }}
           COMMENTS_FILE: ${{ runner.temp }}/comments.json
           REVIEW_BOT: ${{ inputs.review-bot }}
+          # Empty for a trusted author: the policy's max-changed-lines-untrusted.
+          MAX_LINES: ${{ steps.gate.outputs.max_lines }}
         run: bash .dx-central/scripts/conventions.sh
 
   docs:

@@ -2,8 +2,8 @@ name: Issues
 
 # What happens to an issue, from the shared workflows in DiluxOne/.github: the
 # triage classifies it when it opens (from docs/roadmap.md and the docs) and
-# the reproduction job tries to write a failing unit test when the triage
-# labels it bug:unconfirmed. Fill in support-url.
+# the reproduction job tries to write a failing unit test when a maintainer
+# labels it repro:run. Fill in support-url.
 
 on:
   issues:
@@ -19,7 +19,7 @@ jobs:
     permissions:
       contents: read
       issues: write
-    uses: DiluxOne/.github/.github/workflows/issue-triage.yml@v3
+    uses: DiluxOne/.github/.github/workflows/issue-triage.yml@v4
     with:
       support-url: https://example.com/support
     secrets: inherit
@@ -30,5 +30,5 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: DiluxOne/.github/.github/workflows/issue-repro.yml@v3
+    uses: DiluxOne/.github/.github/workflows/issue-repro.yml@v4
     secrets: inherit

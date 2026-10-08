@@ -20,6 +20,9 @@ Rules for any coding agent working in `DiluxOne/.github`.
   never `${{ }}` inside a `run:` script.
 - Nothing that runs with secrets may run on a fork's code.
 - Branches, PR titles and commits follow Conventional Commits; CI enforces it.
+  Write headers of 72 characters or fewer: 100 is where CI and the commit-msg
+  hook reject them, not a target. Measure a header before committing it
+  (`printf %s "$subject" | wc -m`) instead of finding out from the hook.
   PR descriptions use the template sections (What changes and Why are
   required); commit and PR bodies are plain paragraphs, never hard-wrapped.
 - When you write a pull request, issue or comment, end it with the AI line from

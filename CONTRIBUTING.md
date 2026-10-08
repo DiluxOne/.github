@@ -8,6 +8,14 @@ Thanks for helping. This is the default guide for every DiluxOne repository; a r
 - **Security problems** go through private vulnerability reporting, never a public issue. See [SECURITY.md](SECURITY.md).
 - **Bugs and ideas** go to the repository's issues, using its templates.
 
+## Start from an issue
+
+Every change starts as an issue: features, fixes and docs alike, maintainers included. Open one with the repository's template (or find the one that already describes it) and wait until a maintainer accepts it, which they do by adding the `accepted` label. The template sets the issue's type (`type:fix` for a bug, `type:feat` for a feature, `type:docs`, `type:chore` for maintenance), and the pull request's type must fit it: a `feat` closes a `type:feat` issue, a `fix` a `type:fix` one. Then write the code, and say `Closes #<number>` in the pull request's description. CI fails a pull request that closes no accepted issue; bots' own pull requests (Dependabot, releases) are exempt.
+
+Why: it is the cheapest moment to agree on what to build. A feature that is already planned, that belongs to a paid add-on, or that the project will not do is answered on the issue, before anyone spends time on code. An issue that is not accepted is not a "no" to the person, only to the change as proposed; the reply says why when it can.
+
+If the issue is accepted after the pull request was opened, edit the description (or ask a maintainer to re-run the check) and the check passes.
+
 ## Pull requests
 
 1. Create a branch from `main`: in your fork if you are an outside contributor, in the repository itself if you are a maintainer.
@@ -45,7 +53,7 @@ Titles stay plain Conventional Commits, without emoji: tools read the type, and 
 The description becomes the commit body on `main`, so it is part of the project's history. Write it for the person who reads it in a year:
 
 - **📝 What changes:** one or two sentences, in plain words. Required.
-- **💡 Why:** the problem it solves, and a link to the issue (`Closes #123`). Required.
+- **💡 Why:** the problem it solves, and the accepted issue it closes (`Closes #123`). Required; CI fails a pull request that closes no accepted issue.
 - **🧪 How I tested it:** what you ran and what you checked.
 - **📸 Screenshots:** before and after, for anything visible.
 - Short paragraphs, no walls of text, no copy of the diff. Friendly and direct.
@@ -64,7 +72,7 @@ The docs check CI also runs (relative links resolve, no retired product name) is
 
 ## What CI checks
 
-Every pull request runs the conventions check (branch name, PR title, every commit and the description) and the project's quality gates.
+Every pull request runs the conventions check (branch name, PR title, every commit, the description and the accepted issue it closes) and the project's quality gates. A pull request titled `docs` may change only documentation (Markdown, images under `docs/`, `readme.txt`, licence files, the issue templates). One from someone outside the maintainers may change at most 600 lines, not counting `composer.lock`, `package-lock.json` and the translation files (`.po`, `.pot`, `.mo`) under `languages/`: split a bigger change into smaller pull requests, each with its accepted issue.
 
 Pull requests from branches of the repository (not drafts, not forks) are reviewed by Claude, which comments inline on blockers and majors, lists minor findings in its summary and labels the risk and complexity.
 

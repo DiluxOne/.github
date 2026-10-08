@@ -11,7 +11,16 @@
 # headings, default "What changes,Why"; empty skips), LABELS (comma-separated,
 # optional), COMMENTS_FILE and REVIEW_BOT (the pull request's comments as the
 # REST API lists them, and the login of the App whose review records count;
-# optional), AUTHOR_TYPE (Bot skips the sections). Run from the repository.
+# optional), AUTHOR_TYPE (Bot skips the sections), MAX_LINES (the most lines
+# the branch may change, lock files and translations aside; empty for no
+# limit: CI sets it for authors who are not trusted; composer.lock,
+# package-lock.json and the .po, .pot and .mo files of a languages/ directory
+# do not count).
+# Run from the repository.
+#
+# A pull request titled docs may change only documentation: Markdown, the
+# images under docs/, readme.txt, licence files and the issue templates. That is
+# where a code change would hide behind the lightest review.
 #
 #   conventions.sh          check (exit 1 on any broken rule)
 #   conventions.sh --test   self-test against a scratch repository
@@ -42,6 +51,7 @@ check() {
   COMMENTS_FILE=${COMMENTS_FILE:-}
   REVIEW_BOT=${REVIEW_BOT:-dilux-bot[bot]}
   AUTHOR_TYPE=${AUTHOR_TYPE:-User}
+  MAX_LINES=${MAX_LINES:-}
   TYPES='feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert'
   HEADER_RE="^(${TYPES})(\([a-z0-9._/-]+\))?!?: [^ ].*[^.]$"
   BRANCH_RE="^((${TYPES})/[a-z0-9][a-z0-9._-]*|dependabot/.+)$"
@@ -72,6 +82,25 @@ check() {
       [ "$bang" = '!' ] || error "The pull request is labelled type:breaking, so its title needs the \"!\" of a breaking change: \"$token$bang:\"."
     elif [ "$token" != "$typelabel" ]; then
       error "The pull request is labelled type:$typelabel but its title says \"$token:\"; the title must carry the labelled type (the review sets it; change the label if the review is wrong)."
+    fi
+  fi
+  # Documentation only, when the title says docs.
+  DOCS_RE='^docs(\([^)]*\))?!?: '
+  if [[ "$TITLE" =~ $DOCS_RE ]]; then
+    while IFS= read -r f; do
+      case "$f" in
+        ''|*.md|docs/*.png|docs/*.jpg|docs/*.jpeg|docs/*.gif|docs/*.webp|readme.txt|LICENSE|LICENSE.*|COPYING|.github/ISSUE_TEMPLATE/*) ;;
+        *) error "The title says docs, but $f is not documentation: give the title the type of the change it carries." ;;
+      esac
+    # --no-renames: a code file renamed into a .md shows as the code file
+    # deleted, which is not documentation.
+    done < <(git diff --no-renames --name-only "${BASE}...${HEAD_REF}")
+  fi
+  # A size an author who is not trusted may change at once.
+  if [[ "$MAX_LINES" =~ ^[0-9]+$ ]] && [ "$MAX_LINES" -gt 0 ]; then
+    changed=$(git diff --numstat "${BASE}...${HEAD_REF}" | awk -F'\t' '$3 !~ /(^|\/)(composer\.lock|package-lock\.json)$/ && $3 !~ /(^|\/)languages\/[^\/]+\.(po|pot|mo)$/ && $1 != "-" { n += $1 + $2 } END { print n + 0 }')
+    if [ "$changed" -gt "$MAX_LINES" ]; then
+      error "This pull request changes $changed lines; one from an author outside the maintainers may change at most $MAX_LINES. Split it into smaller pull requests, each closing its accepted issue, or ask a maintainer to take it over."
     fi
   fi
   while read -r sha; do
@@ -105,17 +134,24 @@ check() {
 # One case: a scratch repository whose branch adds one commit with this
 # message; expect 0 (passes) or 1 (fails).
 test_case() {
-  local name=$1 want=$2 branch=$3 title=$4 message=$5 body=$6 labels=${7:-} comments=${8:-} got dir
+  local name=$1 want=$2 branch=$3 title=$4 message=$5 body=$6 labels=${7:-} comments=${8:-} files=${9:-} max=${10:-} got dir
   dir=$(mktemp -d)
   (
     cd "$dir" && git init -q && git config user.email t@t && git config user.name t
     git commit -q --allow-empty -m "chore: base" && git checkout -q -b topic
+    # files: "path:lines,path:lines", each written with that many lines.
+    if [ -n "$files" ]; then
+      IFS=, read -ra specs <<< "$files"
+      for spec in "${specs[@]}"; do
+        mkdir -p "$(dirname "${spec%%:*}")"; seq 1 "${spec##*:}" > "${spec%%:*}"; git add "${spec%%:*}"
+      done
+    fi
     git commit -q --allow-empty -m "$message"
     file=""
     if [ -n "$comments" ]; then
       file=$(mktemp); printf '%s' "${comments//HEADSHA/$(git rev-parse HEAD)}" > "$file"
     fi
-    BRANCH=$branch TITLE=$title BODY=$body LABELS=$labels COMMENTS_FILE=$file REVIEW_BOT='dilux-bot[bot]' BASE=$(git rev-parse HEAD~1) HEAD_REF=$(git rev-parse HEAD) check >/dev/null 2>&1
+    BRANCH=$branch TITLE=$title BODY=$body LABELS=$labels COMMENTS_FILE=$file REVIEW_BOT='dilux-bot[bot]' MAX_LINES=$max BASE=$(git rev-parse HEAD~1) HEAD_REF=$(git rev-parse HEAD) check >/dev/null 2>&1
   ) && got=0 || got=1
   rm -rf "$dir"
   if [ "$got" = "$want" ]; then echo "ok   $name"; else echo "FAIL $name (want $want, got $got)"; return 1; fi
@@ -149,6 +185,25 @@ if [ "${1:-}" = "--test" ]; then
   test_case "passes: under a cap of its own, the review is still to come" 0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" "$(rec 'dilux-bot[bot]' "$other" 3 8)" || fail=1
   test_case "fails: a record whose sha is not a commit"           1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" "$(rec 'dilux-bot[bot]' 'abc\\nx' 1 '')" || fail=1
   test_case "passes: the last page's record (paginated arrays)"    0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" "$(rec 'dilux-bot[bot]' HEADSHA 1 '')$(rec 'dilux-bot[bot]' "$other" 2 '')" || fail=1
+  test_case "passes: docs that change only docs"   0 docs/guide "docs(guide): a thing" "docs(guide): a thing" "$good" "" "" "docs/a.md:3,README.md:2,readme.txt:1" || fail=1
+  test_case "fails: docs that change code"         1 docs/guide "docs(guide): a thing" "docs(guide): a thing" "$good" "" "" "docs/a.md:3,includes/a.php:2" || fail=1
+  test_case "passes: a fix may change code"        0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "" "" "includes/a.php:2" || fail=1
+  test_case "passes: under the size limit"         0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "" "" "includes/a.php:50" 100 || fail=1
+  test_case "fails: over the size limit"           1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "" "" "includes/a.php:150" 100 || fail=1
+  test_case "passes: lock files and translations do not count" 0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "" "" "includes/a.php:50,composer.lock:500,languages/x.po:500" 100 || fail=1
+  # A docs title over a code file renamed into a .md: the base has the code.
+  dir=$(mktemp -d)
+  if (
+    cd "$dir" && git init -q && git config user.email t@t && git config user.name t
+    mkdir includes && seq 1 40 > includes/a.php && git add . && git commit -q -m "chore: base" && git checkout -q -b docs/x
+    git mv includes/a.php notes.md && git commit -q -m "docs: notes"
+    BRANCH=docs/x TITLE="docs: notes" BODY=$good BASE=$(git rev-parse HEAD~1) HEAD_REF=$(git rev-parse HEAD) check >/dev/null 2>&1
+  ); then echo "FAIL fails: docs that rename code into Markdown (want 1, got 0)"; fail=1; else echo "ok   fails: docs that rename code into Markdown"; fi
+  rm -rf "$dir"
+  test_case "passes: translations at any depth do not count" 0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "" "" "includes/a.php:50,includes/languages/x.po:500" 100 || fail=1
+  test_case "fails: code under languages/ counts"  1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "" "" "languages/loader.php:500" 100 || fail=1
+  test_case "fails: a script under docs/ is not docs" 1 docs/guide "docs(guide): a thing" "docs(guide): a thing" "$good" "" "" "docs/build.sh:3" || fail=1
+  test_case "passes: no limit for a trusted author" 0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "" "" "includes/a.php:5000" "" || fail=1
   [ "$fail" -eq 0 ] && echo "all tests passed"
   exit "$fail"
 fi
