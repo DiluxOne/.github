@@ -12,7 +12,7 @@ The rule: **what is the same for every repository is configured once, at the org
 | Issue fields: **Priority** | Organisation settings, issue fields | Native; the maintainer sets it when accepting |
 | **Projects**, one per product (the free plugin and its Pro add-on together) | Organisation Projects | Built-in workflows: an issue labelled `accepted` is added with Status *Accepted*; closed or merged moves it to *Done* |
 | Protection of `main` and of release tags | **Organisation rulesets**, all repositories | One ruleset for `main` (pull request only, squash, linear history, conversations resolved, required checks) and two for `X.Y.Z` tags (created only by administrators and the release App; never moved or deleted) |
-| The pull request pipeline: conventions, the accepted-issue gate, the Claude review, the auto-merge decision | A **required workflow** in this repository, demanded by the organisation's `main` ruleset | Runs on every pull request of every repository with no file in it |
+| The pull request pipeline: conventions, the accepted-issue gate, the Claude review, the auto-merge decision | A **required workflow** in this repository, demanded by the organisation's `main` ruleset | Runs on every pull request of every repository with no file in it. Its jobs keep today's names (`conventions / …`, `review / Claude review`), so the required checks do not change. As today, the conventions and the gate run on a fork's pull request with a read-only token and no secret, and the review, which needs secrets, skips forks |
 | Issue forms, pull request template, `CONTRIBUTING.md`, `SECURITY.md`, `SUPPORT.md`, code of conduct | This repository's community files | GitHub's defaults for every repository that has none of its own |
 | Labels (`accepted`, the triage's, the review's) | `labels.yml` here | `scripts/sync-repos.sh`, run by the maintainer, creates or updates them everywhere |
 | Merge and security settings (squash only, auto-merge, delete branch, squash title and body from the pull request, Dependabot alerts, secret scanning where the plan has it) | `repos.yml` here | The same script |
@@ -26,14 +26,14 @@ Only what is its own:
 - `.github/review-policy.yml`: its kind of project, its high-risk paths, and `paid-roadmap:` for a free plugin with a Pro add-on.
 - The callers GitHub cannot require from the organisation, because required workflows run only on pull requests: the issue triage and reproduction (`issues.yml`) and the replies to `@dilux-bot` (`pull-request-comments.yml`). Two small files, from `workflow-templates/`.
 - The checks of its kind that need its own values (a WordPress plugin's slug for Plugin Check, its test suites, its release): the `-wp` callers. Whether these can become required workflows reading the slug from the policy is step 6.
-- `.github/dependabot.yml`, which GitHub reads only from the repository.
+- `.github/dependabot.yml` and `.github/CODEOWNERS`, which GitHub reads only from the repository (the sync script can write the same `CODEOWNERS` everywhere).
 - A `CONTRIBUTING.md` of its own only when it has something the organisation's cannot say (Offload's real-storage suites), and then it links to the organisation's for the rest.
 
 Everything else a repository has today and the organisation now provides is deleted from it: its rulesets, `pull-request.yml` and `pull-request-edited.yml` where the required workflow replaces them, its issue forms and its copies of the community files.
 
 ## The accepted issue
 
-The gate stays on the label: `accepted`, added by a person, is the only thing that lets a pull request through, because it lives on the issue, the repository's own token reads it, and its history says who added it. The Project shows it: an issue labelled `accepted` lands on its product's board as *Accepted* on its own. The issue's native **Type** must fit the pull request's (a `feat` or `!` closes a Feature, a `fix` a Bug); the `type:*` labels stay on pull requests only, where the review sets them from the diff.
+The gate stays on the label: `accepted`, added by a person, is the only thing that lets a pull request through, because it lives on the issue, the repository's own token reads it, and its history says who added it. The Project shows it: an issue labelled `accepted` lands on its product's board as *Accepted* on its own. The issue's native **Type** must fit the pull request's: a `feat` or `!` closes a Feature, a `fix` a Bug, and any other type (docs, refactor, test, ci, build, chore, perf, style, revert) closes any accepted issue, a Task or a Docs one among them. The `type:*` labels stay on pull requests only, where the review sets them from the diff.
 
 ## Repositories
 
@@ -51,6 +51,21 @@ Every repository of the organisation follows this, products and tools alike, `di
 | Slider | `diluxone-slider-wordpress` (not on GitHub yet) | Slider |
 | The organisation's tooling | `.github`, `diluxone-wp-test` | Platform |
 
+## Easy for every agent, ours and a contributor's
+
+Most work here is done by AI agents: the maintainer's, and the ones an outside contributor points at a fork. The flow has to be something an agent can follow from a clone, with no knowledge of this conversation:
+
+- **One flow, written once.** `docs/agents.md` in this repository says it step by step, with the exact commands: find or open the issue (with the form that sets its Type), wait for `accepted`, branch, work, check locally, open the pull request with `Closes #<n>`. The organisation's `CONTRIBUTING.md` says the same for people and tells them to point their agent at `AGENTS.md`.
+- **The same opening in every `AGENTS.md`.** Each repository's `AGENTS.md` starts with a short block, the same everywhere and kept in step by the sync script between `<!-- dx:org -->` markers: what the organisation's rules are, that nothing starts without an accepted issue, and where the flow is. Below it, only what is the repository's own.
+- **A small command for each step**, `scripts/dx.sh` in this repository, which any clone or fork can run (from a checkout of this repository beside it, or fetched at a pinned version):
+  - `dx issue`: opens an issue with the right form and Type, from flags or by asking.
+  - `dx start <n>`: checks that the issue is accepted and its Type, and creates the branch (`<type>/<n>-<slug>`).
+  - `dx check`: the conventions, the gate as CI will see it, and the local review.
+  - `dx pr`: opens the pull request with the template filled and `Closes #<n>`.
+  
+  It works the same on a fork: the issue is read from the upstream repository.
+- **Errors that say what to do.** Every check that fails names the step of the flow that was skipped and the command that fixes it.
+
 ## Order
 
 Each step is one pull request here (with its accepted issue) or one change of settings, and the next starts when the maintainer says so.
@@ -60,7 +75,8 @@ Each step is one pull request here (with its accepted issue) or one change of se
    - The accepted-issue gate reads the native issue Type.
    - The organisation's issue forms set it.
    - A new `org-pull-request.yml`, the pipeline as one workflow a ruleset can require: it reads each repository's policy and kind from the repository itself.
-   - `labels.yml`, `repos.yml` and `scripts/sync-repos.sh`.
+   - `labels.yml`, `repos.yml` and `scripts/sync-repos.sh` (labels, settings, `CODEOWNERS` and the `AGENTS.md` opening block).
+   - `docs/agents.md` and `scripts/dx.sh`, the agent's flow and its commands.
    - The README's adoption section rewritten for the organisation.
 
    Breaking: v4's `type:*` labels on issues no longer count.
@@ -77,7 +93,7 @@ When the maintainer asks a repository to adopt this:
 
 1. Open the issue for it (the maintenance-task form, Type Task) and wait until the maintainer accepts it.
 2. On a branch:
-   - Delete what the organisation now provides: `.github/ISSUE_TEMPLATE/`, `.github/pull_request_template.md`, `SECURITY.md`, `CONTRIBUTING.md` (unless it has something of its own: then keep only that, linking to the organisation's), `.github/CODEOWNERS`, `pull-request.yml` and `pull-request-edited.yml`.
+   - Delete what the organisation now provides: `.github/ISSUE_TEMPLATE/`, `.github/pull_request_template.md`, `SECURITY.md`, `CONTRIBUTING.md` (unless it has something of its own: then keep only that, linking to the organisation's), `pull-request.yml` and `pull-request-edited.yml`. Keep `CODEOWNERS`.
    - Keep `issues.yml`, `pull-request-comments.yml`, the `-wp` callers, `dependabot.yml` and `review-policy.yml`, on `@v5`.
 3. Update `AGENTS.md`:
    - "Start from an issue": the native Type must fit the pull request.
