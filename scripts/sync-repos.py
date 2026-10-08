@@ -248,6 +248,44 @@ def self_test():
     check("repos.yml: settings, security and files", isinstance(conf.get("settings"), dict) and isinstance(conf.get("security"), dict) and ".github/CODEOWNERS" in (conf.get("files") or {}), conf)
     block_file = open(os.path.join(CENTRAL, "agents-block.md"), encoding="utf-8").read()
     check("agents-block.md: carries both markers", block_file.startswith(START) and block_file.rstrip().endswith(END))
+    # drift() against a stand-in for gh: one repository with a label of
+    # another colour, a missing one, a setting off, CODEOWNERS different and
+    # AGENTS.md without the block.
+    global gh
+    real = gh
+
+    class Out:
+        def __init__(self, stdout="", returncode=0, stderr=""):
+            self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
+
+    def fake(*args, check=True, input_text=None):
+        joined = " ".join(args)
+        if args[:2] == ("label", "list"):
+            return Out(json.dumps([{"name": "accepted", "color": "000000", "description": "x"}]))
+        if joined.startswith("api repos/o/r/contents/.github/CODEOWNERS"):
+            return Out("* @someone-else\n")
+        if joined.startswith("api repos/o/r/contents/AGENTS.md"):
+            return Out("# AGENTS.md\n\nMine.\n")
+        if joined.startswith("api repos/o/r"):
+            return Out(json.dumps({"allow_squash_merge": True, "allow_merge_commit": True}))
+        return Out("", 1, "HTTP 404")
+    globals()["gh"] = fake
+    try:
+        global ORG
+        saved, ORG = ORG, "o"
+        lines = drift({"name": "r"}, {"settings": {"allow_squash_merge": True, "allow_merge_commit": False, "has_wiki": False}, "files": {".github/CODEOWNERS": "* @soydiloreto\n"}},
+                      [{"name": "accepted", "color": "0E8A16", "description": "y"}, {"name": "planned", "color": "0E8A16"}], block)
+    finally:
+        ORG = saved
+        globals()["gh"] = real
+    text = "\n".join(lines)
+    check("drift: a label of another colour", "label `accepted` has another colour" in text, lines)
+    check("drift: a missing label", "label `planned` is missing" in text, lines)
+    check("drift: a setting off", "setting `allow_merge_commit` is `True`" in text, lines)
+    check("drift: a setting the token cannot read", "setting `has_wiki` cannot be read" in text, lines)
+    check("drift: a file that differs", "`.github/CODEOWNERS` differs" in text, lines)
+    check("drift: AGENTS.md without the block", "does not carry the organisation's current block" in text, lines)
+    check("drift: a setting in step is not reported", "allow_squash_merge" not in text, lines)
     if not failed:
         print("all tests passed")
     return 1 if failed else 0

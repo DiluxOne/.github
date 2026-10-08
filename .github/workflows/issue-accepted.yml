@@ -56,7 +56,10 @@ jobs:
             --jq "[.data.repository.issue.timelineItems.nodes[] | (.subject // (select(.willCloseTarget) | .source)) | select(. != null and .state == \"OPEN\" and .repository.nameWithOwner == \"$GITHUB_REPOSITORY\") | \"\(.number) \(.headRefOid)\"] | unique | .[]")
           if [ -z "$prs" ]; then echo "No open pull request closes #$NUMBER."; exit 0; fi
           while read -r pr sha; do
-            run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$WORKFLOW" --commit "$sha" --limit 1 --json databaseId,conclusion --jq '.[0] | select(.conclusion == "failure") | .databaseId' 2>/dev/null || true)
+            # By name through the API: `gh run list --workflow` cannot find a
+            # workflow the organisation requires, which no file here holds.
+            run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$sha&per_page=100" \
+              --jq "[.workflow_runs[] | select(.name == \"$WORKFLOW\")] | sort_by(.created_at) | last | select(.conclusion == \"failure\") | .id" 2>/dev/null || true)
             if [ -n "$run" ]; then
               gh run rerun "$run" --repo "$GITHUB_REPOSITORY" --failed
               echo "#$pr: re-ran the failed jobs of run $run."
