@@ -14,11 +14,12 @@ request template, issue forms) unless it has its own. The rules for contributors
    is open, in the same repository and carries the `accepted` label, added
    by a person. A bot's label never counts, so no automation can accept an
    issue, and only people with triage access or more can label one. The
-   issue's type must fit the pull request's: a `feat` (or any `!`) closes an
-   issue labelled `type:feat` or `type:breaking`, a `fix` one labelled
-   `type:fix`; the issue forms set it (bug → `type:fix`, feature →
-   `type:feat`, docs → `type:docs`, maintenance task → `type:chore`) and a
-   maintainer corrects it when accepting. So an accepted bug report cannot
+   issue's **Type** (GitHub's own field: the organisation's Feature, Bug,
+   Task and Docs) must fit the pull request's: a `feat` (or any `!`) closes
+   a Feature, a `fix` a Bug; the issue forms set it (bug → Bug, feature →
+   Feature, docs → Docs, maintenance task → Task) and a maintainer corrects
+   it when accepting. Priority and Projects are the maintainer's, set when
+   accepting. So an accepted bug report cannot
    carry a feature in. Bots'
    own pull requests (Dependabot, releases) are exempt. This is where a
    feature that is already planned, or that belongs to a paid add-on, is
@@ -177,9 +178,7 @@ how to add a rule and how to add a kind; the one kind today is
    repository and added to the bypass list of the tag-creation ruleset, as
    an Integration. Dependabot alerts and updates, private vulnerability
    reporting. The `dilux-bot` App must be installed on the repository. The
-   review creates its own labels (`type:*` among them, which the issue forms
-   use too; create them before the first issue if the review has not run
-   yet); create `accepted` by hand (the label a
+   review creates its own labels; create `accepted` by hand (the label a
    maintainer puts on an issue to accept it), and keep the triage role, the
    only one below write that can label, for people you trust to accept
    work.
@@ -249,14 +248,31 @@ That pull request is red on the same strict check, for the same reason, so
 an administrator merges it past the required check, deliberately; the pull
 request that needed the code then passes.
 
+## What every repository shares, and how it stays in step
+
+The organisation holds what GitHub lets it hold: the issue Types (Feature, Bug, Task, Docs) and fields (Priority), the Projects, the rulesets, the secrets and Apps, and the community files of this repository (issue forms, pull request template, `CONTRIBUTING.md`, `SECURITY.md`, `SUPPORT.md`, code of conduct), which GitHub uses for every repository that has none of its own. What it does not hold lives here and [`scripts/sync-repos.py`](scripts/sync-repos.py) brings it to every repository:
+
+- [`labels.yml`](labels.yml): every label the workflows and people use (`accepted` among them).
+- [`repos.yml`](repos.yml): the merge and security settings, and the files GitHub reads only from the repository (`.github/CODEOWNERS`).
+- [`agents-block.md`](agents-block.md): the opening of every `AGENTS.md`, the organisation's rules for any agent, between `dx:org` markers.
+
+```bash
+python3 scripts/sync-repos.py all --dry-run          # what would change, everywhere
+python3 scripts/sync-repos.py labels                  # labels, through the API
+python3 scripts/sync-repos.py settings --repo NAME    # one repository's settings
+python3 scripts/sync-repos.py files                   # CODEOWNERS and the AGENTS.md block, as a pull request per repository
+```
+
+Labels and settings change through the API. Files never go straight to `main`: for each repository that differs, the script opens an issue (Type Task) and a pull request that closes it, and the maintainer accepts the issue and merges. A maintainer runs it, signed in to `gh` as an owner of the organisation.
+
 ## Migrating a repository from `v3` to `v4`
 
 `v4` brings the accepted-issue gate: from the moment a repository points at
 `v4`, every pull request that is not a bot's must close an accepted issue.
 
-1. Create the `accepted` label and the `type:*` labels (`feat`, `fix`,
-   `docs`, `chore`, `breaking` at least), and give a repository with its own
-   issue forms the `type:*` label of each, as the organisation's forms do.
+1. Create the `accepted` label (`scripts/sync-repos.py labels` does), and
+   give each of a repository's own issue forms a `type:` key with its issue
+   Type (Bug, Feature, Docs, Task), as the organisation's forms do.
 2. Grant `issues: read` to the `conventions` job in `pull-request.yml` (or
    `pull-request-wp.yml`) and `pull-request-edited.yml`; without it the
    workflow fails to start.
@@ -285,6 +301,8 @@ ref (default `v4`), not at the ref of its `uses:` line: a caller that pins
 | [`auto-merge.yml`](.github/workflows/auto-merge.yml) | Turns GitHub's auto-merge on or off from the review's outputs and commits the description verbatim. `pull-request-edited.yml` runs it on `edited` too. | the five review outputs |
 | [`scripts/conventions.sh`](scripts/conventions.sh) | Not a workflow: the conventions a pull request is held to (branch, title, every commit header, no session trailer, description sections, no "Generated with" footer, a `docs` title that changes only docs, the size limit). `conventions.yml` runs it on a pull request, `local-review.sh` before one; `--test` for its own tests. | env: `BRANCH`, `TITLE`, `BODY`, `BASE`, `HEAD_REF`, `COMMENTS_FILE`, `REVIEW_BOT`, `MAX_HEADER`, `SECTIONS`, `LABELS`, `AUTHOR_TYPE`, `MAX_LINES` |
 | [`scripts/issue-gate.sh`](scripts/issue-gate.sh) | Not a workflow: the accepted-issue gate. Asks GitHub which issues the pull request closes and passes when one is open, in the same repository and carries the policy's label, added last by a person. `--test` for its own tests. | env: `REQUIRED`, `LABEL`, `AUTHOR_TYPE`, `GITHUB_REPOSITORY`, `PR`, `GH_TOKEN` |
+| [`scripts/dx.sh`](scripts/dx.sh) | Not a workflow: the flow of [`docs/agents.md`](docs/agents.md), one command per step, from a clone or a fork: `dx issue`, `dx start <n>` (checks the issue is accepted, makes the branch and the description), `dx check` (the local review), `dx pr`. `--test` for its own tests. | `issue`, `start`, `check`, `pr` |
+| [`scripts/sync-repos.py`](scripts/sync-repos.py) | Not a workflow: brings `labels.yml`, `repos.yml` and `agents-block.md` to every repository (labels and settings through the API, files as a pull request per repository). `--test` for its own tests. | `labels`, `settings`, `files`, `all`; `--repo`, `--dry-run` |
 | [`scripts/triage-brief.sh`](scripts/triage-brief.sh) | Not a workflow: the issue triage's public brief (the issue, the open issues, the roadmap, README and readme.txt, the versions, where questions go), never the paid roadmap. Both triage jobs build their brief with it. `--test` for its own tests. | env: `NUMBER`, `TITLE`, `BODY`, `AUTHOR`, `ROADMAP`, `SUPPORT_URL`, `DEV_TAG`, `GH_TOKEN`; `<out-file>` |
 | [`scripts/triage-act.sh`](scripts/triage-act.sh) | Not a workflow: what the triage does with a verdict: its labels, the reply with the AI line and a record, the lock of a security report. `--test` for its own tests, with a stand-in for gh. | env: `VERDICT`, `REPLY`, `SUMMARY`, `NUMBER`, `MAINTAINER`, `MODEL`, `COST`, `GH_TOKEN` |
 | [`scripts/triage-reply.sh`](scripts/triage-reply.sh) | Not a workflow: the triage's fixed replies when it read a paid add-on's private roadmap (a paid, planned, new or by-design request), in English, Spanish or Portuguese, and the plain fallback when the reply written without the roadmap fails. `--test` for its own tests. | `<category> <language>` |

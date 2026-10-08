@@ -1,0 +1,40 @@
+# The settings every repository of the organisation has, applied by
+# scripts/sync-repos.py through the API. What GitHub lets the organisation
+# hold itself (rulesets, issue types and fields, Projects, secrets, the
+# community files of this repository) is not here.
+
+# Repositories the script leaves alone.
+exclude:
+  - ards-web   # a client's site, moving to the maintainer's account (docs/plans/org-first.md)
+
+# Merging: squash only, the pull request's title and description as the
+# commit, the branch deleted, auto-merge allowed (the policy decides when).
+settings:
+  allow_squash_merge: true
+  allow_merge_commit: false
+  allow_rebase_merge: false
+  allow_auto_merge: true
+  delete_branch_on_merge: true
+  squash_merge_commit_title: PR_TITLE
+  squash_merge_commit_message: PR_BODY
+  has_issues: true
+  has_wiki: false
+
+# Security: Dependabot alerts everywhere; private vulnerability reporting,
+# secret scanning and push protection where GitHub offers them (public
+# repositories on this plan).
+security:
+  vulnerability_alerts: true
+  private_vulnerability_reporting: public-only
+  secret_scanning: public-only
+
+# Files every repository carries because GitHub reads them only from the
+# repository. They reach it as a pull request that closes an issue the
+# script opens there, never straight to main.
+files:
+  .github/CODEOWNERS: |
+    # Who is asked to review a pull request. The organisation's rulesets do
+    # not require code-owner approval; this only puts every pull request in
+    # the maintainer's queue. Kept in step by DiluxOne/.github
+    # (scripts/sync-repos.py).
+    * @soydiloreto

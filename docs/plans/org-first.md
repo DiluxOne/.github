@@ -14,7 +14,7 @@ The rule: **what is the same for every repository is configured once, at the org
 | Protection of `main` and of release tags | **Organisation rulesets**, all repositories | One ruleset for `main` (pull request only, squash, linear history, conversations resolved, required checks) and two for `X.Y.Z` tags (created only by administrators and the release App; never moved or deleted) |
 | The pull request pipeline: conventions, the accepted-issue gate, the Claude review, the auto-merge decision | A **required workflow** in this repository, demanded by the organisation's `main` ruleset | Runs on every pull request of every repository with no file in it. Its jobs keep today's names (`conventions / …`, `review / Claude review`), so the required checks do not change. As today, the conventions and the gate run on a fork's pull request with a read-only token and no secret, and the review, which needs secrets, skips forks |
 | Issue forms, pull request template, `CONTRIBUTING.md`, `SECURITY.md`, `SUPPORT.md`, code of conduct | This repository's community files | GitHub's defaults for every repository that has none of its own |
-| Labels (`accepted`, the triage's, the review's) | `labels.yml` here | `scripts/sync-repos.sh`, run by the maintainer, creates or updates them everywhere |
+| Labels (`accepted`, the triage's, the review's) | `labels.yml` here | `scripts/sync-repos.py`, run by the maintainer, creates or updates them everywhere |
 | Merge and security settings (squash only, auto-merge, delete branch, squash title and body from the pull request, Dependabot alerts, secret scanning where the plan has it) | `repos.yml` here | The same script |
 | Secrets and the bots (`dilux-bot`, `dilux-release`) | Organisation secrets and Apps | Already there |
 
@@ -75,7 +75,7 @@ Each step is one pull request here (with its accepted issue) or one change of se
    - The accepted-issue gate reads the native issue Type.
    - The organisation's issue forms set it.
    - A new `org-pull-request.yml`, the pipeline as one workflow a ruleset can require: it reads each repository's policy and kind from the repository itself.
-   - `labels.yml`, `repos.yml` and `scripts/sync-repos.sh` (labels, settings, `CODEOWNERS` and the `AGENTS.md` opening block).
+   - `labels.yml`, `repos.yml` and `scripts/sync-repos.py` (labels, settings, `CODEOWNERS` and the `AGENTS.md` opening block).
    - `docs/agents.md` and `scripts/dx.sh`, the agent's flow and its commands.
    - The README's adoption section rewritten for the organisation.
 
@@ -102,4 +102,4 @@ When the maintainer asks a repository to adopt this:
 4. Pull requests already open close an accepted issue too (`Closes #<n>`).
 5. A repository still on v2 moves through v3 first ("Migrating from v2 to v3" in the README).
 
-The maintainer runs `scripts/sync-repos.sh` for the labels and settings, which it changes through the API, and deletes the repository's own rulesets once the organisation's are active. What the script writes into files (`CODEOWNERS`, the opening block of `AGENTS.md`) never goes straight to `main`: it opens one pull request per repository, closing an issue it opens there for the maintainer to accept, like any other change.
+The maintainer runs `scripts/sync-repos.py` for the labels and settings, which it changes through the API, and deletes the repository's own rulesets once the organisation's are active. What the script writes into files (`CODEOWNERS`, the opening block of `AGENTS.md`) never goes straight to `main`: it opens one pull request per repository, closing an issue it opens there for the maintainer to accept, like any other change.

@@ -1,0 +1,58 @@
+# Every label the organisation's workflows and people use, the same in every
+# repository. scripts/sync-repos.py creates them or brings their colour and
+# description in line; it never deletes a label a repository added.
+#
+# The issue's kind is not a label: it is the native issue Type (Feature,
+# Bug, Task, Docs, set at the organisation). The type:* labels below are on
+# pull requests only, where the review sets them from the diff.
+
+# The maintainer's decision: a pull request may close this issue.
+- {name: accepted, color: "0E8A16", description: "A maintainer accepted this issue; a pull request may close it"}
+
+# The issue triage (issue-triage.yml).
+- {name: needs-triage, color: "E4E669", description: "Not looked at yet"}
+- {name: "bug:unconfirmed", color: "D93F0B", description: "A bug report worth a reproduction attempt (repro:run starts one)"}
+- {name: needs-info, color: "E4E669", description: "Waiting for versions, steps or logs"}
+- {name: by-design, color: "BFDADC", description: "Works as documented, or a known limitation"}
+- {name: pro-feature, color: "5319E7", description: "Needs the paid service or add-on"}
+- {name: planned, color: "0E8A16", description: "Already planned"}
+- {name: exists-in-pro, color: "5319E7", description: "A paid product already has it"}
+- {name: question, color: "D876E3", description: "A usage question; the support channel has it"}
+- {name: security, color: "B60205", description: "A vulnerability; report it privately"}
+- {name: enhancement, color: "A2EEEF", description: "New feature or request"}
+- {name: duplicate, color: "CFD3D7", description: "An open issue already covers it"}
+
+# The reproduction (issue-repro.yml).
+- {name: "repro:run", color: "FBCA04", description: "A maintainer asks for a reproduction attempt"}
+- {name: "repro:again", color: "FBCA04", description: "Ask for another reproduction attempt"}
+- {name: "bug:confirmed", color: "B60205", description: "Reproduced by a failing test"}
+- {name: could-not-reproduce, color: "FBCA04", description: "The reproduction attempt found nothing"}
+
+# The review, on pull requests (claude-review.yml).
+- {name: "risk:low", color: "0E8A16", description: "Set by the Claude review"}
+- {name: "risk:medium", color: "FBCA04", description: "Set by the Claude review"}
+- {name: "risk:high", color: "D93F0B", description: "Set by the Claude review"}
+- {name: "complexity:low", color: "0E8A16", description: "Set by the Claude review"}
+- {name: "complexity:medium", color: "FBCA04", description: "Set by the Claude review"}
+- {name: "complexity:high", color: "D93F0B", description: "Set by the Claude review"}
+- {name: "review:full", color: "5319E7", description: "Ask the Claude review for a full pass on the next push"}
+- {name: "type:breaking", color: "0075CA", description: "The kind of change, read from the diff by the Claude review"}
+- {name: "type:feat", color: "0075CA", description: "The kind of change, read from the diff by the Claude review"}
+- {name: "type:fix", color: "0075CA", description: "The kind of change, read from the diff by the Claude review"}
+- {name: "type:perf", color: "0075CA", description: "The kind of change, read from the diff by the Claude review"}
+- {name: "type:refactor", color: "0075CA", description: "The kind of change, read from the diff by the Claude review"}
+- {name: "type:style", color: "0075CA", description: "The kind of change, read from the diff by the Claude review"}
+- {name: "type:docs", color: "0075CA", description: "The kind of change, read from the diff by the Claude review"}
+- {name: "type:test", color: "0075CA", description: "The kind of change, read from the diff by the Claude review"}
+- {name: "type:ci", color: "0075CA", description: "The kind of change, read from the diff by the Claude review"}
+- {name: "type:build", color: "0075CA", description: "The kind of change, read from the diff by the Claude review"}
+- {name: "type:chore", color: "0075CA", description: "The kind of change, read from the diff by the Claude review"}
+- {name: "type:revert", color: "0075CA", description: "The kind of change, read from the diff by the Claude review"}
+- {name: "version:major", color: "B60205", description: "A maintainer makes the next release a major"}
+- {name: "version:minor", color: "FBCA04", description: "A maintainer makes the next release a minor"}
+- {name: "version:patch", color: "0E8A16", description: "A maintainer makes the next release a patch"}
+
+# Dependabot and the weekly run.
+- {name: dependencies, color: "0366D6", description: "Updates a dependency"}
+- {name: github-actions, color: "000000", description: "Updates a GitHub Action"}
+- {name: "ci:weekly", color: "B60205", description: "The weekly run failed"}

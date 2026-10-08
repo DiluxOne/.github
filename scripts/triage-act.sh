@@ -13,7 +13,7 @@
 set -euo pipefail
 
 act() {
-  local category label reply record dup
+  local category label reply record dup kind
   if ! printf '%s' "${VERDICT:-}" | jq -e .category >/dev/null 2>&1; then
     echo "::warning::No classification came back; the issue stays as it is for a human."
     gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label needs-triage >/dev/null 2>&1 || true
@@ -37,6 +37,16 @@ act() {
     *) echo "::warning::Unknown category '$category'; the issue waits for a person."; label="needs-triage";;
   esac
   gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "$label" --remove-label needs-triage >/dev/null 2>&1 || gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "$label" >/dev/null
+  # An issue opened outside the forms (an agent, the API) has no Type: the
+  # category gives it one. A Type someone set is never changed.
+  case $category in
+    bug_unconfirmed|needs_info) kind=Bug;;
+    pro_feature|planned|enhancement) kind=Feature;;
+    *) kind="";;
+  esac
+  if [ -n "$kind" ] && [ -z "$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" --jq '.type.name // ""' 2>/dev/null)" ]; then
+    gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/$NUMBER" -f type="$kind" >/dev/null 2>&1 || echo "::warning::Could not set #$NUMBER's Type to $kind."
+  fi
   reply=${REPLY:-}
   [ -n "${reply//[[:space:]]/}" ] || reply="Thanks! A maintainer will take a look."
   # The original is named only when it is an open issue of this repository,
@@ -61,7 +71,7 @@ if [ "${1:-}" = "--test" ]; then
   fail=0
   log=$(mktemp)
   # A stand-in for gh that records every call, one line each.
-  gh() { printf '%s\n' "$*" | tr '\n' ' ' >> "$log"; echo >> "$log"; case "$*" in "issue view 3 "*) echo OPEN;; "issue view 4 "*) echo CLOSED;; esac; }
+  gh() { printf '%s\n' "$*" | tr '\n' ' ' >> "$log"; echo >> "$log"; case "$*" in "issue view 3 "*) echo OPEN;; "issue view 4 "*) echo CLOSED;; "api repos/o/r/issues/7 --jq"*) echo "${HAS_TYPE:-}";; esac; }
   t() {
     local name=$1 want=$2
     : > "$log"
@@ -78,6 +88,9 @@ if [ "${1:-}" = "--test" ]; then
   VERDICT='{"category":"duplicate","duplicate_of":31337}' REPLY=x SUMMARY=s t "nor does the record carry it" '"duplicate_of":null'
   VERDICT='{"category":"needs_info","duplicate_of":3}' REPLY=x SUMMARY=s t "a number outside a duplicate is not recorded" '"duplicate_of":null'
   VERDICT='{"category":"duplicate","duplicate_of":3}' REPLY=x SUMMARY=s t "a real duplicate is recorded" '"duplicate_of":3'
+  VERDICT='{"category":"needs_info"}' REPLY=x SUMMARY=s t "an issue with no Type gets the category's" "api -X PATCH repos/o/r/issues/7 -f type=Bug"
+  VERDICT='{"category":"enhancement"}' REPLY=x SUMMARY=s t "a request gets Feature" "api -X PATCH repos/o/r/issues/7 -f type=Feature"
+  : > "$log"; if ( VERDICT='{"category":"enhancement"}' REPLY=x SUMMARY=s HAS_TYPE=Bug NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m act >/dev/null 2>&1; grep -q "type=Feature" "$log" ); then echo "FAIL a Type someone set is kept"; fail=1; else echo "ok   a Type someone set is kept"; fi
   VERDICT='{"category":"security"}' REPLY=x SUMMARY=s t "a security report is locked" "issue lock 7"
   VERDICT='' REPLY=x SUMMARY=s t "no verdict waits for a person" "--add-label needs-triage"
   VERDICT='{"category":"nonsense"}' REPLY=x SUMMARY=s t "an unknown category waits for a person" "--add-label needs-triage"
