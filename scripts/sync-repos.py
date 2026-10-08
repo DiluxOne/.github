@@ -215,9 +215,9 @@ def drift(repo, conf, labels, block, current=0):
                     texts.append(out.stdout)
         old = old_versions(texts, current)
         if not any(CALLS_RE.search(t) for t in texts) and repo["name"] not in (conf.get("no-workflows") or []):
-            found.append("calls none of the shared workflows (docs/adopting.md)")
+            found.append("calls none of the shared workflows (README, \"Adopt it in a new repository\")")
         if old:
-            found.append(f"calls the shared workflows at {', '.join('@v' + str(v) for v in old)}; the current is @v{current} (docs/migrating.md)")
+            found.append(f"calls the shared workflows at {', '.join('@v' + str(v) for v in old)}; the current is @v{current} (README, \"Migrating a repository\")")
     have = {l["name"]: l for l in json.loads(gh("label", "list", "--repo", full, "--limit", "1000", "--json", "name,color,description").stdout)}
     for label in labels:
         name = str(label["name"])
