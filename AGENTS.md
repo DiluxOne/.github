@@ -39,6 +39,7 @@ Rules for any coding agent working in `DiluxOne/.github`.
   caught comes with that test, in the same pull request: what was found once
   is not left to the next review to find again. Every script carries its
   `--test`, run by the scripts job.
-- Keep `README.md`, `CONTRIBUTING.md`, `kinds/README.md`, the review
+- Keep `README.md` (short: what this is, the flow, links), `docs/` (the
+  details), `CONTRIBUTING.md`, `kinds/README.md`, the review
   profiles, the packs, the workflow templates and the workflow header
   comments in step with what the workflows do, in the same PR.
