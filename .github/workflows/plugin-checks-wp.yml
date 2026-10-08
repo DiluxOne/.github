@@ -7,7 +7,9 @@ name: WordPress plugin checks (fast)
 # back and Plugin Check misses: kinds/wordpress-plugin/rules.yml, run by
 # scripts/review-rules.php), readme/version alignment, and the version
 # markers against what was released (scripts/release-markers.sh). Opt-in:
-# the shipped translations complete, CodeQL. Each job is its own status check.
+# the shipped translations complete, CodeQL, and a required plugin that
+# wordpress.org does not have yet, from the organisation (Plugin Check
+# needs it active). Each job is its own status check.
 #
 # The kind's settings (Plugin Check's strictness, categories and the codes it
 # never reports) and its rules come from the pack, not from this file; a
@@ -36,6 +38,10 @@ name: WordPress plugin checks (fast)
 #         php-versions: '["7.4","8.0","8.1","8.2","8.3","8.4","8.5"]'  # the default
 #         translations-complete: true                  # optional: languages/*.po complete
 #         codeql-languages: javascript-typescript      # optional: CodeQL on the code
+#         # optional: a required plugin wordpress.org does not have (yet)
+#         requires-plugins-from: diluxone-users=DiluxOne/diluxone-users-wordpress@main
+#       secrets:
+#         DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}   # with requires-plugins-from
 #     tests:
 #       uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v5
 #
@@ -77,6 +83,14 @@ on:
         description: CodeQL languages to analyse (comma-separated, e.g. javascript-typescript); empty skips the job, and so does a private repository (CodeQL needs Code Security there). Results fail the check; nothing is uploaded to code scanning.
         type: string
         default: ''
+      requires-plugins-from:
+        description: The required plugins (Requires Plugins) wordpress.org does not have, one `<slug>=<owner>/<repo>@<ref>` per line, from repositories of this organisation. Plugin Check mounts their shipped tree beside the plugin instead of asking wordpress.org. Needs the DILUX_BOT_PRIVATE_KEY secret.
+        type: string
+        default: ''
+    secrets:
+      # Only with requires-plugins-from: a token that reads those repositories.
+      DILUX_BOT_PRIVATE_KEY:
+        required: false
 
 permissions:
   contents: read
@@ -259,9 +273,65 @@ jobs:
           DEFAULT_POLICY: .dx-central/policy/review-policy.default.yml
         run: bash .dx-central/scripts/changes.sh
 
+  required-plugins:
+    name: Required plugins (from the organisation)
+    # Opt-in (`requires-plugins-from`). Plugin Check's action installs every
+    # plugin the header requires from wordpress.org, and fails on one it does
+    # not list yet (a free plugin still in review, an add-on's own base). Its
+    # shipped tree is fetched here, with a dilux-bot token that reads those
+    # repositories alone, in a job that never checks out the code under
+    # check: the key never shares a job with a pull request's code. A fork's
+    # pull request gets no secret, and this job fails for it. It runs when
+    # Plugin Check does.
+    needs: changes
+    if: ${{ !cancelled() && inputs.requires-plugins-from != '' && (needs.changes.outputs.code != 'false' || needs.changes.outputs.plugin_check != 'false') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref }}
+          path: .dx-central
+          persist-credentials: false
+      - name: The repositories
+        id: repos
+        env:
+          REQUIRES: ${{ inputs.requires-plugins-from }}
+          OWNER: ${{ github.repository_owner }}
+          HAS_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY != '' }}
+        run: |
+          if [ "$HAS_KEY" != true ]; then
+            echo "::error::requires-plugins-from needs the DILUX_BOT_PRIVATE_KEY secret (secrets: in the caller; a fork's pull request gets none)."
+            exit 1
+          fi
+          list=$(bash .dx-central/scripts/required-plugins.sh repos)
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+      - name: dilux-bot token (read those repositories)
+        id: bot
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.repos.outputs.list }}
+          permission-contents: read
+      - name: Their shipped trees
+        env:
+          REQUIRES: ${{ inputs.requires-plugins-from }}
+          OWNER: ${{ github.repository_owner }}
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+        run: bash .dx-central/scripts/required-plugins.sh fetch "$RUNNER_TEMP/required-plugins"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: required-plugins-${{ inputs.slug }}
+          path: ${{ runner.temp }}/required-plugins
+          retention-days: 1
+          include-hidden-files: true
+
   plugin-check:
     name: WordPress Plugin Check
-    needs: changes
+    needs: [changes, required-plugins]
     if: ${{ !cancelled() && (needs.changes.outputs.code != 'false' || needs.changes.outputs.plugin_check != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -290,6 +360,22 @@ jobs:
         run: |
           mkdir -p "build/$SLUG"
           rsync -a --exclude-from=.distignore --exclude=build --exclude=.dx-central ./ "build/$SLUG/"
+      # A required plugin wordpress.org does not have: mounted from the
+      # required-plugins job (a skipped job here would pass the check).
+      - name: The required plugins arrived
+        if: inputs.requires-plugins-from != ''
+        env:
+          RESULT: ${{ needs.required-plugins.result }}
+        run: |
+          [ "$RESULT" = success ] || { echo "::error::The required plugins could not be fetched (the Required plugins job: $RESULT)."; exit 1; }
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: inputs.requires-plugins-from != ''
+        with:
+          name: required-plugins-${{ inputs.slug }}
+          path: ${{ runner.temp }}/required-plugins
+      - name: Mount them beside the plugin
+        if: inputs.requires-plugins-from != ''
+        run: bash .dx-central/scripts/required-plugins.sh wp-env "$RUNNER_TEMP/required-plugins"
       - uses: wordpress/plugin-check-action@10857da14b6c2246d15402b3e69f777edcf8c12e # v1.1.9
         with:
           # Checking the built tree, not the repository, means no exclude
