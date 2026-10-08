@@ -208,9 +208,8 @@ jobs:
             fi
           fi
           if [ -z "$RETIRED" ]; then echo "No retired names."; exit 0; fi
-          # Every caller declares the names on a `retired-names:` line (the
-          # main workflow and pull-request-edited.yml alike): those lines are
-          # the exemption, not one file.
+          # The names are declared on a `retired-names:` line (the policy's,
+          # or a caller's input): those lines are the exemption, not one file.
           if git grep -nIiE "$RETIRED" -- . | grep -vE '^[^:]+:[0-9]+:\s*retired-names:'; then
             echo "::error::A retired product name is back (see the lines above)."
             exit 1
