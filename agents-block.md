@@ -16,8 +16,11 @@ step-by-step flow with its commands is in
    Conventional Commit of 72 characters or fewer (CI rejects more than 100);
    bodies are plain paragraphs, never hard-wrapped; no `Claude-Session:`.
 4. **Check before the pull request** (`dx check`, or the repository's
-   `make pre-pr`) and open it only when the person you work for says so.
+   `make pre-pr`) and open it (`dx pr`) only when the person you work for
+   says so.
 5. **Never** push to `main`, create or move a tag, or approve a release.
 6. **Say AI took part** with one line at the end of what you write on GitHub:
-   `🤖 AI-assisted · <model> (<maker>)`. Never "Generated with …".
+   `🤖 AI-generated · <model> (<maker>)` when you wrote it,
+   `🤖 AI-assisted · <model> (<maker>)` when a person did with your help.
+   Never "Generated with …".
 <!-- dx:org:end -->

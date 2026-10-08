@@ -62,6 +62,9 @@ def with_block(agents, block):
     """AGENTS.md with the organisation's block: replaced between its markers,
     or put right after the first heading when it has none."""
     block = block.rstrip("\n") + "\n"
+    if agents.count(START) > 1 or agents.count(END) > 1 or (START in agents) != (END in agents) \
+            or (START in agents and agents.index(END) < agents.index(START)):
+        raise ValueError("AGENTS.md has a broken dx:org block (a marker missing, repeated or out of order); fix it by hand")
     if START in agents and END in agents:
         before = agents[: agents.index(START)]
         after = agents[agents.index(END) + len(END):]
@@ -136,12 +139,23 @@ def sync_files(repo, conf, block, dry):
     body = ("The organisation keeps some files the same in every repository, because GitHub reads them only from "
             f"the repository: {changed} differ here from DiluxOne/.github (repos.yml, agents-block.md). "
             "This brings them in step.\n\n🤖 AI-generated · scripts/sync-repos.py")
-    url = gh("issue", "create", "--repo", full, "--title", "Keep the organisation's shared files in step", "--body", body).stdout.strip()
-    number = url.rsplit("/", 1)[-1]
-    gh("api", "-X", "PATCH", f"repos/{full}/issues/{number}", "-f", "type=Task", check=False)
+    # A run that failed half way left its issue (and maybe its branch): reuse
+    # them instead of opening a second one.
+    title = "Keep the organisation's shared files in step"
+    found = json.loads(gh("issue", "list", "--repo", full, "--state", "open", "--search", f"in:title \"{title}\"", "--json", "number,title").stdout)
+    found = [i for i in found if i["title"] == title]
+    if found:
+        number = str(found[0]["number"])
+        print(f"  reusing the open issue #{number}")
+    else:
+        url = gh("issue", "create", "--repo", full, "--title", title, "--body", body).stdout.strip()
+        number = url.rsplit("/", 1)[-1]
+    if gh("api", "-X", "PATCH", f"repos/{full}/issues/{number}", "-f", "type=Task", check=False).returncode != 0:
+        print(f"  warning: could not set #{number}'s Type to Task; set it by hand")
     branch = f"chore/{number}-org-shared-files"
-    base = json.loads(gh("api", f"repos/{full}/git/ref/heads/{default}").stdout)["object"]["sha"]
-    gh("api", "-X", "POST", f"repos/{full}/git/refs", "-f", f"ref=refs/heads/{branch}", "-f", f"sha={base}")
+    if gh("api", f"repos/{full}/git/ref/heads/{branch}", check=False).returncode != 0:
+        base = json.loads(gh("api", f"repos/{full}/git/ref/heads/{default}").stdout)["object"]["sha"]
+        gh("api", "-X", "POST", f"repos/{full}/git/refs", "-f", f"ref=refs/heads/{branch}", "-f", f"sha={base}")
     for path, content in wanted.items():
         current = gh("api", f"repos/{full}/contents/{path}?ref={branch}", "--jq", ".sha", check=False)
         payload = {"message": f"chore: keep {path} in step with the organisation", "branch": branch,
@@ -173,6 +187,12 @@ def self_test():
     newer = with_block(once, block.replace("RULES", "NEW RULES"))
     check("a new block replaces the old one, and only it", "NEW RULES" in newer and "\nRULES" not in newer.replace("NEW RULES", "") and newer.endswith("Intro.\n\n## Mine\n"), newer)
     check("no heading: the block goes first", with_block("Just text.\n", block).startswith(START))
+    for name, broken in (("a start with no end", f"# A\n{START} -->\nx\n"), ("an end before the start", f"# A\n{END}\n{START} -->\n"), ("two blocks", once + once)):
+        try:
+            with_block(broken, block)
+            check(f"a broken block fails: {name}", False, "no error")
+        except ValueError:
+            check(f"a broken block fails: {name}", True)
     labels = load_yaml(os.path.join(CENTRAL, "labels.yml"))
     names = [str(l["name"]) for l in labels]
     check("labels.yml: every label has a name, a colour and no repeat", all(re.fullmatch(r"[0-9A-F]{6}", str(l["color"])) for l in labels) and len(names) == len(set(names)), names)
@@ -208,7 +228,7 @@ def main(argv):
                 sync_settings(repo, conf, dry)
             if what in ("files", "all"):
                 sync_files(repo, conf, block, dry)
-        except (RuntimeError, subprocess.CalledProcessError) as exc:
+        except (RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
             failures += 1
             print(f"  failed: {exc}")
     return 1 if failures else 0

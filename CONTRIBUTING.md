@@ -8,6 +8,10 @@ Thanks for helping. This is the default guide for every DiluxOne repository; a r
 - **Security problems** go through private vulnerability reporting, never a public issue. See [SECURITY.md](SECURITY.md).
 - **Bugs and ideas** go to the repository's issues, using its templates.
 
+## Working with an AI agent
+
+Most work here is done with AI agents. Point yours at the repository's `AGENTS.md`: it opens with the organisation's rules, and the step-by-step flow, with a command for each step (`dx issue`, `dx start`, `dx check`, `dx pr`), is in [`docs/agents.md`](docs/agents.md). It works the same from a fork.
+
 ## Start from an issue
 
 Every change starts as an issue: features, fixes and docs alike, maintainers included. Open one with the repository's template (or find the one that already describes it) and wait until a maintainer accepts it, which they do by adding the `accepted` label. The template sets the issue's **Type** (Bug, Feature, Docs or Task), and the pull request's type must fit it: a `feat` closes a Feature, a `fix` a Bug. A maintainer sets the Priority and the Project when accepting. Then write the code, and say `Closes #<number>` in the pull request's description. CI fails a pull request that closes no accepted issue; bots' own pull requests (Dependabot, releases) are exempt.
