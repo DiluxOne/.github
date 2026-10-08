@@ -5,8 +5,10 @@ Rules for any coding agent working in `DiluxOne/.github`.
 - This repository defines how every DiluxOne repository is checked, reviewed,
   merged and released. A mistake here reaches all of them at once. Every change
   is high risk and is merged by a human, except one that touches only the
-  pages people read (README.md, docs/ but docs/agents.md, profile/), which can
-  merge on its own like a docs change anywhere (.github/review-policy.yml).
+  pages people read (README.md, profile/, and docs/ but what agents and the
+  review read as rules: docs/agents.md, docs/architecture.md,
+  docs/testing-and-quality.md), which can merge on its own like a docs change
+  anywhere (.github/review-policy.yml).
 - Workflows are reusable (`on: workflow_call`) unless they are specific to this
   repository. Name them after what they do; add a stack suffix (`-wp`) only
   when the steps are stack-specific.
