@@ -33,7 +33,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CENTRAL = os.path.join(HERE, "..")
 START = "<!-- dx:org:start"
 END = "<!-- dx:org:end -->"
-BRANCH_PREFIX = "chore/org-shared-files"
 
 
 def load_yaml(path):
@@ -54,7 +53,9 @@ def gh(*args, check=True, input_text=None):
 
 
 def repositories(only, exclude):
-    rows = json.loads(gh("repo", "list", ORG, "--no-archived", "--limit", "300", "--json", "name,visibility,isFork,defaultBranchRef").stdout)
+    rows = json.loads(gh("repo", "list", ORG, "--no-archived", "--limit", "1000", "--json", "name,visibility,isFork,defaultBranchRef").stdout)
+    if len(rows) >= 1000:
+        raise SystemExit("more than 1000 repositories: the list would be cut; raise the limit")
     return [r for r in rows if r["name"] not in exclude and not r["isFork"] and (not only or r["name"] in only)]
 
 
@@ -111,7 +112,7 @@ def sync_settings(repo, conf, dry):
 def sync_files(repo, conf, block, dry):
     full = f"{ORG}/{repo['name']}"
     open_prs = json.loads(gh("pr", "list", "--repo", full, "--state", "open", "--json", "headRefName").stdout)
-    if any(p["headRefName"].startswith(BRANCH_PREFIX) or "-org-shared-files" in p["headRefName"] for p in open_prs):
+    if any(p["headRefName"].endswith("-org-shared-files") for p in open_prs):
         print("  a pull request for the shared files is already open; skipped")
         return
     default = (repo.get("defaultBranchRef") or {}).get("name") or "main"

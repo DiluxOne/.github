@@ -270,9 +270,9 @@ Labels and settings change through the API. Files never go straight to `main`: f
 `v4` brings the accepted-issue gate: from the moment a repository points at
 `v4`, every pull request that is not a bot's must close an accepted issue.
 
-1. Create the `accepted` label, and give a repository's own issue forms the
-   native `type:` of each (Bug, Feature, Docs, Task), as the organisation's
-   forms do.
+1. Create the `accepted` label (`scripts/sync-repos.py labels` does), and
+   give each of a repository's own issue forms a `type:` key with its issue
+   Type (Bug, Feature, Docs, Task), as the organisation's forms do.
 2. Grant `issues: read` to the `conventions` job in `pull-request.yml` (or
    `pull-request-wp.yml`) and `pull-request-edited.yml`; without it the
    workflow fails to start.

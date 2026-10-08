@@ -10,7 +10,7 @@ Thanks for helping. This is the default guide for every DiluxOne repository; a r
 
 ## Working with an AI agent
 
-Most work here is done with AI agents. Point yours at the repository's `AGENTS.md`: it opens with the organisation's rules, and the step-by-step flow, with a command for each step (`dx issue`, `dx start`, `dx check`, `dx pr`), is in [`docs/agents.md`](docs/agents.md). It works the same from a fork.
+Most work here is done with AI agents. Point yours at the repository's `AGENTS.md`: it opens with the organisation's rules, and the step-by-step flow, with a command for each step (`dx issue`, `dx start`, `dx check`, `dx pr`), is in [DiluxOne/.github, `docs/agents.md`](https://github.com/DiluxOne/.github/blob/main/docs/agents.md). It works the same from a fork.
 
 ## Start from an issue
 
