@@ -58,12 +58,22 @@ jobs:
           while read -r pr sha; do
             # By name through the API: `gh run list --workflow` cannot find a
             # workflow the organisation requires, which no file here holds.
-            run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$sha&per_page=100" \
-              --jq "[.workflow_runs[] | select(.name == \"$WORKFLOW\")] | sort_by(.created_at) | last | select(.conclusion == \"failure\") | .id" 2>/dev/null || true)
-            if [ -n "$run" ]; then
-              gh run rerun "$run" --repo "$GITHUB_REPOSITORY" --failed
-              echo "#$pr: re-ran the failed jobs of run $run."
+            if ! last=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$sha&per_page=100" \
+              --jq "[.workflow_runs[] | select(.name == \"$WORKFLOW\")] | sort_by(.created_at) | last | \"\(.id // \"\") \(.status // \"\") \(.conclusion // \"\")\""); then
+              echo "::warning::#$pr: could not list its runs."; continue
+            fi
+            read -r run status conclusion <<< "$last"
+            if [ -z "$run" ]; then
+              echo "#$pr: no run of \"$WORKFLOW\" on its head."
+            elif [ "$status" != completed ]; then
+              echo "::warning::#$pr: its run $run is still $status; re-run it once it ends, or push."
+            elif [ "$conclusion" = failure ]; then
+              if gh run rerun "$run" --repo "$GITHUB_REPOSITORY" --failed; then
+                echo "#$pr: re-ran the failed jobs of run $run."
+              else
+                echo "::warning::#$pr: could not re-run run $run."
+              fi
             else
-              echo "#$pr: no failed run of \"$WORKFLOW\" on its head to re-run."
+              echo "#$pr: its last run $run did not fail ($conclusion); nothing to re-run."
             fi
           done <<< "$prs"

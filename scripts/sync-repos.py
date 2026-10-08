@@ -195,13 +195,14 @@ def drift(repo, conf, labels, block):
             found.append(f"label `{name}` has another colour or description")
     data = json.loads(gh("api", f"repos/{full}").stdout)
     for key, value in (conf.get("settings") or {}).items():
-        if key not in data:
-            found.append(f"setting `{key}` cannot be read with this token")
-        elif data[key] != value:
+        # A token that cannot see a setting says nothing about it: not drift.
+        if key in data and data[key] != value:
             found.append(f"setting `{key}` is `{data[key]}`, not `{value}`")
     default = (repo.get("defaultBranchRef") or {}).get("name") or "main"
     for path, content in (conf.get("files") or {}).items():
         out = gh("api", f"repos/{full}/contents/{path}?ref={default}", "-H", "Accept: application/vnd.github.raw", check=False)
+        if out.returncode != 0 and "404" not in out.stderr:
+            raise RuntimeError(f"could not read {path}: {out.stderr.strip()[:200]}")
         if out.returncode != 0:
             found.append(f"`{path}` is missing")
         elif out.stdout != content:
@@ -282,7 +283,7 @@ def self_test():
     check("drift: a label of another colour", "label `accepted` has another colour" in text, lines)
     check("drift: a missing label", "label `planned` is missing" in text, lines)
     check("drift: a setting off", "setting `allow_merge_commit` is `True`" in text, lines)
-    check("drift: a setting the token cannot read", "setting `has_wiki` cannot be read" in text, lines)
+    check("drift: a setting the token cannot read is not drift", "has_wiki" not in text, lines)
     check("drift: a file that differs", "`.github/CODEOWNERS` differs" in text, lines)
     check("drift: AGENTS.md without the block", "does not carry the organisation's current block" in text, lines)
     check("drift: a setting in step is not reported", "allow_squash_merge" not in text, lines)

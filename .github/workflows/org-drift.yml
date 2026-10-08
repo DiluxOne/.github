@@ -15,6 +15,11 @@ on:
 permissions:
   contents: read
 
+# One check at a time, so two runs never open two issues.
+concurrency:
+  group: org-drift
+  cancel-in-progress: false
+
 jobs:
   drift:
     name: Drift check
