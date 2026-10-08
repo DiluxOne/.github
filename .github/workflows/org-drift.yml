@@ -1,0 +1,78 @@
+name: Repositories in step
+
+# Once a week, and by hand: compares every repository of the organisation with
+# what this repository keeps for all of them (labels.yml, repos.yml,
+# agents-block.md), through scripts/sync-repos.py check, and changes nothing.
+# One issue here, "Repositories out of step", lists what differs: opened or
+# updated when something does, closed when nothing does. Bringing a
+# repository in step stays a maintainer's run of scripts/sync-repos.py.
+
+on:
+  schedule:
+    - cron: '23 9 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    name: Drift check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Every repository the App is installed on, read-only, for the check.
+      - name: dilux-bot token (read, every repository)
+        id: read
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-contents: read
+          permission-issues: read
+          permission-metadata: read
+
+      - name: Compare
+        env:
+          GH_TOKEN: ${{ steps.read.outputs.token }}
+        run: python3 scripts/sync-repos.py check --report "$RUNNER_TEMP/drift.md"
+
+      - name: dilux-bot token (issues, this repository)
+        id: write
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-issues: write
+
+      - name: The issue
+        env:
+          GH_TOKEN: ${{ steps.write.outputs.token }}
+          TITLE: Repositories out of step
+        run: |
+          set -euo pipefail
+          open=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"$TITLE\"" --json number,title --jq "[.[] | select(.title == \"$TITLE\")][0].number // empty")
+          if grep -q '^Every repository is in step' "$RUNNER_TEMP/drift.md"; then
+            if [ -n "$open" ]; then
+              gh issue close "$open" --repo "$GITHUB_REPOSITORY" --comment "Every repository is in step again." >/dev/null
+              echo "In step; closed #$open."
+            else
+              echo "In step."
+            fi
+            exit 0
+          fi
+          printf '\n<sub>🤖 Weekly drift check · %s</sub>\n' "$(date -u +%Y-%m-%d)" >> "$RUNNER_TEMP/drift.md"
+          if [ -n "$open" ]; then
+            gh issue edit "$open" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/drift.md" >/dev/null
+            echo "Updated #$open."
+          else
+            url=$(gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body-file "$RUNNER_TEMP/drift.md")
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/${url##*/}" -f type=Task >/dev/null 2>&1 || true
+            echo "Opened $url."
+          fi

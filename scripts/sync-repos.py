@@ -15,8 +15,11 @@ archived and not excluded in repos.yml:
             an issue (Type Task) and a pull request that closes it, and the
             maintainer accepts the issue and merges, like any other change.
   all       the three, in that order.
+  check     changes nothing: lists, as Markdown, what differs in each
+            repository (the weekly drift check posts it as an issue).
 
   sync-repos.py <labels|settings|files|all> [--repo NAME ...] [--dry-run]
+  sync-repos.py check [--repo NAME ...] [--report FILE]
   sync-repos.py --test
 
 Run by a maintainer with `gh` signed in as an owner of the organisation.
@@ -178,6 +181,43 @@ def sync_files(repo, conf, block, dry):
     print(f"  issue #{number} (accept it) and {pr}")
 
 
+def drift(repo, conf, labels, block):
+    """What differs in a repository from what this repository keeps, as lines."""
+    full = f"{ORG}/{repo['name']}"
+    found = []
+    have = {l["name"]: l for l in json.loads(gh("label", "list", "--repo", full, "--limit", "1000", "--json", "name,color,description").stdout)}
+    for label in labels:
+        name = str(label["name"])
+        mine = have.get(name)
+        if mine is None:
+            found.append(f"label `{name}` is missing")
+        elif mine["color"].upper() != str(label["color"]).upper() or (mine.get("description") or "") != str(label.get("description", "")):
+            found.append(f"label `{name}` has another colour or description")
+    data = json.loads(gh("api", f"repos/{full}").stdout)
+    for key, value in (conf.get("settings") or {}).items():
+        if key not in data:
+            found.append(f"setting `{key}` cannot be read with this token")
+        elif data[key] != value:
+            found.append(f"setting `{key}` is `{data[key]}`, not `{value}`")
+    default = (repo.get("defaultBranchRef") or {}).get("name") or "main"
+    for path, content in (conf.get("files") or {}).items():
+        out = gh("api", f"repos/{full}/contents/{path}?ref={default}", "-H", "Accept: application/vnd.github.raw", check=False)
+        if out.returncode != 0:
+            found.append(f"`{path}` is missing")
+        elif out.stdout != content:
+            found.append(f"`{path}` differs")
+    out = gh("api", f"repos/{full}/contents/AGENTS.md?ref={default}", "-H", "Accept: application/vnd.github.raw", check=False)
+    if out.returncode == 0:
+        try:
+            if with_block(out.stdout, block) != out.stdout:
+                found.append("`AGENTS.md` does not carry the organisation's current block")
+        except ValueError:
+            found.append("`AGENTS.md` has a broken dx:org block")
+    else:
+        found.append("no `AGENTS.md`")
+    return found
+
+
 def self_test():
     failed = 0
 
@@ -216,7 +256,7 @@ def self_test():
 def main(argv):
     if argv == ["--test"]:
         return self_test()
-    if not argv or argv[0] not in ("labels", "settings", "files", "all"):
+    if not argv or argv[0] not in ("labels", "settings", "files", "all", "check"):
         print(__doc__)
         return 64
     what, rest = argv[0], argv[1:]
@@ -231,6 +271,28 @@ def main(argv):
     if missing:
         print(f"No such repository (or archived, or excluded): {', '.join(missing)}")
         return 1
+    if what == "check":
+        report = [f"# Repositories out of step with {ORG}/.github", "",
+                  "What differs from `labels.yml`, `repos.yml` and `agents-block.md`. Labels and settings: `python3 scripts/sync-repos.py all`; files: the pull requests it opens.", ""]
+        dirty = 0
+        for repo in repos:
+            try:
+                lines = drift(repo, conf, labels, block)
+            except RuntimeError as exc:
+                lines = [f"could not be checked: {exc}"]
+            if lines:
+                dirty += 1
+                report += [f"## {repo['name']}", ""] + [f"- {line}" for line in lines] + [""]
+        if not dirty:
+            report = [f"Every repository is in step with {ORG}/.github."]
+        text = "\n".join(report) + "\n"
+        path = next((rest[i + 1] for i, a in enumerate(rest) if a == "--report" and i + 1 < len(rest)), None)
+        if path:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+        print(text)
+        print(f"{dirty} repositories out of step.")
+        return 0
     for repo in repos:
         print(f"{ORG}/{repo['name']}")
         try:

@@ -27,8 +27,10 @@ request template, issue forms) unless it has its own. The rules for contributors
    is a deterministic step of the conventions check
    ([`scripts/issue-gate.sh`](scripts/issue-gate.sh), the policy's
    `issue-gate`, read from the base branch), so it runs on forks too, with
-   a read-only token. Accepting the issue later does not re-run the check:
-   edit the description, or re-run the job.
+   a read-only token. When the issue is accepted after the pull request
+   opened, `issue-accepted.yml` re-runs the failed check on its own (GitHub
+   does not start the organisation's required workflow on an edit of the
+   description); otherwise push, or re-run the job.
 1. **Checks.** The conventions (branch name, title, every commit, the
    description's required sections, no "Generated with" footer, relative doc
    links, a `docs` title that changes only documentation, and at most
@@ -271,6 +273,8 @@ ref (default `v5`), not at the ref of its `uses:` line: a caller that pins
 
 | Workflow | Does | Inputs |
 | --- | --- | --- |
+| [`issue-accepted.yml`](.github/workflows/issue-accepted.yml) | When a person adds `accepted` to an issue, re-runs the failed jobs of `Pull request (organisation)` on the open pull requests that close it. Called from `issues.yml`. | `label`, `workflow` |
+| [`org-drift.yml`](.github/workflows/org-drift.yml) | Not reusable: once a week and by hand, `scripts/sync-repos.py check` over every repository; keeps one issue here, "Repositories out of step", listing what differs, closed when nothing does. Changes nothing. | none |
 | [`org-pull-request.yml`](.github/workflows/org-pull-request.yml) | Not reusable: the pull request pipeline of every repository but this one, required by the organisation's `main` ruleset. Calls `conventions.yml`, `claude-review.yml` and `auto-merge.yml` at `@v5` with today's job names, on every pull request event, `edited` included. | none; the repository's `.github/review-policy.yml` |
 | [`conventions.yml`](.github/workflows/conventions.yml) | Branch, title, commits, description sections, no "Generated with" footer, a `docs` title that changes only docs, the size limit for authors who are not trusted (all in `scripts/conventions.sh`), the accepted issue the pull request closes (`scripts/issue-gate.sh`), relative doc links, retired names. Callers grant `issues: read`. Reads the labels and the review App's last record live, so a re-run sees today's `type:*` label. | `retired-names`, `required-sections`, `max-header`, `central-ref`, `review-bot` |
 | [`claude-review.yml`](.github/workflows/claude-review.yml) | The review described above. `profile` (default `general`) names a kind or a pack's alias (`plugin-wp`); with `general`, the kind the repository's policy declares adds its profile. Outputs `risk`, `complexity`, `floor`, `trusted`, `blocking`. | `profile`, `central-ref`, `max-auto-reviews` |

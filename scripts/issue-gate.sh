@@ -134,7 +134,7 @@ check() {
     return 0
   fi
   [ -n "$lines" ] || echo "This pull request closes no issue."
-  echo "::error::Every pull request closes an issue a maintainer accepted (label \"$LABEL\"). Open an issue (or find one), wait until it is accepted, and write \"Closes #<number>\" in the description (into a branch other than the default, link it under Development instead); then edit the description or re-run this check. See CONTRIBUTING.md, \"Start from an issue\"."
+  echo "::error::Every pull request closes an issue a maintainer accepted (label \"$LABEL\"). Open an issue (or find one), wait until it is accepted, and write \"Closes #<number>\" in the description (into a branch other than the default, link it under Development instead); accepting the issue re-runs this check (or push, or re-run it). See CONTRIBUTING.md, \"Start from an issue\"."
   return 1
 }
 
