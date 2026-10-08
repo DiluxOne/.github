@@ -28,7 +28,7 @@ name: WordPress plugin checks (fast)
 #
 #   jobs:
 #     checks:
-#       uses: DiluxOne/.github/.github/workflows/plugin-checks-wp.yml@v4
+#       uses: DiluxOne/.github/.github/workflows/plugin-checks-wp.yml@v5
 #       with:
 #         slug: diluxone-offload
 #         version-constant: DILUXONE_OFFLOAD_VERSION   # optional
@@ -37,13 +37,10 @@ name: WordPress plugin checks (fast)
 #         translations-complete: true                  # optional: languages/*.po complete
 #         codeql-languages: javascript-typescript      # optional: CodeQL on the code
 #     tests:
-#       uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v4
-#     review:
-#       needs: [checks]          # the review waits for the fast gates only
-#       uses: DiluxOne/.github/.github/workflows/claude-review.yml@v4
-#       with:
-#         profile: plugin-wp
-#       secrets: inherit
+#       uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v5
+#
+# (workflow-templates/plugin-checks-wp.yml; the conventions and the review
+# are the organisation's required org-pull-request.yml.)
 
 on:
   workflow_call:
@@ -67,7 +64,7 @@ on:
       central-ref:
         description: Ref of DiluxOne/.github to read the policy from.
         type: string
-        default: v4
+        default: v5
       kind:
         description: The kind of project whose rules and settings these checks read (kinds/<kind>/). A repository whose policy declares another kind fails.
         type: string

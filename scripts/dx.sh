@@ -72,8 +72,19 @@ cmd_start() {
   [ "$accepted" = true ] || die "#$n is not accepted yet: wait until a maintainer adds the \"accepted\" label."
   type=${type:-$(type_for "$kind")}
   branch="$type/$n-$(slug "$title")"
-  git fetch -q origin
-  base=$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)
+  # From the upstream's default branch, also in a fork, whose own may be
+  # behind.
+  local default base remote
+  default=$(gh api "repos/$up" --jq .default_branch)
+  # origin when it is the upstream; in a fork, the upstream by the URL gh
+  # reports (a private upstream needs git credentials for it, as gh auth setup-git gives).
+  remote=origin
+  if [ "$(gh repo view --json nameWithOwner --jq .nameWithOwner)" != "$up" ]; then
+    git remote get-url upstream >/dev/null 2>&1 || git remote add upstream "$(gh repo view "$up" --json url --jq .url).git"
+    remote=upstream
+  fi
+  git fetch -q "$remote" "$default"
+  base="$remote/$default"
   git switch -q -c "$branch" "$base"
   mkdir -p "$(git rev-parse --git-dir)/dx"
   cat > "$(git rev-parse --git-dir)/dx/pr.md" <<EOF

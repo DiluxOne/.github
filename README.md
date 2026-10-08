@@ -100,13 +100,9 @@ how to add a rule and how to add a kind; the one kind today is
 
 ## Adopt it in a new repository
 
-1. **Workflows.** Copy the callers from [`workflow-templates/`](workflow-templates/)
-   (they also appear under *Actions → New workflow* in every repository of the
-   organisation): `pull-request.yml` or `pull-request-wp.yml`,
-   `pull-request-edited.yml`, `pull-request-comments.yml`, `issues.yml` and,
-   for a plugin, `release-wp.yml`. Fill in `slug`, `version-constant`, `retired-names` and
-   `support-url`.
-   The `conventions` job grants `issues: read`, for the accepted-issue gate.
+Most of it is the organisation's already: a new repository gets the pull request pipeline, the rulesets, the issue forms and the community files without a file of its own (docs/plans/org-first.md). What it adds:
+
+1. **Workflows.** From [`workflow-templates/`](workflow-templates/) (also under *Actions → New workflow*): `issues.yml` (the issue triage and reproduction; fill in `support-url`) and `pull-request-comments.yml` (replies to `@dilux-bot`), which GitHub cannot require from the organisation; and, for a WordPress plugin, `plugin-checks-wp.yml` (fill in `slug` and `version-constant`) and `release-wp.yml`. No `pull-request.yml`: the organisation's ruleset requires [`org-pull-request.yml`](.github/workflows/org-pull-request.yml) on every repository.
 2. **Policy and rules.** Add `.github/review-policy.yml`. Every review
    setting lives in this file and in the organisation's
    [`policy/review-policy.default.yml`](policy/review-policy.default.yml),
@@ -119,6 +115,7 @@ how to add a rule and how to add a kind; the one kind today is
 
    ```yaml
    kind: wordpress-plugin   # kinds/<kind>/: adds its review profile, its rules and settings
+   retired-names: 'old name|OLD_PREFIX_'   # names that must not come back (the docs check)
    paid-roadmap:            # a free plugin whose paid add-on plans in private: the triage reads it, never quotes it
      repository: DiluxOne/my-plugin-pro-wordpress
      path: docs/roadmap.md
@@ -153,38 +150,7 @@ how to add a rule and how to add a kind; the one kind today is
    a `docs/roadmap.md` that says what is free, what is paid, what is planned,
    what will not be done and the known limitations: the issue triage answers
    from it.
-3. **Settings.** Squash only, auto-merge allowed, delete the branch on merge,
-   squash title from the PR title and body from the PR body. A ruleset on
-   `main`: changes only through a pull request, linear history, conversations
-   resolved, required checks green and up to date, named
-   `conventions / Conventions (branch, title, commits)`,
-   `conventions / Docs (links and names)`, `review / Claude review` and, for a
-   plugin, every `checks / …` and `tests / …` job: among them
-   `checks / Review rules (wordpress-plugin)`, `checks / WordPress Plugin Check`,
-   `checks / Translations complete (languages/*.po)` and `checks / CodeQL`
-   (skipped, so passing, unless their input is on) and one `tests / …` per
-   target and suite, named as the
-   [`plugin-tests-wp.yml`](.github/workflows/plugin-tests-wp.yml) row below says. Two rulesets on tags
-   `X.Y.Z`: one that lets only administrators create them (bypass actor:
-   the Administrator role), so no token the workflows hold can publish; one
-   under which nobody can delete or move them. For a plugin, an environment
-   `wordpress-org` with a deployment policy of tag `*.*.*` plus branch
-   `main`, **required reviewers** (the maintainers who may publish; without
-   one the deployment does not wait for anyone), and, as environment secrets
-   (never organisation secrets), `SVN_USERNAME`, `SVN_PASSWORD` and the
-   release App's `DILUX_RELEASE_PRIVATE_KEY`, with `DILUX_RELEASE_CLIENT_ID`
-   as an environment variable. The `dilux-release` App (one for the
-   organisation, `contents: write` and nothing else) is installed on the
-   repository and added to the bypass list of the tag-creation ruleset, as
-   an Integration. Dependabot alerts and updates, private vulnerability
-   reporting. The `dilux-bot` App must be installed on the repository. The
-   review creates its own labels; create `accepted` by hand (the label a
-   maintainer puts on an issue to accept it), and keep the triage role, the
-   only one below write that can label, for people you trust to accept
-   work.
-
-   The tag rulesets cover `X.Y.Z` only, so the moving tag `dev` of the
-   development build stays free for the workflow's own token.
+3. **Labels, settings and shared files.** `python3 scripts/sync-repos.py all --repo <name>` from a checkout of this repository: the labels, the merge and security settings, `.github/CODEOWNERS` and the opening block of `AGENTS.md` (a pull request with its issue). The `main` and tag rulesets are the organisation's; a plugin that publishes adds its environment `wordpress-org` (deployment policy: tag `*.*.*` plus `main`, required reviewers, the SVN credentials and the release App's key as environment secrets) and installs the `dilux-release` App.
 
    Then the readme: the newest entry under `== Changelog ==` is headed
    `= X.Y.Z =` (or `= Unreleased =`) and its first line is `Unreleased.`
@@ -194,6 +160,53 @@ how to add a rule and how to add a kind; the one kind today is
    version being released (`scripts/release-markers.sh prepare`), and the
    next push to `main` waits for the environment's reviewers. Between
    releases the markers say the last version released.
+
+## What every repository shares, and how it stays in step
+
+The organisation holds what GitHub lets it hold: the issue Types (Feature, Bug, Task, Docs) and fields (Priority), the Projects, the rulesets, the secrets and Apps, and the community files of this repository (issue forms, pull request template, `CONTRIBUTING.md`, `SECURITY.md`, `SUPPORT.md`, code of conduct), which GitHub uses for every repository that has none of its own. What it does not hold lives here and [`scripts/sync-repos.py`](scripts/sync-repos.py) brings it to every repository:
+
+- [`labels.yml`](labels.yml): every label the workflows and people use (`accepted` among them).
+- [`repos.yml`](repos.yml): the merge and security settings, and the files GitHub reads only from the repository (`.github/CODEOWNERS`).
+- [`agents-block.md`](agents-block.md): the opening of every `AGENTS.md`, the organisation's rules for any agent, between `dx:org` markers.
+
+```bash
+python3 scripts/sync-repos.py all --dry-run          # what would change, everywhere
+python3 scripts/sync-repos.py labels                  # labels, through the API
+python3 scripts/sync-repos.py settings --repo NAME    # one repository's settings
+python3 scripts/sync-repos.py files                   # CODEOWNERS and the AGENTS.md block, as a pull request per repository
+```
+
+Labels and settings change through the API. Files never go straight to `main`: for each repository that differs, the script opens an issue (Type Task) and a pull request that closes it, and the maintainer accepts the issue and merges. A maintainer runs it, signed in to `gh` as an owner of the organisation.
+
+## Migrating a repository from `v4` to `v5`
+
+`v5` moves the pull request pipeline to the organisation and reads an issue's native Type.
+
+1. Open the issue for it (the maintenance-task form) and have it accepted; set the native Type of every open issue a pull request closes (a `type:*` label no longer counts).
+2. Delete `.github/workflows/pull-request-edited.yml`, and `pull-request.yml` unless it has jobs of its own: for a plugin, keep only `checks`, `tests` and `weekly-failure` (the `plugin-checks-wp.yml` template). Move `retired-names` from the callers to `.github/review-policy.yml`.
+3. Delete what the organisation provides: the issue forms, the pull request template, `SECURITY.md`, `CONTRIBUTING.md` unless it has something of its own. Keep `.github/CODEOWNERS`, `dependabot.yml` and the review policy.
+4. Point the remaining `uses:` and `central-ref:` at `@v5`.
+5. Run `scripts/sync-repos.py all --repo <name>`; once the organisation's rulesets are active, delete the repository's own.
+
+## Migrating a repository from `v3` to `v4`
+
+`v4` brings the accepted-issue gate: from the moment a repository points at
+`v4`, every pull request that is not a bot's must close an accepted issue.
+
+1. Create the `accepted` label (`scripts/sync-repos.py labels` does), and
+   give each of a repository's own issue forms a `type:` key with its issue
+   Type (Bug, Feature, Docs, Task), as the organisation's forms do.
+2. Grant `issues: read` to the `conventions` job in `pull-request.yml` (or
+   `pull-request-wp.yml`) and `pull-request-edited.yml`; without it the
+   workflow fails to start.
+3. Point every `uses:` and `central-ref:` at `@v4` (the release workflow at
+   its commit).
+4. Before the first pull request on `v4`, open its issue and accept it. A
+   pull request already open needs one too: write `Closes #<number>` in its
+   description.
+5. Reproductions change trigger: the triage's `bug:unconfirmed` no longer
+   starts one; someone with write access adds `repro:run` (created on the
+   first report; create it by hand to use it before) or `repro:again`.
 
 ## Migrating a repository from `v1` to `v2`
 
@@ -248,57 +261,21 @@ That pull request is red on the same strict check, for the same reason, so
 an administrator merges it past the required check, deliberately; the pull
 request that needed the code then passes.
 
-## What every repository shares, and how it stays in step
-
-The organisation holds what GitHub lets it hold: the issue Types (Feature, Bug, Task, Docs) and fields (Priority), the Projects, the rulesets, the secrets and Apps, and the community files of this repository (issue forms, pull request template, `CONTRIBUTING.md`, `SECURITY.md`, `SUPPORT.md`, code of conduct), which GitHub uses for every repository that has none of its own. What it does not hold lives here and [`scripts/sync-repos.py`](scripts/sync-repos.py) brings it to every repository:
-
-- [`labels.yml`](labels.yml): every label the workflows and people use (`accepted` among them).
-- [`repos.yml`](repos.yml): the merge and security settings, and the files GitHub reads only from the repository (`.github/CODEOWNERS`).
-- [`agents-block.md`](agents-block.md): the opening of every `AGENTS.md`, the organisation's rules for any agent, between `dx:org` markers.
-
-```bash
-python3 scripts/sync-repos.py all --dry-run          # what would change, everywhere
-python3 scripts/sync-repos.py labels                  # labels, through the API
-python3 scripts/sync-repos.py settings --repo NAME    # one repository's settings
-python3 scripts/sync-repos.py files                   # CODEOWNERS and the AGENTS.md block, as a pull request per repository
-```
-
-Labels and settings change through the API. Files never go straight to `main`: for each repository that differs, the script opens an issue (Type Task) and a pull request that closes it, and the maintainer accepts the issue and merges. A maintainer runs it, signed in to `gh` as an owner of the organisation.
-
-## Migrating a repository from `v3` to `v4`
-
-`v4` brings the accepted-issue gate: from the moment a repository points at
-`v4`, every pull request that is not a bot's must close an accepted issue.
-
-1. Create the `accepted` label (`scripts/sync-repos.py labels` does), and
-   give each of a repository's own issue forms a `type:` key with its issue
-   Type (Bug, Feature, Docs, Task), as the organisation's forms do.
-2. Grant `issues: read` to the `conventions` job in `pull-request.yml` (or
-   `pull-request-wp.yml`) and `pull-request-edited.yml`; without it the
-   workflow fails to start.
-3. Point every `uses:` and `central-ref:` at `@v4` (the release workflow at
-   its commit).
-4. Before the first pull request on `v4`, open its issue and accept it. A
-   pull request already open needs one too: write `Closes #<number>` in its
-   description.
-5. Reproductions change trigger: the triage's `bug:unconfirmed` no longer
-   starts one; someone with write access adds `repro:run` (created on the
-   first report; create it by hand to use it before) or `repro:again`.
-
 ## Reusable workflows
 
-Call them pinned to `@v4`; a breaking change ships as the next major (`v5`), and the previous one stays where it is. A stack suffix
+Call them pinned to `@v5`; a breaking change ships as the next major (`v6`), and the previous one stays where it is. A stack suffix
 (`-wp`) appears only when the steps are specific to that stack. A workflow
 with a `central-ref` input reads the scripts, profiles and policy at that
-ref (default `v4`), not at the ref of its `uses:` line: a caller that pins
+ref (default `v5`), not at the ref of its `uses:` line: a caller that pins
 `uses:` to a version passes the same version as `central-ref`.
 
 | Workflow | Does | Inputs |
 | --- | --- | --- |
+| [`org-pull-request.yml`](.github/workflows/org-pull-request.yml) | Not reusable: the pull request pipeline of every repository but this one, required by the organisation's `main` ruleset. Calls `conventions.yml`, `claude-review.yml` and `auto-merge.yml` at `@v5` with today's job names, on every pull request event, `edited` included. | none; the repository's `.github/review-policy.yml` |
 | [`conventions.yml`](.github/workflows/conventions.yml) | Branch, title, commits, description sections, no "Generated with" footer, a `docs` title that changes only docs, the size limit for authors who are not trusted (all in `scripts/conventions.sh`), the accepted issue the pull request closes (`scripts/issue-gate.sh`), relative doc links, retired names. Callers grant `issues: read`. Reads the labels and the review App's last record live, so a re-run sees today's `type:*` label. | `retired-names`, `required-sections`, `max-header`, `central-ref`, `review-bot` |
 | [`claude-review.yml`](.github/workflows/claude-review.yml) | The review described above. `profile` (default `general`) names a kind or a pack's alias (`plugin-wp`); with `general`, the kind the repository's policy declares adds its profile. Outputs `risk`, `complexity`, `floor`, `trusted`, `blocking`. | `profile`, `central-ref`, `max-auto-reviews` |
 | [`review-reply.yml`](.github/workflows/review-reply.yml) | Answers `@dilux-bot` mentions from members and collaborators, with the high-risk reviewer, on the same profiles as the review. | `profile`, `central-ref` |
-| [`auto-merge.yml`](.github/workflows/auto-merge.yml) | Turns GitHub's auto-merge on or off from the review's outputs and commits the description verbatim. `pull-request-edited.yml` runs it on `edited` too. | the five review outputs |
+| [`auto-merge.yml`](.github/workflows/auto-merge.yml) | Turns GitHub's auto-merge on or off from the review's outputs and commits the description verbatim. `org-pull-request.yml` runs it on `edited` too. | the five review outputs |
 | [`scripts/conventions.sh`](scripts/conventions.sh) | Not a workflow: the conventions a pull request is held to (branch, title, every commit header, no session trailer, description sections, no "Generated with" footer, a `docs` title that changes only docs, the size limit). `conventions.yml` runs it on a pull request, `local-review.sh` before one; `--test` for its own tests. | env: `BRANCH`, `TITLE`, `BODY`, `BASE`, `HEAD_REF`, `COMMENTS_FILE`, `REVIEW_BOT`, `MAX_HEADER`, `SECTIONS`, `LABELS`, `AUTHOR_TYPE`, `MAX_LINES` |
 | [`scripts/issue-gate.sh`](scripts/issue-gate.sh) | Not a workflow: the accepted-issue gate. Asks GitHub which issues the pull request closes and passes when one is open, in the same repository and carries the policy's label, added last by a person. `--test` for its own tests. | env: `REQUIRED`, `LABEL`, `AUTHOR_TYPE`, `GITHUB_REPOSITORY`, `PR`, `GH_TOKEN` |
 | [`scripts/dx.sh`](scripts/dx.sh) | Not a workflow: the flow of [`docs/agents.md`](docs/agents.md), one command per step, from a clone or a fork: `dx issue`, `dx start <n>` (checks the issue is accepted, makes the branch and the description), `dx check` (the local review), `dx pr`. `--test` for its own tests. | `issue`, `start`, `check`, `pr` |
@@ -351,13 +328,14 @@ workflow of a repository from its Actions tab.
 
 ## Changing this repository
 
-Every place the bot's token is minted asks only for what that job does: the review, the replies and the triage get `contents: read` while the model runs; `contents: write` is minted only by the merge, the reproduction push, the weekly learnings, and the step that resolves review threads after the model has finished (resolving a thread is a write on the repository), which nothing that read the pull request's text ever holds. Tags are not creatable by `dilux-bot` at all: the ruleset an adopting repository sets at step 3 allows `X.Y.Z` tag creation to administrators and the release App only, and this repository's `v*` tags (the moving `v4`, the frozen `v3`, `v2` and `v1`) can be created, moved or deleted only by administrators (ruleset `moving tags`: creation, update, deletion). The wordpress.org credentials live in the repository environment `wordpress-org`, whose deployment policy admits only `X.Y.Z` tags and `main`, so no pull request or branch job can read them; the check `svn-auth-check.yml` runs inside that environment.
+Every place the bot's token is minted asks only for what that job does: the review, the replies and the triage get `contents: read` while the model runs; `contents: write` is minted only by the merge, the reproduction push, the weekly learnings, and the step that resolves review threads after the model has finished (resolving a thread is a write on the repository), which nothing that read the pull request's text ever holds. Tags are not creatable by `dilux-bot` at all: the ruleset an adopting repository sets at step 3 allows `X.Y.Z` tag creation to administrators and the release App only, and this repository's `v*` tags (the moving `v5`, the frozen `v4`, `v3`, `v2` and `v1`) can be created, moved or deleted only by administrators (ruleset `moving tags`: creation, update, deletion). The wordpress.org credentials live in the repository environment `wordpress-org`, whose deployment policy admits only `X.Y.Z` tags and `main`, so no pull request or branch job can read them; the check `svn-auth-check.yml` runs inside that environment.
 
 Everything here is high risk: a human merges every change. After merging, move
-`v4` (or cut `v5` for a breaking change: `scripts/next-version.py --tag-prefix v`
-says which) and tag the exact version. Moving `v4` also ships the review
-profiles, the packs and the default policy, which every repository on `v4`
-reads from that tag. A run that already exists keeps the workflow it was
-created with: re-running a failed job after `v4` moved re-runs the old
-workflow. Reopen the pull request, or push to it, for a run on the new one.
-`v3`, `v2` and `v1` stay where they are.
+`v5` (or cut `v6` for a breaking change: `scripts/next-version.py --tag-prefix v`
+says which) and tag the exact version. Moving `v5` also ships the review
+profiles, the packs, the default policy and the organisation's required
+workflow, which every repository on `v5` reads from that tag. A run that
+already exists keeps the workflow it was created with: re-running a failed
+job after `v5` moved re-runs the old workflow. Reopen the pull request, or
+push to it, for a run on the new one. `v4`, `v3`, `v2` and `v1` stay where
+they are.
