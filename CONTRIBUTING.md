@@ -18,7 +18,7 @@ Every change starts as an issue: features, fixes and docs alike, maintainers inc
 
 Why: it is the cheapest moment to agree on what to build. A feature that is already planned, that belongs to a paid add-on, or that the project will not do is answered on the issue, before anyone spends time on code. An issue that is not accepted is not a "no" to the person, only to the change as proposed; the reply says why when it can.
 
-If the issue is accepted after the pull request was opened, edit the description (or ask a maintainer to re-run the check) and the check passes.
+If the issue is accepted after the pull request was opened, the failed check runs again on its own when the maintainer accepts it, in a repository whose `issues.yml` has the `accepted` job; otherwise push a commit, or ask a maintainer to re-run it, and it passes.
 
 ## Pull requests
 

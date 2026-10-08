@@ -32,3 +32,12 @@ jobs:
       pull-requests: write
     uses: DiluxOne/.github/.github/workflows/issue-repro.yml@v5
     secrets: inherit
+
+  # A pull request opened before its issue was accepted gets its gate re-run
+  # when a person accepts the issue.
+  accepted:
+    permissions:
+      actions: write
+      issues: read
+      pull-requests: read
+    uses: DiluxOne/.github/.github/workflows/issue-accepted.yml@v5
