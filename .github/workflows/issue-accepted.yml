@@ -42,8 +42,11 @@ on:
       DILUX_BOT_PRIVATE_KEY:
         required: false
 
-permissions:
-  contents: read
+# Nothing at the workflow level: a reusable workflow cannot ask for more than
+# its caller's job grants, and the issues.yml template grants the accepted job
+# actions: write, issues: read and pull-requests: read only. Each job asks for
+# what it uses, within that.
+permissions: {}
 
 jobs:
   rerun:
@@ -97,6 +100,9 @@ jobs:
     name: The product's Project
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # The Projects go through the bot's own token; DiluxOne/.github is public,
+    # so its checkout needs nothing from the workflow's.
+    permissions: {}
     if: >-
       github.event_name == 'issues' && (
         (github.event.action == 'labeled' && github.event.label.name == inputs.label && github.event.sender.type != 'Bot') ||
