@@ -248,6 +248,23 @@ That pull request is red on the same strict check, for the same reason, so
 an administrator merges it past the required check, deliberately; the pull
 request that needed the code then passes.
 
+## What every repository shares, and how it stays in step
+
+The organisation holds what GitHub lets it hold: the issue Types (Feature, Bug, Task, Docs) and fields (Priority), the Projects, the rulesets, the secrets and Apps, and the community files of this repository (issue forms, pull request template, `CONTRIBUTING.md`, `SECURITY.md`, `SUPPORT.md`, code of conduct), which GitHub uses for every repository that has none of its own. What it does not hold lives here and [`scripts/sync-repos.py`](scripts/sync-repos.py) brings it to every repository:
+
+- [`labels.yml`](labels.yml): every label the workflows and people use (`accepted` among them).
+- [`repos.yml`](repos.yml): the merge and security settings, and the files GitHub reads only from the repository (`.github/CODEOWNERS`).
+- [`agents-block.md`](agents-block.md): the opening of every `AGENTS.md`, the organisation's rules for any agent, between `dx:org` markers.
+
+```bash
+python3 scripts/sync-repos.py all --dry-run          # what would change, everywhere
+python3 scripts/sync-repos.py labels                  # labels, through the API
+python3 scripts/sync-repos.py settings --repo NAME    # one repository's settings
+python3 scripts/sync-repos.py files                   # CODEOWNERS and the AGENTS.md block, as a pull request per repository
+```
+
+Labels and settings change through the API. Files never go straight to `main`: for each repository that differs, the script opens an issue (Type Task) and a pull request that closes it, and the maintainer accepts the issue and merges. A maintainer runs it, signed in to `gh` as an owner of the organisation.
+
 ## Migrating a repository from `v3` to `v4`
 
 `v4` brings the accepted-issue gate: from the moment a repository points at
