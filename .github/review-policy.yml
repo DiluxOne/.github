@@ -14,6 +14,10 @@ high-risk:
   # Workflows (.github/**), AGENTS.md and CLAUDE.md are the organisation's
   # defaults already.
   - "docs/agents.md"
+  # Read by the review and the reproduction as the repository's rules
+  # (review-brief.sh, issue-repro.yml), should this repository have them.
+  - "docs/architecture.md"
+  - "docs/testing-and-quality.md"
   - "kinds/**"
   - "policy/**"
   - "review-profiles/**"
