@@ -11,7 +11,7 @@ Each repository calls the workflows in this one instead of carrying its own copy
 
 | 🎫 No issue, no code | 🔍 Checked and reviewed | 🚦 Nothing merges red |
 | --- | --- | --- |
-| Every pull request closes an issue a maintainer accepted. A paid or already planned feature is stopped there, before anyone writes it. | Deterministic checks for the kind of project, then a Claude review that labels risk and complexity and comments on what blocks. | Rulesets require every check. Only a low-risk, low-complexity change from a trusted author merges on its own; anything else waits for a person. |
+| Every pull request closes an issue a maintainer accepted. A paid or already planned feature is stopped there, before anyone writes it. | Deterministic checks for the kind of project, then a Claude review that labels risk and complexity and comments on what blocks. | Rulesets require every check. A change merges on its own only when it touches low-risk paths alone, the review rates it low risk and low complexity, nothing blocks, its author is trusted and every check is green. Anything else waits for a person, and every release waits for a person's approval. |
 
 ## The life of a change
 
@@ -23,11 +23,14 @@ flowchart LR
     C --> D["✅ Conventions<br/>+ accepted-issue gate"]
     D --> E["🧪 Checks of its kind<br/>tests, lint, Plugin Check…"]
     E --> F["🤖 Claude review<br/>risk · complexity · type"]
-    F --> G{"Low risk and<br/>nothing blocks?"}
+    F --> L["Auto-merge needs all six<br/>1 · only low-risk paths<br/>2 · review: low risk<br/>3 · review: low complexity<br/>4 · nothing blocks<br/>5 · a trusted author<br/>6 · every check green"]
+    L --> G{"All six?"}
     G -- "yes" --> H["⚡ Auto-merge"]
-    G -- "no" --> I["👤 A person merges"]
-    H --> J["📦 Release<br/>tag X.Y.Z → wordpress.org"]
-    I --> J
+    G -- "any no" --> I["👤 A person merges"]
+    H --> R{"🔐 Release approved<br/>by a person?"}
+    I --> R
+    R -- "approved" --> J["📦 Tag X.Y.Z<br/>→ wordpress.org"]
+    R -- "not yet" --> W["Waits on main,<br/>nothing published"]
 ```
 
 Step by step, with every detail: [What happens on a pull request](docs/pull-requests.md).
