@@ -102,4 +102,4 @@ When the maintainer asks a repository to adopt this:
 4. Pull requests already open close an accepted issue too (`Closes #<n>`).
 5. A repository still on v2 moves through v3 first ("Migrating from v2 to v3" in the README).
 
-The maintainer runs `scripts/sync-repos.sh` once for the labels and settings, and deletes the repository's own rulesets once the organisation's are active.
+The maintainer runs `scripts/sync-repos.sh` for the labels and settings, which it changes through the API, and deletes the repository's own rulesets once the organisation's are active. What the script writes into files (`CODEOWNERS`, the opening block of `AGENTS.md`) never goes straight to `main`: it opens one pull request per repository, closing an issue it opens there for the maintainer to accept, like any other change.
