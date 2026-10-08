@@ -314,7 +314,7 @@ jobs:
         continue-on-error: true
         # Below the job's timeout, so the verdict still runs and comments.
         timeout-minutes: 25
-        uses: anthropics/claude-code-action@8cf3482550831fb35a4fc3fbf7ca139cf8028b4c # v1.0.233
+        uses: anthropics/claude-code-action@6c690188da61cf16ee7debb28383ba67f02abb4c # v1.0.242
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ steps.bot.outputs.token }}

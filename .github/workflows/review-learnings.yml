@@ -134,7 +134,7 @@ jobs:
         id: claude
         if: steps.collect.outputs.reviews != '0'
         continue-on-error: true
-        uses: anthropics/claude-code-action@8cf3482550831fb35a4fc3fbf7ca139cf8028b4c # v1.0.233
+        uses: anthropics/claude-code-action@6c690188da61cf16ee7debb28383ba67f02abb4c # v1.0.242
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           # Claude only edits files here, so it gets the job's own read-only

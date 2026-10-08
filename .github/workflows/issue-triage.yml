@@ -241,7 +241,7 @@ jobs:
         env:
           DX_FULL_SCHEMA: '{"type":"object","additionalProperties":false,"required":["category","reply","summary","language"],"properties":{"language":{"type":"string","enum":["en","es","pt","other"]},"category":{"type":"string","enum":["bug_unconfirmed","needs_info","by_design","pro_feature","planned","enhancement","question","duplicate","security"]},"exists_in_pro":{"type":"boolean"},"duplicate_of":{"type":"integer"},"missing":{"type":"array","items":{"type":"string","maxLength":120}},"reply":{"type":"string","maxLength":2500},"summary":{"type":"string","maxLength":300}}}'
           DX_PAID_SCHEMA: '{"type":"object","additionalProperties":false,"required":["category","language"],"properties":{"language":{"type":"string","enum":["en","es","pt","other"]},"category":{"type":"string","enum":["bug_unconfirmed","needs_info","by_design","pro_feature","planned","enhancement","question","duplicate","security"]},"exists_in_pro":{"type":"boolean"},"duplicate_of":{"type":"integer"}}}'
-        uses: anthropics/claude-code-action@8cf3482550831fb35a4fc3fbf7ca139cf8028b4c # v1.0.233
+        uses: anthropics/claude-code-action@6c690188da61cf16ee7debb28383ba67f02abb4c # v1.0.242
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ github.token }}
@@ -405,7 +405,7 @@ jobs:
         if: steps.fixed.outputs.write == 'true'
         continue-on-error: true
         timeout-minutes: 6
-        uses: anthropics/claude-code-action@8cf3482550831fb35a4fc3fbf7ca139cf8028b4c # v1.0.233
+        uses: anthropics/claude-code-action@6c690188da61cf16ee7debb28383ba67f02abb4c # v1.0.242
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ github.token }}
