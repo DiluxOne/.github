@@ -10,7 +10,7 @@ aliases: [plugin-wp]
 
 # The reusable workflows that make up this kind's battery, in
 # .github/workflows/. GitHub cannot choose a reusable workflow from data, so
-# a repository's caller names them (workflow-templates/pull-request-wp.yml
+# a repository's caller names them (workflow-templates/plugin-checks-wp.yml
 # and release-wp.yml); they read their rules and settings from this pack.
 workflows:
   - plugin-checks-wp.yml

@@ -38,12 +38,9 @@ name: WordPress plugin checks (fast)
 #         codeql-languages: javascript-typescript      # optional: CodeQL on the code
 #     tests:
 #       uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v5
-#     review:
-#       needs: [checks]          # the review waits for the fast gates only
-#       uses: DiluxOne/.github/.github/workflows/claude-review.yml@v5
-#       with:
-#         profile: plugin-wp
-#       secrets: inherit
+#
+# (workflow-templates/plugin-checks-wp.yml; the conventions and the review
+# are the organisation's required org-pull-request.yml.)
 
 on:
   workflow_call:

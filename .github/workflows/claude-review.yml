@@ -48,7 +48,7 @@ name: Claude review
 #
 #   on:
 #     pull_request:
-#       types: [opened, synchronize, reopened, ready_for_review]  # and pull-request-edited.yml on `edited`
+#       types: [opened, synchronize, reopened, ready_for_review, edited]  # as org-pull-request.yml does
 #   jobs:
 #     review:
 #       needs: [conventions, checks]

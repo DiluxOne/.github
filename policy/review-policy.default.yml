@@ -32,6 +32,11 @@ issue-gate:
 # file can say that.
 max-changed-lines-untrusted: 600
 
+# A repository names in its own policy the product names that must not come
+# back (`retired-names: 'old name|OLD_PREFIX_'`, a case-insensitive extended
+# regex); the docs check of the conventions fails when one appears. There is
+# no default here: it is each repository's history.
+
 # A changed file matching any of these makes the pull request high risk.
 # Anything that changes how code is built, checked, released or reviewed,
 # or what an agent is told to do, is here.

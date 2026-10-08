@@ -16,7 +16,7 @@ name: Conventions
 #
 #   on:
 #     pull_request:
-#       types: [opened, synchronize, reopened, ready_for_review]  # and pull-request-edited.yml on `edited`
+#       types: [opened, synchronize, reopened, ready_for_review, edited]  # as org-pull-request.yml does
 #   jobs:
 #     conventions:
 #       permissions: { contents: read, pull-requests: read, issues: read }
@@ -69,7 +69,7 @@ jobs:
       - name: No base-branch change since the last push
         # `edited` also fires when the base branch changes. The suites ran on
         # a merge with the old base and, on `edited`, do not run again
-        # (pull-request-edited.yml), so this check fails until a push starts
+        # (a plugin's checks run on code events only), so this check fails until a push starts
         # them on the new merge: on every `edited` event, not only the one
         # that changed the base, because a later title edit re-runs this job
         # under the same id and would replace the failure. The fact comes
@@ -210,7 +210,7 @@ jobs:
           if [ -z "$RETIRED" ]; then echo "No retired names."; exit 0; fi
           # The names are declared on a `retired-names:` line (the policy's,
           # or a caller's input): those lines are the exemption, not one file.
-          if git grep -nIiE "$RETIRED" -- . | grep -vE '^[^:]+:[0-9]+:\s*retired-names:'; then
+          if git grep -nIiE -e "$RETIRED" -- . | grep -vE '^[^:]+:[0-9]+:\s*retired-names:'; then
             echo "::error::A retired product name is back (see the lines above)."
             exit 1
           fi
