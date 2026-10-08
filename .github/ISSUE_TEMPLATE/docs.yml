@@ -1,6 +1,7 @@
 name: 📝 Documentation
 description: Something in the docs is missing, wrong or unclear.
-labels: ["documentation", "type:docs"]
+type: Docs
+labels: ["documentation"]
 body:
   - type: textarea
     id: where

@@ -14,11 +14,12 @@ request template, issue forms) unless it has its own. The rules for contributors
    is open, in the same repository and carries the `accepted` label, added
    by a person. A bot's label never counts, so no automation can accept an
    issue, and only people with triage access or more can label one. The
-   issue's type must fit the pull request's: a `feat` (or any `!`) closes an
-   issue labelled `type:feat` or `type:breaking`, a `fix` one labelled
-   `type:fix`; the issue forms set it (bug → `type:fix`, feature →
-   `type:feat`, docs → `type:docs`, maintenance task → `type:chore`) and a
-   maintainer corrects it when accepting. So an accepted bug report cannot
+   issue's **Type** (GitHub's own field: the organisation's Feature, Bug,
+   Task and Docs) must fit the pull request's: a `feat` (or any `!`) closes
+   a Feature, a `fix` a Bug; the issue forms set it (bug → Bug, feature →
+   Feature, docs → Docs, maintenance task → Task) and a maintainer corrects
+   it when accepting. Priority and Projects are the maintainer's, set when
+   accepting. So an accepted bug report cannot
    carry a feature in. Bots'
    own pull requests (Dependabot, releases) are exempt. This is where a
    feature that is already planned, or that belongs to a paid add-on, is
@@ -177,9 +178,7 @@ how to add a rule and how to add a kind; the one kind today is
    repository and added to the bypass list of the tag-creation ruleset, as
    an Integration. Dependabot alerts and updates, private vulnerability
    reporting. The `dilux-bot` App must be installed on the repository. The
-   review creates its own labels (`type:*` among them, which the issue forms
-   use too; create them before the first issue if the review has not run
-   yet); create `accepted` by hand (the label a
+   review creates its own labels; create `accepted` by hand (the label a
    maintainer puts on an issue to accept it), and keep the triage role, the
    only one below write that can label, for people you trust to accept
    work.
@@ -254,9 +253,9 @@ request that needed the code then passes.
 `v4` brings the accepted-issue gate: from the moment a repository points at
 `v4`, every pull request that is not a bot's must close an accepted issue.
 
-1. Create the `accepted` label and the `type:*` labels (`feat`, `fix`,
-   `docs`, `chore`, `breaking` at least), and give a repository with its own
-   issue forms the `type:*` label of each, as the organisation's forms do.
+1. Create the `accepted` label, and give a repository's own issue forms the
+   native `type:` of each (Bug, Feature, Docs, Task), as the organisation's
+   forms do.
 2. Grant `issues: read` to the `conventions` job in `pull-request.yml` (or
    `pull-request-wp.yml`) and `pull-request-edited.yml`; without it the
    workflow fails to start.
