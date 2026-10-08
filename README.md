@@ -168,7 +168,7 @@ Most of it is the organisation's already: a new repository gets the pull request
 The organisation holds what GitHub lets it hold: the issue Types (Feature, Bug, Task, Docs) and fields (Priority), the Projects, the rulesets, the secrets and Apps, and the community files of this repository (issue forms, pull request template, `CONTRIBUTING.md`, `SECURITY.md`, `SUPPORT.md`, code of conduct), which GitHub uses for every repository that has none of its own. What it does not hold lives here and [`scripts/sync-repos.py`](scripts/sync-repos.py) brings it to every repository:
 
 - [`labels.yml`](labels.yml): every label the workflows and people use (`accepted` among them).
-- [`repos.yml`](repos.yml): the merge and security settings, and the files GitHub reads only from the repository (`.github/CODEOWNERS`).
+- [`repos.yml`](repos.yml): the merge and security settings, the files GitHub reads only from the repository (`.github/CODEOWNERS`), and which public Project of the organisation each repository's accepted issues land on.
 - [`agents-block.md`](agents-block.md): the opening of every `AGENTS.md`, the organisation's rules for any agent, between `dx:org` markers.
 
 ```bash
@@ -273,7 +273,7 @@ ref (default `v5`), not at the ref of its `uses:` line: a caller that pins
 
 | Workflow | Does | Inputs |
 | --- | --- | --- |
-| [`issue-accepted.yml`](.github/workflows/issue-accepted.yml) | When a person adds `accepted` to an issue, re-runs the failed jobs of `Pull request (organisation)` on the open pull requests that close it. Called from `issues.yml`. | `label`, `workflow` |
+| [`issue-accepted.yml`](.github/workflows/issue-accepted.yml) | When a person adds `accepted` to an issue: puts it on its product's public Project as *Accepted* (`projects:` in `repos.yml`) and re-runs the failed jobs of `Pull request (organisation)` on the open pull requests that close it. When an accepted issue closes: *Done*. Called from `issues.yml` (on `labeled` and `closed`). | `label`, `workflow`, `central-ref`; secret `DILUX_BOT_PRIVATE_KEY` |
 | [`org-drift.yml`](.github/workflows/org-drift.yml) | Not reusable: once a week and by hand, `scripts/sync-repos.py check` over every repository; keeps one issue here, "Repositories out of step", listing what differs, closed when nothing does. Changes nothing. | none |
 | [`org-pull-request.yml`](.github/workflows/org-pull-request.yml) | Not reusable: the pull request pipeline of every repository but this one, required by the organisation's `main` ruleset. Calls `conventions.yml`, `claude-review.yml` and `auto-merge.yml` at `@v5` with today's job names, on every pull request event, `edited` included. | none; the repository's `.github/review-policy.yml` |
 | [`conventions.yml`](.github/workflows/conventions.yml) | Branch, title, commits, description sections, no "Generated with" footer, a `docs` title that changes only docs, the size limit for authors who are not trusted (all in `scripts/conventions.sh`), the accepted issue the pull request closes (`scripts/issue-gate.sh`), relative doc links, retired names. Callers grant `issues: read`. Reads the labels and the review App's last record live, so a re-run sees today's `type:*` label. | `retired-names`, `required-sections`, `max-header`, `central-ref`, `review-bot` |
