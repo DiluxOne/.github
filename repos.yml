@@ -7,6 +7,24 @@
 exclude:
   - ards-web   # a client's site, moving to the maintainer's account (docs/plans/org-first.md)
 
+# Which public Project of the organisation each repository's accepted issues
+# land on (its number: github.com/orgs/DiluxOne/projects/<n>). One per
+# product, the free plugin and its Pro add-on together. A repository not
+# listed puts its issues on no Project.
+projects:
+  diluxone-offload-wordpress: 1
+  diluxone-users-wordpress: 2
+  diluxone-users-pro-wordpress: 2
+  diluxone-multisite-user-sync-wordpress: 3
+  diluxone-comments-wordpress: 4
+  diluxone-comments-pro-wordpress: 4
+  diluxone-help-wordpress: 5
+  diluxone-support-wordpress: 6
+  diluxone-commerce-wordpress: 7
+  diluxone-slider-wordpress: 8
+  .github: 9
+  diluxone-wp-test: 9
+
 # Merging: squash only, the pull request's title and description as the
 # commit, the branch deleted, auto-merge allowed (the policy decides when).
 settings:

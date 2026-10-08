@@ -247,6 +247,8 @@ def self_test():
     check("labels.yml: accepted is there", "accepted" in names)
     conf = load_yaml(os.path.join(CENTRAL, "repos.yml"))
     check("repos.yml: settings, security and files", isinstance(conf.get("settings"), dict) and isinstance(conf.get("security"), dict) and ".github/CODEOWNERS" in (conf.get("files") or {}), conf)
+    projects = conf.get("projects") or {}
+    check("repos.yml: every Project is a positive number, every repository a name", projects and all(isinstance(n, int) and n > 0 for n in projects.values()) and all(re.fullmatch(r"[A-Za-z0-9._-]+", r) for r in projects), projects)
     block_file = open(os.path.join(CENTRAL, "agents-block.md"), encoding="utf-8").read()
     check("agents-block.md: carries both markers", block_file.startswith(START) and block_file.rstrip().endswith(END))
     # drift() against a stand-in for gh: one repository with a label of
