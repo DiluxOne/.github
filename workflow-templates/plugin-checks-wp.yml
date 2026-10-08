@@ -1,0 +1,58 @@
+name: Plugin checks
+
+# The checks of a WordPress plugin, from the shared workflows in
+# DiluxOne/.github: the fast quality gates and the slow wp-env suites, on
+# every pull request, on a push to the default branch, once a week and by
+# hand. The conventions, the accepted-issue gate, the Claude review and the
+# auto-merge decision are the organisation's (org-pull-request.yml, required
+# by its ruleset): nothing of them here. Fill in slug and version-constant,
+# and declare the kind in .github/review-policy.yml (`kind: wordpress-plugin`).
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [$default-branch]
+  # Once a week, and by hand, everything runs whatever changed: the suites
+  # against today's WordPress and tools. A failure opens (or updates) one issue.
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    permissions:
+      contents: read
+      pull-requests: read # the push to main looks up the pull request it came from
+      checks: read # and the checks of its head
+    uses: DiluxOne/.github/.github/workflows/plugin-checks-wp.yml@v5
+    with:
+      slug: my-plugin
+      version-constant: MY_PLUGIN_VERSION
+      # translations-complete: true               # the plugin ships languages/*.po
+      # codeql-languages: javascript-typescript   # CodeQL on the plugin's scripts
+
+  tests:
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+    uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v5
+    # One check per target and suite. Left out: integration on a network,
+    # and `npx playwright test` on a single site.
+    # with:
+    #   integration-targets: '["single","network"]'
+    #   e2e-suites: >-
+    #     [{"name":"single","site":"single","run":"npx playwright test"},
+    #      {"name":"network","site":"network","run":"npx playwright test -c playwright.network.config.ts","results":"build/e2e-network-results"}]
+
+  weekly-failure:
+    needs: [checks, tests]
+    if: ${{ !cancelled() && github.event_name == 'schedule' && contains(needs.*.result, 'failure') }}
+    permissions:
+      contents: read
+      issues: write
+    uses: DiluxOne/.github/.github/workflows/weekly-failure.yml@v5

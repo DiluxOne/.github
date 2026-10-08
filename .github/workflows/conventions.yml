@@ -20,19 +20,19 @@ name: Conventions
 #   jobs:
 #     conventions:
 #       permissions: { contents: read, pull-requests: read, issues: read }
-#       uses: DiluxOne/.github/.github/workflows/conventions.yml@v4
+#       uses: DiluxOne/.github/.github/workflows/conventions.yml@v5
 #       with:
 #         retired-names: 'offload\+|dilux cloud'   # optional
 #         required-sections: 'What changes,Why'   # the default
 #         max-header: 100                         # the default
-#         central-ref: v4                         # the default: where the script is read from;
+#         central-ref: v5                         # the default: where the script is read from;
 #                                                 # keep it on the ref the workflow is pinned at
 
 on:
   workflow_call:
     inputs:
       retired-names:
-        description: Case-insensitive extended regex of names that must not appear in tracked files. Empty to skip.
+        description: Case-insensitive extended regex of names that must not appear in tracked files. Empty reads `retired-names:` from the repository's .github/review-policy.yml; empty there too skips.
         type: string
         default: ''
       required-sections:
@@ -50,7 +50,7 @@ on:
       central-ref:
         description: Ref of DiluxOne/.github to read the conventions script from.
         type: string
-        default: v4
+        default: v5
 
 permissions:
   contents: read
@@ -187,10 +187,21 @@ jobs:
           fail: true
 
       - name: No retired product names
-        if: inputs.retired-names != ''
         env:
-          RETIRED: ${{ inputs.retired-names }}
+          RETIRED_INPUT: ${{ inputs.retired-names }}
+          GH_TOKEN: ${{ github.token }}
+          # The policy of the base branch on a pull request, of the pushed
+          # commit otherwise: a pull request cannot drop a name to pass.
+          REF: ${{ github.event.pull_request.base.sha || github.sha }}
+        # The caller's input, or else `retired-names:` in the repository's
+        # .github/review-policy.yml (what the organisation's required
+        # workflow, which has no per-repository input, reads).
         run: |
+          RETIRED=$RETIRED_INPUT
+          if [ -z "$RETIRED" ]; then
+            RETIRED=$(gh api "repos/$GITHUB_REPOSITORY/contents/.github/review-policy.yml?ref=$REF" -H 'Accept: application/vnd.github.raw' 2>/dev/null | yq -r '.["retired-names"] // ""' 2>/dev/null || true)
+          fi
+          if [ -z "$RETIRED" ]; then echo "No retired names."; exit 0; fi
           # Every caller declares the names on a `retired-names:` line (the
           # main workflow and pull-request-edited.yml alike): those lines are
           # the exemption, not one file.
