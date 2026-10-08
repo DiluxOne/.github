@@ -46,17 +46,9 @@ name: Claude review
 # while the policy and the brief follow v5),
 # max-auto-reviews.
 #
-#   on:
-#     pull_request:
-#       types: [opened, synchronize, reopened, ready_for_review, edited]  # as org-pull-request.yml does
-#   jobs:
-#     review:
-#       needs: [conventions, checks]
-#       permissions: { contents: read, pull-requests: write, issues: write }
-#       uses: DiluxOne/.github/.github/workflows/claude-review.yml@v5
-#       with:
-#         profile: plugin-wp   # optional: `kind: wordpress-plugin` in the policy does the same
-#       secrets: inherit
+#   Called by org-pull-request.yml, the organisation's required pipeline,
+#   for every repository, and by this repository's own pull-request.yml;
+#   read either for the call and its permissions.
 
 on:
   workflow_call:

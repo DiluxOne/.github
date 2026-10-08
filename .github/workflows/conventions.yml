@@ -14,19 +14,9 @@ name: Conventions
 # pushes to main): relative Markdown links resolve, and no retired product
 # name comes back.
 #
-#   on:
-#     pull_request:
-#       types: [opened, synchronize, reopened, ready_for_review, edited]  # as org-pull-request.yml does
-#   jobs:
-#     conventions:
-#       permissions: { contents: read, pull-requests: read, issues: read }
-#       uses: DiluxOne/.github/.github/workflows/conventions.yml@v5
-#       with:
-#         retired-names: 'offload\+|dilux cloud'   # optional
-#         required-sections: 'What changes,Why'   # the default
-#         max-header: 100                         # the default
-#         central-ref: v5                         # the default: where the script is read from;
-#                                                 # keep it on the ref the workflow is pinned at
+#   Called by org-pull-request.yml, the organisation's required pipeline,
+#   for every repository, and by this repository's own pull-request.yml;
+#   read either for the call and its permissions.
 
 on:
   workflow_call:

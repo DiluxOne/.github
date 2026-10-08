@@ -76,8 +76,8 @@ cmd_start() {
   # behind.
   local default base remote
   default=$(gh api "repos/$up" --jq .default_branch)
-  # origin when it is the upstream; in a fork, the upstream through gh's
-  # credentials (a private upstream needs them).
+  # origin when it is the upstream; in a fork, the upstream by the URL gh
+  # reports (a private upstream needs git credentials for it, as gh auth setup-git gives).
   remote=origin
   if [ "$(gh repo view --json nameWithOwner --jq .nameWithOwner)" != "$up" ]; then
     git remote get-url upstream >/dev/null 2>&1 || git remote add upstream "$(gh repo view "$up" --json url --jq .url).git"
