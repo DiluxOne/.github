@@ -199,7 +199,13 @@ jobs:
         run: |
           RETIRED=$RETIRED_INPUT
           if [ -z "$RETIRED" ]; then
-            RETIRED=$(gh api "repos/$GITHUB_REPOSITORY/contents/.github/review-policy.yml?ref=$REF" -H 'Accept: application/vnd.github.raw' 2>/dev/null | yq -r '.["retired-names"] // ""' 2>/dev/null || true)
+            # No policy file means no names; any other failure fails the
+            # check rather than letting a retired name through.
+            if policy=$(gh api "repos/$GITHUB_REPOSITORY/contents/.github/review-policy.yml?ref=$REF" -H 'Accept: application/vnd.github.raw' 2>"$RUNNER_TEMP/policy.err"); then
+              RETIRED=$(yq -r '.["retired-names"] // ""' <<<"$policy")
+            elif ! grep -q 'HTTP 404' "$RUNNER_TEMP/policy.err"; then
+              echo "::error::Could not read .github/review-policy.yml for retired-names ($(head -c 200 "$RUNNER_TEMP/policy.err"))."; exit 1
+            fi
           fi
           if [ -z "$RETIRED" ]; then echo "No retired names."; exit 0; fi
           # Every caller declares the names on a `retired-names:` line (the
