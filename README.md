@@ -188,7 +188,7 @@ Labels and settings change through the API. Files never go straight to `main`: f
 2. Delete `.github/workflows/pull-request-edited.yml`, and `pull-request.yml` unless it has jobs of its own: for a plugin, keep only `checks`, `tests` and `weekly-failure` (the `plugin-checks-wp.yml` template). Move `retired-names` from the callers to `.github/review-policy.yml`.
 3. Delete what the organisation provides: the issue forms, the pull request template, `SECURITY.md`, `CONTRIBUTING.md` unless it has something of its own. Keep `.github/CODEOWNERS`, `dependabot.yml` and the review policy.
 4. Point the remaining `uses:` and `central-ref:` at `@v5`.
-5. Run `scripts/sync-repos.py all --repo <name>`; once the organisation's rulesets are active, delete the repository's own.
+5. Before opening that pull request, the repository joins the organisation's rulesets (a maintainer, from this repository's session), or its own ruleset would require checks the pull request deletes. After the merge, run `scripts/sync-repos.py all --repo <name>` and replace the repository's own rulesets with one named **own checks** that only requires its own jobs' checks (`checks / …`, `tests / …`, a plugin's real-storage suites), by their exact names: the organisation's ruleset requires its pipeline, not a plugin's tests. A repository with no checks of its own keeps no ruleset.
 
 ## Migrating a repository from `v3` to `v4`
 

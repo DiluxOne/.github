@@ -209,7 +209,7 @@ def drift(repo, conf, labels, block, current=0):
                     out = gh("api", f"repos/{full}/contents/{entry['path']}", "-H", "Accept: application/vnd.github.raw", check=False)
                     texts.append(out.stdout if out.returncode == 0 else "")
         old = old_versions(texts, current)
-        if not any(USES_RE.search(t) for t in texts):
+        if not any(USES_RE.search(t) for t in texts) and repo["name"] not in (conf.get("no-workflows") or []):
             found.append("calls none of the shared workflows (README, \"Adopt it in a new repository\")")
         if old:
             found.append(f"calls the shared workflows at {', '.join('@v' + str(v) for v in old)}; the current is @v{current} (README, \"Migrating a repository\")")

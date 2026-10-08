@@ -3,6 +3,12 @@
 # hold itself (rulesets, issue types and fields, Projects, secrets, the
 # community files of this repository) is not here.
 
+# Repositories with no workflows of their own by design (the organisation's
+# required pipeline still runs on their pull requests): the drift check does
+# not ask them to call the shared ones.
+no-workflows:
+  - diluxone-wp-test   # a disposable environment to test by hand (its AGENTS.md)
+
 # Repositories the script leaves alone.
 exclude:
   - ards-web   # a client's site, moving to the maintainer's account (docs/plans/org-first.md)
