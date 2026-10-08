@@ -1,5 +1,35 @@
-# Everything in this repository decides how every other DiluxOne repository is
-# built, checked, reviewed and released: every change is high risk and a human
-# merges it.
+# Almost everything in this repository decides how every other DiluxOne
+# repository is built, checked, reviewed and released: it is high risk and a
+# person merges it. The exceptions are the pages people read and nothing
+# runs: README.md, docs/ and profile/ (the organisation's public page). A
+# change to those alone can merge on its own, under the same conditions as
+# anywhere else (low risk and complexity, nothing blocking, a trusted
+# author, every check green).
+#
+# There is no "everything but" pattern, so this lists what is high risk: the
+# root files one by one. A file added here is in no list until it is named,
+# and `policy.py --test` fails until it is ("this repository: every file but
+# its pages is high risk").
 high-risk:
-  - "**"
+  # Workflows (.github/**), AGENTS.md and CLAUDE.md are the organisation's
+  # defaults already.
+  - "docs/agents.md"
+  # Read by the review and the reproduction as the repository's rules
+  # (review-brief.sh, issue-repro.yml), should this repository have them.
+  - "docs/architecture.md"
+  - "docs/testing-and-quality.md"
+  - "kinds/**"
+  - "policy/**"
+  - "review-profiles/**"
+  - "scripts/**"
+  - "workflow-templates/**"
+  - "agents-block.md"
+  - "labels.yml"
+  - "repos.yml"
+  - "CONTRIBUTING.md"
+  - "SECURITY.md"
+  - "SUPPORT.md"
+  - "CODE_OF_CONDUCT.md"
+  - "pull_request_template.md"
+  - "LICENSE"
+  - ".gitignore"

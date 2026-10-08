@@ -197,7 +197,8 @@ A future `node-app`, say:
 3. If its rules read another language, an adapter in the engine (see
    above), with tests.
 4. Its caller templates in `workflow-templates/`, its row in the table at
-   the top of this page and in the README.
+   the top of this page, and its name where
+   [`docs/adopting.md`](../docs/adopting.md) lists the kinds.
 
 `python3 scripts/policy.py --test` checks every pack: its workflows exist,
 it names its adapters, it has rules and a review profile.

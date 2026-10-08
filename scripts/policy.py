@@ -473,6 +473,24 @@ def settings_tests():
         check(f"profile: {name} is {want}", got == want, got)
         if got:
             check(f"profile: {got} exists", os.path.isfile(os.path.join(CENTRAL, got)))
+    # This repository's own policy: every tracked file is high risk but its
+    # pages (README.md, docs/ but docs/agents.md, profile/), which alone can be low. A new file
+    # that no pattern names fails here instead of slipping into low risk.
+    own = load_yaml(os.path.join(CENTRAL, ".github", "review-policy.yml"))
+    default_policy = load_yaml(os.path.join(CENTRAL, "policy", "review-policy.default.yml"))
+    tracked = [f for f in subprocess.run(["git", "-C", CENTRAL, "ls-files", "-z"], capture_output=True, text=True).stdout.split("\0") if f]
+    check("this repository: its tracked files could be listed", bool(tracked), "git ls-files returned nothing")
+    if tracked:
+        high = default_policy.get("high-risk", []) + own.get("high-risk", [])
+        low = default_policy.get("low-risk-eligible", []) + own.get("low-risk-eligible", [])
+        rules = ("docs/agents.md", "docs/architecture.md", "docs/testing-and-quality.md")
+        page = lambda f: f == "README.md" or (f.startswith(("docs/", "profile/")) and f not in rules)
+        loose = [f for f in tracked if not page(f) and not matches(f, high)]
+        check("this repository: every file but its pages is high risk", not loose, loose[:10])
+        for f in rules:
+            check(f"this repository: {f}, read as rules, is high risk", matches(f, high))
+        pages = [f for f in tracked if page(f) and f.endswith(".md")]
+        check("this repository: its Markdown pages can be low risk", all(not matches(f, high) and matches(f, low) for f in pages), pages)
     for kind in sorted(os.listdir(os.path.join(CENTRAL, "kinds"))):
         if not os.path.isfile(pack_path(kind)):
             continue
