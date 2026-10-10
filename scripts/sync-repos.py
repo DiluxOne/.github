@@ -356,7 +356,7 @@ def sync_own_checks(repo, dry):
         # Only what an active ruleset required on the default branch: a
         # release branch's checks, or a disabled ruleset's, may never run there.
         old = {c for r in mine if r.get("target") == "branch" and r.get("enforcement") == "active"
-               and set(((r.get("conditions") or {}).get("ref_name") or {}).get("include") or []) <= MAIN_REFS
+               and set(((r.get("conditions") or {}).get("ref_name") or {}).get("include") or ["none"]) <= MAIN_REFS
                for c in required_checks(r) if c.split(" / ", 1)[0] not in pipeline}
         contexts = sorted(set(own_contexts(recent_check_names(full), spec)) | old)
         if not contexts:
