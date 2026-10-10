@@ -86,7 +86,10 @@ jobs:
             elif [ "$status" != completed ]; then
               echo "::warning::#$pr: its run $run is still $status; re-run it once it ends, or push."
             elif [ "$conclusion" = failure ]; then
-              if gh run rerun "$run" --repo "$GITHUB_REPOSITORY" --failed; then
+              # The API, not `gh run rerun`: that looks the run's workflow up
+              # in this repository and gets a 404 for the organisation's
+              # required one.
+              if gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$run/rerun-failed-jobs" >/dev/null; then
                 echo "#$pr: re-ran the failed jobs of run $run."
               else
                 echo "::warning::#$pr: could not re-run run $run."
