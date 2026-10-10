@@ -43,6 +43,8 @@ Fill in What changes and Why in `.git/dx/pr.md`, then `dx check`. It runs what C
 
 Only when the person you work for says so: `dx pr`. It pushes the branch and opens the pull request upstream with that description. End anything you write on GitHub with one line saying AI took part: `🤖 AI-generated · <model> (<maker>)` when you wrote it, `🤖 AI-assisted · <model> (<maker>)` when a person did with your help. Never "Generated with …".
 
+When something waits on a person, say who does what, with the full URL, one per line. To a maintainer: the action and its link ("Add `accepted` to https://github.com/DiluxOne/<repo>/issues/<n>", "Approve and merge https://github.com/DiluxOne/<repo>/pull/<n>"), never "the issue needs accepting" alone. To someone working from a fork or a clone, who cannot accept, approve or merge: never a maintainer's step; tell them a maintainer will review it and answer soon, with the link to where it waits.
+
 Then CI runs the same checks. If you opened it before the issue was accepted, its gate fails; it runs again on its own when a maintainer accepts the issue, where the repository's `issues.yml` has the `accepted` job; otherwise push a commit (editing the description does not re-run it). On a fork's pull request the review does not run (no secret reaches code from a fork); a maintainer reviews it. Answer a review thread by fixing the code and pushing, or by replying with `@dilux-bot` (from a branch of the repository). Every conversation is resolved before a merge.
 
 ## Never
