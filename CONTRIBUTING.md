@@ -36,7 +36,7 @@ Nothing reaches `main` without a green pull request, maintainers included.
 
 ## Commit messages and PR titles
 
-We follow [Conventional Commits](https://www.conventionalcommits.org/). The first line (and the PR title) is `<type>(<optional-scope>): <subject>`, with type one of `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`. Keep it short: aim for 72 characters, CI rejects anything over 100, and do not end it with a period.
+We follow [Conventional Commits](https://www.conventionalcommits.org/). The first line (and the PR title) is `<type>(<optional-scope>): <subject>`, with type one of `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`. Keep it short: aim for 72 characters, CI rejects anything over 100, and do not end it with a period. Dependabot's long grouped titles are the exception: the review shortens them, and their commits are not measured, since the squash keeps only the title.
 
 The body explains **why**: the problem, the context, the alternatives you considered. Write it in plain paragraphs, **one line per paragraph, without hard-wrapping**: GitHub, where these messages are read, wraps them for you, and hard-wrapped lines show up broken there. The commit on `main` takes its body from the pull request description, so the commits on your branch can be short.
 

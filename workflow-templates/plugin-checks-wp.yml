@@ -34,6 +34,10 @@ jobs:
       version-constant: MY_PLUGIN_VERSION
       # translations-complete: true               # the plugin ships languages/*.po
       # codeql-languages: javascript-typescript   # CodeQL on the plugin's scripts
+      # A required plugin (Requires Plugins) wordpress.org does not have yet:
+      # requires-plugins-from: base-plugin=DiluxOne/base-plugin-wordpress@main
+    # secrets:
+    #   DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}   # with requires-plugins-from
 
   tests:
     permissions:
