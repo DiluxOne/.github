@@ -584,7 +584,7 @@ jobs:
           if [ "$retitled" = "$current" ]; then
             echo "The title already carries the type."
           elif [ "${#retitled}" -gt 100 ]; then
-            echo "::warning::The title should start with \"${want}${scope}${bang}:\" but that makes it longer than 100 characters; shorten it yourself. The conventions check will ask for it."
+            echo "::warning::The title \"${retitled}\" is longer than 100 characters; it needs shortening by hand. The conventions check will ask for it."
           else
             gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --title "$retitled" >/dev/null
             echo "Title corrected to \"$retitled\"."
