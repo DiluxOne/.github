@@ -560,24 +560,31 @@ jobs:
         # The title becomes the commit on main, and the conventions check
         # requires it to carry the labelled type. Scope and subject are the
         # author's; only the type token (and the `!` of a breaking change) is
-        # corrected.
+        # corrected. A Dependabot title past the limit is also shortened
+        # (scripts/conventions.sh, which lets it through for this step to fix).
         if: ${{ !cancelled() && steps.resolver.outcome == 'success' && steps.verdict.outputs.type != '' }}
         env:
           GH_TOKEN: ${{ steps.resolver.outputs.token }}
           PR: ${{ github.event.pull_request.number }}
           TYPE: ${{ steps.verdict.outputs.type }}
+          AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+          BRANCH: ${{ github.head_ref }}
         run: |
           set -euo pipefail
-          title=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json title --jq .title)
+          current=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json title --jq .title)
+          title=$current
+          if [ "$AUTHOR_TYPE" = Bot ] && [[ "$BRANCH" == dependabot/* ]]; then
+            title=$(bash .dx-central/scripts/conventions.sh --dependabot-title "$title")
+          fi
           title_re='^([a-z]+)(\([^)]*\))?(!?): (.*)$'
           [[ "$title" =~ $title_re ]] || { echo "The title is not a Conventional Commit header; the conventions check says so."; exit 0; }
           token=${BASH_REMATCH[1]}; scope=${BASH_REMATCH[2]}; subject=${BASH_REMATCH[4]}
           if [ "$TYPE" = breaking ]; then want="$token"; bang='!'; else want="$TYPE"; bang=''; fi
           retitled="${want}${scope}${bang}: ${subject}"
-          if [ "$retitled" = "$title" ]; then
+          if [ "$retitled" = "$current" ]; then
             echo "The title already carries the type."
           elif [ "${#retitled}" -gt 100 ]; then
-            echo "::warning::The title should start with \"${want}${scope}${bang}:\" but that makes it longer than 100 characters; shorten it yourself. The conventions check will ask for it."
+            echo "::warning::The title \"${retitled}\" is longer than 100 characters; it needs shortening by hand. The conventions check will ask for it."
           else
             gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --title "$retitled" >/dev/null
             echo "Title corrected to \"$retitled\"."
