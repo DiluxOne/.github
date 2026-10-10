@@ -296,7 +296,7 @@ def superseded(name, mine, org, pipeline):
     org = [r for r in org if covers(r, name)]
     org_branch = [r for r in org if r.get("target") == "branch"
                   and set(((r.get("conditions") or {}).get("ref_name") or {}).get("include") or []) & MAIN_REFS]
-    org_types = {x.get("type") for r in org_branch for x in r.get("rules") or []}
+    org_rules = {json.dumps(x, sort_keys=True) for r in org_branch for x in r.get("rules") or []}
     own = {c for r in mine if r.get("name") == OWN for c in required_checks(r)}
     found = []
     for r in mine:
@@ -305,9 +305,9 @@ def superseded(name, mine, org, pipeline):
             if any(o.get("target") == "tag" and same_rules(r, o) for o in org):
                 found.append((r["id"], r["name"]))
         elif r.get("target") == "branch" and r.get("name") != OWN and org_branch and refs and refs <= MAIN_REFS:
-            types = {x.get("type") for x in r.get("rules") or []} - {"required_status_checks"}
+            rules = {json.dumps(x, sort_keys=True) for x in r.get("rules") or [] if x.get("type") != "required_status_checks"}
             checks = required_checks(r)
-            if types <= org_types and all(c in own or c.split(" / ", 1)[0] in pipeline for c in checks):
+            if rules <= org_rules and all(c in own or c.split(" / ", 1)[0] in pipeline for c in checks):
                 found.append((r["id"], r["name"]))
     return found
 
@@ -353,7 +353,11 @@ def sync_own_checks(repo, dry):
     mine = rulesets(full)
     pipeline = pipeline_jobs()
     if spec and not any(r.get("name") == OWN for r in mine):
-        old = {c for r in mine if r.get("target") == "branch" for c in required_checks(r) if c.split(" / ", 1)[0] not in pipeline}
+        # Only what an active ruleset required on the default branch: a
+        # release branch's checks, or a disabled ruleset's, may never run there.
+        old = {c for r in mine if r.get("target") == "branch" and r.get("enforcement") == "active"
+               and set(((r.get("conditions") or {}).get("ref_name") or {}).get("include") or []) <= MAIN_REFS
+               for c in required_checks(r) if c.split(" / ", 1)[0] not in pipeline}
         contexts = sorted(set(own_contexts(recent_check_names(full), spec)) | old)
         if not contexts:
             print(f"  no checks of its jobs ({', '.join(spec.get('jobs') or [])}) on its last merged pull requests: \"{OWN}\" waits, and nothing is deleted")
@@ -515,6 +519,16 @@ def self_test():
     check("own checks: its jobs' checks, once, sorted, without the skipped", own_contexts(names, spec) == ["checks / PHPStan", "tests / E2E (single)"], own_contexts(names, spec))
     check("own checks: a repository calling the checks needs one", calls_any(["uses: DiluxOne/.github/.github/workflows/plugin-checks-wp.yml@v5"], spec["callers-of"]))
     check("own checks: one calling only the issue workflows does not", not calls_any(["uses: DiluxOne/.github/.github/workflows/issue-triage.yml@v5"], spec["callers-of"]))
+    saved_gh = globals()["gh"]
+    globals()["gh"] = lambda *a, check=True, input_text=None: type("O", (), {"stdout": "", "returncode": 1, "stderr": "HTTP 502"})()
+    try:
+        own_checks_spec("o/r", "main", ["uses: DiluxOne/.github/.github/workflows/plugin-checks-wp.yml@v5"])
+        check("own checks: a policy that cannot be read stops, rather than reads as no kind", False, "no error")
+    except RuntimeError:
+        check("own checks: a policy that cannot be read stops, rather than reads as no kind", True)
+    globals()["gh"] = lambda *a, check=True, input_text=None: type("O", (), {"stdout": "", "returncode": 1, "stderr": "HTTP 404"})()
+    check("own checks: no policy, no ruleset", own_checks_spec("o/r", "main", ["uses: DiluxOne/.github/.github/workflows/plugin-checks-wp.yml@v5"]) is None)
+    globals()["gh"] = saved_gh
     check("pipeline: the organisation's required jobs", {"conventions", "review"} <= pipeline_jobs(), pipeline_jobs())
     check("kind: plain, quoted and with a comment", [policy_kind("kind: wordpress-plugin\n"), policy_kind('kind: "wordpress-plugin"\n'), policy_kind("a: b\nkind: 'x-y'  # mine\n"), policy_kind("other: 1\n")] == ["wordpress-plugin", "wordpress-plugin", "x-y", None])
     tag_rules = [{"type": "deletion"}, {"type": "update"}]
@@ -537,6 +551,8 @@ def self_test():
     check("superseded: not a ruleset with a rule the organisation's lack, nor a check only it requires", all(i not in (6, 7) for i, _ in got), got)
     check("superseded: not the old main while \"own checks\" lacks one of its checks", superseded("r", [m for m in mine if m["id"] != 2], org, pipe) == [(3, "release tags")], superseded("r", [m for m in mine if m["id"] != 2], org, pipe))
     check("superseded: nothing while the organisation's rulesets do not cover the repository", superseded("other", mine, org, pipe) == [], superseded("other", mine, org, pipe))
+    strict = [dict(mine[0], rules=[{"type": "pull_request", "parameters": {"required_approving_review_count": 2}}, rsc("checks / PHPStan")]), own_rs]
+    check("superseded: not a ruleset whose rule is stricter than the organisation's", superseded("r", strict, org, pipe) == [], superseded("r", strict, org, pipe))
     paused = [dict(o, enforcement="evaluate") for o in org]
     check("superseded: nothing when the organisation's are not active", superseded("r", mine, paused, pipe) == [], superseded("r", mine, paused, pipe))
     if not failed:
