@@ -297,7 +297,8 @@ def superseded(name, mine, org, pipeline):
     org_branch = [r for r in org if r.get("target") == "branch"
                   and set(((r.get("conditions") or {}).get("ref_name") or {}).get("include") or []) & MAIN_REFS]
     org_rules = {json.dumps(x, sort_keys=True) for r in org_branch for x in r.get("rules") or []}
-    own = {c for r in mine if r.get("name") == OWN for c in required_checks(r)}
+    own = {c for r in mine if r.get("name") == OWN and r.get("enforcement", "active") == "active" for c in required_checks(r)}
+    org_bypass = {json.dumps(x, sort_keys=True) for r in org_branch for x in r.get("bypass_actors") or []}
     found = []
     for r in mine:
         refs = set(((r.get("conditions") or {}).get("ref_name") or {}).get("include") or [])
@@ -307,7 +308,8 @@ def superseded(name, mine, org, pipeline):
         elif r.get("target") == "branch" and r.get("name") != OWN and org_branch and refs and refs <= MAIN_REFS:
             rules = {json.dumps(x, sort_keys=True) for x in r.get("rules") or [] if x.get("type") != "required_status_checks"}
             checks = required_checks(r)
-            if rules <= org_rules and all(c in own or c.split(" / ", 1)[0] in pipeline for c in checks):
+            bypass = {json.dumps(x, sort_keys=True) for x in r.get("bypass_actors") or []}
+            if rules <= org_rules and bypass <= org_bypass and all(c in own or c.split(" / ", 1)[0] in pipeline for c in checks):
                 found.append((r["id"], r["name"]))
     return found
 
@@ -393,17 +395,17 @@ def drift(repo, conf, labels, block, current=0):
             found.append("calls none of the shared workflows (docs/adopting.md)")
         if old:
             found.append(f"calls the shared workflows at {', '.join('@v' + str(v) for v in old)}; the current is @v{current} (docs/migrating.md)")
-        mine = rulesets(full)
-        if own_checks_spec(full, default, texts) and not any(r.get("name") == OWN for r in mine):
-            found.append(f"no \"{OWN}\" ruleset: nothing requires its own jobs' checks (`sync-repos.py own-checks`)")
+        # Said, never guessed: a ruleset that cannot be read is reported as
+        # such, not as nothing to report.
         try:
+            mine = rulesets(full)
             org = org_rulesets()
-        except RuntimeError:
-            # The weekly check's token may not read the organisation's
-            # rulesets (organisation administration); what they cover is
-            # then not reported, rather than guessed.
-            org = []
-        for _, rname in superseded(repo["name"], mine, org, pipeline_jobs()):
+        except RuntimeError as exc:
+            found.append(f"its rulesets could not be checked: {exc}")
+            mine, org = None, []
+        if mine is not None and own_checks_spec(full, default, texts) and not any(r.get("name") == OWN for r in mine):
+            found.append(f"no \"{OWN}\" ruleset: nothing requires its own jobs' checks (`sync-repos.py own-checks`)")
+        for _, rname in superseded(repo["name"], mine or [], org, pipeline_jobs()):
             found.append(f"the ruleset \"{rname}\" is covered by the organisation's (`sync-repos.py own-checks` deletes it)")
     have = {l["name"]: l for l in json.loads(gh("label", "list", "--repo", full, "--limit", "1000", "--json", "name,color,description").stdout)}
     for label in labels:
@@ -553,6 +555,9 @@ def self_test():
     check("superseded: nothing while the organisation's rulesets do not cover the repository", superseded("other", mine, org, pipe) == [], superseded("other", mine, org, pipe))
     strict = [dict(mine[0], rules=[{"type": "pull_request", "parameters": {"required_approving_review_count": 2}}, rsc("checks / PHPStan")]), own_rs]
     check("superseded: not a ruleset whose rule is stricter than the organisation's", superseded("r", strict, org, pipe) == [], superseded("r", strict, org, pipe))
+    bypassed = [dict(mine[0], bypass_actors=[{"actor_id": 9, "actor_type": "Integration", "bypass_mode": "always"}]), own_rs]
+    check("superseded: not a ruleset someone may bypass that the organisation's do not let", superseded("r", bypassed, org, pipe) == [], superseded("r", bypassed, org, pipe))
+    check("superseded: a disabled \"own checks\" covers nothing", superseded("r", [mine[0], dict(own_rs, enforcement="disabled")], org, pipe) == [], "")
     paused = [dict(o, enforcement="evaluate") for o in org]
     check("superseded: nothing when the organisation's are not active", superseded("r", mine, paused, pipe) == [], superseded("r", mine, paused, pipe))
     if not failed:
