@@ -221,8 +221,18 @@ jobs:
           node-version: '20'
       - run: npm install --no-audit --no-fund
         if: env.GO == 'true'
-      - run: npx playwright install --with-deps chromium
+      - name: Chromium
         if: env.GO == 'true'
+        # On GitHub's runners every job has a machine of its own, and installs
+        # Chromium's system libraries with apt. The organisation's VM runs a
+        # dozen jobs on one system, where apt takes one at a time: it carries
+        # those libraries, provisioned on every boot, and a job there fetches
+        # the browser alone, into its user's cache.
+        env:
+          RUNNER_KIND: ${{ runner.environment }}
+        run: |
+          if [ "$RUNNER_KIND" = self-hosted ]; then npx playwright install chromium
+          else npx playwright install --with-deps chromium; fi
       - run: npx wp-env start
         if: env.GO == 'true'
       - name: Activate the plugin (single site)
@@ -265,7 +275,14 @@ jobs:
         env:
           CI: 'true'
           RUN: ${{ matrix.suite.run }}
+        # A runner with ports of its own (the organisation's VM, one pair per
+        # runner, so suites side by side never share one) states them alone;
+        # the addresses every suite reads come from them: WP_BASE_URL, the
+        # development site, and WP_NETWORK_URL, the tests site. Elsewhere
+        # neither port is set and each repository keeps its own defaults.
         run: |
+          [ -z "${WP_ENV_PORT:-}" ] || export WP_BASE_URL="http://localhost:$WP_ENV_PORT"
+          [ -z "${WP_ENV_TESTS_PORT:-}" ] || export WP_NETWORK_URL="http://localhost:$WP_ENV_TESTS_PORT"
           mkdir -p build
           bash -c "$RUN"
       - if: failure() && env.GO == 'true'
