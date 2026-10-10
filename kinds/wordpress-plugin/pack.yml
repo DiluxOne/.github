@@ -17,6 +17,19 @@ workflows:
   - plugin-tests-wp.yml
   - plugin-release-wp.yml
 
+# What a repository of this kind requires of its own jobs, beside the
+# organisation's pipeline: a repository ruleset named "own checks"
+# (docs/migrating.md). A repository needs one when a workflow of its calls
+# one of `callers-of`; scripts/sync-repos.py creates it from the check runs
+# of its last merged pull request whose job is one of `jobs` ("checks / PHPStan"),
+# leaving out the names in `skip`, plus every check its old default-branch
+# rulesets required. One that exists is never rewritten: a repository adds
+# its own suites to it by hand (Offload's real-storage ones).
+own-checks:
+  callers-of: [plugin-checks-wp.yml, plugin-tests-wp.yml]
+  jobs: [checks, tests]
+  skip: [What changed]
+
 # The engines this kind's checks run, and the language adapter of each.
 adapters:
   - engine: scripts/review-rules.php

@@ -2,7 +2,9 @@ name: Repositories in step
 
 # Once a week, and by hand: compares every repository of the organisation with
 # what this repository keeps for all of them (labels.yml, repos.yml,
-# agents-block.md), through scripts/sync-repos.py check, and changes nothing.
+# agents-block.md, the kind's "own checks" ruleset, the rulesets the
+# organisation's cover), through scripts/sync-repos.py check, and changes
+# nothing.
 # One issue here, "Repositories out of step", lists what differs: opened or
 # updated when something does, closed when nothing does. Bringing a
 # repository in step stays a maintainer's run of scripts/sync-repos.py.
@@ -41,6 +43,9 @@ jobs:
           permission-contents: read
           permission-issues: read
           permission-metadata: read
+          # The organisation's rulesets, to tell which of a repository's own
+          # they cover. Read-only.
+          permission-organization-administration: read
 
       - name: Compare
         env:

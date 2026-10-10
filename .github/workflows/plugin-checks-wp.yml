@@ -322,7 +322,7 @@ jobs:
           OWNER: ${{ github.repository_owner }}
           GH_TOKEN: ${{ steps.bot.outputs.token }}
         run: bash .dx-central/scripts/required-plugins.sh fetch "$RUNNER_TEMP/required-plugins"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: required-plugins-${{ inputs.slug }}
           path: ${{ runner.temp }}/required-plugins
@@ -371,7 +371,7 @@ jobs:
           RESULT: ${{ needs.required-plugins.result }}
         run: |
           [ "$RESULT" = success ] || { echo "::error::The required plugins could not be fetched (the Required plugins job: $RESULT)."; exit 1; }
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         id: required
         if: inputs.requires-plugins-from != ''
         continue-on-error: true

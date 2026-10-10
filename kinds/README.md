@@ -31,6 +31,7 @@ kinds/<kind>/
 | `name` | The kind's name for people. |
 | `aliases` | Other names a caller's `profile:` may use for this kind (one line, `[a, b]`). `plugin-wp` is the wordpress-plugin kind's: the name of its profile before packs existed, still accepted. |
 | `workflows` | The reusable workflows in `.github/workflows/` that make up the battery. |
+| `own-checks` | What a repository of this kind requires of its own jobs in its **own checks** ruleset: `callers-of` (it needs one when it calls one of these workflows), `jobs` (the caller's job names whose checks are required), `skip` (check names left out). `scripts/sync-repos.py own-checks` creates it. |
 | `adapters` | The engines the kind's checks run and the language adapter each reads with. |
 | `settings` | What the workflows read from the pack, free-form per kind (for wordpress-plugin, `plugin-check`: `strict`, `categories`, `include-experimental`, `ignore-codes`). |
 
