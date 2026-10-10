@@ -16,6 +16,16 @@ name: Organisation VM
 # while jobs run. The VM is shared with AI Studio's runners: "nothing has run"
 # counts theirs too, so neither side switches it off under the other.
 #
+# What runs there, and with what: the private repositories' jobs, the review
+# and the issue triage among them, with the Anthropic key and dilux-bot's.
+# Those repositories take pull requests from the maintainer, the maintainer's
+# agents and Dependabot alone (a private repository has no outside forks
+# running its workflows), and AI Studio, the VM's other tenant, is the
+# maintainer's too. Code anyone else writes never reaches it: the release,
+# the credentials check and the reproduction stay on GitHub's fresh runners,
+# and public repositories never see DX_RUNNER. A VM that hosted anyone else's
+# code would need jobs that do not persist, one VM per job.
+#
 # Azure: OIDC federation (app gh-actions-dilux-runner-starter, a credential
 # for this repository's main branch; role Virtual Machine Contributor on that
 # VM alone). The IDs are variables, not secrets: none of them is a credential.
@@ -79,7 +89,8 @@ jobs:
               runs=$(gh api --paginate "repos/$OWNER/$repo/actions/runs?status=$status&per_page=100" --jq '.workflow_runs[].id') || { echo "waiting=unknown" >> "$GITHUB_OUTPUT"; exit 0; }
               for run in $runs; do
                 n=$(gh api --paginate "repos/$OWNER/$repo/actions/runs/$run/jobs?filter=latest&per_page=100" \
-                  --jq '[.jobs[] | select(.status == "queued" and (.labels | index("diluxone")))] | length' | awk '{s += $1} END {print s + 0}') || { echo "waiting=unknown" >> "$GITHUB_OUTPUT"; exit 0; }
+                  --jq '[.jobs[] | select(.status == "queued" and (.labels | index("diluxone")))] | length' | awk '{s += $1} END {print s + 0}') || n=unknown
+                [[ "$n" =~ ^[0-9]+$ ]] || { echo "waiting=unknown" >> "$GITHUB_OUTPUT"; exit 0; }
                 [ "$n" -gt 0 ] && echo "$repo: run $run has $n job(s) waiting"
                 waiting=$((waiting + n))
               done
@@ -107,7 +118,10 @@ jobs:
           state=$(power)
           echo "VM: $state; waiting: $WAITING; action: $ACTION"
           if [ "$ACTION" = auto ]; then
-            if [ "$WAITING" = unknown ] || [ "${WAITING:-0}" -gt 0 ]; then ACTION=start
+            # Unsure starts a VM that is off, but does not keep one on: it
+            # goes off only when idle, and the next run starts it again.
+            if [ "$state" != PowerState/running ] && { [ "$WAITING" = unknown ] || [ "${WAITING:-0}" -gt 0 ]; }; then ACTION=start
+            elif [ "$state" = PowerState/running ] && [ "$WAITING" != unknown ] && [ "${WAITING:-0}" -gt 0 ]; then echo "On, and jobs wait for it."; exit 0
             elif [ "$state" = PowerState/running ]; then ACTION=deallocate-if-idle
             else echo "Off, and nothing waits for it."; exit 0; fi
           fi
@@ -124,13 +138,17 @@ jobs:
               echo "Started: its runners connect to GitHub as it boots." ;;
             deallocate-if-idle)
               # Asked of the VM itself: is a runner at work (ours or AI Studio's),
-              # and when did one last work? It records the last time it saw one.
+              # and when did one last work? Each job leaves a Worker_*.log in its
+              # runner's _diag, written until the job ends, so the newest one
+              # dates the last job, however short, between two of these runs.
+              # Since the VM booted, at least: a fresh start counts as work.
               # shellcheck disable=SC2016 # runs on the VM, not here.
               verdict=$(az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript --query 'value[0].message' -o tsv --scripts '
-                f=/var/tmp/runner-last-busy; now=$(date +%s)
-                if pgrep -f Runner.Worker >/dev/null; then echo "$now" > "$f"; echo VERDICT=busy; exit 0; fi
-                last=$(cat "$f" 2>/dev/null || echo 0); up=$(awk "{print int(\$1)}" /proc/uptime)
-                echo "VERDICT=idle-for:$(( (now - (last > now - up ? last : now - up)) / 60 ))"') || { echo "::warning::Could not ask the VM; it stays on."; exit 0; }
+                if pgrep -f Runner.Worker >/dev/null; then echo VERDICT=busy; exit 0; fi
+                now=$(date +%s); boot=$(( now - $(cut -d. -f1 /proc/uptime) ))
+                last=$(find /data/runners/*/_diag /data/runners-dx/*/_diag -name "Worker_*.log" -printf "%T@\n" 2>/dev/null | sort -n | tail -1 | cut -d. -f1)
+                last=${last:-0}; [ "$last" -gt "$boot" ] || last=$boot
+                echo "VERDICT=idle-for:$(( (now - last) / 60 ))"') || { echo "::warning::Could not ask the VM; it stays on."; exit 0; }
               verdict=$(sed -n 's/^VERDICT=//p' <<<"$verdict" | tail -1)
               echo "VM says: ${verdict:-nothing}"
               case "$verdict" in
