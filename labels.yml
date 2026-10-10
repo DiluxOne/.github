@@ -55,4 +55,6 @@
 # Dependabot and the weekly run.
 - {name: dependencies, color: "0366D6", description: "Updates a dependency"}
 - {name: github-actions, color: "000000", description: "Updates a GitHub Action"}
+- {name: npm, color: "CB3837", description: "Updates an npm package"}
+- {name: composer, color: "885630", description: "Updates a Composer package"}
 - {name: "ci:weekly", color: "B60205", description: "The weekly run failed"}
