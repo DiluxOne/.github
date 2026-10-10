@@ -98,7 +98,7 @@ permissions:
 jobs:
   syntax:
     name: PHP ${{ matrix.php }} syntax
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -125,7 +125,7 @@ jobs:
 
   unit:
     name: PHP ${{ matrix.php }} unit tests
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -153,7 +153,7 @@ jobs:
 
   static:
     name: ${{ matrix.gate.name }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -186,7 +186,7 @@ jobs:
 
   i18n:
     name: i18n (wp i18n make-pot)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -244,7 +244,7 @@ jobs:
     # and treat a missing answer as "run", so this job failing (or an older
     # central without the script) never skips a suite; a job skipped by
     # the answer satisfies the ruleset.
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
       contents: read
@@ -285,7 +285,7 @@ jobs:
     # Plugin Check does.
     needs: changes
     if: ${{ !cancelled() && inputs.requires-plugins-from != '' && (needs.changes.outputs.code != 'false' || needs.changes.outputs.plugin_check != 'false') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -336,7 +336,7 @@ jobs:
     name: WordPress Plugin Check
     needs: [changes, required-plugins]
     if: ${{ !cancelled() && (needs.changes.outputs.code != 'false' || needs.changes.outputs.plugin_check != 'false') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -408,7 +408,7 @@ jobs:
     # shipped tree; config rules (phpcs.xml) the repository; suppressions
     # are checked against the repository's .github/review-suppressions.yml.
     # An error fails, a warning is annotated. Cheap: every pull request.
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -448,7 +448,7 @@ jobs:
     # strings the shipped code has today, misses none. Off, the job is
     # skipped, which satisfies a ruleset.
     if: inputs.translations-complete
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -516,7 +516,7 @@ jobs:
     # check passes, so the review is not held back; it runs again once the
     # repository is public.
     if: inputs.codeql-languages != '' && !github.event.repository.private
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -543,7 +543,7 @@ jobs:
 
   readme:
     name: readme.txt and versions
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
       contents: read

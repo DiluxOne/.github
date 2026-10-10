@@ -37,6 +37,23 @@ jobs:
         run: |
           bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
           ./actionlint -color
+      - name: Every shared job picks its runner, but those that stay on GitHub's
+        # The private repositories' jobs run on the organisation's VM through
+        # DX_RUNNER (runner-vm.yml); the release, the credentials check and the
+        # reproduction handle secrets or code written from an issue's text and
+        # stay on GitHub's fresh runners.
+        run: |
+          fail=0
+          for f in .github/workflows/*.yml; do
+            grep -qE '^  workflow_call:' "$f" || continue
+            case "$(basename "$f")" in
+              plugin-release-wp.yml|svn-auth-check.yml|issue-repro.yml)
+                if grep -q 'DX_RUNNER' "$f"; then echo "::error file=$f::stays on GitHub's runners: no DX_RUNNER here"; fail=1; fi ;;
+              *)
+                if grep -E '^\s+runs-on:' "$f" | grep -vq 'DX_RUNNER'; then echo "::error file=$f::a job without the DX_RUNNER choice"; fail=1; fi ;;
+            esac
+          done
+          exit "$fail"
 
   scripts:
     name: Scripts (self-tests)

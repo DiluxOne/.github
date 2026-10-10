@@ -1,0 +1,169 @@
+name: Organisation VM
+
+# Not reusable. The private repositories run the shared workflows on the
+# organisation's own runners (all but the release, the credentials check and
+# the reproduction, which handle secrets or code written from an issue's text
+# and stay on GitHub's fresh runners): vm-gh-runner-01 in Azure, runner group
+# private-repos-vm, label `diluxone`. Their jobs pick it when they see the
+# organisation variable DX_RUNNER=self-hosted, which only the private
+# repositories do. Public repositories, this one included, stay on GitHub's
+# runners, free for them; that is also why this check runs here.
+#
+# Every ten minutes, and by hand: when a private repository's job is waiting
+# for a `diluxone` runner and the VM is off, it starts it; when the VM is on
+# and nothing has run on it for IDLE_MINUTES (no runner process at work, the
+# VM's own record of the last one), it deallocates it, so compute is paid only
+# while jobs run. The VM is shared with AI Studio's runners: "nothing has run"
+# counts theirs too, so neither side switches it off under the other.
+#
+# What runs there, and with what: the private repositories' jobs, the review
+# and the issue triage among them, with the Anthropic key and dilux-bot's.
+# Those repositories take pull requests from the maintainer, the maintainer's
+# agents and Dependabot alone (a private repository has no outside forks
+# running its workflows), and AI Studio, the VM's other tenant, is the
+# maintainer's too. Code anyone else writes never reaches it: the release,
+# the credentials check and the reproduction stay on GitHub's fresh runners,
+# and public repositories never see DX_RUNNER. A VM that hosted anyone else's
+# code would need jobs that do not persist, one VM per job.
+#
+# Azure: OIDC federation (app gh-actions-dilux-runner-starter, a credential
+# for this repository's main branch; role Virtual Machine Contributor on that
+# VM alone). The IDs are variables, not secrets: none of them is a credential.
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'auto (start when a job waits, deallocate when idle) | start | deallocate'
+        type: choice
+        options: [auto, start, deallocate]
+        default: auto
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runner-vm
+  cancel-in-progress: false
+
+env:
+  IDLE_MINUTES: 20
+
+jobs:
+  vm:
+    name: Start or deallocate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write # the Azure login
+    steps:
+      - name: dilux-bot token (read the private repositories' runs)
+        id: bot
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-actions: read
+          permission-metadata: read
+
+      - name: Jobs waiting for the VM
+        id: demand
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          OWNER: ${{ github.repository_owner }}
+        # A run queued or in progress in a private repository, with a job
+        # still queued whose labels ask for `diluxone`. Unsure (an API error)
+        # counts as waiting: a VM left on costs less than jobs left stuck.
+        run: |
+          set -euo pipefail
+          [ -n "$GH_TOKEN" ] || { echo "::warning::No dilux-bot token: counted as waiting."; echo "waiting=unknown" >> "$GITHUB_OUTPUT"; exit 0; }
+          waiting=0
+          repos=$(gh api --paginate "orgs/$OWNER/repos?type=private&per_page=100" --jq '.[] | select(.archived | not) | .name') || { echo "waiting=unknown" >> "$GITHUB_OUTPUT"; exit 0; }
+          for repo in $repos; do
+            for status in queued in_progress; do
+              runs=$(gh api --paginate "repos/$OWNER/$repo/actions/runs?status=$status&per_page=100" --jq '.workflow_runs[].id') || { echo "waiting=unknown" >> "$GITHUB_OUTPUT"; exit 0; }
+              for run in $runs; do
+                n=$(gh api --paginate "repos/$OWNER/$repo/actions/runs/$run/jobs?filter=latest&per_page=100" \
+                  --jq '[.jobs[] | select(.status == "queued" and (.labels | index("diluxone")))] | length' | awk '{s += $1} END {print s + 0}') || n=unknown
+                [[ "$n" =~ ^[0-9]+$ ]] || { echo "waiting=unknown" >> "$GITHUB_OUTPUT"; exit 0; }
+                [ "$n" -gt 0 ] && echo "$repo: run $run has $n job(s) waiting"
+                waiting=$((waiting + n))
+              done
+            done
+          done
+          echo "$waiting job(s) waiting for the VM"
+          echo "waiting=$waiting" >> "$GITHUB_OUTPUT"
+
+      - name: Azure login (OIDC)
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Start or deallocate
+        env:
+          RG: ${{ vars.RUNNER_VM_RG }}
+          VM: ${{ vars.RUNNER_VM_NAME }}
+          ACTION: ${{ github.event.inputs.action || 'auto' }}
+          WAITING: ${{ steps.demand.outputs.waiting }}
+        run: |
+          set -euo pipefail
+          power() { az vm get-instance-view -g "$RG" -n "$VM" --query "instanceView.statuses[?starts_with(code,'PowerState/')].code | [0]" -o tsv; }
+          state=$(power)
+          echo "VM: $state; waiting: $WAITING; action: $ACTION"
+          if [ "$ACTION" = auto ]; then
+            # Unsure starts a VM that is off, but does not keep one on: it
+            # goes off only when idle, and the next run starts it again.
+            if [ "$state" != PowerState/running ] && { [ "$WAITING" = unknown ] || [ "${WAITING:-0}" -gt 0 ]; }; then ACTION=start
+            elif [ "$state" = PowerState/running ] && [ "$WAITING" != unknown ] && [ "${WAITING:-0}" -gt 0 ]; then echo "On, and jobs wait for it."; exit 0
+            elif [ "$state" = PowerState/running ]; then ACTION=deallocate-if-idle
+            else echo "Off, and nothing waits for it."; exit 0; fi
+          fi
+          case "$ACTION" in
+            start)
+              [ "$state" = PowerState/running ] && { echo "Already on."; exit 0; }
+              # Starting while it deallocates fails with AllocationFailed: wait it out.
+              for i in $(seq 1 30); do [ "$state" != PowerState/deallocating ] && break; sleep 10; state=$(power); done
+              for i in 1 2 3; do
+                az vm start -g "$RG" -n "$VM" -o none && break
+                [ "$i" = 3 ] && { echo "::error::The VM did not start after three tries."; exit 1; }
+                sleep 60
+              done
+              echo "Started: its runners connect to GitHub as it boots." ;;
+            deallocate-if-idle)
+              # Asked of the VM itself: is a runner at work (ours or AI Studio's),
+              # and when did one last work? Each job leaves a Worker_*.log in its
+              # runner's _diag, written until the job ends, so the newest one
+              # dates the last job, however short, between two of these runs.
+              # Since the VM booted, at least: a fresh start counts as work.
+              # shellcheck disable=SC2016 # runs on the VM, not here.
+              verdict=$(az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript --query 'value[0].message' -o tsv --scripts '
+                if pgrep -f Runner.Worker >/dev/null; then echo VERDICT=busy; exit 0; fi
+                now=$(date +%s); boot=$(( now - $(cut -d. -f1 /proc/uptime) ))
+                last=$(find /data/runners/*/_diag /data/runners-dx/*/_diag -name "Worker_*.log" -printf "%T@\n" 2>/dev/null | sort -n | tail -1 | cut -d. -f1)
+                last=${last:-0}; [ "$last" -gt "$boot" ] || last=$boot
+                echo "VERDICT=idle-for:$(( (now - last) / 60 ))"') || { echo "::warning::Could not ask the VM; it stays on."; exit 0; }
+              verdict=$(sed -n 's/^VERDICT=//p' <<<"$verdict" | tail -1)
+              echo "VM says: ${verdict:-nothing}"
+              case "$verdict" in
+                idle-for:*)
+                  minutes=${verdict#idle-for:}
+                  if [ "$minutes" -ge "$IDLE_MINUTES" ]; then
+                    az vm deallocate -g "$RG" -n "$VM" -o none --no-wait
+                    echo "Idle for $minutes minutes: deallocating."
+                  else
+                    echo "Idle for $minutes minutes; it goes off at $IDLE_MINUTES."
+                  fi ;;
+                *) echo "Busy, or no answer: it stays on." ;;
+              esac ;;
+            deallocate)
+              [ "$state" = PowerState/deallocated ] && { echo "Already off."; exit 0; }
+              az vm deallocate -g "$RG" -n "$VM" -o none --no-wait
+              echo "Deallocating." ;;
+          esac

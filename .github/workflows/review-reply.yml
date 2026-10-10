@@ -51,7 +51,7 @@ permissions:
 jobs:
   reply:
     name: Claude reply
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 15
     if: >-
       contains(github.event.comment.body, '@dilux-bot') &&

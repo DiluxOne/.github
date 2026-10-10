@@ -99,7 +99,7 @@ permissions:
 jobs:
   review:
     name: Claude review
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     # An edit may wait for its push's review, which itself can take the 30
     # minutes a review job has: an edit's job gets longer to outlast it.
     timeout-minutes: ${{ github.event.action == 'edited' && 60 || 30 }}

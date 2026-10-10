@@ -51,7 +51,7 @@ permissions: {}
 jobs:
   rerun:
     name: Re-run the gate
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     if: github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == inputs.label && github.event.sender.type != 'Bot'
     permissions:
@@ -101,7 +101,7 @@ jobs:
 
   project:
     name: The product's Project
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     # The Projects go through the bot's own token; DiluxOne/.github is public,
     # so its checkout needs nothing from the workflow's.
