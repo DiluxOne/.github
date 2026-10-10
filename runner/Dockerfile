@@ -28,7 +28,7 @@ RUN apt-get update \
 # Docker CLI and Compose: the jobs drive the VM's own Docker (wp-env) through
 # its socket, mounted by the slot.
 RUN install -m 0755 -d /etc/apt/keyrings \
- && curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc \
+ && curl -fsSL --retry 5 --retry-all-errors https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc \
  && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list \
  && apt-get update \
  && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin docker-buildx-plugin \
@@ -38,22 +38,22 @@ RUN install -m 0755 -d /etc/apt/keyrings \
 # GitHub CLI, Python with PyYAML (scripts/*.py), gettext (msgfmt),
 # shellcheck, and mikefarah's yq (not Ubuntu's yq, a different tool), checked
 # against its published SHA-256.
-RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli.gpg \
+RUN curl -fsSL --retry 5 --retry-all-errors https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli.gpg \
  && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/githubcli.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
  && apt-get update \
  && apt-get install -y --no-install-recommends gh python3 python3-yaml python3-venv python3-pip gettext shellcheck \
  && rm -rf /var/lib/apt/lists/*
 RUN set -eu; base=https://github.com/mikefarah/yq/releases/latest/download; \
-    curl -fsSL -o /usr/local/bin/yq "$base/yq_linux_amd64"; \
-    i=$(curl -fsSL "$base/checksums_hashes_order" | grep -n '^SHA-256$' | cut -d: -f1); \
-    sum=$(curl -fsSL "$base/checksums" | awk -v c=$((i + 1)) '$1 == "yq_linux_amd64" {print $c}'); \
+    curl -fsSL --retry 5 --retry-all-errors -o /usr/local/bin/yq "$base/yq_linux_amd64"; \
+    i=$(curl -fsSL --retry 5 --retry-all-errors "$base/checksums_hashes_order" | grep -n '^SHA-256$' | cut -d: -f1); \
+    sum=$(curl -fsSL --retry 5 --retry-all-errors "$base/checksums" | awk -v c=$((i + 1)) '$1 == "yq_linux_amd64" {print $c}'); \
     echo "$sum  /usr/local/bin/yq" | sha256sum -c -; chmod 755 /usr/local/bin/yq; yq --version
 
 # Node.js LTS from nodejs.org, checked against its published SHA-256.
 RUN set -eu; base="https://nodejs.org/dist/latest-v${NODE_MAJOR}.x"; \
-    file=$(curl -fsSL "$base/SHASUMS256.txt" | awk '/linux-x64\.tar\.xz$/ {print $2}'); \
-    sum=$(curl -fsSL "$base/SHASUMS256.txt" | awk '/linux-x64\.tar\.xz$/ {print $1}'); \
-    curl -fsSL -o /tmp/node.tar.xz "$base/$file"; \
+    file=$(curl -fsSL --retry 5 --retry-all-errors "$base/SHASUMS256.txt" | awk '/linux-x64\.tar\.xz$/ {print $2}'); \
+    sum=$(curl -fsSL --retry 5 --retry-all-errors "$base/SHASUMS256.txt" | awk '/linux-x64\.tar\.xz$/ {print $1}'); \
+    curl -fsSL --retry 5 --retry-all-errors -o /tmp/node.tar.xz "$base/$file"; \
     echo "$sum  /tmp/node.tar.xz" | sha256sum -c -; \
     tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1; rm /tmp/node.tar.xz; \
     node --version
@@ -68,7 +68,7 @@ RUN useradd -m -s /bin/bash runner \
  && chmod 0440 /etc/sudoers.d/runner
 WORKDIR /home/runner/actions-runner
 RUN test -n "$RUNNER_VERSION" && test -n "$RUNNER_SHA256" \
- && curl -fsSL -o /tmp/runner.tgz "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz" \
+ && curl -fsSL --retry 5 --retry-all-errors -o /tmp/runner.tgz "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz" \
  && echo "${RUNNER_SHA256}  /tmp/runner.tgz" | sha256sum -c - \
  && tar -xzf /tmp/runner.tgz && rm /tmp/runner.tgz \
  && ./bin/installdependencies.sh && rm -rf /var/lib/apt/lists/* \
