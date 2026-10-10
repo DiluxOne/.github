@@ -38,8 +38,12 @@ on:
         type: string
         default: v5
     secrets:
+      # The maintainer's Claude subscription (`claude setup-token`); the API
+      # key is used only when it is missing.
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: false
       ANTHROPIC_API_KEY:
-        required: true
+        required: false
       DILUX_BOT_PRIVATE_KEY:
         required: true
 
@@ -188,7 +192,8 @@ jobs:
         timeout-minutes: 10
         uses: anthropics/claude-code-action@6fed3ca145920b639991cb756090506e1bcaf515 # v1.0.245
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
           github_token: ${{ steps.bot.outputs.token }}
           prompt: |
             You are the code reviewer for ${{ github.repository }}, pull request #${{ steps.pr.outputs.pr }}.

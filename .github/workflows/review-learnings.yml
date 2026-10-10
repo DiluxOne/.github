@@ -136,7 +136,8 @@ jobs:
         continue-on-error: true
         uses: anthropics/claude-code-action@6fed3ca145920b639991cb756090506e1bcaf515 # v1.0.245
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
           # Claude only edits files here, so it gets the job's own read-only
           # token, never the organisation-wide one (the action writes its
           # token into the checkout's git config, which Claude can read).

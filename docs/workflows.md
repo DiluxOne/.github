@@ -61,7 +61,8 @@ callers are [`pull-request.yml`](../.github/workflows/pull-request.yml) and
 
 | Kind | Name | Notes |
 | --- | --- | --- |
-| Secret | `ANTHROPIC_API_KEY` | Review, replies and learnings. Also a Dependabot secret, so Dependabot's pull requests are reviewed. |
+| Secret | `CLAUDE_CODE_OAUTH_TOKEN` | What every Claude run uses (review, replies, learnings, issue triage, reproduction): a token from the maintainer's Claude subscription (`claude setup-token`, valid a year), so runs draw on the subscription's usage limits instead of API billing; the cost a review's summary shows is then an estimate. Also a Dependabot secret, so Dependabot's pull requests are reviewed. |
+| Secret | `ANTHROPIC_API_KEY` | The fallback: used only where `CLAUDE_CODE_OAUTH_TOKEN` is missing (a repository without it, or an expired token removed), billed per use on the Claude API. |
 | Secret | `DILUX_BOT_PRIVATE_KEY` | The `dilux-bot` GitHub App's key. Also a Dependabot secret. |
 | Secret (environment, not organisation) | `SVN_USERNAME`, `SVN_PASSWORD` | wordpress.org SVN, in each plugin repository's `wordpress-org` environment. The release and the credentials check declare that environment on their job; their callers pass `secrets: inherit`, the one way an environment's secrets reach a called job (it hands over every secret, which is why those two workflows run only on `X.Y.Z` tags or by hand from `main`, and call a pinned commit). The environment's policy admits `X.Y.Z` tags and `main`: a pull request's job can never name it; a job running on `main` can only through a workflow that was merged into `main` by a reviewed pull request, which is the trust boundary of everything else here. |
 | Variable | `DILUX_BOT_CLIENT_ID` | The App's client ID. |

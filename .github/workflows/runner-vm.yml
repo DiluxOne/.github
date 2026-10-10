@@ -17,7 +17,7 @@ name: Organisation VM
 # counts theirs too, so neither side switches it off under the other.
 #
 # What runs there, and with what: the private repositories' jobs, the review
-# and the issue triage among them, with the Anthropic key and dilux-bot's.
+# and the issue triage among them, with the Claude token and dilux-bot's key.
 # Those repositories take pull requests from the maintainer, the maintainer's
 # agents and Dependabot alone (a private repository has no outside forks
 # running its workflows), and AI Studio, the VM's other tenant, is the
