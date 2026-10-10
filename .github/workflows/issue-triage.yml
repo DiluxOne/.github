@@ -110,7 +110,7 @@ permissions:
 jobs:
   triage:
     name: Triage
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
     if: github.event_name == 'issues' && github.event.action == 'opened' && github.event.issue.user.type != 'Bot'
     outputs:
@@ -344,7 +344,7 @@ jobs:
     name: Reply without the paid roadmap
     needs: triage
     if: needs.triage.outputs.paid == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - name: dilux-bot token
@@ -449,7 +449,7 @@ jobs:
 
   stale:
     name: Close needs-info issues nobody answered
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     if: github.event_name == 'schedule'
     steps:

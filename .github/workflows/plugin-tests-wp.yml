@@ -89,7 +89,7 @@ jobs:
     # and treat a missing answer as "run", so this job failing (or an older
     # central without the script) never skips a suite; a job skipped by
     # the answer satisfies the ruleset.
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
       contents: read
@@ -136,7 +136,7 @@ jobs:
     # the suite is off, or no code changed, every step is skipped and the
     # job is green.
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -194,7 +194,7 @@ jobs:
     needs: changes
     # Always there, like the integration jobs, for the same reason.
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: ${{ matrix.suite.timeout }}
     strategy:
       fail-fast: false

@@ -48,7 +48,7 @@ permissions:
 jobs:
   conventions:
     name: Conventions (branch, title, commits)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     if: github.event_name == 'pull_request'
     permissions:
@@ -162,7 +162,7 @@ jobs:
 
   docs:
     name: Docs (links and names)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - name: Checkout

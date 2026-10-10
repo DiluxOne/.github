@@ -81,7 +81,7 @@ permissions:
 jobs:
   write:
     name: Write the test
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 25
     if: >-
       github.event_name == 'issues' && github.event.action == 'labeled' &&
@@ -281,7 +281,7 @@ jobs:
     name: Run the test (no secrets)
     needs: write
     if: needs.write.outputs.run == 'true' && needs.write.outputs.wrote == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 15
     # Only what checkout needs; the token this gives can read the repository
     # and nothing else. No secrets reach this job.
@@ -363,7 +363,7 @@ jobs:
     name: Report
     needs: [write, run]
     if: always() && needs.write.result == 'success' && needs.write.outputs.run == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
     permissions:
       contents: write
