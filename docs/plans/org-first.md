@@ -37,7 +37,7 @@ The gate stays on the label: `accepted`, added by a person, is the only thing th
 
 ## Repositories
 
-Every repository of the organisation follows this, products and tools alike, `diluxone-wp-test` included. `ards-web`, a client's site, is not a DiluxOne product: it moves to the maintainer's personal account (its deployment uses repository secrets, which move with it). Mail is already there.
+Every repository of the organisation follows this, products and tools alike, `diluxone-wp-test` included. `ards-web`, a client's site, is not a DiluxOne product: it moves to the maintainer's personal account (its deployment uses repository secrets, which move with it).
 
 | Product | Repositories | Project |
 | --- | --- | --- |
@@ -49,6 +49,7 @@ Every repository of the organisation follows this, products and tools alike, `di
 | Support | `diluxone-support-wordpress` | Support |
 | Commerce | `diluxone-commerce-wordpress` | Commerce |
 | Slider | `diluxone-slider-wordpress` (not on GitHub yet) | Slider |
+| Mail | `diluxone-mail-wordpress` | Mail |
 | The organisation's tooling | `.github`, `diluxone-wp-test` | Platform |
 
 ## Easy for every agent, ours and a contributor's
