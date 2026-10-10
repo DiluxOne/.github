@@ -329,6 +329,8 @@ jobs:
           # A re-run of the failed jobs alone reuses this attempt's artifact.
           retention-days: 7
           include-hidden-files: true
+          # A re-run of every job uploads it again under the same name.
+          overwrite: true
 
   plugin-check:
     name: WordPress Plugin Check
@@ -379,7 +381,7 @@ jobs:
       - name: The required plugins were downloaded
         if: inputs.requires-plugins-from != '' && steps.required.outcome == 'failure'
         run: |
-          echo "::error::The required plugins' artifact is gone (it lasts 7 days, and a re-run of the failed jobs alone reuses the first attempt's). Re-run all jobs."
+          echo "::error::The required plugins' artifact could not be downloaded: gone (it lasts 7 days, and a re-run of the failed jobs alone reuses the first attempt's) or a download error. Re-run all jobs."
           exit 1
       - name: Mount them beside the plugin
         if: inputs.requires-plugins-from != ''
