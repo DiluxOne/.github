@@ -94,7 +94,7 @@ run_slot() {
   read -r dev tests <<<"$(slot_ports "$slot")"
   local gid; gid=$(stat -c %g /var/run/docker.sock)
   runner_id=""
-  trap 'docker stop -t 30 "dx-runner-$slot" >/dev/null 2>&1 || true; drop_runner "$runner_id"; exit 0' TERM INT
+  trap 'docker stop -t 30 "dx-runner-$slot" >/dev/null 2>&1 || true; drop_runner "$runner_id"; rm -f "$DX_STATE/jit-$slot.env"; exit 0' TERM INT
   while :; do
     clean_slot "$slot"
     name=$(runner_name "$slot" "$(openssl rand -hex 3)")
@@ -106,7 +106,8 @@ run_slot() {
     runner_id=$(jq -r .runner.id <<<"$jit")
     echo "dx-runner $slot: $name (runner $runner_id) waiting for a job"
     # The configuration goes in a root-only file, not on the command line,
-    # where ps and docker inspect would show it.
+    # where ps would show it to any user of the VM; it is deleted as soon as
+    # the job ends.
     envfile="$DX_STATE/jit-$slot.env"
     (umask 077; printf 'DX_JIT_CONFIG=%s\n' "$(jq -r .encoded_jit_config <<<"$jit")" > "$envfile")
     docker run --rm --init --name "dx-runner-$slot" --network host --group-add "$gid" \
