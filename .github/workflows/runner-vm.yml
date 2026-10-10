@@ -1,8 +1,10 @@
 name: Organisation VM
 
 # Not reusable. The private repositories run the shared workflows on the
-# organisation's own runners (vm-gh-runner-01 in Azure, runner group
-# private-repos-vm, label `diluxone`): their jobs pick it when they see the
+# organisation's own runners (all but the release, the credentials check and
+# the reproduction, which handle secrets or code written from an issue's text
+# and stay on GitHub's fresh runners): vm-gh-runner-01 in Azure, runner group
+# private-repos-vm, label `diluxone`. Their jobs pick it when they see the
 # organisation variable DX_RUNNER=self-hosted, which only the private
 # repositories do. Public repositories, this one included, stay on GitHub's
 # runners, free for them; that is also why this check runs here.
@@ -50,6 +52,7 @@ jobs:
     steps:
       - name: dilux-bot token (read the private repositories' runs)
         id: bot
+        continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
@@ -68,11 +71,12 @@ jobs:
         # counts as waiting: a VM left on costs less than jobs left stuck.
         run: |
           set -euo pipefail
+          [ -n "$GH_TOKEN" ] || { echo "::warning::No dilux-bot token: counted as waiting."; echo "waiting=unknown" >> "$GITHUB_OUTPUT"; exit 0; }
           waiting=0
           repos=$(gh api --paginate "orgs/$OWNER/repos?type=private&per_page=100" --jq '.[] | select(.archived | not) | .name') || { echo "waiting=unknown" >> "$GITHUB_OUTPUT"; exit 0; }
           for repo in $repos; do
             for status in queued in_progress; do
-              runs=$(gh api "repos/$OWNER/$repo/actions/runs?status=$status&per_page=50" --jq '.workflow_runs[].id') || { echo "waiting=unknown" >> "$GITHUB_OUTPUT"; exit 0; }
+              runs=$(gh api --paginate "repos/$OWNER/$repo/actions/runs?status=$status&per_page=100" --jq '.workflow_runs[].id') || { echo "waiting=unknown" >> "$GITHUB_OUTPUT"; exit 0; }
               for run in $runs; do
                 n=$(gh api --paginate "repos/$OWNER/$repo/actions/runs/$run/jobs?filter=latest&per_page=100" \
                   --jq '[.jobs[] | select(.status == "queued" and (.labels | index("diluxone")))] | length' | awk '{s += $1} END {print s + 0}') || { echo "waiting=unknown" >> "$GITHUB_OUTPUT"; exit 0; }
