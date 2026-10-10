@@ -9,10 +9,15 @@ name: Organisation VM
 # repositories do. Public repositories, this one included, stay on GitHub's
 # runners, free for them; that is also why this check runs here.
 #
+# The runners themselves are one-job containers (scripts/runner-vm/, the
+# image from runner-image.yml); the VM brings itself to that state on every
+# boot (scripts/runner-vm/provision.sh).
+#
 # Every ten minutes, and by hand: when a private repository's job is waiting
 # for a `diluxone` runner and the VM is off, it starts it; when the VM is on
 # and nothing has run on it for IDLE_MINUTES (no runner process at work, the
-# VM's own record of the last one), it deallocates it, so compute is paid only
+# VM's own record of the last one), it cleans what jobs left (images only
+# past 70% of the data disk) and deallocates it, so compute is paid only
 # while jobs run. The VM is shared with AI Studio's runners: "nothing has run"
 # counts theirs too, so neither side switches it off under the other.
 #
@@ -146,7 +151,7 @@ jobs:
               verdict=$(az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript --query 'value[0].message' -o tsv --scripts '
                 if pgrep -f Runner.Worker >/dev/null; then echo VERDICT=busy; exit 0; fi
                 now=$(date +%s); boot=$(( now - $(cut -d. -f1 /proc/uptime) ))
-                last=$(find /data/runners/*/_diag /data/runners-dx/*/_diag -name "Worker_*.log" -printf "%T@\n" 2>/dev/null | sort -n | tail -1 | cut -d. -f1)
+                last=$( { find /data/runners/*/_diag /data/runners-dx/*/_diag -name "Worker_*.log" -printf "%T@\n"; find /var/lib/dx-runner/last-job -printf "%T@\n"; } 2>/dev/null | sort -n | tail -1 | cut -d. -f1)
                 last=${last:-0}; [ "$last" -gt "$boot" ] || last=$boot
                 echo "VERDICT=idle-for:$(( (now - last) / 60 ))"') || { echo "::warning::Could not ask the VM; it stays on."; exit 0; }
               verdict=$(sed -n 's/^VERDICT=//p' <<<"$verdict" | tail -1)
@@ -155,6 +160,19 @@ jobs:
                 idle-for:*)
                   minutes=${verdict#idle-for:}
                   if [ "$minutes" -ge "$IDLE_MINUTES" ]; then
+                    # Before it goes off, and only while nothing runs: what
+                    # jobs left behind and nothing references. Every image goes
+                    # only when the data disk is over 70% full, so the ones in
+                    # daily use are not pulled again after every boot. A
+                    # failed cleanup is logged and the VM goes off anyway.
+                    # shellcheck disable=SC2016 # runs on the VM, not here.
+                    az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript --query 'value[0].message' -o tsv --scripts '
+                      pgrep -f Runner.Worker >/dev/null && { echo "busy: no cleanup"; exit 0; }
+                      docker container prune -f >/dev/null; docker volume prune -f >/dev/null; docker image prune -f >/dev/null
+                      docker builder prune -f --filter until=168h >/dev/null
+                      used=$(df --output=pcent /data | tail -1 | tr -dc 0-9)
+                      [ "${used:-0}" -gt 70 ] && docker image prune -af >/dev/null
+                      echo "cleaned; /data at $(df --output=pcent /data | tail -1 | tr -d " ")"' || echo "::warning::The cleanup failed; deallocating anyway."
                     az vm deallocate -g "$RG" -n "$VM" -o none --no-wait
                     echo "Idle for $minutes minutes: deallocating."
                   else

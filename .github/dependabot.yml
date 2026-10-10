@@ -16,3 +16,14 @@ updates:
     commit-message:
       prefix: ci
       include: scope
+  # The runner image's base (runner/Dockerfile), pinned by digest.
+  - package-ecosystem: docker
+    directory: /runner
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: America/Argentina/Buenos_Aires
+    commit-message:
+      prefix: ci
+      include: scope
