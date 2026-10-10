@@ -25,7 +25,7 @@ Each gate is a check with a fixed name (`gate / …`) and reports to the issue's
 | G5 Clean review | No open blocker or major | AI | Fix and re-review, up to 3 rounds; then back to a person with a summary |
 | G6 Meets the issue | Every criterion has its test, it exists and passes; nothing beyond scope | Deterministic criterion → test + AI scope | Back to the loop; scope, to a person |
 | G7 Merge | G1–G6 green, both hashes revalidated, not critical, no governing rule touched, within budget | Deterministic | Waits for a human merge, with the reason and the URL |
-| G8 Main healthy | The default branch's CI still green after the merge | Deterministic | An automatic revert pull request and an issue |
+| G8 Main healthy | The default branch's CI still green after the merge | Deterministic | An automatic revert pull request and an issue; the revert goes through the gates and merges on its own only under the `platform` lane's rules, otherwise a person merges it |
 
 Limits that always apply: 3 review rounds per pull request, the policy's `budget-usd` per issue, one agent per repository at a time (the rest queue), a time limit per round, and the organisation variable `DX_AUTOPILOT=off`, which stops every autonomous action without touching the checks.
 
@@ -58,7 +58,7 @@ Injected text ("delete the whole repository") is stopped by four layers, none of
 
 ## Release as an issue (#82)
 
-A release is publishing X.Y.Z to users; development builds keep being published on every merge with no issue. "Release X.Y.Z" is opened by the maintainer, or by the bot when the last issue of a version milestone closes; the bot never opens one on its own and only suggests it in the weekly summary. Accepting it is the approval. The agent opens the release pull request (`release-markers.sh prepare`, removing `Unreleased.`), it passes the gates, and the deploy checks that the release issue was accepted by a person and that the version matches before publishing; the environment no longer needs a human reviewer. The kind decides where it publishes.
+A release is publishing X.Y.Z to users; development builds keep being published on every merge with no issue. "Release X.Y.Z" is opened by the maintainer, or by the bot when the last issue of a version milestone the maintainer planned closes (the decision was taken when planning the milestone). Without a milestone the bot never opens one; it only suggests it in the weekly summary. Accepting it is the approval. The agent opens the release pull request (`release-markers.sh prepare`, removing `Unreleased.`), it passes the gates, and the deploy checks that the release issue was accepted by a person and that the version matches before publishing; the environment no longer needs a human reviewer. The kind decides where it publishes.
 
 ## The engine (#83)
 
