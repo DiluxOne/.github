@@ -326,8 +326,11 @@ jobs:
         with:
           name: required-plugins-${{ inputs.slug }}
           path: ${{ runner.temp }}/required-plugins
-          retention-days: 1
+          # A re-run of the failed jobs alone reuses this attempt's artifact.
+          retention-days: 7
           include-hidden-files: true
+          # A re-run of every job uploads it again under the same name.
+          overwrite: true
 
   plugin-check:
     name: WordPress Plugin Check
@@ -369,10 +372,17 @@ jobs:
         run: |
           [ "$RESULT" = success ] || { echo "::error::The required plugins could not be fetched (the Required plugins job: $RESULT)."; exit 1; }
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        id: required
         if: inputs.requires-plugins-from != ''
+        continue-on-error: true
         with:
           name: required-plugins-${{ inputs.slug }}
           path: ${{ runner.temp }}/required-plugins
+      - name: The required plugins were downloaded
+        if: inputs.requires-plugins-from != '' && steps.required.outcome == 'failure'
+        run: |
+          echo "::error::The required plugins' artifact could not be downloaded: gone (it lasts 7 days, and a re-run of the failed jobs alone reuses the first attempt's) or a download error. Re-run all jobs."
+          exit 1
       - name: Mount them beside the plugin
         if: inputs.requires-plugins-from != ''
         run: bash .dx-central/scripts/required-plugins.sh wp-env "$RUNNER_TEMP/required-plugins"
