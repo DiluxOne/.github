@@ -7,14 +7,15 @@ name: Runner image
 # because this repository is public, so its minutes are free.
 #
 # Each build takes the latest actions/runner release (checked against the
-# SHA-256 GitHub publishes for it) and the latest Node.js LTS, then runs a
+# SHA-256 GitHub publishes for it) and the latest release of Node.js 22
+# LTS (the line is NODE_MAJOR in the Dockerfile), then runs a
 # smoke test on the image: git; the tools the workflows call (gh, yq,
 # Python with PyYAML, msgfmt, shellcheck); the Docker CLI against a real
 # daemon through the socket (as on the VM); Node; sudo; the runner's version;
 # Chromium launching under Playwright; and PHP installed the way setup-php
 # does. Only a
 # build that passes is promoted: tagged :stable (what the VM pulls on boot)
-# and with its date (:YYYY-MM-DD, to go back to). A failed build leaves
+# and with its date and run (:YYYY-MM-DD.<run>, to go back to). A failed build leaves
 # :stable as it was. On a pull request it builds and tests, and pushes
 # nothing.
 #
@@ -38,8 +39,10 @@ on:
 permissions:
   contents: read
 
+# Pull requests in their own group, so one never pushes a promotion out of
+# the queue.
 concurrency:
-  group: runner-image
+  group: runner-image-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
   cancel-in-progress: false
 
 env:
@@ -71,7 +74,7 @@ jobs:
           body=$(gh api repos/actions/runner/releases/latest --jq .body)
           sha=$(sed -n 's/.*<!-- BEGIN SHA linux-x64 -->\([0-9a-f]\{64\}\)<!-- END SHA linux-x64 -->.*/\1/p' <<<"$body" | head -1)
           [ -n "$sha" ] || { echo "::error::No SHA-256 for linux-x64 in the runner release ${tag}"; exit 1; }
-          { echo "runner=${tag#v}"; echo "runner_sha=$sha"; echo "date=$(date -u +%Y-%m-%d)"; } >> "$GITHUB_OUTPUT"
+          { echo "runner=${tag#v}"; echo "runner_sha=$sha"; echo "date=$(date -u +%Y-%m-%d).$GITHUB_RUN_NUMBER"; } >> "$GITHUB_OUTPUT"
           echo "actions/runner ${tag}"
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -131,7 +134,8 @@ jobs:
           DATE: ${{ steps.v.outputs.date }}
         run: |
           set -euo pipefail
-          for t in stable "$DATE"; do docker tag "$IMAGE:candidate" "$IMAGE:$t"; docker push -q "$IMAGE:$t"; done
+          # The dated tag first: :stable moves only once the way back exists.
+          for t in "$DATE" stable; do docker tag "$IMAGE:candidate" "$IMAGE:$t"; docker push -q "$IMAGE:$t"; done
           digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:stable")
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "Promoted $IMAGE:stable and :$DATE ($digest)"

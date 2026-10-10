@@ -11,7 +11,12 @@
 #   dx-runner-slot.sh --test     self-test
 #
 # Reads /etc/dx-runner/app.env (CLIENT_ID, INSTALLATION_ID, ORG) and the App's
-# key /etc/dx-runner/app.pem, both root-only. Each slot keeps its own ports
+# key /etc/dx-runner/app.pem, both root-only. Every job gets the VM's Docker
+# socket (wp-env needs it), which is root on the VM: a job could read that key.
+# That is accepted on the same terms as the VM itself (runner-vm.yml's
+# header): only the private repositories run here, with pull requests from
+# the maintainer, the maintainer's agents and Dependabot alone, and the key can
+# do nothing but register runners. Each slot keeps its own ports
 # (wp-env suites side by side never share one) and its own folders under
 # $DX_BASE/d<slot>, mounted into the container at the same path, because the
 # jobs start wp-env containers on the VM's own Docker, which resolves paths on
@@ -74,7 +79,6 @@ clean_slot() {
   ids=$(docker ps -a --format '{{.ID}} {{.Label "com.docker.compose.project.working_dir"}}' | slot_containers "$slot")
   # shellcheck disable=SC2086 # one ID per word
   [ -z "$ids" ] || docker rm -f $ids >/dev/null
-  docker volume prune -f >/dev/null || true
   mkdir -p "$DX_BASE/d$slot/_work" "$DX_BASE/d$slot/wp-env"
   find "$DX_BASE/d$slot/_work" -mindepth 1 -maxdepth 1 ! -name _tool -exec rm -rf {} +
   rm -rf "${DX_BASE:?}/d$slot/wp-env/"*
@@ -82,7 +86,7 @@ clean_slot() {
 }
 
 run_slot() {
-  local slot=$1 name token jit dev tests
+  local slot=$1 name token jit dev tests envfile
   # shellcheck disable=SC1091
   . "$DX_CONF/app.env"
   mkdir -p "$DX_STATE"
@@ -101,17 +105,23 @@ run_slot() {
     fi
     runner_id=$(jq -r .runner.id <<<"$jit")
     echo "dx-runner $slot: $name (runner $runner_id) waiting for a job"
+    # The configuration goes in a root-only file, not on the command line,
+    # where ps and docker inspect would show it.
+    envfile="$DX_STATE/jit-$slot.env"
+    (umask 077; printf 'DX_JIT_CONFIG=%s\n' "$(jq -r .encoded_jit_config <<<"$jit")" > "$envfile")
     docker run --rm --init --name "dx-runner-$slot" --network host --group-add "$gid" \
       -v /var/run/docker.sock:/var/run/docker.sock \
       -v "$DX_BASE/d$slot:$DX_BASE/d$slot" \
-      -e DX_JIT_CONFIG="$(jq -r .encoded_jit_config <<<"$jit")" \
+      --env-file "$envfile" \
       -e WP_ENV_PORT="$dev" -e WP_ENV_TESTS_PORT="$tests" -e WP_ENV_HOME="$DX_BASE/d$slot/wp-env" \
       "$DX_IMAGE" &
     # A just-in-time runner exits 0 after its job, and GitHub removes it on
     # its own. Anything else (a broken image, Docker down) leaves it
     # registered without a job: delete it and wait, so the slot does not
     # register runner after runner.
-    if wait $!; then
+    local ok=0; wait $! || ok=$?
+    rm -f "$envfile"
+    if [ "$ok" = 0 ]; then
       touch "$DX_STATE/last-job"
     else
       echo "dx-runner $slot: the container ended with an error; waiting 60 s" >&2

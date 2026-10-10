@@ -74,6 +74,9 @@ EOF
 
 apply() {
   mkdir -p "$DX_LIB" /var/lib/dx-runner
+  if ! command -v jq >/dev/null || ! command -v openssl >/dev/null || ! command -v curl >/dev/null; then
+    apt-get update -qq && apt-get install -y -qq jq openssl curl >/dev/null
+  fi
   # containerd on the data disk. On a VM that has no images yet it is set
   # here; moving images already on the system disk stays a one-off by hand.
   if [ -f /etc/containerd/config.toml ] && ! grep -q "^root = \"$CONTAINERD_ROOT\"" /etc/containerd/config.toml; then
@@ -90,7 +93,8 @@ apply() {
   mv "$DX_LIB/dx-runner-slot.sh.new" "$DX_LIB/dx-runner-slot.sh"; chmod 755 "$DX_LIB/dx-runner-slot.sh"
   slot_unit > /etc/systemd/system/dx-runner@.service
   provision_unit > /etc/systemd/system/dx-provision.service
-  docker pull -q "$DX_IMAGE" >/dev/null
+  # A failed pull keeps the image already here; the slots still start.
+  docker pull -q "$DX_IMAGE" >/dev/null || echo "provision: could not pull $DX_IMAGE; using the one on the VM" >&2
   local unit
   for unit in $(systemctl list-unit-files --no-legend 'actions.runner.DiluxOne.*' | awk '{print $1}'); do
     systemctl disable --now "$unit" >/dev/null 2>&1 || true
