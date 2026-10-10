@@ -107,3 +107,6 @@ reading can find.
 ## Lessons learned
 
 <!-- Rules proposed by the weekly learnings job and merged by a human. -->
+
+- When a change adds a retry, a scheduled fallback event, a failure callback or a row that holds billed remote state (an unfinished multipart upload), check every path that ends the work, fails it or deletes the row: each must clear the event, run the callback or abort the remote state, including a 200 with an error body and a transport error.
+- When a header, limit or option must apply to every request or upload path, check that a test covers each variant (single, multipart, copy, resumed, pooled; `wp_remote` and curl), not only the simplest one.
