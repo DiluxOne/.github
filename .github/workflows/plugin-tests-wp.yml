@@ -28,7 +28,12 @@ name: WordPress plugin tests (slow)
 #
 # The ports, the mu-plugins and the PHP version are the repository's
 # `.wp-env.json`; nothing here knows them. Each job is a fresh runner, so a
-# single-site target needs no throwaway environment of its own.
+# single-site target needs no throwaway environment of its own. On the
+# organisation's VM each runner has ports of its own (WP_ENV_PORT,
+# WP_ENV_TESTS_PORT, which wp-env obeys), and the suites get their addresses
+# from them: WP_BASE_URL, the development site, and WP_NETWORK_URL, the tests
+# site, overriding any the runner's environment sets. A repository's
+# Playwright configs read those two and default to its own ports.
 #
 # The calling repository provides `.wp-env.json`, `phpunit-integration.xml`,
 # the npm dependencies (`@wordpress/env`, `@playwright/test`) and Playwright
