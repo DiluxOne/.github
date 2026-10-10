@@ -221,13 +221,21 @@ def workflow_texts(full):
     return texts
 
 
+def policy_kind(text):
+    """The kind a repository's .github/review-policy.yml names, quoted or not."""
+    m = re.search(r"""^kind:\s*["']?([A-Za-z0-9_-]+)["']?\s*(#.*)?$""", text or "", re.M)
+    return m.group(1) if m else None
+
+
 def own_checks_spec(full, default, texts):
     """The pack's `own-checks` when the repository needs the ruleset: its kind
     (kind: in its .github/review-policy.yml) asks for one and a workflow of
     its calls one of the pack's `callers-of`. None otherwise."""
     out = gh("api", f"repos/{full}/contents/.github/review-policy.yml?ref={default}", "-H", "Accept: application/vnd.github.raw", check=False)
-    m = re.search(r"^kind:\s*([A-Za-z0-9_-]+)", out.stdout, re.M) if out.returncode == 0 else None
-    pack = os.path.join(CENTRAL, "kinds", m.group(1), "pack.yml") if m else ""
+    if out.returncode != 0 and "404" not in out.stderr:
+        raise RuntimeError(f"could not read its review policy: {out.stderr.strip()[:200]}")
+    kind = policy_kind(out.stdout) if out.returncode == 0 else None
+    pack = os.path.join(CENTRAL, "kinds", kind, "pack.yml") if kind else ""
     spec = (load_yaml(pack).get("own-checks") or None) if pack and os.path.isfile(pack) else None
     return spec if spec and calls_any(texts, spec.get("callers-of") or []) else None
 
@@ -237,12 +245,25 @@ def calls_any(texts, workflows):
     return any(re.search(r"DiluxOne/\.github/\.github/workflows/" + re.escape(w) + r"@", t) for t in texts for w in workflows)
 
 
+def pipeline_jobs():
+    """The jobs of the organisation's required pipeline (org-pull-request.yml):
+    their checks are the organisation's to require, not "own checks"'."""
+    text = open(os.path.join(CENTRAL, ".github", "workflows", "org-pull-request.yml"), encoding="utf-8").read()
+    jobs = text[text.index("\njobs:"):]
+    return set(re.findall(r"^  ([A-Za-z0-9_-]+):\s*$", jobs, re.M))
+
+
 def own_contexts(names, spec):
     """The check names "own checks" requires: those of the pack's jobs, but
     the ones it skips, once each, sorted."""
     jobs, skip = set(spec.get("jobs") or []), set(spec.get("skip") or [])
     picked = {n for n in names if " / " in n and n.split(" / ", 1)[0] in jobs and n.split(" / ", 1)[1] not in skip}
     return sorted(picked)
+
+
+def required_checks(ruleset):
+    return [c["context"] for r in ruleset.get("rules") or [] if r.get("type") == "required_status_checks"
+            for c in (r.get("parameters") or {}).get("required_status_checks") or []]
 
 
 def covers(org_rs, name):
@@ -262,26 +283,39 @@ def same_rules(a, b):
     return key(a) == key(b)
 
 
-def superseded(name, mine, org):
-    """The repository's own rulesets the organisation's cover: on the default
-    branch, any but "own checks" once the organisation's branch ruleset
-    applies; on tags, one that does what an organisation tag ruleset that
-    applies does. Each as (id, name)."""
+MAIN_REFS = {"~DEFAULT_BRANCH", "refs/heads/main"}
+
+
+def superseded(name, mine, org, pipeline):
+    """The repository's own rulesets the organisation's cover, each as
+    (id, name): on tags, one that does exactly what an organisation tag
+    ruleset that applies does; on the default branch, one whose every rule
+    an organisation branch ruleset on the default branch has too, but its
+    required checks, and whose every required check is either the
+    organisation pipeline's or already in "own checks". Anything else stays."""
     org = [r for r in org if covers(r, name)]
-    branch = any(r.get("target") == "branch" for r in org)
+    org_branch = [r for r in org if r.get("target") == "branch"
+                  and set(((r.get("conditions") or {}).get("ref_name") or {}).get("include") or []) & MAIN_REFS]
+    org_types = {x.get("type") for r in org_branch for x in r.get("rules") or []}
+    own = {c for r in mine if r.get("name") == OWN for c in required_checks(r)}
     found = []
     for r in mine:
-        refs = ((r.get("conditions") or {}).get("ref_name") or {}).get("include") or []
-        if r.get("target") == "branch" and branch and r.get("name") != OWN and set(refs) <= {"~DEFAULT_BRANCH", "refs/heads/main"}:
-            found.append((r["id"], r["name"]))
-        elif r.get("target") == "tag" and any(o.get("target") == "tag" and same_rules(r, o) for o in org):
-            found.append((r["id"], r["name"]))
+        refs = set(((r.get("conditions") or {}).get("ref_name") or {}).get("include") or [])
+        if r.get("target") == "tag":
+            if any(o.get("target") == "tag" and same_rules(r, o) for o in org):
+                found.append((r["id"], r["name"]))
+        elif r.get("target") == "branch" and r.get("name") != OWN and org_branch and refs and refs <= MAIN_REFS:
+            types = {x.get("type") for x in r.get("rules") or []} - {"required_status_checks"}
+            checks = required_checks(r)
+            if types <= org_types and all(c in own or c.split(" / ", 1)[0] in pipeline for c in checks):
+                found.append((r["id"], r["name"]))
     return found
 
 
 def rulesets(full):
     """The repository's own rulesets (not the organisation's), whole."""
-    rows = json.loads(gh("api", f"repos/{full}/rulesets?includes_parents=false").stdout)
+    pages = json.loads(gh("api", "--paginate", "--slurp", f"repos/{full}/rulesets?includes_parents=false&per_page=100").stdout)
+    rows = [r for page in pages for r in page]
     return [json.loads(gh("api", f"repos/{full}/rulesets/{r['id']}").stdout) for r in rows if r.get("source_type") == "Repository"]
 
 
@@ -291,43 +325,56 @@ ORG_RULESETS = None
 def org_rulesets():
     global ORG_RULESETS
     if ORG_RULESETS is None:
-        rows = json.loads(gh("api", f"orgs/{ORG}/rulesets").stdout)
-        ORG_RULESETS = [json.loads(gh("api", f"orgs/{ORG}/rulesets/{r['id']}").stdout) for r in rows]
+        pages = json.loads(gh("api", "--paginate", "--slurp", f"orgs/{ORG}/rulesets?per_page=100").stdout)
+        ORG_RULESETS = [json.loads(gh("api", f"orgs/{ORG}/rulesets/{r['id']}").stdout) for page in pages for r in page]
     return ORG_RULESETS
 
 
+def recent_check_names(full, count=5):
+    """The check names on the heads of the last merged pull requests: more
+    than one, so a docs-only one that skipped the suites does not decide."""
+    merged = json.loads(gh("pr", "list", "--repo", full, "--state", "merged", "--limit", str(count), "--json", "headRefOid").stdout)
+    names = set()
+    for pr in merged:
+        pages = json.loads(gh("api", "--paginate", "--slurp", f"repos/{full}/commits/{pr['headRefOid']}/check-runs?per_page=100").stdout)
+        names |= {c["name"] for page in pages for c in page.get("check_runs", [])}
+    return names
+
+
 def sync_own_checks(repo, dry):
+    """Creates "own checks" where the kind asks for it and there is none: the
+    pack's jobs' checks on the last merged pull requests, plus every check
+    the repository's old default-branch rulesets required that is not the
+    organisation pipeline's, so none is lost. Then deletes what superseded()
+    finds; a ruleset with a rule or a check nothing else carries stays."""
     full = f"{ORG}/{repo['name']}"
     default = (repo.get("defaultBranchRef") or {}).get("name") or "main"
     spec = own_checks_spec(full, default, workflow_texts(full))
     mine = rulesets(full)
-    has_own = any(r.get("name") == OWN for r in mine)
-    if spec and not has_own:
-        merged = json.loads(gh("pr", "list", "--repo", full, "--state", "merged", "--limit", "1", "--json", "headRefOid").stdout)
-        names = []
-        if merged:
-            runs = json.loads(gh("api", "--paginate", "--slurp", f"repos/{full}/commits/{merged[0]['headRefOid']}/check-runs?per_page=100").stdout)
-            names = [c["name"] for page in runs for c in page.get("check_runs", [])]
-        contexts = own_contexts(names, spec)
+    pipeline = pipeline_jobs()
+    if spec and not any(r.get("name") == OWN for r in mine):
+        old = {c for r in mine if r.get("target") == "branch" for c in required_checks(r) if c.split(" / ", 1)[0] not in pipeline}
+        contexts = sorted(set(own_contexts(recent_check_names(full), spec)) | old)
         if not contexts:
-            print(f"  no checks of its jobs ({', '.join(spec.get('jobs') or [])}) on its last merged pull request: \"{OWN}\" waits, and nothing is deleted")
+            print(f"  no checks of its jobs ({', '.join(spec.get('jobs') or [])}) on its last merged pull requests: \"{OWN}\" waits, and nothing is deleted")
             return
+        body = {"name": OWN, "target": "branch", "enforcement": "active", "bypass_actors": [],
+                "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+                "rules": [{"type": "required_status_checks", "parameters": {
+                    "strict_required_status_checks_policy": True, "do_not_enforce_on_create": False,
+                    "required_status_checks": [{"context": c} for c in contexts]}}]}
         if dry:
             print(f"  would create \"{OWN}\" with {len(contexts)} checks")
         else:
-            body = {"name": OWN, "target": "branch", "enforcement": "active", "bypass_actors": [],
-                    "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
-                    "rules": [{"type": "required_status_checks", "parameters": {
-                        "strict_required_status_checks_policy": True, "do_not_enforce_on_create": False,
-                        "required_status_checks": [{"context": c} for c in contexts]}}]}
             gh("api", "-X", "POST", f"repos/{full}/rulesets", "--input", "-", input_text=json.dumps(body))
             print(f"  \"{OWN}\" created with {len(contexts)} checks")
-    for rid, rname in superseded(repo["name"], mine, org_rulesets()):
+        mine = mine + [{"id": None, **body}]
+    for rid, rname in superseded(repo["name"], mine, org_rulesets(), pipeline):
         if dry:
-            print(f"  would delete the ruleset \"{rname}\" (the organisation's covers it)")
+            print(f"  would delete the ruleset \"{rname}\" (the organisation's and \"{OWN}\" cover it)")
         else:
             gh("api", "-X", "DELETE", f"repos/{full}/rulesets/{rid}")
-            print(f"  deleted the ruleset \"{rname}\" (the organisation's covers it)")
+            print(f"  deleted the ruleset \"{rname}\" (the organisation's and \"{OWN}\" cover it)")
 
 
 def drift(repo, conf, labels, block, current=0):
@@ -352,7 +399,7 @@ def drift(repo, conf, labels, block, current=0):
             # rulesets (organisation administration); what they cover is
             # then not reported, rather than guessed.
             org = []
-        for _, rname in superseded(repo["name"], mine, org):
+        for _, rname in superseded(repo["name"], mine, org, pipeline_jobs()):
             found.append(f"the ruleset \"{rname}\" is covered by the organisation's (`sync-repos.py own-checks` deletes it)")
     have = {l["name"]: l for l in json.loads(gh("label", "list", "--repo", full, "--limit", "1000", "--json", "name,color,description").stdout)}
     for label in labels:
@@ -468,19 +515,30 @@ def self_test():
     check("own checks: its jobs' checks, once, sorted, without the skipped", own_contexts(names, spec) == ["checks / PHPStan", "tests / E2E (single)"], own_contexts(names, spec))
     check("own checks: a repository calling the checks needs one", calls_any(["uses: DiluxOne/.github/.github/workflows/plugin-checks-wp.yml@v5"], spec["callers-of"]))
     check("own checks: one calling only the issue workflows does not", not calls_any(["uses: DiluxOne/.github/.github/workflows/issue-triage.yml@v5"], spec["callers-of"]))
+    check("pipeline: the organisation's required jobs", {"conventions", "review"} <= pipeline_jobs(), pipeline_jobs())
+    check("kind: plain, quoted and with a comment", [policy_kind("kind: wordpress-plugin\n"), policy_kind('kind: "wordpress-plugin"\n'), policy_kind("a: b\nkind: 'x-y'  # mine\n"), policy_kind("other: 1\n")] == ["wordpress-plugin", "wordpress-plugin", "x-y", None])
     tag_rules = [{"type": "deletion"}, {"type": "update"}]
-    org = [{"name": "org: main", "target": "branch", "enforcement": "active", "conditions": {"repository_name": {"include": ["r"]}}, "rules": [{"type": "pull_request"}]},
+    pipe = {"conventions", "review", "auto-merge"}
+    org = [{"name": "org: main", "target": "branch", "enforcement": "active", "conditions": {"repository_name": {"include": ["r"]}, "ref_name": {"include": ["~DEFAULT_BRANCH"]}}, "rules": [{"type": "pull_request"}, {"type": "deletion"}, {"type": "workflows"}]},
            {"name": "org: release tags", "target": "tag", "enforcement": "active", "conditions": {"repository_name": {"include": ["r"]}, "ref_name": {"include": ["refs/tags/*.*.*"]}}, "rules": tag_rules}]
-    mine = [{"id": 1, "name": "main", "target": "branch", "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"]}}, "rules": [{"type": "required_status_checks"}]},
-            {"id": 2, "name": OWN, "target": "branch", "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"]}}},
+
+    def rsc(*names):
+        return {"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": n} for n in names]}}
+    own_rs = {"id": 2, "name": OWN, "target": "branch", "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"]}}, "rules": [rsc("checks / PHPStan", "real-s3 / AWS")]}
+    mine = [{"id": 1, "name": "main", "target": "branch", "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"]}}, "rules": [{"type": "deletion"}, {"type": "pull_request"}, rsc("checks / PHPStan", "conventions / Conventions", "review / Claude review")]},
+            own_rs,
             {"id": 3, "name": "release tags", "target": "tag", "conditions": {"ref_name": {"include": ["refs/tags/*.*.*"]}}, "rules": tag_rules},
             {"id": 4, "name": "Tag protection", "target": "tag", "conditions": {"ref_name": {"include": ["~ALL"]}}, "rules": tag_rules},
-            {"id": 5, "name": "release branches", "target": "branch", "conditions": {"ref_name": {"include": ["refs/heads/release/*"]}}}]
-    got = superseded("r", mine, org)
-    check("superseded: the old main and a tag ruleset the same as the organisation's", got == [(1, "main"), (3, "release tags")], got)
-    check("superseded: nothing while the organisation's rulesets do not cover the repository", superseded("other", mine, org) == [], superseded("other", mine, org))
+            {"id": 5, "name": "release branches", "target": "branch", "conditions": {"ref_name": {"include": ["refs/heads/release/*"]}}, "rules": [{"type": "deletion"}]},
+            {"id": 6, "name": "Copilot", "target": "branch", "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"]}}, "rules": [{"type": "copilot_code_review"}]},
+            {"id": 7, "name": "suites", "target": "branch", "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"]}}, "rules": [rsc("real-azure / Blob")]}]
+    got = superseded("r", mine, org, pipe)
+    check("superseded: the old main (its checks the pipeline's or own) and a tag ruleset the same as the organisation's", got == [(1, "main"), (3, "release tags")], got)
+    check("superseded: not a ruleset with a rule the organisation's lack, nor a check only it requires", all(i not in (6, 7) for i, _ in got), got)
+    check("superseded: not the old main while \"own checks\" lacks one of its checks", superseded("r", [m for m in mine if m["id"] != 2], org, pipe) == [(3, "release tags")], superseded("r", [m for m in mine if m["id"] != 2], org, pipe))
+    check("superseded: nothing while the organisation's rulesets do not cover the repository", superseded("other", mine, org, pipe) == [], superseded("other", mine, org, pipe))
     paused = [dict(o, enforcement="evaluate") for o in org]
-    check("superseded: nothing when the organisation's are not active", superseded("r", mine, paused) == [], superseded("r", mine, paused))
+    check("superseded: nothing when the organisation's are not active", superseded("r", mine, paused, pipe) == [], superseded("r", mine, paused, pipe))
     if not failed:
         print("all tests passed")
     return 1 if failed else 0
