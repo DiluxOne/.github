@@ -5,7 +5,7 @@
 # job should install itself: jobs still pick their PHP, Node or Python with the
 # setup-* actions, as on GitHub's runners. Rebuilt every week and promoted to
 # :stable only after a smoke test (.github/workflows/runner-image.yml).
-FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+FROM ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7
 
 # Filled by runner-image.yml with the latest release of actions/runner and the
 # SHA-256 GitHub publishes for it, and the latest Node.js LTS line.
