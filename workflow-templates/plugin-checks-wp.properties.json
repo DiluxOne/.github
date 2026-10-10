@@ -1,0 +1,9 @@
+{
+  "name": "Plugin checks, WordPress (DiluxOne)",
+  "description": "The WordPress plugin checks and suites from DiluxOne/.github; the organisation's required workflow does the conventions and the review.",
+  "iconName": "octicon check",
+  "categories": [
+    "Code quality",
+    "Testing"
+  ]
+}

@@ -1,0 +1,65 @@
+# The settings every repository of the organisation has, applied by
+# scripts/sync-repos.py through the API. What GitHub lets the organisation
+# hold itself (rulesets, issue types and fields, Projects, secrets, the
+# community files of this repository) is not here.
+
+# Repositories with no workflows of their own by design (the organisation's
+# required pipeline still runs on their pull requests): the drift check does
+# not ask them to call the shared ones.
+no-workflows:
+  - diluxone-wp-test   # a disposable environment to test by hand (its AGENTS.md)
+
+# Repositories the script leaves alone.
+exclude:
+  - ards-web   # a client's site, moving to the maintainer's account (docs/plans/org-first.md)
+
+# Which public Project of the organisation each repository's accepted issues
+# land on (its number: github.com/orgs/DiluxOne/projects/<n>). One per
+# product, the free plugin and its Pro add-on together. A repository not
+# listed puts its issues on no Project.
+projects:
+  diluxone-offload-wordpress: 1
+  diluxone-users-wordpress: 2
+  diluxone-users-pro-wordpress: 2
+  diluxone-multisite-user-sync-wordpress: 3
+  diluxone-comments-wordpress: 4
+  diluxone-comments-pro-wordpress: 4
+  diluxone-help-wordpress: 5
+  diluxone-support-wordpress: 6
+  diluxone-commerce-wordpress: 7
+  diluxone-slider-wordpress: 8
+  diluxone-mail-wordpress: 10
+  .github: 9
+  diluxone-wp-test: 9
+
+# Merging: squash only, the pull request's title and description as the
+# commit, the branch deleted, auto-merge allowed (the policy decides when).
+settings:
+  allow_squash_merge: true
+  allow_merge_commit: false
+  allow_rebase_merge: false
+  allow_auto_merge: true
+  delete_branch_on_merge: true
+  squash_merge_commit_title: PR_TITLE
+  squash_merge_commit_message: PR_BODY
+  has_issues: true
+  has_wiki: false
+
+# Security: Dependabot alerts everywhere; private vulnerability reporting,
+# secret scanning and push protection where GitHub offers them (public
+# repositories on this plan).
+security:
+  vulnerability_alerts: true
+  private_vulnerability_reporting: public-only
+  secret_scanning: public-only
+
+# Files every repository carries because GitHub reads them only from the
+# repository. They reach it as a pull request that closes an issue the
+# script opens there, never straight to main.
+files:
+  .github/CODEOWNERS: |
+    # Who is asked to review a pull request. The organisation's rulesets do
+    # not require code-owner approval; this only puts every pull request in
+    # the maintainer's queue. Kept in step by DiluxOne/.github
+    # (scripts/sync-repos.py).
+    * @soydiloreto

@@ -1,0 +1,15 @@
+name: 🧰 Maintenance task
+description: For maintainers. A refactor, a test, a dependency, CI or tooling, with no change a user would notice.
+type: Task
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Every change starts as an accepted issue, maintenance included. A change a user would notice is a bug report or a feature request instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What and why
+      description: What the task changes, and why it is worth doing now.
+    validations:
+      required: true

@@ -1,9 +1,13 @@
 name: Issue reproduction
 
-# Reusable. When an issue gets the `bug:unconfirmed` label (from the triage)
-# or `repro:again` (from a person), Claude writes ONE unit test that fails if
-# the reported bug exists, under tests/Unit/Repro/. Then the test runs, and
-# the outcome is reported:
+# Reusable. When a person who can write to the repository labels an issue
+# `repro:run` (or `repro:again` for another try), Claude writes ONE unit test
+# that fails if the reported bug exists, under tests/Unit/Repro/. Then the
+# test runs, and the outcome is reported. The triage's `bug:unconfirmed`
+# only says a report is worth trying; it starts nothing on its own, so no
+# issue anyone opens can make code run here without a maintainer's decision.
+# A label a bot adds is ignored, and so is one added by someone with less
+# than write access (checked live, not from the event).
 #
 #   the test fails  -> the bug is real: label `bug:confirmed`, a draft pull
 #                      request with the failing test as evidence and as the
@@ -20,8 +24,14 @@ name: Issue reproduction
 #   write   Claude writes the test (it cannot run it: no shell); the file is
 #           handed over as an artifact.
 #   run     a fresh runner with a read-only token and no secrets installs
-#           the dev tools and runs the test. Whatever the test does dies
-#           with the runner; its output is treated as untrusted text.
+#           the dev tools (the repository's own, before the test is there)
+#           and runs the test inside a container with no network, no
+#           environment and the checkout read-only, so the test can reach
+#           neither the runner's own tokens nor anything outside. Whatever
+#           it does dies with the container; its output is untrusted text.
+#           The container is the stock php:<version>-cli image: a test that
+#           needs an extension it lacks (mysqli, gd, intl, zip) reports
+#           broken, not a verdict on the bug.
 #   report  a fresh runner with the bot token pushes the test file as the
 #           write job produced it, opens the draft pull request, labels and
 #           comments. It never executes repository code (hooks off).
@@ -35,7 +45,7 @@ name: Issue reproduction
 #   jobs:
 #     repro:
 #       permissions: { actions: read, contents: write, issues: write, pull-requests: write }
-#       uses: DiluxOne/.github/.github/workflows/issue-repro.yml@v3
+#       uses: DiluxOne/.github/.github/workflows/issue-repro.yml@v5
 #       secrets: inherit
 
 on:
@@ -52,7 +62,7 @@ on:
       central-ref:
         description: Ref of DiluxOne/.github to read the policy from.
         type: string
-        default: v3
+        default: v5
       dev-tag:
         description: The moving tag of the repository's "Development build" pre-release (as in plugin-release-wp.yml), linked when a report names an older version. Empty when the repository publishes none.
         type: string
@@ -75,7 +85,8 @@ jobs:
     timeout-minutes: 25
     if: >-
       github.event_name == 'issues' && github.event.action == 'labeled' &&
-      (github.event.label.name == 'bug:unconfirmed' || github.event.label.name == 'repro:again')
+      github.event.sender.type != 'Bot' &&
+      (github.event.label.name == 'repro:run' || github.event.label.name == 'repro:again')
     concurrency:
       group: issue-repro-${{ github.repository }}-${{ github.event.issue.number }}
       cancel-in-progress: false
@@ -101,13 +112,25 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-metadata: read
 
-      - name: Daily cap
+      - name: Daily cap, and a label from someone who can write
         id: cap
         env:
           GH_TOKEN: ${{ github.token }}
+          BOT_TOKEN: ${{ steps.bot.outputs.token }}
           MAX: ${{ inputs.max-per-day }}
+          LOGIN: ${{ github.event.sender.login }}
         run: |
           set -euo pipefail
+          # The repository's own answer, now, not the event's: a label from
+          # a triager or a read-only collaborator starts nothing.
+          if ! role=$(GH_TOKEN=$BOT_TOKEN gh api "repos/$GITHUB_REPOSITORY/collaborators/$LOGIN/permission" --jq .role_name 2>"$RUNNER_TEMP/role.err"); then
+            echo "::warning::Could not check $LOGIN's permission ($(head -c 200 "$RUNNER_TEMP/role.err")); no reproduction runs. Add the label again to retry."
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          case "$role" in
+            admin|maintain|write) echo "$LOGIN asked for a reproduction ($role)." ;;
+            *) echo "::notice::$LOGIN has $role permission on this repository; only people who can write to it start a reproduction."; echo "run=false" >> "$GITHUB_OUTPUT"; exit 0 ;;
+          esac
           today=$(date -u +%Y-%m-%d)
           # Attempts, not runs: write jobs where the model actually ran today
           # (their "Write the test" step completed), capped or empty ones aside.
@@ -279,23 +302,55 @@ jobs:
           php-version: ${{ inputs.php-version }}
           coverage: none
           tools: composer:v2
+      # The repository's own dev tools, installed while the untrusted test is
+      # not in the tree yet: Composer runs the repository's scripts, never
+      # the test.
       - run: composer install --no-interaction --prefer-dist --no-progress
+      - name: The PHP image the test runs in
+        env:
+          PHP_VERSION: ${{ inputs.php-version }}
+        run: docker pull --quiet "php:${PHP_VERSION}-cli"
       - name: Run
         id: run
         env:
           NUMBER: ${{ github.event.issue.number }}
+          PHP_VERSION: ${{ inputs.php-version }}
+        # In a container with no network, no environment (none of the
+        # runner's variables, its runtime token among them), the checkout
+        # mounted read-only and nothing writable but a scratch /tmp.
         run: |
           set -euo pipefail
           test="tests/Unit/Repro/Issue${NUMBER}Test.php"
           mkdir -p tests/Unit/Repro && cp "$RUNNER_TEMP/handover/test.php" "$test"
           if ! php -l "$test" >/dev/null 2>&1; then echo "outcome=broken" >> "$GITHUB_OUTPUT"; php -l "$test" || true; exit 0; fi
-          set +e; vendor/bin/phpunit --no-coverage "$test" > "$RUNNER_TEMP/phpunit.txt" 2>&1; rc=$?; set -e
+          set +e
+          docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
+            --user "$(id -u):$(id -g)" --memory 1g --pids-limit 256 \
+            -v "$PWD:/app:ro" -w /app "php:${PHP_VERSION}-cli" \
+            timeout 600 php vendor/bin/phpunit --no-coverage --do-not-cache-result "$test" > "$RUNNER_TEMP/phpunit.txt" 2>&1
+          rc=$?
+          set -e
+          # 125 to 127: docker could not run the test at all, which says
+          # nothing about the bug.
+          if [ "$rc" -ge 125 ] && [ "$rc" -le 127 ]; then
+            echo "::warning::The container did not run the test (exit $rc)."; tail -5 "$RUNNER_TEMP/phpunit.txt" || true
+            echo "outcome=broken" >> "$GITHUB_OUTPUT"; exit 0
+          fi
           tail -25 "$RUNNER_TEMP/phpunit.txt"
           tail -25 "$RUNNER_TEMP/phpunit.txt" > "$RUNNER_TEMP/handover/phpunit-tail.txt"
+          # Only PHPUnit's own verdicts count: exit 1 with a failure and no
+          # error is the bug; exit 0 with "OK" is a pass. An error (a wrong
+          # class, a missing stub), a timeout (124), a kill (137, memory), a
+          # PHP fatal (255) or anything else proves nothing about the bug.
           if grep -qE '^(Errors|ERRORS)|There w(as|ere) [0-9]+ errors?' "$RUNNER_TEMP/phpunit.txt"; then
-            # An error (a wrong class, a missing stub) proves nothing about the bug.
             echo "outcome=broken" >> "$GITHUB_OUTPUT"
-          elif [ "$rc" -ne 0 ]; then echo "outcome=reproduced" >> "$GITHUB_OUTPUT"; else echo "outcome=passed" >> "$GITHUB_OUTPUT"; fi
+          elif [ "$rc" -eq 1 ] && grep -qE '^FAILURES!' "$RUNNER_TEMP/phpunit.txt"; then
+            echo "outcome=reproduced" >> "$GITHUB_OUTPUT"
+          elif [ "$rc" -eq 0 ] && grep -qE '^OK \(' "$RUNNER_TEMP/phpunit.txt"; then
+            echo "outcome=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::PHPUnit gave no verdict (exit $rc)."; echo "outcome=broken" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
@@ -359,11 +414,11 @@ jobs:
           BT: '`'
         run: |
           set -euo pipefail
-          for l in "bug:confirmed|B60205|Reproduced by a failing test" "could-not-reproduce|FBCA04|The reproduction attempt found nothing" "repro:again|FBCA04|Ask for another reproduction attempt"; do
+          for l in "bug:confirmed|B60205|Reproduced by a failing test" "could-not-reproduce|FBCA04|The reproduction attempt found nothing" "repro:run|FBCA04|A maintainer asks for a reproduction attempt" "repro:again|FBCA04|Ask for another reproduction attempt"; do
             IFS='|' read -r name color desc <<<"$l"
             gh label create "$name" --repo "$GITHUB_REPOSITORY" --color "$color" --description "$desc" --force >/dev/null
           done
-          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "repro:again" >/dev/null 2>&1 || true
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "repro:run" --remove-label "repro:again" >/dev/null 2>&1 || true
           sign="<sub>🤖 AI reproduction · $MODEL (Anthropic)${COST:+ · \$$COST}</sub>"
           test="tests/Unit/Repro/Issue${NUMBER}Test.php"
           code_main="${BT}main${BT}"; code_test="${BT}${test}${BT}"; fence="${BT}${BT}${BT}"; code_again="${BT}repro:again${BT}"
@@ -430,6 +485,6 @@ jobs:
             g commit -q -m "test(repro): attempt for #$NUMBER" -m "Written by the reproduction job from the report in #$NUMBER; it passes on main, so the report could not be reproduced this way." -m "🤖 AI-generated · $MODEL (Anthropic)"
             g push -q -f -u origin "$branch"
             gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label could-not-reproduce >/dev/null
-            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'I could not reproduce this. I wrote a unit test from the report (%s, on the branch %s) and it passes on %s: %s%s\n\nWhat would help: %s\n\nIf you add that, put the %s label (or a maintainer will) and I try again.\n\n%s' "$code_test" "${BT}${branch}${BT}" "$code_main" "$SUMMARY" "$since" "$needs" "$code_again" "$sign")" >/dev/null
+            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'I could not reproduce this. I wrote a unit test from the report (%s, on the branch %s) and it passes on %s: %s%s\n\nWhat would help: %s\n\nIf you add that here, a maintainer can ask for another attempt (the %s label).\n\n%s' "$code_test" "${BT}${branch}${BT}" "$code_main" "$SUMMARY" "$since" "$needs" "$code_again" "$sign")" >/dev/null
             echo "Not reproduced."
           fi

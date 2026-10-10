@@ -8,6 +8,18 @@ Thanks for helping. This is the default guide for every DiluxOne repository; a r
 - **Security problems** go through private vulnerability reporting, never a public issue. See [SECURITY.md](SECURITY.md).
 - **Bugs and ideas** go to the repository's issues, using its templates.
 
+## Working with an AI agent
+
+Most work here is done with AI agents. Point yours at the repository's `AGENTS.md`: it opens with the organisation's rules, and the step-by-step flow, with a command for each step (`dx issue`, `dx start`, `dx check`, `dx pr`), is in [DiluxOne/.github, `docs/agents.md`](https://github.com/DiluxOne/.github/blob/main/docs/agents.md). It works the same from a fork.
+
+## Start from an issue
+
+Every change starts as an issue: features, fixes and docs alike, maintainers included. Open one with the repository's template (or find the one that already describes it) and wait until a maintainer accepts it, which they do by adding the `accepted` label. The template sets the issue's **Type** (Bug, Feature, Docs or Task), and the pull request's type must fit it: a `feat` closes a Feature, a `fix` a Bug. A maintainer sets the Priority and the Project when accepting. Then write the code, and say `Closes #<number>` in the pull request's description. CI fails a pull request that closes no accepted issue; bots' own pull requests (Dependabot, releases) are exempt.
+
+Why: it is the cheapest moment to agree on what to build. A feature that is already planned, that belongs to a paid add-on, or that the project will not do is answered on the issue, before anyone spends time on code. An issue that is not accepted is not a "no" to the person, only to the change as proposed; the reply says why when it can.
+
+If the issue is accepted after the pull request was opened, the failed check runs again on its own when the maintainer accepts it, in a repository whose `issues.yml` has the `accepted` job; otherwise push a commit, or ask a maintainer to re-run it, and it passes.
+
 ## Pull requests
 
 1. Create a branch from `main`: in your fork if you are an outside contributor, in the repository itself if you are a maintainer.
@@ -24,7 +36,7 @@ Nothing reaches `main` without a green pull request, maintainers included.
 
 ## Commit messages and PR titles
 
-We follow [Conventional Commits](https://www.conventionalcommits.org/). The first line (and the PR title) is `<type>(<optional-scope>): <subject>`, with type one of `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`. Keep it short: aim for 72 characters, CI rejects anything over 100, and do not end it with a period.
+We follow [Conventional Commits](https://www.conventionalcommits.org/). The first line (and the PR title) is `<type>(<optional-scope>): <subject>`, with type one of `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`. Keep it short: aim for 72 characters, CI rejects anything over 100, and do not end it with a period. Dependabot's long grouped titles are the exception: the review shortens them, and their commits are not measured, since the squash keeps only the title.
 
 The body explains **why**: the problem, the context, the alternatives you considered. Write it in plain paragraphs, **one line per paragraph, without hard-wrapping**: GitHub, where these messages are read, wraps them for you, and hard-wrapped lines show up broken there. The commit on `main` takes its body from the pull request description, so the commits on your branch can be short.
 
@@ -45,7 +57,7 @@ Titles stay plain Conventional Commits, without emoji: tools read the type, and 
 The description becomes the commit body on `main`, so it is part of the project's history. Write it for the person who reads it in a year:
 
 - **📝 What changes:** one or two sentences, in plain words. Required.
-- **💡 Why:** the problem it solves, and a link to the issue (`Closes #123`). Required.
+- **💡 Why:** the problem it solves, and the accepted issue it closes (`Closes #123`). Required; CI fails a pull request that closes no accepted issue.
 - **🧪 How I tested it:** what you ran and what you checked.
 - **📸 Screenshots:** before and after, for anything visible.
 - Short paragraphs, no walls of text, no copy of the diff. Friendly and direct.
@@ -64,7 +76,7 @@ The docs check CI also runs (relative links resolve, no retired product name) is
 
 ## What CI checks
 
-Every pull request runs the conventions check (branch name, PR title, every commit and the description) and the project's quality gates.
+Every pull request runs the conventions check (branch name, PR title, every commit, the description and the accepted issue it closes) and the project's quality gates. A pull request titled `docs` may change only documentation (Markdown, images under `docs/`, `readme.txt`, licence files, the issue templates). One from someone outside the maintainers may change at most 600 lines, not counting `composer.lock`, `package-lock.json` and the translation files (`.po`, `.pot`, `.mo`) under `languages/`: split a bigger change into smaller pull requests, each with its accepted issue.
 
 Pull requests from branches of the repository (not drafts, not forks) are reviewed by Claude, which comments inline on blockers and majors, lists minor findings in its summary and labels the risk and complexity.
 

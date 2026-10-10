@@ -1,0 +1,19 @@
+name: 📝 Documentation
+description: Something in the docs is missing, wrong or unclear.
+type: Docs
+labels: ["documentation"]
+body:
+  - type: textarea
+    id: where
+    attributes:
+      label: Where?
+      description: The page, file or section, with a link if you have one.
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What is missing, wrong or unclear?
+      description: What you expected to find, and what you found instead.
+    validations:
+      required: true

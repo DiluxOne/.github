@@ -1,5 +1,6 @@
 name: ✨ Feature request
 description: Something the product should do and does not.
+type: Feature
 labels: ["enhancement"]
 body:
   - type: textarea

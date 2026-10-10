@@ -11,10 +11,28 @@
 # headings, default "What changes,Why"; empty skips), LABELS (comma-separated,
 # optional), COMMENTS_FILE and REVIEW_BOT (the pull request's comments as the
 # REST API lists them, and the login of the App whose review records count;
-# optional), AUTHOR_TYPE (Bot skips the sections). Run from the repository.
+# optional), AUTHOR_TYPE (Bot skips the sections; on a dependabot/ branch it
+# also leaves the commits' length unmeasured and lets a title through whose
+# shortened form, below, fits), MAX_LINES (the most lines
+# the branch may change, lock files and translations aside; empty for no
+# limit: CI sets it for authors who are not trusted; composer.lock,
+# package-lock.json and the .po, .pot and .mo files of a languages/ directory
+# do not count).
+# Run from the repository.
 #
-#   conventions.sh          check (exit 1 on any broken rule)
-#   conventions.sh --test   self-test against a scratch repository
+# A pull request titled docs may change only documentation: Markdown, the
+# images under docs/, readme.txt, licence files and the issue templates. That is
+# where a code change would hide behind the lightest review.
+#
+# A grouped Dependabot pull request comes titled past the limit ("Bump x
+# from 1.0 to 1.1 in the dev group across 1 directory") and its commit says
+# the same. The merge is a squash, so only the title reaches main: the
+# check measures the title in its shortened form (dependabot_title), and
+# the review's "Correct the title's type" step sets that form as the title.
+#
+#   conventions.sh                          check (exit 1 on any broken rule)
+#   conventions.sh --dependabot-title <t>   print <t> shortened to MAX_HEADER
+#   conventions.sh --test                   self-test against a scratch repository
 set -euo pipefail
 
 # Whether the review is still to read HEAD_REF: its last record (only the
@@ -35,6 +53,19 @@ review_pending() {
   [ "$sha" != "$HEAD_REF" ] && [ "$count" -lt "$max" ]
 }
 
+# A Dependabot title shortened to fit MAX_HEADER (default 100), dropping
+# boilerplate first: " in the <group> group" and " across N directories",
+# then the version it bumps from, then the one it bumps to. Printed as is
+# when it already fits, and as short as it gets when nothing more can go.
+dependabot_title() {
+  local t=$1 max=${MAX_HEADER:-100}
+  (( ${#t} > max )) || { printf '%s\n' "$t"; return; }
+  t=$(sed -E 's/ in the [^ ]+ group//; s/ across [0-9]+ director(y|ies)//' <<<"$t")
+  (( ${#t} > max )) && t=$(sed -E 's/ from [^ ]+ to ([^ ]+)/ to \1/' <<<"$t")
+  (( ${#t} > max )) && t=$(sed -E 's/ to [^ ]+$//' <<<"$t")
+  printf '%s\n' "$t"
+}
+
 check() {
   MAX_HEADER=${MAX_HEADER:-100}
   SECTIONS=${SECTIONS-What changes,Why}
@@ -42,20 +73,30 @@ check() {
   COMMENTS_FILE=${COMMENTS_FILE:-}
   REVIEW_BOT=${REVIEW_BOT:-dilux-bot[bot]}
   AUTHOR_TYPE=${AUTHOR_TYPE:-User}
+  MAX_LINES=${MAX_LINES:-}
   TYPES='feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert'
   HEADER_RE="^(${TYPES})(\([a-z0-9._/-]+\))?!?: [^ ].*[^.]$"
   BRANCH_RE="^((${TYPES})/[a-z0-9][a-z0-9._-]*|dependabot/.+)$"
   fail=0
+  dependabot=false
+  [ "$AUTHOR_TYPE" = Bot ] && [[ "$BRANCH" == dependabot/* ]] && dependabot=true
   error() { echo "::error::$1"; fail=1; }
+  # $3, the length the header is held to: MAX_HEADER, or none.
   check_header() {
     if ! [[ "$2" =~ $HEADER_RE ]]; then
       error "$1 is not a Conventional Commit header (\"type(scope): subject\", type one of ${TYPES//|/, }, no trailing period): \"$2\""
-    elif (( ${#2} > MAX_HEADER )); then
+    elif [ -n "${3-$MAX_HEADER}" ] && (( ${#2} > ${3-$MAX_HEADER} )); then
       error "$1 is ${#2} characters; the limit is ${MAX_HEADER}: \"$2\""
     fi
   }
   [[ "$BRANCH" =~ $BRANCH_RE ]] || error "Branch \"$BRANCH\" must be <type>/<kebab-case-description>, type one of ${TYPES//|/, }."
-  check_header "The pull request title" "$TITLE"
+  short=$(dependabot_title "$TITLE")
+  if [ "$dependabot" = true ] && (( ${#TITLE} > MAX_HEADER )) && (( ${#short} <= MAX_HEADER )); then
+    echo "The title is ${#TITLE} characters; the review shortens it to \"$short\", which is what is checked."
+    check_header "The pull request title" "$short"
+  else
+    check_header "The pull request title" "$TITLE"
+  fi
   # The type:* label is the review's reading of the diff (or a person's
   # override); the title, which becomes the commit on main, must say the
   # same. The review corrects the title itself; this catches a later
@@ -74,9 +115,33 @@ check() {
       error "The pull request is labelled type:$typelabel but its title says \"$token:\"; the title must carry the labelled type (the review sets it; change the label if the review is wrong)."
     fi
   fi
+  # Documentation only, when the title says docs.
+  DOCS_RE='^docs(\([^)]*\))?!?: '
+  if [[ "$TITLE" =~ $DOCS_RE ]]; then
+    while IFS= read -r f; do
+      case "$f" in
+        ''|*.md|docs/*.png|docs/*.jpg|docs/*.jpeg|docs/*.gif|docs/*.webp|readme.txt|LICENSE|LICENSE.*|COPYING|.github/ISSUE_TEMPLATE/*) ;;
+        *) error "The title says docs, but $f is not documentation: give the title the type of the change it carries." ;;
+      esac
+    # --no-renames: a code file renamed into a .md shows as the code file
+    # deleted, which is not documentation.
+    done < <(git diff --no-renames --name-only "${BASE}...${HEAD_REF}")
+  fi
+  # A size an author who is not trusted may change at once.
+  if [[ "$MAX_LINES" =~ ^[0-9]+$ ]] && [ "$MAX_LINES" -gt 0 ]; then
+    changed=$(git diff --numstat "${BASE}...${HEAD_REF}" | awk -F'\t' '$3 !~ /(^|\/)(composer\.lock|package-lock\.json)$/ && $3 !~ /(^|\/)languages\/[^\/]+\.(po|pot|mo)$/ && $1 != "-" { n += $1 + $2 } END { print n + 0 }')
+    if [ "$changed" -gt "$MAX_LINES" ]; then
+      error "This pull request changes $changed lines; one from an author outside the maintainers may change at most $MAX_LINES. Split it into smaller pull requests, each closing its accepted issue, or ask a maintainer to take it over."
+    fi
+  fi
   while read -r sha; do
     [ -z "$sha" ] && continue
-    check_header "Commit ${sha:0:7}" "$(git log -1 --format=%s "$sha")"
+    # Dependabot writes its commits; the squash keeps only the title.
+    if [ "$dependabot" = true ]; then
+      check_header "Commit ${sha:0:7}" "$(git log -1 --format=%s "$sha")" ""
+    else
+      check_header "Commit ${sha:0:7}" "$(git log -1 --format=%s "$sha")"
+    fi
     if git log -1 --format=%B "$sha" | grep -qiE '^Claude-Session:'; then
       error "Commit ${sha:0:7} carries a Claude-Session trailer; session links stay out of the history."
     fi
@@ -105,21 +170,33 @@ check() {
 # One case: a scratch repository whose branch adds one commit with this
 # message; expect 0 (passes) or 1 (fails).
 test_case() {
-  local name=$1 want=$2 branch=$3 title=$4 message=$5 body=$6 labels=${7:-} comments=${8:-} got dir
+  local name=$1 want=$2 branch=$3 title=$4 message=$5 body=$6 labels=${7:-} comments=${8:-} files=${9:-} max=${10:-} author=${11:-User} got dir
   dir=$(mktemp -d)
   (
     cd "$dir" && git init -q && git config user.email t@t && git config user.name t
     git commit -q --allow-empty -m "chore: base" && git checkout -q -b topic
+    # files: "path:lines,path:lines", each written with that many lines.
+    if [ -n "$files" ]; then
+      IFS=, read -ra specs <<< "$files"
+      for spec in "${specs[@]}"; do
+        mkdir -p "$(dirname "${spec%%:*}")"; seq 1 "${spec##*:}" > "${spec%%:*}"; git add "${spec%%:*}"
+      done
+    fi
     git commit -q --allow-empty -m "$message"
     file=""
     if [ -n "$comments" ]; then
       file=$(mktemp); printf '%s' "${comments//HEADSHA/$(git rev-parse HEAD)}" > "$file"
     fi
-    BRANCH=$branch TITLE=$title BODY=$body LABELS=$labels COMMENTS_FILE=$file REVIEW_BOT='dilux-bot[bot]' BASE=$(git rev-parse HEAD~1) HEAD_REF=$(git rev-parse HEAD) check >/dev/null 2>&1
+    BRANCH=$branch TITLE=$title BODY=$body LABELS=$labels COMMENTS_FILE=$file REVIEW_BOT='dilux-bot[bot]' MAX_LINES=$max AUTHOR_TYPE=$author BASE=$(git rev-parse HEAD~1) HEAD_REF=$(git rev-parse HEAD) check >/dev/null 2>&1
   ) && got=0 || got=1
   rm -rf "$dir"
   if [ "$got" = "$want" ]; then echo "ok   $name"; else echo "FAIL $name (want $want, got $got)"; return 1; fi
 }
+
+if [ "${1:-}" = "--dependabot-title" ]; then
+  dependabot_title "${2:-}"
+  exit 0
+fi
 
 if [ "${1:-}" = "--test" ]; then
   good=$'## 📝 What changes\n\nA thing.\n\n## 💡 Why\n\nA reason.\n\n🤖 AI-assisted · Claude Opus 5.5 (Anthropic)'
@@ -149,6 +226,41 @@ if [ "${1:-}" = "--test" ]; then
   test_case "passes: under a cap of its own, the review is still to come" 0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" "$(rec 'dilux-bot[bot]' "$other" 3 8)" || fail=1
   test_case "fails: a record whose sha is not a commit"           1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" "$(rec 'dilux-bot[bot]' 'abc\\nx' 1 '')" || fail=1
   test_case "passes: the last page's record (paginated arrays)"    0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" "$(rec 'dilux-bot[bot]' HEADSHA 1 '')$(rec 'dilux-bot[bot]' "$other" 2 '')" || fail=1
+  test_case "passes: docs that change only docs"   0 docs/guide "docs(guide): a thing" "docs(guide): a thing" "$good" "" "" "docs/a.md:3,README.md:2,readme.txt:1" || fail=1
+  test_case "fails: docs that change code"         1 docs/guide "docs(guide): a thing" "docs(guide): a thing" "$good" "" "" "docs/a.md:3,includes/a.php:2" || fail=1
+  test_case "passes: a fix may change code"        0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "" "" "includes/a.php:2" || fail=1
+  test_case "passes: under the size limit"         0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "" "" "includes/a.php:50" 100 || fail=1
+  test_case "fails: over the size limit"           1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "" "" "includes/a.php:150" 100 || fail=1
+  test_case "passes: lock files and translations do not count" 0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "" "" "includes/a.php:50,composer.lock:500,languages/x.po:500" 100 || fail=1
+  # A docs title over a code file renamed into a .md: the base has the code.
+  dir=$(mktemp -d)
+  if (
+    cd "$dir" && git init -q && git config user.email t@t && git config user.name t
+    mkdir includes && seq 1 40 > includes/a.php && git add . && git commit -q -m "chore: base" && git checkout -q -b docs/x
+    git mv includes/a.php notes.md && git commit -q -m "docs: notes"
+    BRANCH=docs/x TITLE="docs: notes" BODY=$good BASE=$(git rev-parse HEAD~1) HEAD_REF=$(git rev-parse HEAD) check >/dev/null 2>&1
+  ); then echo "FAIL fails: docs that rename code into Markdown (want 1, got 0)"; fail=1; else echo "ok   fails: docs that rename code into Markdown"; fi
+  rm -rf "$dir"
+  test_case "passes: translations at any depth do not count" 0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "" "" "includes/a.php:50,includes/languages/x.po:500" 100 || fail=1
+  test_case "fails: code under languages/ counts"  1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "" "" "languages/loader.php:500" 100 || fail=1
+  test_case "fails: a script under docs/ is not docs" 1 docs/guide "docs(guide): a thing" "docs(guide): a thing" "$good" "" "" "docs/build.sh:3" || fail=1
+  test_case "passes: no limit for a trusted author" 0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "" "" "includes/a.php:5000" "" || fail=1
+  # Dependabot: a grouped title, and one too long even without its boilerplate.
+  grouped="build(deps-dev): Bump @aws-sdk/client-s3 from 3.1141.0 to 3.1146.0 in the dev-dependencies group across 1 directory"
+  huge="build(deps-dev): Bump @a-very-long-scope/$(printf 'x%.0s' $(seq 1 60)) from 1.0.0 to 2.0.0"
+  test_case "passes: a grouped Dependabot title and commit"      0 dependabot/npm_and_yarn/dev-x "$grouped" "$grouped" "" "" "" "" "" Bot || fail=1
+  test_case "fails: the same from a person"                       1 dependabot/npm_and_yarn/dev-x "$grouped" "$grouped" "$good" || fail=1
+  test_case "fails: the same on a branch of a person's"           1 build/dev-x "$grouped" "$grouped" "" "" "" "" "" Bot || fail=1
+  test_case "fails: a Dependabot title too long even shortened"   1 dependabot/npm_and_yarn/dev-x "$huge from 1.0.0 to 2.0.0" "$grouped" "" "" "" "" "" Bot || fail=1
+  test_case "fails: a Dependabot commit that is not a header"     1 dependabot/npm_and_yarn/dev-x "$grouped" "Bump x" "" "" "" "" "" Bot || fail=1
+  short() {
+    local got; got=$(MAX_HEADER=${3:-100} dependabot_title "$1")
+    if [ "$got" = "$2" ]; then echo "ok   shortens: \"$2\""; else echo "FAIL shortens: want \"$2\", got \"$got\""; return 1; fi
+  }
+  short "$grouped" "build(deps-dev): Bump @aws-sdk/client-s3 from 3.1141.0 to 3.1146.0" || fail=1
+  short "ci(deps): Bump the github-actions group across 2 directories with 3 updates" "ci(deps): Bump the github-actions group across 2 directories with 3 updates" || fail=1
+  short "ci(deps): Bump actions/checkout from 6.0.0 to 7.0.1 in the github-actions group" "ci(deps): Bump actions/checkout to 7.0.1" 50 || fail=1
+  short "ci(deps): Bump actions/checkout from 6.0.0 to 7.0.1 across 3 directories" "ci(deps): Bump actions/checkout" 35 || fail=1
   [ "$fail" -eq 0 ] && echo "all tests passed"
   exit "$fail"
 fi

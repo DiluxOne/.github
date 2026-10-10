@@ -41,22 +41,14 @@ name: Claude review
 # kind of project, kinds/<kind>/review-profile.md; a `kind:` in the policy
 # adds it on its own, and `plugin-wp` still names the WordPress one),
 # central-ref (where the profiles, the policy and scripts/review-brief.sh
-# are read from, default v3: a caller that pins `uses:` to a version, say
+# are read from, default v5: a caller that pins `uses:` to a version, say
 # @v3.0.0, passes the same version here, or the workflow runs at its pin
-# while the policy and the brief follow v3),
+# while the policy and the brief follow v5),
 # max-auto-reviews.
 #
-#   on:
-#     pull_request:
-#       types: [opened, synchronize, reopened, ready_for_review]  # and pull-request-edited.yml on `edited`
-#   jobs:
-#     review:
-#       needs: [conventions, checks]
-#       permissions: { contents: read, pull-requests: write, issues: write }
-#       uses: DiluxOne/.github/.github/workflows/claude-review.yml@v3
-#       with:
-#         profile: plugin-wp   # optional: `kind: wordpress-plugin` in the policy does the same
-#       secrets: inherit
+#   Called by org-pull-request.yml, the organisation's required pipeline,
+#   for every repository, and by this repository's own pull-request.yml;
+#   read either for the call and its permissions.
 
 on:
   workflow_call:
@@ -68,7 +60,7 @@ on:
       central-ref:
         description: Ref of DiluxOne/.github to read the profiles and policy from.
         type: string
-        default: v3
+        default: v5
       max-auto-reviews:
         description: Automatic reviews per pull request before the next push needs the review:full label.
         type: number
@@ -568,24 +560,31 @@ jobs:
         # The title becomes the commit on main, and the conventions check
         # requires it to carry the labelled type. Scope and subject are the
         # author's; only the type token (and the `!` of a breaking change) is
-        # corrected.
+        # corrected. A Dependabot title past the limit is also shortened
+        # (scripts/conventions.sh, which lets it through for this step to fix).
         if: ${{ !cancelled() && steps.resolver.outcome == 'success' && steps.verdict.outputs.type != '' }}
         env:
           GH_TOKEN: ${{ steps.resolver.outputs.token }}
           PR: ${{ github.event.pull_request.number }}
           TYPE: ${{ steps.verdict.outputs.type }}
+          AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+          BRANCH: ${{ github.head_ref }}
         run: |
           set -euo pipefail
-          title=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json title --jq .title)
+          current=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json title --jq .title)
+          title=$current
+          if [ "$AUTHOR_TYPE" = Bot ] && [[ "$BRANCH" == dependabot/* ]]; then
+            title=$(bash .dx-central/scripts/conventions.sh --dependabot-title "$title")
+          fi
           title_re='^([a-z]+)(\([^)]*\))?(!?): (.*)$'
           [[ "$title" =~ $title_re ]] || { echo "The title is not a Conventional Commit header; the conventions check says so."; exit 0; }
           token=${BASH_REMATCH[1]}; scope=${BASH_REMATCH[2]}; subject=${BASH_REMATCH[4]}
           if [ "$TYPE" = breaking ]; then want="$token"; bang='!'; else want="$TYPE"; bang=''; fi
           retitled="${want}${scope}${bang}: ${subject}"
-          if [ "$retitled" = "$title" ]; then
+          if [ "$retitled" = "$current" ]; then
             echo "The title already carries the type."
           elif [ "${#retitled}" -gt 100 ]; then
-            echo "::warning::The title should start with \"${want}${scope}${bang}:\" but that makes it longer than 100 characters; shorten it yourself. The conventions check will ask for it."
+            echo "::warning::The title \"${retitled}\" is longer than 100 characters; it needs shortening by hand. The conventions check will ask for it."
           else
             gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --title "$retitled" >/dev/null
             echo "Title corrected to \"$retitled\"."

@@ -22,6 +22,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      issues: read # the issues it closes, for the accepted-issue gate
     uses: ./.github/workflows/conventions.yml
 
   actionlint:
@@ -50,9 +51,16 @@ jobs:
       - run: bash scripts/stamp-version.sh --test
       - run: bash scripts/release-markers.sh --test
       - run: bash scripts/conventions.sh --test
+      - run: bash scripts/issue-gate.sh --test
       - run: bash scripts/review-brief.sh --test
       - run: bash scripts/local-review.sh --test
       - run: python3 scripts/policy.py --test
+      - run: bash scripts/triage-reply.sh --test
+      - run: bash scripts/required-plugins.sh --test
+      - run: bash scripts/triage-act.sh --test
+      - run: bash scripts/triage-brief.sh --test
+      - run: python3 scripts/sync-repos.py --test
+      - run: bash scripts/dx.sh --test
       - run: php scripts/review-rules.php --test
       - run: python3 scripts/test-targets.py --test
       - run: bash scripts/kind.sh --test
@@ -75,6 +83,7 @@ jobs:
           echo "$RUNNER_TEMP/stock" >> "$GITHUB_PATH"
       - run: bash --version | head -1
       - run: /bin/bash scripts/conventions.sh --test
+      - run: /bin/bash scripts/issue-gate.sh --test
       - run: /bin/bash scripts/review-brief.sh --test
       - run: /bin/bash scripts/local-review.sh --test
       - run: python3 scripts/policy.py --test

@@ -1,0 +1,68 @@
+name: Pull request (organisation)
+
+# The pull request pipeline of every DiluxOne repository, in one place. An
+# organisation ruleset requires this workflow on every repository's default
+# branch, so it runs on each pull request with no file in the repository:
+# the conventions with the accepted-issue gate, then the Claude review and
+# the auto-merge decision. The job ids are the ones the repositories' own
+# pull-request.yml used, so the check names stay
+# "conventions / Conventions (branch, title, commits)",
+# "conventions / Docs (links and names)" and "review / Claude review".
+#
+# An edit of the title or description runs it too: the conventions check it,
+# and the review spends nothing on a commit it already read (claude-review.yml
+# keeps an edit in a concurrency group of its own, so nothing is cancelled).
+#
+# A repository's own checks of its kind (a WordPress plugin's Plugin Check
+# and suites, its release) stay in its own workflow; the review does not
+# wait for them yet (docs/plans/org-first.md, step 6). On a fork's pull
+# request the conventions and the gate run with a read-only token and no
+# secret; the review, which needs secrets, skips forks.
+#
+# This repository runs its own pipeline (pull-request.yml), which reviews
+# changes to these workflows with the version in the pull request, so the
+# jobs here skip DiluxOne/.github.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  conventions:
+    if: github.repository != 'DiluxOne/.github'
+    permissions:
+      contents: read
+      pull-requests: read # the pull request's timeline, for the base-branch check on `edited`
+      issues: read # the issues it closes, for the accepted-issue gate
+    uses: DiluxOne/.github/.github/workflows/conventions.yml@v5
+
+  review:
+    needs: [conventions]
+    if: github.repository != 'DiluxOne/.github'
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    uses: DiluxOne/.github/.github/workflows/claude-review.yml@v5
+    with:
+      # The repository's kind (kind: in .github/review-policy.yml) adds its
+      # own profile to the general one.
+      profile: general
+    secrets: inherit
+
+  auto-merge:
+    needs: review
+    if: always() && github.repository != 'DiluxOne/.github' && needs.review.result != 'skipped'
+    uses: DiluxOne/.github/.github/workflows/auto-merge.yml@v5
+    with:
+      risk: ${{ needs.review.outputs.risk }}
+      complexity: ${{ needs.review.outputs.complexity }}
+      floor: ${{ needs.review.outputs.floor }}
+      trusted: ${{ needs.review.outputs.trusted }}
+      blocking: ${{ needs.review.outputs.blocking }}
+      description-ok: ${{ needs.review.outputs.description-ok }}
+      enabled: ${{ needs.review.outputs.auto-merge }}
+    secrets: inherit

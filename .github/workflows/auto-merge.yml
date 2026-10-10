@@ -7,7 +7,7 @@ name: Auto-merge
 #
 # It also sets the commit body to the PR description verbatim (GitHub's own
 # squash message hard-wraps it at 72 columns). The body is taken when
-# auto-merge is enabled, so pull-request-edited.yml runs this on `edited`, or a later
+# auto-merge is enabled, so org-pull-request.yml runs this on `edited` too, or a later
 # edit of the description would not reach main.
 #
 # All of these must hold, or a human merges:
@@ -21,23 +21,9 @@ name: Auto-merge
 # The dilux-bot App enables it, so the resulting push to main triggers the
 # post-merge workflows (a GITHUB_TOKEN merge would not).
 #
-#   on:
-#     pull_request:
-#       types: [opened, synchronize, reopened, ready_for_review]  # and pull-request-edited.yml on `edited`
-#   jobs:
-#     auto-merge:
-#       needs: review
-#       if: always() && needs.review.result != 'skipped'
-#       uses: DiluxOne/.github/.github/workflows/auto-merge.yml@v3
-#       with:
-#         risk: ${{ needs.review.outputs.risk }}
-#         complexity: ${{ needs.review.outputs.complexity }}
-#         floor: ${{ needs.review.outputs.floor }}
-#         trusted: ${{ needs.review.outputs.trusted }}
-#         blocking: ${{ needs.review.outputs.blocking }}
-#         description-ok: ${{ needs.review.outputs.description-ok }}
-#         enabled: ${{ needs.review.outputs.auto-merge }}
-#       secrets: inherit
+#   Called by org-pull-request.yml, the organisation's required pipeline,
+#   for every repository, and by this repository's own pull-request.yml;
+#   read either for the call and its permissions.
 
 on:
   workflow_call:
