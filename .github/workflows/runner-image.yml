@@ -8,9 +8,11 @@ name: Runner image
 #
 # Each build takes the latest actions/runner release (checked against the
 # SHA-256 GitHub publishes for it) and the latest Node.js LTS, then runs a
-# smoke test on the image: git, the Docker CLI against a real daemon through
-# the socket (as on the VM), Node, sudo, the runner's version, Chromium
-# launching under Playwright, and PHP installed the way setup-php does. Only a
+# smoke test on the image: git; the tools the workflows call (gh, yq,
+# Python with PyYAML, msgfmt, shellcheck); the Docker CLI against a real
+# daemon through the socket (as on the VM); Node; sudo; the runner's version;
+# Chromium launching under Playwright; and PHP installed the way setup-php
+# does. Only a
 # build that passes is promoted: tagged :stable (what the VM pulls on boot)
 # and with its date (:YYYY-MM-DD, to go back to). A failed build leaves
 # :stable as it was. On a pull request it builds and tests, and pushes
@@ -99,6 +101,7 @@ jobs:
             docker version --format "Docker {{.Client.Version}} → daemon {{.Server.Version}}"
             docker run --rm hello-world >/dev/null && echo "a container runs through the socket"
             node --version
+            gh --version | head -1; yq --version; python3 -c "import yaml; print(\"Python with PyYAML\")"; msgfmt --version | head -1; shellcheck --version | sed -n 2p
             sudo -n true && echo "sudo without a password"
             v=$(/home/runner/actions-runner/bin/Runner.Listener --version); [ "$v" = "$RUNNER" ] && echo "runner $v"
             cd "$(mktemp -d)" && npm init -y >/dev/null && npm install --silent playwright >/dev/null

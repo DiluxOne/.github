@@ -60,6 +60,13 @@ app_token() {
     "$API/app/installations/$INSTALLATION_ID/access_tokens" | jq -r .token
 }
 
+# Deletes a runner registration; one already gone is fine.
+drop_runner() {
+  [ -n "${1:-}" ] || return 0
+  curl -sS -o /dev/null -X DELETE -H "Authorization: Bearer $(app_token)" -H "Accept: application/vnd.github+json" \
+    "$API/orgs/$ORG/actions/runners/$1" || true
+}
+
 # Removes what the last job left: its wp-env containers and its checkout
 # (the tool cache stays: jobs in one slot run one after another).
 clean_slot() {
@@ -83,7 +90,7 @@ run_slot() {
   read -r dev tests <<<"$(slot_ports "$slot")"
   local gid; gid=$(stat -c %g /var/run/docker.sock)
   runner_id=""
-  trap 'docker stop -t 30 "dx-runner-$slot" >/dev/null 2>&1 || true; [ -z "$runner_id" ] || curl -fsS -X DELETE -H "Authorization: Bearer $(app_token)" "$API/orgs/$ORG/actions/runners/$runner_id" >/dev/null || true; exit 0' TERM INT
+  trap 'docker stop -t 30 "dx-runner-$slot" >/dev/null 2>&1 || true; drop_runner "$runner_id"; exit 0' TERM INT
   while :; do
     clean_slot "$slot"
     name=$(runner_name "$slot" "$(openssl rand -hex 3)")
@@ -100,9 +107,18 @@ run_slot() {
       -e DX_JIT_CONFIG="$(jq -r .encoded_jit_config <<<"$jit")" \
       -e WP_ENV_PORT="$dev" -e WP_ENV_TESTS_PORT="$tests" -e WP_ENV_HOME="$DX_BASE/d$slot/wp-env" \
       "$DX_IMAGE" &
-    wait $! || echo "dx-runner $slot: the container ended with an error" >&2
+    # A just-in-time runner exits 0 after its job, and GitHub removes it on
+    # its own. Anything else (a broken image, Docker down) leaves it
+    # registered without a job: delete it and wait, so the slot does not
+    # register runner after runner.
+    if wait $!; then
+      touch "$DX_STATE/last-job"
+    else
+      echo "dx-runner $slot: the container ended with an error; waiting 60 s" >&2
+      drop_runner "$runner_id"
+      sleep 60
+    fi
     runner_id=""
-    touch "$DX_STATE/last-job"
   done
 }
 
