@@ -26,10 +26,9 @@ import fnmatch
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
-
-import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LEVELS = ["none", "low", "medium", "high"]
@@ -41,11 +40,24 @@ def warn(msg):
     print(f"::warning::{msg}", file=sys.stderr)
 
 
-def load(path):
+def read_yaml(path):
+    """yq where it is (the runners), PyYAML otherwise (a contributor's machine),
+    as scripts/policy.py does: a stock macOS has neither PyYAML nor GNU tools."""
     if not path or not os.path.exists(path):
         return {}
-    with open(path, encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+    if shutil.which("yq"):
+        out = subprocess.run(["yq", "-o=json", ".", path], check=True, capture_output=True, text=True).stdout
+        return json.loads(out or "{}") or {}
+    try:
+        import yaml
+    except ImportError:
+        sys.exit(f"{os.path.basename(sys.argv[0])} needs yq or PyYAML to read {path}")
+    with open(path, encoding="utf-8") as fh:
+        return yaml.safe_load(fh) or {}
+
+
+def load(path):
+    return read_yaml(path)
 
 
 def stricter_level(a, b):
