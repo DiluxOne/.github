@@ -37,6 +37,7 @@ jobs:
       contents: read
       pull-requests: read # the pull request's timeline, for the base-branch check on `edited`
       issues: read # the issues it closes, for the accepted-issue gate
+      actions: read # the run that opened a lane's issue (policy/autonomy.yml)
     uses: DiluxOne/.github/.github/workflows/conventions.yml@v5
 
   review:

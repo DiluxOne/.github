@@ -9,8 +9,9 @@
 # The golden rule: this file, the gates and the workflows that apply them
 # (`constitution` below) are always accepted and merged by a person.
 # Autonomy cannot widen itself. Every path here is also high risk in the
-# review policy, so the auto-merge decision never merges them; policy.py's
-# self-test fails if one is not.
+# review policy (this repository's or the default), so the auto-merge
+# decision never merges them; scripts/autonomy.py's self-test fails if one is
+# not.
 #
 # The organisation variable DX_AUTOPILOT=off stops every autonomous action at
 # once, without touching the checks: no lane accepts an issue, no agent

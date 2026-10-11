@@ -23,6 +23,7 @@ jobs:
       contents: read
       pull-requests: read
       issues: read # the issues it closes, for the accepted-issue gate
+      actions: read # the run that opened a lane's issue (policy/autonomy.yml)
     uses: ./.github/workflows/conventions.yml
 
   actionlint:

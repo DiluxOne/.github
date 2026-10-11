@@ -4,10 +4,11 @@ name: Decided by policy
 # organisation that the autonomy policy (policy/autonomy.yml) accepted or
 # merged instead of a person during the last seven days, as a comment on the
 # issue "Decided by policy" of this repository (opened by the first run that
-# needs it). The issues and pull requests carry `accepted-by:policy` or
-# `merged-by:policy`; each line links one, with its repository and title. A
-# week with nothing decided by policy says so. This is how the maintainer
-# sees, in one place, what proceeded without them.
+# needs it): issues labelled `accepted-by:policy` when they were opened, and
+# pull requests labelled `merged-by:policy` when they merged. Each public one
+# is a line with its repository, title and link; private ones are only
+# counted, because the issue is public. A week with nothing says so. This is
+# how the maintainer sees, in one place, what proceeded without them.
 
 on:
   schedule:
@@ -38,23 +39,46 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           OWNER: ${{ github.repository_owner }}
+        # This issue is public: a private repository's decisions are counted,
+        # never named (no repository, title or link). A search that fails
+        # fails the run instead of reporting an empty week.
         run: |
           set -euo pipefail
           since=$(date -u -d '7 days ago' +%Y-%m-%d)
-          lines=""
-          for label in accepted-by:policy merged-by:policy; do
-            found=$(gh search issues --owner "$OWNER" --label "$label" --updated ">=$since" --include-prs --limit 200 \
-              --json url,title,repository --jq '.[] | "- [\(.repository.nameWithOwner)] \(.title) (\(.url))"') || found=""
-            [ -z "$found" ] || lines+="**${label}**"$'\n'"${found}"$'\n\n'
-          done
-          [ -n "$lines" ] || lines="Nothing was accepted or merged by policy since ${since}."
+          public=""; private=0
+          add() { # label, then one JSON object per line: url, title, repository
+            local lab=$1 rows
+            rows=$(cat)
+            [ -n "${rows//[$'\n ']/}" ] || return 0
+            public+="**${lab}**"$'\n'
+            while IFS= read -r row; do
+              [ -n "$row" ] || continue
+              if [ "$(jq -r '.repository.isPrivate // true' <<<"$row")" = false ]; then
+                public+="- $(jq -r '"[\(.repository.nameWithOwner)] \(.title) (\(.url))"' <<<"$row")"$'\n'
+              else
+                private=$((private + 1))
+              fi
+            done <<<"$rows"
+            public+=$'\n'
+          }
+          # Searched first (a failure stops the run), then added in this shell.
+          accepted=$(gh search issues --owner "$OWNER" --label accepted-by:policy --created ">=$since" --limit 200 \
+            --json url,title,repository --jq '.[] | @json')
+          merged=$(gh search prs --owner "$OWNER" --label merged-by:policy --merged-at ">=$since" --limit 200 \
+            --json url,title,repository --jq '.[] | @json')
+          add accepted-by:policy <<<"$accepted"
+          add merged-by:policy <<<"$merged"
+          [ -n "$public" ] || public="Nothing in a public repository was accepted or merged by policy since ${since}."
+          [ "$private" -eq 0 ] || public+=$'\n'"And ${private} in private repositories (not named here, since this issue is public)."
           title="Decided by policy"
           n=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"$title\"" --json number,title --jq "map(select(.title == \"$title\"))[0].number // empty")
           if [ -z "$n" ]; then
-            n=$(gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "Every Monday, what the autonomy policy (policy/autonomy.yml) accepted or merged in the organisation instead of a person, by autonomy-digest.yml.
+            n=$(gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "Every Monday, what the autonomy policy (policy/autonomy.yml) accepted or merged in the organisation instead of a person, by autonomy-digest.yml. Private repositories are counted, not named.
 
           🤖 AI-generated · Claude Opus 5.5 (Anthropic)" | sed 's#.*/##')
           fi
           gh issue comment "$n" --repo "$GITHUB_REPOSITORY" --body "Week since ${since}:
 
-          ${lines}"
+          ${public}
+
+          🤖 AI-generated · Claude Opus 5.5 (Anthropic)"

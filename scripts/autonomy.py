@@ -33,6 +33,7 @@ import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LEVELS = ["none", "low", "medium", "high"]
+CENTRAL = "DiluxOne/.github"
 MARKER = re.compile(r"<!--\s*dx-lane:\s*([a-z0-9-]+)\s+run:\s*(https://github\.com/([^/\s]+)/([^/\s]+)/actions/runs/(\d+))\s*-->")
 
 
@@ -136,17 +137,17 @@ def lane_accepts(policy, issue, run, repository, autopilot_var):
         return False, "the run named is in another repository"
     if not run or str(run.get("id")) != run_id:
         return False, "the run named could not be read"
-    paths = [run.get("path") or ""] + [w.get("path") or "" for w in (run.get("referenced_workflows") or [])]
-    names = {os.path.basename(p.split("@", 1)[0]) for p in paths if p}
+    # The run's own workflow is in the issue's repository (checked above);
+    # a workflow it calls counts only when it is the organisation's own,
+    # from DiluxOne/.github.
+    names = {os.path.basename(run.get("path") or "")}
+    names |= {os.path.basename(p.split("@", 1)[0]) for p in (w.get("path") or "" for w in (run.get("referenced_workflows") or []))
+              if p.startswith(f"{CENTRAL}/.github/workflows/")}
+    names.discard("")
     allowed = set(origin.get("workflows") or [])
     if not names & allowed:
         return False, f"the run's workflows ({', '.join(sorted(names)) or 'none'}) are not the lane's ({', '.join(sorted(allowed))})"
     return True, f"accepted by policy: lane {name}, opened by run {run_id}"
-
-
-def touches_constitution(policy, files):
-    pats = policy.get("constitution") or []
-    return [f for f in files if any(fnmatch.fnmatch(f, p) for p in pats)]
 
 
 def read_run(issue, repository):
@@ -218,7 +219,6 @@ def self_test():
     check("a repository cannot turn it on", m["autopilot"], False)
     m = merge(org, {"constitution": ["docs/rules.md"]})
     check("a repository adds a protected path", "docs/rules.md" in m["constitution"], True)
-    check("protected paths are found", touches_constitution(merge(org, {}), ["README.md", "policy/autonomy.yml", ".github/workflows/x.yml"]), ["policy/autonomy.yml", ".github/workflows/x.yml"])
 
     repo = "DiluxOne/.github"
     url = f"https://github.com/{repo}/actions/runs/42"
@@ -256,6 +256,8 @@ def self_test():
     bug = issue(labels=("lane:bugfix-reproduced",), body="<!-- dx-lane: bugfix-reproduced run: https://github.com/DiluxOne/x/actions/runs/42 -->")
     bug["timelineItems"]["nodes"][0]["label"]["name"] = "lane:bugfix-reproduced"
     check("accepts: a reproduction through a repository's caller", lane_accepts(pol, bug, rr, "DiluxOne/x", "")[0], True)
+    fake = {"id": 42, "path": ".github/workflows/issues.yml", "referenced_workflows": [{"path": "someone/else/.github/workflows/issue-repro.yml@main"}]}
+    check("refuses: a called workflow of the same name from elsewhere", lane_accepts(pol, bug, fake, "DiluxOne/x", "")[0], False)
 
     if not failed:
         print("all tests passed")

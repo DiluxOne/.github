@@ -89,6 +89,11 @@ needed_types() {
   fi
 }
 
+# Whether issue $2 of the answer in $1 has a Type the title allows.
+type_fits() {
+  jq -e --argjson n "$2" --argjson need "$(needed_types)" '.data.repository.pullRequest.closingIssuesReferences.nodes[] | select(.number == $n) | (.issueType.name // "") as $t | ($need | length) == 0 or (($need | index($t)) != null)' "$1" >/dev/null
+}
+
 # Whether a lane of the autonomy policy accepts issue $2 of the answer in $1
 # (scripts/autonomy.py, policy/autonomy.yml): prints why, either way. Only an
 # issue with a lane:<name> label is asked; the rest are not a lane's.
@@ -144,7 +149,11 @@ check() {
       closed) echo "#$n is closed; the issue must be open." ;;
       no-label|bot-label)
         if why=$(lane_verdict "$answer" "$n"); then
-          echo "#$n is $why."; ok=1
+          if type_fits "$answer" "$n"; then
+            echo "#$n is $why."; ok=1
+          else
+            echo "#$n is $why, but its Type is not $(needed_types | jq -r '.[0]'), the kind this pull request's title says."
+          fi
         elif [ "$v" = no-label ]; then
           echo "#$n has no \"$LABEL\" label yet: a maintainer has not accepted it.${why:+ No lane accepts it either: $why.}"
         else
@@ -214,6 +223,8 @@ if [ "${1:-}" = "--test" ]; then
   lane_issue | answer | LANE_RUN=$runfile T="fix(x): a thing" case_ "passes: a lane accepts an issue nobody labelled" 0 || fail=1
   lane_issue someone | answer | LANE_RUN=$runfile T="fix(x): a thing" case_ "fails: a lane's issue a person opened" 1 || fail=1
   lane_issue | answer | DX_AUTOPILOT=off LANE_RUN=$runfile T="fix(x): a thing" case_ "fails: a lane's issue with the autopilot off" 1 || fail=1
+  lane_issue | answer | LANE_RUN=$runfile T="feat(x): a thing" case_ "fails: a feature closing a lane's Bug" 1 || fail=1
+  lane_issue | jq '.labels.nodes += [{name: "accepted"}] | .timelineItems.nodes += [{__typename: "LabeledEvent", label: {name: "accepted"}, actor: {__typename: "Bot", login: "dilux-bot"}}]' | answer | LANE_RUN=$runfile T="fix(x): a thing" case_ "passes: a lane's issue whose accepted label a bot added" 0 || fail=1
   rm -f "$runfile"
   echo '{}' | WHO=Bot case_ "passes: a bot's pull request" 0 || fail=1
   echo '{}' | REQ=false case_ "passes: the gate is off" 0 || fail=1
