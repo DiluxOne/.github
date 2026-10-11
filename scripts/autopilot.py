@@ -255,6 +255,22 @@ def scrub(text):
     return SECRET.sub("[redacted]", text)
 
 
+def silent_why(mode, pr, why, spec_outcome, limit_hit, done, total, runs, cap):
+    """Why a run ended without a result, in one sentence, from what the
+    workflow knows."""
+    if why:
+        return why
+    if mode == "start" and not pr and spec_outcome not in ("", "success"):
+        return f"Writing the Spec did not finish ({spec_outcome})."
+    if limit_hit and pr and total and done == total:
+        return f"It ran out of turns or time with every criterion done but the checks and the finish left, after {runs} of {cap} runs."
+    if limit_hit and pr and total:
+        return f"It ran out of turns or time with {total - done} of {total} criteria left, after {runs} of {cap} runs."
+    if limit_hit:
+        return "It ran out of turns or time before there was a pull request to work in."
+    return "The agent finished without marking the pull request ready or saying why it stopped."
+
+
 def silent_comment(verdict_why, run_url):
     return f"""{SILENT}
 **The autopilot ended without a result.** {verdict_why} Nothing was marked ready and the agent left no stop comment, so a person takes it from here (`needs-human`). What it did is in [the run]({run_url}): its summary, and the full transcript as an artifact.
@@ -510,6 +526,9 @@ A class on html.
     check("C3: the silent comment says why and asks a person", "needs-human" in silent_comment("x", "u") and silent_comment("x", "u").startswith(SILENT), True)
     check("C4: a run that hit its limit with boxes left continues", end_verdict("start", "5", True, False, 1, 2, True, 1, 5), "continue")
     check("C4: not past the cap", end_verdict("start", "5", True, False, 1, 2, True, 5, 5), "silent")
+    check("silent: an all-ticked run says the checks and the finish were left", "checks and the finish left" in silent_why("continue", "5", "", "", True, 2, 2, 2, 5), True)
+    check("silent: a Spec run out of time, no pull request, says so", silent_why("start", "", "", "success", True, 0, 0, 1, 5), "It ran out of turns or time before there was a pull request to work in.")
+    check("silent: the workflow's own reason wins", silent_why("start", "", "G3 failed.", "success", False, 0, 0, 1, 5), "G3 failed.")
     check("C4: an all-ticked draft that ran out of time goes to a person, not round again", end_verdict("continue", "5", True, False, 2, 2, True, 2, 5), "silent")
     check("C4: may continue with boxes left", may_continue(["autopilot"], t, 1, 5)[0], True)
     check("C4: never with needs-human", may_continue(["needs-human"], t, 1, 5)[0], False)
@@ -697,16 +716,7 @@ def main(argv):
                             "--description", "On an issue: the autopilot continues its draft pull request"], capture_output=True)
             gh("issue", "edit", str(number), "--repo", repo, "--add-label", "autopilot:continue")
         elif v == "silent":
-            if os.environ.get("WHY"):
-                why = os.environ["WHY"]
-            elif mode == "start" and not pr and os.environ.get("SPEC_OUTCOME") not in ("", "success"):
-                why = f"Writing the Spec did not finish ({os.environ['SPEC_OUTCOME']})."
-            elif limit_hit and done == total:
-                why = f"It ran out of turns or time with every criterion done but the checks and the finish left, after {runs} of {cap} runs."
-            elif limit_hit:
-                why = f"It ran out of turns or time with {total - done} of {total} criteria left, after {runs} of {cap} runs."
-            else:
-                why = "The agent finished without marking the pull request ready or saying why it stopped."
+            why = silent_why(mode, pr, os.environ.get("WHY", ""), os.environ.get("SPEC_OUTCOME", ""), limit_hit, done, total, runs, cap)
             if mode == "fix":
                 why = "The fix round pushed nothing and the agent did not say why."
             gh(target[0], "comment", str(target[1]), "--repo", repo, "--body", silent_comment(why, run_url))
