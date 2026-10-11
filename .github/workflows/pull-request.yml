@@ -23,6 +23,7 @@ jobs:
       contents: read
       pull-requests: read
       issues: read # the issues it closes, for the accepted-issue gate
+      actions: read # the run that opened a lane's issue (policy/autonomy.yml)
     uses: ./.github/workflows/conventions.yml
 
   actionlint:
@@ -80,6 +81,8 @@ jobs:
       - run: bash scripts/dx.sh --test
       - run: php scripts/review-rules.php --test
       - run: python3 scripts/test-targets.py --test
+      - run: python3 scripts/autonomy.py --test
+      - run: bash scripts/policy-digest.sh --test
       - run: bash scripts/runner-vm/dx-runner-slot.sh --test
       - run: bash scripts/runner-vm/provision.sh --test
       - run: bash scripts/kind.sh --test

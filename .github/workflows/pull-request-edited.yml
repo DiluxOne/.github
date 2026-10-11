@@ -19,6 +19,7 @@ jobs:
       contents: read
       pull-requests: read # the pull request's timeline, for the base-branch check on `edited`
       issues: read # the issues it closes, for the accepted-issue gate
+      actions: read # the run that opened a lane's issue (policy/autonomy.yml)
     uses: ./.github/workflows/conventions.yml
     with:
       retired-names: ''
