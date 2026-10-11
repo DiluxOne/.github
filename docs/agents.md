@@ -13,7 +13,7 @@ How a change reaches a DiluxOne repository, written for an AI agent (and for the
 Nothing starts without one: features, fixes, docs and maintenance alike, the maintainer's own work too.
 
 - Look for an open issue that already describes the change.
-- If there is none, open one: `dx issue --bug|--feature|--docs|--task --title "…" --body-file issue.md`, or on GitHub with the matching form. The kind becomes the issue's **Type** (Bug, Feature, Docs, Task). Write it in English: what is wrong or missing, what you expected, why it matters. For a bug, the steps, versions and logs.
+- If there is none, open one: `dx issue --bug|--feature|--docs|--task --title "…" --body-file issue.md`, or on GitHub with the matching form. The kind becomes the issue's **Type** (Bug, Feature, Docs, Task). Write it in English: what is wrong or missing, what you expected, why it matters. For a bug, the steps, versions and logs. An issue the maintainer will accept carries a PRD: the sections of [`policy/issue-schema.yml`](../policy/issue-schema.yml) (`### Problem`, `### Scope`, `### Out of scope`, `### Acceptance criteria` with one `C1: Given …, when …, then …` per line, `### Criticality`), in that order and nothing outside them; `python3 scripts/issue-schema.py check < issue.md` says what is missing. A reporter's form (bug, feature) may come before them.
 - **Wait until a maintainer accepts it** with the `accepted` label. Never add it yourself, and never ask a bot to: the gate ignores a label a bot added. The issue triage may answer first: "not planned for the free plugin", "already planned", a question. That is the answer to the change as proposed; do not start it.
 
 ## 2. A branch for it

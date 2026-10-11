@@ -10,6 +10,8 @@ name: Issue accepted
 # not start a required workflow on an edit of the description, so a pull
 # request opened before its issue was accepted would otherwise stay red until
 # its next push. A bot's label starts nothing, as the gate ignores it anyway.
+# The same acceptance checks the issue's PRD against the issue schema (gate
+# G1, policy/issue-schema.yml) and says on the issue whether it is ready.
 #
 #   on:
 #     issues:
@@ -98,6 +100,68 @@ jobs:
               echo "#$pr: its last run $run did not fail ($conclusion); nothing to re-run."
             fi
           done <<< "$prs"
+
+  ready:
+    name: Issue ready (G1)
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    # When a person accepts it: is the issue's PRD complete, as the issue
+    # schema says (policy/issue-schema.yml, gate G1)? One comment, kept up to
+    # date, says it is ready or what is missing. It decides nothing yet: the
+    # autopilot (#83) starts only on a ready issue. Needs the bot's key to
+    # comment; without it the check runs and only logs.
+    if: github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == inputs.label && github.event.sender.type != 'Bot'
+    # Nothing from the caller's token: the callers grant this workflow
+    # actions: write, issues: read and pull-requests: read only, and the
+    # schema and its script are read from this public repository.
+    permissions: {}
+    steps:
+      - name: The issue schema and its script
+        env:
+          REF: ${{ inputs.central-ref }}
+        run: |
+          set -euo pipefail
+          mkdir -p .dx-central/scripts .dx-central/policy
+          base="https://raw.githubusercontent.com/DiluxOne/.github/$REF"
+          curl -fsSL --retry 3 "$base/scripts/issue-schema.py" -o .dx-central/scripts/issue-schema.py
+          curl -fsSL --retry 3 "$base/policy/issue-schema.yml" -o .dx-central/policy/issue-schema.yml
+      - name: dilux-bot token
+        id: bot
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-issues: write
+      - name: Check the PRD and say so on the issue
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          BODY: ${{ github.event.issue.body }}
+          NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          # Exit 1 is "not ready" with its reasons (each in code, so text the
+          # issue controls cannot mention anyone or render a link); anything else is the
+          # checker failing, which must fail this job, not blame the issue.
+          rc=0; result=$(printf '%s' "$BODY" | python3 .dx-central/scripts/issue-schema.py check) || rc=$?
+          if [ "$rc" -gt 1 ] || ! jq -e 'has("ok")' <<<"$result" >/dev/null 2>&1; then
+            echo "::error::The schema check itself failed (exit $rc); nothing said on the issue."; exit 1
+          fi
+          if [ "$(jq -r .ok <<<"$result")" = true ]; then
+            text="**Issue ready (G1):** the PRD has every section of the schema ($(jq -r '.criteria | length' <<<"$result") acceptance criteria)."
+          else
+            text="**Issue not ready (G1):** the PRD does not follow the schema yet (policy/issue-schema.yml in DiluxOne/.github). The autopilot will not start until it does:"$'\n\n'"$(jq -r '.errors[] | "- `" + gsub("`"; "\u0027") + "`"' <<<"$result")"
+          fi
+          echo "$text"
+          [ -n "$GH_TOKEN" ] || { echo "No bot key: the result stays in this log."; exit 0; }
+          body="<!-- dx-g1 -->"$'\n'"$text"$'\n\n'"🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '.[] | select(.user.type == "Bot" and (.user.login | startswith("dilux-bot")) and (.body | startswith("<!-- dx-g1 -->"))) | .id' | tail -1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$body" >/dev/null
+          else
+            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$body" >/dev/null
+          fi
 
   project:
     name: The product's Project
