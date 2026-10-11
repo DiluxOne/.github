@@ -701,6 +701,8 @@ def main(argv):
                 why = os.environ["WHY"]
             elif mode == "start" and not pr and os.environ.get("SPEC_OUTCOME") not in ("", "success"):
                 why = f"Writing the Spec did not finish ({os.environ['SPEC_OUTCOME']})."
+            elif limit_hit and done == total:
+                why = f"It ran out of turns or time with every criterion done but the checks and the finish left, after {runs} of {cap} runs."
             elif limit_hit:
                 why = f"It ran out of turns or time with {total - done} of {total} criteria left, after {runs} of {cap} runs."
             else:
