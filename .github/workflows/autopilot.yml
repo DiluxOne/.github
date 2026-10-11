@@ -133,7 +133,10 @@ jobs:
           if [ "$MODE" = continue ]; then
             # The label asked for one run: it goes now, so it can be asked again.
             gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label "autopilot:continue" >/dev/null 2>&1 || true
-            PR=$(gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json closedByPullRequestsReferences --jq '[.closedByPullRequestsReferences[].number] | last // empty')
+            PR=""
+            for n in $(gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json closedByPullRequestsReferences --jq '.closedByPullRequestsReferences[].number'); do
+              if gh pr view "$n" --repo "$GITHUB_REPOSITORY" --json state,labels --jq '.state == "OPEN" and ([.labels[].name] | index("autopilot") != null)' | grep -qx true; then PR=$n; fi
+            done
             [ -n "$PR" ] || { echo "No pull request closes #$ISSUE: nothing to continue."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; }
           fi
           if [ "$MODE" != start ]; then
@@ -320,6 +323,8 @@ jobs:
           BODY="$RUNNER_TEMP/body.md" ISSUE_TYPE="$type" TITLE="$title" python3 .dx-central/scripts/autopilot.py draft > "$RUNNER_TEMP/draft.json"
           branch=$(jq -r .branch "$RUNNER_TEMP/draft.json")
           jq -r .body "$RUNNER_TEMP/draft.json" > "$RUNNER_TEMP/draft.md"
+          # A branch left by an earlier, failed attempt is not reused.
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then branch="$branch-$GITHUB_RUN_ID"; fi
           git checkout -q -b "$branch"
           git commit -q --allow-empty -m "chore(autopilot): start on #$NUMBER" -m "The draft pull request opens before any code: the Spec as its checklist."
           git push -q origin "$branch"
@@ -409,9 +414,16 @@ jobs:
           export REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml" AUTOPILOT_RUN="$RUN_URL"
           # Out of turns or time: the agent did not choose to end. A run a
           # person cancelled is not continued.
+          # Out of turns: the log says so. Out of time: the step failed and the
+          # agent never wrote its result (it was stopped). Any other failure
+          # (auth, a crash with a result) is not continued.
           LIMIT_HIT=false
-          if [ "$WORK_OUTCOME" = failure ]; then LIMIT_HIT=true; fi
-          if [ -f "${WORK_LOG:-/nonexistent}" ] && jq -e '(if type == "array" then . else [.] end) | map(select(.type == "result" and (.subtype // "") == "error_max_turns")) | length > 0' "$WORK_LOG" >/dev/null 2>&1; then LIMIT_HIT=true; fi
+          results=0
+          if [ -f "${WORK_LOG:-/nonexistent}" ]; then
+            jq -e '(if type == "array" then . else [.] end) | map(select(.type == "result" and (.subtype // "") == "error_max_turns")) | length > 0' "$WORK_LOG" >/dev/null 2>&1 && LIMIT_HIT=true
+            results=$(jq '(if type == "array" then . else [.] end) | map(select(.type == "result")) | length' "$WORK_LOG" 2>/dev/null || echo 0)
+          fi
+          if [ "$WORK_OUTCOME" = failure ] && [ "$results" = 0 ]; then LIMIT_HIT=true; fi
           export LIMIT_HIT
           python3 .dx-central/scripts/autopilot.py end
 
@@ -422,12 +434,16 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/transcript"
           if [ -n "$WORK_LOG" ] && [ -f "$WORK_LOG" ]; then cp "$WORK_LOG" "$RUNNER_TEMP/transcript/2-work.json"; fi
+          # The artifact of a public repository is public: every file loses
+          # its tokens before anything else can fail.
+          for f in "$RUNNER_TEMP"/transcript/*.json; do
+            [ -f "$f" ] || continue
+            python3 .dx-central/scripts/autopilot.py scrub "$f"
+          done
           found=false
           for f in "$RUNNER_TEMP"/transcript/*.json; do
             [ -f "$f" ] || continue
             found=true
-            # The artifact of a public repository is public: no token in it.
-            python3 .dx-central/scripts/autopilot.py scrub "$f"
             case "$f" in *spec*) t="The autopilot's run: the Spec" ;; *) t="The autopilot's run: the work" ;; esac
             python3 .dx-central/scripts/autopilot.py account "$f" "$t" >> "$GITHUB_STEP_SUMMARY"
           done

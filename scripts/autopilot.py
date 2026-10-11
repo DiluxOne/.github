@@ -300,7 +300,7 @@ def account(events, title="The autopilot's run"):
         section("What it ran", ran),
         section("What it changed", changed),
         section("What it said along the way", notes, code=False, limit=15),
-        f"### How it ended\n\n{end} after {turns} turns.\n\n" + (f"> {last[:1500]}\n" if last else ""),
+        f"### How it ended\n\n{end} after {turns} turns.\n\n" + ("\n".join("> " + l for l in last[:1500].split("\n")) + "\n" if last else ""),
     ])
 
 
@@ -520,6 +520,7 @@ A class on html.
     check("C5: the account has its sections", all(h in a for h in ("What it read", "What it ran", "What it changed", "How it ended")), True)
     check("C5: the account names what it did", ("`header.php`" in a, "`make test`" in a, "success after 4 turns" in a), (True, True, True))
     check("C5: an empty log still gives an account", "How it ended" in account([]), True)
+    check("C5: the agent's last words stay quoted, every line", "> one\n> two" in account([{"type": "result", "result": "one\ntwo"}]), True)
     t0 = "2026-10-11T10:00:00Z"
     bot_stop = {"body": STOP + " x", "author": {"login": "dilux-bot"}, "createdAt": "2026-10-11T10:05:00Z"}
     check("C3: the autopilot's own stop comment counts", stopped_since([bot_stop], t0), True)
