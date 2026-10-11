@@ -491,13 +491,18 @@ jobs:
 
   # When a person accepts an issue: the autopilot (#83) works it to a pull
   # request, if the autopilot is on and the issue is ready (autopilot.yml
-  # decides both). Here because this caller inherits the secrets.
+  # decides both). `autopilot:continue` on the issue, from a person or from
+  # dilux-bot (a run that ran out of turns or time), resumes its draft pull
+  # request (#109). Here because this caller inherits the secrets.
   autopilot:
-    if: github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'accepted' && github.event.sender.type != 'Bot'
+    if: >-
+      github.event_name == 'issues' && github.event.action == 'labeled' && (
+        (github.event.label.name == 'accepted' && github.event.sender.type != 'Bot') ||
+        (github.event.label.name == 'autopilot:continue' && (github.event.sender.type != 'Bot' || github.event.sender.login == 'dilux-bot[bot]')))
     permissions: {}
     uses: DiluxOne/.github/.github/workflows/autopilot.yml@v5
     with:
-      mode: start
+      mode: ${{ github.event.label.name == 'accepted' && 'start' || 'continue' }}
       issue: ${{ format('{0}', github.event.issue.number) }}
       central-ref: ${{ inputs.central-ref }}
     secrets: inherit

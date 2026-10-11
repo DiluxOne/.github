@@ -16,6 +16,8 @@ Nothing starts without one: features, fixes, docs and maintenance alike, the mai
 - If there is none, open one: `dx issue --bug|--feature|--docs|--task --title "…" --body-file issue.md`, or on GitHub with the matching form. The kind becomes the issue's **Type** (Bug, Feature, Docs, Task). Write it in English: what is wrong or missing, what you expected, why it matters. For a bug, the steps, versions and logs. An issue the maintainer will accept carries a PRD: the sections of [`policy/issue-schema.yml`](../policy/issue-schema.yml) (`### Problem`, `### Scope`, `### Out of scope`, `### Acceptance criteria` with one `C1: Given …, when …, then …` per line, `### Criticality`), in that order and nothing outside them; `python3 scripts/issue-schema.py check < issue.md` says what is missing. A reporter's form (bug, feature) may come before them.
 - **Wait until a maintainer accepts it** with the `accepted` label. Never add it yourself, and never ask a bot to: the gate ignores a label a bot added. The issue triage may answer first: "not planned for the free plugin", "already planned", a question. That is the answer to the change as proposed; do not start it.
 
+When the maintainer accepts an issue in a repository where the autopilot is on, the autopilot may take it: it writes the Spec, opens a draft pull request (label `autopilot`) with one box per criterion, and ticks each box as that criterion's commit lands. Follow it there and on the issue's board; do not start a pull request of your own for the same issue.
+
 ## 2. A branch for it
 
 `dx start <number>` checks that the issue is open and accepted and creates the branch `<type>/<number>-<slug>` from the default branch, with the type its Type asks for:

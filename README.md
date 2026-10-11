@@ -19,7 +19,7 @@ Each repository calls the workflows in this one instead of carrying its own copy
 flowchart LR
     A["📝 Issue<br/>a PRD: problem, scope, criteria"] --> B{"Maintainer<br/>accepts?<br/>(PRD sealed)"}
     B -- "no" --> X["Closed or<br/>kept for later"]
-    B -- "accepted" --> C["🤖 Autopilot: Spec, branch,<br/>code, tests, pull request<br/>Closes #n"]
+    B -- "accepted" --> C["🤖 Autopilot, in the open:<br/>Spec, then a draft pull request,<br/>one commit per criterion, ticked<br/>Closes #n"]
     C --> D["✅ Conventions<br/>+ accepted-issue gate"]
     D --> E["🧪 Checks of its kind<br/>tests, lint, Plugin Check…"]
     E --> F["🤖 Claude review<br/>risk · complexity · type"]
@@ -33,6 +33,8 @@ flowchart LR
     R -- "approved" --> J["📦 Tag X.Y.Z<br/>→ wordpress.org"]
     R -- "not yet" --> W["Waits on main,<br/>nothing published"]
 ```
+
+You can follow an autopilot run as it goes: its draft pull request is the Spec as a checklist, one box per criterion, ticked as each criterion's commit lands; the issue's board links the pull request, the run and the progress; the run's summary says what the agent read, ran and changed, and keeps its full transcript. A run never ends in silence: the pull request is ready for review, or the agent says where it stopped and why, or the run continues (`autopilot:continue`), or the workflow says so and hands it to a person.
 
 Step by step, with every detail: [What happens on a pull request](docs/pull-requests.md).
 

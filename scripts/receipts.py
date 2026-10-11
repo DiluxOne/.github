@@ -99,16 +99,61 @@ def receipt(number, body, last_seal, pr, checks, policy_ref, at):
     }
 
 
-def board_text(number, ready, last_seal, merged):
+def autopilot_row(a):
+    """The autopilot's row: its pull request, the run, criteria done of total."""
+    if not a:
+        return None
+    state = ("✓ merged" if a.get("state") == "MERGED" else "✗ closed" if a.get("state") == "CLOSED"
+             else "🙋 a person has it" if a.get("needs_human") else "🟡 working (draft)" if a.get("draft") else "✓ ready for review")
+    parts = [state, f"{a.get('done', 0)} of {a.get('total', 0)} criteria", f"[#{a['pr']}]({a['url']})"]
+    if a.get("run"):
+        parts.append(f"[the run]({a['run']})")
+    return "| Autopilot | " + " · ".join(parts) + " |"
+
+
+def board_text(number, ready, last_seal, merged, autopilot=None):
     rows = ["| Gate | State |", "| --- | --- |"]
     rows.append(f"| G1 Issue ready | {'✓ the PRD follows the schema' if ready else '✗ see the G1 comment'} |")
     if last_seal:
         rows.append(f"| G2 Accepted | ✓ by {last_seal.get('accepted_by')} at {last_seal.get('at')}; PRD sealed `{last_seal.get('prd_sha256', '')[:12]}` |")
     else:
         rows.append("| G2 Accepted | not sealed |")
+    row = autopilot_row(autopilot)
+    if row:
+        rows.append(row)
     if merged:
         rows.append(f"| G7 Merged | ✓ #{merged.get('pull_request')} by {merged.get('merged_by')}; receipt in `receipts/issues/{number}/merged-{merged.get('at')}.json` |")
     return f"{BOARD}\n**The issue's board**\n\n" + "\n".join(rows) + f"\n\n{AI}"
+
+
+def autopilot_state(repo, number):
+    """The autopilot's pull request for the issue, and its progress, read
+    from GitHub (AUTOPILOT_JSON stands in for it in the self-test)."""
+    if os.environ.get("AUTOPILOT_JSON"):
+        return json.loads(os.environ["AUTOPILOT_JSON"]) or None
+    try:
+        refs = json.loads(subprocess.run(["gh", "issue", "view", str(number), "--repo", repo, "--json", "closedByPullRequestsReferences"],
+                                         capture_output=True, text=True, check=True).stdout)["closedByPullRequestsReferences"]
+        for ref in reversed(refs):
+            pr = json.loads(subprocess.run(["gh", "pr", "view", str(ref["number"]), "--repo", repo, "--json", "number,url,body,isDraft,state,labels"],
+                                           capture_output=True, text=True, check=True).stdout)
+            labels = [l["name"] for l in pr["labels"]]
+            if "autopilot" not in labels:
+                continue
+            ap = _autopilot()
+            done, total = ap.progress(pr["body"] or "")
+            return {"pr": pr["number"], "url": pr["url"], "draft": pr["isDraft"], "state": pr["state"],
+                    "needs_human": "needs-human" in labels, "done": done, "total": total, "run": os.environ.get("AUTOPILOT_RUN", "")}
+    except (subprocess.CalledProcessError, KeyError, ValueError):
+        return None
+    return None
+
+
+def _autopilot():
+    spec = importlib.util.spec_from_file_location("autopilot", os.path.join(HERE, "autopilot.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 # --- the receipts branch ---------------------------------------------------
@@ -233,6 +278,11 @@ Normal
     b = board_text(7, True, s, r)
     check("the board starts with its marker", b.startswith(BOARD), True)
     check("the board shows the seal", "PRD sealed" in b and s["prd_sha256"][:12] in b, True)
+    a = {"pr": 12, "url": "https://github.com/o/r/pull/12", "draft": True, "state": "OPEN", "done": 1, "total": 3, "run": "https://github.com/o/r/actions/runs/9"}
+    ab = board_text(7, True, s, None, a)
+    check("C6: the board links the pull request and the run, with the progress", ("[#12](https://github.com/o/r/pull/12)" in ab, "[the run](https://github.com/o/r/actions/runs/9)" in ab, "1 of 3 criteria" in ab), (True, True, True))
+    check("C6: a person's pull request says so", "a person has it" in board_text(7, True, s, None, dict(a, needs_human=True)), True)
+    check("C6: no autopilot, no row", "Autopilot" in board_text(7, True, s, None, None), False)
     with tempfile.TemporaryDirectory() as d:
         os.environ["RECEIPTS_FIXTURE"] = d
         write("o/r", "issues/7/prd-2026-10-11T00:00:00Z.json", s, "seal")
@@ -249,7 +299,7 @@ Normal
         bf = os.path.join(d, "body.md")
         with open(bf, "w", encoding="utf-8") as f:
             f.write(body)
-        env = dict(os.environ, NUMBER="9", BODY=bf, GITHUB_REPOSITORY="o/r", ACCEPTED_BY="soydiloreto",
+        env = dict(os.environ, AUTOPILOT_JSON="null", NUMBER="9", BODY=bf, GITHUB_REPOSITORY="o/r", ACCEPTED_BY="soydiloreto",
                    PR_JSON=json.dumps(pr), CHECKS_JSON='{"success": 3}')
         run = lambda *a: sp.run([sys.executable, os.path.abspath(__file__)] + list(a), env=env, capture_output=True, text=True)
         check("cli: verify an issue never sealed", run("verify-prd").stdout.strip(), "unsealed")
@@ -328,7 +378,7 @@ def main(argv):
         ready = schema_mod.check(body)["ok"]
         names = [n for n in list_dir(repo, f"issues/{number}") if n.startswith("merged-")]
         merged = read(repo, f"issues/{number}/{names[-1]}") if names else None
-        print(board_text(number, ready, last_seal(repo, number), merged))
+        print(board_text(number, ready, last_seal(repo, number), merged, autopilot_state(repo, number)))
         return 0
     print(__doc__, file=sys.stderr)
     return 64

@@ -62,7 +62,10 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    (5) keeps the last verdict until the `review:full` label asks for more.
    Drafts and forks are not reviewed; pull requests Dependabot or the
    organisation's App open are (`allowed_bots`).
-3. **Merge.** A pull request the autopilot opened (#83, label `autopilot`)
+3. **Merge.** The autopilot works in a draft pull request (#109): the Spec
+   as a checklist, a commit per criterion, each box ticked once its commit is
+   pushed; the review and the merge decision start when it marks it ready.
+   A pull request the autopilot opened (#83, label `autopilot`)
    merges by policy when gate G7 passes ([`scripts/autopilot.py`](../scripts/autopilot.py)
    `decide`): the issue is not Critical, no protected path of
    [`policy/autonomy.yml`](../policy/autonomy.yml) changes, the review does
