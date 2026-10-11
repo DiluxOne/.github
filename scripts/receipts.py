@@ -243,7 +243,15 @@ Normal
         check("cli: verify the sealed PRD", run("verify-prd").stdout.strip(), "match")
         check("cli: merged writes a receipt", run("merged").returncode, 0)
         check("cli: the board shows the receipt", "G7 Merged" in run("board").stdout, True)
-        check("cli: a second merge does not overwrite the first", len([n for n in os.listdir(os.path.join(d, "issues/9")) if n.startswith("merged-")]) >= 1, True)
+        import time
+        time.sleep(1.1)
+        run("merged")
+        check("cli: a second merge does not overwrite the first", len([n for n in os.listdir(os.path.join(d, "issues/9")) if n.startswith("merged-")]), 2)
+        os.makedirs(os.path.join(d, "issues/10"))
+        with open(os.path.join(d, "issues/10/prd-x.json"), "w") as f:
+            f.write("{not json")
+        r10 = sp.run([sys.executable, os.path.abspath(__file__), "verify-prd"], env=dict(env, NUMBER="10"), capture_output=True, text=True)
+        check("cli: a seal that cannot be read exits 2", r10.returncode, 2)
         del os.environ["RECEIPTS_FIXTURE"]
     if not failed:
         print("all tests passed")
@@ -267,7 +275,7 @@ def main(argv):
     if mode == "verify-prd":
         try:
             sealed = last_seal(repo, number)
-        except (RuntimeError, ValueError, KeyError) as e:
+        except Exception as e:  # noqa: BLE001 — any failure to read is "unknown", never "unsealed" nor "changed"
             print(f"error: {e}")
             return 2
         v = verdict(body, sealed)

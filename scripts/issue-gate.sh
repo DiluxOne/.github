@@ -259,6 +259,8 @@ if [ "${1:-}" = "--test" ]; then
   NUMBER=12 BODY="$sealdir/body" RECEIPTS_FIXTURE=$sealdir python3 "$(dirname "${BASH_SOURCE[0]}")/receipts.py" seal-prd >/dev/null
   body_with "$prd" | answer | RECEIPTS_FIXTURE=$sealdir T="chore: a thing" case_ "passes: the PRD is the one sealed" 0 || fail=1
   body_with "${prd/then c/then d}" | answer | RECEIPTS_FIXTURE=$sealdir T="chore: a thing" case_ "fails: the PRD changed after it was sealed" 1 || fail=1
+  mkdir -p "$sealdir/issues/13"; echo '{not json' > "$sealdir/issues/13/prd-x.json"
+  body_with "$prd" | jq '.number = 13' | answer | RECEIPTS_FIXTURE=$sealdir T="chore: a thing" case_ "fails: a seal that cannot be read (fails closed)" 1 || fail=1
   rm -rf "$sealdir"
   echo '{}' | WHO=Bot case_ "passes: a bot's pull request" 0 || fail=1
   echo '{}' | REQ=false case_ "passes: the gate is off" 0 || fail=1
