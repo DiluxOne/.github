@@ -89,6 +89,18 @@ needed_types() {
   fi
 }
 
+# Issue $2's PRD against its last seal on the receipts branch: prints match,
+# changed or unsealed (scripts/receipts.py); fails only when changed.
+prd_seal() {
+  local body
+  body=$(mktemp)
+  jq -r --argjson n "$2" '.data.repository.pullRequest.closingIssuesReferences.nodes[] | select(.number == $n) | .body // ""' "$1" > "$body"
+  NUMBER=$2 BODY=$body python3 "$(dirname "${BASH_SOURCE[0]}")/receipts.py" verify-prd 2>/dev/null
+  local rc=$?
+  rm -f "$body"
+  return "$rc"
+}
+
 # Whether issue $2 of the answer in $1 has a Type the title allows.
 type_fits() {
   jq -e --argjson n "$2" --argjson need "$(needed_types)" '.data.repository.pullRequest.closingIssuesReferences.nodes[] | select(.number == $n) | (.issueType.name // "") as $t | ($need | length) == 0 or (($need | index($t)) != null)' "$1" >/dev/null
@@ -144,7 +156,14 @@ check() {
   while read -r n v; do
     [ -z "$n" ] && continue
     case "$v" in
-      ok) echo "#$n is accepted."; ok=1 ;;
+      ok)
+        # Its PRD must still be the one sealed when it was accepted (#81):
+        # an edit after acceptance needs a new acceptance.
+        if seal=$(prd_seal "$answer" "$n") || [ "$seal" != changed ]; then
+          echo "#$n is accepted${seal:+ (PRD: $seal)}."; ok=1
+        else
+          echo "#$n's PRD changed after it was accepted; a maintainer accepts it again (remove and add \"$LABEL\") to seal the new text."
+        fi ;;
       other-repo) echo "#$n is in another repository; the issue must be in this one." ;;
       closed) echo "#$n is closed; the issue must be open." ;;
       no-label|bot-label)
@@ -184,6 +203,7 @@ if [ "${1:-}" = "--test" ]; then
     jq -n --argjson n "$1" --arg r "$2" --arg s "$3" --argjson l "$labels" --argjson e "$events" --arg t "$type" '{number: $n, state: $s, repository: {nameWithOwner: $r}, labels: $l, issueType: (if $t == "" then null else {name: $t} end), timelineItems: $e}'
   }
   answer() { jq -s '{data: {repository: {pullRequest: {closingIssuesReferences: {nodes: .}}}}}'; }
+  export RECEIPTS_FIXTURE=${RECEIPTS_FIXTURE:-$(mktemp -d)}
   case_() {
     local name=$1 want=$2 file got
     file=$(mktemp); cat > "$file"
@@ -226,6 +246,15 @@ if [ "${1:-}" = "--test" ]; then
   lane_issue | answer | LANE_RUN=$runfile T="feat(x): a thing" case_ "fails: a feature closing a lane's Bug" 1 || fail=1
   lane_issue | jq '.labels.nodes += [{name: "accepted"}] | .timelineItems.nodes += [{__typename: "LabeledEvent", label: {name: "accepted"}, actor: {__typename: "Bot", login: "dilux-bot"}}]' | answer | LANE_RUN=$runfile T="fix(x): a thing" case_ "passes: a lane's issue whose accepted label a bot added" 0 || fail=1
   rm -f "$runfile"
+  # Sealed PRDs (scripts/receipts.py): a fixture directory stands in for the branch.
+  sealdir=$(mktemp -d); mkdir -p "$sealdir/issues/12"
+  body_with() { jq -n --arg r "$repo" --arg b "$1" '{number: 12, state: "OPEN", repository: {nameWithOwner: $r}, body: $b, labels: {nodes: [{name: "accepted"}]}, issueType: {name: "Task"}, timelineItems: {nodes: [{__typename: "LabeledEvent", label: {name: "accepted"}, actor: {__typename: "User", login: "x"}}]}}'; }
+  prd=$'### Problem\n\nx\n\n### Scope\n\n- y\n\n### Out of scope\n\n- z\n\n### Acceptance criteria\n\n- C1: Given a, when b, then c.\n\n### Criticality\n\nNormal'
+  printf '%s' "$prd" > "$sealdir/body"
+  NUMBER=12 BODY="$sealdir/body" RECEIPTS_FIXTURE=$sealdir python3 "$(dirname "${BASH_SOURCE[0]}")/receipts.py" seal-prd >/dev/null
+  body_with "$prd" | answer | RECEIPTS_FIXTURE=$sealdir T="chore: a thing" case_ "passes: the PRD is the one sealed" 0 || fail=1
+  body_with "${prd/then c/then d}" | answer | RECEIPTS_FIXTURE=$sealdir T="chore: a thing" case_ "fails: the PRD changed after it was sealed" 1 || fail=1
+  rm -rf "$sealdir"
   echo '{}' | WHO=Bot case_ "passes: a bot's pull request" 0 || fail=1
   echo '{}' | REQ=false case_ "passes: the gate is off" 0 || fail=1
   [ "$fail" -eq 0 ] && echo "all tests passed"

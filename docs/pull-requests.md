@@ -14,7 +14,10 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    its App opened from one of its own workflows' runs, named in the issue
    and checked against the API, never on a label alone; a repository's own
    `.github/autonomy.yml` can only make that stricter, and the organisation
-   variable `DX_AUTOPILOT=off` stops every lane. The
+   variable `DX_AUTOPILOT=off` stops every lane. When a person accepts an
+   issue its PRD is sealed (its SHA-256 on the repository's `receipts`
+   branch, [`scripts/receipts.py`](../scripts/receipts.py)); a PRD edited
+   after that fails the gate until a maintainer accepts it again. The
    issue's **Type** (GitHub's own field: the organisation's Feature, Bug,
    Task and Docs) must fit the pull request's: a `feat` (or any `!`) closes
    a Feature, a `fix` a Bug; the issue forms set it (bug → Bug, feature →
