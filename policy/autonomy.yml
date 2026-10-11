@@ -1,0 +1,74 @@
+# The autonomy policy: everything the organisation lets proceed without a
+# person deciding comes from here, and nothing else does (the plan, #78).
+# scripts/autonomy.py reads it, with a repository's own .github/autonomy.yml
+# from the base branch, which can only make it stricter: switch a lane off,
+# narrow its repositories, lower what it may merge, turn the autopilot off,
+# add protected paths. Anything that would widen it is ignored, with a
+# warning.
+#
+# The golden rule: this file, the gates and the workflows that apply them
+# (`constitution` below) are always accepted and merged by a person.
+# Autonomy cannot widen itself. Every path here is also high risk in the
+# review policy, so the auto-merge decision never merges them; policy.py's
+# self-test fails if one is not.
+#
+# The organisation variable DX_AUTOPILOT=off stops every autonomous action at
+# once, without touching the checks: no lane accepts an issue, no agent
+# starts, nothing merges by policy. Everything waits for a person, as before.
+
+autopilot: true
+
+constitution:
+  - "policy/**"
+  - ".github/**"
+  - "scripts/**"
+  - "kinds/**"
+  - "review-profiles/**"
+  - "AGENTS.md"
+  - "CLAUDE.md"
+
+# A lane's issue is accepted by policy only when all of this holds, read from
+# GitHub, never from the issue's text alone:
+#   - the issue carries the lane's label (`lane:<name>`), and the last to add
+#     it was the lane's App (origin.app), not a person and not another bot;
+#   - the issue was opened by that App;
+#   - its body names the workflow run that opened it
+#     (<!-- dx-lane: <name> run: <run URL> -->), that run belongs to the same
+#     repository, and its workflow (or one it calls) is one of origin.workflows;
+#   - the lane is on, takes `accept: policy`, and covers the repository;
+#   - the autopilot is on (here, the repository's own file and DX_AUTOPILOT).
+#
+# merge: the most a pull request closing a lane's issue may be, as the review
+# rates it, and still merge on its own (the autopilot, #83, applies it).
+lanes:
+  platform:
+    description: The organisation's own machinery that a weekly job keeps current, starting with the runner image.
+    accept: policy
+    origin:
+      app: dilux-bot
+      workflows: [runner-image.yml]
+    repositories: [".github"]
+    evidence: The workflow run that opened the issue, with its smoke test.
+    merge: {max-risk: medium, max-complexity: medium}
+
+  bugfix-reproduced:
+    description: A reported bug that the reproduction confirmed with a failing test.
+    accept: policy
+    origin:
+      app: dilux-bot
+      workflows: [issue-repro.yml]
+    repositories: ["*"]
+    evidence: The failing test the reproduction wrote; the fix must make it pass.
+    merge: {max-risk: medium, max-complexity: medium}
+
+  human-issue:
+    description: An issue a person accepted.
+    accept: human
+    repositories: ["*"]
+    merge: {max-risk: low, max-complexity: low}
+
+  release:
+    description: A release issue. Publishing to users is always a person's decision.
+    accept: human
+    repositories: ["*"]
+    merge: {max-risk: none, max-complexity: none}

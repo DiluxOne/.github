@@ -7,7 +7,14 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    `Closes #12` (or the issue is linked under *Development*), and the issue
    is open, in the same repository and carries the `accepted` label, added
    by a person. A bot's label never counts, so no automation can accept an
-   issue, and only people with triage access or more can label one. The
+   issue, and only people with triage access or more can label one. The one
+   exception is explicit and narrow: a lane of the autonomy policy
+   ([`policy/autonomy.yml`](../policy/autonomy.yml), read by
+   [`scripts/autonomy.py`](../scripts/autonomy.py)) accepts an issue that
+   its App opened from one of its own workflows' runs, named in the issue
+   and checked against the API, never on a label alone; a repository's own
+   `.github/autonomy.yml` can only make that stricter, and the organisation
+   variable `DX_AUTOPILOT=off` stops every lane. The
    issue's **Type** (GitHub's own field: the organisation's Feature, Bug,
    Task and Docs) must fit the pull request's: a `feat` (or any `!`) closes
    a Feature, a `fix` a Bug; the issue forms set it (bug → Bug, feature →

@@ -40,6 +40,8 @@ QUERY='query($owner: String!, $name: String!, $number: Int!) {
         nodes {
           number
           state
+          body
+          author { login }
           repository { nameWithOwner }
           labels(first: 50) { nodes { name } }
           issueType { name }
@@ -87,6 +89,22 @@ needed_types() {
   fi
 }
 
+# Whether a lane of the autonomy policy accepts issue $2 of the answer in $1
+# (scripts/autonomy.py, policy/autonomy.yml): prints why, either way. Only an
+# issue with a lane:<name> label is asked; the rest are not a lane's.
+lane_verdict() {
+  local node
+  node=$(mktemp)
+  jq --argjson n "$2" '.data.repository.pullRequest.closingIssuesReferences.nodes[] | select(.number == $n)' "$1" > "$node"
+  if ! jq -e '[.labels.nodes[]?.name | select(startswith("lane:"))] | length > 0' "$node" >/dev/null; then
+    rm -f "$node"; return 1
+  fi
+  LANE_ISSUE=$node python3 "$(dirname "${BASH_SOURCE[0]}")/autonomy.py" lane-accept 2>/dev/null
+  local rc=$?
+  rm -f "$node"
+  return "$rc"
+}
+
 check() {
   REQUIRED=${REQUIRED:-true}
   LABEL=${LABEL:-accepted}
@@ -124,8 +142,14 @@ check() {
       ok) echo "#$n is accepted."; ok=1 ;;
       other-repo) echo "#$n is in another repository; the issue must be in this one." ;;
       closed) echo "#$n is closed; the issue must be open." ;;
-      no-label) echo "#$n has no \"$LABEL\" label yet: a maintainer has not accepted it." ;;
-      bot-label) echo "#$n got its \"$LABEL\" label from a bot; only a person accepts an issue." ;;
+      no-label|bot-label)
+        if why=$(lane_verdict "$answer" "$n"); then
+          echo "#$n is $why."; ok=1
+        elif [ "$v" = no-label ]; then
+          echo "#$n has no \"$LABEL\" label yet: a maintainer has not accepted it.${why:+ No lane accepts it either: $why.}"
+        else
+          echo "#$n got its \"$LABEL\" label from a bot; only a person accepts an issue.${why:+ No lane accepts it either: $why.}"
+        fi ;;
       wrong-type) echo "#$n's Type is not $(needed_types | jq -r '.[0]'), the kind this pull request's title says; it needs an issue of its own kind (or a maintainer changes the issue's Type)." ;;
     esac
   done <<< "$lines"
@@ -182,6 +206,15 @@ if [ "${1:-}" = "--test" ]; then
   issue 12 "$repo" OPEN accepted LabeledEvent:accepted:User Task | answer | T="test(x): a thing" case_ "passes: tests may close any accepted issue" 0 || fail=1
   issue 12 "$repo" OPEN accepted LabeledEvent:accepted:User | answer | T="docs(x): a thing" case_ "passes: docs may close an issue with no Type" 0 || fail=1
   { issue 3 "$repo" OPEN accepted LabeledEvent:accepted:User Bug; issue 12 "$repo" OPEN accepted LabeledEvent:accepted:User Feature; } | answer | T="feat: a thing" case_ "passes: one fitting issue among several" 0 || fail=1
+  # A lane's issue: opened by dilux-bot from the lane's workflow, no accepted label.
+  lane_issue() {
+    jq -n --arg r "$repo" --arg u "https://github.com/$repo/actions/runs/42" --arg who "${1:-dilux-bot}" '{number: 12, state: "OPEN", repository: {nameWithOwner: $r}, author: {login: $who}, body: ("<!-- dx-lane: bugfix-reproduced run: " + $u + " -->"), labels: {nodes: [{name: "lane:bugfix-reproduced"}]}, issueType: {name: "Bug"}, timelineItems: {nodes: [{__typename: "LabeledEvent", label: {name: "lane:bugfix-reproduced"}, actor: {__typename: "Bot", login: "dilux-bot"}}]}}'
+  }
+  runfile=$(mktemp); echo '{"id": 42, "path": ".github/workflows/issues.yml", "referenced_workflows": [{"path": "DiluxOne/.github/.github/workflows/issue-repro.yml@refs/tags/v5"}]}' > "$runfile"
+  lane_issue | answer | LANE_RUN=$runfile T="fix(x): a thing" case_ "passes: a lane accepts an issue nobody labelled" 0 || fail=1
+  lane_issue someone | answer | LANE_RUN=$runfile T="fix(x): a thing" case_ "fails: a lane's issue a person opened" 1 || fail=1
+  lane_issue | answer | DX_AUTOPILOT=off LANE_RUN=$runfile T="fix(x): a thing" case_ "fails: a lane's issue with the autopilot off" 1 || fail=1
+  rm -f "$runfile"
   echo '{}' | WHO=Bot case_ "passes: a bot's pull request" 0 || fail=1
   echo '{}' | REQ=false case_ "passes: the gate is off" 0 || fail=1
   [ "$fail" -eq 0 ] && echo "all tests passed"

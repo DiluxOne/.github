@@ -119,7 +119,14 @@ jobs:
           LABEL: ${{ steps.gate.outputs.label }}
           TITLE: ${{ github.event.pull_request.title }}
           AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
-        run: bash .dx-central/scripts/issue-gate.sh
+          # An issue a lane of the autonomy policy accepts passes too
+          # (policy/autonomy.yml, the repository's own file from the base
+          # branch, stricter only); DX_AUTOPILOT=off stops every lane.
+          DX_AUTOPILOT: ${{ vars.DX_AUTOPILOT }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git show "$BASE:.github/autonomy.yml" > "$RUNNER_TEMP/repo-autonomy.yml" 2>/dev/null || : > "$RUNNER_TEMP/repo-autonomy.yml"
+          REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml" bash .dx-central/scripts/issue-gate.sh
 
       - name: The labels and the review's comments, as they are now
         id: live
