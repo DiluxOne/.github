@@ -55,7 +55,11 @@ jobs:
     name: Re-run the gate
     runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
-    if: github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == inputs.label && github.event.sender.type != 'Bot'
+    # After the seal (the ready job): the gate compares the PRD with the
+    # newest seal, so a re-acceptance after an edit must be sealed first.
+    # always(): a failed or skipped seal still lets the re-run happen.
+    needs: ready
+    if: always() && github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == inputs.label && github.event.sender.type != 'Bot'
     permissions:
       actions: write # re-run the failed jobs
       issues: read
