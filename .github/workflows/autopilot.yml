@@ -292,7 +292,9 @@ jobs:
         if: always() && steps.spec.outputs.execution_file != ''
         env:
           LOG: ${{ steps.spec.outputs.execution_file }}
-        run: mkdir -p "$RUNNER_TEMP/transcript" && cp "$LOG" "$RUNNER_TEMP/transcript/1-spec.json" || true
+        run: |
+          mkdir -p "$RUNNER_TEMP/transcript"
+          if [ -f "$LOG" ]; then cp "$LOG" "$RUNNER_TEMP/transcript/1-spec.json"; fi
 
       - name: The Spec (G3), sealed, and the draft pull request
         id: draft
