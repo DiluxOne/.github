@@ -22,6 +22,11 @@ autopilot: true
 # Review rounds the autopilot may spend fixing a blocked pull request before
 # it hands it back to a person.
 autopilot-rounds: 3
+# Runs the autopilot may spend on one issue's draft pull request: the first,
+# and each that continues it (`autopilot:continue`, added by a person or by
+# the workflow when a run ran out of turns or time with criteria left). Past
+# it, a person takes the pull request.
+autopilot-runs: 5
 
 constitution:
   - "policy/**"

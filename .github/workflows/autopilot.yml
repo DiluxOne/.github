@@ -1,23 +1,39 @@
 name: Autopilot
 
 # Reusable. The autopilot (#83, the plan in #78): an issue a person accepted,
-# worked by Claude to a pull request, and its review's blocking points fixed,
-# round after round, until the review is clean or the rounds run out.
+# worked by Claude in the open, in a draft pull request, to a pull request
+# ready for review; then its review's blocking points fixed, round after
+# round, until the review is clean or the rounds run out (#109).
 #
-#   mode: start  called from issue-triage.yml when a person adds `accepted`.
-#                It starts only if the autopilot is on (policy/autonomy.yml,
-#                the repository's own .github/autonomy.yml, DX_AUTOPILOT) and
-#                the issue is ready (G1). The agent writes the Spec into the
-#                issue (G3, sealed on the receipts branch), branches,
-#                implements with one test per criterion, runs the
-#                repository's checks and opens the pull request, labelled
-#                `autopilot`. From there the organisation's pipeline runs as
-#                on any pull request.
-#   mode: fix    called from org-pull-request.yml when the review of an
-#                `autopilot` pull request blocks: one round of fixes, pushed
-#                to its branch, which runs the pipeline again. After
-#                `autopilot-rounds` rounds (3) it hands the pull request to a
-#                person (`needs-human`, with a summary).
+#   mode: start     called from issue-triage.yml when a person adds
+#                   `accepted`. It starts only if the autopilot is on
+#                   (policy/autonomy.yml, the repository's own
+#                   .github/autonomy.yml, DX_AUTOPILOT) and the issue is
+#                   ready (G1). First the agent writes the Spec into the
+#                   issue (G3, sealed on the receipts branch). Then this
+#                   workflow opens the draft pull request, labelled
+#                   `autopilot`: the Spec as a checklist, one box per
+#                   criterion. Then the agent works the criteria in order,
+#                   one commit each, pushed, its box ticked only once GitHub
+#                   has the commit (scripts/autopilot.py tick).
+#   mode: continue  called from issue-triage.yml when `autopilot:continue` is
+#                   added to the issue (by a person, or by this workflow when
+#                   a run ran out of turns or time with criteria left): the
+#                   agent resumes from the branch and the unticked boxes, up
+#                   to `autopilot-runs` runs per issue (5).
+#   mode: fix       called from org-pull-request.yml when the review of an
+#                   `autopilot` pull request blocks: one round of fixes,
+#                   pushed to its branch, which runs the pipeline again. After
+#                   `autopilot-rounds` rounds (3) it hands the pull request to
+#                   a person (`needs-human`, with a summary).
+#
+# A run never ends in silence (scripts/autopilot.py end): the pull request is
+# ready for review, or the agent said where it stopped and why (a comment and
+# `needs-human`), or the run continues; otherwise this workflow says so
+# itself, adds `needs-human` and fails. Every run writes a readable account
+# to its job summary and keeps the agent's full transcript as an artifact,
+# and the issue's board links the pull request, the run and the criteria
+# done. The review (paid) runs only once the draft is marked ready.
 #
 # Whether it merges is auto-merge.yml's decision (scripts/autopilot.py
 # decide, gate G7): never a Critical issue, never a change to the protected
@@ -27,17 +43,19 @@ name: Autopilot
 # its commits and pull requests are told apart from the maintainer's. It
 # runs where the repository's jobs run (DX_RUNNER), one run per issue.
 # Known limit: the agent holds dilux-bot's token, the same App that writes
-# the receipts branch; a later step moves seals to an App of their own. Every input it reads from the issue is the PRD at its sealed
-# text, fenced as data in the prompt (scripts/autopilot.py).
+# the receipts branch; a later step moves seals to an App of their own.
+# Every input it reads from the issue is the PRD at its sealed text, fenced
+# as data in the prompt (scripts/autopilot.py).
 
 on:
   workflow_call:
     inputs:
       mode:
+        description: start, continue or fix.
         type: string
         required: true
       issue:
-        description: The issue (mode start).
+        description: The issue (modes start and continue).
         type: string
         default: ''
       pr:
@@ -111,29 +129,46 @@ jobs:
           PR: ${{ inputs.pr }}
         run: |
           set -euo pipefail
-          if [ "$MODE" = fix ]; then
+          is_bot() { case "$1" in dilux-bot|"dilux-bot[bot]"|app/dilux-bot) return 0 ;; *) return 1 ;; esac; }
+          if [ "$MODE" = continue ]; then
+            # The label asked for one run: it goes now, so it can be asked again.
+            gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label "autopilot:continue" >/dev/null 2>&1 || true
+            PR=""
+            refs=$(gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json closedByPullRequestsReferences --jq '.closedByPullRequestsReferences[].number')
+            for n in $refs; do
+              if gh pr view "$n" --repo "$GITHUB_REPOSITORY" --json state,labels --jq '.state == "OPEN" and ([.labels[].name] | index("autopilot") != null)' | grep -qx true; then PR=$n; fi
+            done
+            [ -n "$PR" ] || { echo "No pull request closes #$ISSUE: nothing to continue."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          fi
+          if [ "$MODE" != start ]; then
             author=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json author --jq .author.login)
-            case "$author" in dilux-bot|"dilux-bot[bot]"|app/dilux-bot) ;; *) echo "#$PR was opened by $author, not dilux-bot: no autopilot round."; exit 1 ;; esac
-            ISSUE=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // empty')
+            is_bot "$author" || { echo "#$PR was opened by $author, not dilux-bot: the autopilot stays out."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; }
+            [ "$MODE" = continue ] || ISSUE=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // empty')
             branch=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json headRefName --jq .headRefName)
             labels=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | join(",")')
-            round=$(( $(tr ',' '\n' <<<"$labels" | sed -n 's/^autopilot:round-\([0-9]*\)$/\1/p' | sort -n | tail -1) + 1 ))
-            { echo "branch=$branch"; echo "round=$round"; } >> "$GITHUB_OUTPUT"
+            last() { tr ',' '\n' <<<"$labels" | sed -n "s/^autopilot:$1-\([0-9]*\)\$/\1/p" | sort -n | tail -1; }
+            round=$(( $(last round) + 1 )); runs=$(( $(last run) + 1 ))
+            { echo "pr=$PR"; echo "branch=$branch"; echo "round=$round"; echo "runs=$runs"; } >> "$GITHUB_OUTPUT"
+          else
+            echo "runs=1" >> "$GITHUB_OUTPUT"
           fi
           [ -n "$ISSUE" ] || { echo "No issue to work on."; exit 1; }
           echo "issue=$ISSUE" >> "$GITHUB_OUTPUT"
           gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/body.md"
           gh api "repos/$GITHUB_REPOSITORY/contents/.github/autonomy.yml" --jq .content 2>/dev/null | base64 -d > "$RUNNER_TEMP/repo-autonomy.yml" || : > "$RUNNER_TEMP/repo-autonomy.yml"
+          echo "go=true" >> "$GITHUB_OUTPUT"
 
       - name: May it start
         id: may
+        if: steps.what.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           DX_AUTOPILOT: ${{ vars.DX_AUTOPILOT }}
           MODE: ${{ inputs.mode }}
           ISSUE: ${{ steps.what.outputs.issue }}
-          PR: ${{ inputs.pr }}
+          PR: ${{ steps.what.outputs.pr }}
           ROUND: ${{ steps.what.outputs.round }}
+          RUNS: ${{ steps.what.outputs.runs }}
         run: |
           set -euo pipefail
           export BODY="$RUNNER_TEMP/body.md" REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml"
@@ -141,7 +176,7 @@ jobs:
             echo "The autopilot does not start: $why"
             echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          # Both modes work only from the PRD a person accepted: its seal
+          # Every mode works only from the PRD a person accepted: its seal
           # (written by issue-accepted.yml, which runs alongside on
           # acceptance) must exist and match the issue now. Waits up to two
           # minutes for it, and says on the issue when it does not start.
@@ -159,12 +194,28 @@ jobs:
           🤖 AI-generated · Claude Opus 5.5 (Anthropic)" >/dev/null || true
             echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          if [ "$MODE" = fix ]; then
+          if [ "$MODE" = start ]; then
+            open_prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --search "linked:issue $ISSUE" --json number --jq 'length')
+            if [ "$open_prs" != 0 ]; then
+              echo "A pull request already closes #$ISSUE: nothing to start (\`autopilot:continue\` resumes the autopilot's)."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+          else
             # A failed read stops the step: it must not count as "no label".
             human=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | index("needs-human") != null')
+            if [ "$human" = true ]; then
+              echo "#$PR is a person's now (needs-human): the autopilot stays out."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+            fi
           fi
-          if [ "$MODE" = fix ] && [ "$human" = true ]; then
-            echo "#$PR is a person's now (needs-human): the autopilot stays out."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          if [ "$MODE" = continue ]; then
+            # may-continue counts the runs before this one.
+            if ! why=$(RUNS=$((RUNS - 1)) python3 .dx-central/scripts/autopilot.py may-continue); then
+              echo "No continue: $why"
+              [[ "$why" != *"cap is"* ]] || gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "The autopilot does not continue: $why. A person takes it from here.
+
+          🤖 AI-generated · Claude Opus 5.5 (Anthropic)" >/dev/null
+              [[ "$why" != *"cap is"* ]] || gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label needs-human >/dev/null
+              echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+            fi
           fi
           if [ "$MODE" = fix ]; then
             max=$(python3 .dx-central/scripts/autonomy.py policy | jq -r '."autopilot-rounds" // 3')
@@ -175,57 +226,160 @@ jobs:
           🤖 AI-generated · Claude Opus 5.5 (Anthropic)" >/dev/null
               echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
             fi
-          else
-            open_prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --search "linked:issue $ISSUE" --json number --jq 'length')
-            if [ "$open_prs" != 0 ]; then
-              echo "A pull request already closes #$ISSUE: nothing to start."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
-            fi
           fi
           echo "go=true" >> "$GITHUB_OUTPUT"
 
-      - name: The task
-        id: task
+      - name: Set up git, and the branch of a pull request
+        id: git
         if: steps.may.outputs.go == 'true'
         env:
           MODE: ${{ inputs.mode }}
-          NUMBER: ${{ steps.what.outputs.issue }}
-          PR: ${{ inputs.pr }}
-          ROUND: ${{ steps.what.outputs.round }}
           BRANCH: ${{ steps.what.outputs.branch }}
         run: |
           set -euo pipefail
           git config user.name "dilux-bot[bot]"
           git config user.email "333187390+dilux-bot[bot]@users.noreply.github.com"
-          # A fix works on the pull request's branch by name, so it can push.
-          if [ "$MODE" = fix ]; then
+          if [ "$MODE" != start ]; then
             git fetch -q origin "$BRANCH"
             git checkout -q -B "$BRANCH" "origin/$BRANCH"
           fi
+          echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "started=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      # Counted before the agent runs: a round or run that fails or times out
+      # after pushing still counts, so the caps hold.
+      - name: Count the round or the run
+        if: steps.may.outputs.go == 'true' && inputs.mode != 'start'
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          MODE: ${{ inputs.mode }}
+          PR: ${{ steps.what.outputs.pr }}
+          ROUND: ${{ steps.what.outputs.round }}
+          RUNS: ${{ steps.what.outputs.runs }}
+        run: |
+          if [ "$MODE" = fix ]; then l="autopilot:round-$ROUND"; d="The autopilot's review rounds on this pull request"; else l="autopilot:run-$RUNS"; d="The autopilot's runs on this pull request"; fi
+          gh label create "$l" --repo "$GITHUB_REPOSITORY" --color C5DEF5 --description "$d" 2>/dev/null || true
+          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label "$l" >/dev/null
+
+      # --- start: the Spec first, then the draft pull request ---------------
+      - name: The Spec's task
+        id: spec-task
+        if: steps.may.outputs.go == 'true' && inputs.mode == 'start'
+        env:
+          NUMBER: ${{ steps.what.outputs.issue }}
+        run: |
+          set -euo pipefail
           export BODY="$RUNNER_TEMP/body.md" REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml"
           # A random delimiter: the PRD's text cannot end the output early.
           eof="DX_$(openssl rand -hex 16)"
-          {
-            echo "prompt<<$eof"
-            python3 .dx-central/scripts/autopilot.py prompt "$MODE"
-            echo "$eof"
-          } >> "$GITHUB_OUTPUT"
+          { echo "prompt<<$eof"; python3 .dx-central/scripts/autopilot.py prompt spec; echo "$eof"; } >> "$GITHUB_OUTPUT"
 
-      # Counted before the agent runs: a round that fails or times out after
-      # pushing still counts, so the cap holds.
-      - name: Count the round
-        if: steps.may.outputs.go == 'true' && inputs.mode == 'fix'
+      - name: Claude writes the Spec
+        id: spec
+        if: steps.may.outputs.go == 'true' && inputs.mode == 'start'
+        timeout-minutes: 20
+        uses: anthropics/claude-code-action@6fed3ca145920b639991cb756090506e1bcaf515 # v1.0.245
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
+          github_token: ${{ steps.bot.outputs.token }}
+          bot_name: dilux-bot[bot]
+          bot_id: '333187390'
+          allowed_bots: dilux-bot
+          prompt: ${{ steps.spec-task.outputs.prompt }}
+          claude_args: |
+            --model claude-opus-5-5
+            --max-turns 60
+            --allowedTools "Bash,Read,Glob,Grep"
+
+      - name: Keep the Spec's transcript
+        if: always() && steps.spec.outputs.execution_file != ''
+        env:
+          LOG: ${{ steps.spec.outputs.execution_file }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/transcript"
+          if [ -f "$LOG" ]; then cp "$LOG" "$RUNNER_TEMP/transcript/1-spec.json"; fi
+
+      - name: The Spec (G3), sealed, and the draft pull request
+        id: draft
+        if: steps.may.outputs.go == 'true' && inputs.mode == 'start' && steps.spec.outcome == 'success'
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
-          PR: ${{ inputs.pr }}
+          NUMBER: ${{ steps.what.outputs.issue }}
+          POLICY_REF: ${{ steps.central.outputs.ref }}
+          STARTED: ${{ steps.git.outputs.started }}
+          RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+        run: |
+          set -euo pipefail
+          gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/body.md"
+          stopped=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json comments --jq '[.comments[] | select((.body | startswith("<!-- dx-autopilot-stop -->")) and (.author.login | test("^(app/)?dilux-bot(\\[bot\\])?$")) and .createdAt >= env.STARTED)] | length')
+          if [ "$stopped" != 0 ]; then echo "The agent stopped after the Spec; it said why on the issue."; exit 0; fi
+          if ! python3 .dx-central/scripts/issue-schema.py check --stage spec < "$RUNNER_TEMP/body.md" > "$RUNNER_TEMP/g3.json"; then
+            echo "::warning::The Spec does not pass G3: $(jq -c .errors "$RUNNER_TEMP/g3.json")"
+            echo "why=The Spec on the issue does not pass G3: $(jq -r '.errors | join("; ")' "$RUNNER_TEMP/g3.json" | head -c 300)" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/receipts.py seal-spec
+          type=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" --jq '.type.name // ""')
+          title=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json title --jq .title)
+          BODY="$RUNNER_TEMP/body.md" ISSUE_TYPE="$type" TITLE="$title" python3 .dx-central/scripts/autopilot.py draft > "$RUNNER_TEMP/draft.json"
+          branch=$(jq -r .branch "$RUNNER_TEMP/draft.json")
+          jq -r .body "$RUNNER_TEMP/draft.json" > "$RUNNER_TEMP/draft.md"
+          # A branch left by an earlier, failed attempt is not reused.
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then branch="$branch-$GITHUB_RUN_ID"; fi
+          git checkout -q -b "$branch"
+          git commit -q --allow-empty -m "chore(autopilot): start on #$NUMBER" -m "The draft pull request opens before any code: the Spec as its checklist."
+          git push -q origin "$branch"
+          url=$(gh pr create --repo "$GITHUB_REPOSITORY" --draft --base "$(gh repo view "$GITHUB_REPOSITORY" --json defaultBranchRef --jq .defaultBranchRef.name)" \
+            --head "$branch" --title "$(jq -r .title "$RUNNER_TEMP/draft.json")" --body-file "$RUNNER_TEMP/draft.md" --label autopilot)
+          pr=${url##*/}
+          gh label create "autopilot:run-1" --repo "$GITHUB_REPOSITORY" --color C5DEF5 --description "The autopilot's runs on this pull request" 2>/dev/null || true
+          gh pr edit "$pr" --repo "$GITHUB_REPOSITORY" --add-label "autopilot:run-1" >/dev/null
+          { echo "pr=$pr"; echo "branch=$branch"; } >> "$GITHUB_OUTPUT"
+          AUTOPILOT_RUN="$RUN_URL" python3 .dx-central/scripts/autopilot.py board
+          echo "Draft pull request #$pr opened for #$NUMBER: $url"
+
+      # --- start and continue: the criteria, one commit each ----------------
+      - name: The work's task
+        id: work-task
+        if: steps.may.outputs.go == 'true' && (inputs.mode == 'continue' || steps.draft.outputs.pr != '')
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          MODE: ${{ inputs.mode }}
+          NUMBER: ${{ steps.what.outputs.issue }}
+          PR: ${{ steps.draft.outputs.pr || steps.what.outputs.pr }}
+          BRANCH: ${{ steps.draft.outputs.branch || steps.what.outputs.branch }}
+          RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+        run: |
+          set -euo pipefail
+          export BODY="$RUNNER_TEMP/body.md" REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml"
+          [ "$MODE" != continue ] || AUTOPILOT_RUN="$RUN_URL" python3 .dx-central/scripts/autopilot.py board
+          eof="DX_$(openssl rand -hex 16)"
+          { echo "prompt<<$eof"; python3 .dx-central/scripts/autopilot.py prompt work; echo "$eof"; } >> "$GITHUB_OUTPUT"
+
+      # --- fix: one review round -------------------------------------------
+      - name: The fix's task
+        id: fix-task
+        if: steps.may.outputs.go == 'true' && inputs.mode == 'fix'
+        env:
+          NUMBER: ${{ steps.what.outputs.issue }}
+          PR: ${{ steps.what.outputs.pr }}
           ROUND: ${{ steps.what.outputs.round }}
         run: |
-          gh label create "autopilot:round-$ROUND" --repo "$GITHUB_REPOSITORY" --color C5DEF5 --description "The autopilot's review rounds on this pull request" 2>/dev/null || true
-          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label "autopilot:round-$ROUND" >/dev/null
+          set -euo pipefail
+          export BODY="$RUNNER_TEMP/body.md" REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml"
+          eof="DX_$(openssl rand -hex 16)"
+          { echo "prompt<<$eof"; python3 .dx-central/scripts/autopilot.py prompt fix; echo "$eof"; } >> "$GITHUB_OUTPUT"
 
       - name: Claude works
-        if: steps.may.outputs.go == 'true'
+        id: work
+        if: steps.work-task.outputs.prompt != '' || steps.fix-task.outputs.prompt != ''
         timeout-minutes: 75
         uses: anthropics/claude-code-action@6fed3ca145920b639991cb756090506e1bcaf515 # v1.0.245
+        env:
+          NUMBER: ${{ steps.what.outputs.issue }}
+          PR: ${{ steps.draft.outputs.pr || steps.what.outputs.pr }}
+          BRANCH: ${{ steps.draft.outputs.branch || steps.what.outputs.branch }}
+          AUTOPILOT_RUN: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
@@ -234,31 +388,73 @@ jobs:
           bot_id: '333187390'
           # A fix round runs from the pipeline the bot's own push started.
           allowed_bots: dilux-bot
-          prompt: ${{ steps.task.outputs.prompt }}
+          prompt: ${{ steps.work-task.outputs.prompt || steps.fix-task.outputs.prompt }}
           claude_args: |
             --model claude-opus-5-5
             --max-turns 150
             --allowedTools "Bash,Read,Edit,MultiEdit,Write,Glob,Grep"
 
-      - name: The Spec (G3), sealed
-        if: steps.may.outputs.go == 'true' && inputs.mode == 'start'
+      # --- every mode: never end in silence, and say what happened ----------
+      - name: The end rule
+        if: always() && steps.may.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
+          MODE: ${{ inputs.mode }}
           NUMBER: ${{ steps.what.outputs.issue }}
-          POLICY_REF: ${{ steps.central.outputs.ref }}
+          PR: ${{ steps.draft.outputs.pr || steps.what.outputs.pr }}
+          RUNS: ${{ steps.what.outputs.runs }}
+          STARTED: ${{ steps.git.outputs.started }}
+          HEAD_BEFORE: ${{ inputs.mode == 'fix' && steps.git.outputs.head || '' }}
+          WORK_OUTCOME: ${{ steps.work.outcome }}
+          SPEC_OUTCOME: ${{ steps.spec.outcome }}
+          WHY: ${{ steps.draft.outputs.why }}
+          WORK_LOG: ${{ steps.work.outputs.execution_file }}
+          RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
         run: |
           set -euo pipefail
-          gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/body.md"
-          if python3 .dx-central/scripts/issue-schema.py check --stage spec < "$RUNNER_TEMP/body.md" > "$RUNNER_TEMP/g3.json"; then
-            BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/receipts.py seal-spec
-          else
-            echo "::warning::The Spec does not pass G3: $(jq -c .errors "$RUNNER_TEMP/g3.json")"
+          export REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml" AUTOPILOT_RUN="$RUN_URL"
+          # Out of turns or time: the agent did not choose to end. A run a
+          # person cancelled is not continued.
+          # Out of turns: the log says so. Out of time: the step failed and the
+          # agent never wrote its result (it was stopped). Any other failure
+          # (auth, a crash with a result) is not continued.
+          LIMIT_HIT=false
+          results=0
+          if [ -f "${WORK_LOG:-/nonexistent}" ]; then
+            jq -e '(if type == "array" then . else [.] end) | map(select(.type == "result" and (.subtype // "") == "error_max_turns")) | length > 0' "$WORK_LOG" >/dev/null 2>&1 && LIMIT_HIT=true
+            results=$(jq '(if type == "array" then . else [.] end) | map(select(.type == "result")) | length' "$WORK_LOG" 2>/dev/null || echo 0)
           fi
-          pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --author "app/dilux-bot" --search "linked:issue $NUMBER" --json number --jq '.[0].number // empty')
-          if [ -n "$pr" ]; then
-            gh pr edit "$pr" --repo "$GITHUB_REPOSITORY" --add-label autopilot >/dev/null || true
-            echo "Pull request #$pr opened for #$NUMBER."
-          else
-            echo "::warning::No pull request closes #$NUMBER after the run; the agent said why on the issue, or a person takes it."
-          fi
+          if [ "$WORK_OUTCOME" = failure ] && [ "$results" = 0 ]; then LIMIT_HIT=true; fi
+          export LIMIT_HIT
+          python3 .dx-central/scripts/autopilot.py end
 
+      - name: The run's account
+        if: always() && steps.may.outputs.go == 'true'
+        env:
+          WORK_LOG: ${{ steps.work.outputs.execution_file }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/transcript"
+          if [ -n "$WORK_LOG" ] && [ -f "$WORK_LOG" ]; then cp "$WORK_LOG" "$RUNNER_TEMP/transcript/2-work.json"; fi
+          # The artifact of a public repository is public: every file loses
+          # its tokens before anything else can fail.
+          for f in "$RUNNER_TEMP"/transcript/*.json; do
+            [ -f "$f" ] || continue
+            python3 .dx-central/scripts/autopilot.py scrub "$f" || { echo "::warning::$(basename "$f") could not be scrubbed; it is not kept."; rm -f "$f"; }
+          done
+          found=false
+          for f in "$RUNNER_TEMP"/transcript/*.json; do
+            [ -f "$f" ] || continue
+            found=true
+            case "$f" in *spec*) t="The autopilot's run: the Spec" ;; *) t="The autopilot's run: the work" ;; esac
+            python3 .dx-central/scripts/autopilot.py account "$f" "$t" >> "$GITHUB_STEP_SUMMARY"
+          done
+          [ "$found" = true ] || printf '## The autopilot'"'"'s run\n\nThe agent did not run.\n' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: The transcript
+        if: always() && steps.may.outputs.go == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: autopilot-transcript-${{ inputs.mode }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/transcript
+          if-no-files-found: ignore
+          retention-days: 30
