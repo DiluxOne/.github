@@ -141,6 +141,21 @@ jobs:
             echo "The autopilot does not start: $why"
             echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
+          if [ "$MODE" = start ]; then
+            # The agent works only from the PRD a person accepted: its seal
+            # (written by issue-accepted.yml, which runs alongside) must
+            # exist and match the issue now. Waits up to two minutes for it.
+            v=unsealed
+            for _ in $(seq 1 12); do
+              v=$(NUMBER="$ISSUE" python3 .dx-central/scripts/receipts.py verify-prd || true)
+              [ "$v" = unsealed ] || break
+              sleep 10
+            done
+            if [ "$v" != match ]; then
+              echo "The autopilot does not start: the PRD is not the one sealed on acceptance ($v)."
+              echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+          fi
           if [ "$MODE" = fix ]; then
             # A failed read stops the step: it must not count as "no label".
             human=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | index("needs-human") != null')
