@@ -45,21 +45,23 @@ jobs:
         run: |
           set -euo pipefail
           since=$(date -u -d '7 days ago' +%Y-%m-%d)
+          publics=$(gh repo list "$OWNER" --visibility public --limit 500 --json nameWithOwner --jq '.[].nameWithOwner')
           public=""; private=0
           add() { # label, then one JSON object per line: url, title, repository
             local lab=$1 rows
             rows=$(cat)
             [ -n "${rows//[$'\n ']/}" ] || return 0
-            public+="**${lab}**"$'\n'
+            local mine=""
             while IFS= read -r row; do
               [ -n "$row" ] || continue
-              if [ "$(jq -r '.repository.isPrivate // true' <<<"$row")" = false ]; then
-                public+="- $(jq -r '"[\(.repository.nameWithOwner)] \(.title) (\(.url))"' <<<"$row")"$'\n'
+              # Public only when the organisation lists it as public.
+              if grep -qxF "$(jq -r '.repository.nameWithOwner' <<<"$row")" <<<"$publics"; then
+                mine+="- $(jq -r '"[\(.repository.nameWithOwner)] \(.title) (\(.url))"' <<<"$row")"$'\n'
               else
                 private=$((private + 1))
               fi
             done <<<"$rows"
-            public+=$'\n'
+            [ -z "$mine" ] || public+="**${lab}**"$'\n'"${mine}"$'\n'
           }
           # Searched first (a failure stops the run), then added in this shell.
           accepted=$(gh search issues --owner "$OWNER" --label accepted-by:policy --created ">=$since" --limit 200 \
