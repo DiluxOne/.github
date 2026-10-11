@@ -19,6 +19,10 @@
 
 autopilot: true
 
+# Review rounds the autopilot may spend fixing a blocked pull request before
+# it hands it back to a person.
+autopilot-rounds: 3
+
 constitution:
   - "policy/**"
   - ".github/**"
@@ -63,10 +67,10 @@ lanes:
     merge: {max-risk: medium, max-complexity: medium}
 
   human-issue:
-    description: An issue a person accepted.
+    description: An issue a person accepted, worked by the autopilot (#83) to a merged pull request unless it is marked Critical or touches the protected paths.
     accept: human
     repositories: ["*"]
-    merge: {max-risk: low, max-complexity: low}
+    merge: {max-risk: high, max-complexity: high}
 
   release:
     description: A release issue. Publishing to users is always a person's decision.

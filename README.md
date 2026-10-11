@@ -17,14 +17,15 @@ Each repository calls the workflows in this one instead of carrying its own copy
 
 ```mermaid
 flowchart LR
-    A["📝 Issue<br/>bug · feature · task · docs"] --> B{"Maintainer<br/>accepts?"}
+    A["📝 Issue<br/>a PRD: problem, scope, criteria"] --> B{"Maintainer<br/>accepts?<br/>(PRD sealed)"}
     B -- "no" --> X["Closed or<br/>kept for later"]
-    B -- "accepted" --> C["🌿 Branch + pull request<br/>Closes #n"]
+    B -- "accepted" --> C["🤖 Autopilot: Spec, branch,<br/>code, tests, pull request<br/>Closes #n"]
     C --> D["✅ Conventions<br/>+ accepted-issue gate"]
     D --> E["🧪 Checks of its kind<br/>tests, lint, Plugin Check…"]
     E --> F["🤖 Claude review<br/>risk · complexity · type"]
-    F --> L["Auto-merge needs all six<br/>1 · only low-risk paths<br/>2 · review: low risk<br/>3 · review: low complexity<br/>4 · nothing blocks<br/>5 · a trusted author<br/>6 · every check green"]
-    L --> G{"All six?"}
+    F -- "blocks" --> C
+    F --> L["Merges on its own when<br/>not Critical · no protected path<br/>review clean · within the lane<br/>a test per criterion · every check green"]
+    L --> G{"All of them?"}
     G -- "yes" --> H["⚡ Auto-merge"]
     G -- "any no" --> I["👤 A person merges"]
     H --> R{"🔐 Release approved<br/>by a person?"}

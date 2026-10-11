@@ -9,6 +9,8 @@ signed by GitHub and show as Verified.
 
   receipts.py seal-prd     on acceptance: the PRD's SHA-256, who accepted, when
                            (issues/<n>/prd-<UTC>.json)
+  receipts.py seal-spec    at G3, when the autopilot wrote the Spec: its SHA-256
+                           (issues/<n>/spec-<UTC>.json)
   receipts.py verify-prd   the PRD now against its last seal: prints "match",
                            "changed" or "unsealed"; exit 1 when changed, 2 when
                            the seal could not be read (never taken as unsealed)
@@ -270,6 +272,13 @@ def main(argv):
         at = now()
         s = seal(number, body, os.environ.get("ACCEPTED_BY", "?"), policy_ref, at)
         write(repo, f"issues/{number}/prd-{at}.json", s, f"Seal #{number}'s PRD")
+        print(json.dumps(s))
+        return 0
+    if mode == "seal-spec":
+        at = now()
+        s = {"kind": "spec-seal", "issue": number, "spec_sha256": spec_hash(body), "at": at,
+             "policy": f"DiluxOne/.github@{policy_ref}" if policy_ref else None}
+        write(repo, f"issues/{number}/spec-{at}.json", s, f"Seal #{number}'s Spec")
         print(json.dumps(s))
         return 0
     if mode == "verify-prd":

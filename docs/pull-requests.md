@@ -62,7 +62,15 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    (5) keeps the last verdict until the `review:full` label asks for more.
    Drafts and forks are not reviewed; pull requests Dependabot or the
    organisation's App open are (`allowed_bots`).
-3. **Merge.** A human, with [`scripts/squash-merge.sh`](../scripts/squash-merge.sh)
+3. **Merge.** A pull request the autopilot opened (#83, label `autopilot`)
+   merges by policy when gate G7 passes ([`scripts/autopilot.py`](../scripts/autopilot.py)
+   `decide`): the issue is not Critical, no protected path of
+   [`policy/autonomy.yml`](../policy/autonomy.yml) changes, the review does
+   not block and its description is true, risk and complexity are within the
+   `human-issue` lane, the Spec is complete and every criterion's test exists
+   at the head; it is labelled `merged-by:policy`. While the review blocks,
+   the autopilot fixes and pushes, up to three rounds, then hands it to a
+   person (`needs-human`). Any other pull request: a human, with [`scripts/squash-merge.sh`](../scripts/squash-merge.sh)
    `<owner/repo> <number>` (description verbatim, co-authors kept), or
    GitHub's auto-merge when the floor is low, the verdict is low risk and low
    complexity, nothing blocks, the author is trusted and the policy says

@@ -487,3 +487,16 @@ jobs:
             gh issue close "$n" --repo "$GITHUB_REPOSITORY" --reason "not planned" >/dev/null
             echo "Closed #$n."
           done
+
+  # When a person accepts an issue: the autopilot (#83) works it to a pull
+  # request, if the autopilot is on and the issue is ready (autopilot.yml
+  # decides both). Here because this caller inherits the secrets.
+  autopilot:
+    if: github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'accepted' && github.event.sender.type != 'Bot'
+    permissions: {}
+    uses: DiluxOne/.github/.github/workflows/autopilot.yml@v5
+    with:
+      mode: start
+      issue: ${{ format('{0}', github.event.issue.number) }}
+      central-ref: ${{ inputs.central-ref }}
+    secrets: inherit
