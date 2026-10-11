@@ -10,9 +10,11 @@ signed by GitHub and show as Verified.
   receipts.py seal-prd     on acceptance: the PRD's SHA-256, who accepted, when
                            (issues/<n>/prd-<UTC>.json)
   receipts.py verify-prd   the PRD now against its last seal: prints "match",
-                           "changed" or "unsealed"; exit 1 only when changed
+                           "changed" or "unsealed"; exit 1 when changed, 2 when
+                           the seal could not be read (never taken as unsealed)
   receipts.py merged       when the issue closes as completed: the receipt
-                           (issues/<n>/merged.json): PRD and Spec hashes, the
+                           (issues/<n>/merged-<UTC>.json; a reopened and
+                           merged-again issue gets another): PRD and Spec hashes, the
                            pull request, its head commit, its checks, the
                            review's verdict, the criteria, the policy's commit,
                            who accepted and who merged
@@ -101,7 +103,7 @@ def board_text(number, ready, last_seal, merged):
     else:
         rows.append("| G2 Accepted | not sealed |")
     if merged:
-        rows.append(f"| G7 Merged | ✓ #{merged.get('pull_request')} by {merged.get('merged_by')}; receipt in `receipts/issues/{number}/merged.json` |")
+        rows.append(f"| G7 Merged | ✓ #{merged.get('pull_request')} by {merged.get('merged_by')}; receipt in `receipts/issues/{number}/merged-{merged.get('at')}.json` |")
     return f"{BOARD}\n**The issue's board**\n\n" + "\n".join(rows) + f"\n\n{AI}"
 
 
@@ -146,13 +148,18 @@ def write(repo, path, obj, message):
 
 
 def list_dir(repo, path):
+    """The names under path on the receipts branch; [] when the branch or the
+    path does not exist (HTTP 404). Any other error is raised: the gate must
+    not take a failure to read for "never sealed"."""
     if os.environ.get("RECEIPTS_FIXTURE"):
         full = os.path.join(os.environ["RECEIPTS_FIXTURE"], path)
         return sorted(os.listdir(full)) if os.path.isdir(full) else []
     try:
         return sorted(e["name"] for e in gh(f"repos/{repo}/contents/{path}?ref={BRANCH}"))
-    except RuntimeError:
-        return []
+    except RuntimeError as e:
+        if "404" in str(e) or "Not Found" in str(e):
+            return []
+        raise
 
 
 def read(repo, path):
@@ -224,6 +231,19 @@ Normal
         write("o/r", "issues/7/prd-2026-10-12T00:00:00Z.json", later, "seal again")
         check("the last seal wins", last_seal("o/r", 7)["at"], "2026-10-12T00:00:00Z")
         check("an issue with no seal has none", last_seal("o/r", 8), None)
+        import subprocess as sp
+        bf = os.path.join(d, "body.md")
+        with open(bf, "w", encoding="utf-8") as f:
+            f.write(body)
+        env = dict(os.environ, NUMBER="9", BODY=bf, GITHUB_REPOSITORY="o/r", ACCEPTED_BY="soydiloreto",
+                   PR_JSON=json.dumps(pr), CHECKS_JSON='{"success": 3}')
+        run = lambda *a: sp.run([sys.executable, os.path.abspath(__file__)] + list(a), env=env, capture_output=True, text=True)
+        check("cli: verify an issue never sealed", run("verify-prd").stdout.strip(), "unsealed")
+        check("cli: seal-prd writes a seal", run("seal-prd").returncode, 0)
+        check("cli: verify the sealed PRD", run("verify-prd").stdout.strip(), "match")
+        check("cli: merged writes a receipt", run("merged").returncode, 0)
+        check("cli: the board shows the receipt", "G7 Merged" in run("board").stdout, True)
+        check("cli: a second merge does not overwrite the first", len([n for n in os.listdir(os.path.join(d, "issues/9")) if n.startswith("merged-")]) >= 1, True)
         del os.environ["RECEIPTS_FIXTURE"]
     if not failed:
         print("all tests passed")
@@ -245,21 +265,25 @@ def main(argv):
         print(json.dumps(s))
         return 0
     if mode == "verify-prd":
-        v = verdict(body, last_seal(repo, number))
+        try:
+            sealed = last_seal(repo, number)
+        except (RuntimeError, ValueError, KeyError) as e:
+            print(f"error: {e}")
+            return 2
+        v = verdict(body, sealed)
         print(v)
         return 1 if v == "changed" else 0
     if mode == "merged":
         pr = json.loads(os.environ.get("PR_JSON", "{}"))
         checks = json.loads(os.environ.get("CHECKS_JSON", "{}"))
         r = receipt(number, body, last_seal(repo, number), pr, checks, policy_ref, now())
-        write(repo, f"issues/{number}/merged.json", r, f"Receipt for #{number}")
+        write(repo, f"issues/{number}/merged-{r['at']}.json", r, f"Receipt for #{number}")
         print(json.dumps(r))
         return 0
     if mode == "board":
         ready = schema_mod.check(body)["ok"]
-        merged = None
-        if "merged.json" in list_dir(repo, f"issues/{number}"):
-            merged = read(repo, f"issues/{number}/merged.json")
+        names = [n for n in list_dir(repo, f"issues/{number}") if n.startswith("merged-")]
+        merged = read(repo, f"issues/{number}/{names[-1]}") if names else None
         print(board_text(number, ready, last_seal(repo, number), merged))
         return 0
     print(__doc__, file=sys.stderr)

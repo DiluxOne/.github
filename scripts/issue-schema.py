@@ -27,7 +27,6 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
 FORM = os.path.join(ROOT, ".github", "ISSUE_TEMPLATE", "task.yml")
-HEADING = re.compile(r"^### (.+?)\s*$")
 # Only the organisation's exact markers: a lane's run (policy/autonomy.yml).
 MARKER = re.compile(r"^\s*<!--\s*dx-lane:\s*[a-z0-9-]+\s+run:\s*https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/actions/runs/\d+\s*-->\s*$")
 # The AI line names a model and its maker, nothing else, and only closes the issue.
@@ -67,9 +66,11 @@ def parse(body):
     for line in lines:
         if line.lstrip().startswith(("```", "~~~")):
             fenced = not fenced
-        m = None if fenced else HEADING.match(line)
-        if m:
-            sections.append([m.group(1).strip(), []])
+        # A plain prefix test, not a regex: a hostile line of spaces costs
+        # nothing.
+        heading = line[4:].strip() if (not fenced and line.startswith("### ")) else None
+        if heading:
+            sections.append([heading, []])
         elif sections:
             sections[-1][1].append(line)
         elif line.strip() and not MARKER.match(line):

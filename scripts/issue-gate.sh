@@ -90,12 +90,13 @@ needed_types() {
 }
 
 # Issue $2's PRD against its last seal on the receipts branch: prints match,
-# changed or unsealed (scripts/receipts.py); fails only when changed.
+# changed or unsealed (scripts/receipts.py); exits 1 when changed and 2 when
+# the seal could not be read.
 prd_seal() {
   local body
   body=$(mktemp)
   jq -r --argjson n "$2" '.data.repository.pullRequest.closingIssuesReferences.nodes[] | select(.number == $n) | .body // ""' "$1" > "$body"
-  NUMBER=$2 BODY=$body python3 "$(dirname "${BASH_SOURCE[0]}")/receipts.py" verify-prd 2>/dev/null
+  NUMBER=$2 BODY=$body python3 "$(dirname "${BASH_SOURCE[0]}")/receipts.py" verify-prd
   local rc=$?
   rm -f "$body"
   return "$rc"
@@ -159,10 +160,14 @@ check() {
       ok)
         # Its PRD must still be the one sealed when it was accepted (#81):
         # an edit after acceptance needs a new acceptance.
-        if seal=$(prd_seal "$answer" "$n") || [ "$seal" != changed ]; then
-          echo "#$n is accepted${seal:+ (PRD: $seal)}."; ok=1
-        else
+        # Fails closed: a seal that cannot be read is not "never sealed".
+        rc=0; seal=$(prd_seal "$answer" "$n") || rc=$?
+        if [ "$rc" = 0 ]; then
+          echo "#$n is accepted (PRD: $seal)."; ok=1
+        elif [ "$rc" = 1 ]; then
           echo "#$n's PRD changed after it was accepted; a maintainer accepts it again (remove and add \"$LABEL\") to seal the new text."
+        else
+          echo "#$n's sealed PRD could not be read ($seal); re-run this check."
         fi ;;
       other-repo) echo "#$n is in another repository; the issue must be in this one." ;;
       closed) echo "#$n is closed; the issue must be open." ;;
