@@ -304,7 +304,8 @@ def main(argv):
         if not sealed:
             print("unsealed")
             return 1
-        v = "match" if sealed.get("spec_sha256") == spec_hash(body) else "changed"
+        live = spec_hash(body)
+        v = "match" if live is not None and sealed.get("spec_sha256") == live else "changed"
         print(v)
         return 0 if v == "match" else 1
     if mode == "verify-prd":
