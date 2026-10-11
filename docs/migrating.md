@@ -6,6 +6,8 @@ What a repository changes to move from one major of the shared workflows to the 
 
 `v5` moves the pull request pipeline to the organisation and reads an issue's native Type.
 
+Within `v5`, from the version that brings the autonomy policy (#79): `conventions.yml` asks for `actions: read`, to read the run that opened a lane's issue. The organisation's pipeline (`org-pull-request.yml`) already grants it, so no repository changes anything; one that called `conventions.yml` from a workflow of its own would add `actions: read` to that job.
+
 1. Open the issue for it (the maintenance-task form) and have it accepted; set the native Type of every open issue a pull request closes (a `type:*` label no longer counts).
 2. Delete `.github/workflows/pull-request-edited.yml`, and `pull-request.yml` unless it has jobs of its own: for a plugin, keep only `checks`, `tests` and `weekly-failure` (the `plugin-checks-wp.yml` template). Move `retired-names` from the callers to `.github/review-policy.yml`.
 3. Delete what the organisation provides: the issue forms, the pull request template, `SECURITY.md`, `CONTRIBUTING.md` unless it has something of its own. Keep `.github/CODEOWNERS`, `dependabot.yml` and the review policy.

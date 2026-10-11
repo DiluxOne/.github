@@ -28,10 +28,14 @@ section() {
 }
 
 digest() { # accepted rows, merged rows, public names, since
-  local out="" p1 p2 tmp
+  local out p1 p2 tmp
   tmp=$(mktemp)
-  out+=$(section accepted-by:policy "$3" <<<"$1" 3>"$tmp"); p1=$(cat "$tmp")
-  out+=$(section merged-by:policy "$3" <<<"$2" 3>"$tmp"); p2=$(cat "$tmp")
+  local a m
+  a=$(section accepted-by:policy "$3" <<<"$1" 3>"$tmp"); p1=$(cat "$tmp")
+  m=$(section merged-by:policy "$3" <<<"$2" 3>"$tmp"); p2=$(cat "$tmp")
+  # $( ) drops trailing newlines: join the two with a blank line between.
+  out=$a
+  [ -z "$m" ] || out+="${out:+$'\n\n'}$m"
   rm -f "$tmp"
   [ -n "$out" ] || out="Nothing in a public repository was accepted or merged by policy since $4."
   local private=$((p1 + p2))
@@ -52,6 +56,9 @@ if [ "${1:-}" = --test ]; then
   got=$(digest '{"url":"u2","title":"x","repository":{"nameWithOwner":"DiluxOne/secret"}}' "" "$pub" 2026-10-04)
   check "a label with only private entries has no heading" "$(grep -c 'accepted-by:policy' <<<"$got")" 0
   check "a repository named like a public one's prefix stays private" "$(digest '{"url":"u","title":"t","repository":{"nameWithOwner":"DiluxOne/.github-private"}}' "" "$pub" d | grep -c 'github-private')" 0
+  m='{"url":"u9","title":"merged one","repository":{"nameWithOwner":"DiluxOne/.github"}}'
+  got=$(digest "$a" "$m" "$pub" d)
+  check "both sections: the second heading starts its own line" "$(grep -c '^\*\*merged-by:policy\*\*$' <<<"$got")" 1
   check "an empty week says so" "$(digest "" "" "$pub" 2026-10-04)" "Nothing in a public repository was accepted or merged by policy since 2026-10-04."
   [ "$fail" = 0 ] && echo "all tests passed"
   exit "$fail"
