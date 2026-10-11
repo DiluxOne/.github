@@ -33,7 +33,7 @@ flowchart LR
     G -- "any no" --> I["👤 A person merges"]
     H --> R{"🔐 Release approved<br/>by a person?"}
     I --> R
-    R -- "approved" --> J["📦 Tag X.Y.Z<br/>→ wordpress.org"]
+    R -- "approved" --> J["📦 Tag X.Y.Z<br/>→ production, published"]
     R -- "not yet" --> W["Waits on main,<br/>nothing published"]
 ```
 
