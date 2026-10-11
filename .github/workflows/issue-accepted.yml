@@ -141,16 +141,22 @@ jobs:
           NUMBER: ${{ github.event.issue.number }}
         run: |
           set -euo pipefail
-          result=$(printf '%s' "$BODY" | python3 .dx-central/scripts/issue-schema.py check || true)
+          # Exit 1 is "not ready" with its reasons (each in code, so text the
+          # issue controls cannot mention anyone or render a link); anything else is the
+          # checker failing, which must fail this job, not blame the issue.
+          rc=0; result=$(printf '%s' "$BODY" | python3 .dx-central/scripts/issue-schema.py check) || rc=$?
+          if [ "$rc" -gt 1 ] || ! jq -e 'has("ok")' <<<"$result" >/dev/null 2>&1; then
+            echo "::error::The schema check itself failed (exit $rc); nothing said on the issue."; exit 1
+          fi
           if [ "$(jq -r .ok <<<"$result")" = true ]; then
             text="**Issue ready (G1):** the PRD has every section of the schema ($(jq -r '.criteria | length' <<<"$result") acceptance criteria)."
           else
-            text="**Issue not ready (G1):** the PRD does not follow the schema yet (policy/issue-schema.yml in DiluxOne/.github). The autopilot will not start until it does:"$'\n\n'"$(jq -r '.errors[] | "- " + .' <<<"$result")"
+            text="**Issue not ready (G1):** the PRD does not follow the schema yet (policy/issue-schema.yml in DiluxOne/.github). The autopilot will not start until it does:"$'\n\n'"$(jq -r '.errors[] | "- `" + gsub("`"; "\u0027") + "`"' <<<"$result")"
           fi
           echo "$text"
           [ -n "$GH_TOKEN" ] || { echo "No bot key: the result stays in this log."; exit 0; }
           body="<!-- dx-g1 -->"$'\n'"$text"$'\n\n'"🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
-          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '.[] | select(.body | startswith("<!-- dx-g1 -->")) | .id' | tail -1)
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '.[] | select(.user.type == "Bot" and (.user.login | startswith("dilux-bot")) and (.body | startswith("<!-- dx-g1 -->"))) | .id' | tail -1)
           if [ -n "$id" ]; then
             gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$body" >/dev/null
           else

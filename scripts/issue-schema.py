@@ -31,6 +31,7 @@ HEADING = re.compile(r"^### (.+?)\s*$")
 MARKER = re.compile(r"^\s*<!--\s*dx-[^>]*-->\s*$")
 AI_LINE = re.compile(r"^\s*🤖 AI-(generated|assisted) · .+$")
 COMMENT = re.compile(r"<!--.*?-->", re.S)
+GWT = re.compile(r"\bgiven\b.*\bwhen\b.*\bthen\b", re.I)
 CRITERION = re.compile(r"^(?:-\s+(?:\[[ xX]\]\s+)?)?(C\d+):\s+\S")
 EMPTY = {"", "_no response_"}
 
@@ -60,8 +61,11 @@ def parse(body):
     outside any section (before the first heading) that are not markers."""
     sections, stray = [], []
     lines = (body or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    fenced = False
     for line in lines:
-        m = HEADING.match(line)
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+        m = None if fenced else HEADING.match(line)
         if m:
             sections.append([m.group(1).strip(), []])
         elif sections:
@@ -142,6 +146,9 @@ def check(body, stage="prd", sch=None):
             if None in found:
                 errors.append(f"### {h}: every line is a criterion with its ID, like 'C1: Given …, when …, then …'")
             ids = [i for i in found if i]
+            vague = [i for i, line in zip(found, [l for l in t.split("\n") if l.strip()]) if i and not GWT.search(line)]
+            if vague:
+                errors.append(f"### {h}: {', '.join(vague)} not in the form 'Given …, when …, then …'")
             dup = sorted({i for i in ids if ids.count(i) > 1})
             if dup:
                 errors.append(f"### {h}: repeated IDs {', '.join(dup)}")
@@ -237,6 +244,9 @@ A class on <html> and a cookie.
     check_("passes: criticality with a full stop", check(good.replace("Normal\n", "Normal.\n"))["ok"], True)
     check_("fails: criticality not one of the values", check(good.replace("Normal\n", "Urgent\n"))["ok"], False)
     check_("fails: a section twice", check(good + "\n### Problem\n\nAgain.\n")["ok"], False)
+    check_("fails: a criterion not in Given/when/then form", check(good.replace("Given a dark page, when they reload, then it stays dark.", "It stays dark."))["ok"], False)
+    check_("fails: given/when/then out of order", check(good.replace("Given a dark page, when they reload, then it stays dark.", "Then it stays dark when given a reload."))["ok"], False)
+    check_("passes: a heading inside a code block is text", check(good.replace("- A toggle in the header.", "- A toggle in the header.\n\n```\n### not a section\n```"))["ok"], True)
     check_("passes: a complete Spec at G3", check(spec, "spec")["ok"], True)
     check_("fails: a criterion with no test at G3", check(spec.replace("- C2 → tests/e2e/persist.spec.ts\n", ""), "spec")["ok"], False)
     check_("fails: no Spec at G3", check(good, "spec")["ok"], False)
@@ -249,6 +259,12 @@ A class on <html> and a cookie.
     check_("hash: the Spec does not change the PRD's", h(good), h(spec))
     check_("hash: a word changes it", h(good) == h(good.replace("dark mode", "light mode")), False)
     check_("hash: the Spec's own", bool(part_text(spec, "spec")), True)
+    import subprocess as sp
+    me = os.path.abspath(__file__)
+    cli = lambda args, text: sp.run([sys.executable, me] + args, input=text, capture_output=True, text=True)
+    check_("cli: check passes a complete PRD", cli(["check"], good).returncode, 0)
+    check_("cli: check --stage spec fails without a Spec", cli(["check", "--stage", "spec"], good).returncode, 1)
+    check_("cli: hash prints the PRD's", cli(["hash", "prd"], good).stdout.strip(), h(good))
     sch = schema()
     try:
         import yaml  # noqa: F401
