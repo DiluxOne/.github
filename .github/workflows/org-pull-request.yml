@@ -73,7 +73,10 @@ jobs:
   # rounds it hands the pull request to a person.
   autopilot-fix:
     needs: review
-    if: always() && github.repository != 'DiluxOne/.github' && needs.review.outputs.blocking == 'true' && contains(github.event.pull_request.labels.*.name, 'autopilot')
+    # Only dilux-bot's own pull requests, and only for a new commit (an edit
+    # of the description keeps the review's verdict and must not spend a
+    # round).
+    if: always() && github.repository != 'DiluxOne/.github' && needs.review.outputs.blocking == 'true' && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == 'dilux-bot[bot]' && github.event.action != 'edited'
     permissions: {}
     uses: DiluxOne/.github/.github/workflows/autopilot.yml@v5
     with:

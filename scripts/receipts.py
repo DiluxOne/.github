@@ -124,28 +124,33 @@ def ensure_branch(repo):
     try:
         gh(f"repos/{repo}/git/ref/heads/{BRANCH}")
         return
-    except RuntimeError:
-        pass
+    except RuntimeError as e:
+        if "404" not in str(e) and "Not Found" not in str(e):
+            raise
     tree = gh("-X", "POST", f"repos/{repo}/git/trees", "--input", "-", data={"tree": [{
         "path": "README.md", "mode": "100644", "type": "blob",
         "content": "# Receipts\n\nSeals and receipts of this repository's issues, written by dilux-bot (DiluxOne/.github, scripts/receipts.py). Nobody else writes here, and nothing here is deleted or rewritten.\n"}]})
     commit = gh("-X", "POST", f"repos/{repo}/git/commits", "--input", "-", data={"message": "Receipts begin", "tree": tree["sha"], "parents": []})
-    gh("-X", "POST", f"repos/{repo}/git/refs", "--input", "-", data={"ref": f"refs/heads/{BRANCH}", "sha": commit["sha"]})
+    try:
+        gh("-X", "POST", f"repos/{repo}/git/refs", "--input", "-", data={"ref": f"refs/heads/{BRANCH}", "sha": commit["sha"]})
+    except RuntimeError as e:
+        # Another first write made it a moment ago: use that one.
+        if "already exists" not in str(e):
+            raise
 
 
 def write(repo, path, obj, message):
     if os.environ.get("RECEIPTS_FIXTURE"):
         full = os.path.join(os.environ["RECEIPTS_FIXTURE"], path)
+        if os.path.exists(full):
+            raise RuntimeError(f"{path} exists; a receipt is never overwritten")
         os.makedirs(os.path.dirname(full), exist_ok=True)
         with open(full, "w", encoding="utf-8") as f:
             json.dump(obj, f, indent=2)
         return
     ensure_branch(repo)
+    # Never an overwrite: without a sha, the API refuses a path that exists.
     payload = {"message": message, "branch": BRANCH, "content": base64.b64encode((json.dumps(obj, indent=2) + "\n").encode()).decode()}
-    try:
-        payload["sha"] = gh(f"repos/{repo}/contents/{path}?ref={BRANCH}")["sha"]
-    except RuntimeError:
-        pass
     gh("-X", "PUT", f"repos/{repo}/contents/{path}", "--input", "-", data=payload)
 
 
@@ -232,6 +237,11 @@ Normal
         later = dict(s, prd_sha256="x", at="2026-10-12T00:00:00Z")
         write("o/r", "issues/7/prd-2026-10-12T00:00:00Z.json", later, "seal again")
         check("the last seal wins", last_seal("o/r", 7)["at"], "2026-10-12T00:00:00Z")
+        try:
+            write("o/r", "issues/7/prd-2026-10-12T00:00:00Z.json", s, "again")
+            check("a seal is never overwritten", "overwrote", "refused")
+        except RuntimeError:
+            check("a seal is never overwritten", "refused", "refused")
         check("an issue with no seal has none", last_seal("o/r", 8), None)
         import subprocess as sp
         bf = os.path.join(d, "body.md")
