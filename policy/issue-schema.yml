@@ -1,0 +1,72 @@
+# The issue schema: the sections an issue's PRD and Spec are made of, in
+# order, and what each must hold (the plan, #78; gate G1, and G3 for the
+# Spec). One source: scripts/issue-schema.py checks an issue against it and
+# writes the maintenance-task form from it (.github/ISSUE_TEMPLATE/task.yml,
+# never edited by hand; CI fails when the form and this file disagree).
+#
+# An issue is "### " sections, one after another:
+#   1. the report, if any: the sections the reporters' forms produce (a bug
+#      report's "What happened?", a feature request's "What problem would
+#      this solve?"…). Context for people; the agent never reads it;
+#   2. the PRD, every section below in this order: what to build and why,
+#      written or completed by the maintainer (or an agent with them) and
+#      sealed when the issue is accepted (#81);
+#   3. the Spec, written by the agent at G3: how, which files, which test
+#      proves each criterion.
+# Nothing else: text before the first section, an unknown heading or a
+# section out of order fails the check. The only lines allowed outside a
+# section's text are the organisation's markers (<!-- dx-… -->) and the AI
+# line at the end.
+
+prd:
+  - id: problem
+    heading: Problem
+    description: What is wrong or missing today, and for whom. Facts, not the solution.
+    required: true
+  - id: scope
+    heading: Scope
+    description: What this issue changes, as a list.
+    required: true
+  - id: out-of-scope
+    heading: Out of scope
+    description: What it deliberately does not change.
+    required: true
+  - id: criteria
+    heading: Acceptance criteria
+    description: "One line per criterion, each with its ID and a verifiable form: C1: Given …, when …, then …"
+    required: true
+    format: criteria
+  - id: criticality
+    heading: Criticality
+    description: Normal, or Critical (a person merges it).
+    required: true
+    format: one-of
+    values: [Normal, Critical]
+
+spec:
+  - id: approach
+    heading: "Spec: approach"
+    description: How the change is made, in a few lines.
+    required: true
+  - id: files
+    heading: "Spec: files"
+    description: The files it touches.
+    required: true
+  - id: tests
+    heading: "Spec: tests"
+    description: "One line per criterion: C1 → the test that proves it."
+    required: true
+    format: covers-criteria
+
+# The reporters' forms' sections, allowed before the PRD.
+report:
+  - What happened?
+  - Steps to reproduce
+  - Version
+  - Logs or screenshots
+  - Where?
+  - What is missing, wrong or unclear?
+  - What problem would this solve?
+  - What would you like to happen?
+  - What do you do today instead?
+  - What and why

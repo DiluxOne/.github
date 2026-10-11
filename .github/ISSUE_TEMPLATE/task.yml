@@ -1,15 +1,52 @@
+# Written by scripts/issue-schema.py from policy/issue-schema.yml; edit those, not this file.
 name: 🧰 Maintenance task
 description: For maintainers. A refactor, a test, a dependency, CI or tooling, with no change a user would notice.
 type: Task
 body:
-  - type: markdown
-    attributes:
-      value: |
-        Every change starts as an accepted issue, maintenance included. A change a user would notice is a bug report or a feature request instead.
-  - type: textarea
-    id: what
-    attributes:
-      label: What and why
-      description: What the task changes, and why it is worth doing now.
-    validations:
-      required: true
+- type: markdown
+  attributes:
+    value: 'Every change starts as an accepted issue, maintenance included. A change a user would notice is a bug report or a feature request instead.
+
+
+      These are the PRD''s sections (policy/issue-schema.yml); the Spec is added by the agent before any code.
+
+      '
+- type: textarea
+  id: problem
+  attributes:
+    label: Problem
+    description: What is wrong or missing today, and for whom. Facts, not the solution.
+  validations:
+    required: true
+- type: textarea
+  id: scope
+  attributes:
+    label: Scope
+    description: What this issue changes, as a list.
+  validations:
+    required: true
+- type: textarea
+  id: out-of-scope
+  attributes:
+    label: Out of scope
+    description: What it deliberately does not change.
+  validations:
+    required: true
+- type: textarea
+  id: criteria
+  attributes:
+    label: Acceptance criteria
+    description: 'One line per criterion, each with its ID and a verifiable form: C1: Given …, when …, then …'
+  validations:
+    required: true
+- type: dropdown
+  id: criticality
+  attributes:
+    label: Criticality
+    description: Normal, or Critical (a person merges it).
+    options:
+    - Normal
+    - Critical
+    default: 0
+  validations:
+    required: true
