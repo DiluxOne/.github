@@ -461,14 +461,14 @@ jobs:
           if [ "$(rank "$FLOOR")" -gt "$(rank "$model_risk")" ]; then risk=$FLOOR; fi
 
           # The type of the change is the review's, read from the diff, unless a
-          # person set a type:* label by hand: then theirs stands. The bot
-          # only ever replaces a type:* label it set itself.
-          # shellcheck disable=SC2016 # jq variable, not a shell one.
-          human=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/timeline" --paginate | jq -r -s --arg bot "$BOT" '[.[][] | select(.event == "labeled" and ((.label.name // "") | startswith("type:")) and .actor.login != $bot) | .label.name] | last // ""')
+          # person set a type:* label by hand: then theirs stands
+          # (scripts/review-type.sh). The bot only ever replaces a type:* label
+          # it set itself.
+          gh api "repos/$GITHUB_REPOSITORY/issues/$PR/timeline" --paginate > "$RUNNER_TEMP/timeline.json"
           current=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(startswith("type:"))] | join(",")')
-          if [ -n "$human" ] && [[ ",$current," == *",$human,"* ]]; then
-            type=${human#type:}
-            echo "A person set $human; the review's reading ($(jq -r .type <<<"$OUT")) is recorded, the label stands."
+          type=$(bash .dx-central/scripts/review-type.sh "$type" "$BOT" "$RUNNER_TEMP/timeline.json" "$current")
+          if [ "$type" != "$(jq -r '.type // "chore"' <<<"$OUT")" ]; then
+            echo "A person set type:$type; the review's reading ($(jq -r .type <<<"$OUT")) is recorded, the label stands."
           fi
           { echo "risk=$risk"; echo "complexity=$complexity"; echo "blocking=$blocking"; echo "type=$type"; echo "description_ok=$dmatch"; } >> "$GITHUB_OUTPUT"
 
@@ -480,9 +480,17 @@ jobs:
           for t in breaking feat fix perf refactor style docs test ci build chore revert; do
             gh label create "type:$t" --color 0075CA --description "The kind of change, read from the diff by the Claude review" --repo "$GITHUB_REPOSITORY" --force >/dev/null
           done
-          current=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name|select(startswith("risk:") or startswith("complexity:") or startswith("type:") or . == "review:full")]|join(",")')
-          [ -n "$current" ] && gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label "$current" >/dev/null
-          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label "risk:$risk,complexity:$complexity,type:$type" >/dev/null
+          # Only what changes is touched: a label already right stays as it
+          # is, so a person's type:* label stays theirs (scripts/review-type.sh
+          # reads who put each label on last).
+          want="risk:$risk,complexity:$complexity,type:$type"
+          have=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name|select(startswith("risk:") or startswith("complexity:") or startswith("type:") or . == "review:full")]|join(",")')
+          # shellcheck disable=SC2016 # jq variables, not shell ones.
+          stale=$(jq -nr --arg have "$have" --arg want "$want" '($want | split(",")) as $w | [$have | split(",")[] | select(. != "" and (. as $l | $w | index($l) | not))] | join(",")')
+          # shellcheck disable=SC2016 # jq variables, not shell ones.
+          missing=$(jq -nr --arg have "$have" --arg want "$want" '($have | split(",")) as $h | [$want | split(",")[] | select(. as $l | $h | index($l) | not)] | join(",")')
+          [ -z "$stale" ] || gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label "$stale" >/dev/null
+          [ -z "$missing" ] || gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label "$missing" >/dev/null
 
           # Only threads that really are the bot's open ones; resolved in the
           # next step, with a token the model never held.
@@ -567,15 +575,23 @@ jobs:
         # author's; only the type token (and the `!` of a breaking change) is
         # corrected. A Dependabot title past the limit is also shortened
         # (scripts/conventions.sh, which lets it through for this step to fix).
+        # The labels are read again here: a person's type:* label, added since
+        # the verdict or over a reused one, wins (scripts/review-type.sh).
         if: ${{ !cancelled() && steps.resolver.outcome == 'success' && steps.verdict.outputs.type != '' }}
         env:
           GH_TOKEN: ${{ steps.resolver.outputs.token }}
           PR: ${{ github.event.pull_request.number }}
-          TYPE: ${{ steps.verdict.outputs.type }}
+          REVIEW_TYPE: ${{ steps.verdict.outputs.type }}
+          BOT: ${{ steps.bot.outputs.app-slug }}[bot]
+          # The verdict step's token, which reads the timeline there too.
+          TIMELINE_TOKEN: ${{ steps.bot.outputs.token }}
           AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
           BRANCH: ${{ github.head_ref }}
         run: |
           set -euo pipefail
+          GH_TOKEN=$TIMELINE_TOKEN gh api "repos/$GITHUB_REPOSITORY/issues/$PR/timeline" --paginate > "$RUNNER_TEMP/timeline.json"
+          labels=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(startswith("type:"))] | join(",")')
+          TYPE=$(bash .dx-central/scripts/review-type.sh "$REVIEW_TYPE" "$BOT" "$RUNNER_TEMP/timeline.json" "$labels")
           current=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json title --jq .title)
           title=$current
           if [ "$AUTHOR_TYPE" = Bot ] && [[ "$BRANCH" == dependabot/* ]]; then
