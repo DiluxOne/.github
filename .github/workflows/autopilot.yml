@@ -19,8 +19,12 @@ name: Autopilot
 #   mode: continue  called from issue-triage.yml when `autopilot:continue` is
 #                   added to the issue (by a person, or by this workflow when
 #                   a run ran out of turns or time with criteria left): the
-#                   agent resumes from the branch and the unticked boxes, up
-#                   to `autopilot-runs` runs per issue (5).
+#                   agent resumes from the branch and the unticked boxes (or,
+#                   every box ticked and still a draft, only runs the checks
+#                   and finishes), up to `autopilot-runs` runs per issue (5).
+#                   A person who took it back removes `needs-human` first.
+#                   The agent runs every command in the foreground: the run
+#                   ends when it stops, and nothing wakes it.
 #   mode: fix       called from org-pull-request.yml when the review of an
 #                   `autopilot` pull request blocks: one round of fixes,
 #                   pushed to its branch, which runs the pipeline again. After
