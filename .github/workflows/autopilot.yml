@@ -141,6 +141,9 @@ jobs:
             echo "The autopilot does not start: $why"
             echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
+          if [ "$MODE" = fix ] && gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | index("needs-human")' | grep -qv null; then
+            echo "#$PR is a person's now (needs-human): the autopilot stays out."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
           if [ "$MODE" = fix ]; then
             max=$(python3 .dx-central/scripts/autonomy.py policy | jq -r '."autopilot-rounds" // 3')
             if [ "$ROUND" -gt "$max" ]; then
@@ -185,6 +188,18 @@ jobs:
             echo "$eof"
           } >> "$GITHUB_OUTPUT"
 
+      # Counted before the agent runs: a round that fails or times out after
+      # pushing still counts, so the cap holds.
+      - name: Count the round
+        if: steps.may.outputs.go == 'true' && inputs.mode == 'fix'
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          PR: ${{ inputs.pr }}
+          ROUND: ${{ steps.what.outputs.round }}
+        run: |
+          gh label create "autopilot:round-$ROUND" --repo "$GITHUB_REPOSITORY" --color C5DEF5 --description "The autopilot's review rounds on this pull request" 2>/dev/null || true
+          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label "autopilot:round-$ROUND" >/dev/null
+
       - name: Claude works
         if: steps.may.outputs.go == 'true'
         timeout-minutes: 75
@@ -225,12 +240,3 @@ jobs:
             echo "::warning::No pull request closes #$NUMBER after the run; the agent said why on the issue, or a person takes it."
           fi
 
-      - name: Count the round
-        if: steps.may.outputs.go == 'true' && inputs.mode == 'fix'
-        env:
-          GH_TOKEN: ${{ steps.bot.outputs.token }}
-          PR: ${{ inputs.pr }}
-          ROUND: ${{ steps.what.outputs.round }}
-        run: |
-          gh label create "autopilot:round-$ROUND" --repo "$GITHUB_REPOSITORY" --color C5DEF5 --description "The autopilot's review rounds on this pull request" 2>/dev/null || true
-          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label "autopilot:round-$ROUND" >/dev/null

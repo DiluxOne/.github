@@ -18,6 +18,16 @@ name: Auto-merge
 #     the description after that review);
 #   - the author is in the policy's trusted-authors list.
 #
+# A pull request dilux-bot opened and labelled `autopilot` (#83) is decided
+# by the autonomy policy instead, gate G7 (scripts/autopilot.py decide, from
+# DiluxOne/.github at `central-ref`): it closes exactly one issue, which is
+# not Critical; no protected path changes (every file, renames by their old
+# path too); the review does not block and its description is true; risk and
+# complexity are within the `human-issue` lane; the Spec is the one sealed at
+# G3; every criterion's test is a test file the pull request adds or changes.
+# It is labelled `merged-by:policy`. Auto-merge is switched off before that
+# decision, so a failure leaves nothing set to merge.
+#
 # The dilux-bot App enables it, so the resulting push to main triggers the
 # post-merge workflows (a GITHUB_TOKEN merge would not).
 #
@@ -118,8 +128,14 @@ jobs:
           # file's old path too, so a protected path cannot leave by a rename.
           gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/files"
           gh api "repos/$GITHUB_REPOSITORY/git/trees/$HEAD?recursive=1" --jq '.tree[] | select(.type == "blob") | .path' > "$RUNNER_TEMP/head"
+          export NUMBER="$issue"
           gh api "repos/$GITHUB_REPOSITORY/contents/.github/autonomy.yml?ref=$BASE" --jq .content 2>/dev/null | base64 -d > "$RUNNER_TEMP/repo-autonomy.yml" || : > "$RUNNER_TEMP/repo-autonomy.yml"
+          if [ "$(wc -l < "$RUNNER_TEMP/files")" -ge 3000 ]; then echo "A human merges this one: the file list may be cut at the API's 3000."; exit 0; fi
           export BODY="$RUNNER_TEMP/body.md" FILES="$RUNNER_TEMP/files" HEAD_FILES="$RUNNER_TEMP/head" REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml"
+          # The Spec decided on must be the one the autopilot sealed at G3.
+          if ! spec=$(NUMBER="$issue" python3 "$RUNNER_TEMP/central/scripts/receipts.py" verify-spec); then
+            echo "A human merges this one: the Spec is not the one sealed at G3 ($spec)."; exit 0
+          fi
           if why=$(python3 "$RUNNER_TEMP/central/scripts/autopilot.py" decide); then
             body=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq .body | tr -d '\r')
             gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --auto --squash --body "$body"

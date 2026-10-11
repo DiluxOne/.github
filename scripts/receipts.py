@@ -11,6 +11,8 @@ signed by GitHub and show as Verified.
                            (issues/<n>/prd-<UTC>.json)
   receipts.py seal-spec    at G3, when the autopilot wrote the Spec: its SHA-256
                            (issues/<n>/spec-<UTC>.json)
+  receipts.py verify-spec  the Spec now against its seal: exit 0 only on "match"
+                           (an autopilot merge needs the Spec it sealed)
   receipts.py verify-prd   the PRD now against its last seal: prints "match",
                            "changed" or "unsealed"; exit 1 when changed, 2 when
                            the seal could not be read (never taken as unsealed)
@@ -255,6 +257,7 @@ Normal
         check("cli: verify the sealed PRD", run("verify-prd").stdout.strip(), "match")
         check("cli: merged writes a receipt", run("merged").returncode, 0)
         check("cli: the board shows the receipt", "G7 Merged" in run("board").stdout, True)
+        check("cli: verify-spec with no Spec seal fails", run("verify-spec").returncode, 1)
         import time
         time.sleep(1.1)
         run("merged")
@@ -291,6 +294,19 @@ def main(argv):
         write(repo, f"issues/{number}/spec-{at}.json", s, f"Seal #{number}'s Spec")
         print(json.dumps(s))
         return 0
+    if mode == "verify-spec":
+        try:
+            seals = [n for n in list_dir(repo, f"issues/{number}") if n.startswith("spec-")]
+            sealed = read(repo, f"issues/{number}/{seals[-1]}") if seals else None
+        except Exception as e:  # noqa: BLE001
+            print(f"error: {e}")
+            return 2
+        if not sealed:
+            print("unsealed")
+            return 1
+        v = "match" if sealed.get("spec_sha256") == spec_hash(body) else "changed"
+        print(v)
+        return 0 if v == "match" else 1
     if mode == "verify-prd":
         try:
             sealed = last_seal(repo, number)
