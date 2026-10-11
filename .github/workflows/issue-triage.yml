@@ -46,8 +46,8 @@ name: Issue triage
 # GitHub's issue search (every issue opened, a bot's too, so the count errs
 # high; a just-opened issue may not be indexed yet, so it can also err low by
 # a few); past that, or when the count fails, an issue gets needs-triage and
-# waits for a person,
-# so a flood of issues cannot run up the bill. The brief and the labelling
+# waits for a person. The runs go on the subscription, so the cap (10000)
+# only stops a flood, not a busy day. The brief and the labelling
 # are scripts/triage-brief.sh and scripts/triage-act.sh, shared by both jobs.
 #
 # On a schedule, the same workflow closes `needs-info` issues nobody answered
@@ -92,7 +92,7 @@ on:
       max-per-day:
         description: Triage runs in 24 hours at most (one per issue a person opens, counted as it opens); past that, an issue gets needs-triage and waits for a person.
         type: number
-        default: 20
+        default: 10000
       central-ref:
         description: Ref of DiluxOne/.github to read the policy from.
         type: string
@@ -161,7 +161,8 @@ jobs:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           MAX: ${{ inputs.max-per-day }}
           NUMBER: ${{ github.event.issue.number }}
-        # The issues opened in the last 24 hours, this one aside, stand for
+        # The issues opened in the last 24 hours (the search's total), this one
+        # aside, stand for
         # the triage runs before it: a failed classification counts too, and
         # a bot's issue (which starts none) as well, so the count errs high.
         # When GitHub cannot say, the issue waits for a person: the cap
@@ -169,7 +170,7 @@ jobs:
         run: |
           set -euo pipefail
           since=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)
-          if n=$(gh api -X GET search/issues -f q="repo:$GITHUB_REPOSITORY is:issue created:>=$since" -f per_page=100 --jq "[.items[] | select(.number != $NUMBER)] | length" 2>/dev/null) && [[ "$n" =~ ^[0-9]+$ ]]; then
+          if n=$(gh api -X GET search/issues -f q="repo:$GITHUB_REPOSITORY is:issue created:>=$since" -f per_page=1 --jq '[.total_count - 1, 0] | max' 2>/dev/null) && [[ "$n" =~ ^[0-9]+$ ]]; then
             :
           else
             n=$MAX; echo "::warning::Could not count today's issues; #$NUMBER waits for a person."

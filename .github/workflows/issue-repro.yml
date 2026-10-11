@@ -36,7 +36,8 @@ name: Issue reproduction
 #           write job produced it, opens the draft pull request, labels and
 #           comments. It never executes repository code (hooks off).
 # Claude may write only under tests/Unit/Repro/; anything else is discarded.
-# At most `max-per-day` attempts a day. The `high` reviewer of the policy
+# At most `max-per-day` runs a day (10000: the runs go on the
+# subscription, so it only stops a flood). The `high` reviewer of the policy
 # writes the test.
 #
 #   on:
@@ -52,9 +53,9 @@ on:
   workflow_call:
     inputs:
       max-per-day:
-        description: Reproduction attempts per day across the repository.
+        description: Runs of an issues event per day across the repository before a reproduction waits (a flood stop).
         type: number
-        default: 5
+        default: 10000
       php-version:
         description: PHP the test runs on.
         type: string
@@ -136,14 +137,11 @@ jobs:
             *) echo "::notice::$LOGIN has $role permission on this repository; only people who can write to it start a reproduction."; echo "run=false" >> "$GITHUB_OUTPUT"; exit 0 ;;
           esac
           today=$(date -u +%Y-%m-%d)
-          # Attempts, not runs: write jobs where the model actually ran today
-          # (their "Write the test" step completed), capped or empty ones aside.
-          n=0
-          for id in $(gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=issues&created=>=$today&per_page=100" --paginate --jq ".workflow_runs[] | select(.id != $GITHUB_RUN_ID) | .id"); do
-            n=$((n + $(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" --paginate --jq '[.jobs[] | select(.name | endswith("Write the test")) | .steps[]? | select(.name == "Write the test" and .conclusion != "skipped")] | length')))
-          done
+          # Every run of an issues event today counts, attempt or not: the
+          # count errs high, costs one listing, and the cap only stops a flood.
+          n=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=issues&created=>=$today&per_page=100" --paginate --jq ".workflow_runs[] | select(.id != $GITHUB_RUN_ID) | .id" | wc -l)
           if [ "$n" -ge "$MAX" ]; then
-            echo "::warning::$n reproduction attempts already ran today (cap $MAX); this one waits for tomorrow or for a person."
+            echo "::warning::$n issue runs already ran today (cap $MAX); this one waits for tomorrow or for a person."
             echo "run=false" >> "$GITHUB_OUTPUT"
           else
             echo "run=true" >> "$GITHUB_OUTPUT"

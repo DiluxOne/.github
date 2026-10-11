@@ -11,7 +11,8 @@ name: Issue accepted
 # request opened before its issue was accepted would otherwise stay red until
 # its next push. A bot's label starts nothing, as the gate ignores it anyway.
 # The same acceptance checks the issue's PRD against the issue schema (gate
-# G1, policy/issue-schema.yml) and says on the issue whether it is ready.
+# G1, policy/issue-schema.yml) and says on the issue whether it is ready,
+# and removes `needs-triage`: a person has looked at the issue.
 #
 #   on:
 #     issues:
@@ -185,6 +186,8 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s' "$BODY_TEXT" > "$RUNNER_TEMP/body.md"
+          # A person accepted it, so it was looked at: needs-triage goes.
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label needs-triage >/dev/null 2>&1 || true
           BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/receipts.py seal-prd
           board=$(BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/receipts.py board)
           id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '.[] | select(.user.type == "Bot" and (.user.login | startswith("dilux-bot")) and (.body | startswith("<!-- dx-board -->"))) | .id' | tail -1)
