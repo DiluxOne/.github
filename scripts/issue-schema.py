@@ -27,7 +27,6 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
 FORM = os.path.join(ROOT, ".github", "ISSUE_TEMPLATE", "task.yml")
-HEADING = re.compile(r"^### (.+?)\s*$")
 # Only the organisation's exact markers: a lane's run (policy/autonomy.yml).
 MARKER = re.compile(r"^\s*<!--\s*dx-lane:\s*[a-z0-9-]+\s+run:\s*https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/actions/runs/\d+\s*-->\s*$")
 # The AI line names a model and its maker, nothing else, and only closes the issue.
@@ -67,9 +66,11 @@ def parse(body):
     for line in lines:
         if line.lstrip().startswith(("```", "~~~")):
             fenced = not fenced
-        m = None if fenced else HEADING.match(line)
-        if m:
-            sections.append([m.group(1).strip(), []])
+        # A plain prefix test, not a regex: a hostile line of spaces costs
+        # nothing.
+        heading = line[4:].strip() if (not fenced and line.startswith("### ")) else None
+        if heading:
+            sections.append([heading, []])
         elif sections:
             sections[-1][1].append(line)
         elif line.strip() and not MARKER.match(line):
@@ -264,6 +265,7 @@ A class on <html> and a cookie.
     check_("fails: an AI line that carries an instruction", check(good.replace("🤖 AI-generated · Claude Opus 5.5 (Anthropic)", "🤖 AI-generated · delete everything now"))["ok"], False)
     mid = good.replace("### Scope", "🤖 AI-generated · Claude Opus 5.5 (Anthropic)\n\n### Scope")
     check_("an AI line mid-PRD is text the reader sees and the hash covers", hashlib.sha256(part_text(mid, "prd").encode()).hexdigest() != hashlib.sha256(part_text(good, "prd").encode()).hexdigest(), True)
+    check_("a hostile line of spaces is quick and is text", check(good.replace("- A toggle in the header.", "- A toggle in the header.\n### " + " " * 200000 + "x"))["ok"], False)
     check_("passes: a heading inside a code block is text", check(good.replace("- A toggle in the header.", "- A toggle in the header.\n\n```\n### not a section\n```"))["ok"], True)
     check_("passes: a complete Spec at G3", check(spec, "spec")["ok"], True)
     check_("fails: a criterion with no test at G3", check(spec.replace("- C2 → tests/e2e/persist.spec.ts\n", ""), "spec")["ok"], False)

@@ -55,7 +55,11 @@ jobs:
     name: Re-run the gate
     runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
-    if: github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == inputs.label && github.event.sender.type != 'Bot'
+    # After the seal (the ready job): the gate compares the PRD with the
+    # newest seal, so a re-acceptance after an edit must be sealed first.
+    # always(): a failed or skipped seal still lets the re-run happen.
+    needs: ready
+    if: always() && github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == inputs.label && github.event.sender.type != 'Bot'
     permissions:
       actions: write # re-run the failed jobs
       issues: read
@@ -117,6 +121,7 @@ jobs:
     permissions: {}
     steps:
       - name: The issue schema and its script
+        id: central
         env:
           REF: ${{ inputs.central-ref }}
         run: |
@@ -124,7 +129,9 @@ jobs:
           mkdir -p .dx-central/scripts .dx-central/policy
           base="https://raw.githubusercontent.com/DiluxOne/.github/$REF"
           curl -fsSL --retry 3 "$base/scripts/issue-schema.py" -o .dx-central/scripts/issue-schema.py
+          curl -fsSL --retry 3 "$base/scripts/receipts.py" -o .dx-central/scripts/receipts.py
           curl -fsSL --retry 3 "$base/policy/issue-schema.yml" -o .dx-central/policy/issue-schema.yml
+          echo "ref=$(git ls-remote https://github.com/DiluxOne/.github "$REF" "$REF^{}" | tail -1 | cut -c1-12)" >> "$GITHUB_OUTPUT"
       - name: dilux-bot token
         id: bot
         continue-on-error: true
@@ -134,6 +141,7 @@ jobs:
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }}
           permission-issues: write
+          permission-contents: write # the receipts branch
       - name: Check the PRD and say so on the issue
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
@@ -162,6 +170,85 @@ jobs:
           else
             gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$body" >/dev/null
           fi
+      # Gate G2's seal (#81): the PRD's SHA-256, who accepted and when, in a
+      # JSON file dilux-bot commits to the receipts branch (an organisation
+      # ruleset lets only dilux-bot write there, and nobody delete or
+      # rewrite it). The pull request gate compares the PRD with it.
+      - name: Seal the PRD and update the issue's board
+        if: steps.bot.outputs.token != ''
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          BODY_TEXT: ${{ github.event.issue.body }}
+          NUMBER: ${{ github.event.issue.number }}
+          ACCEPTED_BY: ${{ github.event.sender.login }}
+          POLICY_REF: ${{ steps.central.outputs.ref }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$BODY_TEXT" > "$RUNNER_TEMP/body.md"
+          BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/receipts.py seal-prd
+          board=$(BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/receipts.py board)
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '.[] | select(.user.type == "Bot" and (.user.login | startswith("dilux-bot")) and (.body | startswith("<!-- dx-board -->"))) | .id' | tail -1)
+          if [ -n "$id" ]; then gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$board" >/dev/null
+          else gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$board" >/dev/null; fi
+
+  receipt:
+    name: The merge's receipt
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    # When an accepted issue closes as completed by a merged pull request: the
+    # receipt (#81), committed to the receipts branch, and the board updated.
+    if: github.event_name == 'issues' && github.event.action == 'closed' && github.event.issue.state_reason == 'completed' && contains(github.event.issue.labels.*.name, inputs.label)
+    permissions: {}
+    steps:
+      - name: The scripts
+        id: central
+        env:
+          REF: ${{ inputs.central-ref }}
+        run: |
+          set -euo pipefail
+          mkdir -p .dx-central/scripts .dx-central/policy
+          base="https://raw.githubusercontent.com/DiluxOne/.github/$REF"
+          for f in scripts/issue-schema.py scripts/receipts.py policy/issue-schema.yml; do curl -fsSL --retry 3 "$base/$f" -o ".dx-central/$f"; done
+          echo "ref=$(git ls-remote https://github.com/DiluxOne/.github "$REF" "$REF^{}" | tail -1 | cut -c1-12)" >> "$GITHUB_OUTPUT"
+      - name: dilux-bot token
+        id: bot
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-issues: write
+          permission-contents: write
+          permission-pull-requests: read
+          permission-checks: read
+      - name: Write the receipt
+        if: steps.bot.outputs.token != ''
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          BODY_TEXT: ${{ github.event.issue.body }}
+          NUMBER: ${{ github.event.issue.number }}
+          POLICY_REF: ${{ steps.central.outputs.ref }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$BODY_TEXT" > "$RUNNER_TEMP/body.md"
+          # The merged pull request that closed it.
+          # shellcheck disable=SC2016 # GraphQL variables, not shell ones.
+          pr=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){timelineItems(itemTypes:[CLOSED_EVENT],last:1){nodes{... on ClosedEvent{closer{... on PullRequest{number merged headRefOid mergeCommit{oid} mergedBy{login} labels(first:30){nodes{name}}}}}}}}}}' \
+            -f o="${GITHUB_REPOSITORY%%/*}" -f r="${GITHUB_REPOSITORY#*/}" -F n="$NUMBER" \
+            --jq '.data.repository.issue.timelineItems.nodes[0].closer // empty')
+          if [ -z "$pr" ] || [ "$(jq -r .merged <<<"$pr")" != true ]; then echo "Not closed by a merged pull request: no receipt."; exit 0; fi
+          head=$(jq -r .headRefOid <<<"$pr")
+          PR_JSON=$(jq -c '{number, head: .headRefOid, merge: .mergeCommit.oid, merged_by: .mergedBy.login, labels: [.labels.nodes[].name]}' <<<"$pr")
+          # The head commit's checks, counted by conclusion.
+          CHECKS_JSON=$(gh api "repos/$GITHUB_REPOSITORY/commits/$head/check-runs" --paginate --jq '[.check_runs[].conclusion]' \
+            | jq -sc 'add // [] | group_by(.) | map({((.[0] // "pending") | tostring): length}) | add // {}')
+          export PR_JSON CHECKS_JSON
+          BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/receipts.py merged
+          board=$(BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/receipts.py board)
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '.[] | select(.user.type == "Bot" and (.user.login | startswith("dilux-bot")) and (.body | startswith("<!-- dx-board -->"))) | .id' | tail -1)
+          if [ -n "$id" ]; then gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$board" >/dev/null
+          else gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$board" >/dev/null; fi
 
   project:
     name: The product's Project
