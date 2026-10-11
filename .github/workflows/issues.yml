@@ -34,5 +34,9 @@ jobs:
       issues: read
       pull-requests: read
     uses: DiluxOne/.github/.github/workflows/issue-accepted.yml@v5
+    with:
+      # Here the gate runs in this repository's own pipeline
+      # (pull-request.yml); the organisation's skips this repository.
+      workflow: Pull request
     secrets:
       DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
