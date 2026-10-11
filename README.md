@@ -19,14 +19,17 @@ Each repository calls the workflows in this one instead of carrying its own copy
 flowchart LR
     A["📝 Issue<br/>a PRD: problem, scope, criteria"] --> B{"Maintainer<br/>accepts?<br/>(PRD sealed)"}
     B -- "no" --> X["Closed or<br/>kept for later"]
-    B -- "accepted" --> C["🤖 Autopilot, in the open:<br/>Spec, then a draft pull request,<br/>one commit per criterion, ticked<br/>Closes #n"]
-    C --> D["✅ Conventions<br/>+ accepted-issue gate"]
-    D --> E["🧪 Checks of its kind<br/>tests, lint, Plugin Check…"]
-    E --> F["🤖 Claude review<br/>risk · complexity · type"]
-    F -- "blocks" --> C
+    B -- "accepted" --> S["🤖 Autopilot writes the Spec<br/>on the issue (sealed)"]
+    S --> C["📋 Draft pull request, in the open<br/>a box per criterion<br/>one commit each, ticked as it lands"]
+    C -- "out of turns or time" --> K["🔁 autopilot:continue<br/>resumes the draft"]
+    K --> C
+    C -- "stuck: says why" --> I
+    C -- "every box ticked<br/>checks pass" --> D["✅ Ready for review<br/>conventions + accepted-issue gate<br/>checks of its kind"]
+    D --> F["🤖 Claude review<br/>risk · complexity · type"]
+    F -- "blocks (3 rounds)" --> C
     F --> L["Merges on its own when<br/>not Critical · no protected path<br/>review clean · within the lane<br/>a test per criterion · every check green"]
     L --> G{"All of them?"}
-    G -- "yes" --> H["⚡ Auto-merge"]
+    G -- "yes" --> H["⚡ Auto-merge<br/>+ receipt"]
     G -- "any no" --> I["👤 A person merges"]
     H --> R{"🔐 Release approved<br/>by a person?"}
     I --> R
@@ -34,7 +37,7 @@ flowchart LR
     R -- "not yet" --> W["Waits on main,<br/>nothing published"]
 ```
 
-You can follow an autopilot run as it goes: its draft pull request is the Spec as a checklist, one box per criterion, ticked as each criterion's commit lands; the issue's board links the pull request, the run and the progress; the run's summary says what the agent read, ran and changed, and keeps its full transcript. A run never ends in silence: the pull request is ready for review, or the agent says where it stopped and why, or the run continues (`autopilot:continue`), or the workflow says so and hands it to a person.
+You can follow an autopilot run as it goes: its draft pull request is the Spec as a checklist, one box per criterion, ticked as each criterion's commit lands; the issue's board links the pull request, the run and the progress; the run's summary says what the agent read, ran and changed, and keeps its full transcript. A run never ends in silence: the pull request is ready for review, or the agent says where it stopped and why, or the run continues (`autopilot:continue`), or the workflow says so and hands it to a person (`needs-human`). A pull request that is not the autopilot's, a person's or a contributor's, joins the same path at "Ready for review".
 
 Step by step, with every detail: [What happens on a pull request](docs/pull-requests.md).
 
