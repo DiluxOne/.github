@@ -19,6 +19,10 @@
 
 autopilot: true
 
+# Review rounds the autopilot may spend fixing a blocked pull request before
+# it hands it back to a person.
+autopilot-rounds: 3
+
 constitution:
   - "policy/**"
   - ".github/**"
@@ -62,11 +66,16 @@ lanes:
     evidence: The failing test the reproduction wrote; the fix must make it pass.
     merge: {max-risk: medium, max-complexity: medium}
 
+  # Trust that remains (stated, not hidden): the autopilot acts with
+  # dilux-bot's token, the same App that writes the receipts branch, so a
+  # misled agent could write a seal; an App of its own for receipts is the
+  # next step. What it can never do is merge a protected path or a Critical
+  # issue, nor merge while the review blocks.
   human-issue:
-    description: An issue a person accepted.
+    description: An issue a person accepted, worked by the autopilot (#83) to a merged pull request unless it is marked Critical or touches the protected paths.
     accept: human
     repositories: ["*"]
-    merge: {max-risk: low, max-complexity: low}
+    merge: {max-risk: high, max-complexity: high}
 
   release:
     description: A release issue. Publishing to users is always a person's decision.

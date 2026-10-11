@@ -67,3 +67,19 @@ jobs:
       description-ok: ${{ needs.review.outputs.description-ok }}
       enabled: ${{ needs.review.outputs.auto-merge }}
     secrets: inherit
+
+  # An autopilot pull request whose review blocks: one round of fixes by the
+  # autopilot (#83), which pushes and so runs this pipeline again; after its
+  # rounds it hands the pull request to a person.
+  autopilot-fix:
+    needs: review
+    # Only dilux-bot's own pull requests, and only for a new commit (an edit
+    # of the description keeps the review's verdict and must not spend a
+    # round).
+    if: always() && github.repository != 'DiluxOne/.github' && needs.review.outputs.blocking == 'true' && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == 'dilux-bot[bot]' && github.event.action != 'edited'
+    permissions: {}
+    uses: DiluxOne/.github/.github/workflows/autopilot.yml@v5
+    with:
+      mode: fix
+      pr: ${{ format('{0}', github.event.pull_request.number) }}
+    secrets: inherit

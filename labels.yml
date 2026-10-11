@@ -15,6 +15,8 @@
 - {name: "lane:bugfix-reproduced", color: "1D76DB", description: "A bug the reproduction confirmed with a failing test"}
 - {name: "accepted-by:policy", color: "0E8A16", description: "Accepted by a lane of the autonomy policy, not by a person"}
 - {name: "merged-by:policy", color: "0E8A16", description: "Merged by the autonomy policy, not by a person"}
+- {name: autopilot, color: "1D76DB", description: "Opened by the autopilot from an accepted issue"}
+- {name: needs-human, color: "D93F0B", description: "The autopilot handed this over to a person"}
 
 # The issue triage (issue-triage.yml).
 - {name: needs-triage, color: "E4E669", description: "Not looked at yet"}

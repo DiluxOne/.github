@@ -9,6 +9,10 @@ signed by GitHub and show as Verified.
 
   receipts.py seal-prd     on acceptance: the PRD's SHA-256, who accepted, when
                            (issues/<n>/prd-<UTC>.json)
+  receipts.py seal-spec    at G3, when the autopilot wrote the Spec: its SHA-256
+                           (issues/<n>/spec-<UTC>.json)
+  receipts.py verify-spec  the Spec now against its seal: exit 0 only on "match"
+                           (an autopilot merge needs the Spec it sealed)
   receipts.py verify-prd   the PRD now against its last seal: prints "match",
                            "changed" or "unsealed"; exit 1 when changed, 2 when
                            the seal could not be read (never taken as unsealed)
@@ -122,28 +126,33 @@ def ensure_branch(repo):
     try:
         gh(f"repos/{repo}/git/ref/heads/{BRANCH}")
         return
-    except RuntimeError:
-        pass
+    except RuntimeError as e:
+        if "404" not in str(e) and "Not Found" not in str(e):
+            raise
     tree = gh("-X", "POST", f"repos/{repo}/git/trees", "--input", "-", data={"tree": [{
         "path": "README.md", "mode": "100644", "type": "blob",
         "content": "# Receipts\n\nSeals and receipts of this repository's issues, written by dilux-bot (DiluxOne/.github, scripts/receipts.py). Nobody else writes here, and nothing here is deleted or rewritten.\n"}]})
     commit = gh("-X", "POST", f"repos/{repo}/git/commits", "--input", "-", data={"message": "Receipts begin", "tree": tree["sha"], "parents": []})
-    gh("-X", "POST", f"repos/{repo}/git/refs", "--input", "-", data={"ref": f"refs/heads/{BRANCH}", "sha": commit["sha"]})
+    try:
+        gh("-X", "POST", f"repos/{repo}/git/refs", "--input", "-", data={"ref": f"refs/heads/{BRANCH}", "sha": commit["sha"]})
+    except RuntimeError as e:
+        # Another first write made it a moment ago: use that one.
+        if "already exists" not in str(e):
+            raise
 
 
 def write(repo, path, obj, message):
     if os.environ.get("RECEIPTS_FIXTURE"):
         full = os.path.join(os.environ["RECEIPTS_FIXTURE"], path)
+        if os.path.exists(full):
+            raise RuntimeError(f"{path} exists; a receipt is never overwritten")
         os.makedirs(os.path.dirname(full), exist_ok=True)
         with open(full, "w", encoding="utf-8") as f:
             json.dump(obj, f, indent=2)
         return
     ensure_branch(repo)
+    # Never an overwrite: without a sha, the API refuses a path that exists.
     payload = {"message": message, "branch": BRANCH, "content": base64.b64encode((json.dumps(obj, indent=2) + "\n").encode()).decode()}
-    try:
-        payload["sha"] = gh(f"repos/{repo}/contents/{path}?ref={BRANCH}")["sha"]
-    except RuntimeError:
-        pass
     gh("-X", "PUT", f"repos/{repo}/contents/{path}", "--input", "-", data=payload)
 
 
@@ -230,6 +239,11 @@ Normal
         later = dict(s, prd_sha256="x", at="2026-10-12T00:00:00Z")
         write("o/r", "issues/7/prd-2026-10-12T00:00:00Z.json", later, "seal again")
         check("the last seal wins", last_seal("o/r", 7)["at"], "2026-10-12T00:00:00Z")
+        try:
+            write("o/r", "issues/7/prd-2026-10-12T00:00:00Z.json", s, "again")
+            check("a seal is never overwritten", "overwrote", "refused")
+        except RuntimeError:
+            check("a seal is never overwritten", "refused", "refused")
         check("an issue with no seal has none", last_seal("o/r", 8), None)
         import subprocess as sp
         bf = os.path.join(d, "body.md")
@@ -243,6 +257,7 @@ Normal
         check("cli: verify the sealed PRD", run("verify-prd").stdout.strip(), "match")
         check("cli: merged writes a receipt", run("merged").returncode, 0)
         check("cli: the board shows the receipt", "G7 Merged" in run("board").stdout, True)
+        check("cli: verify-spec with no Spec seal fails", run("verify-spec").returncode, 1)
         import time
         time.sleep(1.1)
         run("merged")
@@ -272,6 +287,27 @@ def main(argv):
         write(repo, f"issues/{number}/prd-{at}.json", s, f"Seal #{number}'s PRD")
         print(json.dumps(s))
         return 0
+    if mode == "seal-spec":
+        at = now()
+        s = {"kind": "spec-seal", "issue": number, "spec_sha256": spec_hash(body), "at": at,
+             "policy": f"DiluxOne/.github@{policy_ref}" if policy_ref else None}
+        write(repo, f"issues/{number}/spec-{at}.json", s, f"Seal #{number}'s Spec")
+        print(json.dumps(s))
+        return 0
+    if mode == "verify-spec":
+        try:
+            seals = [n for n in list_dir(repo, f"issues/{number}") if n.startswith("spec-")]
+            sealed = read(repo, f"issues/{number}/{seals[-1]}") if seals else None
+        except Exception as e:  # noqa: BLE001
+            print(f"error: {e}")
+            return 2
+        if not sealed:
+            print("unsealed")
+            return 1
+        live = spec_hash(body)
+        v = "match" if live is not None and sealed.get("spec_sha256") == live else "changed"
+        print(v)
+        return 0 if v == "match" else 1
     if mode == "verify-prd":
         try:
             sealed = last_seal(repo, number)
