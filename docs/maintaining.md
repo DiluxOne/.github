@@ -13,3 +13,14 @@ already exists keeps the workflow it was created with: re-running a failed
 job after `v5` moved re-runs the old workflow. Reopen the pull request, or
 push to it, for a run on the new one. `v4`, `v3`, `v2` and `v1` stay where
 they are.
+
+## The organisation's VM
+
+The private repositories' jobs run on `vm-gh-runner-01` (Azure, shared with AI Studio's own runners): four slots (`dx-runner@1..4`), each an endless loop of one-job containers of `ghcr.io/diluxone/runner:stable`, registered just in time through the `dilux-runner` App ([`scripts/runner-vm/dx-runner-slot.sh`](../scripts/runner-vm/dx-runner-slot.sh)). [`runner-vm.yml`](../.github/workflows/runner-vm.yml) starts the VM when a job waits and, after 20 minutes without one, cleans and deallocates it.
+
+- **Changing the VM** is a pull request here: on every boot `dx-provision.service` fetches [`scripts/runner-vm/provision.sh`](../scripts/runner-vm/provision.sh) from `main` and runs it. Nobody changes the VM by hand.
+- **Changing the image** is a pull request to [`runner/`](../runner/); [`runner-image.yml`](../.github/workflows/runner-image.yml) builds it on merge and every Monday, and promotes it to `:stable` only after its smoke test. Each promotion is a comment on the issue "Runner image".
+- **Going back to an earlier image:** every promoted build also carries its date and run (`:YYYY-MM-DD.<run>`). Point `:stable` at one (`docker buildx imagetools create -t ghcr.io/diluxone/runner:stable ghcr.io/diluxone/runner:<that tag>`) and the slots take it on their next container.
+- **Sending every job back to GitHub's runners:** set the organisation variable `DX_RUNNER` to `github`. Nothing else changes; set it back to `self-hosted` to return.
+- **A new VM:** Docker, the data disk on `/data`, the App's key and IDs in `/etc/dx-runner/app.pem` and `app.env` (root only; copies in the maintainer's secrets manager), then `provision.sh --install`.
+- **The App's key** can only register runners. A job reaches the VM's Docker socket (wp-env needs it), which is root on the VM, so it could read the key; that is accepted because only the private repositories reach the VM (the runner group `private-repos-vm` admits them alone, and only they see `DX_RUNNER`), and a private repository has no outside forks: its pull requests come from the maintainer, the maintainer's agents and Dependabot.

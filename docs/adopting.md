@@ -68,6 +68,8 @@ Most of it is the organisation's already: a new repository gets the pull request
    from it.
 3. **Labels, settings and shared files.** `python3 scripts/sync-repos.py all --repo <name>` from a checkout of this repository: the labels, the merge and security settings, `.github/CODEOWNERS` and the opening block of `AGENTS.md` (a pull request with its issue). The `main` and tag rulesets are the organisation's; a plugin that publishes adds its environment `wordpress-org` (deployment policy: tag `*.*.*` plus `main`, required reviewers, the SVN credentials and the release App's key as environment secrets) and installs the `dilux-release` App.
 
+   The organisation's side, done by an administrator of the organisation (a maintainer, or the session working in this repository): add the repository to the `include` list of the three organisation rulesets (`org: main`, `org: release tag creation`, `org: release tags`), which name their repositories one by one; for a private repository, also to the organisation variable `DX_RUNNER` and to the runner group `private-repos-vm`, so its jobs run on the organisation's VM and spend no minutes; and give it a Project in `repos.yml` (`projects:`). A repository that versions third-party code with Markdown of its own (a site's `wp-content/plugins/` and `themes/`) lists those paths in a `.lycheeignore` at its root, lychee's own file, so the docs check does not follow their links.
+
    Then the readme: the newest entry under `== Changelog ==` is headed
    `= X.Y.Z =` (or `= Unreleased =`) and its first line is `Unreleased.`
    while the version is not ready. Every pull request that changes what a

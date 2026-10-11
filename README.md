@@ -43,6 +43,7 @@ flowchart TB
         O1["Rulesets on main and tags"]
         O2["Required workflow on every pull request"]
         O3["Issue types, Projects, secrets, Apps"]
+        O4["Runners: GitHub's for public repos, one-job containers on the organisation's VM for private ones"]
     end
     subgraph HUB["⚙️ This repository"]
         H1["Reusable workflows"]
@@ -66,6 +67,8 @@ flowchart TB
 - **Policy is data.** Risk paths, models, budget and auto-merge live in [`policy/`](policy/) and in each repository's `.github/review-policy.yml`, read from the base branch, so a pull request cannot loosen its own rules.
 - **A review lesson becomes a rule.** Something a reviewer sent back once becomes one entry in its kind's `rules.yml`, with fixtures, never a new script ([`kinds/`](kinds/)).
 - **Secrets never meet a fork's code.** Actions are pinned to a commit and every token asks for the least it needs.
+- **Every job starts clean.** Public repositories run on GitHub's runners; private ones on the organisation's VM, each job in a disposable container of an image rebuilt and smoke-tested every week ([`runner/`](runner/)).
+- **Every pending step names its action and its URL.** Agents tell a maintainer exactly what to accept, approve or merge, with the link; an outside contributor is never asked for a maintainer's step.
 - **Versions are tags.** Repositories call `@v5`. A breaking change ships as `v6`, and older majors stay where they are.
 
 ## What's inside
@@ -76,7 +79,8 @@ flowchart TB
 | 🧩 | [`kinds/`](kinds/) | One pack per kind of project (today, `wordpress-plugin`): its rules, review profile and settings |
 | 📜 | [`policy/`](policy/) | The default review policy every repository adds to |
 | 🤖 | [`review-profiles/`](review-profiles/) | What the Claude review looks for |
-| 🛠️ | [`scripts/`](scripts/) | The logic behind the workflows, each script with its own `--test` |
+| 🛠️ | [`scripts/`](scripts/) | The logic behind the workflows, each script with its own `--test`; [`scripts/runner-vm/`](scripts/runner-vm/) keeps the organisation's VM in its described state |
+| 🏃 | [`runner/`](runner/) | The image every job on the organisation's VM runs in, `ghcr.io/diluxone/runner` |
 | 📋 | [`workflow-templates/`](workflow-templates/) | Ready-made callers for a new repository |
 | 🏷️ | [`labels.yml`](labels.yml) · [`repos.yml`](repos.yml) | Labels, settings and Projects, kept in step by `scripts/sync-repos.py` |
 | 🖼️ | [`profile/`](profile/) | The organisation's public page on GitHub |
@@ -94,3 +98,5 @@ flowchart TB
 | Add a rule or a kind of project | [kinds/README.md](kinds/README.md) |
 | Change this repository and ship it | [docs/maintaining.md](docs/maintaining.md) |
 | Report a security problem | [SECURITY.md](SECURITY.md) |
+| See where this is going: one human decision per change, gates, receipts | [The plan, issue #78](https://github.com/DiluxOne/.github/issues/78) |
+| Read the story of how we build software | [Cómo construimos software en DiluxOne](https://diluxone.com/es/blog/como-construimos-software/) · [How we build software](https://diluxone.com/blog/how-we-build-software/) |
