@@ -28,6 +28,10 @@ name: Auto-merge
 on:
   workflow_call:
     inputs:
+      central-ref:
+        description: Ref of DiluxOne/.github whose scripts decide an autopilot pull request.
+        type: string
+        default: v5
       risk:
         type: string
         default: ''
@@ -86,6 +90,8 @@ jobs:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           PR: ${{ github.event.pull_request.number }}
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          CENTRAL_REF: ${{ inputs.central-ref }}
           HEAD: ${{ github.event.pull_request.head.sha }}
           BASE: ${{ github.event.pull_request.base.sha }}
           DX_AUTOPILOT: ${{ vars.DX_AUTOPILOT }}
@@ -95,12 +101,17 @@ jobs:
           DESCRIPTION_OK: ${{ inputs.description-ok }}
         run: |
           set -euo pipefail
+          # Only a pull request dilux-bot opened and labelled autopilot;
+          # anyone else's goes through the usual decision below.
           case ",$LABELS," in *,autopilot,*) ;; *) echo "handled=false" >> "$GITHUB_OUTPUT"; exit 0 ;; esac
+          [ "$AUTHOR" = "dilux-bot[bot]" ] || { echo "handled=false" >> "$GITHUB_OUTPUT"; exit 0; }
           echo "handled=true" >> "$GITHUB_OUTPUT"
-          git clone -q --depth 1 --branch v5 https://github.com/DiluxOne/.github "$RUNNER_TEMP/central"
+          git clone -q --depth 1 --branch "$CENTRAL_REF" https://github.com/DiluxOne/.github "$RUNNER_TEMP/central"
           issue=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // empty')
           gh issue view "$issue" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/body.md"
-          gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json files --jq '.files[].path' > "$RUNNER_TEMP/files"
+          # Every file, paginated (gh pr view stops at 100), with a renamed
+          # file's old path too, so a protected path cannot leave by a rename.
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/files"
           gh api "repos/$GITHUB_REPOSITORY/git/trees/$HEAD?recursive=1" --jq '.tree[] | select(.type == "blob") | .path' > "$RUNNER_TEMP/head"
           gh api "repos/$GITHUB_REPOSITORY/contents/.github/autonomy.yml?ref=$BASE" --jq .content 2>/dev/null | base64 -d > "$RUNNER_TEMP/repo-autonomy.yml" || : > "$RUNNER_TEMP/repo-autonomy.yml"
           export BODY="$RUNNER_TEMP/body.md" FILES="$RUNNER_TEMP/files" HEAD_FILES="$RUNNER_TEMP/head" REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml"

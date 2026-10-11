@@ -25,8 +25,9 @@ name: Autopilot
 #
 # It acts as dilux-bot (its token for git and the API), never as a person, so
 # its commits and pull requests are told apart from the maintainer's. It
-# runs where the repository's jobs run (DX_RUNNER), one at a time per
-# repository. Every input it reads from the issue is the PRD at its sealed
+# runs where the repository's jobs run (DX_RUNNER), one run per issue.
+# Known limit: the agent holds dilux-bot's token, the same App that writes
+# the receipts branch; a later step moves seals to an App of their own. Every input it reads from the issue is the PRD at its sealed
 # text, fenced as data in the prompt (scripts/autopilot.py).
 
 on:
@@ -56,8 +57,10 @@ on:
 
 permissions: {}
 
+# One run per issue (a fix belongs to its pull request): a newer run never
+# drops one waiting for another issue.
 concurrency:
-  group: autopilot-${{ github.repository }}
+  group: autopilot-${{ github.repository }}-${{ inputs.issue || inputs.pr }}
   cancel-in-progress: false
 
 jobs:
@@ -145,8 +148,11 @@ jobs:
           🤖 AI-generated · Claude Opus 5.5 (Anthropic)" >/dev/null
               echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
             fi
-          elif gh pr list --repo "$GITHUB_REPOSITORY" --state open --search "linked:issue $ISSUE" --json number --jq 'length' | grep -qv '^0$'; then
-            echo "A pull request already closes #$ISSUE: nothing to start."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          else
+            open_prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --search "linked:issue $ISSUE" --json number --jq 'length')
+            if [ "$open_prs" != 0 ]; then
+              echo "A pull request already closes #$ISSUE: nothing to start."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+            fi
           fi
           echo "go=true" >> "$GITHUB_OUTPUT"
 
@@ -169,10 +175,12 @@ jobs:
             git checkout -q -B "$BRANCH" "origin/$BRANCH"
           fi
           export BODY="$RUNNER_TEMP/body.md" REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml"
+          # A random delimiter: the PRD's text cannot end the output early.
+          eof="DX_$(openssl rand -hex 16)"
           {
-            echo 'prompt<<DX_PROMPT_END'
+            echo "prompt<<$eof"
             python3 .dx-central/scripts/autopilot.py prompt "$MODE"
-            echo 'DX_PROMPT_END'
+            echo "$eof"
           } >> "$GITHUB_OUTPUT"
 
       - name: Claude works
@@ -207,7 +215,7 @@ jobs:
           else
             echo "::warning::The Spec does not pass G3: $(jq -c .errors "$RUNNER_TEMP/g3.json")"
           fi
-          pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --search "linked:issue $NUMBER" --json number --jq '.[0].number // empty')
+          pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --author "app/dilux-bot" --search "linked:issue $NUMBER" --json number --jq '.[0].number // empty')
           if [ -n "$pr" ]; then
             gh pr edit "$pr" --repo "$GITHUB_REPOSITORY" --add-label autopilot >/dev/null || true
             echo "Pull request #$pr opened for #$NUMBER."
