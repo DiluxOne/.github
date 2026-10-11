@@ -2,9 +2,8 @@
 # Whose type a pull request carries, for claude-review.yml: the review's,
 # read from the diff, unless a person set a type:* label by hand. Then the
 # person's stands: the last one a person added that is still on the pull
-# request. A label any bot set is never a person's. Once claude-review.yml
-# calls it (the pull request for #91; this one only adds it), the workflow
-# asks twice: when it labels the verdict, and again just before it
+# request. A label any bot set is never a person's. The workflow asks
+# twice: when it labels the verdict, and again just before it
 # retitles the pull request, so a label a person changed in between (or a
 # reused verdict) never puts the review's type back over theirs.
 #

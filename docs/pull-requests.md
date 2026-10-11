@@ -52,7 +52,7 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    the [review profiles](../review-profiles/) (general, and the kind's
    `kinds/<kind>/review-profile.md`) and the repository's `AGENTS.md`
    and `docs/architecture.md`: inline comments for blockers and majors (each a
-   thread to resolve), `risk:*`, `complexity:*` and `type:*` labels (the type of the change read from the diff, which also corrects the title's type token; a person's own `type:*` label wins), one summary comment
+   thread to resolve), `risk:*`, `complexity:*` and `type:*` labels (the type of the change read from the diff, which also corrects the title's type token; a person's own `type:*` label wins, over the title too), one summary comment
    with what the run cost, red when blocking. It can raise the risk, never
    lower it. It reads the whole change once and only what you pushed since
    its last look after that, spends nothing when the same commit is re-run,
