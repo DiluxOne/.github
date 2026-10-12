@@ -30,9 +30,11 @@ Within `v5`, from the version that brings the autonomy policy (#79): `convention
 4. Before the first pull request on `v4`, open its issue and accept it. A
    pull request already open needs one too: write `Closes #<number>` in its
    description.
-5. Reproductions change trigger: the triage's `bug:unconfirmed` no longer
-   starts one; someone with write access adds `repro:run` (created on the
-   first report; create it by hand to use it before) or `repro:again`.
+5. Reproductions start on their own: add the `repro-triaged` job from
+   `workflow-templates/issues.yml`, which runs the reproduction when the
+   triage classifies a report as a bug. Someone with write access can still
+   add `repro:run` (created on the first report; create it by hand to use it
+   before) or `repro:again`.
 
 ## Migrating a repository from `v2` to `v3`
 
