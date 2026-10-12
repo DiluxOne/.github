@@ -191,7 +191,7 @@ jobs:
           npx wp-env run tests-cli wp core is-installed --network >/dev/null 2>&1 \
             || npx wp-env run tests-cli wp core multisite-convert --title="Tests network"
           npx wp-env run tests-cli wp core is-installed --network >/dev/null 2>&1 \
-            || { echo "::error::The tests site is not a network after converting it: its database is not fresh (a reused wp-env volume holds the last run's network)."; exit 1; }
+            || { echo "::error::The tests site is not a network after converting it. WP-CLI's output above says why; the usual cause is a database that is not fresh (a runner that kept the last run's wp-env volume, whose network already exists)."; exit 1; }
           npx wp-env run tests-cli wp plugin activate "$REPO" --network
       - name: PHPUnit (integration)
         if: env.GO == 'true'
@@ -268,7 +268,7 @@ jobs:
           # network's tables converts to nothing, and the suite would only say
           # so three steps later.
           npx wp-env run tests-cli wp core is-installed --network >/dev/null 2>&1 \
-            || { echo "::error::The tests site is not a network after converting it: its database is not fresh (a reused wp-env volume holds the last run's network)."; exit 1; }
+            || { echo "::error::The tests site is not a network after converting it. WP-CLI's output above says why; the usual cause is a database that is not fresh (a runner that kept the last run's wp-env volume, whose network already exists)."; exit 1; }
           # Written into the checkout, which wp-env mounts as the plugin's
           # folder, and copied from there inside the container.
           mkdir -p build

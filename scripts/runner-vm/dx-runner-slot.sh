@@ -56,17 +56,23 @@ slot_containers() { # slot < lines
   awk -v home="$DX_BASE/d$1/wp-env/" 'index($2, home) == 1 {print $1}'
 }
 
-# The docker compose projects of the slot's last job, one per folder of its
-# wp-env home: wp-env writes each project's docker-compose.yml in a folder of
-# its own there (`wp-env-<repo>-<hash>`), and docker compose, given no name,
-# names the project after that folder (lower-case, nothing but [a-z0-9_-]),
-# and its volumes and networks after the project.
-slot_projects() { # slot
-  local dir
-  for dir in "$DX_BASE/d$1/wp-env"/*/; do
-    [ -d "$dir" ] && basename "$dir" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_\n-'
-  done
-  return 0
+# A docker compose project's name from its folder under the slot's wp-env
+# home: wp-env writes each project's docker-compose.yml in a folder of its own
+# there (`wp-env-<repo>-<hash>`), and docker compose, given no name, names the
+# project after that folder (lower-case, nothing but [a-z0-9_-]), and its
+# volumes and networks after the project.
+project_name() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-'; }
+
+# Removes a compose project's volumes and networks; false when one stays.
+drop_project() { # name
+  local ids ok=0
+  ids=$(docker volume ls -q --filter "label=com.docker.compose.project=$1")
+  # shellcheck disable=SC2086 # one name per word
+  [ -z "$ids" ] || docker volume rm -f $ids >/dev/null || ok=1
+  ids=$(docker network ls -q --filter "label=com.docker.compose.project=$1")
+  # shellcheck disable=SC2086 # one ID per word
+  [ -z "$ids" ] || docker network rm $ids >/dev/null || ok=1
+  return "$ok"
 }
 
 b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
@@ -89,25 +95,25 @@ drop_runner() {
 }
 
 # Removes what the last job left: its wp-env containers, then the volumes
-# (the databases among them) and networks of its wp-env projects, which
-# docker compose keeps past the containers, then its checkout (the tool cache
-# stays: jobs in one slot run one after another).
+# (the databases among them) and networks of each of its wp-env projects,
+# which docker compose keeps past the containers, then its checkout (the tool
+# cache stays: jobs in one slot run one after another). A project whose
+# volumes or networks could not be removed keeps its folder, so the next turn
+# finds it again.
 clean_slot() {
-  local slot=$1 ids project
+  local slot=$1 ids dir project
   ids=$(docker ps -a --format '{{.ID}} {{.Label "com.docker.compose.project.working_dir"}}' | slot_containers "$slot")
   # shellcheck disable=SC2086 # one ID per word
   [ -z "$ids" ] || docker rm -f $ids >/dev/null
   mkdir -p "$DX_BASE/d$slot/_work" "$DX_BASE/d$slot/wp-env"
-  for project in $(slot_projects "$slot"); do
-    ids=$(docker volume ls -q --filter "label=com.docker.compose.project=$project")
-    # shellcheck disable=SC2086 # one name per word
-    [ -z "$ids" ] || docker volume rm -f $ids >/dev/null || echo "dx-runner $slot: could not remove the volumes of $project" >&2
-    ids=$(docker network ls -q --filter "label=com.docker.compose.project=$project")
-    # shellcheck disable=SC2086 # one ID per word
-    [ -z "$ids" ] || docker network rm $ids >/dev/null || echo "dx-runner $slot: could not remove the networks of $project" >&2
+  for dir in "$DX_BASE/d$slot/wp-env"/*/; do
+    [ -d "$dir" ] || continue
+    project=$(project_name "$(basename "$dir")")
+    if drop_project "$project"; then rm -rf "$dir"
+    else echo "dx-runner $slot: the volumes or networks of $project could not be removed; its folder stays for the next turn" >&2; fi
   done
   find "$DX_BASE/d$slot/_work" -mindepth 1 -maxdepth 1 ! -name _tool -exec rm -rf {} +
-  rm -rf "${DX_BASE:?}/d$slot/wp-env/"*
+  find "$DX_BASE/d$slot/wp-env" -mindepth 1 -maxdepth 1 ! -type d -exec rm -rf {} +
   chown -R "$RUNNER_UID" "$DX_BASE/d$slot"
 }
 
@@ -167,11 +173,28 @@ self_test() {
   check "runner name" "$(runner_name 2 a1b2c3)" "diluxone-chile-2-a1b2c3"
   check "jit payload" "$(jit_payload diluxone-chile-1-x 1)" \
     '{"name":"diluxone-chile-1-x","runner_group_id":3,"labels":["self-hosted","linux","x64","diluxone"],"work_folder":"/data/runners-dx/d1/_work"}'
-  local home; home=$(mktemp -d); mkdir -p "$home/d1/wp-env/wp-env-Diluxone-Users-a8cf25ac" "$home/d1/wp-env/0f1e2d3c4b5a69788796a5b4c3d2e1f0" "$home/d2/wp-env/wp-env-other-11111111"
+  check "project name as compose makes it" "$(project_name 'wp-env-Diluxone Users-a8cf25ac')" "wp-env-diluxoneusers-a8cf25ac"
+  # clean_slot against a stubbed docker: the slot's projects lose their
+  # volumes, networks and folders; one whose volumes stay keeps its folder;
+  # the other slot is not touched.
+  local home log; home=$(mktemp -d); log=$home/docker.log
+  mkdir -p "$home/d1/wp-env/wp-env-Diluxone-Users-a8cf25ac" "$home/d1/wp-env/wp-env-stuck-22222222" "$home/d2/wp-env/wp-env-other-11111111"
   touch "$home/d1/wp-env/a-file"
-  check "slot 1 projects: its folders, as compose names them" "$(DX_BASE=$home slot_projects 1 | sort | tr '\n' ' ')" "0f1e2d3c4b5a69788796a5b4c3d2e1f0 wp-env-diluxone-users-a8cf25ac "
-  check "slot 3 projects: none" "$(DX_BASE=$home slot_projects 3 | tr '\n' ' ')" ""
-  rm -rf "$home"
+  docker() {
+    echo "$*" >> "$log"
+    case "$*" in
+      "volume ls -q --filter label=com.docker.compose.project=wp-env-diluxone-users-a8cf25ac") echo v1; echo v2 ;;
+      "network ls -q --filter label=com.docker.compose.project=wp-env-diluxone-users-a8cf25ac") echo n1 ;;
+      "volume ls -q --filter label=com.docker.compose.project=wp-env-stuck-22222222") echo v3 ;;
+      "volume rm -f v3") return 1 ;;
+    esac
+  }
+  RUNNER_UID=$(id -u) DX_BASE=$home clean_slot 1 2>/dev/null
+  check "clean: the slot's volumes and networks removed" "$(grep -c -x 'volume rm -f v1 v2\|network rm n1' "$log")" "2"
+  check "clean: a project whose volumes stay keeps its folder, the rest goes" "$(find "$home/d1/wp-env" -mindepth 1 -printf '%f ')" "wp-env-stuck-22222222 "
+  check "clean: the other slot untouched" "$(find "$home/d2/wp-env" -mindepth 1 -printf '%f ')" "wp-env-other-11111111 "
+  check "clean: nothing of the other slot asked of docker" "$(grep -c other "$log")" "0"
+  unset -f docker; rm -rf "$home"
   check "slot 1 containers only" "$(printf '%s\n' \
     'aaa /data/runners-dx/d1/wp-env/abc123' \
     'bbb /data/runners-dx/d10/wp-env/def456' \
