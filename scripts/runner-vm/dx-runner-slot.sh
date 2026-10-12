@@ -63,13 +63,14 @@ slot_containers() { # slot < lines
 # volumes and networks after the project.
 project_name() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-'; }
 
-# Removes a compose project's volumes and networks; false when one stays.
+# Removes a compose project's volumes and networks; false when one stays, or
+# when docker could not even list them.
 drop_project() { # name
   local ids ok=0
-  ids=$(docker volume ls -q --filter "label=com.docker.compose.project=$1")
+  ids=$(docker volume ls -q --filter "label=com.docker.compose.project=$1") || return 1
   # shellcheck disable=SC2086 # one name per word
   [ -z "$ids" ] || docker volume rm -f $ids >/dev/null || ok=1
-  ids=$(docker network ls -q --filter "label=com.docker.compose.project=$1")
+  ids=$(docker network ls -q --filter "label=com.docker.compose.project=$1") || return 1
   # shellcheck disable=SC2086 # one ID per word
   [ -z "$ids" ] || docker network rm $ids >/dev/null || ok=1
   return "$ok"
@@ -178,7 +179,7 @@ self_test() {
   # volumes, networks and folders; one whose volumes stay keeps its folder;
   # the other slot is not touched.
   local home log; home=$(mktemp -d); log=$home/docker.log
-  mkdir -p "$home/d1/wp-env/wp-env-Diluxone-Users-a8cf25ac" "$home/d1/wp-env/wp-env-stuck-22222222" "$home/d2/wp-env/wp-env-other-11111111"
+  mkdir -p "$home/d1/wp-env/wp-env-Diluxone-Users-a8cf25ac" "$home/d1/wp-env/0f1e2d3c4b5a69788796a5b4c3d2e1f0" "$home/d1/wp-env/wp-env-stuck-22222222" "$home/d2/wp-env/wp-env-other-11111111"
   touch "$home/d1/wp-env/a-file"
   docker() {
     echo "$*" >> "$log"
@@ -187,11 +188,14 @@ self_test() {
       "network ls -q --filter label=com.docker.compose.project=wp-env-diluxone-users-a8cf25ac") echo n1 ;;
       "volume ls -q --filter label=com.docker.compose.project=wp-env-stuck-22222222") echo v3 ;;
       "volume rm -f v3") return 1 ;;
+      "volume ls -q --filter label=com.docker.compose.project=wp-env-unlisted-33333333") return 1 ;;
     esac
   }
+  mkdir -p "$home/d1/wp-env/wp-env-unlisted-33333333"
   RUNNER_UID=$(id -u) DX_BASE=$home clean_slot 1 2>/dev/null
   check "clean: the slot's volumes and networks removed" "$(grep -c -x 'volume rm -f v1 v2\|network rm n1' "$log")" "2"
-  check "clean: a project whose volumes stay keeps its folder, the rest goes" "$(find "$home/d1/wp-env" -mindepth 1 -printf '%f ')" "wp-env-stuck-22222222 "
+  check "clean: a project whose volumes stay, or could not be listed, keeps its folder; the rest goes (a legacy md5 folder too)" "$(find "$home/d1/wp-env" -mindepth 1 -printf '%f\n' | sort | tr '\n' ' ')" "wp-env-stuck-22222222 wp-env-unlisted-33333333 "
+  check "clean: the legacy md5 folder was asked of docker by its own name" "$(grep -c 'project=0f1e2d3c4b5a69788796a5b4c3d2e1f0$' "$log")" "2"
   check "clean: the other slot untouched" "$(find "$home/d2/wp-env" -mindepth 1 -printf '%f ')" "wp-env-other-11111111 "
   check "clean: nothing of the other slot asked of docker" "$(grep -c other "$log")" "0"
   unset -f docker; rm -rf "$home"
