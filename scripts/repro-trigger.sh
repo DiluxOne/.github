@@ -3,6 +3,9 @@
 #   decide  reads TRIGGER, EVENT, ACTION, LABEL, SENDER_TYPE, ROLE and
 #           TRIAGE_BUG from the environment and prints go=yes or go=no
 #           (appended to $GITHUB_OUTPUT when it is set).
+#   bug     reads VERDICT (the triage's verdict JSON) and PAID, and prints
+#           true when the verdict is bug_unconfirmed and the report is not
+#           paid: the triage's `bug` output.
 #   --test  the cases behind each acceptance criterion of the issue.
 #
 # trigger "triage": the triage classified the report as a bug (TRIAGE_BUG),
@@ -66,11 +69,36 @@ test_all() {
   check "a closed issue starts nothing" no triage issues closed "" User "" true
   check "a pull request event starts nothing" no triage pull_request opened "" User "" true
 
+  # bug_from VERDICT PAID WANT
+  bug_from() {
+    total=$((total + 1))
+    got=$(VERDICT=$1 PAID=$2 bug_output)
+    if [ "$got" != "$3" ]; then
+      failed=$((failed + 1))
+      echo "not ok $total - bug output for '$1' paid=$2 (want $3, got $got)"
+    else
+      echo "ok $total - bug output for '$1' paid=$2"
+    fi
+  }
+  bug_from '{"category":"bug_unconfirmed"}' false true
+  bug_from '{"category":"bug_unconfirmed"}' true false
+  bug_from '{"category":"enhancement"}' false false
+  bug_from '{"category":"needs_info"}' false false
+  bug_from '' false false
+  bug_from 'not json' false false
+
   echo "$((total - failed))/$total passed"
   [ "$failed" -eq 0 ]
 }
 
+# bug_output reads VERDICT and PAID from the environment.
+bug_output() {
+  if [ "${PAID:-false}" = true ]; then echo false; return; fi
+  jq -r 'if .category == "bug_unconfirmed" then "true" else "false" end' <<<"${VERDICT:-null}" 2>/dev/null || echo false
+}
+
 case "${1:-}" in
+  bug) bug_output ;;
   decide)
     go=$(decide "${TRIGGER:-label}" "${EVENT:-}" "${ACTION:-}" "${LABEL:-}" "${SENDER_TYPE:-}" "${ROLE:-}" "${TRIAGE_BUG:-false}")
     echo "go=$go"

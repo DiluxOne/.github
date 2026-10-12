@@ -106,10 +106,14 @@ jobs:
     name: Write the test
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    # A cheap pre-filter only; the decision is scripts/repro-trigger.sh.
+    # A cheap pre-filter only, so that an unrelated label never queues a run;
+    # the decision is scripts/repro-trigger.sh.
     if: >-
-      github.event_name == 'issues' &&
-      (github.event.action == 'labeled' || github.event.action == 'opened')
+      github.event_name == 'issues' && (
+        (inputs.trigger == 'triage' && github.event.action == 'opened') ||
+        (inputs.trigger == 'label' && github.event.action == 'labeled' &&
+          github.event.sender.type != 'Bot' &&
+          (github.event.label.name == 'repro:run' || github.event.label.name == 'repro:again')))
     concurrency:
       group: issue-repro-${{ github.repository }}-${{ github.event.issue.number }}
       cancel-in-progress: false
@@ -134,6 +138,10 @@ jobs:
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }}
           permission-metadata: read
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -189,11 +197,6 @@ jobs:
           else
             echo "run=true" >> "$GITHUB_OUTPUT"
           fi
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: steps.cap.outputs.run == 'true'
-        with:
-          persist-credentials: false
 
       - name: The high reviewer from the policy
         id: policy
