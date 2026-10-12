@@ -4,7 +4,10 @@
 # (the dilux-runner App, whose only permission is the organisation's
 # self-hosted runners), starts a fresh container of ghcr.io/diluxone/runner
 # with it, waits for that one job to end, and cleans what the job left on the
-# VM before the next turn. Nothing a job installs survives it.
+# VM before the next turn: its containers, its checkout, and the volumes and
+# networks of its wp-env (docker compose keeps them past the containers, and
+# the next job of the slot would find the last job's database). Nothing a job
+# installs survives it.
 #
 #   dx-runner-slot.sh <slot>     run slot <slot> (1, 2, …); systemd's
 #                                dx-runner@<slot>.service does this
@@ -53,6 +56,19 @@ slot_containers() { # slot < lines
   awk -v home="$DX_BASE/d$1/wp-env/" 'index($2, home) == 1 {print $1}'
 }
 
+# The docker compose projects of the slot's last job, one per folder of its
+# wp-env home: wp-env writes each project's docker-compose.yml in a folder of
+# its own there (`wp-env-<repo>-<hash>`), and docker compose, given no name,
+# names the project after that folder (lower-case, nothing but [a-z0-9_-]),
+# and its volumes and networks after the project.
+slot_projects() { # slot
+  local dir
+  for dir in "$DX_BASE/d$1/wp-env"/*/; do
+    [ -d "$dir" ] && basename "$dir" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_\n-'
+  done
+  return 0
+}
+
 b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
 
 app_token() {
@@ -72,14 +88,24 @@ drop_runner() {
     "$API/orgs/$ORG/actions/runners/$1" || true
 }
 
-# Removes what the last job left: its wp-env containers and its checkout
-# (the tool cache stays: jobs in one slot run one after another).
+# Removes what the last job left: its wp-env containers, then the volumes
+# (the databases among them) and networks of its wp-env projects, which
+# docker compose keeps past the containers, then its checkout (the tool cache
+# stays: jobs in one slot run one after another).
 clean_slot() {
-  local slot=$1 ids
+  local slot=$1 ids project
   ids=$(docker ps -a --format '{{.ID}} {{.Label "com.docker.compose.project.working_dir"}}' | slot_containers "$slot")
   # shellcheck disable=SC2086 # one ID per word
   [ -z "$ids" ] || docker rm -f $ids >/dev/null
   mkdir -p "$DX_BASE/d$slot/_work" "$DX_BASE/d$slot/wp-env"
+  for project in $(slot_projects "$slot"); do
+    ids=$(docker volume ls -q --filter "label=com.docker.compose.project=$project")
+    # shellcheck disable=SC2086 # one name per word
+    [ -z "$ids" ] || docker volume rm -f $ids >/dev/null || echo "dx-runner $slot: could not remove the volumes of $project" >&2
+    ids=$(docker network ls -q --filter "label=com.docker.compose.project=$project")
+    # shellcheck disable=SC2086 # one ID per word
+    [ -z "$ids" ] || docker network rm $ids >/dev/null || echo "dx-runner $slot: could not remove the networks of $project" >&2
+  done
   find "$DX_BASE/d$slot/_work" -mindepth 1 -maxdepth 1 ! -name _tool -exec rm -rf {} +
   rm -rf "${DX_BASE:?}/d$slot/wp-env/"*
   chown -R "$RUNNER_UID" "$DX_BASE/d$slot"
@@ -141,6 +167,11 @@ self_test() {
   check "runner name" "$(runner_name 2 a1b2c3)" "diluxone-chile-2-a1b2c3"
   check "jit payload" "$(jit_payload diluxone-chile-1-x 1)" \
     '{"name":"diluxone-chile-1-x","runner_group_id":3,"labels":["self-hosted","linux","x64","diluxone"],"work_folder":"/data/runners-dx/d1/_work"}'
+  local home; home=$(mktemp -d); mkdir -p "$home/d1/wp-env/wp-env-Diluxone-Users-a8cf25ac" "$home/d1/wp-env/0f1e2d3c4b5a69788796a5b4c3d2e1f0" "$home/d2/wp-env/wp-env-other-11111111"
+  touch "$home/d1/wp-env/a-file"
+  check "slot 1 projects: its folders, as compose names them" "$(DX_BASE=$home slot_projects 1 | sort | tr '\n' ' ')" "0f1e2d3c4b5a69788796a5b4c3d2e1f0 wp-env-diluxone-users-a8cf25ac "
+  check "slot 3 projects: none" "$(DX_BASE=$home slot_projects 3 | tr '\n' ' ')" ""
+  rm -rf "$home"
   check "slot 1 containers only" "$(printf '%s\n' \
     'aaa /data/runners-dx/d1/wp-env/abc123' \
     'bbb /data/runners-dx/d10/wp-env/def456' \

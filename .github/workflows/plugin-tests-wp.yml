@@ -180,10 +180,18 @@ jobs:
         if: env.GO == 'true'
       - name: Multisite network
         if: env.GO == 'true' && matrix.target.site == 'network'
+        # Converted, then checked: on a database that already holds a network's
+        # tables (a runner that kept the last job's wp-env volumes) WP-CLI says
+        # "The network already exists." and writes no constant, and the suite
+        # would fail three steps later saying the site is not a network.
         env:
           REPO: ${{ github.event.repository.name }}
         run: |
-          npx wp-env run tests-cli wp core multisite-convert --title="Tests network"
+          set -euo pipefail
+          npx wp-env run tests-cli wp core is-installed --network >/dev/null 2>&1 \
+            || npx wp-env run tests-cli wp core multisite-convert --title="Tests network"
+          npx wp-env run tests-cli wp core is-installed --network >/dev/null 2>&1 \
+            || { echo "::error::The tests site is not a network after converting it: its database is not fresh (a reused wp-env volume holds the last run's network)."; exit 1; }
           npx wp-env run tests-cli wp plugin activate "$REPO" --network
       - name: PHPUnit (integration)
         if: env.GO == 'true'
@@ -256,6 +264,11 @@ jobs:
           set -euo pipefail
           npx wp-env run tests-cli wp core is-installed --network >/dev/null 2>&1 \
             || npx wp-env run tests-cli wp core multisite-convert --title="Tests network"
+          # Checked, as in the integration job: a database that already holds a
+          # network's tables converts to nothing, and the suite would only say
+          # so three steps later.
+          npx wp-env run tests-cli wp core is-installed --network >/dev/null 2>&1 \
+            || { echo "::error::The tests site is not a network after converting it: its database is not fresh (a reused wp-env volume holds the last run's network)."; exit 1; }
           # Written into the checkout, which wp-env mounts as the plugin's
           # folder, and copied from there inside the container.
           mkdir -p build
