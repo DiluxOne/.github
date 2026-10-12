@@ -1,13 +1,14 @@
 name: Issue reproduction
 
-# Reusable. When a person who can write to the repository labels an issue
-# `repro:run` (or `repro:again` for another try), Claude writes ONE unit test
-# that fails if the reported bug exists, under tests/Unit/Repro/. Then the
-# test runs, and the outcome is reported. The triage's `bug:unconfirmed`
-# only says a report is worth trying; it starts nothing on its own, so no
-# issue anyone opens can make code run here without a maintainer's decision.
-# A label a bot adds is ignored, and so is one added by someone with less
-# than write access (checked live, not from the event).
+# Reusable. Claude writes ONE unit test that fails if a reported bug exists,
+# under tests/Unit/Repro/; then the test runs, and the outcome is reported.
+# It starts in two ways (scripts/repro-trigger.sh decides which):
+#   trigger `triage`  the triage classified the report as a bug
+#                     (`bug:unconfirmed`), on the event that opened it;
+#   trigger `label`   a person who can write to the repository labels the
+#                     issue `repro:run` (or `repro:again` for another try).
+# A label a bot adds starts nothing, and so does one added by someone with
+# less than write access (checked live, not from the event).
 #
 #   the test fails  -> the bug is real: label `bug:confirmed`, a draft pull
 #                      request with the failing test as evidence and as the
@@ -42,16 +43,33 @@ name: Issue reproduction
 #
 #   on:
 #     issues:
-#       types: [labeled]
+#       types: [opened, labeled]
 #   jobs:
 #     repro:
 #       permissions: { actions: read, contents: write, issues: write, pull-requests: write }
 #       uses: DiluxOne/.github/.github/workflows/issue-repro.yml@v5
 #       secrets: inherit
+#     repro-triaged:
+#       needs: triage
+#       if: needs.triage.outputs.bug == 'true'
+#       permissions: { actions: read, contents: write, issues: write, pull-requests: write }
+#       uses: DiluxOne/.github/.github/workflows/issue-repro.yml@v5
+#       with:
+#         trigger: triage
+#         triage-bug: ${{ needs.triage.outputs.bug }}
+#       secrets: inherit
 
 on:
   workflow_call:
     inputs:
+      trigger:
+        description: What starts it. `label` (a person labels the issue repro:run or repro:again) or `triage` (the triage classified the report as a bug; the caller passes triage-bug).
+        type: string
+        default: label
+      triage-bug:
+        description: With trigger `triage`, the triage's bug output ('true' when it classified the report as a bug).
+        type: string
+        default: ''
       max-per-day:
         description: Runs of an issues event per day across the repository before a reproduction waits (a flood stop).
         type: number
@@ -88,10 +106,14 @@ jobs:
     name: Write the test
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    # A cheap pre-filter only, so that an unrelated label never queues a run;
+    # the decision is scripts/repro-trigger.sh.
     if: >-
-      github.event_name == 'issues' && github.event.action == 'labeled' &&
-      github.event.sender.type != 'Bot' &&
-      (github.event.label.name == 'repro:run' || github.event.label.name == 'repro:again')
+      github.event_name == 'issues' && (
+        (inputs.trigger == 'triage' && github.event.action == 'opened') ||
+        (inputs.trigger == 'label' && github.event.action == 'labeled' &&
+          github.event.sender.type != 'Bot' &&
+          (github.event.label.name == 'repro:run' || github.event.label.name == 'repro:again')))
     concurrency:
       group: issue-repro-${{ github.repository }}-${{ github.event.issue.number }}
       cancel-in-progress: false
@@ -117,25 +139,54 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-metadata: read
 
-      - name: Daily cap, and a label from someone who can write
-        id: cap
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref }}
+          path: .dx-central
+          persist-credentials: false
+
+      - name: Who asked, by label
+        id: who
+        if: inputs.trigger == 'label' && github.event.sender.type != 'Bot'
         env:
-          GH_TOKEN: ${{ github.token }}
-          BOT_TOKEN: ${{ steps.bot.outputs.token }}
-          MAX: ${{ inputs.max-per-day }}
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
           LOGIN: ${{ github.event.sender.login }}
         run: |
           set -euo pipefail
           # The repository's own answer, now, not the event's: a label from
           # a triager or a read-only collaborator starts nothing.
-          if ! role=$(GH_TOKEN=$BOT_TOKEN gh api "repos/$GITHUB_REPOSITORY/collaborators/$LOGIN/permission" --jq .role_name 2>"$RUNNER_TEMP/role.err"); then
+          if role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$LOGIN/permission" --jq .role_name 2>"$RUNNER_TEMP/role.err"); then
+            echo "role=$role" >> "$GITHUB_OUTPUT"
+          else
             echo "::warning::Could not check $LOGIN's permission ($(head -c 200 "$RUNNER_TEMP/role.err")); no reproduction runs. Add the label again to retry."
-            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+            echo "role=unknown" >> "$GITHUB_OUTPUT"
           fi
-          case "$role" in
-            admin|maintain|write) echo "$LOGIN asked for a reproduction ($role)." ;;
-            *) echo "::notice::$LOGIN has $role permission on this repository; only people who can write to it start a reproduction."; echo "run=false" >> "$GITHUB_OUTPUT"; exit 0 ;;
-          esac
+
+      - name: Start a reproduction?
+        id: start
+        env:
+          TRIGGER: ${{ inputs.trigger }}
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          LABEL: ${{ github.event.label.name }}
+          SENDER_TYPE: ${{ github.event.sender.type }}
+          ROLE: ${{ steps.who.outputs.role }}
+          TRIAGE_BUG: ${{ inputs.triage-bug }}
+        run: bash .dx-central/scripts/repro-trigger.sh decide
+
+      - name: Daily cap
+        id: cap
+        if: steps.start.outputs.go == 'yes'
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          MAX: ${{ inputs.max-per-day }}
+        run: |
+          set -euo pipefail
           today=$(date -u +%Y-%m-%d)
           # Every run of an issues event today counts, attempt or not: the
           # count errs high, costs one listing, and the cap only stops a flood.
@@ -146,19 +197,6 @@ jobs:
           else
             echo "run=true" >> "$GITHUB_OUTPUT"
           fi
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: steps.cap.outputs.run == 'true'
-        with:
-          persist-credentials: false
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: steps.cap.outputs.run == 'true'
-        with:
-          repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
-          path: .dx-central
-          persist-credentials: false
 
       - name: The high reviewer from the policy
         id: policy

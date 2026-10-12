@@ -7,7 +7,8 @@ name: Issue triage
 # the policy (the low-risk reviewer) does this work.
 #
 #   bug:unconfirmed       a bug report with enough to try to reproduce it
-#                         (a maintainer starts issue-repro.yml with repro:run)
+#                         (issue-repro.yml starts on its own; repro:run starts
+#                         one by hand)
 #   needs-info            a bug report missing versions, steps or logs: the
 #                         reply asks for them. A report with steps made on an
 #                         older version (an older release, or a development
@@ -97,6 +98,12 @@ on:
         description: Ref of DiluxOne/.github to read the policy from.
         type: string
         default: v5
+    outputs:
+      # true when the verdict is a bug worth a reproduction (bug:unconfirmed,
+      # not a paid report): the caller starts one on its own.
+      bug:
+        description: true when the triage classified the report as bug_unconfirmed.
+        value: ${{ jobs.triage.outputs.bug }}
     secrets:
       # The maintainer's Claude subscription (`claude setup-token`); the API
       # key is used only when it is missing.
@@ -122,6 +129,7 @@ jobs:
       # produced, handed to the job that writes the public reply.
       paid: ${{ steps.verdict.outputs.paid }}
       verdict: ${{ steps.verdict.outputs.verdict }}
+      bug: ${{ steps.verdict.outputs.bug }}
       language: ${{ steps.verdict.outputs.language }}
       cost: ${{ steps.verdict.outputs.cost }}
       model: ${{ steps.policy.outputs.model }}
@@ -323,7 +331,8 @@ jobs:
           language=$(jq -r '.language // "en"' <<<"${OUT:-null}" 2>/dev/null || echo en)
           case "$language" in en|es|pt|other) ;; *) language=en ;; esac
           cost=""; if [ -n "$EXECUTION_FILE" ] && [ -f "$EXECUTION_FILE" ]; then cost=$(jq -r '[.[] | select(.type == "result")] | last | .total_cost_usd // empty' "$EXECUTION_FILE" 2>/dev/null || true); fi
-          { echo "paid=${PAID:-false}"; echo "verdict=$verdict"; echo "language=$language"; echo "cost=$cost"; } >> "$GITHUB_OUTPUT"
+          bug=$(VERDICT=$verdict PAID=${PAID:-false} bash .dx-central/scripts/repro-trigger.sh bug)
+          { echo "paid=${PAID:-false}"; echo "verdict=$verdict"; echo "bug=$bug"; echo "language=$language"; echo "cost=$cost"; } >> "$GITHUB_OUTPUT"
 
       - name: Act (label, reply, lock)
         if: steps.cap.outputs.over != 'true' && steps.brief.outputs.paid != 'true'

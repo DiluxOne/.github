@@ -21,7 +21,7 @@
 
 # The issue triage (issue-triage.yml).
 - {name: needs-triage, color: "E4E669", description: "Not looked at yet"}
-- {name: "bug:unconfirmed", color: "D93F0B", description: "A bug report worth a reproduction attempt (repro:run starts one)"}
+- {name: "bug:unconfirmed", color: "D93F0B", description: "A bug report: a reproduction starts on its own (repro:run starts one by hand)"}
 - {name: needs-info, color: "E4E669", description: "Waiting for versions, steps or logs"}
 - {name: by-design, color: "BFDADC", description: "Works as documented, or a known limitation"}
 - {name: pro-feature, color: "5319E7", description: "Needs the paid service or add-on"}
