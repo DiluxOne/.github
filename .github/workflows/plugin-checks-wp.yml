@@ -428,6 +428,12 @@ jobs:
           DEFAULT_POLICY: .dx-central/policy/review-policy.default.yml
           EVENT: ${{ github.event_name }}
         run: bash .dx-central/scripts/kind.sh
+      # The engine's PHP, set up like every other PHP job's: GitHub's runners
+      # carry one, the organisation's runner image does not, by design.
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: '8.5'
+          coverage: none
       - name: Build the shipped tree (what wordpress.org receives)
         env:
           SLUG: ${{ inputs.slug }}
