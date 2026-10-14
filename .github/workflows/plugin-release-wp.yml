@@ -32,6 +32,22 @@ name: WordPress plugin release
 # and the release is created on the existing tag. A tag this workflow
 # created itself arrives with its release already there, so that run stops.
 #
+# Who approves (#134, scripts/release-gate.py): before any version reaches
+# the deploy job, the `version` job reads the environment's protection
+# rules from GitHub. With required reviewers, they approve, as above.
+# Without them nothing deploys, and the summary says to add one (a private
+# repository below GitHub Enterprise cannot have one: it is made public
+# first). Rules that cannot be read, because the caller's job grants no
+# `actions: read` (the template does), stop a private repository and let a
+# public one go on as before, with a warning that asks for the permission.
+# A bump the policy releases without a person (`release.<bump>: auto`,
+# through the auto-environment, which has no reviewers by design) passes
+# the gate: the policy decided. A rehearsal (`dry-run`) passes it too,
+# since it publishes nothing, and the summary says what a real release
+# would have met. The same job names any older run of this workflow still
+# waiting for an approval, since it holds the one-release-at-a-time group
+# and this run's deployment queues behind it.
+#
 # The readme's newest changelog entry names the version: `= X.Y.Z =` equal to
 # the computed one (while it is held it may be headed `= Unreleased =`; the
 # release pull request renames it with the markers). A different number is a disagreement between the roadmap and the labels, and
@@ -79,9 +95,13 @@ name: WordPress plugin release
 #   permissions:
 #     contents: write
 #     pull-requests: read # the labels of what merged decide the version
+#   permissions:
+#     contents: write
+#     pull-requests: read   # the labels of what merged decide the version
+#     actions: read         # the environment's rules, and the runs still waiting
 #   jobs:
 #     release:
-#       uses: DiluxOne/.github/.github/workflows/plugin-release-wp.yml@<sha> # vX.Y.Z
+#       uses: DiluxOne/.github/.github/workflows/plugin-release-wp.yml@v5
 #       with:
 #         slug: diluxone-offload
 #         version-constant: DILUXONE_OFFLOAD_VERSION   # optional
@@ -131,17 +151,20 @@ on:
         description: The development version of this commit, <next>-dev.<N>, the one the "Development build" pre-release carries.
         value: ${{ jobs.version.outputs.dev }}
 
-permissions:
-  contents: write
-
+# No workflow-level permissions: each job says its own, and `version` takes
+# the caller's as granted (see it).
 jobs:
   version:
     name: What is next
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions:
-      contents: read
-      pull-requests: read # the labels of what merged
+    # No permissions block: the job takes the caller's token as granted
+    # (contents and pull-requests to read the labels of what merged, and
+    # `actions: read`, which the template grants, to read the environment's
+    # protection rules and the runs still waiting). A called job may not ask
+    # for more than its caller grants, and a caller on the old template
+    # grants no `actions`: there the gate reads nothing, and release-gate.py
+    # says what that means for a public and for a private repository.
     outputs:
       version: ${{ steps.next.outputs.version }}
       environment: ${{ steps.next.outputs.environment }}
@@ -163,6 +186,8 @@ jobs:
           AUTO_ENVIRONMENT: ${{ inputs.auto-environment }}
           DEFAULT_POLICY: .dx-central/policy/review-policy.default.yml
           BASE: ${{ github.event.repository.default_branch }}
+          PRIVATE: ${{ github.event.repository.private }}
+          DRY_RUN: ${{ inputs.dry-run }}
         run: |
           set -euo pipefail
           { echo "version="; echo "dev="; echo "environment=$ENVIRONMENT"; } >> "$GITHUB_OUTPUT"
@@ -209,6 +234,7 @@ jobs:
                 exit 1
               fi
               version=$tag
+              mode=approve
               ;;
             *)
               # shellcheck disable=SC2016 # backticks in the Markdown of the summary, not commands.
@@ -243,8 +269,31 @@ jobs:
               version=$coming
               ;;
           esac
+          # Who approves (#134): the environment's required reviewers, read
+          # from GitHub, never assumed (scripts/release-gate.py). The runs
+          # still waiting for an approval are listed too (every page), since
+          # they hold the one-release-at-a-time group.
+          env_name=$(grep '^environment=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-)
+          # The environment's rules. 404: the environment does not exist
+          # yet (GitHub would create it, with no rule, when the job starts),
+          # which is "no reviewers", not "unreadable". Anything else that
+          # fails (403 without actions: read, an outage) leaves the file
+          # empty, which the gate reads as unreadable.
+          if ! gh api "repos/$GITHUB_REPOSITORY/environments/$env_name" > "$RUNNER_TEMP/environment.json" 2> "$RUNNER_TEMP/environment.err"; then
+            if grep -q "HTTP 404" "$RUNNER_TEMP/environment.err"; then echo '{"protection_rules": []}' > "$RUNNER_TEMP/environment.json"; else : > "$RUNNER_TEMP/environment.json"; fi
+          fi
+          workflow_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .workflow_id 2>/dev/null || echo "")
+          { for st in waiting pending; do gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs?status=$st&per_page=100" --jq ".workflow_runs[] | select(.workflow_id == ${workflow_id:-0})" 2>/dev/null || echo "::warning::The runs in state $st could not be listed; the queued-behind notice may be incomplete." >&2; done; } | jq -s '{workflow_runs: .}' > "$RUNNER_TEMP/waiting.json" || : > "$RUNNER_TEMP/waiting.json"
+          gate=$(PRIVATE="$PRIVATE" MODE="${mode:-approve}" DRY_RUN="$DRY_RUN" VERSION="$version" RUN_ID="$GITHUB_RUN_ID" \
+                 ENVIRONMENT_FILE="$RUNNER_TEMP/environment.json" WAITING_FILE="$RUNNER_TEMP/waiting.json" GITHUB_OUTPUT="$RUNNER_TEMP/gate.out" \
+                 python3 .dx-central/scripts/release-gate.py)
+          if ! grep -q '^go=true$' "$RUNNER_TEMP/gate.out"; then
+            printf '%s\n%s\n' "$gate" "$per_type" >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::Not released: $(grep '^why=' "$RUNNER_TEMP/gate.out" | cut -d= -f2-)"
+            exit 0
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          printf '## Release %s\n\nA **%s** release after %s, from the labels of what merged:\n\n%s\n\nApprove the deployment to publish it; reject it and nothing happens. A later push to main computes again.\n' "$version" "$bump" "$last" "$per_type" >> "$GITHUB_STEP_SUMMARY"
+          printf '## Release %s\n\nA **%s** release after %s, from the labels of what merged:\n\n%s\n\n%s\nA later push to main computes again.\n' "$version" "$bump" "$last" "$per_type" "$gate" >> "$GITHUB_STEP_SUMMARY"
 
   development-build:
     name: Development build
@@ -370,6 +419,8 @@ jobs:
     if: needs.version.outputs.version != ''
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: write # what the workflow granted every job before: the checkout, and the tag through the App's token
     environment: ${{ needs.version.outputs.environment }}
     # One release at a time; a run waiting for approval is never cancelled by
     # a newer push (the approver decides), and a run deploying is never

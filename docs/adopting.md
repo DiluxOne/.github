@@ -77,7 +77,11 @@ Most of it is the organisation's already: a new repository gets the pull request
    the line is the release decision, sets the three version markers to the
    version being released (`scripts/release-markers.sh prepare`), and the
    next push to `main` waits for the environment's reviewers. Between
-   releases the markers say the last version released.
+   releases the markers say the last version released. The reviewers are a
+   requirement the workflow checks, not an assumption (`scripts/release-gate.py`,
+   which reads the environment with the `actions: read` the template grants):
+   without them nothing deploys. A private repository below GitHub Enterprise
+   cannot have them, so it is made public before its first release.
 
 ## What every repository shares, and how it stays in step
 
