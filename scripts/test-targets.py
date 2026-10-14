@@ -232,6 +232,17 @@ def self_test():
         print("FAIL C2 (#127): {name, timeout} sets that target's timeout and no other's")
     else:
         print("ok   C2 (#127): {name, timeout} sets that target's timeout and no other's")
+    # #140: the job that runs a suite's command sets PHP and Composer up when the repository uses them.
+    workflow = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".github", "workflows", "plugin-tests-wp.yml")
+    try:
+        text = open(workflow, encoding="utf-8").read()
+        e2e = text[text.index("\n  e2e:\n"):]
+        before_run = e2e[:e2e.index("- name: Run the suite")]
+        ok = "shivammathur/setup-php" in before_run and "hashFiles('composer.json')" in before_run and "tools: composer:v2" in before_run
+    except (OSError, ValueError):
+        ok = False
+    print(("ok   " if ok else "FAIL ") + "C1/C2 (#140): the E2E job sets PHP and Composer up, only with a composer.json, before it runs the suite")
+    failed += 0 if ok else 1
     if not failed:
         print("all tests passed")
     return 1 if failed else 0

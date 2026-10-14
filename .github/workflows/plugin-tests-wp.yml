@@ -43,7 +43,9 @@ name: WordPress plugin tests (slow)
 # The calling repository provides `.wp-env.json`, `phpunit-integration.xml`,
 # the npm dependencies (`@wordpress/env`, `@playwright/test`) and Playwright
 # configs that write their results where `results` says; wp-env mounts the
-# checkout under the repository's name.
+# checkout under the repository's name. A suite's command runs with Node 20
+# and, when the repository has a composer.json, PHP 8.5 and Composer, on
+# GitHub's runners and on the organisation's alike (#140).
 #
 #   jobs:
 #     tests:
@@ -239,6 +241,16 @@ jobs:
         if: env.GO == 'true'
         with:
           node-version: '20'
+      # A suite's command may rely on PHP and Composer, as it can on GitHub's
+      # runners: the organisation's runner image carries neither by design
+      # (#140), so they are set up here when the repository has a
+      # composer.json; a repository without one gets no PHP and loses no time.
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        if: env.GO == 'true' && hashFiles('composer.json') != ''
+        with:
+          php-version: '8.5'
+          coverage: none
+          tools: composer:v2
       - run: npm install --no-audit --no-fund
         if: env.GO == 'true'
       - name: Chromium
