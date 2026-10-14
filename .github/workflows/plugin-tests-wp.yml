@@ -11,8 +11,13 @@ name: WordPress plugin tests (slow)
 #
 #   integration-targets  '["single","network"]': one job per target, checks
 #                        "Integration (single site)" and "Integration (network)".
-#                        Left out, the old single job "Integration tests
-#                        (wp-env)", on the network unless `multisite: false`.
+#                        A target is a name, or {name, timeout?} to give its
+#                        job more (or fewer) minutes than the default 40: on
+#                        the organisation's VM, where four runners share four
+#                        cores, the network suite can take twice what it
+#                        takes on GitHub's. Left out, the old single job
+#                        "Integration tests (wp-env)", on the network unless
+#                        `multisite: false`.
 #   e2e-suites           a JSON list of {name, site, run, results?, timeout?}:
 #                        one job per suite, check "E2E (<name>)". `site` single
 #                        is the development site with the plugin activated;
@@ -65,7 +70,7 @@ on:
         type: boolean
         default: true
       integration-targets:
-        description: 'JSON list of where the integration suite runs, "single" and/or "network", one job each. Empty keeps the old single job (on the network unless multisite is false).'
+        description: 'JSON list of where the integration suite runs, "single" and/or "network" (a name, or {name, timeout?}, the job''s minutes, default 40), one job each. Empty keeps the old single job (on the network unless multisite is false).'
         type: string
         default: ''
       e2e-suites:
@@ -142,7 +147,9 @@ jobs:
     # job is green.
     if: ${{ !cancelled() }}
     runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
-    timeout-minutes: 20
+    # The target's minutes, from the plan (40 unless the caller says; 40 too
+    # when an older central-ref's plan carries none).
+    timeout-minutes: ${{ matrix.target.timeout || 40 }}
     strategy:
       fail-fast: false
       matrix:
