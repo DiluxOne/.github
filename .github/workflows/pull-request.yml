@@ -65,6 +65,7 @@ jobs:
         with:
           persist-credentials: false
       - run: python3 scripts/next-version.py --test
+      - run: python3 scripts/release-gate.py --test
       - run: bash scripts/release-ready.sh --test
       - run: bash scripts/stamp-version.sh --test
       - run: bash scripts/release-markers.sh --test
