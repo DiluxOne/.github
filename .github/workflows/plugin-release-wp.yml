@@ -86,7 +86,8 @@ name: WordPress plugin release
 # as repository or organisation secrets. The environment's deployment policy
 # admits main and X.Y.Z tags, and its required reviewers are the approval.
 # The caller passes `secrets: inherit`, which is why it runs only on main and
-# on X.Y.Z tags, and calls this workflow at a fixed commit.
+# on X.Y.Z tags. It calls this workflow at `v5`, like every other: a
+# protected ref only an administrator moves, so nothing is pinned (#136).
 #
 #   on:
 #     push:

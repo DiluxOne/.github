@@ -27,9 +27,10 @@ name: Release
 # environment's secrets can only be handed over with `secrets: inherit`
 # (verified: passed by name, SVN_USERNAME arrived empty), which passes every
 # repository and organisation secret too. That is why
-# this workflow runs only on main and X.Y.Z tags and calls the shared
-# workflow at a fixed commit (Dependabot keeps the pin current; a bump of it
-# is reviewed as the secret-bearing change it is).
+# this workflow runs only on main and X.Y.Z tags. It calls the shared
+# workflow at `v5`, like every other workflow here: `v5` is a protected ref
+# of DiluxOne/.github that only an administrator moves, so nothing pinned
+# is needed, and nothing is pinned in any repository (DiluxOne/.github#136).
 
 on:
   push:
@@ -43,8 +44,7 @@ permissions:
 
 jobs:
   release:
-    # Pin the commit of the DiluxOne/.github release you adopt (not the moving
-    # tag): `@<sha> # vX.Y.Z`. Dependabot proposes the bump when the central releases.
+    # At `v5`, never a pinned commit: see the header.
     uses: DiluxOne/.github/.github/workflows/plugin-release-wp.yml@v5
     with:
       slug: my-plugin
