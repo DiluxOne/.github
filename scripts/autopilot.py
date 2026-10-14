@@ -9,7 +9,8 @@
                              or a run that continues one)
   autopilot.py prompt fix    the agent's task for a review that blocked
   autopilot.py draft         the draft pull request's title and body, from the
-                             issue (JSON: branch, title, body)
+                             issue (JSON: branch, title, body); fails, with why
+                             on stderr, when no criterion can be read
   autopilot.py tick C<n>     tick a criterion's box on the pull request, once
                              a pushed commit names it (the agent runs it)
   autopilot.py finish ready FILE | stop WHY
@@ -124,15 +125,17 @@ TYPES = {"bug": "fix", "feature": "feat", "docs": "docs"}
 
 
 def criteria(body):
-    """[(id, text, test)] from the PRD's criteria and the Spec's tests."""
+    """[(id, text, test)] from the PRD's criteria and the Spec's tests. A
+    criterion is what the schema accepts as one (schema.CRITERION: `C1: …`,
+    with or without the list dash), so every issue that passes G1 is read."""
     sections = dict(schema.parse(body)[0])
     tests = sections.get("Spec: tests", "")
     out = []
     for line in sections.get("Acceptance criteria", "").split("\n"):
-        m = re.match(r"^\s*-\s+(?:\[[ xX]\]\s+)?(C\d+):\s+(.*\S)", line)
+        m = schema.CRITERION.match(line.strip())
         if not m:
             continue
-        cid, text = m.group(1), m.group(2)
+        cid, text = m.group(1), line.strip()[m.end(1) + 1:].strip()
         t = next((l for l in tests.split("\n") if re.search(rf"\b{cid}\b", l)), "")
         test = re.sub(rf"^\s*-\s*{cid}\s*(→|->)\s*", "", t).strip()
         out.append((cid, text, test))
@@ -149,8 +152,15 @@ def kebab(title, words=5):
     return "-".join(w[:words]) or "change"
 
 
+NO_CRITERIA = "no criterion could be read from the issue's Acceptance criteria; the draft pull request is not opened"
+
+
 def draft(number, issue_type, title, body):
-    """The branch, title and body of the draft pull request, before any code."""
+    """The branch, title and body of the draft pull request, before any code.
+    ValueError when the issue yields no criterion: a draft with an empty
+    checklist would tell the agent every box is ticked."""
+    if not criteria(body):
+        raise ValueError(NO_CRITERIA)
     kind = TYPES.get((issue_type or "").strip().lower(), "chore")
     subject = title.strip()
     subject = subject[:1].lower() + subject[1:]
@@ -511,6 +521,16 @@ A class on html.
     check("C1: one unticked box per criterion, with its test", (progress(d["body"]), "Test: tests/e2e/persist.spec.ts" in d["body"]), ((0, 2), True))
     check("C1: a Bug's draft is a fix", draft("8", "Bug", "x", two)["branch"].startswith("fix/8-"), True)
     check("C1: a long title stays within 72", len(draft("8", "Task", "a" * 90, two)["title"]) <= 72, True)
+    bare = two.replace("- C1: Given", "C1: Given").replace("- C2: Given", "C2: Given")
+    check("C1 (#125): criteria without the list dash are read like dashed ones", [c[:2] for c in criteria(bare)], [c[:2] for c in criteria(two)])
+    check("C1 (#125): a ticked box is read too, and the id is not part of the text", criteria("### Acceptance criteria\n\n- [x] C1: Given a, when b, then c.\n")[0][:2], ("C1", "Given a, when b, then c."))
+    check("C1 (#125): the draft's checklist lists every bare criterion", progress(draft("7", "Feature", "x", bare)["body"]), (0, 2))
+    try:
+        draft("7", "Feature", "x", "### Problem\n\nx\n\n### Acceptance criteria\n\n- Given nothing, when read, then no id.\n")
+        refused = "no error"
+    except ValueError as err:
+        refused = str(err)
+    check("C2 (#125): a body with no readable criterion refuses the draft, and says so", refused, NO_CRITERIA)
     body = d["body"]
     check("C2: no commit names C2: its box stays", tick(body, "C2", ["feat: toggle (C1)"]), None)
     t = tick(body, "C1", ["feat: toggle (C1)\n\nC2 is next"])
@@ -679,7 +699,11 @@ def main(argv):
         return 64
     if argv[:1] == ["draft"]:
         body = open(os.environ["BODY"], encoding="utf-8").read()
-        print(json.dumps(draft(number, os.environ.get("ISSUE_TYPE", ""), os.environ.get("TITLE", ""), body)))
+        try:
+            print(json.dumps(draft(number, os.environ.get("ISSUE_TYPE", ""), os.environ.get("TITLE", ""), body)))
+        except ValueError as err:
+            print(err, file=sys.stderr)
+            return 1
         return 0
     if argv[:1] == ["board"]:
         refresh_board(repo, number)
