@@ -325,7 +325,13 @@ jobs:
           BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/receipts.py seal-spec
           type=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" --jq '.type.name // ""')
           title=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json title --jq .title)
-          BODY="$RUNNER_TEMP/body.md" ISSUE_TYPE="$type" TITLE="$title" python3 .dx-central/scripts/autopilot.py draft > "$RUNNER_TEMP/draft.json"
+          # No checklist, no draft: the end rule then stops the run with a
+          # comment and `needs-human`, as it does when G3 fails.
+          if ! BODY="$RUNNER_TEMP/body.md" ISSUE_TYPE="$type" TITLE="$title" python3 .dx-central/scripts/autopilot.py draft > "$RUNNER_TEMP/draft.json" 2> "$RUNNER_TEMP/draft.err"; then
+            why=$(tr '\n' ' ' < "$RUNNER_TEMP/draft.err" | head -c 300)
+            echo "::warning::$why"
+            echo "why=The draft pull request was not opened: $why" >> "$GITHUB_OUTPUT"; exit 0
+          fi
           branch=$(jq -r .branch "$RUNNER_TEMP/draft.json")
           jq -r .body "$RUNNER_TEMP/draft.json" > "$RUNNER_TEMP/draft.md"
           # A branch left by an earlier, failed attempt is not reused.
