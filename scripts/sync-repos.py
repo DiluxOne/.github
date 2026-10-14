@@ -205,6 +205,20 @@ def old_versions(texts, current):
     return sorted({int(v) for t in texts for v in USES_RE.findall(t) if int(v) < current})
 
 
+# A call of a shared workflow at anything but a version tag vN: a commit, a
+# branch, a tag of another shape. Nothing is pinned in any repository (#136).
+# `v5-foo` is not a version tag; a comment (`# …@<sha>` in an example) is
+# not a call.
+PINNED_RE = re.compile(r"DiluxOne/\.github/\.github/workflows/([\w.-]+)@(?!v\d+(?:[\s\"'#]|$))([^\s\"']+)")
+COMMENT_RE = re.compile(r"(^|\s)#.*$", re.M)
+
+
+def pinned_calls(texts):
+    """[(workflow, ref)] for every call of a shared workflow at a ref that is
+    not a version tag, in these workflow files; comments are not read."""
+    return sorted({(w, r) for t in texts for w, r in PINNED_RE.findall(COMMENT_RE.sub("", t))})
+
+
 OWN = "own checks"
 
 
@@ -395,6 +409,8 @@ def drift(repo, conf, labels, block, current=0):
             found.append("calls none of the shared workflows (docs/adopting.md)")
         if old:
             found.append(f"calls the shared workflows at {', '.join('@v' + str(v) for v in old)}; the current is @v{current} (docs/migrating.md)")
+        for w, r in pinned_calls(texts):
+            found.append(f"calls `{w}` at `@{r}` instead of `@v{current}`: nothing is pinned to a commit in any repository (docs/workflows.md, #136)")
         # Said, never guessed: a ruleset that cannot be read is reported as
         # such, not as nothing to report.
         try:
@@ -515,6 +531,11 @@ def self_test():
     check("versions: the current major is not", old_versions(files[1:], 5) == [], old_versions(files[1:], 5))
     check("versions: another owner's action is not", old_versions(["uses: actions/checkout@v2"], 5) == [], "")
     check("calls: a pinned commit counts as calling the shared workflows", bool(CALLS_RE.search("uses: DiluxOne/.github/.github/workflows/plugin-release-wp.yml@0123456789abcdef0123456789abcdef01234567")), "")
+    pinned = ["uses: DiluxOne/.github/.github/workflows/plugin-release-wp.yml@0123456789abcdef0123456789abcdef01234567 # v5.4.0", "uses: DiluxOne/.github/.github/workflows/svn-auth-check.yml@main", "uses: DiluxOne/.github/.github/workflows/conventions.yml@v5", "uses: actions/checkout@0123456789abcdef0123456789abcdef01234567"]
+    check("C3 (#136): a shared workflow called at a commit or a branch is named with its ref", pinned_calls(pinned) == [("plugin-release-wp.yml", "0123456789abcdef0123456789abcdef01234567"), ("svn-auth-check.yml", "main")], pinned_calls(pinned))
+    check("C3 (#136): a call at v5, and another owner's pinned action, are not", pinned_calls(pinned[2:]) == [], pinned_calls(pinned[2:]))
+    check("C3 (#136): a commented example is not a call, v5-foo is not a version", pinned_calls(["# uses: DiluxOne/.github/.github/workflows/x.yml@0123456789abcdef0123456789abcdef01234567", "uses: DiluxOne/.github/.github/workflows/y.yml@v5-foo"]) == [("y.yml", "v5-foo")], pinned_calls(["uses: DiluxOne/.github/.github/workflows/y.yml@v5-foo"]))
+    check("C3 (#136): a quoted call at v5 is not pinned; a dotted tag and a branch ref are", pinned_calls(['uses: "DiluxOne/.github/.github/workflows/a.yml@v5"', "uses: 'DiluxOne/.github/.github/workflows/b.yml@v5.4.0'", "uses: DiluxOne/.github/.github/workflows/c.yml@refs/heads/main"]) == [("b.yml", "v5.4.0"), ("c.yml", "refs/heads/main")], pinned_calls(['uses: "DiluxOne/.github/.github/workflows/a.yml@v5"', "uses: 'DiluxOne/.github/.github/workflows/b.yml@v5.4.0'"]))
     spec = load_yaml(os.path.join(CENTRAL, "kinds", "wordpress-plugin", "pack.yml")).get("own-checks") or {}
     check("pack wordpress-plugin: own-checks names its callers and jobs", spec.get("callers-of") and spec.get("jobs"), spec)
     names = ["checks / PHPStan", "checks / What changed", "tests / E2E (single)", "tests / E2E (single)", "conventions / Conventions (branch, title, commits)", "review / Claude review", "Dependabot", "real-s3 / AWS"]

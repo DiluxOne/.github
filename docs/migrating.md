@@ -11,7 +11,7 @@ Within `v5`, from the version that brings the autonomy policy (#79): `convention
 1. Open the issue for it (the maintenance-task form) and have it accepted; set the native Type of every open issue a pull request closes (a `type:*` label no longer counts).
 2. Delete `.github/workflows/pull-request-edited.yml`, and `pull-request.yml` unless it has jobs of its own: for a plugin, keep only `checks`, `tests` and `weekly-failure` (the `plugin-checks-wp.yml` template). Move `retired-names` from the callers to `.github/review-policy.yml`.
 3. Delete what the organisation provides: the issue forms, the pull request template, `SECURITY.md`, `CONTRIBUTING.md` unless it has something of its own. Keep `.github/CODEOWNERS`, `dependabot.yml` and the review policy.
-4. Point the remaining `uses:` and `central-ref:` at `@v5`.
+4. Point the remaining `uses:` and `central-ref:` at `@v5`, the release workflow too: nothing is pinned to a commit in any repository (#136).
 5. Before opening that pull request, the repository joins the organisation's rulesets (a maintainer, from this repository's session), or its own ruleset would require checks the pull request deletes. After the merge, run `scripts/sync-repos.py all --repo <name>`: besides the labels and settings, it creates a ruleset named **own checks** that only requires the repository's own jobs' checks (`checks / …`, `tests / …`, from its last merged pull requests, which jobs the kind's pack says, plus every check its old rulesets required outside the organisation's pipeline) and deletes the repository's rulesets the organisation's and **own checks** cover; a ruleset with a rule or a check nothing else carries stays, for a person to decide. The organisation's ruleset requires its pipeline, not a plugin's tests. Add any other suite of its own (a plugin's real-storage ones) to **own checks** by hand; the script never rewrites one that exists. The weekly drift check reports a repository that needs **own checks** and has none. A repository with no checks of its own keeps no ruleset.
 
 ## Migrating a repository from `v3` to `v4`
@@ -25,8 +25,7 @@ Within `v5`, from the version that brings the autonomy policy (#79): `convention
 2. Grant `issues: read` to the `conventions` job in `pull-request.yml` (or
    `pull-request-wp.yml`) and `pull-request-edited.yml`; without it the
    workflow fails to start.
-3. Point every `uses:` and `central-ref:` at `@v4` (the release workflow at
-   its commit).
+3. Point every `uses:` and `central-ref:` at `@v4`.
 4. Before the first pull request on `v4`, open its issue and accept it. A
    pull request already open needs one too: write `Closes #<number>` in its
    description.
@@ -42,7 +41,7 @@ Within `v5`, from the version that brings the autonomy policy (#79): `convention
 
 1. Declare the kind in `.github/review-policy.yml`: `kind: wordpress-plugin`.
 2. Add `.github/review-suppressions.yml` (`review-rules.php --suggest-suppressions` writes the list; every reason is written by a person) and fix what the rules find.
-3. Point every `uses:` at `@v3` (the release workflow at its commit), and set the new tests inputs if the repository has more than one suite.
+3. Point every `uses:` at `@v3`, and set the new tests inputs if the repository has more than one suite.
 4. Once green, require `checks / Review rules (<kind>)` and the per-target `tests / …` checks in the `main` ruleset.
 
 ### What `v3` changes for a plugin
@@ -87,4 +86,4 @@ templates fails to start once it points at `v2`:
    grants `pull-requests: read`, passes `secrets: inherit` and starts as a
    rehearsal (`dry-run: true`). The environment needs the release App's key
    and client id besides the SVN credentials.
-4. Point every `uses:` at `@v2` (the release workflow at its commit).
+4. Point every `uses:` at `@v2`.
