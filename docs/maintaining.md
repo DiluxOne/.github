@@ -16,7 +16,7 @@ they are.
 
 ## The organisation's VM
 
-The private repositories' jobs run on `vm-gh-runner-01` (Azure, shared with AI Studio's own runners): four slots (`dx-runner@1..4`), each an endless loop of one-job containers of `ghcr.io/diluxone/runner:stable`, registered just in time through the `dilux-runner` App ([`scripts/runner-vm/dx-runner-slot.sh`](../scripts/runner-vm/dx-runner-slot.sh)). [`runner-vm.yml`](../.github/workflows/runner-vm.yml) starts the VM when a job waits and, after 20 minutes without one, cleans and deallocates it.
+The private repositories' jobs run on `vm-gh-runner-01` (Azure, `Standard_D8as_v5`: 8 cores, 32 GB, shared with AI Studio's own runners): one slot per core (`dx-runner@1..8`; `DX_SLOTS` overrides, #138), each an endless loop of one-job containers of `ghcr.io/diluxone/runner:stable`, registered just in time through the `dilux-runner` App ([`scripts/runner-vm/dx-runner-slot.sh`](../scripts/runner-vm/dx-runner-slot.sh)). [`runner-vm.yml`](../.github/workflows/runner-vm.yml) starts the VM when a job waits and, after 20 minutes without one, cleans and deallocates it.
 
 - **Changing the VM** is a pull request here: on every boot `dx-provision.service` fetches [`scripts/runner-vm/provision.sh`](../scripts/runner-vm/provision.sh) from `main` and runs it. Nobody changes the VM by hand.
 - **Changing the image** is a pull request to [`runner/`](../runner/); [`runner-image.yml`](../.github/workflows/runner-image.yml) builds it on merge and every Monday, and promotes it to `:stable` only after its smoke test. Each promotion is a comment on the issue "Runner image".
