@@ -23,6 +23,14 @@
                              silent (a comment, `needs-human`, exit 1)
   autopilot.py may-continue  whether a run may continue the pull request
                              (RUNS: the runs before this one)
+  autopilot.py work-log      the path of the agent's execution log for the
+                             work, found wherever it is (WORK_LOG: the
+                             action's output; else the file it writes; else
+                             the session the CLI kept as it went, turned into
+                             the same list); prints nothing when there is none
+  autopilot.py last-resort   when the end rule itself failed: a comment and
+                             `needs-human` on the pull request (or the issue),
+                             so the run still never ends in silence
   autopilot.py account FILE [TITLE]
                              the run's readable account (Markdown) from the
                              agent's execution log
@@ -40,9 +48,11 @@ GITHUB_REPOSITORY; for decide: RISK, COMPLEXITY, BLOCKING, DESCRIPTION_OK
 (a file, every path at the pull request's head, for the criteria's evidence);
 for prompt fix: PR (the pull request), ROUND (1, 2, …); for prompt work,
 tick, finish, end, may-continue: PR, BRANCH, RUNS (runs so far, this one
-included), STARTED (when this run's agent started, UTC ISO), LIMIT_HIT
-(true when the agent ran out of turns or time), HEAD_BEFORE (mode fix: the
-branch's head before the round), MODE.
+included), STARTED (when this run's agent started, UTC ISO), WORK_LOG and
+WORK_OUTCOME (the work's execution log and the step's outcome: together they
+say whether the agent ran out of turns or time), HEAD_BEFORE (mode fix: the
+branch's head before the round), MODE; for work-log: WORK_LOG (the action's
+output), WORK_STARTED (when the work step started), GITHUB_WORKSPACE.
 """
 import importlib.util
 import json
@@ -286,6 +296,118 @@ def silent_comment(verdict_why, run_url):
 **The autopilot ended without a result.** {verdict_why} Nothing was marked ready and the agent left no stop comment, so a person takes it from here (`needs-human`). What it did is in [the run]({run_url}): its summary, and the full transcript as an artifact.
 
 {AI_LINE}"""
+
+
+def last_resort_comment(run_url):
+    return f"""{SILENT}
+**The autopilot's run ended, and its end rule could not say how.** Nothing was marked ready, and the step that writes the verdict failed before it could (the run's log says why), so a person takes it from here (`needs-human`). What the agent did is in [the run]({run_url}): its summary, and the transcript as an artifact when there is one.
+
+{AI_LINE}"""
+
+
+EXECUTION_FILE = "claude-execution-output.json"
+SESSION_LOG = "claude-work-session.json"
+
+
+def iso_ts(text):
+    import calendar
+    import time
+    try:
+        return calendar.timegm(time.strptime((text or "").strip(), "%Y-%m-%dT%H:%M:%SZ"))
+    except ValueError:
+        return 0
+
+
+def session_events(path):
+    """The CLI's own session file (one JSON object per line, the same message
+    shapes the action's log has) as the list `account` reads, with a result
+    that says the run was stopped when the session has none."""
+    events = []
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(e, dict) and e.get("type") in ("system", "user", "assistant", "result"):
+                events.append(e)
+    if not any(e.get("type") == "result" for e in events):
+        turns = sum(1 for e in events if e.get("type") == "assistant")
+        events.append({"type": "result", "subtype": "stopped", "num_turns": turns,
+                       "result": "The step ended before the agent did (its time ran out): this is the session's log up to then."})
+    return events
+
+
+def project_dir(workspace):
+    """The folder the CLI keeps a working directory's sessions in: its path
+    with every character that is not a letter or a digit turned into `-`."""
+    return re.sub(r"[^A-Za-z0-9]", "-", workspace or "")
+
+
+def work_log(output_file, runner_temp, work_started, homes, workspace=""):
+    """Where the work's execution log is: "" when the work never started;
+    else the action's output when it set one; else the file the action
+    writes at the end of a run (a step killed by its timeout never gets
+    there: the action keeps the messages in memory until the agent ends);
+    else the newest session file the CLI itself kept as it went in the
+    workspace's own folder, <home>/projects/<the workspace's path, encoded>/
+    *.jsonl, touched since the work step started (no other folder: on a
+    shared home another repository's session is never taken for this one),
+    turned into the same list at <runner_temp>/claude-work-session.json. ""
+    when there is none."""
+    since = iso_ts(work_started)
+    if not since:
+        return ""
+    if output_file and os.path.isfile(output_file):
+        return output_file
+    written = os.path.join(runner_temp, EXECUTION_FILE)
+    if os.path.isfile(written):
+        return written
+    if not workspace:
+        return ""
+    folder = project_dir(workspace)
+    found = []
+    for home in homes:
+        root = os.path.join(home or "", "projects", folder)
+        if not home or not os.path.isdir(root):
+            continue
+        for f in os.listdir(root):
+            path = os.path.join(root, f)
+            if not f.endswith(".jsonl") or not os.path.isfile(path):
+                continue
+            mtime = os.path.getmtime(path)
+            if mtime >= since:
+                found.append((mtime, path))
+    if not found:
+        return ""
+    newest = max(found)
+    out = os.path.join(runner_temp, SESSION_LOG)
+    with open(out, "w", encoding="utf-8") as fh:
+        json.dump(session_events(newest[1]), fh)
+    return out
+
+
+def read_events(path):
+    """The agent's execution log as a list; [] when there is none to read."""
+    try:
+        data = json.load(open(path, encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return []
+    return data if isinstance(data, list) else [data]
+
+
+def limit_hit(events, work_outcome):
+    """Whether the agent ran out of turns or time, so the run may continue:
+    its log says it ran out of turns (error_max_turns, from the action), or
+    the step failed (its timeout; a run a person cancelled has outcome
+    cancelled and is not continued) and either wrote no result at all or
+    only the stopped result work-log adds to a killed step's session."""
+    results = [e for e in events if e.get("type") == "result"]
+    if any((e.get("subtype") or "") == "error_max_turns" for e in results):
+        return True
+    if work_outcome != "failure":
+        return False
+    return not results or all((e.get("subtype") or "") == "stopped" for e in results)
 
 
 def account(events, title="The autopilot's run"):
@@ -579,6 +701,63 @@ A class on html.
     check("C3: an earlier run's stop does not count for this one", stopped_since([dict(bot_stop, createdAt="2026-10-11T09:00:00Z")], t0), False)
     check("C5: the transcript loses tokens and keys", scrub("t=ghs_" + "a" * 36 + " k=sk-ant-" + "b" * 30 + " ok"), "t=[redacted] k=[redacted] ok")
     check("tested: the section is filled, the rest kept", ("Ran make test." in set_tested(body, "Ran make test."), "## 🎯" in set_tested(body, "x"), AI_LINE in set_tested(body, "x")), (True, True, True))
+    # #126: the run's tokens and its end, read from the workflow itself.
+    check("C4 (#126): the last resort's comment asks a person, and links the run", (last_resort_comment("u").startswith(SILENT), "needs-human" in last_resort_comment("u"), "(u)" in last_resort_comment("u")), (True, True, True))
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        home = os.path.join(tmp, "home", ".claude")
+        os.makedirs(os.path.join(home, "projects", "x"))
+        temp = os.path.join(tmp, "temp")
+        os.makedirs(temp)
+        t0 = "2026-10-13T01:00:00Z"
+        ws = "/w/repo"
+        check("C3 (#126): no log anywhere gives nothing", work_log("", temp, t0, [home], ws), "")
+        mine = os.path.join(home, "projects", project_dir(ws))
+        os.makedirs(mine)
+        session = os.path.join(mine, "s1.jsonl")
+        with open(session, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {"command": "npm exec playwright install chromium"}}]}}) + "\n")
+            fh.write("not json\n")
+        got = work_log("", temp, t0, ["", home], ws)
+        events = read_events(got)
+        check("C3 (#126): a killed step's work is read from the CLI's own session", (os.path.basename(got), "`npm exec playwright install chromium`" in account(events), "stopped after 1 turns" in account(events)), (SESSION_LOG, True, True))
+        check("C3 (#126): a killed step hit its limit; a cancelled one did not", (limit_hit(events, "failure"), limit_hit(events, "cancelled"), limit_hit([], "failure"), limit_hit([], "cancelled"), limit_hit([{"type": "result", "subtype": "success"}], "failure"), limit_hit([{"type": "result", "subtype": "error_max_turns"}], "success")), (True, False, True, False, False, True))
+        check("C3 (#126): a session older than the work is not this run's", work_log("", temp, "2099-01-01T00:00:00Z", [home], ws), "")
+        check("C3 (#126): no work start, no log at all: the Spec's is never taken for the work's", work_log(session, temp, "", [home], ws), "")
+        other = os.path.join(home, "projects", "-w-other", "s2.jsonl")
+        os.makedirs(os.path.dirname(other))
+        open(other, "w").write(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "theirs"}]}}) + "\n")
+        check("C3 (#126): another workspace's session is never taken, however new", ("theirs" in account(read_events(work_log("", temp, t0, [home], ws))), work_log("", temp, t0, [home], "/w/none"), work_log("", temp, t0, [home], "")), (False, "", ""))
+        check("C3 (#126): the CLI's folder for a path", project_dir("/data/runners-dx/d2/_work/r/r"), "-data-runners-dx-d2--work-r-r")
+        written = os.path.join(temp, EXECUTION_FILE)
+        open(written, "w").write("[]")
+        check("C3 (#126): the file the action wrote wins over the session", work_log("", temp, t0, [home], ws), written)
+        check("C3 (#126): the action's output wins over both", work_log(session, temp, t0, [home], ws), session)
+    workflow = os.path.join(HERE, "..", ".github", "workflows", "autopilot.yml")
+    try:
+        import yaml
+        steps = yaml.safe_load(open(workflow, encoding="utf-8"))["jobs"]["run"]["steps"]
+    except ImportError:
+        steps = None
+        print("skip C1/C2 (#126): PyYAML is not installed here; the scripts job reads the workflow")
+    if steps is not None:
+        names = [st.get("name") or st.get("id") or "" for st in steps]
+        ids = [st.get("id") or "" for st in steps]
+        at = lambda key: next(i for i, st in enumerate(steps) if st.get("id") == key)
+        work, end, last = at("work"), at("end"), at("last-resort")
+        tokens = {"bot": at("bot"), "bot-work": at("bot-work"), "bot-end": at("bot-end")}
+        check("C1 (#126): a token is minted after the work, however it ended, and before the end rule", (tokens["bot-work"] < work < tokens["bot-end"] < end < last, "always()" in str(steps[tokens["bot-end"]].get("if", ""))), (True, True))
+        check("C2 (#126): the work's step ends before its token does", int(steps[work].get("timeout-minutes", 0)) < 60, True)
+        check("C2 (#126): the work gets the token minted right before it", steps[work].get("with", {}).get("github_token", ""), "${{ steps.bot-work.outputs.token }}")
+        wrong = []
+        for i, st in enumerate(steps):
+            text = json.dumps({"env": st.get("env", {}), "with": st.get("with", {})})
+            used = re.findall(r"steps\.(bot[a-z-]*)\.outputs\.token", text)
+            phase = "bot" if i < work else ("bot-work" if i == work else "bot-end")
+            if any(u != phase for u in used):
+                wrong.append(names[i])
+        check("C2 (#126): every step writes with the token of its own phase", wrong, [])
+        check("C2 (#126): the end rule says its verdict, and the last resort waits for it", ("verdict" in str(steps[last].get("if", "")), ids[end]), (True, "end"))
     if not failed:
         print("all tests passed")
     return failed
@@ -723,7 +902,7 @@ def main(argv):
         mode = os.environ.get("MODE", "start")
         started = os.environ.get("STARTED", "")
         run_url = os.environ.get("RUN_URL", "")
-        limit_hit = os.environ.get("LIMIT_HIT", "") == "true"
+        limit = limit_hit(read_events(os.environ.get("WORK_LOG", "")), os.environ.get("WORK_OUTCOME", ""))
         target = ("pr", pr) if pr else ("issue", number)
         comments = json.loads(gh(target[0], "view", str(target[1]), "--repo", repo, "--json", "comments"))["comments"]
         stopped = stopped_since(comments, started)
@@ -733,21 +912,59 @@ def main(argv):
             draft_ = info["isDraft"]
             done, total = progress(info["body"])
             pushed = bool(os.environ.get("HEAD_BEFORE")) and info["headRefOid"] != os.environ.get("HEAD_BEFORE")
-        v = end_verdict(mode, pr, draft_, stopped, done, total, limit_hit, runs, cap, pushed)
+        v = end_verdict(mode, pr, draft_, stopped, done, total, limit, runs, cap, pushed)
         print(v)
+
+        def said():
+            # The verdict, written the moment it is on GitHub: the last
+            # resort runs only when this step ended without one.
+            if os.environ.get("GITHUB_OUTPUT"):
+                with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+                    fh.write(f"verdict={v}\n")
+
         if v == "continue":
             subprocess.run(["gh", "label", "create", "autopilot:continue", "--repo", repo, "--color", "1D76DB", "--force",
                             "--description", "On an issue: the autopilot continues its draft pull request"], capture_output=True)
             gh("issue", "edit", str(number), "--repo", repo, "--add-label", "autopilot:continue")
+            said()
         elif v == "silent":
-            why = silent_why(mode, pr, os.environ.get("WHY", ""), os.environ.get("SPEC_OUTCOME", ""), limit_hit, done, total, runs, cap)
+            why = silent_why(mode, pr, os.environ.get("WHY", ""), os.environ.get("SPEC_OUTCOME", ""), limit, done, total, runs, cap)
             if mode == "fix":
                 why = "The fix round pushed nothing and the agent did not say why."
             gh(target[0], "comment", str(target[1]), "--repo", repo, "--body", silent_comment(why, run_url))
+            said()
             gh(target[0], "edit", str(target[1]), "--repo", repo, "--add-label", "needs-human")
+        else:
+            said()
         if number:
             refresh_board(repo, number)
         return 1 if v == "silent" else 0
+    if argv[:1] == ["work-log"]:
+        homes = [os.environ.get("CLAUDE_CONFIG_DIR", ""), os.path.join(os.environ.get("HOME", ""), ".claude")]
+        print(work_log(os.environ.get("WORK_LOG", ""), os.environ.get("RUNNER_TEMP", "/tmp"), os.environ.get("WORK_STARTED", ""), homes, os.environ.get("GITHUB_WORKSPACE", "")))
+        return 0
+    if argv[:1] == ["last-resort"]:
+        run_url = os.environ.get("RUN_URL", "")
+        text = last_resort_comment(run_url)
+        # One comment, on the pull request or, failing that, on the issue;
+        # the label is tried wherever the comment landed. Nothing here fails.
+        for kind, n in (("pr", pr), ("issue", number)):
+            if not n:
+                continue
+            try:
+                gh(kind, "comment", str(n), "--repo", repo, "--body", text)
+            except (RuntimeError, OSError) as err:
+                print(f"::warning::The last resort could not comment on {kind} #{n}: {str(err)[:200]}")
+                continue
+            try:
+                gh(kind, "edit", str(n), "--repo", repo, "--add-label", "needs-human")
+            except (RuntimeError, OSError) as err:
+                print(f"::warning::The last resort commented on {kind} #{n} but could not label it: {str(err)[:200]}")
+            print(f"The last resort said so on {kind} #{n}.")
+            break
+        if number:
+            refresh_board(repo, number)
+        return 0
     body = open(os.environ["BODY"], encoding="utf-8").read() if os.environ.get("BODY") else ""
     var = os.environ.get("DX_AUTOPILOT", "")
     if argv[:1] == ["may-start"]:
