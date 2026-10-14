@@ -17,7 +17,15 @@
 # the branch may change, lock files and translations aside; empty for no
 # limit: CI sets it for authors who are not trusted; composer.lock,
 # package-lock.json and the .po, .pot and .mo files of a languages/ directory
-# do not count).
+# do not count), TAKEN_OVER (the maintainer who took a bot's pull request
+# over, as the policy found; MAX_LINES is then empty, and the log says why).
+#
+# `conventions.sh --head-facts REPO PR SHA DIR` writes, for the gate that
+# decides a take-over (#130), what GitHub says about a pull request: the
+# head commit's author and committer logins (DIR/head-author,
+# DIR/head-committer), who last added `needs-human` (DIR/needs-human-by)
+# and the labels as they are now (DIR/labels, comma-separated). A read that
+# fails leaves its file empty, which keeps the cap, never lifts it.
 # Run from the repository.
 #
 # A pull request titled docs may change only documentation: Markdown, the
@@ -66,6 +74,20 @@ dependabot_title() {
   printf '%s\n' "$t"
 }
 
+# What GitHub says about a pull request's head and its `needs-human` (#130):
+# one file per fact under $4, empty when the read fails. `--paginate` with
+# `--jq` prints each page's matches in order, so the last line is the last
+# event (gh does not take `--slurp` together with `--jq`).
+head_facts() { # repo pr sha dir
+  local repo=$1 pr=$2 sha=$3 dir=$4 author_committer
+  mkdir -p "$dir"
+  author_committer=$(gh api "repos/$repo/commits/$sha" --jq '[(.author.login // ""), (.committer.login // "")] | join(" ")' 2>/dev/null) || author_committer=" "
+  printf '%s' "${author_committer%% *}" > "$dir/head-author"
+  printf '%s' "${author_committer#* }" > "$dir/head-committer"
+  gh api "repos/$repo/issues/$pr/timeline" --paginate --jq '.[] | select(.event == "labeled" and .label.name == "needs-human") | .actor.login' 2>/dev/null | tail -n1 | tr -d '\n' > "$dir/needs-human-by" || : > "$dir/needs-human-by"
+  gh api "repos/$repo/issues/$pr/labels" --jq '[.[].name] | join(",")' 2>/dev/null | tr -d '\n' > "$dir/labels" || : > "$dir/labels"
+}
+
 check() {
   MAX_HEADER=${MAX_HEADER:-100}
   SECTIONS=${SECTIONS-What changes,Why}
@@ -74,6 +96,7 @@ check() {
   REVIEW_BOT=${REVIEW_BOT:-dilux-bot[bot]}
   AUTHOR_TYPE=${AUTHOR_TYPE:-User}
   MAX_LINES=${MAX_LINES:-}
+  TAKEN_OVER=${TAKEN_OVER:-}
   TYPES='feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert'
   HEADER_RE="^(${TYPES})(\([a-z0-9._/-]+\))?!?: [^ ].*[^.]$"
   BRANCH_RE="^((${TYPES})/[a-z0-9][a-z0-9._-]*|dependabot/.+)$"
@@ -127,11 +150,15 @@ check() {
     # deleted, which is not documentation.
     done < <(git diff --no-renames --name-only "${BASE}...${HEAD_REF}")
   fi
-  # A size an author who is not trusted may change at once.
+  # A size an author who is not trusted may change at once. A bot's pull
+  # request a maintainer took over is the maintainer's: no cap.
+  if [ -n "$TAKEN_OVER" ] && [ -z "$MAX_LINES" ]; then
+    echo "The size cap does not apply: $TAKEN_OVER took this pull request over (the head commit is theirs)."
+  fi
   if [[ "$MAX_LINES" =~ ^[0-9]+$ ]] && [ "$MAX_LINES" -gt 0 ]; then
     changed=$(git diff --numstat "${BASE}...${HEAD_REF}" | awk -F'\t' '$3 !~ /(^|\/)(composer\.lock|package-lock\.json)$/ && $3 !~ /(^|\/)languages\/[^\/]+\.(po|pot|mo)$/ && $1 != "-" { n += $1 + $2 } END { print n + 0 }')
     if [ "$changed" -gt "$MAX_LINES" ]; then
-      error "This pull request changes $changed lines; one from an author outside the maintainers may change at most $MAX_LINES. Split it into smaller pull requests, each closing its accepted issue, or ask a maintainer to take it over."
+      error "This pull request changes $changed lines; one from an author outside the maintainers may change at most $MAX_LINES. Split it into smaller pull requests, each closing its accepted issue, or ask a maintainer to take it over: a maintainer takes an autopilot pull request over by adding \`needs-human\`, removing \`autopilot\` and then pushing a commit of their own to its branch (the push runs this check again); the cap no longer applies once the head is theirs."
     fi
   fi
   while read -r sha; do
@@ -198,6 +225,11 @@ if [ "${1:-}" = "--dependabot-title" ]; then
   exit 0
 fi
 
+if [ "${1:-}" = "--head-facts" ]; then
+  head_facts "${2:?repo}" "${3:?pr}" "${4:?sha}" "${5:?dir}"
+  exit 0
+fi
+
 if [ "${1:-}" = "--test" ]; then
   good=$'## 📝 What changes\n\nA thing.\n\n## 💡 Why\n\nA reason.\n\n🤖 AI-assisted · Claude Opus 5.5 (Anthropic)'
   long="fix(sync): $(printf 'x%.0s' $(seq 1 95))"
@@ -245,6 +277,43 @@ if [ "${1:-}" = "--test" ]; then
   test_case "fails: code under languages/ counts"  1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "" "" "languages/loader.php:500" 100 || fail=1
   test_case "fails: a script under docs/ is not docs" 1 docs/guide "docs(guide): a thing" "docs(guide): a thing" "$good" "" "" "docs/build.sh:3" || fail=1
   test_case "passes: no limit for a trusted author" 0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "" "" "includes/a.php:5000" "" || fail=1
+  # #130: a bot's pull request a maintainer took over, over the size, passes
+  # and says why; with the cap, the error says how to take one over.
+  over() { # $1 MAX_LINES, $2 TAKEN_OVER; prints the check's output, exits as it does
+    local dir; dir=$(mktemp -d)
+    (
+      cd "$dir" && git init -q && git config user.email t@t && git config user.name t
+      git commit -q --allow-empty -m "chore: base" && git checkout -q -b fix/a-thing
+      mkdir includes && seq 1 5000 > includes/a.php && git add . && git commit -q -m "fix(sync): a thing"
+      BRANCH=fix/a-thing TITLE="fix(sync): a thing" BODY=$good MAX_LINES=$1 TAKEN_OVER=$2 AUTHOR_TYPE=Bot BASE=$(git rev-parse HEAD~1) HEAD_REF=$(git rev-parse HEAD) check 2>&1
+    ); local code=$?
+    rm -rf "$dir"; return $code
+  }
+  if out=$(over "" soydiloreto) && grep -q "soydiloreto took this pull request over" <<<"$out"; then echo "ok   C1 (#130): a taken-over autopilot pull request over the size passes and says so"; else echo "FAIL C1 (#130): a taken-over autopilot pull request over the size passes and says so"; fail=1; fi
+  if ! out=$(over 600 "") && grep -q "may change at most 600" <<<"$out" && grep -q 'needs-human' <<<"$out" && grep -q 'removing `autopilot`' <<<"$out" && grep -q "then pushing a commit of their own" <<<"$out"; then echo "ok   C2/C3 (#130): with the cap it fails as today, and the error says how a maintainer takes it over"; else echo "FAIL C2/C3 (#130): with the cap it fails as today, and the error says how a maintainer takes it over"; fail=1; fi
+  # #130: the facts the gate reads, against a gh that answers like the real
+  # one (fixtures run through jq; `--slurp` with `--jq` refused, as gh does).
+  gh() {
+    local endpoint=$2 expr="" slurp=false a
+    for a in "$@"; do case "$a" in --slurp) slurp=true ;; esac; done
+    while [ $# -gt 0 ]; do [ "$1" = --jq ] && expr=$2; shift; done
+    if $slurp && [ -n "$expr" ]; then echo 'the `--slurp` option is not supported with `--jq` or `--template`' >&2; return 1; fi
+    case "$endpoint" in
+      */commits/*) jq -r "$expr" <<<'{"author":{"login":"soydiloreto"},"committer":{"login":"soydiloreto"}}' ;;
+      */timeline) jq -r "$expr" <<<'[{"event":"labeled","label":{"name":"autopilot"},"actor":{"login":"dilux-bot[bot]"}},{"event":"labeled","label":{"name":"needs-human"},"actor":{"login":"dilux-bot[bot]"}},{"event":"unlabeled","label":{"name":"needs-human"},"actor":{"login":"soydiloreto"}},{"event":"labeled","label":{"name":"needs-human"},"actor":{"login":"soydiloreto"}}]' ;;
+      */labels) jq -r "$expr" <<<'[{"name":"needs-human"},{"name":"type:fix"}]' ;;
+      *) return 1 ;;
+    esac
+  }
+  dir=$(mktemp -d)
+  head_facts o/r 35 abc "$dir"
+  facts="$(cat "$dir/head-author")|$(cat "$dir/head-committer")|$(cat "$dir/needs-human-by")|$(cat "$dir/labels")"
+  if [ "$facts" = "soydiloreto|soydiloreto|soydiloreto|needs-human,type:fix" ]; then echo "ok   C1 (#130): the gate reads the head's logins, who last added needs-human and the labels"; else echo "FAIL C1 (#130): the gate reads the head's logins, who last added needs-human and the labels (got $facts)"; fail=1; fi
+  gh() { return 1; }
+  head_facts o/r 35 abc "$dir"
+  if [ -z "$(cat "$dir/head-author" "$dir/head-committer" "$dir/needs-human-by" "$dir/labels")" ]; then echo "ok   C2 (#130): a read that fails leaves every fact empty (the cap stays)"; else echo "FAIL C2 (#130): a read that fails leaves every fact empty (the cap stays)"; fail=1; fi
+  unset -f gh
+  rm -rf "$dir"
   # Dependabot: a grouped title, and one too long even without its boilerplate.
   grouped="build(deps-dev): Bump @aws-sdk/client-s3 from 3.1141.0 to 3.1146.0 in the dev-dependencies group across 1 directory"
   huge="build(deps-dev): Bump @a-very-long-scope/$(printf 'x%.0s' $(seq 1 60)) from 1.0.0 to 2.0.0"

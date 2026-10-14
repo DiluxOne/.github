@@ -16,7 +16,7 @@ Nothing starts without one: features, fixes, docs and maintenance alike, the mai
 - If there is none, open one: `dx issue --bug|--feature|--docs|--task --title "…" --body-file issue.md`, or on GitHub with the matching form. The kind becomes the issue's **Type** (Bug, Feature, Docs, Task). Write it in English: what is wrong or missing, what you expected, why it matters. For a bug, the steps, versions and logs. An issue the maintainer will accept carries a PRD: the sections of [`policy/issue-schema.yml`](../policy/issue-schema.yml) (`### Problem`, `### Scope`, `### Out of scope`, `### Acceptance criteria` with one `C1: Given …, when …, then …` per line, `### Criticality`), in that order and nothing outside them; `python3 scripts/issue-schema.py check < issue.md` says what is missing. A reporter's form (bug, feature) may come before them.
 - **Wait until a maintainer accepts it** with the `accepted` label. Never add it yourself, and never ask a bot to: the gate ignores a label a bot added. The issue triage may answer first: "not planned for the free plugin", "already planned", a question. That is the answer to the change as proposed; do not start it.
 
-When the maintainer accepts an issue in a repository where the autopilot is on, the autopilot may take it: it writes the Spec, opens a draft pull request (label `autopilot`) with one box per criterion, and ticks each box as that criterion's commit lands. Follow it there and on the issue's board; do not start a pull request of your own for the same issue.
+When the maintainer accepts an issue in a repository where the autopilot is on, the autopilot may take it: it writes the Spec, opens a draft pull request (label `autopilot`) with one box per criterion, and ticks each box as that criterion's commit lands. Follow it there and on the issue's board; do not start a pull request of your own for the same issue. A maintainer who takes an autopilot pull request over adds `needs-human`, removes `autopilot` and then pushes a commit of their own to its branch from a clone (the push runs the checks again; a label alone does not, and a commit made in GitHub's web editor is committed by `web-flow`, who is not a maintainer): from then on it is the maintainer's, and the size cap for authors outside the maintainers no longer applies to it.
 
 ## 2. A branch for it
 
@@ -35,7 +35,7 @@ CI holds you to it: a `feat` or `!` pull request must close a Feature, a `fix` a
 
 - Follow the repository's `AGENTS.md`, its plan and its tests.
 - Commit as Conventional Commits: `type(scope): subject`, **72 characters or fewer** (CI rejects more than 100; measure it), no trailing period. Bodies are plain paragraphs, one line each, never hard-wrapped. `Co-Authored-By:` is fine; `Claude-Session:` is rejected.
-- A `docs` pull request may change only documentation. From outside the maintainers, a pull request changes at most 600 lines (translations and lock files aside): split a bigger change, each part with its issue.
+- A `docs` pull request may change only documentation. From outside the maintainers, a pull request changes at most 600 lines (translations and lock files aside): split a bigger change, each part with its issue (an autopilot pull request a maintainer took over counts as the maintainer's).
 
 ## 4. Check it
 
