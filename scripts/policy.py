@@ -52,7 +52,14 @@ With POLICY_MODE=issue-gate it writes, for the conventions check:
   label     the label that accepts an issue
   trusted   true | false   PR_AUTHOR is a trusted author
   max_lines the most lines PR_AUTHOR's pull request may change; empty when
-            the author is trusted or there is no limit
+            the author is trusted, a maintainer took the pull request
+            over, or there is no limit
+  taken_over the trusted author who took a bot's pull request over (#130):
+            PR_AUTHOR_TYPE is Bot, the head is in this repository
+            (HEAD_IN_REPO true, never a fork), PR_LABELS carry `needs-human`
+            and not `autopilot`, and HEAD_AUTHOR, HEAD_COMMITTER (the head
+            commit's logins on GitHub) and NEEDS_HUMAN_BY (who last added
+            the label) are all trusted authors; empty otherwise
 
 The organisation's `issue-gate` decides both; a repository can set
 `required: false` only when the organisation's says `optional: true`.
@@ -165,6 +172,24 @@ def kind_mode(repo):
 LABEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 :._/-]{0,49}")
 
 
+def taken_over_by(trusted_authors, env):
+    """The trusted author who took a bot's pull request over, or "". Only a
+    bot's pull request whose head lives in this repository (so whoever
+    pushed it had write access: a commit's author line can be forged, a
+    push cannot), labelled `needs-human` and no longer `autopilot`, and
+    only when the head commit's author and committer on GitHub and the
+    person who last added `needs-human` are all trusted authors."""
+    if env.get("PR_AUTHOR_TYPE", "") != "Bot" or env.get("HEAD_IN_REPO", "") != "true":
+        return ""
+    labels = [l.strip() for l in env.get("PR_LABELS", "").split(",") if l.strip()]
+    if "needs-human" not in labels or "autopilot" in labels:
+        return ""
+    who = [env.get(k, "") for k in ("HEAD_AUTHOR", "HEAD_COMMITTER", "NEEDS_HUMAN_BY")]
+    if not all(w and w in trusted_authors for w in who):
+        return ""
+    return who[0]
+
+
 def issue_gate(defaults, repo):
     org = defaults.get("issue-gate") or {}
     mine = repo.get("issue-gate") or {}
@@ -180,7 +205,11 @@ def issue_gate(defaults, repo):
         return 1
     if "label" in mine and mine.get("label") != label:
         print("::warning::issue-gate.label is the organisation's; a repository cannot change it, ignored.")
-    trusted = os.environ.get("PR_AUTHOR", "") in repo.get("trusted-authors", defaults.get("trusted-authors", []))
+    trusted_authors = repo.get("trusted-authors", defaults.get("trusted-authors", [])) or []
+    trusted = os.environ.get("PR_AUTHOR", "") in trusted_authors
+    taken_over = taken_over_by(trusted_authors, os.environ)
+    if taken_over:
+        print(f"taken over by {taken_over}: the head commit is {taken_over}'s and so is `needs-human`; the size cap does not apply")
     max_lines = ""
     try:
         org_max = int(defaults.get("max-changed-lines-untrusted", 0) or 0)
@@ -193,10 +222,10 @@ def issue_gate(defaults, repo):
         limit = mine_max if 0 < mine_max < org_max else org_max
         if mine_max != limit and "max-changed-lines-untrusted" in repo:
             print("::warning::max-changed-lines-untrusted: a repository can lower the limit, not raise or remove it; ignored.")
-        if not trusted:
+        if not trusted and not taken_over:
             max_lines = str(limit)
     with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
-        fh.write(f"required={'true' if required else 'false'}\nlabel={label}\ntrusted={'true' if trusted else 'false'}\nmax_lines={max_lines}\n")
+        fh.write(f"required={'true' if required else 'false'}\nlabel={label}\ntrusted={'true' if trusted else 'false'}\nmax_lines={max_lines}\ntaken_over={taken_over}\n")
     print(f"issue-gate required={'true' if required else 'false'} label={label}")
     return 0
 
@@ -354,7 +383,7 @@ def run_case(defaults_path, repo_text, files, **env):
         open(out_path, "w").close()
         saved = dict(os.environ)
         os.environ.update({"DEFAULT_POLICY": defaults_path, "REPO_POLICY": repo_path, "CHANGED_FILES": "\n".join(files), "GITHUB_OUTPUT": out_path})
-        for key in ("PR_AUTHOR", "POLICY_LEVEL", "POLICY_MODE", "KIND_DEFAULT"):
+        for key in ("PR_AUTHOR", "POLICY_LEVEL", "POLICY_MODE", "KIND_DEFAULT", "PR_AUTHOR_TYPE", "HEAD_IN_REPO", "PR_LABELS", "HEAD_AUTHOR", "HEAD_COMMITTER", "NEEDS_HUMAN_BY"):
             os.environ.pop(key, None)
         os.environ.update(env)
         try:
@@ -382,6 +411,8 @@ def self_test():
     with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False, encoding="utf-8") as fh:
         fh.write("issue-gate:\n  required: true\n  label: \"$(id)\"\n")
         gate_bad = fh.name
+    TAKEN = {"POLICY_MODE": "issue-gate", "PR_AUTHOR": "dilux-bot[bot]", "PR_AUTHOR_TYPE": "Bot", "HEAD_IN_REPO": "true", "PR_LABELS": "needs-human,type:fix",
+             "HEAD_AUTHOR": "soydiloreto", "HEAD_COMMITTER": "soydiloreto", "NEEDS_HUMAN_BY": "soydiloreto"}
     cases = [
         # (name, defaults, repo policy, files, extra env, expected outputs, expected exit)
         ("docs only is low", default, "", ["docs/a.md", "README.md"], {}, {"floor": "low", "model": "claude-sonnet-5-5"}, 0),
@@ -433,6 +464,13 @@ def self_test():
         ("size: a repository lowers it", default, "max-changed-lines-untrusted: 200\n", [], {"POLICY_MODE": "issue-gate", "PR_AUTHOR": "someone"}, {"max_lines": "200"}, 0),
         ("size: but cannot raise it", default, "max-changed-lines-untrusted: 5000\n", [], {"POLICY_MODE": "issue-gate", "PR_AUTHOR": "someone"}, {"max_lines": "600"}, 0),
         ("size: nor remove it", default, "max-changed-lines-untrusted: 0\n", [], {"POLICY_MODE": "issue-gate", "PR_AUTHOR": "someone"}, {"max_lines": "600"}, 0),
+        ("C1 (#130): a bot's pull request a maintainer took over has no cap", default, "", [], dict(TAKEN, PR_AUTHOR="dilux-bot[bot]"), {"trusted": "false", "max_lines": "", "taken_over": "soydiloreto"}, 0),
+        ("C2 (#130): with the bot's own head, the cap stays", default, "", [], dict(TAKEN, HEAD_AUTHOR="dilux-bot[bot]", HEAD_COMMITTER="dilux-bot[bot]"), {"max_lines": "600", "taken_over": ""}, 0),
+        ("C2 (#130): a trusted head without a trusted needs-human keeps the cap", default, "", [], dict(TAKEN, NEEDS_HUMAN_BY="someone"), {"max_lines": "600", "taken_over": ""}, 0),
+        ("C2 (#130): still labelled autopilot, the cap stays", default, "", [], dict(TAKEN, PR_LABELS="autopilot,needs-human"), {"max_lines": "600", "taken_over": ""}, 0),
+        ("C2 (#130): a head from a fork is never taken over", default, "", [], dict(TAKEN, HEAD_IN_REPO="false"), {"max_lines": "600", "taken_over": ""}, 0),
+        ("C2 (#130): a committer who is not trusted keeps the cap", default, "", [], dict(TAKEN, HEAD_COMMITTER="web-flow"), {"max_lines": "600", "taken_over": ""}, 0),
+        ("C2 (#130): only a bot's pull request can be taken over", default, "", [], dict(TAKEN, PR_AUTHOR_TYPE="User"), {"max_lines": "600", "taken_over": ""}, 0),
     ]
     failed = 0
     for name, defaults_path, repo_text, files, env, want, want_code in cases:

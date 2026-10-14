@@ -8,7 +8,12 @@ name: Conventions
 # the one sober line instead), and that it closes an issue a maintainer
 # accepted (scripts/issue-gate.sh; the organisation's policy, `issue-gate`);
 # that a docs pull request changes only documentation; and that one from an
-# author who is not trusted stays under `max-changed-lines-untrusted`.
+# author who is not trusted stays under `max-changed-lines-untrusted` (a
+# pull request the autopilot opened and a maintainer took over, by adding
+# `needs-human`, removing `autopilot` and then pushing a commit of their own,
+# is the maintainer's: the gate reads the head commit's author and who added
+# the label from GitHub, and the cap does not apply, #130; labels alone do
+# not run this workflow, the push does).
 # The checks themselves are scripts/conventions.sh,
 # which scripts/local-review.sh runs before a pull request is opened. Plus a docs check whenever the caller runs (pull requests and
 # pushes to main): relative Markdown links resolve, and no retired product
@@ -105,10 +110,26 @@ jobs:
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_IN_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
         # Read from the base branch, never the pull request's own copy: a
         # pull request cannot exempt itself by editing the policy.
         run: |
           git show "$BASE:.github/review-policy.yml" > "$RUNNER_TEMP/repo-policy.yml" 2>/dev/null || : > "$RUNNER_TEMP/repo-policy.yml"
+          # A bot's pull request a maintainer took over (#130): who the head
+          # commit is on GitHub, who last added `needs-human`, and the labels
+          # as they are now, all read from GitHub, never from the pull
+          # request's text; the policy decides.
+          HEAD_AUTHOR="" HEAD_COMMITTER="" NEEDS_HUMAN_BY="" PR_LABELS=""
+          if [ "$PR_AUTHOR_TYPE" = Bot ] && [ "$HEAD_IN_REPO" = true ]; then
+            bash .dx-central/scripts/conventions.sh --head-facts "$GITHUB_REPOSITORY" "$PR" "$HEAD_SHA" "$RUNNER_TEMP/head"
+            HEAD_AUTHOR=$(cat "$RUNNER_TEMP/head/head-author"); HEAD_COMMITTER=$(cat "$RUNNER_TEMP/head/head-committer")
+            NEEDS_HUMAN_BY=$(cat "$RUNNER_TEMP/head/needs-human-by"); PR_LABELS=$(cat "$RUNNER_TEMP/head/labels")
+          fi
+          export HEAD_AUTHOR HEAD_COMMITTER NEEDS_HUMAN_BY PR_LABELS
           DEFAULT_POLICY=.dx-central/policy/review-policy.default.yml REPO_POLICY="$RUNNER_TEMP/repo-policy.yml" \
             POLICY_MODE=issue-gate python3 .dx-central/scripts/policy.py
 
@@ -164,8 +185,10 @@ jobs:
           LABELS: ${{ steps.live.outputs.labels }}
           COMMENTS_FILE: ${{ runner.temp }}/comments.json
           REVIEW_BOT: ${{ inputs.review-bot }}
-          # Empty for a trusted author: the policy's max-changed-lines-untrusted.
+          # Empty for a trusted author, or a pull request a maintainer took
+          # over: the policy's max-changed-lines-untrusted.
           MAX_LINES: ${{ steps.gate.outputs.max_lines }}
+          TAKEN_OVER: ${{ steps.gate.outputs.taken_over }}
         run: bash .dx-central/scripts/conventions.sh
 
   docs:
