@@ -46,6 +46,17 @@ name: Autopilot
 # It acts as dilux-bot (its token for git and the API), never as a person, so
 # its commits and pull requests are told apart from the maintainer's. It
 # runs where the repository's jobs run (DX_RUNNER), one run per issue.
+# An App's token lives 60 minutes, so the run mints one per phase: `bot` for
+# the steps up to the Spec and the draft, `bot-work` right before the agent
+# works (its step is capped at 55 minutes, under the token's life), and
+# `bot-end`, always, right before the end rule, so the verdict is written
+# however long the run took (#126). When the end rule itself fails before
+# it says its verdict, "The last resort" still comments and adds
+# `needs-human`, with `bot-end`'s token or, failing that, the job's own. A
+# work step killed by its timeout leaves no execution log (the action
+# writes it when the agent ends), so the account and the transcript fall
+# back to the session the CLI kept as it went (scripts/autopilot.py
+# work-log), and the end rule still counts it as a run out of time.
 # Known limit: the agent holds dilux-bot's token, the same App that writes
 # the receipts branch; a later step moves seals to an App of their own.
 # Every input it reads from the issue is the PRD at its sealed text, fenced
@@ -302,7 +313,9 @@ jobs:
           LOG: ${{ steps.spec.outputs.execution_file }}
         run: |
           mkdir -p "$RUNNER_TEMP/transcript"
-          if [ -f "$LOG" ]; then cp "$LOG" "$RUNNER_TEMP/transcript/1-spec.json"; fi
+          # Moved, not copied: the work step writes its own log at the same
+          # path, and a file left there afterwards is the work's.
+          if [ -f "$LOG" ]; then mv "$LOG" "$RUNNER_TEMP/transcript/1-spec.json"; fi
 
       - name: The Spec (G3), sealed, and the draft pull request
         id: draft
@@ -380,10 +393,33 @@ jobs:
           eof="DX_$(openssl rand -hex 16)"
           { echo "prompt<<$eof"; python3 .dx-central/scripts/autopilot.py prompt fix; echo "$eof"; } >> "$GITHUB_OUTPUT"
 
+      # A fresh token for the work: the first one is up to 25 minutes old by
+      # now, and the agent may run for 55 more.
+      - name: dilux-bot token for the work
+        id: bot-work
+        if: steps.work-task.outputs.prompt != '' || steps.fix-task.outputs.prompt != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+          permission-checks: read
+          permission-actions: read
+
+      - name: When the work starts
+        id: work-start
+        if: steps.work-task.outputs.prompt != '' || steps.fix-task.outputs.prompt != ''
+        run: echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: Claude works
         id: work
         if: steps.work-task.outputs.prompt != '' || steps.fix-task.outputs.prompt != ''
-        timeout-minutes: 75
+        # Under the token's 60 minutes: the agent's pushes and comments hold
+        # to the end of the step.
+        timeout-minutes: 55
         uses: anthropics/claude-code-action@6fed3ca145920b639991cb756090506e1bcaf515 # v1.0.245
         env:
           NUMBER: ${{ steps.what.outputs.issue }}
@@ -393,7 +429,7 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
-          github_token: ${{ steps.bot.outputs.token }}
+          github_token: ${{ steps.bot-work.outputs.token }}
           bot_name: dilux-bot[bot]
           bot_id: '333187390'
           # A fix round runs from the pipeline the bot's own push started.
@@ -405,10 +441,27 @@ jobs:
             --allowedTools "Bash,Read,Edit,MultiEdit,Write,Glob,Grep"
 
       # --- every mode: never end in silence, and say what happened ----------
+      # A fresh token for the verdict, whatever happened before and however
+      # long it took.
+      - name: dilux-bot token for the end
+        id: bot-end
+        if: always() && steps.may.outputs.go == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+          permission-checks: read
+          permission-actions: read
+
       - name: The end rule
+        id: end
         if: always() && steps.may.outputs.go == 'true'
         env:
-          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          GH_TOKEN: ${{ steps.bot-end.outputs.token }}
           MODE: ${{ inputs.mode }}
           NUMBER: ${{ steps.what.outputs.issue }}
           PR: ${{ steps.draft.outputs.pr || steps.what.outputs.pr }}
@@ -419,31 +472,45 @@ jobs:
           SPEC_OUTCOME: ${{ steps.spec.outcome }}
           WHY: ${{ steps.draft.outputs.why }}
           WORK_LOG: ${{ steps.work.outputs.execution_file }}
+          WORK_STARTED: ${{ steps.work-start.outputs.at }}
           RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
         run: |
           set -euo pipefail
           export REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml" AUTOPILOT_RUN="$RUN_URL"
-          # Out of turns or time: the agent did not choose to end. A run a
-          # person cancelled is not continued.
-          # Out of turns: the log says so. Out of time: the step failed and the
-          # agent never wrote its result (it was stopped). Any other failure
-          # (auth, a crash with a result) is not continued.
-          LIMIT_HIT=false
-          results=0
-          if [ -f "${WORK_LOG:-/nonexistent}" ]; then
-            jq -e '(if type == "array" then . else [.] end) | map(select(.type == "result" and (.subtype // "") == "error_max_turns")) | length > 0' "$WORK_LOG" >/dev/null 2>&1 && LIMIT_HIT=true
-            results=$(jq '(if type == "array" then . else [.] end) | map(select(.type == "result")) | length' "$WORK_LOG" 2>/dev/null || echo 0)
-          fi
-          if [ "$WORK_OUTCOME" = failure ] && [ "$results" = 0 ]; then LIMIT_HIT=true; fi
-          export LIMIT_HIT
+          # The log wherever it is: the action's output, or the file it
+          # wrote, or the CLI's session when the step was killed. From it and
+          # the step's outcome, `end` tells a run out of turns or time (which
+          # may continue) from one that failed otherwise, or that a person
+          # cancelled (outcome cancelled), which does not.
+          WORK_LOG=$(python3 .dx-central/scripts/autopilot.py work-log)
+          export WORK_LOG
           python3 .dx-central/scripts/autopilot.py end
+
+      # The end rule failed before it said its verdict (its log says why):
+      # the run still leaves a comment and `needs-human`, with the fresh
+      # token, or with the job's own when even that step failed.
+      - name: The last resort
+        id: last-resort
+        if: always() && steps.may.outputs.go == 'true' && steps.end.outcome != 'success' && steps.end.outputs.verdict == ''
+        env:
+          GH_TOKEN: ${{ steps.bot-end.outputs.token || github.token }}
+          NUMBER: ${{ steps.what.outputs.issue }}
+          PR: ${{ steps.draft.outputs.pr || steps.what.outputs.pr }}
+          RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+        run: |
+          export REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml" AUTOPILOT_RUN="$RUN_URL"
+          python3 .dx-central/scripts/autopilot.py last-resort
 
       - name: The run's account
         if: always() && steps.may.outputs.go == 'true'
         env:
           WORK_LOG: ${{ steps.work.outputs.execution_file }}
+          WORK_STARTED: ${{ steps.work-start.outputs.at }}
         run: |
           mkdir -p "$RUNNER_TEMP/transcript"
+          # Best effort: the account and the transcript are kept whatever
+          # the log's lookup does.
+          WORK_LOG=$(python3 .dx-central/scripts/autopilot.py work-log) || WORK_LOG=""
           if [ -n "$WORK_LOG" ] && [ -f "$WORK_LOG" ]; then cp "$WORK_LOG" "$RUNNER_TEMP/transcript/2-work.json"; fi
           # The artifact of a public repository is public: every file loses
           # its tokens before anything else can fail.
