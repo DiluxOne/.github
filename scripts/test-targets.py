@@ -9,7 +9,8 @@ order or the run.
 
   INTEGRATION          true | false   run the integration suite at all
   MULTISITE            true | false   the old switch: the one target is the network
-  INTEGRATION_TARGETS  JSON list of "single" and/or "network"; empty: the old
+  INTEGRATION_TARGETS  JSON list of targets, each "single" or "network", or
+                       {name, timeout?} with the same name; empty: the old
                        behaviour, one job named "Integration tests (wp-env)"
                        on the network (MULTISITE true) or a single site
   E2E                  true | false   run the end-to-end suites at all
@@ -28,6 +29,11 @@ network-activated. `run` is the command, run by bash from the checkout (an
 npm script, `npx playwright test -c <config>`, variables in front of it);
 `results` the folder kept when it fails (default build/e2e-results);
 `timeout` its minutes (default 25).
+
+An integration target's `timeout` is its job's minutes too (default 40: on
+the organisation's VM, whose four runners share four cores, the network
+suite takes up to twice what it takes on GitHub's). Both timeouts are whole
+minutes, from 5 to 120.
 
 Every entry has `enabled`: a suite turned off (`integration: false`,
 `e2e: false`) is still an entry, with `enabled` false, and its job runs no
@@ -48,6 +54,8 @@ NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
 SITES = ("single", "network")
 LEGACY_INTEGRATION = "Integration tests (wp-env)"
 LEGACY_E2E = "E2E (Playwright)"
+INTEGRATION_TIMEOUT = 40
+E2E_TIMEOUT = 25
 
 
 class InputError(Exception):
@@ -72,21 +80,38 @@ def as_list(name, value):
     return data
 
 
+def minutes(entry, default, where):
+    """A job's `timeout`, whole minutes from 5 to 120; `where` names the entry in the error."""
+    timeout = entry.get("timeout", default)
+    if not isinstance(timeout, int) or isinstance(timeout, bool) or not 5 <= timeout <= 120:
+        raise InputError(f"{where}: timeout is whole minutes, from 5 to 120.")
+    return timeout
+
+
 def integration(env):
     enabled = as_bool(env.get("INTEGRATION"))
     targets = as_list("integration-targets", env.get("INTEGRATION_TARGETS"))
     if targets is None:
         site = "network" if as_bool(env.get("MULTISITE")) else "single"
-        return [{"check": LEGACY_INTEGRATION, "site": site, "enabled": enabled}]
+        return [{"check": LEGACY_INTEGRATION, "site": site, "timeout": INTEGRATION_TIMEOUT, "enabled": enabled}]
     if not targets:
         raise InputError("integration-targets is empty: leave it out, or turn integration off.")
     out = []
-    for target in targets:
-        if target not in SITES:
-            raise InputError(f"integration-targets: '{target}' is not single or network.")
-        if any(t["site"] == target for t in out):
-            raise InputError(f"integration-targets: '{target}' is listed twice.")
-        out.append({"check": "Integration (single site)" if target == "single" else "Integration (network)", "site": target, "enabled": enabled})
+    for n, target in enumerate(targets, 1):
+        # A name alone, or {name, timeout?}.
+        entry = {"name": target} if isinstance(target, str) else target
+        if not isinstance(entry, dict):
+            raise InputError(f"integration-targets, entry {n}: a site name, or an object with name and timeout.")
+        unknown = set(entry) - {"name", "timeout"}
+        if unknown:
+            raise InputError(f"integration-targets, entry {n}: unknown key(s) {', '.join(sorted(unknown))}.")
+        site = entry.get("name")
+        if site not in SITES:
+            raise InputError(f"integration-targets: '{site}' is not single or network.")
+        if any(t["site"] == site for t in out):
+            raise InputError(f"integration-targets: '{site}' is listed twice.")
+        timeout = minutes(entry, INTEGRATION_TIMEOUT, f"integration-targets, '{site}'")
+        out.append({"check": "Integration (single site)" if site == "single" else "Integration (network)", "site": site, "timeout": timeout, "enabled": enabled})
     return out
 
 
@@ -94,7 +119,7 @@ def e2e(env):
     enabled = as_bool(env.get("E2E"))
     suites = as_list("e2e-suites", env.get("E2E_SUITES"))
     if suites is None:
-        return [{"check": LEGACY_E2E, "name": "playwright", "site": "single", "run": "npx playwright test", "results": "build/e2e-results", "artifact": "playwright-results", "timeout": 25, "enabled": enabled}]
+        return [{"check": LEGACY_E2E, "name": "playwright", "site": "single", "run": "npx playwright test", "results": "build/e2e-results", "artifact": "playwright-results", "timeout": E2E_TIMEOUT, "enabled": enabled}]
     if not suites:
         raise InputError("e2e-suites is empty: leave it out, or turn e2e off.")
     out = []
@@ -117,9 +142,7 @@ def e2e(env):
         results = suite.get("results", "build/e2e-results")
         if not isinstance(results, str) or results.startswith("/") or ".." in results.split("/"):
             raise InputError(f"e2e-suites, '{name}': results is a folder inside the checkout.")
-        timeout = suite.get("timeout", 25)
-        if not isinstance(timeout, int) or isinstance(timeout, bool) or not 5 <= timeout <= 120:
-            raise InputError(f"e2e-suites, '{name}': timeout is whole minutes, from 5 to 120.")
+        timeout = minutes(suite, E2E_TIMEOUT, f"e2e-suites, '{name}'")
         out.append({"check": f"E2E ({name})", "name": name, "site": suite["site"], "run": run.strip(), "results": results, "artifact": f"playwright-results-{name}", "timeout": timeout, "enabled": enabled})
     return out
 
@@ -160,7 +183,13 @@ def self_test():
         ("a suite with two lines", {"E2E_SUITES": json.dumps([{"name": "a", "site": "single", "run": "x\ny"}])}, "one command line"),
         ("results outside the checkout", {"E2E_SUITES": '[{"name":"a","site":"single","run":"x","results":"../x"}]'}, "inside the checkout"),
         ("an unknown key", {"E2E_SUITES": '[{"name":"a","site":"single","run":"x","env":{}}]'}, "unknown key"),
-        ("a timeout out of range", {"E2E_SUITES": '[{"name":"a","site":"single","run":"x","timeout":600}]'}, "timeout"),
+        ("a timeout out of range", {"E2E_SUITES": '[{"name":"a","site":"single","run":"x","timeout":600}]'}, "from 5 to 120"),
+        ("an integration target as an object", {"INTEGRATION_TARGETS": '["single",{"name":"network","timeout":60}]'}, {"integration": ["Integration (single site)", "Integration (network)"]}),
+        ("an integration target with an unknown key", {"INTEGRATION_TARGETS": '[{"name":"network","minutes":60}]'}, "unknown key"),
+        ("an integration target that is neither a name nor an object", {"INTEGRATION_TARGETS": '[["network"]]'}, "a site name, or an object"),
+        ("an integration timeout too long", {"INTEGRATION_TARGETS": '[{"name":"network","timeout":600}]'}, "from 5 to 120"),
+        ("an integration timeout too short", {"INTEGRATION_TARGETS": '[{"name":"network","timeout":2}]'}, "from 5 to 120"),
+        ("an integration timeout that is not whole minutes", {"INTEGRATION_TARGETS": '[{"name":"network","timeout":"40"}]'}, "whole minutes"),
     ]
     failed = 0
     for name, env, want in cases:
@@ -189,6 +218,20 @@ def self_test():
         print("FAIL the old E2E job keeps its artifact and results folder")
     else:
         print("ok   the old E2E job keeps its artifact and results folder")
+    # C1 (#127): names only, and the old single job, each get the default timeout.
+    by_name = plan({"INTEGRATION_TARGETS": '["single","network"]'})["integration"]
+    if [t["timeout"] for t in by_name] != [INTEGRATION_TIMEOUT, INTEGRATION_TIMEOUT] or plan({})["integration"][0]["timeout"] != INTEGRATION_TIMEOUT:
+        failed += 1
+        print("FAIL C1 (#127): an integration target named alone, and the old single job, get a 40-minute timeout")
+    else:
+        print("ok   C1 (#127): an integration target named alone, and the old single job, get a 40-minute timeout")
+    # C2 (#127): the caller's timeout reaches the job.
+    by_object = plan({"INTEGRATION_TARGETS": '["single",{"name":"network","timeout":60}]'})["integration"]
+    if {t["check"]: t["timeout"] for t in by_object} != {"Integration (single site)": INTEGRATION_TIMEOUT, "Integration (network)": 60}:
+        failed += 1
+        print("FAIL C2 (#127): {name, timeout} sets that target's timeout and no other's")
+    else:
+        print("ok   C2 (#127): {name, timeout} sets that target's timeout and no other's")
     if not failed:
         print("all tests passed")
     return 1 if failed else 0
