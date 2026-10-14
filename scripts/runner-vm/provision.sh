@@ -22,7 +22,14 @@ set -euo pipefail
 DX_REF=${DX_REF:-main}
 DX_RAW=${DX_RAW:-https://raw.githubusercontent.com/DiluxOne/.github/$DX_REF/scripts/runner-vm}
 DX_LIB=${DX_LIB:-/usr/local/lib/dx-runner}
-DX_SLOTS=${DX_SLOTS:-4}
+# One slot per core unless DX_SLOTS says otherwise (#138): a slot's job is
+# CPU-bound (a wp-env with its PHPUnit or Playwright), and memory per slot
+# stays well under the 4 GB a core brings on the VM's family.
+slot_count() { # [DX_SLOTS] [cores]
+  local want=${1:-} cores=${2:-$(nproc)}
+  if [[ "$want" =~ ^[1-9][0-9]*$ ]]; then echo "$want"; else echo "$cores"; fi
+}
+DX_SLOTS=$(slot_count "${DX_SLOTS:-}")
 DX_IMAGE=${DX_IMAGE:-ghcr.io/diluxone/runner:stable}
 CONTAINERD_ROOT=${CONTAINERD_ROOT:-/data/containerd}
 
@@ -32,6 +39,16 @@ containerd_config() { # < current config
   local root=$1
   printf 'root = "%s"\n' "$root"
   grep -v '^[[:space:]]*root[[:space:]]*=' || true
+}
+
+# The dx-runner@N units numbered above $1, among the unit names in $2 (one
+# per line): what a smaller count leaves behind.
+extra_slots() { # count names
+  local n
+  for n in $(printf '%s\n' "$2" | sed -n 's/^dx-runner@\([0-9]\+\)\.service$/\1/p'); do
+    [ "$n" -gt "$1" ] && echo "dx-runner@$n.service"
+  done
+  return 0
 }
 
 slot_unit() {
@@ -103,6 +120,12 @@ apply() {
   systemctl enable dx-provision.service >/dev/null
   local n
   for n in $(seq 1 "$DX_SLOTS"); do systemctl enable "dx-runner@$n.service" >/dev/null; done
+  # A bigger count before (a larger machine, or DX_SLOTS by hand) leaves
+  # units above the count: they are stopped and disabled, never left to run.
+  local u
+  for u in $(extra_slots "$DX_SLOTS" "$(systemctl list-units 'dx-runner@*.service' --all --no-legend --plain 2>/dev/null | awk '{print $1}'; systemctl list-unit-files 'dx-runner@*.service' --no-legend 2>/dev/null | awk '{print $1}')"); do
+    systemctl disable --now "$u" >/dev/null 2>&1 || true
+  done
   docker container prune -f >/dev/null; docker image prune -f >/dev/null
   docker builder prune -f --filter until=168h >/dev/null || true
   echo "provision: done ($DX_SLOTS slots, $DX_IMAGE)"
@@ -127,6 +150,12 @@ self_test() {
     "$(printf 'root = "/data/containerd"\nversion = 2')"
   check "slot unit runs the slot" "$(slot_unit | grep ExecStart)" "ExecStart=$DX_LIB/dx-runner-slot.sh %i"
   check "provision unit fetches from main" "$(provision_unit | grep -c 'raw.githubusercontent.com/DiluxOne/.github/main/scripts/runner-vm/provision.sh')" "1"
+  # #138: one slot per core, DX_SLOTS overriding; a smaller count trims the extra units.
+  check "C1 (#138): the default count is the machine's cores" "$(slot_count '' 8)" "8"
+  check "C2 (#138): DX_SLOTS overrides the cores" "$(slot_count 6 8)" "6"
+  check "C2 (#138): a DX_SLOTS that is not a count (empty, 0, text) falls back to the cores" "$(slot_count 0 8) $(slot_count abc 8) $(slot_count '' 8)" "8 8 8"
+  check "C1 (#138): units above the count are the extra ones, in order, each once" "$(extra_slots 4 "$(printf 'dx-runner@1.service\ndx-runner@6.service\ndx-runner@4.service\ndx-runner@8.service\ndx-runner@.service\ndx-runner@6.service\n')" | sort -u | tr '\n' ' ')" "dx-runner@6.service dx-runner@8.service "
+  check "C1 (#138): nothing above the count, nothing to trim" "$(extra_slots 8 "$(printf 'dx-runner@1.service\ndx-runner@8.service\n')")" ""
   [ "$fail" = 0 ] && echo "all tests passed"
   return "$fail"
 }
