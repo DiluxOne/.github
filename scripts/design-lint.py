@@ -65,17 +65,27 @@ def is_ours(path):
 
 
 def changed_css(base, head):
-    out = git("diff", "--name-only", "--diff-filter=AMR", "-M", base, head, "--", "*.css").stdout
-    return [p for p in out.splitlines() if p and is_ours(p)]
+    out = git("diff", "--name-only", "-z", "--diff-filter=AMR", "-M", base, head, "--", "*.css").stdout
+    return [p for p in out.split("\0") if p and is_ours(p)]
+
+
+def header_path(name):
+    """The path of a `+++ ` header as git writes it: a TAB after a name with a
+    space in it, and a name with a quote, a backslash or a control character
+    quoted C-style."""
+    name = name.rstrip("\t")
+    if len(name) > 1 and name.startswith('"') and name.endswith('"'):
+        name = name[1:-1].encode("utf-8").decode("unicode_escape").encode("latin-1").decode("utf-8", "replace")
+    return name
 
 
 def added_lines(diff):
     """{path: {line numbers}} that a `git diff -U0` adds or changes, on the
     new side."""
     out, path = {}, None
-    for line in diff.splitlines():
+    for line in diff.split("\n"):
         if line.startswith("+++ "):
-            name = line[4:]
+            name = header_path(line[4:])
             path = name[2:] if name.startswith("b/") else None
             if path is not None:
                 out.setdefault(path, set())
@@ -263,6 +273,9 @@ def self_test():
             "diff --git a/gone.css b/gone.css\n--- a/gone.css\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n@@ -5,2 +6,0 @@\n")
     got = added_lines(diff)
     ok("added lines: a hunk's new side, one line when no count, none for a deletion", got == {"a.css": {2, 3, 11}}, got)
+    got = added_lines('--- a/my admin.css\t\n+++ b/my admin.css\t\n@@ -1 +1 @@\n'
+                      '--- "a/qu\\"ot\\303\\251.css"\n+++ "b/qu\\"ot\\303\\251.css"\n@@ -0,0 +4 @@\n')
+    ok("added lines: a name with a space (git's TAB after it) and a quoted one", got == {"my admin.css": {1}, 'qu"oté.css': {4}}, got)
     ok("which CSS is ours", [is_ours(p) for p in ("assets/a.css", "a.min.css", "assets/vendor/x.css", "node_modules/y/z.css", "a.scss")]
        == [True, False, False, False, False], "")
     results = [{"source": "/r/a.css", "warnings": [
@@ -414,6 +427,19 @@ def self_test():
             code = check("plugin", "HEAD^1", "HEAD", repos_yml, out=lines.append)
             errors = [line for line in lines if line.startswith("::error")]
             ok("a renamed file: only the lines the change adds fail", code == 1 and len(errors) == 1 and "line=13," in errors[0], errors)
+            write("assets/my admin.css", ".diluxone-x-admin .a { color: #646970; }\n")
+            sh("git", "add", "-A")
+            sh("git", "commit", "-q", "-m", "a name with a space")
+            with open(os.path.join(repo, "assets/my admin.css"), "a", encoding="utf-8") as fh:
+                fh.write(".diluxone-x-admin .b { color: #2271b1; }\n")
+            sh("git", "add", "-A")
+            sh("git", "commit", "-q", "-m", "blue in it")
+            lines = []
+            code = check("plugin", "HEAD^1", "HEAD", repos_yml, out=lines.append)
+            errors = [line for line in lines if line.startswith("::error")]
+            ok("a file with a space in its name: the line the change adds fails, the old one warns", code == 1 and len(errors) == 1
+               and errors[0].startswith("::error file=assets/my admin.css,line=2,")
+               and any(line.startswith("::warning file=assets/my admin.css,line=1,") for line in lines), lines)
         finally:
             os.chdir(cwd)
     if not failed:
