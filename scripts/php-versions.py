@@ -47,7 +47,7 @@ which stops at PHP 8.3 (a composer.json whose vimeo/psalm allows no 6, said
 before the install, so Composer is not asked to install it on a PHP it
 refuses; or a Psalm 5 installed, said after it). After the install it
 warns when PHPCompatibility is missing or is 9 (which knows no syntax newer
-than PHP 7.4), and for `stan` writes `config`, a PHPStan config that
+than PHP 7.4), and for `stan` (before and after) writes `config`, a PHPStan config that
 includes the repository's own (phpstan.neon, phpstan.neon.dist,
 phpstan.dist.neon) and sets phpVersion to the minimum, in RUNNER_TEMP.
 These are the bridges of #85, warnings until each plugin moves.
@@ -137,13 +137,23 @@ def plan(settings, main, readme):
 def allows_major(constraint, major):
     """Whether a Composer constraint lets in some release of `major` or later."""
     for alt in re.split(r"\s*\|\|?\s*", str(constraint or "").strip()):
-        alt = alt.strip()
-        if not alt:
+        parts = [p for p in re.split(r"[\s,]+", alt.strip()) if p]
+        if not parts:
             continue
-        if alt.startswith(("*", ">")) or alt.startswith("dev-"):
-            return True
-        m = re.search(r"(\d+)", alt)
-        if m and int(m.group(1)) >= major:
+        ok = True
+        for part in parts:
+            m = re.search(r"(\d+)(?:\.(\d+))?", part)
+            number = (int(m.group(1)), int(m.group(2) or 0)) if m else None
+            if part.startswith("<="):
+                ok = ok and number is not None and number[0] >= major
+            elif part.startswith("<"):
+                ok = ok and number is not None and number > (major, 0)
+            elif part.startswith(("*", ">", "dev-")):
+                continue
+            else:
+                # ^X, ~X, X.*, X.Y: nothing from a later major, as Composer reads them.
+                ok = ok and number is not None and number[0] >= major
+        if ok:
             return True
     return False
 
@@ -177,7 +187,8 @@ def gate(script, env, root="."):
         if installed is None and wanted and not allows_major(wanted, 6):
             out["php"] = PSALM5_PHP
             notes.append(f"::warning file=composer.json::vimeo/psalm {wanted} allows no Psalm 6, and Psalm 5 does not run on PHP {tools}: Psalm runs on PHP {PSALM5_PHP} until the repository requires ^5.26 || ^6.14.2 {move}.")
-        elif installed is not None and re.match(r"[0-5]\.", psalm):
+        elif installed is not None and re.match(r"[0-5]\.", psalm) and tools != PSALM5_PHP:
+            # (Already on 8.3: said before the install, not again.)
             out["php"] = PSALM5_PHP
             notes.append(f"::warning file=composer.json::Composer installed Psalm {psalm}, which does not run on PHP {tools}: Psalm runs on PHP {PSALM5_PHP} until the repository installs Psalm 6.14.2 or later (no config.platform.php holding its tools to an older PHP) {move}.")
     elif script == "lint" and installed is not None:
@@ -186,7 +197,7 @@ def gate(script, env, root="."):
             notes.append(f"::warning file=composer.json::No PHPCompatibility is installed: nothing holds the code to PHP {minimum}. Require phpcompatibility/phpcompatibility-wp ^3.0@alpha and add PHPCompatibilityWP to the PHPCS ruleset {move}.")
         elif re.match(r"[0-9]\.", compat):
             notes.append(f"::warning file=composer.json::PHPCompatibility {compat} knows no syntax newer than PHP 7.4, so PHP 8 syntax passes it unseen: require phpcompatibility/phpcompatibility-wp ^3.0@alpha, which brings PHPCompatibility 10 {move}.")
-    elif script == "stan" and installed is not None:
+    elif script == "stan":
         own = next((f for f in PHPSTAN_CONFIGS if os.path.isfile(os.path.join(root, f))), None)
         if own is None:
             raise ValueError(f"no {', '.join(PHPSTAN_CONFIGS)} at the repository's root: the checks give PHPStan the PHP to analyse for through it")
@@ -312,6 +323,9 @@ def self_test():
     check("constraint: ^5.26 || ^6.14.2 allows 6", allows_major("^5.26 || ^6.14.2", 6))
     check("constraint: ^5.0|^6.0 allows 6", allows_major("^5.0|^6.0", 6))
     check("constraint: >=5 and * allow 6", allows_major(">=5", 6) and allows_major("*", 6))
+    check("constraint: >=5.0 <6.0 allows no 6", not allows_major(">=5.0 <6.0", 6))
+    check("constraint: >=5.0,<6.1 and <=6.0 allow 6", allows_major(">=5.0,<6.1", 6) and allows_major("<=6.0", 6))
+    check("constraint: 5.* and ~5.26 allow no 6, 6.* does", not allows_major("5.*", 6) and not allows_major("~5.26", 6) and allows_major("6.*", 6))
     env = {"TOOLS": "8.5", "MINIMUM": "7.4", "PHPSTAN": "70400"}
 
     def gate_in(script, composer=None, installed=None, files=()):
@@ -340,6 +354,16 @@ def self_test():
     check("psalm: 6 allowed, before the install: the tools' PHP", out["php"] == "8.5" and not notes, (out, notes))
     out, notes = gate_in("psalm:taint", {"require-dev": {"vimeo/psalm": "^5.26 || ^6.14.2"}}, {"vimeo/psalm": "5.26.1"})
     check("psalm: Psalm 5 installed (a platform pin): PHP 8.3, with a warning", out["php"] == "8.3" and "5.26.1" in notes[0], (out, notes))
+    with tempfile.TemporaryDirectory() as d:
+        with open(os.path.join(d, "composer.json"), "w") as fh:
+            json.dump({"require-dev": {"vimeo/psalm": "^5.26"}}, fh)
+        os.makedirs(os.path.join(d, "vendor", "composer"))
+        with open(os.path.join(d, "vendor", "composer", "installed.json"), "w") as fh:
+            json.dump({"packages": [{"name": "vimeo/psalm", "version": "5.26.1"}]}, fh)
+        out, notes = gate("psalm:taint", dict(env, TOOLS="8.3"), d)
+    check("psalm: already on 8.3 after the install: stays, said once", out["php"] == "8.3" and not notes, (out, notes))
+    out, notes = gate_in("stan", {}, None, ["phpstan.neon"])
+    check("stan: the config is written before the install too", out and "config" in out, out)
     out, notes = gate_in("psalm:taint", {"require-dev": {"vimeo/psalm": "^6.14.2"}}, {"vimeo/psalm": "v6.20.0"})
     check("psalm: Psalm 6 installed: the tools' PHP, nothing said", out["php"] == "8.5" and not notes, (out, notes))
     out, notes = gate_in("lint", {}, {"phpcompatibility/php-compatibility": "9.3.5"})
