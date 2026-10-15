@@ -18,8 +18,17 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    issue its PRD is sealed (its SHA-256 on the repository's `receipts`
    branch, [`scripts/receipts.py`](../scripts/receipts.py)); a PRD edited
    after that fails the gate until a maintainer accepts it again, and so does
-   a seal that cannot be read. An issue a lane accepted is not sealed (no
-   person accepted it); its gate checks its origin instead. The
+   a seal that cannot be read. An issue a lane accepted carries
+   `accepted-by:policy`; its gate checks its origin instead of a person's
+   label. A reproduced bug is the first lane that reaches the autopilot
+   (#84): when the reproduction's test fails, dilux-bot opens an issue of
+   its own for the fix (`lane:bugfix-reproduced`), whose PRD is fixed text
+   and the reproduction's facts, never the report's words, with that test,
+   its SHA-256 and its branch as the specification; the lane accepts it from
+   GitHub's history, the workflow seals its PRD as accepted by the policy,
+   and the autopilot starts. A report the triage reads as a request is
+   retyped Feature instead and waits for a person; one that does not
+   reproduce gets what was tried and what would settle it, and waits. The
    issue's **Type** (GitHub's own field: the organisation's Feature, Bug,
    Task and Docs) must fit the pull request's: a `feat` (or any `!`) closes
    a Feature, a `fix` a Bug; the issue forms set it (bug → Bug, feature →
@@ -83,8 +92,13 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    `decide`): the issue is not Critical, no protected path of
    [`policy/autonomy.yml`](../policy/autonomy.yml) changes, the review does
    not block and its description is true, risk and complexity are within the
-   `human-issue` lane, the Spec is complete and every criterion's test is a test
-   file the pull request adds or changes; it is labelled `merged-by:policy`. While the review blocks,
+   caps of the lane it was worked under (`human-issue` for an issue a person
+   accepted, the lane's own for a lane's issue), the Spec is complete and every criterion's test is a test
+   file the pull request adds or changes; for a reproduced bug, the
+   reproduction test is in it with the SHA-256 the PRD sealed (the test that
+   failed before; the autopilot ran it only in the sandbox, where it must
+   pass before the pull request is ready, and the pull request's own checks
+   run it too); it is labelled `merged-by:policy`. While the review blocks,
    the autopilot fixes and pushes, up to three rounds, then hands it to a
    person (`needs-human`). Any other pull request: a human, with [`scripts/squash-merge.sh`](../scripts/squash-merge.sh)
    `<owner/repo> <number>` (description verbatim, co-authors kept), or

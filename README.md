@@ -20,6 +20,10 @@ flowchart LR
     A["📝 Issue<br/>a PRD: problem, scope, criteria"] --> B{"Maintainer<br/>accepts?<br/>(PRD sealed)"}
     B -- "no" --> X["Closed or<br/>kept for later"]
     B -- "accepted" --> S["🤖 Autopilot writes the Spec<br/>on the issue (sealed)"]
+    P["🐞 Bug report"] --> Q{"Reproduced by<br/>a failing test?"}
+    Q -- "no: what was tried,<br/>what is missing" --> X
+    Q -- "yes" --> V["Fix issue opened by the bot<br/>accepted by policy (PRD sealed)<br/>the test is the spec"]
+    V --> S
     S --> C["📋 Draft pull request, in the open<br/>a box per criterion<br/>one commit each, ticked as it lands"]
     C -- "out of turns or time" --> K["🔁 autopilot:continue<br/>resumes the draft"]
     K --> C
@@ -43,6 +47,8 @@ flowchart LR
 Publishing is the third decision a person makes, after accepting the issue and, sometimes, merging: an issue "Release X.Y.Z" (the Release form), whose acceptance opens the release pull request; once it merges, the release workflow checks that a person with the admin or maintain role accepted that issue for that version before anything is published. The bot never opens one.
 
 You can follow an autopilot run as it goes: its draft pull request is the Spec as a checklist, one box per criterion, ticked as each criterion's commit lands; the issue's board links the pull request, the run and the progress; the run's summary says what the agent read, ran and changed, and keeps its full transcript. A run never ends in silence: the pull request is ready for review, or the agent says where it stopped and why, or the run continues (`autopilot:continue`), or the workflow says so and hands it to a person (`needs-human`). A pull request that is not the autopilot's, a person's or a contributor's, joins the same path at "Ready for review".
+
+A bug report needs no person to start its fix once it is reproduced: the reproduction writes a unit test from the report, runs it where it can reach nothing, and when it fails, the bot opens an issue of its own for the fix, accepted by the `bugfix-reproduced` lane of the autonomy policy; the autopilot then has to make that exact test pass, through every gate. A report that does not reproduce gets what was tried and what would settle it; one that is really a feature request becomes a Feature and waits for a maintainer, like any request.
 
 Step by step, with every detail: [What happens on a pull request](docs/pull-requests.md).
 

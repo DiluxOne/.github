@@ -6,7 +6,13 @@ name: Autopilot
 # round, until the review is clean or the rounds run out (#109).
 #
 #   mode: start     called from issue-triage.yml when a person adds
-#                   `accepted`. It starts only if the autopilot is on
+#                   `accepted`, and from issue-repro.yml when the
+#                   `bugfix-reproduced` lane accepted the issue it opened
+#                   for a reproduced bug (#84). Who accepted it is read
+#                   from GitHub (scripts/autopilot.py lane): a lane's own
+#                   issue is worked under that lane, with its caps; one a
+#                   person accepted, under `human-issue`; any other
+#                   issue starts nothing. It starts only if the autopilot is on
 #                   (policy/autonomy.yml, the repository's own
 #                   .github/autonomy.yml, DX_AUTOPILOT) and the issue is
 #                   ready (G1). First the agent writes the Spec into the
@@ -61,6 +67,16 @@ name: Autopilot
 # the receipts branch; a later step moves seals to an App of their own.
 # Every input it reads from the issue is the PRD at its sealed text, fenced
 # as data in the prompt (scripts/autopilot.py).
+#
+# A reproduced bug (lane `bugfix-reproduced`): its failing test, written from
+# an outsider's report, is untrusted code, and this job holds the bot's
+# token and the Claude subscription. So the test never enters the working
+# tree (a sparse checkout keeps it in the commits only, and the repository's
+# own tests cannot pick it up); the draft's branch starts at the
+# reproduction's commit, the test checked against the SHA-256 the PRD
+# sealed; the agent runs it only in the sandbox (scripts/repro-sandbox.sh:
+# no network, no environment, no secret), and `finish ready` refuses until
+# it passes there. The pull request's own checks run it too, as any test.
 
 on:
   workflow_call:
@@ -187,13 +203,29 @@ jobs:
         run: |
           set -euo pipefail
           export BODY="$RUNNER_TEMP/body.md" REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml"
+          # Who accepted it, read from GitHub's history (never from a label
+          # alone): a lane's own issue that lane accepts is worked under the
+          # lane, with its caps; one a person accepted, under human-issue.
+          if ! LANE=$(NUMBER="$ISSUE" python3 .dx-central/scripts/autopilot.py lane); then
+            echo "The autopilot does not start: $LANE"
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          export LANE
+          echo "lane=$LANE" >> "$GITHUB_OUTPUT"
           if ! why=$(python3 .dx-central/scripts/autopilot.py may-start); then
             echo "The autopilot does not start: $why"
             echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          # Every mode works only from the PRD a person accepted: its seal
-          # (written by issue-accepted.yml, which runs alongside on
-          # acceptance) must exist and match the issue now. Waits up to two
+          # A reproduced bug: the test that failed, its SHA-256 and the
+          # branch that holds it, from the sealed PRD (scripts/repro-lane.py).
+          if [ "$LANE" = bugfix-reproduced ]; then
+            ev=$(python3 .dx-central/scripts/repro-lane.py evidence)
+            { echo "repro-test=$(jq -r .test <<<"$ev")"; echo "repro-sha=$(jq -r .sha256 <<<"$ev")"; echo "repro-branch=$(jq -r .branch <<<"$ev")"; } >> "$GITHUB_OUTPUT"
+          fi
+          # Every mode works only from the PRD that was accepted: its seal
+          # (written by issue-accepted.yml, which runs alongside on a
+          # person's acceptance, or by the reproduction when its lane
+          # accepted it) must exist and match the issue now. Waits up to two
           # minutes for it, and says on the issue when it does not start.
           v=unsealed
           for _ in $(seq 1 12); do
@@ -250,10 +282,22 @@ jobs:
         env:
           MODE: ${{ inputs.mode }}
           BRANCH: ${{ steps.what.outputs.branch }}
+          LANE: ${{ steps.may.outputs.lane }}
+          REPRO_TEST: ${{ steps.may.outputs.repro-test }}
         run: |
           set -euo pipefail
           git config user.name "dilux-bot[bot]"
           git config user.email "333187390+dilux-bot[bot]@users.noreply.github.com"
+          # A reproduced bug's test was written from an outsider's report:
+          # untrusted code, which this job, holding the bot's token and the
+          # Claude subscription, never runs. It stays in the commits and out
+          # of the working tree (git's sparse checkout: the file is never
+          # written, and git add leaves it as committed), so the repository's
+          # own tests cannot pick it up; the agent runs it only in the
+          # sandbox (scripts/repro-sandbox.sh), with no network and no secret.
+          if [ "$LANE" = bugfix-reproduced ]; then
+            git sparse-checkout set --no-cone '/*' "!/$REPRO_TEST"
+          fi
           if [ "$MODE" != start ]; then
             git fetch -q origin "$BRANCH"
             git checkout -q -B "$BRANCH" "origin/$BRANCH"
@@ -282,6 +326,7 @@ jobs:
         if: steps.may.outputs.go == 'true' && inputs.mode == 'start'
         env:
           NUMBER: ${{ steps.what.outputs.issue }}
+          LANE: ${{ steps.may.outputs.lane }}
         run: |
           set -euo pipefail
           export BODY="$RUNNER_TEMP/body.md" REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml"
@@ -326,6 +371,10 @@ jobs:
           POLICY_REF: ${{ steps.central.outputs.ref }}
           STARTED: ${{ steps.git.outputs.started }}
           RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+          LANE: ${{ steps.may.outputs.lane }}
+          REPRO_TEST: ${{ steps.may.outputs.repro-test }}
+          REPRO_SHA: ${{ steps.may.outputs.repro-sha }}
+          REPRO_BRANCH: ${{ steps.may.outputs.repro-branch }}
         run: |
           set -euo pipefail
           gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/body.md"
@@ -349,8 +398,19 @@ jobs:
           jq -r .body "$RUNNER_TEMP/draft.json" > "$RUNNER_TEMP/draft.md"
           # A branch left by an earlier, failed attempt is not reused.
           if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then branch="$branch-$GITHUB_RUN_ID"; fi
-          git checkout -q -b "$branch"
-          git commit -q --allow-empty -m "chore(autopilot): start on #$NUMBER" -m "The draft pull request opens before any code: the Spec as its checklist."
+          if [ "$LANE" = bugfix-reproduced ]; then
+            # A reproduced bug's branch starts at the reproduction's own
+            # commit: the failing test, byte for byte the one the PRD sealed
+            # (its SHA-256), committed but never written to the working tree.
+            git fetch -q origin "$REPRO_BRANCH"
+            if [ "$(git cat-file blob "FETCH_HEAD:$REPRO_TEST" 2>/dev/null | sha256sum | cut -c1-64)" != "$REPRO_SHA" ]; then
+              echo "why=The reproduction test on $REPRO_BRANCH is not the one the PRD sealed; the draft pull request is not opened." >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            git checkout -q -b "$branch" FETCH_HEAD
+          else
+            git checkout -q -b "$branch"
+            git commit -q --allow-empty -m "chore(autopilot): start on #$NUMBER" -m "The draft pull request opens before any code: the Spec as its checklist."
+          fi
           git push -q origin "$branch"
           url=$(gh pr create --repo "$GITHUB_REPOSITORY" --draft --base "$(gh repo view "$GITHUB_REPOSITORY" --json defaultBranchRef --jq .defaultBranchRef.name)" \
             --head "$branch" --title "$(jq -r .title "$RUNNER_TEMP/draft.json")" --body-file "$RUNNER_TEMP/draft.md" --label autopilot)
@@ -372,6 +432,7 @@ jobs:
           PR: ${{ steps.draft.outputs.pr || steps.what.outputs.pr }}
           BRANCH: ${{ steps.draft.outputs.branch || steps.what.outputs.branch }}
           RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+          LANE: ${{ steps.may.outputs.lane }}
         run: |
           set -euo pipefail
           export BODY="$RUNNER_TEMP/body.md" REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml"
@@ -387,6 +448,7 @@ jobs:
           NUMBER: ${{ steps.what.outputs.issue }}
           PR: ${{ steps.what.outputs.pr }}
           ROUND: ${{ steps.what.outputs.round }}
+          LANE: ${{ steps.may.outputs.lane }}
         run: |
           set -euo pipefail
           export BODY="$RUNNER_TEMP/body.md" REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml"
@@ -426,6 +488,10 @@ jobs:
           PR: ${{ steps.draft.outputs.pr || steps.what.outputs.pr }}
           BRANCH: ${{ steps.draft.outputs.branch || steps.what.outputs.branch }}
           AUTOPILOT_RUN: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+          # finish ready reads them: in the bugfix-reproduced lane it runs
+          # the reproduction test in the sandbox and refuses unless it passes.
+          LANE: ${{ steps.may.outputs.lane }}
+          REPRO_TEST: ${{ steps.may.outputs.repro-test }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}

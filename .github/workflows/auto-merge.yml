@@ -23,8 +23,12 @@ name: Auto-merge
 # DiluxOne/.github at `central-ref`): it closes exactly one issue, which is
 # not Critical; no protected path changes (every file, renames by their old
 # path too); the review does not block and its description is true; risk and
-# complexity are within the `human-issue` lane; the Spec is the one sealed at
-# G3; every criterion's test is a test file the pull request adds or changes.
+# complexity are within the caps of the lane it was worked under
+# (`scripts/autopilot.py lane`: a lane's own issue, that lane; one a person
+# accepted, `human-issue`); the Spec is the one sealed at G3; every
+# criterion's test is a test file the pull request adds or changes; and, for
+# a reproduced bug (`bugfix-reproduced`), the reproduction test is in the
+# pull request with the SHA-256 the PRD sealed, the test that failed.
 # It is labelled `merged-by:policy`. Auto-merge is switched off before that
 # decision, so a failure leaves nothing set to merge.
 #
@@ -89,6 +93,7 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
           permission-issues: read # the issue an autopilot pull request closes
+          permission-actions: read # the run that opened a lane's issue
 
       # A pull request the autopilot opened is decided by the autonomy
       # policy instead (gate G7, scripts/autopilot.py decide): never a
@@ -135,6 +140,16 @@ jobs:
           # The Spec decided on must be the one the autopilot sealed at G3.
           if ! spec=$(NUMBER="$issue" python3 "$RUNNER_TEMP/central/scripts/receipts.py" verify-spec); then
             echo "A human merges this one: the Spec is not the one sealed at G3 ($spec)."; exit 0
+          fi
+          # The lane it was worked under, read from GitHub's history: its
+          # caps apply. A reproduced bug's test must be, at the head, the
+          # one that failed: its SHA-256 against the sealed PRD's.
+          if ! LANE=$(python3 "$RUNNER_TEMP/central/scripts/autopilot.py" lane); then
+            echo "A human merges this one: $LANE."; exit 0
+          fi
+          export LANE REPRO_SHA256=""
+          if [ "$LANE" = bugfix-reproduced ] && repro_test=$(python3 "$RUNNER_TEMP/central/scripts/repro-lane.py" evidence | jq -r .test); then
+            REPRO_SHA256=$(gh api "repos/$GITHUB_REPOSITORY/contents/$repro_test?ref=$HEAD" --jq .content 2>/dev/null | base64 -d | sha256sum | cut -c1-64) || REPRO_SHA256=""
           fi
           if why=$(python3 "$RUNNER_TEMP/central/scripts/autopilot.py" decide); then
             body=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq .body | tr -d '\r')

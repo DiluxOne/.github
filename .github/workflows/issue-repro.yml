@@ -14,9 +14,26 @@ name: Issue reproduction
 # ends green with a notice, before any model runs, and a report the triage
 # sent gets one comment saying it waits for a person.
 #
-#   the test fails  -> the bug is real: label `bug:confirmed`, a draft pull
-#                      request with the failing test as evidence and as the
-#                      starting point of the fix, and a comment on the issue;
+#   the test fails  -> the bug is real: label `bug:confirmed`, the test on
+#                      the branch test/repro-issue-<n>, and a comment on the
+#                      issue. Then, when the `bugfix-reproduced` lane is open
+#                      here (policy/autonomy.yml, the repository's
+#                      .github/autonomy.yml, DX_AUTOPILOT; #84): dilux-bot
+#                      opens an issue of its own for the fix, whose PRD is
+#                      fixed text and the reproduction's facts
+#                      (scripts/repro-lane.py: the test, its SHA-256, this
+#                      run), never the report's words; the lane accepts it
+#                      as GitHub's history shows it (scripts/autonomy.py
+#                      lane-accept), it is labelled `accepted-by:policy`
+#                      and sealed, and the `autopilot` job works it
+#                      (autopilot.yml): the fix must make that test pass,
+#                      as written, through every gate. When the lane is
+#                      not open, a draft pull request with the failing test
+#                      waits for a person, as before. While a lane issue for
+#                      the report is open, another attempt changes nothing.
+#                      (A report that is really a request was retyped
+#                      Feature by the triage and is not reproduced on its
+#                      own.)
 #   the test passes -> label `could-not-reproduce`, the test is pushed to a
 #                      branch, and the comment asks the reporter for what
 #                      would settle it; when the report named an older
@@ -31,15 +48,20 @@ name: Issue reproduction
 #   run     a fresh runner with a read-only token and no secrets installs
 #           the dev tools (the repository's own, before the test is there)
 #           and runs the test inside a container with no network, no
-#           environment and the checkout read-only, so the test can reach
+#           environment and the checkout read-only (scripts/repro-sandbox.sh,
+#           the same sandbox the autopilot uses for it), so the test can reach
 #           neither the runner's own tokens nor anything outside. Whatever
 #           it does dies with the container; its output is untrusted text.
 #           The container is the stock php:<version>-cli image: a test that
 #           needs an extension it lacks (mysqli, gd, intl, zip) reports
 #           broken, not a verdict on the bug.
 #   report  a fresh runner with the bot token pushes the test file as the
-#           write job produced it, opens the draft pull request, labels and
-#           comments. It never executes repository code (hooks off).
+#           write job produced it, opens the lane's issue (or the draft pull
+#           request), labels and comments. It never executes repository
+#           code (hooks off).
+#   autopilot  only for the lane's accepted issue: autopilot.yml, which
+#           keeps the test out of its working tree and runs it only in the
+#           sandbox (its header says how).
 # Claude may write only under tests/Unit/Repro/; anything else is discarded.
 # At most `max-per-day` runs a day (10000: the runs go on the
 # subscription, so it only stops a flood). The `high` reviewer of the policy
@@ -379,51 +401,25 @@ jobs:
       # not in the tree yet: Composer runs the repository's scripts, never
       # the test.
       - run: composer install --no-interaction --prefer-dist --no-progress
-      - name: The PHP image the test runs in
-        env:
-          PHP_VERSION: ${{ inputs.php-version }}
-        run: docker pull --quiet "php:${PHP_VERSION}-cli"
+      # The organisation's sandbox (public, read without a token), fetched
+      # after Composer, so nothing the repository runs can touch it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref }}
+          path: .dx-central
+          persist-credentials: false
       - name: Run
         id: run
         env:
           NUMBER: ${{ github.event.issue.number }}
           PHP_VERSION: ${{ inputs.php-version }}
-        # In a container with no network, no environment (none of the
-        # runner's variables, its runtime token among them), the checkout
-        # mounted read-only and nothing writable but a scratch /tmp.
-        run: |
-          set -euo pipefail
-          test="tests/Unit/Repro/Issue${NUMBER}Test.php"
-          mkdir -p tests/Unit/Repro && cp "$RUNNER_TEMP/handover/test.php" "$test"
-          if ! php -l "$test" >/dev/null 2>&1; then echo "outcome=broken" >> "$GITHUB_OUTPUT"; php -l "$test" || true; exit 0; fi
-          set +e
-          docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
-            --user "$(id -u):$(id -g)" --memory 1g --pids-limit 256 \
-            -v "$PWD:/app:ro" -w /app "php:${PHP_VERSION}-cli" \
-            timeout 600 php vendor/bin/phpunit --no-coverage --do-not-cache-result "$test" > "$RUNNER_TEMP/phpunit.txt" 2>&1
-          rc=$?
-          set -e
-          # 125 to 127: docker could not run the test at all, which says
-          # nothing about the bug.
-          if [ "$rc" -ge 125 ] && [ "$rc" -le 127 ]; then
-            echo "::warning::The container did not run the test (exit $rc)."; tail -5 "$RUNNER_TEMP/phpunit.txt" || true
-            echo "outcome=broken" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          tail -25 "$RUNNER_TEMP/phpunit.txt"
-          tail -25 "$RUNNER_TEMP/phpunit.txt" > "$RUNNER_TEMP/handover/phpunit-tail.txt"
-          # Only PHPUnit's own verdicts count: exit 1 with a failure and no
-          # error is the bug; exit 0 with "OK" is a pass. An error (a wrong
-          # class, a missing stub), a timeout (124), a kill (137, memory), a
-          # PHP fatal (255) or anything else proves nothing about the bug.
-          if grep -qE '^(Errors|ERRORS)|There w(as|ere) [0-9]+ errors?' "$RUNNER_TEMP/phpunit.txt"; then
-            echo "outcome=broken" >> "$GITHUB_OUTPUT"
-          elif [ "$rc" -eq 1 ] && grep -qE '^FAILURES!' "$RUNNER_TEMP/phpunit.txt"; then
-            echo "outcome=reproduced" >> "$GITHUB_OUTPUT"
-          elif [ "$rc" -eq 0 ] && grep -qE '^OK \(' "$RUNNER_TEMP/phpunit.txt"; then
-            echo "outcome=passed" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::PHPUnit gave no verdict (exit $rc)."; echo "outcome=broken" >> "$GITHUB_OUTPUT"
-          fi
+        # scripts/repro-sandbox.sh: a container with no network, no
+        # environment (none of the runner's variables, its runtime token
+        # among them), the checkout and the test mounted read-only and
+        # nothing writable but a scratch /tmp; only PHPUnit's own verdict
+        # counts. The autopilot runs the same test there, against its fix.
+        run: bash .dx-central/scripts/repro-sandbox.sh run "$RUNNER_TEMP/handover/test.php" "Issue${NUMBER}Test.php" "$RUNNER_TEMP/handover"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -442,6 +438,8 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
+    outputs:
+      lane-issue: ${{ steps.lane.outputs.issue }}
     steps:
       - name: dilux-bot token
         id: bot
@@ -450,12 +448,34 @@ jobs:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }}
-          permission-contents: write
+          permission-contents: write # the test's branch, and the seal on the receipts branch
           permission-pull-requests: write
           permission-issues: write
+          permission-actions: read # this run, as the lane's origin
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref }}
+          path: .dx-central
+          persist-credentials: false
+      # Whether a reproduced bug goes to the `bugfix-reproduced` lane: the
+      # autopilot on (the policy, this repository's .github/autonomy.yml,
+      # DX_AUTOPILOT) and the lane on here (scripts/autonomy.py). If not, the
+      # draft pull request with the test waits for a person, as before.
+      - name: May the lane take it
+        id: open
+        if: needs.run.outputs.outcome == 'reproduced'
+        env:
+          DX_AUTOPILOT: ${{ vars.DX_AUTOPILOT }}
+          REPO_AUTONOMY: .github/autonomy.yml
+        run: |
+          if why=$(python3 .dx-central/scripts/autonomy.py lane-open bugfix-reproduced); then
+            echo "lane=yes" >> "$GITHUB_OUTPUT"
+          fi
+          echo "$why"
       # The test comes from the write job's artifact only; the run job's
       # artifact holds untrusted output and is read as text.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -470,7 +490,9 @@ jobs:
           name: repro-output-${{ github.event.issue.number }}
           path: ${{ runner.temp }}/output
       - name: Labels, branch, pull request, comment
+        id: report
         env:
+          LANE_OPEN: ${{ steps.open.outputs.lane }}
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           NUMBER: ${{ github.event.issue.number }}
           MODEL: ${{ needs.write.outputs.model }}
@@ -545,13 +567,28 @@ jobs:
           g() { git -c core.hooksPath=/dev/null -c "user.name=$BOT" -c "user.email=$BOT@users.noreply.github.com" -c "http.extraheader=$auth" "$@"; }
           # A branch name the conventions accept: <type>/<kebab-case>.
           branch="test/repro-issue-$NUMBER"
+          # The bugfix-reproduced lane's open issue for this report holds the
+          # test on that branch by its SHA-256: another attempt never
+          # replaces it under the fix.
+          held=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label lane:bugfix-reproduced --limit 100 --json number,title,author \
+            --jq "[.[] | select(.title == \"The bug reproduced from #$NUMBER\" and (.author.login | test(\"^(app/)?dilux-bot(\\\\[bot\\\\])?$\")))][0].number // empty" 2>/dev/null || true)
+          if [ -n "$held" ]; then
+            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'A fix for this report is already under way in #%s, with the reproduction test it was handed; this attempt (%s) changes nothing there.\n\n%s' "$held" "$OUTCOME" "$sign")" >/dev/null
+            echo "The lane's issue #$held holds this report's test; nothing pushed."; exit 0
+          fi
           g checkout -q -B "$branch"
           g add -- "$test"
           if [ "$OUTCOME" = reproduced ]; then
             g commit -q -m "test(repro): failing test for #$NUMBER" -m "Written by the reproduction job from the report in #$NUMBER; it fails on main, which confirms the bug. The fix goes in on top of it." -m "🤖 AI-generated · $MODEL (Anthropic)"
             g push -q -f -u origin "$branch"
-            url=$(gh pr create --repo "$GITHUB_REPOSITORY" --head "$branch" --draft --title "test(repro): failing test for #$NUMBER" --body "$(printf '## 📝 What changes\n\nA unit test that reproduces #%s. It fails on %s, which is the point: it turns green when the bug is fixed.\n\n## 💡 Why\n\nA bug with a failing test is confirmed and half fixed. This draft is the starting point of the fix; it is not merged on its own.\n\n## 🧪 How I tested it\n\n%s\n%s\n%s\n\n🤖 AI-generated · %s (Anthropic)' "$NUMBER" "$code_main" "$fence" "$tail" "$fence" "$MODEL")")
             gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label bug:confirmed --remove-label bug:unconfirmed >/dev/null
+            if [ "$LANE_OPEN" = yes ]; then
+              # The next step hands it to the lane and says so on the report.
+              printf 'Reproduced. I wrote a unit test from this report and it fails on %s, so the bug is confirmed: %s\n\n%s%s' "$code_main" "$code_test" "$SUMMARY" "$on_current" > "$RUNNER_TEMP/reproduced.md"
+              { echo "handoff=true"; echo "branch=$branch"; } >> "$GITHUB_OUTPUT"
+              echo "Reproduced; the lane takes it."; exit 0
+            fi
+            url=$(gh pr create --repo "$GITHUB_REPOSITORY" --head "$branch" --draft --title "test(repro): failing test for #$NUMBER" --body "$(printf '## 📝 What changes\n\nA unit test that reproduces #%s. It fails on %s, which is the point: it turns green when the bug is fixed.\n\n## 💡 Why\n\nA bug with a failing test is confirmed and half fixed. This draft is the starting point of the fix; it is not merged on its own.\n\n## 🧪 How I tested it\n\n%s\n%s\n%s\n\n🤖 AI-generated · %s (Anthropic)' "$NUMBER" "$code_main" "$fence" "$tail" "$fence" "$MODEL")")
             gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'Reproduced. I wrote a unit test from this report and it fails on %s, so the bug is confirmed: %s\n\n%s%s\n\nThe test and its output are in %s; the fix will come on top of it.\n\n%s' "$code_main" "$code_test" "$SUMMARY" "$on_current" "$url" "$sign")" >/dev/null
             echo "Reproduced: $url"
           else
@@ -561,3 +598,73 @@ jobs:
             gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'I could not reproduce this. I wrote a unit test from the report (%s, on the branch %s) and it passes on %s: %s%s\n\nWhat would help: %s\n\nIf you add that here, a maintainer can ask for another attempt (the %s label).\n\n%s' "$code_test" "${BT}${branch}${BT}" "$code_main" "$SUMMARY" "$since" "$needs" "$code_again" "$sign")" >/dev/null
             echo "Not reproduced."
           fi
+
+      # The bugfix-reproduced lane (#84, policy/autonomy.yml). dilux-bot opens
+      # an issue of its own for the fix, whose PRD is fixed text and the
+      # reproduction's facts (scripts/repro-lane.py: the test, its SHA-256,
+      # its branch, this run), never the report's words: the failing test is
+      # its specification. The lane accepts it only as GitHub's history
+      # shows it (scripts/autonomy.py lane-accept: opened and labelled by
+      # dilux-bot, from this run of issue-repro.yml), never on the label
+      # alone. Then it gets `accepted-by:policy`, its PRD is sealed on the
+      # receipts branch as accepted by the policy, and the autopilot job
+      # below takes it. If the lane refuses, the issue waits for a person's
+      # `accepted`, like any other.
+      - name: Hand it to the bugfix-reproduced lane
+        id: lane
+        if: steps.report.outputs.handoff == 'true'
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          NUMBER: ${{ github.event.issue.number }}
+          SHA256: ${{ needs.write.outputs.sha256 }}
+          MODEL: ${{ needs.write.outputs.model }}
+          COST: ${{ needs.write.outputs.cost }}
+          DX_AUTOPILOT: ${{ vars.DX_AUTOPILOT }}
+          REPO_AUTONOMY: .github/autonomy.yml
+          RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+          BT: '`'
+        run: |
+          set -euo pipefail
+          sign="<sub>🤖 AI reproduction · $MODEL (Anthropic)${COST:+ · \$$COST}</sub>"
+          for l in "lane:bugfix-reproduced|1D76DB|A bug the reproduction confirmed with a failing test" "accepted-by:policy|0E8A16|Accepted by a lane of the autonomy policy, not by a person"; do
+            IFS='|' read -r name color desc <<<"$l"
+            gh label create "$name" --repo "$GITHUB_REPOSITORY" --color "$color" --description "$desc" --force >/dev/null
+          done
+          # The commit the test failed on: the one every job of this run checked out.
+          REPORT=$NUMBER BASE=$GITHUB_SHA python3 .dx-central/scripts/repro-lane.py prd > "$RUNNER_TEMP/lane.json"
+          jq -r .body "$RUNNER_TEMP/lane.json" > "$RUNNER_TEMP/lane.md"
+          url=$(gh issue create --repo "$GITHUB_REPOSITORY" --title "$(jq -r .title "$RUNNER_TEMP/lane.json")" --body-file "$RUNNER_TEMP/lane.md" --label lane:bugfix-reproduced)
+          lane=${url##*/}
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/$lane" -f type=Bug >/dev/null 2>&1 || echo "::warning::Could not set #$lane's Type to Bug."
+          if why=$(NUMBER=$lane python3 .dx-central/scripts/autonomy.py lane-accept); then
+            gh issue edit "$lane" --repo "$GITHUB_REPOSITORY" --add-label accepted-by:policy >/dev/null
+            gh issue view "$lane" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/sealed.md"
+            POLICY_REF=$(git -C .dx-central rev-parse --short=12 HEAD)
+            export POLICY_REF
+            NUMBER=$lane BODY="$RUNNER_TEMP/sealed.md" ACCEPTED_BY="policy (lane bugfix-reproduced)" python3 .dx-central/scripts/receipts.py seal-prd
+            board=$(NUMBER=$lane BODY="$RUNNER_TEMP/sealed.md" python3 .dx-central/scripts/receipts.py board)
+            gh issue comment "$lane" --repo "$GITHUB_REPOSITORY" --body "$board" >/dev/null
+            next="The fix is #$lane: the ${BT}bugfix-reproduced${BT} lane of the autonomy policy accepted it, and the autopilot works it in the open. It must make this test pass, exactly as written, and go through every check and the review."
+            echo "issue=$lane" >> "$GITHUB_OUTPUT"
+            echo "#$lane: $why"
+          else
+            gh issue comment "$lane" --repo "$GITHUB_REPOSITORY" --body "$(printf 'No lane accepted this issue (%s), so it waits for a maintainer: accepting it (%saccepted%s) hands it to the autopilot.\n\n%s' "$why" "$BT" "$BT" "$sign")" >/dev/null
+            next="The fix is tracked in #$lane, which waits for a maintainer to accept it."
+            echo "::warning::#$lane: no lane accepted it ($why)."
+          fi
+          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '%s\n\n%s\n\n%s' "$(cat "$RUNNER_TEMP/reproduced.md")" "$next" "$sign")" >/dev/null
+
+  # The fix of a reproduced bug the lane accepted: the autopilot, as when a
+  # person accepts an issue (it reads the lane from GitHub again, and works
+  # under the lane's caps). Same run, so nothing waits on a label event.
+  autopilot:
+    name: Autopilot
+    needs: report
+    if: needs.report.outputs.lane-issue != ''
+    permissions: {}
+    uses: DiluxOne/.github/.github/workflows/autopilot.yml@v5
+    with:
+      mode: start
+      issue: ${{ needs.report.outputs.lane-issue }}
+      central-ref: ${{ inputs.central-ref }}
+    secrets: inherit

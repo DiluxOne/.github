@@ -5,7 +5,12 @@
                             organisation's, made stricter by a repository's own
                             file, never looser
   autonomy.py lane-accept   say whether an issue is accepted by a lane; exit 0
-                            when it is, 1 when not (the issue gate calls it)
+                            when it is, 1 when not (the issue gate, the
+                            autopilot and the reproduction call it)
+  autonomy.py lane-open NAME
+                            say whether the lane NAME may accept an issue of
+                            this repository now, before one is opened; exit
+                            0 when it may (the reproduction asks it)
   autonomy.py --test        self-test
 
 Environment:
@@ -16,7 +21,8 @@ Environment:
   DX_AUTOPILOT     the organisation variable; "off" stops every lane
   For lane-accept:
   LANE_ISSUE       a file holding the issue as the issue gate reads it
-                   (GraphQL: number, author, body, labels, label events)
+                   (GraphQL: number, author, body, labels, label events);
+                   when unset, issue NUMBER is read from GitHub with gh
   GITHUB_REPOSITORY  owner/name of the repository the issue is in
   LANE_RUN         a file holding the workflow run named in the issue; read
                    from the API with gh when unset
@@ -112,17 +118,16 @@ def last_label_event(issue, label):
     return events[-1] if events else None
 
 
-def lane_accepts(policy, issue, run, repository, autopilot_var):
-    """(True, why) when a lane accepts the issue; (False, why) otherwise. Pure."""
+def lane_open(policy, name, repository, autopilot_var):
+    """(True, why) when the lane `name` may accept an issue of `repository`
+    now, before any issue exists: the autopilot is on (the policy, the
+    repository's file, DX_AUTOPILOT), and the lane is on, accepts by policy
+    and covers the repository. Pure. A workflow asks it before it opens a
+    lane's issue; lane_accepts asks it again of the issue."""
     if (autopilot_var or "").strip().lower() == "off":
         return False, "the organisation's DX_AUTOPILOT is off"
     if not policy.get("autopilot", False):
         return False, "the autopilot is off in the policy"
-    labels = [n.get("name") for n in ((issue.get("labels") or {}).get("nodes") or [])]
-    lanes = [l[len("lane:"):] for l in labels if l and l.startswith("lane:")]
-    if len(lanes) != 1:
-        return False, "the issue needs exactly one lane:<name> label" if not lanes else "the issue carries more than one lane"
-    name = lanes[0]
     lane = (policy.get("lanes") or {}).get(name)
     if lane is None:
         return False, f"no lane named {name} in the policy"
@@ -133,6 +138,32 @@ def lane_accepts(policy, issue, run, repository, autopilot_var):
     repo_name = repository.split("/", 1)[-1]
     if "*" not in (lane.get("repositories") or []) and repo_name not in (lane.get("repositories") or []):
         return False, f"the lane {name} does not cover {repo_name}"
+    return True, f"the lane {name} is open in {repo_name}"
+
+
+def lane_of(issue):
+    """The lane an issue names with its labels: (name, None), or (None, why)
+    when it names none or more than one."""
+    labels = [n.get("name") for n in ((issue.get("labels") or {}).get("nodes") or [])]
+    lanes = [l[len("lane:"):] for l in labels if l and l.startswith("lane:")]
+    if len(lanes) != 1:
+        return None, ("the issue needs exactly one lane:<name> label" if not lanes else "the issue carries more than one lane")
+    return lanes[0], None
+
+
+def lane_accepts(policy, issue, run, repository, autopilot_var):
+    """(True, why) when a lane accepts the issue; (False, why) otherwise. Pure."""
+    if (autopilot_var or "").strip().lower() == "off":
+        return False, "the organisation's DX_AUTOPILOT is off"
+    if not policy.get("autopilot", False):
+        return False, "the autopilot is off in the policy"
+    name, why = lane_of(issue)
+    if name is None:
+        return False, why
+    ok, why = lane_open(policy, name, repository, autopilot_var)
+    if not ok:
+        return False, why
+    lane = policy["lanes"][name]
     origin = lane.get("origin") or {}
     app = origin.get("app", "")
     bot_logins = {app, f"{app}[bot]"}
@@ -160,6 +191,38 @@ def lane_accepts(policy, issue, run, repository, autopilot_var):
     if not names & allowed:
         return False, f"the run's workflows ({', '.join(sorted(names)) or 'none'}) are not the lane's ({', '.join(sorted(allowed))})"
     return True, f"accepted by policy: lane {name}, opened by run {run_id}"
+
+
+# The issue as the issue gate reads it (scripts/issue-gate.sh): who opened
+# it, its body, its labels and who added each, from GitHub's history.
+ISSUE_QUERY = """query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) {
+      number
+      body
+      author { login }
+      labels(first: 50) { nodes { name } }
+      timelineItems(itemTypes: [LABELED_EVENT, UNLABELED_EVENT], last: 100) {
+        nodes {
+          __typename
+          ... on LabeledEvent { label { name } actor { __typename login } }
+          ... on UnlabeledEvent { label { name } actor { __typename login } }
+        }
+      }
+    }
+  }
+}"""
+
+
+def read_issue(repository, number):
+    """The issue, read from GitHub with gh (GH_TOKEN), or None when it cannot be."""
+    owner, name = repository.split("/", 1)
+    try:
+        out = subprocess.run(["gh", "api", "graphql", "-f", f"query={ISSUE_QUERY}", "-F", f"owner={owner}", "-F", f"name={name}",
+                              "-F", f"number={number}"], capture_output=True, text=True, check=True).stdout
+        return (((json.loads(out).get("data") or {}).get("repository") or {}).get("issue")) or None
+    except (subprocess.CalledProcessError, json.JSONDecodeError):
+        return None
 
 
 def read_run(issue, repository):
@@ -271,6 +334,21 @@ def self_test():
     fake = {"id": 42, "path": ".github/workflows/issues.yml", "referenced_workflows": [{"path": "someone/else/.github/workflows/issue-repro.yml@main"}]}
     check("refuses: a called workflow of the same name from elsewhere", lane_accepts(pol, bug, fake, "DiluxOne/x", "")[0], False)
 
+    # #84: the lane a reproduction hands a bug to, asked before its issue exists.
+    check("lane-open: bugfix-reproduced is open everywhere by default", lane_open(pol, "bugfix-reproduced", "DiluxOne/x", "")[0], True)
+    check("lane-open: not with DX_AUTOPILOT off", lane_open(pol, "bugfix-reproduced", "DiluxOne/x", "off")[0], False)
+    check("lane-open: not when the repository switches the lane off", lane_open(merge(org, {"lanes": {"bugfix-reproduced": {"enabled": False}}}), "bugfix-reproduced", "DiluxOne/x", "")[0], False)
+    check("lane-open: not when the repository makes it human", lane_open(merge(org, {"lanes": {"bugfix-reproduced": {"accept": "human"}}}), "bugfix-reproduced", "DiluxOne/x", "")[0], False)
+    check("lane-open: not when the repository turns the autopilot off", lane_open(merge(org, {"autopilot": False}), "bugfix-reproduced", "DiluxOne/x", "")[0], False)
+    check("lane-open: not outside the repositories it narrows to", lane_open(merge(org, {"lanes": {"bugfix-reproduced": {"repositories": ["y"]}}}), "bugfix-reproduced", "DiluxOne/x", "")[0], False)
+    check("lane-open: never a lane a person accepts", lane_open(pol, "human-issue", "DiluxOne/x", "")[0], False)
+    check("lane-open: never a lane that does not exist", lane_open(pol, "mine", "DiluxOne/x", "")[0], False)
+    person = issue(labels=("lane:bugfix-reproduced",), author="reporter", body="<!-- dx-lane: bugfix-reproduced run: https://github.com/DiluxOne/x/actions/runs/42 -->")
+    person["timelineItems"]["nodes"][0]["label"]["name"] = "lane:bugfix-reproduced"
+    check("refuses: a reporter's own issue, even with the lane's label and marker", lane_accepts(pol, person, rr, "DiluxOne/x", "")[0], False)
+    check("lane_of: one lane", lane_of(bug), ("bugfix-reproduced", None))
+    check("lane_of: none", lane_of(issue(labels=("bug",)))[0], None)
+
     if not failed:
         print("all tests passed")
     return failed
@@ -283,9 +361,17 @@ def main():
     if mode == "policy":
         print(json.dumps(policy_in_force(), indent=2))
         return 0
+    if mode == "lane-open":
+        name = sys.argv[2] if len(sys.argv) > 2 else ""
+        ok, why = lane_open(policy_in_force(), name, os.environ["GITHUB_REPOSITORY"], os.environ.get("DX_AUTOPILOT", ""))
+        print(why)
+        return 0 if ok else 1
     if mode == "lane-accept":
-        issue = load_json(os.environ["LANE_ISSUE"])
         repository = os.environ["GITHUB_REPOSITORY"]
+        issue = load_json(os.environ["LANE_ISSUE"]) if os.environ.get("LANE_ISSUE") else read_issue(repository, os.environ.get("NUMBER", ""))
+        if not issue:
+            print("the issue could not be read")
+            return 1
         ok, why = lane_accepts(policy_in_force(), issue, read_run(issue, repository), repository, os.environ.get("DX_AUTOPILOT", ""))
         print(why)
         return 0 if ok else 1

@@ -33,6 +33,11 @@ name: Issue accepted
 # nothing while DX_AUTOPILOT is off. No receipt is written for it: the tag
 # and the GitHub release are the record.
 #
+# An issue a lane of the autonomy policy accepted (`accepted-by:policy`; its
+# PRD sealed by the workflow that opened it, issue-repro.yml for a
+# reproduced bug, #84) gets its receipt when it closes as completed, as an
+# accepted one does.
+#
 #   on:
 #     issues:
 #       types: [labeled, closed]
@@ -240,7 +245,9 @@ jobs:
     timeout-minutes: 5
     # When an accepted issue closes as completed by a merged pull request: the
     # receipt (#81), committed to the receipts branch, and the board updated.
-    if: github.event_name == 'issues' && github.event.action == 'closed' && github.event.issue.state_reason == 'completed' && contains(github.event.issue.labels.*.name, inputs.label) && !contains(github.event.issue.labels.*.name, 'lane:release')
+    # An issue a lane accepted (`accepted-by:policy`, a reproduced bug's, #84)
+    # gets its receipt too: its PRD was sealed by the policy.
+    if: github.event_name == 'issues' && github.event.action == 'closed' && github.event.issue.state_reason == 'completed' && (contains(github.event.issue.labels.*.name, inputs.label) || contains(github.event.issue.labels.*.name, 'accepted-by:policy')) && !contains(github.event.issue.labels.*.name, 'lane:release')
     permissions: {}
     steps:
       - name: The scripts
