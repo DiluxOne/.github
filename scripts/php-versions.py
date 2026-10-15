@@ -29,6 +29,13 @@ Reads from the environment:
   MAIN      the plugin's main file, whose `Requires PHP:` header is read
   README    readme.txt, read when the main file says nothing (default
             readme.txt)
+  BASE_MAIN, BASE_README
+            on a pull request, the same two files as the base branch has
+            them (a missing one is an empty file): a pull request that
+            raises Requires PHP above both the pack's minimum and the
+            base's fails. The legacy floor is only ever the one already
+            merged; a plugin's Requires PHP goes down to the minimum, never
+            up.
 
 Writes to $GITHUB_OUTPUT (and prints):
 
@@ -104,8 +111,12 @@ def declared(main, readme):
     return None, None
 
 
-def plan(settings, main, readme):
-    """(outputs, notes): what the checks run on, and the annotations that say why."""
+def plan(settings, main, readme, base=None):
+    """(outputs, notes): what the checks run on, and the annotations that say why.
+
+    `base` is (main, readme) as the base branch has them, on a pull request:
+    a pull request may lower Requires PHP, never raise it above both the
+    pack's minimum and what the base declared."""
     php = (settings or {}).get("php") or {}
     if "tools" not in php or "minimum" not in php:
         raise ValueError("the kind's settings name no php.tools and php.minimum (kinds/<kind>/pack.yml)")
@@ -117,6 +128,12 @@ def plan(settings, main, readme):
     raw, where = declared(main, readme)
     own = parse(raw, f"Requires PHP in {where}") if raw is not None else None
     low = floor
+    if base is not None and own is not None and own > floor:
+        braw, bwhere = declared(*base)
+        before = parse(braw, f"Requires PHP in the base's {bwhere}") if braw is not None else None
+        if before is None or own > before:
+            was = f"PHP {before[0]}.{before[1]}" if before is not None else "nothing"
+            raise ValueError(f"this pull request raises Requires PHP to {own[0]}.{own[1]} (the base says {was}), above the organisation's minimum, PHP {floor[0]}.{floor[1]}: every plugin supports the minimum, and a plugin's Requires PHP only goes down to it (DiluxOne/.github#85)")
     if own is not None and own > floor:
         low = own
         notes.append(f"::warning file={where}::Requires PHP is {own[0]}.{own[1]}, above the organisation's minimum, PHP {floor[0]}.{floor[1]}: the checks start at {own[0]}.{own[1]} until the plugin lowers it (DiluxOne/.github#85).")
@@ -137,7 +154,9 @@ def plan(settings, main, readme):
 def allows_major(constraint, major):
     """Whether a Composer constraint lets in some release of `major` or later."""
     for alt in re.split(r"\s*\|\|?\s*", str(constraint or "").strip()):
-        # An operator written apart from its version (`>= 5.0`) is one part.
+        # A hyphen range (`5.0 - 6.2`) is its two bounds; an operator written
+        # apart from its version (`>= 5.0`) is one part.
+        alt = re.sub(r"^\s*(\S+)\s+-\s+(\S+)\s*$", r">=\1 <=\2", alt)
         parts = [p for p in re.split(r"[\s,]+", re.sub(r"([<>=!~^]+)\s+", r"\1", alt.strip())) if p]
         if not parts:
             continue
@@ -149,7 +168,8 @@ def allows_major(constraint, major):
                 ok = ok and number is not None and number[0] >= major
             elif part.startswith("<"):
                 ok = ok and number is not None and number > (major, 0)
-            elif part.startswith(("*", ">", "dev-")):
+            elif part.startswith(("*", ">", "!=", "dev-")):
+                # A lower bound, or one excluded release: no upper bound.
                 continue
             else:
                 # ^X, ~X, X.*, X.Y: nothing from a later major, as Composer reads them.
@@ -230,7 +250,10 @@ def main(argv):
             print("usage: php-versions.py [--test | gate <lint|stan|psalm:taint>]", file=sys.stderr)
             return 64
         settings = json.loads(os.environ.get("SETTINGS") or "{}")
-        emit(*plan(settings, os.environ.get("MAIN", ""), os.environ.get("README", "readme.txt")))
+        base = None
+        if os.environ.get("BASE_MAIN") or os.environ.get("BASE_README"):
+            base = (os.environ.get("BASE_MAIN", ""), os.environ.get("BASE_README", ""))
+        emit(*plan(settings, os.environ.get("MAIN", ""), os.environ.get("README", "readme.txt"), base))
     except (ValueError, KeyError) as err:
         print(f"::error::{err}")
         return 1
@@ -247,23 +270,36 @@ def self_test():
         print(("ok   " if ok else "FAIL ") + name + ("" if ok else f": {detail}"))
         failed += 0 if ok else 1
 
-    def run(settings, main_text=None, readme_text=None):
+    def run(settings, main_text=None, readme_text=None, base_text=None):
         with tempfile.TemporaryDirectory() as d:
             main = os.path.join(d, "plugin.php")
             readme = os.path.join(d, "readme.txt")
-            if main_text is not None:
-                with open(main, "w") as fh:
-                    fh.write(main_text)
-            if readme_text is not None:
-                with open(readme, "w") as fh:
-                    fh.write(readme_text)
+            base_main = os.path.join(d, "base.php")
+            for path, text in ((main, main_text), (readme, readme_text), (base_main, base_text)):
+                if text is not None:
+                    with open(path, "w") as fh:
+                        fh.write(text)
+            base = (base_main, os.path.join(d, "base-readme.txt")) if base_text is not None else None
             try:
-                return plan(settings, main, readme)
+                return plan(settings, main, readme, base)
             except ValueError as err:
                 return None, [str(err)]
 
     pack = {"php": {"tools": "8.5", "minimum": "7.4"}}
     header = "<?php\n/**\n * Plugin Name: P\n * Requires PHP: {}\n */\n"
+
+    out, notes = run(pack, header.format("8.1"), None, header.format("8.0"))
+    check("a pull request that raises Requires PHP above the base and the minimum fails", out is None and "raises Requires PHP to 8.1" in notes[0], notes)
+    out, notes = run(pack, header.format("8.0"), None, header.format("7.4"))
+    check("a pull request that takes a 7.4 plugin to 8.0 fails", out is None and "the base says PHP 7.4" in notes[0], notes)
+    out, notes = run(pack, header.format("8.0"), None, "")
+    check("a new plugin above the minimum fails", out is None and "the base says nothing" in notes[0], notes)
+    out, notes = run(pack, header.format("8.0"), None, header.format("8.0"))
+    check("a pull request that keeps a legacy Requires PHP passes, with the warning", out and out["minimum"] == "8.0" and notes[0].startswith("::warning"), (out, notes))
+    out, notes = run(pack, header.format("7.4"), None, header.format("8.1"))
+    check("a pull request that lowers it to the minimum is checked from the minimum", out and out["minimum"] == "7.4" and not notes, (out, notes))
+    out, notes = run(pack, header.format("8.0"), None, header.format("8.1"))
+    check("a pull request that lowers it part of the way passes", out and out["minimum"] == "8.0", (out, notes))
 
     check("releases: across a major", releases((7, 4), (8, 5)) == ["7.4", "8.0", "8.1", "8.2", "8.3", "8.4", "8.5"], releases((7, 4), (8, 5)))
     check("releases: one", releases((8, 5), (8, 5)) == ["8.5"])
@@ -325,6 +361,8 @@ def self_test():
     check("constraint: ^5.0|^6.0 allows 6", allows_major("^5.0|^6.0", 6))
     check("constraint: >=5 and * allow 6", allows_major(">=5", 6) and allows_major("*", 6))
     check("constraint: >=5.0 <6.0 allows no 6", not allows_major(">=5.0 <6.0", 6))
+    check("constraint: 5.0 - 6.2 allows 6, 5.0 - 5.26 does not", allows_major("5.0 - 6.2", 6) and not allows_major("5.0 - 5.26", 6))
+    check("constraint: >=5.0 !=5.1.0 allows 6", allows_major(">=5.0 !=5.1.0", 6))
     check("constraint: >= 5.0 (operator apart) allows 6, >= 5.0 < 6.0 does not", allows_major(">= 5.0", 6) and not allows_major(">= 5.0 < 6.0", 6))
     check("constraint: >=5.0,<6.1 and <=6.0 allow 6", allows_major(">=5.0,<6.1", 6) and allows_major("<=6.0", 6))
     check("constraint: 5.* and ~5.26 allow no 6, 6.* does", not allows_major("5.*", 6) and not allows_major("~5.26", 6) and allows_major("6.*", 6))

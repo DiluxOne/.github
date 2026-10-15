@@ -75,7 +75,8 @@ kind-settings:
   the tools' PHP, the minimum they analyse for, and every release between
   the two for the syntax and unit-test jobs. A plugin that still declares a
   higher `Requires PHP` than the pack's minimum is checked from its own,
-  with a warning, until it lowers it.
+  with a warning, until it lowers it; a pull request that raises it above
+  both the base's and the minimum fails.
 
 **What a pack cannot do: choose the workflows.** GitHub resolves a
 `uses: owner/repo/.github/workflows/file.yml@ref` line before anything runs,

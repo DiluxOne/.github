@@ -151,14 +151,27 @@ jobs:
       - name: From the pack and the plugin's Requires PHP
         id: php
         # The plugin's Requires PHP is read from the change itself: the pull
-        # request that lowers it is the one checked on the lower PHP.
+        # request that lowers it is the one checked on the lower PHP. On a
+        # pull request the base's is read too (the checkout's first parent):
+        # one that raises it above both the base's and the pack's minimum
+        # fails, so the legacy floor is only ever one already merged.
         env:
           SETTINGS: ${{ steps.kind.outputs.settings }}
           MAIN: ${{ inputs.main-file != '' && inputs.main-file || format('{0}.php', inputs.slug) }}
           README: readme.txt
           PHP_VERSIONS: ${{ inputs.php-versions }}
+          EVENT: ${{ github.event_name }}
         run: |
           [ -z "$PHP_VERSIONS" ] || echo "::warning::php-versions is ignored: the PHP versions come from the pack and the plugin's Requires PHP (DiluxOne/.github#85). Remove it from the caller."
+          case "$EVENT" in
+            push|schedule|workflow_dispatch) ;;
+            *)
+              if git rev-parse --verify -q HEAD^1 >/dev/null; then
+                export BASE_MAIN="$RUNNER_TEMP/base-main.php" BASE_README="$RUNNER_TEMP/base-readme.txt"
+                git show "HEAD^1:$MAIN" > "$BASE_MAIN" 2>/dev/null || : > "$BASE_MAIN"
+                git show "HEAD^1:$README" > "$BASE_README" 2>/dev/null || : > "$BASE_README"
+              fi ;;
+          esac
           python3 .dx-central/scripts/php-versions.py
 
   syntax:
