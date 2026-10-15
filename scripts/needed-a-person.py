@@ -500,6 +500,9 @@ def self_test():
     check("C1: one the decision (G7) left to a person is waiting", "`Working` (u-working), waiting: protected path" in digest([decided], pol, now), True)
     fixing = pr(cases["review blocker (its failing review check is not a gate of its own)"], url="u-fixing", title="Fixing", mergedAt=None, mergedBy=None, state="OPEN", author={"__typename": "Bot", "login": BOT}, labels={"nodes": [{"name": "autopilot"}]})
     check("C1: one the autopilot's fix rounds still work is not waiting", "Fixing" in digest([fixing], pol, now), False)
+    major = '<!-- dx-review -->\n<!-- dx-review-record {"risk":"low","complexity":"low","floor":"low","blocking":false,"findings":[{"severity":"major","file":"a","title":"t"}]} -->'
+    major_only = dict(decided, url="u-major", title="Major", early={"nodes": []}, comments={"nodes": [{"author": {"__typename": "Bot", "login": BOT}, "body": major}]})
+    check("C1: one whose review has a major, not blocking, is still the autopilot's", "Major" in digest([major_only], pol, now), False)
     handed = dict(fixing, labels={"nodes": [{"name": "autopilot"}, {"name": "needs-human"}]})
     check("C1: one the autopilot handed to a person is waiting", "`Fixing` (u-fixing), waiting: review blocker" in digest([handed], pol, now), True)
     check("C1: an empty week says so", "Nothing in the organisation was merged by a person" in digest([], pol, now), True)
@@ -540,7 +543,6 @@ def self_test():
     check("C3: the pull requests per week", "| **Pull requests** | 1 | 1 | 4 | 3 | 9 |" in out, True)
     check("C3: a proposal for a reason with 5 clean reviews", "The size cap stopped 5 pull requests" in out, True)
     check("C3: none for a reason with 4", "high risk stopped" in out, False)
-    major = '<!-- dx-review -->\nx\n<!-- dx-review-record {"risk":"low","complexity":"low","floor":"low","blocking":false,"findings":[{"severity":"major","file":"a","title":"t"}]} -->'
     dirty = [dict(p, comments={"nodes": [{"author": {"__typename": "Bot", "login": BOT}, "body": major}]}) for p in month]
     check("C3: none when the reviews found a major", "The size cap stopped" in digest(dirty, pol, now), False)
     check("C3: the proposal is text only and says a person merges", "accepts and merges" in out, True)
