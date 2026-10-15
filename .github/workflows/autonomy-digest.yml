@@ -9,6 +9,18 @@ name: Decided by policy
 # is a line with its repository, title and link; private ones are only
 # counted, because the issue is public. A week with nothing says so. This is
 # how the maintainer sees, in one place, what proceeded without them.
+#
+# The same comment says what still needed a person (#143,
+# scripts/needed-a-person.py): every pull request a person merged that week,
+# or that waits on one now, with the reasons its gates, labels and review
+# recorded (high risk, a protected path, a Critical issue, a review blocker,
+# autopilot rounds exhausted, a failed gate, the size cap, an outside author,
+# over a risk cap; "unknown" when none is); the totals per reason, per week
+# and per repository over the last four weeks, read again from the API each
+# run (nothing is stored); and a proposal, as text only, for each reason that
+# stopped 5 or more pull requests whose review found no blocker or major.
+# Changing a limit stays a pull request a person accepts and merges. Private
+# repositories are counted under their reasons, never named.
 
 on:
   schedule:
@@ -34,6 +46,7 @@ jobs:
           permission-issues: write
           permission-pull-requests: read
           permission-metadata: read
+          permission-checks: read # the head's checks, for a failed gate
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -43,22 +56,26 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           OWNER: ${{ github.repository_owner }}
-        # This issue is public: scripts/policy-digest.sh counts a private
-        # repository's decisions and never names them. A search that fails
-        # fails the run instead of reporting an empty week.
+        # This issue is public: scripts/policy-digest.sh and
+        # scripts/needed-a-person.py count a private repository's pull
+        # requests and never name them. A search that fails fails the run
+        # instead of reporting an empty week.
         run: |
           set -euo pipefail
           since=$(date -u -d '7 days ago' +%Y-%m-%d)
           body=$(SINCE="$since" bash scripts/policy-digest.sh)
+          person=$(python3 scripts/needed-a-person.py)
           title="Decided by policy"
           n=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"$title\"" --json number,title --jq "map(select(.title == \"$title\"))[0].number // empty")
           if [ -z "$n" ]; then
-            n=$(gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "Every Monday, what the autonomy policy (policy/autonomy.yml) accepted or merged in the organisation instead of a person, by autonomy-digest.yml. Private repositories are counted, not named.
+            n=$(gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "Every Monday, what the autonomy policy (policy/autonomy.yml) accepted or merged in the organisation instead of a person, and what still needed a person and why, by autonomy-digest.yml. Private repositories are counted, not named.
 
           🤖 AI-generated · Claude Opus 5.5 (Anthropic)" | sed 's#.*/##')
           fi
           gh issue comment "$n" --repo "$GITHUB_REPOSITORY" --body "Week since ${since}:
 
           ${body}
+
+          ${person}
 
           🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
