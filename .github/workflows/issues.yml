@@ -3,8 +3,8 @@ name: Issues
 # This repository's own issues, through the same shared workflows every
 # DiluxOne repository calls (workflow-templates/issues.yml), at the moving
 # tag: the triage when an issue opens, and, when a person accepts one, the
-# Platform Project (#9, repos.yml), the gate re-run on its pull requests, the
-# PRD's seal, and the autopilot (issue-triage.yml calls it). Most of this
+# Platform Project (#9, repos.yml), its assignee (#73), the gate re-run on
+# its pull requests, the PRD's seal, and the autopilot (issue-triage.yml calls it). Most of this
 # repository is a protected path of policy/autonomy.yml, and an autopilot
 # pull request that touches one is never merged by policy. No reproduction job: this repository has no
 # plugin to reproduce a bug in.

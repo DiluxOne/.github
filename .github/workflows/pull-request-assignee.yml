@@ -1,0 +1,99 @@
+name: Issue assignee
+
+# Reusable. Whoever opens the pull request that closes an issue works it
+# (#73): when a member of the organisation opens one ("Closes #N", or a link
+# under Development), each open issue of the repository it closes is
+# reassigned to them, unless they are already among its assignees. When an
+# issue is accepted it went to whoever accepted it (issue-accepted.yml); this
+# hands it to whoever took it on. An outside contributor's pull request, a
+# bot's (the autopilot's, Dependabot's) and a fork's leave the assignee as it
+# is: the member who accepted the issue still answers for it. The decision is
+# scripts/issue-assignee.sh (`pr`), with its self-test.
+#
+# It runs when the pull request opens, reopens, leaves draft or its
+# description changes (a "Closes #N" added later), never on a push. A
+# maintainer who reassigns the issue by hand afterwards keeps that choice
+# until one of those happens again, when the author takes it back. It reads
+# no code of the pull request and writes only the issues' assignees, through
+# dilux-bot's token; without the bot's key it does nothing. A failure is a
+# warning, never a red check: an assignee is bookkeeping, not a gate.
+#
+#   Called by org-pull-request.yml, the organisation's required pipeline,
+#   for every repository, and by this repository's own pull-request.yml and
+#   pull-request-edited.yml:
+#
+#   jobs:
+#     assignee:
+#       permissions: {}
+#       uses: DiluxOne/.github/.github/workflows/pull-request-assignee.yml@v5
+#       secrets:
+#         DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+
+on:
+  workflow_call:
+    inputs:
+      central-ref:
+        description: Ref of DiluxOne/.github to read scripts/issue-assignee.sh from.
+        type: string
+        default: v5
+    secrets:
+      DILUX_BOT_PRIVATE_KEY:
+        required: false
+
+# Nothing from the caller's token: the issues are read and written with the
+# bot's, and the script comes from this public repository.
+permissions: {}
+
+jobs:
+  assignee:
+    name: Issue assignee
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    # A branch of the repository only: a fork's pull request gets no secret,
+    # and one from a member's fork is rare enough to leave to a person.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.type != 'Bot' &&
+      contains(fromJSON('["opened","reopened","ready_for_review","edited"]'), github.event.action) &&
+      (github.event.action != 'edited' || github.event.changes.body != null)
+    permissions: {}
+    steps:
+      - name: The script
+        id: central
+        env:
+          REF: ${{ inputs.central-ref }}
+          HAS_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY != '' }}
+        run: |
+          set -euo pipefail
+          if [ "$HAS_KEY" != true ]; then echo "No bot key passed: the assignees are left alone."; exit 0; fi
+          mkdir -p .dx-central/scripts
+          if curl -fsSL --retry 3 "https://raw.githubusercontent.com/DiluxOne/.github/$REF/scripts/issue-assignee.sh" -o .dx-central/scripts/issue-assignee.sh; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::scripts/issue-assignee.sh is not at $REF of DiluxOne/.github; the assignees are left alone."
+          fi
+
+      - name: dilux-bot token
+        id: bot
+        if: steps.central.outputs.ok == 'true'
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-issues: write
+          permission-pull-requests: read # the issues it closes
+
+      - name: Its issues go to its author, if a member
+        if: steps.bot.outputs.token != ''
+        # A warning at most: this rides the required pipeline.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          PR: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+        run: bash .dx-central/scripts/issue-assignee.sh pr
