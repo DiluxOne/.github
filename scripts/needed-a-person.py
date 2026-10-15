@@ -244,9 +244,10 @@ def needed(pr):
     if pr.get("state") != "OPEN" or pr.get("isDraft") or pr.get("autoMergeRequest"):
         return None
     # The autopilot works in a draft; ready, it is still its own while its
-    # fix rounds answer a blocking review. Ready and not blocked, nothing
-    # set to merge, the decision (G7) left it to a person.
-    if "autopilot" in labels and "needs-human" not in labels and (review_record(pr) or {}).get("blocking") is True:
+    # fix rounds answer a review's blockers or majors (or the review is still
+    # to come). Ready with a clean review and nothing set to merge, the
+    # decision (G7) left it to a person.
+    if "autopilot" in labels and "needs-human" not in labels and not clean_review(pr):
         return None
     # Waiting on a person: handed to one, or the machinery is done with it
     # (the review ran), or nothing automatic will look at it (a fork).
