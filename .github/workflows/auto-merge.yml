@@ -208,10 +208,21 @@ jobs:
           # Every file, renames by their old path too, so a protected path
           # cannot leave by a rename.
           gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/files"
-          gh api "repos/$GITHUB_REPOSITORY/contents/.github/autonomy.yml?ref=$BASE" --jq .content 2>/dev/null | base64 -d > "$RUNNER_TEMP/repo-autonomy.yml" || : > "$RUNNER_TEMP/repo-autonomy.yml"
+          # The repository's own autonomy policy: none only when the file is
+          # not there; a read that fails otherwise leaves the merge to a person.
+          read_ok=true
+          if content=$(gh api "repos/$GITHUB_REPOSITORY/contents/.github/autonomy.yml?ref=$BASE" --jq .content 2>"$RUNNER_TEMP/autonomy.err"); then
+            printf '%s' "$content" | base64 -d > "$RUNNER_TEMP/repo-autonomy.yml"
+          elif grep -qE '404|Not Found' "$RUNNER_TEMP/autonomy.err"; then
+            : > "$RUNNER_TEMP/repo-autonomy.yml"
+          else
+            read_ok=false
+          fi
           export FILES="$RUNNER_TEMP/files" REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml"
           ok=false
-          if [ "$(wc -l < "$FILES")" -ge 3000 ]; then
+          if [ "$read_ok" = false ]; then
+            why="the repository's .github/autonomy.yml could not be read"
+          elif [ "$(wc -l < "$FILES")" -ge 3000 ]; then
             why="the file list may be cut at the API's 3000"
           elif why=$(python3 "$RUNNER_TEMP/central/scripts/revert.py" decide); then
             ok=true

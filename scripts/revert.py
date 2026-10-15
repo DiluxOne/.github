@@ -491,6 +491,12 @@ def act():
     if run.get("status") != "completed" or run.get("conclusion") not in RED or int(run.get("run_attempt") or 1) < 2:
         print("The run changed since the scan; the next sweep reads it again.")
         return 0
+    # Still red now? A fix pushed since the scan makes the revert needless.
+    latest = (api(f"repos/{repo}/actions/workflows/{run['workflow_id']}/runs?branch={item['default']}&event=push&status=completed&per_page=1")
+              or {}).get("workflow_runs") or []
+    if latest and latest[0].get("conclusion") == "success":
+        print("The default branch is green again since the scan; nothing is reverted.")
+        return 0
     if "reverted" in [l["name"] for l in pr.get("labels") or []] or issue_for(repo, item["sha"]):
         print("Already reverted.")
         return 0
@@ -689,7 +695,7 @@ def self_test():
     check("`locate` runs before any token for the repository", actjob.index("revert.py locate") < actjob.index("id: rerun") < actjob.index("id: revert"), True)
 
     # act, offline: a local repository in place of GitHub, gh and the API faked.
-    def act_offline(conflict=False, files=("src/a.txt",), kind="revert"):
+    def act_offline(conflict=False, files=("src/a.txt",), kind="revert", green_since=False):
         calls = []
         with tempfile.TemporaryDirectory() as base:
             src = os.path.join(base, "DiluxOne", "x")
@@ -711,7 +717,9 @@ def self_test():
             answers = {
                 "repositories/7": {"full_name": "DiluxOne/x", "name": "x", "default_branch": "main", "private": False},
                 "repos/DiluxOne/x/actions/runs/4": {"id": 4, "status": "completed", "conclusion": "failure", "run_attempt": 2,
-                                                    "head_sha": merge, "html_url": again["html_url"], "name": "Checks"},
+                                                    "head_sha": merge, "html_url": again["html_url"], "name": "Checks", "workflow_id": 99},
+                "repos/DiluxOne/x/actions/workflows/99/runs?branch=main&event=push&status=completed&per_page=1":
+                    {"workflow_runs": [{"conclusion": "success" if green_since else "failure"}]},
                 "repos/DiluxOne/x/pulls/12": {"number": 12, "title": pr["title"], "html_url": pr["url"], "labels": []},
                 f"repos/DiluxOne/x/commits/{merge}": {"parents": [{"sha": "p"}]},
                 "repos/DiluxOne/x/labels/revert": {"name": "revert"},
@@ -788,6 +796,8 @@ def self_test():
         check("scan: a repository without a policy of its own has the organisation's", repo_policy("DiluxOne/x", "main")["autopilot"], True)
     finally:
         globals()["api"] = saved_api
+    calls, pushed = act_offline(green_since=True)
+    check("act: green again since the scan, nothing is reverted", (pushed, any(c[0] == "gh" for c in calls)), (None, False))
     calls, pushed = act_offline(kind="rerun")
     gh_calls = [c[1:] for c in calls if c[0] == "gh"]
     check("act: a first red re-runs its failed jobs, and nothing else", (gh_calls, pushed), ([("api", "-X")], None))
