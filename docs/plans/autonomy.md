@@ -4,9 +4,9 @@ The work plan is the parent issue [#184](https://github.com/DiluxOne/.github/iss
 
 As of 2026-10-15
 
-The only human decision becomes accepting a well-formed issue; from there the change travels on its own to the merge, through verifiable gates that leave a record, unless the issue is marked critical.
+For a normal change, the only human decision becomes accepting a well-formed issue; from there it travels on its own to the merge, through verifiable gates that leave a record. A person still decides what is high risk or critical, an organisation decision (once, for every repository) and each release.
 
-**Update v2 (2026-10-15):** on 2026-10-15 one decision ended in 33 `accepted` labels added by hand. This part orders the model by decision, not by repository, and by type of change. It replaces whatever below contradicts it.
+**Update v2 (2026-10-15):** on 2026-10-15 one decision ended in 33 `accepted` labels added by hand. This part orders the model by decision, not by repository, and by type of change.
 
 ## Work plan
 
@@ -361,7 +361,7 @@ The base is there (autopilot, gates, receipts, lanes, packs per kind); what is m
 
 ## Today vs proposed
 
-Today a maintainer steps into five points of every change; with the proposed model, into one, plus releases and what is critical.
+Today a maintainer steps into five points of every change; with the proposed model, into one (accepting the issue), plus what the policy leaves to a person and releases.
 
 | Moment | Today | Proposed |
 | --- | --- | --- |
@@ -431,7 +431,7 @@ Everything stays in GitHub: comments, checks and labels (`accepted-by:policy`, `
 
 ## PRD, Spec and receipts
 
-The issue has two sections, each with its own hash: PRD and Spec. On merge, the bot stores a signed receipt in a branch nobody can touch. The PRD is frozen when the issue is accepted, the Spec when G3 passes, and the receipt records both hashes with the merge.
+The issue has two sections, each with its own hash: PRD and Spec. On merge, the bot stores a signed receipt in a branch only the bot can write to. The PRD is frozen when the issue is accepted, the Spec when G3 passes, and the receipt records both hashes with the merge.
 
 - **PRD:** a maintainer writes it (or an agent with them). On acceptance its hash is stored; if someone edits it later, the gate detects it and it has to be accepted again.
 - **Spec:** the agent completes it at G3 in the same issue. When G3 passes its hash is stored; if it changes, G3 runs again and it is recorded.
