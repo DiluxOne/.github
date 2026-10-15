@@ -1,0 +1,12 @@
+{
+  "name": "diluxone-design-lint",
+  "private": true,
+  "description": "stylelint, pinned, for the design systems' pattern rules (scripts/design-lint.py, plugin-checks-wp.yml).",
+  "type": "module",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "dependencies": {
+    "stylelint": "17.16.0"
+  }
+}

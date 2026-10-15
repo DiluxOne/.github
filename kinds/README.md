@@ -78,6 +78,13 @@ kind-settings:
   higher `Requires PHP` than the pack's minimum is checked from its own,
   with a warning, until it lowers it; a pull request that raises it above
   both the base's and the minimum fails.
+- What a screen looks like is not the kind's: it is the design system's
+  ([`design-systems/`](../design-systems/)), which a repository names in
+  `repos.yml` whatever its kind. Its pattern rules for CSS run in the
+  kind's checks all the same (`plugin-checks-wp.yml`,
+  `Design system (stylelint)`, [`scripts/design-lint.py`](../scripts/design-lint.py)):
+  a rule about how a screen looks goes into the system's `rules.yml`, not
+  into a pack's.
 
 **What a pack cannot do: choose the workflows.** GitHub resolves a
 `uses: owner/repo/.github/workflows/file.yml@ref` line before anything runs,

@@ -2,27 +2,37 @@
 # system (repos.yml, `design-system: wordpress-admin`), as data. Each rule:
 #
 #   id          kebab-case, unique
-#   type        pattern: a regular expression (Python's, comments left out of
-#               the code first) that finds the problem; review: what a person
-#               or the Claude review reads for, which no expression can
+#   type        pattern: a regular expression (Python's, in the part of its
+#               syntax JavaScript reads the same way, since stylelint runs it
+#               too; comments left out of the code first) that finds the
+#               problem; review: what a person or the Claude review reads
+#               for, which no expression can
 #   severity    error (a new or changed line must not do it), warning, notice
 #   applies-to  css, php (the templates) or any
 #   message     what is wrong and what to write instead
 #   source      where the rule comes from
+#   tokens      optional, a pattern rule's: the paths of tokens.json (a group
+#               or a token) whose values its message names, so a raw value
+#               found is told the token that holds it
 #   fixtures    a pattern rule's `fail` (code it must catch) and `pass` (the
 #               closest code it must not); scripts/design-tokens.py --test
-#               runs every one
+#               runs every one, and scripts/design-lint.py --test runs them
+#               through stylelint
 #
 # screens: the files that draw a screen, as regular expressions (Python's,
 # case ignored) on a changed file's path. When a pull request changes one,
 # the Claude review's brief carries this system's README, components and
 # rules (scripts/review-brief.sh), and the review holds those files to it.
 #
-# The Claude review reads this file when a pull request touches a screen;
-# until the stylelint rule does too (issue #77, the later issues), these are
-# also what a person and an agent writing a screen hold it to. A finding on
-# code a pull request did not touch is not the pull request's to fix: the
-# plugins move their raw values to the tokens in their own issues.
+# The Claude review reads this file when a pull request touches a screen.
+# The pattern rules that read CSS are also dist/stylelint.json, generated
+# (scripts/design-tokens.py build), which the plugins' checks run on the CSS
+# a pull request changes (plugin-checks-wp.yml, "Design system"): an `error`
+# on a line the pull request adds or changes fails it; anything else, and
+# whatever is on the lines it did not touch, is a warning. A finding on code
+# a pull request did not touch is not the pull request's to fix: the plugins
+# move their raw values to the tokens in their own issues.
+#
 screens:
   - '\.(?:css|scss|sass|less)$'
   - '(?:^|/)(?:admin|templates?|views?|partials)/.*\.php$'
@@ -39,6 +49,7 @@ rules:
       tokens follow the person's admin colour scheme; a typed value does not.
     source: "Issue #77: Offload's and Users+'s admin CSS repeat the WordPress palette as raw hex values"
     pattern: '(?:^|[{;])\s*(?!--)[a-z-]+\s*:[^;{}]*?(?:#[0-9a-fA-F]{3,8}\b|\brgba?\(|\bhsla?\()[^;{}]*[;}]'
+    tokens: [color]
     fixtures:
       fail:
         - ".diluxone-x-admin .card { color: #646970; }"
@@ -62,6 +73,7 @@ rules:
       screens stop matching.
     source: "Users+'s admin stylesheet (--du-1 to --du-6, --du-block); Offload's 20px and 15px are the values that fall outside it"
     pattern: '(?:^|[{;])\s*(?:margin|padding|gap|row-gap|column-gap)(?:-[a-z]+)*\s*:[^;{}]*?(?<![\w.-])-?(?:[1-9]\d*(?:\.\d+)?|0?\.\d+)(?:px|em|rem)\b[^;{}]*[;}]'
+    tokens: [space]
     fixtures:
       fail:
         - ".diluxone-x-admin .card { padding: 20px; }"
@@ -85,6 +97,7 @@ rules:
       `var(--dx-radius-pill)` or `var(--dx-radius-round)`.
     source: "Offload's and Users+'s admin CSS: 4, 6 and 8px, a pill and a disc, and 2, 3, 5, 11 and 13px once each"
     pattern: '(?:^|[{;])\s*border(?:-[a-z]+)*-radius\s*:[^;{}]*?(?<![\w.-])[1-9]\d*(?:px|%|em|rem)(?!\w)[^;{}]*[;}]'
+    tokens: [radius]
     fixtures:
       fail:
         - ".diluxone-x-admin .card { border-radius: 8px; }"
@@ -105,6 +118,7 @@ rules:
       never bold. The family is WordPress's and never set.
     source: "Offload's and Users+'s admin CSS: 11 to 18px for everything that is not a big number, 600 as the only heavy weight (Offload's four `bold` are the exception)"
     pattern: '(?:^|[{;])\s*(?:font-size\s*:[^;{}]*?\d(?:px|em|rem|pt)\b|font-weight\s*:\s*(?:bold|bolder|lighter|\d{3})\b|font-family\s*:)[^;{}]*[;}]'
+    tokens: [font.size, font.weight]
     fixtures:
       fail:
         - ".diluxone-x-admin h3 { font-size: 18px; }"

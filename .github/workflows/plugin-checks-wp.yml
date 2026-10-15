@@ -6,8 +6,10 @@ name: WordPress plugin checks (fast)
 # analysis, i18n, Plugin Check on
 # the shipped tree, the kind's review rules (what wordpress.org's review sends
 # back and Plugin Check misses: kinds/wordpress-plugin/rules.yml, run by
-# scripts/review-rules.php), readme/version alignment, and the version
-# markers against what was released (scripts/release-markers.sh). Opt-in:
+# scripts/review-rules.php), the CSS a pull request changes against the
+# design system repos.yml gives the repository (stylelint, from the system's
+# rules.yml: scripts/design-lint.py), readme/version alignment, and the
+# version markers against what was released (scripts/release-markers.sh). Opt-in:
 # the shipped translations complete, CodeQL, and a required plugin that
 # wordpress.org does not have yet, from the organisation (Plugin Check
 # needs it active). Each job is its own status check.
@@ -629,6 +631,54 @@ jobs:
           TREE: ${{ steps.tree.outputs.dir }}
           KIND: ${{ steps.kind.outputs.kind }}
         run: php .dx-central/scripts/review-rules.php --kind "$KIND" --repo . --tree "$TREE"
+
+  design-system:
+    name: Design system (stylelint)
+    # The CSS a pull request changes, against the design system repos.yml
+    # gives the repository (`design-system:`): the pattern rules of its
+    # rules.yml, as the stylelint configuration scripts/design-tokens.py
+    # generates from them (design-systems/<name>/dist/stylelint.json), or,
+    # for `local`, the repository's own docs/design-system/ read from the
+    # base branch. Run by scripts/design-lint.py with stylelint pinned in
+    # scripts/stylelint/package-lock.json, and nothing of the repository's
+    # own stylelint setup. An `error` rule on a line the pull request adds
+    # or changes fails; everything else is a warning, so no repository is
+    # held to what its files already had. For a repository with no design
+    # system, a pull request without CSS, and any event but a pull request,
+    # its steps after the checkout are skipped and the check passes. No
+    # secret.
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The merge commit and its base: the lines the pull request adds.
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref }}
+          path: .dx-central
+          persist-credentials: false
+      - name: Which design system, which CSS
+        id: plan
+        if: github.event_name == 'pull_request'
+        env:
+          REPO: ${{ github.event.repository.name }}
+        run: python3 .dx-central/scripts/design-lint.py plan --repo "$REPO"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.plan.outputs.run == 'true'
+        with:
+          node-version: '24'
+      - name: stylelint, as the lockfile pins it
+        if: steps.plan.outputs.run == 'true'
+        run: npm ci --prefix .dx-central/scripts/stylelint --ignore-scripts --no-audit --no-fund
+      - name: The changed CSS against the design system
+        if: steps.plan.outputs.run == 'true'
+        env:
+          REPO: ${{ github.event.repository.name }}
+        run: python3 .dx-central/scripts/design-lint.py check --repo "$REPO"
 
   translations:
     name: Translations complete (languages/*.po)

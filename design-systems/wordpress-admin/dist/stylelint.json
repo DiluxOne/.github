@@ -1,0 +1,248 @@
+{
+  "plugins": [
+    "./scripts/stylelint/design-system.mjs"
+  ],
+  "rules": {
+    "diluxone/design-system": [
+      true,
+      {
+        "system": "wordpress-admin",
+        "rules": [
+          {
+            "id": "colour-from-tokens",
+            "severity": "error",
+            "pattern": "(?:^|[{;])\\s*(?!--)[a-z-]+\\s*:[^;{}]*?(?:#[0-9a-fA-F]{3,8}\\b|\\brgba?\\(|\\bhsla?\\()[^;{}]*[;}]",
+            "message": "A colour is a token: `var(--dx-color-…)` (dist/tokens.css), never a hex, rgb() or hsl() value typed into a rule, not even as a var() fallback. The tokens follow the person's admin colour scheme; a typed value does not.",
+            "suggest": {
+              "#8c8f94": [
+                "--dx-color-wp-gray-30"
+              ],
+              "#3c434a": [
+                "--dx-color-wp-gray-70"
+              ],
+              "#f0f6fc": [
+                "--dx-color-wp-blue-0"
+              ],
+              "#c5d9ed": [
+                "--dx-color-wp-blue-5"
+              ],
+              "#135e96": [
+                "--dx-color-wp-blue-60"
+              ],
+              "#1d2327": [
+                "--dx-color-text",
+                "--dx-color-wp-gray-90"
+              ],
+              "#646970": [
+                "--dx-color-text-muted",
+                "--dx-color-wp-gray-50"
+              ],
+              "#50575e": [
+                "--dx-color-text-subtle",
+                "--dx-color-pill-off-text",
+                "--dx-color-wp-gray-60"
+              ],
+              "#dcdcde": [
+                "--dx-color-border",
+                "--dx-color-wp-gray-5"
+              ],
+              "#c3c4c7": [
+                "--dx-color-border-strong",
+                "--dx-color-wp-gray-10"
+              ],
+              "#f0f0f1": [
+                "--dx-color-border-soft",
+                "--dx-color-pill-off-background",
+                "--dx-color-wp-gray-2"
+              ],
+              "#ffffff": [
+                "--dx-color-surface",
+                "--dx-color-wp-white"
+              ],
+              "#f6f7f7": [
+                "--dx-color-surface-alt",
+                "--dx-color-wp-gray-0"
+              ],
+              "#2271b1": [
+                "--dx-color-accent",
+                "--dx-color-info",
+                "--dx-color-wp-blue-50"
+              ],
+              "#72aee6": [
+                "--dx-color-accent-light",
+                "--dx-color-wp-blue-20"
+              ],
+              "#9cbfdc": [
+                "--dx-color-accent-edge"
+              ],
+              "#00a32a": [
+                "--dx-color-success",
+                "--dx-color-wp-green-40"
+              ],
+              "#edfaef": [
+                "--dx-color-success-wash",
+                "--dx-color-wp-green-0"
+              ],
+              "#dba617": [
+                "--dx-color-warning",
+                "--dx-color-wp-yellow-30"
+              ],
+              "#fcf9e8": [
+                "--dx-color-warning-wash",
+                "--dx-color-wp-yellow-0"
+              ],
+              "#996800": [
+                "--dx-color-warning-text",
+                "--dx-color-wp-yellow-50"
+              ],
+              "#d63638": [
+                "--dx-color-error",
+                "--dx-color-wp-red-50"
+              ],
+              "#b32d2e": [
+                "--dx-color-error-strong",
+                "--dx-color-wp-red-60"
+              ],
+              "#fcf0f1": [
+                "--dx-color-error-wash",
+                "--dx-color-wp-red-0"
+              ],
+              "#8a2424": [
+                "--dx-color-error-text",
+                "--dx-color-wp-red-70"
+              ],
+              "#edf4f9": [
+                "--dx-color-info-wash",
+                "--dx-color-accent-wash"
+              ],
+              "#d6f2e4": [
+                "--dx-color-pill-on-background"
+              ],
+              "#0a5c3e": [
+                "--dx-color-pill-on-text"
+              ],
+              "#fdf0d5": [
+                "--dx-color-pill-pending-background"
+              ],
+              "#7a5200": [
+                "--dx-color-pill-pending-text"
+              ],
+              "#5b2a99": [
+                "--dx-color-pro"
+              ],
+              "#efe7fb": [
+                "--dx-color-pro-wash"
+              ]
+            }
+          },
+          {
+            "id": "space-from-tokens",
+            "severity": "warning",
+            "pattern": "(?:^|[{;])\\s*(?:margin|padding|gap|row-gap|column-gap)(?:-[a-z]+)*\\s*:[^;{}]*?(?<![\\w.-])-?(?:[1-9]\\d*(?:\\.\\d+)?|0?\\.\\d+)(?:px|em|rem)\\b[^;{}]*[;}]",
+            "message": "Margins, paddings and gaps are steps of the scale, `var(--dx-space-1)` to `var(--dx-space-6)` (4, 8, 12, 16, 24, 32px), and the room under a block is `var(--dx-space-block)`. A number of its own (20px, 15px) is how two screens stop matching.",
+            "suggest": {
+              "4px": [
+                "--dx-space-1"
+              ],
+              "8px": [
+                "--dx-space-2"
+              ],
+              "12px": [
+                "--dx-space-3"
+              ],
+              "16px": [
+                "--dx-space-4"
+              ],
+              "32px": [
+                "--dx-space-6"
+              ],
+              "24px": [
+                "--dx-space-block",
+                "--dx-space-5"
+              ],
+              "2px": [
+                "--dx-space-pill-block"
+              ],
+              "10px": [
+                "--dx-space-pill-inline"
+              ]
+            }
+          },
+          {
+            "id": "radius-from-tokens",
+            "severity": "warning",
+            "pattern": "(?:^|[{;])\\s*border(?:-[a-z]+)*-radius\\s*:[^;{}]*?(?<![\\w.-])[1-9]\\d*(?:px|%|em|rem)(?!\\w)[^;{}]*[;}]",
+            "message": "A corner is `var(--dx-radius-sm)` (4px, notices and fields), `var(--dx-radius-md)` (6px, cards and choices), `var(--dx-radius-lg)`, `var(--dx-radius-pill)` or `var(--dx-radius-round)`.",
+            "suggest": {
+              "4px": [
+                "--dx-radius-sm"
+              ],
+              "6px": [
+                "--dx-radius-md"
+              ],
+              "8px": [
+                "--dx-radius-lg"
+              ],
+              "100px": [
+                "--dx-radius-pill"
+              ],
+              "50%": [
+                "--dx-radius-round"
+              ]
+            }
+          },
+          {
+            "id": "type-from-tokens",
+            "severity": "warning",
+            "pattern": "(?:^|[{;])\\s*(?:font-size\\s*:[^;{}]*?\\d(?:px|em|rem|pt)\\b|font-weight\\s*:\\s*(?:bold|bolder|lighter|\\d{3})\\b|font-family\\s*:)[^;{}]*[;}]",
+            "message": "A font size is one of the scale, `var(--dx-font-size-tiny)` to `var(--dx-font-size-heading)` (11 to 18px); a weight is `var(--dx-font-weight-regular)` or `var(--dx-font-weight-semibold)`, never bold. The family is WordPress's and never set.",
+            "suggest": {
+              "11px": [
+                "--dx-font-size-tiny"
+              ],
+              "12px": [
+                "--dx-font-size-small"
+              ],
+              "13px": [
+                "--dx-font-size-help"
+              ],
+              "14px": [
+                "--dx-font-size-body"
+              ],
+              "15px": [
+                "--dx-font-size-title"
+              ],
+              "18px": [
+                "--dx-font-size-heading"
+              ],
+              "400": [
+                "--dx-font-weight-regular"
+              ],
+              "600": [
+                "--dx-font-weight-semibold"
+              ]
+            }
+          },
+          {
+            "id": "wordpress-breakpoints",
+            "severity": "warning",
+            "pattern": "@media[^{]*\\(\\s*(?:max|min)-width\\s*:\\s*(?!(?:782|960)px\\b)\\d",
+            "message": "Two breakpoints and no others, WordPress's own: 782px (the admin turns to touch) and 960px (the menu folds). A third number is a width where the plugin stops looking like the dashboard around it."
+          },
+          {
+            "id": "no-important",
+            "severity": "error",
+            "pattern": "!\\s*important",
+            "message": "No `!important`. A rule that loses is scoped under the plugin's wrapper class (`.diluxone-<slug>-admin .x`), which outweighs WordPress's own without forcing anything."
+          },
+          {
+            "id": "scoped-under-the-screen",
+            "severity": "error",
+            "pattern": "(?:^|[{},])\\s*\\.(?:nav-tab(?:-wrapper|-active)?|notice(?:-[a-z]+)?|wp-list-table|button(?:-primary|-secondary)?|card|form-table)\\b[^{},]*[{,]",
+            "message": "A WordPress class (.nav-tab, .notice, .wp-list-table, .button, .card, .form-table) is restyled only under the plugin's wrapper class: `.diluxone-<slug>-admin .nav-tab`, never `.nav-tab` on its own, which changes every other plugin's screen and WordPress's."
+          }
+        ]
+      }
+    ]
+  }
+}
