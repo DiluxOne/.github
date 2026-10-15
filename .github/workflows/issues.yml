@@ -4,7 +4,8 @@ name: Issues
 # DiluxOne repository calls (workflow-templates/issues.yml), at the moving
 # tag, job for job as the template (scripts/sync-repos.py check compares
 # them): the triage when an issue opens, the reproduction of a report the
-# triage calls a bug (or that a maintainer labels repro:run), and, when a
+# triage calls a bug (or that a maintainer labels repro:run; with no unit
+# tests here it ends green and the report waits for a person), and, when a
 # person accepts one, the Platform Project (#9, repos.yml), its assignee
 # (#73), the gate re-run on its pull requests, the PRD's seal, and the
 # autopilot (issue-triage.yml calls it). Most of this repository is a
