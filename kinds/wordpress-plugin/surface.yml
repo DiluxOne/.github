@@ -19,10 +19,12 @@ docs-paths:
   - readme.txt
 
 files: ["**/*.php"]
-# At the root only: a folder of that name deeper in the plugin is read.
+# Dependencies at any depth (a bundled library is not the plugin's surface);
+# tests and hidden folders at the root only, so a folder of that name deeper
+# in cannot hide surface.
 exclude:
-  - "vendor/**"
-  - "node_modules/**"
+  - "**/vendor/**"
+  - "**/node_modules/**"
   - "tests/**"
   - "test/**"
   - ".*/**"
@@ -69,6 +71,8 @@ surface:
         - base: "<?php\nregister_rest_route( 'dx/v1', '/items', array() );\n"
           head: "<?php\nregister_rest_route( 'dx/v1', '/items', array() );\nregister_rest_route( 'dx/v1', '/items/(?P<id>\\d+)', array() );\n"
       pass:
+        - path: includes/lib/vendor/x/rest.php
+          head: "<?php\nregister_rest_route( 'x/v1', '/y', array() );\n"
         - base: "<?php\nregister_rest_route( 'dx/v1', '/items', array( 'permission_callback' => '__return_true' ) );\n"
           head: "<?php\nregister_rest_route( 'dx/v1', '/items', array( 'permission_callback' => array( $this, 'can' ) ) );\n"
         - files:
