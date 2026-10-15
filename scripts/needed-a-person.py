@@ -206,7 +206,9 @@ def classify(pr, pol):
     # A bot's pull request a maintainer took over (no `autopilot` label) has no cap.
     capped = outside or (is_autopilot and "autopilot" in labels)
     size = capped and pol["max-lines"] > 0 and changed_lines(pr) > pol["max-lines"]
-    # A failing check the reasons above already explain is not a gate of its own.
+    # A failing check the reasons above already explain is not a gate of its
+    # own. Every gate is a check run of a workflow; the token reads no
+    # commit statuses.
     failing = []
     for commit in nodes(pr.get("commits")):
         rollup = ((commit.get("commit") or {}).get("statusCheckRollup") or {})
@@ -240,6 +242,9 @@ def needed(pr):
         merger = pr.get("mergedBy") or {}
         return "merged" if merger.get("__typename") == "User" else None
     if pr.get("state") != "OPEN" or pr.get("isDraft") or pr.get("autoMergeRequest"):
+        return None
+    # The autopilot is still working it until it hands it over.
+    if "autopilot" in labels and "needs-human" not in labels:
         return None
     # Waiting on a person: handed to one, or the machinery is done with it
     # (the review ran), or nothing automatic will look at it (a fork).
@@ -408,7 +413,6 @@ query($q: String!, $endCursor: String) {
       commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
         __typename
         ... on CheckRun { name conclusion }
-        ... on StatusContext { context state }
       } } } } } }
     } }
   }
@@ -440,7 +444,7 @@ def parse_search(out, q):
 
 def fetch(owner, now):
     since = (now - datetime.timedelta(days=7 * WEEKS)).strftime("%Y-%m-%d")
-    return search(f"org:{owner} is:pr is:merged merged:>={since}") + search(f"org:{owner} is:pr is:open draft:false")
+    return search(f"org:{owner} is:pr is:merged merged:>={since} -label:merged-by:policy") + search(f"org:{owner} is:pr is:open draft:false")
 
 
 def self_test():
@@ -489,6 +493,10 @@ def self_test():
     check("C1: a pull request waiting on a person is listed as waiting", "`Waits` (u-wait), waiting: outside author" in digest([waiting], pol, now), True)
     queued = dict(waiting, autoMergeRequest={"enabledAt": fx["now"]})
     check("C1: one set to merge on its own is not waiting", "Waits" in digest([queued], pol, now), False)
+    working = pr(cases["protected path"], url="u-working", title="Working", mergedAt=None, mergedBy=None, state="OPEN")
+    check("C1: one the autopilot still works is not waiting", "Working" in digest([working], pol, now), False)
+    handed = dict(working, labels={"nodes": [{"name": "autopilot"}, {"name": "needs-human"}]})
+    check("C1: one the autopilot handed to a person is waiting", "`Working` (u-working), waiting: protected path" in digest([handed], pol, now), True)
     check("C1: an empty week says so", "Nothing in the organisation was merged by a person" in digest([], pol, now), True)
 
     tricky = pr(cases["no reason recorded"], url="u-tricky", title="Ping @someone, see [x](http://e) `a`")
