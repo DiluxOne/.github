@@ -97,7 +97,10 @@ if [ "${1:-}" = --test ]; then
   printf '      - run: rsync -a --exclude-from=.distignore --exclude=build ./ "build/$SLUG/"\n' > "$t/wf/old.yml"
   ok "the lint catches staging into build/"         '! lint_workflows "$t/wf" >/dev/null'
   ok "C1/C2/C3: no workflow stages in the checkout" 'lint_workflows "$here/../.github/workflows"'
-  ok "the checks stage with this script"            '[ "$(grep -c "scripts/stage-plugin.sh" "$here/../.github/workflows/plugin-checks-wp.yml")" -ge 5 ]'
+  # Its calls, not its mentions: syntax, i18n, Plugin Check, review rules
+  # and translations each stage with it.
+  call='bash .dx-central/scripts/stage-plugin.sh "$SLUG")'
+  ok "the five checks stage with this script"       '[ "$(grep -cF "$call" "$here/../.github/workflows/plugin-checks-wp.yml")" -eq 5 ]'
   exit "$fail"
 fi
 
