@@ -96,7 +96,7 @@ lanes:
     description: An issue a person accepted, worked by the autopilot (#83) to a merged pull request unless it is marked Critical or touches the protected paths.
     accept: human
     repositories: ["*"]
-    merge: {max-risk: high, max-complexity: high}
+    merge: {max-risk: medium, max-complexity: high}
 
   # Mechanical sync pull requests (#155): the Task issue and the pull request
   # scripts/sync-repos.py opens in a repository (`files`, `callers`) to bring
