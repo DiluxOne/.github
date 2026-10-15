@@ -72,6 +72,8 @@ AI_LINE = autopilot.AI_LINE
 RED = ("failure", "timed_out")
 WAIT = "<!-- dx-revert-wait -->"
 RUNS_READ = 100
+# Where `act` clones from; the self-test points it at a local repository.
+GIT_BASE = "https://github.com/"
 
 
 # --- the decision, pure -----------------------------------------------------
@@ -331,6 +333,13 @@ def write_summary(text):
             fh.write(text + "\n")
 
 
+def plan_item(action, repo, run, pr):
+    """One item of the plan: numbers only. A job's outputs are dropped when
+    they hold a masked value, and a private repository's details stay out of
+    this public repository's logs; `act` reads the rest again."""
+    return {"kind": action, "repo_id": int(repo["id"]), "run_id": int(run["id"]), "pr": int(pr["number"])}
+
+
 def mask(repo):
     """This repository is public, and so are its logs: a private repository's
     name never shows in them."""
@@ -388,10 +397,7 @@ def scan():
                 if action == "revert":
                     reverting.add(run["head_sha"])
                 if action in ("rerun", "revert"):
-                    # Numbers only: a job's outputs are dropped when they hold
-                    # a masked value, and a private repository's details stay
-                    # out of the plan; `act` reads the rest again.
-                    plan.append({"kind": action, "repo_id": r["id"], "run_id": run["id"], "pr": pr["number"]})
+                    plan.append(plan_item(action, r, run, pr))
         except (RuntimeError, KeyError, ValueError) as e:
             say("every workflow", "not read", str(e)[:200])
     write_output("plan", json.dumps(plan, separators=(",", ":")))
@@ -426,8 +432,9 @@ def ensure_label(repo, name):
     try:
         api(f"repos/{repo}/labels/{name}")
         return
-    except RuntimeError:
-        pass
+    except RuntimeError as e:
+        if "404" not in str(e) and "Not Found" not in str(e):
+            raise
     spec = next((l for l in autonomy.read_yaml(os.path.join(HERE, "..", "labels.yml")) if l.get("name") == name), {})
     gh("label", "create", name, "--repo", repo, "--color", spec.get("color", "B60205"), "--description", spec.get("description", ""))
 
@@ -478,7 +485,7 @@ def act():
         env = dict(os.environ, GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="http.https://github.com/.extraheader",
                    GIT_CONFIG_VALUE_0=f"AUTHORIZATION: basic {auth}", GIT_TERMINAL_PROMPT="0")
         git = lambda *a, check=True: subprocess.run(["git", "-C", work] + list(a), env=env, capture_output=True, text=True, check=check)
-        subprocess.run(["git", "clone", "-q", "--filter=blob:none", "--branch", item["default"], f"https://github.com/{repo}", work],
+        subprocess.run(["git", "clone", "-q", "--filter=blob:none", "--branch", item["default"], f"{GIT_BASE}{repo}", work],
                        env=env, capture_output=True, text=True, check=True)
         git("config", "user.name", BOT)
         git("config", "user.email", BOT_EMAIL)
@@ -502,8 +509,12 @@ def act():
         except (RuntimeError, subprocess.CalledProcessError) as e:
             # The issue stays, and stops the next sweep from trying again:
             # it says what failed and who does what.
-            gh("issue", "comment", issue, "--repo", repo, "--body", by_hand_comment(item, "the revert pull request could not be opened"))
-            raise RuntimeError(f"the revert pull request could not be opened: {str(e)[:200]}")
+            try:
+                gh("issue", "comment", issue, "--repo", repo, "--body",
+                   by_hand_comment(item, f"the revert pull request could not be opened (the branch `{name}` may hold the revert)"))
+            except RuntimeError as c:
+                print(f"::warning::The issue could not say so either: {str(c)[:200]}")
+            raise RuntimeError(f"the revert pull request could not be opened: {str(e)[:200]}") from e
     gh("pr", "edit", str(item["pr"]), "--repo", repo, "--add-label", "reverted")
     # The cause is the original issue's: it opens again for the autopilot or a person.
     try:
@@ -638,6 +649,89 @@ def self_test():
     check("a merge of anything else is dilux-bot's", cannot_push(["README.md", "src/a.php"]), None)
     check("never twice: the issue that names the merge is found", already_issue([{"number": 3, "body": "x"}, {"number": 9, "body": "Merge: `abc123`"}], "abc123"), 9)
     check("never twice: none names it", already_issue([{"number": 3, "body": "x"}], "abc123"), None)
+
+    # The plan and the act job never carry a repository's name (#142's local review).
+    pi = plan_item("revert", {"id": 7, "name": "secret", "full_name": "DiluxOne/secret"}, again, pr)
+    check("the plan holds numbers only", (sorted(pi), all(isinstance(pi[k], int) for k in ("repo_id", "run_id", "pr"))), (["kind", "pr", "repo_id", "run_id"], True))
+    ror = open(os.path.join(HERE, "..", ".github", "workflows", "revert-on-red.yml"), encoding="utf-8").read()
+    actjob = ror[ror.index("\n  act:"):]
+    check("the act job reads no name from the plan", re.search(r"matrix\.item\.(repo|name|private)\b", actjob), None)
+    check("the act job's tokens are for the repository `locate` named", actjob.count("repositories: ${{ steps.where.outputs.name }}"), 2)
+    check("`locate` runs before any token for the repository", actjob.index("revert.py locate") < actjob.index("id: rerun") < actjob.index("id: revert"), True)
+
+    # act, offline: a local repository in place of GitHub, gh and the API faked.
+    def act_offline(conflict=False, files=("src/a.txt",)):
+        calls = []
+        with tempfile.TemporaryDirectory() as base:
+            src = os.path.join(base, "DiluxOne", "x")
+            sh = lambda *a: subprocess.run(["git", "-C", src] + list(a), capture_output=True, text=True, check=True).stdout.strip()
+            os.makedirs(os.path.join(src, "src"))
+            subprocess.run(["git", "init", "-q", "-b", "main", src], check=True)
+            sh("config", "user.name", "t")
+            sh("config", "user.email", "t@example.com")
+            open(os.path.join(src, "src", "a.txt"), "w").write("one\n")
+            sh("add", "-A")
+            sh("commit", "-q", "-m", "first")
+            open(os.path.join(src, "src", "a.txt"), "w").write("two\n")
+            sh("commit", "-q", "-am", "fix(sync): retry once (#12)")
+            merge = sh("rev-parse", "HEAD")
+            if conflict:
+                open(os.path.join(src, "src", "a.txt"), "w").write("three\n")
+                sh("commit", "-q", "-am", "later")
+            sh("switch", "-q", "-c", "elsewhere")  # main is not checked out: a push to a branch of it is accepted
+            answers = {
+                "repositories/7": {"full_name": "DiluxOne/x", "name": "x", "default_branch": "main", "private": False},
+                "repos/DiluxOne/x/actions/runs/4": {"id": 4, "status": "completed", "conclusion": "failure", "run_attempt": 2,
+                                                    "head_sha": merge, "html_url": again["html_url"], "name": "Checks"},
+                "repos/DiluxOne/x/pulls/12": {"number": 12, "title": pr["title"], "html_url": pr["url"], "labels": []},
+                f"repos/DiluxOne/x/commits/{merge}": {"parents": [{"sha": "p"}]},
+                "repos/DiluxOne/x/labels/revert": {"name": "revert"},
+                "repos/DiluxOne/x/labels/reverted": {"name": "reverted"},
+            }
+
+            def fake_api(path, *args):
+                calls.append(("api", path))
+                return answers[path]
+
+            def fake_lines(path, jq):
+                calls.append(("lines", path))
+                if "/jobs" in path:
+                    return ['"checks / PHP 8.3"']
+                if "/issues?" in path:
+                    return []
+                return list(files)
+
+            def fake_gh(*args, input_text=None):
+                calls.append(("gh",) + args[:2])
+                return "https://github.com/DiluxOne/x/issues/40\n" if args[:2] == ("issue", "create") else "{}"
+
+            saved = {k: globals()[k] for k in ("api", "api_lines", "gh", "GIT_BASE")}
+            env = {k: os.environ.get(k) for k in ("ITEM", "GH_TOKEN", "DX_AUTOPILOT")}
+            globals().update(api=fake_api, api_lines=fake_lines, gh=fake_gh, GIT_BASE=base + os.sep)
+            os.environ.update(ITEM=json.dumps({"kind": "revert", "repo_id": 7, "run_id": 4, "pr": 12}), GH_TOKEN="t", DX_AUTOPILOT="")
+            try:
+                act()
+            finally:
+                globals().update(saved)
+                for k, v in env.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+            pushed = subprocess.run(["git", "-C", src, "log", "-1", "--format=%s", "revert/40-fix-sync-retry-once"], capture_output=True, text=True)
+            return calls, (pushed.stdout.strip() if pushed.returncode == 0 else None)
+
+    calls, pushed = act_offline()
+    gh_calls = [c[1:] for c in calls if c[0] == "gh"]
+    check("act: the revert is pushed on its branch", pushed, "revert: fix(sync): retry once")
+    check("act: the issue, then the pull request, then `reverted`", [c for c in gh_calls if c in (("issue", "create"), ("pr", "create"), ("pr", "edit"))],
+          [("issue", "create"), ("pr", "create"), ("pr", "edit")])
+    calls, pushed = act_offline(conflict=True)
+    gh_calls = [c[1:] for c in calls if c[0] == "gh"]
+    check("act: a revert that does not apply opens the issue alone", (pushed, ("issue", "create") in gh_calls, ("issue", "comment") in gh_calls, ("pr", "create") in gh_calls), (None, True, True, False))
+    calls, pushed = act_offline(files=("src/a.txt", ".github/workflows/ci.yml"))
+    gh_calls = [c[1:] for c in calls if c[0] == "gh"]
+    check("act: a merge that changed workflow files opens the issue alone", (pushed, ("issue", "create") in gh_calls, ("pr", "create") in gh_calls), (None, True, False))
 
     # The workflows that apply it.
     am = open(os.path.join(HERE, "..", ".github", "workflows", "auto-merge.yml"), encoding="utf-8").read()
