@@ -48,6 +48,13 @@ jobs:
         # issue's text and always stay on GitHub's fresh runners, and so does
         # the wake-up of the VM (#154), which cannot wait for the VM it starts.
         run: python3 scripts/runner-route.py check
+      - name: No merge-conflict markers
+        # A rebase resolved by hand can leave a conflict's markers (diff3's
+        # base section among them) in a file that still parses (#152).
+        run: |
+          if git grep -nE '^(<{7}|[|]{7}|>{7})( |$)' -- .; then
+            echo "::error::merge-conflict markers are committed (above)"; exit 1
+          fi
 
   scripts:
     name: Scripts (self-tests)
