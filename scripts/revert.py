@@ -6,11 +6,17 @@ is reverted, unless the red is a flaky job.
                           workflow whose runs on the default branch went red,
                           the run where the red began, the pull request whose
                           merge it ran on, and what to do. Writes the plan (a
-                          JSON list, `plan=` to GITHUB_OUTPUT) and a report
-                          (GITHUB_STEP_SUMMARY, and stdout)
-  revert.py act           one item of the plan (ITEM, JSON): re-run the failed
-                          jobs once, or open the Bug issue and the revert pull
-                          request and label the original `reverted`
+                          JSON list of numbers only, `plan=` to GITHUB_OUTPUT)
+                          and a report (GITHUB_STEP_SUMMARY, and stdout) that
+                          counts a private repository without naming it
+  revert.py locate        the name of a plan item's repository (ITEM, JSON),
+                          masked when private, as `name=` to GITHUB_OUTPUT
+  revert.py act           one item of the plan (ITEM): re-run the failed jobs
+                          once, or open the Bug issue and the revert pull
+                          request and label the original `reverted` (a merge
+                          that does not revert cleanly, or that changed
+                          workflow files, gets the issue alone, saying who
+                          does what)
   revert.py decide        whether a revert pull request merges on its own
                           (within the `platform` lane); prints why; exit 0
                           when it may
@@ -189,7 +195,7 @@ def issue_body(item):
 - **Failing run:** {item['run_url']} ({item['workflow']}: {jobs})
 - **Original pull request:** {item['pr_url']}, whose head passed the same checks.
 
-dilux-bot opens a pull request that reverts the merge and closes this issue. It goes through the gates like any change and merges on its own only within the `{LANE}` lane of policy/autonomy.yml; otherwise this issue says who does what. Fixing the cause is the original issue's, reopened.
+dilux-bot reverts the merge in a pull request that closes this issue, or says below why a person does. The revert goes through the gates like any change and merges on its own only within the `{LANE}` lane of policy/autonomy.yml; otherwise this issue says who does what. Fixing the cause is the original issue's, reopened.
 
 {AI_LINE}"""
 
@@ -219,12 +225,25 @@ Approve and merge {pr_url}
 {AI_LINE}"""
 
 
-def conflict_comment(item):
-    return f"""**The merge could not be reverted cleanly** on today's default branch: later changes touch the same lines. Nothing was opened; a person reverts it by hand.
+def by_hand_comment(item, why):
+    return f"""**dilux-bot did not open the revert:** {why}. A person reverts it by hand.
 
 Revert #{item['pr']} by hand: {item['pr_url']}
 
 {AI_LINE}"""
+
+
+def cannot_push(files):
+    """Why dilux-bot cannot push the revert itself, or None: the App may not
+    change workflow files (it has no `workflows` permission)."""
+    wf = [f for f in files if f.startswith(".github/workflows/")]
+    return f"the merge changed workflow files ({', '.join(wf[:3])}), which dilux-bot may not change" if wf else None
+
+
+def already_issue(issues, sha):
+    """The number of the issue among `issues` (number, body) that names this
+    merge commit, or None."""
+    return next((i["number"] for i in issues if sha in (i.get("body") or "")), None)
 
 
 def report_line(item_label, workflow, verdict, why, run_url=None):
@@ -243,6 +262,11 @@ def gh(*args, input_text=None):
 
 def api(path, *args):
     return json.loads(gh("api", path, *args) or "null")
+
+
+def api_lines(path, jq):
+    """Every page of a list, one line per item as `jq` prints it."""
+    return [l for l in gh("api", "--paginate", path, "--jq", jq).split("\n") if l]
 
 
 def repo_policy(repo, default):
@@ -269,24 +293,27 @@ def find_pr(repo, sha, default):
 
 
 def checks_at(repo, sha):
-    """{check name: success, or the first conclusion that is not}."""
+    """{check name: success, or the first conclusion that is not}, every page."""
     out = {}
-    for c in (api(f"repos/{repo}/commits/{sha}/check-runs?filter=latest&per_page=100") or {}).get("check_runs") or []:
-        name, concl = c.get("name"), c.get("conclusion") or c.get("status")
+    for line in api_lines(f"repos/{repo}/commits/{sha}/check-runs?filter=latest&per_page=100",
+                          '.check_runs[] | [.name, (.conclusion // .status)] | @json'):
+        name, concl = json.loads(line)
         if out.get(name, "success") == "success":
             out[name] = concl
     return out
 
 
 def failed_jobs(repo, run_id):
-    jobs = (api(f"repos/{repo}/actions/runs/{run_id}/jobs?filter=latest&per_page=100") or {}).get("jobs") or []
-    return [j["name"] for j in jobs if j.get("conclusion") in RED]
+    return [json.loads(l) for l in api_lines(f"repos/{repo}/actions/runs/{run_id}/jobs?filter=latest&per_page=100",
+                                             '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | .name | @json')]
 
 
 def issue_for(repo, sha):
-    q = f"repo:{repo} is:issue author:app/dilux-bot {sha} in:body"
-    items = (api("search/issues", "-X", "GET", "-f", f"q={q}") or {}).get("items") or []
-    return items[0]["number"] if items else None
+    """The Bug issue dilux-bot opened for this merge, from the issue list (not
+    the search, which lags): every issue labelled `revert` it opened."""
+    issues = [json.loads(l) for l in api_lines(f"repos/{repo}/issues?state=all&labels=revert&creator={BOT}&per_page=100",
+                                               'map(select(.pull_request == null) | {number, body}) | .[] | @json')]
+    return already_issue(issues, sha)
 
 
 def write_output(key, value):
@@ -304,6 +331,13 @@ def write_summary(text):
             fh.write(text + "\n")
 
 
+def mask(repo):
+    """This repository is public, and so are its logs: a private repository's
+    name never shows in them."""
+    print(f"::add-mask::{repo['full_name']}")
+    print(f"::add-mask::{repo['name']}")
+
+
 def scan():
     head = "## Red default branches (G8)\n"
     org = autonomy.merge(autonomy.load(os.environ.get("ORG_AUTONOMY") or os.path.join(HERE, "..", "policy", "autonomy.yml")), {})
@@ -313,107 +347,132 @@ def scan():
         write_summary(f"{head}\nNothing is re-run or reverted: {why}.")
         return 0
     lines, plan = [], []
-    repos = []
-    page = 1
-    while True:
-        got = api(f"installation/repositories?per_page=100&page={page}") or {}
-        repos += got.get("repositories") or []
-        if len(got.get("repositories") or []) < 100:
-            break
-        page += 1
+    repos = [json.loads(l) for l in api_lines("installation/repositories?per_page=100", ".repositories[] | @json")]
     for r in repos:
         if r.get("archived") or r.get("disabled"):
             continue
         full, default, private = r["full_name"], r.get("default_branch") or "main", bool(r.get("private"))
         if private:
-            # This repository is public, and so are its logs.
-            print(f"::add-mask::{full}")
-            print(f"::add-mask::{r['name']}")
-        label = "A private repository" if private else full
+            mask(r)
+        say = lambda workflow, verdict, why, url=None: lines.append(
+            f"- **A private repository**: {verdict}." if private else report_line(full, workflow, verdict, why, url))
         try:
             why = stopped(os.environ.get("DX_AUTOPILOT", ""), repo_policy(full, default))
             if why:
-                lines.append(report_line(label, "every workflow", "skipped", why))
+                say("every workflow", "skipped", why)
                 continue
             runs = (api(f"repos/{full}/actions/runs?branch={default}&event=push&per_page={RUNS_READ}") or {}).get("workflow_runs") or []
             groups = {}
             for run in runs:
                 if run.get("head_branch") == default:
                     groups.setdefault(run["workflow_id"], []).append(run)
-            seen = set()
+            reverting = set()
             for wruns in groups.values():
                 workflow = wruns[0].get("name") or "a workflow"
                 state, run, why = pick(wruns)
-                url = None if private else (run or {}).get("html_url")
                 if state == "flaky?":
                     first = (api(f"repos/{full}/actions/runs/{run['id']}/attempts/1") or {}).get("conclusion")
                     if flaky(first):
-                        lines.append(report_line(label, workflow, "flaky", "it failed, then passed when re-run; nothing is reverted", url))
+                        say(workflow, "flaky", "it failed, then passed when re-run; nothing is reverted", run["html_url"])
                     continue
-                if state == "none" and run is None and why.startswith("red"):
-                    lines.append(report_line(label, workflow, "left alone", why))
-                if state != "red" or run["head_sha"] in seen:
+                if state == "none" and why.startswith("red"):
+                    say(workflow, "left alone", why)
+                if state != "red":
                     continue
-                seen.add(run["head_sha"])
                 pr = find_pr(full, run["head_sha"], default)
                 failed = failed_jobs(full, run["id"])
                 action, why = assess(run, pr, failed, checks_at(full, pr["head_sha"]) if pr else {})
+                if action == "revert" and (run["head_sha"] in reverting or issue_for(full, run["head_sha"])):
+                    action, why = assess(run, pr, failed, {}, already=True)
+                say(workflow, {"none": "left alone", "rerun": "re-run", "revert": "reverted"}[action], why, run["html_url"])
                 if action == "revert":
-                    n = issue_for(full, run["head_sha"])
-                    if n:
-                        action, why = assess(run, pr, failed, {}, already=True)
-                lines.append(report_line(label, workflow, {"none": "left alone", "rerun": "re-run", "revert": "reverted"}[action], why, url))
+                    reverting.add(run["head_sha"])
                 if action in ("rerun", "revert"):
-                    plan.append({"kind": action, "repo": full, "name": r["name"], "private": private, "default": default,
-                                 "run_id": run["id"], "run_url": run["html_url"], "run_attempt": int(run.get("run_attempt") or 1),
-                                 "workflow": workflow, "sha": run["head_sha"], "failed": failed,
-                                 "pr": pr["number"], "pr_title": pr["title"], "pr_url": pr["url"]})
+                    # Numbers only: a job's outputs are dropped when they hold
+                    # a masked value, and a private repository's details stay
+                    # out of the plan; `act` reads the rest again.
+                    plan.append({"kind": action, "repo_id": r["id"], "run_id": run["id"], "pr": pr["number"]})
         except (RuntimeError, KeyError, ValueError) as e:
-            lines.append(report_line(label, "every workflow", "not read", str(e)[:200] if not private else "the API failed"))
+            say("every workflow", "not read", str(e)[:200])
     write_output("plan", json.dumps(plan, separators=(",", ":")))
     write_summary(head + "\n" + ("\n".join(lines) if lines else "Every default branch read is green, or red before any merge seen here."))
     return 0
 
 
+def locate():
+    """The plan's repository, by its id: its name for the next steps' token,
+    masked first when it is private."""
+    item = json.loads(os.environ["ITEM"])
+    r = api(f"repositories/{item['repo_id']}")
+    if r.get("private"):
+        mask(r)
+    write_output("name", r["name"])
+    return 0
+
+
+def read_item(plan_item):
+    """Everything the texts need, read again with the repository's own token."""
+    r = api(f"repositories/{plan_item['repo_id']}")
+    repo = r["full_name"]
+    run = api(f"repos/{repo}/actions/runs/{plan_item['run_id']}")
+    pr = api(f"repos/{repo}/pulls/{plan_item['pr']}")
+    return repo, run, pr, {
+        "repo": repo, "default": r.get("default_branch") or "main", "sha": run["head_sha"], "run_url": run["html_url"],
+        "workflow": run.get("name") or "a workflow", "failed": failed_jobs(repo, run["id"]),
+        "pr": pr["number"], "pr_title": pr.get("title", ""), "pr_url": pr["html_url"]}
+
+
 def ensure_label(repo, name):
-    have = {l["name"] for l in api(f"repos/{repo}/labels?per_page=100")}
-    if name in have:
+    try:
+        api(f"repos/{repo}/labels/{name}")
         return
+    except RuntimeError:
+        pass
     spec = next((l for l in autonomy.read_yaml(os.path.join(HERE, "..", "labels.yml")) if l.get("name") == name), {})
     gh("label", "create", name, "--repo", repo, "--color", spec.get("color", "B60205"), "--description", spec.get("description", ""))
 
 
+def open_issue(repo, item, tmp, comment=None):
+    body = os.path.join(tmp, "issue.md")
+    with open(body, "w", encoding="utf-8") as fh:
+        fh.write(issue_body(item))
+    issue = gh("issue", "create", "--repo", repo, "--title", issue_title(item), "--body-file", body, "--label", "revert").strip().rsplit("/", 1)[-1]
+    try:
+        gh("api", "-X", "PATCH", f"repos/{repo}/issues/{issue}", "-f", "type=Bug")
+    except RuntimeError as e:
+        print(f"::warning::The issue's Type was not set: {str(e)[:200]}")
+    if comment:
+        gh("issue", "comment", issue, "--repo", repo, "--body", comment)
+    return issue
+
+
 def act():
-    item = json.loads(os.environ["ITEM"])
-    repo = item["repo"]
+    plan_item = json.loads(os.environ["ITEM"])
     if (os.environ.get("DX_AUTOPILOT", "") or "").strip().lower() == "off":
         print("Nothing is done: the organisation's DX_AUTOPILOT is off.")
         return 0
-    if item["kind"] == "rerun":
-        gh("api", "-X", "POST", f"repos/{repo}/actions/runs/{item['run_id']}/rerun-failed-jobs")
+    repo, run, pr, item = read_item(plan_item)
+    if plan_item["kind"] == "rerun":
+        gh("api", "-X", "POST", f"repos/{repo}/actions/runs/{run['id']}/rerun-failed-jobs")
         print("The failed jobs run again; the next sweep reads their verdict.")
         return 0
     # Read again: nothing changed since the scan?
-    run = api(f"repos/{repo}/actions/runs/{item['run_id']}")
     if run.get("status") != "completed" or run.get("conclusion") not in RED or int(run.get("run_attempt") or 1) < 2:
         print("The run changed since the scan; the next sweep reads it again.")
         return 0
-    pr = api(f"repos/{repo}/pulls/{item['pr']}")
     if "reverted" in [l["name"] for l in pr.get("labels") or []] or issue_for(repo, item["sha"]):
         print("Already reverted.")
         return 0
     for name in ("revert", "reverted"):
         ensure_label(repo, name)
+    files = api_lines(f"repos/{repo}/commits/{item['sha']}", ".files[] | .filename, (.previous_filename // empty)")
     with tempfile.TemporaryDirectory() as tmp:
-        body = os.path.join(tmp, "issue.md")
-        with open(body, "w", encoding="utf-8") as fh:
-            fh.write(issue_body(item))
-        url = gh("issue", "create", "--repo", repo, "--title", issue_title(item), "--body-file", body).strip()
-        issue = url.rsplit("/", 1)[-1]
-        try:
-            gh("api", "-X", "PATCH", f"repos/{repo}/issues/{issue}", "-f", "type=Bug")
-        except RuntimeError as e:
-            print(f"::warning::The issue's Type was not set: {str(e)[:200]}")
+        cannot = cannot_push(files)
+        if cannot:
+            issue = open_issue(repo, item, tmp, by_hand_comment(item, cannot))
+            print(f"The revert is a person's: the issue (#{issue}) says why.")
+            return 0
+        # The revert first, on a branch of its own; the issue only once it applies.
         work = os.path.join(tmp, "repo")
         auth = base64.b64encode(f"x-access-token:{os.environ['GH_TOKEN']}".encode()).decode()
         env = dict(os.environ, GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="http.https://github.com/.extraheader",
@@ -424,32 +483,39 @@ def act():
         git("config", "user.name", BOT)
         git("config", "user.email", BOT_EMAIL)
         parents = len(api(f"repos/{repo}/commits/{item['sha']}").get("parents") or [])
-        name = branch(issue, item["pr_title"])
-        git("switch", "-q", "-c", name)
         mainline = ["-m", "1"] if parents > 1 else []
         if git("revert", "--no-edit", "--no-commit", *mainline, item["sha"], check=False).returncode != 0:
             git("revert", "--abort", check=False)
-            gh("issue", "comment", issue, "--repo", repo, "--body", conflict_comment(item))
-            print("The merge does not revert cleanly; the issue says so.")
+            issue = open_issue(repo, item, tmp, by_hand_comment(item, "it does not revert cleanly on today's default branch: later changes touch the same lines"))
+            print(f"The merge does not revert cleanly; the issue (#{issue}) says so.")
             return 0
         title = revert_title(item["pr_title"])
         git("commit", "-q", "-m", title, "-m", f"This reverts commit {item['sha']} (#{item['pr']}): the default branch went red after it merged.")
-        git("push", "-q", "origin", f"HEAD:refs/heads/{name}")
-        pbody = os.path.join(tmp, "pr.md")
-        with open(pbody, "w", encoding="utf-8") as fh:
-            fh.write(pr_body(item, issue))
-        gh("pr", "create", "--repo", repo, "--base", item["default"], "--head", name, "--title", title, "--body-file", pbody, "--label", "revert")
+        issue = open_issue(repo, item, tmp)
+        try:
+            name = branch(issue, item["pr_title"])
+            git("push", "-q", "origin", f"HEAD:refs/heads/{name}")
+            pbody = os.path.join(tmp, "pr.md")
+            with open(pbody, "w", encoding="utf-8") as fh:
+                fh.write(pr_body(item, issue))
+            gh("pr", "create", "--repo", repo, "--base", item["default"], "--head", name, "--title", title, "--body-file", pbody, "--label", "revert")
+        except (RuntimeError, subprocess.CalledProcessError) as e:
+            # The issue stays, and stops the next sweep from trying again:
+            # it says what failed and who does what.
+            gh("issue", "comment", issue, "--repo", repo, "--body", by_hand_comment(item, "the revert pull request could not be opened"))
+            raise RuntimeError(f"the revert pull request could not be opened: {str(e)[:200]}")
     gh("pr", "edit", str(item["pr"]), "--repo", repo, "--add-label", "reverted")
     # The cause is the original issue's: it opens again for the autopilot or a person.
     try:
         closed = json.loads(gh("pr", "view", str(item["pr"]), "--repo", repo, "--json", "closingIssuesReferences"))
         for ref in closed.get("closingIssuesReferences") or []:
-            n = str(ref["number"])
-            gh("issue", "reopen", n, "--repo", repo, "--comment", f"Reopened: #{item['pr']} is reverted (#{issue}), the default branch went red after it merged.\n\n{AI_LINE}")
+            gh("issue", "reopen", str(ref["number"]), "--repo", repo, "--comment",
+               f"Reopened: #{item['pr']} is reverted (#{issue}), the default branch went red after it merged.\n\n{AI_LINE}")
     except RuntimeError as e:
         print(f"::warning::The original issue was not reopened: {str(e)[:200]}")
     print(f"The revert is open; it closes #{issue}.")
     return 0
+
 
 
 # --- the self-test ----------------------------------------------------------
@@ -566,7 +632,12 @@ def self_test():
     wc = wait_comment(why, "https://github.com/DiluxOne/diluxone-offload-wordpress/pull/41")
     check("C4: its issue shows the action and its URL", "Approve and merge https://github.com/DiluxOne/diluxone-offload-wordpress/pull/41" in wc, True)
     check("C4: and why it waits", why in wc, True)
-    check("C4: a revert that does not apply says who does what", f"Revert #12 by hand: {pr['url']}" in conflict_comment(item), True)
+    bh = by_hand_comment(item, "it does not revert cleanly")
+    check("C4: a revert that does not apply says why and who does what", ("it does not revert cleanly" in bh, f"Revert #12 by hand: {pr['url']}" in bh), (True, True))
+    check("a merge that changed workflow files is a person's revert", bool(cannot_push(["README.md", ".github/workflows/ci.yml"])), True)
+    check("a merge of anything else is dilux-bot's", cannot_push(["README.md", "src/a.php"]), None)
+    check("never twice: the issue that names the merge is found", already_issue([{"number": 3, "body": "x"}, {"number": 9, "body": "Merge: `abc123`"}], "abc123"), 9)
+    check("never twice: none names it", already_issue([{"number": 3, "body": "x"}], "abc123"), None)
 
     # The workflows that apply it.
     am = open(os.path.join(HERE, "..", ".github", "workflows", "auto-merge.yml"), encoding="utf-8").read()
@@ -585,6 +656,8 @@ def main(argv):
         return self_test()
     if mode == "scan":
         return scan()
+    if mode == "locate":
+        return locate()
     if mode == "act":
         return act()
     if mode == "decide":

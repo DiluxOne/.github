@@ -216,6 +216,7 @@ jobs:
           elif why=$(python3 "$RUNNER_TEMP/central/scripts/revert.py" decide); then
             ok=true
           fi
+          why=${why:-the G8 decision could not be made}
           if [ "$ok" = true ]; then
             body=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq .body | tr -d '\r')
             gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --auto --squash --body "$body"

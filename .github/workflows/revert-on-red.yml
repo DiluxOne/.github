@@ -14,12 +14,16 @@ name: Revert on red
 #   - the first red: its failed jobs run again, once (actions: write). The
 #     next sweep reads the verdict: green, and the report says it was flaky
 #     and nothing is reverted; red again, and the red holds;
-#   - a red that holds: a Bug issue linking the merge, the failing run and
-#     the original pull request; a pull request `revert: <original title>`
-#     on a `revert/<issue>-…` branch, labelled `revert`, closing that issue;
-#     the label `reverted` on the original pull request; and its closed
-#     issues reopened, since the cause is still theirs. A merge that no
-#     longer reverts cleanly gets the issue alone, saying who does what.
+#   - a red that holds: the revert, committed first; then a Bug issue
+#     (labelled `revert`) linking the merge, the failing run and the
+#     original pull request; a pull request `revert: <original title>` on a
+#     `revert/<issue>-…` branch, labelled `revert`, closing that issue; the
+#     label `reverted` on the original pull request; and its closed issues
+#     reopened, since the cause is still theirs. A merge that does not
+#     revert cleanly, or that changed workflow files (the App may not push
+#     them), gets the issue alone, saying who does what; so does a revert
+#     whose pull request could not be opened. That issue is what stops the
+#     next sweep from trying again.
 # Nothing is reverted twice, a revert's own merge never, and nothing with
 # DX_AUTOPILOT=off or the autopilot off in the policy (the run says why).
 # The revert then goes through the gates like any change: the organisation's
@@ -97,17 +101,27 @@ jobs:
       matrix:
         item: ${{ fromJSON(needs.scan.outputs.plan) }}
     steps:
-      - name: Keep a private repository's name out of the log
-        env:
-          FULL: ${{ matrix.item.repo }}
-          NAME: ${{ matrix.item.name }}
-          PRIVATE: ${{ matrix.item.private }}
-        run: |
-          if [ "$PRIVATE" = true ]; then echo "::add-mask::$FULL"; echo "::add-mask::$NAME"; fi
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # The plan carries numbers only: the repository's name comes from its
+      # id, masked before anything prints it when the repository is private.
+      - name: dilux-bot token (metadata, every repository)
+        id: meta
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-metadata: read
+
+      - name: The repository
+        id: where
+        env:
+          GH_TOKEN: ${{ steps.meta.outputs.token }}
+          ITEM: ${{ toJSON(matrix.item) }}
+        run: python3 scripts/revert.py locate
 
       - name: dilux-bot token (re-run, this repository)
         id: rerun
@@ -117,8 +131,9 @@ jobs:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: ${{ matrix.item.name }}
+          repositories: ${{ steps.where.outputs.name }}
           permission-actions: write
+          permission-pull-requests: read
 
       - name: dilux-bot token (revert, this repository)
         id: revert
@@ -128,7 +143,7 @@ jobs:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: ${{ matrix.item.name }}
+          repositories: ${{ steps.where.outputs.name }}
           permission-actions: read
           permission-contents: write
           permission-issues: write
