@@ -38,6 +38,19 @@ name: Issue accepted
 # #84), gets its receipt when it closes as completed, as an accepted one
 # does. Other lanes' issues are not sealed and get none yet.
 #
+# When a lane's label (`lane:<name>`) is added to an issue, by a person or a
+# bot, the `lane` job asks the autonomy policy whether that lane accepts it
+# now (scripts/autonomy.py lane-announce, policy/autonomy.yml at
+# `central-ref`, the repository's own .github/autonomy.yml stricter only). A
+# lane a person accepts, or one whose own workflow labels its issues
+# (platform, bugfix-reproduced), is left alone. For a sync lane it says so on the issue, in
+# one comment kept up to date that links the policy at the commit it read,
+# and adds `accepted-by:policy` when the lane accepts it (removes it when
+# not), which is what the weekly "Decided by policy" issue lists. It decides
+# nothing the gate relies on: the pull request's gate asks the policy again
+# (scripts/issue-gate.sh). This is how a sync run's issue (lane org-sync,
+# #155, opened by scripts/sync-repos.py) is accepted when it is opened.
+#
 #   on:
 #     issues:
 #       types: [labeled, closed]
@@ -428,6 +441,78 @@ jobs:
           git push -q origin "$branch"
           pr=$(gh pr create --repo "$GITHUB_REPOSITORY" --base "$BASE" --head "$branch" --title "$title" --body "$(jq -r .body "$RUNNER_TEMP/plan.json")")
           say "**The release pull request:** $pr. It goes through the checks and the review like any other; merging it publishes $version to $where, after the release workflow checks that a person accepted this issue and that its title still names $version."
+
+  lane:
+    name: Accepted by policy
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    # A lane's label added to an issue: whether its lane accepts it, as the
+    # header says. Reads with the caller's token (the issue, and the run
+    # that opened a platform lane's issue); writes the label and the comment
+    # with the bot's.
+    if: github.event_name == 'issues' && github.event.action == 'labeled' && startsWith(github.event.label.name, 'lane:')
+    permissions:
+      actions: read # the workflow run a lane's issue names
+      issues: read
+    steps:
+      # The commit first, then the files at that commit: the link the
+      # comment gives is the policy that decided.
+      - name: The autonomy policy and its script
+        id: central
+        env:
+          REF: ${{ inputs.central-ref }}
+        run: |
+          set -euo pipefail
+          sha=$(git ls-remote https://github.com/DiluxOne/.github "$REF" "$REF^{}" | tail -1 | cut -f1)
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::$REF is not a ref of DiluxOne/.github."; exit 1; }
+          mkdir -p .dx-central/scripts .dx-central/policy
+          base="https://raw.githubusercontent.com/DiluxOne/.github/$sha"
+          for f in scripts/autonomy.py policy/autonomy.yml; do curl -fsSL --retry 3 "$base/$f" -o ".dx-central/$f"; done
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: dilux-bot token
+        id: bot
+        continue-on-error: true
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-issues: write
+          permission-contents: read # the repository's own .github/autonomy.yml
+
+      - name: Ask the policy, and say so on the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BOT_TOKEN: ${{ steps.bot.outputs.token }}
+          NUMBER: ${{ github.event.issue.number }}
+          LANE: ${{ github.event.label.name }}
+          DX_AUTOPILOT: ${{ vars.DX_AUTOPILOT }}
+          POLICY_SHA: ${{ steps.central.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "$BOT_TOKEN" ]; then echo "No bot key: the policy's verdict would go nowhere, so it is not asked."; exit 0; fi
+          # The repository's own policy, from its default branch, stricter
+          # only: missing is none; unreadable stops here rather than reads as none.
+          if ! GH_TOKEN=$BOT_TOKEN gh api "repos/$GITHUB_REPOSITORY/contents/.github/autonomy.yml" -H "Accept: application/vnd.github.raw" > "$RUNNER_TEMP/repo-autonomy.yml" 2> "$RUNNER_TEMP/err"; then
+            grep -q "404" "$RUNNER_TEMP/err" || { echo "::error::Could not read .github/autonomy.yml: $(head -c 300 "$RUNNER_TEMP/err")"; exit 1; }
+            : > "$RUNNER_TEMP/repo-autonomy.yml"
+          fi
+          REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml" python3 .dx-central/scripts/autonomy.py lane-announce > "$RUNNER_TEMP/verdict.json"
+          act=$(jq -r .act "$RUNNER_TEMP/verdict.json")
+          if [ "$act" = skip ]; then echo "$LANE: a person accepts this lane's issues; nothing to say."; exit 0; fi
+          text=$(jq -r .comment "$RUNNER_TEMP/verdict.json")
+          echo "$text"
+          export GH_TOKEN=$BOT_TOKEN
+          if [ "$act" = accept ]; then
+            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label accepted-by:policy >/dev/null
+          else
+            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label accepted-by:policy >/dev/null 2>&1 || true
+          fi
+          body="<!-- dx-lane-verdict -->"$'\n'"$text"$'\n\n'"🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '.[] | select(.user.type == "Bot" and (.user.login | startswith("dilux-bot")) and (.body | startswith("<!-- dx-lane-verdict -->"))) | .id' | tail -1)
+          if [ -n "$id" ]; then gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$body" >/dev/null
+          else gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$body" >/dev/null; fi
 
   project:
     name: The product's Project

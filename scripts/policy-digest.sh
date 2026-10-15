@@ -59,6 +59,8 @@ if [ "${1:-}" = --test ]; then
   m='{"url":"u9","title":"merged one","repository":{"nameWithOwner":"DiluxOne/.github"}}'
   got=$(digest "$a" "$m" "$pub" d)
   check "both sections: the second heading starts its own line" "$(grep -c '^\*\*merged-by:policy\*\*$' <<<"$got")" 1
+  sync='{"url":"u3","title":"Keep the organisation'"'"'s shared files in step","repository":{"nameWithOwner":"DiluxOne/diluxone-offload-wordpress"}}'
+  check "a sync run's issue the org-sync lane accepted is listed (#155)" "$(digest "$sync" "" "$pub" d | grep -c "shared files in step (u3)")" 1
   check "an empty week says so" "$(digest "" "" "$pub" 2026-10-04)" "Nothing in a public repository was accepted or merged by policy since 2026-10-04."
   [ "$fail" = 0 ] && echo "all tests passed"
   exit "$fail"

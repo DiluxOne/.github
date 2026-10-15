@@ -40,6 +40,18 @@ name: Auto-merge
 # otherwise its issue says why it waits and the action with its URL, in one
 # comment kept up to date.
 #
+# A pull request that closes one issue of a sync lane (org-sync, #155: the
+# Task issue scripts/sync-repos.py opens) is decided by the autonomy policy
+# as well (scripts/autonomy.py lane-merge): the lane accepts the issue and
+# the pull request (opened by the run's account, from its branch, only the
+# files it wrote); every file is what the commit of DiluxOne/.github the
+# issue names holds (CODEOWNERS as repos.yml, AGENTS.md's dx:org block, each
+# caller job a template's job but the repository's own inputs); no job
+# changes its permissions or the secrets it passes (high risk: a person);
+# the review does not block, its description is true, and risk and
+# complexity are within the lane's caps. It is labelled `merged-by:policy`.
+# Never in DiluxOne/.github, and nothing while DX_AUTOPILOT is off.
+#
 # The dilux-bot App enables it, so the resulting push to main triggers the
 # post-merge workflows (a GITHUB_TOKEN merge would not).
 #
@@ -249,8 +261,59 @@ jobs:
             GH_TOKEN="$ISSUE_TOKEN" gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body "$comment" >/dev/null
           fi
 
-      - name: Enable or disable
+      # A sync run's pull request (lane org-sync, #155: scripts/sync-repos.py
+      # opened it and its issue) is decided by the autonomy policy too
+      # (scripts/autonomy.py lane-merge): the lane accepts its issue, it
+      # changes only what the run wrote, every file is what the commit of
+      # DiluxOne/.github its issue names holds, no job changes its
+      # permissions or secrets, the review does not block and its
+      # description is true, within the lane's caps. Any other pull request
+      # goes on to the usual decision.
+      - name: A sync run's pull request
+        id: lane
         if: steps.autopilot.outputs.handled != 'true' && steps.revert.outputs.handled != 'true'
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          PR: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CENTRAL_REF: ${{ inputs.central-ref }}
+          DX_AUTOPILOT: ${{ vars.DX_AUTOPILOT }}
+          RISK: ${{ inputs.risk }}
+          COMPLEXITY: ${{ inputs.complexity }}
+          BLOCKING: ${{ inputs.blocking }}
+          DESCRIPTION_OK: ${{ inputs.description-ok }}
+        run: |
+          set -euo pipefail
+          issues=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences --jq '[.closingIssuesReferences[].number] | join(" ")')
+          if [ "$(wc -w <<<"$issues")" -ne 1 ]; then echo "handled=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          # Only an issue with a lane's label is worth asking the policy about.
+          lanes=$(gh issue view "$issues" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(startswith("lane:"))] | length' 2>/dev/null || echo 0)
+          if [ "$lanes" = 0 ]; then echo "handled=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          git clone -q --depth 1 --branch "$CENTRAL_REF" https://github.com/DiluxOne/.github "$RUNNER_TEMP/central"
+          gh api "repos/$GITHUB_REPOSITORY/contents/.github/autonomy.yml?ref=$BASE_SHA" --jq .content 2>/dev/null | base64 -d > "$RUNNER_TEMP/repo-autonomy.yml" || : > "$RUNNER_TEMP/repo-autonomy.yml"
+          rc=0
+          why=$(NUMBER=$issues REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml" python3 "$RUNNER_TEMP/central/scripts/autonomy.py" lane-merge) || rc=$?
+          if [ "$rc" = 2 ]; then echo "handled=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          echo "handled=true" >> "$GITHUB_OUTPUT"
+          # Off first: whatever the verdict, nothing stays set to merge from before.
+          gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --disable-auto >/dev/null 2>&1 || true
+          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label merged-by:policy >/dev/null 2>&1 || true
+          if [ "$rc" = 0 ]; then
+            body=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq .body | tr -d '\r')
+            gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --auto --squash --body "$body"
+            gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label merged-by:policy >/dev/null
+            echo "Auto-merge enabled by policy: $why."
+          elif [ "$rc" = 1 ]; then
+            echo "A human merges this one: $why."
+          else
+            echo "::error::The lane's decision failed (exit $rc); a human merges this one."; exit 1
+          fi
+
+      - name: Enable or disable
+        if: steps.autopilot.outputs.handled != 'true' && steps.revert.outputs.handled != 'true' && steps.lane.outputs.handled != 'true'
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           PR: ${{ github.event.pull_request.number }}
