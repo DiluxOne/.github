@@ -79,6 +79,7 @@ jobs:
       - run: python3 scripts/surface.py --test
       - run: bash scripts/triage-reply.sh --test
       - run: bash scripts/required-plugins.sh --test
+      - run: bash scripts/stage-plugin.sh --test
       - run: bash scripts/triage-act.sh --test
       - run: bash scripts/repro-trigger.sh --test
       - run: bash scripts/triage-brief.sh --test

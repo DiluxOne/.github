@@ -26,7 +26,9 @@ name: WordPress plugin checks (fast)
 #
 # The calling repository provides composer scripts `test:unit`, `lint`,
 # `stan` and `psalm:taint`, a `.distignore` listing what never ships, and a
-# `readme.txt`.
+# `readme.txt`. The shipped tree every job reads is the checkout minus that
+# `.distignore` (scripts/stage-plugin.sh), staged outside the checkout: a
+# `build/` the plugin commits ships unless the `.distignore` lists it.
 #
 #   jobs:
 #     checks:
@@ -112,6 +114,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The organisation's staging script alone (scripts/stage-plugin.sh).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref }}
+          path: .dx-central
+          persist-credentials: false
+          sparse-checkout: scripts/stage-plugin.sh
+          sparse-checkout-cone-mode: false
       - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
           php-version: ${{ matrix.php }}
@@ -123,9 +134,8 @@ jobs:
         env:
           SLUG: ${{ inputs.slug }}
         run: |
-          mkdir -p "build/$SLUG"
-          rsync -a --exclude-from=.distignore --exclude=build ./ "build/$SLUG/"
-          find "build/$SLUG" -type f -name '*.php' -print0 | xargs -0 -n1 php -l >/dev/null
+          tree=$(bash .dx-central/scripts/stage-plugin.sh "$SLUG")
+          find "$tree" -type f -name '*.php' -print0 | xargs -0 -n1 php -l >/dev/null
 
   unit:
     name: PHP ${{ matrix.php }} unit tests
@@ -196,6 +206,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The organisation's staging script alone (scripts/stage-plugin.sh).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref }}
+          path: .dx-central
+          persist-credentials: false
+          sparse-checkout: scripts/stage-plugin.sh
+          sparse-checkout-cone-mode: false
       - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
           php-version: '8.5'
@@ -213,17 +232,17 @@ jobs:
           sudo install -m 0755 "$RUNNER_TEMP/wp" /usr/local/bin/wp
           wp --version
       - name: Build the shipped tree
+        id: tree
         env:
           SLUG: ${{ inputs.slug }}
-        run: |
-          mkdir -p "build/$SLUG"
-          rsync -a --exclude-from=.distignore --exclude=build ./ "build/$SLUG/"
+        run: tree=$(bash .dx-central/scripts/stage-plugin.sh "$SLUG") && echo "dir=$tree" >> "$GITHUB_OUTPUT"
       - name: Extract strings; any warning fails
         env:
           SLUG: ${{ inputs.slug }}
+          TREE: ${{ steps.tree.outputs.dir }}
         run: |
           set +e
-          out=$(wp i18n make-pot "build/$SLUG" "build/$SLUG.pot" --slug="$SLUG" --domain="$SLUG" 2>&1); status=$?
+          out=$(wp i18n make-pot "$TREE" "$TREE.pot" --slug="$SLUG" --domain="$SLUG" 2>&1); status=$?
           set -e
           echo "$out"
           [ "$status" -eq 0 ] || exit "$status"
@@ -231,7 +250,7 @@ jobs:
             echo "::error::wp i18n make-pot reported warnings (missing translator comments, dynamic domains, concatenated strings)."
             exit 1
           fi
-          count=$(grep -c '^msgid "' "build/$SLUG.pot" || true)
+          count=$(grep -c '^msgid "' "$TREE.pot" || true)
           [ "$count" -gt 1 ] || { echo "::error::No translatable strings extracted."; exit 1; }
           echo "Extracted $count strings."
 
@@ -362,11 +381,10 @@ jobs:
           EVENT: ${{ github.event_name }}
         run: bash .dx-central/scripts/kind.sh
       - name: Build the shipped tree (what wordpress.org receives)
+        id: tree
         env:
           SLUG: ${{ inputs.slug }}
-        run: |
-          mkdir -p "build/$SLUG"
-          rsync -a --exclude-from=.distignore --exclude=build --exclude=.dx-central ./ "build/$SLUG/"
+        run: tree=$(bash .dx-central/scripts/stage-plugin.sh "$SLUG") && echo "dir=$tree" >> "$GITHUB_OUTPUT"
       # A required plugin wordpress.org does not have: mounted from the
       # required-plugins job (a skipped job here would pass the check).
       - name: The required plugins arrived
@@ -394,7 +412,10 @@ jobs:
         with:
           # Checking the built tree, not the repository, means no exclude
           # lists to keep in sync: only what ships is checked.
-          build-dir: build/${{ inputs.slug }}
+          # It is staged outside the checkout, under the runner's temporary
+          # folder (scripts/stage-plugin.sh): the plugin's own build/ ships
+          # unless its .distignore says otherwise (#172).
+          build-dir: ${{ steps.tree.outputs.dir }}
           slug: ${{ inputs.slug }}
           # From the pack (kinds/<kind>/pack.yml, `settings.plugin-check`):
           # strict fails on every warning, as the reviewer does; the codes
@@ -439,16 +460,15 @@ jobs:
           php-version: '8.5'
           coverage: none
       - name: Build the shipped tree (what wordpress.org receives)
+        id: tree
         env:
           SLUG: ${{ inputs.slug }}
-        run: |
-          mkdir -p "build/$SLUG"
-          rsync -a --exclude-from=.distignore --exclude=build --exclude=.dx-central ./ "build/$SLUG/"
+        run: tree=$(bash .dx-central/scripts/stage-plugin.sh "$SLUG") && echo "dir=$tree" >> "$GITHUB_OUTPUT"
       - name: Check the rules
         env:
-          SLUG: ${{ inputs.slug }}
+          TREE: ${{ steps.tree.outputs.dir }}
           KIND: ${{ steps.kind.outputs.kind }}
-        run: php .dx-central/scripts/review-rules.php --kind "$KIND" --repo . --tree "build/$SLUG"
+        run: php .dx-central/scripts/review-rules.php --kind "$KIND" --repo . --tree "$TREE"
 
   translations:
     name: Translations complete (languages/*.po)
@@ -464,6 +484,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The organisation's staging script alone (scripts/stage-plugin.sh).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref }}
+          path: .dx-central
+          persist-credentials: false
+          sparse-checkout: scripts/stage-plugin.sh
+          sparse-checkout-cone-mode: false
       - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
           php-version: '8.5'
@@ -493,9 +522,8 @@ jobs:
             echo "::error::translations-complete is on and languages/ has no .po file to check."
             exit 1
           fi
-          mkdir -p "build/$SLUG"
-          rsync -a --exclude-from=.distignore --exclude=build ./ "build/$SLUG/"
-          wp i18n make-pot "build/$SLUG" "build/$SLUG.pot" --slug="$SLUG" --domain="$SLUG" >/dev/null
+          tree=$(bash .dx-central/scripts/stage-plugin.sh "$SLUG")
+          wp i18n make-pot "$tree" "$tree.pot" --slug="$SLUG" --domain="$SLUG" >/dev/null
           fail=0
           for po in "${files[@]}"; do
             # As it is: parses, and nothing fuzzy or untranslated.
@@ -504,7 +532,7 @@ jobs:
             # not is untranslated here (no fuzzy matching: a guess is not a
             # translation).
             merged=$(mktemp)
-            msgmerge --quiet --no-fuzzy-matching --no-wrap -o "$merged" "$po" "build/$SLUG.pot"
+            msgmerge --quiet --no-fuzzy-matching --no-wrap -o "$merged" "$po" "$tree.pot"
             now=$(msgfmt --statistics -o /dev/null "$merged" 2>&1)
             printf '%-40s %s | against the code: %s\n' "$po" "$own" "$now"
             case "$own $now" in
@@ -539,12 +567,12 @@ jobs:
       - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           upload: never
-          output: build/codeql
+          output: ${{ runner.temp }}/codeql
       - name: Any result fails
         run: |
           set -euo pipefail
           count=0
-          for sarif in build/codeql/*.sarif; do
+          for sarif in "$RUNNER_TEMP"/codeql/*.sarif; do
             jq -r '.runs[] | .results[]? | "::error file=\(.locations[0].physicalLocation.artifactLocation.uri // ""),line=\(.locations[0].physicalLocation.region.startLine // 1),title=CodeQL \(.ruleId)::\(.message.text | gsub("\n"; " "))"' "$sarif"
             count=$((count + $(jq '[.runs[] | .results[]?] | length' "$sarif")))
           done
