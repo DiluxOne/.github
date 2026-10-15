@@ -418,7 +418,8 @@ def job_differences(name, want, have, owned, central=False):
     """What a caller's job does other than its template's, as phrases."""
     found = []
     w, h = split_uses(want.get("uses")), split_uses(have.get("uses"), central)
-    if not h or h[0] != w[0] or (h[1] is not None and h[1] != w[1]):
+    if (not w or not h) and want.get("uses") != have.get("uses") or \
+            w and h and (h[0] != w[0] or (h[1] is not None and h[1] != w[1])):
         found.append(f"calls `{have.get('uses')}`, not `{want.get('uses')}`")
     # A job of the repository's own may join what a template's job waits
     # for (a suite of its own whose failure the weekly issue reports too).
@@ -471,20 +472,23 @@ def callers_drift(files, conf, central=False):
     return out
 
 
-def caller_lines(drifted):
-    """The drift check's lines for callers_drift()'s result."""
+def caller_lines(drifted, central=False):
+    """The drift check's lines for callers_drift()'s result. DiluxOne/.github
+    brings its own callers in step by hand (sync_callers() skips it)."""
     lines = []
+    fix = "by hand, in a pull request here" if central else "`sync-repos.py callers`"
     for name, path, found in drifted:
         for f in found:
             if path:
-                lines.append(f"`{path}` {f} of `workflow-templates/{name}` (`sync-repos.py callers`)")
+                lines.append(f"`{path}` {f} of `workflow-templates/{name}` ({fix})")
             else:
                 lines.append(f"{f}: add it from the template (docs/adopting.md)")
     return lines
 
 
 # Rewriting a caller: job by job, on the text, so that the repository's
-# header, triggers, comments and jobs of its own stay as they are.
+# header, triggers and jobs of its own stay as they are; a job it rewrites
+# takes the template's text, comments included.
 
 JOB_RE = re.compile(r"^  ([A-Za-z0-9_-]+):\s*(#.*)?$")
 KEY_RE = re.compile(r"^    ([A-Za-z0-9_-]+):")
@@ -606,7 +610,8 @@ def rewrite_caller(text, template_text, owned):
         keep = job in have and set(needs_of(data_theirs[job])) <= set(needs_of(data_mine.get(job) or {}))
         new = merged_job(lines, have.get(job, []), owned, fallback, keep)
         if new is None:
-            missing += [k for k in owned if k in (data_theirs[job].get("with") or {})]
+            given = (data_mine.get(job) or {}).get("with") or {}
+            missing += [k for k in owned if k in (data_theirs[job].get("with") or {}) and k not in given and k not in fallback]
             continue
         while new and not new[0].strip():
             new.pop(0)
@@ -838,7 +843,8 @@ def drift(repo, conf, labels, block, current=0):
             # At an older major the migration rewrites every caller; compared
             # once it is on the current one.
             try:
-                found += caller_lines(callers_drift(files, conf, central=repo["name"] == ".github"))
+                central = repo["name"] == ".github"
+                found += caller_lines(callers_drift(files, conf, central), central)
             except ValueError as exc:  # a workflow that does not parse is reported, not skipped
                 found.append(f"its workflow callers could not be compared: {str(exc)[:200]}")
         for w, r in pinned_calls(texts):
@@ -951,6 +957,11 @@ def callers_test(check, conf):
     local = comments.replace("DiluxOne/.github/.github/workflows/review-reply.yml@v5", "./.github/workflows/review-reply.yml")
     check("callers: in DiluxOne/.github a local call is the same workflow",
           callers_drift({**c2, ".github/workflows/pull-request-comments.yml": local}, conf, central=True) == [], "")
+    check("callers: DiluxOne/.github's own lines say by hand, not `callers` (which skips it)",
+          "by hand" in caller_lines(callers_drift(files, conf, True), True)[0] and "`sync-repos.py callers`" not in caller_lines(callers_drift(files, conf, True), True)[0], "")
+    odd = dict(jobs_of(parse_yaml(issues))["triage"], uses="./local.yml")
+    check("callers: a template job with no shared `uses:` is compared as text, not a crash",
+          job_differences("x", odd, dict(odd, uses="./other.yml"), set()) == ["job `x` calls `./other.yml`, not `./local.yml`"] and job_differences("x", odd, odd, set()) == [], "")
     check("callers: elsewhere a local call is not", callers_drift({**c2, ".github/workflows/pull-request-comments.yml": local}, conf) != [], "")
     # The rewrite: only what differs, the repository's values and jobs kept.
     new, missing = rewrite_caller(old, issues, set(owned["issues.yml"]))
@@ -973,6 +984,10 @@ def callers_test(check, conf):
     check("rewrite: an input to fill in that the repository never gives stops it",
           rewrite_caller(bare.replace("  triage:", "  triaged:"), issues, set(owned["issues.yml"])) == (None, ["support-url"]),
           rewrite_caller(bare.replace("  triage:", "  triaged:"), issues, set(owned["issues.yml"])))
+    two = issues.replace("    with:\n      support-url: https://example.com/support\n", "")
+    named_only = two.replace("  repro-triaged:", "  repro-mine:")
+    got = rewrite_caller(named_only.replace("  triage:", "  triaged:"), two.replace("trigger: triage", "trigger: triage\n      support-url: x"), {"support-url", "trigger"})
+    check("rewrite: the inputs it says are missing are only those no job gives", got == (None, ["support-url"]), got)
     # C3: `callers` against a stand-in for gh: one issue (Task), one pull
     # request closing it, the caller in it with the repository's support URL.
     calls, written = [], {}
