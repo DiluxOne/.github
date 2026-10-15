@@ -240,8 +240,9 @@ def sync_callers(repo, conf, dry):
             notes.append(f"no caller of workflow-templates/{name}: add it from the template by hand (docs/adopting.md)")
             continue
         text = open(os.path.join(TEMPLATES, name), encoding="utf-8").read()
-        new, missing = rewrite_caller(files[path], text, set(owned.get(name) or []))
-        left = [f for n, p, f in callers_drift({**files, path: new}, conf) if p == path] if new else []
+        # A file that is the caller of two templates takes both rewrites.
+        new, missing = rewrite_caller(wanted.get(path, files[path]), text, set(owned.get(name) or []))
+        left = [f for n, p, f in callers_drift({**files, path: new}, conf) if p == path and n == name] if new else []
         if new is None:
             notes.append(f"{path}: no job of the repository gives {', '.join(missing)}; bring it in step by hand")
         elif left:
@@ -545,8 +546,12 @@ def merged_job(template_lines, have_lines, owned, fallback, keep_needs=False):
     out = list(template_lines)
     have_keys = keyed(have_lines, KEY_RE, 4)
     keys = keyed(out, KEY_RE, 4)
-    if keep_needs and "needs" in keys and "needs" in have_keys:
-        (s, e), (a, b) = keys["needs"], have_keys["needs"]
+    if keep_needs and "needs" in have_keys:
+        a, b = have_keys["needs"]
+        if "needs" in keys:
+            s, e = keys["needs"]
+        else:  # the template's job waits for nothing: the repository's own go right under its name
+            s = e = next(i for i, l in enumerate(out) if JOB_RE.match(l)) + 1
         out[s:e] = have_lines[a:b]
     have_inputs = {}
     if "with" in have_keys:
@@ -980,6 +985,10 @@ def callers_test(check, conf):
     check("rewrite: a job's own inputs and its own `needs` survive the template's job",
           fixed is not None and callers_drift({**c2, ".github/workflows/plugin-checks.yml": fixed}, conf) == []
           and "main-file: mine.php" in fixed and "slug: mine" in fixed and "coverage" in fixed, fixed)
+    waits = comments.replace("  reply:\n", "  reply:\n    needs: [mine]\n").replace("    secrets: inherit", "    secrets:\n      DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}")
+    fixed, _ = rewrite_caller(waits, comments, set(owned["pull-request-comments.yml"]))
+    check("rewrite: a job's own `needs` stays where the template's job waits for nothing",
+          fixed is not None and "    needs: [mine]\n" in fixed and "secrets: inherit" in fixed, fixed)
     bare = old.replace("    with:\n      support-url: https://wordpress.org/support/plugin/mine/\n", "")
     check("rewrite: an input to fill in that the repository never gives stops it",
           rewrite_caller(bare.replace("  triage:", "  triaged:"), issues, set(owned["issues.yml"])) == (None, ["support-url"]),
@@ -1043,6 +1052,21 @@ def callers_test(check, conf):
     check("C3 (#150): the caller in it has repro-triaged and keeps the repository's support URL",
           branch == "ci/7-org-workflow-callers" and "  repro-triaged:" in content and "support-url: https://wordpress.org/support/plugin/mine/" in content, written)
     check("C3 (#150): a caller in step is not rewritten", ".github/workflows/pull-request-comments.yml" not in written, sorted(written))
+    # One file that is the caller of two templates gets both rewrites.
+    reply = comments[comments.index("\njobs:\n") + len("\njobs:\n"):].replace("    secrets: inherit", "    secrets:\n      DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}")
+    files.clear()
+    files[".github/workflows/all.yml"] = old.rstrip("\n") + "\n\n" + reply
+    calls.clear()
+    written.clear()
+    globals()["gh"], ORG = fake, "o"
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            sync_callers({"name": "r", "defaultBranchRef": {"name": "main"}}, conf, False)
+    finally:
+        globals()["gh"], ORG = saved_gh, saved_org
+    both = written.get(".github/workflows/all.yml", ("", ""))[1]
+    check("callers: a file that is the caller of two templates takes both rewrites",
+          "  repro-triaged:" in both and "  reply:" in both and callers_drift({".github/workflows/all.yml": both}, conf) == [], both)
 
 
 def self_test():
