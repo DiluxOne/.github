@@ -47,7 +47,7 @@ permissions: {}
 jobs:
   assignee:
     name: Issue assignee
-    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.pull_request && github.event.issue.user.login == 'dilux-bot[bot]')) && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     # A branch of the repository only: a fork's pull request gets no secret,
     # and one from a member's fork is rare enough to leave to a person.

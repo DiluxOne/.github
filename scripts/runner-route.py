@@ -19,8 +19,11 @@ author (never by anything the pull request changes):
 
 both opened by dilux-bot[bot]. A comment on a pull request (issue_comment)
 does not name the branch, so a comment on any of dilux-bot's pull requests
-runs on GitHub's runners too. A person's pull request, or anything else,
-keeps DX_RUNNER's choice.
+runs on GitHub's runners too. So does every job of an issues event on the
+lane's own issue, the one dilux-bot opens titled "The bug reproduced from
+#<n>" (scripts/repro-lane.py): the autopilot that writes the fix from the
+reproduction's commit runs on it. A person's pull request or issue, or
+anything else, keeps DX_RUNNER's choice.
 
 `runs-on` cannot call a script, so the decision is one expression, the same
 in every job of a shared workflow; this script writes it and checks that
@@ -50,6 +53,8 @@ import sys
 BOT = "dilux-bot[bot]"
 REPRO_PREFIX = "test/repro-issue-"
 LANE_MARK = "-the-bug-reproduced-from-"
+# No "#": in a plain YAML value, " #" starts a comment and cuts the expression.
+LANE_TITLE = "The bug reproduced from "
 VM_LABELS = ["self-hosted", "linux", "x64", "diluxone"]
 FALLBACKS = ("ubuntu-latest", "ubuntu-24.04")
 
@@ -75,7 +80,8 @@ def decide(dx_runner, event):
     if author == BOT and (head.startswith(REPRO_PREFIX) or ("/" in head and LANE_MARK in head)):
         return None
     issue = event.get("issue") or {}
-    if issue.get("pull_request") and ((issue.get("user") or {}).get("login") or "").lower() == BOT:
+    by_bot = ((issue.get("user") or {}).get("login") or "").lower() == BOT
+    if by_bot and (issue.get("pull_request") or (issue.get("title") or "").lower().startswith(LANE_TITLE.lower())):
         return None
     return VM_LABELS
 
@@ -85,7 +91,8 @@ def expression(fallback="ubuntu-latest"):
     head = f"{pr}.head.ref"
     repro = (f"({pr}.user.login == '{BOT}' && (startsWith({head}, '{REPRO_PREFIX}')"
              f" || (contains({head}, '/') && contains({head}, '{LANE_MARK}'))))")
-    comment = f"(github.event.issue.pull_request && github.event.issue.user.login == '{BOT}')"
+    issue = "github.event.issue"
+    comment = f"({issue}.user.login == '{BOT}' && ({issue}.pull_request || startsWith({issue}.title, '{LANE_TITLE}')))"
     labels = json.dumps(VM_LABELS, separators=(",", ":"))
     return (f"${{{{ vars.DX_RUNNER == 'self-hosted' && !({repro} || {comment})"
             f" && fromJSON('{labels}') || '{fallback}' }}}}")
@@ -303,7 +310,10 @@ def self_test():
         ("C2: a person's chore branch named like the lane keeps the VM", "self-hosted", pr("soydiloreto", "chore/31-the-bug-reproduced-from-12"), vm),
         ("the title or labels do not decide", "self-hosted", pr("soydiloreto", "fix/40-x", title="test(repro): failing test for #12", labels=[{"name": "autopilot"}]), vm),
         ("a comment on a person's pull request keeps the VM", "self-hosted", {"issue": {"pull_request": {"url": "x"}, "user": {"login": "soydiloreto"}}}, vm),
-        ("an issue event of dilux-bot (not a pull request) keeps the VM", "self-hosted", {"issue": {"user": {"login": BOT}}}, vm),
+        ("an issue event of dilux-bot (not a pull request) keeps the VM", "self-hosted", {"issue": {"user": {"login": BOT}, "title": "Runner image: build failed"}}, vm),
+        ("C1: the lane's issue (the autopilot writes the fix there) runs on GitHub's runners", "self-hosted",
+         {"issue": {"user": {"login": BOT}, "title": "The bug reproduced from #12"}, "label": {"name": "accepted"}}, gh),
+        ("a person's issue with the lane's title keeps the VM", "self-hosted", {"issue": {"user": {"login": "soydiloreto"}, "title": "The bug reproduced from #12"}}, vm),
         ("a push or a schedule keeps the VM", "self-hosted", {"ref": "refs/heads/main"}, vm),
         ("without DX_RUNNER, GitHub's runners", "", pr("soydiloreto", "fix/40-x"), gh),
         ("DX_RUNNER=github, GitHub's runners", "github", pr("soydiloreto", "fix/40-x"), gh),
@@ -317,6 +327,7 @@ def self_test():
 
     check("the fallback is the one asked for", evaluate(expression("ubuntu-24.04"), {"vars": {}, "github": {"event": {}}}), "ubuntu-24.04")
     check("the expression is one line", "\n" in expr, False)
+    check("the expression has no \" #\" (YAML would read the rest as a comment)", " #" in expr, False)
 
     old = "${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('[\"self-hosted\",\"linux\",\"x64\",\"diluxone\"]') || 'ubuntu-24.04' }}"
     shared = "on:\n  workflow_call:\njobs:\n  a:\n    runs-on: " + old + "\n  b:\n    runs-on: ubuntu-latest\n"
@@ -336,6 +347,30 @@ def self_test():
     check("write: leaves a job whose runner an earlier job decided alone", rewrite(later), later)
     check("check: a GitHub-only workflow may name DX_RUNNER outside runs-on", problems("runner-wake.yml", "# DX_RUNNER\non:\n  workflow_call:\njobs:\n  a:\n    if: vars.DX_RUNNER == 'self-hosted'\n    runs-on: ubuntu-latest\n"), [])
     check("check: the VM's wake-up stays on GitHub's runners", problems("runner-wake.yml", "on:\n  workflow_call:\njobs:\n  a:\n    runs-on: ubuntu-latest\n"), [])
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        shared_path = os.path.join(tmp, "x.yml")
+        repro_path = os.path.join(tmp, "issue-repro.yml")
+        with open(shared_path, "w") as f:
+            f.write("on:\n  workflow_call:\njobs:\n  a:\n    runs-on: " + old + "\n")
+        repro_text = "on:\n  workflow_call:\njobs:\n  a:\n    runs-on: " + old + "\n"
+        with open(repro_path, "w") as f:
+            f.write(repro_text)
+        quiet = open(os.devnull, "w")
+        stdout, sys.stdout = sys.stdout, quiet
+        try:
+            before = main(["check", shared_path])
+            wrote = main(["write", shared_path, repro_path])
+            after = main(["check", shared_path])
+        finally:
+            sys.stdout = stdout
+            quiet.close()
+        check("cli: check exits 1 on the old choice", before, 1)
+        check("cli: write fixes a shared job, and still fails on the reproduction's DX_RUNNER", wrote, 1)
+        check("cli: check exits 0 once written", after, 0)
+        with open(repro_path) as f:
+            check("cli: write never adds the choice to a GitHub-only workflow", f.read(), repro_text)
 
     print("all passed" if not failed else f"{failed} failed")
     return 1 if failed else 0

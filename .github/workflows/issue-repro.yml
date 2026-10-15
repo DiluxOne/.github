@@ -68,8 +68,9 @@ name: Issue reproduction
 # runners too, never on the organisation's VM, whatever DX_RUNNER says:
 # every shared job reads the branch (test/repro-issue-<n>, and the
 # bugfix-reproduced lane's <type>/<m>-the-bug-reproduced-from-<n>) and the
-# author (dilux-bot) of the pull request, never what it changes
-# (scripts/runner-route.py, #167).
+# author (dilux-bot) of the pull request, never what it changes, and the
+# autopilot that writes the lane's fix, from dilux-bot's issue "The bug
+# reproduced from #<n>" (scripts/runner-route.py, #167).
 # At most `max-per-day` runs a day (10000: the runs go on the
 # subscription, so it only stops a flood). The `high` reviewer of the policy
 # writes the test.
