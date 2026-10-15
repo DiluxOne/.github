@@ -39,7 +39,9 @@ name: Organisation VM
 # running its workflows), and AI Studio, the VM's other tenant, is the
 # maintainer's too. Code anyone else writes never reaches it: the release,
 # the credentials check and the reproduction stay on GitHub's fresh runners,
-# and public repositories never see DX_RUNNER. A VM that hosted anyone else's
+# so do the checks of the pull requests dilux-bot opens from a reproduction
+# (scripts/runner-route.py decides from their branch and author, #167), and
+# public repositories never see DX_RUNNER. A VM that hosted anyone else's
 # code would need jobs that do not persist, one VM per job.
 #
 # Azure: OIDC federation (app gh-actions-dilux-runner-starter, a credential

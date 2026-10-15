@@ -59,7 +59,7 @@ permissions:
 jobs:
   conventions:
     name: Conventions (branch, title, commits)
-    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (startsWith(github.event.pull_request.head.ref, 'fix/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.pull_request && github.event.issue.user.login == 'dilux-bot[bot]')) && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     if: github.event_name == 'pull_request'
     permissions:
@@ -204,7 +204,7 @@ jobs:
 
   docs:
     name: Docs (links and names)
-    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (startsWith(github.event.pull_request.head.ref, 'fix/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.pull_request && github.event.issue.user.login == 'dilux-bot[bot]')) && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - name: Checkout

@@ -126,7 +126,7 @@ permissions:
 jobs:
   triage:
     name: Triage
-    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (startsWith(github.event.pull_request.head.ref, 'fix/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.pull_request && github.event.issue.user.login == 'dilux-bot[bot]')) && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
     # Not a release issue (#82, `lane:release`): it asks for no answer, only
     # a person's acceptance (issue-accepted.yml).
@@ -366,7 +366,7 @@ jobs:
     name: Reply without the paid roadmap
     needs: triage
     if: needs.triage.outputs.paid == 'true'
-    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (startsWith(github.event.pull_request.head.ref, 'fix/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.pull_request && github.event.issue.user.login == 'dilux-bot[bot]')) && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - name: dilux-bot token
@@ -472,7 +472,7 @@ jobs:
 
   stale:
     name: Close needs-info issues nobody answered
-    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (startsWith(github.event.pull_request.head.ref, 'fix/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.pull_request && github.event.issue.user.login == 'dilux-bot[bot]')) && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     if: github.event_name == 'schedule'
     steps:

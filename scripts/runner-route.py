@@ -1,0 +1,365 @@
+#!/usr/bin/env python3
+"""Where a shared job runs: the organisation's VM or GitHub's runners (#167).
+
+A private repository's jobs run on the organisation's VM when the
+organisation variable DX_RUNNER is `self-hosted` (runner-vm.yml). A job
+there reaches the VM's Docker socket. A pull request that dilux-bot opened
+from a reproduction never runs there: its test was written from an issue's
+text, which anyone can write, so it runs on GitHub's fresh runners whatever
+DX_RUNNER says. Those pull requests are, by their head branch and their
+author (never by anything the pull request changes):
+
+  - the reproduction's draft (issue-repro.yml): `test/repro-issue-<n>`;
+  - the fix of the `bugfix-reproduced` lane (autopilot.yml, #84), which
+    starts at the reproduction's commit: `fix/<m>-the-bug-reproduced-from-<n>`
+    (scripts/autopilot.py names it after its issue, "The bug reproduced
+    from #<n>"), with `-<run id>` when an earlier attempt left the branch;
+
+both opened by dilux-bot[bot]. A comment on a pull request (issue_comment)
+does not name the branch, so a comment on any of dilux-bot's pull requests
+runs on GitHub's runners too. A person's pull request, or anything else,
+keeps DX_RUNNER's choice.
+
+`runs-on` cannot call a script, so the decision is one expression, the same
+in every job of a shared workflow; this script writes it and checks that
+every job carries it.
+
+Usage:
+  runner-route.py expression [FALLBACK]   print the runs-on value
+                                          (FALLBACK: ubuntu-latest)
+  runner-route.py check [FILE...]         every job of a shared workflow
+                                          carries the expression, except
+                                          those that always stay on GitHub's
+                                          runners (no DX_RUNNER at all);
+                                          default: .github/workflows/*.yml
+  runner-route.py write [FILE...]         rewrite every DX_RUNNER runs-on
+                                          line to the expression, keeping
+                                          its fallback
+  runner-route.py --test                  self-test: the expression, read
+                                          as GitHub reads it, against events
+"""
+
+import glob
+import json
+import os
+import re
+import sys
+
+BOT = "dilux-bot[bot]"
+REPRO_PREFIX = "test/repro-issue-"
+LANE_PREFIX = "fix/"
+LANE_MARK = "-the-bug-reproduced-from-"
+VM_LABELS = ["self-hosted", "linux", "x64", "diluxone"]
+FALLBACKS = ("ubuntu-latest", "ubuntu-24.04")
+
+# Shared workflows that never run on the VM: they hold secrets (the release,
+# the credentials check) or run code written from an issue (the reproduction).
+GITHUB_ONLY = ("plugin-release-wp.yml", "svn-auth-check.yml", "issue-repro.yml",
+               # It wakes the VM (#154): it cannot wait for the VM it starts.
+               "runner-wake.yml")
+
+# A job whose runner an earlier job of the same run decided (autopilot.yml's
+# `where`, #84: a reproduced bug's work never runs on the VM) keeps that
+# choice: `runs-on` names the earlier job's `github-hosted` output.
+DECIDED = re.compile(r"^\$\{\{ \(vars\.DX_RUNNER == 'self-hosted' && needs\.[a-z0-9_-]+\.outputs\.github-hosted == 'false'\) && fromJSON\('\[\"self-hosted\",\"linux\",\"x64\",\"diluxone\"\]'\) \|\| '([^']+)' \}\}$")
+
+
+def decide(dx_runner, event):
+    """The runner a job gets: VM_LABELS, or None for GitHub's (the fallback)."""
+    if dx_runner != "self-hosted":
+        return None
+    pr = event.get("pull_request") or {}
+    author = ((pr.get("user") or {}).get("login") or "").lower()
+    head = ((pr.get("head") or {}).get("ref") or "").lower()
+    if author == BOT and (head.startswith(REPRO_PREFIX) or (head.startswith(LANE_PREFIX) and LANE_MARK in head)):
+        return None
+    issue = event.get("issue") or {}
+    if issue.get("pull_request") and ((issue.get("user") or {}).get("login") or "").lower() == BOT:
+        return None
+    return VM_LABELS
+
+
+def expression(fallback="ubuntu-latest"):
+    pr = "github.event.pull_request"
+    head = f"{pr}.head.ref"
+    repro = (f"({pr}.user.login == '{BOT}' && (startsWith({head}, '{REPRO_PREFIX}')"
+             f" || (startsWith({head}, '{LANE_PREFIX}') && contains({head}, '{LANE_MARK}'))))")
+    comment = f"(github.event.issue.pull_request && github.event.issue.user.login == '{BOT}')"
+    labels = json.dumps(VM_LABELS, separators=(",", ":"))
+    return (f"${{{{ vars.DX_RUNNER == 'self-hosted' && !({repro} || {comment})"
+            f" && fromJSON('{labels}') || '{fallback}' }}}}")
+
+
+RUNS_ON = re.compile(r"^(\s+)runs-on:\s*(.*?)\s*$")
+FALLBACK_OF = re.compile(r"\|\|\s*'([^']+)'\s*}}$")
+
+
+def workflow_files(args):
+    return args or sorted(glob.glob(".github/workflows/*.yml"))
+
+
+def is_shared(text):
+    return re.search(r"^  workflow_call:", text, re.M) is not None
+
+
+def problems(path, text):
+    name = os.path.basename(path)
+    out = []
+    if not is_shared(text):
+        return out
+    if name in GITHUB_ONLY:
+        # Only the runs-on lines: a comment or an `if:` may name DX_RUNNER.
+        for n, line in enumerate(text.splitlines(), 1):
+            m = RUNS_ON.match(line)
+            if m and ("DX_RUNNER" in m.group(2) or "self-hosted" in m.group(2)):
+                out.append(f"{path}:{n}: stays on GitHub's runners: no DX_RUNNER here")
+        return out
+    for n, line in enumerate(text.splitlines(), 1):
+        m = RUNS_ON.match(line)
+        if not m:
+            continue
+        value = m.group(2)
+        decided = DECIDED.match(value)
+        if decided and decided.group(1) in FALLBACKS:
+            continue
+        fb = FALLBACK_OF.search(value)
+        if not fb or fb.group(1) not in FALLBACKS or value != expression(fb.group(1)):
+            out.append(f"{path}:{n}: a job without the runner choice of scripts/runner-route.py (run `python3 scripts/runner-route.py write`)")
+    return out
+
+
+def rewrite(text):
+    lines = []
+    for line in text.splitlines(keepends=True):
+        m = RUNS_ON.match(line.rstrip("\n"))
+        if m and "DX_RUNNER" in m.group(2) and not DECIDED.match(m.group(2)):
+            fb = FALLBACK_OF.search(m.group(2))
+            line = f"{m.group(1)}runs-on: {expression(fb.group(1) if fb else 'ubuntu-latest')}\n"
+        lines.append(line)
+    return "".join(lines)
+
+
+# --- GitHub's expressions, the part the runs-on value uses ----------------
+# Enough to read the expression the way GitHub does: property paths (a
+# missing one is null), '...' strings, == != ! && || and parentheses,
+# startsWith, contains and fromJSON. Strings compare ignoring case, as on
+# GitHub; && and || return one of their operands.
+
+TOKEN = re.compile(r"\s*(?:(?P<str>'(?:[^']|'')*')|(?P<op>==|!=|&&|\|\||[!(),])|(?P<name>[A-Za-z_][A-Za-z0-9_\-]*(?:\.[A-Za-z_][A-Za-z0-9_\-]*)*))")
+
+
+def tokens(src):
+    pos, out = 0, []
+    src = src.strip()
+    while pos < len(src):
+        m = TOKEN.match(src, pos)
+        if not m or m.end() == pos:
+            raise ValueError(f"cannot read the expression at: {src[pos:pos + 30]}")
+        pos = m.end()
+        if m.group("str") is not None:
+            out.append(("str", m.group("str")[1:-1].replace("''", "'")))
+        elif m.group("op"):
+            out.append(("op", m.group("op")))
+        else:
+            out.append(("name", m.group("name")))
+    return out
+
+
+def truthy(v):
+    return v not in (None, False, 0, "")
+
+
+def as_text(v):
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    return str(v)
+
+
+def evaluate(src, context):
+    src = src.strip()
+    if src.startswith("${{") and src.endswith("}}"):
+        src = src[3:-2]
+    toks = tokens(src)
+    i = 0
+
+    def peek():
+        return toks[i] if i < len(toks) else (None, None)
+
+    def take(kind=None, value=None):
+        nonlocal i
+        t = peek()
+        if (kind and t[0] != kind) or (value and t[1] != value):
+            raise ValueError(f"expected {value or kind}, got {t[1]}")
+        i += 1
+        return t
+
+    def lookup(path):
+        v = context
+        for part in path.split("."):
+            v = v.get(part) if isinstance(v, dict) else None
+        return v
+
+    def primary():
+        kind, value = peek()
+        if (kind, value) == ("op", "("):
+            take()
+            v = or_()
+            take("op", ")")
+            return v
+        if (kind, value) == ("op", "!"):
+            take()
+            return not truthy(primary())
+        if kind == "str":
+            take()
+            return value
+        if kind == "name":
+            take()
+            if peek() == ("op", "("):
+                take()
+                args = [or_()]
+                while peek() == ("op", ","):
+                    take()
+                    args.append(or_())
+                take("op", ")")
+                fn = value.lower()
+                if fn == "startswith":
+                    return as_text(args[0]).lower().startswith(as_text(args[1]).lower())
+                if fn == "contains":
+                    return as_text(args[1]).lower() in as_text(args[0]).lower()
+                if fn == "fromjson":
+                    return json.loads(args[0])
+                raise ValueError(f"unknown function {value}")
+            if value in ("true", "false"):
+                return value == "true"
+            if value == "null":
+                return None
+            return lookup(value)
+        raise ValueError(f"unexpected {value}")
+
+    def equality():
+        v = primary()
+        while peek() in (("op", "=="), ("op", "!=")):
+            op = take()[1]
+            w = primary()
+            same = (v.lower() == w.lower()) if isinstance(v, str) and isinstance(w, str) else v == w
+            v = same if op == "==" else not same
+        return v
+
+    def and_():
+        v = equality()
+        while peek() == ("op", "&&"):
+            take()
+            w = equality()
+            v = w if truthy(v) else v
+        return v
+
+    def or_():
+        v = and_()
+        while peek() == ("op", "||"):
+            take()
+            w = and_()
+            v = v if truthy(v) else w
+        return v
+
+    out = or_()
+    if i != len(toks):
+        raise ValueError(f"left over: {toks[i:]}")
+    return out
+
+
+# --- self-test -------------------------------------------------------------
+
+def self_test():
+    failed = 0
+
+    def check(name, got, want):
+        nonlocal failed
+        ok = got == want
+        failed += 0 if ok else 1
+        print(f"{'ok  ' if ok else 'FAIL'} {name}" + ("" if ok else f": got {got!r}, want {want!r}"))
+
+    def pr(author, head, **extra):
+        return {"pull_request": {"user": {"login": author}, "head": {"ref": head}, **extra}}
+
+    vm, gh = VM_LABELS, "ubuntu-latest"
+    events = [
+        ("C1: the reproduction's draft runs on GitHub's runners", "self-hosted", pr(BOT, "test/repro-issue-12"), gh),
+        ("C1: the lane's fix runs on GitHub's runners", "self-hosted", pr(BOT, "fix/31-the-bug-reproduced-from-12"), gh),
+        ("C1: the lane's fix on a second attempt's branch too", "self-hosted", pr(BOT, "fix/31-the-bug-reproduced-from-12-987654"), gh),
+        ("C1: a comment on one of dilux-bot's pull requests (no branch in the event)", "self-hosted",
+         {"issue": {"pull_request": {"url": "x"}, "user": {"login": BOT}}}, gh),
+        ("C1: a review comment on the reproduction's draft", "self-hosted", pr(BOT, "test/repro-issue-12") | {"comment": {"body": "x"}}, gh),
+        ("C2: a person's pull request keeps the VM", "self-hosted", pr("soydiloreto", "fix/40-the-login-loop"), vm),
+        ("C2: a person's branch named like a reproduction keeps the VM (the author decides too)", "self-hosted", pr("soydiloreto", "test/repro-issue-12"), vm),
+        ("C2: a person's lane-like branch keeps the VM", "self-hosted", pr("soydiloreto", "fix/31-the-bug-reproduced-from-12"), vm),
+        ("dilux-bot's other autopilot pull requests keep the VM", "self-hosted", pr(BOT, "fix/40-the-login-loop"), vm),
+        ("dilux-bot's feature from the autopilot keeps the VM", "self-hosted", pr(BOT, "feat/41-dark-mode"), vm),
+        ("the lane's words in a feature branch are not the lane", "self-hosted", pr(BOT, "feat/41-the-bug-reproduced-from-12"), vm),
+        ("the title or labels do not decide", "self-hosted", pr("soydiloreto", "fix/40-x", title="test(repro): failing test for #12", labels=[{"name": "autopilot"}]), vm),
+        ("a comment on a person's pull request keeps the VM", "self-hosted", {"issue": {"pull_request": {"url": "x"}, "user": {"login": "soydiloreto"}}}, vm),
+        ("an issue event of dilux-bot (not a pull request) keeps the VM", "self-hosted", {"issue": {"user": {"login": BOT}}}, vm),
+        ("a push or a schedule keeps the VM", "self-hosted", {"ref": "refs/heads/main"}, vm),
+        ("without DX_RUNNER, GitHub's runners", "", pr("soydiloreto", "fix/40-x"), gh),
+        ("DX_RUNNER=github, GitHub's runners", "github", pr("soydiloreto", "fix/40-x"), gh),
+        ("the bot's login matches ignoring case, as on GitHub", "self-hosted", pr("Dilux-Bot[bot]", "test/repro-issue-12"), gh),
+    ]
+    expr = expression()
+    for name, var, event, want in events:
+        got = evaluate(expr, {"vars": {"DX_RUNNER": var} if var else {}, "github": {"event": event}})
+        check(f"expression: {name}", got, want)
+        check(f"decide: {name}", decide(var, event) or gh, want)
+
+    check("the fallback is the one asked for", evaluate(expression("ubuntu-24.04"), {"vars": {}, "github": {"event": {}}}), "ubuntu-24.04")
+    check("the expression is one line", "\n" in expr, False)
+
+    old = "${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('[\"self-hosted\",\"linux\",\"x64\",\"diluxone\"]') || 'ubuntu-24.04' }}"
+    shared = "on:\n  workflow_call:\njobs:\n  a:\n    runs-on: " + old + "\n  b:\n    runs-on: ubuntu-latest\n"
+    check("check: the old choice is a problem", len(problems("x.yml", shared)), 2)
+    fixed = rewrite(shared)
+    check("write: rewrites the DX_RUNNER line, keeping its fallback", f"    runs-on: {expression('ubuntu-24.04')}\n" in fixed, True)
+    check("write: leaves a plain runs-on alone (check still names it)", "    runs-on: ubuntu-latest\n" in fixed and len(problems("x.yml", fixed)), 1)
+    check("check: a workflow that is not shared is not read", problems("x.yml", "on:\n  push:\njobs:\n  a:\n    runs-on: ubuntu-latest\n"), [])
+    check("check: the reproduction carries no DX_RUNNER", len(problems("issue-repro.yml", "on:\n  workflow_call:\n    runs-on: " + expression() + "\n")), 1)
+    check("check: an unknown fallback is a problem", len(problems("x.yml", "on:\n  workflow_call:\n    runs-on: " + expression("windows-latest") + "\n")), 1)
+
+    decided = "${{ (vars.DX_RUNNER == 'self-hosted' && needs.where.outputs.github-hosted == 'false') && fromJSON('[\"self-hosted\",\"linux\",\"x64\",\"diluxone\"]') || 'ubuntu-latest' }}"
+    later = "on:\n  workflow_call:\njobs:\n  run:\n    runs-on: " + decided + "\n"
+    check("check: a job whose runner an earlier job decided keeps it", problems("autopilot.yml", later), [])
+    check("write: leaves a job whose runner an earlier job decided alone", rewrite(later), later)
+    check("check: a GitHub-only workflow may name DX_RUNNER outside runs-on", problems("runner-wake.yml", "# DX_RUNNER\non:\n  workflow_call:\njobs:\n  a:\n    if: vars.DX_RUNNER == 'self-hosted'\n    runs-on: ubuntu-latest\n"), [])
+    check("check: the VM's wake-up stays on GitHub's runners", problems("runner-wake.yml", "on:\n  workflow_call:\njobs:\n  a:\n    runs-on: ubuntu-latest\n"), [])
+
+    print("all passed" if not failed else f"{failed} failed")
+    return 1 if failed else 0
+
+
+def main(argv):
+    if argv == ["--test"]:
+        return self_test()
+    if not argv or argv[0] not in ("expression", "check", "write"):
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    cmd, rest = argv[0], argv[1:]
+    if cmd == "expression":
+        print(expression(rest[0] if rest else "ubuntu-latest"))
+        return 0
+    found = []
+    for path in workflow_files(rest):
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        if cmd == "write" and is_shared(text) and os.path.basename(path) not in GITHUB_ONLY:
+            new = rewrite(text)
+            if new != text:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(new)
+                text = new
+        found += problems(path, text)
+    for p in found:
+        print(f"::error::{p}")
+    return 1 if found else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
