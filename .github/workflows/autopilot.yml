@@ -158,7 +158,10 @@ jobs:
   run:
     name: Autopilot (${{ inputs.mode }})
     needs: where
-    runs-on: ${{ (vars.DX_RUNNER == 'self-hosted' && needs.where.outputs.github-hosted != 'true') && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
+    # Even when `where` failed: the run still says how it ended. Only an
+    # explicit "false" from it sends the work to the VM.
+    if: ${{ !cancelled() }}
+    runs-on: ${{ (vars.DX_RUNNER == 'self-hosted' && needs.where.outputs.github-hosted == 'false') && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 90
     permissions: {}
     steps:

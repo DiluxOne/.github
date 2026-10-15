@@ -865,6 +865,12 @@ Clamp the value in Sum::add.
           ("reproduction test's commit" in pw, f"git show HEAD:{test12}" in pw, "LANE=" in pw), (True, True, False))
     check("#84 the fix prompt keeps the test out too", "never run it with PHPUnit" in prompt_fix("o/x", 14, 1, 3, ev12), True)
     check("#84 a person's issue gets none of it", any("repro-sandbox" in p for p in (prompt_spec("o/r", 7, "x"), prompt_work("o/r", 7, 5, "b", "x", [], False), prompt_fix("o/r", 9, 1, 3))), False)
+    lbl = [f"lane:{REPRO}", "accepted-by:policy"]
+    check("#84 finish: a reproduced bug needs its sealed test to pass", repro_needed(lane_spec, lbl, "match"), ("", test12))
+    check("#84 finish: a person's issue needs none", repro_needed(spec, ["accepted"], "match"), ("", ""))
+    check("#84 finish: dropping the lane's label does not skip it (the PRD names the test)", repro_needed(lane_spec, [], "match"), ("", test12))
+    check("#84 finish: dropping the evidence does not skip it (the label stays)", repro_needed(spec, lbl, "changed")[1], "")
+    check("#84 finish: a PRD edited after its seal cannot redirect the test", (repro_needed(lane_spec.replace(sha, "f" * 64), lbl, "changed")[1], bool(repro_needed(lane_spec, lbl, "unsealed")[0])), ("", True))
     check("#84 the sandbox's verdict is its last outcome line", (sandbox_outcome("x\noutcome=reproduced\noutcome=passed\n"), sandbox_outcome("OK\noutcome=passed"), sandbox_outcome("outcome=passed (said the test)"), sandbox_outcome("")), ("passed", "passed", "", ""))
 
     workflow = os.path.join(HERE, "..", ".github", "workflows", "autopilot.yml")
@@ -897,8 +903,9 @@ Clamp the value in Sum::add.
         check("#84: the test is kept out of the working tree before any agent runs", ("sparse-checkout set" in steps[git_step].get("run", ""), git_step < at("spec") < work), (True, True))
         check("#84: the finish takes no lane from the work's environment (it reads GitHub)", ("LANE" in steps[work].get("env", {}), "REPRO_TEST" in steps[work].get("env", {})), (False, False))
         wf = yaml.safe_load(open(workflow, encoding="utf-8"))
-        check("#84: a reproduced bug's work runs on GitHub's runner, decided before the job starts",
-              ("needs.where.outputs.github-hosted" in str(wf["jobs"]["run"]["runs-on"]), "lane:bugfix-reproduced" in wf["jobs"]["where"]["steps"][-1]["run"], "hosted=true" in wf["jobs"]["where"]["steps"][-1]["run"]), (True, True, True))
+        check("#84: a reproduced bug's work runs on GitHub's runner, decided before the job starts, and only an explicit no sends it to the VM",
+              ("needs.where.outputs.github-hosted == 'false'" in str(wf["jobs"]["run"]["runs-on"]), "lane:bugfix-reproduced" in wf["jobs"]["where"]["steps"][-1]["run"], "hosted=true" in wf["jobs"]["where"]["steps"][-1]["run"]), (True, True, True))
+        check("#84: a failed `where` never silences the run", "!cancelled()" in str(wf["jobs"]["run"].get("if", "")), True)
         check("#84: the lane is decided before the autopilot may start, from GitHub", "autopilot.py lane" in steps[at("may")].get("run", ""), True)
     if not failed:
         print("all tests passed")
@@ -946,6 +953,22 @@ def _refresh_board(repo, number):
         gh("api", "-X", "PATCH", f"repos/{repo}/issues/comments/{ids[-1]}", "-f", f"body={board}")
     else:
         gh("issue", "comment", str(number), "--repo", repo, "--body", board)
+
+
+def repro_needed(body, labels, seal):
+    """(why, test) for finish ready. test: the reproduction test that must
+    pass first, from the PRD; ("", "") when none is needed. A reproduced
+    bug's issue is told by its PRD's evidence or by its lane's label, so
+    dropping either never skips the check; and the PRD must be the one
+    sealed, so its test cannot be redirected. Pure."""
+    ev = repro.evidence(body)
+    if not ev and f"lane:{REPRO}" not in labels:
+        return "", ""
+    if seal != "match":
+        return f"the issue's PRD is not the one sealed ({seal or 'unread'}), so its reproduction test cannot be trusted", ""
+    if not ev:
+        return "the issue is a reproduced bug's, but its PRD names no reproduction test", ""
+    return "", ev["test"]
 
 
 def sandbox_outcome(output):
@@ -1011,23 +1034,26 @@ def main(argv):
             if not text.strip():
                 print("Not ready: write how you tested it into a file and pass it: finish ready <file>.")
                 return 1
-            # The lane and the test from GitHub and the sealed PRD, never from
-            # what the agent passes: a reproduced bug is ready only once its
-            # test passes in the sandbox at HEAD, as it failed before.
-            issue = autonomy.read_issue(repo, number)
-            if not issue:
-                print(f"Not ready: issue #{number} could not be read to tell its lane. Try again.")
+            # A reproduced bug is ready only once its test passes in the
+            # sandbox at HEAD, as it failed before. Which test, and whether
+            # one is needed, come from the PRD at its seal and the issue's
+            # labels, never from what the agent passes.
+            issue = json.loads(gh("issue", "view", str(number), "--repo", repo, "--json", "body,labels"))
+            tmp = os.path.join(os.environ.get("RUNNER_TEMP", "/tmp"), f"finish-body-{number}.md")
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.write(issue.get("body") or "")
+            seal = subprocess.run([sys.executable, os.path.join(HERE, "receipts.py"), "verify-prd"], capture_output=True, text=True,
+                                  env=dict(os.environ, NUMBER=str(number), BODY=tmp, GITHUB_REPOSITORY=repo)).stdout.strip()
+            need, test = repro_needed(issue.get("body") or "", [l["name"] for l in issue.get("labels") or []], seal)
+            if need and not test:
+                print(f"Not ready: {need}.")
                 return 1
-            pol = autonomy.policy_in_force()
-            lane_now, _ = which_lane(pol, issue, autonomy.read_run(issue, repo), repo, os.environ.get("DX_AUTOPILOT", ""))
-            ev = repro.evidence(issue.get("body") or "")
-            if lane_now == REPRO or (autonomy.lane_of(issue)[0] == REPRO):
-                test = (ev or {}).get("test", "")
+            if test:
                 run = subprocess.run(["bash", os.path.join(HERE, "repro-sandbox.sh"), "run-ref", "HEAD", test], capture_output=True, text=True)
                 outcome = sandbox_outcome(run.stdout)
-                if not test or outcome != "passed":
+                if outcome != "passed":
                     # The verdict only: the test's own output is untrusted text.
-                    print(f"Not ready: the reproduction test {test or '(none in the PRD)'} does not pass in the sandbox at HEAD ({outcome or 'no verdict'}). Fix the code it exercises, commit, push, and finish again.")
+                    print(f"Not ready: the reproduction test {test} does not pass in the sandbox at HEAD ({outcome or 'no verdict'}). Fix the code it exercises, commit, push, and finish again.")
                     return 1
                 text = text.rstrip() + f"\n\nThe reproduction test `{test}` passes at {head_sha()[:12]} in the sandbox (no network, no secrets), where it failed on the default branch.\n"
             set_body(repo, pr, set_tested(body, text))

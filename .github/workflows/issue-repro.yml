@@ -638,6 +638,7 @@ jobs:
           jq -r .body "$RUNNER_TEMP/lane.json" > "$RUNNER_TEMP/lane.md"
           url=$(gh issue create --repo "$GITHUB_REPOSITORY" --title "$(jq -r .title "$RUNNER_TEMP/lane.json")" --body-file "$RUNNER_TEMP/lane.md" --label lane:bugfix-reproduced)
           lane=${url##*/}
+          echo "created=$lane" >> "$GITHUB_OUTPUT"
           gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/$lane" -f type=Bug >/dev/null 2>&1 || echo "::warning::Could not set #$lane's Type to Bug."
           if why=$(NUMBER=$lane python3 .dx-central/scripts/autonomy.py lane-accept); then
             gh issue edit "$lane" --repo "$GITHUB_REPOSITORY" --add-label accepted-by:policy >/dev/null
@@ -666,7 +667,14 @@ jobs:
           NUMBER: ${{ github.event.issue.number }}
           RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
           BRANCH: ${{ steps.report.outputs.branch }}
+          CREATED: ${{ steps.lane.outputs.created }}
         run: |
+          # A lane issue opened before the failure is closed, said so on
+          # it, so it neither waits unstarted nor blocks the next attempt.
+          if [ -n "$CREATED" ]; then
+            gh issue comment "$CREATED" --repo "$GITHUB_REPOSITORY" --body "$(printf 'Closed: handing this to the autopilot failed part-way (%s). A maintainer takes the bug from #%s.\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)' "$RUN_URL" "$NUMBER")" >/dev/null || true
+            gh issue close "$CREATED" --repo "$GITHUB_REPOSITORY" --reason "not planned" >/dev/null || true
+          fi
           gh label create needs-human --repo "$GITHUB_REPOSITORY" --color D93F0B --description "A person takes it from here" --force >/dev/null || true
           gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label needs-human >/dev/null || true
           gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '%s\n\nThe failing test is on the branch %s. Handing the fix to the autopilot failed part-way (%s), so a maintainer takes it from here.\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)' "$(cat "$RUNNER_TEMP/reproduced.md" 2>/dev/null || echo Reproduced.)" "$BRANCH" "$RUN_URL")" >/dev/null

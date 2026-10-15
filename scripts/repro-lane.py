@@ -161,7 +161,10 @@ def self_test():
         check("wiring: the report hands the accepted issue to the autopilot job", jobs["report"]["outputs"]["lane-issue"], "${{ steps.lane.outputs.issue }}")
         ap = jobs["autopilot"]
         check("wiring: the autopilot job starts only on that issue, in mode start", (ap["needs"], "lane-issue" in ap["if"], ap["with"]["mode"], ap["uses"].split("@")[0]), ("report", True, "start", "DiluxOne/.github/.github/workflows/autopilot.yml"))
-        check("wiring: a hand-off that fails says so on the report", "failure()" in steps["The hand-off failed"]["if"], True)
+        failed_step = steps["The hand-off failed"]
+        check("wiring: a hand-off that fails says so on the report, and closes the lane issue it opened",
+              ("failure()" in failed_step["if"], "steps.lane.outputs.created" in failed_step["env"]["CREATED"], 'gh issue close "$CREATED"' in failed_step["run"],
+               steps["lane"]["run"].index('echo "created=') < steps["lane"]["run"].index("lane-accept")), (True, True, True, True))
         decide_run = next(s["run"] for s in merge_wf["jobs"]["decide"]["steps"] if s.get("id") == "autopilot")
         check("wiring: G7 gets the lane from GitHub and the test's SHA-256 at the head", ("autopilot.py\" lane" in decide_run, "REPRO_SHA256=$(gh api" in decide_run), (True, True))
     for bad, args in (("a number", ("12; rm", run, sha, base)), ("a run URL", (12, "https://evil.example/actions/runs/1", sha, base)),
