@@ -127,10 +127,12 @@ pr() {
   answer=${ASSIGNEE_JSON:-}
   if [ -z "$answer" ]; then
     answer=$(mktemp)
-    if ! gh api graphql -f query="$QUERY" -F owner="${GITHUB_REPOSITORY%%/*}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$PR" > "$answer" 2>&1 \
-      || jq -e '.errors' "$answer" >/dev/null 2>&1; then
-      echo "::warning::Could not read the issues this pull request closes ($(head -c 200 "$answer")); no assignee changed."; return 0
+    if ! gh api graphql -f query="$QUERY" -F owner="${GITHUB_REPOSITORY%%/*}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$PR" > "$answer" 2>"$answer.err"; then
+      echo "::warning::Could not read the issues this pull request closes ($(head -c 200 "$answer.err")); no assignee changed."; return 0
     fi
+  fi
+  if ! jq -e '.data and (.errors | not)' "$answer" >/dev/null 2>&1; then
+    echo "::warning::Could not read the issues this pull request closes ($(head -c 200 "$answer")); no assignee changed."; return 0
   fi
   local lines
   lines=$(plan_pr "$answer")
@@ -177,6 +179,10 @@ if [ "${1:-}" = "--test" ]; then
   f=$(mktemp); issue 12 "$GITHUB_REPOSITORY" OPEN soydiloreto | answer > "$f"
   is "the pr mode, dry: a member reassigns" "$(ASSIGNEE_DRY=1 ASSIGNEE_JSON=$f PR=1 PR_AUTHOR=maria PR_AUTHOR_TYPE=User AUTHOR_ASSOCIATION=MEMBER pr)" "#12: would assign maria, unassign soydiloreto."
   is "the pr mode, dry: an outsider changes nothing" "$(ASSIGNEE_DRY=1 ASSIGNEE_JSON=$f PR=1 PR_AUTHOR=someone PR_AUTHOR_TYPE=User AUTHOR_ASSOCIATION=CONTRIBUTOR pr | grep -c 'would' || true)" 0
+  echo '{"errors":[{"message":"Resource not accessible"}]}' > "$f"
+  is "the pr mode: an error answer is a warning and changes nothing" "$(ASSIGNEE_DRY=1 ASSIGNEE_JSON=$f PR=1 PR_AUTHOR=maria PR_AUTHOR_TYPE=User AUTHOR_ASSOCIATION=MEMBER pr | cut -c1-11)" "::warning::"
+  echo 'not json' > "$f"
+  is "the pr mode: an answer that is not JSON too" "$(ASSIGNEE_DRY=1 ASSIGNEE_JSON=$f PR=1 PR_AUTHOR=maria PR_AUTHOR_TYPE=User AUTHOR_ASSOCIATION=MEMBER pr | cut -c1-11)" "::warning::"
   echo '[]' > "$f"
   is "the accepted mode, dry: assigns the person" "$(ASSIGNEE_DRY=1 ASSIGNEE_JSON=$f NUMBER=7 SENDER=soydiloreto SENDER_TYPE=User accepted)" "#7: would assign soydiloreto."
   echo '["maria"]' > "$f"

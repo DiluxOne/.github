@@ -11,7 +11,9 @@ name: Issue assignee
 # scripts/issue-assignee.sh (`pr`), with its self-test.
 #
 # It runs when the pull request opens, reopens, leaves draft or its
-# description changes (a "Closes #N" added later), never on a push. It reads
+# description changes (a "Closes #N" added later), never on a push. A
+# maintainer who reassigns the issue by hand afterwards keeps that choice
+# until one of those happens again, when the author takes it back. It reads
 # no code of the pull request and writes only the issues' assignees, through
 # dilux-bot's token; without the bot's key it does nothing. A failure is a
 # warning, never a red check: an assignee is bookkeeping, not a gate.
@@ -86,6 +88,8 @@ jobs:
 
       - name: Its issues go to its author, if a member
         if: steps.bot.outputs.token != ''
+        # A warning at most: this rides the required pipeline.
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           PR: ${{ github.event.pull_request.number }}

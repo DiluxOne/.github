@@ -159,6 +159,8 @@ jobs:
       # (pull-request-assignee.yml).
       - name: Assign it to whoever accepted it
         if: steps.bot.outputs.token != '' && hashFiles('.dx-central/scripts/issue-assignee.sh') != ''
+        # Never in the way of the check and the seal that follow.
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           NUMBER: ${{ github.event.issue.number }}
