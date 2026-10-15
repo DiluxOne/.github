@@ -102,7 +102,7 @@ flowchart TB
 | 🏃 | [`runner/`](runner/) | The image every job on the organisation's VM runs in, `ghcr.io/diluxone/runner` |
 | 📋 | [`workflow-templates/`](workflow-templates/) | Ready-made callers for a new repository |
 | 🎨 | [`design-systems/`](design-systems/) | What a screen looks like: tokens, components and the rules a review checks (today, `wordpress-admin`); each project names its own in `repos.yml` |
-| 🏷️ | [`labels.yml`](labels.yml) · [`repos.yml`](repos.yml) | Labels, settings, Projects and design systems, kept in step by `scripts/sync-repos.py` |
+| 🏷️ | [`labels.yml`](labels.yml) · [`repos.yml`](repos.yml) | Labels, settings, Projects, design systems and what each repository adds to its Dependabot template (`kinds/<kind>/dependabot.yml`, `policy/dependabot.default.yml`), kept in step by `scripts/sync-repos.py` |
 | 🖼️ | [`profile/`](profile/) | The organisation's public page on GitHub |
 
 ## Read more

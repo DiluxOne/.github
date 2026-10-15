@@ -63,11 +63,12 @@ settings:
   has_issues: true
   has_wiki: false
 
-# Security: Dependabot alerts everywhere; private vulnerability reporting,
-# secret scanning and push protection where GitHub offers them (public
-# repositories on this plan).
+# Security: Dependabot alerts and security updates everywhere; private
+# vulnerability reporting, secret scanning and push protection where GitHub
+# offers them (public repositories on this plan).
 security:
   vulnerability_alerts: true
+  automated_security_fixes: true
   private_vulnerability_reporting: public-only
   secret_scanning: public-only
 
@@ -81,6 +82,32 @@ files:
     # the maintainer's queue. Kept in step by DiluxOne/.github
     # (scripts/sync-repos.py).
     * @soydiloreto
+
+# Dependabot: every repository's .github/dependabot.yml is written from its
+# kind's template (kinds/<kind>/dependabot.yml; a repository without a kind,
+# or of a kind without one, gets policy/dependabot.default.yml) by
+# `sync-repos.py files`, as a pull request like the files above, and the drift
+# check reports one that differs. It carries only the ecosystems the
+# repository has: github-actions always, npm with a package.json at its root,
+# composer with a composer.json, docker with a Dockerfile. What a repository
+# adds lives here and nowhere else, per ecosystem: `directories` (beside its
+# root's; they turn the ecosystem on) and `ignore` (Dependabot's own
+# entries). Nothing is ignored by default: every dependency is kept on its
+# latest version.
+dependabot:
+  .github:
+    docker:
+      # The runner image's base (runner/Dockerfile), pinned by digest. Only
+      # the digest of the Ubuntu release it is on moves by itself: a new
+      # Ubuntu release (24.04 to 26.04) is a decision of ours, taken when what
+      # the jobs install on it is published for it (above all what setup-php
+      # installs from: the ondrej/php PPA and php-builder's prebuilt builds,
+      # which the runner-image.yml smoke test sets PHP up from), and then made
+      # by hand in the Dockerfile (docs/maintaining.md).
+      directories: [/runner]
+      ignore:
+        - dependency-name: ubuntu
+          update-types: ["version-update:semver-major", "version-update:semver-minor"]
 
 # The workflow callers (workflow-templates/) every repository that calls the
 # shared workflows keeps job for job as its template: the drift check

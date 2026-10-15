@@ -68,4 +68,5 @@
 - {name: github-actions, color: "000000", description: "Updates a GitHub Action"}
 - {name: npm, color: "CB3837", description: "Updates an npm package"}
 - {name: composer, color: "885630", description: "Updates a Composer package"}
+- {name: docker, color: "2496ED", description: "Updates a Docker image"}
 - {name: "ci:weekly", color: "B60205", description: "The weekly run failed"}

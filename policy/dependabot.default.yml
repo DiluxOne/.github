@@ -1,0 +1,90 @@
+# Dependabot, as DiluxOne/.github keeps it for every repository: this file is
+# written from policy/dependabot.default.yml there (a repository of a kind:
+# kinds/<kind>/dependabot.yml) by scripts/sync-repos.py, with only the
+# ecosystems this repository has, and the drift check reports any difference.
+# Change it there, not here. A repository's own directories or `ignore` for
+# an ecosystem live in DiluxOne/.github's repos.yml (`dependabot`).
+#
+# Every dependency is kept on its latest version: checked daily, no cooldown,
+# majors included, one grouped pull request per ecosystem. Security updates
+# are on (repos.yml, `security`) and grouped the same way. Titles come out as
+# "ci(deps): Bump …", "build(deps): Bump …" or "build(deps-dev): Bump …",
+# which the conventions check accepts.
+version: 2
+updates:
+  # The actions this repository's workflows use. The shared workflows of
+  # DiluxOne/.github are called at a major tag (`@v5`), never pinned, so
+  # there is nothing of theirs to bump.
+  - package-ecosystem: github-actions
+    directories: ["/"]
+    schedule:
+      interval: daily
+      time: "09:00"
+      timezone: America/Argentina/Buenos_Aires
+    groups:
+      github-actions:
+        patterns: ["*"]
+      github-actions-security:
+        applies-to: security-updates
+        patterns: ["*"]
+    labels: [dependencies, github-actions]
+    commit-message:
+      prefix: ci
+      include: scope
+
+  # npm packages (package.json). The requirement in the manifest rises with
+  # each new version, not only the lockfile.
+  - package-ecosystem: npm
+    directories: ["/"]
+    schedule:
+      interval: daily
+      time: "09:00"
+      timezone: America/Argentina/Buenos_Aires
+    versioning-strategy: increase
+    groups:
+      npm:
+        patterns: ["*"]
+      npm-security:
+        applies-to: security-updates
+        patterns: ["*"]
+    labels: [dependencies, npm]
+    commit-message:
+      prefix: build
+      include: scope
+
+  # Composer packages (composer.json), the same way.
+  - package-ecosystem: composer
+    directories: ["/"]
+    schedule:
+      interval: daily
+      time: "09:00"
+      timezone: America/Argentina/Buenos_Aires
+    versioning-strategy: increase
+    groups:
+      composer:
+        patterns: ["*"]
+      composer-security:
+        applies-to: security-updates
+        patterns: ["*"]
+    labels: [dependencies, composer]
+    commit-message:
+      prefix: build
+      include: scope
+
+  # The images a Dockerfile builds from.
+  - package-ecosystem: docker
+    directories: ["/"]
+    schedule:
+      interval: daily
+      time: "09:00"
+      timezone: America/Argentina/Buenos_Aires
+    groups:
+      docker:
+        patterns: ["*"]
+      docker-security:
+        applies-to: security-updates
+        patterns: ["*"]
+    labels: [dependencies, docker]
+    commit-message:
+      prefix: build
+      include: scope
