@@ -408,6 +408,13 @@ def self_test():
         out = os.path.join(SYSTEMS, name, "dist", "tokens.css")
         check(f"design-systems/{name}: dist/tokens.css is in step", os.path.isfile(out) and open(out, encoding="utf-8").read() == css, "run python3 scripts/design-tokens.py build")
     check("wordpress-admin is there", "wordpress-admin" in systems(), systems())
+    saved, sys.stderr = sys.stderr, open(os.devnull, "w")
+    try:
+        usage = [main(["build", "--system"]), main(["build", "--system", "--check"])]
+    finally:
+        sys.stderr.close()
+        sys.stderr = saved
+    check("build --system with no name is a usage error, not every system", usage == [64, 64], usage)
     if not failed:
         print("all tests passed")
     return 1 if failed else 0
