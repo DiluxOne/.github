@@ -647,6 +647,50 @@
             }
           ]
         },
+        "closingIssuesReferences": {
+          "nodes": [
+            {
+              "body": "### Criticality\n\nNormal\n",
+              "labels": {
+                "nodes": [
+                  {
+                    "name": "lane:org-sync"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "__typename": "Bot",
+                "login": "dilux-bot"
+              },
+              "body": "<!-- dx-review -->\n### Claude review · risk **high**\n\n<!-- dx-review-record {\"risk\":\"high\",\"complexity\":\"low\",\"floor\":\"low\",\"blocking\":false,\"findings\":[]} -->"
+            }
+          ]
+        }
+      },
+      "want": [
+        "unknown"
+      ]
+    },
+    {
+      "name": "high risk from a person's issue: human-issue merges only up to medium (#186)",
+      "pr": {
+        "author": {
+          "__typename": "Bot",
+          "login": "dilux-bot"
+        },
+        "labels": {
+          "nodes": [
+            {
+              "name": "autopilot"
+            }
+          ]
+        },
         "comments": {
           "nodes": [
             {
@@ -660,7 +704,7 @@
         }
       },
       "want": [
-        "unknown"
+        "high-risk"
       ]
     },
     {

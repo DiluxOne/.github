@@ -46,6 +46,7 @@ For the team of the central repository (`.github`). Each phase is a sub-issue of
 - **Today:** the queue #156 to #180 is closed (only #179 is still open, and it moves to phase 4). The human-issue lane merges on its own up to high risk (`policy/autonomy.yml`, `max-risk: high`), more than the model says.
 - **Do:** lower human-issue to `max-risk: medium`.
 - **Done when:** a high-risk pull request that comes from human-issue is left for a person to merge.
+- **Done:** lowered in #186; the high-risk pull requests of human-issue wait for a person.
 
 ### Phase 2 · The model, written
 
