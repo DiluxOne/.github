@@ -643,9 +643,10 @@ jobs:
     # scripts/stylelint/package-lock.json, and nothing of the repository's
     # own stylelint setup. An `error` rule on a line the pull request adds
     # or changes fails; everything else is a warning, so no repository is
-    # held to what its files already had. Skipped (a skipped check
-    # satisfies a ruleset) for a repository with no design system, a pull
-    # request without CSS, and any event but a pull request. No secret.
+    # held to what its files already had. For a repository with no design
+    # system, a pull request without CSS, and any event but a pull request,
+    # its steps after the checkout are skipped and the check passes. No
+    # secret.
     runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:

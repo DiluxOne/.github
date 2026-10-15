@@ -114,7 +114,7 @@ def local_config(base, tmp):
                     tokens = dt.flatten(json.load(fh))
             tokens.update(dt.flatten(tree))
             dt.validate(tokens)
-        except (dt.Invalid, ValueError) as exc:
+        except Exception as exc:  # anything a malformed file raises: warn, never crash
             problems.append(f"docs/design-system/tokens.json: {exc}; no token is suggested")
             tokens = {}
     text = show(base, "docs/design-system/rules.yml")
@@ -122,8 +122,11 @@ def local_config(base, tmp):
         path = os.path.join(tmp, "rules.yml")
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(text)
-        own = dt.read_yaml(path)
-        found = dt.check_rules(own, tokens or None)
+        try:
+            own = dt.read_yaml(path)
+            found = dt.check_rules(own, tokens or None) if isinstance(own, dict) else ["it is not a map with a `rules` list"]
+        except Exception as exc:  # malformed YAML: yq's error or PyYAML's
+            own, found = None, [f"it does not parse ({str(exc).strip()[:200]})"]
         if found:
             problems += [f"docs/design-system/rules.yml: {p}; its rules are left out" for p in found]
         else:
@@ -165,7 +168,10 @@ def classify(results, added, root):
             if w.get("rule") == RULE:
                 level = "error" if touched and w.get("severity") == "error" else "warning"
             else:
-                level, text = "warning", f"{w.get('rule')}: {text} (stylelint could not read this; nothing of the design system was checked here)"
+                # CSS stylelint cannot read is checked for nothing: on a line
+                # the change adds, that is the change's to fix.
+                level = "error" if touched else "warning"
+                text = f"{w.get('rule')}: {text} (stylelint could not read this file; nothing of the design system was checked in it)"
             out.append((level, path, line, end, w.get("column") or 1, text, touched))
     return out
 
@@ -210,7 +216,10 @@ def check(repo, base, head, repos_yml, out=print):
         if not conf:
             out("No pattern rules to run: nothing to check.")
             return 0
-        found = classify(stylelint(conf, files, root), added_lines(git("diff", "-U0", "-M", base, head, "--", *files).stdout), root)
+        # The same pathspec as changed_css: with the new names alone, git
+        # could not pair a renamed file with its old path, and every line of
+        # it would read as added.
+        found = classify(stylelint(conf, files, root), added_lines(git("diff", "-U0", "-M", base, head, "--", "*.css").stdout), root)
     # GitHub shows ten annotations of a level per step: the change's own first.
     found.sort(key=lambda f: (f[0] != "error", not f[6], f[1], f[2]))
     for level, path, line, end, col, text, _ in found:
@@ -261,13 +270,15 @@ def self_test():
         {"line": 1, "endLine": 1, "column": 3, "rule": RULE, "severity": "error", "text": "colour-from-tokens: y"},
         {"line": 3, "endLine": 3, "column": 3, "rule": RULE, "severity": "warning", "text": "space-from-tokens: z"},
         {"line": 10, "endLine": 12, "column": 1, "rule": RULE, "severity": "error", "text": "no-important: w"},
-        {"line": 4, "column": 1, "rule": "CssSyntaxError", "severity": "error", "text": "Unclosed block (CssSyntaxError)"}]}]
+        {"line": 4, "column": 1, "rule": "CssSyntaxError", "severity": "error", "text": "Unclosed block (CssSyntaxError)"},
+        {"line": 11, "column": 1, "rule": "CssSyntaxError", "severity": "error", "text": "Unclosed block (CssSyntaxError)"}]}]
     got = classify(results, {"a.css": {2, 3, 11}}, "/r")
     ok("classify: an error rule on an added line fails, with the rule's name trimmed", got[0] == ("error", "a.css", 2, 2, 3, "colour-from-tokens: x", True), got[0])
     ok("classify: on a line the change did not touch, a warning (C2)", got[1][0] == "warning", got[1])
     ok("classify: a warning rule on an added line stays a warning", got[2][0] == "warning", got[2])
     ok("classify: a finding over several lines is the change's when one of them is", got[3][0] == "error", got[3])
-    ok("classify: a file stylelint cannot read warns, never fails", got[4][0] == "warning" and "could not read" in got[4][5], got[4])
+    ok("classify: CSS stylelint cannot read warns where it was, and fails where the change wrote it",
+       got[4][0] == "warning" and "could not read" in got[4][5] and got[5][0] == "error", got[4:])
     ok("escape: annotations keep their newlines and their properties their commas", escape("a\nb%") == "a%0Ab%25" and escape("a,b:c", True) == "a%2Cb%3Ac", "")
     ok("args: --repo is required, the rest has defaults", args([]) is None and args(["--repo", "r"])["--base"] == "HEAD^1" and args(["--bogus", "x"]) is None, "")
 
@@ -364,6 +375,20 @@ def self_test():
             lines = []
             code = check("app", "HEAD^1", "HEAD", repos_yml, out=lines.append)
             ok("local: its own rules add to the extended system's", code == 1 and any(line.startswith("::error") and "no-red" in line for line in lines), lines)
+            write("docs/design-system/rules.yml", "rules: [\n  - id: broken\n")
+            write("docs/design-system/tokens.json", "[1, 2]")
+            sh("git", "add", "-A")
+            sh("git", "commit", "-q", "-m", "broken rules")
+            write("assets/admin.css", ".c { color: #2271b1; }\n")
+            sh("git", "add", "-A")
+            sh("git", "commit", "-q", "-m", "blue again")
+            lines = []
+            code = check("app", "HEAD^1", "HEAD", repos_yml, out=lines.append)
+            ok("local: rules and tokens that do not parse warn, and the extended system's still run", code == 1
+               and any(line.startswith("::warning::docs/design-system/rules.yml: it does not parse") for line in lines)
+               and any(line.startswith("::warning::docs/design-system/tokens.json") for line in lines)
+               and any(line.startswith("::error") and "colour-from-tokens" in line for line in lines), lines)
+            sh("git", "rm", "-q", "docs/design-system/tokens.json")
             write("docs/design-system/README.md", "# App\n")
             sh("git", "rm", "-q", "docs/design-system/rules.yml")
             sh("git", "add", "-A")
@@ -377,6 +402,18 @@ def self_test():
             lines = []
             code = check("plugin", "HEAD~1", "HEAD~1", repos_yml, out=lines.append)
             ok("no CSS changed: nothing runs", code == 0 and "touches no CSS" in lines[0], lines)
+            write("assets/admin.css", "".join(f".diluxone-x-admin .r{i} {{ color: #646970; padding: {i}px; }}\n" for i in range(12)))
+            sh("git", "add", "-A")
+            sh("git", "commit", "-q", "-m", "a longer file")
+            sh("git", "mv", "assets/admin.css", "assets/screen.css")
+            with open(os.path.join(repo, "assets/screen.css"), "a", encoding="utf-8") as fh:
+                fh.write(".diluxone-x-admin .new { color: #2271b1; }\n")
+            sh("git", "add", "-A")
+            sh("git", "commit", "-q", "-m", "renamed")
+            lines = []
+            code = check("plugin", "HEAD^1", "HEAD", repos_yml, out=lines.append)
+            errors = [line for line in lines if line.startswith("::error")]
+            ok("a renamed file: only the lines the change adds fail", code == 1 and len(errors) == 1 and "line=13," in errors[0], errors)
         finally:
             os.chdir(cwd)
     if not failed:
