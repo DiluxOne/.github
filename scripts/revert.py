@@ -526,11 +526,15 @@ def act():
             issue = open_issue(repo, item, tmp, by_hand_comment(item, "it does not revert cleanly on today's default branch: later changes touch the same lines"))
             print(f"The merge does not revert cleanly; the issue (#{issue}) says so.")
             return 0
+        if git("diff", "--cached", "--quiet", check=False).returncode == 0:
+            issue = open_issue(repo, item, tmp, by_hand_comment(item, "reverting it changes nothing on today's default branch: the change is already undone, so the red has another cause"))
+            print(f"The revert would be empty; the issue (#{issue}) says so.")
+            return 0
         title = revert_title(item["pr_title"])
         git("commit", "-q", "-m", title, "-m", f"This reverts commit {item['sha']} (#{item['pr']}): the default branch went red after it merged.")
         issue = open_issue(repo, item, tmp)
+        name = branch(issue, item["pr_title"])
         try:
-            name = branch(issue, item["pr_title"])
             git("push", "-q", "origin", f"HEAD:refs/heads/{name}")
             pbody = os.path.join(tmp, "pr.md")
             with open(pbody, "w", encoding="utf-8") as fh:
@@ -695,7 +699,7 @@ def self_test():
     check("`locate` runs before any token for the repository", actjob.index("revert.py locate") < actjob.index("id: rerun") < actjob.index("id: revert"), True)
 
     # act, offline: a local repository in place of GitHub, gh and the API faked.
-    def act_offline(conflict=False, files=("src/a.txt",), kind="revert", green_since=False):
+    def act_offline(conflict=False, files=("src/a.txt",), kind="revert", green_since=False, undone=False):
         calls = []
         with tempfile.TemporaryDirectory() as base:
             src = os.path.join(base, "DiluxOne", "x")
@@ -710,8 +714,8 @@ def self_test():
             open(os.path.join(src, "src", "a.txt"), "w").write("two\n")
             sh("commit", "-q", "-am", "fix(sync): retry once (#12)")
             merge = sh("rev-parse", "HEAD")
-            if conflict:
-                open(os.path.join(src, "src", "a.txt"), "w").write("three\n")
+            if conflict or undone:
+                open(os.path.join(src, "src", "a.txt"), "w").write("three\n" if conflict else "one\n")
                 sh("commit", "-q", "-am", "later")
             sh("switch", "-q", "-c", "elsewhere")  # main is not checked out: a push to a branch of it is accepted
             answers = {
@@ -798,6 +802,9 @@ def self_test():
         globals()["api"] = saved_api
     calls, pushed = act_offline(green_since=True)
     check("act: green again since the scan, nothing is reverted", (pushed, any(c[0] == "gh" for c in calls)), (None, False))
+    calls, pushed = act_offline(undone=True)
+    gh_calls = [c[1:] for c in calls if c[0] == "gh"]
+    check("act: a merge already undone opens the issue alone, saying so", (pushed, ("issue", "comment") in gh_calls, ("pr", "create") in gh_calls), (None, True, False))
     calls, pushed = act_offline(kind="rerun")
     gh_calls = [c[1:] for c in calls if c[0] == "gh"]
     check("act: a first red re-runs its failed jobs, and nothing else", (gh_calls, pushed), ([("api", "-X")], None))
