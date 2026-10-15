@@ -382,6 +382,8 @@ jobs:
           # The central's checkout leaves before the tree is packed: nothing
           # that is not the plugin may end up in the build.
           rm -rf .dx-central
+          # The rule of scripts/stage-plugin.sh, which the checks stage by:
+          # only .distignore decides, so a committed build/ ships (#172).
           exclude=(); [ -f .distignore ] && exclude=(--exclude-from=.distignore)
           mkdir -p "$RUNNER_TEMP/dist"
           rsync -rc "${exclude[@]}" --exclude=.git --exclude=.github ./ "$RUNNER_TEMP/dist/$SLUG/" --delete

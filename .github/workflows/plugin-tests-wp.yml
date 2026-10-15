@@ -457,10 +457,10 @@ jobs:
           # so three steps later.
           npx wp-env run tests-cli wp core is-installed --network >/dev/null 2>&1 \
             || { echo "::error::The tests site is not a network after converting it. WP-CLI's output above says why; the usual cause is a database that is not fresh (a runner that kept the last run's wp-env volume, whose network already exists)."; exit 1; }
-          # Written into the checkout, which wp-env mounts as the plugin's
-          # folder, and copied from there inside the container.
-          mkdir -p build
-          cat > build/dx-network.htaccess <<'HTACCESS'
+          # Written outside the checkout (the plugin may commit a build/ of
+          # its own, #172) and handed to the container as base64 on the
+          # command line, which needs no mount.
+          cat > "$RUNNER_TEMP/dx-network.htaccess" <<'HTACCESS'
           # BEGIN WordPress Multisite
           RewriteEngine On
           RewriteBase /
@@ -474,7 +474,8 @@ jobs:
           RewriteRule . index.php [L]
           # END WordPress Multisite
           HTACCESS
-          npx wp-env run tests-cli bash -c "cp /var/www/html/wp-content/plugins/$REPO/build/dx-network.htaccess /var/www/html/.htaccess"
+          htaccess=$(base64 -w0 "$RUNNER_TEMP/dx-network.htaccess")
+          npx wp-env run tests-cli bash -c "echo $htaccess | base64 -d > /var/www/html/.htaccess"
           # The plugins it needs first (requires-plugins-from), or WordPress
           # refuses it for its Requires Plugins header.
           read -ra slugs <<<"$SLUGS"
