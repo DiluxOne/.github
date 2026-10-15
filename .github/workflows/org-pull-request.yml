@@ -5,7 +5,10 @@ name: Pull request (organisation)
 # branch, so it runs on each pull request with no file in the repository:
 # the conventions with the accepted-issue gate, then the Claude review and
 # the auto-merge decision; beside them, the issues it closes go to its
-# author when a member of the organisation (pull-request-assignee.yml, #73).
+# author when a member of the organisation (pull-request-assignee.yml, #73);
+# and, in a private repository, a call that starts the organisation's VM its
+# jobs wait for, instead of leaving them to runner-vm.yml's schedule
+# (runner-wake.yml, #154).
 # The job ids are the ones the repositories' own pull-request.yml used, so
 # the check names stay "conventions / Conventions (branch, title, commits)",
 # "conventions / Docs (links and names)" and "review / Claude review".
@@ -47,6 +50,19 @@ jobs:
     if: github.repository != 'DiluxOne/.github'
     permissions: {}
     uses: DiluxOne/.github/.github/workflows/pull-request-assignee.yml@v5
+    secrets:
+      DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+
+  # The VM the private repositories' jobs run on is off while idle: start it
+  # now (#154). On GitHub's runner, a few seconds; skipped where DX_RUNNER is
+  # not `self-hosted`, so in every public repository. Not on `edited`: an
+  # edit queues only the conventions, mostly right after the push or the
+  # review that already woke the VM, and the schedule covers the rest, so
+  # edits spend no minutes on it.
+  wake-vm:
+    if: github.repository != 'DiluxOne/.github' && github.event.action != 'edited'
+    permissions: {}
+    uses: DiluxOne/.github/.github/workflows/runner-wake.yml@v5
     secrets:
       DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
 
