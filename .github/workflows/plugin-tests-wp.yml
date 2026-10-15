@@ -47,6 +47,17 @@ name: WordPress plugin tests (slow)
 # and, when the repository has a composer.json, PHP 8.5 and Composer, on
 # GitHub's runners and on the organisation's alike (#140).
 #
+# A plugin that needs another to run (an add-on and its free plugin) names
+# it in `requires-plugins-from`, as for plugin-checks-wp.yml: one
+# `<slug>=<owner>/<repo>@<ref>` per line, repositories of this organisation,
+# read with dilux-bot (the caller passes DILUX_BOT_PRIVATE_KEY). Its shipped
+# tree is fetched once, in a job of its own, and every suite mounts it as
+# wp-content/plugins/<slug> (merged into the repository's
+# `.wp-env.override.json`, scripts/required-plugins.sh) and activates it,
+# network-activated on a network, before the plugin under test. A required
+# plugin that cannot be fetched fails the suite, naming its repository;
+# none is ever tested without it. Left empty, nothing of this runs.
+#
 #   jobs:
 #     tests:
 #       uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v5
@@ -55,6 +66,9 @@ name: WordPress plugin tests (slow)
 #         e2e-suites: >-
 #           [{"name":"single","site":"single","run":"npx playwright test"},
 #            {"name":"network","site":"network","run":"npx playwright test -c playwright.network.config.ts","results":"build/e2e-network-results"}]
+#         requires-plugins-from: diluxone-users=DiluxOne/diluxone-users-wordpress@main
+#       secrets:
+#         DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}   # with requires-plugins-from
 
 on:
   workflow_call:
@@ -79,10 +93,18 @@ on:
         description: 'JSON list of end-to-end suites, {name, site (single|network), run, results?, timeout?}, one job each, named "E2E (<name>)". Empty keeps the old single "E2E (Playwright)" job.'
         type: string
         default: ''
+      requires-plugins-from:
+        description: The plugins this one needs to run (Requires Plugins), one `<slug>=<owner>/<repo>@<ref>` per line, from repositories of this organisation. Every suite mounts their shipped tree as wp-content/plugins/<slug> and activates them before this plugin. Needs the DILUX_BOT_PRIVATE_KEY secret.
+        type: string
+        default: ''
       central-ref:
         description: Ref of DiluxOne/.github to read the policy from.
         type: string
         default: v5
+    secrets:
+      # Only with requires-plugins-from: a token that reads those repositories.
+      DILUX_BOT_PRIVATE_KEY:
+        required: false
 
 permissions:
   contents: read
@@ -140,9 +162,67 @@ jobs:
           DEFAULT_POLICY: .dx-central/policy/review-policy.default.yml
         run: bash .dx-central/scripts/changes.sh
 
+  required-plugins:
+    name: Required plugins (from the organisation)
+    # Opt-in (`requires-plugins-from`), as in plugin-checks-wp.yml: the
+    # shipped tree of each plugin this one needs, fetched with a dilux-bot
+    # token that reads those repositories alone, in a job that never checks
+    # out the code under test: the key never shares a job with a pull
+    # request's code. A fork's pull request gets no secret, and this job
+    # fails for it. It runs when a suite does.
+    needs: changes
+    if: ${{ !cancelled() && inputs.requires-plugins-from != '' && (inputs.integration || inputs.e2e) && needs.changes.outputs.code != 'false' }}
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref }}
+          path: .dx-central
+          persist-credentials: false
+      - name: The repositories
+        id: repos
+        env:
+          REQUIRES: ${{ inputs.requires-plugins-from }}
+          OWNER: ${{ github.repository_owner }}
+          HAS_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY != '' }}
+        run: |
+          if [ "$HAS_KEY" != true ]; then
+            echo "::error::requires-plugins-from needs the DILUX_BOT_PRIVATE_KEY secret (secrets: in the caller; a fork's pull request gets none)."
+            exit 1
+          fi
+          list=$(bash .dx-central/scripts/required-plugins.sh repos)
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+      - name: dilux-bot token (read those repositories)
+        id: bot
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.repos.outputs.list }}
+          permission-contents: read
+      - name: Their shipped trees
+        env:
+          REQUIRES: ${{ inputs.requires-plugins-from }}
+          OWNER: ${{ github.repository_owner }}
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+        run: bash .dx-central/scripts/required-plugins.sh fetch "$RUNNER_TEMP/required-plugins"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          # Not plugin-checks-wp.yml's name: a caller runs both in one run.
+          name: required-plugins-tests
+          path: ${{ runner.temp }}/required-plugins
+          # A re-run of the failed jobs alone reuses this attempt's artifact.
+          retention-days: 7
+          include-hidden-files: true
+          # A re-run of every job uploads it again under the same name.
+          overwrite: true
+
   integration:
     name: ${{ matrix.target.check }}
-    needs: changes
+    needs: [changes, required-plugins]
     # Always there, so its check carries the name a ruleset requires (a job
     # skipped before its matrix expands reports an unexpanded name). When
     # the suite is off, or no code changed, every step is skipped and the
@@ -185,8 +265,51 @@ jobs:
         if: env.GO == 'true'
       - run: npm install --no-audit --no-fund
         if: env.GO == 'true'
+      # The plugins this one needs (`requires-plugins-from`): from the
+      # required-plugins job (a skipped job there would pass the suite
+      # without them), mounted beside it before wp-env starts.
+      - name: The required plugins arrived
+        if: inputs.requires-plugins-from != '' && env.GO == 'true'
+        env:
+          RESULT: ${{ needs.required-plugins.result }}
+          REQUIRES: ${{ inputs.requires-plugins-from }}
+        run: |
+          [ "$RESULT" = success ] || { echo "::error::The required plugins ($(printf '%s' "$REQUIRES" | tr '\n' ' ')) could not be fetched (the Required plugins job: $RESULT; its log names the repository). The suite does not run without them."; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: inputs.requires-plugins-from != '' && env.GO == 'true'
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref }}
+          path: .dx-central
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        id: required-download
+        if: inputs.requires-plugins-from != '' && env.GO == 'true'
+        continue-on-error: true
+        with:
+          name: required-plugins-tests
+          path: ${{ runner.temp }}/required-plugins
+      - name: Mount the required plugins beside it
+        id: required
+        if: inputs.requires-plugins-from != '' && env.GO == 'true'
+        env:
+          DOWNLOAD: ${{ steps.required-download.outcome }}
+          REQUIRES: ${{ inputs.requires-plugins-from }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          [ "$DOWNLOAD" = success ] || { echo "::error::The required plugins' artifact could not be downloaded: gone (it lasts 7 days, and a re-run of the failed jobs alone reuses the first attempt's) or a download error. Re-run all jobs."; exit 1; }
+          bash .dx-central/scripts/required-plugins.sh mount "$RUNNER_TEMP/required-plugins"
+          echo "slugs=$(bash .dx-central/scripts/required-plugins.sh slugs)" >> "$GITHUB_OUTPUT"
       - run: npx wp-env start
         if: env.GO == 'true'
+      - name: The required plugins, active (single site)
+        if: inputs.requires-plugins-from != '' && env.GO == 'true' && matrix.target.site == 'single'
+        env:
+          SLUGS: ${{ steps.required.outputs.slugs }}
+        run: |
+          read -ra slugs <<<"$SLUGS"
+          npx wp-env run tests-cli wp plugin activate "${slugs[@]}"
       - name: Multisite network
         if: env.GO == 'true' && matrix.target.site == 'network'
         # Converted, then checked: on a database that already holds a network's
@@ -195,12 +318,17 @@ jobs:
         # would fail three steps later saying the site is not a network.
         env:
           REPO: ${{ github.event.repository.name }}
+          SLUGS: ${{ steps.required.outputs.slugs }}
         run: |
           set -euo pipefail
           npx wp-env run tests-cli wp core is-installed --network >/dev/null 2>&1 \
             || npx wp-env run tests-cli wp core multisite-convert --title="Tests network"
           npx wp-env run tests-cli wp core is-installed --network >/dev/null 2>&1 \
             || { echo "::error::The tests site is not a network after converting it. WP-CLI's output above says why; the usual cause is a database that is not fresh (a runner that kept the last run's wp-env volume, whose network already exists)."; exit 1; }
+          # The plugins it needs first (requires-plugins-from), or WordPress
+          # refuses it for its Requires Plugins header.
+          read -ra slugs <<<"$SLUGS"
+          [ "${#slugs[@]}" -eq 0 ] || npx wp-env run tests-cli wp plugin activate "${slugs[@]}" --network
           npx wp-env run tests-cli wp plugin activate "$REPO" --network
       - name: PHPUnit (integration)
         if: env.GO == 'true'
@@ -213,7 +341,7 @@ jobs:
 
   e2e:
     name: ${{ matrix.suite.check }}
-    needs: changes
+    needs: [changes, required-plugins]
     # Always there, like the integration jobs, for the same reason.
     if: ${{ !cancelled() }}
     runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-24.04' }}
@@ -265,13 +393,53 @@ jobs:
         run: |
           if [ "$RUNNER_KIND" = self-hosted ]; then npx playwright install chromium
           else npx playwright install --with-deps chromium; fi
+      # The plugins this one needs (`requires-plugins-from`): from the
+      # required-plugins job (a skipped job there would pass the suite
+      # without them), mounted beside it before wp-env starts.
+      - name: The required plugins arrived
+        if: inputs.requires-plugins-from != '' && env.GO == 'true'
+        env:
+          RESULT: ${{ needs.required-plugins.result }}
+          REQUIRES: ${{ inputs.requires-plugins-from }}
+        run: |
+          [ "$RESULT" = success ] || { echo "::error::The required plugins ($(printf '%s' "$REQUIRES" | tr '\n' ' ')) could not be fetched (the Required plugins job: $RESULT; its log names the repository). The suite does not run without them."; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: inputs.requires-plugins-from != '' && env.GO == 'true'
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref }}
+          path: .dx-central
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        id: required-download
+        if: inputs.requires-plugins-from != '' && env.GO == 'true'
+        continue-on-error: true
+        with:
+          name: required-plugins-tests
+          path: ${{ runner.temp }}/required-plugins
+      - name: Mount the required plugins beside it
+        id: required
+        if: inputs.requires-plugins-from != '' && env.GO == 'true'
+        env:
+          DOWNLOAD: ${{ steps.required-download.outcome }}
+          REQUIRES: ${{ inputs.requires-plugins-from }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          [ "$DOWNLOAD" = success ] || { echo "::error::The required plugins' artifact could not be downloaded: gone (it lasts 7 days, and a re-run of the failed jobs alone reuses the first attempt's) or a download error. Re-run all jobs."; exit 1; }
+          bash .dx-central/scripts/required-plugins.sh mount "$RUNNER_TEMP/required-plugins"
+          echo "slugs=$(bash .dx-central/scripts/required-plugins.sh slugs)" >> "$GITHUB_OUTPUT"
       - run: npx wp-env start
         if: env.GO == 'true'
       - name: Activate the plugin (single site)
         if: env.GO == 'true' && matrix.suite.site == 'single'
+        # The plugins it needs first (requires-plugins-from), in one call.
         env:
           REPO: ${{ github.event.repository.name }}
-        run: npx wp-env run cli wp plugin activate "$REPO"
+          SLUGS: ${{ steps.required.outputs.slugs }}
+        run: |
+          read -ra slugs <<<"$SLUGS"
+          npx wp-env run cli wp plugin activate "${slugs[@]}" "$REPO"
       - name: A subdirectory network on the tests site, the plugin network-activated
         if: env.GO == 'true' && matrix.suite.site == 'network'
         # WordPress's own rewrite rules for a subdirectory network: without
@@ -279,6 +447,7 @@ jobs:
         # other sites of the network.
         env:
           REPO: ${{ github.event.repository.name }}
+          SLUGS: ${{ steps.required.outputs.slugs }}
         run: |
           set -euo pipefail
           npx wp-env run tests-cli wp core is-installed --network >/dev/null 2>&1 \
@@ -306,6 +475,10 @@ jobs:
           # END WordPress Multisite
           HTACCESS
           npx wp-env run tests-cli bash -c "cp /var/www/html/wp-content/plugins/$REPO/build/dx-network.htaccess /var/www/html/.htaccess"
+          # The plugins it needs first (requires-plugins-from), or WordPress
+          # refuses it for its Requires Plugins header.
+          read -ra slugs <<<"$SLUGS"
+          [ "${#slugs[@]}" -eq 0 ] || npx wp-env run tests-cli wp plugin activate "${slugs[@]}" --network
           npx wp-env run tests-cli wp plugin activate "$REPO" --network
       - name: Run the suite
         if: env.GO == 'true'

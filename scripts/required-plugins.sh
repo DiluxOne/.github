@@ -1,33 +1,41 @@
 #!/usr/bin/env bash
 # The plugins a plugin requires (its `Requires Plugins` header) that
 # wordpress.org does not have yet, provided from the organisation's own
-# repositories for Plugin Check (plugin-checks-wp.yml, `requires-plugins-from`).
+# repositories (`requires-plugins-from`): for Plugin Check
+# (plugin-checks-wp.yml) and for the wp-env suites (plugin-tests-wp.yml).
 #
 # Plugin Check's action installs every required plugin with
 # `wp plugin install --activate <slug>`, which asks wordpress.org first and
 # fails with "Plugin not found" for one it does not list, even when it is
 # already installed. So the required plugin is mounted beside the one being
 # checked and a must-use plugin answers wordpress.org's question for those
-# slugs alone: WP-CLI finds them installed and activates them.
+# slugs alone: WP-CLI finds them installed and activates them. The suites
+# need no such answer: they mount the plugins, activate them with WP-CLI,
+# and keep the repository's own must-use plugins.
 #
 #   required-plugins.sh repos         The repositories, comma-separated (for
 #                                     the token that reads them).
+#   required-plugins.sh slugs         The slugs, space-separated, in the
+#                                     order given (to activate them).
 #   required-plugins.sh fetch <dir>   Clone each one at its ref and copy its
 #                                     shipped tree (its .distignore) to
 #                                     <dir>/<slug>; the must-use plugin goes
 #                                     to <dir>/mu-plugins.
-#   required-plugins.sh wp-env <dir>  Write ./.wp-env.override.json, which
-#                                     wp-env merges into the action's
-#                                     .wp-env.json: each <dir>/<slug> as
-#                                     wp-content/plugins/<slug>, and
-#                                     <dir>/mu-plugins.
+#   required-plugins.sh wp-env <dir>  Merge into ./.wp-env.override.json
+#                                     (which wp-env merges into .wp-env.json;
+#                                     what it already says is kept) each
+#                                     <dir>/<slug> as wp-content/plugins/<slug>,
+#                                     and <dir>/mu-plugins (Plugin Check).
+#   required-plugins.sh mount <dir>   The same without the must-use plugins
+#                                     (the suites).
 #
-# repos and fetch expect REQUIRES (one `<slug>=<owner>/<repo>@<ref>` per line or comma),
+# repos, slugs and fetch expect REQUIRES (one `<slug>=<owner>/<repo>@<ref>` per line or comma),
 # and OWNER (the organisation: no other owner is accepted); fetch also
 # GH_TOKEN (contents read on those repositories); GIT_BASE overrides https://github.com for the
-# tests. It writes nothing outside <dir>.
+# tests. fetch writes nothing outside <dir>; wp-env and mount, nothing but
+# ./.wp-env.override.json.
 #
-# `required-plugins.sh --test` checks both against scratch repositories.
+# `required-plugins.sh --test` checks them against scratch repositories.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -37,7 +45,7 @@ if [ "${1:-}" = "--test" ]; then
   (
     set -euo pipefail
     mkdir -p "$dir/git/Org" && cd "$dir/git/Org"
-    git init -q base-repo && cd base-repo && git config user.email t@t && git config user.name t
+    git init -q base-repo && cd base-repo && git config user.email t@t && git config user.name t && git config commit.gpgsign false
     printf '<?php\n/* Plugin Name: Base */\n' > base.php
     printf 'notes\n' > README.md
     printf 'README.md\n.distignore\n' > .distignore
@@ -67,6 +75,19 @@ b=Org/two@v1,c=Org/one@x" OWNER=Org bash "$here/required-plugins.sh" repos 2>/de
   ok "wp-env: the plugin mounted under its slug" "jq -e --arg d '$dir/out' '.mappings[\"wp-content/plugins/base\"] == (\$d + \"/base\")' '$dir/.wp-env.override.json' >/dev/null"
   ok "wp-env: the must-use plugins mounted"     "jq -e --arg d '$dir/out' '.mappings[\"wp-content/mu-plugins\"] == (\$d + \"/mu-plugins\")' '$dir/.wp-env.override.json' >/dev/null"
   ok "wp-env: nothing else"                     "jq -e '.mappings | length == 2' '$dir/.wp-env.override.json' >/dev/null"
+  # The suites (plugin-tests-wp.yml, #148): mounted beside the plugin under
+  # test, without the must-use plugins, keeping what the repository's own
+  # override already says (C1).
+  printf '%s\n' '{"port":8888,"mappings":{"wp-content/mu-plugins/own.php":"./own.php"},"config":{"WP_DEBUG":true}}' > "$dir/.wp-env.override.json"
+  ( cd "$dir" && bash "$here/required-plugins.sh" mount "$dir/out" >/dev/null 2>&1 ) || { echo "FAIL mount failed"; fail=1; }
+  ok "C1 (#148) mount: the plugin under wp-content/plugins/<slug>" "jq -e --arg d '$dir/out' '.mappings[\"wp-content/plugins/base\"] == (\$d + \"/base\")' '$dir/.wp-env.override.json' >/dev/null"
+  ok "C1 (#148) mount: no must-use plugins of its own"   "jq -e '.mappings | has(\"wp-content/mu-plugins\") | not' '$dir/.wp-env.override.json' >/dev/null"
+  ok "C1 (#148) mount: the repository's override kept"   "jq -e '.port == 8888 and .config.WP_DEBUG == true and .mappings[\"wp-content/mu-plugins/own.php\"] == \"./own.php\" and (.mappings | length == 2)' '$dir/.wp-env.override.json' >/dev/null"
+  ok "C1 (#148) slugs: in the order given, once" '[ "$(REQUIRES="b=Org/two@v1
+a=Org/one@main,b=Org/two@v1" OWNER=Org bash "$here/required-plugins.sh" slugs 2>/dev/null)" = "b a" ]'
+  ok "C1 (#148) slugs: another owner is refused" '! REQUIRES="a=Other/one@main" OWNER=Org bash "$here/required-plugins.sh" slugs >/dev/null 2>&1'
+  # C3 (#148): a repository that cannot be read stops the job, naming it.
+  ok "C3 (#148) an unreadable repository fails, naming it" '! out=$(cd "$dir" && REQUIRES="gone=Org/no-such-repo@main" OWNER=Org GH_TOKEN=t GIT_BASE=file://$dir/git bash "$here/required-plugins.sh" fetch "$dir/out3" 2>&1) && grep -q "::error::.*Org/no-such-repo@main" <<<"$out"'
   rm -rf "$dir"
   [ "$fail" -eq 0 ] && echo "all tests passed"
   exit "$fail"
@@ -96,7 +117,14 @@ if [ "$mode" = repos ]; then
   printf '%s\n' "$list" | awk '{print $3}' | sort -u | paste -sd, -
   exit 0
 fi
-[ -n "$out" ] || { echo "usage: required-plugins.sh repos | fetch|wp-env <dir> | --test" >&2; exit 2; }
+if [ "$mode" = slugs ]; then
+  # For WP-CLI: the slugs, in the order given, each once.
+  list=$(parse) || exit 1
+  printf '%s\n' "$list" | awk '!seen[$1]++ {print $1}' | paste -sd' ' -
+  exit 0
+fi
+usage="usage: required-plugins.sh repos | slugs | fetch|wp-env|mount <dir> | --test"
+[ -n "$out" ] || { echo "$usage" >&2; exit 2; }
 
 case "$mode" in
   fetch)
@@ -148,17 +176,23 @@ add_filter(
 );
 PHP
     ;;
-  wp-env)
+  wp-env|mount)
     out=$(cd "$out" && pwd)
     mapfile -t slugs < <(find "$out" -mindepth 1 -maxdepth 1 -type d ! -name mu-plugins -printf '%f\n' | sort)
-    jq -n --arg dir "$out" '
-      { mappings: (
+    mu=false; [ "$mode" = wp-env ] && mu=true
+    # Merged into the override the repository may already have (its ports,
+    # constants and mappings stay); a mapping of the same path is ours.
+    existing='{}'
+    [ -f .wp-env.override.json ] && existing=$(cat .wp-env.override.json)
+    jq -n --arg dir "$out" --argjson mu "$mu" --argjson existing "$existing" '
+      $existing * { mappings: (
           [ $ARGS.positional[] | { key: "wp-content/plugins/\(.)", value: "\($dir)/\(.)" } ]
-          + [ { key: "wp-content/mu-plugins", value: "\($dir)/mu-plugins" } ]
+          + (if $mu then [ { key: "wp-content/mu-plugins", value: "\($dir)/mu-plugins" } ] else [] end)
         | from_entries) }' \
       --args "${slugs[@]}" \
-      > .wp-env.override.json
+      > .wp-env.override.json.new
+    mv .wp-env.override.json.new .wp-env.override.json
     cat .wp-env.override.json
     ;;
-  *) echo "usage: required-plugins.sh repos | fetch|wp-env <dir> | --test" >&2; exit 2 ;;
+  *) echo "$usage" >&2; exit 2 ;;
 esac
