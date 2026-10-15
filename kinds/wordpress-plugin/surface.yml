@@ -6,7 +6,7 @@
 # runs every fixture.
 #
 # Patterns are Python regular expressions over a whole file (a call may span
-# lines). A `name` group: new when the name appears nowhere in the base's
+# lines); `(?i)`, since PHP's function names are not case-sensitive. A `name` group: new when the name appears nowhere in the base's
 # files (a hook moved or fired again is not new). No `name` group: new when
 # the changed files hold more matches than at the base (a call changed in
 # place, or moved, is not new). Conservative on purpose: this check is
@@ -32,7 +32,7 @@ exclude:
 surface:
   - id: setting
     what: a setting (register_setting)
-    pattern: '(?<![\w$>:])register_setting\s*\(\s*(?:''(?:[^''\\]|\\.)*''|"(?:[^"\\]|\\.)*"|[A-Za-z_\\$][\w\\:$>-]*)\s*,\s*(?P<name>''(?:[^''\\]|\\.)*''|"(?:[^"\\]|\\.)*"|[A-Za-z_\\$][\w\\:$>-]*)'
+    pattern: '(?i)(?<![\w$>:])register_setting\s*\(\s*(?:''(?:[^''\\]|\\.)*''|"(?:[^"\\]|\\.)*"|[A-Za-z_\\$][\w\\:$>-]*)\s*,\s*(?P<name>''(?:[^''\\]|\\.)*''|"(?:[^"\\]|\\.)*"|[A-Za-z_\\$][\w\\:$>-]*)'
     fixtures:
       fail:
         - "<?php\nregister_setting( 'dx_group', 'dx_new_option' );\n"
@@ -49,7 +49,7 @@ surface:
 
   - id: option
     what: an option (add_option)
-    pattern: '(?<![\w$>:])(?<!function )add_(?:site_)?option\s*\(\s*(?P<name>''(?:[^''\\]|\\.)*''|"(?:[^"\\]|\\.)*"|[A-Za-z_\\$][\w\\:$>-]*)'
+    pattern: '(?i)(?<![\w$>:])(?<!function )add_(?:site_)?option\s*\(\s*(?P<name>''(?:[^''\\]|\\.)*''|"(?:[^"\\]|\\.)*"|[A-Za-z_\\$][\w\\:$>-]*)'
     fixtures:
       fail:
         - "<?php\nadd_option( 'dx_new_option', 1 );\n"
@@ -62,10 +62,11 @@ surface:
 
   - id: rest-route
     what: a REST route (register_rest_route)
-    pattern: '(?<![\w$>:])register_rest_route\s*\('
+    pattern: '(?i)(?<![\w$>:])register_rest_route\s*\('
     fixtures:
       fail:
         - "<?php\nregister_rest_route( 'dx/v1', '/items', array( 'methods' => 'GET' ) );\n"
+        - "<?php\nREGISTER_REST_ROUTE( 'dx/v1', '/shout', array() );\n"
         - path: includes/test/rest.php
           head: "<?php\nregister_rest_route( 'dx/v1', '/hidden', array() );\n"
         - base: "<?php\nregister_rest_route( 'dx/v1', '/items', array() );\n"
@@ -84,7 +85,7 @@ surface:
 
   - id: admin-page
     what: an admin page (add_menu_page, add_submenu_page and the like)
-    pattern: '(?<![\w$>:])add_(?:menu|submenu|object|utility|options|management|theme|users|dashboard|posts|media|links|pages|comments|plugins)_page\s*\('
+    pattern: '(?i)(?<![\w$>:])add_(?:menu|submenu|object|utility|options|management|theme|users|dashboard|posts|media|links|pages|comments|plugins)_page\s*\('
     fixtures:
       fail:
         - "<?php\nadd_submenu_page( 'dx', 'Reports', 'Reports', 'manage_options', 'dx-reports', 'cb' );\n"
@@ -96,7 +97,7 @@ surface:
 
   - id: hook
     what: a hook (do_action, apply_filters)
-    pattern: '(?<![\w$>:])(?:do_action|do_action_ref_array|apply_filters|apply_filters_ref_array)\s*\(\s*(?P<name>''(?:[^''\\]|\\.)*''|"(?:[^"\\]|\\.)*")'
+    pattern: '(?i)(?<![\w$>:])(?:do_action|do_action_ref_array|apply_filters|apply_filters_ref_array)\s*\(\s*(?P<name>''(?:[^''\\]|\\.)*''|"(?:[^"\\]|\\.)*")'
     fixtures:
       fail:
         - "<?php\n$v = apply_filters( 'dx_new_filter', $v );\n"
@@ -123,7 +124,7 @@ surface:
 
   - id: shortcode
     what: a shortcode (add_shortcode)
-    pattern: '(?<![\w$>:])add_shortcode\s*\(\s*(?P<name>''(?:[^''\\]|\\.)*''|"(?:[^"\\]|\\.)*"|[A-Za-z_\\$][\w\\:$>-]*)'
+    pattern: '(?i)(?<![\w$>:])add_shortcode\s*\(\s*(?P<name>''(?:[^''\\]|\\.)*''|"(?:[^"\\]|\\.)*"|[A-Za-z_\\$][\w\\:$>-]*)'
     fixtures:
       fail:
         - "<?php\nadd_shortcode( 'dx_gallery', 'dx_gallery_cb' );\n"
@@ -134,7 +135,7 @@ surface:
 
   - id: post-type
     what: a post type (register_post_type)
-    pattern: '(?<![\w$>:])register_post_type\s*\(\s*(?P<name>''(?:[^''\\]|\\.)*''|"(?:[^"\\]|\\.)*"|[A-Za-z_\\$][\w\\:$>-]*)'
+    pattern: '(?i)(?<![\w$>:])register_post_type\s*\(\s*(?P<name>''(?:[^''\\]|\\.)*''|"(?:[^"\\]|\\.)*"|[A-Za-z_\\$][\w\\:$>-]*)'
     fixtures:
       fail:
         - "<?php\nregister_post_type( 'dx_ticket', array( 'public' => true ) );\n"
@@ -144,7 +145,7 @@ surface:
 
   - id: taxonomy
     what: a taxonomy (register_taxonomy)
-    pattern: '(?<![\w$>:])register_taxonomy\s*\(\s*(?P<name>''(?:[^''\\]|\\.)*''|"(?:[^"\\]|\\.)*"|[A-Za-z_\\$][\w\\:$>-]*)'
+    pattern: '(?i)(?<![\w$>:])register_taxonomy\s*\(\s*(?P<name>''(?:[^''\\]|\\.)*''|"(?:[^"\\]|\\.)*"|[A-Za-z_\\$][\w\\:$>-]*)'
     fixtures:
       fail:
         - "<?php\nregister_taxonomy( 'dx_topic', 'dx_ticket' );\n"
@@ -154,7 +155,7 @@ surface:
 
   - id: endpoint
     what: an AJAX or admin-post endpoint (wp_ajax_, admin_post_)
-    pattern: '(?<![\w$>:])add_action\s*\(\s*(?P<name>''(?:wp_ajax_|admin_post_)[^'']*''|"(?:wp_ajax_|admin_post_)[^"]*")'
+    pattern: '(?i)(?<![\w$>:])add_action\s*\(\s*(?P<name>''(?:wp_ajax_|admin_post_)[^'']*''|"(?:wp_ajax_|admin_post_)[^"]*")'
     fixtures:
       fail:
         - "<?php\nadd_action( 'wp_ajax_dx_export', 'dx_export' );\n"

@@ -195,7 +195,8 @@ literal compared without its quotes, or the expression as written,
 whitespace aside) appears nowhere in the base's files of the entry: a hook
 moved, or fired a second time, is not new. One without is new when the
 changed files hold more matches at the head than at the base: a call changed
-in place, or moved to another file, is not new. The check is required in
+in place, or moved to another file, is not new (nor, by the same count, one
+added where another is removed: the human merge reads that). The check is required in
 every repository of the kind, so an entry stays conservative: a pattern that
 is unsure says nothing, and the human merge still reads the change.
 

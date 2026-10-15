@@ -70,9 +70,14 @@ def git(*args, data=None):
     return subprocess.run(["git", *args], check=True, capture_output=True, input=data).stdout
 
 
-def read_blobs(rev, paths):
-    """{path: text} of the files that exist at rev, via one cat-file process."""
-    paths = [p for p in paths if "\n" not in p]  # cat-file reads one per line
+def read_blobs(rev, paths, strict=False):
+    """{path: text} of the files that exist at rev, via one cat-file process.
+    strict (the files the diff changes): a file it cannot read, too large or
+    with a newline in its path, is an error, never skipped in silence."""
+    odd = [p for p in paths if "\n" in p]  # cat-file reads one path per line
+    if odd and strict:
+        raise ValueError(f"a changed path holds a newline: {odd[0]!r}")
+    paths = [p for p in paths if "\n" not in p]
     if not paths:
         return {}
     out = git("cat-file", "--batch", data="".join(f"{rev}:{p}\n" for p in paths).encode())
@@ -86,6 +91,8 @@ def read_blobs(rev, paths):
         size = int(header[2])
         if header[1] == b"blob" and size <= MAX_BYTES:
             blobs[p] = out[i:i + size].decode("utf-8", "replace")
+        elif header[1] == b"blob" and strict:
+            raise ValueError(f"{p} is {size} bytes, more than this check reads ({MAX_BYTES})")
         i += size + 1
     return blobs
 
@@ -159,7 +166,7 @@ def check(kind, base, head):
     mb = git("merge-base", base, head).decode().strip()
     takes = [selector(e.get("files") or pack.get("files") or [], pack.get("exclude") or []) for e in pack["surface"]]
     changed = [p for p in git("diff", "--no-renames", "--name-only", "-z", mb, head).decode().split("\0") if p and any(t(p) for t in takes)]
-    base_files, head_files = read_blobs(mb, changed), read_blobs(head, changed)
+    base_files, head_files = read_blobs(mb, changed, strict=True), read_blobs(head, changed, strict=True)
     cache = {}
 
     def base_corpus(take):
@@ -271,6 +278,10 @@ def self_test():
             sh("commit", "-qm", "refactor: move")
             ok("git: a hook moved to a new file is not new", check("wordpress-plugin", base, "HEAD") == [])
             ok("git: no kind, nothing checked", check("", base, "HEAD") == [])
+            write("includes/big.php", "<?php\n" + "//" * (MAX_BYTES // 2) + "\n")
+            sh("add", "-A")
+            sh("commit", "-qm", "fix: big")
+            ok("git: a changed file too large to read cannot be told apart, never skipped", _raises(lambda: check("wordpress-plugin", base, "HEAD")))
         finally:
             os.chdir(cwd)
 
