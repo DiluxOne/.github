@@ -33,6 +33,11 @@ name: Issue accepted
 # nothing while DX_AUTOPILOT is off. No receipt is written for it: the tag
 # and the GitHub release are the record.
 #
+# A reproduced bug's issue, which the `bugfix-reproduced` lane accepted
+# (`accepted-by:policy`; its PRD sealed by issue-repro.yml, which opened it,
+# #84), gets its receipt when it closes as completed, as an accepted one
+# does. Other lanes' issues are not sealed and get none yet.
+#
 #   on:
 #     issues:
 #       types: [labeled, closed]
@@ -240,7 +245,10 @@ jobs:
     timeout-minutes: 5
     # When an accepted issue closes as completed by a merged pull request: the
     # receipt (#81), committed to the receipts branch, and the board updated.
-    if: github.event_name == 'issues' && github.event.action == 'closed' && github.event.issue.state_reason == 'completed' && contains(github.event.issue.labels.*.name, inputs.label) && !contains(github.event.issue.labels.*.name, 'lane:release')
+    # A reproduced bug's issue (`lane:bugfix-reproduced`, #84) gets its
+    # receipt too: its PRD was sealed when the lane accepted it. Other lanes'
+    # issues (the platform's) are not sealed and get none yet.
+    if: github.event_name == 'issues' && github.event.action == 'closed' && github.event.issue.state_reason == 'completed' && (contains(github.event.issue.labels.*.name, inputs.label) || (contains(github.event.issue.labels.*.name, 'accepted-by:policy') && contains(github.event.issue.labels.*.name, 'lane:bugfix-reproduced'))) && !contains(github.event.issue.labels.*.name, 'lane:release')
     permissions: {}
     steps:
       - name: The scripts

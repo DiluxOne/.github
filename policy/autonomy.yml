@@ -61,6 +61,12 @@ lanes:
     evidence: The workflow run that opened the issue, with its smoke test.
     merge: {max-risk: medium, max-complexity: medium}
 
+  # The reproduction (issue-repro.yml) opens the lane's issue itself, never
+  # the reporter: its PRD is fixed text and the reproduction's facts
+  # (scripts/repro-lane.py), with the failing test as the specification. The
+  # autopilot keeps that test, untrusted code, out of its working tree and
+  # runs it only in the sandbox (scripts/repro-sandbox.sh); G7 merges only a
+  # pull request that carries it with the SHA-256 the PRD sealed (#84).
   bugfix-reproduced:
     description: A reported bug that the reproduction confirmed with a failing test.
     accept: policy
@@ -68,7 +74,7 @@ lanes:
       app: dilux-bot
       workflows: [issue-repro.yml]
     repositories: ["*"]
-    evidence: The failing test the reproduction wrote; the fix must make it pass.
+    evidence: The failing test the reproduction wrote, named in the PRD with its SHA-256; the fix makes it pass in the sandbox, unchanged.
     merge: {max-risk: medium, max-complexity: medium}
 
   # Trust that remains (stated, not hidden): the autopilot acts with

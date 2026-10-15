@@ -8,7 +8,8 @@ name: Issue triage
 #
 #   bug:unconfirmed       a bug report with enough to try to reproduce it
 #                         (issue-repro.yml starts on its own; repro:run starts
-#                         one by hand)
+#                         one by hand; a reproduced one goes to the autopilot
+#                         through the bugfix-reproduced lane, #84)
 #   needs-info            a bug report missing versions, steps or logs: the
 #                         reply asks for them. A report with steps made on an
 #                         older version (an older release, or a development
@@ -30,6 +31,10 @@ name: Issue triage
 #
 # It never adds `accepted`: only a person accepts an issue, and the
 # accepted-issue gate (scripts/issue-gate.sh) ignores a label a bot added.
+# An issue with no Type gets the category's; a bug report it reads as a
+# request (enhancement, planned, pro-feature) is retyped Feature and the
+# reply says so (#84): no reproduction starts, no `fix` can close it, and it
+# waits for a person like any request (scripts/triage-act.sh).
 #
 # A repository whose paid add-on keeps its roadmap in a private repository
 # names it in its policy (`paid-roadmap:` in .github/review-policy.yml). The
