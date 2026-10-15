@@ -243,11 +243,9 @@ def gate(script, env, root="."):
 
 def annotation(note):
     """A workflow command with its message escaped: text read from the pull request (a constraint, a header) cannot start another command."""
-    m = re.match(r"(::[a-z]+(?: [^:]*)?::)(.*)", note, re.S)
-    if not m:
-        return note
-    message = m.group(2).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-    return m.group(1) + message
+    m = re.match(r"(::[a-z]+(?: (?:(?!::)[^\r\n])*)?::)(.*)", note, re.S)
+    head, message = (m.group(1), m.group(2)) if m else ("", note)
+    return head + message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
 
 def emit(out, notes):
@@ -490,6 +488,9 @@ def self_test():
 
     check("annotation: a newline from the pull request cannot start another command",
           annotation("::warning file=composer.json::vimeo/psalm ^5\n::error::forged 100%") == "::warning file=composer.json::vimeo/psalm ^5%0A::error::forged 100%25")
+    check("annotation: a property with a colon still has its message escaped",
+          annotation("::warning file=C:/x.php::a\n::error::b") == "::warning file=C:/x.php::a%0A::error::b")
+    check("annotation: text that is no command is escaped whole", "\n" not in annotation("plain\n::error::b"))
     out, notes = gate_in("psalm:taint", {"require-dev": {"vimeo/psalm": "^5.26\n::error::forged"}})
     check("psalm: a forged constraint is escaped when printed", "\n" not in annotation(notes[0]), notes)
 
