@@ -42,7 +42,8 @@ jobs:
         # The private repositories' jobs run on the organisation's VM through
         # DX_RUNNER (runner-vm.yml); the release, the credentials check and the
         # reproduction handle secrets or code written from an issue's text and
-        # stay on GitHub's fresh runners.
+        # stay on GitHub's fresh runners; the wake-up of the VM (#154) cannot
+        # wait for the VM it starts.
         run: |
           fail=0
           for f in .github/workflows/*.yml; do
@@ -50,6 +51,8 @@ jobs:
             case "$(basename "$f")" in
               plugin-release-wp.yml|svn-auth-check.yml|issue-repro.yml)
                 if grep -q 'DX_RUNNER' "$f"; then echo "::error file=$f::stays on GitHub's runners: no DX_RUNNER here"; fail=1; fi ;;
+              runner-wake.yml)
+                if grep -E '^\s+runs-on:' "$f" | grep -vq 'ubuntu-latest$'; then echo "::error file=$f::wakes the VM: its job runs on GitHub's runners alone"; fail=1; fi ;;
               *)
                 if grep -E '^\s+runs-on:' "$f" | grep -vq 'DX_RUNNER'; then echo "::error file=$f::a job without the DX_RUNNER choice"; fail=1; fi ;;
             esac
@@ -99,6 +102,7 @@ jobs:
       - run: python3 scripts/autopilot.py --test
       - run: bash scripts/runner-vm/dx-runner-slot.sh --test
       - run: bash scripts/runner-vm/provision.sh --test
+      - run: bash scripts/runner-demand.sh --test
       - run: bash scripts/kind.sh --test
 
   # The scripts a contributor runs on their own machine, on a stock macOS:

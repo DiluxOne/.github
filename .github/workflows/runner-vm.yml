@@ -13,13 +13,24 @@ name: Organisation VM
 # image from runner-image.yml); the VM brings itself to that state on every
 # boot (scripts/runner-vm/provision.sh).
 #
-# Every ten minutes, and by hand: when a private repository's job is waiting
-# for a `diluxone` runner and the VM is off, it starts it; when the VM is on
+# Every ten minutes, when dispatched with `start` by a private repository's
+# pull request (runner-wake.yml, from the organisation's pipeline, #154), and
+# by hand: when a private repository's job is waiting for a `diluxone` runner
+# and the VM is off, it starts it; when the VM is on
 # and nothing has run on it for IDLE_MINUTES (no runner process at work, the
 # VM's own record of the last one), it cleans what jobs left (images only
 # past 70% of the data disk) and deallocates it, so compute is paid only
 # while jobs run. The VM is shared with AI Studio's runners: "nothing has run"
 # counts theirs too, so neither side switches it off under the other.
+#
+# GitHub delays or skips schedules under load (on 15 October none ran from
+# 00:07 to 01:01 UTC), so the schedule is the fallback, not the trigger: a
+# pull request wakes the VM itself. Jobs that do not come from a pull request
+# (a push, an issue, a repository's schedule) still wait for the next run
+# here. Every run also keeps one issue here, "Jobs waiting for the
+# organisation's VM", listing the jobs queued for more than LONG_MINUTES
+# with their links, closed when none waits that long (#154). The decisions
+# are scripts/runner-demand.sh, with its self-test.
 #
 # What runs there, and with what: the private repositories' jobs, the review
 # and the issue triage among them, with the Claude token and dilux-bot's key.
@@ -55,6 +66,7 @@ concurrency:
 
 env:
   IDLE_MINUTES: 20
+  LONG_MINUTES: 15
 
 jobs:
   vm:
@@ -64,7 +76,12 @@ jobs:
     permissions:
       contents: read
       id-token: write # the Azure login
+      issues: write # the issue of jobs that waited too long, here
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: dilux-bot token (read the private repositories' runs)
         id: bot
         continue-on-error: true
@@ -87,20 +104,9 @@ jobs:
         run: |
           set -euo pipefail
           [ -n "$GH_TOKEN" ] || { echo "::warning::No dilux-bot token: counted as waiting."; echo "waiting=unknown" >> "$GITHUB_OUTPUT"; exit 0; }
-          waiting=0
-          repos=$(gh api --paginate "orgs/$OWNER/repos?type=private&per_page=100" --jq '.[] | select(.archived | not) | .name') || { echo "waiting=unknown" >> "$GITHUB_OUTPUT"; exit 0; }
-          for repo in $repos; do
-            for status in queued in_progress; do
-              runs=$(gh api --paginate "repos/$OWNER/$repo/actions/runs?status=$status&per_page=100" --jq '.workflow_runs[].id') || { echo "waiting=unknown" >> "$GITHUB_OUTPUT"; exit 0; }
-              for run in $runs; do
-                n=$(gh api --paginate "repos/$OWNER/$repo/actions/runs/$run/jobs?filter=latest&per_page=100" \
-                  --jq '[.jobs[] | select(.status == "queued" and (.labels | index("diluxone")))] | length' | awk '{s += $1} END {print s + 0}') || n=unknown
-                [[ "$n" =~ ^[0-9]+$ ]] || { echo "waiting=unknown" >> "$GITHUB_OUTPUT"; exit 0; }
-                [ "$n" -gt 0 ] && echo "$repo: run $run has $n job(s) waiting"
-                waiting=$((waiting + n))
-              done
-            done
-          done
+          bash scripts/runner-demand.sh scan > "$RUNNER_TEMP/waiting.tsv" || { echo "::warning::GitHub did not answer: counted as waiting."; echo "waiting=unknown" >> "$GITHUB_OUTPUT"; exit 0; }
+          cut -f1,3 "$RUNNER_TEMP/waiting.tsv"
+          waiting=$(wc -l < "$RUNNER_TEMP/waiting.tsv" | tr -d ' ')
           echo "$waiting job(s) waiting for the VM"
           echo "waiting=$waiting" >> "$GITHUB_OUTPUT"
 
@@ -125,10 +131,11 @@ jobs:
           if [ "$ACTION" = auto ]; then
             # Unsure starts a VM that is off, but does not keep one on: it
             # goes off only when idle, and the next run starts it again.
-            if [ "$state" != PowerState/running ] && { [ "$WAITING" = unknown ] || [ "${WAITING:-0}" -gt 0 ]; }; then ACTION=start
-            elif [ "$state" = PowerState/running ] && [ "$WAITING" != unknown ] && [ "${WAITING:-0}" -gt 0 ]; then echo "On, and jobs wait for it."; exit 0
-            elif [ "$state" = PowerState/running ]; then ACTION=deallocate-if-idle
-            else echo "Off, and nothing waits for it."; exit 0; fi
+            ACTION=$(bash scripts/runner-demand.sh decide "$state" "${WAITING:-unknown}")
+            case "$ACTION" in
+              stay) echo "On, and jobs wait for it."; exit 0 ;;
+              nothing) echo "Off, and nothing waits for it."; exit 0 ;;
+            esac
           fi
           case "$ACTION" in
             start)
@@ -185,3 +192,16 @@ jobs:
               az vm deallocate -g "$RG" -n "$VM" -o none --no-wait
               echo "Deallocating." ;;
           esac
+
+      # After the VM, so a failure here never keeps it from starting. Only
+      # with a scan that answered: unsure says nothing either way.
+      - name: Jobs that waited too long
+        if: always() && steps.demand.outputs.waiting != '' && steps.demand.outputs.waiting != 'unknown'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          bash scripts/runner-demand.sh long "$LONG_MINUTES" "$(date +%s)" < "$RUNNER_TEMP/waiting.tsv" > "$RUNNER_TEMP/long.tsv"
+          bash scripts/runner-demand.sh report "$RUNNER_TEMP/long.tsv"

@@ -1,0 +1,68 @@
+name: Wake the organisation's VM
+
+# Reusable. A private repository's pull request queues jobs for the
+# organisation's VM (DX_RUNNER, runner-vm.yml), which is off while idle; this
+# asks runner-vm.yml to start it at once, instead of waiting for its schedule,
+# which GitHub delays or skips under load (#154). It runs on GitHub's runners
+# (it cannot wait for the VM it wakes), only where DX_RUNNER is
+# `self-hosted`, so only in the private repositories, and only on a branch of
+# the repository: a fork's pull request gets no secret. It reads no code of
+# the pull request: one call that dispatches runner-vm.yml with `start`,
+# with a dilux-bot token limited to this repository and to `actions: write`.
+# A VM already on answers "Already on." in runner-vm.yml; dispatches close
+# together collapse there (one run at a time, one pending). Without the key,
+# or without the App's permission, it warns and the schedule still starts the
+# VM within ten minutes. A failure is a warning, never a red check.
+#
+#   Called by org-pull-request.yml, the organisation's required pipeline, for
+#   every repository:
+#
+#   jobs:
+#     wake-vm:
+#       permissions: {}
+#       uses: DiluxOne/.github/.github/workflows/runner-wake.yml@v5
+#       secrets:
+#         DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+
+on:
+  workflow_call:
+    secrets:
+      DILUX_BOT_PRIVATE_KEY:
+        required: false
+
+# Nothing from the caller's token: the dispatch goes with the bot's.
+permissions: {}
+
+jobs:
+  wake:
+    name: Wake the VM
+    # GitHub's runner, never DX_RUNNER's: the VM may be the one that is off.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: >-
+      vars.DX_RUNNER == 'self-hosted' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    permissions: {}
+    steps:
+      - name: dilux-bot token (dispatch runner-vm.yml)
+        id: bot
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: .github
+          permission-actions: write
+
+      - name: Start the VM
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          CENTRAL: ${{ github.repository_owner }}/.github
+        run: |
+          if [ -z "$GH_TOKEN" ]; then echo "::warning::No dilux-bot token with actions: write on $CENTRAL: the VM waits for runner-vm.yml's schedule."; exit 0; fi
+          if gh workflow run runner-vm.yml --repo "$CENTRAL" --ref main -f action=start; then
+            echo "Asked runner-vm.yml to start the VM."
+          else
+            echo "::warning::Could not dispatch runner-vm.yml: the VM waits for its schedule."
+          fi
