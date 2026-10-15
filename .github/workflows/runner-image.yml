@@ -12,9 +12,11 @@ name: Runner image
 # smoke test on the image: git; the tools the workflows call (gh, yq,
 # Python with PyYAML, msgfmt, shellcheck); the Docker CLI against a real
 # daemon through the socket (as on the VM); Node; sudo; the runner's version;
-# Chromium launching under Playwright; and PHP installed the way setup-php
-# does. Only a
-# build that passes is promoted: tagged :stable (what the VM pulls on boot)
+# Chromium launching under Playwright; and PHP 7.4, 8.3 and 8.5 set up by
+# setup-php (at the commit the workflows pin) with php -v and composer
+# --version, after checking that php-builder's prebuilt 8.3 to 8.5 find every
+# library they link against in the image (#145). Only a build that passes is
+# promoted: tagged :stable (what the VM pulls on boot)
 # and with its date and run (:YYYY-MM-DD.<run>, to go back to). A failed build leaves
 # :stable as it was. On a pull request it builds and tests, and pushes
 # nothing.
@@ -111,10 +113,57 @@ jobs:
             cd "$(mktemp -d)"; npm init -y >/dev/null; npm install --silent playwright >/dev/null
             npx playwright install chromium >/dev/null
             node -e "require(\"playwright\").chromium.launch().then(b => b.close()).then(() => console.log(\"Chromium launches\"))"
-            sudo add-apt-repository -y ppa:ondrej/php >/dev/null 2>&1
-            sudo apt-get update -qq; sudo apt-get install -y -qq php-cli >/dev/null
-            php -r "echo \"PHP \", PHP_VERSION, PHP_EOL;"
           ' | tee smoke.txt
+
+          # PHP the way a job on the VM gets it (#145): setup-php, at the
+          # commit the organisation's workflows pin, in a fresh container per
+          # version. On a self-hosted runner it takes 7.4 from ondrej's PPA
+          # and 8.3 and up from php-builder's prebuilt builds, while an
+          # apt-get of their libraries runs beside it that can fail without
+          # stopping it. So first, before any apt-get, a prebuilt php and the
+          # extensions it enables by default must find every shared library
+          # they link against in the image itself.
+          sp=$(grep -ohm1 'shivammathur/setup-php@[0-9a-f]\{40\}' .github/workflows/plugin-checks-wp.yml | cut -d@ -f2 || true)
+          [ -n "$sp" ] || { echo "::error::No pinned setup-php in plugin-checks-wp.yml"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/setup-php"
+          curl -fsSL --retry 5 --retry-all-errors "https://codeload.github.com/shivammathur/setup-php/tar.gz/$sp" \
+            | tar -xz --strip-components=1 -C "$RUNNER_TEMP/setup-php"
+          os=$(docker run --rm --entrypoint bash "$IMAGE:candidate" -c '. /etc/os-release; echo "$ID$VERSION_ID"')
+          for v in 8.3 8.4 8.5; do
+            mkdir -p "$RUNNER_TEMP/php-$v"
+            curl -fsSL --retry 5 --retry-all-errors "https://github.com/shivammathur/php-builder/releases/download/$v/php_$v+$os.tar.zst" \
+              | tar -I zstd -x -C "$RUNNER_TEMP/php-$v"
+            docker run --rm --entrypoint bash -e V="$v" -v "$RUNNER_TEMP/php-$v:/php:ro" "$IMAGE:candidate" -c '
+              set -euo pipefail
+              ext=$(ls -d /php/usr/lib/php/20*/)
+              files=("/php/usr/bin/php$V")
+              for ini in /php/etc/php/"$V"/cli/conf.d/*.ini; do
+                so="$ext$(basename "$ini" .ini | sed "s/^[0-9]*-//").so"
+                [ -e "$so" ] && files+=("$so")
+              done
+              [ "${#files[@]}" -gt 1 ] || { echo "PHP $V (php-builder): no extension enabled by default found"; exit 1; }
+              missing=$(for f in "${files[@]}"; do LD_LIBRARY_PATH=/php/usr/lib ldd "$f" | awk -v f="${f##*/}" "/not found/ {print f \": \" \$1}" || exit 1; done) \
+                || { echo "PHP $V (php-builder): ldd could not read its files"; exit 1; }
+              [ -z "$missing" ] || { echo "PHP $V (php-builder) misses in the image:"; echo "$missing"; exit 1; }
+              echo "PHP $V (php-builder) and its $(( ${#files[@]} - 1 )) default extensions find their libraries"
+            ' | tee -a smoke.txt
+          done
+          for v in 7.4 8.3 8.5; do
+            docker run --rm --entrypoint bash -e V="$v" -v "$RUNNER_TEMP/setup-php:/setup-php:ro" "$IMAGE:candidate" -c '
+              set -euo pipefail
+              t=$(mktemp -d); cp -r /setup-php "$t/sp"
+              export GITHUB_ENV=$t/env GITHUB_PATH=$t/path GITHUB_OUTPUT=$t/out RUNNER_TEMP=$t RUNNER_ENVIRONMENT=self-hosted GITHUB_ACTIONS=true RUNNER_OS=Linux
+              touch "$GITHUB_ENV" "$GITHUB_PATH" "$GITHUB_OUTPUT"
+              env "INPUT_PHP-VERSION=$V" INPUT_COVERAGE=none INPUT_TOOLS=composer:v2 INPUT_INI-FILE=production \
+                node "$t/sp/dist/index.js" > "$t/log" 2>&1 || { cat "$t/log"; exit 1; }
+              PATH="$(tr "\n" ":" < "$GITHUB_PATH")$PATH"
+              got=$(php -r "echo PHP_MAJOR_VERSION, \".\", PHP_MINOR_VERSION;") || { cat "$t/log"; exit 1; }
+              [ "$got" = "$V" ] || { echo "setup-php gave PHP $got, expected $V"; exit 1; }
+              p=$(php -v) || { echo "setup-php $V: php -v failed"; exit 1; }
+              c=$(composer --version 2>&1) || { echo "setup-php $V: composer --version failed"; echo "$c"; cat "$t/log"; exit 1; }
+              echo "setup-php $V: $(head -1 <<<"$p"); $(head -1 <<<"$c")"
+            ' | tee -a smoke.txt
+          done
           {
             echo 'report<<SMOKE'
             cat smoke.txt

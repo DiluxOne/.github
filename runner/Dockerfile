@@ -3,8 +3,10 @@
 # discarded when the job ends (scripts/runner-vm/dx-runner-slot.sh), so no job
 # sees what another installed. It carries what every stack needs and nothing a
 # job should install itself: jobs still pick their PHP, Node or Python with the
-# setup-* actions, as on GitHub's runners. Rebuilt every week and promoted to
-# :stable only after a smoke test (.github/workflows/runner-image.yml).
+# setup-* actions, as on GitHub's runners; for PHP the image carries only the
+# shared libraries setup-php's prebuilt builds expect from GitHub's image.
+# Rebuilt every week and promoted to :stable only after a smoke test
+# (.github/workflows/runner-image.yml), which sets PHP up with setup-php.
 FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
 
 # Filled by runner-image.yml with the latest release of actions/runner and the
@@ -61,6 +63,22 @@ RUN set -eu; base="https://nodejs.org/dist/latest-v${NODE_MAJOR}.x"; \
 # Chromium's system libraries, so a job installs only the browser
 # (plugin-tests-wp.yml drops --with-deps on self-hosted runners).
 RUN npx --yes playwright@latest install-deps chromium && rm -rf /var/lib/apt/lists/* /root/.npm
+
+# The shared libraries setup-php's prebuilt PHP links against (#145). On a
+# self-hosted runner setup-php installs PHP 8.3 and up from php-builder's
+# builds, extracted straight onto the system, while an apt-get of their
+# libraries runs beside it; when that apt-get fails the build is extracted
+# anyway, and php does not start (libsodium) or loses the extensions it
+# enables by default. These are the libraries `ldd` finds missing in the
+# image for php and those extensions (8.3 to 8.5); PHP itself stays out.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      libsodium23 \
+      libaspell15 libenchant-2-2 libfbclient2 libgd3 liblmdb0 \
+      libmagickwand-6.q16-7t64 libmemcached11t64 libodbc2 libodbcinst2 \
+      libpq5 libqdbm14 librabbitmq4 libsnmp40t64 libsybdb5 libtidy5deb1 \
+      libxslt1.1 libzip4t64 libzmq5 \
+ && rm -rf /var/lib/apt/lists/*
 
 # The runner, as the user `runner`, with password-less sudo like GitHub's.
 RUN useradd -m -s /bin/bash runner \
