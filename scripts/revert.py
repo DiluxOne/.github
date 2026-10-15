@@ -90,8 +90,13 @@ def stopped(autopilot_var, policy):
 def pick(runs):
     """A workflow's runs on the default branch, newest first ->
     (state, run, why). state: healthy, flaky? (green on a re-run: whether its
-    first attempt failed decides), red (run: where the red began), none."""
-    done = [r for r in runs if r.get("status") == "completed" and r.get("conclusion") in RED + ("success",)]
+    first attempt failed decides), red (run: where the red began), none.
+    A run still going (a re-run among them) leaves the workflow for the next
+    sweep: read without it, the red would seem to begin on a later merge that
+    only inherited it."""
+    if any(r.get("status") != "completed" for r in runs):
+        return "none", None, "a run is still going; the next sweep reads it"
+    done = [r for r in runs if r.get("conclusion") in RED + ("success",)]
     if not done:
         return "none", None, "no finished run"
     if done[0]["conclusion"] == "success":
@@ -218,7 +223,14 @@ The revert is `git revert` of the merge commit, applied cleanly on the default b
 {AI_LINE}"""
 
 
-def wait_comment(why, pr_url):
+def wait_comment(why, pr_url, merging=False):
+    """The one comment on a revert's issue, kept up to date: the action and
+    its URL while it waits for a person; what changed once it no longer does."""
+    if merging:
+        return f"""{WAIT}
+**The revert no longer waits for a person (G8):** {why}.
+
+{AI_LINE}"""
     return f"""{WAIT}
 **The revert waits for a person (G8):** {why}.
 
@@ -280,8 +292,11 @@ def repo_policy(repo, default):
         with open(path, "wb") as fh:
             fh.write(base64.b64decode(content))
         mine = autonomy.load(path)
-    except RuntimeError:
-        pass
+    except RuntimeError as e:
+        # Only a file that is not there is no file: any other failure would
+        # read a repository that turned the autopilot off as one that has it on.
+        if "404" not in str(e) and "Not Found" not in str(e):
+            raise
     return autonomy.merge(org, mine)
 
 
@@ -562,7 +577,8 @@ def self_test():
     check("pick: green is healthy", pick([run(3, "success"), run(2, "failure")])[0], "healthy")
     state, r, _ = pick([run(5, "failure"), run(4, "failure"), run(3, "success")])
     check("pick: the red began on the oldest failure after a green run", (state, r["id"]), ("red", 4))
-    check("pick: a run still going is not read", pick([run(6, None, status="in_progress"), run(5, "failure"), run(4, "success")])[1]["id"], 5)
+    check("pick: a run still going waits for the next sweep", pick([run(6, None, status="in_progress"), run(5, "failure"), run(4, "success")])[:2], ("none", None))
+    check("pick: a re-run going does not move the red to a later merge", pick([run(6, "failure"), run(5, None, 2, "in_progress"), run(4, "success")])[:2], ("none", None))
     check("pick: a cancelled run is skipped", pick([run(6, "cancelled"), run(5, "failure"), run(4, "success")])[1]["id"], 5)
     check("pick: red on every run read is left to a person", pick([run(5, "failure"), run(4, "failure")])[:2], ("none", None))
     check("pick: green on a re-run asks whether it was flaky", pick([run(5, "success", 2), run(4, "success")])[0], "flaky?")
@@ -643,6 +659,8 @@ def self_test():
     wc = wait_comment(why, "https://github.com/DiluxOne/diluxone-offload-wordpress/pull/41")
     check("C4: its issue shows the action and its URL", "Approve and merge https://github.com/DiluxOne/diluxone-offload-wordpress/pull/41" in wc, True)
     check("C4: and why it waits", why in wc, True)
+    done = wait_comment("merges by policy", "https://github.com/DiluxOne/.github/pull/41", merging=True)
+    check("C4: once it merges by policy, the comment no longer asks for a person", ("Approve and merge" in done, done.startswith(WAIT)), (False, True))
     bh = by_hand_comment(item, "it does not revert cleanly")
     check("C4: a revert that does not apply says why and who does what", ("it does not revert cleanly" in bh, f"Revert #12 by hand: {pr['url']}" in bh), (True, True))
     check("a merge that changed workflow files is a person's revert", bool(cannot_push(["README.md", ".github/workflows/ci.yml"])), True)
@@ -660,7 +678,7 @@ def self_test():
     check("`locate` runs before any token for the repository", actjob.index("revert.py locate") < actjob.index("id: rerun") < actjob.index("id: revert"), True)
 
     # act, offline: a local repository in place of GitHub, gh and the API faked.
-    def act_offline(conflict=False, files=("src/a.txt",)):
+    def act_offline(conflict=False, files=("src/a.txt",), kind="revert"):
         calls = []
         with tempfile.TemporaryDirectory() as base:
             src = os.path.join(base, "DiluxOne", "x")
@@ -708,7 +726,7 @@ def self_test():
             saved = {k: globals()[k] for k in ("api", "api_lines", "gh", "GIT_BASE")}
             env = {k: os.environ.get(k) for k in ("ITEM", "GH_TOKEN", "DX_AUTOPILOT")}
             globals().update(api=fake_api, api_lines=fake_lines, gh=fake_gh, GIT_BASE=base + os.sep)
-            os.environ.update(ITEM=json.dumps({"kind": "revert", "repo_id": 7, "run_id": 4, "pr": 12}), GH_TOKEN="t", DX_AUTOPILOT="")
+            os.environ.update(ITEM=json.dumps({"kind": kind, "repo_id": 7, "run_id": 4, "pr": 12}), GH_TOKEN="t", DX_AUTOPILOT="")
             try:
                 act()
             finally:
@@ -742,6 +760,26 @@ def self_test():
     finally:
         globals()["api"] = saved_api
     check("act: a label read that fails, not missing, stops the act", raised, True)
+    globals()["api"] = no_access
+    try:
+        repo_policy("DiluxOne/x", "main")
+        raised = False
+    except RuntimeError:
+        raised = True
+    finally:
+        globals()["api"] = saved_api
+    check("scan: a repository's policy that cannot be read is not read as on", raised, True)
+
+    def missing(path, *args):
+        raise RuntimeError("HTTP 404: Not Found")
+    globals()["api"] = missing
+    try:
+        check("scan: a repository without a policy of its own has the organisation's", repo_policy("DiluxOne/x", "main")["autopilot"], True)
+    finally:
+        globals()["api"] = saved_api
+    calls, pushed = act_offline(kind="rerun")
+    gh_calls = [c[1:] for c in calls if c[0] == "gh"]
+    check("act: a first red re-runs its failed jobs, and nothing else", (gh_calls, pushed), ([("api", "-X")], None))
     calls, pushed = act_offline(conflict=True)
     gh_calls = [c[1:] for c in calls if c[0] == "gh"]
     check("act: a revert that does not apply opens the issue alone", (pushed, ("issue", "create") in gh_calls, ("issue", "comment") in gh_calls, ("pr", "create") in gh_calls), (None, True, True, False))
@@ -753,6 +791,7 @@ def self_test():
     am = open(os.path.join(HERE, "..", ".github", "workflows", "auto-merge.yml"), encoding="utf-8").read()
     check("auto-merge.yml decides a revert pull request with this script", "scripts/revert.py\" decide" in am, True)
     check("auto-merge.yml posts the wait comment on the revert's issue", "revert.py\" wait-comment" in am, True)
+    check("auto-merge.yml updates that comment once the revert merges by policy", 'MERGING="$ok"' in am, True)
     check("the labels exist in labels.yml", {"revert", "reverted"} <= {l.get("name") for l in autonomy.read_yaml(os.path.join(HERE, "..", "labels.yml"))}, True)
 
     if not failed:
@@ -778,7 +817,7 @@ def main(argv):
         print(why)
         return 0 if ok else 1
     if mode == "wait-comment":
-        print(wait_comment(os.environ.get("WHY", "").strip().rstrip("."), os.environ["PR_URL"]))
+        print(wait_comment(os.environ.get("WHY", "").strip().rstrip("."), os.environ["PR_URL"], os.environ.get("MERGING") == "true"))
         return 0
     print(__doc__, file=sys.stderr)
     return 64
