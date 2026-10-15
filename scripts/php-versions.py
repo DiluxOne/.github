@@ -137,7 +137,8 @@ def plan(settings, main, readme):
 def allows_major(constraint, major):
     """Whether a Composer constraint lets in some release of `major` or later."""
     for alt in re.split(r"\s*\|\|?\s*", str(constraint or "").strip()):
-        parts = [p for p in re.split(r"[\s,]+", alt.strip()) if p]
+        # An operator written apart from its version (`>= 5.0`) is one part.
+        parts = [p for p in re.split(r"[\s,]+", re.sub(r"([<>=!~^]+)\s+", r"\1", alt.strip())) if p]
         if not parts:
             continue
         ok = True
@@ -324,6 +325,7 @@ def self_test():
     check("constraint: ^5.0|^6.0 allows 6", allows_major("^5.0|^6.0", 6))
     check("constraint: >=5 and * allow 6", allows_major(">=5", 6) and allows_major("*", 6))
     check("constraint: >=5.0 <6.0 allows no 6", not allows_major(">=5.0 <6.0", 6))
+    check("constraint: >= 5.0 (operator apart) allows 6, >= 5.0 < 6.0 does not", allows_major(">= 5.0", 6) and not allows_major(">= 5.0 < 6.0", 6))
     check("constraint: >=5.0,<6.1 and <=6.0 allow 6", allows_major(">=5.0,<6.1", 6) and allows_major("<=6.0", 6))
     check("constraint: 5.* and ~5.26 allow no 6, 6.* does", not allows_major("5.*", 6) and not allows_major("~5.26", 6) and allows_major("6.*", 6))
     env = {"TOOLS": "8.5", "MINIMUM": "7.4", "PHPSTAN": "70400"}
