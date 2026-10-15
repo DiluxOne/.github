@@ -67,7 +67,7 @@ name: Issue reproduction
 # among them, and in a private repository those checks run on GitHub's
 # runners too, never on the organisation's VM, whatever DX_RUNNER says:
 # every shared job reads the branch (test/repro-issue-<n>, and the
-# bugfix-reproduced lane's fix/<m>-the-bug-reproduced-from-<n>) and the
+# bugfix-reproduced lane's <type>/<m>-the-bug-reproduced-from-<n>) and the
 # author (dilux-bot) of the pull request, never what it changes
 # (scripts/runner-route.py, #167).
 # At most `max-per-day` runs a day (10000: the runs go on the

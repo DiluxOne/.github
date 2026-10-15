@@ -55,7 +55,7 @@ permissions:
 jobs:
   reply:
     name: Claude reply
-    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (startsWith(github.event.pull_request.head.ref, 'fix/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.pull_request && github.event.issue.user.login == 'dilux-bot[bot]')) && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.pull_request && github.event.issue.user.login == 'dilux-bot[bot]')) && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 15
     if: >-
       contains(github.event.comment.body, '@dilux-bot') &&

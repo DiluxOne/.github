@@ -11,9 +11,11 @@ author (never by anything the pull request changes):
 
   - the reproduction's draft (issue-repro.yml): `test/repro-issue-<n>`;
   - the fix of the `bugfix-reproduced` lane (autopilot.yml, #84), which
-    starts at the reproduction's commit: `fix/<m>-the-bug-reproduced-from-<n>`
+    starts at the reproduction's commit: `<type>/<m>-the-bug-reproduced-from-<n>`
     (scripts/autopilot.py names it after its issue, "The bug reproduced
-    from #<n>"), with `-<run id>` when an earlier attempt left the branch;
+    from #<n>"; the type is `fix` when the issue's Type was set, another
+    when setting it failed), with `-<run id>` when an earlier attempt left
+    the branch;
 
 both opened by dilux-bot[bot]. A comment on a pull request (issue_comment)
 does not name the branch, so a comment on any of dilux-bot's pull requests
@@ -47,7 +49,6 @@ import sys
 
 BOT = "dilux-bot[bot]"
 REPRO_PREFIX = "test/repro-issue-"
-LANE_PREFIX = "fix/"
 LANE_MARK = "-the-bug-reproduced-from-"
 VM_LABELS = ["self-hosted", "linux", "x64", "diluxone"]
 FALLBACKS = ("ubuntu-latest", "ubuntu-24.04")
@@ -71,7 +72,7 @@ def decide(dx_runner, event):
     pr = event.get("pull_request") or {}
     author = ((pr.get("user") or {}).get("login") or "").lower()
     head = ((pr.get("head") or {}).get("ref") or "").lower()
-    if author == BOT and (head.startswith(REPRO_PREFIX) or (head.startswith(LANE_PREFIX) and LANE_MARK in head)):
+    if author == BOT and (head.startswith(REPRO_PREFIX) or ("/" in head and LANE_MARK in head)):
         return None
     issue = event.get("issue") or {}
     if issue.get("pull_request") and ((issue.get("user") or {}).get("login") or "").lower() == BOT:
@@ -83,7 +84,7 @@ def expression(fallback="ubuntu-latest"):
     pr = "github.event.pull_request"
     head = f"{pr}.head.ref"
     repro = (f"({pr}.user.login == '{BOT}' && (startsWith({head}, '{REPRO_PREFIX}')"
-             f" || (startsWith({head}, '{LANE_PREFIX}') && contains({head}, '{LANE_MARK}'))))")
+             f" || (contains({head}, '/') && contains({head}, '{LANE_MARK}'))))")
     comment = f"(github.event.issue.pull_request && github.event.issue.user.login == '{BOT}')"
     labels = json.dumps(VM_LABELS, separators=(",", ":"))
     return (f"${{{{ vars.DX_RUNNER == 'self-hosted' && !({repro} || {comment})"
@@ -296,7 +297,10 @@ def self_test():
         ("C2: a person's lane-like branch keeps the VM", "self-hosted", pr("soydiloreto", "fix/31-the-bug-reproduced-from-12"), vm),
         ("dilux-bot's other autopilot pull requests keep the VM", "self-hosted", pr(BOT, "fix/40-the-login-loop"), vm),
         ("dilux-bot's feature from the autopilot keeps the VM", "self-hosted", pr(BOT, "feat/41-dark-mode"), vm),
-        ("the lane's words in a feature branch are not the lane", "self-hosted", pr(BOT, "feat/41-the-bug-reproduced-from-12"), vm),
+        ("C1: the lane's fix under another type (its issue's Type was not set)", "self-hosted", pr(BOT, "chore/31-the-bug-reproduced-from-12"), gh),
+        ("C1: the lane's fix under another type, second attempt", "self-hosted", pr(BOT, "feat/31-the-bug-reproduced-from-12-987654"), gh),
+        ("the lane's words without a type are not the lane", "self-hosted", pr(BOT, "the-bug-reproduced-from-12"), vm),
+        ("C2: a person's chore branch named like the lane keeps the VM", "self-hosted", pr("soydiloreto", "chore/31-the-bug-reproduced-from-12"), vm),
         ("the title or labels do not decide", "self-hosted", pr("soydiloreto", "fix/40-x", title="test(repro): failing test for #12", labels=[{"name": "autopilot"}]), vm),
         ("a comment on a person's pull request keeps the VM", "self-hosted", {"issue": {"pull_request": {"url": "x"}, "user": {"login": "soydiloreto"}}}, vm),
         ("an issue event of dilux-bot (not a pull request) keeps the VM", "self-hosted", {"issue": {"user": {"login": BOT}}}, vm),
