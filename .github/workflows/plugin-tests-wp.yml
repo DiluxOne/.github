@@ -175,7 +175,7 @@ jobs:
         if: env.GO == 'true'
         with:
           node-version: '20'
-      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         if: env.GO == 'true'
         with:
           php-version: '8.5'
@@ -245,7 +245,7 @@ jobs:
       # runners: the organisation's runner image carries neither by design
       # (#140), so they are set up here when the repository has a
       # composer.json; a repository without one gets no PHP and loses no time.
-      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         if: env.GO == 'true' && hashFiles('composer.json') != ''
         with:
           php-version: '8.5'
