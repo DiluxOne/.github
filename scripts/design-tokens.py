@@ -396,7 +396,8 @@ def brief(repo, repos_file, changed, root=".", limit=BRIEF_LIMIT):
         if b and screens is None and os.path.isfile(os.path.join(b, "rules.yml")):
             screens = read_yaml(os.path.join(b, "rules.yml")).get("screens")
     screens = [re.compile(rx, re.I) for rx in (screens or STYLESHEETS)]
-    touched = [f for f in changed if any(rx.search(f) for rx in screens)]
+    # A screen the change deletes draws nothing left to hold to the system.
+    touched = [f for f in changed if any(rx.search(f) for rx in screens) and os.path.exists(os.path.join(root, f))]
     if not touched:
         return ""
     parts = system_parts(base, shown)
@@ -411,10 +412,11 @@ def brief(repo, repos_file, changed, root=".", limit=BRIEF_LIMIT):
     for path, here, text in parts:
         if text is None:
             continue
-        if used + len(text) > limit:
+        size = len(text.encode("utf-8"))
+        if used + size > limit:
             left.append(here)
             continue
-        used += len(text)
+        used += size
         out += [f"### {path}", "", text.rstrip("\n"), ""]
     if left:
         out += ["Not inlined, to keep the brief short; read them when a finding needs them: " + ", ".join(f"`{p}`" for p in left) + ".", ""]
@@ -522,13 +524,18 @@ def self_test():
         repos = os.path.join(tmp, "repos.yml")
         with open(repos, "w", encoding="utf-8") as fh:
             fh.write("design-system:\n  r: wordpress-admin\n")
-        whole = brief("r", repos, ["assets/admin.css"])
-        short = brief("r", repos, ["assets/admin.css"], limit=8000)
+        for f in ("assets/admin.css", "includes/admin/settings.php", "includes/class-sync.php"):
+            os.makedirs(os.path.dirname(os.path.join(tmp, f)), exist_ok=True)
+            open(os.path.join(tmp, f), "w").close()
+        whole = brief("r", repos, ["assets/admin.css"], tmp)
+        short = brief("r", repos, ["assets/admin.css"], tmp, limit=8000)
         check("brief: the whole system fits under the limit", "### design-systems/wordpress-admin/components.md" in whole and "Not inlined" not in whole and len(whole) <= BRIEF_LIMIT + 2000, len(whole))
         check("brief: past the limit, what does not fit is named, not inlined",
               "### design-systems/wordpress-admin/README.md" in short and "### design-systems/wordpress-admin/components.md" not in short and "`design-systems/wordpress-admin/components.md`" in short, short[-400:])
-        check("brief: a PHP file that draws no screen brings nothing", brief("r", repos, ["includes/class-sync.php"]) == "", "")
-        check("brief: an admin template brings it", brief("r", repos, ["includes/admin/settings.php"]) != "", "")
+        check("brief: a PHP file that draws no screen brings nothing", brief("r", repos, ["includes/class-sync.php"], tmp) == "", "")
+        check("brief: an admin template brings it", brief("r", repos, ["includes/admin/settings.php"], tmp) != "", "")
+        check("brief: a stylesheet the change deletes brings nothing", brief("r", repos, ["assets/gone.css"], tmp) == "", "")
+        check("brief: the limit counts bytes", len(whole.encode("utf-8")) <= BRIEF_LIMIT + 2000, len(whole.encode("utf-8")))
     for name in systems():
         css, problems = check_system(name)
         check(f"design-systems/{name}: tokens, rules and fixtures are sound", not problems, problems)
