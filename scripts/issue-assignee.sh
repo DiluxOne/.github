@@ -10,7 +10,8 @@
 #                                it closes is reassigned to its author, when
 #                                the author is a member of the organisation
 #                                and not already among the assignees
-#                                (pull-request-assignee.yml)
+#                                (pull-request-assignee.yml); the first ten it
+#                                closes, as many as the accepted-issue gate reads
 #   issue-assignee.sh --test     self-test against fixtures
 #
 # A bot is never made an assignee. A lane's issue (accepted by policy,
@@ -127,7 +128,7 @@ pr() {
   answer=${ASSIGNEE_JSON:-}
   if [ -z "$answer" ]; then
     answer=$(mktemp)
-    if ! gh api graphql -f query="$QUERY" -F owner="${GITHUB_REPOSITORY%%/*}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$PR" > "$answer" 2>"$answer.err"; then
+    if ! gh api graphql -f query="$QUERY" -f owner="${GITHUB_REPOSITORY%%/*}" -f name="${GITHUB_REPOSITORY#*/}" -F number="$PR" > "$answer" 2>"$answer.err"; then
       echo "::warning::Could not read the issues this pull request closes ($(head -c 200 "$answer.err")); no assignee changed."; return 0
     fi
   fi
