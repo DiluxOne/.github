@@ -449,7 +449,7 @@ def read_item(planned):
     return repo, run, pr, {
         "repo": repo, "default": r.get("default_branch") or "main", "sha": run["head_sha"], "run_url": run["html_url"],
         "workflow": run.get("name") or "a workflow", "failed": failed_jobs(repo, run["id"]),
-        "pr": pr["number"], "pr_title": pr.get("title", ""), "pr_url": pr["html_url"]}
+        "pr": pr["number"], "pr_title": pr.get("title", ""), "pr_url": pr["html_url"], "private": r.get("private") is not False}
 
 
 def ensure_label(repo, name):
@@ -471,18 +471,53 @@ def open_issue(repo, item, tmp, comment=None):
     try:
         gh("api", "-X", "PATCH", f"repos/{repo}/issues/{issue}", "-f", "type=Bug")
     except RuntimeError as e:
-        print(f"::warning::The issue's Type was not set: {str(e)[:200]}")
+        print(f"::warning::The issue's Type was not set: {detail(e)}")
     if comment:
         gh("issue", "comment", issue, "--repo", repo, "--body", comment)
     return issue
 
 
+# Until act knows the repository is public, it treats it as private: no
+# command, output or title reaches this public repository's logs.
+PRIVATE = True
+
+
+def detail(e):
+    """An error's text for the log: only for a public repository."""
+    return "details are kept out of this public log" if PRIVATE else str(e)[:200]
+
+
+def run_git(args, env, check=True):
+    """git, failing with its subcommand and exit code only: its command line
+    holds the branch (words of the pull request's title) and the commit
+    message, and its output may too."""
+    out = subprocess.run(["git"] + list(args), env=env, capture_output=True, text=True)
+    if check and out.returncode != 0:
+        sub = next((a for a in args if not a.startswith("-") and a not in ("-C",) and not os.path.isabs(a)), "git")
+        raise RuntimeError(f"git {sub} exited {out.returncode}")
+    return out
+
+
+def guarded_act():
+    """act, whose failure in a private repository says only that it failed."""
+    try:
+        return act()
+    except Exception as e:  # noqa: BLE001 - every failure, nothing of it printed
+        if PRIVATE:
+            print(f"::error::The act failed ({type(e).__name__}); details are kept out of this public log.")
+            return 1
+        raise
+
+
 def act():
+    global PRIVATE
+    PRIVATE = True
     planned = json.loads(os.environ["ITEM"])
     if (os.environ.get("DX_AUTOPILOT", "") or "").strip().lower() == "off":
         print("Nothing is done: the organisation's DX_AUTOPILOT is off.")
         return 0
     repo, run, pr, item = read_item(planned)
+    PRIVATE = item["private"]
     if planned["kind"] == "rerun":
         gh("api", "-X", "POST", f"repos/{repo}/actions/runs/{run['id']}/rerun-failed-jobs")
         print("The failed jobs run again; the next sweep reads their verdict.")
@@ -514,9 +549,8 @@ def act():
         auth = base64.b64encode(f"x-access-token:{os.environ['GH_TOKEN']}".encode()).decode()
         env = dict(os.environ, GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="http.https://github.com/.extraheader",
                    GIT_CONFIG_VALUE_0=f"AUTHORIZATION: basic {auth}", GIT_TERMINAL_PROMPT="0")
-        git = lambda *a, check=True: subprocess.run(["git", "-C", work] + list(a), env=env, capture_output=True, text=True, check=check)
-        subprocess.run(["git", "clone", "-q", "--filter=blob:none", "--branch", item["default"], f"{GIT_BASE}{repo}", work],
-                       env=env, capture_output=True, text=True, check=True)
+        git = lambda *a, check=True: run_git(["-C", work] + list(a), env, check)
+        run_git(["clone", "-q", "--filter=blob:none", "--branch", item["default"], f"{GIT_BASE}{repo}", work], env)
         git("config", "user.name", BOT)
         git("config", "user.email", BOT_EMAIL)
         parents = len(api(f"repos/{repo}/commits/{item['sha']}").get("parents") or [])
@@ -540,15 +574,15 @@ def act():
             with open(pbody, "w", encoding="utf-8") as fh:
                 fh.write(pr_body(item, issue))
             gh("pr", "create", "--repo", repo, "--base", item["default"], "--head", name, "--title", title, "--body-file", pbody, "--label", "revert")
-        except (RuntimeError, subprocess.CalledProcessError) as e:
+        except RuntimeError as e:
             # The issue stays, and stops the next sweep from trying again:
             # it says what failed and who does what.
             try:
                 gh("issue", "comment", issue, "--repo", repo, "--body",
                    by_hand_comment(item, f"the revert pull request could not be opened (the branch `{name}` may hold the revert)"))
             except RuntimeError as c:
-                print(f"::warning::The issue could not say so either: {str(c)[:200]}")
-            raise RuntimeError(f"the revert pull request could not be opened: {str(e)[:200]}") from e
+                print(f"::warning::The issue could not say so either: {detail(c)}")
+            raise RuntimeError(f"the revert pull request could not be opened: {detail(e)}") from None
     gh("pr", "edit", str(item["pr"]), "--repo", repo, "--add-label", "reverted")
     # The cause is the original issue's: it opens again for the autopilot or a person.
     try:
@@ -557,13 +591,21 @@ def act():
             gh("issue", "reopen", str(ref["number"]), "--repo", repo, "--comment",
                f"Reopened: #{item['pr']} is reverted (#{issue}), the default branch went red after it merged.\n\n{AI_LINE}")
     except RuntimeError as e:
-        print(f"::warning::The original issue was not reopened: {str(e)[:200]}")
+        print(f"::warning::The original issue was not reopened: {detail(e)}")
     print(f"The revert is open; it closes #{issue}.")
     return 0
 
 
 
 # --- the self-test ----------------------------------------------------------
+
+def run_git_error():
+    try:
+        run_git(["-C", "/nonexistent-dx", "push", "-q", "origin", "HEAD:refs/heads/revert/40-a-secret-title"], dict(os.environ))
+    except RuntimeError as e:
+        return re.sub(r"exited \d+$", "exited N", str(e))
+    return None
+
 
 def self_test():
     failed = 0
@@ -754,7 +796,7 @@ def self_test():
     check("locate: masks it again in its own job, then names it for the token", ("::add-mask::secret-pro" in printed.split("## Red default branches")[1], "name=secret-pro" in outputs), (True, True))
 
     # act, offline: a local repository in place of GitHub, gh and the API faked.
-    def act_offline(conflict=False, files=("src/a.txt",), kind="revert", green_since=False, undone=False):
+    def act_offline(conflict=False, files=("src/a.txt",), kind="revert", green_since=False, undone=False, private=False, refuse_push=False, out=None):
         calls = []
         with tempfile.TemporaryDirectory() as base:
             src = os.path.join(base, "DiluxOne", "x")
@@ -773,8 +815,13 @@ def self_test():
                 open(os.path.join(src, "src", "a.txt"), "w").write("three\n" if conflict else "one\n")
                 sh("commit", "-q", "-am", "later")
             sh("switch", "-q", "-c", "elsewhere")  # main is not checked out: a push to a branch of it is accepted
+            if refuse_push:
+                hook = os.path.join(src, ".git", "hooks", "pre-receive")
+                with open(hook, "w") as fh:
+                    fh.write("#!/bin/sh\necho 'refused: fix(sync): retry once' >&2\nexit 1\n")
+                os.chmod(hook, 0o755)
             answers = {
-                "repositories/7": {"full_name": "DiluxOne/x", "name": "x", "default_branch": "main", "private": False},
+                "repositories/7": {"full_name": "DiluxOne/x", "name": "x", "default_branch": "main", "private": private},
                 "repos/DiluxOne/x/actions/runs/4": {"id": 4, "status": "completed", "conclusion": "failure", "run_attempt": 2,
                                                     "head_sha": merge, "html_url": again["html_url"], "name": "Checks", "workflow_id": 99},
                 "repos/DiluxOne/x/actions/workflows/99/runs?branch=main&event=push&status=completed&per_page=1":
@@ -805,9 +852,16 @@ def self_test():
             env = {k: os.environ.get(k) for k in ("ITEM", "GH_TOKEN", "DX_AUTOPILOT")}
             globals().update(api=fake_api, api_lines=fake_lines, gh=fake_gh, GIT_BASE=base + os.sep)
             os.environ.update(ITEM=json.dumps({"kind": kind, "repo_id": 7, "run_id": 4, "pr": 12}), GH_TOKEN="t", DX_AUTOPILOT="")
+            import contextlib
+            import io
+            buf = io.StringIO()
             try:
-                act()
+                with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                    rc = guarded_act() if refuse_push else act()
             finally:
+                if out is not None:
+                    out.append((rc if "rc" in locals() else None, buf.getvalue()))
+                print(buf.getvalue(), end="")
                 globals().update(saved)
                 for k, v in env.items():
                     if v is None:
@@ -855,6 +909,13 @@ def self_test():
         check("scan: a repository without a policy of its own has the organisation's", repo_policy("DiluxOne/x", "main")["autopilot"], True)
     finally:
         globals()["api"] = saved_api
+    seen = []
+    calls, pushed = act_offline(private=True, refuse_push=True, out=seen)
+    rc, log = seen[0]
+    check("act: a private repository's refused push fails the job", (rc, pushed), (1, None))
+    check("act: and its log holds no title, branch or command", any(w in log for w in ("retry", "fix(sync)", "revert/40", "push -q", "refused")), False)
+    check("act: and the issue still says who does what", ("issue", "comment") in [c[1:] for c in calls if c[0] == "gh"], True)
+    check("act: git fails with its subcommand and exit code only", run_git_error(), "git push exited N")
     calls, pushed = act_offline(green_since=True)
     check("act: green again since the scan, nothing is reverted", (pushed, any(c[0] == "gh" for c in calls)), (None, False))
     calls, pushed = act_offline(undone=True)
@@ -894,7 +955,7 @@ def main(argv):
     if mode == "locate":
         return locate()
     if mode == "act":
-        return act()
+        return guarded_act()
     if mode == "decide":
         files = [l.strip() for l in open(os.environ["FILES"], encoding="utf-8") if l.strip()] if os.environ.get("FILES") else []
         ok, why = decide(autonomy.policy_in_force(), os.environ.get("GITHUB_REPOSITORY", ""), files, os.environ.get("RISK", ""),
