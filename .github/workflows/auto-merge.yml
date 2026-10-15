@@ -303,7 +303,8 @@ jobs:
           gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label merged-by:policy >/dev/null 2>&1 || true
           if [ "$rc" = 0 ]; then
             body=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq .body | tr -d '\r')
-            gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --auto --squash --body "$body"
+            # Tied to the head decided on: a later push merges nothing until it is decided again.
+            gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --auto --squash --match-head-commit "$HEAD_SHA" --body "$body"
             gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label merged-by:policy >/dev/null
             echo "Auto-merge enabled by policy: $why."
           elif [ "$rc" = 1 ]; then

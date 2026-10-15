@@ -492,6 +492,12 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$BOT_TOKEN" ]; then echo "No bot key: the policy's verdict would go nowhere, so it is not asked."; exit 0; fi
+          # Only a sync lane is announced here (the organisation's policy
+          # says which; a repository's file cannot add one): any other lane
+          # is skipped before anything else is read.
+          if ! python3 .dx-central/scripts/autonomy.py policy | jq -e --arg l "${LANE#lane:}" '.lanes[$l] | (.accept == "policy" and (.origin.runs // null) != null)' >/dev/null; then
+            echo "$LANE: not a sync lane; nothing to say."; exit 0
+          fi
           # The repository's own policy, from its default branch, stricter
           # only: missing is none; unreadable stops here rather than reads as none.
           if ! GH_TOKEN=$BOT_TOKEN gh api "repos/$GITHUB_REPOSITORY/contents/.github/autonomy.yml" -H "Accept: application/vnd.github.raw" > "$RUNNER_TEMP/repo-autonomy.yml" 2> "$RUNNER_TEMP/err"; then
