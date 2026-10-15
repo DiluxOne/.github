@@ -8,7 +8,9 @@
 #   deploy.sh --test   self-test: the package holds what the App loads
 #
 # The App's settings (the dilux-bot key among them) are set once by an
-# administrator, never from here: see clock.py.
+# administrator, never from here: see clock.py. Nothing deploys on merge:
+# whoever merges a change to this directory runs this script after it, and
+# says so on the pull request.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -43,6 +45,9 @@ if [ "${1:-}" = --test ]; then
   req="$HERE/requirements.txt"
   check "requirements: azure-functions, PyJWT with crypto, cryptography, pinned" \
     "$(grep -qx 'azure-functions==[0-9.]*' "$req" && grep -qx 'PyJWT\[crypto\]==[0-9.]*' "$req" && grep -qx 'cryptography==[0-9.]*' "$req"; echo $?)"
+  check "host.json: valid JSON with an extension bundle" \
+    "$(python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["extensionBundle"]["id"] else 1)' "$HERE/host.json"; echo $?)"
+  check "function_app.py: compiles" "$(python3 -m py_compile "$HERE/function_app.py" 2>/dev/null; echo $?)"
   check "clock: its own self-test passes" "$(python3 "$HERE/clock.py" --test >/dev/null; echo $?)"
   if [ "$fails" -ne 0 ]; then echo "$fails failed"; exit 1; fi
   echo "all passed"

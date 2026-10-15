@@ -13,7 +13,8 @@ name: Organisation VM
 # image from runner-image.yml); the VM brings itself to that state on every
 # boot (scripts/runner-vm/provision.sh).
 #
-# Every ten minutes, when dispatched with `start` by a private repository's
+# Every five minutes from the clock in Azure (below), when dispatched with
+# `start` by a private repository's
 # pull request (runner-wake.yml, from the organisation's pipeline, #154), and
 # by hand: when a private repository's job is waiting for a `diluxone` runner
 # and the VM is off, it starts it; when the VM is on
