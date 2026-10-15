@@ -73,11 +73,15 @@ run() {
   # The mount point, so Docker never has to create one inside the
   # read-only checkout. An empty folder: git does not see it.
   mkdir -p tests/Unit/Repro
+  # The checkout's .git is hidden behind an empty folder: where a checkout
+  # kept its token (the autopilot's), the test never sees it.
+  local hide=()
+  if [ -d .git ]; then hide=(--tmpfs /app/.git:ro); fi
   docker pull --quiet "php:${php}-cli" >/dev/null
   set +e
   docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
     --user "$(id -u):$(id -g)" --memory 1g --pids-limit 256 \
-    -v "$PWD:/app:ro" -v "$scratch/test:/app/tests/Unit/Repro:ro" -w /app "php:${php}-cli" \
+    -v "$PWD:/app:ro" "${hide[@]}" -v "$scratch/test:/app/tests/Unit/Repro:ro" -w /app "php:${php}-cli" \
     timeout 600 php vendor/bin/phpunit --no-coverage --do-not-cache-result "tests/Unit/Repro/$name" > "$out" 2>&1
   rc=$?
   set -e

@@ -571,7 +571,7 @@ jobs:
           # test on that branch by its SHA-256: another attempt never
           # replaces it under the fix. Fails closed: when the list cannot be
           # read, nothing is pushed and the run fails.
-          if ! held=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label lane:bugfix-reproduced --limit 100 --json number,title,author \
+          if ! held=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label lane:bugfix-reproduced --search "\"The bug reproduced from #$NUMBER\" in:title" --limit 100 --json number,title,author \
             --jq "[.[] | select(.title == \"The bug reproduced from #$NUMBER\" and (.author.login | test(\"^(app/)?dilux-bot(\\\\[bot\\\\])?$\")))][0].number // empty"); then
             echo "::error::Could not list the open bugfix-reproduced issues; nothing pushed, so no lane issue's test is replaced. Re-run this job."; exit 1
           fi

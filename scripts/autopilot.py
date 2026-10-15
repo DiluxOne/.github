@@ -63,6 +63,7 @@ say whether the agent ran out of turns or time), HEAD_BEFORE (mode fix: the
 branch's head before the round), MODE; for work-log: WORK_LOG (the action's
 output), WORK_STARTED (when the work step started), GITHUB_WORKSPACE.
 """
+import hashlib
 import importlib.util
 import json
 import os
@@ -1049,6 +1050,11 @@ def main(argv):
                 print(f"Not ready: {need}.")
                 return 1
             if test:
+                # The test at HEAD must be the one that failed, as G7 will ask.
+                blob = subprocess.run(["git", "show", f"HEAD:{test}"], capture_output=True)
+                if blob.returncode != 0 or hashlib.sha256(blob.stdout).hexdigest() != repro.evidence(issue.get("body") or "")["sha256"]:
+                    print(f"Not ready: the reproduction test {test} at HEAD is not the one that failed (its SHA-256 differs from the sealed PRD's). Restore it as it was committed.")
+                    return 1
                 run = subprocess.run(["bash", os.path.join(HERE, "repro-sandbox.sh"), "run-ref", "HEAD", test], capture_output=True, text=True)
                 outcome = sandbox_outcome(run.stdout)
                 if outcome != "passed":
