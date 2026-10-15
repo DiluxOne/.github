@@ -136,7 +136,10 @@ jobs:
           base="https://raw.githubusercontent.com/DiluxOne/.github/$REF"
           curl -fsSL --retry 3 "$base/scripts/issue-schema.py" -o .dx-central/scripts/issue-schema.py
           curl -fsSL --retry 3 "$base/scripts/receipts.py" -o .dx-central/scripts/receipts.py
-          curl -fsSL --retry 3 "$base/scripts/issue-assignee.sh" -o .dx-central/scripts/issue-assignee.sh
+          # The assignee is bookkeeping: a ref without the script skips it,
+          # never the check and the seal.
+          curl -fsSL --retry 3 "$base/scripts/issue-assignee.sh" -o .dx-central/scripts/issue-assignee.sh \
+            || echo "::warning::scripts/issue-assignee.sh is not at $REF; the issue is not assigned."
           curl -fsSL --retry 3 "$base/policy/issue-schema.yml" -o .dx-central/policy/issue-schema.yml
           echo "ref=$(git ls-remote https://github.com/DiluxOne/.github "$REF" "$REF^{}" | tail -1 | cut -c1-12)" >> "$GITHUB_OUTPUT"
       - name: dilux-bot token
@@ -155,7 +158,7 @@ jobs:
       # member's pull request that closes it later takes it over
       # (pull-request-assignee.yml).
       - name: Assign it to whoever accepted it
-        if: steps.bot.outputs.token != ''
+        if: steps.bot.outputs.token != '' && hashFiles('.dx-central/scripts/issue-assignee.sh') != ''
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           NUMBER: ${{ github.event.issue.number }}

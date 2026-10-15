@@ -122,6 +122,8 @@ accepted() {
 pr() {
   local why answer n verb who others
   if ! why=$(author_takes); then echo "$why."; return 0; fi
+  # The same closing references the accepted-issue gate reads on the same
+  # event (scripts/issue-gate.sh): a description it can read, so can this.
   answer=${ASSIGNEE_JSON:-}
   if [ -z "$answer" ]; then
     answer=$(mktemp)
@@ -180,6 +182,22 @@ if [ "${1:-}" = "--test" ]; then
   echo '["maria"]' > "$f"
   is "the accepted mode, dry: keeps an assignee" "$(ASSIGNEE_DRY=1 ASSIGNEE_JSON=$f NUMBER=7 SENDER=soydiloreto SENDER_TYPE=User accepted)" "#7: it already has an assignee (maria)."
   rm -f "$f"
+  # apply, against a stand-in for gh that logs each call: the author is added
+  # first, and the others go only once GitHub has the author.
+  log=$(mktemp)
+  gh() {
+    local a line=$3
+    for a in "$@"; do case "$a" in assignees*) line="$line $a" ;; esac; done
+    echo "$line" >> "$log"
+    if [ "$3" = POST ]; then echo "${GH_ANSWER:-[]}"; fi
+  }
+  : > "$log"; GH_ANSWER='["soydiloreto","maria"]' apply 12 maria soydiloreto >/dev/null
+  is "apply: adds the author, then removes the others" "$(cut -d' ' -f1,2 "$log" | tr '\n' '|')" "POST assignees[]=maria|DELETE assignees[]=soydiloreto|"
+  : > "$log"; GH_ANSWER='["soydiloreto"]' apply 12 maria soydiloreto >/dev/null
+  is "apply: GitHub did not take the author, so nobody is removed" "$(cut -d' ' -f1 "$log" | tr '\n' '|')" "POST|"
+  : > "$log"; GH_ANSWER='["maria"]' apply 12 maria "" >/dev/null
+  is "apply: nobody else to remove, no DELETE" "$(cut -d' ' -f1 "$log" | tr '\n' '|')" "POST|"
+  unset -f gh; rm -f "$log"
   [ "$fail" -eq 0 ] && echo "all tests passed"
   exit "$fail"
 fi
