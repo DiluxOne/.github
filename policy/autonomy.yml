@@ -15,7 +15,8 @@
 #
 # The organisation variable DX_AUTOPILOT=off stops every autonomous action at
 # once, without touching the checks: no lane accepts an issue, no agent
-# starts, nothing merges by policy. Everything waits for a person, as before.
+# starts, nothing merges by policy, no red default branch is reverted (G8).
+# Everything waits for a person, as before.
 
 autopilot: true
 
@@ -59,6 +60,9 @@ lanes:
       workflows: [runner-image.yml]
     repositories: [".github"]
     evidence: The workflow run that opened the issue, with its smoke test.
+    # Also the limits of gate G8 (#142): a revert dilux-bot opens when a
+    # merge turned a default branch red merges on its own only in these
+    # repositories, within these caps (scripts/revert.py decide).
     merge: {max-risk: medium, max-complexity: medium}
 
   # The reproduction (issue-repro.yml) opens the lane's issue itself, never

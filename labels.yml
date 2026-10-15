@@ -20,6 +20,10 @@
 - {name: "autopilot:continue", color: "1D76DB", description: "On an issue: the autopilot continues its draft pull request"}
 - {name: needs-human, color: "D93F0B", description: "The autopilot handed this over to a person"}
 
+# Gate G8 (revert-on-red.yml): a merge that turned the default branch red.
+- {name: revert, color: "B60205", description: "Opened by dilux-bot to revert a merge that turned the default branch red"}
+- {name: reverted, color: "B60205", description: "Reverted: the default branch went red after it merged"}
+
 # The issue triage (issue-triage.yml).
 - {name: needs-triage, color: "E4E669", description: "Not looked at yet"}
 - {name: "bug:unconfirmed", color: "D93F0B", description: "A bug report: a reproduction starts on its own (repro:run starts one by hand)"}

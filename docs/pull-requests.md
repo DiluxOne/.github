@@ -118,6 +118,25 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    [`scripts/release-gate.py`](../scripts/release-gate.py)). The bot never
    opens a release issue and no policy accepts one.
 
+5. **After the merge (G8).** When a merged pull request turns the default
+   branch red, it is reverted
+   ([`revert-on-red.yml`](../.github/workflows/revert-on-red.yml), every 15
+   minutes over every repository, [`scripts/revert.py`](../scripts/revert.py)).
+   It reads where the red began: the first run of a workflow on the default
+   branch that failed after a green one, on the merge commit of a pull
+   request whose head passed the same jobs. Its failed jobs run again once:
+   green, and the run says it was flaky and nothing is reverted; red again,
+   and dilux-bot opens a Bug issue linking the merge, the failing run and the
+   original pull request, a pull request `revert: <original title>` that
+   closes it, labels the original `reverted` and reopens its issues (the
+   cause is theirs to fix). The revert goes through the same checks and
+   review; it merges on its own only within the `platform` lane of
+   [`policy/autonomy.yml`](../policy/autonomy.yml) (its repositories and
+   caps, no protected path), and otherwise its issue says why it waits and
+   "Approve and merge" with its URL. A red that was there before the merge,
+   a job that never ran on the pull request, a revert's own merge, or
+   `DX_AUTOPILOT=off`: nothing is reverted, and the run says why.
+
 Mention `@dilux-bot` in a review thread or in the conversation and Claude
 answers there; it resolves its own thread when the point is settled.
 

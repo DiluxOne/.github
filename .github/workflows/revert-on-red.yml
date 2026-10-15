@@ -1,0 +1,157 @@
+name: Revert on red
+
+# Not reusable. Gate G8 of the plan (#78, #142): when a merged pull request
+# turns a repository's default branch red, dilux-bot reverts it, in every
+# repository the App is installed on, with no file in any of them.
+#
+# Every 15 minutes, and by hand, `scan` reads, with a read-only token over
+# the whole organisation, the runs of pushes to each default branch
+# (scripts/revert.py scan): for each workflow that went red, the run where
+# the red began, the pull request whose merge it ran on, and whether the
+# same jobs passed on that pull request's head. Then, one repository at a
+# time, `act` does what the scan decided, with a token for that repository
+# alone:
+#   - the first red: its failed jobs run again, once (actions: write). The
+#     next sweep reads the verdict: green, and the report says it was flaky
+#     and nothing is reverted; red again, and the red holds;
+#   - a red that holds: the revert, committed first; then a Bug issue
+#     (labelled `revert`) linking the merge, the failing run and the
+#     original pull request; a pull request `revert: <original title>` on a
+#     `revert/<issue>-…` branch, labelled `revert`, closing that issue; the
+#     label `reverted` on the original pull request; and its closed issues
+#     reopened, since the cause is still theirs. A merge that does not
+#     revert cleanly, or that changed workflow files (the App may not push
+#     them), gets the issue alone, saying who does what; so does a revert
+#     whose pull request could not be opened. That issue is what stops the
+#     next sweep from trying again.
+# Nothing is reverted twice, a revert's own merge never, and nothing with
+# DX_AUTOPILOT=off or the autopilot off in the policy (the run says why).
+# The revert then goes through the gates like any change: the organisation's
+# pipeline reviews it, and auto-merge.yml merges it on its own only within
+# the `platform` lane of policy/autonomy.yml (scripts/revert.py decide);
+# otherwise its issue names the action and the URL for a person.
+#
+# Why a sweep from here: a push to another repository cannot start a
+# workflow in this one, and the organisation's required workflow runs on
+# pull requests only, so anything triggered by the red run itself would be
+# a file in each repository. Re-run included, a red that holds is reverted
+# within the hour when the re-run takes under half of it.
+#
+# This repository is public, and so are these logs: a private repository's
+# name is masked and the report counts it without naming it. The code that
+# runs here is this repository's main; the repositories are only cloned to
+# commit the revert, never run.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One sweep at a time, so two never open the same revert.
+concurrency:
+  group: revert-on-red
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    name: Default branches
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      plan: ${{ steps.scan.outputs.plan }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: dilux-bot token (read, every repository)
+        id: read
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-actions: read
+          permission-checks: read
+          permission-contents: read
+          permission-issues: read
+          permission-pull-requests: read
+          permission-metadata: read
+
+      - name: Scan
+        id: scan
+        env:
+          GH_TOKEN: ${{ steps.read.outputs.token }}
+          DX_AUTOPILOT: ${{ vars.DX_AUTOPILOT }}
+        run: python3 scripts/revert.py scan
+
+  act:
+    needs: scan
+    if: needs.scan.outputs.plan != '' && needs.scan.outputs.plan != '[]'
+    # Not the repository's name: it may be private.
+    name: Act ${{ strategy.job-index }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        item: ${{ fromJSON(needs.scan.outputs.plan) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The plan carries numbers only: the repository's name comes from its
+      # id, masked before anything prints it when the repository is private.
+      - name: dilux-bot token (metadata, every repository)
+        id: meta
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-metadata: read
+
+      - name: The repository
+        id: where
+        env:
+          GH_TOKEN: ${{ steps.meta.outputs.token }}
+          ITEM: ${{ toJSON(matrix.item) }}
+        run: python3 scripts/revert.py locate
+
+      - name: dilux-bot token (re-run, this repository)
+        id: rerun
+        if: matrix.item.kind == 'rerun'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.where.outputs.name }}
+          permission-actions: write
+          permission-pull-requests: read
+
+      - name: dilux-bot token (revert, this repository)
+        id: revert
+        if: matrix.item.kind == 'revert'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.where.outputs.name }}
+          permission-actions: read
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+
+      - name: Act
+        env:
+          GH_TOKEN: ${{ steps.rerun.outputs.token || steps.revert.outputs.token }}
+          ITEM: ${{ toJSON(matrix.item) }}
+          DX_AUTOPILOT: ${{ vars.DX_AUTOPILOT }}
+        run: python3 scripts/revert.py act
