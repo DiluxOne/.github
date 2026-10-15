@@ -219,7 +219,8 @@ def judge(node, label):
         return False, f"#{n} got `{label}` from {actor.get('login') or 'an unknown actor'}, not a person: only a person accepts a release", None, None
     at = last.get("createdAt") or ""
     for e in events:
-        if e.get("__typename") == "RenamedTitleEvent" and (e.get("createdAt") or "") > at:
+        # The same second counts as after: the timeline cannot order them.
+        if e.get("__typename") == "RenamedTitleEvent" and (e.get("createdAt") or "") >= at:
             was, now_ = (shown(e.get("previousTitle")), shown(e.get("currentTitle")))
             return False, f"#{n}'s title changed after it was accepted (`{was}` → `{now_}`): a person accepts it again (remove and add `{label}`)", None, None
     return True, f"#{n}", actor.get("login"), at
@@ -411,6 +412,7 @@ def self_test():
     check("C5: a title changed after the acceptance approves nothing", (r["ok"], "accepts it again" in r["why"]), (False, True))
     odd = node(events=[ev("LabeledEvent", "2026-10-02T10:00:00Z"), ev("RenamedTitleEvent", "2026-10-03T10:00:00Z", previousTitle="a `b`\nc", currentTitle="Release 1.2.0")])
     check("C5: a former title quoted back cannot close its code span", "`b`" in verify(answer(odd), "1.2.0")["why"], False)
+    check("C5: a title changed in the same second as the acceptance approves nothing", verify(answer(node(events=[ev("LabeledEvent", "2026-10-02T10:00:00Z"), ev("RenamedTitleEvent", "2026-10-02T10:00:00Z", previousTitle="Release 1.1.9", currentTitle="Release 1.2.0")])), "1.2.0")["ok"], False)
     check("C5: a title changed before it was accepted is fine", verify(answer(node(events=[ev("RenamedTitleEvent", "2026-10-01T10:00:00Z", previousTitle="Release ", currentTitle="Release 1.2.0"), ev("LabeledEvent", "2026-10-02T10:00:00Z")])), "1.2.0")["ok"], True)
     r = verify(answer(node(number=3, state="CLOSED", reason="NOT_PLANNED"), node(number=9)), "1.2.0")
     check("one accepted issue among several for the version is enough", (r["ok"], r["issue"]), (True, 9))

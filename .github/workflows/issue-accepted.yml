@@ -380,8 +380,12 @@ jobs:
             say "**No release pull request:** $version is already released (its tag exists)."; exit 0
           fi
           if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
-            read -r pr state < <(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --state all --json url,state --jq '.[0] | "\(.url // "") \(.state // "")"')
-            if [ "${state:-}" = CLOSED ]; then
+            found=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --state all --json url,state --jq '.[0] | "\(.url // "") \(.state // "")"') \
+              || { echo "::error::Could not list the pull requests of $branch."; exit 1; }
+            read -r pr state <<<"$found"
+            if [ "${state:-}" = MERGED ]; then
+              say "**No release pull request:** the one for $version, $pr, already merged; the release run of that merge publishes $version (re-run it if it found no accepted issue then)."
+            elif [ "${state:-}" = CLOSED ]; then
               say "**No release pull request:** the one for $version, $pr, was closed without merging and its branch \`$branch\` is still there. Delete that branch, then accept this issue again (remove and add \`accepted\`) for a new one."
             else
               say "**The release pull request** for $version is already there: ${pr:-the branch \`$branch\`}. Merging it publishes $version to $where."
