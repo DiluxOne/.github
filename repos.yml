@@ -81,3 +81,21 @@ files:
     # the maintainer's queue. Kept in step by DiluxOne/.github
     # (scripts/sync-repos.py).
     * @soydiloreto
+
+# The workflow callers (workflow-templates/) every repository that calls the
+# shared workflows keeps job for job as its template: the drift check
+# compares them and `sync-repos.py callers` brings one in step, as a pull
+# request that closes an issue it opens there. The templates in
+# `every-repository` apply to each of them; any other template, to a
+# repository that calls one of the shared workflows it calls.
+# `repository-owned` names, for each template, the inputs it says to fill in:
+# their values are the repository's, never compared and always kept. An input
+# a repository passes that its template does not set (main-file,
+# php-versions, requires-plugins-from), and a job of its own, are its own too.
+callers:
+  every-repository: [issues.yml, pull-request-comments.yml]
+  repository-owned:
+    issues.yml: [support-url]
+    pull-request-comments.yml: [profile]
+    plugin-checks-wp.yml: [slug, version-constant]
+    release-wp.yml: [slug, version-constant, dry-run]

@@ -2,12 +2,15 @@ name: Issues
 
 # This repository's own issues, through the same shared workflows every
 # DiluxOne repository calls (workflow-templates/issues.yml), at the moving
-# tag: the triage when an issue opens, and, when a person accepts one, the
-# Platform Project (#9, repos.yml), its assignee (#73), the gate re-run on
-# its pull requests, the PRD's seal, and the autopilot (issue-triage.yml calls it). Most of this
-# repository is a protected path of policy/autonomy.yml, and an autopilot
-# pull request that touches one is never merged by policy. No reproduction job: this repository has no
-# plugin to reproduce a bug in.
+# tag, job for job as the template (scripts/sync-repos.py check compares
+# them): the triage when an issue opens, the reproduction of a report the
+# triage calls a bug (or that a maintainer labels repro:run; with no unit
+# tests here it ends green and the report waits for a person), and, when a
+# person accepts one, the Platform Project (#9, repos.yml), its assignee
+# (#73), the gate re-run on its pull requests, the PRD's seal, and the
+# autopilot (issue-triage.yml calls it). Most of this repository is a
+# protected path of policy/autonomy.yml, and an autopilot pull request that
+# touches one is never merged by policy.
 
 on:
   issues:
@@ -26,6 +29,29 @@ jobs:
     uses: DiluxOne/.github/.github/workflows/issue-triage.yml@v5
     with:
       support-url: https://github.com/DiluxOne/.github/blob/main/SUPPORT.md
+    secrets: inherit
+
+  repro:
+    permissions:
+      actions: read
+      contents: write
+      issues: write
+      pull-requests: write
+    uses: DiluxOne/.github/.github/workflows/issue-repro.yml@v5
+    secrets: inherit
+
+  repro-triaged:
+    needs: triage
+    if: needs.triage.outputs.bug == 'true'
+    permissions:
+      actions: read
+      contents: write
+      issues: write
+      pull-requests: write
+    uses: DiluxOne/.github/.github/workflows/issue-repro.yml@v5
+    with:
+      trigger: triage
+      triage-bug: ${{ needs.triage.outputs.bug }}
     secrets: inherit
 
   accepted:

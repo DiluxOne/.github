@@ -8,7 +8,11 @@ name: Issue reproduction
 #   trigger `label`   a person who can write to the repository labels the
 #                     issue `repro:run` (or `repro:again` for another try).
 # A label a bot adds starts nothing, and so does one added by someone with
-# less than write access (checked live, not from the event).
+# less than write access (checked live, not from the event). A repository
+# without a unit-test setup (tests/bootstrap.php and tests/Unit/: one with
+# no PHP yet, or DiluxOne/.github) has nothing to reproduce against: the run
+# ends green with a notice, before any model runs, and a report the triage
+# sent gets one comment saying it waits for a person.
 #
 #   the test fails  -> the bug is real: label `bug:confirmed`, a draft pull
 #                      request with the failing test as evidence and as the
@@ -179,9 +183,40 @@ jobs:
           TRIAGE_BUG: ${{ inputs.triage-bug }}
         run: bash .dx-central/scripts/repro-trigger.sh decide
 
+      # Nothing to reproduce against without a unit-test setup: the run ends
+      # here, green, before any model runs, and a report the triage sent
+      # waits for a person (one comment on the issue says so).
+      - name: A unit-test setup?
+        id: setup
+        if: steps.start.outputs.go == 'yes'
+        run: bash .dx-central/scripts/repro-trigger.sh setup
+
+      - name: dilux-bot token (the issue's comment)
+        id: say
+        if: steps.setup.outputs.ready == 'no' && inputs.trigger == 'triage'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-issues: write
+
+      - name: No unit-test setup
+        if: steps.setup.outputs.ready == 'no'
+        env:
+          GH_TOKEN: ${{ steps.say.outputs.token }}
+          TRIGGER: ${{ inputs.trigger }}
+          NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          echo "::notice::This repository has no tests/bootstrap.php and tests/Unit/ yet, so there is nothing to reproduce against; the report waits for a person."
+          if [ "$TRIGGER" = triage ]; then
+            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'This repository has no unit-test setup to reproduce a report against yet, so no reproduction ran. A person will look at it.\n\n<sub>🤖 Issue reproduction</sub>')" >/dev/null
+          fi
+
       - name: Daily cap
         id: cap
-        if: steps.start.outputs.go == 'yes'
+        if: steps.start.outputs.go == 'yes' && steps.setup.outputs.ready == 'yes'
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           MAX: ${{ inputs.max-per-day }}
@@ -216,9 +251,6 @@ jobs:
           BODY: ${{ github.event.issue.body }}
         run: |
           set -euo pipefail
-          if [ ! -f tests/bootstrap.php ] || [ ! -d tests/Unit ]; then
-            echo "::error::This repository has no tests/bootstrap.php and tests/Unit/, which the reproduction job needs."; exit 1
-          fi
           mkdir -p tests/Unit/Repro
           example=$(find tests/Unit -name '*Test.php' -not -path '*/Repro/*' | head -1)
           {
