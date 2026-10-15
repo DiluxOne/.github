@@ -38,6 +38,20 @@ Writes to $GITHUB_OUTPUT (and prints):
   versions  every release from minimum to tools, as a JSON list
   phpstan   the minimum as PHPStan's `phpVersion` (70400)
 
+`php-versions.py gate <script>` is one static gate of the checks (`lint`,
+`stan`, `psalm:taint`), run from the plugin's checkout with TOOLS, MINIMUM
+and PHPSTAN (the outputs above) in the environment. Before `composer
+install` (no vendor/composer/installed.json yet) and again after it, it
+writes `php`, the PHP the gate runs on: the tools', except for Psalm 5,
+which stops at PHP 8.3 (a composer.json whose vimeo/psalm allows no 6, said
+before the install, so Composer is not asked to install it on a PHP it
+refuses; or a Psalm 5 installed, said after it). After the install it
+warns when PHPCompatibility is missing or is 9 (which knows no syntax newer
+than PHP 7.4), and for `stan` writes `config`, a PHPStan config that
+includes the repository's own (phpstan.neon, phpstan.neon.dist,
+phpstan.dist.neon) and sets phpVersion to the minimum, in RUNNER_TEMP.
+These are the bridges of #85, warnings until each plugin moves.
+
 `php-versions.py --test` checks these rules.
 """
 import json
@@ -49,7 +63,11 @@ import sys
 # the tools' PHP moves to a new major, the one before it is added here.
 LAST_MINOR = {5: 6, 7: 4}
 
-VERSION = re.compile(r"(\d+)\.(\d+)")
+# Psalm 5's newest PHP (vimeo/psalm 5.26.1: ~8.3.0). Psalm 6.14.2 is the
+# first that runs on PHP 8.5.
+PSALM5_PHP = "8.3"
+PHPSTAN_CONFIGS = ("phpstan.neon", "phpstan.neon.dist", "phpstan.dist.neon")
+
 HEADER = re.compile(r"^[ \t/*#@]*Requires PHP:[ \t]*(\S+)", re.IGNORECASE | re.MULTILINE)
 
 
@@ -116,13 +134,72 @@ def plan(settings, main, readme):
     return out, notes
 
 
-def main():
-    try:
-        settings = json.loads(os.environ.get("SETTINGS") or "{}")
-        out, notes = plan(settings, os.environ.get("MAIN", ""), os.environ.get("README", "readme.txt"))
-    except ValueError as err:
-        print(f"::error::{err}")
-        return 1
+def allows_major(constraint, major):
+    """Whether a Composer constraint lets in some release of `major` or later."""
+    for alt in re.split(r"\s*\|\|?\s*", str(constraint or "").strip()):
+        alt = alt.strip()
+        if not alt:
+            continue
+        if alt.startswith(("*", ">")) or alt.startswith("dev-"):
+            return True
+        m = re.search(r"(\d+)", alt)
+        if m and int(m.group(1)) >= major:
+            return True
+    return False
+
+
+def installed_version(installed, name):
+    """The version of `name` in vendor/composer/installed.json, without a leading v; '' when absent."""
+    packages = installed.get("packages", []) if isinstance(installed, dict) else installed
+    for pkg in packages or []:
+        if pkg.get("name") == name:
+            return str(pkg.get("version", "")).lstrip("v")
+    return ""
+
+
+def gate(script, env, root="."):
+    """(outputs, notes) for one static gate; see the module's docstring."""
+    tools, minimum = env["TOOLS"], env["MINIMUM"]
+    out, notes = {"php": tools}, []
+    composer = {}
+    if os.path.isfile(os.path.join(root, "composer.json")):
+        with open(os.path.join(root, "composer.json"), encoding="utf-8") as fh:
+            composer = json.load(fh)
+    path = os.path.join(root, "vendor", "composer", "installed.json")
+    installed = None
+    if os.path.isfile(path):
+        with open(path, encoding="utf-8") as fh:
+            installed = json.load(fh)
+    move = "(DiluxOne/.github#85, docs/migrating.md)"
+    if script == "psalm:taint":
+        wanted = (composer.get("require-dev") or {}).get("vimeo/psalm") or (composer.get("require") or {}).get("vimeo/psalm")
+        psalm = installed_version(installed, "vimeo/psalm") if installed is not None else ""
+        if installed is None and wanted and not allows_major(wanted, 6):
+            out["php"] = PSALM5_PHP
+            notes.append(f"::warning file=composer.json::vimeo/psalm {wanted} allows no Psalm 6, and Psalm 5 does not run on PHP {tools}: Psalm runs on PHP {PSALM5_PHP} until the repository requires ^5.26 || ^6.14.2 {move}.")
+        elif installed is not None and re.match(r"[0-5]\.", psalm):
+            out["php"] = PSALM5_PHP
+            notes.append(f"::warning file=composer.json::Composer installed Psalm {psalm}, which does not run on PHP {tools}: Psalm runs on PHP {PSALM5_PHP} until the repository installs Psalm 6.14.2 or later (no config.platform.php holding its tools to an older PHP) {move}.")
+    elif script == "lint" and installed is not None:
+        compat = installed_version(installed, "phpcompatibility/php-compatibility")
+        if not compat:
+            notes.append(f"::warning file=composer.json::No PHPCompatibility is installed: nothing holds the code to PHP {minimum}. Require phpcompatibility/phpcompatibility-wp ^3.0@alpha and add PHPCompatibilityWP to the PHPCS ruleset {move}.")
+        elif re.match(r"[0-9]\.", compat):
+            notes.append(f"::warning file=composer.json::PHPCompatibility {compat} knows no syntax newer than PHP 7.4, so PHP 8 syntax passes it unseen: require phpcompatibility/phpcompatibility-wp ^3.0@alpha, which brings PHPCompatibility 10 {move}.")
+    elif script == "stan" and installed is not None:
+        own = next((f for f in PHPSTAN_CONFIGS if os.path.isfile(os.path.join(root, f))), None)
+        if own is None:
+            raise ValueError(f"no {', '.join(PHPSTAN_CONFIGS)} at the repository's root: the checks give PHPStan the PHP to analyse for through it")
+        config = os.path.join(env.get("RUNNER_TEMP") or root, "dx-phpstan.neon")
+        with open(config, "w", encoding="utf-8") as fh:
+            fh.write(f"includes:\n  - {os.path.abspath(os.path.join(root, own))}\nparameters:\n  phpVersion: {int(env['PHPSTAN'])}\n")
+        out["config"] = config
+    elif script not in ("lint", "stan", "psalm:taint"):
+        raise ValueError(f"'{script}' is not a static gate (lint, stan, psalm:taint)")
+    return out, notes
+
+
+def emit(out, notes):
     for note in notes:
         print(note)
     lines = "".join(f"{k}={v}\n" for k, v in out.items())
@@ -130,6 +207,21 @@ def main():
     if os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
             fh.write(lines)
+
+
+def main(argv):
+    try:
+        if argv[:1] == ["gate"] and len(argv) == 2:
+            emit(*gate(argv[1], os.environ))
+            return 0
+        if argv:
+            print("usage: php-versions.py [--test | gate <lint|stan|psalm:taint>]", file=sys.stderr)
+            return 64
+        settings = json.loads(os.environ.get("SETTINGS") or "{}")
+        emit(*plan(settings, os.environ.get("MAIN", ""), os.environ.get("README", "readme.txt")))
+    except (ValueError, KeyError) as err:
+        print(f"::error::{err}")
+        return 1
     return 0
 
 
@@ -214,6 +306,81 @@ def self_test():
     shipped = (policy.load_yaml(os.path.join(here, "..", "kinds", "wordpress-plugin", "pack.yml")).get("settings") or {})
     out, notes = run(shipped, header.format("7.4"))
     check("the wordpress-plugin pack names both, as strings", out is not None and all(isinstance(shipped["php"][k], str) for k in ("tools", "minimum")), (shipped.get("php"), notes))
+
+    # The static gates.
+    check("constraint: ^5.26 allows no 6", not allows_major("^5.26", 6))
+    check("constraint: ^5.26 || ^6.14.2 allows 6", allows_major("^5.26 || ^6.14.2", 6))
+    check("constraint: ^5.0|^6.0 allows 6", allows_major("^5.0|^6.0", 6))
+    check("constraint: >=5 and * allow 6", allows_major(">=5", 6) and allows_major("*", 6))
+    env = {"TOOLS": "8.5", "MINIMUM": "7.4", "PHPSTAN": "70400"}
+
+    def gate_in(script, composer=None, installed=None, files=()):
+        with tempfile.TemporaryDirectory() as d:
+            if composer is not None:
+                with open(os.path.join(d, "composer.json"), "w") as fh:
+                    json.dump(composer, fh)
+            if installed is not None:
+                os.makedirs(os.path.join(d, "vendor", "composer"))
+                with open(os.path.join(d, "vendor", "composer", "installed.json"), "w") as fh:
+                    json.dump({"packages": [{"name": n, "version": v} for n, v in installed.items()]}, fh)
+            for f in files:
+                open(os.path.join(d, f), "w").close()
+            try:
+                out, notes = gate(script, dict(env, RUNNER_TEMP=d), d)
+                if "config" in out:
+                    with open(out["config"]) as fh:
+                        out["config_text"] = fh.read()
+                return out, notes
+            except ValueError as err:
+                return None, [str(err)]
+
+    out, notes = gate_in("psalm:taint", {"require-dev": {"vimeo/psalm": "^5.26"}})
+    check("psalm: ^5 alone, before the install: PHP 8.3, so Composer is not asked for Psalm 5 on 8.5", out["php"] == "8.3" and notes and notes[0].startswith("::warning"), (out, notes))
+    out, notes = gate_in("psalm:taint", {"require-dev": {"vimeo/psalm": "^5.26 || ^6.14.2"}})
+    check("psalm: 6 allowed, before the install: the tools' PHP", out["php"] == "8.5" and not notes, (out, notes))
+    out, notes = gate_in("psalm:taint", {"require-dev": {"vimeo/psalm": "^5.26 || ^6.14.2"}}, {"vimeo/psalm": "5.26.1"})
+    check("psalm: Psalm 5 installed (a platform pin): PHP 8.3, with a warning", out["php"] == "8.3" and "5.26.1" in notes[0], (out, notes))
+    out, notes = gate_in("psalm:taint", {"require-dev": {"vimeo/psalm": "^6.14.2"}}, {"vimeo/psalm": "v6.20.0"})
+    check("psalm: Psalm 6 installed: the tools' PHP, nothing said", out["php"] == "8.5" and not notes, (out, notes))
+    out, notes = gate_in("lint", {}, {"phpcompatibility/php-compatibility": "9.3.5"})
+    check("lint: PHPCompatibility 9 is warned about", out["php"] == "8.5" and notes and "9.3.5" in notes[0], (out, notes))
+    out, notes = gate_in("lint", {}, {"phpcompatibility/php-compatibility": "10.0.0-alpha2"})
+    check("lint: PHPCompatibility 10 says nothing", not notes, notes)
+    out, notes = gate_in("lint", {}, {})
+    check("lint: no PHPCompatibility is warned about", notes and "No PHPCompatibility" in notes[0], notes)
+    out, notes = gate_in("lint", {})
+    check("lint: before the install, nothing to say", out["php"] == "8.5" and not notes, (out, notes))
+    out, notes = gate_in("stan", {}, {}, ["phpstan.neon.dist"])
+    check("stan: the repository's config, included, with the minimum's phpVersion", out and "phpstan.neon.dist" in out["config_text"] and "phpVersion: 70400" in out["config_text"], out)
+    out, notes = gate_in("stan", {}, {}, ["phpstan.neon", "phpstan.neon.dist"])
+    check("stan: phpstan.neon first, as PHPStan reads it", out and "phpstan.neon\n" in out["config_text"], out)
+    out, notes = gate_in("stan", {}, {})
+    check("stan: no config at the root fails", out is None and "phpstan.neon" in notes[0], notes)
+    out, notes = gate_in("nope", {}, {})
+    check("a gate that is not one fails", out is None and "not a static gate" in notes[0], notes)
+
+    # The command line, as the workflow calls it.
+    import subprocess
+
+    with tempfile.TemporaryDirectory() as d:
+        output = os.path.join(d, "out")
+        with open(os.path.join(d, "plugin.php"), "w") as fh:
+            fh.write(header.format("8.0"))
+        proc = subprocess.run([sys.executable, os.path.abspath(__file__)], cwd=d, capture_output=True, text=True,
+                              env=dict(os.environ, SETTINGS=json.dumps(pack), MAIN="plugin.php", GITHUB_OUTPUT=output))
+        with open(output) as fh:
+            written = fh.read()
+        check("cli: writes the plan to GITHUB_OUTPUT and warns", proc.returncode == 0 and "minimum=8.0\n" in written and 'versions=["8.0",' in written and "::warning" in proc.stdout, (proc.returncode, proc.stdout, written))
+        proc = subprocess.run([sys.executable, os.path.abspath(__file__)], cwd=d, capture_output=True, text=True,
+                              env=dict(os.environ, SETTINGS="{}", MAIN="plugin.php", GITHUB_OUTPUT=output))
+        check("cli: a pack without php fails with an error annotation", proc.returncode == 1 and proc.stdout.startswith("::error::"), (proc.returncode, proc.stdout))
+        with open(os.path.join(d, "composer.json"), "w") as fh:
+            json.dump({"require-dev": {"vimeo/psalm": "^5.26"}}, fh)
+        proc = subprocess.run([sys.executable, os.path.abspath(__file__), "gate", "psalm:taint"], cwd=d, capture_output=True, text=True,
+                              env=dict(os.environ, TOOLS="8.5", MINIMUM="7.4", PHPSTAN="70400", GITHUB_OUTPUT=output))
+        check("cli: gate writes the PHP", proc.returncode == 0 and "php=8.3" in proc.stdout, (proc.returncode, proc.stdout))
+        proc = subprocess.run([sys.executable, os.path.abspath(__file__), "gate"], cwd=d, capture_output=True, text=True)
+        check("cli: gate without a script is a usage error", proc.returncode == 64, proc.returncode)
     return failed
 
 
@@ -223,4 +390,4 @@ if __name__ == "__main__":
         if not failed:
             print("all tests passed")
         sys.exit(1 if failed else 0)
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

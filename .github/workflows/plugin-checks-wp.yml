@@ -243,9 +243,31 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref }}
+          path: .dx-central
+          persist-credentials: false
+      # Two tools whose old major cannot do what the minimum asks, until the
+      # repository moves (its own pull request, #85; scripts/php-versions.py
+      # gate): Psalm 5 does not run on a PHP newer than 8.3, so it gets 8.3,
+      # said from composer.json before the install (Composer would refuse
+      # Psalm 5 on the tools' PHP) and from what was installed after it (a
+      # config.platform.php that holds the tools to an older PHP);
+      # PHPCompatibility 9 knows no syntax newer than PHP 7.4, so PHP 8
+      # syntax passes it unseen. Both warn, neither fails.
+      - name: The PHP for this gate
+        id: before
+        env:
+          SCRIPT: ${{ matrix.gate.script }}
+          TOOLS: ${{ needs.php.outputs.tools }}
+          MINIMUM: ${{ needs.php.outputs.minimum }}
+          PHPSTAN: ${{ needs.php.outputs.phpstan }}
+        run: python3 .dx-central/scripts/php-versions.py gate "$SCRIPT"
       - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
-          php-version: ${{ needs.php.outputs.tools }}
+          php-version: ${{ steps.before.outputs.php }}
           coverage: none
           tools: composer:v2
       - name: Composer cache directory
@@ -254,67 +276,38 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.cache-dir.outputs.dir }}
-          key: composer-${{ runner.os }}-php-${{ needs.php.outputs.tools }}-${{ hashFiles('composer.json') }}
-          restore-keys: composer-${{ runner.os }}-php-${{ needs.php.outputs.tools }}-
+          key: composer-${{ runner.os }}-php-${{ steps.before.outputs.php }}-${{ hashFiles('composer.json') }}
+          restore-keys: composer-${{ runner.os }}-php-${{ steps.before.outputs.php }}-
       - run: composer install --no-interaction --prefer-dist --no-progress
       - name: What the repository installed
-        id: installed
-        # Two tools whose old major cannot do what the minimum asks, until
-        # the repository moves (its own pull request, #85): Psalm 5 does not
-        # run on a PHP newer than 8.3, so it gets 8.3; PHPCompatibility 9
-        # (phpcompatibility-wp 2) knows no syntax newer than PHP 7.4, so PHP
-        # 8 syntax passes it unseen. Both warn, neither fails.
+        id: after
         env:
           SCRIPT: ${{ matrix.gate.script }}
-          TOOLS: ${{ needs.php.outputs.tools }}
+          TOOLS: ${{ steps.before.outputs.php }}
           MINIMUM: ${{ needs.php.outputs.minimum }}
-        run: |
-          set -euo pipefail
-          installed() { jq -r --arg n "$1" '(.packages // .)[] | select(.name == $n) | .version' vendor/composer/installed.json | sed 's/^v//'; }
-          case "$SCRIPT" in
-            psalm:taint)
-              psalm=$(installed vimeo/psalm)
-              case "$psalm" in
-                4.*|5.*)
-                  echo "::warning::Psalm $psalm cannot run on PHP $TOOLS, so it runs on PHP 8.3 until the repository requires vimeo/psalm ^6.14.2 and no config.platform.php holds its tools below PHP 8.1.31 (DiluxOne/.github#85)."
-                  echo "php=8.3" >> "$GITHUB_OUTPUT" ;;
-              esac ;;
-            lint)
-              compat=$(installed phpcompatibility/php-compatibility)
-              case "$compat" in
-                '') echo "::warning::No PHPCompatibility is installed: nothing holds the code to PHP $MINIMUM. Require phpcompatibility/phpcompatibility-wp ^3.0@alpha and add PHPCompatibilityWP to the PHPCS ruleset (DiluxOne/.github#85)." ;;
-                9.*) echo "::warning::PHPCompatibility $compat knows no syntax newer than PHP 7.4, so PHP 8 syntax passes it unseen: require phpcompatibility/phpcompatibility-wp ^3.0@alpha, which brings PHPCompatibility 10 (DiluxOne/.github#85)." ;;
-              esac ;;
-          esac
-      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
-        if: steps.installed.outputs.php != ''
+          PHPSTAN: ${{ needs.php.outputs.phpstan }}
+        run: python3 .dx-central/scripts/php-versions.py gate "$SCRIPT"
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        if: steps.after.outputs.php != steps.before.outputs.php
         with:
-          php-version: ${{ steps.installed.outputs.php }}
+          php-version: ${{ steps.after.outputs.php }}
           coverage: none
           tools: composer:v2
       - name: composer ${{ matrix.gate.script }}, for PHP ${{ needs.php.outputs.minimum }}
         env:
           SCRIPT: ${{ matrix.gate.script }}
           MINIMUM: ${{ needs.php.outputs.minimum }}
-          PHPSTAN_VERSION: ${{ needs.php.outputs.phpstan }}
+          CONFIG: ${{ steps.after.outputs.config }}
+        # Each composer script takes the arguments after `--`: the PHP to
+        # analyse for, over the repository's own setting (the command line
+        # wins over a PHPCS ruleset's testVersion; the config written above
+        # includes the repository's phpstan.neon and sets phpVersion).
         run: |
           set -euo pipefail
           case "$SCRIPT" in
-            lint)
-              # Over the ruleset's own testVersion: the command line wins.
-              composer lint -- --runtime-set testVersion "$MINIMUM-" ;;
-            stan)
-              # The repository's config, included, with the minimum's
-              # phpVersion over its own.
-              config=
-              for f in phpstan.neon phpstan.neon.dist phpstan.dist.neon; do
-                if [ -f "$f" ]; then config=$f; break; fi
-              done
-              [ -n "$config" ] || { echo "::error::No phpstan.neon (or phpstan.neon.dist, phpstan.dist.neon) at the repository's root: the checks give PHPStan the PHP to analyse for through it."; exit 1; }
-              printf 'includes:\n  - %s\nparameters:\n  phpVersion: %s\n' "$GITHUB_WORKSPACE/$config" "$PHPSTAN_VERSION" > "$RUNNER_TEMP/dx-phpstan.neon"
-              composer stan -- --configuration="$RUNNER_TEMP/dx-phpstan.neon" ;;
-            psalm:taint)
-              composer psalm:taint -- --php-version="$MINIMUM" ;;
+            lint) composer lint -- --runtime-set testVersion "$MINIMUM-" ;;
+            stan) composer stan -- --configuration="$CONFIG" ;;
+            psalm:taint) composer psalm:taint -- --php-version="$MINIMUM" ;;
           esac
 
   i18n:
