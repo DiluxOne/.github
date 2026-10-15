@@ -130,6 +130,7 @@ jobs:
       minimum: ${{ steps.php.outputs.minimum }}
       versions: ${{ steps.php.outputs.versions }}
       phpstan: ${{ steps.php.outputs.phpstan }}
+      analysis-only: ${{ steps.php.outputs.analysis-only }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -226,6 +227,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref }}
+          path: .dx-central
+          persist-credentials: false
+      - name: The organisation's scripts, out of the tree
+        run: mv .dx-central "$RUNNER_TEMP/dx-central"
       - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
           php-version: ${{ matrix.php }}
@@ -239,7 +248,16 @@ jobs:
           path: ${{ steps.cache-dir.outputs.dir }}
           key: composer-${{ runner.os }}-php-${{ matrix.php }}-${{ hashFiles('composer.json') }}
           restore-keys: composer-${{ runner.os }}-php-${{ matrix.php }}-
-      - run: composer install --no-interaction --prefer-dist --no-progress
+      # The unit tests need none of the analysis tools, and the newest of
+      # those need a newer PHP than the minimum (Psalm 6 needs 8.1): the
+      # pack's `php.analysis-only` packages are taken out of require-dev,
+      # and the rest is resolved for this PHP (`update`, so a lock written
+      # on the tools' PHP never holds an older lane to it).
+      - name: Without the analysis-only packages
+        env:
+          ANALYSIS_ONLY: ${{ needs.php.outputs.analysis-only }}
+        run: python3 "$RUNNER_TEMP/dx-central/scripts/php-versions.py" unit-deps
+      - run: composer update --no-interaction --prefer-dist --no-progress
       - run: composer test:unit
 
   static:

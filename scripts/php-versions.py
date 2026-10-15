@@ -44,6 +44,15 @@ Writes to $GITHUB_OUTPUT (and prints):
   declared  the plugin's own `Requires PHP`, "major.minor"; empty when none
   versions  every release from minimum to tools, as a JSON list
   phpstan   the minimum as PHPStan's `phpVersion` (70400)
+  analysis-only
+            the pack's `php.analysis-only`, as a JSON list: the dev
+            packages only the analysis needs
+
+`php-versions.py unit-deps` (ANALYSIS_ONLY, that list, in the environment)
+takes those packages out of the checkout's composer.json require-dev, for
+a unit-test job: it resolves the rest for its own PHP (`composer update`),
+so a tool that needs a newer PHP than the minimum (Psalm 6 needs 8.1) never
+stops the unit tests on the minimum.
 
 `php-versions.py gate <script>` is one static gate of the checks (`lint`,
 `stan`, `psalm:taint`), run from the plugin's checkout with TOOLS, MINIMUM
@@ -147,6 +156,7 @@ def plan(settings, main, readme, base=None):
         "declared": f"{own[0]}.{own[1]}" if own is not None else "",
         "versions": json.dumps(releases(low, tools), separators=(",", ":")),
         "phpstan": str(low[0] * 10000 + low[1] * 100),
+        "analysis-only": json.dumps(analysis_only(php), separators=(",", ":")),
     }
     return out, notes
 
@@ -241,13 +251,39 @@ def emit(out, notes):
             fh.write(lines)
 
 
+def analysis_only(php):
+    """The pack's `php.analysis-only`, checked: a list of Composer package names."""
+    names = php.get("analysis-only") or []
+    if not isinstance(names, list) or not all(isinstance(n, str) and re.fullmatch(r"[a-z0-9_.-]+/[a-z0-9_.-]+", n) for n in names):
+        raise ValueError(f"php.analysis-only is {names!r}, not a list of Composer package names")
+    return names
+
+
+def unit_deps(path, names):
+    """Take the analysis-only packages out of composer.json's require-dev; the names taken out."""
+    with open(path, encoding="utf-8") as fh:
+        composer = json.load(fh)
+    dev = composer.get("require-dev") or {}
+    gone = [n for n in names if n in dev]
+    if gone:
+        composer["require-dev"] = {k: v for k, v in dev.items() if k not in gone}
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(composer, fh, indent=4)
+            fh.write("\n")
+    return gone
+
+
 def main(argv):
     try:
         if argv[:1] == ["gate"] and len(argv) == 2:
             emit(*gate(argv[1], os.environ))
             return 0
+        if argv == ["unit-deps"]:
+            gone = unit_deps("composer.json", json.loads(os.environ.get("ANALYSIS_ONLY") or "[]"))
+            print("Not installed for the unit tests (analysis only): " + (", ".join(gone) or "nothing"))
+            return 0
         if argv:
-            print("usage: php-versions.py [--test | gate <lint|stan|psalm:taint>]", file=sys.stderr)
+            print("usage: php-versions.py [--test | gate <lint|stan|psalm:taint> | unit-deps]", file=sys.stderr)
             return 64
         settings = json.loads(os.environ.get("SETTINGS") or "{}")
         base = None
@@ -354,6 +390,7 @@ def self_test():
     shipped = (policy.load_yaml(os.path.join(here, "..", "kinds", "wordpress-plugin", "pack.yml")).get("settings") or {})
     out, notes = run(shipped, header.format("7.4"))
     check("the wordpress-plugin pack names both, as strings", out is not None and all(isinstance(shipped["php"][k], str) for k in ("tools", "minimum")), (shipped.get("php"), notes))
+    shipped_php_analysis = json.loads(out["analysis-only"]) if out else []
 
     # The static gates.
     check("constraint: ^5.26 allows no 6", not allows_major("^5.26", 6))
@@ -423,6 +460,25 @@ def self_test():
     out, notes = gate_in("nope", {}, {})
     check("a gate that is not one fails", out is None and "not a static gate" in notes[0], notes)
 
+    # The unit-test jobs' dependencies (#156 review): a plugin that requires
+    # Psalm 6 alone (PHP 8.1+) still resolves its unit tests on PHP 7.4.
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "composer.json")
+        psalm_only = {"require": {"php": ">=7.4"}, "require-dev": {"phpunit/phpunit": "^9.6", "vimeo/psalm": "^6.14.2", "humanmade/psalm-plugin-wordpress": "^3.1.2", "phpstan/phpstan": "^2.1", "brain/monkey": "^2.6"}, "scripts": {"test:unit": "phpunit"}}
+        with open(path, "w") as fh:
+            json.dump(psalm_only, fh)
+        gone = unit_deps(path, shipped_php_analysis)
+        with open(path) as fh:
+            left = json.load(fh)
+        check("unit-deps: a Psalm-bearing composer.json loses the analysis tools", sorted(gone) == ["humanmade/psalm-plugin-wordpress", "phpstan/phpstan", "vimeo/psalm"], gone)
+        check("unit-deps: keeps what the unit tests need, and the rest of the file", left["require-dev"] == {"phpunit/phpunit": "^9.6", "brain/monkey": "^2.6"} and left["scripts"] == psalm_only["scripts"] and left["require"] == psalm_only["require"], left)
+        check("unit-deps: nothing left to take out changes nothing", unit_deps(path, shipped_php_analysis) == [])
+    check("the pack's analysis-only names Psalm and its WordPress plugin", {"vimeo/psalm", "humanmade/psalm-plugin-wordpress"} <= set(shipped_php_analysis), shipped_php_analysis)
+    out, notes = run(pack, header.format("7.4"))
+    check("plan: analysis-only is written, empty when the pack has none", out and out["analysis-only"] == "[]", out)
+    out, notes = run({"php": {"tools": "8.5", "minimum": "7.4", "analysis-only": ["not a package"]}}, header.format("7.4"))
+    check("plan: an analysis-only entry that is not a package fails", out is None and "analysis-only" in notes[0], notes)
+
     # The command line, as the workflow calls it.
     import subprocess
 
@@ -443,6 +499,11 @@ def self_test():
         proc = subprocess.run([sys.executable, os.path.abspath(__file__), "gate", "psalm:taint"], cwd=d, capture_output=True, text=True,
                               env=dict(os.environ, TOOLS="8.5", MINIMUM="7.4", PHPSTAN="70400", GITHUB_OUTPUT=output))
         check("cli: gate writes the PHP", proc.returncode == 0 and "php=8.3" in proc.stdout, (proc.returncode, proc.stdout))
+        proc = subprocess.run([sys.executable, os.path.abspath(__file__), "unit-deps"], cwd=d, capture_output=True, text=True,
+                              env=dict(os.environ, ANALYSIS_ONLY='["vimeo/psalm"]'))
+        with open(os.path.join(d, "composer.json")) as fh:
+            left = json.load(fh)
+        check("cli: unit-deps edits the checkout's composer.json", proc.returncode == 0 and "vimeo/psalm" in proc.stdout and "vimeo/psalm" not in left.get("require-dev", {}), (proc.returncode, proc.stdout, left))
         proc = subprocess.run([sys.executable, os.path.abspath(__file__), "gate"], cwd=d, capture_output=True, text=True)
         check("cli: gate without a script is a usage error", proc.returncode == 64, proc.returncode)
     return failed

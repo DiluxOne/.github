@@ -53,6 +53,17 @@ settings:
     # higher is checked from its own until it lowers it; a pull request
     # that raises it above both the base's and this fails.
     minimum: '7.4'
+    # The dev packages only the analysis needs, which run on the tools' PHP
+    # alone (Psalm 6 needs 8.1, say): the unit-test jobs take them out of
+    # require-dev and resolve the rest for their own PHP, so a plugin can
+    # require the newest of them and still run its unit tests on the
+    # minimum. A repository adds its own to the list.
+    analysis-only:
+      - vimeo/psalm
+      - humanmade/psalm-plugin-wordpress
+      - phpstan/phpstan
+      - phpstan/extension-installer
+      - szepeviktor/phpstan-wordpress
   plugin-check:
     # Every warning fails, as it does for the reviewer.
     strict: true
