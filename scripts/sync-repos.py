@@ -1239,6 +1239,16 @@ def callers_test(check, conf):
           "  repro-triaged:" in both and "  reply:" in both and callers_drift({".github/workflows/all.yml": both}, conf) == [], both)
 
 
+def drift_or_reason(repo, conf, labels, block, current=0):
+    """drift(), or why the repository could not be checked: one repository
+    that cannot be read, or whose template cannot be written, does not stop
+    the report."""
+    try:
+        return drift(repo, conf, labels, block, current)
+    except (RuntimeError, ValueError) as exc:
+        return [f"could not be checked: {exc}"]
+
+
 def dependabot_test(check, conf, labels, block):
     """The Dependabot templates and what `files` and `check` do with them (#178)."""
     templates_found = [DEPENDABOT_DEFAULT] + sorted(f"kinds/{k}/dependabot.yml" for k in os.listdir(os.path.join(CENTRAL, "kinds"))
@@ -1363,6 +1373,17 @@ def dependabot_test(check, conf, labels, block):
     check("C1 (#178): `files` writes the template's dependabot.yml, with the plugin's ecosystems, in a pull request that closes its issue",
           written.get(DEPENDABOT) == ("chore/7-org-shared-files", want) and len(prs) == 1 and "Closes #7" in prs[0][prs[0].index("--body") + 1], (sorted(written), prs))
     check("C1 (#178): the files in step are not rewritten", sorted(written) == [DEPENDABOT], sorted(written))
+    saved_drift = globals()["drift"]
+    for exc in (ValueError("the template has no entry for pip"), RuntimeError("could not read x")):
+        def failing(*a, exc=exc, **k):
+            raise exc
+        globals()["drift"] = failing
+        try:
+            got = drift_or_reason(repo, conf, [], block)
+        finally:
+            globals()["drift"] = saved_drift
+        check(f"check: a repository whose drift raises {type(exc).__name__} is reported as not checked, not a stop",
+              got == [f"could not be checked: {exc}"], got)
 
 
 def self_test():
@@ -1535,10 +1556,7 @@ def main(argv):
         dirty = 0
         current = current_major()
         for repo in repos:
-            try:
-                lines = drift(repo, conf, labels, block, current)
-            except (RuntimeError, ValueError) as exc:  # one repository that cannot be read does not stop the report
-                lines = [f"could not be checked: {exc}"]
+            lines = drift_or_reason(repo, conf, labels, block, current)
             if lines:
                 dirty += 1
                 report += [f"## {repo['name']}", ""] + [f"- {line}" for line in lines] + [""]
