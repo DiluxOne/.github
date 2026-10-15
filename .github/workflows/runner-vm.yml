@@ -13,7 +13,8 @@ name: Organisation VM
 # image from runner-image.yml); the VM brings itself to that state on every
 # boot (scripts/runner-vm/provision.sh).
 #
-# Every ten minutes, when dispatched with `start` by a private repository's
+# Every five minutes from the clock in Azure (below), when dispatched with
+# `start` by a private repository's
 # pull request (runner-wake.yml, from the organisation's pipeline, #154), and
 # by hand: when a private repository's job is waiting for a `diluxone` runner
 # and the VM is off, it starts it; when the VM is on
@@ -23,11 +24,14 @@ name: Organisation VM
 # while jobs run. The VM is shared with AI Studio's runners: "nothing has run"
 # counts theirs too, so neither side switches it off under the other.
 #
-# GitHub delays or skips schedules under load (on 15 October none ran from
-# 00:07 to 01:01 UTC), so the schedule is the fallback, not the trigger: a
-# pull request wakes the VM itself. Jobs that do not come from a pull request
-# (a push, an issue, a repository's schedule) still wait for the next run
-# here. Every run also keeps one issue here, "Jobs waiting for the
+# GitHub delays or skips schedules under load: from 10 to 15 October it ran
+# this one 4 to 6 times a day of 144, and jobs that no pull request woke (an
+# issue, a push, a re-run) waited hours (#183). So the clock is outside
+# GitHub: an Azure Function (scripts/runner-vm/clock/,
+# diluxone-runner-cl-prod-func) dispatches this workflow with `auto` every
+# five minutes, as dilux-bot, and a pull request still wakes the VM at once
+# (runner-wake.yml). The schedule here stays as the fallback if the Function
+# stops. Every run also keeps one issue here, "Jobs waiting for the
 # organisation's VM", listing the jobs queued for more than LONG_MINUTES
 # with their links, closed when none waits that long (#154). The decisions
 # are scripts/runner-demand.sh, with its self-test.
