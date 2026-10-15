@@ -813,6 +813,9 @@ def self_test():
     check("auto-merge.yml decides a revert pull request with this script", "scripts/revert.py\" decide" in am, True)
     check("auto-merge.yml posts the wait comment on the revert's issue", "revert.py\" wait-comment" in am, True)
     check("auto-merge.yml updates that comment once the revert merges by policy", 'MERGING="$ok"' in am, True)
+    g8 = am[am.index("name: A revert pull request (G8)"):am.index("name: Enable or disable")]
+    check("auto-merge.yml: only a missing .github/autonomy.yml reads as none; any other failure leaves it to a person",
+          ("|| : >" not in g8, "grep -qE '404|Not Found'" in g8, 'if [ "$read_ok" = false ]; then' in g8), (True, True, True))
     check("the labels exist in labels.yml", {"revert", "reverted"} <= {l.get("name") for l in autonomy.read_yaml(os.path.join(HERE, "..", "labels.yml"))}, True)
 
     if not failed:
