@@ -698,6 +698,61 @@ def self_test():
     check("the act job's tokens are for the repository `locate` named", actjob.count("repositories: ${{ steps.where.outputs.name }}"), 2)
     check("`locate` runs before any token for the repository", actjob.index("revert.py locate") < actjob.index("id: rerun") < actjob.index("id: revert"), True)
 
+    # scan and locate, offline, over a private repository: masked, counted, never named.
+    def scan_private():
+        secret = {"id": 7, "name": "secret-pro", "full_name": "DiluxOne/secret-pro", "private": True, "default_branch": "main"}
+        answers = {
+            "repos/DiluxOne/secret-pro/actions/runs?branch=main&event=push&per_page=100": {"workflow_runs": [
+                {**run(5, "failure"), "head_sha": "sha5", "workflow_id": 1, "head_branch": "main", "name": "Secret checks"},
+                {**run(4, "success"), "workflow_id": 1, "head_branch": "main", "name": "Secret checks"}]},
+            "repos/DiluxOne/secret-pro/commits/sha5/pulls": [{"number": 12, "title": "feat: the secret thing", "html_url": "u", "merged_at": "t",
+                                                             "merge_commit_sha": "sha5", "base": {"ref": "main"}, "head": {"sha": "h", "ref": "feat/1-x"}, "labels": []}],
+            "repositories/7": secret,
+        }
+
+        def fake_api(path, *args):
+            if "contents/.github/autonomy.yml" in path:
+                raise RuntimeError("HTTP 404: Not Found")
+            return answers[path]
+
+        def fake_lines(path, jq):
+            if path.startswith("installation/repositories"):
+                return [json.dumps(secret)]
+            if "/jobs" in path:
+                return ['"checks / PHP 8.3"']
+            if "/check-runs" in path:
+                return ['["checks / PHP 8.3", "success"]']
+            return []
+
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as tmp:
+            out, summary = os.path.join(tmp, "out"), os.path.join(tmp, "summary")
+            saved = {k: globals()[k] for k in ("api", "api_lines")}
+            env = {k: os.environ.get(k) for k in ("DX_AUTOPILOT", "GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY", "ITEM")}
+            globals().update(api=fake_api, api_lines=fake_lines)
+            os.environ.update(DX_AUTOPILOT="", GITHUB_OUTPUT=out, GITHUB_STEP_SUMMARY=summary, ITEM=json.dumps({"kind": "rerun", "repo_id": 7, "run_id": 5, "pr": 12}))
+            printed = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(printed):
+                    scan()
+                    locate()
+            finally:
+                globals().update(saved)
+                for k, v in env.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+            return printed.getvalue(), open(out, encoding="utf-8").read(), open(summary, encoding="utf-8").read()
+
+    printed, outputs, report = scan_private()
+    plan = json.loads(next(l for l in outputs.split("\n") if l.startswith("plan="))[len("plan="):])
+    check("scan: a private repository's red is planned, numbers only", plan, [{"kind": "rerun", "repo_id": 7, "run_id": 5, "pr": 12}])
+    check("scan: its name is masked before anything prints it", printed.index("::add-mask::DiluxOne/secret-pro") < printed.index("## Red default branches"), True)
+    check("scan: the report counts it and names nothing of it", ("A private repository" in report, any(w in report for w in ("secret", "Secret", "#12", "PHP"))), (True, False))
+    check("locate: masks it again in its own job, then names it for the token", ("::add-mask::secret-pro" in printed.split("## Red default branches")[1], "name=secret-pro" in outputs), (True, True))
+
     # act, offline: a local repository in place of GitHub, gh and the API faked.
     def act_offline(conflict=False, files=("src/a.txt",), kind="revert", green_since=False, undone=False):
         calls = []
