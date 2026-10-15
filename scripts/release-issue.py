@@ -125,14 +125,17 @@ def prepare_argv(release, inputs, version, central_path):
     caller's inputs, an empty or missing one taking the pack's default (which
     may name other inputs)."""
     values = {k: v for k, v in (inputs or {}).items() if v != ""}
-    for k, v in values.items():
-        if "${{" in v:
-            raise ValueError(f"the caller's input {k} is an expression ({v}); the release pull request needs its value written out")
     for k, default in (release.get("defaults") or {}).items():
         if k not in values:
             values[k] = fill(str(default), values)
     values.update({"version": version, "central": central_path})
-    return [fill(str(a), values) for a in release.get("prepare") or []]
+    argv = [fill(str(a), values) for a in release.get("prepare") or []]
+    # Only what the command uses: an expression elsewhere in the caller is
+    # the caller's business.
+    for a in argv:
+        if "${{" in a:
+            raise ValueError(f"an input the release pull request needs is an expression ({shown(a)}); write its value out in the caller")
+    return argv
 
 
 def plan(title, number, nxt, kind, release, inputs, central_path):
@@ -375,6 +378,7 @@ def self_test():
     check("plan: an input the command needs and nobody gives", (p["ok"], "no `slug` input" in p["why"]), (False, True))
     p = plan("Release 1.2.0", "7", nxt, "wordpress-plugin", release, {"slug": "${{ vars.SLUG }}"}, "c")
     check("plan: an input that is an expression is refused, not passed on", (p["ok"], "expression" in p["why"]), (False, True))
+    check("plan: an expression in an input the command does not use is fine", plan("Release 1.2.0", "7", nxt, "wordpress-plugin", release, dict(inputs, **{"dry-run": "${{ github.ref != 'refs/heads/main' }}"}), "c")["ok"], True)
     check("plan: an argument is one argument, whatever it holds", prepare_argv({"prepare": ["x", "{a}"]}, {"a": "b; rm -rf /"}, "1.0.0", "c"), ["x", "b; rm -rf /"])
 
     # the caller's inputs, read from the repository's workflows

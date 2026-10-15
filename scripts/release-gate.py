@@ -149,7 +149,7 @@ def main():
     # One line: `why` may quote an issue's title, and GITHUB_OUTPUT takes one
     # key per line.
     why = " ".join(why.split())
-    if go and reviewers is None:
+    if go and reviewers is None and "actions: read" in why:
         print(f"::warning::{why}", file=sys.stderr)
     behind = queued_behind(read_json(os.environ.get("WAITING_FILE", "")), os.environ.get("RUN_ID", ""))
     out = os.environ.get("GITHUB_OUTPUT")
