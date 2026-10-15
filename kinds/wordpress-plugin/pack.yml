@@ -40,6 +40,18 @@ adapters:
 # own policy (`kind-settings:`), never replace a value: it adds an
 # exception, it does not turn a gate off (scripts/policy.py).
 settings:
+  # The PHP of the checks (scripts/php-versions.py, DiluxOne/.github#85).
+  # Strings, so 8.10 never reads as 8.1. A repository cannot change either.
+  php:
+    # Every tool runs on it (PHPCS, PHPStan, Psalm, i18n, the wp-env suites):
+    # the latest PHP. The `platform` lane raises it when a new one ships.
+    tools: '8.5'
+    # Every plugin supports it: the tools analyse for it (PHPStan's
+    # phpVersion, PHPCompatibility's testVersion, Psalm's --php-version) and
+    # the syntax and unit-test jobs run on every release from it to `tools`.
+    # Only the maintainer changes it. A plugin whose Requires PHP is still
+    # higher is checked from its own until it lowers it.
+    minimum: '7.4'
   plugin-check:
     # Every warning fails, as it does for the reviewer.
     strict: true

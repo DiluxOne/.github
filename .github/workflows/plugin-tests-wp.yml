@@ -31,8 +31,11 @@ name: WordPress plugin tests (slow)
 #                        "E2E (Playwright)": `npx playwright test` on the
 #                        development site.
 #
-# The ports, the mu-plugins and the PHP version are the repository's
-# `.wp-env.json`; nothing here knows them. Each job is a fresh runner, so a
+# The PHP is the pack's (kinds/wordpress-plugin/pack.yml, `settings.php.tools`,
+# #85): the sites run on it (WP_ENV_PHP_VERSION, over the `phpVersion` of
+# the repository's `.wp-env.json`, which stays what a person runs locally),
+# and so do Composer and a suite's command. The ports and the mu-plugins are
+# the repository's `.wp-env.json`; nothing here knows them. Each job is a fresh runner, so a
 # single-site target needs no throwaway environment of its own. On the
 # organisation's VM each runner has ports of its own (WP_ENV_PORT,
 # WP_ENV_TESTS_PORT, which wp-env obeys), and the suites get their addresses
@@ -44,7 +47,7 @@ name: WordPress plugin tests (slow)
 # the npm dependencies (`@wordpress/env`, `@playwright/test`) and Playwright
 # configs that write their results where `results` says; wp-env mounts the
 # checkout under the repository's name. A suite's command runs with Node 20
-# and, when the repository has a composer.json, PHP 8.5 and Composer, on
+# and, when the repository has a composer.json, the tools' PHP and Composer, on
 # GitHub's runners and on the organisation's alike (#140).
 #
 # A plugin that needs another to run (an add-on and its free plugin) names
@@ -133,6 +136,7 @@ jobs:
       code: ${{ steps.changes.outputs.code }}
       integration: ${{ steps.plan.outputs.integration }}
       e2e: ${{ steps.plan.outputs.e2e }}
+      php: ${{ fromJSON(steps.kind.outputs.settings || '{}').php.tools }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -161,6 +165,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           DEFAULT_POLICY: .dx-central/policy/review-policy.default.yml
         run: bash .dx-central/scripts/changes.sh
+      # Last, so a failure here never costs the plan or the answer above: the
+      # suites then stop at their own check of the PHP.
+      - name: The kind's settings (the PHP the suites run on)
+        id: kind
+        if: ${{ !cancelled() }}
+        env:
+          KIND_DEFAULT: wordpress-plugin
+          DEFAULT_POLICY: .dx-central/policy/review-policy.default.yml
+          EVENT: ${{ github.event_name }}
+        run: bash .dx-central/scripts/kind.sh
 
   required-plugins:
     name: Required plugins (from the organisation)
@@ -241,10 +255,16 @@ jobs:
         target: ${{ fromJSON(needs.changes.outputs.integration || '[{"check":"No test plan (What changed failed)","enabled":false,"timeout":5,"noplan":true}]') }}
     env:
       GO: ${{ matrix.target.enabled && needs.changes.outputs.code != 'false' }}
+      # The site's PHP, the pack's, over the repository's .wp-env.json.
+      WP_ENV_PHP_VERSION: ${{ needs.changes.outputs.php }}
     steps:
       - if: matrix.target.noplan
         run: |
           echo "::error::The What changed job failed, so there is no test plan: fix it and re-run."
+          exit 1
+      - if: env.GO == 'true' && env.WP_ENV_PHP_VERSION == ''
+        run: |
+          echo "::error::The What changed job could not read the kind's settings, so nothing says which PHP to run on: its log says why."
           exit 1
       - if: env.GO != 'true'
         run: echo "Nothing to run here (suite off, or no code changed)."
@@ -258,7 +278,7 @@ jobs:
       - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         if: env.GO == 'true'
         with:
-          php-version: '8.5'
+          php-version: ${{ needs.changes.outputs.php }}
           coverage: none
           tools: composer:v2
       - run: composer install --no-interaction --prefer-dist --no-progress
@@ -355,10 +375,16 @@ jobs:
         suite: ${{ fromJSON(needs.changes.outputs.e2e || '[{"check":"No test plan (What changed failed)","enabled":false,"timeout":5,"noplan":true}]') }}
     env:
       GO: ${{ matrix.suite.enabled && needs.changes.outputs.code != 'false' }}
+      # The site's PHP, the pack's, over the repository's .wp-env.json.
+      WP_ENV_PHP_VERSION: ${{ needs.changes.outputs.php }}
     steps:
       - if: matrix.suite.noplan
         run: |
           echo "::error::The What changed job failed, so there is no test plan: fix it and re-run."
+          exit 1
+      - if: env.GO == 'true' && env.WP_ENV_PHP_VERSION == ''
+        run: |
+          echo "::error::The What changed job could not read the kind's settings, so nothing says which PHP to run on: its log says why."
           exit 1
       - if: env.GO != 'true'
         run: echo "Nothing to run here (suite off, or no code changed)."
@@ -376,7 +402,7 @@ jobs:
       - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         if: env.GO == 'true' && hashFiles('composer.json') != ''
         with:
-          php-version: '8.5'
+          php-version: ${{ needs.changes.outputs.php }}
           coverage: none
           tools: composer:v2
       - run: npm install --no-audit --no-fund

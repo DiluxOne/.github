@@ -105,7 +105,12 @@ files are held to, beside the rules above.
   data with `wp_localize_script` / `wp_add_inline_script`.
 - **Minimum PHP and WordPress versions** in the header are real: no syntax
   or functions newer than the stated PHP; `function_exists()` guards for
-  newer WordPress APIs.
+  newer WordPress APIs. Every plugin supports PHP 7.4, the pack's
+  `php.minimum`: a change that raises `Requires PHP` above it is a finding,
+  and so, in a plugin that declares it, is code that needs a newer PHP
+  (union types, `match`, `?->`, named arguments, promoted constructor
+  properties, `readonly`, enums, a PHP 8 function WordPress does not
+  polyfill).
 - **`Tested up to` lives only in `readme.txt`.** Version header, version
   constant and `Stable tag` stay aligned (the checks enforce it).
 - **No trialware:** a plugin hosted on wordpress.org cannot lock features

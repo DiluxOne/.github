@@ -37,6 +37,7 @@ if [ "${1:-}" = "--test" ]; then
   run wordpress-plugin || { echo "FAIL kind.sh failed"; fail=1; }
   has "the kind"                              "kind=wordpress-plugin"
   has "the pack's settings"                   '"strict":true'
+  has "the pack's PHP"                        '"php":{'
   has "the base's exceptions"                 "from_the_base"
   lacks "never the change's own exceptions"   "from_the_change"
   ( cd "$dir" && : > out && GITHUB_OUTPUT=$dir/out RUNNER_TEMP=$dir DEFAULT_POLICY=$here/../policy/review-policy.default.yml KIND_DEFAULT=wordpress-plugin EVENT=push bash "$here/kind.sh" >/dev/null 2>&1 ) || { echo "FAIL kind.sh failed on a push"; fail=1; }

@@ -504,6 +504,10 @@ def settings_tests():
     check("kind: the pack's Plugin Check settings", code == 0 and pc.get("strict") is True and "stable_tag_mismatch" in pc.get("ignore-codes", []), out)
     check("kind: a repository adds an ignore code", "one_more_code" in pc.get("ignore-codes", []), pc)
     check("kind: a repository cannot turn strict off", pc.get("strict") is True, pc)
+    pack_php = (load_yaml(pack_path("wordpress-plugin")).get("settings") or {}).get("php")
+    code, out = run_case(os.path.join(CENTRAL, "policy", "review-policy.default.yml"), "kind: wordpress-plugin\nkind-settings:\n  php:\n    minimum: '8.1'\n    tools: '8.3'\n", [], POLICY_MODE="kind")
+    php = json.loads(out.get("settings", "{}")).get("php")
+    check("kind: a repository cannot change the PHP the checks run on (#85)", code == 0 and pack_php and php == pack_php, (php, pack_php))
     merged = merge_settings({"a": [1], "b": {"c": [2], "d": "x"}}, {"a": [1, 3], "b": {"c": [4], "d": "y"}, "e": [5], "f": "z"})
     check("settings: lists append without repeats, maps merge, single values stay", merged == {"a": [1, 3], "b": {"c": [2, 4], "d": "x"}, "e": [5]}, merged)
     for name, want in (("general", "review-profiles/general.md"), ("wordpress-plugin", "kinds/wordpress-plugin/review-profile.md"), ("plugin-wp", "kinds/wordpress-plugin/review-profile.md"), ("nothing-here", None), ("../AGENTS", None)):

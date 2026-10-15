@@ -34,11 +34,12 @@ kinds/<kind>/
 | `workflows` | The reusable workflows in `.github/workflows/` that make up the battery. |
 | `own-checks` | What a repository of this kind requires of its own jobs in its **own checks** ruleset: `callers-of` (it needs one when it calls one of these workflows), `jobs` (the caller's job names whose checks are required), `skip` (check names left out). `scripts/sync-repos.py own-checks` creates it. |
 | `adapters` | The engines the kind's checks run and the language adapter each reads with. |
-| `settings` | What the workflows read from the pack, free-form per kind (for wordpress-plugin, `plugin-check`: `strict`, `categories`, `include-experimental`, `ignore-codes`). |
+| `settings` | What the workflows read from the pack, free-form per kind (for wordpress-plugin, `php`: `tools`, the PHP every tool runs on, and `minimum`, the oldest every plugin supports, read by [`scripts/php-versions.py`](../scripts/php-versions.py); `plugin-check`: `strict`, `categories`, `include-experimental`, `ignore-codes`). |
 | `release` | How a version of this kind is released (#82), read by [`scripts/release-issue.py`](../scripts/release-issue.py): `publishes-to` (where it goes, for people), `workflow` (the reusable workflow that publishes it; the repository's caller of it holds the inputs), `prepare` (the command that turns the default branch into the release pull request, one argument per item: `{version}`, `{central}` for the checkout of this repository, any other `{name}` the caller's input) and `defaults` (an input the caller leaves out). A kind without it publishes nothing, and its release issue says so. |
 
 A repository can add to a list in `settings` from its own policy, never
-replace a value: it adds an exception, it does not turn a gate off. The
+replace a value: it adds an exception, it does not turn a gate off (nor
+choose its own PHP: `php.tools` and `php.minimum` are the pack's alone). The
 checks read that policy from the base branch, so a pull request cannot
 exempt itself; its additions apply once it has merged.
 
@@ -69,6 +70,12 @@ kind-settings:
   repository declares.
 - The engine, [`scripts/review-rules.php`](../scripts/review-rules.php), runs
   `kinds/<kind>/rules.yml` (`--kind <kind>`).
+- [`scripts/php-versions.py`](../scripts/php-versions.py) turns the pack's
+  `php` and the plugin's own `Requires PHP` into the PHP the checks run on:
+  the tools' PHP, the minimum they analyse for, and every release between
+  the two for the syntax and unit-test jobs. A plugin that still declares a
+  higher `Requires PHP` than the pack's minimum is checked from its own,
+  with a warning, until it lowers it.
 
 **What a pack cannot do: choose the workflows.** GitHub resolves a
 `uses: owner/repo/.github/workflows/file.yml@ref` line before anything runs,

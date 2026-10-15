@@ -2,7 +2,8 @@ name: WordPress plugin checks (fast)
 
 # Reusable. The fast quality gates of the wordpress-plugin kind
 # (kinds/wordpress-plugin/pack.yml): PHP syntax and unit tests on every
-# supported PHP, PHPCS, PHPStan, Psalm taint analysis, i18n, Plugin Check on
+# supported PHP, PHPCS (with PHPCompatibility), PHPStan, Psalm taint
+# analysis, i18n, Plugin Check on
 # the shipped tree, the kind's review rules (what wordpress.org's review sends
 # back and Plugin Check misses: kinds/wordpress-plugin/rules.yml, run by
 # scripts/review-rules.php), readme/version alignment, and the version
@@ -17,6 +18,17 @@ name: WordPress plugin checks (fast)
 # branch so a pull request cannot exempt itself. GitHub cannot choose a
 # reusable workflow from data, so this file is the kind's battery by name.
 #
+# PHP, from the pack too (`settings.php`, #85; scripts/php-versions.py):
+# every tool runs on `tools`, the latest PHP, and analyses for `minimum`,
+# the oldest every plugin supports: PHPCS's PHPCompatibility gets it as
+# testVersion, PHPStan as phpVersion (over the repository's own config),
+# Psalm as --php-version. The syntax and unit-test jobs run on every release
+# from the minimum to the tools' PHP. A plugin whose Requires PHP is still
+# higher than the pack's minimum is checked from its own, with a warning,
+# until it lowers it in its own pull request. Psalm 5 cannot run on a PHP
+# newer than 8.3: a repository that still installs it gets 8.3 for Psalm,
+# with a warning, until it requires vimeo/psalm ^6.14.2.
+#
 # The slow wp-env suites (integration, E2E) are plugin-tests-wp.yml, a
 # separate workflow, so a caller can start the review as soon as these pass
 # (`needs:`). Plugin Check is the one slow job here; it is skipped when the
@@ -25,10 +37,13 @@ name: WordPress plugin checks (fast)
 # ruleset.
 #
 # The calling repository provides composer scripts `test:unit`, `lint`,
-# `stan` and `psalm:taint`, a `.distignore` listing what never ships, and a
-# `readme.txt`. The shipped tree every job reads is the checkout minus that
-# `.distignore` (scripts/stage-plugin.sh), staged outside the checkout: a
-# `build/` the plugin commits ships unless the `.distignore` lists it.
+# `stan` and `psalm:taint` (each takes arguments after it: the checks add
+# the PHP to analyse for), a phpstan.neon (or .neon.dist, .dist.neon) at its
+# root, PHPCompatibilityWP in its PHPCS ruleset, a `.distignore` listing
+# what never ships, and a `readme.txt`. The shipped tree every job reads is
+# the checkout minus that `.distignore` (scripts/stage-plugin.sh), staged
+# outside the checkout: a `build/` the plugin commits ships unless the
+# `.distignore` lists it.
 #
 #   jobs:
 #     checks:
@@ -37,7 +52,6 @@ name: WordPress plugin checks (fast)
 #         slug: diluxone-offload
 #         version-constant: DILUXONE_OFFLOAD_VERSION   # optional
 #         main-file: diluxone-offload.php              # default <slug>.php
-#         php-versions: '["7.4","8.0","8.1","8.2","8.3","8.4","8.5"]'  # the default
 #         translations-complete: true                  # optional: languages/*.po complete
 #         codeql-languages: javascript-typescript      # optional: CodeQL on the code
 #         # optional: a required plugin wordpress.org does not have (yet)
@@ -70,9 +84,9 @@ on:
         type: string
         default: ''
       php-versions:
-        description: JSON array of PHP versions for syntax and unit tests, from the plugin's minimum to the latest release.
+        description: Ignored, and annotated so the caller removes it; kept so a caller that still passes it does not fail. The PHP versions come from the pack (`settings.php`) and the plugin's Requires PHP (#85).
         type: string
-        default: '["7.4","8.0","8.1","8.2","8.3","8.4","8.5"]'
+        default: ''
       central-ref:
         description: Ref of DiluxOne/.github to read the policy from.
         type: string
@@ -102,14 +116,60 @@ permissions:
   contents: read
 
 jobs:
+  php:
+    name: PHP versions
+    # The PHP every job below runs on, from the pack (`settings.php`) and
+    # the plugin's own Requires PHP (scripts/php-versions.py): `tools`, the
+    # latest; `minimum`, the oldest the checks hold the code to; `versions`,
+    # every release between them, for the syntax and unit-test jobs.
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    outputs:
+      tools: ${{ steps.php.outputs.tools }}
+      minimum: ${{ steps.php.outputs.minimum }}
+      versions: ${{ steps.php.outputs.versions }}
+      phpstan: ${{ steps.php.outputs.phpstan }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The base, for its policy.
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref }}
+          path: .dx-central
+          persist-credentials: false
+      - name: The kind's settings
+        id: kind
+        env:
+          KIND_DEFAULT: ${{ inputs.kind }}
+          DEFAULT_POLICY: .dx-central/policy/review-policy.default.yml
+          EVENT: ${{ github.event_name }}
+        run: bash .dx-central/scripts/kind.sh
+      - name: From the pack and the plugin's Requires PHP
+        id: php
+        # The plugin's Requires PHP is read from the change itself: the pull
+        # request that lowers it is the one checked on the lower PHP.
+        env:
+          SETTINGS: ${{ steps.kind.outputs.settings }}
+          MAIN: ${{ inputs.main-file != '' && inputs.main-file || format('{0}.php', inputs.slug) }}
+          README: readme.txt
+          PHP_VERSIONS: ${{ inputs.php-versions }}
+        run: |
+          [ -z "$PHP_VERSIONS" ] || echo "::warning::php-versions is ignored: the PHP versions come from the pack and the plugin's Requires PHP (DiluxOne/.github#85). Remove it from the caller."
+          python3 .dx-central/scripts/php-versions.py
+
   syntax:
     name: PHP ${{ matrix.php }} syntax
+    needs: php
     runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        php: ${{ fromJSON(inputs.php-versions) }}
+        php: ${{ fromJSON(needs.php.outputs.versions) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -139,12 +199,13 @@ jobs:
 
   unit:
     name: PHP ${{ matrix.php }} unit tests
+    needs: php
     runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        php: ${{ fromJSON(inputs.php-versions) }}
+        php: ${{ fromJSON(needs.php.outputs.versions) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -167,24 +228,24 @@ jobs:
 
   static:
     name: ${{ matrix.gate.name }}
+    needs: php
     runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
+        # Each on the tools' PHP, analysing for the minimum (the `php` job).
         gate:
-          # The latest PHP, except where the tool version that still supports
-          # the plugin's minimum PHP cannot run on it (Psalm 5 stops at 8.3).
-          - { name: PHPCS (WordPress Coding Standards), script: lint, php: '8.5' }
-          - { name: PHPStan, script: stan, php: '8.5' }
-          - { name: Psalm taint analysis, script: 'psalm:taint', php: '8.3' }
+          - { name: PHPCS (WordPress Coding Standards), script: lint }
+          - { name: PHPStan, script: stan }
+          - { name: Psalm taint analysis, script: 'psalm:taint' }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
-          php-version: ${{ matrix.gate.php }}
+          php-version: ${{ needs.php.outputs.tools }}
           coverage: none
           tools: composer:v2
       - name: Composer cache directory
@@ -193,16 +254,83 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.cache-dir.outputs.dir }}
-          key: composer-${{ runner.os }}-php-${{ matrix.gate.php }}-${{ hashFiles('composer.json') }}
-          restore-keys: composer-${{ runner.os }}-php-${{ matrix.gate.php }}-
+          key: composer-${{ runner.os }}-php-${{ needs.php.outputs.tools }}-${{ hashFiles('composer.json') }}
+          restore-keys: composer-${{ runner.os }}-php-${{ needs.php.outputs.tools }}-
       - run: composer install --no-interaction --prefer-dist --no-progress
-      - run: composer ${{ matrix.gate.script }}
+      - name: What the repository installed
+        id: installed
+        # Two tools whose old major cannot do what the minimum asks, until
+        # the repository moves (its own pull request, #85): Psalm 5 does not
+        # run on a PHP newer than 8.3, so it gets 8.3; PHPCompatibility 9
+        # (phpcompatibility-wp 2) knows no syntax newer than PHP 7.4, so PHP
+        # 8 syntax passes it unseen. Both warn, neither fails.
+        env:
+          SCRIPT: ${{ matrix.gate.script }}
+          TOOLS: ${{ needs.php.outputs.tools }}
+          MINIMUM: ${{ needs.php.outputs.minimum }}
+        run: |
+          set -euo pipefail
+          installed() { jq -r --arg n "$1" '(.packages // .)[] | select(.name == $n) | .version' vendor/composer/installed.json | sed 's/^v//'; }
+          case "$SCRIPT" in
+            psalm:taint)
+              psalm=$(installed vimeo/psalm)
+              case "$psalm" in
+                4.*|5.*)
+                  echo "::warning::Psalm $psalm cannot run on PHP $TOOLS, so it runs on PHP 8.3 until the repository requires vimeo/psalm ^6.14.2 and no config.platform.php holds its tools below PHP 8.1.31 (DiluxOne/.github#85)."
+                  echo "php=8.3" >> "$GITHUB_OUTPUT" ;;
+              esac ;;
+            lint)
+              compat=$(installed phpcompatibility/php-compatibility)
+              case "$compat" in
+                '') echo "::warning::No PHPCompatibility is installed: nothing holds the code to PHP $MINIMUM. Require phpcompatibility/phpcompatibility-wp ^3.0@alpha and add PHPCompatibilityWP to the PHPCS ruleset (DiluxOne/.github#85)." ;;
+                9.*) echo "::warning::PHPCompatibility $compat knows no syntax newer than PHP 7.4, so PHP 8 syntax passes it unseen: require phpcompatibility/phpcompatibility-wp ^3.0@alpha, which brings PHPCompatibility 10 (DiluxOne/.github#85)." ;;
+              esac ;;
+          esac
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        if: steps.installed.outputs.php != ''
+        with:
+          php-version: ${{ steps.installed.outputs.php }}
+          coverage: none
+          tools: composer:v2
+      - name: composer ${{ matrix.gate.script }}, for PHP ${{ needs.php.outputs.minimum }}
+        env:
+          SCRIPT: ${{ matrix.gate.script }}
+          MINIMUM: ${{ needs.php.outputs.minimum }}
+          PHPSTAN_VERSION: ${{ needs.php.outputs.phpstan }}
+        run: |
+          set -euo pipefail
+          case "$SCRIPT" in
+            lint)
+              # Over the ruleset's own testVersion: the command line wins.
+              composer lint -- --runtime-set testVersion "$MINIMUM-" ;;
+            stan)
+              # The repository's config, included, with the minimum's
+              # phpVersion over its own.
+              config=
+              for f in phpstan.neon phpstan.neon.dist phpstan.dist.neon; do
+                if [ -f "$f" ]; then config=$f; break; fi
+              done
+              [ -n "$config" ] || { echo "::error::No phpstan.neon (or phpstan.neon.dist, phpstan.dist.neon) at the repository's root: the checks give PHPStan the PHP to analyse for through it."; exit 1; }
+              printf 'includes:\n  - %s\nparameters:\n  phpVersion: %s\n' "$GITHUB_WORKSPACE/$config" "$PHPSTAN_VERSION" > "$RUNNER_TEMP/dx-phpstan.neon"
+              composer stan -- --configuration="$RUNNER_TEMP/dx-phpstan.neon" ;;
+            psalm:taint)
+              composer psalm:taint -- --php-version="$MINIMUM" ;;
+          esac
 
   i18n:
     name: i18n (wp i18n make-pot)
+    needs: php
+    # Always there, so a failed `php` job fails this check instead of
+    # skipping it (a skipped job satisfies the ruleset).
+    if: ${{ !cancelled() }}
     runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
+      - name: The PHP versions job
+        env:
+          RESULT: ${{ needs.php.result }}
+        run: |
+          [ "$RESULT" = success ] || { echo "::error::The PHP versions job did not succeed ($RESULT): nothing says which PHP to run on."; exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -217,7 +345,7 @@ jobs:
           sparse-checkout-cone-mode: false
       - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
-          php-version: '8.5'
+          php-version: ${{ needs.php.outputs.tools }}
           coverage: none
       # setup-php's `tools: wp-cli` asks for a release asset named wp-cli.phar,
       # which wp-cli's releases do not carry (it answered 404 on 2 October 2026). The
@@ -457,7 +585,7 @@ jobs:
       # carry one, the organisation's runner image does not, by design.
       - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
-          php-version: '8.5'
+          php-version: ${{ fromJSON(steps.kind.outputs.settings).php.tools }}
           coverage: none
       - name: Build the shipped tree (what wordpress.org receives)
         id: tree
@@ -476,11 +604,17 @@ jobs:
     # can be translated; this says the locales the plugin ships have been:
     # each languages/*.po parses, has nothing fuzzy, and, merged with the
     # strings the shipped code has today, misses none. Off, the job is
-    # skipped, which satisfies a ruleset.
-    if: inputs.translations-complete
+    # skipped, which satisfies a ruleset. On, a failed `php` job fails it.
+    needs: php
+    if: ${{ !cancelled() && inputs.translations-complete }}
     runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
+      - name: The PHP versions job
+        env:
+          RESULT: ${{ needs.php.result }}
+        run: |
+          [ "$RESULT" = success ] || { echo "::error::The PHP versions job did not succeed ($RESULT): nothing says which PHP to run on."; exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -495,7 +629,7 @@ jobs:
           sparse-checkout-cone-mode: false
       - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
-          php-version: '8.5'
+          php-version: ${{ needs.php.outputs.tools }}
           coverage: none
       # setup-php's `tools: wp-cli` asks for a release asset named wp-cli.phar,
       # which wp-cli's releases do not carry (it answered 404 on 2 October 2026). The
