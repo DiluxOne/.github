@@ -322,6 +322,8 @@ def self_test():
     check("write: leaves a plain runs-on alone (check still names it)", "    runs-on: ubuntu-latest\n" in fixed and len(problems("x.yml", fixed)), 1)
     check("check: a workflow that is not shared is not read", problems("x.yml", "on:\n  push:\njobs:\n  a:\n    runs-on: ubuntu-latest\n"), [])
     check("check: the reproduction carries no DX_RUNNER", len(problems("issue-repro.yml", "on:\n  workflow_call:\n    runs-on: " + expression() + "\n")), 1)
+    check("check: the reproduction's header may name DX_RUNNER (comments are not jobs)",
+          problems("issue-repro.yml", "# whatever DX_RUNNER says\non:\n  workflow_call:\njobs:\n  a:\n    runs-on: ubuntu-latest\n"), [])
     check("check: an unknown fallback is a problem", len(problems("x.yml", "on:\n  workflow_call:\n    runs-on: " + expression("windows-latest") + "\n")), 1)
 
     decided = "${{ (vars.DX_RUNNER == 'self-hosted' && needs.where.outputs.github-hosted == 'false') && fromJSON('[\"self-hosted\",\"linux\",\"x64\",\"diluxone\"]') || 'ubuntu-latest' }}"
