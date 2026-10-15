@@ -936,6 +936,13 @@ def self_test():
     check("lane_of: one lane", lane_of(bug), ("bugfix-reproduced", None))
     check("lane_of: none", lane_of(issue(labels=("bug",)))[0], None)
 
+    # The sync lane's step in auto-merge.yml reads the repository's policy
+    # as the revert's does: only a missing file reads as none.
+    am = open(os.path.join(HERE, "..", ".github", "workflows", "auto-merge.yml"), encoding="utf-8").read()
+    step = am[am.index("name: A sync run's pull request"):am.index("name: Enable or disable")]
+    check("auto-merge.yml: the sync lane reads only a missing .github/autonomy.yml as none",
+          ("|| : >" not in step, "grep -qE '404|Not Found'" in step, "autonomy.py\" lane-merge" in step), (True, True, True))
+
     if not failed:
         print("all tests passed")
     return failed
