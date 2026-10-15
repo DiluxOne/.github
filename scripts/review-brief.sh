@@ -147,7 +147,9 @@ for path in ${rewritten[@]+"${rewritten[@]}"}; do
   { printf '\n### Rewritten: %s (new content, line-numbered)\n\n`````\n' "$path"; git show "$HEAD:$path" | nl -ba -w4 -s': '; printf '`````\n'; } >> "$WORK/diff.patch"
 done
 # The design system the repository declares (repos.yml), when the change
-# touches a file that draws one of its screens; nothing otherwise.
+# touches a file that draws one of its screens; nothing otherwise. A
+# repos.yml it cannot read fails the brief, as the policy does, rather than
+# review a screen without its rules.
 python3 "$CENTRAL/scripts/design-tokens.py" brief --repo "${REPO##*/}" --repos "${REPOS_FILE:-$CENTRAL/repos.yml}" \
   --changed "$WORK/shown-files.txt" --root . > "$WORK/design-system.md"
 limit=250000

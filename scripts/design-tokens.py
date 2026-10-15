@@ -535,7 +535,13 @@ def self_test():
         check("brief: a PHP file that draws no screen brings nothing", brief("r", repos, ["includes/class-sync.php"], tmp) == "", "")
         check("brief: an admin template brings it", brief("r", repos, ["includes/admin/settings.php"], tmp) != "", "")
         check("brief: a stylesheet the change deletes brings nothing", brief("r", repos, ["assets/gone.css"], tmp) == "", "")
-        check("brief: the limit counts bytes", len(whole.encode("utf-8")) <= BRIEF_LIMIT + 2000, len(whole.encode("utf-8")))
+        os.makedirs(os.path.join(tmp, "docs", "design-system"))
+        with open(os.path.join(tmp, "docs", "design-system", "README.md"), "w", encoding="utf-8") as fh:
+            fh.write("\u00e1" * 6000)
+        with open(repos, "w", encoding="utf-8") as fh:
+            fh.write("design-system:\n  r: local\n")
+        got = brief("r", repos, ["assets/admin.css"], tmp, limit=8000)
+        check("brief: the limit counts bytes (6000 characters, 12000 bytes, past 8000)", "### docs/design-system/README.md" not in got and "Not inlined" in got, got[-300:])
     for name in systems():
         css, problems = check_system(name)
         check(f"design-systems/{name}: tokens, rules and fixtures are sound", not problems, problems)
