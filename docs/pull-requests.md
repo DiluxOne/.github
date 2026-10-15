@@ -12,7 +12,15 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    ([`policy/autonomy.yml`](../policy/autonomy.yml), read by
    [`scripts/autonomy.py`](../scripts/autonomy.py)) accepts an issue that
    its App opened from one of its own workflows' runs, named in the issue
-   and checked against the API, never on a label alone; a repository's own
+   and checked against the API, never on a label alone. The `org-sync`
+   lane (#155) accepts the Task issue `scripts/sync-repos.py` opens
+   (`files`, `callers`) from a maintainer's machine: opened and labelled by
+   a person the lane names, never edited, naming a commit merged here and
+   the fingerprint of the files the run wrote, which its pull request's
+   files must give again, from the run's branch, touching only the paths
+   that kind of run writes; never in this repository. `issue-accepted.yml`
+   says on the issue when a lane accepts it, with `accepted-by:policy`, and
+   the gate asks again on the pull request. A repository's own
    `.github/autonomy.yml` can only make that stricter, and the organisation
    variable `DX_AUTOPILOT=off` stops every lane. When a person accepts an
    issue its PRD is sealed (its SHA-256 on the repository's `receipts`
@@ -100,7 +108,15 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    pass before the pull request is ready, and the pull request's own checks
    run it too); it is labelled `merged-by:policy`. While the review blocks,
    the autopilot fixes and pushes, up to three rounds, then hands it to a
-   person (`needs-human`). Any other pull request: a human, with [`scripts/squash-merge.sh`](../scripts/squash-merge.sh)
+   person (`needs-human`). A sync run's pull request (lane `org-sync`)
+   merges by policy too ([`scripts/autonomy.py`](../scripts/autonomy.py)
+   `lane-merge`) when the lane accepts its issue and every file it changes
+   is what the commit of this repository the issue names holds (CODEOWNERS
+   as `repos.yml` has it, only the `dx:org` block of `AGENTS.md`, each
+   caller job a template's but the repository's own inputs), the review
+   does not block and its description is true, within the lane's caps; a
+   job that changes its permissions or the secrets it passes, a new one
+   too, is high risk and waits for a person. Any other pull request: a human, with [`scripts/squash-merge.sh`](../scripts/squash-merge.sh)
    `<owner/repo> <number>` (description verbatim, co-authors kept), or
    GitHub's auto-merge when the floor is low, the verdict is low risk and low
    complexity, nothing blocks, the author is trusted and the policy says

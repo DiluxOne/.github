@@ -18,8 +18,14 @@ archived and not excluded in repos.yml:
             (github-actions always; npm, composer, docker by their manifest at
             its root) and what repos.yml `dependabot` adds for it. These never
             go straight to main: for a repository whose files differ, it opens
-            an issue (Type Task) and a pull request that closes it, and the
-            maintainer accepts the issue and merges, like any other change.
+            an issue (Type Task) and a pull request that closes it. When this
+            checkout is a commit merged into main, with nothing the sync
+            reads changed locally, and it writes only what the lane covers
+            (not the Dependabot file), the issue carries the run's marker and
+            `lane:org-sync`, and the autonomy policy accepts it (and may
+            merge its pull request) with no person (policy/autonomy.yml,
+            lane org-sync, #155); otherwise the maintainer accepts the issue
+            and merges, like any other change.
   own-checks  a repository whose kind asks for it (kinds/<kind>/pack.yml,
             `own-checks`) gets a ruleset named "own checks" requiring its own
             jobs' checks, from its last merged pull request; one that exists
@@ -54,6 +60,7 @@ archived and not excluded in repos.yml:
 Run by a maintainer with `gh` signed in as an owner of the organisation.
 """
 import base64
+import importlib.util
 import json
 import os
 import re
@@ -65,6 +72,15 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CENTRAL = os.path.join(HERE, "..")
 START = "<!-- dx:org:start"
 END = "<!-- dx:org:end -->"
+# The autonomy policy's lane for what this script opens (policy/autonomy.yml).
+LANE = "org-sync"
+# What a sync reads from this checkout: a local change to any of them is not
+# a change merged here, so its issues wait for a person.
+SOURCES = ["repos.yml", "labels.yml", "agents-block.md", "workflow-templates", "policy/dependabot.default.yml", "kinds"]
+
+_spec = importlib.util.spec_from_file_location("autonomy", os.path.join(HERE, "autonomy.py"))
+autonomy = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(autonomy)
 
 
 def load_yaml(path):
@@ -187,26 +203,110 @@ def sync_files(repo, conf, block, dry):
                "## 💡 Why\n\nGitHub reads these only from the repository, so the organisation keeps them in step from one place.")
     open_change(repo, default, wanted, "Keep the organisation's shared files in step", body,
                 "chore/{}-org-shared-files", "chore: keep the organisation's shared files in step", pr_body,
-                "chore: keep {} in step with the organisation")
+                "chore: keep {} in step with the organisation", mode="files")
 
 
-def open_change(repo, default, wanted, title, body, branch_form, pr_title, pr_body, message_form):
+ORG_COMMIT = None
+
+
+def org_commit():
+    """(commit, None) when this checkout is DiluxOne/.github's main as it is
+    now and nothing a sync reads (SOURCES) differs from it locally: what a
+    sync run brings repositories in line with. (None, why) otherwise: an
+    older commit would roll back what changed since. Asked once per run."""
+    global ORG_COMMIT
+    if ORG_COMMIT is None:
+        ORG_COMMIT = _org_commit()
+    return ORG_COMMIT
+
+
+def _org_commit():
+    def git(*args):
+        out = subprocess.run(["git", "-C", CENTRAL, *args], capture_output=True, text=True)
+        return out.stdout.strip() if out.returncode == 0 else None
+    sha = git("rev-parse", "HEAD")
+    if not sha or not re.fullmatch(r"[0-9a-f]{40}", sha):
+        return None, "this checkout's commit could not be read"
+    dirty = git("status", "--porcelain", "--", *SOURCES)
+    if dirty is None or dirty:
+        return None, f"{', '.join(SOURCES)} have local changes here"
+    status = gh("api", f"repos/{ORG}/.github/compare/{sha}...main", "--jq", ".status", check=False)
+    if status.returncode != 0 or status.stdout.strip() != "identical":
+        return None, f"this checkout ({sha[:12]}) is not main as it is now (pull first)"
+    return sha, None
+
+
+def lane_text(full, mode, wanted):
+    """(paragraph, marker) when a run of this kind is the org-sync lane's:
+    the paragraph naming the commit, and the run's marker. (None, None)
+    otherwise, saying why."""
+    if not mode:
+        return None, None
+    # A file the lane's run of this kind does not cover (the Dependabot
+    # file): the lane would refuse its pull request, so the issue claims
+    # nothing and a person accepts it.
+    paths = lane_paths(mode)
+    outside = sorted(p for p in wanted if not any(autonomy.path_matches(p, pat) for pat in paths))
+    if outside:
+        print(f"  not the {LANE} lane: it writes {', '.join(outside)}, outside what the lane's {mode} run covers; the issue waits for a person to accept it")
+        return None, None
+    sha, why = org_commit()
+    if not sha:
+        print(f"  not the {LANE} lane: {why}; the issue waits for a person to accept it")
+        return None, None
+    text = (f"It brings the repository in line with DiluxOne/.github at {sha} (https://github.com/{ORG}/.github/commit/{sha}). "
+            f"The autonomy policy accepts this issue (policy/autonomy.yml, lane {LANE}), and its pull request merges on its own "
+            "only while it changes nothing but what that commit holds, and no job's permissions or secrets.")
+    return text, autonomy.sync_marker(LANE, full, mode, sha, wanted)
+
+
+def lane_paths(mode):
+    """The paths the org-sync lane lets a run of this kind write."""
+    policy = load_yaml(os.path.join(CENTRAL, "policy", "autonomy.yml"))
+    return ((((policy.get("lanes") or {}).get(LANE) or {}).get("origin") or {}).get("runs") or {}).get(mode, {}).get("paths") or []
+
+
+def with_lane(body, text, marker):
+    """The issue's body with the lane's paragraph and the marker (which
+    renders as nothing) before its closing line: the AI line stays last."""
+    head, _, last = body.rstrip("\n").rpartition("\n\n")
+    return f"{head}\n\n{text}\n\n{marker}\n\n{last}" if head else f"{text}\n\n{marker}\n\n{body}"
+
+
+def open_change(repo, default, wanted, title, body, branch_form, pr_title, pr_body, message_form, mode=None):
     """An issue (Type Task) and a pull request that closes it, writing
     `wanted` ({path: content}) on the branch branch_form.format(<issue>),
     one commit per file (message_form.format(<path>)). A run that failed
     half way left its issue (and maybe its branch): they are reused instead
-    of opening a second one."""
+    of opening a second one. With `mode` (a kind of run of the org-sync
+    lane: files, callers), a new issue carries the run's marker and, once
+    its Type is Task, the lane's label (lane_text())."""
     full = f"{ORG}/{repo['name']}"
-    found = json.loads(gh("issue", "list", "--repo", full, "--state", "open", "--search", f"in:title \"{title}\"", "--json", "number,title").stdout)
+    found = json.loads(gh("issue", "list", "--repo", full, "--state", "open", "--search", f"in:title \"{title}\"", "--json", "number,title,body").stdout)
     found = [i for i in found if i["title"] == title]
+    text, marker = lane_text(full, mode, wanted)
+    lane = False
     if found:
         number = str(found[0]["number"])
         print(f"  reusing the open issue #{number}")
+        # Its marker is another run's (other files, another commit): the lane
+        # would refuse it, so it says so now and a person accepts it.
+        if marker is None or marker not in (found[0].get("body") or ""):
+            gh("issue", "edit", number, "--repo", full, "--remove-label", f"lane:{LANE}", "--remove-label", "accepted-by:policy", check=False)
+        else:
+            lane = True
     else:
-        url = gh("issue", "create", "--repo", full, "--title", title, "--body", body).stdout.strip()
+        url = gh("issue", "create", "--repo", full, "--title", title, "--body", with_lane(body, text, marker) if marker else body).stdout.strip()
         number = url.rsplit("/", 1)[-1]
+        lane = marker is not None
     if gh("api", "-X", "PATCH", f"repos/{full}/issues/{number}", "-f", "type=Task", check=False).returncode != 0:
         print(f"  warning: could not set #{number}'s Type to Task; set it by hand")
+        lane = False
+    # The label last, once the issue is as the lane reads it: adding it is
+    # what asks the policy (issue-accepted.yml).
+    if lane and gh("issue", "edit", number, "--repo", full, "--add-label", f"lane:{LANE}", check=False).returncode != 0:
+        print(f"  warning: could not add lane:{LANE} to #{number} (labels.yml not synced there yet?); a person accepts it")
+        lane = False
     branch = branch_form.format(number)
     if gh("api", f"repos/{full}/git/ref/heads/{branch}", check=False).returncode != 0:
         base = json.loads(gh("api", f"repos/{full}/git/ref/heads/{default}").stdout)["object"]["sha"]
@@ -221,7 +321,7 @@ def open_change(repo, default, wanted, title, body, branch_form, pr_title, pr_bo
     pr_body = f"{pr_body}\n\nCloses #{number}\n\n🤖 AI-generated · scripts/sync-repos.py"
     pr = gh("pr", "create", "--repo", full, "--base", default, "--head", branch,
             "--title", pr_title, "--body", pr_body).stdout.strip()
-    print(f"  issue #{number} (accept it) and {pr}")
+    print(f"  issue #{number} ({f'lane {LANE}: the policy accepts it' if lane else 'accept it'}) and {pr}")
     return number, pr
 
 
@@ -284,7 +384,7 @@ def sync_callers(repo, conf, dry):
                "(DiluxOne/.github, scripts/sync-repos.py check) found these out of step.")
     open_change(repo, default, wanted, "Keep the workflow callers in step with the organisation's templates", body,
                 "ci/{}-org-workflow-callers", "ci: keep the workflow callers in step with the templates", pr_body,
-                "ci: keep {} in step with its template")
+                "ci: keep {} in step with its template", mode="callers")
 
 
 USES_RE = re.compile(r"DiluxOne/\.github/\.github/workflows/[\w.-]+@v(\d+)\b")
@@ -1527,6 +1627,94 @@ def self_test():
     check("superseded: nothing when the organisation's are not active", superseded("r", mine, paused, pipe) == [], superseded("r", mine, paused, pipe))
     callers_test(check, conf)
     dependabot_test(check, conf, labels, block_file)
+    # The org-sync lane (#155): a run from a merged commit marks its issue,
+    # and labels it only once its Type is Task; the lane reads it back.
+    policy = load_yaml(os.path.join(CENTRAL, "policy", "autonomy.yml"))
+    runs = policy["lanes"][LANE]["origin"]["runs"]
+    check("org-sync: the branch a files run opens is the lane's", "chore/{}-org-shared-files".format(7) == runs["files"]["branch"].format(issue=7), runs)
+    check("org-sync: every file a files run writes is in the lane's paths",
+          all(any(autonomy.path_matches(p, pat) for pat in runs["files"]["paths"]) for p in list((conf.get("files") or {})) + ["AGENTS.md"]), runs)
+    check("org-sync: the branch a callers run opens is the lane's", "ci/{}-org-workflow-callers".format(7) == runs["callers"]["branch"].format(issue=7), runs)
+    check("org-sync: a caller is in the lane's paths", any(autonomy.path_matches(".github/workflows/issues.yml", pat) for pat in runs["callers"]["paths"]), runs)
+    # What a callers run writes, as the lane's merge reads it: an input the
+    # template sets brought back merges on its own; a job brought back with
+    # its permissions waits for a person.
+    owned = (conf.get("callers") or {}).get("repository-owned") or {}
+    tpl_text = {n: t for n, (t, _) in templates().items()}
+    tpl_data = {n: d for n, (_, d) in templates().items()}
+    issues_tpl = tpl_text["issues.yml"].replace("https://example.com/support", "https://diluxone.com/support/")
+    for label, before, high in (("an input the template sets", issues_tpl.replace("      trigger: triage\n", ""), False),
+                                ("a job the template has", issues_tpl[:issues_tpl.index("  repro-triaged:")] + issues_tpl[issues_tpl.index("  # When a person accepts"):], True)):
+        new, _ = rewrite_caller(before, tpl_text["issues.yml"], set(owned.get("issues.yml") or []))
+        problem, is_high = autonomy.caller_problem(".github/workflows/issues.yml", before, new or "", tpl_data, owned)
+        check(f"org-sync: a callers run bringing back {label} {'waits for a person' if high else 'merges on its own'}",
+              (problem is not None, is_high) == (high, high), problem)
+    calls = []
+    sha = "0123456789abcdef0123456789abcdef01234567"
+
+    def recorder(fail=(), found=()):
+        def fake_gh(*args, check=True, input_text=None):
+            calls.append(args)
+            joined = " ".join(args)
+            if any(f in joined for f in fail):
+                return Out("", 1, "HTTP 422")
+            if args[:2] == ("issue", "list"):
+                return Out(json.dumps(list(found)))
+            if args[:2] == ("issue", "create"):
+                return Out("https://github.com/o/r/issues/7\n")
+            if "git/ref/heads/main" in joined:
+                return Out(json.dumps({"object": {"sha": "b" * 40}}))
+            if args[:2] == ("pr", "create"):
+                return Out("https://github.com/o/r/pull/8\n")
+            if "contents/" in joined and "--jq" in args:
+                return Out("", 1, "HTTP 404")
+            return Out("{}")
+        return fake_gh
+    wanted = {".github/CODEOWNERS": "* @soydiloreto\n"}
+    global ORG_COMMIT
+    saved_gh, saved_org, saved_commit = globals()["gh"], ORG, ORG_COMMIT
+    try:
+        ORG, ORG_COMMIT = "o", (sha, None)
+        globals()["gh"] = recorder()
+        ai = "🤖 AI-generated · scripts/sync-repos.py"
+        open_change({"name": "r"}, "main", wanted, "T", f"Body.\n\n{ai}", "chore/{}-org-shared-files", "chore: t", "## What", "chore: {}", mode="files")
+        create = next(c for c in calls if c[:2] == ("issue", "create"))
+        body = create[create.index("--body") + 1]
+        m = autonomy.SYNC_MARKER.search(body)
+        check("org-sync: the issue names the commit and carries the run's marker",
+              bool(m) and m.group(3) == sha and m.group(4) == autonomy.fingerprint("o/r", "files", sha, wanted) and f"/commit/{sha}" in body, body)
+        check("org-sync: the AI line stays last", body.startswith("Body.") and body.endswith(ai), body)
+        order = [i for i, c in enumerate(calls) if c[:2] == ("issue", "create") or "type=Task" in c or "lane:org-sync" in c]
+        check("org-sync: created, then its Type, then the lane's label", len(order) == 3 and "lane:org-sync" in calls[order[2]], calls)
+        calls.clear()
+        globals()["gh"] = recorder(fail=("type=Task",))
+        open_change({"name": "r"}, "main", wanted, "T", "Body.", "chore/{}-org-shared-files", "chore: t", "## What", "chore: {}", mode="files")
+        check("org-sync: no Type, no lane: a person accepts it", not any("lane:org-sync" in c for c in calls), calls)
+        calls.clear()
+        mine = autonomy.sync_marker(LANE, "o/r", "files", sha, wanted)
+        globals()["gh"] = recorder(found=[{"number": 7, "title": "T", "body": f"Body.\n\n{mine}"}])
+        open_change({"name": "r"}, "main", wanted, "T", "Body.", "chore/{}-org-shared-files", "chore: t", "## What", "chore: {}", mode="files")
+        check("org-sync: a half-done run's issue, the same run's, keeps the lane", any("--add-label" in c and "lane:org-sync" in c for c in calls), calls)
+        calls.clear()
+        globals()["gh"] = recorder(found=[{"number": 7, "title": "T", "body": f"Body.\n\n{mine.replace(sha, 'f' * 40)}"}])
+        open_change({"name": "r"}, "main", wanted, "T", "Body.", "chore/{}-org-shared-files", "chore: t", "## What", "chore: {}", mode="files")
+        check("org-sync: an older run's issue loses the lane and accepted-by:policy",
+              any("--remove-label" in c and "accepted-by:policy" in c for c in calls) and not any("--add-label" in c for c in calls), calls)
+        calls.clear()
+        globals()["gh"] = recorder()
+        open_change({"name": "r"}, "main", dict(wanted, **{DEPENDABOT: "version: 2\n"}), "T", "Body.", "chore/{}-org-shared-files", "chore: t", "## What", "chore: {}", mode="files")
+        create = next(c for c in calls if c[:2] == ("issue", "create"))
+        check("org-sync: a files run that writes the Dependabot file (outside the lane) marks nothing",
+              "dx-lane" not in create[create.index("--body") + 1] and not any("lane:org-sync" in c for c in calls), calls)
+        check("org-sync: the Dependabot templates are among what the sync reads", {"policy/dependabot.default.yml", "kinds"} <= set(SOURCES), SOURCES)
+        calls.clear()
+        ORG_COMMIT = (None, "not merged")
+        globals()["gh"] = recorder()
+        open_change({"name": "r"}, "main", wanted, "T", "Body.", "chore/{}-org-shared-files", "chore: t", "## What", "chore: {}", mode="files")
+        create = next(c for c in calls if c[:2] == ("issue", "create"))
+        check("org-sync: a checkout not merged into main marks nothing", "dx-lane" not in create[create.index("--body") + 1] and not any("lane:org-sync" in c for c in calls), calls)
+    finally:
+        globals()["gh"], ORG, ORG_COMMIT = saved_gh, saved_org, saved_commit
     if not failed:
         print("all tests passed")
     return 1 if failed else 0

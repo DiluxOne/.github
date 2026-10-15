@@ -11,7 +11,11 @@
 # Autonomy cannot widen itself. Every path here is also high risk in the
 # review policy (this repository's or the default), so the auto-merge
 # decision never merges them; scripts/autonomy.py's self-test fails if one is
-# not.
+# not. One narrow exception, the `org-sync` lane below: in a repository
+# other than this one, it merges the files scripts/sync-repos.py keeps in
+# step (callers under .github/workflows/, .github/CODEOWNERS, the dx:org
+# block of AGENTS.md) only when they are what a commit a person already
+# merged here holds, and never a change of permissions or secrets.
 #
 # The organisation variable DX_AUTOPILOT=off stops every autonomous action at
 # once, without touching the checks: no lane accepts an issue, no agent
@@ -48,6 +52,8 @@ constitution:
 #     repository, and its workflow (or one it calls) is one of origin.workflows;
 #   - the lane is on, takes `accept: policy`, and covers the repository;
 #   - the autopilot is on (here, the repository's own file and DX_AUTOPILOT).
+# A sync lane (one whose origin has `runs`, org-sync) checks its own origin
+# instead of a workflow run: see it below.
 #
 # merge: the most a pull request closing a lane's issue may be, as the review
 # rates it, and still merge on its own (the autopilot, #83, applies it).
@@ -91,6 +97,54 @@ lanes:
     accept: human
     repositories: ["*"]
     merge: {max-risk: high, max-complexity: high}
+
+  # Mechanical sync pull requests (#155): the Task issue and the pull request
+  # scripts/sync-repos.py opens in a repository (`files`, `callers`) to bring
+  # it in line with a change a person already merged here. A maintainer runs
+  # the script from their machine, so the issue is theirs and no workflow
+  # run opened it: instead of `workflows`, the lane names who may run it
+  # (`people`, beside its App) and each kind of run (`runs`): the branch its
+  # pull request comes from and the only paths it may change. Accepted when
+  # all of this holds (scripts/autonomy.py, sync_accepts()):
+  #   - one of them opened the issue and added lane:org-sync last, and its
+  #     text was never edited;
+  #   - its Type is Task, and it carries the run's marker
+  #     (<!-- dx-lane: org-sync sync: <kind> org: <commit> files: <hash> -->):
+  #     a commit of this repository merged into main, and the run's
+  #     fingerprint, the SHA-256 of what it wrote;
+  #   - its pull request (for the gate and the merge): opened by the same
+  #     account from the run's branch, adding or modifying only the run's
+  #     paths, whose files give the same fingerprint. Anything else fails
+  #     the lane, and the issue waits for a person to accept it.
+  # Never in this repository. It merges on its own (auto-merge.yml,
+  # autonomy.py lane-merge) only when the review does not block and its
+  # description is true, within `merge`, and every file is what that commit
+  # holds: CODEOWNERS as repos.yml has it, AGENTS.md with only its dx:org
+  # block replaced by agents-block.md, and each caller job it changes a
+  # template's job (workflow-templates/), but the inputs that are the
+  # repository's, with nothing else in the file changed. A job that changes
+  # its permissions or the secrets it passes, a new job among them, is high
+  # risk: a person merges it. `max-risk: high` because the review's floor for
+  # .github/** and AGENTS.md is high whatever the change; the checks above,
+  # not the rating, are what hold it.
+  org-sync:
+    description: The issue and pull request scripts/sync-repos.py opens to bring a repository in line with a change merged here.
+    accept: policy
+    type: Task
+    origin:
+      app: dilux-bot
+      people: [soydiloreto]
+      script: scripts/sync-repos.py
+      runs:
+        files:
+          branch: "chore/{issue}-org-shared-files"
+          paths: [".github/CODEOWNERS", "AGENTS.md"]
+        callers:
+          branch: "ci/{issue}-org-workflow-callers"
+          paths: [".github/workflows/*.yml", ".github/workflows/*.yaml"]
+    repositories: ["*"]
+    evidence: The merged commit of DiluxOne/.github the issue names, and the run's fingerprint, which the pull request's files must give again.
+    merge: {max-risk: high, max-complexity: low}
 
   # The issue "Release X.Y.Z" (#82, the Release form, label lane:release):
   # a person's acceptance opens the release pull request

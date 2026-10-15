@@ -35,12 +35,18 @@ set -euo pipefail
 QUERY='query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
+      number
+      headRefName
+      headRefOid
+      baseRefOid
+      author { login }
       closingIssuesReferences(first: 10) {
         totalCount
         nodes {
           number
           state
           body
+          lastEditedAt
           author { login }
           repository { nameWithOwner }
           labels(first: 50) { nodes { name } }
@@ -109,17 +115,20 @@ type_fits() {
 
 # Whether a lane of the autonomy policy accepts issue $2 of the answer in $1
 # (scripts/autonomy.py, policy/autonomy.yml): prints why, either way. Only an
-# issue with a lane:<name> label is asked; the rest are not a lane's.
+# issue with a lane:<name> label is asked; the rest are not a lane's. A sync
+# lane (org-sync) judges the pull request too: its author, branch and files
+# (LANE_PR).
 lane_verdict() {
-  local node
-  node=$(mktemp)
+  local node pr
+  node=$(mktemp); pr=$(mktemp)
   jq --argjson n "$2" '.data.repository.pullRequest.closingIssuesReferences.nodes[] | select(.number == $n)' "$1" > "$node"
+  jq '.data.repository.pullRequest | {number, author, headRefName, headRefOid, baseRefOid}' "$1" > "$pr"
   if ! jq -e '[.labels.nodes[]?.name | select(startswith("lane:"))] | length > 0' "$node" >/dev/null; then
-    rm -f "$node"; return 1
+    rm -f "$node" "$pr"; return 1
   fi
-  LANE_ISSUE=$node python3 "$(dirname "${BASH_SOURCE[0]}")/autonomy.py" lane-accept 2>/dev/null
+  LANE_ISSUE=$node LANE_PR=$pr LANE_SCOPE=pr python3 "$(dirname "${BASH_SOURCE[0]}")/autonomy.py" lane-accept 2>/dev/null
   local rc=$?
-  rm -f "$node"
+  rm -f "$node" "$pr"
   return "$rc"
 }
 
@@ -251,6 +260,23 @@ if [ "${1:-}" = "--test" ]; then
   lane_issue | answer | LANE_RUN=$runfile T="feat(x): a thing" case_ "fails: a feature closing a lane's Bug" 1 || fail=1
   lane_issue | jq '.labels.nodes += [{name: "accepted"}] | .timelineItems.nodes += [{__typename: "LabeledEvent", label: {name: "accepted"}, actor: {__typename: "Bot", login: "dilux-bot"}}]' | answer | LANE_RUN=$runfile T="fix(x): a thing" case_ "passes: a lane's issue whose accepted label a bot added" 0 || fail=1
   rm -f "$runfile"
+  # A sync run's issue (lane org-sync, #155): opened and labelled by a person
+  # the lane names, its marker naming a merged commit and the run's files.
+  sync_dir=$(mktemp -d)
+  sha=0123456789abcdef0123456789abcdef01234567
+  echo '{"merged": true}' > "$sync_dir/org.json"
+  printf '%s\n' '{"files": [{"status": "modified", "path": ".github/CODEOWNERS"}], "head": {".github/CODEOWNERS": "* @soydiloreto\n"}, "base": {}}' > "$sync_dir/change.json"
+  jq '.files += [{"status": "added", "path": "README.md"}] | .head["README.md"] = "x\n"' "$sync_dir/change.json" > "$sync_dir/wider.json"
+  marker=$(python3 -c 'import importlib.util,sys; s=importlib.util.spec_from_file_location("a", sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(m.sync_marker("org-sync", sys.argv[2], "files", sys.argv[3], {".github/CODEOWNERS": "* @soydiloreto\n"}))' "$(dirname "${BASH_SOURCE[0]}")/autonomy.py" "$repo" "$sha")
+  sync_issue() {
+    jq -n --arg r "$repo" --arg b "$marker" --arg who "${1:-soydiloreto}" '{number: 31, state: "OPEN", repository: {nameWithOwner: $r}, author: {login: $who}, body: $b, lastEditedAt: null, labels: {nodes: [{name: "lane:org-sync"}]}, issueType: {name: "Task"}, timelineItems: {nodes: [{__typename: "LabeledEvent", label: {name: "lane:org-sync"}, actor: {__typename: "User", login: $who}}]}}'
+  }
+  sync_answer() { jq -s --arg b "${1:-chore/31-org-shared-files}" '{data: {repository: {pullRequest: {number: 32, headRefName: $b, headRefOid: "h", baseRefOid: "b", author: {login: "soydiloreto"}, closingIssuesReferences: {nodes: .}}}}}'; }
+  sync_issue | sync_answer | LANE_ORG=$sync_dir/org.json LANE_CHANGE=$sync_dir/change.json T="chore: keep the shared files in step" case_ "passes: a sync run's issue and its pull request (org-sync)" 0 || fail=1
+  sync_issue someone | sync_answer | LANE_ORG=$sync_dir/org.json LANE_CHANGE=$sync_dir/change.json T="chore: keep the shared files in step" case_ "fails: a sync issue someone the lane does not name opened" 1 || fail=1
+  sync_issue | sync_answer chore/31-mine | LANE_ORG=$sync_dir/org.json LANE_CHANGE=$sync_dir/change.json T="chore: keep the shared files in step" case_ "fails: a sync issue's pull request from another branch" 1 || fail=1
+  sync_issue | sync_answer | LANE_ORG=$sync_dir/org.json LANE_CHANGE=$sync_dir/wider.json T="chore: keep the shared files in step" case_ "fails: a sync pull request that changes a file outside the sync's set" 1 || fail=1
+  rm -rf "$sync_dir"
   # Sealed PRDs (scripts/receipts.py): a fixture directory stands in for the branch.
   sealdir=$(mktemp -d); mkdir -p "$sealdir/issues/12"
   body_with() { jq -n --arg r "$repo" --arg b "$1" '{number: 12, state: "OPEN", repository: {nameWithOwner: $r}, body: $b, labels: {nodes: [{name: "accepted"}]}, issueType: {name: "Task"}, timelineItems: {nodes: [{__typename: "LabeledEvent", label: {name: "accepted"}, actor: {__typename: "User", login: "x"}}]}}'; }
