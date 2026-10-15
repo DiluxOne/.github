@@ -19,6 +19,9 @@ high-risk:
   - "docs/architecture.md"
   - "docs/testing-and-quality.md"
   - "kinds/**"
+  # Every screen of every project associated with a system follows it
+  # (repos.yml, design-system), its pages included: they are its rules.
+  - "design-systems/**"
   - "policy/**"
   - "review-profiles/**"
   - "scripts/**"

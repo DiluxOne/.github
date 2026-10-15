@@ -95,7 +95,8 @@ flowchart TB
 | 🛠️ | [`scripts/`](scripts/) | The logic behind the workflows, each script with its own `--test`; [`scripts/runner-vm/`](scripts/runner-vm/) keeps the organisation's VM in its described state |
 | 🏃 | [`runner/`](runner/) | The image every job on the organisation's VM runs in, `ghcr.io/diluxone/runner` |
 | 📋 | [`workflow-templates/`](workflow-templates/) | Ready-made callers for a new repository |
-| 🏷️ | [`labels.yml`](labels.yml) · [`repos.yml`](repos.yml) | Labels, settings and Projects, kept in step by `scripts/sync-repos.py` |
+| 🎨 | [`design-systems/`](design-systems/) | What a screen looks like: tokens, components and the rules a review checks (today, `wordpress-admin`); each project names its own in `repos.yml` |
+| 🏷️ | [`labels.yml`](labels.yml) · [`repos.yml`](repos.yml) | Labels, settings, Projects and design systems, kept in step by `scripts/sync-repos.py` |
 | 🖼️ | [`profile/`](profile/) | The organisation's public page on GitHub |
 
 ## Read more
