@@ -83,6 +83,7 @@ flowchart TB
 - **One accepted issue per pull request.** Bots' pull requests (Dependabot, releases) are the exception.
 - **An accepted issue names who works it.** Whoever accepts it becomes its assignee, if it has none, until a member of the organisation opens the pull request that closes it; a bot never is, so a lane's issue stays unassigned.
 - **Autonomy is data too, and only ever narrower.** What may proceed without a person comes from [`policy/autonomy.yml`](policy/autonomy.yml): named lanes, each checked against GitHub, never against an issue's text. A repository can only tighten it, the rules that govern it always need a person, and `DX_AUTOPILOT=off` stops it all.
+- **A merge that turns main red is reverted.** Not when the red is a flaky job (it runs again once first); the revert closes a Bug issue that links the merge, the run and the pull request, and merges on its own only within the `platform` lane ([docs](docs/pull-requests.md)).
 - **Policy is data.** Risk paths, models, budget and auto-merge live in [`policy/`](policy/) and in each repository's `.github/review-policy.yml`, read from the base branch, so a pull request cannot loosen its own rules.
 - **A review lesson becomes a rule.** Something a reviewer sent back once becomes one entry in its kind's `rules.yml`, with fixtures, never a new script ([`kinds/`](kinds/)).
 - **Secrets never meet a fork's code.** Actions are pinned to a commit and every token asks for the least it needs.

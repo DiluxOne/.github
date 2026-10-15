@@ -32,6 +32,14 @@ name: Auto-merge
 # It is labelled `merged-by:policy`. Auto-merge is switched off before that
 # decision, so a failure leaves nothing set to merge.
 #
+# A revert dilux-bot opened when a merge turned the default branch red
+# (gate G8, revert-on-red.yml: label `revert`, a `revert/` branch) is decided
+# by scripts/revert.py decide: only within the `platform` lane of
+# policy/autonomy.yml (its repositories and caps, no protected path, the
+# review not blocking, its description true), labelled `merged-by:policy`;
+# otherwise its issue says why it waits and the action with its URL, in one
+# comment kept up to date.
+#
 # The dilux-bot App enables it, so the resulting push to main triggers the
 # post-merge workflows (a GITHUB_TOKEN merge would not).
 #
@@ -160,8 +168,74 @@ jobs:
             echo "A human merges this one: $why."
           fi
 
+      # A revert's issue gets a comment when the revert waits for a person:
+      # a token of its own, since that needs issues: write.
+      - name: dilux-bot token (a revert's issue)
+        id: revert-bot
+        if: contains(github.event.pull_request.labels.*.name, 'revert') && github.event.pull_request.user.login == 'dilux-bot[bot]' && startsWith(github.event.pull_request.head.ref, 'revert/') && steps.autopilot.outputs.handled != 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-issues: write
+
+      # A revert of a merge that turned the default branch red (gate G8,
+      # scripts/revert.py decide): within the `platform` lane only.
+      - name: A revert pull request (G8)
+        id: revert
+        if: steps.revert-bot.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          ISSUE_TOKEN: ${{ steps.revert-bot.outputs.token }}
+          PR: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          CENTRAL_REF: ${{ inputs.central-ref }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          DX_AUTOPILOT: ${{ vars.DX_AUTOPILOT }}
+          RISK: ${{ inputs.risk }}
+          COMPLEXITY: ${{ inputs.complexity }}
+          BLOCKING: ${{ inputs.blocking }}
+          DESCRIPTION_OK: ${{ inputs.description-ok }}
+        run: |
+          set -euo pipefail
+          echo "handled=true" >> "$GITHUB_OUTPUT"
+          # Off first: if anything below fails, nothing stays set to merge.
+          gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --disable-auto >/dev/null 2>&1 || true
+          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label merged-by:policy >/dev/null 2>&1 || true
+          git clone -q --depth 1 --branch "$CENTRAL_REF" https://github.com/DiluxOne/.github "$RUNNER_TEMP/central"
+          # Every file, renames by their old path too, so a protected path
+          # cannot leave by a rename.
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/files"
+          gh api "repos/$GITHUB_REPOSITORY/contents/.github/autonomy.yml?ref=$BASE" --jq .content 2>/dev/null | base64 -d > "$RUNNER_TEMP/repo-autonomy.yml" || : > "$RUNNER_TEMP/repo-autonomy.yml"
+          export FILES="$RUNNER_TEMP/files" REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml"
+          ok=false
+          if [ "$(wc -l < "$FILES")" -ge 3000 ]; then
+            why="the file list may be cut at the API's 3000"
+          elif why=$(python3 "$RUNNER_TEMP/central/scripts/revert.py" decide); then
+            ok=true
+          fi
+          if [ "$ok" = true ]; then
+            body=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq .body | tr -d '\r')
+            gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --auto --squash --body "$body"
+            gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label merged-by:policy >/dev/null
+            echo "Auto-merge enabled by policy: $why."
+            exit 0
+          fi
+          echo "A human merges this one: $why."
+          issue=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // empty')
+          [ -n "$issue" ] || exit 0
+          comment=$(WHY="$why" python3 "$RUNNER_TEMP/central/scripts/revert.py" wait-comment)
+          id=$(GH_TOKEN="$ISSUE_TOKEN" gh api "repos/$GITHUB_REPOSITORY/issues/$issue/comments" --paginate --jq '.[] | select(.user.login == "dilux-bot[bot]" and (.body | startswith("<!-- dx-revert-wait -->"))) | .id' | tail -n1)
+          if [ -n "$id" ]; then
+            GH_TOKEN="$ISSUE_TOKEN" gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$comment" >/dev/null
+          else
+            GH_TOKEN="$ISSUE_TOKEN" gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body "$comment" >/dev/null
+          fi
+
       - name: Enable or disable
-        if: steps.autopilot.outputs.handled != 'true'
+        if: steps.autopilot.outputs.handled != 'true' && steps.revert.outputs.handled != 'true'
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           PR: ${{ github.event.pull_request.number }}
