@@ -34,6 +34,22 @@ issue-gate:
 # maintainer's) is the maintainer's: no cap (#130).
 max-changed-lines-untrusted: 600
 
+# What a pull request titled docs may change: shell `case` globs (`*` crosses
+# directories). The organisation's list only: a repository's own file cannot
+# widen it; a kind adds its own (`docs-paths:` in kinds/<kind>/surface.yml,
+# scripts/surface.py).
+docs-paths:
+  - "*.md"
+  - "docs/*.png"
+  - "docs/*.jpg"
+  - "docs/*.jpeg"
+  - "docs/*.gif"
+  - "docs/*.webp"
+  - "LICENSE"
+  - "LICENSE.*"
+  - "COPYING"
+  - ".github/ISSUE_TEMPLATE/*"
+
 # A repository names in its own policy the product names that must not come
 # back (`retired-names: 'old name|OLD_PREFIX_'`, a case-insensitive extended
 # regex); the docs check of the conventions fails when one appears. There is

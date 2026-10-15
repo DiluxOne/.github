@@ -18,7 +18,10 @@
 # limit: CI sets it for authors who are not trusted; composer.lock,
 # package-lock.json and the .po, .pot and .mo files of a languages/ directory
 # do not count), TAKEN_OVER (the maintainer who took a bot's pull request
-# over, as the policy found; MAX_LINES is then empty, and the log says why).
+# over, as the policy found; MAX_LINES is then empty, and the log says why),
+# KIND (the repository's kind, as the policy found; empty for none) and
+# TRUSTED (false for an author who is not trusted: only then is the surface,
+# below, checked; empty or true skips it).
 #
 # `conventions.sh --head-facts REPO PR SHA DIR` writes, for the gate that
 # decides a take-over (#130), what GitHub says about a pull request: the
@@ -28,9 +31,18 @@
 # fails leaves its file empty, which keeps the cap, never lifts it.
 # Run from the repository.
 #
-# A pull request titled docs may change only documentation: Markdown, the
-# images under docs/, readme.txt, licence files and the issue templates. That is
-# where a code change would hide behind the lightest review.
+# A pull request titled docs may change only documentation: the
+# organisation's `docs-paths` (Markdown, the images under docs/, licence files
+# and the issue templates) and the kind's (kinds/<kind>/surface.yml; a
+# WordPress plugin's readme.txt). That is where a code change would hide
+# behind the lightest review.
+#
+# A pull request from an author who is not trusted (TRUSTED=false, never a
+# bot) whose type is not feat (and has no "!") may not add public surface:
+# what the kind's pack lists (a WordPress plugin's settings, options, REST
+# routes, admin pages, hooks, shortcodes and blocks), read from the diff by
+# scripts/surface.py, which runs nothing of the pull request (#144). New
+# functionality needs a Feature issue a maintainer accepted.
 #
 # A grouped Dependabot pull request comes titled past the limit ("Bump x
 # from 1.0 to 1.1 in the dev group across 1 directory") and its commit says
@@ -42,6 +54,9 @@
 #   conventions.sh --dependabot-title <t>   print <t> shortened to MAX_HEADER
 #   conventions.sh --test                   self-test against a scratch repository
 set -euo pipefail
+
+# The other scripts it calls (surface.py), wherever it is run from.
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # Whether the review is still to read HEAD_REF: its last record (only the
 # review App's own comment counts, and only a 40-hex commit) names another
@@ -97,6 +112,8 @@ check() {
   AUTHOR_TYPE=${AUTHOR_TYPE:-User}
   MAX_LINES=${MAX_LINES:-}
   TAKEN_OVER=${TAKEN_OVER:-}
+  KIND=${KIND:-}
+  TRUSTED=${TRUSTED:-}
   TYPES='feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert'
   HEADER_RE="^(${TYPES})(\([a-z0-9._/-]+\))?!?: [^ ].*[^.]$"
   BRANCH_RE="^((${TYPES})/[a-z0-9][a-z0-9._-]*|dependabot/.+)$"
@@ -141,14 +158,34 @@ check() {
   # Documentation only, when the title says docs.
   DOCS_RE='^docs(\([^)]*\))?!?: '
   if [[ "$TITLE" =~ $DOCS_RE ]]; then
-    while IFS= read -r f; do
-      case "$f" in
-        ''|*.md|docs/*.png|docs/*.jpg|docs/*.jpeg|docs/*.gif|docs/*.webp|readme.txt|LICENSE|LICENSE.*|COPYING|.github/ISSUE_TEMPLATE/*) ;;
-        *) error "The title says docs, but $f is not documentation: give the title the type of the change it carries." ;;
-      esac
-    # --no-renames: a code file renamed into a .md shows as the code file
-    # deleted, which is not documentation.
-    done < <(git diff --no-renames --name-only "${BASE}...${HEAD_REF}")
+    if ! docs_globs=$(python3 "$here/surface.py" --docs-paths "$KIND"); then
+      error "The documentation paths could not be read (kind \"$KIND\"), so a docs title cannot be checked."
+    else
+      while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        is_doc=false
+        while IFS= read -r g; do
+          # shellcheck disable=SC2254 # the glob is the point.
+          [ -n "$g" ] && case "$f" in $g) is_doc=true; break ;; esac
+        done <<<"$docs_globs"
+        [ "$is_doc" = true ] || error "The title says docs, but $f is not documentation: give the title the type of the change it carries."
+      # --no-renames: a code file renamed into a .md shows as the code file
+      # deleted, which is not documentation.
+      done < <(git diff --no-renames --name-only "${BASE}...${HEAD_REF}")
+    fi
+  fi
+  # No new functionality behind a type that is not feat, from an author who
+  # is not trusted (#144). Only the kind knows what its surface is.
+  ptype=''
+  [[ "$TITLE" =~ $TYPE_RE ]] && [ -z "${BASH_REMATCH[3]}" ] && ptype=${BASH_REMATCH[1]}
+  if [ "$TRUSTED" = false ] && [ "$AUTHOR_TYPE" != Bot ] && [ -n "$KIND" ] && [ -n "$ptype" ] && [ "$ptype" != feat ]; then
+    surface_code=0
+    added=$(python3 "$here/surface.py" --check "$KIND" "$BASE" "$HEAD_REF") || surface_code=$?
+    if [ "$surface_code" -eq 1 ]; then
+      error "This pull request is titled $ptype, but it adds new functionality: ${added//$'\n'/; }. New functionality needs a Feature issue that a maintainer has accepted, and a feat pull request that closes it: take it out of this pull request, or open that issue first. See https://github.com/DiluxOne/.github/blob/main/CONTRIBUTING.md#start-from-an-issue."
+    elif [ "$surface_code" -ne 0 ]; then
+      error "What this pull request adds could not be read (kind \"$KIND\"), so it cannot be told apart from new functionality."
+    fi
   fi
   # A size an author who is not trusted may change at once. A bot's pull
   # request a maintainer took over is the maintainer's: no cap.
@@ -200,7 +237,7 @@ test_case() {
   local name=$1 want=$2 branch=$3 title=$4 message=$5 body=$6 labels=${7:-} comments=${8:-} files=${9:-} max=${10:-} author=${11:-User} got dir
   dir=$(mktemp -d)
   (
-    cd "$dir" && git init -q && git config user.email t@t && git config user.name t
+    cd "$dir" && git init -q && git config user.email t@t && git config user.name t && git config commit.gpgsign false
     git commit -q --allow-empty -m "chore: base" && git checkout -q -b topic
     # files: "path:lines,path:lines", each written with that many lines.
     if [ -n "$files" ]; then
@@ -258,7 +295,9 @@ if [ "${1:-}" = "--test" ]; then
   test_case "passes: under a cap of its own, the review is still to come" 0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" "$(rec 'dilux-bot[bot]' "$other" 3 8)" || fail=1
   test_case "fails: a record whose sha is not a commit"           1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" "$(rec 'dilux-bot[bot]' 'abc\\nx' 1 '')" || fail=1
   test_case "passes: the last page's record (paginated arrays)"    0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "type:feat" "$(rec 'dilux-bot[bot]' HEADSHA 1 '')$(rec 'dilux-bot[bot]' "$other" 2 '')" || fail=1
-  test_case "passes: docs that change only docs"   0 docs/guide "docs(guide): a thing" "docs(guide): a thing" "$good" "" "" "docs/a.md:3,README.md:2,readme.txt:1" || fail=1
+  KIND=wordpress-plugin test_case "passes: docs that change only docs" 0 docs/guide "docs(guide): a thing" "docs(guide): a thing" "$good" "" "" "docs/a.md:3,README.md:2,readme.txt:1" || fail=1
+  test_case "passes: docs with no kind, the organisation's paths" 0 docs/guide "docs(guide): a thing" "docs(guide): a thing" "$good" "" "" "docs/a.md:3,README.md:2,LICENSE:1,.github/ISSUE_TEMPLATE/bug.yml:2" || fail=1
+  test_case "fails: readme.txt is a kind's documentation, not every repository's" 1 docs/guide "docs(guide): a thing" "docs(guide): a thing" "$good" "" "" "readme.txt:1" || fail=1
   test_case "fails: docs that change code"         1 docs/guide "docs(guide): a thing" "docs(guide): a thing" "$good" "" "" "docs/a.md:3,includes/a.php:2" || fail=1
   test_case "passes: a fix may change code"        0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "" "" "includes/a.php:2" || fail=1
   test_case "passes: under the size limit"         0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "" "" "includes/a.php:50" 100 || fail=1
@@ -267,12 +306,46 @@ if [ "${1:-}" = "--test" ]; then
   # A docs title over a code file renamed into a .md: the base has the code.
   dir=$(mktemp -d)
   if (
-    cd "$dir" && git init -q && git config user.email t@t && git config user.name t
+    cd "$dir" && git init -q && git config user.email t@t && git config user.name t && git config commit.gpgsign false
     mkdir includes && seq 1 40 > includes/a.php && git add . && git commit -q -m "chore: base" && git checkout -q -b docs/x
     git mv includes/a.php notes.md && git commit -q -m "docs: notes"
     BRANCH=docs/x TITLE="docs: notes" BODY=$good BASE=$(git rev-parse HEAD~1) HEAD_REF=$(git rev-parse HEAD) check >/dev/null 2>&1
   ); then echo "FAIL fails: docs that rename code into Markdown (want 1, got 0)"; fail=1; else echo "ok   fails: docs that rename code into Markdown"; fi
   rm -rf "$dir"
+  # #144: no new functionality behind a type that is not feat, from an
+  # author who is not trusted. The base holds includes/a.php; the branch
+  # writes $5 to $6 (a path) and is checked as $3 (title), with $4 TRUSTED
+  # and $7 AUTHOR_TYPE, for the wordpress-plugin kind; the output must say
+  # $8 when given.
+  surface_case() { # name want title trusted content path author expect
+    local dir got out
+    dir=$(mktemp -d)
+    out=$(
+      cd "$dir" && git init -q && git config user.email t@t && git config user.name t && git config commit.gpgsign false
+      mkdir includes && printf '<?php\nfunction dx_a() {\n  return 1;\n}\ndo_action( %s );\n' "'dx_ready'" > includes/a.php
+      git add . && git commit -q -m "chore: base" && git checkout -q -b fix/a-thing
+      mkdir -p "$(dirname "$6")" && printf '%b' "$5" > "$6" && git add . && git commit -q -m "$3"
+      BRANCH=fix/a-thing TITLE=$3 BODY=$good KIND=wordpress-plugin TRUSTED=$4 AUTHOR_TYPE=${7:-User} BASE=$(git rev-parse HEAD~1) HEAD_REF=$(git rev-parse HEAD) check 2>&1
+    ) && got=0 || got=1
+    rm -rf "$dir"
+    if [ "$got" = "$2" ] && { [ -z "${8:-}" ] || grep -qF -- "$8" <<<"$out"; }; then echo "ok   $1"; else echo "FAIL $1 (want $2, got $got: $out)"; return 1; fi
+  }
+  route='<?php\nadd_action( "rest_api_init", function () {\n  register_rest_route( "dx/v1", "/items", array() );\n} );\n'
+  edit='<?php\nfunction dx_a() {\n  return 2;\n}\ndo_action( '"'dx_ready'"' );\n'
+  neutral="needs a Feature issue that a maintainer has accepted"
+  surface_case "C1 (#144): an untrusted fix that adds a REST route fails, neutrally" 1 "fix(sync): a thing" false "$route" includes/rest.php User "$neutral" || fail=1
+  surface_case "C1 (#144): the message names what it adds" 1 "fix(sync): a thing" false "$route" includes/rest.php User "a REST route (register_rest_route) (includes/rest.php)" || fail=1
+  surface_case "C1 (#144): and links the contribution guide" 1 "fix(sync): a thing" false "$route" includes/rest.php User "CONTRIBUTING.md#start-from-an-issue" || fail=1
+  surface_case "C1 (#144): any type that is not feat, a refactor too" 1 "refactor(sync): a thing" false "$route" includes/rest.php User "$neutral" || fail=1
+  surface_case "C2 (#144): an untrusted docs pull request that changes PHP fails" 1 "docs(guide): a thing" false "$edit" includes/a.php User "includes/a.php is not documentation" || fail=1
+  surface_case "C3 (#144): an untrusted fix that only changes existing code passes" 0 "fix(sync): a thing" false "$edit" includes/a.php || fail=1
+  surface_case "C3 (#144): firing an existing hook again is not new" 0 "fix(sync): a thing" false '<?php\ndo_action( '"'dx_ready'"' );\n' includes/b.php || fail=1
+  surface_case "C3 (#144): surface in tests is not the plugin's" 0 "fix(sync): a thing" false "$route" tests/rest-test.php || fail=1
+  surface_case "C4 (#144): the same from a trusted author passes" 0 "fix(sync): a thing" true "$route" includes/rest.php || fail=1
+  surface_case "C4 (#144): and from a bot" 0 "fix(sync): a thing" false "$route" includes/rest.php Bot || fail=1
+  surface_case "#144: a feat may add surface" 0 "feat(sync): a thing" false "$route" includes/rest.php || fail=1
+  surface_case "#144: so may a breaking change" 0 "fix(sync)!: a thing" false "$route" includes/rest.php || fail=1
+  surface_case "#144: unknown trust (a local run without a login) is not checked" 0 "fix(sync): a thing" "" "$route" includes/rest.php || fail=1
   test_case "passes: translations at any depth do not count" 0 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "" "" "includes/a.php:50,includes/languages/x.po:500" 100 || fail=1
   test_case "fails: code under languages/ counts"  1 fix/a-thing "fix(sync): a thing" "fix(sync): a thing" "$good" "" "" "languages/loader.php:500" 100 || fail=1
   test_case "fails: a script under docs/ is not docs" 1 docs/guide "docs(guide): a thing" "docs(guide): a thing" "$good" "" "" "docs/build.sh:3" || fail=1
@@ -282,7 +355,7 @@ if [ "${1:-}" = "--test" ]; then
   over() { # $1 MAX_LINES, $2 TAKEN_OVER; prints the check's output, exits as it does
     local dir; dir=$(mktemp -d)
     (
-      cd "$dir" && git init -q && git config user.email t@t && git config user.name t
+      cd "$dir" && git init -q && git config user.email t@t && git config user.name t && git config commit.gpgsign false
       git commit -q --allow-empty -m "chore: base" && git checkout -q -b fix/a-thing
       mkdir includes && seq 1 5000 > includes/a.php && git add . && git commit -q -m "fix(sync): a thing"
       BRANCH=fix/a-thing TITLE="fix(sync): a thing" BODY=$good MAX_LINES=$1 TAKEN_OVER=$2 AUTHOR_TYPE=Bot BASE=$(git rev-parse HEAD~1) HEAD_REF=$(git rev-parse HEAD) check 2>&1
