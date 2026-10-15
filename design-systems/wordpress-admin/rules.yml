@@ -1,0 +1,237 @@
+# What a review checks on an admin screen of a project that uses this design
+# system (repos.yml, `design-system: wordpress-admin`), as data. Each rule:
+#
+#   id          kebab-case, unique
+#   type        pattern: a regular expression (Python's, comments left out of
+#               the code first) that finds the problem; review: what a person
+#               or the Claude review reads for, which no expression can
+#   severity    error (a new or changed line must not do it), warning, notice
+#   applies-to  css, php (the templates) or any
+#   message     what is wrong and what to write instead
+#   source      where the rule comes from
+#   fixtures    a pattern rule's `fail` (code it must catch) and `pass` (the
+#               closest code it must not); scripts/design-tokens.py --test
+#               runs every one
+#
+# Until the stylelint rule and the kind's review read this file (issue #77,
+# the later issues), these are what a person and an agent writing a screen
+# hold it to. A finding on code a pull request did not touch is not the pull
+# request's to fix: the plugins move their raw values to the tokens in their
+# own issues.
+rules:
+  - id: colour-from-tokens
+    type: pattern
+    severity: error
+    applies-to: css
+    message: >-
+      A colour is a token: `var(--dx-color-…)` (dist/tokens.css), never a hex,
+      rgb() or hsl() value typed into a rule, not even as a var() fallback. The
+      tokens follow the person's admin colour scheme; a typed value does not.
+    source: "Issue #77: Offload's and Users+'s admin CSS repeat the WordPress palette as raw hex values"
+    pattern: '(?:^|[{;])\s*(?!--)[a-z-]+\s*:[^;{}]*?(?:#[0-9a-fA-F]{3,8}\b|\brgba?\(|\bhsla?\()[^;{}]*[;}]'
+    fixtures:
+      fail:
+        - ".diluxone-x-admin .card { color: #646970; }"
+        - ".diluxone-x-admin .card { border: 1px solid #ddd; }"
+        - ".diluxone-x-admin .overlay { background: rgba(0, 0, 0, .7); }"
+        - ".diluxone-x-admin .tab { border-color: var(--du-accent, #2271b1); }"
+      pass:
+        - ".diluxone-x-admin .card { color: var(--dx-color-text-muted); }"
+        - ".diluxone-x-admin a:hover #add-new { color: var(--dx-color-accent); }"
+        - ":root { --dx-color-accent: #2271b1; }"
+        - ".diluxone-x-admin .step::before { content: \"#1\"; }"
+
+  - id: space-from-tokens
+    type: pattern
+    severity: warning
+    applies-to: css
+    message: >-
+      Margins, paddings and gaps are steps of the scale, `var(--dx-space-1)` to
+      `var(--dx-space-6)` (4, 8, 12, 16, 24, 32px), and the room under a block
+      is `var(--dx-space-block)`. A number of its own (20px, 15px) is how two
+      screens stop matching.
+    source: "Users+'s admin stylesheet (--du-1 to --du-6, --du-block); Offload's 20px and 15px are the values that fall outside it"
+    pattern: '(?:^|[{;])\s*(?:margin|padding|gap|row-gap|column-gap)(?:-[a-z]+)*\s*:[^;{}]*?(?<![\w.-])(?:[1-9]\d*(?:\.\d+)?|0?\.\d+)(?:px|em|rem)\b[^;{}]*[;}]'
+    fixtures:
+      fail:
+        - ".diluxone-x-admin .card { padding: 20px; }"
+        - ".diluxone-x-admin .card { margin: 0 0 16px; }"
+        - ".diluxone-x-admin .grid { gap: 8px 24px; }"
+        - ".diluxone-x-admin .row { padding-left: 1.5em; }"
+      pass:
+        - ".diluxone-x-admin .card { padding: var(--dx-space-4); }"
+        - ".diluxone-x-admin .card { margin: 0 0 var(--dx-space-block); }"
+        - ".diluxone-x-admin .card { margin: 0; }"
+        - ".diluxone-x-admin .card { margin: 0 auto; }"
+
+  - id: radius-from-tokens
+    type: pattern
+    severity: warning
+    applies-to: css
+    message: >-
+      A corner is `var(--dx-radius-sm)` (4px, notices and fields),
+      `var(--dx-radius-md)` (6px, cards and choices), `var(--dx-radius-lg)`,
+      `var(--dx-radius-pill)` or `var(--dx-radius-round)`.
+    source: "Offload's and Users+'s admin CSS: 4, 6 and 8px, a pill and a disc, and 2, 3, 5, 11 and 13px once each"
+    pattern: '(?:^|[{;])\s*border(?:-[a-z]+)*-radius\s*:[^;{}]*?(?<![\w.-])[1-9]\d*(?:px|%|em|rem)(?!\w)[^;{}]*[;}]'
+    fixtures:
+      fail:
+        - ".diluxone-x-admin .card { border-radius: 8px; }"
+        - ".diluxone-x-admin .icon { border-radius: 50%; }"
+        - ".diluxone-x-admin .tab { border-top-left-radius: 3px; }"
+      pass:
+        - ".diluxone-x-admin .card { border-radius: var(--dx-radius-md); }"
+        - ".diluxone-x-admin .flat { border-radius: 0; }"
+
+  - id: type-from-tokens
+    type: pattern
+    severity: warning
+    applies-to: css
+    message: >-
+      A font size is one of the scale, `var(--dx-font-size-tiny)` to
+      `var(--dx-font-size-heading)` (11 to 18px); a weight is
+      `var(--dx-font-weight-regular)` or `var(--dx-font-weight-semibold)`,
+      never bold. The family is WordPress's and never set.
+    source: "Offload's and Users+'s admin CSS: 11 to 18px for everything that is not a big number, 600 as the only heavy weight (Offload's four `bold` are the exception)"
+    pattern: '(?:^|[{;])\s*(?:font-size\s*:[^;{}]*?\d(?:px|em|rem|pt)\b|font-weight\s*:\s*(?:bold|bolder|lighter|\d{3})\b|font-family\s*:)[^;{}]*[;}]'
+    fixtures:
+      fail:
+        - ".diluxone-x-admin h3 { font-size: 18px; }"
+        - ".diluxone-x-admin .big { font-size: 2.5em; }"
+        - ".diluxone-x-admin strong { font-weight: bold; }"
+        - ".diluxone-x-admin .label { font-weight: 600; }"
+        - ".diluxone-x-admin { font-family: Inter, sans-serif; }"
+      pass:
+        - ".diluxone-x-admin h3 { font-size: var(--dx-font-size-heading); }"
+        - ".diluxone-x-admin .label { font-weight: var(--dx-font-weight-semibold); }"
+        - ".diluxone-x-admin .icon::before { font-size: inherit; }"
+
+  - id: wordpress-breakpoints
+    type: pattern
+    severity: warning
+    applies-to: css
+    message: >-
+      Two breakpoints and no others, WordPress's own: 782px (the admin turns
+      to touch) and 960px (the menu folds). A third number is a width where
+      the plugin stops looking like the dashboard around it.
+    source: "Users+'s admin stylesheet (\"Narrow windows\"); Offload's 768, 1100 and 1400px are the ones outside it"
+    pattern: '@media[^{]*\(\s*(?:max|min)-width\s*:\s*(?!(?:782|960)px\b)\d'
+    fixtures:
+      fail:
+        - "@media (max-width: 1100px) { .diluxone-x-admin .grid { display: block; } }"
+        - "@media screen and (max-width: 768px) { .diluxone-x-admin .grid { display: block; } }"
+      pass:
+        - "@media screen and (max-width: 782px) { .diluxone-x-admin .grid { display: block; } }"
+        - "@media (max-width: 960px) { .diluxone-x-admin .studio { display: block; } }"
+        - "@media (prefers-reduced-motion: reduce) { .diluxone-x-admin * { transition: none; } }"
+
+  - id: no-important
+    type: pattern
+    severity: error
+    applies-to: css
+    message: >-
+      No `!important`. A rule that loses is scoped under the plugin's wrapper
+      class (`.diluxone-<slug>-admin .x`), which outweighs WordPress's own
+      without forcing anything.
+    source: "The organisation's conventions: no fragile overrides where a selector or a setting does it"
+    pattern: '!\s*important'
+    fixtures:
+      fail:
+        - ".diluxone-x-admin .notice { margin: 0 !important; }"
+      pass:
+        - ".diluxone-x-admin .notice { margin: 0; }"
+
+  - id: scoped-under-the-screen
+    type: pattern
+    severity: error
+    applies-to: css
+    message: >-
+      A WordPress class (.nav-tab, .notice, .wp-list-table, .button, .card,
+      .form-table) is restyled only under the plugin's wrapper class:
+      `.diluxone-<slug>-admin .nav-tab`, never `.nav-tab` on its own, which
+      changes every other plugin's screen and WordPress's.
+    source: "Offload's and Users+'s admin CSS: every rule on a WordPress class is under .diluxone-<slug>-admin or a container of the plugin"
+    pattern: '(?:^|[},])\s*\.(?:nav-tab(?:-wrapper|-active)?|notice(?:-[a-z]+)?|wp-list-table|button(?:-primary|-secondary)?|card|form-table)\b[^{},]*[{,]'
+    fixtures:
+      fail:
+        - ".nav-tab-active { border-top-color: var(--dx-color-accent); }"
+        - ".notice.inline { margin: 0; }"
+        - ".diluxone-x-admin .card,\n.card > h3 { margin: 0; }"
+      pass:
+        - ".diluxone-x-admin .nav-tab-active { border-top-color: var(--dx-color-accent); }"
+        - ".diluxone-x-sync .notice.inline { margin: 0; }"
+        - ".diluxone-x-card { padding: var(--dx-space-4); }"
+
+  - id: no-inline-styles
+    type: pattern
+    severity: warning
+    applies-to: php
+    message: >-
+      No `style=""` in a template or a script: the look is the stylesheet's.
+      The one exception is a value that is data, such as a progress bar's
+      width, and it says so in a comment.
+    source: "Offload's admin-sync.css: \"No inline styles in the templates or the scripts: only a bar's width, which is data\""
+    pattern: '\bstyle\s*=\s*["'']'
+    fixtures:
+      fail:
+        - "<div class=\"card\" style=\"padding: 20px\">"
+      pass:
+        - "<div class=\"diluxone-x-card\">"
+        - "<?php echo esc_attr( $style ); ?>"
+
+  - id: accent-from-the-scheme
+    type: review
+    severity: error
+    applies-to: any
+    message: >-
+      The accent is the person's, not the plugin's: the plugin sets
+      `--dx-color-accent` (and `--dx-color-accent-light`) on its screen from
+      the admin colour scheme the person picked (its third and fourth
+      colours), and everything built on it (the wash, the edge, the focus
+      ring, the open tab, the info notice) follows. A plugin that paints its
+      own blue looks wrong on every scheme but the default.
+    source: "Users+'s includes/admin-ui.php and Offload's Admin::accent_color(): both read the scheme and set the accent inline"
+
+  - id: wordpress-pieces-first
+    type: review
+    severity: warning
+    applies-to: any
+    message: >-
+      WordPress's own pieces first: .nav-tab-wrapper for tabs, .wp-list-table
+      for a list of rows, .notice for what just happened, .button and
+      .button-primary, .card. A new component is written only when none of
+      them fits, and goes into the design system (or the repository's
+      docs/design-system/) in the same pull request, with its example.
+    source: "Users+'s admin stylesheet (\"WordPress's own classes do what they can\") and Offload's admin-sync.css (\"Built on WordPress' own pieces\")"
+
+  - id: notice-for-news-aside-for-a-place
+    type: review
+    severity: notice
+    applies-to: any
+    message: >-
+      WordPress's `.notice` at the top of the page is for what just happened
+      (saved, failed, connected). A caveat about a setting sits next to that
+      setting as the inline aside (components.md, Notices), a bar and a wash
+      and no icon: it is a sentence, not an alarm.
+    source: "Users+'s admin stylesheet (\"An aside, where it applies\")"
+
+  - id: states-are-pills
+    type: review
+    severity: warning
+    applies-to: any
+    message: >-
+      A state (on, pending, off) is the pill, with its three colours
+      (`--dx-color-pill-*`), the same in every plugin. A badge of another
+      shape or colour for a state is the vocabulary splitting again.
+    source: "Offload's .diluxone-offload-pill and Users+'s .diluxone-users-pill: the same shape and the same colours to the hex value; Offload's older .state-badge is the one that differs"
+
+  - id: one-measure
+    type: review
+    severity: notice
+    applies-to: css
+    message: >-
+      What is read (a column of options, a notice, a field) stops at
+      `--dx-layout-measure`; a block with columns of its own (a table, a grid
+      of cards) takes the width it is given. A box you type into is not
+      better the width of a window.
+    source: "Users+'s --du-measure and .du-wide; Offload's main column at minmax(0, 1000px)"

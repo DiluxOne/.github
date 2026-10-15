@@ -22,7 +22,10 @@ archived and not excluded in repos.yml:
             organisation's) are deleted.
   all       the four, in that order.
   check     changes nothing: lists, as Markdown, what differs in each
-            repository (the weekly drift check posts it as an issue).
+            repository (the weekly drift check posts it as an issue),
+            including a repository whose `design-system` in repos.yml names
+            no system of design-systems/, or is `local` with no
+            docs/design-system/README.md.
 
   sync-repos.py <labels|settings|files|own-checks|all> [--repo NAME ...] [--dry-run]
   sync-repos.py check [--repo NAME ...] [--report FILE]
@@ -397,6 +400,27 @@ def sync_own_checks(repo, dry):
             print(f"  deleted the ruleset \"{rname}\" (the organisation's and \"{OWN}\" cover it)")
 
 
+def design_systems():
+    """The organisation's design systems: each directory of design-systems/
+    with its tokens.json."""
+    base = os.path.join(CENTRAL, "design-systems")
+    return sorted(d for d in os.listdir(base) if os.path.isfile(os.path.join(base, d, "tokens.json"))) if os.path.isdir(base) else []
+
+
+def design_system_problems(conf, known):
+    """What is wrong with repos.yml's `design-system`, as lines."""
+    mapping = conf.get("design-system") or {}
+    if not isinstance(mapping, dict):
+        return ["`design-system` is a map of repository to system"]
+    found = []
+    for repo, system in mapping.items():
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", str(repo)):
+            found.append(f"`design-system`: `{repo}` is not a repository's name")
+        if system != "local" and system not in known:
+            found.append(f"`design-system`: {repo} names `{system}`, which is neither a system of design-systems/ ({', '.join(known) or 'none'}) nor `local`")
+    return found
+
+
 def drift(repo, conf, labels, block, current=0):
     """What differs in a repository from what this repository keeps, as lines."""
     full = f"{ORG}/{repo['name']}"
@@ -453,6 +477,15 @@ def drift(repo, conf, labels, block, current=0):
             found.append("`AGENTS.md` has a broken dx:org block")
     else:
         found.append("no `AGENTS.md`")
+    system = (conf.get("design-system") or {}).get(repo["name"])
+    if system == "local":
+        out = gh("api", f"repos/{full}/contents/docs/design-system/README.md?ref={default}", "-H", "Accept: application/vnd.github.raw", check=False)
+        if out.returncode != 0 and "404" not in out.stderr:
+            raise RuntimeError(f"could not read docs/design-system/README.md: {out.stderr.strip()[:200]}")
+        if out.returncode != 0:
+            found.append("its design system is `local` (repos.yml), but it has no `docs/design-system/README.md`")
+    elif system is not None and system not in design_systems():
+        found.append(f"its design system `{system}` (repos.yml) is not one of design-systems/")
     return found
 
 
@@ -486,6 +519,12 @@ def self_test():
     check("repos.yml: settings, security and files", isinstance(conf.get("settings"), dict) and isinstance(conf.get("security"), dict) and ".github/CODEOWNERS" in (conf.get("files") or {}), conf)
     projects = conf.get("projects") or {}
     check("repos.yml: every Project is a positive number, every repository a name", projects and all(isinstance(n, int) and n > 0 for n in projects.values()) and all(re.fullmatch(r"[A-Za-z0-9._-]+", r) for r in projects), projects)
+    known = design_systems()
+    check("design systems: wordpress-admin is one", "wordpress-admin" in known, known)
+    check("repos.yml: every design-system is a system of design-systems/ or local", design_system_problems(conf, known) == [], design_system_problems(conf, known))
+    got = design_system_problems({"design-system": {"a": "wordpress-admin", "b": "local", "c": "material", "bad name": "local"}}, known)
+    check("repos.yml: an unknown design system, and a name that is not a repository's, are refused", len(got) == 2 and "`material`" in got[0] and "bad name" in got[1], got)
+    check("repos.yml: a design-system that is not a map is refused", design_system_problems({"design-system": ["a"]}, known) != [], "")
     block_file = open(os.path.join(CENTRAL, "agents-block.md"), encoding="utf-8").read()
     check("agents-block.md: carries both markers", block_file.startswith(START) and block_file.rstrip().endswith(END))
     # drift() against a stand-in for gh: one repository with a label of
@@ -506,6 +545,8 @@ def self_test():
             return Out("* @someone-else\n")
         if joined.startswith("api repos/o/r/contents/AGENTS.md"):
             return Out("# AGENTS.md\n\nMine.\n")
+        if joined.startswith("api repos/o/r/contents/docs/design-system/"):
+            return Out("", 1, "HTTP 404")
         if joined.startswith("api repos/o/r"):
             return Out(json.dumps({"allow_squash_merge": True, "allow_merge_commit": True}))
         return Out("", 1, "HTTP 404")
@@ -513,8 +554,11 @@ def self_test():
     try:
         global ORG
         saved, ORG = ORG, "o"
-        lines = drift({"name": "r"}, {"settings": {"allow_squash_merge": True, "allow_merge_commit": False, "has_wiki": False}, "files": {".github/CODEOWNERS": "* @soydiloreto\n"}},
+        lines = drift({"name": "r"}, {"settings": {"allow_squash_merge": True, "allow_merge_commit": False, "has_wiki": False}, "files": {".github/CODEOWNERS": "* @soydiloreto\n"},
+                                      "design-system": {"r": "local"}},
                       [{"name": "accepted", "color": "0E8A16", "description": "y"}, {"name": "planned", "color": "0E8A16"}], block)
+        unknown = drift({"name": "r"}, {"design-system": {"r": "material"}}, [], block)
+        named = drift({"name": "r"}, {"design-system": {"r": "wordpress-admin"}}, [], block)
     finally:
         ORG = saved
         globals()["gh"] = real
@@ -526,6 +570,9 @@ def self_test():
     check("drift: a file that differs", "`.github/CODEOWNERS` differs" in text, lines)
     check("drift: AGENTS.md without the block", "does not carry the organisation's current block" in text, lines)
     check("drift: a setting in step is not reported", "allow_squash_merge" not in text, lines)
+    check("drift: a local design system with no docs/design-system/README.md", "no `docs/design-system/README.md`" in text, lines)
+    check("drift: a design system design-systems/ does not have", any("`material`" in line for line in unknown), unknown)
+    check("drift: a design system of design-systems/ is in step", not any("design system" in line for line in named), named)
     files = ["uses: DiluxOne/.github/.github/workflows/conventions.yml@v3", "uses: DiluxOne/.github/.github/workflows/issue-triage.yml@v5", "uses: actions/checkout@v7"]
     check("versions: an older major is found", old_versions(files, 5) == [3], old_versions(files, 5))
     check("versions: the current major is not", old_versions(files[1:], 5) == [], old_versions(files[1:], 5))

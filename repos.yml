@@ -33,6 +33,23 @@ projects:
   .github: 9
   diluxone-wp-test: 9
 
+# Which design system each repository's screens follow: one of
+# design-systems/ here, or `local` (its own docs/design-system/, which may
+# extend one of these; design-systems/README.md). A repository not listed
+# has none.
+design-system:
+  diluxone-offload-wordpress: wordpress-admin
+  diluxone-users-wordpress: wordpress-admin
+  diluxone-users-pro-wordpress: wordpress-admin
+  diluxone-multisite-user-sync-wordpress: wordpress-admin
+  diluxone-comments-wordpress: wordpress-admin
+  diluxone-comments-pro-wordpress: wordpress-admin
+  diluxone-help-wordpress: wordpress-admin
+  diluxone-support-wordpress: wordpress-admin
+  diluxone-commerce-wordpress: wordpress-admin
+  diluxone-slider-wordpress: wordpress-admin
+  diluxone-mail-wordpress: wordpress-admin
+
 # Merging: squash only, the pull request's title and description as the
 # commit, the branch deleted, auto-merge allowed (the policy decides when).
 settings:
