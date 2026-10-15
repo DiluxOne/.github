@@ -16,7 +16,12 @@ updates:
     commit-message:
       prefix: ci
       include: scope
-  # The runner image's base (runner/Dockerfile), pinned by digest.
+  # The runner image's base (runner/Dockerfile), pinned by digest. Only the
+  # digest of the Ubuntu release it is on moves by itself: a new Ubuntu
+  # release (24.04 to 26.04) is a decision of ours, taken when what the jobs
+  # install on it is published for it (setup-php's ondrej/php PPA, above
+  # all, which the runner-image.yml smoke test installs from), and then made
+  # by hand in the Dockerfile.
   - package-ecosystem: docker
     directory: /runner
     schedule:
@@ -24,6 +29,9 @@ updates:
       day: monday
       time: "09:00"
       timezone: America/Argentina/Buenos_Aires
+    ignore:
+      - dependency-name: ubuntu
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
     commit-message:
       prefix: ci
       include: scope
