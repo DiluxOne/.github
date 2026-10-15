@@ -418,7 +418,13 @@ def main(argv):
         return self_test()
     if argv[:1] == ["build"]:
         rest = argv[1:]
-        only = rest[rest.index("--system") + 1] if "--system" in rest and rest.index("--system") + 1 < len(rest) else None
+        only = None
+        if "--system" in rest:
+            i = rest.index("--system") + 1
+            if i >= len(rest) or rest[i].startswith("--"):
+                print(__doc__, file=sys.stderr)
+                return 64
+            only = rest[i]
         return build(only, "--check" in rest)
     print(__doc__, file=sys.stderr)
     return 64

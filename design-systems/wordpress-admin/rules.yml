@@ -185,8 +185,8 @@ rules:
     applies-to: any
     message: >-
       The accent is the person's, not the plugin's: the plugin sets
-      `--dx-color-accent` (and `--dx-color-accent-light`) on its screen from
-      the admin colour scheme the person picked (its third and fourth
+      `--dx-color-accent` (and `--dx-color-accent-light`) on `:root`, on its
+      own screens only, from the admin colour scheme the person picked (its third and fourth
       colours), and everything built on it (the wash, the edge, the focus
       ring, the open tab, the info notice) follows. A plugin that paints its
       own blue looks wrong on every scheme but the default.
