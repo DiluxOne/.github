@@ -85,7 +85,8 @@ lanes:
   # The issue "Release X.Y.Z" (#82, the Release form, label lane:release):
   # a person's acceptance opens the release pull request
   # (issue-accepted.yml), and the release workflow publishes only a version
-  # whose issue a person accepted (scripts/release-issue.py verify). The bot
+  # whose issue a person with the admin or maintain role accepted
+  # (scripts/release-issue.py verify). The bot
   # never opens one, and nothing here can accept one.
   release:
     description: A release issue. Publishing to users is always a person's decision.

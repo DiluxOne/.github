@@ -14,8 +14,9 @@ counts, read from the issue's timeline, never from its text.
                             prepares the tree), or why there is none; JSON on
                             stdout, exit 0 when there is one, 1 when not
   release-issue.py verify   before anything is published: whether a release
-                            issue for VERSION exists, a person accepted it and
-                            its title still names VERSION; JSON on stdout,
+                            issue for VERSION exists, a person accepted it who
+                            has the admin or maintain role on the repository
+                            now, and its title still names VERSION; JSON on stdout,
                             exit 0 when it approves the release, 1 when not,
                             2 when the issues could not be read
   release-issue.py --test   self-test
@@ -28,8 +29,10 @@ Environment:
           names CENTRAL, default CENTRAL)
   verify: VERSION, LABEL (the accepting label, default accepted),
           GITHUB_REPOSITORY, GH_TOKEN (issues: read); RELEASE_ISSUES_JSON, a
-          file holding the GraphQL answer, replaces the call (the self-test
-          uses it)
+          file holding the GraphQL answer, replaces the call, and
+          RELEASE_ROLES_JSON, a file mapping a login to its role_name (or to
+          null for an answer that failed), replaces the permission calls
+          (the self-test uses both)
 
 What the kind contributes is data: kinds/<kind>/pack.yml, `release:` says
 where a version goes (`publishes-to`), which reusable workflow publishes it
@@ -48,6 +51,10 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 TITLE = re.compile(r"^Release (\d+\.\d+\.\d+)$")
 AI_LINE = "🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
+# Who may approve a release: the roles that administer or maintain the
+# repository, read at verify time. Triage and write may accept an ordinary
+# issue; publishing to users takes more (#82).
+RELEASE_ROLES = ("admin", "maintain")
 PLACEHOLDER = re.compile(r"\{([a-z][a-z0-9-]*)\}")
 
 _spec = importlib.util.spec_from_file_location("issue_schema", os.path.join(HERE, "issue-schema.py"))
@@ -226,8 +233,10 @@ def judge(node, label):
     return True, f"#{n}", actor.get("login"), at
 
 
-def verify(answer, version, label="accepted"):
-    """Whether a person approved releasing `version` (pure)."""
+def verify(answer, version, label="accepted", role_of=None):
+    """Whether a person approved releasing `version`. `role_of(login)` is
+    that person's role_name on the repository now, or None when it could not
+    be read (which approves nothing)."""
     if not isinstance(answer, dict) or answer.get("errors") or not isinstance(((answer.get("data") or {}).get("repository") or {}).get("issues"), dict):
         why = json.dumps(answer.get("errors"))[:300] if isinstance(answer, dict) and answer.get("errors") else "no answer"
         return {"ok": False, "unreadable": True, "version": version, "why": f"the release issues could not be read ({why}); the caller's release job needs `issues: read`"}
@@ -240,8 +249,15 @@ def verify(answer, version, label="accepted"):
     for node in mine:
         ok, why, by, at = judge(node, label)
         if ok:
+            role = role_of(by) if role_of else None
+            if role is None:
+                whys.append(f"#{node.get('number')} was accepted by {by}, whose permission on the repository could not be read, so it approves nothing")
+                continue
+            if role not in RELEASE_ROLES:
+                whys.append(f"#{node.get('number')} was accepted by {by}, whose role here is {shown(role)}: only a person with the admin or maintain role approves a release; one of them accepts it again (remove and add `{label}`)")
+                continue
             return {"ok": True, "version": version, "issue": node.get("number"), "by": by, "at": at,
-                    "why": f"issue #{node.get('number')} `{wanted}`, accepted by {by} at {at}"}
+                    "why": f"issue #{node.get('number')} `{wanted}`, accepted by {by} ({role}) at {at}"}
         whys.append(why)
     return {"ok": False, "version": version, "why": f"no issue `{wanted}` is accepted by a person: " + "; ".join(whys)}
 
@@ -256,6 +272,15 @@ def fetch(repo, label):
         return json.loads(out.stdout)
     except ValueError:
         return {"errors": [{"message": "not JSON"}]}
+
+
+def role(repo, login):
+    """`login`'s role_name on `repo` now, or None when it cannot be read."""
+    if not re.fullmatch(r"[A-Za-z0-9-]+", login or ""):
+        return None
+    out = subprocess.run(["gh", "api", f"repos/{repo}/collaborators/{login}/permission", "--jq", ".role_name"], capture_output=True, text=True)
+    name = out.stdout.strip()
+    return name if out.returncode == 0 and name and name != "null" else None
 
 
 # --- the command line -------------------------------------------------------
@@ -290,7 +315,17 @@ def main(argv):
                 answer = None
         else:
             answer = fetch(os.environ.get("GITHUB_REPOSITORY", "/"), os.environ.get("LABEL") or "accepted")
-        result = verify(answer, version, os.environ.get("LABEL") or "accepted")
+        roles_file = os.environ.get("RELEASE_ROLES_JSON")
+        if roles_file:
+            try:
+                with open(roles_file, encoding="utf-8") as fh:
+                    roles = json.load(fh)
+            except (OSError, ValueError):
+                roles = {}
+            role_of = lambda who: roles.get(who) if isinstance(roles, dict) else None  # noqa: E731
+        else:
+            role_of = lambda who: role(os.environ.get("GITHUB_REPOSITORY", "/"), who)  # noqa: E731
+        result = verify(answer, version, os.environ.get("LABEL") or "accepted", role_of)
         print(json.dumps(result, indent=2))
         return 0 if result["ok"] else (2 if result.get("unreadable") else 1)
     print(__doc__, file=sys.stderr)
@@ -384,6 +419,10 @@ def self_test():
     def answer(*nodes):
         return {"data": {"repository": {"issues": {"nodes": list(nodes)}}}}
 
+    def vfy(a, version, label="accepted", roles=None):
+        roles = {"soydiloreto": "admin"} if roles is None else roles
+        return verify(a, version, label, lambda who: roles.get(who))
+
     def ev(kind, at, label="accepted", who="User", **extra):
         e = {"__typename": kind, "createdAt": at, "actor": {"__typename": who, "login": "dilux-bot" if who == "Bot" else "soydiloreto"}}
         if kind != "RenamedTitleEvent":
@@ -391,46 +430,65 @@ def self_test():
         e.update(extra)
         return e
 
-    r = verify(answer(node()), "1.2.0")
+    r = vfy(answer(node()), "1.2.0")
     check("C1: an open release issue a person accepted approves its version", (r["ok"], r["issue"], r["by"]), (True, 12, "soydiloreto"))
-    check("C1: closed as completed (its pull request merged) still approves", verify(answer(node(state="CLOSED", reason="COMPLETED")), "1.2.0")["ok"], True)
-    r = verify(answer(node(state="CLOSED", reason="NOT_PLANNED")), "1.2.0")
+    check("C1: closed as completed (its pull request merged) still approves", vfy(answer(node(state="CLOSED", reason="COMPLETED")), "1.2.0")["ok"], True)
+    r = vfy(answer(node(state="CLOSED", reason="NOT_PLANNED")), "1.2.0")
     check("C2: closed as not planned approves nothing", (r["ok"], "not planned" in r["why"]), (False, True))
-    r = verify(answer(node()), "1.3.0")
+    r = vfy(answer(node()), "1.3.0")
     check("C3: another version is not approved by it", (r["ok"], "Release 1.3.0" in r["why"]), (False, True))
-    check("C3: a title that only starts with the version does not count", verify(answer(node(title="Release 1.2.0 and more")), "1.2.0")["ok"], False)
-    r = verify(answer(node(events=[ev("LabeledEvent", "2026-10-02T10:00:00Z", who="Bot")])), "1.2.0")
+    check("C3: a title that only starts with the version does not count", vfy(answer(node(title="Release 1.2.0 and more")), "1.2.0")["ok"], False)
+    r = vfy(answer(node(events=[ev("LabeledEvent", "2026-10-02T10:00:00Z", who="Bot")])), "1.2.0")
     check("C4: accepted by a bot approves nothing", (r["ok"], "not a person" in r["why"]), (False, True))
-    check("C4: a person's acceptance after a bot's counts", verify(answer(node(events=[ev("LabeledEvent", "2026-10-02T10:00:00Z", who="Bot"), ev("UnlabeledEvent", "2026-10-02T11:00:00Z"), ev("LabeledEvent", "2026-10-02T12:00:00Z")])), "1.2.0")["ok"], True)
-    check("C4: a bot's after a person's does not", verify(answer(node(events=[ev("LabeledEvent", "2026-10-02T10:00:00Z"), ev("UnlabeledEvent", "2026-10-02T11:00:00Z"), ev("LabeledEvent", "2026-10-02T12:00:00Z", who="Bot")])), "1.2.0")["ok"], False)
-    check("C4: the label with no event that says who added it", verify(answer(node(events=[])), "1.2.0")["ok"], False)
-    check("C4: a person's event for another label does not count", verify(answer(node(events=[ev("LabeledEvent", "2026-10-02T10:00:00Z", label="approved")])), "1.2.0")["ok"], False)
-    check("C4: not accepted at all", verify(answer(node(labels=("lane:release",))), "1.2.0")["ok"], False)
-    check("C4: an issue without the lane's label is not a release issue", verify(answer(node(labels=("accepted",))), "1.2.0")["ok"], False)
+    check("C4: a person's acceptance after a bot's counts", vfy(answer(node(events=[ev("LabeledEvent", "2026-10-02T10:00:00Z", who="Bot"), ev("UnlabeledEvent", "2026-10-02T11:00:00Z"), ev("LabeledEvent", "2026-10-02T12:00:00Z")])), "1.2.0")["ok"], True)
+    check("C4: a bot's after a person's does not", vfy(answer(node(events=[ev("LabeledEvent", "2026-10-02T10:00:00Z"), ev("UnlabeledEvent", "2026-10-02T11:00:00Z"), ev("LabeledEvent", "2026-10-02T12:00:00Z", who="Bot")])), "1.2.0")["ok"], False)
+    check("C4: the label with no event that says who added it", vfy(answer(node(events=[])), "1.2.0")["ok"], False)
+    check("C4: a person's event for another label does not count", vfy(answer(node(events=[ev("LabeledEvent", "2026-10-02T10:00:00Z", label="approved")])), "1.2.0")["ok"], False)
+    check("C4: not accepted at all", vfy(answer(node(labels=("lane:release",))), "1.2.0")["ok"], False)
+    check("C4: an issue without the lane's label is not a release issue", vfy(answer(node(labels=("accepted",))), "1.2.0")["ok"], False)
     renamed = node(events=[ev("LabeledEvent", "2026-10-02T10:00:00Z"), ev("RenamedTitleEvent", "2026-10-03T10:00:00Z", previousTitle="Release 1.1.9", currentTitle="Release 1.2.0")])
-    r = verify(answer(renamed), "1.2.0")
+    r = vfy(answer(renamed), "1.2.0")
     check("C5: a title changed after the acceptance approves nothing", (r["ok"], "accepts it again" in r["why"]), (False, True))
     odd = node(events=[ev("LabeledEvent", "2026-10-02T10:00:00Z"), ev("RenamedTitleEvent", "2026-10-03T10:00:00Z", previousTitle="a `b`\nc", currentTitle="Release 1.2.0")])
-    check("C5: a former title quoted back cannot close its code span", "`b`" in verify(answer(odd), "1.2.0")["why"], False)
-    check("C5: a title changed in the same second as the acceptance approves nothing", verify(answer(node(events=[ev("LabeledEvent", "2026-10-02T10:00:00Z"), ev("RenamedTitleEvent", "2026-10-02T10:00:00Z", previousTitle="Release 1.1.9", currentTitle="Release 1.2.0")])), "1.2.0")["ok"], False)
-    check("C5: a title changed before it was accepted is fine", verify(answer(node(events=[ev("RenamedTitleEvent", "2026-10-01T10:00:00Z", previousTitle="Release ", currentTitle="Release 1.2.0"), ev("LabeledEvent", "2026-10-02T10:00:00Z")])), "1.2.0")["ok"], True)
-    r = verify(answer(node(number=3, state="CLOSED", reason="NOT_PLANNED"), node(number=9)), "1.2.0")
+    check("C5: a former title quoted back cannot close its code span", "`b`" in vfy(answer(odd), "1.2.0")["why"], False)
+    check("C5: a title changed in the same second as the acceptance approves nothing", vfy(answer(node(events=[ev("LabeledEvent", "2026-10-02T10:00:00Z"), ev("RenamedTitleEvent", "2026-10-02T10:00:00Z", previousTitle="Release 1.1.9", currentTitle="Release 1.2.0")])), "1.2.0")["ok"], False)
+    check("C5: a title changed before it was accepted is fine", vfy(answer(node(events=[ev("RenamedTitleEvent", "2026-10-01T10:00:00Z", previousTitle="Release ", currentTitle="Release 1.2.0"), ev("LabeledEvent", "2026-10-02T10:00:00Z")])), "1.2.0")["ok"], True)
+    r = vfy(answer(node(number=3, state="CLOSED", reason="NOT_PLANNED"), node(number=9)), "1.2.0")
     check("one accepted issue among several for the version is enough", (r["ok"], r["issue"]), (True, 9))
-    check("no release issue at all", verify(answer(), "1.2.0")["ok"], False)
-    r = verify({"errors": [{"message": "Resource not accessible by integration"}]}, "1.2.0")
+    check("no release issue at all", vfy(answer(), "1.2.0")["ok"], False)
+    r = vfy({"errors": [{"message": "Resource not accessible by integration"}]}, "1.2.0")
     check("C6: an error is unreadable, never approved, and names the permission", (r["ok"], r.get("unreadable"), "issues: read" in r["why"]), (False, True, True))
-    check("C6: no answer is unreadable", verify(None, "1.2.0").get("unreadable"), True)
-    check("a custom accepting label", verify(answer(node(labels=("lane:release", "ok"), events=[ev("LabeledEvent", "2026-10-02T10:00:00Z", label="ok")])), "1.2.0", "ok")["ok"], True)
+    check("C6: no answer is unreadable", vfy(None, "1.2.0").get("unreadable"), True)
+    r = vfy(answer(node()), "1.2.0", roles={"soydiloreto": "admin"})
+    check("C7: an admin's acceptance approves, and says the role", (r["ok"], "(admin)" in r["why"]), (True, True))
+    check("C7: a maintainer's acceptance approves", vfy(answer(node()), "1.2.0", roles={"soydiloreto": "maintain"})["ok"], True)
+    r = vfy(answer(node()), "1.2.0", roles={"soydiloreto": "write"})
+    check("C7: a writer's acceptance approves nothing, saying who may", (r["ok"], "role here is write" in r["why"], "admin or maintain" in r["why"]), (False, True, True))
+    check("C7: a triager's acceptance approves nothing", vfy(answer(node()), "1.2.0", roles={"soydiloreto": "triage"})["ok"], False)
+    check("C7: a custom role approves nothing", vfy(answer(node()), "1.2.0", roles={"soydiloreto": "release-manager"})["ok"], False)
+    r = vfy(answer(node()), "1.2.0", roles={})
+    check("C7: a permission that cannot be read fails closed", (r["ok"], "could not be read" in r["why"]), (False, True))
+    check("C7: no way to read permissions at all fails closed", verify(answer(node()), "1.2.0")["ok"], False)
+    r = vfy(answer(node(number=3), node(number=9, events=[ev("LabeledEvent", "2026-10-02T10:00:00Z")])), "1.2.0", roles={"soydiloreto": "admin"})
+    check("C7: the role is read for the person who accepted", r["by"], "soydiloreto")
+    check("C7: a login that is not one is never asked about", role("o/r", "x/../y"), None)
+    check("a custom accepting label", vfy(answer(node(labels=("lane:release", "ok"), events=[ev("LabeledEvent", "2026-10-02T10:00:00Z", label="ok")])), "1.2.0", "ok")["ok"], True)
 
     # the command line, end to end
     me = os.path.abspath(__file__)
     with tempfile.TemporaryDirectory() as tmp:
         f = os.path.join(tmp, "a.json")
         json.dump(answer(node()), open(f, "w"))
-        run = lambda env: subprocess.run([sys.executable, me, "verify"], env={**os.environ, **env}, capture_output=True, text=True)
+        rf = os.path.join(tmp, "roles.json")
+        json.dump({"soydiloreto": "maintain"}, open(rf, "w"))
+        run = lambda env: subprocess.run([sys.executable, me, "verify"], env={**os.environ, "RELEASE_ROLES_JSON": rf, **env}, capture_output=True, text=True)
         out = run({"RELEASE_ISSUES_JSON": f, "VERSION": "1.2.0"})
         check("cli: verify approves, exit 0", (out.returncode, json.loads(out.stdout)["issue"]), (0, 12))
         check("cli: verify, another version, exit 1", run({"RELEASE_ISSUES_JSON": f, "VERSION": "9.9.9"}).returncode, 1)
+        json.dump({"soydiloreto": "triage"}, open(rf, "w"))
+        check("cli: verify, accepted by a triager, exit 1", run({"RELEASE_ISSUES_JSON": f, "VERSION": "1.2.0"}).returncode, 1)
+        json.dump({"soydiloreto": None}, open(rf, "w"))
+        check("cli: verify, the role's answer failed, exit 1", run({"RELEASE_ISSUES_JSON": f, "VERSION": "1.2.0"}).returncode, 1)
         json.dump({"errors": [{"message": "x"}]}, open(f, "w"))
         check("cli: verify, unreadable, exit 2", run({"RELEASE_ISSUES_JSON": f, "VERSION": "1.2.0"}).returncode, 2)
         root = os.path.join(tmp, "repo")

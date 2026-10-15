@@ -91,8 +91,9 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    release pull request (the `Unreleased.` hold removed, the version
    markers set: the command the kind names), which goes through steps 1 to
    3 and closes the issue. When it merges, the release workflow publishes
-   only if that issue was accepted last by a person, not a bot, and its
-   title still names the version the labels give
+   only if that issue was accepted last by a person, not a bot, with the
+   admin or maintain role on the repository (triage or write is not
+   enough), and its title still names the version the labels give
    ([`scripts/release-issue.py`](../scripts/release-issue.py) `verify`,
    [`scripts/release-gate.py`](../scripts/release-gate.py)). The bot never
    opens a release issue and no policy accepts one.

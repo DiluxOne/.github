@@ -36,7 +36,10 @@ name: WordPress plugin release
 # reaches the deploy job, the `version` job looks for the issue "Release
 # X.Y.Z" of this version (label `lane:release`) and reads its timeline
 # (scripts/release-issue.py verify): a person, not a bot, added `accepted`
-# last, and its title has not changed since. That acceptance is the
+# last, that person has the admin or maintain role on the repository now
+# (read from the API when it runs; triage or write is not enough, and an
+# answer that fails approves nothing), and its title has not changed since.
+# That acceptance is the
 # approval, and the environment needs no reviewer for it, which is what a
 # private repository on the Team plan cannot have. Accepting the issue also
 # opened the release pull request (issue-accepted.yml); its merge is the

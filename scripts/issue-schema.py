@@ -216,7 +216,7 @@ def release_form(sch=None):
     body = [{
         "type": "markdown",
         "attributes": {"value": "Publishing a version is a person's decision, and accepting this issue is it. Title it exactly `Release X.Y.Z`, the version the labels of what merged give (the last release run on `main` says which).\n\n"
-                                "Once a maintainer accepts it, the release pull request opens on its own (the `Unreleased.` hold removed, the version markers set); when it merges, the release workflow checks that a person accepted this issue and that its title still names the version, then publishes. Change the title after accepting and it must be accepted again.\n"},
+                                "Once a person with the admin or maintain role accepts it, the release pull request opens on its own (the `Unreleased.` hold removed, the version markers set); when it merges, the release workflow checks that such a person accepted this issue and that its title still names the version, then publishes. Triage or write is not enough to publish. Change the title after accepting and it must be accepted again.\n"},
     }]
     for s in rel["sections"]:
         body.append({"type": "textarea", "id": s["id"], "attributes": {"label": s["heading"], "description": s["description"]},

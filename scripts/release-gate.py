@@ -33,8 +33,8 @@ Environment:
 Prints the Markdown for the summary. Exit 0 always: the workflow reads `go`.
 
 The rule:
-  - a release issue for this version, accepted by a person, whose title
-    still names it: deploy (environment reviewers, if any, approve too);
+  - a release issue for this version, accepted by a person with the admin
+    or maintain role, whose title still names it: deploy (environment reviewers, if any, approve too);
   - otherwise the environment's required reviewers, as before #82: with
     them, deploy, and they approve;
   - rules read and no reviewers: nothing deploys, and the summary says to
