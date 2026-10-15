@@ -920,6 +920,9 @@ def callers_test(check, conf):
         check(f"callers: every input repository-owned in {name} is one its template sets", name in tpl and set(keys) <= given, (keys, given))
     issues = tpl["issues.yml"]
     comments = tpl["pull-request-comments.yml"]
+    # The support-url line, and what follows its value (a comment, #170).
+    url_line = re.search(r"^      support-url: https://example\.com/support.*\n", issues, re.M).group(0)
+    note = url_line[len("      support-url: https://example.com/support"):]
     # The fixture of C1: an issues.yml from before #120, without repro-triaged,
     # with its own support URL, an input and a job of its own.
     start = issues.index("  repro-triaged:")
@@ -942,13 +945,21 @@ def callers_test(check, conf):
     c2 = {".github/workflows/issues.yml": same, ".github/workflows/pull-request-comments.yml": comments.replace("profile: general", "profile: plugin-wp"),
           ".github/workflows/plugin-checks.yml": checks}
     check("C2 (#150): a caller that differs only in what is the repository's own is in step", callers_drift(c2, conf) == [], callers_drift(c2, conf))
+    # C2 (#170): comments are not compared. A caller copied before the
+    # templates' comments changed, or with comments of its own, is in step.
+    before = same.replace("# with the label repro:run.\n", "# with the label repro:run. Fill in support-url.\n").replace(note, "\n")
+    before = before.replace("  repro:\n", "  # Mine: a note on a job.\n  repro:\n").replace("      trigger: triage\n", "      trigger: triage # mine\n")
+    old_profile = re.sub(r"(      profile: general) #.*", r"\1 # or plugin-wp for a WordPress plugin; with general, the kind in .github/review-policy.yml adds its own", comments)
+    commented = {**c2, ".github/workflows/issues.yml": before, ".github/workflows/pull-request-comments.yml": old_profile}
+    check("C2 (#170): a caller whose comments differ from the template's is in step",
+          before != same and old_profile != comments and callers_drift(commented, conf) == [], callers_drift(commented, conf))
     check("callers: a template whose workflows the repository does not call does not apply",
           not any(n == "release-wp.yml" for n, _, _ in callers_drift(files, conf)), callers_drift(files, conf))
     check("callers: a repository with no caller of an every-repository template is told so",
           callers_drift({".github/workflows/issues.yml": same}, conf) == [("pull-request-comments.yml", None, ["has no caller of `workflow-templates/pull-request-comments.yml`"])],
           callers_drift({".github/workflows/issues.yml": same}, conf))
-    named = same.replace("    with:\n      support-url: https://diluxone.com/support/\n    secrets: inherit",
-                         "    with:\n      support-url: https://diluxone.com/support/\n    secrets:\n      DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}")
+    named = same.replace(f"    with:\n      support-url: https://diluxone.com/support/{note}    secrets: inherit",
+                         f"    with:\n      support-url: https://diluxone.com/support/{note}    secrets:\n      DILUX_BOT_PRIVATE_KEY: ${{{{ secrets.DILUX_BOT_PRIVATE_KEY }}}}")
     named = named.replace("      trigger: triage", "      trigger: label").replace("      actions: write\n", "      actions: read\n")
     named = named.replace("uses: DiluxOne/.github/.github/workflows/issue-accepted.yml@v5", "uses: DiluxOne/.github/.github/workflows/issue-accepted.yml@v4")
     got = callers_drift({**c2, ".github/workflows/issues.yml": named}, conf)
@@ -989,11 +1000,11 @@ def callers_test(check, conf):
     fixed, _ = rewrite_caller(waits, comments, set(owned["pull-request-comments.yml"]))
     check("rewrite: a job's own `needs` stays where the template's job waits for nothing",
           fixed is not None and "    needs: [mine]\n" in fixed and "secrets: inherit" in fixed, fixed)
-    bare = old.replace("    with:\n      support-url: https://wordpress.org/support/plugin/mine/\n", "")
+    bare = old.replace(f"    with:\n      support-url: https://wordpress.org/support/plugin/mine/{note}", "")
     check("rewrite: an input to fill in that the repository never gives stops it",
           rewrite_caller(bare.replace("  triage:", "  triaged:"), issues, set(owned["issues.yml"])) == (None, ["support-url"]),
           rewrite_caller(bare.replace("  triage:", "  triaged:"), issues, set(owned["issues.yml"])))
-    two = issues.replace("    with:\n      support-url: https://example.com/support\n", "")
+    two = issues.replace("    with:\n" + url_line, "")
     named_only = two.replace("  repro-triaged:", "  repro-mine:")
     got = rewrite_caller(named_only.replace("  triage:", "  triaged:"), two.replace("trigger: triage", "trigger: triage\n      support-url: x"), {"support-url", "trigger"})
     check("rewrite: the inputs it says are missing are only those no job gives", got == (None, ["support-url"]), got)

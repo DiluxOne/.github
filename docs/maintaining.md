@@ -14,7 +14,7 @@ job after `v5` moved re-runs the old workflow. Reopen the pull request, or
 push to it, for a run on the new one. `v4`, `v3`, `v2` and `v1` stay where
 they are.
 
-A change to a template in [`workflow-templates/`](../workflow-templates/) reaches no repository by itself: each one has its own copy, its caller. The weekly drift check lists every caller that differs from its template, with the job and the template's path, in the issue "Repositories out of step"; `python3 scripts/sync-repos.py callers --repo NAME` opens the issue and the pull request that bring that repository in step, and the maintainer accepts and merges them there. A new input a template asks to fill in goes into `repos.yml` (`callers`, `repository-owned`) in the same pull request, or the check would hold every repository to the template's example value.
+A change to a template in [`workflow-templates/`](../workflow-templates/) reaches no repository by itself: each one has its own copy, its caller. The weekly drift check lists every caller that differs from its template, with the job and the template's path (it compares what the jobs do, never their comments, so a template's comment can change without putting any repository out of step), in the issue "Repositories out of step"; `python3 scripts/sync-repos.py callers --repo NAME` opens the issue and the pull request that bring that repository in step, and the maintainer accepts and merges them there. A new input a template asks to fill in goes into `repos.yml` (`callers`, `repository-owned`) in the same pull request, or the check would hold every repository to the template's example value.
 
 ## The organisation's VM
 
