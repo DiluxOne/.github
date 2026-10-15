@@ -21,7 +21,7 @@ both opened by dilux-bot[bot]. A comment on a pull request (issue_comment)
 does not name the branch, so a comment on any of dilux-bot's pull requests
 runs on GitHub's runners too. So does every job of an issues event on the
 lane's own issue, the one dilux-bot opens titled "The bug reproduced from
-#<n>" (scripts/repro-lane.py): the autopilot that writes the fix from the
+#<n>" (scripts/repro-lane.py of #166; keep the two in step): the autopilot that writes the fix from the
 reproduction's commit runs on it. A person's pull request or issue, or
 anything else, keeps DX_RUNNER's choice.
 
