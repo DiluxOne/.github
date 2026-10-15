@@ -92,6 +92,14 @@ jobs:
       - run: python3 scripts/issue-schema.py form --check
       - run: python3 scripts/design-tokens.py --test
       - run: python3 scripts/design-tokens.py build --check
+      # stylelint, as scripts/stylelint/package-lock.json pins it: every CSS
+      # fixture of a design system through the configuration generated
+      # from its rules.yml, and the plugins' check on a scratch repository.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - run: npm ci --prefix scripts/stylelint --ignore-scripts --no-audit --no-fund
+      - run: python3 scripts/design-lint.py --test
       - run: python3 scripts/receipts.py --test
       - run: python3 scripts/autopilot.py --test
       - run: python3 scripts/revert.py --test

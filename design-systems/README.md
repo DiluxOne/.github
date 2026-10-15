@@ -15,18 +15,59 @@ design-systems/<name>/
   README.md        what it is for, its principles, where its values came from
   tokens.json      the tokens, in the Design Tokens format ($value, $type)
   dist/tokens.css  the tokens as CSS custom properties, generated: never edited
+  dist/stylelint.json  the pattern rules that read CSS, as stylelint's configuration, generated: never edited
   components.md    the components and patterns, each with its example
   rules.yml        what a review checks, as data, each pattern with its fixtures,
                    and its `screens`: the paths of the files that draw a screen
 ```
 
 [`scripts/design-tokens.py`](../scripts/design-tokens.py) writes
-`dist/tokens.css` from `tokens.json` (`build`), and fails when the two are
-out of step or a token, a reference or a rule is wrong (`build --check`, run
-by this repository's pull request pipeline with its `--test`). Every token is
-a property named `--dx-<its path>`; a token that names another is `var()` of
-it, so a value set at runtime (the accent, from the person's admin colour
-scheme) carries everything built on it.
+`dist/tokens.css` from `tokens.json` and `dist/stylelint.json` from
+`rules.yml` (`build`), and fails when they are out of step or a token, a
+reference or a rule is wrong (`build --check`, run by this repository's pull
+request pipeline with its `--test`). Every token is a property named
+`--dx-<its path>`; a token that names another is `var()` of it, so a value
+set at runtime (the accent, from the person's admin colour scheme) carries
+everything built on it.
+
+## What the checks hold a pull request to
+
+`dist/stylelint.json` is not a second copy of the rules: it is `rules.yml`'s
+pattern rules, the same expressions, for the stylelint rule
+[`scripts/stylelint/design-system.mjs`](../scripts/stylelint/design-system.mjs),
+and `scripts/design-lint.py --test` runs every CSS fixture of `rules.yml`
+through it. A plugin's checks (`plugin-checks-wp.yml`, the
+`Design system (stylelint)` job) run it on the CSS a pull request changes,
+when the repository has a system in `repos.yml`:
+
+- a rule of severity `error` (a raw colour, `!important`, a WordPress class
+  restyled outside the plugin's wrapper) on a line the pull request adds or
+  changes **fails** the check;
+- a rule of severity `warning`, and anything on the lines it did not touch,
+  is a **warning**: what a plugin already had is moved to the tokens in an
+  issue of its own, not by whoever touches the file next;
+- the message names the token that holds a raw value it found, from the
+  rule's `tokens` (`#2271b1` is `var(--dx-color-accent)`);
+- nothing of the repository's own stylelint setup counts: no
+  `.stylelintrc`, no `.stylelintignore`, no `stylelint-disable` comment. An
+  exception is a change to the rules, here, in a pull request a person
+  merges. Minified files and what is under `vendor/` or `node_modules/` are
+  not checked.
+
+To run it on your machine, from a checkout of this repository beside the
+plugin's:
+
+```bash
+npm ci --prefix ../.github/scripts/stylelint --ignore-scripts
+node ../.github/scripts/stylelint/node_modules/stylelint/bin/stylelint.mjs \
+  --config ../.github/design-systems/wordpress-admin/dist/stylelint.json \
+  --config-basedir ../.github "assets/**/*.css"
+```
+
+A `local` system is read from the repository's `docs/design-system/` on the
+base branch, so a pull request cannot loosen what checks it: its
+`rules.yml`, added to the rules of the system its `README.md` extends, and
+its `tokens.json`, added to that system's.
 
 ## A project and its system
 

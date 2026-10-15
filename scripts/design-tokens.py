@@ -3,9 +3,10 @@
 their rules checked against their fixtures.
 
   design-tokens.py build [--check] [--system NAME]
-        write design-systems/<name>/dist/tokens.css from its tokens.json, for
-        every system (or the one named); --check writes nothing and fails when
-        a file differs from what it would write, or a system is not valid.
+        write design-systems/<name>/dist/tokens.css from its tokens.json, and
+        dist/stylelint.json from its rules.yml, for every system (or the one
+        named); --check writes nothing and fails when a file differs from
+        what it would write, or a system is not valid.
   design-tokens.py brief --repo NAME --repos FILE --changed FILE [--root DIR]
         the review brief's section on the design system repository NAME
         declares in FILE (repos.yml), when a path listed in --changed is one
@@ -27,7 +28,13 @@ rules.yml lists what a review checks; a rule of type `pattern` carries a
 regular expression and fixtures, and every `fail` fixture must match it and
 no `pass` fixture may (comments are left out first). Its `screens` are the
 paths, as regular expressions, of the files that draw a screen: a change to
-one brings the system into the Claude review's brief (`brief`).
+one brings the system into the Claude review's brief (`brief`). The pattern
+rules that read CSS are also dist/stylelint.json, the options of the stylelint rule
+scripts/stylelint/design-system.mjs (the plugins' check,
+scripts/design-lint.py): the same expressions, so a pattern keeps to the part
+of Python's syntax JavaScript reads the same way. A rule's `tokens` (paths of
+tokens.json, e.g. `color` or `font.size`) are where its message looks up the
+token that holds a raw value it found.
 """
 import json
 import os
@@ -236,8 +243,40 @@ def strip_comments(text):
     return re.sub(r"/\*.*?\*/", "", text, flags=re.S)
 
 
-def check_rules(rules):
-    """The rules file's problems, as lines; an empty list when it is sound."""
+# What Python's `re` reads and JavaScript's RegExp does not, or reads
+# otherwise: a pattern holds none of them, since stylelint runs it too.
+NOT_IN_JS = [
+    (re.compile(r"\(\?P[<=>]"), "a named group in Python's form (?P...)"),
+    (re.compile(r"\(\?#"), "a comment group (?#...)"),
+    (re.compile(r"\(\?[aiLmsux-]+[:)]"), "an inline flag ((?i), (?x)...)"),
+    (re.compile(r"(?<!\\)\\[AZz]"), r"\A or \Z (^ and $ instead)"),
+    (re.compile(r"\(\?>"), "an atomic group (?>...)"),
+    (re.compile(r"(?<!\\)[*+?}]\+"), "a possessive quantifier (*+, ++, ?+)"),
+]
+
+
+def js_problems(pattern):
+    return [why for rx, why in NOT_IN_JS if rx.search(pattern)]
+
+
+def token_groups(rule, tokens):
+    """A rule's `tokens` as a list, and what is wrong with it."""
+    groups = rule.get("tokens")
+    if groups is None:
+        return [], []
+    if isinstance(groups, str):
+        groups = [groups]
+    if not isinstance(groups, list) or not all(isinstance(g, str) and g for g in groups):
+        return [], ["`tokens` is a path of tokens.json or a list of them"]
+    if tokens is None:
+        return groups, []
+    return groups, [f"`tokens`: {g} is no token or group of tokens.json" for g in groups
+                    if not any(p == g or p.startswith(g + ".") for p in tokens)]
+
+
+def check_rules(rules, tokens=None):
+    """The rules file's problems, as lines; an empty list when it is sound.
+    Given the system's tokens (flattened), a rule's `tokens` must name some."""
     found = []
     screens = (rules or {}).get("screens")
     if screens is not None:
@@ -283,6 +322,8 @@ def check_rules(rules):
         if not rule.get("pattern"):
             found.append(f"{rid}: a pattern rule has a pattern")
             continue
+        found += [f"{rid}: the pattern has {why}, which stylelint's JavaScript reads otherwise" for why in js_problems(rule["pattern"])]
+        found += [f"{rid}: {p}" for p in token_groups(rule, tokens)[1]]
         fx = rule.get("fixtures") or {}
         if not fx.get("fail") or not fx.get("pass"):
             found.append(f"{rid}: a pattern rule has fail and pass fixtures")
@@ -296,29 +337,90 @@ def check_rules(rules):
     return found
 
 
+def normalise(value):
+    """A raw value as scripts/stylelint/design-system.mjs reads one: a hex in
+    lower case with six or eight digits, a number without trailing zeros."""
+    value = str(value).lower()
+    m = re.fullmatch(r"#([0-9a-f]{3,4})", value)
+    if m:
+        return "#" + "".join(c * 2 for c in m.group(1))
+    m = re.fullmatch(r"(-?(?:\d+(?:\.\d*)?|\.\d+))([a-z%]*)", value)
+    if m:
+        number = float(m.group(1))
+        return (str(int(number)) if number.is_integer() else repr(number)) + m.group(2)
+    return value
+
+
+def suggestions(tokens, groups):
+    """{raw value: [property, ...]} for the tokens under `groups`: first those
+    a screen uses, in the file's order, then the palette (a value written
+    out that other tokens name); three at most."""
+    named = {target(tokens, t["value"], p) for p, t in tokens.items()} - {None}
+    palette_of = {p for p in named if not target(tokens, tokens[p]["value"], p)}
+    out = {}
+    for palette in (False, True):
+        for path in tokens:
+            if (path in palette_of) != palette or not any(path == g or path.startswith(g + ".") for g in groups):
+                continue
+            value = resolve(tokens, path)
+            if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+                names = out.setdefault(normalise(value), [])
+                if len(names) < 3:
+                    names.append(css_name(path))
+    return out
+
+
+def stylelint_rules(rules, tokens):
+    """The pattern rules that read CSS, as the stylelint rule's options."""
+    out = []
+    for rule in rules.get("rules") or []:
+        if rule.get("type") != "pattern" or rule.get("applies-to") not in ("css", "any"):
+            continue
+        item = {"id": rule["id"], "severity": rule["severity"], "pattern": rule["pattern"],
+                "message": " ".join(str(rule["message"]).split())}
+        groups = token_groups(rule, tokens)[0]
+        if groups and tokens:
+            item["suggest"] = suggestions(tokens, groups)
+        out.append(item)
+    return out
+
+
+def stylelint_config(name, rules, tokens):
+    """dist/stylelint.json: the plugin, by its path from this repository's
+    root (stylelint's --config-basedir), and the system's pattern rules."""
+    conf = {"plugins": ["./scripts/stylelint/design-system.mjs"],
+            "rules": {"diluxone/design-system": [True, {"system": name, "rules": stylelint_rules(rules, tokens)}]}}
+    return json.dumps(conf, indent=2, ensure_ascii=False) + "\n"
+
+
 def systems(only=None):
     names = sorted(d for d in os.listdir(SYSTEMS) if os.path.isfile(os.path.join(SYSTEMS, d, "tokens.json")))
     return [n for n in names if not only or n == only]
 
 
 def check_system(name):
-    """(the CSS it writes, its problems as lines)."""
+    """({dist file: what it holds}, the system's problems as lines). A file
+    is left out when what it is written from is not sound."""
     base = os.path.join(SYSTEMS, name)
     problems = [f"{name}: no {f}" for f in ("README.md", "rules.yml") if not os.path.isfile(os.path.join(base, f))]
-    css = None
+    out, tokens = {}, None
     try:
         with open(os.path.join(base, "tokens.json"), encoding="utf-8") as fh:
-            css = render(name, json.load(fh))
+            tree = json.load(fh)
+        out["tokens.css"] = render(name, tree)
+        tokens = flatten(tree)
     except (Invalid, ValueError) as exc:
         problems.append(f"{name}/tokens.json: {exc}")
     if os.path.isfile(os.path.join(base, "rules.yml")):
         rules = read_yaml(os.path.join(base, "rules.yml"))
-        found = check_rules(rules)
+        found = check_rules(rules, tokens)
         problems += [f"{name}/{p}" for p in found]
+        if not found and tokens is not None:
+            out["stylelint.json"] = stylelint_config(name, rules, tokens)
         if not found and os.path.isfile(os.path.join(base, "components.md")):
             with open(os.path.join(base, "components.md"), encoding="utf-8") as fh:
                 problems += [f"{name}/components.md: {p}" for p in check_examples(fh.read(), rules)]
-    return css, problems
+    return out, problems
 
 
 def check_examples(markdown, rules):
@@ -423,6 +525,9 @@ def brief(repo, repos_file, changed, root=".", limit=BRIEF_LIMIT):
     return "\n".join(out)
 
 
+SOURCES = {"tokens.css": "tokens.json", "stylelint.json": "rules.yml"}
+
+
 def build(only=None, check=False):
     names = systems(only)
     if not names:
@@ -430,29 +535,29 @@ def build(only=None, check=False):
         return 1
     failed = 0
     for name in names:
-        css, problems = check_system(name)
+        files, problems = check_system(name)
         for p in problems:
             print(f"::error::{p}")
         failed += bool(problems)
-        if css is None:
-            continue
-        out = os.path.join(SYSTEMS, name, "dist", "tokens.css")
-        current = open(out, encoding="utf-8").read() if os.path.isfile(out) else None
-        if check:
-            if current != css:
-                print(f"::error::design-systems/{name}/dist/tokens.css differs from tokens.json: run python3 scripts/design-tokens.py build")
-                failed += 1
-            else:
-                print(f"{name}: dist/tokens.css is in step")
-        elif current != css:
-            os.makedirs(os.path.dirname(out), exist_ok=True)
-            with open(out, "w", encoding="utf-8") as fh:
-                fh.write(css)
-            print(f"{name}: wrote dist/tokens.css")
+        for file, text in files.items():
+            out = os.path.join(SYSTEMS, name, "dist", file)
+            current = open(out, encoding="utf-8").read() if os.path.isfile(out) else None
+            if check:
+                if current != text:
+                    print(f"::error::design-systems/{name}/dist/{file} differs from {SOURCES[file]}: run python3 scripts/design-tokens.py build")
+                    failed += 1
+                else:
+                    print(f"{name}: dist/{file} is in step")
+            elif current != text:
+                os.makedirs(os.path.dirname(out), exist_ok=True)
+                with open(out, "w", encoding="utf-8") as fh:
+                    fh.write(text)
+                print(f"{name}: wrote dist/{file}")
     return 1 if failed else 0
 
 
 def self_test():
+    global SYSTEMS
     failed = 0
 
     def check(name, ok, detail=""):
@@ -542,12 +647,51 @@ def self_test():
             fh.write("design-system:\n  r: local\n")
         got = brief("r", repos, ["assets/admin.css"], tmp, limit=8000)
         check("brief: the limit counts bytes (6000 characters, 12000 bytes, past 8000)", "### docs/design-system/README.md" not in got and "Not inlined" in got, got[-300:])
+    for pattern, bad in ((r"(?P<x>a)", True), (r"(?i)a", True), (r"a\Z", True), (r"a++", True), (r"(?>a)", True),
+                         (r"(?<![\w.-])\d+\+?", False), (r"(?:^|[{;])\s*(?!--)a", False), (r"\\Z", False)):
+        check(f"js: {pattern} {'is' if bad else 'is not'} refused", bool(js_problems(pattern)) == bad, js_problems(pattern))
+    check("normalise: hex in lower case and six digits, numbers without zeros",
+          [normalise(v) for v in ("#DDD", "#2271B1", "#0003", "16px", "1.50em", ".5rem", "-2px", 600, "50%")]
+          == ["#dddddd", "#2271b1", "#00000033", "16px", "1.5em", "0.5rem", "-2px", "600", "50%"], "")
+    flat = flatten(tree)
+    got = suggestions(flat, ["color"])
+    check("suggest: what a screen uses first, the palette after", got.get("#1d2327") == ["--dx-color-text", "--dx-color-grey-9"], got)
+    check("suggest: only the groups named", "4px" not in got and suggestions(flat, ["space"]).get("4px") == ["--dx-space-block", "--dx-space-1"], suggestions(flat, ["space"]))
+    check("rules: `tokens` that name nothing are refused", check_rules({"rules": [dict(good["rules"][0], tokens="colour")]}, flat) == ["no-important: `tokens`: colour is no token or group of tokens.json"], "")
+    check("rules: a pattern JavaScript reads otherwise is refused", any("stylelint" in g for g in check_rules({"rules": [dict(good["rules"][0], pattern=r"(?i)!\s*important")]})), "")
+    conf = json.loads(stylelint_config("t", {"rules": [dict(good["rules"][0], tokens="color"), good["rules"][1],
+                                                        dict(good["rules"][0], id="php-only", **{"applies-to": "php"})]}, flat))
+    opts = conf["rules"]["diluxone/design-system"][1]
+    check("stylelint.json: the CSS pattern rules only, with what to suggest", [r["id"] for r in opts["rules"]] == ["no-important"] and opts["rules"][0]["suggest"]["#2271b1"] == ["--dx-color-accent"], opts)
+    check("stylelint.json: the rule's own pattern, word for word", opts["rules"][0]["pattern"] == good["rules"][0]["pattern"], opts)
     for name in systems():
-        css, problems = check_system(name)
+        files, problems = check_system(name)
         check(f"design-systems/{name}: tokens, rules and fixtures are sound", not problems, problems)
-        out = os.path.join(SYSTEMS, name, "dist", "tokens.css")
-        check(f"design-systems/{name}: dist/tokens.css is in step", os.path.isfile(out) and open(out, encoding="utf-8").read() == css, "run python3 scripts/design-tokens.py build")
+        for file in ("tokens.css", "stylelint.json"):
+            out = os.path.join(SYSTEMS, name, "dist", file)
+            check(f"design-systems/{name}: dist/{file} is in step", os.path.isfile(out) and open(out, encoding="utf-8").read() == files.get(file), "run python3 scripts/design-tokens.py build")
     check("wordpress-admin is there", "wordpress-admin" in systems(), systems())
+    # C4 (#152): a rules.yml changed and not built again fails the check.
+    real = SYSTEMS
+    with tempfile.TemporaryDirectory() as tmp:
+        SYSTEMS = os.path.join(tmp, "design-systems")
+        shutil.copytree(os.path.join(real, "wordpress-admin"), os.path.join(SYSTEMS, "wordpress-admin"))
+        rules_path = os.path.join(SYSTEMS, "wordpress-admin", "rules.yml")
+        with open(rules_path, encoding="utf-8") as fh:
+            text = fh.read()
+        with open(rules_path, "w", encoding="utf-8") as fh:
+            fh.write(text.replace("severity: warning", "severity: error", 1))
+        saved = sys.stdout
+        sys.stdout = open(os.devnull, "w")
+        try:
+            stale = build("wordpress-admin", check=True)
+            build("wordpress-admin")
+            fresh = build("wordpress-admin", check=True)
+        finally:
+            sys.stdout.close()
+            sys.stdout = saved
+        SYSTEMS = real
+    check("build --check fails when rules.yml and dist/stylelint.json disagree, and build puts them in step", (stale, fresh) == (1, 0), (stale, fresh))
     saved, sys.stderr = sys.stderr, open(os.devnull, "w")
     try:
         usage = [main(["build", "--system"]), main(["build", "--system", "--check"])]
