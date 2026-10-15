@@ -63,7 +63,7 @@ REASONS = {
     "risk-cap": "over the risk cap",
     "unknown": "unknown",
 }
-FAILED = {"FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ERROR"}
+FAILED = {"FAILURE", "TIMED_OUT", "STARTUP_FAILURE"}
 # Not counted by the size cap, as scripts/conventions.sh.
 UNCOUNTED = re.compile(r"(^|/)(composer\.lock|package-lock\.json)$|(^|/)languages/[^/]+\.(po|pot|mo)$")
 RECORD = re.compile(r"<!-- dx-review-record (.*?) -->", re.S)
@@ -213,8 +213,8 @@ def classify(pr, pol):
     for commit in nodes(pr.get("commits")):
         rollup = ((commit.get("commit") or {}).get("statusCheckRollup") or {})
         for ctx in nodes(rollup.get("contexts")):
-            name = ctx.get("name") or ctx.get("context") or ""
-            if (ctx.get("conclusion") or ctx.get("state")) not in FAILED:
+            name = ctx.get("name") or ""
+            if ctx.get("conclusion") not in FAILED:
                 continue
             if blocker and "Claude review" in name:
                 continue
@@ -243,8 +243,10 @@ def needed(pr):
         return "merged" if merger.get("__typename") == "User" else None
     if pr.get("state") != "OPEN" or pr.get("isDraft") or pr.get("autoMergeRequest"):
         return None
-    # The autopilot is still working it until it hands it over.
-    if "autopilot" in labels and "needs-human" not in labels:
+    # The autopilot works in a draft; ready, it is still its own while its
+    # fix rounds answer a blocking review. Ready and not blocked, nothing
+    # set to merge, the decision (G7) left it to a person.
+    if "autopilot" in labels and "needs-human" not in labels and (review_record(pr) or {}).get("blocking") is True:
         return None
     # Waiting on a person: handed to one, or the machinery is done with it
     # (the review ran), or nothing automatic will look at it (a fork).
@@ -493,10 +495,12 @@ def self_test():
     check("C1: a pull request waiting on a person is listed as waiting", "`Waits` (u-wait), waiting: outside author" in digest([waiting], pol, now), True)
     queued = dict(waiting, autoMergeRequest={"enabledAt": fx["now"]})
     check("C1: one set to merge on its own is not waiting", "Waits" in digest([queued], pol, now), False)
-    working = pr(cases["protected path"], url="u-working", title="Working", mergedAt=None, mergedBy=None, state="OPEN")
-    check("C1: one the autopilot still works is not waiting", "Working" in digest([working], pol, now), False)
-    handed = dict(working, labels={"nodes": [{"name": "autopilot"}, {"name": "needs-human"}]})
-    check("C1: one the autopilot handed to a person is waiting", "`Working` (u-working), waiting: protected path" in digest([handed], pol, now), True)
+    decided = pr(cases["protected path"], url="u-working", title="Working", mergedAt=None, mergedBy=None, state="OPEN")
+    check("C1: one the decision (G7) left to a person is waiting", "`Working` (u-working), waiting: protected path" in digest([decided], pol, now), True)
+    fixing = pr(cases["review blocker (its failing review check is not a gate of its own)"], url="u-fixing", title="Fixing", mergedAt=None, mergedBy=None, state="OPEN", author={"__typename": "Bot", "login": BOT}, labels={"nodes": [{"name": "autopilot"}]})
+    check("C1: one the autopilot's fix rounds still work is not waiting", "Fixing" in digest([fixing], pol, now), False)
+    handed = dict(fixing, labels={"nodes": [{"name": "autopilot"}, {"name": "needs-human"}]})
+    check("C1: one the autopilot handed to a person is waiting", "`Fixing` (u-fixing), waiting: review blocker" in digest([handed], pol, now), True)
     check("C1: an empty week says so", "Nothing in the organisation was merged by a person" in digest([], pol, now), True)
 
     tricky = pr(cases["no reason recorded"], url="u-tricky", title="Ping @someone, see [x](http://e) `a`")
