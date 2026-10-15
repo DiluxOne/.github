@@ -20,14 +20,27 @@ archived and not excluded in repos.yml:
             is left as it is. Then its rulesets the organisation's cover
             (another one on the default branch, a tag ruleset the same as the
             organisation's) are deleted.
-  all       the four, in that order.
+  callers   the workflows that call the shared ones, held job for job to
+            the templates in workflow-templates/ (repos.yml `callers`): the
+            ones in `every-repository`, and any other whose shared workflows
+            the repository calls. Each template job must be there with the
+            same `uses:`, `needs` (its own jobs may join them), `if`,
+            `permissions`, `secrets` handling and inputs, but the inputs the
+            template says to fill in (`repository-owned`). Inputs and jobs of
+            the repository's own are never compared. Like `files`, it opens
+            an issue (Type Task) and a pull request rewriting each caller
+            that differs, only the jobs that differ, keeping the
+            repository's values, header, triggers and own jobs. A repository
+            at an older major migrates first (docs/migrating.md). Not in
+            `all`: a template change is a pull request in every repository.
+  all       labels, settings, files and own-checks, in that order.
   check     changes nothing: lists, as Markdown, what differs in each
-            repository (the weekly drift check posts it as an issue),
-            including a repository whose `design-system` in repos.yml names
-            no system of design-systems/, or is `local` with no
-            docs/design-system/README.md.
+            repository, its callers included (the weekly drift check posts
+            it as an issue), and a repository whose `design-system` in
+            repos.yml names no system of design-systems/, or is `local` with
+            no docs/design-system/README.md.
 
-  sync-repos.py <labels|settings|files|own-checks|all> [--repo NAME ...] [--dry-run]
+  sync-repos.py <labels|settings|files|own-checks|callers|all> [--repo NAME ...] [--dry-run]
   sync-repos.py check [--repo NAME ...] [--report FILE]
   sync-repos.py --test
 
@@ -158,9 +171,20 @@ def sync_files(repo, conf, block, dry):
     body = ("The organisation keeps some files the same in every repository, because GitHub reads them only from "
             f"the repository: {changed} differ here from DiluxOne/.github (repos.yml, agents-block.md). "
             "This brings them in step.\n\n🤖 AI-generated · scripts/sync-repos.py")
-    # A run that failed half way left its issue (and maybe its branch): reuse
-    # them instead of opening a second one.
-    title = "Keep the organisation's shared files in step"
+    pr_body = (f"## 📝 What changes\n\n{changed} as DiluxOne/.github keeps them for every repository.\n\n"
+               "## 💡 Why\n\nGitHub reads these only from the repository, so the organisation keeps them in step from one place.")
+    open_change(repo, default, wanted, "Keep the organisation's shared files in step", body,
+                "chore/{}-org-shared-files", "chore: keep the organisation's shared files in step", pr_body,
+                "chore: keep {} in step with the organisation")
+
+
+def open_change(repo, default, wanted, title, body, branch_form, pr_title, pr_body, message_form):
+    """An issue (Type Task) and a pull request that closes it, writing
+    `wanted` ({path: content}) on the branch branch_form.format(<issue>),
+    one commit per file (message_form.format(<path>)). A run that failed
+    half way left its issue (and maybe its branch): they are reused instead
+    of opening a second one."""
+    full = f"{ORG}/{repo['name']}"
     found = json.loads(gh("issue", "list", "--repo", full, "--state", "open", "--search", f"in:title \"{title}\"", "--json", "number,title").stdout)
     found = [i for i in found if i["title"] == title]
     if found:
@@ -171,23 +195,83 @@ def sync_files(repo, conf, block, dry):
         number = url.rsplit("/", 1)[-1]
     if gh("api", "-X", "PATCH", f"repos/{full}/issues/{number}", "-f", "type=Task", check=False).returncode != 0:
         print(f"  warning: could not set #{number}'s Type to Task; set it by hand")
-    branch = f"chore/{number}-org-shared-files"
+    branch = branch_form.format(number)
     if gh("api", f"repos/{full}/git/ref/heads/{branch}", check=False).returncode != 0:
         base = json.loads(gh("api", f"repos/{full}/git/ref/heads/{default}").stdout)["object"]["sha"]
         gh("api", "-X", "POST", f"repos/{full}/git/refs", "-f", f"ref=refs/heads/{branch}", "-f", f"sha={base}")
     for path, content in wanted.items():
         current = gh("api", f"repos/{full}/contents/{path}?ref={branch}", "--jq", ".sha", check=False)
-        payload = {"message": f"chore: keep {path} in step with the organisation", "branch": branch,
+        payload = {"message": message_form.format(path), "branch": branch,
                    "content": base64.b64encode(content.encode()).decode()}
         if current.returncode == 0 and current.stdout.strip():
             payload["sha"] = current.stdout.strip()
         gh("api", "-X", "PUT", f"repos/{full}/contents/{path}", "--input", "-", input_text=json.dumps(payload))
-    pr_body = (f"## 📝 What changes\n\n{changed} as DiluxOne/.github keeps them for every repository.\n\n"
-               f"## 💡 Why\n\nGitHub reads these only from the repository, so the organisation keeps them in step from one place.\n\nCloses #{number}\n\n"
-               "🤖 AI-generated · scripts/sync-repos.py")
+    pr_body = f"{pr_body}\n\nCloses #{number}\n\n🤖 AI-generated · scripts/sync-repos.py"
     pr = gh("pr", "create", "--repo", full, "--base", default, "--head", branch,
-            "--title", "chore: keep the organisation's shared files in step", "--body", pr_body).stdout.strip()
+            "--title", pr_title, "--body", pr_body).stdout.strip()
     print(f"  issue #{number} (accept it) and {pr}")
+    return number, pr
+
+
+def sync_callers(repo, conf, dry):
+    """Opens an issue and a pull request that bring the repository's callers
+    in step with their templates (callers_drift(), rewrite_caller()). A
+    repository at an older major migrates first (docs/migrating.md);
+    DiluxOne/.github changes its own callers by hand."""
+    full = f"{ORG}/{repo['name']}"
+    if repo["name"] == ".github":
+        print("  this repository's own callers change in a pull request here, by hand")
+        return
+    files = workflow_files(full)
+    if not any(CALLS_RE.search(t) for t in files.values()):
+        print("  calls none of the shared workflows: nothing to compare (docs/adopting.md)")
+        return
+    if old_versions(files.values(), current_major()):
+        print("  calls the shared workflows at an older major: migrate it first (docs/migrating.md)")
+        return
+    open_prs = json.loads(gh("pr", "list", "--repo", full, "--state", "open", "--limit", "500", "--json", "headRefName").stdout)
+    if any(p["headRefName"].endswith("-org-workflow-callers") for p in open_prs):
+        print("  a pull request for the workflow callers is already open; skipped")
+        return
+    owned = (conf.get("callers") or {}).get("repository-owned") or {}
+    wanted, notes = {}, []
+    for name, path, found in callers_drift(files, conf):
+        if not path:
+            notes.append(f"no caller of workflow-templates/{name}: add it from the template by hand (docs/adopting.md)")
+            continue
+        text = open(os.path.join(TEMPLATES, name), encoding="utf-8").read()
+        new, missing = rewrite_caller(files[path], text, set(owned.get(name) or []))
+        left = [f for n, p, f in callers_drift({**files, path: new}, conf) if p == path] if new else []
+        if new is None:
+            notes.append(f"{path}: no job of the repository gives {', '.join(missing)}; bring it in step by hand")
+        elif left:
+            notes.append(f"{path}: still differs after the rewrite ({'; '.join(left[0])}); bring it in step by hand")
+        else:
+            wanted[path] = new
+    for note in notes:
+        print(f"  {note}")
+    if not wanted:
+        print("  callers in step" if not notes else "  nothing this script can bring in step")
+        return
+    changed = ", ".join(wanted)
+    if dry:
+        import difflib
+        print(f"  would open an issue and a pull request for: {changed}")
+        for path, new in wanted.items():
+            sys.stdout.writelines("    " + l for l in difflib.unified_diff(files[path].splitlines(True), new.splitlines(True), path, path))
+        return
+    default = (repo.get("defaultBranchRef") or {}).get("name") or "main"
+    templates_named = ", ".join(sorted({f"workflow-templates/{n}" for n, p, _ in callers_drift(files, conf) if p in wanted}))
+    body = (f"The organisation's workflow templates ({templates_named} in DiluxOne/.github) have jobs or settings "
+            f"that {changed} here lack. This brings each caller in step, job by job, keeping the values that are "
+            "this repository's (its support URL, slug, version constant, profile) and its own jobs and inputs."
+            "\n\n🤖 AI-generated · scripts/sync-repos.py")
+    pr_body = (f"## 📝 What changes\n\n{changed} as {templates_named} has them, with this repository's own values and jobs kept.\n\n"
+               "## 💡 Why\n\nA job a template gains reaches every repository only through its callers; the weekly drift check "
+               "(DiluxOne/.github, scripts/sync-repos.py check) found these out of step.")
+    open_change(repo, default, wanted, "Keep the workflow callers in step with the organisation's templates", body,
+                "ci/{}-org-workflow-callers", "ci: keep the workflow callers in step with the templates", pr_body,
+                "ci: keep {} in step with its template")
 
 
 USES_RE = re.compile(r"DiluxOne/\.github/\.github/workflows/[\w.-]+@v(\d+)\b")
@@ -225,17 +309,332 @@ def pinned_calls(texts):
 OWN = "own checks"
 
 
-def workflow_texts(full):
-    """The text of each workflow file of a repository (none: an empty list)."""
+def workflow_files(full):
+    """{path: text} of each workflow file of a repository (none: empty)."""
     listing = gh("api", f"repos/{full}/contents/.github/workflows", check=False)
     if listing.returncode != 0 and "404" not in listing.stderr:
         raise RuntimeError(f"could not list its workflows: {listing.stderr.strip()[:200]}")
-    texts = []
+    files = {}
     if listing.returncode == 0:
         for entry in json.loads(listing.stdout):
             if entry.get("name", "").endswith((".yml", ".yaml")):
-                texts.append(gh("api", f"repos/{full}/contents/{entry['path']}", "-H", "Accept: application/vnd.github.raw").stdout)
-    return texts
+                files[entry["path"]] = gh("api", f"repos/{full}/contents/{entry['path']}", "-H", "Accept: application/vnd.github.raw").stdout
+    return files
+
+
+def workflow_texts(full):
+    """The text of each workflow file of a repository (none: an empty list)."""
+    return list(workflow_files(full).values())
+
+
+# The callers: each repository's workflows that call the shared ones, held
+# job for job to the templates in workflow-templates/ (repos.yml `callers`).
+
+TEMPLATES = os.path.join(CENTRAL, "workflow-templates")
+SHARED_PREFIX = "DiluxOne/.github/.github/workflows/"
+LOCAL_PREFIX = "./.github/workflows/"
+
+
+def parse_yaml(text):
+    """A YAML text as data, through yq or PyYAML like load_yaml(); a text
+    that does not parse raises ValueError."""
+    import shutil
+    if shutil.which("yq"):
+        out = subprocess.run(["yq", "-o=json", ".", "-"], input=text, capture_output=True, text=True)
+        if out.returncode != 0:
+            raise ValueError(f"not YAML: {out.stderr.strip()[:200]}")
+        return json.loads(out.stdout or "null") or {}
+    import yaml
+    try:
+        return yaml.safe_load(text) or {}
+    except yaml.YAMLError as exc:
+        raise ValueError(f"not YAML: {exc}") from exc
+
+
+def templates():
+    """{name: (text, data)} of every workflow template."""
+    found = {}
+    for name in sorted(os.listdir(TEMPLATES)):
+        if name.endswith(".yml"):
+            text = open(os.path.join(TEMPLATES, name), encoding="utf-8").read()
+            found[name] = (text, parse_yaml(text))
+    return found
+
+
+def split_uses(uses, central=False):
+    """(shared workflow, ref) for a call of a shared workflow, else None. In
+    DiluxOne/.github itself a local call (./.github/workflows/x.yml) is the
+    same workflow, at whatever the template calls (ref None)."""
+    uses = str(uses or "")
+    if uses.startswith(SHARED_PREFIX) and "@" in uses:
+        name, ref = uses[len(SHARED_PREFIX):].split("@", 1)
+        return name, ref
+    if central and uses.startswith(LOCAL_PREFIX):
+        return uses[len(LOCAL_PREFIX):], None
+    return None
+
+
+def jobs_of(data):
+    jobs = (data or {}).get("jobs") or {}
+    return jobs if isinstance(jobs, dict) else {}
+
+
+def shared_calls(data, central=False):
+    """The shared workflows a workflow's jobs call."""
+    return {s[0] for job in jobs_of(data).values() if isinstance(job, dict) and (s := split_uses(job.get("uses"), central))}
+
+
+def caller_for(template, files, central=False):
+    """The repository's workflow file that calls this template's shared
+    workflows: the one calling most of them, the template's own name first
+    on a tie. None when no file calls any."""
+    wanted = shared_calls(template)
+    best = None
+    for path in sorted(files):
+        overlap = len(shared_calls(files[path][1], central) & wanted)
+        if overlap:
+            key = (overlap, os.path.basename(path) == template.get("_name"))
+            if best is None or key > best[0]:
+                best = (key, path)
+    return best[1] if best else None
+
+
+def plain(value):
+    """A value as the text a comparison reads: booleans as YAML writes them,
+    an expression without its ${{ }} and its spacing."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    text = " ".join(str(value if value is not None else "").split())
+    m = re.fullmatch(r"\$\{\{\s*(.*?)\s*\}\}", text)
+    return m.group(1) if m else text
+
+
+def needs_of(job):
+    needs = job.get("needs") or []
+    return sorted([needs] if isinstance(needs, str) else needs)
+
+
+def job_differences(name, want, have, owned, central=False):
+    """What a caller's job does other than its template's, as phrases."""
+    found = []
+    w, h = split_uses(want.get("uses")), split_uses(have.get("uses"), central)
+    if not h or h[0] != w[0] or (h[1] is not None and h[1] != w[1]):
+        found.append(f"calls `{have.get('uses')}`, not `{want.get('uses')}`")
+    # A job of the repository's own may join what a template's job waits
+    # for (a suite of its own whose failure the weekly issue reports too).
+    if not set(needs_of(want)) <= set(needs_of(have)):
+        found.append(f"needs `{', '.join(needs_of(have)) or 'nothing'}`, not `{', '.join(needs_of(want)) or 'nothing'}`")
+    if plain(want.get("if", "")) != plain(have.get("if", "")):
+        found.append(f"runs `if: {plain(have.get('if', '')) or 'always'}`, not `if: {plain(want.get('if', '')) or 'always'}`")
+    if (want.get("permissions") or {}) != (have.get("permissions") or {}):
+        found.append("has other permissions")
+    ws, hs = want.get("secrets"), have.get("secrets")
+    if ws == "inherit" and hs != "inherit":
+        found.append("passes its secrets by name, not `secrets: inherit`")
+    elif isinstance(ws, dict) and hs != "inherit" and not set(ws) <= set(hs or {}):
+        found.append(f"does not pass `{', '.join(sorted(set(ws) - set(hs or {})))}`")
+    given = have.get("with") or {}
+    for key, value in (want.get("with") or {}).items():
+        if key in owned:
+            continue
+        if key not in given:
+            found.append(f"does not pass `{key}: {plain(value)}`")
+        elif plain(given[key]) != plain(value):
+            found.append(f"passes `{key}: {plain(given[key])}`, not `{plain(value)}`")
+    return [f"job `{name}` {f}" for f in found]
+
+
+def callers_drift(files, conf, central=False):
+    """What differs in a repository's callers from the templates that apply
+    to it, as [(template, caller path or None, [phrases])], only those that
+    differ. `files` is {path: text}."""
+    spec = conf.get("callers") or {}
+    every, owned = set(spec.get("every-repository") or []), spec.get("repository-owned") or {}
+    parsed = {p: (t, parse_yaml(t)) for p, t in files.items()}
+    out = []
+    for name, (_, data) in templates().items():
+        data = dict(data, _name=name)
+        path = caller_for(data, parsed, central)
+        if path is None:
+            if name in every:
+                out.append((name, None, [f"has no caller of `workflow-templates/{name}`"]))
+            continue
+        mine = jobs_of(parsed[path][1])
+        found = []
+        for job, want in jobs_of(data).items():
+            if job not in mine:
+                found.append(f"lacks the job `{job}`")
+            else:
+                found += job_differences(job, want, mine[job] or {}, set(owned.get(name) or []), central)
+        if found:
+            out.append((name, path, found))
+    return out
+
+
+def caller_lines(drifted):
+    """The drift check's lines for callers_drift()'s result."""
+    lines = []
+    for name, path, found in drifted:
+        for f in found:
+            if path:
+                lines.append(f"`{path}` {f} of `workflow-templates/{name}` (`sync-repos.py callers`)")
+            else:
+                lines.append(f"{f}: add it from the template (docs/adopting.md)")
+    return lines
+
+
+# Rewriting a caller: job by job, on the text, so that the repository's
+# header, triggers, comments and jobs of its own stay as they are.
+
+JOB_RE = re.compile(r"^  ([A-Za-z0-9_-]+):\s*(#.*)?$")
+KEY_RE = re.compile(r"^    ([A-Za-z0-9_-]+):")
+INPUT_RE = re.compile(r"^      ([A-Za-z0-9_-]+):")
+# What job_differences() compares: a rewrite takes these from the template.
+COMPARED = ("uses", "needs", "if", "permissions", "with", "secrets")
+
+
+def job_blocks(text):
+    """(head, [(job, lines)]) of a workflow's text: everything up to its
+    first job, then each job with the comments and the blank line before it."""
+    lines = text.splitlines(keepends=True)
+    start = next((i for i, l in enumerate(lines) if re.match(r"^jobs:\s*(#.*)?$", l)), None)
+    if start is None:
+        raise ValueError("no jobs: section")
+    start += 1
+    heads = [i for i in range(start, len(lines)) if JOB_RE.match(lines[i])]
+    bounds = []
+    for k, h in enumerate(heads):
+        s = h
+        floor = heads[k - 1] + 1 if k else start
+        while s > floor and (not lines[s - 1].strip() or lines[s - 1].startswith("  #")):
+            s -= 1
+        bounds.append(s)
+    blocks = [(JOB_RE.match(lines[h]).group(1), lines[s:(bounds[k + 1] if k + 1 < len(bounds) else len(lines))])
+              for k, (h, s) in enumerate(zip(heads, bounds))]
+    return "".join(lines[:bounds[0] if bounds else len(lines)]), blocks
+
+
+def keyed(lines, key_re, indent):
+    """{key: (first, end)} of the keys at this indent in a job's lines: a key
+    runs to the next line at its indent or less that is not a comment."""
+    keys, current = {}, None
+    for i, line in enumerate(lines):
+        m = key_re.match(line)
+        if m:
+            current = m.group(1)
+            keys[current] = [i, i + 1]
+        elif current and line.strip() and (len(line) - len(line.lstrip(" ")) > indent or line.lstrip().startswith("#")):
+            if not line.lstrip().startswith("#"):
+                keys[current][1] = i + 1
+        elif current and line.strip():
+            current = None
+    return {k: tuple(v) for k, v in keys.items()}
+
+
+def merged_job(template_lines, have_lines, owned, fallback, keep_needs=False):
+    """The template's job with the repository's values: its inputs the
+    template says to fill in (from this job, else `fallback`, {input: lines}
+    from its other jobs), the inputs and keys it adds, its secrets where the
+    template passes none or names them while it inherits, and its `needs`
+    when they add its own jobs to the template's (keep_needs). None when an
+    input to fill in has no value of the repository's."""
+    out = list(template_lines)
+    have_keys = keyed(have_lines, KEY_RE, 4)
+    keys = keyed(out, KEY_RE, 4)
+    if keep_needs and "needs" in keys and "needs" in have_keys:
+        (s, e), (a, b) = keys["needs"], have_keys["needs"]
+        out[s:e] = have_lines[a:b]
+    have_inputs = {}
+    if "with" in have_keys:
+        a, b = have_keys["with"]
+        sub = have_lines[a:b]
+        have_inputs = {k: sub[s:e] for k, (s, e) in keyed(sub, INPUT_RE, 6).items()}
+    keys = keyed(out, KEY_RE, 4)
+    if "with" in keys:
+        a, b = keys["with"]
+        sub = out[a:b]
+        inputs = keyed(sub, INPUT_RE, 6)
+        for key, (s, e) in sorted(inputs.items(), key=lambda kv: -kv[1][0]):
+            if key in owned:
+                value = have_inputs.get(key) or fallback.get(key)
+                if value is None:
+                    return None
+                sub[s:e] = value
+        extra = [l for k, v in have_inputs.items() if k not in inputs for l in v]
+        last = max((e for _, e in keyed(sub, INPUT_RE, 6).values()), default=1)
+        sub[last:last] = extra
+        out[a:b] = sub
+    elif have_inputs:
+        a, b = keys["uses"]
+        out[b:b] = ["    with:\n"] + [l for v in have_inputs.values() for l in v]
+    keys = keyed(out, KEY_RE, 4)
+    if "secrets" in have_keys:
+        a, b = have_keys["secrets"]
+        theirs = have_lines[a:b]
+        if "secrets" not in keys:
+            out += theirs
+        elif theirs[0].split(":", 1)[1].strip().startswith("inherit"):
+            s, e = keys["secrets"]
+            out[s:e] = theirs
+    for key, (a, b) in have_keys.items():
+        if key not in keys and key not in COMPARED:
+            out += have_lines[a:b]
+    return out
+
+
+def rewrite_caller(text, template_text, owned):
+    """The caller's text with each job of its template that is missing or
+    differs taken from the template, with the repository's values kept.
+    (new text, [inputs no job of the repository fills in]); the text is None
+    when one of those stops it."""
+    head, mine = job_blocks(text)
+    _, theirs = job_blocks(template_text)
+    have = dict(mine)
+    data_mine, data_theirs = jobs_of(parse_yaml(text)), jobs_of(parse_yaml(template_text))
+    fallback = {}
+    for _, lines in mine:
+        keys = keyed(lines, KEY_RE, 4)
+        if "with" in keys:
+            a, b = keys["with"]
+            sub = lines[a:b]
+            for k, (s, e) in keyed(sub, INPUT_RE, 6).items():
+                fallback.setdefault(k, sub[s:e])
+    replaced, missing = {}, []
+    for job, lines in theirs:
+        if job in have and not job_differences(job, data_theirs[job], data_mine.get(job) or {}, owned):
+            continue
+        keep = job in have and set(needs_of(data_theirs[job])) <= set(needs_of(data_mine.get(job) or {}))
+        new = merged_job(lines, have.get(job, []), owned, fallback, keep)
+        if new is None:
+            missing += [k for k in owned if k in (data_theirs[job].get("with") or {})]
+            continue
+        while new and not new[0].strip():
+            new.pop(0)
+        replaced[job] = new
+    if missing:
+        return None, sorted(set(missing))
+    order = [j for j, _ in theirs]
+    blocks = []
+    for job, lines in mine:
+        blocks.append((job, replaced.pop(job) if job in replaced else lines))
+    for job in order:
+        if job in replaced:
+            before = [j for j in order[:order.index(job)] if any(b[0] == j for b in blocks)]
+            at = max((i for i, b in enumerate(blocks) if before and b[0] == before[-1]), default=-1) + 1
+            blocks.insert(at, (job, replaced.pop(job)))
+    body = []
+    for i, (_, lines) in enumerate(blocks):
+        lines = list(lines)
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        while lines and not lines[-1].strip():
+            lines.pop()
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        body += (["\n"] if i else []) + lines
+    while body and not body[-1].strip():
+        body.pop()
+    return head + "".join(body), []
 
 
 def policy_kind(text):
@@ -427,12 +826,21 @@ def drift(repo, conf, labels, block, current=0):
     found = []
     default = (repo.get("defaultBranchRef") or {}).get("name") or "main"
     if current:
-        texts = workflow_texts(full)
+        files = workflow_files(full)
+        texts = list(files.values())
         old = old_versions(texts, current)
-        if not any(CALLS_RE.search(t) for t in texts) and repo["name"] not in (conf.get("no-workflows") or []):
+        adopted = any(CALLS_RE.search(t) for t in texts)
+        if not adopted and repo["name"] not in (conf.get("no-workflows") or []):
             found.append("calls none of the shared workflows (docs/adopting.md)")
         if old:
             found.append(f"calls the shared workflows at {', '.join('@v' + str(v) for v in old)}; the current is @v{current} (docs/migrating.md)")
+        elif adopted:
+            # At an older major the migration rewrites every caller; compared
+            # once it is on the current one.
+            try:
+                found += caller_lines(callers_drift(files, conf, central=repo["name"] == ".github"))
+            except ValueError as exc:  # a workflow that does not parse is reported, not skipped
+                found.append(f"its workflow callers could not be compared: {str(exc)[:200]}")
         for w, r in pinned_calls(texts):
             found.append(f"calls `{w}` at `@{r}` instead of `@v{current}`: nothing is pinned to a commit in any repository (docs/workflows.md, #136)")
         # Said, never guessed: a ruleset that cannot be read is reported as
@@ -487,6 +895,139 @@ def drift(repo, conf, labels, block, current=0):
     elif system is not None and system not in design_systems():
         found.append(f"its design system `{system}` (repos.yml) is not one of design-systems/")
     return found
+
+
+def callers_test(check, conf):
+    """The callers' comparison and rewrite (#150), against the templates."""
+    spec = conf.get("callers") or {}
+    owned = spec.get("repository-owned") or {}
+    tpl = {name: text for name, (text, _) in templates().items()}
+    for name in spec.get("every-repository") or []:
+        check(f"callers: every-repository names a template ({name})", name in tpl, sorted(tpl))
+    for name, keys in owned.items():
+        given = {k for job in jobs_of(parse_yaml(tpl.get(name, ""))).values() for k in (job.get("with") or {})}
+        check(f"callers: every input repository-owned in {name} is one its template sets", name in tpl and set(keys) <= given, (keys, given))
+    issues = tpl["issues.yml"]
+    comments = tpl["pull-request-comments.yml"]
+    # The fixture of C1: an issues.yml from before #120, without repro-triaged,
+    # with its own support URL, an input and a job of its own.
+    start = issues.index("  repro-triaged:")
+    old = issues[:start] + issues[issues.index("  # When a person accepts"):]
+    old = old.replace("https://example.com/support", "https://wordpress.org/support/plugin/mine/")
+    old = old.replace("name: Issues\n", "name: Issues\n\n# Mine: this header stays.\n")
+    old += "    with:\n      workflow: Pull request\n\n  mine:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo mine\n"
+    files = {".github/workflows/issues.yml": old, ".github/workflows/pull-request-comments.yml": comments}
+    got = callers_drift(files, conf)
+    check("C1 (#150): a caller without the template's repro-triaged is out of step, with the job",
+          got == [("issues.yml", ".github/workflows/issues.yml", ["lacks the job `repro-triaged`"])], got)
+    lines = caller_lines(got)
+    check("C1 (#150): the report names the caller, the job and the template's path",
+          len(lines) == 1 and "`.github/workflows/issues.yml`" in lines[0] and "`repro-triaged`" in lines[0] and "`workflow-templates/issues.yml`" in lines[0], lines)
+    # The fixture of C2: the template but its support URL, the profile, an
+    # input and a job of the repository's own, an own job in a `needs`.
+    same = issues.replace("https://example.com/support", "https://diluxone.com/support/") + "\n  mine:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo mine\n"
+    checks = tpl["plugin-checks-wp.yml"].replace("slug: my-plugin", "slug: mine\n      main-file: mine.php\n      php-versions: '[\"8.3\"]'")
+    checks = checks.replace("needs: [checks, tests]", "needs: [checks, tests, coverage]")
+    c2 = {".github/workflows/issues.yml": same, ".github/workflows/pull-request-comments.yml": comments.replace("profile: general", "profile: plugin-wp"),
+          ".github/workflows/plugin-checks.yml": checks}
+    check("C2 (#150): a caller that differs only in what is the repository's own is in step", callers_drift(c2, conf) == [], callers_drift(c2, conf))
+    check("callers: a template whose workflows the repository does not call does not apply",
+          not any(n == "release-wp.yml" for n, _, _ in callers_drift(files, conf)), callers_drift(files, conf))
+    check("callers: a repository with no caller of an every-repository template is told so",
+          callers_drift({".github/workflows/issues.yml": same}, conf) == [("pull-request-comments.yml", None, ["has no caller of `workflow-templates/pull-request-comments.yml`"])],
+          callers_drift({".github/workflows/issues.yml": same}, conf))
+    named = same.replace("    with:\n      support-url: https://diluxone.com/support/\n    secrets: inherit",
+                         "    with:\n      support-url: https://diluxone.com/support/\n    secrets:\n      DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}")
+    named = named.replace("      trigger: triage", "      trigger: label").replace("      actions: write\n", "      actions: read\n")
+    named = named.replace("uses: DiluxOne/.github/.github/workflows/issue-accepted.yml@v5", "uses: DiluxOne/.github/.github/workflows/issue-accepted.yml@v4")
+    got = callers_drift({**c2, ".github/workflows/issues.yml": named}, conf)
+    text = "\n".join(got[0][2]) if got else ""
+    check("callers: secrets by name where the template inherits, an input, permissions and a major that differ",
+          all(s in text for s in ("job `triage` passes its secrets by name", "job `repro-triaged` passes `trigger: label`, not `triage`",
+                                  "job `accepted` has other permissions", "job `accepted` calls `DiluxOne/.github/.github/workflows/issue-accepted.yml@v4`")), got)
+    weekly = checks.replace("needs: [checks, tests, coverage]", "needs: [checks]")
+    got = callers_drift({**c2, ".github/workflows/plugin-checks.yml": weekly}, conf)
+    check("callers: a `needs` without one of the template's jobs differs", got and "job `weekly-failure` needs `checks`, not `checks, tests`" in got[0][2], got)
+    local = comments.replace("DiluxOne/.github/.github/workflows/review-reply.yml@v5", "./.github/workflows/review-reply.yml")
+    check("callers: in DiluxOne/.github a local call is the same workflow",
+          callers_drift({**c2, ".github/workflows/pull-request-comments.yml": local}, conf, central=True) == [], "")
+    check("callers: elsewhere a local call is not", callers_drift({**c2, ".github/workflows/pull-request-comments.yml": local}, conf) != [], "")
+    # The rewrite: only what differs, the repository's values and jobs kept.
+    new, missing = rewrite_caller(old, issues, set(owned["issues.yml"]))
+    check("rewrite: the caller comes out in step", new is not None and callers_drift({**files, ".github/workflows/issues.yml": new}, conf) == [], (missing, new))
+    new = new or ""
+    check("rewrite: its support URL, header, own input and own job are kept",
+          all(s in new for s in ("support-url: https://wordpress.org/support/plugin/mine/", "# Mine: this header stays.", "workflow: Pull request", "  mine:\n")) and "example.com" not in new, new)
+    check("rewrite: repro-triaged goes after repro, before accepted",
+          new.index("  repro:\n") < new.index("  repro-triaged:\n") < new.index("  accepted:\n"), new)
+    check("rewrite: a caller in step is left as it is", rewrite_caller(same, issues, set(owned["issues.yml"]))[0] == same.rstrip("\n") + "\n", "")
+    fixed, _ = rewrite_caller(named, issues, set(owned["issues.yml"]))
+    check("rewrite: secrets, inputs, permissions and the major back to the template's",
+          fixed is not None and callers_drift({**c2, ".github/workflows/issues.yml": fixed}, conf) == [], fixed)
+    perms = checks.replace("      checks: read # and the checks of its head\n", "")
+    fixed, _ = rewrite_caller(perms, tpl["plugin-checks-wp.yml"], set(owned["plugin-checks-wp.yml"]))
+    check("rewrite: a job's own inputs and its own `needs` survive the template's job",
+          fixed is not None and callers_drift({**c2, ".github/workflows/plugin-checks.yml": fixed}, conf) == []
+          and "main-file: mine.php" in fixed and "slug: mine" in fixed and "coverage" in fixed, fixed)
+    bare = old.replace("    with:\n      support-url: https://wordpress.org/support/plugin/mine/\n", "")
+    check("rewrite: an input to fill in that the repository never gives stops it",
+          rewrite_caller(bare.replace("  triage:", "  triaged:"), issues, set(owned["issues.yml"])) == (None, ["support-url"]),
+          rewrite_caller(bare.replace("  triage:", "  triaged:"), issues, set(owned["issues.yml"])))
+    # C3: `callers` against a stand-in for gh: one issue (Task), one pull
+    # request closing it, the caller in it with the repository's support URL.
+    calls, written = [], {}
+
+    class Out:
+        def __init__(self, stdout="", returncode=0, stderr=""):
+            self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
+
+    def fake(*args, check=True, input_text=None):
+        joined = " ".join(args)
+        calls.append(args)
+        if joined == "api repos/o/r/contents/.github/workflows":
+            return Out(json.dumps([{"name": p.rsplit("/", 1)[1], "path": p} for p in files]))
+        for p in files:
+            if joined.startswith(f"api repos/o/r/contents/{p} "):
+                return Out(files[p])
+        if "matching-refs/tags/v" in joined:
+            return Out(json.dumps([[{"ref": "refs/tags/v5"}]]))
+        if args[:2] in (("pr", "list"), ("issue", "list")):
+            return Out("[]")
+        if args[:2] == ("issue", "create"):
+            return Out("https://github.com/o/r/issues/7\n")
+        if args[:2] == ("pr", "create"):
+            return Out("https://github.com/o/r/pull/8\n")
+        if "ref/heads/main" in joined:
+            return Out(json.dumps({"object": {"sha": "abc"}}))
+        if joined.startswith("api -X PUT repos/o/r/contents/"):
+            payload = json.loads(input_text)
+            written[args[3].split("/contents/", 1)[1]] = (payload["branch"], base64.b64decode(payload["content"]).decode())
+            return Out("{}")
+        if joined.startswith("api -X"):
+            return Out("{}")
+        return Out("", 1, "HTTP 404")
+    global ORG
+    saved_gh, saved_org = globals()["gh"], ORG
+    globals()["gh"], ORG = fake, "o"
+    try:
+        import contextlib
+        import io
+        with contextlib.redirect_stdout(io.StringIO()):
+            sync_callers({"name": "r", "defaultBranchRef": {"name": "main"}}, conf, False)
+    finally:
+        globals()["gh"], ORG = saved_gh, saved_org
+    issues_opened = [a for a in calls if a[:2] == ("issue", "create")]
+    prs = [a for a in calls if a[:2] == ("pr", "create")]
+    check("C3 (#150): one issue, set to Task", len(issues_opened) == 1 and any(a[:3] == ("api", "-X", "PATCH") and "type=Task" in a for a in calls), calls)
+    body = prs[0][prs[0].index("--body") + 1] if len(prs) == 1 else ""
+    title = prs[0][prs[0].index("--title") + 1] if len(prs) == 1 else ""
+    check("C3 (#150): one pull request that closes it, from ci/7-…, its title a short Conventional Commit",
+          len(prs) == 1 and "Closes #7" in body and prs[0][prs[0].index("--head") + 1] == "ci/7-org-workflow-callers"
+          and re.fullmatch(r"ci: .{1,68}", title) is not None, prs)
+    branch, content = written.get(".github/workflows/issues.yml", ("", ""))
+    check("C3 (#150): the caller in it has repro-triaged and keeps the repository's support URL",
+          branch == "ci/7-org-workflow-callers" and "  repro-triaged:" in content and "support-url: https://wordpress.org/support/plugin/mine/" in content, written)
+    check("C3 (#150): a caller in step is not rewritten", ".github/workflows/pull-request-comments.yml" not in written, sorted(written))
 
 
 def self_test():
@@ -628,6 +1169,7 @@ def self_test():
     check("superseded: a disabled \"own checks\" covers nothing", superseded("r", [mine[0], dict(own_rs, enforcement="disabled")], org, pipe) == [], "")
     paused = [dict(o, enforcement="evaluate") for o in org]
     check("superseded: nothing when the organisation's are not active", superseded("r", mine, paused, pipe) == [], superseded("r", mine, paused, pipe))
+    callers_test(check, conf)
     if not failed:
         print("all tests passed")
     return 1 if failed else 0
@@ -636,7 +1178,7 @@ def self_test():
 def main(argv):
     if argv == ["--test"]:
         return self_test()
-    if not argv or argv[0] not in ("labels", "settings", "files", "own-checks", "all", "check"):
+    if not argv or argv[0] not in ("labels", "settings", "files", "own-checks", "callers", "all", "check"):
         print(__doc__)
         return 64
     what, rest = argv[0], argv[1:]
@@ -653,7 +1195,7 @@ def main(argv):
         return 1
     if what == "check":
         report = [f"# Repositories out of step with {ORG}/.github", "",
-                  "What differs from `labels.yml`, `repos.yml` and `agents-block.md`. Labels and settings: `python3 scripts/sync-repos.py all`; files: the pull requests it opens.", ""]
+                  "What differs from `labels.yml`, `repos.yml`, `agents-block.md` and `workflow-templates/`. Labels and settings: `python3 scripts/sync-repos.py all`; files: the pull requests it opens; workflow callers: `python3 scripts/sync-repos.py callers --repo NAME`, a pull request each.", ""]
         dirty = 0
         current = current_major()
         for repo in repos:
@@ -685,6 +1227,8 @@ def main(argv):
                 sync_files(repo, conf, block, dry)
             if what in ("own-checks", "all"):
                 sync_own_checks(repo, dry)
+            if what == "callers":
+                sync_callers(repo, conf, dry)
         except (RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
             failures += 1
             print(f"  failed: {exc}")

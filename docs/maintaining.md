@@ -14,6 +14,8 @@ job after `v5` moved re-runs the old workflow. Reopen the pull request, or
 push to it, for a run on the new one. `v4`, `v3`, `v2` and `v1` stay where
 they are.
 
+A change to a template in [`workflow-templates/`](../workflow-templates/) reaches no repository by itself: each one has its own copy, its caller. The weekly drift check lists every caller that differs from its template, with the job and the template's path, in the issue "Repositories out of step"; `python3 scripts/sync-repos.py callers --repo NAME` opens the issue and the pull request that bring that repository in step, and the maintainer accepts and merges them there. A new input a template asks to fill in goes into `repos.yml` (`callers`, `repository-owned`) in the same pull request, or the check would hold every repository to the template's example value.
+
 ## The organisation's VM
 
 The private repositories' jobs run on `vm-gh-runner-01` (Azure, `Standard_D8as_v5`: 8 cores, 32 GB, shared with AI Studio's own runners): one slot per core (`dx-runner@1..8`; `DX_SLOTS` overrides, #138), each an endless loop of one-job containers of `ghcr.io/diluxone/runner:stable`, registered just in time through the `dilux-runner` App ([`scripts/runner-vm/dx-runner-slot.sh`](../scripts/runner-vm/dx-runner-slot.sh)). [`runner-vm.yml`](../.github/workflows/runner-vm.yml) starts the VM when a job waits and, after 20 minutes without one, cleans and deallocates it.
