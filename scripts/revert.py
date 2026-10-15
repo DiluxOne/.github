@@ -416,12 +416,12 @@ def locate():
     return 0
 
 
-def read_item(plan_item):
+def read_item(planned):
     """Everything the texts need, read again with the repository's own token."""
-    r = api(f"repositories/{plan_item['repo_id']}")
+    r = api(f"repositories/{planned['repo_id']}")
     repo = r["full_name"]
-    run = api(f"repos/{repo}/actions/runs/{plan_item['run_id']}")
-    pr = api(f"repos/{repo}/pulls/{plan_item['pr']}")
+    run = api(f"repos/{repo}/actions/runs/{planned['run_id']}")
+    pr = api(f"repos/{repo}/pulls/{planned['pr']}")
     return repo, run, pr, {
         "repo": repo, "default": r.get("default_branch") or "main", "sha": run["head_sha"], "run_url": run["html_url"],
         "workflow": run.get("name") or "a workflow", "failed": failed_jobs(repo, run["id"]),
@@ -454,12 +454,12 @@ def open_issue(repo, item, tmp, comment=None):
 
 
 def act():
-    plan_item = json.loads(os.environ["ITEM"])
+    planned = json.loads(os.environ["ITEM"])
     if (os.environ.get("DX_AUTOPILOT", "") or "").strip().lower() == "off":
         print("Nothing is done: the organisation's DX_AUTOPILOT is off.")
         return 0
-    repo, run, pr, item = read_item(plan_item)
-    if plan_item["kind"] == "rerun":
+    repo, run, pr, item = read_item(planned)
+    if planned["kind"] == "rerun":
         gh("api", "-X", "POST", f"repos/{repo}/actions/runs/{run['id']}/rerun-failed-jobs")
         print("The failed jobs run again; the next sweep reads their verdict.")
         return 0
@@ -726,6 +726,22 @@ def self_test():
     check("act: the revert is pushed on its branch", pushed, "revert: fix(sync): retry once")
     check("act: the issue, then the pull request, then `reverted`", [c for c in gh_calls if c in (("issue", "create"), ("pr", "create"), ("pr", "edit"))],
           [("issue", "create"), ("pr", "create"), ("pr", "edit")])
+    lookup = [c[1] for c in calls if c[0] == "lines" and "/issues?" in c[1]]
+    check("act: never twice reads the `revert` issues dilux-bot opened, in every state",
+          bool(lookup) and all(k in lookup[0] for k in ("state=all", "labels=revert", f"creator={BOT}")), True)
+    saved_api = globals()["api"]
+
+    def no_access(path, *args):
+        raise RuntimeError("HTTP 403: Resource not accessible by integration")
+    globals()["api"] = no_access
+    try:
+        ensure_label("DiluxOne/x", "revert")
+        raised = False
+    except RuntimeError:
+        raised = True
+    finally:
+        globals()["api"] = saved_api
+    check("act: a label read that fails, not missing, stops the act", raised, True)
     calls, pushed = act_offline(conflict=True)
     gh_calls = [c[1:] for c in calls if c[0] == "gh"]
     check("act: a revert that does not apply opens the issue alone", (pushed, ("issue", "create") in gh_calls, ("issue", "comment") in gh_calls, ("pr", "create") in gh_calls), (None, True, True, False))
