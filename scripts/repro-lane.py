@@ -143,6 +143,27 @@ def self_test():
               "timelineItems": {"nodes": [{"__typename": "LabeledEvent", "label": {"name": "lane:" + LANE}, "actor": {"__typename": "Bot", "login": "dilux-bot"}}]}}
     caller = {"id": 42, "path": ".github/workflows/issues.yml", "referenced_workflows": [{"path": "DiluxOne/.github/.github/workflows/issue-repro.yml@refs/tags/v5"}]}
     check("the issue it writes, opened by dilux-bot from a reproduction's run, is one the lane accepts", autonomy.lane_accepts(pol, opened, caller, "DiluxOne/x", "")[0], True)
+    # The workflows' wiring, read as data (PyYAML; the scripts job has it).
+    try:
+        import yaml
+    except ImportError:
+        yaml = None
+        print("skip the workflows' wiring: PyYAML is not installed here; the scripts job reads them")
+    if yaml:
+        wf = lambda name: yaml.safe_load(open(os.path.join(HERE, "..", ".github", "workflows", name), encoding="utf-8"))
+        repro_wf, merge_wf = wf("issue-repro.yml"), wf("auto-merge.yml")
+        jobs = repro_wf["jobs"]
+        steps = {s.get("id") or s.get("name"): s for s in jobs["report"]["steps"]}
+        check("wiring: the run job runs the test in the shared sandbox", any("repro-sandbox.sh run " in (s.get("run") or "") for s in jobs["run"]["steps"]), True)
+        check("wiring: the report asks whether the lane is open before handing anything over", "lane-open bugfix-reproduced" in steps["open"]["run"], True)
+        check("wiring: a failed read of the lane's open issues pushes nothing (fails closed)", ("if ! held=$(" in steps["report"]["run"], "exit 1" in steps["report"]["run"].split("if ! held=$(", 1)[1].split("\nfi\n", 1)[0]), (True, True))
+        check("wiring: the lane's issue is accepted only by lane-accept, then sealed", ("autonomy.py lane-accept" in steps["lane"]["run"], steps["lane"]["run"].index("lane-accept") < steps["lane"]["run"].index("seal-prd")), (True, True))
+        check("wiring: the report hands the accepted issue to the autopilot job", jobs["report"]["outputs"]["lane-issue"], "${{ steps.lane.outputs.issue }}")
+        ap = jobs["autopilot"]
+        check("wiring: the autopilot job starts only on that issue, in mode start", (ap["needs"], "lane-issue" in ap["if"], ap["with"]["mode"], ap["uses"].split("@")[0]), ("report", True, "start", "DiluxOne/.github/.github/workflows/autopilot.yml"))
+        check("wiring: a hand-off that fails says so on the report", "failure()" in steps["The hand-off failed"]["if"], True)
+        decide_run = next(s["run"] for s in merge_wf["jobs"]["decide"]["steps"] if s.get("id") == "autopilot")
+        check("wiring: G7 gets the lane from GitHub and the test's SHA-256 at the head", ("autopilot.py\" lane" in decide_run, "REPRO_SHA256=$(gh api" in decide_run), (True, True))
     for bad, args in (("a number", ("12; rm", run, sha, base)), ("a run URL", (12, "https://evil.example/actions/runs/1", sha, base)),
                       ("a SHA-256", (12, run, "z" * 64, base)), ("a commit", (12, run, sha, "main"))):
         try:

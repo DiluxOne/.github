@@ -51,7 +51,9 @@ name: Autopilot
 #
 # It acts as dilux-bot (its token for git and the API), never as a person, so
 # its commits and pull requests are told apart from the maintainer's. It
-# runs where the repository's jobs run (DX_RUNNER), one run per issue.
+# runs where the repository's jobs run (DX_RUNNER), one run per issue, except
+# a reproduced bug's work, which runs on GitHub's fresh runners (the `where`
+# job), as the reproduction does.
 # An App's token lives 60 minutes, so the run mints one per phase: `bot` for
 # the steps up to the Spec and the draft, `bot-work` right before the agent
 # works (its step is capped at 55 minutes, under the token's life), and
@@ -113,9 +115,50 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Where the work runs. A reproduced bug's test was written from an
+  # outsider's text, and the agent runs it (in the sandbox), so that work
+  # stays on GitHub's fresh runners, as the reproduction itself does, never
+  # on the organisation's shared VM. The `lane:bugfix-reproduced` label
+  # alone decides it: whoever adds it can only send the work to a fresher
+  # runner, never accept anything (the run job reads the lane from history).
+  where:
+    name: Where the autopilot runs
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      github-hosted: ${{ steps.lane.outputs.github-hosted }}
+    steps:
+      - name: dilux-bot token
+        id: bot
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-issues: read
+          permission-pull-requests: read
+      - name: A reproduced bug's work?
+        id: lane
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          ISSUE: ${{ inputs.issue }}
+          PR: ${{ inputs.pr }}
+        run: |
+          set -euo pipefail
+          [ -n "$ISSUE" ] || ISSUE=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // empty')
+          # Fails closed: when the labels cannot be read, GitHub's runner.
+          hosted=true
+          if [ -n "$ISSUE" ] && labels=$(gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | join(",")'); then
+            case ",$labels," in *,lane:bugfix-reproduced,*) ;; *) hosted=false ;; esac
+          fi
+          echo "github-hosted=$hosted" >> "$GITHUB_OUTPUT"
+          echo "On GitHub's runner: $hosted"
+
   run:
     name: Autopilot (${{ inputs.mode }})
-    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
+    needs: where
+    runs-on: ${{ (vars.DX_RUNNER == 'self-hosted' && needs.where.outputs.github-hosted != 'true') && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 90
     permissions: {}
     steps:
@@ -488,10 +531,6 @@ jobs:
           PR: ${{ steps.draft.outputs.pr || steps.what.outputs.pr }}
           BRANCH: ${{ steps.draft.outputs.branch || steps.what.outputs.branch }}
           AUTOPILOT_RUN: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
-          # finish ready reads them: in the bugfix-reproduced lane it runs
-          # the reproduction test in the sandbox and refuses unless it passes.
-          LANE: ${{ steps.may.outputs.lane }}
-          REPRO_TEST: ${{ steps.may.outputs.repro-test }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}

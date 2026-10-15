@@ -13,8 +13,9 @@
 # but a scratch /tmp, no capabilities, 1 GB and 256 processes at most, ten
 # minutes. The checkout's vendor/ must be installed already (by the caller,
 # with the repository's own Composer scripts, before the test is anywhere
-# near). The scratch folder lives under $RUNNER_TEMP, a path the organisation's
-# runners share with the Docker host, so the bind mounts work there too.
+# near). It refuses to run on a self-hosted runner: such code runs on
+# GitHub's fresh runners only (autopilot.yml sends a reproduced bug's work
+# there). The scratch folder lives under $RUNNER_TEMP, or TMPDIR elsewhere.
 #
 #   repro-sandbox.sh run FILE NAME [DIR]  run the test in FILE as NAME
 #                                         (IssueNTest.php); print
@@ -56,6 +57,11 @@ run() {
   local file=$1 name=$2 keep=${3:-} php=${PHP_VERSION:-8.5} scratch rc out
   case "$name" in *[!A-Za-z0-9_.]* | "" | .*) echo "::error::Not a test file name: $name" >&2; return 2 ;; esac
   [ -f "$file" ] || { echo "::error::No test at $file" >&2; return 2; }
+  # Code written from an outsider's text runs on GitHub's fresh runners only,
+  # never on the organisation's shared VM (its Docker is root there).
+  if [ "${RUNNER_ENVIRONMENT:-}" = self-hosted ]; then
+    echo "::error::A reproduction test runs on GitHub's runners only, not on a self-hosted one." >&2; return 2
+  fi
   if [ ! -x vendor/bin/phpunit ] && [ ! -f vendor/bin/phpunit ]; then
     echo "::warning::vendor/bin/phpunit is missing: run composer install first."; say broken; return 0
   fi
@@ -114,6 +120,7 @@ self_test() {
   # The guards that keep the file where it belongs.
   if (run_ref HEAD "src/evil.php" >/dev/null 2>&1); then echo "FAIL run-ref refuses a path outside tests/Unit/Repro"; fail=1; else echo "ok   run-ref refuses a path outside tests/Unit/Repro"; fi
   if (run "$dir/out" "../x.php" >/dev/null 2>&1); then echo "FAIL run refuses a name with a path in it"; fail=1; else echo "ok   run refuses a name with a path in it"; fi
+  if (RUNNER_ENVIRONMENT=self-hosted run "$dir/out" "Issue1Test.php" >/dev/null 2>&1); then echo "FAIL run refuses a self-hosted runner"; fail=1; else echo "ok   run refuses a self-hosted runner"; fi
   rm -rf "$dir"
   [ "$fail" -eq 0 ] && echo "all tests passed"
   return "$fail"
