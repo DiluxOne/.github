@@ -182,7 +182,7 @@ jobs:
     name: PHP ${{ matrix.php }} syntax
     needs: php
     runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
-    timeout-minutes: 10
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -355,7 +355,7 @@ jobs:
     # skipping it (a skipped job satisfies the ruleset).
     if: ${{ !cancelled() }}
     runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: The PHP versions job
         env:
@@ -591,9 +591,10 @@ jobs:
     # the generic engine scripts/review-rules.php. Code rules read the
     # shipped tree; config rules (phpcs.xml) the repository; suppressions
     # are checked against the repository's .github/review-suppressions.yml.
-    # An error fails, a warning is annotated. Cheap: every pull request.
+    # An error fails, a warning is annotated. Cheap: every pull request,
+    # but its PHP setup alone can take six minutes on a busy VM (#173).
     runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -639,7 +640,7 @@ jobs:
     needs: php
     if: ${{ !cancelled() && inputs.translations-complete }}
     runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: The PHP versions job
         env:
