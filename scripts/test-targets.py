@@ -243,6 +243,27 @@ def self_test():
         ok = False
     print(("ok   " if ok else "FAIL ") + "C1/C2 (#140): the E2E job sets PHP and Composer up, only with a composer.json, before it runs the suite")
     failed += 0 if ok else 1
+    # C2 (#148): without requires-plugins-from nothing of it runs. Every step
+    # of the suites that fetches, mounts or checks the required plugins is
+    # guarded by the input, and so is the job that fetches them.
+    guard = "inputs.requires-plugins-from != ''"
+    try:
+        jobs = text[text.index("\njobs:\n"):]
+        fetch_job = jobs[jobs.index("\n  required-plugins:\n"):jobs.index("\n  integration:\n")]
+        ok = guard in fetch_job.split("\n    if:", 1)[1].split("\n", 1)[0]
+        for name in ("integration", "e2e"):
+            job = jobs[jobs.index(f"\n  {name}:\n") + 1:]
+            following = re.search(r"\n  [\w-]+:\n", job)
+            job = job[:following.start()] if following else job
+            code = "\n".join(line for line in job.split("\n") if not line.strip().startswith("#"))
+            steps = code.split("\n      - ")[1:]
+            ours = [s for s in steps if "required-plugins" in s or ".dx-central" in s]
+            ifs = [[line for line in s.split("\n") if line.strip().startswith("if:")] for s in ours]
+            ok = ok and len(ours) == 4 and all(i and guard in i[0] for i in ifs)
+    except (ValueError, IndexError):
+        ok = False
+    print(("ok   " if ok else "FAIL ") + "C2 (#148): every required-plugins step of the suites, and its job, runs only with requires-plugins-from")
+    failed += 0 if ok else 1
     if not failed:
         print("all tests passed")
     return 1 if failed else 0

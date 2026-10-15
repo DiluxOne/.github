@@ -44,6 +44,10 @@ name: WordPress plugin checks (fast)
 #         DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}   # with requires-plugins-from
 #     tests:
 #       uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v5
+#       with:                                    # optional: the suites mount it too
+#         requires-plugins-from: diluxone-users=DiluxOne/diluxone-users-wordpress@main
+#       secrets:
+#         DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
 #
 # (workflow-templates/plugin-checks-wp.yml; the conventions and the review
 # are the organisation's required org-pull-request.yml.)
