@@ -364,11 +364,19 @@ def plan_item(action, repo, run, pr):
     return {"kind": action, "repo_id": int(repo["id"]), "run_id": int(run["id"]), "pr": int(pr["number"])}
 
 
-def mask(repo):
+def mask(repo, bare=True):
     """This repository is public, and so are its logs: a private repository's
-    name never shows in them."""
+    name never shows in them. The scan masks only the full name: it never
+    prints a private repository's, and a bare name that is also a word of the
+    plan (revert, kind, pr) would make GitHub drop the plan output."""
     print(f"::add-mask::{repo['full_name']}")
-    print(f"::add-mask::{repo['name']}")
+    if bare:
+        print(f"::add-mask::{repo['name']}")
+
+
+def is_private(repo):
+    """Private unless the API says it is not."""
+    return repo.get("private") is not False
 
 
 def scan():
@@ -384,9 +392,9 @@ def scan():
     for r in repos:
         if r.get("archived") or r.get("disabled"):
             continue
-        full, default, private = r["full_name"], r.get("default_branch") or "main", bool(r.get("private"))
+        full, default, private = r["full_name"], r.get("default_branch") or "main", is_private(r)
         if private:
-            mask(r)
+            mask(r, bare=False)
         say = lambda workflow, verdict, why, url=None: lines.append(
             f"- **A private repository**: {verdict}." if private else report_line(full, workflow, verdict, why, url))
         try:
@@ -417,7 +425,7 @@ def scan():
                 action, why = assess(run, pr, failed, checks_at(full, pr["head_sha"]) if pr else {})
                 if action == "revert" and (run["head_sha"] in reverting or issue_for(full, run["head_sha"])):
                     action, why = assess(run, pr, failed, {}, already=True)
-                say(workflow, {"none": "left alone", "rerun": "re-run", "revert": "reverted"}[action], why, run["html_url"])
+                say(workflow, {"none": "left alone", "rerun": "re-run planned", "revert": "revert planned"}[action], why, run["html_url"])
                 if action == "revert":
                     reverting.add(run["head_sha"])
                 if action in ("rerun", "revert"):
@@ -434,7 +442,7 @@ def locate():
     masked first when it is private."""
     item = json.loads(os.environ["ITEM"])
     r = api(f"repositories/{item['repo_id']}")
-    if r.get("private"):
+    if is_private(r):
         mask(r)
     write_output("name", r["name"])
     return 0
@@ -449,7 +457,7 @@ def read_item(planned):
     return repo, run, pr, {
         "repo": repo, "default": r.get("default_branch") or "main", "sha": run["head_sha"], "run_url": run["html_url"],
         "workflow": run.get("name") or "a workflow", "failed": failed_jobs(repo, run["id"]),
-        "pr": pr["number"], "pr_title": pr.get("title", ""), "pr_url": pr["html_url"], "private": r.get("private") is not False}
+        "pr": pr["number"], "pr_title": pr.get("title", ""), "pr_url": pr["html_url"], "private": is_private(r)}
 
 
 def ensure_label(repo, name):
@@ -790,9 +798,11 @@ def self_test():
 
     printed, outputs, report = scan_private()
     plan = json.loads(next(l for l in outputs.split("\n") if l.startswith("plan="))[len("plan="):])
+    check("a repository whose visibility the API does not give counts as private", (is_private({}), is_private({"private": False})), (True, False))
     check("scan: a private repository's red is planned, numbers only", plan, [{"kind": "rerun", "repo_id": 7, "run_id": 5, "pr": 12}])
     check("scan: its name is masked before anything prints it", printed.index("::add-mask::DiluxOne/secret-pro") < printed.index("## Red default branches"), True)
     check("scan: the report counts it and names nothing of it", ("A private repository" in report, any(w in report for w in ("secret", "Secret", "#12", "PHP"))), (True, False))
+    check("scan: the plan output is not dropped by a mask of a bare name", "::add-mask::secret-pro\n" in printed.split("## Red default branches")[0], False)
     check("locate: masks it again in its own job, then names it for the token", ("::add-mask::secret-pro" in printed.split("## Red default branches")[1], "name=secret-pro" in outputs), (True, True))
 
     # act, offline: a local repository in place of GitHub, gh and the API faked.
