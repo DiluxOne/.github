@@ -68,6 +68,11 @@ FAILED = {"FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ERROR"}
 UNCOUNTED = re.compile(r"(^|/)(composer\.lock|package-lock\.json)$|(^|/)languages/[^/]+\.(po|pot|mo)$")
 RECORD = re.compile(r"<!-- dx-review-record (.*?) -->", re.S)
 ROUNDS_SPENT = "The autopilot spent its"
+# The most pull requests listed by name in one comment (GitHub takes 65536
+# characters); the rest are counted.
+MAX_LISTED = 100
+# What one GitHub search returns at most.
+SEARCH_CAP = 1000
 
 
 def policy():
@@ -294,6 +299,12 @@ def week(pr, kind, now):
     return i if 0 <= i < WEEKS else None
 
 
+def code(title):
+    """A title as a code span: on a public issue, someone's title must not
+    mention people, link or format anything."""
+    return "`" + " ".join((title or "").replace("`", "'").split()) + "`"
+
+
 def public(pr):
     return ((pr.get("repository") or {}).get("visibility") or "") == "PUBLIC"
 
@@ -323,11 +334,13 @@ def digest(prs, pol, now):
     hidden = [r for r in this if not public(r["pr"])]
     if not this:
         out.append(f"Nothing in the organisation was merged by a person, or waits on one, since {day(0)}.")
-    for r in shown:
+    for r in shown[:MAX_LISTED]:
         pr = r["pr"]
         what = "waiting" if r["kind"] == "waiting" else "merged"
         why = ", ".join(label(x) for x in sorted(r["reasons"], key=order))
-        out.append(f"- [{pr['repository']['nameWithOwner']}] {pr.get('title', '')} ({pr.get('url', '')}), {what}: {why}")
+        out.append(f"- [{pr['repository']['nameWithOwner']}] {code(pr.get('title', ''))} ({pr.get('url', '')}), {what}: {why}")
+    if len(shown) > MAX_LISTED:
+        out.append(f"- And {len(shown) - MAX_LISTED} more in public repositories, counted below.")
     if hidden:
         tally = {}
         for r in hidden:
@@ -379,6 +392,7 @@ def digest(prs, pol, now):
 QUERY = """
 query($q: String!, $endCursor: String) {
   search(query: $q, type: ISSUE, first: 25, after: $endCursor) {
+    issueCount
     pageInfo { hasNextPage endCursor }
     nodes { ... on PullRequest {
       number title url state isDraft mergedAt isCrossRepository additions deletions changedFiles
@@ -406,8 +420,22 @@ def search(q):
     """Every pull request the search finds; a failing call fails the run
     instead of reporting an empty week."""
     out = subprocess.run(["gh", "api", "graphql", "--paginate", "-f", f"query={QUERY}", "-f", f"q={q}",
-                          "--jq", ".data.search.nodes[] | @json"], check=True, capture_output=True, text=True).stdout
-    return [json.loads(line) for line in out.splitlines() if line.strip()]
+                          "--jq", '"count \\(.data.search.issueCount)", (.data.search.nodes[] | @json)'],
+                         check=True, capture_output=True, text=True).stdout
+    return parse_search(out, q)
+
+
+def parse_search(out, q):
+    """The pull requests of a search's pages; past what one search returns,
+    the totals would look whole while they are not, so it fails instead."""
+    prs = []
+    for line in out.splitlines():
+        if line.startswith("count "):
+            if int(line[6:]) > SEARCH_CAP:
+                sys.exit(f"The search {q!r} found {line[6:]} pull requests, more than the {SEARCH_CAP} one search returns: the totals would be cut.")
+        elif line.strip():
+            prs.append(json.loads(line))
+    return prs
 
 
 def fetch(owner, now):
@@ -453,15 +481,28 @@ def self_test():
     by_app = pr(cases["high risk from the review"], url="u-app", title="Auto-merged", mergedBy={"__typename": "Bot", "login": BOT})
     nothing = pr(cases["no reason recorded"], url="u-none", title="Nothing recorded")
     out = digest([mine, by_policy, by_app, nothing], pol, now)
-    check("C1: a pull request a person merged is listed with its reason", "A person merged it (u-person), merged: high risk" in out, True)
-    check("C1: one with no recorded reason says unknown", "Nothing recorded (u-none), merged: unknown" in out, True)
+    check("C1: a pull request a person merged is listed with its reason", "`A person merged it` (u-person), merged: high risk" in out, True)
+    check("C1: one with no recorded reason says unknown", "`Nothing recorded` (u-none), merged: unknown" in out, True)
     check("C1: merged by policy is not listed", "Merged by policy" in out, False)
     check("C1: auto-merged by the App is not listed", "Auto-merged" in out, False)
     waiting = pr(cases["outside author"], url="u-wait", title="Waits", mergedAt=None, mergedBy=None, state="OPEN", isCrossRepository=True)
-    check("C1: a pull request waiting on a person is listed as waiting", "Waits (u-wait), waiting: outside author" in digest([waiting], pol, now), True)
+    check("C1: a pull request waiting on a person is listed as waiting", "`Waits` (u-wait), waiting: outside author" in digest([waiting], pol, now), True)
     queued = dict(waiting, autoMergeRequest={"enabledAt": fx["now"]})
     check("C1: one set to merge on its own is not waiting", "Waits" in digest([queued], pol, now), False)
     check("C1: an empty week says so", "Nothing in the organisation was merged by a person" in digest([], pol, now), True)
+
+    tricky = pr(cases["no reason recorded"], url="u-tricky", title="Ping @someone, see [x](http://e) `a`")
+    check("a title is a code span: no mention, link or formatting", "`Ping @someone, see [x](http://e) 'a'` (u-tricky)" in digest([tricky], pol, now), True)
+    many = [pr(cases["no reason recorded"], url=f"u-many-{i}", title=f"m{i}") for i in range(MAX_LISTED + 3)]
+    out = digest(many, pol, now)
+    check("the list stops at MAX_LISTED and counts the rest", (out.count("merged: unknown"), "And 3 more in public repositories" in out), (MAX_LISTED, True))
+    page = f"count {SEARCH_CAP}\n" + json.dumps(fx["base"]) + "\n"
+    check("a search within the cap gives its pull requests", len(parse_search(page, "q")), 1)
+    try:
+        parse_search(f"count {SEARCH_CAP + 1}\n", "q")
+        check("a search past the cap fails the run", "no failure", "failure")
+    except SystemExit:
+        check("a search past the cap fails the run", "failure", "failure")
 
     # C2: a private repository is counted under its reasons, never named.
     secret = pr(cases[size_case], url="https://github.com/DiluxOne/secret-plugin/pull/7", title="Secret title",
