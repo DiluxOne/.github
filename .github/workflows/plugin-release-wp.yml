@@ -287,7 +287,10 @@ jobs:
           # not read and the reviewers decide, as before. The runs still
           # waiting for an approval are listed too (every page), since they
           # hold the one-release-at-a-time group.
-          VERSION="$version" LABEL=accepted python3 .dx-central/scripts/release-issue.py verify > "$RUNNER_TEMP/release-issue.json" || true
+          # The accepting label is the organisation's (issue-gate.label; a
+          # repository cannot change it), the one issue-accepted.yml acts on.
+          label=$(python3 -c 'import sys; sys.path.insert(0, ".dx-central/scripts"); import policy; print(str(((policy.load_yaml(sys.argv[1]) or {}).get("issue-gate") or {}).get("label") or "accepted"))' "$DEFAULT_POLICY")
+          VERSION="$version" LABEL="$label" python3 .dx-central/scripts/release-issue.py verify > "$RUNNER_TEMP/release-issue.json" || true
           env_name=$(grep '^environment=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-)
           # The environment's rules. 404: the environment does not exist
           # yet (GitHub would create it, with no rule, when the job starts),

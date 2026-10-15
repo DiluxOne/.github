@@ -306,8 +306,11 @@ jobs:
       group: release-pr-${{ github.repository }}
       cancel-in-progress: false
     steps:
+      # Without the bot's key (an old caller) nothing is opened, and the log
+      # says so: a person prepares the release by hand, as before.
       - name: dilux-bot token
         id: bot
+        continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
@@ -317,13 +320,19 @@ jobs:
           permission-pull-requests: write
           permission-issues: write
 
+      - name: No bot key
+        if: steps.bot.outputs.token == ''
+        run: echo "::warning::No dilux-bot key passed to issue-accepted.yml, so no release pull request is opened; a person prepares it by hand."
+
       # The default branch, with its tags; its credentials push the branch.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - if: steps.bot.outputs.token != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           token: ${{ steps.bot.outputs.token }}
           fetch-depth: 0
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - if: steps.bot.outputs.token != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
           ref: ${{ inputs.central-ref }}
@@ -331,6 +340,7 @@ jobs:
           persist-credentials: false
 
       - name: Open it, or say why not
+        if: steps.bot.outputs.token != ''
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           NUMBER: ${{ github.event.issue.number }}
@@ -370,8 +380,12 @@ jobs:
             say "**No release pull request:** $version is already released (its tag exists)."; exit 0
           fi
           if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
-            pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --state all --json url --jq '.[0].url // empty')
-            say "**The release pull request** for $version is already there: ${pr:-the branch \`$branch\`}. Merging it publishes $version to $where."
+            read -r pr state < <(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --state all --json url,state --jq '.[0] | "\(.url // "") \(.state // "")"')
+            if [ "${state:-}" = CLOSED ]; then
+              say "**No release pull request:** the one for $version, $pr, was closed without merging and its branch \`$branch\` is still there. Delete that branch, then accept this issue again (remove and add \`accepted\`) for a new one."
+            else
+              say "**The release pull request** for $version is already there: ${pr:-the branch \`$branch\`}. Merging it publishes $version to $where."
+            fi
             exit 0
           fi
           git config user.name "dilux-bot[bot]"

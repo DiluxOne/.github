@@ -132,8 +132,7 @@ def plan(title, number, nxt, kind, release, inputs, central_path):
     """What the release pull request is, or why there is none (pure)."""
     version = version_of(title)
     if not version:
-        shown = (title or "").strip().replace("`", "'")[:80]
-        return {"ok": False, "why": f"the title must be exactly `Release X.Y.Z` (three numbers), and it is `{shown}`: a person corrects it and accepts the issue again"}
+        return {"ok": False, "why": f"the title must be exactly `Release X.Y.Z` (three numbers), and it is `{shown(title)}`: a person corrects it and accepts the issue again"}
     if not kind:
         return {"ok": False, "version": version, "why": "this repository declares no kind of project (`kind:` in `.github/review-policy.yml`), so nothing says where a version goes"}
     if not release or not release.get("prepare") or not release.get("workflow"):
@@ -193,6 +192,11 @@ QUERY = """query($owner: String!, $name: String!, $label: String!) {
 }"""
 
 
+def shown(title):
+    """A title quoted back in a code span: one line, no backtick, short."""
+    return " ".join(str(title or "").split()).replace("`", "'")[:80]
+
+
 def judge(node, label):
     """(ok, why, by, at) for one issue whose title names the version."""
     n = node.get("number")
@@ -216,7 +220,8 @@ def judge(node, label):
     at = last.get("createdAt") or ""
     for e in events:
         if e.get("__typename") == "RenamedTitleEvent" and (e.get("createdAt") or "") > at:
-            return False, f"#{n}'s title changed after it was accepted (`{e.get('previousTitle')}` → `{e.get('currentTitle')}`): a person accepts it again (remove and add `{label}`)", None, None
+            was, now_ = (shown(e.get("previousTitle")), shown(e.get("currentTitle")))
+            return False, f"#{n}'s title changed after it was accepted (`{was}` → `{now_}`): a person accepts it again (remove and add `{label}`)", None, None
     return True, f"#{n}", actor.get("login"), at
 
 
@@ -242,7 +247,7 @@ def verify(answer, version, label="accepted"):
 
 def fetch(repo, label):
     owner, name = repo.split("/", 1)
-    out = subprocess.run(["gh", "api", "graphql", "-f", f"query={QUERY}", "-F", f"owner={owner}", "-F", f"name={name}", "-f", f"label={LANE_LABEL}"],
+    out = subprocess.run(["gh", "api", "graphql", "-f", f"query={QUERY}", "-f", f"owner={owner}", "-f", f"name={name}", "-f", f"label={LANE_LABEL}"],
                          capture_output=True, text=True)
     if out.returncode != 0:
         return {"errors": [{"message": (out.stderr or out.stdout).strip()[:300]}]}
@@ -404,6 +409,8 @@ def self_test():
     renamed = node(events=[ev("LabeledEvent", "2026-10-02T10:00:00Z"), ev("RenamedTitleEvent", "2026-10-03T10:00:00Z", previousTitle="Release 1.1.9", currentTitle="Release 1.2.0")])
     r = verify(answer(renamed), "1.2.0")
     check("C5: a title changed after the acceptance approves nothing", (r["ok"], "accepts it again" in r["why"]), (False, True))
+    odd = node(events=[ev("LabeledEvent", "2026-10-02T10:00:00Z"), ev("RenamedTitleEvent", "2026-10-03T10:00:00Z", previousTitle="a `b`\nc", currentTitle="Release 1.2.0")])
+    check("C5: a former title quoted back cannot close its code span", "`b`" in verify(answer(odd), "1.2.0")["why"], False)
     check("C5: a title changed before it was accepted is fine", verify(answer(node(events=[ev("RenamedTitleEvent", "2026-10-01T10:00:00Z", previousTitle="Release ", currentTitle="Release 1.2.0"), ev("LabeledEvent", "2026-10-02T10:00:00Z")])), "1.2.0")["ok"], True)
     r = verify(answer(node(number=3, state="CLOSED", reason="NOT_PLANNED"), node(number=9)), "1.2.0")
     check("one accepted issue among several for the version is enough", (r["ok"], r["issue"]), (True, 9))
