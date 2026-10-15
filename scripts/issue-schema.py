@@ -9,8 +9,9 @@
         normalised (#81 seals it): line endings, trailing spaces, HTML
         comments and runs of blank lines do not change it; a word does.
   issue-schema.py form [--check]             write the maintenance-task form
-        (.github/ISSUE_TEMPLATE/task.yml) from the schema; --check fails when
-        the file differs from what it would write.
+        (.github/ISSUE_TEMPLATE/task.yml) and the Release form (release.yml,
+        #82) from the schema; --check fails when a file differs from what it
+        would write.
   issue-schema.py --test                     self-test
 
 Environment: ISSUE_SCHEMA, the schema (default: policy/issue-schema.yml next
@@ -27,6 +28,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
 FORM = os.path.join(ROOT, ".github", "ISSUE_TEMPLATE", "task.yml")
+RELEASE_FORM = os.path.join(ROOT, ".github", "ISSUE_TEMPLATE", "release.yml")
 # Only the organisation's exact markers: a lane's run (policy/autonomy.yml).
 MARKER = re.compile(r"^\s*<!--\s*dx-lane:\s*[a-z0-9-]+\s+run:\s*https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/actions/runs/\d+\s*-->\s*$")
 # The AI line names a model and its maker, nothing else, and only closes the
@@ -198,9 +200,33 @@ def form(sch=None):
                     "validations": {"required": True}}
         body.append(item)
     doc = {"name": "🧰 Maintenance task", "description": "For maintainers. A refactor, a test, a dependency, CI or tooling, with no change a user would notice.", "type": "Task", "body": body}
+    return dump(doc)
+
+
+def dump(doc):
     import yaml  # writing the form is a maintainer's step; reading needs only yq
     head = "# Written by scripts/issue-schema.py from policy/issue-schema.yml; edit those, not this file.\n"
     return head + yaml.safe_dump(doc, sort_keys=False, allow_unicode=True, width=1000)
+
+
+def release_form(sch=None):
+    """The Release form (#82): the title is the version, the label the
+    release lane's; accepting the issue is the decision to publish."""
+    rel = (sch or schema())["release"]
+    body = [{
+        "type": "markdown",
+        "attributes": {"value": "Publishing a version is a person's decision, and accepting this issue is it. Title it exactly `Release X.Y.Z`, the version the labels of what merged give (the last release run on `main` says which).\n\n"
+                                "Once a maintainer accepts it, the release pull request opens on its own (the `Unreleased.` hold removed, the version markers set); when it merges, the release workflow checks that a person accepted this issue and that its title still names the version, then publishes. Change the title after accepting and it must be accepted again.\n"},
+    }]
+    for s in rel["sections"]:
+        body.append({"type": "textarea", "id": s["id"], "attributes": {"label": s["heading"], "description": s["description"]},
+                     "validations": {"required": bool(s.get("required"))}})
+    doc = {"name": "📦 Release", "description": "For maintainers. Publish the next version: accepting this issue is the approval.",
+           "title": rel["title"], "labels": [rel["label"]], "type": "Task", "body": body}
+    return dump(doc)
+
+
+FORMS = ((FORM, form), (RELEASE_FORM, release_form))
 
 
 def self_test():
@@ -301,6 +327,10 @@ A class on <html> and a cookie.
     try:
         import yaml  # noqa: F401
         check_("the form is the schema's", open(FORM, encoding="utf-8").read() == form(sch), True)
+        check_("the Release form is the schema's", open(RELEASE_FORM, encoding="utf-8").read() == release_form(sch), True)
+        rel = yaml.safe_load(release_form(sch))
+        check_("the Release form labels the issue with the release lane's label", (rel["labels"], rel["title"]), (["lane:release"], "Release "))
+        check_("the Release form has a field GitHub can show (a form needs one besides Markdown)", any(b["type"] != "markdown" for b in rel["body"]), True)
     except ImportError:
         print("skip the form is the schema's (no PyYAML here; the Linux job checks it)")
     if not failed:
@@ -320,14 +350,21 @@ def main(argv):
         print(hashlib.sha256(part_text(sys.stdin.read(), argv[1]).encode()).hexdigest())
         return 0
     if argv[:1] == ["form"]:
-        text = form()
-        if argv[1:2] == ["--check"]:
-            same = open(FORM, encoding="utf-8").read() == text
-            print("the form matches the schema" if same else "::error::.github/ISSUE_TEMPLATE/task.yml differs from policy/issue-schema.yml: run scripts/issue-schema.py form")
-            return 0 if same else 1
-        with open(FORM, "w", encoding="utf-8") as f:
-            f.write(text)
-        return 0
+        bad = 0
+        for path, make in FORMS:
+            text = make()
+            if argv[1:2] == ["--check"]:
+                try:
+                    same = open(path, encoding="utf-8").read() == text
+                except OSError:
+                    same = False
+                name = os.path.relpath(path, ROOT)
+                print(f"{name} matches the schema" if same else f"::error::{name} differs from policy/issue-schema.yml: run scripts/issue-schema.py form")
+                bad += 0 if same else 1
+                continue
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+        return 1 if bad else 0
     print(__doc__, file=sys.stderr)
     return 64
 

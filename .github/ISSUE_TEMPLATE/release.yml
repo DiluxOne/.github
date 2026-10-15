@@ -1,0 +1,23 @@
+# Written by scripts/issue-schema.py from policy/issue-schema.yml; edit those, not this file.
+name: 📦 Release
+description: 'For maintainers. Publish the next version: accepting this issue is the approval.'
+title: 'Release '
+labels:
+- lane:release
+type: Task
+body:
+- type: markdown
+  attributes:
+    value: 'Publishing a version is a person''s decision, and accepting this issue is it. Title it exactly `Release X.Y.Z`, the version the labels of what merged give (the last release run on `main` says which).
+
+
+      Once a maintainer accepts it, the release pull request opens on its own (the `Unreleased.` hold removed, the version markers set); when it merges, the release workflow checks that a person accepted this issue and that its title still names the version, then publishes. Change the title after accepting and it must be accepted again.
+
+      '
+- type: textarea
+  id: notes
+  attributes:
+    label: Notes
+    description: Optional. Anything the person who accepts it should know (a date it must wait for, a version it follows). What the version brings is in the changelog, written as the changes merged.
+  validations:
+    required: false

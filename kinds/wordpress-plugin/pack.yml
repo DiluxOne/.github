@@ -49,3 +49,25 @@ settings:
     # stable_tag_mismatch, because the checkout's markers are held to the
     # released version by the readme job, and checked again before SVN.
     ignore-codes: [stable_tag_mismatch]
+
+# How a version of this kind is released (#82; kinds/README.md). A person
+# accepts the issue "Release X.Y.Z"; the release pull request is then this
+# `prepare` command run on the default branch (issue-accepted.yml, through
+# scripts/release-issue.py, which knows nothing of WordPress), and once it
+# merges `workflow` publishes the version to `publishes-to`, after checking
+# that a person accepted that issue (scripts/release-gate.py).
+#   publishes-to  where a release goes, for people (the pull request says it)
+#   workflow      the reusable workflow that publishes; the repository's
+#                 caller of it holds the inputs the command reads (its `with:`)
+#   prepare       the command, one argument per item, run at the repository's
+#                 root: {version} is the release, {central} the checkout of
+#                 DiluxOne/.github, any other {name} the caller's input
+#   defaults      an input the caller leaves out or empty, as the workflow
+#                 itself defaults it
+release:
+  publishes-to: wordpress.org
+  workflow: plugin-release-wp.yml
+  prepare: [bash, "{central}/scripts/release-markers.sh", prepare, ., "{version}", "{main-file}", "{version-constant}"]
+  defaults:
+    main-file: "{slug}.php"
+    version-constant: ""

@@ -31,11 +31,16 @@ flowchart LR
     L --> G{"All of them?"}
     G -- "yes" --> H["⚡ Auto-merge<br/>+ receipt"]
     G -- "any no" --> I["👤 A person merges"]
-    H --> R{"🔐 Release approved<br/>by a person?"}
-    I --> R
-    R -- "approved" --> J["📦 Tag X.Y.Z<br/>→ production, published"]
-    R -- "not yet" --> W["Waits on main,<br/>nothing published"]
+    H --> W["Waits on main,<br/>nothing published"]
+    I --> W
+    W --> R{"🔐 Release X.Y.Z issue<br/>accepted by a person?"}
+    R -- "accepted" --> P["📋 Release pull request<br/>Unreleased. removed, version set"]
+    P -- "merged" --> V{"Accepted by a person<br/>and the same version?"}
+    V -- "yes" --> J["📦 Tag X.Y.Z<br/>→ production, published"]
+    V -- "no" --> W
 ```
+
+Publishing is the third decision a person makes, after accepting the issue and, sometimes, merging: an issue "Release X.Y.Z" (the Release form), whose acceptance opens the release pull request; once it merges, the release workflow checks that a person accepted that issue for that version before anything is published. The bot never opens one.
 
 You can follow an autopilot run as it goes: its draft pull request is the Spec as a checklist, one box per criterion, ticked as each criterion's commit lands; the issue's board links the pull request, the run and the progress; the run's summary says what the agent read, ran and changed, and keeps its full transcript. A run never ends in silence: the pull request is ready for review, or the agent says where it stopped and why, or the run continues (`autopilot:continue`), or the workflow says so and hands it to a person (`needs-human`). A pull request that is not the autopilot's, a person's or a contributor's, joins the same path at "Ready for review".
 

@@ -18,6 +18,20 @@ name: Issue accepted
 # comment. A lane's issue, accepted by policy and never labelled by a
 # person, stays unassigned.
 #
+# A release issue (#82, "Release X.Y.Z", label `lane:release`) is not a PRD:
+# its acceptance is the decision to publish that version. Instead of G1 and
+# the seal, the `release` job opens the release pull request: it checks that
+# the labels of what merged give that version (scripts/next-version.py),
+# runs the command the repository's kind names for it (kinds/<kind>/pack.yml,
+# `release.prepare`; for a plugin, scripts/release-markers.sh prepare, which
+# removes the `Unreleased.` hold and sets the version markers) on a branch,
+# and opens the pull request that closes the issue, as dilux-bot. It says on
+# the issue, in one comment kept up to date, what it opened or why it did
+# not. It never publishes: the release workflow does, once that pull request
+# merges, after checking the issue again (scripts/release-issue.py). It does
+# nothing while DX_AUTOPILOT is off. No receipt is written for it: the tag
+# and the GitHub release are the record.
+#
 #   on:
 #     issues:
 #       types: [labeled, closed]
@@ -119,8 +133,9 @@ jobs:
     # date, says it is ready or what is missing. It decides nothing yet: the
     # autopilot (#83) starts only on a ready issue. It also assigns the issue
     # to whoever accepted it, if nobody has it (#73). Needs the bot's key to
-    # comment and assign; without it the check runs and only logs.
-    if: github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == inputs.label && github.event.sender.type != 'Bot'
+    # comment and assign; without it the check runs and only logs. Not on a
+    # release issue (#82): the `release` job is its acceptance.
+    if: github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == inputs.label && github.event.sender.type != 'Bot' && !contains(github.event.issue.labels.*.name, 'lane:release')
     # Nothing from the caller's token: the callers grant this workflow
     # actions: write, issues: read and pull-requests: read only, and the
     # schema and its script are read from this public repository.
@@ -224,7 +239,7 @@ jobs:
     timeout-minutes: 5
     # When an accepted issue closes as completed by a merged pull request: the
     # receipt (#81), committed to the receipts branch, and the board updated.
-    if: github.event_name == 'issues' && github.event.action == 'closed' && github.event.issue.state_reason == 'completed' && contains(github.event.issue.labels.*.name, inputs.label)
+    if: github.event_name == 'issues' && github.event.action == 'closed' && github.event.issue.state_reason == 'completed' && contains(github.event.issue.labels.*.name, inputs.label) && !contains(github.event.issue.labels.*.name, 'lane:release')
     permissions: {}
     steps:
       - name: The scripts
@@ -276,6 +291,107 @@ jobs:
           id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '.[] | select(.user.type == "Bot" and (.user.login | startswith("dilux-bot")) and (.body | startswith("<!-- dx-board -->"))) | .id' | tail -1)
           if [ -n "$id" ]; then gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$board" >/dev/null
           else gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$board" >/dev/null; fi
+
+  release:
+    name: The release pull request
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    # A person accepts a release issue (#82): the release pull request, as
+    # the header says. Everything goes through dilux-bot's token, so the
+    # caller's grants are not touched; no code of the repository runs, only
+    # the organisation's scripts on its files.
+    if: github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == inputs.label && github.event.sender.type != 'Bot' && contains(github.event.issue.labels.*.name, 'lane:release')
+    permissions: {}
+    concurrency:
+      group: release-pr-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - name: dilux-bot token
+        id: bot
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+
+      # The default branch, with its tags; its credentials push the branch.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          token: ${{ steps.bot.outputs.token }}
+          fetch-depth: 0
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref }}
+          path: .dx-central
+          persist-credentials: false
+
+      - name: Open it, or say why not
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          NUMBER: ${{ github.event.issue.number }}
+          TITLE: ${{ github.event.issue.title }}
+          BASE: ${{ github.event.repository.default_branch }}
+          DX_AUTOPILOT: ${{ vars.DX_AUTOPILOT }}
+        run: |
+          set -euo pipefail
+          echo ".dx-central/" >> .git/info/exclude
+          # One comment on the issue, kept up to date: what was opened, or why not.
+          say() {
+            local body id
+            body="<!-- dx-release -->"$'\n'"$1"$'\n\n'"🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
+            echo "$1"
+            id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '.[] | select(.user.type == "Bot" and (.user.login | startswith("dilux-bot")) and (.body | startswith("<!-- dx-release -->"))) | .id' | tail -1)
+            if [ -n "$id" ]; then gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$body" >/dev/null
+            else gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$body" >/dev/null; fi
+          }
+          if [ "$(tr '[:upper:]' '[:lower:]' <<<"${DX_AUTOPILOT:-}")" = off ]; then
+            say "**No release pull request:** the organisation's \`DX_AUTOPILOT\` is off, which stops every autonomous action. A maintainer prepares it by hand (the kind's command, \`scripts/release-markers.sh prepare\` for a plugin) in a pull request that closes this issue."
+            exit 0
+          fi
+          python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$BASE" --json > "$RUNNER_TEMP/next.json"
+          rc=0
+          TITLE="$TITLE" NUMBER="$NUMBER" NEXT_JSON="$RUNNER_TEMP/next.json" ROOT=. CENTRAL=.dx-central \
+            python3 .dx-central/scripts/release-issue.py plan > "$RUNNER_TEMP/plan.json" || rc=$?
+          if [ "$rc" -gt 1 ] || ! jq -e 'has("ok")' "$RUNNER_TEMP/plan.json" >/dev/null 2>&1; then
+            echo "::error::release-issue.py plan failed (exit $rc)."; exit 1
+          fi
+          if [ "$(jq -r .ok "$RUNNER_TEMP/plan.json")" != true ]; then
+            say "**No release pull request:** $(jq -r .why "$RUNNER_TEMP/plan.json")."
+            exit 0
+          fi
+          version=$(jq -r .version "$RUNNER_TEMP/plan.json"); branch=$(jq -r .branch "$RUNNER_TEMP/plan.json")
+          title=$(jq -r .title "$RUNNER_TEMP/plan.json"); where=$(jq -r .publishes_to "$RUNNER_TEMP/plan.json")
+          if git rev-parse -q --verify "refs/tags/$version^{commit}" >/dev/null; then
+            say "**No release pull request:** $version is already released (its tag exists)."; exit 0
+          fi
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --state all --json url --jq '.[0].url // empty')
+            say "**The release pull request** for $version is already there: ${pr:-the branch \`$branch\`}. Merging it publishes $version to $where."
+            exit 0
+          fi
+          git config user.name "dilux-bot[bot]"
+          git config user.email "333187390+dilux-bot[bot]@users.noreply.github.com"
+          git checkout -q -b "$branch"
+          mapfile -t argv < <(jq -r '.argv[]' "$RUNNER_TEMP/plan.json")
+          if ! "${argv[@]}" > "$RUNNER_TEMP/prepare.log" 2>&1; then
+            cat "$RUNNER_TEMP/prepare.log"
+            say "**No release pull request:** preparing $version failed. If \`main\` already says $version (its pull request merged the old way), nothing needs preparing: re-run the last release run on \`main\`, which now finds this issue accepted. Otherwise the run says why: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            exit 0
+          fi
+          git add -A
+          if git diff --cached --quiet; then
+            say "**No release pull request:** preparing $version changed nothing, so \`main\` already says it: re-run the last release run on \`main\`, which now finds this issue accepted."
+            exit 0
+          fi
+          git commit -q -m "$title"
+          git push -q origin "$branch"
+          pr=$(gh pr create --repo "$GITHUB_REPOSITORY" --base "$BASE" --head "$branch" --title "$title" --body "$(jq -r .body "$RUNNER_TEMP/plan.json")")
+          say "**The release pull request:** $pr. It goes through the checks and the review like any other; merging it publishes $version to $where, after the release workflow checks that a person accepted this issue and that its title still names $version."
 
   project:
     name: The product's Project

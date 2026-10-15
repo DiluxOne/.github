@@ -34,6 +34,7 @@ kinds/<kind>/
 | `own-checks` | What a repository of this kind requires of its own jobs in its **own checks** ruleset: `callers-of` (it needs one when it calls one of these workflows), `jobs` (the caller's job names whose checks are required), `skip` (check names left out). `scripts/sync-repos.py own-checks` creates it. |
 | `adapters` | The engines the kind's checks run and the language adapter each reads with. |
 | `settings` | What the workflows read from the pack, free-form per kind (for wordpress-plugin, `plugin-check`: `strict`, `categories`, `include-experimental`, `ignore-codes`). |
+| `release` | How a version of this kind is released (#82), read by [`scripts/release-issue.py`](../scripts/release-issue.py): `publishes-to` (where it goes, for people), `workflow` (the reusable workflow that publishes it; the repository's caller of it holds the inputs), `prepare` (the command that turns the default branch into the release pull request, one argument per item: `{version}`, `{central}` for the checkout of this repository, any other `{name}` the caller's input) and `defaults` (an input the caller leaves out). A kind without it publishes nothing, and its release issue says so. |
 
 A repository can add to a list in `settings` from its own policy, never
 replace a value: it adds an exception, it does not turn a gate off. The

@@ -1,25 +1,26 @@
 name: Release
 
 # Publishes this plugin to wordpress.org through the shared workflow in
-# DiluxOne/.github, as a deployment: on every push to main the workflow
-# computes the next version from the type:* labels of what merged; when
-# something is pending, it waits for approval in the `wordpress-org`
-# environment, then checks that the version markers say it (the release pull
-# request, the one that removes the `Unreleased.` line, sets them with
-# scripts/release-markers.sh prepare), deploys, tags and creates the
-# release. A tag
-# X.Y.Z an administrator pushes by hand goes through the same job, and must
-# be the version the labels say is next. The approval is the environment's
-# required reviewers, and the workflow checks that they are there (that is
-# what the `actions: read` below is for): without them nothing deploys. A
-# private repository below GitHub Enterprise cannot have them, so it is
-# made public before its first release. While the readme's newest changelog
-# entry starts with the line `Unreleased.` nothing waits for approval: the
-# version is not ready, and the pull request that removes that line releases
-# it. Every push to main also publishes a development build (the shipped
-# tree stamped <next>-dev.<N>) as the one "Development build" pre-release on
-# the moving tag `dev`, replaced each time. Fill in slug and
-# version-constant.
+# DiluxOne/.github: on every push to main the workflow computes the next
+# version from the type:* labels of what merged. A release is a person's
+# decision (DiluxOne/.github#82): a maintainer opens the issue "Release
+# X.Y.Z" (the Release form) and accepts it, which opens the release pull
+# request (the `Unreleased.` line removed and the version markers set, with
+# scripts/release-markers.sh prepare). Once it merges, this workflow checks
+# that a person accepted that issue and that its title still names the
+# version (that is what the `issues: read` below is for), then deploys, tags
+# and creates the release. Without an accepted release issue, the
+# environment's required reviewers approve instead, if it has any (that is
+# what the `actions: read` is for, and a private repository below GitHub
+# Enterprise cannot have them); without either, nothing deploys. A tag X.Y.Z
+# an administrator pushes by hand goes through the same job, and must be the
+# version the labels say is next. While the readme's newest changelog entry
+# starts with the line `Unreleased.` nothing is released: the notes under it
+# are written as the changes merge. Every push to main also publishes a
+# development build (the shipped tree stamped <next>-dev.<N>) as the one
+# "Development build" pre-release on the moving tag `dev`, replaced each
+# time. Fill in slug and version-constant: the release pull request reads
+# them from here.
 #
 # The environment holds the SVN credentials and the release App's key
 # (DILUX_RELEASE_PRIVATE_KEY, with the variable DILUX_RELEASE_CLIENT_ID).
@@ -40,6 +41,7 @@ on:
 permissions:
   contents: write
   pull-requests: read # the labels of what merged decide the version
+  issues: read # the release issue a person accepted, the approval
   actions: read # the environment's protection rules, and the runs still waiting
 
 jobs:

@@ -70,3 +70,20 @@ report:
   - What would you like to happen?
   - What do you do today instead?
   - What and why
+
+# The release issue (#82): publishing a version is a person's decision, and
+# accepting this issue is it. It is not a PRD: its title is the version,
+# exactly "Release X.Y.Z", and its label is the release lane's
+# (policy/autonomy.yml), which is never accepted by policy. Accepting it
+# opens the release pull request; the release workflow publishes only a
+# version whose issue a person accepted and whose title has not changed
+# since (scripts/release-issue.py). scripts/issue-schema.py writes the
+# Release form (.github/ISSUE_TEMPLATE/release.yml) from this.
+release:
+  title: "Release "
+  label: "lane:release"
+  sections:
+    - id: notes
+      heading: Notes
+      description: Optional. Anything the person who accepts it should know (a date it must wait for, a version it follows). What the version brings is in the changelog, written as the changes merged.
+      required: false

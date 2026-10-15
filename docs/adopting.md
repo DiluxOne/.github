@@ -66,22 +66,27 @@ Most of it is the organisation's already: a new repository gets the pull request
    a `docs/roadmap.md` that says what is free, what is paid, what is planned,
    what will not be done and the known limitations: the issue triage answers
    from it.
-3. **Labels, settings and shared files.** `python3 scripts/sync-repos.py all --repo <name>` from a checkout of this repository: the labels, the merge and security settings, `.github/CODEOWNERS` and the opening block of `AGENTS.md` (a pull request with its issue). The `main` and tag rulesets are the organisation's; a plugin that publishes adds its environment `wordpress-org` (deployment policy: tag `*.*.*` plus `main`, required reviewers, the SVN credentials and the release App's key as environment secrets) and installs the `dilux-release` App.
+3. **Labels, settings and shared files.** `python3 scripts/sync-repos.py all --repo <name>` from a checkout of this repository: the labels, the merge and security settings, `.github/CODEOWNERS` and the opening block of `AGENTS.md` (a pull request with its issue). The `main` and tag rulesets are the organisation's; a plugin that publishes adds its environment `wordpress-org` (deployment policy: tag `*.*.*` plus `main`, the SVN credentials and the release App's key as environment secrets; no required reviewer is needed, since a person accepting the release issue is the approval) and installs the `dilux-release` App.
 
    The organisation's side, done by an administrator of the organisation (a maintainer, or the session working in this repository): add the repository to the `include` list of the three organisation rulesets (`org: main`, `org: release tag creation`, `org: release tags`), which name their repositories one by one; for a private repository, also to the organisation variable `DX_RUNNER` and to the runner group `private-repos-vm`, so its jobs run on the organisation's VM and spend no minutes; and give it a Project in `repos.yml` (`projects:`). A repository that versions third-party code with Markdown of its own (a site's `wp-content/plugins/` and `themes/`) lists those paths in a `.lycheeignore` at its root, lychee's own file, so the docs check does not follow their links.
 
    Then the readme: the newest entry under `== Changelog ==` is headed
    `= X.Y.Z =` (or `= Unreleased =`) and its first line is `Unreleased.`
    while the version is not ready. Every pull request that changes what a
-   user sees adds its bullet under that line; the pull request that removes
-   the line is the release decision, sets the three version markers to the
-   version being released (`scripts/release-markers.sh prepare`), and the
-   next push to `main` waits for the environment's reviewers. Between
-   releases the markers say the last version released. The reviewers are a
-   requirement the workflow checks, not an assumption (`scripts/release-gate.py`,
-   which reads the environment with the `actions: read` the template grants):
-   without them nothing deploys. A private repository below GitHub Enterprise
-   cannot have them, so it is made public before its first release.
+   user sees adds its bullet under that line. The release decision is an
+   issue: "Release X.Y.Z", opened with the Release form (label
+   `lane:release`, which `sync-repos.py labels` creates) and accepted by a
+   person. Accepting it opens the release pull request, which removes the
+   line and sets the three version markers to that version
+   (`scripts/release-markers.sh prepare`); when it merges, the release
+   workflow checks the acceptance (`scripts/release-issue.py verify`, with
+   the `issues: read` the template grants) and publishes. Between releases
+   the markers say the last version released. The environment needs no
+   required reviewer, which a private repository below GitHub Enterprise
+   cannot have; one that has them is asked there too. Without an accepted
+   release issue, only the environment's reviewers can approve
+   (`scripts/release-gate.py`, which reads the environment with the
+   `actions: read` the template grants), and without them nothing deploys.
 
 ## What every repository shares, and how it stays in step
 

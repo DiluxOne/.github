@@ -123,7 +123,9 @@ jobs:
     name: Triage
     runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
-    if: github.event_name == 'issues' && github.event.action == 'opened' && github.event.issue.user.type != 'Bot'
+    # Not a release issue (#82, `lane:release`): it asks for no answer, only
+    # a person's acceptance (issue-accepted.yml).
+    if: github.event_name == 'issues' && github.event.action == 'opened' && github.event.issue.user.type != 'Bot' && !contains(github.event.issue.labels.*.name, 'lane:release')
     outputs:
       # Labels and numbers only: what a run that read the paid roadmap
       # produced, handed to the job that writes the public reply.
@@ -502,10 +504,12 @@ jobs:
   # request, if the autopilot is on and the issue is ready (autopilot.yml
   # decides both). `autopilot:continue` on the issue, from a person or from
   # dilux-bot (a run that ran out of turns or time), resumes its draft pull
-  # request (#109). Here because this caller inherits the secrets.
+  # request (#109). Here because this caller inherits the secrets. Never on
+  # a release issue (#82, `lane:release`): its acceptance opens the release
+  # pull request instead (issue-accepted.yml).
   autopilot:
     if: >-
-      github.event_name == 'issues' && github.event.action == 'labeled' && (
+      github.event_name == 'issues' && github.event.action == 'labeled' && !contains(github.event.issue.labels.*.name, 'lane:release') && (
         (github.event.label.name == 'accepted' && github.event.sender.type != 'Bot') ||
         (github.event.label.name == 'autopilot:continue' && (github.event.sender.type != 'Bot' || github.event.sender.login == 'dilux-bot[bot]')))
     permissions: {}
