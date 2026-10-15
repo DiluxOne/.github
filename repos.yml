@@ -91,7 +91,7 @@ files:
 # `repository-owned` names, for each template, the inputs it says to fill in:
 # their values are the repository's, never compared and always kept. An input
 # a repository passes that its template does not set (main-file,
-# php-versions, requires-plugins-from), and a job of its own, are its own too.
+# requires-plugins-from), and a job of its own, are its own too.
 callers:
   every-repository: [issues.yml, pull-request-comments.yml]
   repository-owned:

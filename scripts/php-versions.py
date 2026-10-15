@@ -241,9 +241,18 @@ def gate(script, env, root="."):
     return out, notes
 
 
+def annotation(note):
+    """A workflow command with its message escaped: text read from the pull request (a constraint, a header) cannot start another command."""
+    m = re.match(r"(::[a-z]+(?: [^:]*)?::)(.*)", note, re.S)
+    if not m:
+        return note
+    message = m.group(2).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    return m.group(1) + message
+
+
 def emit(out, notes):
     for note in notes:
-        print(note)
+        print(annotation(note))
     lines = "".join(f"{k}={v}\n" for k, v in out.items())
     print(lines, end="")
     if os.environ.get("GITHUB_OUTPUT"):
@@ -291,7 +300,7 @@ def main(argv):
             base = (os.environ.get("BASE_MAIN", ""), os.environ.get("BASE_README", ""))
         emit(*plan(settings, os.environ.get("MAIN", ""), os.environ.get("README", "readme.txt"), base))
     except (ValueError, KeyError) as err:
-        print(f"::error::{err}")
+        print(annotation(f"::error::{err}"))
         return 1
     return 0
 
@@ -478,6 +487,11 @@ def self_test():
     check("plan: analysis-only is written, empty when the pack has none", out and out["analysis-only"] == "[]", out)
     out, notes = run({"php": {"tools": "8.5", "minimum": "7.4", "analysis-only": ["not a package"]}}, header.format("7.4"))
     check("plan: an analysis-only entry that is not a package fails", out is None and "analysis-only" in notes[0], notes)
+
+    check("annotation: a newline from the pull request cannot start another command",
+          annotation("::warning file=composer.json::vimeo/psalm ^5\n::error::forged 100%") == "::warning file=composer.json::vimeo/psalm ^5%0A::error::forged 100%25")
+    out, notes = gate_in("psalm:taint", {"require-dev": {"vimeo/psalm": "^5.26\n::error::forged"}})
+    check("psalm: a forged constraint is escaped when printed", "\n" not in annotation(notes[0]), notes)
 
     # The command line, as the workflow calls it.
     import subprocess
