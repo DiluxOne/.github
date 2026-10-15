@@ -7,6 +7,8 @@ name: Plugin checks
 # auto-merge decision are the organisation's (org-pull-request.yml, required
 # by its ruleset): nothing of them here. Fill in slug and version-constant,
 # and declare the kind in .github/review-policy.yml (`kind: wordpress-plugin`).
+# The PHP versions are the kind's, not the caller's: every tool on the
+# latest, the code held to the pack's minimum (kinds/wordpress-plugin/pack.yml).
 
 on:
   pull_request:
