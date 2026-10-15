@@ -51,6 +51,6 @@ Then CI runs the same checks. If you opened it before the issue was accepted, it
 
 ## Never
 
-- Push to `main`, create or move a tag, or approve a release.
+- Push to `main`, create or move a tag, or approve a release. A release is the issue "Release X.Y.Z" a person accepts: open one only when the person you work for says so, and never accept it.
 - Add `accepted`, change an issue's Type to get past the gate, or start a change whose issue is not accepted.
 - Put secrets, keys or personal data in a commit, an issue or a log.

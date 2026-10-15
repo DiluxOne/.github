@@ -1,8 +1,8 @@
 name: WordPress plugin release
 
-# Reusable. Publishes a WordPress plugin to wordpress.org as a deployment
-# the maintainer approves, from the version the labels of what merged say
-# is next; or from a tag X.Y.Z an administrator pushes by hand, which is
+# Reusable. Publishes a WordPress plugin to wordpress.org once a person has
+# accepted the issue "Release X.Y.Z" (#82), from the version the labels of
+# what merged say is next; or from a tag X.Y.Z an administrator pushes by hand, which is
 # the same pipeline with the version typed instead of computed.
 #
 # On a push to main, the `version` job runs scripts/next-version.py: the
@@ -10,9 +10,9 @@ name: WordPress plugin release
 # the bump (breaking → major, feat → minor, fix or perf → patch; a
 # version:* label a person set wins). Nothing pending, or the policy's
 # `release:` says `off` for that bump: the run ends there, green, and the
-# summary says why. Something pending: the `release` job waits for the
-# environment's reviewers (the summary shows the version, the bump and the
-# pull requests that justify it), then checks that the three version markers
+# summary says why. Something pending: the approval below decides (the
+# summary shows the version, the bump and the pull requests that justify
+# it), then the `release` job checks that the three version markers
 # already say X.Y.Z (the release pull request, the one that removed the
 # `Unreleased.` line, set them: scripts/release-markers.sh prepare), commits
 # trunk + tags/X.Y.Z + assets to SVN, then creates the tag and the GitHub
@@ -32,14 +32,25 @@ name: WordPress plugin release
 # and the release is created on the existing tag. A tag this workflow
 # created itself arrives with its release already there, so that run stops.
 #
-# Who approves (#134, scripts/release-gate.py): before any version reaches
-# the deploy job, the `version` job reads the environment's protection
-# rules from GitHub. With required reviewers, they approve, as above.
-# Without them nothing deploys, and the summary says to add one (a private
-# repository below GitHub Enterprise cannot have one: it is made public
-# first). Rules that cannot be read, because the caller's job grants no
-# `actions: read` (the template does), stop a private repository and let a
-# public one go on as before, with a warning that asks for the permission.
+# Who approves (#82, #134, scripts/release-gate.py): before any version
+# reaches the deploy job, the `version` job looks for the issue "Release
+# X.Y.Z" of this version (label `lane:release`) and reads its timeline
+# (scripts/release-issue.py verify): a person, not a bot, added `accepted`
+# last, that person has the admin or maintain role on the repository now
+# (read from the API when it runs; triage or write is not enough, and an
+# answer that fails approves nothing), and its title has not changed since.
+# That acceptance is the
+# approval, and the environment needs no reviewer for it, which is what a
+# private repository on the Team plan cannot have. Accepting the issue also
+# opened the release pull request (issue-accepted.yml); its merge is the
+# push that publishes. Without such an issue, the environment's required
+# reviewers approve, as before; without them either nothing deploys, and
+# the summary says to open and accept the release issue. The issues are
+# read with the caller's `issues: read` (the template grants it); without
+# it the reviewers decide. Environment rules that cannot be read, because
+# the caller's job grants no `actions: read` (the template does), stop a
+# private repository and let a public one go on as before, with a warning
+# that asks for the permission.
 # A bump the policy releases without a person (`release.<bump>: auto`,
 # through the auto-environment, which has no reviewers by design) passes
 # the gate: the policy decided. A rehearsal (`dry-run`) passes it too,
@@ -84,7 +95,8 @@ name: WordPress plugin release
 # (`environment`, default `wordpress-org`), and that is where the SVN
 # credentials and the release App's key live: as environment secrets, never
 # as repository or organisation secrets. The environment's deployment policy
-# admits main and X.Y.Z tags, and its required reviewers are the approval.
+# admits main and X.Y.Z tags; it needs no required reviewer once releases
+# go through their issue (a repository that keeps them is asked twice).
 # The caller passes `secrets: inherit`, which is why it runs only on main and
 # on X.Y.Z tags. It calls this workflow at `v5`, like every other: a
 # protected ref only an administrator moves, so nothing is pinned (#136).
@@ -95,10 +107,8 @@ name: WordPress plugin release
 #       tags: ['[0-9]+.[0-9]+.[0-9]+']
 #   permissions:
 #     contents: write
-#     pull-requests: read # the labels of what merged decide the version
-#   permissions:
-#     contents: write
 #     pull-requests: read   # the labels of what merged decide the version
+#     issues: read          # the release issue a person accepted (#82)
 #     actions: read         # the environment's rules, and the runs still waiting
 #   jobs:
 #     release:
@@ -129,7 +139,7 @@ on:
         type: boolean
         default: false
       environment:
-        description: The repository environment the release job runs in. Its deployment policy should allow main and X.Y.Z tags, its required reviewers are the approval, and the SVN secrets and the release App's key live in it.
+        description: The repository environment the release job runs in. Its deployment policy should allow main and X.Y.Z tags, and the SVN secrets and the release App's key live in it. The approval is the accepted release issue (#82); required reviewers, if it has any, approve too.
         type: string
         default: wordpress-org
       auto-environment:
@@ -160,12 +170,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     # No permissions block: the job takes the caller's token as granted
-    # (contents and pull-requests to read the labels of what merged, and
-    # `actions: read`, which the template grants, to read the environment's
-    # protection rules and the runs still waiting). A called job may not ask
-    # for more than its caller grants, and a caller on the old template
-    # grants no `actions`: there the gate reads nothing, and release-gate.py
-    # says what that means for a public and for a private repository.
+    # (contents and pull-requests to read the labels of what merged,
+    # `issues: read` for the release issue, and `actions: read` for the
+    # environment's protection rules and the runs still waiting; the
+    # template grants both). A called job may not ask for more than its
+    # caller grants, and a caller on an old template grants neither: there
+    # the gate reads less, and release-gate.py says what that means for a
+    # public and for a private repository.
     outputs:
       version: ${{ steps.next.outputs.version }}
       environment: ${{ steps.next.outputs.environment }}
@@ -270,10 +281,19 @@ jobs:
               version=$coming
               ;;
           esac
-          # Who approves (#134): the environment's required reviewers, read
-          # from GitHub, never assumed (scripts/release-gate.py). The runs
-          # still waiting for an approval are listed too (every page), since
-          # they hold the one-release-at-a-time group.
+          # Who approves (#82, #134): a person who accepted the issue
+          # "Release X.Y.Z" for this version (scripts/release-issue.py
+          # verify, from the issue's timeline: who added `accepted`, and no
+          # title change since), or else the environment's required
+          # reviewers, read from GitHub, never assumed
+          # (scripts/release-gate.py). Without `issues: read` the issue is
+          # not read and the reviewers decide, as before. The runs still
+          # waiting for an approval are listed too (every page), since they
+          # hold the one-release-at-a-time group.
+          # The accepting label is the organisation's (issue-gate.label; a
+          # repository cannot change it), the one issue-accepted.yml acts on.
+          label=$(python3 -c 'import sys; sys.path.insert(0, ".dx-central/scripts"); import policy; print(str(((policy.load_yaml(sys.argv[1]) or {}).get("issue-gate") or {}).get("label") or "accepted"))' "$DEFAULT_POLICY")
+          VERSION="$version" LABEL="$label" python3 .dx-central/scripts/release-issue.py verify > "$RUNNER_TEMP/release-issue.json" || true
           env_name=$(grep '^environment=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-)
           # The environment's rules. 404: the environment does not exist
           # yet (GitHub would create it, with no rule, when the job starts),
@@ -286,7 +306,7 @@ jobs:
           workflow_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .workflow_id 2>/dev/null || echo "")
           { for st in waiting pending; do gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs?status=$st&per_page=100" --jq ".workflow_runs[] | select(.workflow_id == ${workflow_id:-0})" 2>/dev/null || echo "::warning::The runs in state $st could not be listed; the queued-behind notice may be incomplete." >&2; done; } | jq -s '{workflow_runs: .}' > "$RUNNER_TEMP/waiting.json" || : > "$RUNNER_TEMP/waiting.json"
           gate=$(PRIVATE="$PRIVATE" MODE="${mode:-approve}" DRY_RUN="$DRY_RUN" VERSION="$version" RUN_ID="$GITHUB_RUN_ID" \
-                 ENVIRONMENT_FILE="$RUNNER_TEMP/environment.json" WAITING_FILE="$RUNNER_TEMP/waiting.json" GITHUB_OUTPUT="$RUNNER_TEMP/gate.out" \
+                 RELEASE_ISSUE_FILE="$RUNNER_TEMP/release-issue.json" ENVIRONMENT_FILE="$RUNNER_TEMP/environment.json" WAITING_FILE="$RUNNER_TEMP/waiting.json" GITHUB_OUTPUT="$RUNNER_TEMP/gate.out" \
                  python3 .dx-central/scripts/release-gate.py)
           if ! grep -q '^go=true$' "$RUNNER_TEMP/gate.out"; then
             printf '%s\n%s\n' "$gate" "$per_type" >> "$GITHUB_STEP_SUMMARY"

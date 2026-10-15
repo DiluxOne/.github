@@ -23,7 +23,7 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    issue's **Type** (GitHub's own field: the organisation's Feature, Bug,
    Task and Docs) must fit the pull request's: a `feat` (or any `!`) closes
    a Feature, a `fix` a Bug; the issue forms set it (bug → Bug, feature →
-   Feature, docs → Docs, maintenance task → Task) and a maintainer corrects
+   Feature, docs → Docs, maintenance task → Task, release → Task) and a maintainer corrects
    it when accepting. Priority and Projects are the maintainer's, set when
    accepting. The issue is assigned to whoever accepted it, unless it has
    an assignee, and passes to the member of the organisation who opens the
@@ -85,6 +85,18 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    GitHub's auto-merge when the floor is low, the verdict is low risk and low
    complexity, nothing blocks, the author is trusted and the policy says
    `auto-merge: true`.
+
+4. **Release.** Merging publishes nothing by itself. A person opens the
+   issue "Release X.Y.Z" (the Release form) and accepts it; that opens the
+   release pull request (the `Unreleased.` hold removed, the version
+   markers set: the command the kind names), which goes through steps 1 to
+   3 and closes the issue. When it merges, the release workflow publishes
+   only if that issue was accepted last by a person, not a bot, with the
+   admin or maintain role on the repository (triage or write is not
+   enough), and its title still names the version the labels give
+   ([`scripts/release-issue.py`](../scripts/release-issue.py) `verify`,
+   [`scripts/release-gate.py`](../scripts/release-gate.py)). The bot never
+   opens a release issue and no policy accepts one.
 
 Mention `@dilux-bot` in a review thread or in the conversation and Claude
 answers there; it resolves its own thread when the point is settled.
