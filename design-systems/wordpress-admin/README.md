@@ -63,7 +63,7 @@ chosen.
 | States | `--dx-color-success`, `-warning`, `-error`, `-info`, each with its `-wash` (and `-text`, `-strong` where used) | WordPress's notices |
 | Pills | `--dx-color-pill-{on,pending,off}-{background,text}` | both plugins, identical |
 | Pro | `--dx-color-pro`, `-wash` | Users+ |
-| Space | `--dx-space-1` to `-6` (4, 8, 12, 16, 24, 32px), `--dx-space-block` (24px) | Users+'s scale |
+| Space | `--dx-space-1` to `-6` (4, 8, 12, 16, 24, 32px), `--dx-space-block` (24px), `--dx-space-pill-block` and `-pill-inline` (2 and 10px, inside a pill) | Users+'s scale; the pill's, both plugins |
 | Radius | `--dx-radius-sm` (4), `-md` (6), `-lg` (8), `-pill`, `-round` | both |
 | Type | `--dx-font-size-{tiny,small,help,body,title,heading}` (11 to 18px), `--dx-font-weight-{regular,semibold}`, `--dx-font-line-height-{snug,base,pill}` | both |
 | Borders | `--dx-border-width` (1px), `-bar` (3px, the accent band), `-notice` (4px) | both |

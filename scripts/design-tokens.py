@@ -79,6 +79,8 @@ def flatten(tree):
             children = [k for k in node if not k.startswith("$")]
             if extra or children:
                 raise Invalid(f"{'.'.join(path)}: a token holds {', '.join(extra + children)}")
+            if not isinstance(node.get("$extensions") or {}, dict):
+                raise Invalid(f"{'.'.join(path)}: $extensions is an object")
             out[".".join(path)] = {"type": kind, "value": node["$value"], "description": node.get("$description", ""),
                                    "extensions": node.get("$extensions") or {}}
             return
@@ -170,10 +172,12 @@ def validate(tokens):
         if m is not None:
             if tok["type"] != "color" or target(tokens, tok["value"], path):
                 raise Invalid(f"{path}: a mix is a colour written as its value, not a reference")
+            if not isinstance(m, dict):
+                raise Invalid(f"{path}: a mix names `of` (a colour token), `with` (#rrggbb) and `amount` (1 to 99)")
             of = target(tokens, m.get("of"), path)
             amount = m.get("amount")
-            if not of or tokens[of]["type"] != "color" or not isinstance(amount, int) or not 0 < amount < 100 \
-                    or not (isinstance(m.get("with"), str) and HEX.match(m["with"])):
+            if not of or tokens[of]["type"] != "color" or isinstance(amount, bool) or not isinstance(amount, int) \
+                    or not 0 < amount < 100 or not (isinstance(m.get("with"), str) and re.fullmatch(r"#[0-9a-f]{6}", m["with"])):
                 raise Invalid(f"{path}: a mix names `of` (a colour token), `with` (#rrggbb) and `amount` (1 to 99)")
             want = mix(resolve(tokens, of), m["with"], amount)
             if tok["value"] != want:
@@ -387,6 +391,9 @@ def self_test():
     raises("a name in capitals fails", {"c": {"$type": "color", "Main": {"$value": "#000000"}}}, "lower-case")
     raises("a mix whose $value is not what it gives fails", {"c": {"$type": "color", "a": {"$value": "#2271b1"}, "w": {"$value": "#ffffff", "$extensions": {"com.diluxone.mix": {"of": "{c.a}", "with": "#ffffff", "amount": 8}}}}}, "the mix it names gives #edf4f9")
     raises("two tokens that write the same property fail", {"c": {"$type": "color", "a": {"$root": {"$value": "#000000"}}}, "c-a": {"$type": "color", "$root": {"$value": "#000000"}}}, "same property")
+    for what, ext in (("a mix that is not an object", {"com.diluxone.mix": "8%"}), ("a mix whose amount is true", {"com.diluxone.mix": {"of": "{c.a}", "with": "#ffffff", "amount": True}}),
+                      ("$extensions that is not an object", "x")):
+        raises(f"{what} fails", {"c": {"$type": "color", "a": {"$value": "#2271b1"}, "w": {"$value": "#edf4f9", "$extensions": ext}}}, "object" if what.startswith("$") else "a mix names")
     raises("a token that is also a group fails", {"c": {"$type": "color", "a": {"$value": "#000000", "b": {"$value": "#000000"}}}}, "a token holds")
     good = {"rules": [{"id": "no-important", "type": "pattern", "severity": "error", "applies-to": "css", "message": "m", "source": "s",
                        "pattern": r"!\s*important", "fixtures": {"fail": [".a { color: red !important; }"], "pass": [".a { color: red; } /* !important */"]}},

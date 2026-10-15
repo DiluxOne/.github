@@ -51,10 +51,11 @@ rules:
       is `var(--dx-space-block)`. A number of its own (20px, 15px) is how two
       screens stop matching.
     source: "Users+'s admin stylesheet (--du-1 to --du-6, --du-block); Offload's 20px and 15px are the values that fall outside it"
-    pattern: '(?:^|[{;])\s*(?:margin|padding|gap|row-gap|column-gap)(?:-[a-z]+)*\s*:[^;{}]*?(?<![\w.-])(?:[1-9]\d*(?:\.\d+)?|0?\.\d+)(?:px|em|rem)\b[^;{}]*[;}]'
+    pattern: '(?:^|[{;])\s*(?:margin|padding|gap|row-gap|column-gap)(?:-[a-z]+)*\s*:[^;{}]*?(?<![\w.-])-?(?:[1-9]\d*(?:\.\d+)?|0?\.\d+)(?:px|em|rem)\b[^;{}]*[;}]'
     fixtures:
       fail:
         - ".diluxone-x-admin .card { padding: 20px; }"
+        - ".diluxone-x-admin .icon { margin-top: -2px; }"
         - ".diluxone-x-admin .card { margin: 0 0 16px; }"
         - ".diluxone-x-admin .grid { gap: 8px 24px; }"
         - ".diluxone-x-admin .row { padding-left: 1.5em; }"
@@ -151,12 +152,13 @@ rules:
       `.diluxone-<slug>-admin .nav-tab`, never `.nav-tab` on its own, which
       changes every other plugin's screen and WordPress's.
     source: "Offload's and Users+'s admin CSS: every rule on a WordPress class is under .diluxone-<slug>-admin or a container of the plugin"
-    pattern: '(?:^|[},])\s*\.(?:nav-tab(?:-wrapper|-active)?|notice(?:-[a-z]+)?|wp-list-table|button(?:-primary|-secondary)?|card|form-table)\b[^{},]*[{,]'
+    pattern: '(?:^|[{},])\s*\.(?:nav-tab(?:-wrapper|-active)?|notice(?:-[a-z]+)?|wp-list-table|button(?:-primary|-secondary)?|card|form-table)\b[^{},]*[{,]'
     fixtures:
       fail:
         - ".nav-tab-active { border-top-color: var(--dx-color-accent); }"
         - ".notice.inline { margin: 0; }"
         - ".diluxone-x-admin .card,\n.card > h3 { margin: 0; }"
+        - "@media (max-width: 782px) { .nav-tab { float: none; } }"
       pass:
         - ".diluxone-x-admin .nav-tab-active { border-top-color: var(--dx-color-accent); }"
         - ".diluxone-x-sync .notice.inline { margin: 0; }"
