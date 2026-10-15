@@ -25,7 +25,8 @@ name: WordPress plugin checks (fast)
 # Psalm as --php-version. The syntax and unit-test jobs run on every release
 # from the minimum to the tools' PHP. A plugin whose Requires PHP is still
 # higher than the pack's minimum is checked from its own, with a warning,
-# until it lowers it in its own pull request. Psalm 5 cannot run on a PHP
+# until it lowers it in its own pull request; a pull request that raises
+# it above both the base's and the minimum fails. Psalm 5 cannot run on a PHP
 # newer than 8.3: a repository that still installs it gets 8.3 for Psalm,
 # with a warning, until it requires vimeo/psalm ^6.14.2.
 #
@@ -170,6 +171,8 @@ jobs:
                 export BASE_MAIN="$RUNNER_TEMP/base-main.php" BASE_README="$RUNNER_TEMP/base-readme.txt"
                 git show "HEAD^1:$MAIN" > "$BASE_MAIN" 2>/dev/null || : > "$BASE_MAIN"
                 git show "HEAD^1:$README" > "$BASE_README" 2>/dev/null || : > "$BASE_README"
+              else
+                echo "::notice::The checkout has no parent, so this pull request's Requires PHP is not compared with its base's."
               fi ;;
           esac
           python3 .dx-central/scripts/php-versions.py

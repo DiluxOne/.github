@@ -50,7 +50,8 @@ settings:
     # phpVersion, PHPCompatibility's testVersion, Psalm's --php-version) and
     # the syntax and unit-test jobs run on every release from it to `tools`.
     # Only the maintainer changes it. A plugin whose Requires PHP is still
-    # higher is checked from its own until it lowers it.
+    # higher is checked from its own until it lowers it; a pull request
+    # that raises it above both the base's and this fails.
     minimum: '7.4'
   plugin-check:
     # Every warning fails, as it does for the reviewer.
