@@ -126,7 +126,7 @@ jobs:
     # and treat a missing answer as "run", so this job failing (or an older
     # central without the script) never skips a suite; a job skipped by
     # the answer satisfies the ruleset.
-    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
       contents: read
@@ -186,7 +186,7 @@ jobs:
     # fails for it. It runs when a suite does.
     needs: changes
     if: ${{ !cancelled() && inputs.requires-plugins-from != '' && (inputs.integration || inputs.e2e) && needs.changes.outputs.code != 'false' }}
-    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -242,7 +242,7 @@ jobs:
     # the suite is off, or no code changed, every step is skipped and the
     # job is green.
     if: ${{ !cancelled() }}
-    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
     # The target's minutes, from the plan (40 unless the caller says; 40 too
     # when an older central-ref's plan carries none).
     timeout-minutes: ${{ matrix.target.timeout || 40 }}
@@ -364,7 +364,7 @@ jobs:
     needs: [changes, required-plugins]
     # Always there, like the integration jobs, for the same reason.
     if: ${{ !cancelled() }}
-    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-24.04' }}
+    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-24.04' }}
     timeout-minutes: ${{ matrix.suite.timeout }}
     strategy:
       fail-fast: false

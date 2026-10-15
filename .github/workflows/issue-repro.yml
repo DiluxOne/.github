@@ -63,6 +63,14 @@ name: Issue reproduction
 #           keeps the test out of its working tree and runs it only in the
 #           sandbox (its header says how).
 # Claude may write only under tests/Unit/Repro/; anything else is discarded.
+# The draft pull request then runs the repository's own checks, the test
+# among them, and in a private repository those checks run on GitHub's
+# runners too, never on the organisation's VM, whatever DX_RUNNER says:
+# every shared job reads the branch (test/repro-issue-<n>, and the
+# bugfix-reproduced lane's <type>/<m>-the-bug-reproduced-from-<n>) and the
+# author (dilux-bot) of the pull request, never what it changes, and the
+# autopilot that writes the lane's fix, from dilux-bot's issue "The bug
+# reproduced from #<n>" (scripts/runner-route.py, #167).
 # At most `max-per-day` runs a day (10000: the runs go on the
 # subscription, so it only stops a flood). The `high` reviewer of the policy
 # writes the test.
