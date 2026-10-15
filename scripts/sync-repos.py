@@ -8,10 +8,16 @@ archived and not excluded in repos.yml:
 
   labels    labels.yml: creates each label or brings its colour and
             description in line; never deletes one.
-  settings  repos.yml `settings` and `security`, through the API.
-  files     repos.yml `files` (CODEOWNERS) and the opening block of AGENTS.md
-            (agents-block.md, between its dx:org markers). These never go
-            straight to main: for a repository whose files differ, it opens
+  settings  repos.yml `settings` and `security` (Dependabot's alerts and
+            security updates among them), through the API.
+  files     repos.yml `files` (CODEOWNERS), the opening block of AGENTS.md
+            (agents-block.md, between its dx:org markers) and
+            .github/dependabot.yml, written from the template of the
+            repository's kind (kinds/<kind>/dependabot.yml, else
+            policy/dependabot.default.yml) with only the ecosystems it has
+            (github-actions always; npm, composer, docker by their manifest at
+            its root) and what repos.yml `dependabot` adds for it. These never
+            go straight to main: for a repository whose files differ, it opens
             an issue (Type Task) and a pull request that closes it, and the
             maintainer accepts the issue and merges, like any other change.
   own-checks  a repository whose kind asks for it (kinds/<kind>/pack.yml,
@@ -35,8 +41,9 @@ archived and not excluded in repos.yml:
             `all`: a template change is a pull request in every repository.
   all       labels, settings, files and own-checks, in that order.
   check     changes nothing: lists, as Markdown, what differs in each
-            repository, its callers included (the weekly drift check posts
-            it as an issue), and a repository whose `design-system` in
+            repository, its callers and its Dependabot configuration
+            included (the weekly drift check posts it as an issue), and a
+            repository whose `design-system` in
             repos.yml names no system of design-systems/, or is `local` with
             no docs/design-system/README.md.
 
@@ -126,6 +133,8 @@ def sync_settings(repo, conf, dry):
     gh("api", "-X", "PATCH", f"repos/{full}", *args)
     if security.get("vulnerability_alerts"):
         gh("api", "-X", "PUT", f"repos/{full}/vulnerability-alerts")
+    if security.get("automated_security_fixes"):
+        gh("api", "-X", "PUT", f"repos/{full}/automated-security-fixes")
     if public and security.get("private_vulnerability_reporting") in (True, "public-only"):
         gh("api", "-X", "PUT", f"repos/{full}/private-vulnerability-reporting")
     if public and security.get("secret_scanning") in (True, "public-only"):
@@ -156,6 +165,9 @@ def sync_files(repo, conf, block, dry):
     for path, content in (conf.get("files") or {}).items():
         if read(path) != content:
             wanted[path] = content
+    _, dependabot = dependabot_wanted(repo, conf, default)
+    if read(DEPENDABOT) != dependabot:
+        wanted[DEPENDABOT] = dependabot
     agents = read("AGENTS.md")
     if agents is None:
         print("  no AGENTS.md: the organisation's block waits until the repository has one")
@@ -169,7 +181,7 @@ def sync_files(repo, conf, block, dry):
         print(f"  would open an issue and a pull request for: {changed}")
         return
     body = ("The organisation keeps some files the same in every repository, because GitHub reads them only from "
-            f"the repository: {changed} differ here from DiluxOne/.github (repos.yml, agents-block.md). "
+            f"the repository: {changed} differ here from DiluxOne/.github (repos.yml, agents-block.md, the Dependabot template of its kind). "
             "This brings them in step.\n\n🤖 AI-generated · scripts/sync-repos.py")
     pr_body = (f"## 📝 What changes\n\n{changed} as DiluxOne/.github keeps them for every repository.\n\n"
                "## 💡 Why\n\nGitHub reads these only from the repository, so the organisation keeps them in step from one place.")
@@ -653,14 +665,19 @@ def policy_kind(text):
     return m.group(1) if m else None
 
 
+def repo_kind(full, default):
+    """The kind the repository's .github/review-policy.yml names, or None."""
+    out = gh("api", f"repos/{full}/contents/.github/review-policy.yml?ref={default}", "-H", "Accept: application/vnd.github.raw", check=False)
+    if out.returncode != 0 and "404" not in out.stderr:
+        raise RuntimeError(f"could not read its review policy: {out.stderr.strip()[:200]}")
+    return policy_kind(out.stdout) if out.returncode == 0 else None
+
+
 def own_checks_spec(full, default, texts):
     """The pack's `own-checks` when the repository needs the ruleset: its kind
     (kind: in its .github/review-policy.yml) asks for one and a workflow of
     its calls one of the pack's `callers-of`. None otherwise."""
-    out = gh("api", f"repos/{full}/contents/.github/review-policy.yml?ref={default}", "-H", "Accept: application/vnd.github.raw", check=False)
-    if out.returncode != 0 and "404" not in out.stderr:
-        raise RuntimeError(f"could not read its review policy: {out.stderr.strip()[:200]}")
-    kind = policy_kind(out.stdout) if out.returncode == 0 else None
+    kind = repo_kind(full, default)
     pack = os.path.join(CENTRAL, "kinds", kind, "pack.yml") if kind else ""
     spec = (load_yaml(pack).get("own-checks") or None) if pack and os.path.isfile(pack) else None
     return spec if spec and calls_any(texts, spec.get("callers-of") or []) else None
@@ -830,6 +847,135 @@ def design_system_problems(conf, known):
     return found
 
 
+# Dependabot: every repository's .github/dependabot.yml is written from its
+# kind's template (kinds/<kind>/dependabot.yml; without one, the
+# organisation's default), keeping only the ecosystems the repository has.
+
+DEPENDABOT = ".github/dependabot.yml"
+DEPENDABOT_DEFAULT = "policy/dependabot.default.yml"
+ECOSYSTEM_RE = re.compile(r"""^  - package-ecosystem:\s*["']?([A-Za-z0-9_-]+)["']?\s*(#.*)?$""")
+DIRECTORIES_RE = re.compile(r"^    directories:.*$")
+# What at a repository's root says it has an ecosystem; github-actions always.
+MANIFESTS = {"package.json": "npm", "composer.json": "composer", "Dockerfile": "docker"}
+# What repos.yml `dependabot` may add to an ecosystem of a repository.
+DEPENDABOT_KEYS = {"directories", "ignore"}
+
+
+def dependabot_template(kind):
+    """The Dependabot template of a kind, as a path from this repository's
+    root: the pack's dependabot.yml, else the organisation's default."""
+    if kind and re.fullmatch(r"[A-Za-z0-9_-]+", kind) and os.path.isfile(os.path.join(CENTRAL, "kinds", kind, "dependabot.yml")):
+        return f"kinds/{kind}/dependabot.yml"
+    return DEPENDABOT_DEFAULT
+
+
+def dependabot_entries(text):
+    """(head, [(ecosystem, lines)]) of a Dependabot template: everything up
+    to its first entry of `updates`, then each entry with the comments right
+    above it, blank lines around them left out."""
+    lines = text.splitlines(keepends=True)
+    heads = [i for i, l in enumerate(lines) if ECOSYSTEM_RE.match(l)]
+    if not heads:
+        raise ValueError("no `- package-ecosystem:` entry under `updates:`")
+    starts = []
+    for k, h in enumerate(heads):
+        s = h
+        while s > (heads[k - 1] + 1 if k else 0) and lines[s - 1].startswith("  #"):
+            s -= 1
+        starts.append(s)
+
+    def trimmed(part):
+        part = list(part)
+        while part and not part[-1].strip():
+            part.pop()
+        if part and not part[-1].endswith("\n"):
+            part[-1] += "\n"
+        return part
+    entries = [(ECOSYSTEM_RE.match(lines[h]).group(1), trimmed(lines[s:(starts[k + 1] if k + 1 < len(starts) else len(lines))]))
+               for k, (h, s) in enumerate(zip(heads, starts))]
+    return "".join(trimmed(lines[:starts[0]])), entries
+
+
+def dependabot_ecosystems(root, extra):
+    """{ecosystem: [directories]} a repository has: github-actions always,
+    the others by their manifest at its root (`root`, the names there), plus
+    the directories repos.yml adds (`extra`, its `dependabot` entry)."""
+    found = {"github-actions": ["/"]}
+    for name, eco in MANIFESTS.items():
+        if name in root:
+            found[eco] = ["/"]
+    for eco, spec in extra.items():
+        for d in (spec or {}).get("directories") or []:
+            if d not in found.setdefault(eco, []):
+                found[eco].append(d)
+    return {eco: dirs for eco, dirs in found.items() if dirs}
+
+
+def render_dependabot(template, ecosystems, extra):
+    """The template's text with only these ecosystems' entries, each with its
+    directories and the repository's `ignore` (repos.yml) added."""
+    head, entries = dependabot_entries(template)
+    unknown = sorted(set(ecosystems) - {e for e, _ in entries})
+    if unknown:
+        raise ValueError(f"the template has no entry for {', '.join(unknown)}")
+    blocks = []
+    for eco, lines in entries:
+        if eco not in ecosystems:
+            continue
+        lines = [f"    directories: {json.dumps(ecosystems[eco])}\n" if DIRECTORIES_RE.match(l) else l for l in lines]
+        ignore = (extra.get(eco) or {}).get("ignore") or []
+        if ignore:
+            lines += ["    # This repository's own, from DiluxOne/.github repos.yml (`dependabot`).\n", "    ignore:\n"]
+            lines += [f"      - {json.dumps(i)}\n" for i in ignore]
+        blocks.append("".join(lines))
+    return head + "\n".join(blocks)
+
+
+def dependabot_problems(conf):
+    """What is wrong with repos.yml's `dependabot`, as lines."""
+    mapping = conf.get("dependabot") or {}
+    if not isinstance(mapping, dict):
+        return ["`dependabot` is a map of repository to its ecosystems"]
+    known = {e for e, _ in dependabot_entries(open(os.path.join(CENTRAL, DEPENDABOT_DEFAULT), encoding="utf-8").read())[1]}
+    found = []
+    for repo, ecos in mapping.items():
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", str(repo)):
+            found.append(f"`dependabot`: `{repo}` is not a repository's name")
+        if not isinstance(ecos, dict):
+            found.append(f"`dependabot`: {repo} is a map of ecosystem to what it adds")
+            continue
+        for eco, spec in ecos.items():
+            if eco not in known:
+                found.append(f"`dependabot`: {repo} names `{eco}`, not an ecosystem of the templates ({', '.join(sorted(known))})")
+            elif not isinstance(spec, dict) or set(spec) - DEPENDABOT_KEYS:
+                found.append(f"`dependabot`: {repo}'s `{eco}` may hold only {' and '.join(sorted(DEPENDABOT_KEYS))}")
+            elif not all(isinstance(d, str) and d.startswith("/") for d in spec.get("directories") or []) \
+                    or not all(isinstance(i, dict) and i.get("dependency-name") for i in spec.get("ignore") or []):
+                found.append(f"`dependabot`: {repo}'s `{eco}`: each directory starts with `/`, each `ignore` names a `dependency-name`")
+    return found
+
+
+def root_names(full, default):
+    """The names at a repository's root (an empty repository: none)."""
+    out = gh("api", f"repos/{full}/contents/?ref={default}", check=False)
+    if out.returncode != 0:
+        if "404" in out.stderr:
+            return set()
+        raise RuntimeError(f"could not list its root: {out.stderr.strip()[:200]}")
+    rows = json.loads(out.stdout or "[]")
+    return {r.get("name") for r in rows if isinstance(r, dict)} if isinstance(rows, list) else set()
+
+
+def dependabot_wanted(repo, conf, default):
+    """(template, text): the Dependabot configuration a repository should
+    carry, and the template it comes from."""
+    full = f"{ORG}/{repo['name']}"
+    extra = (conf.get("dependabot") or {}).get(repo["name"]) or {}
+    template = dependabot_template(repo_kind(full, default))
+    text = open(os.path.join(CENTRAL, template), encoding="utf-8").read()
+    return template, render_dependabot(text, dependabot_ecosystems(root_names(full, default), extra), extra)
+
+
 def drift(repo, conf, labels, block, current=0):
     """What differs in a repository from what this repository keeps, as lines."""
     full = f"{ORG}/{repo['name']}"
@@ -887,6 +1033,19 @@ def drift(repo, conf, labels, block, current=0):
             found.append(f"`{path}` is missing")
         elif out.stdout != content:
             found.append(f"`{path}` differs")
+    template, dependabot = dependabot_wanted(repo, conf, default)
+    out = gh("api", f"repos/{full}/contents/{DEPENDABOT}?ref={default}", "-H", "Accept: application/vnd.github.raw", check=False)
+    if out.returncode != 0 and "404" not in out.stderr:
+        raise RuntimeError(f"could not read {DEPENDABOT}: {out.stderr.strip()[:200]}")
+    if out.returncode != 0:
+        found.append(f"`{DEPENDABOT}` is missing (its template: `{template}`; `sync-repos.py files`)")
+    elif out.stdout != dependabot:
+        found.append(f"`{DEPENDABOT}` differs from its template, `{template}` (`sync-repos.py files`)")
+    if (conf.get("security") or {}).get("automated_security_fixes"):
+        out = gh("api", f"repos/{full}/automated-security-fixes", check=False)
+        # Said only when GitHub answers that they are off.
+        if out.returncode == 0 and json.loads(out.stdout or "{}").get("enabled") is False:
+            found.append("Dependabot security updates are off (`sync-repos.py settings`)")
     out = gh("api", f"repos/{full}/contents/AGENTS.md?ref={default}", "-H", "Accept: application/vnd.github.raw", check=False)
     if out.returncode == 0:
         try:
@@ -1080,6 +1239,153 @@ def callers_test(check, conf):
           "  repro-triaged:" in both and "  reply:" in both and callers_drift({".github/workflows/all.yml": both}, conf) == [], both)
 
 
+def drift_or_reason(repo, conf, labels, block, current=0):
+    """drift(), or why the repository could not be checked: one repository
+    that cannot be read, or whose template cannot be written, does not stop
+    the report."""
+    try:
+        return drift(repo, conf, labels, block, current)
+    except (RuntimeError, ValueError) as exc:
+        return [f"could not be checked: {exc}"]
+
+
+def dependabot_test(check, conf, labels, block):
+    """The Dependabot templates and what `files` and `check` do with them (#178)."""
+    templates_found = [DEPENDABOT_DEFAULT] + sorted(f"kinds/{k}/dependabot.yml" for k in os.listdir(os.path.join(CENTRAL, "kinds"))
+                                                    if os.path.isfile(os.path.join(CENTRAL, "kinds", k, "dependabot.yml")))
+    check("dependabot: the wordpress-plugin kind has its template", "kinds/wordpress-plugin/dependabot.yml" in templates_found, templates_found)
+    names = {str(l["name"]) for l in labels}
+    every = {"github-actions": ["/"], "npm": ["/"], "composer": ["/"], "docker": ["/"]}
+    for path in templates_found:
+        text = open(os.path.join(CENTRAL, path), encoding="utf-8").read()
+        data = parse_yaml(text)
+        updates = data.get("updates") or []
+        check(f"dependabot {path}: version 2, one entry per ecosystem the organisation's repositories use",
+              data.get("version") == 2 and sorted(u.get("package-ecosystem") for u in updates) == sorted(every), updates)
+        # C2: daily, no cooldown, majors included, one pull request per ecosystem.
+        check(f"C2 (#178) {path}: every ecosystem checked daily, with no cooldown and nothing ignored",
+              all((u.get("schedule") or {}).get("interval") == "daily" and "cooldown" not in u and "ignore" not in u for u in updates), updates)
+        groups = [g for u in updates for g in (u.get("groups") or {}).values()]
+        check(f"C2 (#178) {path}: every group takes every dependency and every kind of update, majors included",
+              groups and all(g.get("patterns") == ["*"] and not set(g) - {"patterns", "applies-to"} for g in groups), groups)
+        check(f"C2 (#178) {path}: one group for the version updates and one for the security updates per ecosystem",
+              all(sorted((g.get("applies-to") or "version-updates") for g in (u.get("groups") or {}).values()) == ["security-updates", "version-updates"] for u in updates), updates)
+        check(f"dependabot {path}: labels the organisation has, Conventional Commit prefixes with their scope",
+              all(set(u.get("labels") or []) <= names and (u.get("labels") or []) and (u.get("commit-message") or {}).get("prefix") in ("ci", "build")
+                  and (u.get("commit-message") or {}).get("include") == "scope" for u in updates), (updates, sorted(names)))
+        check(f"dependabot {path}: every entry has one `directories:` line to fill in",
+              all(sum(1 for l in lines if DIRECTORIES_RE.match(l)) == 1 for _, lines in dependabot_entries(text)[1]), "")
+        check(f"dependabot {path}: written with every ecosystem at the root, it is the template itself", render_dependabot(text, every, {}) == text, render_dependabot(text, every, {}))
+    plugin = open(os.path.join(CENTRAL, "kinds/wordpress-plugin/dependabot.yml"), encoding="utf-8").read()
+    check("dependabot: a kind's template, else the default", [dependabot_template(k) for k in ("wordpress-plugin", None, "nope", "../kinds/wordpress-plugin")]
+          == ["kinds/wordpress-plugin/dependabot.yml", DEPENDABOT_DEFAULT, DEPENDABOT_DEFAULT, DEPENDABOT_DEFAULT], "")
+    got = parse_yaml(render_dependabot(plugin, dependabot_ecosystems({"package.json", "composer.json", "readme.txt"}, {}), {}))
+    check("C1 (#178): a plugin with a package.json and a composer.json gets github-actions, npm and composer, no docker",
+          [u["package-ecosystem"] for u in got["updates"]] == ["github-actions", "npm", "composer"], got)
+    got = parse_yaml(render_dependabot(plugin, dependabot_ecosystems({"readme.txt"}, {}), {}))
+    check("C1 (#178): a plugin with no manifest gets github-actions alone", [u["package-ecosystem"] for u in got["updates"]] == ["github-actions"], got)
+    extra = (conf.get("dependabot") or {}).get(".github") or {}
+    default = open(os.path.join(CENTRAL, DEPENDABOT_DEFAULT), encoding="utf-8").read()
+    mine = render_dependabot(default, dependabot_ecosystems({"README.md", "runner"}, extra), extra)
+    got = parse_yaml(mine)
+    docker = [u for u in got["updates"] if u["package-ecosystem"] == "docker"]
+    check("C1 (#178): an addition repos.yml allows (directories, ignore) is kept",
+          docker and docker[0]["directories"] == ["/runner"] and docker[0]["ignore"][0]["dependency-name"] == "ubuntu", got)
+    here = open(os.path.join(CENTRAL, DEPENDABOT), encoding="utf-8").read()
+    check("C1 (#178): this repository's own .github/dependabot.yml is in step with its template", here == mine, mine)
+    try:
+        render_dependabot(default, {"pip": ["/"]}, {})
+        check("dependabot: an ecosystem the template lacks stops it", False, "no error")
+    except ValueError:
+        check("dependabot: an ecosystem the template lacks stops it", True)
+    check("repos.yml: `dependabot` names repositories, ecosystems of the templates, directories and ignore only", dependabot_problems(conf) == [], dependabot_problems(conf))
+    bad = dependabot_problems({"dependabot": {"r": {"pip": {}, "npm": {"versioning-strategy": "auto"}, "docker": {"directories": ["runner"]}}, "s": ["npm"]}})
+    check("repos.yml: an unknown ecosystem, a key it may not add, a relative directory and a list are refused", len(bad) == 4, bad)
+
+    # C1 and C3 against a stand-in for gh: a plugin (package.json at its root)
+    # whose dependabot.yml is the weekly one of before.
+    class Out:
+        def __init__(self, stdout="", returncode=0, stderr=""):
+            self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
+    weekly = plugin.replace("interval: daily", "interval: weekly")
+    state = {"dependabot": weekly, "fixes": True}
+    calls, written = [], {}
+
+    def fake(*args, check=True, input_text=None):
+        joined = " ".join(args)
+        calls.append(args)
+        if joined.startswith("api repos/o/r/contents/.github/review-policy.yml"):
+            return Out("kind: wordpress-plugin\n")
+        if joined.startswith("api repos/o/r/contents/?ref="):
+            return Out(json.dumps([{"name": "package.json"}, {"name": "plugin.php"}]))
+        if joined.startswith(f"api repos/o/r/contents/{DEPENDABOT}?ref=main"):
+            return Out(state["dependabot"]) if state["dependabot"] is not None else Out("", 1, "HTTP 404")
+        if joined.startswith("api repos/o/r/contents/.github/CODEOWNERS"):
+            return Out(conf["files"][".github/CODEOWNERS"])
+        if joined.startswith("api repos/o/r/contents/AGENTS.md"):
+            return Out(with_block("# AGENTS.md\n", block))
+        if joined == "api repos/o/r/automated-security-fixes":
+            return Out(json.dumps({"enabled": state["fixes"], "paused": False}))
+        if args[:2] == ("label", "list"):
+            return Out("[]")
+        if args[:2] in (("pr", "list"), ("issue", "list")):
+            return Out("[]")
+        if args[:2] == ("issue", "create"):
+            return Out("https://github.com/o/r/issues/7\n")
+        if args[:2] == ("pr", "create"):
+            return Out("https://github.com/o/r/pull/8\n")
+        if "ref/heads/main" in joined:
+            return Out(json.dumps({"object": {"sha": "abc"}}))
+        if joined.startswith("api -X PUT repos/o/r/contents/"):
+            payload = json.loads(input_text)
+            written[args[3].split("/contents/", 1)[1]] = (payload["branch"], base64.b64decode(payload["content"]).decode())
+            return Out("{}")
+        if joined.startswith("api -X"):
+            return Out("{}")
+        if joined == "api repos/o/r":
+            return Out("{}")
+        return Out("", 1, "HTTP 404")
+    global ORG
+    saved_gh, saved_org = globals()["gh"], ORG
+    repo = {"name": "r", "defaultBranchRef": {"name": "main"}}
+    want = render_dependabot(plugin, {"github-actions": ["/"], "npm": ["/"]}, {})
+    globals()["gh"], ORG = fake, "o"
+    try:
+        import contextlib
+        import io
+        lines = drift(repo, conf, [], block)
+        state["dependabot"], state["fixes"] = want, False
+        in_step = drift(repo, conf, [], block)
+        state["dependabot"] = None
+        missing = drift(repo, conf, [], block)
+        state["dependabot"] = weekly
+        with contextlib.redirect_stdout(io.StringIO()):
+            sync_files(repo, conf, block, False)
+    finally:
+        globals()["gh"], ORG = saved_gh, saved_org
+    check("C3 (#178): the drift check names a dependabot.yml that differs, and its template",
+          any(f"`{DEPENDABOT}` differs from its template, `kinds/wordpress-plugin/dependabot.yml`" in l for l in lines), lines)
+    check("C3 (#178): one in step is not reported", not any("dependabot.yml" in l for l in in_step), in_step)
+    check("C3 (#178): a missing one is", any(f"`{DEPENDABOT}` is missing" in l for l in missing), missing)
+    check("drift: Dependabot security updates off are reported, on are not",
+          any("security updates are off" in l for l in in_step) and not any("security updates" in l for l in lines), (lines, in_step))
+    prs = [a for a in calls if a[:2] == ("pr", "create")]
+    check("C1 (#178): `files` writes the template's dependabot.yml, with the plugin's ecosystems, in a pull request that closes its issue",
+          written.get(DEPENDABOT) == ("chore/7-org-shared-files", want) and len(prs) == 1 and "Closes #7" in prs[0][prs[0].index("--body") + 1], (sorted(written), prs))
+    check("C1 (#178): the files in step are not rewritten", sorted(written) == [DEPENDABOT], sorted(written))
+    saved_drift = globals()["drift"]
+    for exc in (ValueError("the template has no entry for pip"), RuntimeError("could not read x")):
+        def failing(*a, exc=exc, **k):
+            raise exc
+        globals()["drift"] = failing
+        try:
+            got = drift_or_reason(repo, conf, [], block)
+        finally:
+            globals()["drift"] = saved_drift
+        check(f"check: a repository whose drift raises {type(exc).__name__} is reported as not checked, not a stop",
+              got == [f"could not be checked: {exc}"], got)
+
+
 def self_test():
     failed = 0
 
@@ -1220,6 +1526,7 @@ def self_test():
     paused = [dict(o, enforcement="evaluate") for o in org]
     check("superseded: nothing when the organisation's are not active", superseded("r", mine, paused, pipe) == [], superseded("r", mine, paused, pipe))
     callers_test(check, conf)
+    dependabot_test(check, conf, labels, block_file)
     if not failed:
         print("all tests passed")
     return 1 if failed else 0
@@ -1245,14 +1552,11 @@ def main(argv):
         return 1
     if what == "check":
         report = [f"# Repositories out of step with {ORG}/.github", "",
-                  "What differs from `labels.yml`, `repos.yml`, `agents-block.md` and `workflow-templates/`. Labels and settings: `python3 scripts/sync-repos.py all`; files: the pull requests it opens; workflow callers: `python3 scripts/sync-repos.py callers --repo NAME`, a pull request each.", ""]
+                  "What differs from `labels.yml`, `repos.yml`, `agents-block.md`, the Dependabot templates (`kinds/<kind>/dependabot.yml`, `policy/dependabot.default.yml`) and `workflow-templates/`. Labels and settings: `python3 scripts/sync-repos.py all`; files and Dependabot: the pull requests it opens; workflow callers: `python3 scripts/sync-repos.py callers --repo NAME`, a pull request each.", ""]
         dirty = 0
         current = current_major()
         for repo in repos:
-            try:
-                lines = drift(repo, conf, labels, block, current)
-            except RuntimeError as exc:
-                lines = [f"could not be checked: {exc}"]
+            lines = drift_or_reason(repo, conf, labels, block, current)
             if lines:
                 dirty += 1
                 report += [f"## {repo['name']}", ""] + [f"- {line}" for line in lines] + [""]

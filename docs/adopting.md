@@ -66,7 +66,7 @@ Most of it is the organisation's already: a new repository gets the pull request
    a `docs/roadmap.md` that says what is free, what is paid, what is planned,
    what will not be done and the known limitations: the issue triage answers
    from it.
-3. **Labels, settings and shared files.** `python3 scripts/sync-repos.py all --repo <name>` from a checkout of this repository: the labels, the merge and security settings, `.github/CODEOWNERS` and the opening block of `AGENTS.md` (a pull request with its issue). The `main` and tag rulesets are the organisation's; a plugin that publishes adds its environment `wordpress-org` (deployment policy: tag `*.*.*` plus `main`, the SVN credentials and the release App's key as environment secrets; no required reviewer is needed, since a person accepting the release issue is the approval) and installs the `dilux-release` App.
+3. **Labels, settings and shared files.** `python3 scripts/sync-repos.py all --repo <name>` from a checkout of this repository: the labels, the merge and security settings (Dependabot's security updates among them), `.github/CODEOWNERS`, the opening block of `AGENTS.md` and `.github/dependabot.yml` (a pull request with its issue). The `main` and tag rulesets are the organisation's; a plugin that publishes adds its environment `wordpress-org` (deployment policy: tag `*.*.*` plus `main`, the SVN credentials and the release App's key as environment secrets; no required reviewer is needed, since a person accepting the release issue is the approval) and installs the `dilux-release` App.
 
    The organisation's side, done by an administrator of the organisation (a maintainer, or the session working in this repository): add the repository to the `include` list of the three organisation rulesets (`org: main`, `org: release tag creation`, `org: release tags`), which name their repositories one by one; for a private repository, also to the organisation variable `DX_RUNNER` and to the runner group `private-repos-vm`, so its jobs run on the organisation's VM and spend no minutes; and give it a Project in `repos.yml` (`projects:`) and, when it has screens, its design system (`design-system:`, [`design-systems/`](../design-systems/)). A repository that versions third-party code with Markdown of its own (a site's `wp-content/plugins/` and `themes/`) lists those paths in a `.lycheeignore` at its root, lychee's own file, so the docs check does not follow their links.
 
@@ -95,12 +95,13 @@ The organisation holds what GitHub lets it hold: the issue Types (Feature, Bug, 
 - [`labels.yml`](../labels.yml): every label the workflows and people use (`accepted` among them).
 - [`repos.yml`](../repos.yml): the merge and security settings, the files GitHub reads only from the repository (`.github/CODEOWNERS`), which public Project of the organisation each repository's accepted issues land on, and which design system its screens follow ([`design-systems/`](../design-systems/)).
 - [`agents-block.md`](../agents-block.md): the opening of every `AGENTS.md`, the organisation's rules for any agent, between `dx:org` markers.
+- The Dependabot templates: [`kinds/wordpress-plugin/dependabot.yml`](../kinds/wordpress-plugin/dependabot.yml) for a plugin, [`policy/dependabot.default.yml`](../policy/dependabot.default.yml) for a repository without a kind (or of a kind without one). Every dependency stays on its latest version: each ecosystem is checked daily, with no cooldown, majors included, and its updates come grouped in one pull request (`ci(deps)` for the actions, `build(deps)` or `build(deps-dev)` for the packages and images). A repository's `.github/dependabot.yml` is its kind's template with only the ecosystems it has: github-actions always, npm with a `package.json` at its root, composer with a `composer.json`, docker with a `Dockerfile`. What it adds (other directories, an `ignore`) goes in `repos.yml` (`dependabot`), never in its own file: the drift check reports any difference, and `files` brings it back.
 
 ```bash
 python3 scripts/sync-repos.py all --dry-run          # what would change, everywhere
 python3 scripts/sync-repos.py labels                  # labels, through the API
 python3 scripts/sync-repos.py settings --repo NAME    # one repository's settings
-python3 scripts/sync-repos.py files                   # CODEOWNERS and the AGENTS.md block, as a pull request per repository
+python3 scripts/sync-repos.py files                   # CODEOWNERS, the AGENTS.md block and dependabot.yml, as a pull request per repository
 python3 scripts/sync-repos.py callers --repo NAME     # the workflow callers, as the templates have them, as a pull request
 ```
 

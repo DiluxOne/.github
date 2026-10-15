@@ -22,6 +22,7 @@ kinds/<kind>/
   rules.yml           what this kind's reviewers send back, as rules the engine checks
   review-profile.md   what the Claude review reads for this kind, on top of review-profiles/general.md
   surface.yml         its public surface, and its documentation paths (optional; "Public surface" below)
+  dependabot.yml      the .github/dependabot.yml of its repositories (optional; "Dependabot" below)
   *.md                anything a repository of this kind needs to know (wordpress-plugin/suppressions.md)
 ```
 
@@ -213,6 +214,32 @@ Fixtures: `fail` (must be found) and `pass` (must not), each the head of one
 new file (a string), `{base, head, path}` for one file, or `{files: {path:
 {base, head}}}` for several (no `base`, the file is new; no `head`, deleted).
 `python3 scripts/surface.py --test` runs every pack's.
+
+## Dependabot
+
+Every repository's `.github/dependabot.yml` comes from the organisation
+(#178): `scripts/sync-repos.py files` writes the kind's `dependabot.yml`
+there, as a pull request with its issue, and the weekly drift check
+(`sync-repos.py check`) reports a repository whose file differs. A kind
+without one, and a repository without a kind, get
+[`policy/dependabot.default.yml`](../policy/dependabot.default.yml).
+
+A template is a whole Dependabot configuration with one entry under
+`updates` for every ecosystem the organisation's repositories use
+(github-actions, npm, composer, docker), each with the comments right above
+it and one `directories: ["/"]` line. A repository gets only the entries of
+the ecosystems it has: github-actions always, npm with a `package.json` at
+its root, composer with a `composer.json`, docker with a `Dockerfile`. What
+a repository adds lives in [`repos.yml`](../repos.yml) (`dependabot`), per
+ecosystem, and nothing else is kept: `directories` (beside its root's; they
+turn the ecosystem on) and `ignore` (Dependabot's own entries, written under
+the entry). The rule a template keeps, and `sync-repos.py --test` holds it
+to: every dependency on its latest version, so each ecosystem is checked
+daily, with no cooldown and no `ignore`, its groups take every dependency
+and every kind of update (majors included), one for the version updates and
+one for the security updates, with the labels of
+[`labels.yml`](../labels.yml) and a `ci` or `build` prefix with its scope
+(`ci(deps): …`, `build(deps-dev): …`).
 
 ## The engine
 
