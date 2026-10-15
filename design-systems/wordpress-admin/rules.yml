@@ -13,11 +13,21 @@
 #               closest code it must not); scripts/design-tokens.py --test
 #               runs every one
 #
-# Until the stylelint rule and the kind's review read this file (issue #77,
-# the later issues), these are what a person and an agent writing a screen
-# hold it to. A finding on code a pull request did not touch is not the pull
-# request's to fix: the plugins move their raw values to the tokens in their
-# own issues.
+# screens: the files that draw a screen, as regular expressions (Python's,
+# case ignored) on a changed file's path. When a pull request changes one,
+# the Claude review's brief carries this system's README, components and
+# rules (scripts/review-brief.sh), and the review holds those files to it.
+#
+# The Claude review reads this file when a pull request touches a screen;
+# until the stylelint rule does too (issue #77, the later issues), these are
+# also what a person and an agent writing a screen hold it to. A finding on
+# code a pull request did not touch is not the pull request's to fix: the
+# plugins move their raw values to the tokens in their own issues.
+screens:
+  - '\.(?:css|scss|sass|less)$'
+  - '(?:^|/)(?:admin|templates?|views?|partials)/.*\.php$'
+  - '(?:^|/)[^/]*admin[^/]*\.php$'
+
 rules:
   - id: colour-from-tokens
     type: pattern

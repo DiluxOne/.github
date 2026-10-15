@@ -16,7 +16,8 @@ design-systems/<name>/
   tokens.json      the tokens, in the Design Tokens format ($value, $type)
   dist/tokens.css  the tokens as CSS custom properties, generated: never edited
   components.md    the components and patterns, each with its example
-  rules.yml        what a review checks, as data, each pattern with its fixtures
+  rules.yml        what a review checks, as data, each pattern with its fixtures,
+                   and its `screens`: the paths of the files that draw a screen
 ```
 
 [`scripts/design-tokens.py`](../scripts/design-tokens.py) writes
@@ -47,6 +48,15 @@ design-system:
   which (`Extends: wordpress-admin`), its tokens add to that system's and
   never redefine one, and its rules add to that system's.
 - **Not listed**: no design system. A project with screens should name one.
+
+When a pull request of a project changes a file that draws a screen (one of
+the system's `screens`; a stylesheet when it lists none), the Claude review
+reads the system's `README.md`, `components.md` and rules (the project's
+`docs/design-system/` when it is `local`, with the system it extends), and a
+finding that relies on them names the rule's id or the component
+([`scripts/review-brief.sh`](../scripts/review-brief.sh), the kind's review
+profile). What a system writes in those files is what every review of its
+projects reads: keep them short.
 
 `scripts/sync-repos.py --test` refuses a name that is neither a system here
 nor `local`, and the weekly drift check reports a `local` project with no
