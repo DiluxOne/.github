@@ -83,6 +83,8 @@ b=Org/two@v1,c=Org/one@x" OWNER=Org bash "$here/required-plugins.sh" repos 2>/de
   ok "C1 (#148) mount: the plugin under wp-content/plugins/<slug>" "jq -e --arg d '$dir/out' '.mappings[\"wp-content/plugins/base\"] == (\$d + \"/base\")' '$dir/.wp-env.override.json' >/dev/null"
   ok "C1 (#148) mount: no must-use plugins of its own"   "jq -e '.mappings | has(\"wp-content/mu-plugins\") | not' '$dir/.wp-env.override.json' >/dev/null"
   ok "C1 (#148) mount: the repository's override kept"   "jq -e '.port == 8888 and .config.WP_DEBUG == true and .mappings[\"wp-content/mu-plugins/own.php\"] == \"./own.php\" and (.mappings | length == 2)' '$dir/.wp-env.override.json' >/dev/null"
+  ( cd "$dir" && bash "$here/required-plugins.sh" wp-env "$dir/out" >/dev/null 2>&1 ) || { echo "FAIL wp-env over an override failed"; fail=1; }
+  ok "wp-env: an existing override kept, the must-use plugins added" "jq -e --arg d '$dir/out' '.port == 8888 and .mappings[\"wp-content/mu-plugins/own.php\"] == \"./own.php\" and .mappings[\"wp-content/mu-plugins\"] == (\$d + \"/mu-plugins\") and (.mappings | length == 3)' '$dir/.wp-env.override.json' >/dev/null"
   ok "C1 (#148) slugs: in the order given, once" '[ "$(REQUIRES="b=Org/two@v1
 a=Org/one@main,b=Org/two@v1" OWNER=Org bash "$here/required-plugins.sh" slugs 2>/dev/null)" = "b a" ]'
   ok "C1 (#148) slugs: another owner is refused" '! REQUIRES="a=Other/one@main" OWNER=Org bash "$here/required-plugins.sh" slugs >/dev/null 2>&1'
