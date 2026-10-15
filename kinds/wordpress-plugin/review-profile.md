@@ -73,6 +73,27 @@ reading can find.
   list,** and are dismissible unless they are urgent. One on every screen of
   the admin reads as nagging, even when it is true.
 
+## The design system
+
+When the brief has a "Design system" section, the change touches a file
+that draws an admin screen (its stylesheets, its admin templates) of a
+repository that declares one, and that section is the standard those
+files are held to, beside the rules above.
+
+- **A finding that relies on it names what it relies on:** the rule's id
+  (`colour-from-tokens`) or the component's heading in `components.md`
+  (Tabs, Cards, Notices). A finding that can name neither is taste, not a
+  finding.
+- **Only what the change adds or alters.** A raw value already there, on a
+  line the change does not touch, is not this pull request's to fix (the
+  plugins move to the tokens in their own issues).
+- **Severity:** a rule of severity `error` broken by a new or changed line
+  is a **major**; a `warning` or a `notice` is a **minor**. A new
+  component the system does not have, written without adding it to the
+  system in the same pull request (`wordpress-pieces-first`), is a minor.
+- When the section says a file was not inlined, read it from the path it
+  gives before raising a finding that depends on it.
+
 ## Code and packaging
 
 - **Everything is prefixed** (functions, classes, options, hooks, AJAX

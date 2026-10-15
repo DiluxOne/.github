@@ -18,8 +18,9 @@ name: Claude review
 #   3. On a new push, Claude gets one brief file with everything: the diff
 #      since the last reviewed commit (or the whole PR the first time, or
 #      after a force-push, a rebase or a merge), the review profiles, the
-#      repository's AGENTS.md and docs/architecture.md, its own earlier
-#      findings and threads. It reviews the new range, says what was fixed,
+#      repository's AGENTS.md and docs/architecture.md, the design system its
+#      screens follow when the change touches one (repos.yml), its own
+#      earlier findings and threads. It reviews the new range, says what was fixed,
 #      leaves inline comments for blockers and majors, and returns a
 #      structured verdict.
 #   4. The verdict becomes labels (risk:*, complexity:*), one summary comment
@@ -332,8 +333,9 @@ jobs:
             You are the code reviewer for ${{ github.repository }}, pull request #${{ github.event.pull_request.number }}.
 
             Everything you need is in one file: .dx-central/brief.md. Read it first, whole. It has
-            the review rules, the repository's own rules, the policy floor, the pull request, your
-            earlier findings and threads, and the diff. Open other files only when the diff alone
+            the review rules, the repository's own rules, its design system when the change touches
+            a screen, the policy floor, the pull request, your earlier findings and threads, and
+            the diff. Open other files only when the diff alone
             cannot settle a finding (a caller, a definition, a test).
 
             For each blocker or major problem, leave one inline comment on the exact line with

@@ -6,6 +6,11 @@ their rules checked against their fixtures.
         write design-systems/<name>/dist/tokens.css from its tokens.json, for
         every system (or the one named); --check writes nothing and fails when
         a file differs from what it would write, or a system is not valid.
+  design-tokens.py brief --repo NAME --repos FILE --changed FILE [--root DIR]
+        the review brief's section on the design system repository NAME
+        declares in FILE (repos.yml), when a path listed in --changed is one
+        of its screens; nothing otherwise. --root is the repository's
+        checkout, for a `local` system (its docs/design-system/).
   design-tokens.py --test   self-test, and every system checked as --check
 
 tokens.json is in the Design Tokens format (W3C community group): groups,
@@ -20,7 +25,9 @@ colour that mix gives with the default values.
 
 rules.yml lists what a review checks; a rule of type `pattern` carries a
 regular expression and fixtures, and every `fail` fixture must match it and
-no `pass` fixture may (comments are left out first).
+no `pass` fixture may (comments are left out first). Its `screens` are the
+paths, as regular expressions, of the files that draw a screen: a change to
+one brings the system into the Claude review's brief (`brief`).
 """
 import json
 import os
@@ -28,6 +35,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
@@ -231,9 +239,19 @@ def strip_comments(text):
 def check_rules(rules):
     """The rules file's problems, as lines; an empty list when it is sound."""
     found = []
+    screens = (rules or {}).get("screens")
+    if screens is not None:
+        if not isinstance(screens, list) or not screens or not all(isinstance(x, str) and x for x in screens):
+            found.append("rules.yml: `screens` is a list of regular expressions")
+        else:
+            for rx in screens:
+                try:
+                    re.compile(rx)
+                except re.error as exc:
+                    found.append(f"rules.yml: a screen that does not compile: {rx!r}: {exc}")
     items = (rules or {}).get("rules")
     if not isinstance(items, list) or not items:
-        return ["rules.yml: no `rules` list"]
+        return found + ["rules.yml: no `rules` list"]
     ids = [r.get("id") for r in items if isinstance(r, dict)]
     for rule in items:
         if not isinstance(rule, dict):
@@ -316,6 +334,91 @@ def check_examples(markdown, rules):
             if lang in langs and (m := re.search(rule["pattern"], strip_comments(code), re.M)):
                 found.append(f"an example breaks {rule['id']}: {m.group(0).strip()[:80]!r}")
     return found
+
+
+# A system that does not say which files draw its screens (a `local` one
+# with no rules.yml, and none it extends) is brought in by a stylesheet.
+STYLESHEETS = [r"\.(?:css|scss|sass|less)$"]
+# What the brief inlines of a system, at most (it is paid for on every
+# review): the rest is named, to read when a finding needs it.
+BRIEF_LIMIT = 40000
+CENTRAL_NAME = "DiluxOne/" + ".github"
+
+
+def render_rules(rules):
+    """A rules file as the reviewer reads it: one line a rule, the fixtures
+    and the expressions left out (they are for the checks, not for reading)."""
+    lines = []
+    for rule in (rules or {}).get("rules") or []:
+        if isinstance(rule, dict):
+            message = " ".join(str(rule.get("message") or "").split())
+            how = "a check finds it" if rule.get("type") == "pattern" else "read for it"
+            lines.append(f"- `{rule.get('id')}` ({rule.get('severity')}, {rule.get('applies-to')}, {how}): {message}")
+    return "\n".join(lines) + "\n"
+
+
+def system_parts(base, shown):
+    """[(the path to name, where to read it from here, its text, or None when
+    it has no such file)] of one system: its README, its components and its
+    rules, rendered."""
+    parts = []
+    for f in ("README.md", "components.md"):
+        path = os.path.join(base, f)
+        parts.append((f"{shown}/{f}", os.path.relpath(path), open(path, encoding="utf-8").read() if os.path.isfile(path) else None))
+    path = os.path.join(base, "rules.yml")
+    parts.append((f"{shown}/rules.yml", os.path.relpath(path), render_rules(read_yaml(path)) if os.path.isfile(path) else None))
+    return parts
+
+
+def brief(repo, repos_file, changed, root=".", limit=BRIEF_LIMIT):
+    """The brief's section on the repository's design system, or "" when it
+    declares none or the change touches none of its screens."""
+    conf = read_yaml(repos_file) if os.path.isfile(repos_file) else {}
+    system = (conf.get("design-system") or {}).get(repo)
+    if not system:
+        return ""
+    extends = None
+    if system == "local":
+        base, shown = os.path.join(root, "docs", "design-system"), "docs/design-system"
+        readme = os.path.join(base, "README.md")
+        if os.path.isfile(readme):
+            with open(readme, encoding="utf-8") as fh:
+                m = re.search(r"^Extends:\s*`?([a-z0-9-]+)`?", fh.read(), re.M)
+            if m and os.path.isdir(os.path.join(SYSTEMS, m.group(1))):
+                extends = m.group(1)
+    else:
+        base, shown = os.path.join(SYSTEMS, system), f"design-systems/{system}"
+    if not os.path.isdir(base):
+        print(f"design-tokens.py brief: {repo}'s design system `{system}` is not at {base}", file=sys.stderr)
+        return ""
+    screens = None
+    for b in (base, os.path.join(SYSTEMS, extends) if extends else None):
+        if b and screens is None and os.path.isfile(os.path.join(b, "rules.yml")):
+            screens = read_yaml(os.path.join(b, "rules.yml")).get("screens")
+    screens = [re.compile(rx, re.I) for rx in (screens or STYLESHEETS)]
+    touched = [f for f in changed if any(rx.search(f) for rx in screens)]
+    if not touched:
+        return ""
+    parts = system_parts(base, shown)
+    if extends:
+        parts += system_parts(os.path.join(SYSTEMS, extends), f"design-systems/{extends}")
+    named = ", ".join(f"`{f}`" for f in touched[:10]) + (f" and {len(touched) - 10} more" if len(touched) > 10 else "")
+    out = [f"## Design system: {system}" + (f" (extends {extends})" if extends else ""), "",
+           f"This repository's screens follow this design system (repos.yml, `design-system`), and the change touches files that draw them: {named}. "
+           "Hold what the change adds or alters in those files to it, as the profile says: a finding that relies on it names the rule's id or the component's heading."
+           + (f" (`design-systems/` is in {CENTRAL_NAME}.)" if system != "local" or extends else ""), ""]
+    used, left = 0, []
+    for path, here, text in parts:
+        if text is None:
+            continue
+        if used + len(text) > limit:
+            left.append(here)
+            continue
+        used += len(text)
+        out += [f"### {path}", "", text.rstrip("\n"), ""]
+    if left:
+        out += ["Not inlined, to keep the brief short; read them when a finding needs them: " + ", ".join(f"`{p}`" for p in left) + ".", ""]
+    return "\n".join(out)
 
 
 def build(only=None, check=False):
@@ -406,9 +509,26 @@ def self_test():
     got = check_rules({"rules": [dict(good["rules"][1], id="Bad Id", severity="fatal"), dict(good["rules"][1], id="x", type="pattern"), good["rules"][1], good["rules"][1]]})
     check("rules: a bad id, an unknown severity, a pattern rule with no pattern, a repeated id", any("kebab" in g for g in got) and any("severity" in g for g in got) and any("has a pattern" in g for g in got) and sum("unique" in g for g in got) == 2, got)
     check("rules: no list at all", check_rules({}) == ["rules.yml: no `rules` list"], check_rules({}))
+    got = check_rules(dict(good, screens=["\\.css$", "(unclosed"]))
+    check("rules: a screen that does not compile is reported", len(got) == 1 and "does not compile" in got[0], got)
+    check("rules: screens that are not a list are reported", any("`screens`" in g for g in check_rules(dict(good, screens="\\.css$"))), "")
+    rendered = render_rules(good)
+    check("brief: a rule is one line with its id and severity, no expression or fixture",
+          "- `no-important` (error, css, a check finds it): m" in rendered and "important;" not in rendered, rendered)
     doc = "Text with #fff in it.\n\n```css\n.a { color: red !important; }\n```\n\n```css\n.b { color: red; }\n```\n\n```php\n<?php echo 1 !important; ?>\n```\n"
     got = check_examples(doc, good)
     check("examples: a css block that breaks a css rule is reported, prose and other languages are not", len(got) == 1 and "no-important" in got[0], got)
+    with tempfile.TemporaryDirectory() as tmp:
+        repos = os.path.join(tmp, "repos.yml")
+        with open(repos, "w", encoding="utf-8") as fh:
+            fh.write("design-system:\n  r: wordpress-admin\n")
+        whole = brief("r", repos, ["assets/admin.css"])
+        short = brief("r", repos, ["assets/admin.css"], limit=8000)
+        check("brief: the whole system fits under the limit", "### design-systems/wordpress-admin/components.md" in whole and "Not inlined" not in whole and len(whole) <= BRIEF_LIMIT + 2000, len(whole))
+        check("brief: past the limit, what does not fit is named, not inlined",
+              "### design-systems/wordpress-admin/README.md" in short and "### design-systems/wordpress-admin/components.md" not in short and "`design-systems/wordpress-admin/components.md`" in short, short[-400:])
+        check("brief: a PHP file that draws no screen brings nothing", brief("r", repos, ["includes/class-sync.php"]) == "", "")
+        check("brief: an admin template brings it", brief("r", repos, ["includes/admin/settings.php"]) != "", "")
     for name in systems():
         css, problems = check_system(name)
         check(f"design-systems/{name}: tokens, rules and fixtures are sound", not problems, problems)
@@ -430,6 +550,16 @@ def self_test():
 def main(argv):
     if argv == ["--test"]:
         return self_test()
+    if argv[:1] == ["brief"]:
+        opts = dict(zip(argv[1::2], argv[2::2]))
+        known = {"--repo", "--repos", "--changed", "--root"}
+        if len(argv) % 2 == 0 or not {"--repo", "--repos", "--changed"} <= set(opts) or set(opts) - known:
+            print(__doc__, file=sys.stderr)
+            return 64
+        with open(opts["--changed"], encoding="utf-8") as fh:
+            changed = [line.strip() for line in fh if line.strip()]
+        sys.stdout.write(brief(opts["--repo"], opts["--repos"], changed, opts.get("--root", ".")))
+        return 0
     if argv[:1] == ["build"]:
         rest = argv[1:]
         only = None

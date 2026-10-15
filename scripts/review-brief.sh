@@ -12,7 +12,10 @@
 #                            pack's alias (plugin-wp); scripts/policy.py --profile
 #   KIND                     the repository's kind (its policy's `kind:`), optional:
 #                            with PROFILE general, the kind's profile is added
-#   CENTRAL                  a checkout of DiluxOne/.github (profiles, kinds/)
+#   CENTRAL                  a checkout of DiluxOne/.github (profiles, kinds/,
+#                            design-systems/, repos.yml)
+#   REPOS_FILE               repos.yml, optional (default $CENTRAL/repos.yml): the
+#                            design system the repository declares (`design-system`)
 #   WORK                     a scratch directory
 #   OUT                      where the brief goes
 #   PR                       the pull request number; empty before there is one
@@ -71,6 +74,33 @@ if [ "${1:-}" = "--test" ]; then
   check "a declared kind adds its profile to general" "Review profile: WordPress plugin"
   build "$base" "$head" high
   lacks "no kind, general only"                   "Review profile: WordPress plugin"
+  # The design system: in when the change touches a screen of a repository
+  # that declares one (C1), out otherwise (C2), the repository's own for
+  # `local` (C3).
+  lacks "no screen touched, no design system"     "## Design system:"
+  ( cd "$dir/repo" && mkdir -p assets/css docs/design-system && echo '.x-admin .card { padding: 20px; }' > assets/css/admin.css \
+      && printf '# Our system\n\nThe local marker.\n' > docs/design-system/README.md && git add -A && git commit -q -m "feat(a): a card" )
+  css=$(git -C "$dir/repo" rev-parse HEAD)
+  build "$head" "$css" high env REPO=o/diluxone-offload-wordpress
+  check "C1: a stylesheet brings the declared system"  "## Design system: wordpress-admin"
+  check "C1: its README"                          "### design-systems/wordpress-admin/README.md"
+  check "C1: its components"                      "### design-systems/wordpress-admin/components.md"
+  check "C1: its rules, one line each"            '- `colour-from-tokens` (error, css'
+  check "C1: the file that brought it is named"   '`assets/css/admin.css`'
+  lacks "C1: no fixtures in the brief"            "fixtures:"
+  build "$base" "$head" high env REPO=o/diluxone-offload-wordpress
+  lacks "C2: no stylesheet or template, no design system" "## Design system:"
+  build "$head" "$css" high
+  lacks "no design system declared, none in the brief" "## Design system:"
+  printf 'design-system:\n  r: local\n' > "$dir/repos.yml"
+  build "$head" "$css" high env REPOS_FILE="$dir/repos.yml"
+  check "C3: local brings docs/design-system/"    "### docs/design-system/README.md"
+  check "C3: with its text"                       "The local marker."
+  lacks "C3: not the organisation's system"       "### design-systems/wordpress-admin/README.md"
+  ( cd "$dir/repo" && printf '# Our system\n\nExtends: wordpress-admin\n' > docs/design-system/README.md && echo '<?php echo 1;' > admin-page.php && git add -A && git commit -q -m "feat(a): a page" )
+  build "$css" "$(git -C "$dir/repo" rev-parse HEAD)" high env REPOS_FILE="$dir/repos.yml"
+  check "local that extends: an admin template brings it" "## Design system: local (extends wordpress-admin)"
+  check "local that extends: the system it extends too"   "### design-systems/wordpress-admin/rules.yml"
   if ( build "$base" "$head" high env PROFILE=no-such-profile ) 2>/dev/null; then echo "FAIL a profile that does not exist fails"; fail=1; else echo "ok   a profile that does not exist fails"; fi
   rm -rf "$dir"
   [ "$fail" -eq 0 ] && echo "all tests passed"
@@ -116,6 +146,10 @@ for path in ${rewritten[@]+"${rewritten[@]}"}; do
   # fence, so a code block inside the file cannot close it.
   { printf '\n### Rewritten: %s (new content, line-numbered)\n\n`````\n' "$path"; git show "$HEAD:$path" | nl -ba -w4 -s': '; printf '`````\n'; } >> "$WORK/diff.patch"
 done
+# The design system the repository declares (repos.yml), when the change
+# touches a file that draws one of its screens; nothing otherwise.
+python3 "$CENTRAL/scripts/design-tokens.py" brief --repo "${REPO##*/}" --repos "${REPOS_FILE:-$CENTRAL/repos.yml}" \
+  --changed "$WORK/shown-files.txt" --root . > "$WORK/design-system.md"
 limit=250000
 {
   if [ -n "${PR:-}" ]; then echo "# Review brief: $REPO, pull request #$PR"; else echo "# Review brief: $REPO, a change before its pull request"; fi
@@ -130,6 +164,7 @@ limit=250000
       if [ -f "$f" ]; then echo; echo "## Repository file: $f"; echo; cat "$f"; fi
     done
   fi
+  if [ -s "$WORK/design-system.md" ]; then echo; cat "$WORK/design-system.md"; fi
   echo
   echo "## Policy"
   echo
