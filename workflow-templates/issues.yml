@@ -4,7 +4,7 @@ name: Issues
 # triage classifies it when it opens (from docs/roadmap.md and the docs) and
 # the reproduction job tries to write a failing unit test for a report the
 # triage calls a bug (repro-triaged), and a maintainer can start one by hand
-# with the label repro:run. Fill in support-url.
+# with the label repro:run.
 
 on:
   issues:
@@ -22,7 +22,7 @@ jobs:
       issues: write
     uses: DiluxOne/.github/.github/workflows/issue-triage.yml@v5
     with:
-      support-url: https://example.com/support
+      support-url: https://example.com/support # this repository's own page for usage questions (a forum, a help page), not an example's
     secrets: inherit
 
   repro:
