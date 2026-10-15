@@ -282,6 +282,11 @@ def self_test():
             sh("add", "-A")
             sh("commit", "-qm", "fix: big")
             ok("git: a changed file too large to read cannot be told apart, never skipped", _raises(lambda: check("wordpress-plugin", base, "HEAD")))
+            sh("rm", "-q", "includes/big.php")
+            write("includes/odd\nname.php", "<?php\nregister_rest_route( 'dx/v1', '/odd', array() );\n")
+            sh("add", "-A")
+            sh("commit", "-qm", "fix: odd")
+            ok("git: a changed path with a newline cannot be told apart, never skipped", _raises(lambda: check("wordpress-plugin", base, "HEAD")))
         finally:
             os.chdir(cwd)
 

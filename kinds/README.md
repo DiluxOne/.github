@@ -196,9 +196,10 @@ whitespace aside) appears nowhere in the base's files of the entry: a hook
 moved, or fired a second time, is not new. One without is new when the
 changed files hold more matches at the head than at the base: a call changed
 in place, or moved to another file, is not new (nor, by the same count, one
-added where another is removed: the human merge reads that). The check is required in
-every repository of the kind, so an entry stays conservative: a pattern that
-is unsure says nothing, and the human merge still reads the change.
+added where another is removed: the human merge reads that). The check is
+required in every repository of the kind, so an entry stays conservative: a
+pattern that is unsure says nothing, and the human merge still reads the
+change.
 
 Fixtures: `fail` (must be found) and `pass` (must not), each the head of one
 new file (a string), `{base, head, path}` for one file, or `{files: {path:

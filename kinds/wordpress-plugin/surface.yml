@@ -6,7 +6,11 @@
 # runs every fixture.
 #
 # Patterns are Python regular expressions over a whole file (a call may span
-# lines); `(?i)`, since PHP's function names are not case-sensitive. A `name` group: new when the name appears nowhere in the base's
+# lines); `(?i)`, since PHP's function names are not case-sensitive.
+# What it does not read, by choice: files that are not .php (.inc, .phtml),
+# a comment between a function's name and its `(`, and registrations not
+# listed below (register_block_type, register_rest_field, add_rewrite_rule,
+# WP-CLI commands); an entry is added here, with fixtures, when one matters. A `name` group: new when the name appears nowhere in the base's
 # files (a hook moved or fired again is not new). No `name` group: new when
 # the changed files hold more matches than at the base (a call changed in
 # place, or moved, is not new). Conservative on purpose: this check is
