@@ -94,8 +94,17 @@ def pick(runs):
     A run still going (a re-run among them) leaves the workflow for the next
     sweep: read without it, the red would seem to begin on a later merge that
     only inherited it."""
-    if any(r.get("status") != "completed" for r in runs):
-        return "none", None, "a run is still going; the next sweep reads it"
+    # Only the runs since the last green one count: an old run stuck in a
+    # queue blocks nothing.
+    window = []
+    for r in runs:
+        window.append(r)
+        if r.get("status") == "completed" and r.get("conclusion") == "success":
+            break
+    going = [r for r in window if r.get("status") != "completed"]
+    if going:
+        red = any(r.get("conclusion") in RED for r in window)
+        return "none", None, ("red, and " if red else "") + "a run is still going; the next sweep reads it"
     done = [r for r in runs if r.get("conclusion") in RED + ("success",)]
     if not done:
         return "none", None, "no finished run"
@@ -579,6 +588,8 @@ def self_test():
     check("pick: the red began on the oldest failure after a green run", (state, r["id"]), ("red", 4))
     check("pick: a run still going waits for the next sweep", pick([run(6, None, status="in_progress"), run(5, "failure"), run(4, "success")])[:2], ("none", None))
     check("pick: a re-run going does not move the red to a later merge", pick([run(6, "failure"), run(5, None, 2, "in_progress"), run(4, "success")])[:2], ("none", None))
+    check("pick: and the report says so", pick([run(6, "failure"), run(5, None, 2, "in_progress"), run(4, "success")])[2].startswith("red"), True)
+    check("pick: a run stuck before the last green one blocks nothing", pick([run(6, "failure"), run(5, "success"), run(4, None, status="queued")])[:2], ("red", run(6, "failure")))
     check("pick: a cancelled run is skipped", pick([run(6, "cancelled"), run(5, "failure"), run(4, "success")])[1]["id"], 5)
     check("pick: red on every run read is left to a person", pick([run(5, "failure"), run(4, "failure")])[:2], ("none", None))
     check("pick: green on a re-run asks whether it was flaky", pick([run(5, "success", 2), run(4, "success")])[0], "flaky?")
