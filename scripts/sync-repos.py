@@ -20,7 +20,8 @@ archived and not excluded in repos.yml:
             go straight to main: for a repository whose files differ, it opens
             an issue (Type Task) and a pull request that closes it. When this
             checkout is a commit merged into main, with nothing the sync
-            reads changed locally, the issue carries the run's marker and
+            reads changed locally, and it writes only what the lane covers
+            (not the Dependabot file), the issue carries the run's marker and
             `lane:org-sync`, and the autonomy policy accepts it (and may
             merge its pull request) with no person (policy/autonomy.yml,
             lane org-sync, #155); otherwise the maintainer accepts the issue
@@ -75,7 +76,7 @@ END = "<!-- dx:org:end -->"
 LANE = "org-sync"
 # What a sync reads from this checkout: a local change to any of them is not
 # a change merged here, so its issues wait for a person.
-SOURCES = ["repos.yml", "labels.yml", "agents-block.md", "workflow-templates"]
+SOURCES = ["repos.yml", "labels.yml", "agents-block.md", "workflow-templates", "policy/dependabot.default.yml", "kinds"]
 
 _spec = importlib.util.spec_from_file_location("autonomy", os.path.join(HERE, "autonomy.py"))
 autonomy = importlib.util.module_from_spec(_spec)
@@ -241,6 +242,14 @@ def lane_text(full, mode, wanted):
     otherwise, saying why."""
     if not mode:
         return None, None
+    # A file the lane's run of this kind does not cover (the Dependabot
+    # file): the lane would refuse its pull request, so the issue claims
+    # nothing and a person accepts it.
+    paths = lane_paths(mode)
+    outside = sorted(p for p in wanted if not any(autonomy.path_matches(p, pat) for pat in paths))
+    if outside:
+        print(f"  not the {LANE} lane: it writes {', '.join(outside)}, outside what the lane's {mode} run covers; the issue waits for a person to accept it")
+        return None, None
     sha, why = org_commit()
     if not sha:
         print(f"  not the {LANE} lane: {why}; the issue waits for a person to accept it")
@@ -249,6 +258,12 @@ def lane_text(full, mode, wanted):
             f"The autonomy policy accepts this issue (policy/autonomy.yml, lane {LANE}), and its pull request merges on its own "
             "only while it changes nothing but what that commit holds, and no job's permissions or secrets.")
     return text, autonomy.sync_marker(LANE, full, mode, sha, wanted)
+
+
+def lane_paths(mode):
+    """The paths the org-sync lane lets a run of this kind write."""
+    policy = load_yaml(os.path.join(CENTRAL, "policy", "autonomy.yml"))
+    return ((((policy.get("lanes") or {}).get(LANE) or {}).get("origin") or {}).get("runs") or {}).get(mode, {}).get("paths") or []
 
 
 def with_lane(body, text, marker):
@@ -1685,6 +1700,13 @@ def self_test():
         open_change({"name": "r"}, "main", wanted, "T", "Body.", "chore/{}-org-shared-files", "chore: t", "## What", "chore: {}", mode="files")
         check("org-sync: an older run's issue loses the lane and accepted-by:policy",
               any("--remove-label" in c and "accepted-by:policy" in c for c in calls) and not any("--add-label" in c for c in calls), calls)
+        calls.clear()
+        globals()["gh"] = recorder()
+        open_change({"name": "r"}, "main", dict(wanted, **{DEPENDABOT: "version: 2\n"}), "T", "Body.", "chore/{}-org-shared-files", "chore: t", "## What", "chore: {}", mode="files")
+        create = next(c for c in calls if c[:2] == ("issue", "create"))
+        check("org-sync: a files run that writes the Dependabot file (outside the lane) marks nothing",
+              "dx-lane" not in create[create.index("--body") + 1] and not any("lane:org-sync" in c for c in calls), calls)
+        check("org-sync: the Dependabot templates are among what the sync reads", {"policy/dependabot.default.yml", "kinds"} <= set(SOURCES), SOURCES)
         calls.clear()
         ORG_COMMIT = (None, "not merged")
         globals()["gh"] = recorder()
