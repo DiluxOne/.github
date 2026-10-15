@@ -21,6 +21,7 @@ kinds/<kind>/
   pack.yml            the manifest: name, aliases, workflows, adapters, settings
   rules.yml           what this kind's reviewers send back, as rules the engine checks
   review-profile.md   what the Claude review reads for this kind, on top of review-profiles/general.md
+  surface.yml         its public surface, and its documentation paths (optional; "Public surface" below)
   *.md                anything a repository of this kind needs to know (wordpress-plugin/suppressions.md)
 ```
 
@@ -166,6 +167,44 @@ php scripts/review-rules.php --kind wordpress-plugin --repo . --tree build/<slug
 
 It prints the missing entries with `reason: "TODO: …"`; each reason is
 written by a person, for the reviewer who will read it.
+
+## Public surface
+
+An accepted Bug or Docs issue lets a `fix` or `docs` pull request through the
+accepted-issue gate; it must not carry functionality nobody accepted in with
+it (#144). The conventions check fails a pull request whose type is not
+`feat` (and has no `!`), from an author who is not trusted (the policy's
+`trusted-authors`, read from the base branch; bots are never checked), when
+its diff adds what the kind's `surface.yml` lists. The message is neutral:
+new functionality needs a Feature issue a maintainer accepted, with a link to
+CONTRIBUTING.md. [`scripts/surface.py`](../scripts/surface.py) reads only git
+objects (the diff, and the files at the merge base and at the head), so it
+runs on a fork's pull request too, with no secret and nothing of the pull
+request executed. A kind without `surface.yml` has no surface check.
+
+`surface.yml`:
+
+| Key | What |
+| --- | --- |
+| `docs-paths` | Shell `case` globs (`*` crosses directories) a `docs` pull request may change, added to the organisation's `docs-paths` in [`policy/review-policy.default.yml`](../policy/review-policy.default.yml) (all a repository without a kind gets). wordpress-plugin adds `readme.txt`. |
+| `files`, `exclude` | Globs (`**` crosses directories, `*` does not) of the files the surface is read in, and of those never read (wordpress-plugin: dependencies at any depth; tests and hidden folders at the root only, so the same names deeper in cannot hide surface). |
+| `surface` | The entries: `id`, `what` (how the message names it), `pattern` (a Python regular expression over a whole file, so a call may span lines), optionally `files` of its own, and `fixtures`. |
+
+An entry whose `pattern` has a `name` group is new when that name (a quoted
+literal compared without its quotes, or the expression as written,
+whitespace aside) appears nowhere in the base's files of the entry: a hook
+moved, or fired a second time, is not new. One without is new when the
+changed files hold more matches at the head than at the base: a call changed
+in place, or moved to another file, is not new (nor, by the same count, one
+added where another is removed: the human merge reads that). The check is
+required in every repository of the kind, so an entry stays conservative: a
+pattern that is unsure says nothing, and the human merge still reads the
+change.
+
+Fixtures: `fail` (must be found) and `pass` (must not), each the head of one
+new file (a string), `{base, head, path}` for one file, or `{files: {path:
+{base, head}}}` for several (no `base`, the file is new; no `head`, deleted).
+`python3 scripts/surface.py --test` runs every pack's.
 
 ## The engine
 

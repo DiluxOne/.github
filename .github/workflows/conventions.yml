@@ -13,7 +13,13 @@ name: Conventions
 # `needs-human`, removing `autopilot` and then pushing a commit of their own,
 # is the maintainer's: the gate reads the head commit's author and who added
 # the label from GitHub, and the cap does not apply, #130; labels alone do
-# not run this workflow, the push does).
+# not run this workflow, the push does); and that one from an author who is
+# not trusted, whose type is not feat, adds no public surface (what the
+# kind's pack lists in kinds/<kind>/surface.yml: a WordPress plugin's
+# settings, REST routes, AJAX endpoints, admin pages, post types,
+# taxonomies, hooks, shortcodes, blocks), read from
+# the diff by scripts/surface.py, which runs nothing of the pull request, so
+# it holds on a fork's too, with no secret (#144).
 # The checks themselves are scripts/conventions.sh,
 # which scripts/local-review.sh runs before a pull request is opened. Plus a docs check whenever the caller runs (pull requests and
 # pushes to main): relative Markdown links resolve, and no retired product
@@ -189,6 +195,11 @@ jobs:
           # over: the policy's max-changed-lines-untrusted.
           MAX_LINES: ${{ steps.gate.outputs.max_lines }}
           TAKEN_OVER: ${{ steps.gate.outputs.taken_over }}
+          # The base branch's policy: the kind whose pack says what public
+          # surface is, and whether the author is trusted (#144: a pull
+          # request that is not a feat, from anyone else, adds none).
+          KIND: ${{ steps.gate.outputs.kind }}
+          TRUSTED: ${{ steps.gate.outputs.trusted }}
         run: bash .dx-central/scripts/conventions.sh
 
   docs:

@@ -43,7 +43,7 @@ test_case() {
     # The scratch repository is built in a shell of its own: errexit is off
     # inside $( ) && …, so a broken setup would otherwise go unnoticed.
     bash -euo pipefail -c '
-      git init -q && git config user.email t@t && git config user.name t
+      git init -q && git config user.email t@t && git config user.name t && git config commit.gpgsign false
       git commit -q --allow-empty -m "chore: base" && git branch -q -M main && git update-ref refs/remotes/origin/main HEAD
       git checkout -q -b docs/change
       eval "$1"' _ "$setup" || { echo "the setup failed"; exit 97; }
@@ -76,6 +76,10 @@ if [ "${1:-}" = "--test" ]; then
   bodies=$(mktemp -d); printf %s "$good" > "$bodies/good.md"; printf %s "$empty" > "$bodies/empty.md"; printf %s "$noissue" > "$bodies/noissue.md"
   test_case "a description with an empty Why"            1 "section is empty" "$commit" --body-file "$bodies/empty.md" || fail=1
   test_case "a description filled in"                    0 "Conventions OK." "$commit" --body-file "$bodies/good.md" || fail=1
+  # The repository's kind reaches the conventions: a plugin's readme.txt is
+  # documentation there (#144).
+  kind='git checkout -q main && mkdir .github && echo "kind: wordpress-plugin" > .github/review-policy.yml && git add -A && git commit -q -m "chore: kind" && git update-ref refs/remotes/origin/main HEAD && git checkout -q docs/change && git reset -q --hard main && echo hi > readme.txt && git add readme.txt && git commit -q -m "docs(readme): a line"'
+  test_case "the repository's kind reaches the conventions" 0 "Conventions OK." "$kind" || fail=1
   test_case "a description that closes no issue"         1 "closes no issue" "$commit" --body-file "$bodies/noissue.md" || fail=1
   test_case "the origin remote names the repository"    0 "Review brief: o/r," "git remote add origin https://github.com/o/r.git && $commit" || fail=1
   rm -rf "$bodies"
@@ -96,7 +100,7 @@ FAKE
     local dir out got
     dir=$(mktemp -d)
     out=$(
-      cd "$dir" && git init -q && git config user.email t@t && git config user.name t
+      cd "$dir" && git init -q && git config user.email t@t && git config user.name t && git config commit.gpgsign false
       git commit -q --allow-empty -m "chore: base" && git branch -q -M main && git update-ref refs/remotes/origin/main HEAD
       git checkout -q -b docs/change && echo hi > a.md && git add a.md && git commit -q -m "docs(readme): a line"
       eval "$setup"
@@ -186,14 +190,21 @@ echo "== Conventions"
 sections="What changes,Why"
 [ -n "$body_file" ] || { sections=''; echo "(no --body-file: the description is checked when you pass it)"; }
 conventions=0
-BRANCH=$branch TITLE=$title BODY=$body BASE=$BASE HEAD_REF=$HEAD SECTIONS=$sections \
+# The policy's answers CI gives the conventions: the repository's kind, and
+# whether the author (the gh login here; none, and trust is not checked) is
+# trusted, for the surface a pull request that is not a feat may not add.
+login=$(gh api user --jq .login 2>/dev/null || true)
+: > "$work/gate.out"
+DEFAULT_POLICY="$CENTRAL/policy/review-policy.default.yml" REPO_POLICY=.github/review-policy.yml PR_AUTHOR=$login \
+  POLICY_MODE=issue-gate GITHUB_OUTPUT="$work/gate.out" python3 "$CENTRAL/scripts/policy.py" >/dev/null || true
+gate_kind=$(sed -n 's/^kind=//p' "$work/gate.out" | tail -1)
+gate_trusted=''
+[ -z "$login" ] || gate_trusted=$(sed -n 's/^trusted=//p' "$work/gate.out" | tail -1)
+BRANCH=$branch TITLE=$title BODY=$body BASE=$BASE HEAD_REF=$HEAD SECTIONS=$sections KIND=$gate_kind TRUSTED=$gate_trusted \
   bash "$CENTRAL/scripts/conventions.sh" || conventions=1
 # The accepted-issue gate asks GitHub whether the issue is accepted, which
 # only CI can do once the pull request exists; here, the description must at
 # least close an issue.
-: > "$work/gate.out"
-DEFAULT_POLICY="$CENTRAL/policy/review-policy.default.yml" REPO_POLICY=.github/review-policy.yml \
-  POLICY_MODE=issue-gate GITHUB_OUTPUT="$work/gate.out" python3 "$CENTRAL/scripts/policy.py" >/dev/null || true
 if [ -n "$body_file" ] && grep -q '^required=true' "$work/gate.out" \
   && ! printf '%s\n' "$body" | grep -qiE '(^|[^[:alnum:]])(close[sd]?|fix(e[sd])?|resolve[sd]?):? #[0-9]+'; then
   echo "::error::The description closes no issue: write \"Closes #<number>\" for the accepted issue (CONTRIBUTING.md, \"Start from an issue\"); CI checks that it is accepted."
