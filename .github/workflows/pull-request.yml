@@ -71,6 +71,7 @@ jobs:
       - run: bash scripts/release-markers.sh --test
       - run: bash scripts/conventions.sh --test
       - run: bash scripts/issue-gate.sh --test
+      - run: bash scripts/issue-assignee.sh --test
       - run: bash scripts/review-brief.sh --test
       - run: bash scripts/local-review.sh --test
       - run: python3 scripts/policy.py --test
@@ -116,6 +117,17 @@ jobs:
       - run: /bin/bash scripts/review-brief.sh --test
       - run: /bin/bash scripts/local-review.sh --test
       - run: python3 scripts/policy.py --test
+
+  # The issues it closes go to its author, when a member (#73). The
+  # script is read from main, like the review's: a pull request's own
+  # copy runs only once merged.
+  assignee:
+    permissions: {}
+    uses: ./.github/workflows/pull-request-assignee.yml
+    with:
+      central-ref: main
+    secrets:
+      DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
 
   review:
     needs: [conventions, actionlint, scripts]

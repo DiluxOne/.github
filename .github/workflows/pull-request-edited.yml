@@ -24,6 +24,17 @@ jobs:
     with:
       retired-names: ''
 
+  # The issues it closes go to its author, when a member (#73). The
+  # script is read from main, like the review's: a pull request's own
+  # copy runs only once merged.
+  assignee:
+    permissions: {}
+    uses: ./.github/workflows/pull-request-assignee.yml
+    with:
+      central-ref: main
+    secrets:
+      DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+
   review:
     needs: [conventions]
     permissions:

@@ -25,7 +25,11 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    a Feature, a `fix` a Bug; the issue forms set it (bug → Bug, feature →
    Feature, docs → Docs, maintenance task → Task) and a maintainer corrects
    it when accepting. Priority and Projects are the maintainer's, set when
-   accepting. So an accepted bug report cannot
+   accepting. The issue is assigned to whoever accepted it, unless it has
+   an assignee, and passes to the member of the organisation who opens the
+   pull request that closes it; an outside contributor's or a bot's pull
+   request leaves it as it is (#73, `pull-request-assignee.yml`). So an
+   accepted bug report cannot
    carry a feature in. Bots'
    own pull requests (Dependabot, releases) are exempt. This is where a
    feature that is already planned, or that belongs to a paid add-on, is

@@ -70,6 +70,7 @@ flowchart TB
 
 - **Conventional Commits** for branches, titles and commits. CI rejects anything else.
 - **One accepted issue per pull request.** Bots' pull requests (Dependabot, releases) are the exception.
+- **Every accepted issue has an owner.** Whoever accepts it is its assignee, until a member of the organisation opens the pull request that closes it; a bot never is.
 - **Autonomy is data too, and only ever narrower.** What may proceed without a person comes from [`policy/autonomy.yml`](policy/autonomy.yml): named lanes, each checked against GitHub, never against an issue's text. A repository can only tighten it, the rules that govern it always need a person, and `DX_AUTOPILOT=off` stops it all.
 - **Policy is data.** Risk paths, models, budget and auto-merge live in [`policy/`](policy/) and in each repository's `.github/review-policy.yml`, read from the base branch, so a pull request cannot loosen its own rules.
 - **A review lesson becomes a rule.** Something a reviewer sent back once becomes one entry in its kind's `rules.yml`, with fixtures, never a new script ([`kinds/`](kinds/)).

@@ -12,7 +12,11 @@ name: Issue accepted
 # its next push. A bot's label starts nothing, as the gate ignores it anyway.
 # The same acceptance checks the issue's PRD against the issue schema (gate
 # G1, policy/issue-schema.yml) and says on the issue whether it is ready,
-# and removes `needs-triage`: a person has looked at the issue.
+# and removes `needs-triage`: a person has looked at the issue. It assigns
+# the issue to the person who accepted it, unless it has an assignee
+# already (#73; scripts/issue-assignee.sh): with the bot's key, like the
+# comment. A lane's issue, accepted by policy and never labelled by a
+# person, stays unassigned.
 #
 #   on:
 #     issues:
@@ -113,8 +117,9 @@ jobs:
     # When a person accepts it: is the issue's PRD complete, as the issue
     # schema says (policy/issue-schema.yml, gate G1)? One comment, kept up to
     # date, says it is ready or what is missing. It decides nothing yet: the
-    # autopilot (#83) starts only on a ready issue. Needs the bot's key to
-    # comment; without it the check runs and only logs.
+    # autopilot (#83) starts only on a ready issue. It also assigns the issue
+    # to whoever accepted it, if nobody has it (#73). Needs the bot's key to
+    # comment and assign; without it the check runs and only logs.
     if: github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == inputs.label && github.event.sender.type != 'Bot'
     # Nothing from the caller's token: the callers grant this workflow
     # actions: write, issues: read and pull-requests: read only, and the
@@ -131,6 +136,7 @@ jobs:
           base="https://raw.githubusercontent.com/DiluxOne/.github/$REF"
           curl -fsSL --retry 3 "$base/scripts/issue-schema.py" -o .dx-central/scripts/issue-schema.py
           curl -fsSL --retry 3 "$base/scripts/receipts.py" -o .dx-central/scripts/receipts.py
+          curl -fsSL --retry 3 "$base/scripts/issue-assignee.sh" -o .dx-central/scripts/issue-assignee.sh
           curl -fsSL --retry 3 "$base/policy/issue-schema.yml" -o .dx-central/policy/issue-schema.yml
           echo "ref=$(git ls-remote https://github.com/DiluxOne/.github "$REF" "$REF^{}" | tail -1 | cut -c1-12)" >> "$GITHUB_OUTPUT"
       - name: dilux-bot token
@@ -143,6 +149,19 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-issues: write
           permission-contents: write # the receipts branch
+      # Whoever accepted it works it (#73), unless someone already does: the
+      # Project shows who owns each accepted issue. Only a person gets here
+      # (the job skips a bot's label), and the script never assigns a bot; a
+      # member's pull request that closes it later takes it over
+      # (pull-request-assignee.yml).
+      - name: Assign it to whoever accepted it
+        if: steps.bot.outputs.token != ''
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          NUMBER: ${{ github.event.issue.number }}
+          SENDER: ${{ github.event.sender.login }}
+          SENDER_TYPE: ${{ github.event.sender.type }}
+        run: bash .dx-central/scripts/issue-assignee.sh accepted
       - name: Check the PRD and say so on the issue
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
