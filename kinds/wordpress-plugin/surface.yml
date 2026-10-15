@@ -19,12 +19,13 @@ docs-paths:
   - readme.txt
 
 files: ["**/*.php"]
+# At the root only: a folder of that name deeper in the plugin is read.
 exclude:
-  - "**/vendor/**"
-  - "**/node_modules/**"
-  - "**/tests/**"
-  - "**/test/**"
-  - "**/.*/**"
+  - "vendor/**"
+  - "node_modules/**"
+  - "tests/**"
+  - "test/**"
+  - ".*/**"
 
 surface:
   - id: setting
@@ -63,6 +64,8 @@ surface:
     fixtures:
       fail:
         - "<?php\nregister_rest_route( 'dx/v1', '/items', array( 'methods' => 'GET' ) );\n"
+        - path: includes/test/rest.php
+          head: "<?php\nregister_rest_route( 'dx/v1', '/hidden', array() );\n"
         - base: "<?php\nregister_rest_route( 'dx/v1', '/items', array() );\n"
           head: "<?php\nregister_rest_route( 'dx/v1', '/items', array() );\nregister_rest_route( 'dx/v1', '/items/(?P<id>\\d+)', array() );\n"
       pass:
@@ -124,6 +127,38 @@ surface:
         - base: "<?php\nadd_shortcode( 'dx_gallery', 'dx_gallery_cb' );\n"
           head: "<?php\nadd_shortcode( 'dx_gallery', array( $this, 'render' ) );\n"
         - "<?php\nremove_shortcode( 'gallery' );\n"
+
+  - id: post-type
+    what: a post type (register_post_type)
+    pattern: '(?<![\w$>:])register_post_type\s*\(\s*(?P<name>''(?:[^''\\]|\\.)*''|"(?:[^"\\]|\\.)*"|[A-Za-z_\\$][\w\\:$>-]*)'
+    fixtures:
+      fail:
+        - "<?php\nregister_post_type( 'dx_ticket', array( 'public' => true ) );\n"
+      pass:
+        - base: "<?php\nregister_post_type( 'dx_ticket', array( 'public' => true ) );\n"
+          head: "<?php\nregister_post_type( 'dx_ticket', array( 'public' => false ) );\n"
+
+  - id: taxonomy
+    what: a taxonomy (register_taxonomy)
+    pattern: '(?<![\w$>:])register_taxonomy\s*\(\s*(?P<name>''(?:[^''\\]|\\.)*''|"(?:[^"\\]|\\.)*"|[A-Za-z_\\$][\w\\:$>-]*)'
+    fixtures:
+      fail:
+        - "<?php\nregister_taxonomy( 'dx_topic', 'dx_ticket' );\n"
+      pass:
+        - base: "<?php\nregister_taxonomy( 'dx_topic', 'dx_ticket' );\n"
+          head: "<?php\nregister_taxonomy( 'dx_topic', array( 'dx_ticket', 'post' ) );\n"
+
+  - id: endpoint
+    what: an AJAX or admin-post endpoint (wp_ajax_, admin_post_)
+    pattern: '(?<![\w$>:])add_action\s*\(\s*(?P<name>''(?:wp_ajax_|admin_post_)[^'']*''|"(?:wp_ajax_|admin_post_)[^"]*")'
+    fixtures:
+      fail:
+        - "<?php\nadd_action( 'wp_ajax_dx_export', 'dx_export' );\n"
+        - "<?php\nadd_action( \"admin_post_nopriv_dx_form\", array( $this, 'save' ) );\n"
+      pass:
+        - base: "<?php\nadd_action( 'wp_ajax_dx_export', 'dx_export' );\n"
+          head: "<?php\nadd_action( 'wp_ajax_dx_export', array( $this, 'export' ) );\n"
+        - "<?php\nadd_action( 'admin_init', 'dx_boot' );\n"
 
   - id: block
     what: a block (a new block.json)

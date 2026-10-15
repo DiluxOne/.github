@@ -45,8 +45,8 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    description's required sections, no "Generated with" footer, relative doc
    links, a `docs` title that changes only documentation (the
    organisation's `docs-paths` and the kind's), no new public surface (a
-   WordPress plugin's settings, options, REST routes, admin pages, hooks,
-   shortcodes, blocks: the kind's `surface.yml`) in a pull request that is
+   WordPress plugin's settings, options, REST routes, AJAX endpoints, admin
+   pages, post types, taxonomies, hooks, shortcodes, blocks: the kind's `surface.yml`) in a pull request that is
    not a `feat` from an author who is not trusted, read from the diff alone
    so it holds on forks (#144, [`kinds/`](../kinds/README.md#public-surface)), and at most
    `max-changed-lines-untrusted` (600) lines from an author who is not

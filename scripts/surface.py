@@ -157,7 +157,8 @@ def check(kind, base, head):
     if not pack.get("surface"):
         return []
     mb = git("merge-base", base, head).decode().strip()
-    changed = [p for p in git("diff", "--no-renames", "--name-only", "-z", mb, head).decode().split("\0") if p]
+    takes = [selector(e.get("files") or pack.get("files") or [], pack.get("exclude") or []) for e in pack["surface"]]
+    changed = [p for p in git("diff", "--no-renames", "--name-only", "-z", mb, head).decode().split("\0") if p and any(t(p) for t in takes)]
     base_files, head_files = read_blobs(mb, changed), read_blobs(head, changed)
     cache = {}
 

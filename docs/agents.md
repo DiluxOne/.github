@@ -35,7 +35,7 @@ CI holds you to it: a `feat` or `!` pull request must close a Feature, a `fix` a
 
 - Follow the repository's `AGENTS.md`, its plan and its tests.
 - Commit as Conventional Commits: `type(scope): subject`, **72 characters or fewer** (CI rejects more than 100; measure it), no trailing period. Bodies are plain paragraphs, one line each, never hard-wrapped. `Co-Authored-By:` is fine; `Claude-Session:` is rejected.
-- A `docs` pull request may change only documentation. From outside the maintainers, only a `feat` may add new functionality (a plugin's settings, REST routes, admin pages, hooks, shortcodes, blocks): it needs a Feature issue. Such a pull request also changes at most 600 lines (translations and lock files aside): split a bigger change, each part with its issue (an autopilot pull request a maintainer took over counts as the maintainer's).
+- A `docs` pull request may change only documentation. From outside the maintainers, only a `feat` may add new functionality (a plugin's settings, REST routes, AJAX endpoints, admin pages, post types, taxonomies, hooks, shortcodes, blocks): it needs a Feature issue. Such a pull request also changes at most 600 lines (translations and lock files aside): split a bigger change, each part with its issue (an autopilot pull request a maintainer took over counts as the maintainer's).
 
 ## 4. Check it
 

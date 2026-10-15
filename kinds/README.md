@@ -187,7 +187,7 @@ request executed. A kind without `surface.yml` has no surface check.
 | Key | What |
 | --- | --- |
 | `docs-paths` | Shell `case` globs (`*` crosses directories) a `docs` pull request may change, added to the organisation's `docs-paths` in [`policy/review-policy.default.yml`](../policy/review-policy.default.yml) (all a repository without a kind gets). wordpress-plugin adds `readme.txt`. |
-| `files`, `exclude` | Globs (`**` crosses directories, `*` does not) of the files the surface is read in, and of those never read (dependencies, tests, hidden folders). |
+| `files`, `exclude` | Globs (`**` crosses directories, `*` does not) of the files the surface is read in, and of those never read (wordpress-plugin: dependencies, tests and hidden folders at the root only, so the same names deeper in cannot hide surface). |
 | `surface` | The entries: `id`, `what` (how the message names it), `pattern` (a Python regular expression over a whole file, so a call may span lines), optionally `files` of its own, and `fixtures`. |
 
 An entry whose `pattern` has a `name` group is new when that name (a quoted

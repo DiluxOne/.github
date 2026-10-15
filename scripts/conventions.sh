@@ -40,7 +40,8 @@
 # A pull request from an author who is not trusted (TRUSTED=false, never a
 # bot) whose type is not feat (and has no "!") may not add public surface:
 # what the kind's pack lists (a WordPress plugin's settings, options, REST
-# routes, admin pages, hooks, shortcodes and blocks), read from the diff by
+# routes, AJAX endpoints, admin pages, post types, taxonomies, hooks,
+# shortcodes and blocks), read from the diff by
 # scripts/surface.py, which runs nothing of the pull request (#144). New
 # functionality needs a Feature issue a maintainer accepted.
 #
