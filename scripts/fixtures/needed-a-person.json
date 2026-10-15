@@ -1,0 +1,713 @@
+{
+  "_about": "Pull requests as scripts/needed-a-person.py reads them from the GraphQL search, and the reasons each must get (#143). `base` is merged by a person in a public repository; each case replaces the fields it names.",
+  "now": "2026-10-15T09:41:00Z",
+  "base": {
+    "number": 1,
+    "title": "A change",
+    "url": "https://github.com/DiluxOne/diluxone-offload-wordpress/pull/1",
+    "state": "MERGED",
+    "isDraft": false,
+    "mergedAt": "2026-10-14T12:00:00Z",
+    "isCrossRepository": false,
+    "additions": 10,
+    "deletions": 0,
+    "changedFiles": 1,
+    "repository": {
+      "nameWithOwner": "DiluxOne/diluxone-offload-wordpress",
+      "visibility": "PUBLIC"
+    },
+    "author": {
+      "__typename": "User",
+      "login": "soydiloreto"
+    },
+    "mergedBy": {
+      "__typename": "User",
+      "login": "soydiloreto"
+    },
+    "autoMergeRequest": null,
+    "labels": {
+      "nodes": []
+    },
+    "files": {
+      "nodes": [
+        {
+          "path": "includes/a.php",
+          "additions": 10,
+          "deletions": 0
+        }
+      ]
+    },
+    "closingIssuesReferences": {
+      "nodes": [
+        {
+          "body": "### Criticality\n\nNormal\n",
+          "labels": {
+            "nodes": []
+          }
+        }
+      ]
+    },
+    "early": {
+      "nodes": []
+    },
+    "comments": {
+      "nodes": []
+    },
+    "commits": {
+      "nodes": [
+        {
+          "commit": {
+            "statusCheckRollup": {
+              "contexts": {
+                "nodes": [
+                  {
+                    "__typename": "CheckRun",
+                    "name": "Claude review",
+                    "conclusion": "SUCCESS"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "cases": [
+    {
+      "name": "high risk from the review",
+      "pr": {
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "__typename": "Bot",
+                "login": "dilux-bot"
+              },
+              "body": "<!-- dx-review -->\n### Claude review · risk **high**\n\n<!-- dx-review-record {\"risk\":\"high\",\"complexity\":\"low\",\"floor\":\"low\",\"blocking\":false,\"findings\":[],\"model_risk\":\"high\"} -->"
+            }
+          ]
+        }
+      },
+      "want": [
+        "high-risk"
+      ]
+    },
+    {
+      "name": "a protected path of the review policy (the floor), not the review's rating",
+      "pr": {
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "__typename": "Bot",
+                "login": "dilux-bot"
+              },
+              "body": "<!-- dx-review -->\n### Claude review · risk **high**\n\n<!-- dx-review-record {\"risk\":\"high\",\"complexity\":\"low\",\"floor\":\"high\",\"blocking\":false,\"findings\":[],\"model_risk\":\"low\"} -->"
+            }
+          ]
+        }
+      },
+      "want": [
+        "protected-path"
+      ]
+    },
+    {
+      "name": "high risk from the risk label when no record is left",
+      "pr": {
+        "labels": {
+          "nodes": [
+            {
+              "name": "risk:high"
+            }
+          ]
+        }
+      },
+      "want": [
+        "high-risk"
+      ]
+    },
+    {
+      "name": "protected path",
+      "pr": {
+        "author": {
+          "__typename": "Bot",
+          "login": "dilux-bot"
+        },
+        "labels": {
+          "nodes": [
+            {
+              "name": "autopilot"
+            }
+          ]
+        },
+        "files": {
+          "nodes": [
+            {
+              "path": "policy/autonomy.yml",
+              "additions": 3,
+              "deletions": 0
+            }
+          ]
+        },
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "__typename": "Bot",
+                "login": "dilux-bot"
+              },
+              "body": "<!-- dx-review -->\n### Claude review · risk **low**\n\n<!-- dx-review-record {\"risk\":\"low\",\"complexity\":\"low\",\"floor\":\"low\",\"blocking\":false,\"findings\":[]} -->"
+            }
+          ]
+        }
+      },
+      "want": [
+        "protected-path"
+      ]
+    },
+    {
+      "name": "Critical issue",
+      "pr": {
+        "author": {
+          "__typename": "Bot",
+          "login": "dilux-bot"
+        },
+        "labels": {
+          "nodes": [
+            {
+              "name": "autopilot"
+            }
+          ]
+        },
+        "closingIssuesReferences": {
+          "nodes": [
+            {
+              "body": "### Problem\n\nx\n\n### Criticality\n\nCritical\n",
+              "labels": {
+                "nodes": []
+              }
+            }
+          ]
+        },
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "__typename": "Bot",
+                "login": "dilux-bot"
+              },
+              "body": "<!-- dx-review -->\n### Claude review · risk **low**\n\n<!-- dx-review-record {\"risk\":\"low\",\"complexity\":\"low\",\"floor\":\"low\",\"blocking\":false,\"findings\":[]} -->"
+            }
+          ]
+        }
+      },
+      "want": [
+        "critical"
+      ]
+    },
+    {
+      "name": "review blocker (its failing review check is not a gate of its own)",
+      "pr": {
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "__typename": "Bot",
+                "login": "dilux-bot"
+              },
+              "body": "<!-- dx-review -->\n### Claude review · risk **low**\n\n<!-- dx-review-record {\"risk\":\"low\",\"complexity\":\"low\",\"floor\":\"low\",\"blocking\":true,\"findings\":[{\"severity\":\"blocker\",\"file\":\"a\",\"title\":\"t\"}]} -->"
+            }
+          ]
+        },
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "statusCheckRollup": {
+                  "contexts": {
+                    "nodes": [
+                      {
+                        "__typename": "CheckRun",
+                        "name": "review / Claude review",
+                        "conclusion": "FAILURE"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "want": [
+        "review-blocker"
+      ]
+    },
+    {
+      "name": "autopilot rounds exhausted",
+      "pr": {
+        "author": {
+          "__typename": "Bot",
+          "login": "dilux-bot"
+        },
+        "labels": {
+          "nodes": [
+            {
+              "name": "autopilot"
+            }
+          ]
+        },
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "__typename": "Bot",
+                "login": "dilux-bot"
+              },
+              "body": "<!-- dx-review -->\n### Claude review · risk **low**\n\n<!-- dx-review-record {\"risk\":\"low\",\"complexity\":\"low\",\"floor\":\"low\",\"blocking\":false,\"findings\":[{\"severity\":\"major\",\"file\":\"a\",\"title\":\"t\"}]} -->"
+            },
+            {
+              "author": {
+                "__typename": "Bot",
+                "login": "dilux-bot"
+              },
+              "body": "The autopilot spent its 3 rounds and the review still blocks: a person takes it from here."
+            }
+          ]
+        }
+      },
+      "want": [
+        "rounds-exhausted"
+      ]
+    },
+    {
+      "name": "the review's record among the first comments, the hand-over among the last",
+      "pr": {
+        "author": {
+          "__typename": "Bot",
+          "login": "dilux-bot"
+        },
+        "labels": {
+          "nodes": [
+            {
+              "name": "autopilot"
+            }
+          ]
+        },
+        "early": {
+          "nodes": [
+            {
+              "author": {
+                "__typename": "Bot",
+                "login": "dilux-bot"
+              },
+              "body": "<!-- dx-review -->\n### Claude review · risk **low**\n\n<!-- dx-review-record {\"risk\":\"low\",\"complexity\":\"low\",\"floor\":\"low\",\"blocking\":false,\"findings\":[{\"severity\":\"major\",\"file\":\"a\",\"title\":\"t\"}]} -->"
+            }
+          ]
+        },
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "__typename": "Bot",
+                "login": "dilux-bot"
+              },
+              "body": "The autopilot spent its 3 rounds and the review still blocks."
+            }
+          ]
+        }
+      },
+      "want": [
+        "rounds-exhausted"
+      ]
+    },
+    {
+      "name": "a person's comment does not count as rounds exhausted",
+      "pr": {
+        "author": {
+          "__typename": "Bot",
+          "login": "dilux-bot"
+        },
+        "labels": {
+          "nodes": [
+            {
+              "name": "autopilot"
+            }
+          ]
+        },
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "__typename": "Bot",
+                "login": "dilux-bot"
+              },
+              "body": "<!-- dx-review -->\n### Claude review · risk **low**\n\n<!-- dx-review-record {\"risk\":\"low\",\"complexity\":\"low\",\"floor\":\"low\",\"blocking\":false,\"findings\":[]} -->"
+            },
+            {
+              "author": {
+                "__typename": "User",
+                "login": "someone"
+              },
+              "body": "The autopilot spent its 3 rounds"
+            }
+          ]
+        }
+      },
+      "want": [
+        "unknown"
+      ]
+    },
+    {
+      "name": "failed gate",
+      "pr": {
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "__typename": "Bot",
+                "login": "dilux-bot"
+              },
+              "body": "<!-- dx-review -->\n### Claude review · risk **low**\n\n<!-- dx-review-record {\"risk\":\"low\",\"complexity\":\"low\",\"floor\":\"low\",\"blocking\":false,\"findings\":[]} -->"
+            }
+          ]
+        },
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "statusCheckRollup": {
+                  "contexts": {
+                    "nodes": [
+                      {
+                        "__typename": "CheckRun",
+                        "name": "Claude review",
+                        "conclusion": "SUCCESS"
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "name": "tests / Plugin tests",
+                        "conclusion": "FAILURE"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "want": [
+        "failed-gate"
+      ]
+    },
+    {
+      "name": "size cap (its failing conventions check is not a gate of its own)",
+      "pr": {
+        "author": {
+          "__typename": "User",
+          "login": "someone"
+        },
+        "files": {
+          "nodes": [
+            {
+              "path": "includes/a.php",
+              "additions": 700,
+              "deletions": 0
+            }
+          ]
+        },
+        "additions": 700,
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "__typename": "Bot",
+                "login": "dilux-bot"
+              },
+              "body": "<!-- dx-review -->\n### Claude review · risk **low**\n\n<!-- dx-review-record {\"risk\":\"low\",\"complexity\":\"low\",\"floor\":\"low\",\"blocking\":false,\"findings\":[]} -->"
+            }
+          ]
+        },
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "statusCheckRollup": {
+                  "contexts": {
+                    "nodes": [
+                      {
+                        "__typename": "CheckRun",
+                        "name": "conventions / Conventions (branch, title, commits)",
+                        "conclusion": "FAILURE"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "want": [
+        "size-cap",
+        "outside-author"
+      ]
+    },
+    {
+      "name": "lock files and translations do not count toward the size cap",
+      "pr": {
+        "author": {
+          "__typename": "User",
+          "login": "someone"
+        },
+        "files": {
+          "nodes": [
+            {
+              "path": "includes/a.php",
+              "additions": 10,
+              "deletions": 0
+            },
+            {
+              "path": "composer.lock",
+              "additions": 5000,
+              "deletions": 0
+            },
+            {
+              "path": "languages/x.po",
+              "additions": 900,
+              "deletions": 0
+            }
+          ]
+        },
+        "changedFiles": 3,
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "__typename": "Bot",
+                "login": "dilux-bot"
+              },
+              "body": "<!-- dx-review -->\n### Claude review · risk **low**\n\n<!-- dx-review-record {\"risk\":\"low\",\"complexity\":\"low\",\"floor\":\"low\",\"blocking\":false,\"findings\":[]} -->"
+            }
+          ]
+        }
+      },
+      "want": [
+        "outside-author"
+      ]
+    },
+    {
+      "name": "past the first 100 files the totals count",
+      "pr": {
+        "author": {
+          "__typename": "User",
+          "login": "someone"
+        },
+        "changedFiles": 150,
+        "additions": 650,
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "__typename": "Bot",
+                "login": "dilux-bot"
+              },
+              "body": "<!-- dx-review -->\n### Claude review · risk **low**\n\n<!-- dx-review-record {\"risk\":\"low\",\"complexity\":\"low\",\"floor\":\"low\",\"blocking\":false,\"findings\":[]} -->"
+            }
+          ]
+        }
+      },
+      "want": [
+        "size-cap",
+        "outside-author"
+      ]
+    },
+    {
+      "name": "outside author",
+      "pr": {
+        "author": {
+          "__typename": "User",
+          "login": "someone"
+        },
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "__typename": "Bot",
+                "login": "dilux-bot"
+              },
+              "body": "<!-- dx-review -->\n### Claude review · risk **low**\n\n<!-- dx-review-record {\"risk\":\"low\",\"complexity\":\"low\",\"floor\":\"low\",\"blocking\":false,\"findings\":[]} -->"
+            }
+          ]
+        }
+      },
+      "want": [
+        "outside-author"
+      ]
+    },
+    {
+      "name": "a trusted bot is not an outside author",
+      "pr": {
+        "author": {
+          "__typename": "Bot",
+          "login": "dependabot"
+        },
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "__typename": "Bot",
+                "login": "dilux-bot"
+              },
+              "body": "<!-- dx-review -->\n### Claude review · risk **low**\n\n<!-- dx-review-record {\"risk\":\"low\",\"complexity\":\"low\",\"floor\":\"low\",\"blocking\":false,\"findings\":[]} -->"
+            }
+          ]
+        }
+      },
+      "want": [
+        "unknown"
+      ]
+    },
+    {
+      "name": "over the auto-merge's cap",
+      "pr": {
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "__typename": "Bot",
+                "login": "dilux-bot"
+              },
+              "body": "<!-- dx-review -->\n### Claude review · risk **medium**\n\n<!-- dx-review-record {\"risk\":\"medium\",\"complexity\":\"low\",\"floor\":\"medium\",\"blocking\":false,\"findings\":[]} -->"
+            }
+          ]
+        }
+      },
+      "want": [
+        "risk-cap:auto-merge"
+      ]
+    },
+    {
+      "name": "over a lane's cap",
+      "pr": {
+        "author": {
+          "__typename": "Bot",
+          "login": "dilux-bot"
+        },
+        "labels": {
+          "nodes": [
+            {
+              "name": "autopilot"
+            }
+          ]
+        },
+        "closingIssuesReferences": {
+          "nodes": [
+            {
+              "body": "### Criticality\n\nNormal\n",
+              "labels": {
+                "nodes": [
+                  {
+                    "name": "lane:platform"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "__typename": "Bot",
+                "login": "dilux-bot"
+              },
+              "body": "<!-- dx-review -->\n### Claude review · risk **medium**\n\n<!-- dx-review-record {\"risk\":\"medium\",\"complexity\":\"high\",\"floor\":\"low\",\"blocking\":false,\"findings\":[]} -->"
+            }
+          ]
+        }
+      },
+      "want": [
+        "risk-cap:platform"
+      ]
+    },
+    {
+      "name": "high risk within the lane's cap is not a reason",
+      "pr": {
+        "author": {
+          "__typename": "Bot",
+          "login": "dilux-bot"
+        },
+        "labels": {
+          "nodes": [
+            {
+              "name": "autopilot"
+            }
+          ]
+        },
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "__typename": "Bot",
+                "login": "dilux-bot"
+              },
+              "body": "<!-- dx-review -->\n### Claude review · risk **high**\n\n<!-- dx-review-record {\"risk\":\"high\",\"complexity\":\"high\",\"floor\":\"low\",\"blocking\":false,\"findings\":[]} -->"
+            }
+          ]
+        }
+      },
+      "want": [
+        "unknown"
+      ]
+    },
+    {
+      "name": "a taken-over autopilot pull request has no size cap",
+      "pr": {
+        "author": {
+          "__typename": "Bot",
+          "login": "dilux-bot"
+        },
+        "labels": {
+          "nodes": [
+            {
+              "name": "needs-human"
+            }
+          ]
+        },
+        "files": {
+          "nodes": [
+            {
+              "path": "includes/a.php",
+              "additions": 900,
+              "deletions": 0
+            }
+          ]
+        },
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "__typename": "Bot",
+                "login": "dilux-bot"
+              },
+              "body": "<!-- dx-review -->\n### Claude review · risk **low**\n\n<!-- dx-review-record {\"risk\":\"low\",\"complexity\":\"low\",\"floor\":\"low\",\"blocking\":false,\"findings\":[]} -->"
+            }
+          ]
+        }
+      },
+      "want": [
+        "unknown"
+      ]
+    },
+    {
+      "name": "no reason recorded",
+      "pr": {},
+      "want": [
+        "unknown"
+      ]
+    }
+  ]
+}
