@@ -1537,7 +1537,7 @@ def main(argv):
         for repo in repos:
             try:
                 lines = drift(repo, conf, labels, block, current)
-            except RuntimeError as exc:
+            except (RuntimeError, ValueError) as exc:  # one repository that cannot be read does not stop the report
                 lines = [f"could not be checked: {exc}"]
             if lines:
                 dirty += 1
