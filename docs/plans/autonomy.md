@@ -149,7 +149,7 @@ For the team of the central repository (`.github`). Each phase is a sub-issue of
 
 ## The flow end to end
 
-Work comes in through four doors: an issue, an organisation decision, the maintenance schedule and a private security report. All of them go through the same gates and end, depending on the kind, in Unreleased or in production. A maintainer appears in four places: accepting a PRD, accepting an organisation decision, merging a high-risk security fix and publishing.
+Work comes in through four doors: an issue, an organisation decision, the maintenance schedule and a private security report. All of them go through the same gates and end, depending on the kind, in Unreleased or in production. A maintainer appears in four places: accepting an issue, accepting an organisation decision (once, for every repository), merging what the policy leaves to a person (high risk, a security fix) and publishing.
 
 ## Five types of work
 
@@ -252,7 +252,7 @@ With the gates green, everything product-related up to medium risk inclusive mer
 
 | What | Merges on its own | Merged by a maintainer |
 | --- | --- | --- |
-| Maintenance (class 1) | Always, within the `platform` lane | Only if a gate fails |
+| Maintenance (class 1) | Always, within the `platform` and `org-sync` lanes | Only if a gate fails |
 | Product and organisation decisions (classes 2 and 3) | Low and medium risk, inclusive | High risk, or an issue marked Critical |
 | The autonomy policy and the rules (`policy/autonomy.yml`, the gates and the workflows that apply them) | Never | Always |
 | Publishing a version | Never | Always (the "Release X.Y.Z" issue) |
@@ -375,7 +375,7 @@ Today a maintainer steps into five points of every change; with the proposed mod
 
 ## The full flow
 
-From issue to release there are eight gates and three human decisions: accepting the issue, merging what the policy leaves to a person, and accepting the release. If a gate fails, the change does not move: the agent fixes it and tries again within its caps, or hands it back to the maintainer in the issue with the action and the URL.
+From issue to release there are eight gates and three human decisions: accepting the issue, merging what the policy leaves to a person, and accepting the release. An organisation decision, the fourth place a person decides, is accepted once, outside any single change. If a gate fails, the change does not move: the agent fixes it and tries again within its caps, or hands it back to the maintainer in the issue with the action and the URL.
 
 ## Gates
 
