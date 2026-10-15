@@ -181,6 +181,8 @@ if [ "${1:-}" = "--test" ]; then
     esac
   }
   is "scan: the queued diluxone job, once" "$(OWNER=DiluxOne scan | cut -f1,3 | tr '\t' ' ')" "alpha https://github.com/DiluxOne/alpha/actions/runs/1/job/11"
+  gh() { case "$3" in */jobs*) return 1 ;; orgs/*) echo alpha ;; *) echo 1 ;; esac; }
+  is "scan: a jobs read that fails, inside the loop, is exit 3" "$(OWNER=DiluxOne scan >/dev/null; echo $?)" 3
   gh() { return 1; }
   is "scan: GitHub not answering is exit 3" "$(OWNER=DiluxOne scan >/dev/null; echo $?)" 3
   unset -f gh; rm -f "$f" "$log"
