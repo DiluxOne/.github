@@ -77,8 +77,10 @@ name: Autopilot
 # own tests cannot pick it up); the draft's branch starts at the
 # reproduction's commit, the test checked against the SHA-256 the PRD
 # sealed; the agent runs it only in the sandbox (scripts/repro-sandbox.sh:
-# no network, no environment, no secret), and `finish ready` refuses until
-# it passes there. The pull request's own checks run it too, as any test.
+# no network, no environment, no secret), always against a clean copy of a
+# commit, never the working tree; `finish ready` refuses until it passes
+# there at the pull request's pushed head. The pull request's own checks
+# run it too, as any test.
 
 on:
   workflow_call:
