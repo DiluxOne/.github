@@ -480,6 +480,12 @@ jobs:
             exit 1
           fi
           model_risk=$(jq -r .risk <<<"$OUT"); complexity=$(jq -r .complexity <<<"$OUT"); blocking=$(jq -r .blocking <<<"$OUT")
+          # A pre-existing finding never blocks (#234): blocking takes a
+          # blocker or major this pull request introduced; a findings list
+          # that cannot be counted keeps the model's verdict.
+          if [ "$blocking" = true ] && own=$(jq -c '.findings' <<<"$OUT" | python3 .dx-central/scripts/review-count.py serious) && [ "$own" = 0 ]; then
+            blocking=false
+          fi
           type=$(jq -r '.type // "chore"' <<<"$OUT"); dmatch=$(jq -r 'if .description_matches == false then "false" else "true" end' <<<"$OUT")
           text=$(printf '%s' "$BODY" | tr -d '\r' | sha256sum | cut -c1-16)
           risk=$model_risk
@@ -536,7 +542,7 @@ jobs:
           desc=""; if [ "$dmatch" != true ]; then desc=$'\n\n> ✍️ The description does not match the code (see the summary): no auto-merge until it does.'; fi
           findings=$(jq -r '.findings[] | "- **\(.severity)**\(if .pre_existing then " (pre-existing)" else "" end) `\(.file)\(if .line then ":\(.line)" else "" end)`: \(.title)"' <<<"$OUT")
           # The count first (#234): what is left to fix, or nothing.
-          tally=$(jq -c '.findings' <<<"$OUT" | python3 .dx-central/scripts/review-count.py line)
+          tally=$(jq -c '.findings' <<<"$OUT" | python3 .dx-central/scripts/review-count.py line) || tally="_The findings could not be counted._"
           # The changed files travel with the record: the weekly learning job
           # uses them as evidence for a repository's safe and risky paths.
           files=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json files --jq '[.files[].path] | .[:300]' 2>/dev/null || echo '[]')

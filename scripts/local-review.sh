@@ -293,7 +293,9 @@ verdict=$(jq -c '.structured_output // empty' "$work/review.json")
 reasons_not=()
 [ "$conventions" -eq 0 ] || reasons_not+=("a convention is broken (above)")
 # A pre-existing finding (code this branch did not introduce) never stops it.
-serious=$(jq -c '.findings' <<<"$verdict" | python3 "$CENTRAL/scripts/review-count.py" serious)
+serious=$(jq -c '.findings' <<<"$verdict" | python3 "$CENTRAL/scripts/review-count.py" serious) || serious=unknown
+[ "$serious" != unknown ] || reasons_not+=("the findings could not be counted")
+[ "$serious" = unknown ] && serious=0
 [ "$serious" -eq 0 ] || reasons_not+=("$serious blocker or major finding(s)")
 if [ -n "$body_file" ] && [ "$(jq -r .description_matches <<<"$verdict")" != true ]; then
   reasons_not+=("the description does not match the code (see the summary)")

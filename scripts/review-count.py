@@ -56,6 +56,10 @@ def self_test():
     check("only pre-existing: nothing to fix", line([f("major", True)]), "**Nothing to fix.** · 1 pre-existing, not this pull request's")
     check("serious: the pull request's own blockers and majors", serious([f("blocker"), f("major", True), f("minor"), f("major")]), 2)
     check("not a finding is skipped", (line(["x", None]), serious(["x"])), ("**Nothing to fix.**", 0))
+    import subprocess as _sp
+    import os as _os
+    cli = lambda text: _sp.run([sys.executable, _os.path.abspath(__file__), "serious"], input=text, capture_output=True, text=True)
+    check("cli: a cut or empty input is an error, never zero", (cli('[{"severity":"bl').returncode, cli("").returncode, cli("{}").returncode, cli('[{"severity":"major"}]').stdout.strip()), (1, 1, 1, "1"))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
@@ -64,11 +68,15 @@ def main(argv):
     if argv == ["--test"]:
         return self_test()
     if argv in (["line"], ["serious"]):
+        # Fails closed: what is not a list of findings is an error, never
+        # "nothing to fix".
         try:
-            findings = json.loads(sys.stdin.read() or "[]")
+            findings = json.loads(sys.stdin.read())
         except ValueError:
-            findings = []
-        findings = findings if isinstance(findings, list) else []
+            findings = None
+        if not isinstance(findings, list):
+            print("review-count.py: the findings are not a JSON list", file=sys.stderr)
+            return 1
         print(line(findings) if argv == ["line"] else serious(findings))
         return 0
     print(__doc__, file=sys.stderr)
