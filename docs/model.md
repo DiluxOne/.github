@@ -6,7 +6,7 @@ Not all of it is built yet. What is, and in which order the rest comes, is the w
 
 ## In one paragraph
 
-For a normal change, the only human decision is accepting a well-formed issue; from there it travels on its own to the merge, through gates that leave a record. A person still decides four things: accepting an issue, accepting an organisation decision (once, for every repository), merging what the policy leaves to a person (high risk, Critical, the autonomy policy and the rules) and publishing a version.
+For a normal change, the only human decision is accepting a well-formed issue; from there it travels on its own to the merge, through gates that leave a record. A person still decides four things: accepting an issue, accepting an organisation decision (once, for every repository), merging what the policy leaves to a person (high risk, Critical, a security fix, the autonomy policy and the rules) and publishing a version.
 
 ## Four doors in
 
@@ -22,7 +22,7 @@ Five types are enough; everything else (refactor, docs, performance, hotfix, mig
 | Minor | The change fits in one sentence and does not change behaviour: text, a button, docs, a small refactor, a revert | Code, checks, review | A maintainer accepts the issue | Yes |
 | Bugfix | Something behaves differently from what is expected, a performance regression included | A test that reproduces it, a test of what must not change, code, review, validation | The policy, if the bug was reproduced on its own; otherwise a maintainer | Up to medium risk |
 | Feature | Something new, a public API or hook, a migration, a deprecation, a breaking change | PRD, impact, threats, architecture, code, review, independent validation | A maintainer accepts the PRD | Up to medium risk |
-| Security | A vulnerability reported privately | A private advisory, never a public issue | A maintainer | Up to medium risk, with a veto window |
+| Security | A vulnerability reported privately | In a public repository, a private advisory, never a public issue; in a private one, an issue labelled `security` | A maintainer | No: a person merges the fix |
 
 **Not a type:** a spike produces no pull request. It is a step of the triage, when an issue cannot be classified or a maintainer asks for one: the agent investigates read-only, for a capped time, and ends in doing (the issue becomes a bug, a minor change or a feature), clarifying (it asks what is missing) or discarding (it closes with the reason). Release has its own flow.
 
@@ -79,7 +79,7 @@ A change moves only if it passes each gate in order. The deterministic gates alw
 | G4 The kind's checks | Conventions, lint, static analysis, tests | The agent fixes and pushes again (a round) |
 | G5 Clean review | No open blocker or major | The agent fixes; after 3 rounds, a person |
 | G6 Meets the issue | Every criterion with its evidence, nothing out of scope | Back to the loop; a scope problem goes to a person |
-| G7 Merge | G1 to G6 green, not Critical, no protected path, within budget | A person merges, with the reason and the URL |
+| G7 Merge | G1 to G6 green, not Critical, not labelled `security`, no protected path, within budget | A person merges, with the reason and the URL |
 | G8 Healthy main | The default branch's CI green after the merge | An automatic revert pull request and an issue |
 
 Limits that always cut: rounds per pull request (3), cost per issue, the agent's jobs in parallel, and an organisation switch (`DX_AUTOPILOT=off`) that stops everything autonomous without touching code.
@@ -89,7 +89,7 @@ Limits that always cut: rounds per pull request (3), cost per issue, the agent's
 | What | On its own | A maintainer |
 | --- | --- | --- |
 | Maintenance | Always, within its lanes | Only if a gate fails |
-| Product changes and organisation decisions | Low and medium risk | High risk, or an issue marked Critical |
+| Product changes and organisation decisions | Low and medium risk | High risk, an issue marked Critical, or a security fix |
 | The autonomy policy, the gates, the workflows that apply them, and the rules | Never | Always |
 | Publishing a version | Never | Always |
 | Reverting what broke the default branch | Within its lane | The rest |
@@ -110,7 +110,7 @@ Three layers: the organisation (its `.github` repository), the kind, the reposit
 
 | What | Organisation | Kind | Repository |
 | --- | --- | --- | --- |
-| Autonomy: lanes, thresholds, majors, security, veto | `policy/autonomy.yml` | - | Its policy file: restricts, or widens up to the ceiling |
+| Autonomy: lanes, thresholds, majors, what a person always merges (`person-merges`, security) | `policy/autonomy.yml` | - | Its policy file: restricts, or widens up to the ceiling |
 | Gates and workflows | The central workflows | The kind's checks | The callers the sync copies |
 | Mandatory rules | `rules/` | `kinds/<kind>/` | `AGENTS.md`: only adds |
 | Conventions | This page and the `AGENTS.md` block the sync copies | `kinds/<kind>/` | `AGENTS.md`, under the block |
