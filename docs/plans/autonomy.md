@@ -56,6 +56,7 @@ For the team of the central repository (`.github`). Each phase is a sub-issue of
   - `.github/rules/` with the header schema (`level`, `applies_to`, `enforced_by`) and the first mandatory rules: test-first, and no credentials in the front end.
   - The `AGENTS.md` block the sync copies, with the rule on findings.
 - **Done when:** a maintainer merged the three, and an agent in any repository reads them from its `AGENTS.md`.
+- **Done:** [docs/model.md](../model.md), [rules/](../../rules/README.md) (held by `scripts/rules.py`) and items 8 and 9 of `agents-block.md`, in #187; the sync brings the block to every repository.
 
 ### Phase 3 · The policy base
 

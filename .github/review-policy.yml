@@ -18,6 +18,10 @@ high-risk:
   # (review-brief.sh, issue-repro.yml), should this repository have them.
   - "docs/architecture.md"
   - "docs/testing-and-quality.md"
+  # The model every agent reads from AGENTS.md, and the rules every change
+  # meets: like the autonomy policy, a person merges them.
+  - "docs/model.md"
+  - "rules/**"
   - "kinds/**"
   # Every screen of every project associated with a system follows it
   # (repos.yml, design-system), its pages included: they are its rules.
