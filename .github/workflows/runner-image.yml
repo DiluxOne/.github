@@ -183,7 +183,9 @@ jobs:
 
       - name: Promote
         id: promote
-        if: github.event_name != 'pull_request'
+        # DX_AUTOPILOT=off stops every autonomous action, this promotion too:
+        # the build is tested and recorded, and :stable waits for a person.
+        if: github.event_name != 'pull_request' && vars.DX_AUTOPILOT != 'off'
         env:
           DATE: ${{ steps.v.outputs.date }}
         run: |
@@ -213,6 +215,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token || github.token }}
           OUTCOME: ${{ steps.promote.outcome }}
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
           DIGEST: ${{ steps.promote.outputs.digest }}
           RUNNER: ${{ steps.v.outputs.runner }}
           SMOKE: ${{ steps.smoke.outputs.report }}
@@ -227,6 +230,10 @@ jobs:
               NEEDS=0 bash scripts/run-issue.sh open runner-image "Runner image, run $RUN: promoted"
             # The image builds again: a failed build's issue left open is settled.
             bash scripts/run-issue.sh settle runner-image "$RUN_URL"
+          elif [ "$OUTCOME" = skipped ] && [ "$SMOKE_OUTCOME" = success ]; then
+            # It passed, and DX_AUTOPILOT=off held the promotion: a person decides.
+            printf 'Built and tested, not promoted: DX_AUTOPILOT is off, so :stable waits for a person (run this workflow again once it is on).\n\nRun: %s\n\n%s\n' "$RUN_URL" "$ai" |
+              NEEDS=1 bash scripts/run-issue.sh open runner-image "Runner image, run $RUN: held (DX_AUTOPILOT off)"
           else
             # A failed build is the `platform` lane's work: the lane checks
             # that dilux-bot opened it from this run, named in the body.

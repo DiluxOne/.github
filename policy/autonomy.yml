@@ -22,7 +22,8 @@
 #
 # The organisation variable DX_AUTOPILOT=off stops every autonomous action at
 # once, without touching the checks: no lane accepts an issue, no agent
-# starts, nothing merges by policy, no red default branch is reverted (G8).
+# starts, nothing merges by policy, no red default branch is reverted (G8),
+# no runner image is promoted to :stable.
 # Everything waits for a person, as before.
 
 autopilot: true
