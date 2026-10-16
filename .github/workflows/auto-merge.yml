@@ -16,12 +16,17 @@ name: Auto-merge
 #   - the review rated it low risk, low complexity, not blocking;
 #   - the review found the description to match the code (and nobody edited
 #     the description after that review);
-#   - the author is in the policy's trusted-authors list.
+#   - the author is in the policy's trusted-authors list;
+#   - no issue it closes carries a label of the autonomy policy's
+#     `person-merges` (`security`, #194): that holds every path here but the
+#     autopilot's, which checks it itself, and the revert's, which closes no
+#     such issue.
 #
 # A pull request dilux-bot opened and labelled `autopilot` (#83) is decided
 # by the autonomy policy instead, gate G7 (scripts/autopilot.py decide, from
 # DiluxOne/.github at `central-ref`): it closes exactly one issue, which is
-# not Critical; no protected path changes (every file, renames by their old
+# not Critical and carries no label of the policy's `person-merges`
+# (`security`, #194); no protected path changes (every file, renames by their old
 # path too); the review does not block and its description is true, and it
 # found every acceptance criterion met at this head (G6, its record); risk and
 # complexity are within the caps of the lane it was worked under
@@ -118,7 +123,7 @@ jobs:
 
       # A pull request the autopilot opened is decided by the autonomy
       # policy instead (gate G7, scripts/autopilot.py decide): never a
-      # Critical issue or a protected path, never new public surface for an
+      # Critical issue, one labelled security, or a protected path, never new public surface for an
       # issue that is not a Feature (#193), never while the review blocks,
       # never before the review found every acceptance criterion met (G6),
       # within the lane's caps, with a test for every criterion at the head.
@@ -202,6 +207,10 @@ jobs:
             fi
           fi
           export SURFACE="$RUNNER_TEMP/surface" ISSUE_TYPE
+          # The issue's labels: one the policy lists in person-merges
+          # (security, #194) leaves the merge to a person.
+          gh api "repos/$GITHUB_REPOSITORY/issues/$issue" --jq '.labels[].name' > "$RUNNER_TEMP/issue-labels"
+          export ISSUE_LABELS="$RUNNER_TEMP/issue-labels"
           # G6 (#193): the review's verdict on each acceptance criterion, from
           # its record on the pull request, only when it judged this head.
           gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
@@ -299,6 +308,45 @@ jobs:
             GH_TOKEN="$ISSUE_TOKEN" gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body "$comment" >/dev/null
           fi
 
+      # An issue labelled with one of the policy's `person-merges` (security,
+      # #194) is merged by a person, whoever opened the pull request that
+      # closes it: neither the sync lane nor the usual decision below sets
+      # auto-merge for it. A label that cannot be read holds it too.
+      - name: Labels a person merges
+        id: held
+        if: steps.autopilot.outputs.handled != 'true' && steps.revert.outputs.handled != 'true'
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          PR: ${{ github.event.pull_request.number }}
+          CENTRAL_REF: ${{ inputs.central-ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -uo pipefail
+          held=""
+          # Each closed issue in its own repository, by its URL.
+          if ! labels=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences --jq '.closingIssuesReferences[].url' \
+               | while read -r url; do gh api "repos/${url#https://github.com/}" --jq '.labels[].name' || exit 1; done); then
+            held="(the closed issues' labels could not be read)"
+          elif ! git clone -q --depth 1 --branch "$CENTRAL_REF" https://github.com/DiluxOne/.github "$RUNNER_TEMP/central-held"; then
+            held="(the policy could not be read)"
+          # The repository's own policy: none only when the file is not there.
+          elif { content=$(gh api "repos/$GITHUB_REPOSITORY/contents/.github/autonomy.yml?ref=$BASE_SHA" --jq .content 2>"$RUNNER_TEMP/held.err") \
+                 && printf '%s' "$content" | base64 -d > "$RUNNER_TEMP/held-autonomy.yml"; } \
+               || { grep -qE '404|Not Found' "$RUNNER_TEMP/held.err" && : > "$RUNNER_TEMP/held-autonomy.yml"; }; then
+            if ! listed=$(REPO_AUTONOMY="$RUNNER_TEMP/held-autonomy.yml" python3 "$RUNNER_TEMP/central-held/scripts/autonomy.py" policy 2>/dev/null | jq -er '."person-merges" | .[]'); then
+              held="(the policy in force could not be read)"
+            else
+              held=$(grep -Fxf <(printf '%s\n' "$listed") <<<"$labels" | head -n1 || true)
+            fi
+          else
+            held="(the repository's .github/autonomy.yml could not be read)"
+          fi
+          echo "label=$held" >> "$GITHUB_OUTPUT"
+          if [ -n "$held" ]; then
+            gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --disable-auto >/dev/null 2>&1 || true
+            echo "A human merges this one: it closes an issue labelled $held."
+          fi
+
       # A sync run's pull request (lane org-sync, #155: scripts/sync-repos.py
       # opened it and its issue) is decided by the autonomy policy too
       # (scripts/autonomy.py lane-merge): the lane accepts its issue, it
@@ -309,7 +357,7 @@ jobs:
       # goes on to the usual decision.
       - name: A sync run's pull request
         id: lane
-        if: steps.autopilot.outputs.handled != 'true' && steps.revert.outputs.handled != 'true'
+        if: steps.autopilot.outputs.handled != 'true' && steps.revert.outputs.handled != 'true' && steps.held.outputs.label == ''
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           PR: ${{ github.event.pull_request.number }}
@@ -362,7 +410,7 @@ jobs:
           fi
 
       - name: Enable or disable
-        if: steps.autopilot.outputs.handled != 'true' && steps.revert.outputs.handled != 'true' && steps.lane.outputs.handled != 'true'
+        if: steps.autopilot.outputs.handled != 'true' && steps.revert.outputs.handled != 'true' && steps.lane.outputs.handled != 'true' && steps.held.outputs.label == ''
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           PR: ${{ github.event.pull_request.number }}

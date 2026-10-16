@@ -552,12 +552,14 @@ def g6_verdict(path):
 
 
 def decide(policy, body, risk, complexity, blocking, description_ok, files, head_files, autopilot_var, author=BOT, lane_name=LANE, repro_sha="",
-           surface=(), issue_type="", criteria_verdict=False):
+           surface=(), issue_type="", criteria_verdict=False, issue_labels=()):
     """Gate G7. lane_name is the lane the issue is worked under (which_lane);
     for a reproduced bug, repro_sha is the SHA-256 of the reproduction test
     as it is at the head: it must be the one the PRD sealed. surface is what
     the change adds to the kind's public surface (scripts/surface.py), or
-    ["unknown"] when that could not be told; issue_type the issue's Type.
+    ["unknown"] when that could not be told; issue_type the issue's Type;
+    issue_labels the issue's labels (one of the policy's `person-merges`,
+    `security` among them, leaves it to a person, #194).
     criteria_verdict is the review's G6 verdict at this head, {id: met}, or
     None when the review gave none (False: not asked, the old callers)."""
     if author != BOT:
@@ -581,6 +583,9 @@ def decide(policy, body, risk, complexity, blocking, description_ok, files, head
             return False, f"the reproduction test {ev['test']} is not the one that failed (its SHA-256 changed)"
     if criticality(body) == "critical":
         return False, "the issue is marked Critical: a person merges it"
+    held = [l for l in issue_labels if l in (policy.get("person-merges") or ["security"])]
+    if held:
+        return False, f"the issue is labelled {held[0]}: a person merges it"
     import fnmatch
     protected = [f for f in files if any(fnmatch.fnmatch(f, p) for p in policy.get("constitution") or [])]
     if protected:
@@ -973,6 +978,8 @@ Clamp the value in Sum::add.
     check("#193 decide: a Feature may add it", decide(pol, fspec, "low", "low", "false", "true", ["header.php", "tests/e2e/toggle.spec.ts"], head, "", surface=["a new action hook: dx_x"], issue_type="Feature")[0], True)
     check("#193 decide: surface that could not be told stops a Bug's change too", plain(surface=["unknown"], issue_type="Task"), False)
     check("#193 decide: no surface, any Type", plain(surface=[], issue_type="Bug"), True)
+    check("#194 decide: an issue labelled security is merged by a person", (plain(surface=[], issue_type="Bug", issue_labels=["accepted", "security"]), plain(surface=[], issue_type="Bug", issue_labels=["accepted"])), (False, True))
+    check("#194 decide: with no person-merges in the policy, security still holds", decide({k: v for k, v in pol.items() if k != "person-merges"}, spec, "low", "low", "false", "true", ["header.php", "tests/e2e/toggle.spec.ts"], head, "", issue_type="Bug", issue_labels=["security"])[0], False)
     check("#193 decide: a Feature's Spec without its impact, threats and architecture stops", plain(surface=[], issue_type="Feature"), False)
     g6 = lambda v: decide(pol, spec, "low", "low", "false", "true", ["header.php", "tests/e2e/toggle.spec.ts"], head, "", criteria_verdict=v)[0]
     check("#193 G6: merges when the review finds every criterion met", g6({"C1": True}), True)
@@ -1372,7 +1379,7 @@ def main(argv):
         ok, why = decide(pol, body, os.environ.get("RISK", ""), os.environ.get("COMPLEXITY", ""), os.environ.get("BLOCKING", ""),
                          os.environ.get("DESCRIPTION_OK", ""), read_lines("FILES"), read_lines("HEAD_FILES"), var, os.environ.get("AUTHOR", ""),
                          lane_name, os.environ.get("REPRO_SHA256", ""), read_lines("SURFACE"), os.environ.get("ISSUE_TYPE", ""),
-                         g6_verdict(os.environ.get("CRITERIA_VERDICT", "")))
+                         g6_verdict(os.environ.get("CRITERIA_VERDICT", "")), read_lines("ISSUE_LABELS"))
         print(why)
         return 0 if ok else 1
     print(__doc__, file=sys.stderr)

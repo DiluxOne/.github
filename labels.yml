@@ -41,7 +41,7 @@
 - {name: planned, color: "0E8A16", description: "Already planned"}
 - {name: exists-in-pro, color: "5319E7", description: "A paid product already has it"}
 - {name: question, color: "D876E3", description: "A usage question; the support channel has it"}
-- {name: security, color: "B60205", description: "A vulnerability; report it privately"}
+- {name: security, color: "B60205", description: "A vulnerability report; a person merges its fix"}
 - {name: enhancement, color: "A2EEEF", description: "New feature or request"}
 - {name: duplicate, color: "CFD3D7", description: "An open issue already covers it"}
 
