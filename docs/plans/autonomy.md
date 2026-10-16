@@ -67,6 +67,7 @@ For the team of the central repository (`.github`). Each phase is a sub-issue of
   - Protected paths (`policy/` and `rules/`) in G3 and G7.
   - The issue's board.
   - The view of the organisation's Project filtered by `needs:maintainer`.
+- **So far:** a lane's `ceiling` (human-issue: medium by default, high at most), up to which a repository's `.github/autonomy.yml` may raise it; `autonomy.py check` holding the policy to its schema in CI; `rules/**` and `docs/model.md` among the protected paths. The repository's file keeps its name, `.github/autonomy.yml`, not `.github/policy.yml`. Majors, the security veto, the budget, the parallel jobs and the spike's time join the schema with the phase that first reads each, so the policy names nothing that nothing applies.
 - **Done when:** changing a threshold is a pull request to one file; every automatic decision shows on the board with a link to its rule; and `DX_AUTOPILOT=off` stops everything autonomous.
 
 ### Phase 4 · Organisation decisions

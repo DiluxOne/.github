@@ -1,10 +1,13 @@
 # The autonomy policy: everything the organisation lets proceed without a
 # person deciding comes from here, and nothing else does (the plan, #78).
 # scripts/autonomy.py reads it, with a repository's own .github/autonomy.yml
-# from the base branch, which can only make it stricter: switch a lane off,
-# narrow its repositories, lower what it may merge, turn the autopilot off,
-# add protected paths. Anything that would widen it is ignored, with a
-# warning.
+# from the base branch, which makes it stricter: switch a lane off, narrow
+# its repositories, lower what it may merge, turn the autopilot off, add
+# protected paths. The one thing it may widen is what a lane merges on its
+# own, and only where the lane sets a `ceiling`, never past it: `merge` is
+# the organisation's default, `ceiling` the most any repository may raise it
+# to. Anything else that would widen it is ignored, with a warning.
+# `autonomy.py check` holds this file to its schema in CI.
 #
 # The golden rule: this file, the gates and the workflows that apply them
 # (`constitution` below) are always accepted and merged by a person.
@@ -41,6 +44,9 @@ constitution:
   - "review-profiles/**"
   - "AGENTS.md"
   - "CLAUDE.md"
+  # The organisation's rules and the model every agent reads (#187).
+  - "rules/**"
+  - "docs/model.md"
 
 # A lane's issue is accepted by policy only when all of this holds, read from
 # GitHub, never from the issue's text alone:
@@ -57,6 +63,9 @@ constitution:
 #
 # merge: the most a pull request closing a lane's issue may be, as the review
 # rates it, and still merge on its own (the autopilot, #83, applies it).
+# ceiling: the most a repository's own file may raise `merge` to (#188); a
+# lane without one is never raised. An issue marked Critical never merges on
+# its own, whatever either says.
 lanes:
   platform:
     description: The organisation's own machinery that a weekly job keeps current, starting with the runner image.
@@ -97,6 +106,7 @@ lanes:
     accept: human
     repositories: ["*"]
     merge: {max-risk: medium, max-complexity: high}
+    ceiling: {max-risk: high, max-complexity: high}
 
   # Mechanical sync pull requests (#155): the Task issue and the pull request
   # scripts/sync-repos.py opens in a repository (`files`, `callers`) to bring
