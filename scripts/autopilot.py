@@ -221,12 +221,18 @@ NO_DECISIONS = "_None yet: how the agent settles what the PRD leaves open, one l
 
 def add_decision(pr_body, text, day):
     """The pull request's body with one more line in its Decisions log
-    (#193): what the agent decided that the PRD does not say, and why. None
-    when the body has no log, or the text is empty."""
-    text = " ".join((text or "").split())[:400].replace("@", "@\u200b")
+    (#193): what the agent decided that the PRD does not say, and why. A
+    draft opened before the log existed gets one, before "How I tested it".
+    None when the text is empty."""
+    # Its text reaches the merge commit: no @mention, no "Closes #N".
+    text = " ".join((text or "").split())[:400].replace("@", "@\u200b").replace("#", "#\u200b")
     head = "## 🧭 Decisions"
-    if not text or head not in pr_body:
+    if not text:
         return None
+    if head not in pr_body:
+        tested = "## 🧪 How I tested it"
+        block = f"{head}\n\n{NO_DECISIONS}\n\n"
+        pr_body = pr_body.replace(tested, block + tested, 1) if tested in pr_body else pr_body.rstrip("\n") + "\n\n" + block
     before, _, after = pr_body.partition(head)
     nxt = after.find("\n## ")
     section, rest = (after, "") if nxt < 0 else (after[:nxt], after[nxt:])
@@ -830,7 +836,10 @@ A class on html.
     check("#193: the rest of the body is untouched", d2.split("## 🧭 Decisions")[0] == d0.split("## 🧭 Decisions")[0] and "## 🧪 How I tested it" in d2, True)
     check("#193: the work prompt asks to log decisions, and to stop on one that changes the scope",
           (f"{HELPER} decision" in prompt_work("o/r", "7", "8", "b", "x", [("C1", "a", None)], False), "a doubt changes the scope" in prompt_work("o/r", "7", "8", "b", "x", [("C1", "a", None)], False)), (True, True))
-    check("#193: no log, or no text, no decision", (add_decision("## 📝 What changes\n\nx", "y", "d"), add_decision(d0, "  ", "d")), (None, None))
+    old_draft = "## 📝 What changes\n\nx\n\n## 🧪 How I tested it\n\nlater"
+    got = add_decision(old_draft, "y. Closes #12", "d")
+    check("#193: a draft from before the log gets one, before How I tested it", got.index("## 🧭 Decisions") < got.index("## 🧪 How I tested it") and "- d: y. Closes #\u200b12" in got, True)
+    check("#193: no text, no decision", add_decision(d0, "  ", "d"), None)
     check("#190: the prompts never ask for git push, and name the helper", ("git push" not in prompt_work("o/r", "7", "8", "feat/7-x", "x", [("C1", "a", None)], False).replace("Never `git push`", ""),
           f"{HELPER} push" in prompt_work("o/r", "7", "8", "feat/7-x", "x", [("C1", "a", None)], False), f"{HELPER} push" in prompt_fix("o/r", "8", 1, 3)), (True, True, True))
     check("C3: a fix round that pushed nothing is silent", end_verdict("fix", "5", False, False, 2, 2, False, 1, 5, pushed=False), "silent")
