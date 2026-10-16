@@ -87,25 +87,25 @@ jobs:
           persist-credentials: false
           path: .dx-central
 
-      - name: dilux-bot token (advisories, every repository)
-        id: bot
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
-          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          permission-repository-advisories: write
-          # The fix's branch in each fork, claimed before the agent runs.
-          permission-contents: write
-          permission-pull-requests: read
-          permission-metadata: read
-
+      # The token is minted here, not by actions/create-github-app-token,
+      # which has no input for repository advisories: asking it for the
+      # others leaves that one out, and the list of advisories comes back
+      # empty instead of failing (scripts/app-token.sh).
       - name: Forks and fixes due
         id: plan
         env:
-          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          CLIENT_ID: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
+          # Every repository's advisories; contents to create each fork's
+          # branch and to clone it.
+          GH_TOKEN=$(bash .dx-central/scripts/app-token.sh mint '{"repository_advisories":"write","contents":"write","pull_requests":"read","metadata":"read"}')
+          export GH_TOKEN
+          unset PRIVATE_KEY
+          # Revoked when the step ends, however it ends.
+          trap 'curl -fsS -o /dev/null -X DELETE -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/installation/token || true' EXIT
           fixes=$(python3 .dx-central/scripts/advisory.py plan)
           echo "fixes=$fixes" >> "$GITHUB_OUTPUT"
           echo "Fixes due: $(jq length <<<"$fixes")"
