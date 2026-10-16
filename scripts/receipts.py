@@ -111,19 +111,42 @@ def autopilot_row(a):
     return "| Autopilot | " + " · ".join(parts) + " |"
 
 
-def board_text(number, ready, last_seal, merged, autopilot=None):
+def rule_link(policy):
+    """A link to the autonomy policy as a decision read it: at its commit
+    ("DiluxOne/.github@<ref>", as seals and receipts keep it), else main."""
+    ref = (policy or "").partition("@")[2] or "main"
+    return f"[the rule](https://github.com/DiluxOne/.github/blob/{ref}/policy/autonomy.yml)"
+
+
+def board_text(number, ready, last_seal, merged, autopilot=None, labels=()):
     rows = ["| Gate | State |", "| --- | --- |"]
     rows.append(f"| G1 Issue ready | {'✓ the PRD follows the schema' if ready else '✗ see the G1 comment'} |")
+    lane = next((l[5:] for l in labels if l.startswith("lane:")), None)
     if last_seal:
         rows.append(f"| G2 Accepted | ✓ by {last_seal.get('accepted_by')} at {last_seal.get('at')}; PRD sealed `{last_seal.get('prd_sha256', '')[:12]}` |")
+    elif lane and "accepted-by:policy" in labels:
+        # Every automatic decision links the rule it followed (#188).
+        rows.append(f"| G2 Accepted | ✓ by policy, lane `{lane}` ({rule_link(None)}) |")
     else:
         rows.append("| G2 Accepted | not sealed |")
     row = autopilot_row(autopilot)
     if row:
         rows.append(row)
     if merged:
-        rows.append(f"| G7 Merged | ✓ #{merged.get('pull_request')} by {merged.get('merged_by')}; receipt in `receipts/issues/{number}/merged-{merged.get('at')}.json` |")
+        by = f"policy ({rule_link(merged.get('policy'))})" if merged.get("merged_by") == "policy" else merged.get("merged_by")
+        rows.append(f"| G7 Merged | ✓ #{merged.get('pull_request')} by {by}; receipt in `receipts/issues/{number}/merged-{merged.get('at')}.json` |")
     return f"{BOARD}\n**The issue's board**\n\n" + "\n".join(rows) + f"\n\n{AI}"
+
+
+def issue_labels(repo, number):
+    """The issue's labels, read from GitHub (LABELS_JSON stands in for them
+    in the self-test); none when they cannot be read: the board then says
+    less, never something wrong."""
+    if os.environ.get("LABELS_JSON"):
+        return json.loads(os.environ["LABELS_JSON"])
+    out = subprocess.run(["gh", "issue", "view", str(number), "--repo", repo, "--json", "labels", "--jq", "[.labels[].name]"],
+                         capture_output=True, text=True)
+    return json.loads(out.stdout) if out.returncode == 0 and out.stdout.strip() else []
 
 
 def autopilot_state(repo, number):
@@ -283,6 +306,12 @@ Normal
     check("C6: the board links the pull request and the run, with the progress", ("[#12](https://github.com/o/r/pull/12)" in ab, "[the run](https://github.com/o/r/actions/runs/9)" in ab, "1 of 3 criteria" in ab), (True, True, True))
     check("C6: a person's pull request says so", "a person has it" in board_text(7, True, s, None, dict(a, needs_human=True)), True)
     check("C6: no autopilot, no row", "Autopilot" in board_text(7, True, s, None, None), False)
+    lb = board_text(7, True, None, None, None, ["lane:platform", "accepted-by:policy"])
+    check("#188: a lane's acceptance names the lane and links its rule", "✓ by policy, lane `platform` ([the rule](https://github.com/DiluxOne/.github/blob/main/policy/autonomy.yml))" in lb, True)
+    check("#188: a lane's label alone is no acceptance", "not sealed" in board_text(7, True, None, None, None, ["lane:platform"]), True)
+    mb = board_text(7, True, s, receipt(7, body, s, pr2, {}, "abc123", "t"))
+    check("#188: a merge by policy links the rule at the commit it read", "by policy ([the rule](https://github.com/DiluxOne/.github/blob/abc123/policy/autonomy.yml))" in mb, True)
+    check("#188: a person's merge names the person", "by soydiloreto;" in b, True)
     with tempfile.TemporaryDirectory() as d:
         os.environ["RECEIPTS_FIXTURE"] = d
         write("o/r", "issues/7/prd-2026-10-11T00:00:00Z.json", s, "seal")
@@ -299,7 +328,7 @@ Normal
         bf = os.path.join(d, "body.md")
         with open(bf, "w", encoding="utf-8") as f:
             f.write(body)
-        env = dict(os.environ, AUTOPILOT_JSON="null", NUMBER="9", BODY=bf, GITHUB_REPOSITORY="o/r", ACCEPTED_BY="soydiloreto",
+        env = dict(os.environ, AUTOPILOT_JSON="null", LABELS_JSON="[]", NUMBER="9", BODY=bf, GITHUB_REPOSITORY="o/r", ACCEPTED_BY="soydiloreto",
                    PR_JSON=json.dumps(pr), CHECKS_JSON='{"success": 3}')
         run = lambda *a: sp.run([sys.executable, os.path.abspath(__file__)] + list(a), env=env, capture_output=True, text=True)
         check("cli: verify an issue never sealed", run("verify-prd").stdout.strip(), "unsealed")
@@ -378,7 +407,7 @@ def main(argv):
         ready = schema_mod.check(body)["ok"]
         names = [n for n in list_dir(repo, f"issues/{number}") if n.startswith("merged-")]
         merged = read(repo, f"issues/{number}/{names[-1]}") if names else None
-        print(board_text(number, ready, last_seal(repo, number), merged, autopilot_state(repo, number)))
+        print(board_text(number, ready, last_seal(repo, number), merged, autopilot_state(repo, number), issue_labels(repo, number)))
         return 0
     print(__doc__, file=sys.stderr)
     return 64
