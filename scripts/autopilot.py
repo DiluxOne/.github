@@ -120,7 +120,10 @@ def which_lane(policy, issue, run, repository, autopilot_var):
     own issue (its `lane:` label, its origin checked against GitHub by
     autonomy.lane_accepts) is worked under that lane, with its caps; an issue
     a person accepted, under `human-issue`. (None, why) when neither holds:
-    nobody accepted it, so nothing starts. Pure."""
+    nobody accepted it, so nothing starts. A sub-issue a person accepted
+    themselves is theirs, not the delegated lane's (#189). Pure."""
+    if autonomy.lane_of(issue)[0] == autonomy.DELEGATED and person_accepted(issue):
+        return LANE, "a person accepted it"
     ok, why = autonomy.lane_accepts(policy, issue, run, repository, autopilot_var)
     if ok:
         return autonomy.lane_of(issue)[0], why
@@ -838,6 +841,9 @@ Clamp the value in Sum::add.
     lane_issue = gql(["lane:bugfix-reproduced", "accepted-by:policy"], [("lane:bugfix-reproduced", "Bot", "dilux-bot")])
     check("#84 lane: a reproduction's own issue is worked under its lane", which_lane(pol, lane_issue, run42, "DiluxOne/x", "")[0], REPRO)
     check("#84 lane: a person's accepted issue, under human-issue", which_lane(pol, gql(["accepted"], [("accepted", "User", "soydiloreto")], author="someone", body=prd), None, "DiluxOne/x", "")[0], LANE)
+    sub = gql(["accepted"], [("accepted", "User", "soydiloreto")], author="someone", body=prd)
+    sub["parent"] = {"number": 189, "state": "OPEN", "repository": {"nameWithOwner": "DiluxOne/.github"}, "labels": {"nodes": []}, "timelineItems": {"nodes": []}}
+    check("#189 lane: a sub-issue a person accepted is worked under human-issue", which_lane(pol, sub, None, "DiluxOne/x", "")[0], LANE)
     check("#84 lane: nobody accepted it, nothing starts", which_lane(pol, gql(["bug"], [], author="someone", body=prd), None, "DiluxOne/x", "")[0], None)
     check("#84 lane: a bot's `accepted` is nobody's acceptance", which_lane(pol, gql(["accepted"], [("accepted", "Bot", "dilux-bot")], author="someone", body=prd), None, "DiluxOne/x", "")[0], None)
     check("#84 lane: the lane's label added by a person accepts nothing", which_lane(pol, gql(["lane:bugfix-reproduced"], [("lane:bugfix-reproduced", "User", "someone")]), run42, "DiluxOne/x", "")[0], None)

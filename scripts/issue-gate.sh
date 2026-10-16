@@ -47,15 +47,28 @@ QUERY='query($owner: String!, $name: String!, $number: Int!) {
           state
           body
           lastEditedAt
+          authorAssociation
           author { login }
           repository { nameWithOwner }
           labels(first: 50) { nodes { name } }
           issueType { name }
-          timelineItems(itemTypes: [LABELED_EVENT, UNLABELED_EVENT], last: 100) {
+          timelineItems(itemTypes: [LABELED_EVENT, UNLABELED_EVENT, PARENT_ISSUE_ADDED_EVENT], last: 100) {
             nodes {
               __typename
               ... on LabeledEvent { label { name } actor { __typename login } }
               ... on UnlabeledEvent { label { name } actor { __typename login } }
+              ... on ParentIssueAddedEvent { createdAt }
+            }
+          }
+          parent {
+            number state repository { nameWithOwner }
+            labels(first: 50) { nodes { name } }
+            timelineItems(itemTypes: [LABELED_EVENT, UNLABELED_EVENT], last: 100) {
+              nodes {
+                __typename
+                ... on LabeledEvent { label { name } actor { __typename login } }
+                ... on UnlabeledEvent { label { name } actor { __typename login } }
+              }
             }
           }
         }
@@ -115,7 +128,8 @@ type_fits() {
 
 # Whether a lane of the autonomy policy accepts issue $2 of the answer in $1
 # (scripts/autonomy.py, policy/autonomy.yml): prints why, either way. Only an
-# issue with a lane:<name> label is asked; the rest are not a lane's. A sync
+# issue with a lane:<name> label, or a sub-issue (the delegated lane, #189),
+# is asked; the rest are not a lane's. A sync
 # lane (org-sync) judges the pull request too: its author, branch and files
 # (LANE_PR).
 lane_verdict() {
@@ -123,7 +137,7 @@ lane_verdict() {
   node=$(mktemp); pr=$(mktemp)
   jq --argjson n "$2" '.data.repository.pullRequest.closingIssuesReferences.nodes[] | select(.number == $n)' "$1" > "$node"
   jq '.data.repository.pullRequest | {number, author, headRefName, headRefOid, baseRefOid}' "$1" > "$pr"
-  if ! jq -e '[.labels.nodes[]?.name | select(startswith("lane:"))] | length > 0' "$node" >/dev/null; then
+  if ! jq -e '([.labels.nodes[]?.name | select(startswith("lane:"))] | length > 0) or .parent != null' "$node" >/dev/null; then
     rm -f "$node" "$pr"; return 1
   fi
   LANE_ISSUE=$node LANE_PR=$pr LANE_SCOPE=pr python3 "$(dirname "${BASH_SOURCE[0]}")/autonomy.py" lane-accept 2>/dev/null
@@ -260,6 +274,13 @@ if [ "${1:-}" = "--test" ]; then
   lane_issue | answer | LANE_RUN=$runfile T="feat(x): a thing" case_ "fails: a feature closing a lane's Bug" 1 || fail=1
   lane_issue | jq '.labels.nodes += [{name: "accepted"}] | .timelineItems.nodes += [{__typename: "LabeledEvent", label: {name: "accepted"}, actor: {__typename: "Bot", login: "dilux-bot"}}]' | answer | LANE_RUN=$runfile T="fix(x): a thing" case_ "passes: a lane's issue whose accepted label a bot added" 0 || fail=1
   rm -f "$runfile"
+  # A sub-issue of an issue a person accepted (the delegated lane, #189).
+  sub_issue() {
+    jq -n --arg r "$repo" --arg who "${1:-User}" --arg assoc "${2:-MEMBER}" '{number: 12, state: "OPEN", repository: {nameWithOwner: $r}, author: {login: "someone"}, authorAssociation: $assoc, body: "Carry it out here.", lastEditedAt: null, labels: {nodes: []}, issueType: {name: "Task"}, timelineItems: {nodes: [{__typename: "ParentIssueAddedEvent", createdAt: "2026-10-16T10:00:00Z"}]}, parent: {number: 189, state: "OPEN", repository: {nameWithOwner: "DiluxOne/.github"}, labels: {nodes: [{name: "accepted"}]}, timelineItems: {nodes: [{__typename: "LabeledEvent", label: {name: "accepted"}, actor: {__typename: $who, login: "soydiloreto"}}]}}}'
+  }
+  sub_issue | answer | T="chore(x): carry it out" case_ "passes: a member's sub-issue of a person's accepted issue (#189)" 0 || fail=1
+  sub_issue Bot | answer | T="chore(x): carry it out" case_ "fails: a sub-issue whose parent a bot accepted" 1 || fail=1
+  sub_issue User CONTRIBUTOR | answer | T="chore(x): carry it out" case_ "fails: a sub-issue from outside the organisation" 1 || fail=1
   # A sync run's issue (lane org-sync, #155): opened and labelled by a person
   # the lane names, its marker naming a merged commit and the run's files.
   sync_dir=$(mktemp -d)

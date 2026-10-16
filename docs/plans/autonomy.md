@@ -80,6 +80,7 @@ For the team of the central repository (`.github`). Each phase is a sub-issue of
   - The sync on a schedule, not only the check.
   - Decisions that must hold over time become class 1, watched by the daily drift check.
 - **Done when:** an organisation decision is accepted once, and no repository needs an acceptance of its own.
+- **So far:** the `delegated` lane (#179): a sub-issue of an issue a person accepted is accepted by policy, while its parent stays open and accepted, if a member opened it and did not edit it after linking it.
 
 ### Phase 5 · Platform
 
