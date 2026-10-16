@@ -18,7 +18,9 @@ the last four weeks, each thread the review opened is classified:
 The noise is the share of wrong, does not matter and dismissed: findings
 that changed nothing. It is printed per kind and per repository, the
 private ones counted and never named (the digest is a public issue).
-Minors are not threads, so they are not measured here.
+Minors are not threads, so they are not measured here. A pull request's
+first 100 threads and a thread's first 20 comments are read; past that, the
+rest is not counted.
 
 The words a person replies with are the convention for dismissing a finding
 (CONTRIBUTING.md): the first word or words of the reply, in English or
@@ -44,10 +46,10 @@ SEARCH_CAP = 1000
 OUTCOMES = ("fixed", "wrong", "intentional", "does not matter", "dismissed", "open")
 NOISE = ("wrong", "does not matter", "dismissed")
 REPLIES = [
-    ("fixed", re.compile(r"^\W*(fixed|arreglado|corregido)\b", re.I)),
-    ("wrong", re.compile(r"^\W*(wrong|mal|incorrecto)\b", re.I)),
-    ("intentional", re.compile(r"^\W*(intentional|intencional|a prop[oó]sito)\b", re.I)),
-    ("does not matter", re.compile(r"^\W*(does not matter|doesn'?t matter|no importa)\b", re.I)),
+    ("fixed", re.compile(r"^\W*(?:@[\w\[\]-]+\W*)?(fixed|arreglado|corregido)\b", re.I)),
+    ("wrong", re.compile(r"^\W*(?:@[\w\[\]-]+\W*)?(wrong|mal|incorrecto)\b", re.I)),
+    ("intentional", re.compile(r"^\W*(?:@[\w\[\]-]+\W*)?(intentional|intencional|a prop[oó]sito)\b", re.I)),
+    ("does not matter", re.compile(r"^\W*(?:@[\w\[\]-]+\W*)?(does not matter|doesn'?t matter|no importa)\b", re.I)),
 ]
 
 
@@ -64,16 +66,17 @@ def review_thread(t):
 
 
 def outcome(t):
+    """A person's reply decides first, the last that names an outcome: the
+    review resolves a thread it was told is wrong too (review-reply.yml),
+    and that is not a fix."""
     if not t.get("isResolved"):
         return "open"
-    if is_bot(t.get("resolvedBy")):
-        return "fixed"
     replies = [c for c in ((t.get("comments") or {}).get("nodes") or [])[1:] if not is_bot(c.get("author"))]
     for c in reversed(replies):
         for name, rx in REPLIES:
             if rx.search(c.get("body") or ""):
                 return name
-    if t.get("isOutdated"):
+    if is_bot(t.get("resolvedBy")) or t.get("isOutdated"):
         return "fixed"
     return "dismissed"
 
@@ -186,6 +189,8 @@ def self_test():
     check("a person, no reason, the line unchanged: dismissed", outcome(t(True, me, False, "ok")), "dismissed")
     check("the last reply decides", outcome(t(True, me, False, "wrong", "Fixed after all.")), "fixed")
     check("still open at merge", outcome(t(False, None)), "open")
+    check("the review resolved it after a person said wrong: wrong", outcome(t(True, bot, False, "@dilux-bot wrong: the caller checks it")), "wrong")
+    check("an @mention before the word", outcome(t(True, me, False, "@dilux-bot[bot] intentional: kept on purpose")), "intentional")
     other = {"isResolved": True, "resolvedBy": me, "comments": {"nodes": [{"author": me, "body": "a person's own thread"}]}}
     prs = [{"repository": {"nameWithOwner": "o/pub", "visibility": "PUBLIC"}, "reviewThreads": {"nodes": [t(True, bot), t(True, me, False, "wrong"), other]}},
            {"repository": {"nameWithOwner": "o/secret", "visibility": "PRIVATE"}, "reviewThreads": {"nodes": [t(True, me)]}}]
