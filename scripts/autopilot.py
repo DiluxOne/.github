@@ -503,13 +503,29 @@ def account(events, title="The autopilot's run"):
 BOT = org.BOT
 
 
+def g6_verdict(path):
+    """The review's G6 verdict from a file holding its record at the head
+    (the dx-review-record JSON): {id: met}; None without one, or no
+    criteria in it; False when no file was named (not asked)."""
+    if not path:
+        return False
+    try:
+        record = json.loads(open(path, encoding="utf-8").read() or "null")
+    except (OSError, ValueError):
+        return None
+    crit = (record or {}).get("criteria") or []
+    return {c.get("id"): c.get("met") is True for c in crit if isinstance(c, dict)} or None
+
+
 def decide(policy, body, risk, complexity, blocking, description_ok, files, head_files, autopilot_var, author=BOT, lane_name=LANE, repro_sha="",
-           surface=(), issue_type="Feature"):
+           surface=(), issue_type="Feature", criteria_verdict=False):
     """Gate G7. lane_name is the lane the issue is worked under (which_lane);
     for a reproduced bug, repro_sha is the SHA-256 of the reproduction test
     as it is at the head: it must be the one the PRD sealed. surface is what
     the change adds to the kind's public surface (scripts/surface.py), or
-    ["unknown"] when that could not be told; issue_type the issue's Type."""
+    ["unknown"] when that could not be told; issue_type the issue's Type.
+    criteria_verdict is the review's G6 verdict at this head, {id: met}, or
+    None when the review gave none (False: not asked, the old callers)."""
     if author != BOT:
         return False, f"the autopilot's pull requests are opened by {BOT}, not {author or 'unknown'}"
     if (autopilot_var or "").strip().lower() == "off":
@@ -551,6 +567,15 @@ def decide(policy, body, risk, complexity, blocking, description_ok, files, head
         return False, f"complexity {complexity} is above the lane's {caps.get('max-complexity', 'none')}"
     if not schema.check(body, "spec")["ok"]:
         return False, "the Spec is missing or incomplete (G3)"
+    # G6 (#193): an agent that did not write the code, the review, said
+    # each criterion is met, at this head.
+    if criteria_verdict is not False:
+        ids = schema.check(body)["criteria"]
+        if ids and criteria_verdict is None:
+            return False, "the review has not judged the acceptance criteria at this head (G6)"
+        unmet = [i for i in ids if not (criteria_verdict or {}).get(i)]
+        if unmet:
+            return False, f"the review does not find {', '.join(unmet)} met (G6)"
     missing = criteria_evidence(body, set(head_files), set(files))
     if missing:
         return False, "no test at the head for " + ", ".join(missing) + " (G6)"
@@ -881,6 +906,15 @@ Clamp the value in Sum::add.
     check("#193 decide: a Feature may add it", plain(surface=["a new action hook: dx_x"], issue_type="Feature"), True)
     check("#193 decide: surface that could not be told stops a Bug's change too", plain(surface=["unknown"], issue_type="Task"), False)
     check("#193 decide: no surface, any Type", plain(surface=[], issue_type="Bug"), True)
+    g6 = lambda v: decide(pol, spec, "low", "low", "false", "true", ["header.php", "tests/e2e/toggle.spec.ts"], head, "", criteria_verdict=v)[0]
+    check("#193 G6: merges when the review finds every criterion met", g6({"C1": True}), True)
+    check("#193 G6: not when one is not met, or missing", (g6({"C1": False}), g6({"C9": True})), (False, False))
+    check("#193 G6: not when the review gave no verdict at this head", g6(None), False)
+    import tempfile as _tf
+    with _tf.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+        fh.write(json.dumps({"sha": "h", "criteria": [{"id": "C1", "met": True, "evidence": "t"}, {"id": "C2", "met": False, "evidence": "none"}]}))
+    check("#193 G6: the verdict read from the review's record", (g6_verdict(fh.name), g6_verdict(""), g6_verdict("/nonexistent")), ({"C1": True, "C2": False}, False, None))
+    os.unlink(fh.name)
     check("#84 decide: never a protected path, in this lane either", lok(files=lhead + [".github/workflows/x.yml"]), False)
     check("#84 decide: never under the lane without its evidence in the PRD", lok(body=spec, files=["header.php", "tests/e2e/toggle.spec.ts"], head=head), False)
     check("#84 decide: never when the repository switches the lane off", decide(autonomy.merge(org, {"lanes": {REPRO: {"enabled": False}}}), lane_spec, "low", "low", "false", "true", lhead, lhead, "", BOT, REPRO, sha)[0], False)
@@ -1260,7 +1294,8 @@ def main(argv):
         read_lines = lambda k: [l.strip() for l in open(os.environ[k], encoding="utf-8") if l.strip()] if os.environ.get(k) else []
         ok, why = decide(pol, body, os.environ.get("RISK", ""), os.environ.get("COMPLEXITY", ""), os.environ.get("BLOCKING", ""),
                          os.environ.get("DESCRIPTION_OK", ""), read_lines("FILES"), read_lines("HEAD_FILES"), var, os.environ.get("AUTHOR", ""),
-                         lane_name, os.environ.get("REPRO_SHA256", ""), read_lines("SURFACE"), os.environ.get("ISSUE_TYPE", ""))
+                         lane_name, os.environ.get("REPRO_SHA256", ""), read_lines("SURFACE"), os.environ.get("ISSUE_TYPE", ""),
+                         g6_verdict(os.environ.get("CRITERIA_VERDICT", "")))
         print(why)
         return 0 if ok else 1
     print(__doc__, file=sys.stderr)
