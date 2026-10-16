@@ -42,6 +42,16 @@ prd:
     required: true
     format: one-of
     values: [Normal, Critical]
+  # A decision several repositories carry out (#189): which ones, as rules
+  # over what the organisation knows of each, every rule true at once. On
+  # acceptance, scripts/decision.py opens a sub-issue in each, which the
+  # delegated lane accepts; a repository that matches later gets its own on
+  # the next daily run.
+  - id: repositories
+    heading: Repositories
+    description: "Only for a decision that several repositories carry out: which ones, one rule per line, all of them true. `all`; `kind: <kind>`; `visibility: public` or `private`; `has: <file at the repository's root>`; `name: <repository>, <repository>`. Each gets a sub-issue of this one, accepted with it."
+    required: false
+    format: repositories
 
 spec:
   - id: approach
