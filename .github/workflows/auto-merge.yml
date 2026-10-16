@@ -177,9 +177,16 @@ jobs:
           # issue's Type; only a Feature carries new surface in on its own.
           # Anything that cannot be told counts as surface.
           ISSUE_TYPE=$(gh api "repos/$GITHUB_REPOSITORY/issues/$issue" --jq '.type.name // ""' 2>/dev/null || true)
-          kind=$(yq -r ".repos[\"${GITHUB_REPOSITORY#*/}\"].kinds | select(length == 1) | .[0].kind // \"\"" "$RUNNER_TEMP/central/repos.yml" 2>/dev/null || true)
+          # The kind from repos.yml: an unclassified repository, or a kind
+          # whose pack names no surface, has none to add; one repos.yml does
+          # not list, or with several kinds, cannot be told.
+          kinds=$(yq -r ".repos[\"${GITHUB_REPOSITORY#*/}\"] | select(. != null) | (.kinds // []) | map(.kind) | join(\" \")" "$RUNNER_TEMP/central/repos.yml" 2>/dev/null || echo "?")
+          listed=$(yq -r ".repos | has(\"${GITHUB_REPOSITORY#*/}\")" "$RUNNER_TEMP/central/repos.yml" 2>/dev/null || echo false)
+          kind=$kinds
           : > "$RUNNER_TEMP/surface"
-          if [ -n "$kind" ] && [ -f "$RUNNER_TEMP/central/kinds/$kind/surface.yml" ]; then
+          if [ "$listed" != true ] || [ "$(wc -w <<<"$kinds")" -gt 1 ] || [ "$kinds" = "?" ]; then
+            echo unknown > "$RUNNER_TEMP/surface"
+          elif [ -n "$kind" ] && [ -f "$RUNNER_TEMP/central/kinds/$kind/surface.yml" ]; then
             if git clone -q --filter=blob:none --no-checkout "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY" "$RUNNER_TEMP/repo" \
                && git -C "$RUNNER_TEMP/repo" fetch -q origin "$BASE" "$HEAD"; then
               rc=0; (cd "$RUNNER_TEMP/repo" && python3 "$RUNNER_TEMP/central/scripts/surface.py" --check "$kind" "$BASE" "$HEAD") > "$RUNNER_TEMP/surface" || rc=$?

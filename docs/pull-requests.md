@@ -108,7 +108,9 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    `decide`): the issue is not Critical, no protected path of
    [`policy/autonomy.yml`](../policy/autonomy.yml) changes, it adds no
    public surface of its kind (`surface.yml`) unless its issue is a Feature
-   (escalation, #193; what cannot be told counts as surface), the review does
+   (escalation, #193; what cannot be told, in a repository `repos.yml` does
+   not list or with several kinds, counts as surface; an unclassified
+   repository, or a kind with no `surface.yml`, has none), the review does
    not block and its description is true, risk and complexity are within the
    caps of the lane it was worked under (`human-issue` for an issue a person
    accepted, the lane's own for a lane's issue), the Spec is complete and every criterion's test is a test
