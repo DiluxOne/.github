@@ -35,6 +35,10 @@ on:
         description: Clean pull requests a path needs before it is proposed as safe.
         type: number
         default: 5
+      min-repeats:
+        description: Recent pull requests a lesson must appear in before it becomes a rule.
+        type: number
+        default: 3
 
 permissions:
   contents: read
@@ -117,6 +121,22 @@ jobs:
             fi
           done
           rm -f found.json pr.json commits.txt
+          # What a person already turned down (#196): the learnings' pull
+          # requests closed without merging, never proposed again.
+          gh search prs --owner "$ORG" --author "$BOT" --state closed --archived=false --limit 200 \
+            --json repository,number,title,body,closedAt,url --jq '[.[] | select(.title | test("weekly review (lessons|policy proposal)"))]' > found-closed.json \
+            || echo '[]' > found-closed.json
+          rejected='[]'
+          while IFS= read -r row; do
+            [ -n "$row" ] || continue
+            merged=$(gh api "repos/$ORG/$(jq -r .repo <<<"$row")/pulls/$(jq -r .number <<<"$row")" --jq '.merged' 2>/dev/null || echo true)
+            if [ "$merged" = false ]; then
+              body=$(gh api "repos/$ORG/$(jq -r .repo <<<"$row")/pulls/$(jq -r .number <<<"$row")" --jq '.body // ""' 2>/dev/null | head -c 3000 || true)
+              rejected=$(jq -c --argjson r "$row" --arg b "$body" '. + [$r + {body: $b}]' <<<"$rejected")
+            fi
+          done < <(jq -c '.[] | {repo: .repository.name, number, title, url}' found-closed.json)
+          printf '%s\n' "$rejected" > rejected.json
+          rm -f found-closed.json
           echo "reviews=$(jq length learnings.json)" >> "$GITHUB_OUTPUT"
           echo "repos=${repos# }" >> "$GITHUB_OUTPUT"
           echo "$(jq length learnings.json) reviewed pull requests found with one search; repositories with evidence: ${repos:-none}."
@@ -163,8 +183,8 @@ jobs:
 
             Propose only what evidence supports:
 
-            1. Review rules (the profiles): a lesson that appeared in at least two recent pull
-               requests, is general, and is not already covered. A reverted pull request that was
+            1. Review rules (the profiles): a lesson that appeared in at least
+               ${{ inputs.min-repeats || 3 }} recent pull requests, is general, and is not already covered. A reverted pull request that was
                rated low risk is the strongest signal. Write each rule as one bullet of at most two
                sentences under that profile's "## Lessons learned".
             2. Safe paths (a repository's low-risk-eligible): a path pattern that, in at least
@@ -177,6 +197,9 @@ jobs:
             3. Paths to remove from the safe list, in that repository's policy: any "low-risk"
                path touched by a reverted pull request.
             4. A repository's AGENTS.md: a rule the reviewer had to repeat in that repository.
+
+            rejected.json lists the proposals a maintainer closed without merging. Never propose
+            again what one of them proposed: a person decided it.
 
             Only edit files. Do not run git or gh. If nothing qualifies, change nothing.
 
@@ -231,7 +254,7 @@ jobs:
             fi
             if [ ! -d "$dir/.git" ]; then echo "::warning::A proposal names $repo, which was not cloned; skipped."; continue; fi
             # Only the allowed files may change; anything else is a bug or an injection.
-            changed=$(g -C "$dir" status --porcelain --untracked-files=all -- . ':!work' ':!learnings.json' 2>/dev/null | awk '{print $2}' || true)
+            changed=$(g -C "$dir" status --porcelain --untracked-files=all -- . ':!work' ':!learnings.json' ':!rejected.json' 2>/dev/null | awk '{print $2}' || true)
             [ -n "$changed" ] || { echo "::warning::A proposal names $repo but no file changed there; skipped."; continue; }
             stray=$(printf '%s\n' "$changed" | grep -vE "^($allowed)$" || true)
             if [ -n "$stray" ]; then echo "::error::$repo: files outside the allow-list changed; nothing pushed:"; echo "$stray"; failed=$((failed + 1)); continue; fi
