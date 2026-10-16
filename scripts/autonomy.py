@@ -1150,6 +1150,10 @@ def self_test():
     step = am[am.index("name: A sync run's pull request"):am.index("name: Enable or disable")]
     check("auto-merge.yml: the sync lane reads only a missing .github/autonomy.yml as none",
           ("|| : >" not in step, "grep -qE '404|Not Found'" in step, "autonomy.py\" lane-merge" in step), (True, True, True))
+    held = am[am.index("name: Labels a person merges"):am.index("name: A sync run's pull request")]
+    gated = lambda name: "steps.held.outputs.label == ''" in am[am.index(f"name: {name}"):][:400]
+    check("#194 auto-merge.yml: an issue a person merges holds the sync lane and the usual decision, and a read that fails holds them too",
+          (gated("A sync run's pull request"), gated("Enable or disable"), "could not be read" in held, "|| : >" not in held, '"person-merges"' in held), (True, True, True, True, True))
 
     if not failed:
         print("all tests passed")
