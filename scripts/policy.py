@@ -516,7 +516,7 @@ def settings_tests():
         if got:
             check(f"profile: {got} exists", os.path.isfile(os.path.join(CENTRAL, got)))
     # This repository's own policy: every tracked file is high risk but its
-    # pages (README.md, docs/ but docs/agents.md, profile/), which alone can be low. A new file
+    # pages (README.md, docs/ but what is read as rules, profile/), which alone can be low. A new file
     # that no pattern names fails here instead of slipping into low risk.
     own = load_yaml(os.path.join(CENTRAL, ".github", "review-policy.yml"))
     default_policy = load_yaml(os.path.join(CENTRAL, "policy", "review-policy.default.yml"))
@@ -525,7 +525,7 @@ def settings_tests():
     if tracked:
         high = default_policy.get("high-risk", []) + own.get("high-risk", [])
         low = default_policy.get("low-risk-eligible", []) + own.get("low-risk-eligible", [])
-        rules = ("docs/agents.md", "docs/architecture.md", "docs/testing-and-quality.md")
+        rules = ("docs/agents.md", "docs/architecture.md", "docs/testing-and-quality.md", "docs/model.md")
         page = lambda f: f == "README.md" or (f.startswith(("docs/", "profile/")) and f not in rules)
         loose = [f for f in tracked if not page(f) and not matches(f, high)]
         check("this repository: every file but its pages is high risk", not loose, loose[:10])

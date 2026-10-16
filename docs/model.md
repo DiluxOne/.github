@@ -150,7 +150,7 @@ The agent reads text anyone can write. No layer depends on the agent behaving we
 
 ## Learnings
 
-The system learns from its receipts but does not change itself. The receipt records the findings (rounds, what the review flagged, escalations, reverts); a weekly job finds what repeats at least three times and opens a pull request to the rule it belongs to, with the receipts as evidence. A person decides; a closed proposal is recorded and not made again.
+The system learns from its receipts but does not change itself. The receipt records the findings (rounds, what the review flagged, escalations, reverts); a scheduled job finds what repeats (how often, and over how long, the policy sets) and opens a pull request to the rule it belongs to, with the receipts as evidence. A person decides; a closed proposal is recorded and not made again.
 
 ## Release
 

@@ -34,7 +34,10 @@ def header(text):
     m = re.match(r"---\n(.*?)\n---\n(.*)", text, re.S)
     if not m:
         return None, text
-    return yaml.safe_load(m.group(1)), m.group(2)
+    try:
+        return yaml.safe_load(m.group(1)), m.group(2)
+    except yaml.YAMLError:
+        return None, m.group(2)
 
 
 def problems(name, text, kinds):
@@ -106,6 +109,7 @@ def self_test():
     kinds = {"wordpress-plugin"}
     t("a rule with its header holds", problems("test-first.md", good, kinds), [])
     t("no header", problems("x.md", "Just text.\n", kinds), ["x.md: no YAML header between --- lines"])
+    t("a header that is not YAML", problems("x.md", "---\nid: [x\n---\nText.\n", kinds), ["x.md: no YAML header between --- lines"])
     t("the id is the file's name", problems("other.md", good.replace("id: test-first", "id: other"), kinds), [])
     t("an id that is not the file's name", problems("x.md", good, kinds), ["x.md: id 'test-first' is not the file's name"])
     t("a field missing", len(problems("test-first.md", good.replace("enforced_by: [review]\n", ""), kinds)) > 0, True)
