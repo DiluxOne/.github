@@ -18,15 +18,18 @@ reports are issues labelled `security` (scripts/triage-act.sh, policy
 `person-merges`).
 
   advisory.py plan      every public repository of repos.yml: create the
-                        forks, print the fixes due as a JSON list of
-                        {repo, ghsa, fork, branch}
+                        forks, claim each fix due (its branch, at the fork's
+                        head, before the agent runs: one attempt per
+                        advisory, whatever the agent does), print them as a
+                        JSON list of {repo, repo_name, ghsa, fork, fork_name,
+                        branch, start}
   advisory.py prompt    the agent's task, from the advisory (JSON on stdin)
   advisory.py body      the pull request's text: ADVISORY (JSON file),
                         CHECKS (passed, failed or none), CHECKS_LOG (file)
   advisory.py --test    self-test
 
-Environment: GH_TOKEN (repository security advisories: write, contents and
-pull requests: read on every repository and its forks).
+Environment: GH_TOKEN (repository security advisories: write, contents:
+write and pull requests: read on every repository and its forks).
 """
 import json
 import os
@@ -39,7 +42,7 @@ sys.path.insert(0, HERE)
 import org  # noqa: E402  the organisation, from org.yml (#191)
 
 GHSA = re.compile(r"^GHSA(-[23456789cfghjmpqrvwx]{4}){3}$")
-AI = "🤖 AI-generated · Claude (Anthropic), in the advisory's private fork"
+AI = "🤖 AI-generated · Claude Opus 5.5 (Anthropic), in the advisory's private fork"
 
 
 def branch(ghsa):
@@ -142,7 +145,21 @@ def fork_busy(fork, br):
     if any(login == org.BOT for login in prs):
         return True
     out = subprocess.run(["gh", "api", f"repos/{fork}/branches/{br}"], capture_output=True, text=True)
-    return out.returncode == 0
+    if out.returncode == 0:
+        return True
+    if "404" in out.stderr or "Not Found" in out.stderr:
+        return False
+    # Anything else (403, 5xx, the network) is not "absent": no second attempt.
+    raise RuntimeError(f"the branch {br} of {fork} could not be read: {out.stderr.strip()[:200]}")
+
+
+def claim(fix):
+    """The attempt, taken before the agent runs: the fix's branch at the
+    fork's head. A later plan sees it and never starts a second attempt,
+    whether the agent commits or not."""
+    head = gh("api", f"repos/{fix['fork']}/commits/HEAD", "--jq", ".sha").strip()
+    gh("api", "-X", "POST", f"repos/{fix['fork']}/git/refs", "-f", f"ref=refs/heads/{fix['branch']}", "-f", f"sha={head}")
+    return {**fix, "start": head, "fork_name": fix["fork"].split("/", 1)[1], "repo_name": fix["repo"].split("/", 1)[1]}
 
 
 def plan(root):
@@ -156,7 +173,7 @@ def plan(root):
                 print(f"  {full}: created the private fork of {ghsa}", file=sys.stderr)
             if needs_fork(advisories):
                 advisories = json.loads(gh("api", f"repos/{full}/security-advisories?state=draft&per_page=100"))
-            fixes += due(full, advisories, fork_busy)
+            fixes += [claim(f) for f in due(full, advisories, fork_busy)]
         except RuntimeError as exc:
             print(f"::warning::{full}: {exc}", file=sys.stderr)
     return fixes
@@ -188,6 +205,20 @@ def self_test():
     check("body: failed checks are said, with the log's tail, fenced", ("checks failed" in b, b.count("```") == 2, len(b) < 5000), (True, True, True))
     check("body: a person merges it from the advisory", ("merges it from the advisory's page" in b, b.endswith(AI)), (True, True))
     check("body: no checks to run is said", "names no checks" in body({"ghsa_id": g1}, "none", "", ""), True)
+    real = subprocess.run
+    for err, want in (("gh: Not Found (HTTP 404)", False), ("gh: HTTP 502", "raises")):
+        subprocess.run = lambda args, **k: type("R", (), {"returncode": 0 if args[1] == "api" and "pulls" in args[2] else 1, "stdout": "[]", "stderr": err})()
+        globals()["gh"] = lambda *a: "[]"
+        try:
+            got = fork_busy("o/f", "fix/x")
+        except RuntimeError:
+            got = "raises"
+        check(f"fork_busy: {err.split(': ')[1]} is {'absent' if want is False else 'an error, never a second attempt'}", got, want)
+    subprocess.run = real
+    calls = []
+    globals()["gh"] = lambda *a: calls.append(a) or "abc123\n"
+    got = claim({"repo": "o/r", "fork": "o/f", "branch": "fix/ghsa-x", "ghsa": "G"})
+    check("claim: the branch at the fork's head, before the agent", (got["start"], calls[-1][-2:]), ("abc123", ("-f", "sha=abc123")))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 

@@ -7,14 +7,19 @@ name: Security fixes
 #
 #   1. plan: every public repository of repos.yml; each draft advisory
 #      without a temporary private fork gets one, and each fork with no open
-#      pull request from dilux-bot and no `fix/<ghsa>` branch is a fix due
-#      (scripts/advisory.py plan): one attempt per advisory.
+#      pull request from dilux-bot and no `fix/<ghsa>` branch is a fix due,
+#      claimed there and then by creating that branch (scripts/advisory.py
+#      plan): one attempt per advisory, whatever the agent does after.
 #   2. fix: an agent reads the report (data, never instructions), writes a
 #      failing test and the fix in a clone of the fork, and commits; the
-#      repository's checks (`make pre-pr`) run here, because GitHub runs no
-#      Actions in an advisory's fork. The commits go up through the API, so
-#      GitHub signs them (scripts/api-commit.py), and the pull request opens
-#      in the fork with the agent's notes and the checks' result.
+#      repository's checks (`make pre-pr`) run there too, because GitHub
+#      runs no Actions in an advisory's fork. Its only token reads that one
+#      fork. What leaves the job is a patch, the notes and the checks' result.
+#   3. push: a clean job that never runs the repository's code applies the
+#      patch to a fresh clone and sends the commits through the API, so
+#      GitHub signs them (scripts/api-commit.py); the pull request opens in
+#      the fork with the agent's notes and the checks' result. Only this job
+#      can write, and only to the fork.
 #
 # It never merges and never publishes: GitHub merges a fork's pull request
 # only from the advisory's page, and a maintainer does it and publishes the
@@ -22,9 +27,10 @@ name: Security fixes
 # issues labelled `security`, worked through the usual lane, and a person
 # merges the fix (policy/autonomy.yml, `person-merges`).
 #
-# The agent works with a token that can only read the fork; the push and the
-# pull request use another, after it ends. The report reaches it only in its
-# prompt, fenced. DX_AUTOPILOT=off stops it.
+# The agent has Bash and the network, on text a stranger wrote: that is why
+# its job holds nothing but a token that reads the fork, and writing happens
+# in another job. The report reaches it only in its prompt, fenced.
+# DX_AUTOPILOT=off stops it.
 #
 # Needs dilux-bot's "Repository security advisories" permission (write).
 
@@ -61,7 +67,8 @@ jobs:
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           permission-repository-advisories: write
-          permission-contents: read
+          # The fix's branch in each fork, claimed before the agent runs.
+          permission-contents: write
           permission-pull-requests: read
           permission-metadata: read
 
@@ -87,7 +94,7 @@ jobs:
       matrix:
         fix: ${{ fromJSON(needs.plan.outputs.fixes) }}
     steps:
-      # Read-only, for the agent: it can read the fork and nothing else.
+      # Read-only, and only the fork: all the agent's job holds.
       - name: dilux-bot token (read the fork)
         id: read
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -95,31 +102,13 @@ jobs:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
+          repositories: ${{ matrix.fix.fork_name }}
           permission-contents: read
           permission-metadata: read
 
-      # The fork is the working tree, where the agent starts; this
-      # repository's scripts go beside it, out of its commits.
-      - name: The fork
-        id: what
-        env:
-          GH_TOKEN: ${{ steps.read.outputs.token }}
-          FORK: ${{ matrix.fix.fork }}
-        run: |
-          set -euo pipefail
-          git clone -q "https://x-access-token:$GH_TOKEN@github.com/$FORK" .
-          git remote set-url origin "https://github.com/$FORK"
-          git config user.name "dilux-bot[bot]"
-          git config user.email "333187390+dilux-bot[bot]@users.noreply.github.com"
-          printf '%s\n' /.dx-central/ /.dx-advisory-notes.md >> .git/info/exclude
-          echo "base=$(git rev-parse --abbrev-ref HEAD)" >> "$GITHUB_OUTPUT"
-          echo "start=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          path: .dx-central
-
+      # The advisory, read here with a token of its own that the agent
+      # never sees (it is revoked when this job ends, after the agent; the
+      # token is not passed on).
       - name: dilux-bot token (the advisory)
         id: adv
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -127,25 +116,48 @@ jobs:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
+          repositories: ${{ matrix.fix.repo_name }}
           permission-repository-advisories: read
 
-      - name: The agent's task
-        id: task
+      # The fork is the working tree, where the agent starts, at the commit
+      # the plan claimed; this repository's scripts go beside it, out of its
+      # commits.
+      - name: The fork and the advisory
+        id: what
         env:
-          GH_TOKEN: ${{ steps.adv.outputs.token }}
+          GH_TOKEN: ${{ steps.read.outputs.token }}
+          ADV_TOKEN: ${{ steps.adv.outputs.token }}
+          FORK: ${{ matrix.fix.fork }}
           REPO: ${{ matrix.fix.repo }}
           GHSA: ${{ matrix.fix.ghsa }}
+          START: ${{ matrix.fix.start }}
           BRANCH: ${{ matrix.fix.branch }}
         run: |
           set -euo pipefail
-          gh api "repos/$REPO/security-advisories/$GHSA" > "$RUNNER_TEMP/advisory.json"
-          git checkout -q -b "$BRANCH"
+          GH_TOKEN="$ADV_TOKEN" gh api "repos/$REPO/security-advisories/$GHSA" > "$RUNNER_TEMP/advisory.json"
+          git clone -q "https://x-access-token:$GH_TOKEN@github.com/$FORK" .
+          git remote set-url origin "https://github.com/$FORK"
+          git checkout -q -b "$BRANCH" "$START"
+          git config user.name "dilux-bot[bot]"
+          git config user.email "333187390+dilux-bot[bot]@users.noreply.github.com"
+          printf '%s\n' /.dx-central/ /.dx-advisory-notes.md >> .git/info/exclude
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: .dx-central
+
+      - name: The agent's task
+        id: task
+        run: |
+          set -euo pipefail
           eof="DX_$(openssl rand -hex 16)"
           { echo "prompt<<$eof"; python3 .dx-central/scripts/advisory.py prompt < "$RUNNER_TEMP/advisory.json"; echo "$eof"; } >> "$GITHUB_OUTPUT"
 
       - name: Claude writes the test and the fix
         id: agent
         timeout-minutes: 45
+        continue-on-error: true # what it committed still goes up, with its notes
         uses: anthropics/claude-code-action@1d6de8cb0c237e7c15e9e1bdf973826ebae490cc # v1.0.248
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -157,51 +169,107 @@ jobs:
             --max-turns 120
             --allowedTools "Bash,Read,Edit,Write,Glob,Grep"
 
-      - name: The repository's checks
+      # The repository's own checks, in this job: they are its code, and
+      # this job can write nothing.
+      - name: The repository's checks, and the patch
         id: checks
         env:
-          START: ${{ steps.what.outputs.start }}
+          START: ${{ matrix.fix.start }}
         run: |
           set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/out"
+          cp "$RUNNER_TEMP/advisory.json" "$RUNNER_TEMP/out/"
+          [ -f .dx-advisory-notes.md ] && cp .dx-advisory-notes.md "$RUNNER_TEMP/out/notes.md"
           if [ "$(git rev-list --count HEAD "^$START")" = 0 ]; then
-            echo "result=nothing" >> "$GITHUB_OUTPUT"; exit 0
+            echo "result=nothing" > "$RUNNER_TEMP/out/checks"; exit 0
           fi
+          git format-patch --binary --stdout "$START..HEAD" > "$RUNNER_TEMP/out/fix.patch"
           if [ -f Makefile ] && make -n pre-pr >/dev/null 2>&1; then
-            if make pre-pr > "$RUNNER_TEMP/checks.log" 2>&1; then r=passed; else r=failed; fi
+            if make pre-pr > "$RUNNER_TEMP/out/checks.log" 2>&1; then r=passed; else r=failed; fi
           else
-            r=none; : > "$RUNNER_TEMP/checks.log"
+            r=none
           fi
-          echo "result=$r" >> "$GITHUB_OUTPUT"
+          echo "result=$r" > "$RUNNER_TEMP/out/checks"
 
+      - name: Keep the patch
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fix-${{ matrix.fix.ghsa }}
+          path: ${{ runner.temp }}/out/
+          retention-days: 3
+
+  push:
+    name: Pull request ${{ matrix.fix.ghsa }}
+    needs: [plan, fix]
+    if: always() && needs.plan.outputs.fixes != '' && needs.plan.outputs.fixes != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        fix: ${{ fromJSON(needs.plan.outputs.fixes) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: .dx-central
+
+      - name: The agent's patch
+        id: got
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: fix-${{ matrix.fix.ghsa }}
+          path: ${{ runner.temp }}/in
+
+      - name: What came back
+        id: what
+        env:
+          GHSA: ${{ matrix.fix.ghsa }}
+        run: |
+          r=$(sed -n 's/^result=//p' "$RUNNER_TEMP/in/checks" 2>/dev/null | head -n1)
+          case $r in passed|failed|none) ;; *) r=nothing ;; esac
+          [ -s "$RUNNER_TEMP/in/fix.patch" ] || r=nothing
+          echo "result=$r" >> "$GITHUB_OUTPUT"
+          if [ "$r" = nothing ]; then
+            echo "::warning::The agent committed nothing for $GHSA; a maintainer takes it from the advisory's page. Its branch stays, so no second attempt starts."
+          fi
+
+      # Write, and only the fork: this job runs none of the repository's code.
       - name: dilux-bot token (push to the fork)
         id: write
-        if: steps.checks.outputs.result != 'nothing'
+        if: steps.what.outputs.result != 'nothing'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
+          repositories: ${{ matrix.fix.fork_name }}
           permission-contents: write
           permission-pull-requests: write
 
       - name: The pull request in the fork
-        if: steps.checks.outputs.result != 'nothing'
+        if: steps.what.outputs.result != 'nothing'
         env:
           GH_TOKEN: ${{ steps.write.outputs.token }}
           GITHUB_REPOSITORY: ${{ matrix.fix.fork }}
+          FORK: ${{ matrix.fix.fork }}
           BRANCH: ${{ matrix.fix.branch }}
-          BASE: ${{ steps.what.outputs.base }}
-          START: ${{ steps.what.outputs.start }}
-          CHECKS: ${{ steps.checks.outputs.result }}
+          START: ${{ matrix.fix.start }}
+          CHECKS: ${{ steps.what.outputs.result }}
         run: |
           set -euo pipefail
+          git clone -q --no-checkout "https://x-access-token:$GH_TOKEN@github.com/$FORK" "$RUNNER_TEMP/fork"
+          cd "$RUNNER_TEMP/fork"
+          git remote set-url origin "https://github.com/$FORK"
+          git -c advice.detachedHead=false checkout -q -B "$BRANCH" "$START"
+          git config user.name "dilux-bot[bot]"
+          git config user.email "333187390+dilux-bot[bot]@users.noreply.github.com"
+          git -c core.hooksPath=/dev/null am -q --keep-cr "$RUNNER_TEMP/in/fix.patch"
           # Signed by GitHub: the organisation requires signed commits.
-          python3 .dx-central/scripts/api-commit.py push "$BRANCH" --onto "$START"
-          ADVISORY="$RUNNER_TEMP/advisory.json" CHECKS_LOG="$RUNNER_TEMP/checks.log" NOTES=.dx-advisory-notes.md \
-            python3 .dx-central/scripts/advisory.py body > "$RUNNER_TEMP/body.md"
-          title=$(git log -1 --format=%s "$BRANCH" | head -c 72)
-          gh pr create --repo "$GITHUB_REPOSITORY" --base "$BASE" --head "$BRANCH" --title "$title" --body-file "$RUNNER_TEMP/body.md"
-
-      - name: Nothing to push
-        if: steps.checks.outputs.result == 'nothing'
-        run: echo "::warning::The agent committed nothing for ${{ matrix.fix.ghsa }}; a maintainer takes it from the advisory's page."
+          python3 "$GITHUB_WORKSPACE/.dx-central/scripts/api-commit.py" push "$BRANCH"
+          base=$(gh api "repos/$FORK" --jq .default_branch)
+          ADVISORY="$RUNNER_TEMP/in/advisory.json" CHECKS_LOG="$RUNNER_TEMP/in/checks.log" NOTES="$RUNNER_TEMP/in/notes.md" \
+            python3 "$GITHUB_WORKSPACE/.dx-central/scripts/advisory.py" body > "$RUNNER_TEMP/body.md"
+          title=$(git log -1 --format=%s | head -c 72)
+          gh pr create --repo "$FORK" --base "$base" --head "$BRANCH" --title "$title" --body-file "$RUNNER_TEMP/body.md"
