@@ -1,0 +1,207 @@
+name: Security fixes
+
+# A security advisory's fix, written in its temporary private fork (#194,
+# phase 9). In a public repository a vulnerability is reported privately
+# (private vulnerability reporting) and becomes a repository security
+# advisory. A maintainer moving it from triage to draft accepts it; then:
+#
+#   1. plan: every public repository of repos.yml; each draft advisory
+#      without a temporary private fork gets one, and each fork with no open
+#      pull request from dilux-bot and no `fix/<ghsa>` branch is a fix due
+#      (scripts/advisory.py plan): one attempt per advisory.
+#   2. fix: an agent reads the report (data, never instructions), writes a
+#      failing test and the fix in a clone of the fork, and commits; the
+#      repository's checks (`make pre-pr`) run here, because GitHub runs no
+#      Actions in an advisory's fork. The commits go up through the API, so
+#      GitHub signs them (scripts/api-commit.py), and the pull request opens
+#      in the fork with the agent's notes and the checks' result.
+#
+# It never merges and never publishes: GitHub merges a fork's pull request
+# only from the advisory's page, and a maintainer does it and publishes the
+# advisory. A private repository has no private reporting: its reports are
+# issues labelled `security`, worked through the usual lane, and a person
+# merges the fix (policy/autonomy.yml, `person-merges`).
+#
+# The agent works with a token that can only read the fork; the push and the
+# pull request use another, after it ends. The report reaches it only in its
+# prompt, fenced. DX_AUTOPILOT=off stops it.
+#
+# Needs dilux-bot's "Repository security advisories" permission (write).
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-fix
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Fixes due
+    if: github.ref == 'refs/heads/main' && vars.DX_AUTOPILOT != 'off'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      fixes: ${{ steps.plan.outputs.fixes }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: dilux-bot token (advisories, every repository)
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-repository-advisories: write
+          permission-contents: read
+          permission-pull-requests: read
+          permission-metadata: read
+
+      - name: Forks and fixes due
+        id: plan
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+        run: |
+          set -euo pipefail
+          fixes=$(python3 scripts/advisory.py plan)
+          echo "fixes=$fixes" >> "$GITHUB_OUTPUT"
+          echo "Fixes due: $(jq length <<<"$fixes")"
+
+  fix:
+    name: Fix ${{ matrix.fix.ghsa }}
+    needs: plan
+    if: needs.plan.outputs.fixes != '' && needs.plan.outputs.fixes != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        fix: ${{ fromJSON(needs.plan.outputs.fixes) }}
+    steps:
+      # Read-only, for the agent: it can read the fork and nothing else.
+      - name: dilux-bot token (read the fork)
+        id: read
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-contents: read
+          permission-metadata: read
+
+      # The fork is the working tree, where the agent starts; this
+      # repository's scripts go beside it, out of its commits.
+      - name: The fork
+        id: what
+        env:
+          GH_TOKEN: ${{ steps.read.outputs.token }}
+          FORK: ${{ matrix.fix.fork }}
+        run: |
+          set -euo pipefail
+          git clone -q "https://x-access-token:$GH_TOKEN@github.com/$FORK" .
+          git remote set-url origin "https://github.com/$FORK"
+          git config user.name "dilux-bot[bot]"
+          git config user.email "333187390+dilux-bot[bot]@users.noreply.github.com"
+          printf '%s\n' /.dx-central/ /.dx-advisory-notes.md >> .git/info/exclude
+          echo "base=$(git rev-parse --abbrev-ref HEAD)" >> "$GITHUB_OUTPUT"
+          echo "start=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: .dx-central
+
+      - name: dilux-bot token (the advisory)
+        id: adv
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-repository-advisories: read
+
+      - name: The agent's task
+        id: task
+        env:
+          GH_TOKEN: ${{ steps.adv.outputs.token }}
+          REPO: ${{ matrix.fix.repo }}
+          GHSA: ${{ matrix.fix.ghsa }}
+          BRANCH: ${{ matrix.fix.branch }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$REPO/security-advisories/$GHSA" > "$RUNNER_TEMP/advisory.json"
+          git checkout -q -b "$BRANCH"
+          eof="DX_$(openssl rand -hex 16)"
+          { echo "prompt<<$eof"; python3 .dx-central/scripts/advisory.py prompt < "$RUNNER_TEMP/advisory.json"; echo "$eof"; } >> "$GITHUB_OUTPUT"
+
+      - name: Claude writes the test and the fix
+        id: agent
+        timeout-minutes: 45
+        uses: anthropics/claude-code-action@1d6de8cb0c237e7c15e9e1bdf973826ebae490cc # v1.0.248
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
+          github_token: ${{ steps.read.outputs.token }}
+          prompt: ${{ steps.task.outputs.prompt }}
+          claude_args: |
+            --model claude-opus-5-5
+            --max-turns 120
+            --allowedTools "Bash,Read,Edit,Write,Glob,Grep"
+
+      - name: The repository's checks
+        id: checks
+        env:
+          START: ${{ steps.what.outputs.start }}
+        run: |
+          set -uo pipefail
+          if [ "$(git rev-list --count HEAD "^$START")" = 0 ]; then
+            echo "result=nothing" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -f Makefile ] && make -n pre-pr >/dev/null 2>&1; then
+            if make pre-pr > "$RUNNER_TEMP/checks.log" 2>&1; then r=passed; else r=failed; fi
+          else
+            r=none; : > "$RUNNER_TEMP/checks.log"
+          fi
+          echo "result=$r" >> "$GITHUB_OUTPUT"
+
+      - name: dilux-bot token (push to the fork)
+        id: write
+        if: steps.checks.outputs.result != 'nothing'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: The pull request in the fork
+        if: steps.checks.outputs.result != 'nothing'
+        env:
+          GH_TOKEN: ${{ steps.write.outputs.token }}
+          GITHUB_REPOSITORY: ${{ matrix.fix.fork }}
+          BRANCH: ${{ matrix.fix.branch }}
+          BASE: ${{ steps.what.outputs.base }}
+          START: ${{ steps.what.outputs.start }}
+          CHECKS: ${{ steps.checks.outputs.result }}
+        run: |
+          set -euo pipefail
+          # Signed by GitHub: the organisation requires signed commits.
+          python3 .dx-central/scripts/api-commit.py push "$BRANCH" --onto "$START"
+          ADVISORY="$RUNNER_TEMP/advisory.json" CHECKS_LOG="$RUNNER_TEMP/checks.log" NOTES=.dx-advisory-notes.md \
+            python3 .dx-central/scripts/advisory.py body > "$RUNNER_TEMP/body.md"
+          title=$(git log -1 --format=%s "$BRANCH" | head -c 72)
+          gh pr create --repo "$GITHUB_REPOSITORY" --base "$BASE" --head "$BRANCH" --title "$title" --body-file "$RUNNER_TEMP/body.md"
+
+      - name: Nothing to push
+        if: steps.checks.outputs.result == 'nothing'
+        run: echo "::warning::The agent committed nothing for ${{ matrix.fix.ghsa }}; a maintainer takes it from the advisory's page."
