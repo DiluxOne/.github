@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The issue schema (policy/issue-schema.yml): check an issue's PRD and Spec.
 
-  issue-schema.py check [--stage prd|spec]   check the issue body on stdin;
+  issue-schema.py check [--stage prd|spec] [--type TYPE]   check the issue body on stdin;
         print what is missing or out of place as JSON; exit 0 when it passes.
         prd (G1, the default): the report sections, then every PRD section.
         spec (G3): the same, and every Spec section after them.
@@ -157,7 +157,7 @@ def repository_rules(text):
     return rules, errors
 
 
-def check(body, stage="prd", sch=None):
+def check(body, stage="prd", sch=None, issue_type=None):
     sch = sch or schema()
     errors = []
     sections, stray = parse(body)
@@ -198,7 +198,9 @@ def check(body, stage="prd", sch=None):
         h = s["heading"]
         t = text.get(h)
         if t is None or t.strip().lower() in EMPTY:
-            if s.get("required"):
+            # A section for some Types (a feature's phases) is required of
+            # those only; with no Type given, of none.
+            if s.get("required") and (not s.get("types") or issue_type in s["types"]):
                 errors.append(f"### {h} is missing or empty")
             continue
         fmt = s.get("format")
@@ -340,6 +342,14 @@ A class on <html> and a cookie.
     import subprocess as _sp
     crit = _sp.run([sys.executable, os.path.abspath(__file__), "criteria"], input=good, capture_output=True, text=True).stdout
     check_("#193 G6: the criteria of a PRD, as written", crit.startswith("- C1: Given a visitor") and "C2:" in crit, True)
+    phases = "\n### Spec: impact\n\nThe header only.\n\n### Spec: threats\n\n- Spoofing: none, no input.\n\n### Spec: architecture\n\nA class on <html>.\n"
+    check_("#193: a Feature's Spec needs its impact, threats and architecture", check(spec, "spec", issue_type="Feature")["ok"], False)
+    check_("#193: and passes with them", check(spec.rstrip("\n") + "\n" + phases, "spec", issue_type="Feature")["ok"], True)
+    check_("#193: a Bug's Spec needs none of them", check(spec, "spec", issue_type="Bug")["ok"], True)
+    check_("#193: without a Type, none are asked for", check(spec, "spec")["ok"], True)
+    import subprocess as _sp
+    cli = lambda *a: _sp.run([sys.executable, os.path.abspath(__file__), "check", *a], input=spec, capture_output=True, text=True).returncode
+    check_("#193: the CLI reads --stage and --type, in either order", (cli("--stage", "spec", "--type", "Feature"), cli("--type", "Bug", "--stage", "spec"), cli("--stage", "spec")), (1, 0, 0))
     check_("#193: fails: an open doubt in the PRD", check(good.replace("- A toggle in the header.", "- A toggle in the header. [Doubt: in the footer too?]"))["ok"], False)
     check_("#193: fails: a doubt marked in Spanish", check(good.replace("- A toggle in the header.", "- [Duda: ¿también en el pie?]"))["ok"], False)
     check_("#193: fails: a bare, lowercase, spaced or plural marker", [check(good.replace("- A toggle in the header.", f"- A toggle. {m}"))["ok"] for m in ("[Doubt]", "[doubt: where]", "[ Doubt: where]", "[Dudas: dónde]")], [False] * 4)
@@ -396,8 +406,9 @@ def main(argv):
     if argv[:1] == ["--test"]:
         return self_test()
     if argv[:1] == ["check"]:
-        stage = argv[2] if len(argv) > 2 and argv[1] == "--stage" else "prd"
-        result = check(sys.stdin.read(), stage)
+        stage = argv[argv.index("--stage") + 1] if "--stage" in argv[:-1] else "prd"
+        issue_type = argv[argv.index("--type") + 1] if "--type" in argv[:-1] else None
+        result = check(sys.stdin.read(), stage, issue_type=issue_type)
         print(json.dumps(result, indent=2))
         return 0 if result["ok"] else 1
     if argv[:1] == ["criteria"]:
