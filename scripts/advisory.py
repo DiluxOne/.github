@@ -110,6 +110,7 @@ Report:
 def body(a, checks, log, notes):
     state = {"passed": "The repository's checks passed on this branch.",
              "failed": "**The repository's checks failed on this branch**: see the log below.",
+             # They ran in the agent's own working tree, after it: evidence, not a gate.
              "none": "The repository names no checks to run (`make pre-pr`); run them before merging."}.get(checks, "The checks did not run.")
     tail = str(log or "").strip()[-3000:]
     out = [f"Fix for {a.get('ghsa_id')}: {untrusted(a.get('summary'), 200)}", "",
@@ -118,7 +119,7 @@ def body(a, checks, log, notes):
     if tail:
         out += ["", "```", tail.replace("```", "'''"), "```"]
     out += ["", "## Why", "",
-            f"The advisory {a.get('html_url') or a.get('ghsa_id')} was accepted. GitHub runs no Actions in this fork, so the checks ran in DiluxOne/.github's security-fix.yml. "
+            f"The advisory {a.get('html_url') or a.get('ghsa_id')} was accepted. GitHub runs no Actions in this fork, so the checks ran in a private workflow, in the agent's own working tree after it ended: evidence, not a gate. "
             "A maintainer reviews this, merges it from the advisory's page and publishes the advisory; nothing merges it on its own.", "", AI]
     return "\n".join(out)
 
@@ -173,7 +174,9 @@ def plan(root):
                 print(f"  {full}: created the private fork of {ghsa}", file=sys.stderr)
             if needs_fork(advisories):
                 advisories = json.loads(gh("api", f"repos/{full}/security-advisories?state=draft&per_page=100"))
-            fixes += [claim(f) for f in due(full, advisories, fork_busy)]
+            for f in due(full, advisories, fork_busy):
+                # Each as it is claimed: one that fails leaves the others in.
+                fixes.append(claim(f))
         except RuntimeError as exc:
             print(f"::warning::{full}: {exc}", file=sys.stderr)
     return fixes
@@ -205,7 +208,7 @@ def self_test():
     check("body: failed checks are said, with the log's tail, fenced", ("checks failed" in b, b.count("```") == 2, len(b) < 5000), (True, True, True))
     check("body: a person merges it from the advisory", ("merges it from the advisory's page" in b, b.endswith(AI)), (True, True))
     check("body: no checks to run is said", "names no checks" in body({"ghsa_id": g1}, "none", "", ""), True)
-    real = subprocess.run
+    real, real_gh = subprocess.run, gh
     for err, want in (("gh: Not Found (HTTP 404)", False), ("gh: HTTP 502", "raises")):
         subprocess.run = lambda args, **k: type("R", (), {"returncode": 0 if args[1] == "api" and "pulls" in args[2] else 1, "stdout": "[]", "stderr": err})()
         globals()["gh"] = lambda *a: "[]"
@@ -218,7 +221,8 @@ def self_test():
     calls = []
     globals()["gh"] = lambda *a: calls.append(a) or "abc123\n"
     got = claim({"repo": "o/r", "fork": "o/f", "branch": "fix/ghsa-x", "ghsa": "G"})
-    check("claim: the branch at the fork's head, before the agent", (got["start"], calls[-1][-2:]), ("abc123", ("-f", "sha=abc123")))
+    check("claim: the branch at the fork's head, before the agent", (got["start"], got["fork_name"], calls[-1][-2:]), ("abc123", "f", ("-f", "sha=abc123")))
+    globals()["gh"] = real_gh
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
