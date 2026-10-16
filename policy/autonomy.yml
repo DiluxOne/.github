@@ -190,8 +190,9 @@ lanes:
   # a person's acceptance opens the release pull request
   # (issue-accepted.yml), and the release workflow publishes only a version
   # whose issue a person with the admin or maintain role accepted
-  # (scripts/release-issue.py verify). The bot
-  # never opens one, and nothing here can accept one.
+  # (scripts/release-issue.py verify). The bot opens one only for a
+  # version milestone a person closed (scripts/milestones.py, #192), and
+  # nothing here can accept one.
   release:
     description: A release issue. Publishing to users is always a person's decision.
     accept: human

@@ -131,7 +131,10 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    `auto-merge: true`.
 
 4. **Release.** Merging publishes nothing by itself. A person opens the
-   issue "Release X.Y.Z" (the Release form) and accepts it; that opens the
+   issue "Release X.Y.Z" (the Release form), or closes the milestone
+   `X.Y.Z` and dilux-bot opens it on the next daily run
+   ([`scripts/milestones.py`](../scripts/milestones.py), #192), and a
+   person accepts it; that opens the
    release pull request (the `Unreleased.` hold removed, the version
    markers set: the command the kind names), which goes through steps 1 to
    3 and closes the issue. When it merges, the release workflow publishes
@@ -139,8 +142,9 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    admin or maintain role on the repository (triage or write is not
    enough), and its title still names the version the labels give
    ([`scripts/release-issue.py`](../scripts/release-issue.py) `verify`,
-   [`scripts/release-gate.py`](../scripts/release-gate.py)). The bot never
-   opens a release issue and no policy accepts one.
+   [`scripts/release-gate.py`](../scripts/release-gate.py)). The bot opens
+   a release issue only for a milestone a person closed, and no policy
+   accepts one.
 
 5. **After the merge (G8).** When a merged pull request turns the default
    branch red, it is reverted
