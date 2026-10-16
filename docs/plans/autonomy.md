@@ -135,6 +135,7 @@ For the team of the central repository (`.github`). Each phase is a sub-issue of
   - The spike in the triage.
   - The layers of "Malicious text in issues", in all five types.
 - **Done when:** a minor change and a feature go from accepted to merged with no other intervention, and a high-risk one stops for a maintainer.
+- **So far:** G1 refuses a PRD that still marks a doubt (`[Doubt: …]`, `[Duda: …]`).
 
 ### Phase 9 · Security
 
