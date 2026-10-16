@@ -86,7 +86,8 @@ files:
 # Dependabot: every repository's .github/dependabot.yml is written from its
 # kind's template (kinds/<kind>/dependabot.yml; a repository without a kind,
 # or of a kind without one, gets policy/dependabot.default.yml) by
-# `sync-repos.py files`, as a pull request like the files above, and the drift
+# `sync-repos.py dependabot`, as a pull request of its own (no lane covers it,
+# so a person accepts its issue, unlike the files above), and the drift
 # check reports one that differs. It carries only the ecosystems the
 # repository has: github-actions always, npm with a package.json at its root,
 # composer with a composer.json, docker with a Dockerfile. What a repository

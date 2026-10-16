@@ -1736,6 +1736,34 @@ def self_test():
         check("org-sync: a checkout not merged into main marks nothing", "dx-lane" not in create[create.index("--body") + 1] and not any("lane:org-sync" in c for c in calls), calls)
     finally:
         globals()["gh"], ORG, ORG_COMMIT = saved_gh, saved_org, saved_commit
+
+    # #187: which parts each command runs; `dependabot` alone writes the
+    # Dependabot file, and `all` never does.
+    ran = []
+    names = ("repositories", "sync_labels", "sync_settings", "sync_files", "sync_own_checks", "sync_callers")
+    saved = {n: globals()[n] for n in names}
+    globals().update({
+        "repositories": lambda only, exclude: [{"name": "r"}],
+        "sync_labels": lambda *a, **k: ran.append("labels"),
+        "sync_settings": lambda *a, **k: ran.append("settings"),
+        "sync_files": lambda *a, part="files", **k: ran.append(part),
+        "sync_own_checks": lambda *a, **k: ran.append("own-checks"),
+        "sync_callers": lambda *a, **k: ran.append("callers"),
+    })
+    try:
+        import contextlib
+        import io
+        runs = {}
+        for command in ("all", "files", "dependabot"):
+            ran.clear()
+            with contextlib.redirect_stdout(io.StringIO()):
+                main([command, "--dry-run"])
+            runs[command] = list(ran)
+    finally:
+        globals().update(saved)
+    check("#187: `all` runs labels, settings, the shared files and own checks, not the Dependabot file", runs["all"] == ["labels", "settings", "files", "own-checks"], runs["all"])
+    check("#187: `files` runs the shared files alone", runs["files"] == ["files"], runs["files"])
+    check("#187: `dependabot` runs the Dependabot file alone", runs["dependabot"] == ["dependabot"], runs["dependabot"])
     if not failed:
         print("all tests passed")
     return 1 if failed else 0
