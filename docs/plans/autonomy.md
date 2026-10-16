@@ -69,6 +69,7 @@ For the team of the central repository (`.github`). Each phase is a sub-issue of
   - The view of the organisation's Project filtered by `needs:maintainer`.
 - **So far:** a lane's `ceiling` (human-issue: medium by default, high at most), up to which a repository's `.github/autonomy.yml` may raise it; `autonomy.py check` holding the policy to its schema in CI; `rules/**` and `docs/model.md` among the protected paths. The repository's file keeps its name, `.github/autonomy.yml`, not `.github/policy.yml`. Majors, the security veto, the budget, the parallel jobs and the spike's time join the schema with the phase that first reads each, so the policy names nothing that nothing applies.
 - **One issue per run:** each build of the runner image and each week's digest opens its own issue (`run:runner-image`, `run:autonomy-digest`, `scripts/run-issue.sh`): closed as completed when the run needs no one, open with `needs:maintainer` when it does; a build that passes settles the failed ones. #93 and #118 close.
+- **The board and the view:** a lane's acceptance and a merge by policy link the rule they followed on the issue's board; what waits on a maintainer is one search over the organisation (`needs:maintainer` or `needs-human`), linked from `docs/maintaining.md`, with nothing to build.
 - **Done when:** changing a threshold is a pull request to one file; every automatic decision shows on the board with a link to its rule; and `DX_AUTOPILOT=off` stops everything autonomous.
 
 ### Phase 4 · Organisation decisions
@@ -80,6 +81,7 @@ For the team of the central repository (`.github`). Each phase is a sub-issue of
   - The sync on a schedule, not only the check.
   - Decisions that must hold over time become class 1, watched by the daily drift check.
 - **Done when:** an organisation decision is accepted once, and no repository needs an acceptance of its own.
+- **So far:** the `delegated` lane (#179): a sub-issue of an issue a person accepted is accepted by policy, while its parent stays open and accepted, if a member opened it and did not edit it after linking it.
 
 ### Phase 5 · Platform
 

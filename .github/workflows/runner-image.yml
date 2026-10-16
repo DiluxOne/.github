@@ -16,8 +16,9 @@ name: Runner image
 # setup-php (at the commit the workflows pin) with php -v and composer
 # --version, after checking that php-builder's prebuilt 8.3 to 8.5 find every
 # library they link against in the image (#145). Only a build that passes is
-# promoted: tagged :stable (what the VM pulls on boot)
-# and with its date and run (:YYYY-MM-DD.<run>, to go back to). A failed build leaves
+# promoted, and only while DX_AUTOPILOT is not off (off, the build is tested
+# and its issue waits on a person with needs:maintainer): tagged :stable
+# (what the VM pulls on boot) and with its date and run (:YYYY-MM-DD.<run>, to go back to). A failed build leaves
 # :stable as it was. On a pull request it builds and tests, and pushes
 # nothing.
 #
@@ -183,7 +184,9 @@ jobs:
 
       - name: Promote
         id: promote
-        if: github.event_name != 'pull_request'
+        # DX_AUTOPILOT=off stops every autonomous action, this promotion too:
+        # the build is tested and recorded, and :stable waits for a person.
+        if: github.event_name != 'pull_request' && vars.DX_AUTOPILOT != 'off'
         env:
           DATE: ${{ steps.v.outputs.date }}
         run: |
@@ -213,6 +216,8 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token || github.token }}
           OUTCOME: ${{ steps.promote.outcome }}
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+          AUTOPILOT: ${{ vars.DX_AUTOPILOT }}
           DIGEST: ${{ steps.promote.outputs.digest }}
           RUNNER: ${{ steps.v.outputs.runner }}
           SMOKE: ${{ steps.smoke.outputs.report }}
@@ -221,12 +226,17 @@ jobs:
         run: |
           set -euo pipefail
           ai="🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
-          if [ "$OUTCOME" = success ]; then
+          result=$(bash scripts/run-issue.sh build "$OUTCOME" "$SMOKE_OUTCOME" "$AUTOPILOT")
+          if [ "$result" = promoted ]; then
             fence='```'
             printf 'Promoted to :stable: %s\n\nactions/runner %s\n\n%s\n%s\n%s\n\nRun: %s\n\n%s\n' "$DIGEST" "$RUNNER" "$fence" "$SMOKE" "$fence" "$RUN_URL" "$ai" |
               NEEDS=0 bash scripts/run-issue.sh open runner-image "Runner image, run $RUN: promoted"
             # The image builds again: a failed build's issue left open is settled.
             bash scripts/run-issue.sh settle runner-image "$RUN_URL"
+          elif [ "$result" = held ]; then
+            # It passed, and DX_AUTOPILOT=off held the promotion: a person decides.
+            printf 'Built and tested, not promoted: DX_AUTOPILOT is off, so :stable waits for a person (run this workflow again once it is on).\n\nRun: %s\n\n%s\n' "$RUN_URL" "$ai" |
+              NEEDS=1 bash scripts/run-issue.sh open runner-image "Runner image, run $RUN: held (DX_AUTOPILOT off)"
           else
             # A failed build is the `platform` lane's work: the lane checks
             # that dilux-bot opened it from this run, named in the body.
