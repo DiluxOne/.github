@@ -100,7 +100,7 @@ profile). What a system writes in those files is what every review of its
 projects reads: keep them short.
 
 `scripts/sync-repos.py --test` refuses a name that is neither a system here
-nor `local`, and the weekly drift check reports a `local` project with no
+nor `local`, and the daily drift check reports a `local` project with no
 `docs/design-system/README.md`.
 
 ## Versions
