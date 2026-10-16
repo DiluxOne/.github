@@ -107,6 +107,7 @@ For the team of the central repository (`.github`). Each phase is a sub-issue of
   - The sync builds, from the roles, the rules that apply to each repository.
   - An organisation configuration file, and workflows and scripts without proper names.
 - **So far:** `repos.yml` `repos:` lists every repository with its kinds, paths and roles, held to its schema by `scripts/repos-config.py` (no overlapping paths, known kinds and roles, every repository another section names); `sync-repos.py` reads a repository's kind from there, and the daily drift check reports one missing (a new repository) or whose review policy names another kind.
+- **Detection:** each pack says how to recognise its kind (`detect` in `pack.yml`; the plan's `kind.yml` is the pack's `pack.yml`, which already held its checks, surface, Dependabot and release); the daily run proposes the repositories `repos.yml` lacks as a `platform` lane issue and pull request. A new repository is found by the daily run: there is no App server to take the creation event.
 - **Done when:** a monorepo with two kinds runs the checks of each; a new repository shows up as a pull request to `repos.yml`; and searching for "DiluxOne" in workflows and scripts finds nothing.
 
 ### Phase 7 · Release and deploy

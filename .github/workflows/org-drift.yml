@@ -6,7 +6,9 @@ name: Repositories in step
 # issue and a pull request of the org-sync lane, which the autonomy policy
 # accepts and merges when they hold only what main holds here
 # (scripts/sync-repos.py labels and files), and opens the sub-issue of every
-# accepted decision a repository now matches (scripts/decision.py sync).
+# accepted decision a repository now matches (scripts/decision.py sync), and
+# proposes, as a platform lane issue and pull request, the repositories
+# repos.yml does not list yet (scripts/detect.py propose; a person merges).
 # What a run cannot do on its own
 # (settings, rulesets, the Dependabot file, the workflow callers) stays a
 # maintainer's run, and the check below reports it.
@@ -62,17 +64,19 @@ jobs:
 
       # A failure in one repository is reported and the others go on; the
       # check below still runs and lists what is left.
-      - name: Sync (labels, shared files, decisions)
+      - name: Sync (labels, shared files, decisions, new repositories)
         if: github.ref == 'refs/heads/main' && steps.sync.outputs.token != ''
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.sync.outputs.token }}
-        # Each part runs whatever the other did; the step fails if either did.
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        # Each part runs whatever the others did; the step fails if any did.
         run: |
           rc=0
           python3 scripts/sync-repos.py labels || rc=1
           python3 scripts/sync-repos.py files || rc=1
           python3 scripts/decision.py sync || rc=1
+          python3 scripts/detect.py propose || rc=1
           exit "$rc"
 
       # Every repository the App is installed on, read-only, for the check.

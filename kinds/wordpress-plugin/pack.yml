@@ -34,8 +34,9 @@ own-checks:
 # scripts/detect.py): every file of `files` at its root, and a root file
 # matching `header.glob` whose first lines match `header.pattern` (a Python
 # regular expression). Detection only proposes: repos.yml says what a
-# repository is.
+# repository is. `roles`: the roles a proposal gives its paths.
 detect:
+  roles: [back, front]
   files: [readme.txt]
   header:
     glob: "*.php"
