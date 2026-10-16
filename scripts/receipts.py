@@ -123,7 +123,11 @@ def board_text(number, ready, last_seal, merged, autopilot=None, labels=()):
     rows.append(f"| G1 Issue ready | {'✓ the PRD follows the schema' if ready else '✗ see the G1 comment'} |")
     lane = next((l[5:] for l in labels if l.startswith("lane:")), None)
     if last_seal:
-        rows.append(f"| G2 Accepted | ✓ by {last_seal.get('accepted_by')} at {last_seal.get('at')}; PRD sealed `{last_seal.get('prd_sha256', '')[:12]}` |")
+        by = last_seal.get("accepted_by") or ""
+        # A lane seals as "policy (lane <name>)": it links the rule it followed (#188).
+        if by.startswith("policy"):
+            by = f"{by}, {rule_link(last_seal.get('policy'))}"
+        rows.append(f"| G2 Accepted | ✓ by {by} at {last_seal.get('at')}; PRD sealed `{last_seal.get('prd_sha256', '')[:12]}` |")
     elif lane and "accepted-by:policy" in labels:
         # Every automatic decision links the rule it followed (#188).
         rows.append(f"| G2 Accepted | ✓ by policy, lane `{lane}` ({rule_link(None)}) |")
@@ -308,6 +312,8 @@ Normal
     check("C6: no autopilot, no row", "Autopilot" in board_text(7, True, s, None, None), False)
     lb = board_text(7, True, None, None, None, ["lane:platform", "accepted-by:policy"])
     check("#188: a lane's acceptance names the lane and links its rule", "✓ by policy, lane `platform` ([the rule](https://github.com/DiluxOne/.github/blob/main/policy/autonomy.yml))" in lb, True)
+    ls = seal(7, body, "policy (lane bugfix-reproduced)", "def456", "t")
+    check("#188: a lane's sealed acceptance links the rule at its commit", "✓ by policy (lane bugfix-reproduced), [the rule](https://github.com/DiluxOne/.github/blob/def456/policy/autonomy.yml) at t" in board_text(7, True, ls, None), True)
     check("#188: a lane's label alone is no acceptance", "not sealed" in board_text(7, True, None, None, None, ["lane:platform"]), True)
     mb = board_text(7, True, s, receipt(7, body, s, pr2, {}, "abc123", "t"))
     check("#188: a merge by policy links the rule at the commit it read", "by policy ([the rule](https://github.com/DiluxOne/.github/blob/abc123/policy/autonomy.yml))" in mb, True)
