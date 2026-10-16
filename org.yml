@@ -1,5 +1,5 @@
 # Who the organisation is, for the scripts (#191): its name, the repository
-# that holds this configuration, its App and the people who maintain it. A
+# that holds this configuration and its App. A
 # script reads these through scripts/org.py instead of writing them in; an
 # organisation that adopts these workflows changes this file. The `uses:`
 # lines of the workflows still name the organisation: GitHub reads them
@@ -9,4 +9,3 @@ central: DiluxOne/.github
 bot:
   app: dilux-bot
   id: 333187390
-maintainers: [soydiloreto]

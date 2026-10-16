@@ -5,7 +5,6 @@
   CENTRAL      owner/name of the repository holding its configuration
   APP          its App's slug; BOT the App's login as GitHub shows a commit
                or a comment ("<slug>[bot]"); BOT_ID its user id
-  MAINTAINERS  the people who maintain it
 
   org.py --test   self-test
 """
@@ -33,7 +32,6 @@ CENTRAL = _conf["central"]
 APP = _conf["bot"]["app"]
 BOT = f"{APP}[bot]"
 BOT_ID = int(_conf["bot"]["id"])
-MAINTAINERS = list(_conf.get("maintainers") or [])
 
 
 def self_test():
@@ -47,7 +45,13 @@ def self_test():
     check("the central repository is the organisation's", CENTRAL.split("/", 1)[0], ORG)
     check("the bot's login is the App's", BOT, f"{APP}[bot]")
     check("a numeric bot id", BOT_ID > 0, True)
-    check("at least one maintainer", bool(MAINTAINERS), True)
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as fh:
+        fh.write("org: X\ncentral: X/.github\nbot: {app: x-bot, id: 7}\n")
+    try:
+        check("load: reads an org.yml", load(fh.name)["bot"], {"app": "x-bot", "id": 7})
+    finally:
+        os.unlink(fh.name)
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
