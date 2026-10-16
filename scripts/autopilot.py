@@ -518,7 +518,7 @@ def g6_verdict(path):
 
 
 def decide(policy, body, risk, complexity, blocking, description_ok, files, head_files, autopilot_var, author=BOT, lane_name=LANE, repro_sha="",
-           surface=(), issue_type="Feature", criteria_verdict=False):
+           surface=(), issue_type="", criteria_verdict=False):
     """Gate G7. lane_name is the lane the issue is worked under (which_lane);
     for a reproduced bug, repro_sha is the SHA-256 of the reproduction test
     as it is at the head: it must be the one the PRD sealed. surface is what
@@ -565,7 +565,8 @@ def decide(policy, body, risk, complexity, blocking, description_ok, files, head
         return False, f"risk {risk} is above the lane's {caps.get('max-risk', 'none')}"
     if not within(complexity, caps.get("max-complexity", "none")):
         return False, f"complexity {complexity} is above the lane's {caps.get('max-complexity', 'none')}"
-    if not schema.check(body, "spec")["ok"]:
+    # G3 again, by the issue's Type: a Feature's Spec has its phases (#193).
+    if not schema.check(body, "spec", issue_type=issue_type or None)["ok"]:
         return False, "the Spec is missing or incomplete (G3)"
     # G6 (#193): an agent that did not write the code, the review, said
     # each criterion is met, at this head.
@@ -911,9 +912,11 @@ Clamp the value in Sum::add.
     check("#186 decide: human-issue merges up to medium risk, a person merges high", tuple(decide(pol, spec, r, "medium", "false", "true", ["header.php", "tests/e2e/toggle.spec.ts"], head, "")[0] for r in ("medium", "high")), (True, False))
     plain = lambda **k: decide(pol, spec, "low", "low", "false", "true", ["header.php", "tests/e2e/toggle.spec.ts"], head, "", **k)[0]
     check("#193 decide: a Bug's change that adds public surface stops for a person", plain(surface=["a new action hook: dx_x"], issue_type="Bug"), False)
-    check("#193 decide: a Feature may add it", plain(surface=["a new action hook: dx_x"], issue_type="Feature"), True)
+    fspec = spec + "\n### Spec: impact\n\nThe header.\n\n### Spec: threats\n\n- None: no input.\n\n### Spec: architecture\n\nA class on html.\n"
+    check("#193 decide: a Feature may add it", decide(pol, fspec, "low", "low", "false", "true", ["header.php", "tests/e2e/toggle.spec.ts"], head, "", surface=["a new action hook: dx_x"], issue_type="Feature")[0], True)
     check("#193 decide: surface that could not be told stops a Bug's change too", plain(surface=["unknown"], issue_type="Task"), False)
     check("#193 decide: no surface, any Type", plain(surface=[], issue_type="Bug"), True)
+    check("#193 decide: a Feature's Spec without its impact, threats and architecture stops", plain(surface=[], issue_type="Feature"), False)
     g6 = lambda v: decide(pol, spec, "low", "low", "false", "true", ["header.php", "tests/e2e/toggle.spec.ts"], head, "", criteria_verdict=v)[0]
     check("#193 G6: merges when the review finds every criterion met", g6({"C1": True}), True)
     check("#193 G6: not when one is not met, or missing", (g6({"C1": False}), g6({"C9": True})), (False, False))
