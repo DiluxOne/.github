@@ -361,7 +361,10 @@ jobs:
             <sub>🤖 AI review · ${{ steps.scope.outputs.model }} (Anthropic)</sub>
 
             In findings, list every problem still open after this review (new ones and earlier
-            ones the code did not fix). In the summary, say in one line what the new commits fixed
+            ones the code did not fix). Set `pre_existing` true on a finding about code this pull
+            request did not introduce (it was there before, and the diff neither adds nor changes
+            it): it is listed for the maintainer, never inline, and never makes the review blocking.
+            Do not open the summary with a count: the workflow writes it. In the summary, say in one line what the new commits fixed
             when this is an incremental review.
 
             Two more verdicts, both about the whole pull request (not only the new commits):
@@ -391,7 +394,7 @@ jobs:
             --max-turns 60
             --max-budget-usd ${{ steps.policy.outputs.budget || '3' }}
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(git diff:*),Bash(git log:*),Read,Glob,Grep"
-            --json-schema '{"type":"object","additionalProperties":false,"required":["risk","complexity","blocking","type","description_matches","summary","findings","lessons","resolved_threads"],"properties":{"risk":{"type":"string","enum":["low","medium","high"]},"type":{"type":"string","enum":["breaking","feat","fix","perf","refactor","style","docs","test","ci","build","chore","revert"]},"description_matches":{"type":"boolean"},"complexity":{"type":"string","enum":["low","medium","high"]},"blocking":{"type":"boolean"},"summary":{"type":"string","maxLength":1500},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","file","title"],"properties":{"severity":{"type":"string","enum":["blocker","major","minor"]},"file":{"type":"string"},"line":{"type":"integer"},"title":{"type":"string","maxLength":200}}}},"lessons":{"type":"array","items":{"type":"string","maxLength":300}},"resolved_threads":{"type":"array","items":{"type":"string"}},"criteria":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","met","evidence"],"properties":{"id":{"type":"string","pattern":"^C[0-9]+$"},"met":{"type":"boolean"},"evidence":{"type":"string","maxLength":300}}}}}}'
+            --json-schema '{"type":"object","additionalProperties":false,"required":["risk","complexity","blocking","type","description_matches","summary","findings","lessons","resolved_threads"],"properties":{"risk":{"type":"string","enum":["low","medium","high"]},"type":{"type":"string","enum":["breaking","feat","fix","perf","refactor","style","docs","test","ci","build","chore","revert"]},"description_matches":{"type":"boolean"},"complexity":{"type":"string","enum":["low","medium","high"]},"blocking":{"type":"boolean"},"summary":{"type":"string","maxLength":1500},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","file","title"],"properties":{"severity":{"type":"string","enum":["blocker","major","minor"]},"file":{"type":"string"},"line":{"type":"integer"},"title":{"type":"string","maxLength":200},"pre_existing":{"type":"boolean"}}}},"lessons":{"type":"array","items":{"type":"string","maxLength":300}},"resolved_threads":{"type":"array","items":{"type":"string"}},"criteria":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","met","evidence"],"properties":{"id":{"type":"string","pattern":"^C[0-9]+$"},"met":{"type":"boolean"},"evidence":{"type":"string","maxLength":300}}}}}}'
 
       - name: Verdict (labels, summary, result)
         id: verdict
@@ -531,7 +534,9 @@ jobs:
 
           blk=""; if [ "$blocking" = true ]; then blk=" · **blocking**"; fi
           desc=""; if [ "$dmatch" != true ]; then desc=$'\n\n> ✍️ The description does not match the code (see the summary): no auto-merge until it does.'; fi
-          findings=$(jq -r '.findings[] | "- **\(.severity)** `\(.file)\(if .line then ":\(.line)" else "" end)`: \(.title)"' <<<"$OUT")
+          findings=$(jq -r '.findings[] | "- **\(.severity)**\(if .pre_existing then " (pre-existing)" else "" end) `\(.file)\(if .line then ":\(.line)" else "" end)`: \(.title)"' <<<"$OUT")
+          # The count first (#234): what is left to fix, or nothing.
+          tally=$(jq -c '.findings' <<<"$OUT" | python3 .dx-central/scripts/review-count.py line)
           # The changed files travel with the record: the weekly learning job
           # uses them as evidence for a repository's safe and risky paths.
           files=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json files --jq '[.files[].path] | .[:300]' 2>/dev/null || echo '[]')
@@ -542,6 +547,8 @@ jobs:
           body=$(cat <<EOF
           <!-- dx-review -->
           ### Claude review · risk **$risk** · complexity **$complexity** · type **$type**$blk
+
+          $tally
 
           $(jq -r .summary <<<"$OUT")$desc
 
