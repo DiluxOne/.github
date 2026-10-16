@@ -87,7 +87,7 @@ For the team of the central repository (`.github`). Each phase is a sub-issue of
 
 ### Phase 5 · Platform
 
-- **Today:** the image rebuilds itself once a week (on Mondays), and jobs share the operating system and step on each other. These are already in place: the VM as code (`scripts/runner-vm/`, #69), the organisation's Dependabot (#180; bringing it to each repository is pending) and the G8 sweep every 15 minutes (#165).
+- **Today:** the image rebuilds itself every day (#190). Each job already runs in its own container of the image, a one-job runner from a just-in-time configuration (`scripts/runner-vm/dx-runner-slot.sh`), so jobs no longer share the operating system. These are also in place: the VM as code (`scripts/runner-vm/`, #69), the organisation's Dependabot (#180; bringing it to each repository is pending) and the G8 sweep every 15 minutes (#165).
 - **Delivers:**
   - A daily image build, with a smoke test and promotion to `stable`.
   - Ephemeral runners, each in its own container.
@@ -350,7 +350,7 @@ The base is there (autopilot, gates, receipts, lanes, packs per kind); what is m
 
 | Part of the model | Today | Missing |
 | --- | --- | --- |
-| Maintenance | Automatic weekly image; a drift check that only reports; the sync run by hand. The organisation's Dependabot (#180), the sync lane (#171) and revert (#165) are merged | A schedule that runs the sync, not only the check; dependencies with majors merging on their own (today `composer.json` and `package.json` are high risk) |
+| Maintenance | Automatic daily image (#190); a drift check that only reports; the sync run by hand. The organisation's Dependabot (#180), the sync lane (#171) and revert (#165) are merged | A schedule that runs the sync, not only the check; dependencies with majors merging on their own (today `composer.json` and `package.json` are high risk) |
 | Bugs | Triage, reproduction, autopilot, gates and the reproduced-bugs lane (#166) exist | Making "Unreleased" part of the model: today it lives in WordPress's `readme.txt`; reproduction without hand-written PHPUnit |
 | Product | Sealed PRD (G1), Spec (G3), evidence per criterion (G6) | The type field (minor or feature); impact, threats and architecture; validation by an independent agent. **And lowering `human-issue` from high to medium risk:** today it merges on its own more than agreed |
 | Security | `SECURITY.md`; the triage locks the issue and sends it to private reporting | The private advisory flow; private reporting in private repositories too |

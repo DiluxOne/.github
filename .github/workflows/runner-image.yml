@@ -3,7 +3,7 @@ name: Runner image
 # Not reusable. Builds the organisation's runner image (runner/Dockerfile),
 # ghcr.io/diluxone/runner, the image every job on the organisation's VM runs
 # in, one container per job (scripts/runner-vm/dx-runner-slot.sh). Every
-# Monday, on a change to runner/ merged to main, and by hand. Runs here
+# day (#190), on a change to runner/ merged to main, and by hand. Runs here
 # because this repository is public, so its minutes are free.
 #
 # Each build takes the latest actions/runner release (checked against the
@@ -34,7 +34,7 @@ name: Runner image
 
 on:
   schedule:
-    - cron: '17 6 * * 1'
+    - cron: '17 6 * * *'
   push:
     branches: [main]
     paths: ['runner/**', '.github/workflows/runner-image.yml']
