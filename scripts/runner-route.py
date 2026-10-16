@@ -67,7 +67,10 @@ FALLBACKS = ("ubuntu-latest", "ubuntu-24.04")
 # the credentials check) or run code written from an issue (the reproduction).
 GITHUB_ONLY = ("plugin-release-wp.yml", "svn-auth-check.yml", "issue-repro.yml",
                # It wakes the VM (#154): it cannot wait for the VM it starts.
-               "runner-wake.yml")
+               "runner-wake.yml",
+               # An agent works on a stranger's report, and the job holds an
+               # embargoed fix (#194): a fresh runner each time.
+               "security-fix.yml")
 
 # A job whose runner an earlier job of the same run decided (autopilot.yml's
 # `where`, #84: a reproduced bug's work never runs on the VM) keeps that
