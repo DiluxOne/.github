@@ -783,7 +783,23 @@ def policy_kind(text):
     return m.group(1) if m else None
 
 
+def listed(name):
+    """A repository's entry in repos.yml `repos:` (#191), or None."""
+    return ((load_yaml(os.path.join(CENTRAL, "repos.yml")).get("repos") or {}).get(name))
+
+
 def repo_kind(full, default):
+    """The repository's kind: the one repos.yml `repos:` gives it (#191),
+    when it lists exactly one; else the one its .github/review-policy.yml
+    names, or None."""
+    entry = listed(full.split("/", 1)[1])
+    if entry is not None:
+        kinds = entry.get("kinds") or []
+        return kinds[0].get("kind") if len(kinds) == 1 else None
+    return policy_kind_of(full, default)
+
+
+def policy_kind_of(full, default):
     """The kind the repository's .github/review-policy.yml names, or None."""
     out = gh("api", f"repos/{full}/contents/.github/review-policy.yml?ref={default}", "-H", "Accept: application/vnd.github.raw", check=False)
     if out.returncode != 0 and "404" not in out.stderr:
@@ -1099,6 +1115,16 @@ def drift(repo, conf, labels, block, current=0):
     full = f"{ORG}/{repo['name']}"
     found = []
     default = (repo.get("defaultBranchRef") or {}).get("name") or "main"
+    # What it is lives in repos.yml (#191): a repository missing there is new,
+    # and its own review policy may not say another kind.
+    entry = listed(repo["name"])
+    if entry is None:
+        found.append("is not in repos.yml `repos:`: add it with its kinds, paths and roles (an empty list leaves it unclassified)")
+    else:
+        kinds = [k.get("kind") for k in entry.get("kinds") or []]
+        own = policy_kind_of(full, default)
+        if own and own not in kinds:
+            found.append(f"its .github/review-policy.yml says `kind: {own}`, but repos.yml gives it {', '.join(kinds) or 'no kind'}")
     if current:
         files = workflow_files(full)
         texts = list(files.values())
@@ -1486,6 +1512,18 @@ def dependabot_test(check, conf, labels, block):
     check("C3 (#178): the drift check names a dependabot.yml that differs, and its template",
           any(f"`{DEPENDABOT}` differs from its template, `kinds/wordpress-plugin/dependabot.yml`" in l for l in lines), lines)
     check("C3 (#178): one in step is not reported", not any("dependabot.yml" in l for l in in_step), in_step)
+    check("#191: a repository repos.yml does not list is reported as new", any("is not in repos.yml `repos:`" in l for l in lines), True)
+    saved_listed = globals()["listed"]
+    globals()["gh"], ORG = fake, "o"
+    try:
+        globals()["listed"] = lambda name: {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"]}]}
+        check("#191: repos.yml's kind wins, without reading the repository", repo_kind("o/r", "main") == "wordpress-plugin", repo_kind("o/r", "main"))
+        globals()["listed"] = lambda name: {"kinds": [{"kind": "web-api", "paths": ["**"]}]}
+        check("#191: a review policy that names another kind is reported", any("says `kind: wordpress-plugin`, but repos.yml gives it web-api" in l for l in drift(repo, conf, [], block)), True)
+        globals()["listed"] = lambda name: {"kinds": []}
+        check("#191: an unclassified repository has no kind", repo_kind("o/r", "main") is None, repo_kind("o/r", "main"))
+    finally:
+        globals()["gh"], ORG, globals()["listed"] = saved_gh, saved_org, saved_listed
     check("C3 (#178): a missing one is", any(f"`{DEPENDABOT}` is missing" in l for l in missing), missing)
     check("drift: Dependabot security updates off are reported, on are not",
           any("security updates are off" in l for l in in_step) and not any("security updates" in l for l in lines), (lines, in_step))

@@ -105,6 +105,7 @@ For the team of the central repository (`.github`). Each phase is a sub-issue of
   - Detection that proposes by pull request, and new repositories by an App event plus a daily schedule.
   - The sync builds, from the roles, the rules that apply to each repository.
   - An organisation configuration file, and workflows and scripts without proper names.
+- **So far:** `repos.yml` `repos:` lists every repository with its kinds, paths and roles, held to its schema by `scripts/repos-config.py` (no overlapping paths, known kinds and roles, every repository another section names); `sync-repos.py` reads a repository's kind from there, and the daily drift check reports one missing (a new repository) or whose review policy names another kind.
 - **Done when:** a monorepo with two kinds runs the checks of each; a new repository shows up as a pull request to `repos.yml`; and searching for "DiluxOne" in workflows and scripts finds nothing.
 
 ### Phase 7 · Release and deploy
