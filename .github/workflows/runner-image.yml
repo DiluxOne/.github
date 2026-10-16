@@ -22,11 +22,13 @@ name: Runner image
 # nothing.
 #
 # No person approves a build: this is the `platform` lane of the autonomy
-# plan (#78). Each result is recorded on an issue of this repository: every
-# promoted build as a comment on "Runner image" (versions and digest), every
-# failed one on "Runner image: build failed" (with the run), both opened by
-# the first build that needs them. The package must be public once (package
-# settings) so the VM pulls it without credentials.
+# plan (#78). Each build is its own issue of this repository, labelled
+# `run:runner-image` (scripts/run-issue.sh, #188): a promoted one says its
+# versions and digest and closes as completed; a failed one stays open with
+# `needs:maintainer`, as a `platform` lane issue (accepted by policy), until
+# a person or the lane fixes the image. The closed issues are the record of
+# every build. The package must be public once (package settings) so the VM
+# pulls it without credentials.
 
 on:
   schedule:
@@ -213,28 +215,18 @@ jobs:
           DIGEST: ${{ steps.promote.outputs.digest }}
           RUNNER: ${{ steps.v.outputs.runner }}
           SMOKE: ${{ steps.smoke.outputs.report }}
+          RUN: ${{ github.run_number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          if [ "$OUTCOME" = success ]; then title="Runner image"; else title="Runner image: build failed"; fi
-          n=$(gh issue list --state open --search "in:title \"$title\"" --json number,title --jq "map(select(.title == \"$title\"))[0].number // empty")
-          if [ -z "$n" ]; then
-            if [ "$OUTCOME" = success ]; then
-              n=$(gh issue create --title "$title" --body "Every promoted build of ghcr.io/diluxone/runner, recorded by runner-image.yml.
-
-          🤖 AI-generated · Claude Opus 5.5 (Anthropic)" | sed 's#.*/##')
-            else
-              n=$(gh issue create --title "$title" --label "lane:platform,accepted-by:policy" --body "Builds of ghcr.io/diluxone/runner that failed and were not promoted; :stable stayed as it was. Fixing the image is work of the \`platform\` lane (policy/autonomy.yml): accepted by policy, no person needed to accept it. Close it once a build passes.
-
-          <!-- dx-lane: platform run: $RUN_URL -->
-
-          🤖 AI-generated · Claude Opus 5.5 (Anthropic)" | sed 's#.*/##')
-            fi
-          fi
+          ai="🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
           if [ "$OUTCOME" = success ]; then
             fence='```'
-            body=$(printf 'Promoted to :stable: %s\n\nactions/runner %s\n\n%s\n%s\n%s\n\n%s' "$DIGEST" "$RUNNER" "$fence" "$SMOKE" "$fence" "$RUN_URL")
+            printf 'Promoted to :stable: %s\n\nactions/runner %s\n\n%s\n%s\n%s\n\nRun: %s\n\n%s\n' "$DIGEST" "$RUNNER" "$fence" "$SMOKE" "$fence" "$RUN_URL" "$ai" |
+              NEEDS=0 bash scripts/run-issue.sh open runner-image "Runner image, run $RUN: promoted"
           else
-            body=$(printf 'Not promoted; :stable unchanged. Run: %s' "$RUN_URL")
+            # A failed build is the `platform` lane's work: the lane checks
+            # that dilux-bot opened it from this run, named in the body.
+            printf 'Not promoted; :stable stayed as it was. Fixing the image is work of the `platform` lane (policy/autonomy.yml): accepted by policy, no person needed to accept it. It closes when the fix merges.\n\nRun: %s\n\n<!-- dx-lane: platform run: %s -->\n\n%s\n' "$RUN_URL" "$RUN_URL" "$ai" |
+              NEEDS=1 LABELS="lane:platform,accepted-by:policy" bash scripts/run-issue.sh open runner-image "Runner image, run $RUN: build failed"
           fi
-          gh issue comment "$n" --body "$body"

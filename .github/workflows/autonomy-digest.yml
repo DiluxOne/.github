@@ -2,9 +2,9 @@ name: Decided by policy
 
 # Not reusable. Every Monday, and by hand: lists everything in the
 # organisation that the autonomy policy (policy/autonomy.yml) accepted or
-# merged instead of a person during the last seven days, as a comment on the
-# issue "Decided by policy" of this repository (opened by the first run that
-# needs it): issues labelled `accepted-by:policy` when they were opened, and
+# merged instead of a person during the last seven days, as an issue of its
+# own in this repository, labelled `run:autonomy-digest` (scripts/run-issue.sh,
+# #188): issues labelled `accepted-by:policy` when they were opened, and
 # pull requests labelled `merged-by:policy` when they merged. Each public one
 # is a line with its repository, title and link; private ones are only
 # counted, because the issue is public. A week with nothing says so. This is
@@ -20,7 +20,10 @@ name: Decided by policy
 # run (nothing is stored); and a proposal, as text only, for each reason that
 # stopped 5 or more pull requests whose review found no blocker or major.
 # Changing a limit stays a pull request a person accepts and merges. Private
-# repositories are counted under their reasons, never named.
+# repositories are counted under their reasons, never named. The week's issue
+# closes as completed when it proposes nothing; with a proposal, it stays
+# open with `needs:maintainer` until a person decides it. The closed issues
+# are the record of every week.
 
 on:
   schedule:
@@ -65,17 +68,8 @@ jobs:
           since=$(date -u -d '7 days ago' +%Y-%m-%d)
           body=$(SINCE="$since" bash scripts/policy-digest.sh)
           person=$(python3 scripts/needed-a-person.py)
-          title="Decided by policy"
-          n=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"$title\"" --json number,title --jq "map(select(.title == \"$title\"))[0].number // empty")
-          if [ -z "$n" ]; then
-            n=$(gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "Every Monday, what the autonomy policy (policy/autonomy.yml) accepted or merged in the organisation instead of a person, and what still needed a person and why, by autonomy-digest.yml. Private repositories are counted, not named.
-
-          🤖 AI-generated · Claude Opus 5.5 (Anthropic)" | sed 's#.*/##')
-          fi
-          gh issue comment "$n" --repo "$GITHUB_REPOSITORY" --body "Week since ${since}:
-
-          ${body}
-
-          ${person}
-
-          🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
+          # A proposal is a decision for a person; a week without one needs no one.
+          needs=0
+          if grep -q '^\*\*Proposals\*\*' <<<"$person" && ! grep -q '^None: no reason stopped' <<<"$person"; then needs=1; fi
+          printf 'Week since %s:\n\n%s\n\n%s\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)\n' "$since" "$body" "$person" |
+            NEEDS=$needs bash scripts/run-issue.sh open autonomy-digest "Decided by policy, week since $since"
