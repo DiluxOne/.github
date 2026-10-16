@@ -155,7 +155,11 @@ def facts(org, rules):
             if want_kind:
                 row["kind"] = sync.repo_kind(f"{org}/{r['name']}", default)
             if want_files:
-                row["files"] = set(json.loads(gh("api", f"repos/{org}/{r['name']}/contents/?ref={default}", "--jq", "[.[].name]") or "[]"))
+                # An empty repository has no contents at all: no files, not an error.
+                listing = subprocess.run(["gh", "api", f"repos/{org}/{r['name']}/contents/?ref={default}", "--jq", "[.[].name]"], capture_output=True, text=True)
+                if listing.returncode != 0 and "404" not in listing.stderr:
+                    raise RuntimeError(listing.stderr.strip()[:200])
+                row["files"] = set(json.loads(listing.stdout or "[]")) if listing.returncode == 0 else set()
         except (RuntimeError, ValueError) as exc:
             row["error"] = str(exc)
         out.append(row)
@@ -242,7 +246,8 @@ def carry_out(full, number, io=None):
         except RuntimeError as exc:
             failed.append(repo)
             print(f"  {repo}: failed ({exc})")
-    io["comment"](table(f"{full}#{number}", sorted(set(chosen) | set(unread)), children, failed))
+    # A repository that stopped matching keeps its sub-issue, and its row.
+    io["comment"](table(f"{full}#{number}", sorted(set(chosen) | set(unread) | set(children)), children, failed))
     return failed
 
 
@@ -304,6 +309,8 @@ def self_test():
     calls["open"].clear()
     carry_out("DiluxOne/.github", 300, io(children={"offload": "DiluxOne/offload#4"}))
     check("carry out: one that has its sub-issue gets no second", calls["open"], [("mail", "Task")])
+    carry_out("DiluxOne/.github", 300, io(children={"gone": "DiluxOne/gone#2"}))
+    check("carry out: one that stopped matching keeps its row", "| gone | DiluxOne/gone#2 |" in calls["comment"][-1], True)
     calls["open"].clear()
     check("carry out: a failure is reported and the others go on", (carry_out("DiluxOne/.github", 300, io(fail=("mail",))), calls["open"]), (["mail"], [("offload", "Task")]))
     check("carry out: the comment says it failed", "| mail | ✗ failed" in calls["comment"][-1], True)
