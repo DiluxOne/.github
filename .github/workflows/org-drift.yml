@@ -5,7 +5,9 @@ name: Repositories in step
 # shared files (CODEOWNERS, the AGENTS.md block), each repository's as an
 # issue and a pull request of the org-sync lane, which the autonomy policy
 # accepts and merges when they hold only what main holds here
-# (scripts/sync-repos.py labels and files). What a run cannot do on its own
+# (scripts/sync-repos.py labels and files), and opens the sub-issue of every
+# accepted decision a repository now matches (scripts/decision.py sync).
+# What a run cannot do on its own
 # (settings, rulesets, the Dependabot file, the workflow callers) stays a
 # maintainer's run, and the check below reports it.
 #
@@ -60,7 +62,7 @@ jobs:
 
       # A failure in one repository is reported and the others go on; the
       # check below still runs and lists what is left.
-      - name: Sync (labels, shared files)
+      - name: Sync (labels, shared files, decisions)
         if: github.ref == 'refs/heads/main' && steps.sync.outputs.token != ''
         continue-on-error: true
         env:
@@ -70,6 +72,7 @@ jobs:
           rc=0
           python3 scripts/sync-repos.py labels || rc=1
           python3 scripts/sync-repos.py files || rc=1
+          python3 scripts/decision.py sync || rc=1
           exit "$rc"
 
       # Every repository the App is installed on, read-only, for the check.
