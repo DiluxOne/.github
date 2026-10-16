@@ -62,6 +62,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -818,6 +819,14 @@ def self_test():
     check("#188 schema: a ceiling below the default", problems({**org, **lane(ceiling={"max-risk": "low", "max-complexity": "high"})}), ["lanes.human-issue.ceiling.max-risk: low is below the lane's merge (medium)"])
     check("#188 schema: merge names both caps", problems({**org, **lane(merge={"max-risk": "low"})}), ["lanes.human-issue.merge: max-risk and max-complexity"])
     check("#188 schema: the policy and the rules are always protected", problems({**org, "constitution": [".github/**"]}), ["constitution: policy/** is always protected", "constitution: rules/** is always protected"])
+    with tempfile.TemporaryDirectory() as tmp:
+        bad_policy = os.path.join(tmp, "autonomy.yml")
+        with open(bad_policy, "w", encoding="utf-8") as fh:
+            fh.write("autopilot: true\nconstitution: [\"policy/**\", \"rules/**\"]\nlanes: {x: {accept: maybe}}\n")
+        run_check = lambda path: subprocess.run([sys.executable, os.path.abspath(__file__), "check"], env={**os.environ, "ORG_AUTONOMY": path}, capture_output=True, text=True)
+        got, good = run_check(bad_policy), run_check(os.path.join(HERE, "..", "policy", "autonomy.yml"))
+    check("#188 check: a policy off its schema exits 1 and says why", (got.returncode, "lanes.x.accept: human or policy" in got.stdout), (1, True))
+    check("#188 check: the organisation's policy passes", (good.returncode, good.stdout), (0, ""))
     rel = {**org, "lanes": {**org["lanes"], "release": {**org["lanes"]["release"], "ceiling": {"max-risk": "high", "max-complexity": "high"}}}}
     check("#188 schema: a release lane with a ceiling", problems(rel), ["lanes.release: never merges on its own, and has no ceiling"])
     check("#188 schema: a policy lane without an origin", problems({**org, **lane(accept="policy")}), ["lanes.human-issue.origin: a lane that accepts by policy names who opens its issues"])

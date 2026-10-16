@@ -23,7 +23,8 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    the gate asks again on the pull request. A repository's own
    `.github/autonomy.yml` can make that stricter, or raise what a lane
    merges on its own up to the lane's `ceiling` (human-issue: medium by
-   default, high at most; #188), and the organisation
+   default, high at most, so a repository can let its high-risk pull
+   requests from accepted issues merge on its own; #188), and the organisation
    variable `DX_AUTOPILOT=off` stops every lane. When a person accepts an
    issue its PRD is sealed (its SHA-256 on the repository's `receipts`
    branch, [`scripts/receipts.py`](../scripts/receipts.py)); a PRD edited
