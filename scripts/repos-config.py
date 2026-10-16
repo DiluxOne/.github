@@ -14,8 +14,6 @@ checks it, and the rest of repos.yml against it:
   - no section of repos.yml is unknown.
 
   repos-config.py check          repos.yml here (exit 1, with the reasons)
-  repos-config.py kind NAME      the kind of a single-kind repository, or
-                                 nothing (scripts read it from here)
   repos-config.py --test         self-test
 """
 import os
@@ -43,8 +41,10 @@ def prefix(pattern):
 def overlap(a, b):
     """Whether two path patterns may match the same file: one's literal
     start is the other's (a conservative test; "**" overlaps everything)."""
+    def under(x, y):  # x within y, on a path segment's boundary
+        return x.startswith(y) and (y == "" or y.endswith("/") or len(x) == len(y) or x[len(y)] == "/")
     pa, pb = prefix(a), prefix(b)
-    return pa.startswith(pb) or pb.startswith(pa)
+    return under(pa, pb) or under(pb, pa)
 
 
 def problems(conf, kinds, systems):
@@ -128,6 +128,7 @@ def self_test():
     check("kind: a single-kind repository's", kind_of(good, "a"), "wordpress-plugin")
     check("kind: none for an unclassified one, a monorepo or an unknown name", (kind_of(good, "b"), kind_of(mono, "m"), kind_of(good, "zz")), (None, None, None))
     check("overlap: '**' overlaps everything; siblings do not", (overlap("**", "a/**"), overlap("api/**", "web/**"), overlap("api/**", "api/v2/*")), (True, False, True))
+    check("overlap: on a segment's boundary, not a string's", (overlap("src/foo", "src/foobar/**"), overlap("src/foo", "src/foo/**")), (False, True))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
@@ -141,9 +142,6 @@ def main(argv):
         for line in found:
             print(line)
         return 1 if found else 0
-    if len(argv) == 2 and argv[0] == "kind":
-        print(kind_of(conf, argv[1]) or "")
-        return 0
     print(__doc__, file=sys.stderr)
     return 64
 

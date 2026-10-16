@@ -1516,8 +1516,8 @@ def dependabot_test(check, conf, labels, block):
     saved_listed = globals()["listed"]
     globals()["gh"], ORG = fake, "o"
     try:
-        globals()["listed"] = lambda name: {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"]}]}
-        check("#191: repos.yml's kind wins, without reading the repository", repo_kind("o/r", "main") == "wordpress-plugin", repo_kind("o/r", "main"))
+        globals()["listed"] = lambda name: {"kinds": [{"kind": "web-api", "paths": ["**"]}]}
+        check("#191: repos.yml's kind wins over the review policy's", repo_kind("o/r", "main") == "web-api", repo_kind("o/r", "main"))
         globals()["listed"] = lambda name: {"kinds": [{"kind": "web-api", "paths": ["**"]}]}
         check("#191: a review policy that names another kind is reported", any("says `kind: wordpress-plugin`, but repos.yml gives it web-api" in l for l in drift(repo, conf, [], block)), True)
         globals()["listed"] = lambda name: {"kinds": []}

@@ -15,10 +15,11 @@ exclude:
 
 # Every repository of the organisation and what it is (#191): its kinds of
 # project (a pack in kinds/), each over the paths it covers, with the roles
-# of those paths (the rules in rules/ that name a role reach only them). A
-# single-kind repository covers "**". A repository with no kinds is
-# unclassified: it gets the triage and the basic checks, and nothing merges
-# on its own there. scripts/repos-config.py check holds this to its schema:
+# of those paths (which the rules in rules/ that name a role will reach,
+# phase 6 of #184). A single-kind repository covers "**". A repository with
+# no kinds is unclassified (the autopilot leaving it alone comes with phase
+# 8). scripts/sync-repos.py reads the kind from here first.
+# scripts/repos-config.py check holds this to its schema:
 # known kinds, known roles, paths of one repository that never overlap.
 # Where a repository's .github/review-policy.yml names a kind too, this wins.
 repos:
