@@ -94,6 +94,7 @@ For the team of the central repository (`.github`). Each phase is a sub-issue of
   - The `DX_RUNNER_HEAVY` and `DX_RUNNER_LIGHT` variables, the runner group and the block on forks.
 - **Done when:** a week of CI goes by with no jobs stepping on each other, and the image updates itself.
 - **Signed commits:** the bots push through GitHub's API (`scripts/api-commit.py`), which signs their commits: the autopilot and its agent, the release pull request, the reproduction, the weekly learnings and the revert. Then the organisation's ruleset requires signed commits on every branch.
+- **Where jobs run:** the shared jobs read `DX_RUNNER_HEAVY`, the `runs-on` value as JSON (`["self-hosted","linux","x64","diluxone"]` here; `"ubuntu-latest"` sends them back to GitHub), so no workflow names DiluxOne's runners. The old `DX_RUNNER` stays until the repositories' own jobs that name it move. The runner group `private-repos-vm` (selected repositories, no public ones) and the approval of first-time contributors' pull requests were already in place. `DX_RUNNER_LIGHT` comes with phase 6, which takes the organisation's own workflows off proper names.
 
 ### Phase 6 · Organisation config and several kinds
 

@@ -40,7 +40,7 @@ jobs:
           ./actionlint -color
       - name: Every shared job picks its runner, but those that stay on GitHub's
         # The private repositories' jobs run on the organisation's VM through
-        # DX_RUNNER (runner-vm.yml), all with the one expression of
+        # DX_RUNNER_HEAVY (runner-vm.yml), all with the one expression of
         # scripts/runner-route.py, which keeps dilux-bot's reproduction pull
         # requests off the VM (#167), or with the choice an earlier job of
         # the run made (autopilot.yml's `where`); the release, the credentials

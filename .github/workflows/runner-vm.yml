@@ -5,7 +5,8 @@ name: Organisation VM
 # the reproduction, which handle secrets or code written from an issue's text
 # and stay on GitHub's fresh runners): vm-gh-runner-01 in Azure, runner group
 # private-repos-vm, label `diluxone`. Their jobs pick it when they see the
-# organisation variable DX_RUNNER=self-hosted, which only the private
+# organisation variable DX_RUNNER_HEAVY (#190: the runs-on value, as JSON:
+# ["self-hosted","linux","x64","diluxone"]), which only the private
 # repositories do. Public repositories, this one included, stay on GitHub's
 # runners, free for them; that is also why this check runs here.
 #
@@ -45,7 +46,7 @@ name: Organisation VM
 # the credentials check and the reproduction stay on GitHub's fresh runners,
 # so do the checks of the pull requests dilux-bot opens from a reproduction
 # (scripts/runner-route.py decides from their branch and author, #167), and
-# public repositories never see DX_RUNNER. A VM that hosted anyone else's
+# public repositories never see DX_RUNNER_HEAVY. A VM that hosted anyone else's
 # code would need jobs that do not persist, one VM per job.
 #
 # Azure: OIDC federation (app gh-actions-dilux-runner-starter, a credential
