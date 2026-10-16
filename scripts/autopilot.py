@@ -15,6 +15,8 @@
   autopilot.py draft         the draft pull request's title and body, from the
                              issue (JSON: branch, title, body); fails, with why
                              on stderr, when no criterion can be read
+  autopilot.py decision TEXT log on the pull request a decision the PRD left
+                            open, dated (#193; the agent runs it)
   autopilot.py push          push the agent's commits through the API, so
                             GitHub signs them (api-commit.py, #190); the
                             branch is BRANCH, else the pull request's
@@ -68,6 +70,7 @@ output), WORK_STARTED (when the work step started), GITHUB_WORKSPACE.
 """
 import hashlib
 import importlib.util
+import datetime
 import json
 import os
 import re
@@ -213,6 +216,25 @@ def kebab(title, words=5):
 NO_CRITERIA = "no criterion could be read from the issue's Acceptance criteria; the draft pull request is not opened"
 
 
+NO_DECISIONS = "_None yet: how the agent settles what the PRD leaves open, one line each._"
+
+
+def add_decision(pr_body, text, day):
+    """The pull request's body with one more line in its Decisions log
+    (#193): what the agent decided that the PRD does not say, and why. None
+    when the body has no log, or the text is empty."""
+    text = " ".join((text or "").split())[:400].replace("@", "@\u200b")
+    head = "## 🧭 Decisions"
+    if not text or head not in pr_body:
+        return None
+    before, _, after = pr_body.partition(head)
+    nxt = after.find("\n## ")
+    section, rest = (after, "") if nxt < 0 else (after[:nxt], after[nxt:])
+    lines = [l for l in section.strip().split("\n") if l.strip() and l.strip() != NO_DECISIONS]
+    lines.append(f"- {day}: {text}")
+    return f"{before}{head}\n\n" + "\n".join(lines) + "\n" + rest
+
+
 def draft(number, issue_type, title, body):
     """The branch, title and body of the draft pull request, before any code.
     ValueError when the issue yields no criterion: a draft with an empty
@@ -237,6 +259,10 @@ Closes #{number}. The autopilot works it here in the open: one commit per criter
 ## 🎯 Acceptance criteria
 
 {checklist(body)}
+
+## 🧭 Decisions
+
+{NO_DECISIONS}
 
 ## 🧪 How I tested it
 
@@ -672,7 +698,9 @@ For each one, in that order:
 
 When every box is ticked, run the repository's own checks (`make pre-pr` if the Makefile has it, else its test commands), fix, commit and push (`{env} {HELPER} push`) what fails, write a short "How I tested it" into a file, and run `{env} {HELPER} finish ready <file>`: it marks the pull request ready for review.{ready}
 
-If you cannot go on (a criterion is wrong, the checks fail in a way you cannot fix, something outside the Spec is needed), run `{env} {HELPER} finish stop "<where you stopped and why>"` and end. Ending any other way leaves the pull request to a person.
+When you settle something the PRD and the Spec leave open (how, never what), log it: `{env} {HELPER} decision "<what you decided, and why>"`. A doubt that would change the scope or a criterion is not yours to settle: stop instead.
+
+If you cannot go on (a criterion is wrong, the checks fail in a way you cannot fix, something outside the Spec is needed, or a doubt changes the scope), run `{env} {HELPER} finish stop "<where you stopped and why>"` and end. Ending any other way leaves the pull request to a person.
 
 {FOREGROUND}
 
@@ -792,6 +820,17 @@ A class on html.
     check("C3: stopped when the agent said why", end_verdict("start", "5", True, True, 1, 2, False, 1, 5), "stopped")
     check("C3: silent when it just ended", end_verdict("start", "5", True, False, 1, 2, False, 1, 5), "silent")
     check("C3: silent with no pull request and no stop comment", end_verdict("start", "", True, False, 0, 0, False, 1, 5), "silent")
+    d0 = draft("7", "Feature", "Dark mode", spec)["body"]
+    check("#193: the draft has an empty Decisions log", NO_DECISIONS in d0, True)
+    d1 = add_decision(d0, "Kept the toggle in the header, as the theme does it.", "2026-10-16")
+    d2 = add_decision(d1, "A cookie, not localStorage: the server renders the class. @someone", "2026-10-16")
+    log = d2.split("## 🧭 Decisions")[1].split("\n## ")[0]
+    check("#193: decisions pile up in order, dated, the placeholder gone, no @mention",
+          (NO_DECISIONS in log, log.count("- 2026-10-16: "), "header, as the theme" in log.split("\n")[2], "@\u200bsomeone" in log), (False, 2, True, True))
+    check("#193: the rest of the body is untouched", d2.split("## 🧭 Decisions")[0] == d0.split("## 🧭 Decisions")[0] and "## 🧪 How I tested it" in d2, True)
+    check("#193: the work prompt asks to log decisions, and to stop on one that changes the scope",
+          (f"{HELPER} decision" in prompt_work("o/r", "7", "8", "b", "x", [("C1", "a", None)], False), "a doubt changes the scope" in prompt_work("o/r", "7", "8", "b", "x", [("C1", "a", None)], False)), (True, True))
+    check("#193: no log, or no text, no decision", (add_decision("## 📝 What changes\n\nx", "y", "d"), add_decision(d0, "  ", "d")), (None, None))
     check("#190: the prompts never ask for git push, and name the helper", ("git push" not in prompt_work("o/r", "7", "8", "feat/7-x", "x", [("C1", "a", None)], False).replace("Never `git push`", ""),
           f"{HELPER} push" in prompt_work("o/r", "7", "8", "feat/7-x", "x", [("C1", "a", None)], False), f"{HELPER} push" in prompt_fix("o/r", "8", 1, 3)), (True, True, True))
     check("C3: a fix round that pushed nothing is silent", end_verdict("fix", "5", False, False, 2, 2, False, 1, 5, pushed=False), "silent")
@@ -1103,6 +1142,15 @@ def main(argv):
         out = subprocess.run([sys.executable, os.path.join(HERE, "api-commit.py"), "push", branch], capture_output=True, text=True)
         print((out.stdout + out.stderr).strip())
         return out.returncode
+    if argv[:1] == ["decision"]:
+        # A decision the PRD left open, logged on the pull request (#193).
+        new = add_decision(pr_json(repo, pr, "body")["body"], " ".join(argv[1:]), datetime.date.today().isoformat())
+        if new is None:
+            print("No: say the decision and why, on a pull request with its Decisions section.")
+            return 1
+        set_body(repo, pr, new)
+        print("Logged.")
+        return 0
     if argv[:1] == ["tick"]:
         cid = argv[1] if len(argv) > 1 else ""
         body = pr_json(repo, pr, "body")["body"]
