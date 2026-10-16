@@ -69,8 +69,9 @@ ref (default `v5`), not at the ref of its `uses:` line: a caller that pins
 
 Only here: [`review-learnings.yml`](../.github/workflows/review-learnings.yml)
 (every Monday: finds with one search the pull requests the bot reviewed
-anywhere in the organisation, proposes new profile rules from the last 7 days
-of lessons and, per repository, changes to its policy or `AGENTS.md` from 90
+anywhere in the organisation, proposes new profile rules from the lessons of
+the last 7 days that repeated in `min-repeats` (3) pull requests, never one a
+maintainer closed without merging, and, per repository, changes to its policy or `AGENTS.md` from 90
 days of evidence; a path needs `min-evidence` (5) clean merges to be proposed
 as safe; every proposal is a pull request a human merges, with what changes,
 why, and what starts happening if approved) and
