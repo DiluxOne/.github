@@ -120,6 +120,7 @@ For the team of the central repository (`.github`). Each phase is a sub-issue of
   - Removing the environment's reviewers, once the issue is enough.
   - For continuous kinds: deploy on merge, with gradual rollout, automatic rollback and feature flags.
 - **Done when:** a plugin is published by accepting an issue, and the environment has no human approver.
+- **So far:** closing a version milestone `X.Y.Z` opens "Release X.Y.Z" on the next daily run (`scripts/milestones.py`), without touching any repository's workflows; the release pull request already opened itself when a person accepted the issue (#159). The `wordpress-org` environments of Multisite, Offload and Users+ keep their reviewer until the maintainer says otherwise: Users+ kept it on purpose. No kind deploys continuously yet.
 
 ### Phase 8 · Autopilot by type of work
 
