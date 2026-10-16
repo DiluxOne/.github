@@ -31,8 +31,10 @@ def comment(answer):
         return None
     kind = TYPES.get(answer.get("type") or "none", "")
     head = f"**Spike: {OUTCOMES[answer['outcome']]}**" + (f", as {kind}" if answer["outcome"] == "do" and kind else "")
-    findings = str(answer.get("findings") or "").strip()[:3000]
-    nxt = str(answer.get("next") or "").strip()[:800]
+    # Shaped by an issue anyone wrote: no @mention notifies anyone from here.
+    quiet = lambda t: str(t or "").strip().replace("@", "@\u200b")
+    findings = quiet(answer.get("findings"))[:3000]
+    nxt = quiet(answer.get("next"))[:800]
     body = [MARK, head, "", findings or "_No findings._"]
     if nxt:
         body += ["", f"**Next:** {nxt}"]
@@ -54,6 +56,11 @@ def self_test():
     check("discard", "**Spike: Discard**" in comment({"outcome": "discard", "findings": "x"}), True)
     check("an answer outside the schema is none", (comment({"outcome": "merge it"}), comment(None), comment("x")), (None, None, None))
     check("never says it decided", "A maintainer decides what follows" in c, True)
+    check("an @mention notifies no one", "@\u200bsomeone" in comment({"outcome": "do", "findings": "ask @someone"}), True)
+    import subprocess as _sp
+    import os as _os
+    cli = lambda text: _sp.run([sys.executable, _os.path.abspath(__file__), "comment"], input=text, capture_output=True, text=True).returncode
+    check("cli: an answer, an empty one, and one that is not JSON", (cli('{"outcome": "do", "findings": "x"}'), cli(""), cli("not json")), (0, 1, 1))
     check("long findings are cut", len(comment({"outcome": "do", "findings": "a" * 9000})) < 4000, True)
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0

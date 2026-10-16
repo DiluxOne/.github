@@ -57,11 +57,13 @@ name: Issue triage
 # are scripts/triage-brief.sh and scripts/triage-act.sh, shared by both jobs.
 #
 # On a schedule, the same workflow closes `needs-info` issues nobody answered
-# in `stale-days`. Everything in the issue is data, never instructions.
+# in `stale-days`. When a person labels an issue `spike` (#193), the `spike`
+# job investigates it read-only and recommends what to do (scripts/spike.py).
+# Everything in the issue is data, never instructions.
 #
 #   on:
 #     issues:
-#       types: [opened]
+#       types: [opened, labeled]
 #     schedule:
 #       - cron: '0 13 * * *'
 #   jobs:
@@ -480,6 +482,10 @@ jobs:
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 35
     if: github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'spike' && github.event.sender.type != 'Bot'
+    # One spike per issue at a time: labelling it again waits for the first.
+    concurrency:
+      group: spike-${{ github.repository }}-${{ github.event.issue.number }}
+      cancel-in-progress: false
     permissions:
       contents: read
     steps:
@@ -520,7 +526,7 @@ jobs:
           claude_args: |
             --model claude-opus-5-5
             --max-turns 40
-            --allowedTools "Read,Glob,Grep,Bash(git log:*),Bash(git grep:*),Bash(git show:*)"
+            --allowedTools "Read,Glob,Grep"
             --json-schema '{"type":"object","additionalProperties":false,"required":["outcome","type","findings","next"],"properties":{"outcome":{"type":"string","enum":["do","clarify","discard"]},"type":{"type":"string","enum":["bug","minor","feature","none"]},"findings":{"type":"string","maxLength":3000},"next":{"type":"string","maxLength":800}}}'
       - name: dilux-bot token
         id: bot
@@ -543,7 +549,8 @@ jobs:
             text=$(printf '<!-- dx-spike -->\n**Spike: no answer.** The investigation ended without one (its run: %s/%s/actions/runs/%s). A maintainer decides what follows.\n\n🤖 AI-generated · Claude (Anthropic), a read-only spike' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
           fi
           gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$text" >/dev/null
-          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label needs:maintainer --remove-label spike >/dev/null 2>&1 || true
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label needs:maintainer --remove-label spike >/dev/null \
+            || echo "::warning::The spike's answer is on the issue, but its labels could not change (needs:maintainer, spike)."
 
   stale:
     name: Close needs-info issues nobody answered
