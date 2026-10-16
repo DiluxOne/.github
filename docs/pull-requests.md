@@ -20,7 +20,12 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    files must give again, from the run's branch, touching only the paths
    that kind of run writes; never in this repository. `issue-accepted.yml`
    says on the issue when a lane accepts it, with `accepted-by:policy`, and
-   the gate asks again on the pull request. A repository's own
+   the gate asks again on the pull request.
+   A sub-issue of an issue a person accepted is accepted by the
+   `delegated` lane (#189): its parent open and accepted by a person, the
+   sub-issue opened by a member of the organisation (or dilux-bot) and not
+   edited after it was linked, so one decision for several repositories
+   needs one acceptance. A repository's own
    `.github/autonomy.yml` can make that stricter, or raise what a lane
    merges on its own up to the lane's `ceiling` (human-issue: medium by
    default, high at most, so a repository can let its high-risk pull
