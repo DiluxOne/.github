@@ -10,7 +10,7 @@ name: Decided by policy
 # counted, because the issue is public. A week with nothing says so. This is
 # how the maintainer sees, in one place, what proceeded without them.
 #
-# The same comment says what still needed a person (#143,
+# The same issue says what still needed a person (#143,
 # scripts/needed-a-person.py): every pull request a person merged that week,
 # or that waits on one now, with the reasons its gates, labels and review
 # recorded (high risk, a protected path, a Critical issue, a review blocker,
@@ -68,8 +68,9 @@ jobs:
           since=$(date -u -d '7 days ago' +%Y-%m-%d)
           body=$(SINCE="$since" bash scripts/policy-digest.sh)
           person=$(python3 scripts/needed-a-person.py)
-          # A proposal is a decision for a person; a week without one needs no one.
+          # A proposal is a decision for a person; a week without one needs
+          # no one (needed-a-person.py counts them in a dx-proposals comment).
           needs=0
-          if grep -q '^\*\*Proposals\*\*' <<<"$person" && ! grep -q '^None: no reason stopped' <<<"$person"; then needs=1; fi
+          if grep -qE '<!-- dx-proposals: [1-9][0-9]* -->' <<<"$person"; then needs=1; fi
           printf 'Week since %s:\n\n%s\n\n%s\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)\n' "$since" "$body" "$person" |
             NEEDS=$needs bash scripts/run-issue.sh open autonomy-digest "Decided by policy, week since $since"

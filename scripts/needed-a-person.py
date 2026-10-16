@@ -394,6 +394,9 @@ def digest(prs, pol, now):
             props.append(f"- {text}")
     out += ["", "**Proposals** (text only: nothing changes until a person accepts and merges a pull request)", ""]
     out += props or [f"None: no reason stopped {PROPOSE_AT} or more pull requests whose review found no blocker or major in {WEEKS} weeks."]
+    # How many proposals, for autonomy-digest.yml: a week with one waits on
+    # a person (#188). An HTML comment, so the issue shows nothing of it.
+    out += ["", f"<!-- dx-proposals: {len(props)} -->"]
     return "\n".join(out) + "\n"
 
 
@@ -547,6 +550,7 @@ def self_test():
     check("C3: none when the reviews found a major", "The size cap stopped" in digest(dirty, pol, now), False)
     check("C3: the proposal is text only and says a person merges", "accepts and merges" in out, True)
     check("C3: no proposal says so", "None: no reason stopped 5" in digest([mine], pol, now), True)
+    check("#188: the digest counts its proposals for the week's issue", ("<!-- dx-proposals: 0 -->" in digest([mine], pol, now), re.search(r"<!-- dx-proposals: [1-9]\d* -->", out) is not None), (True, True))
     check("C3: the per-repository totals", "| DiluxOne/diluxone-offload-wordpress | 9 |" in out, True)
 
     if not failed:

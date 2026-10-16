@@ -13,9 +13,9 @@
 #                                  issue's number
 #   run-issue.sh --test            self-test, with a stand-in for gh
 #
-# Environment: GITHUB_REPOSITORY, GH_TOKEN (issues: write). The labels are
-# created when missing (labels.yml has them; the sync brings them to every
-# repository), so a run never fails for a label.
+# Environment: GITHUB_REPOSITORY, GH_TOKEN (issues: write). The kind's label
+# is created when missing, so a first run never fails for it; the others
+# come from labels.yml, which the sync brings to every repository.
 set -euo pipefail
 
 # The labels for a run's issue: its kind's, the caller's, and needs:maintainer
@@ -32,10 +32,7 @@ open_run() {
   local kind=$1 title=$2 body labels url n
   body=$(cat)
   labels=$(labels_for "$kind" "${LABELS:-}" "${NEEDS:-0}")
-  IFS=, read -ra each <<<"$labels"
-  for l in "${each[@]}"; do
-    gh label create "$l" --repo "$GITHUB_REPOSITORY" --color C5DEF5 --description "A run's record (#188)" >/dev/null 2>&1 || true
-  done
+  gh label create "run:$kind" --repo "$GITHUB_REPOSITORY" --color C5DEF5 --description "A run's record (#188)" >/dev/null 2>&1 || true
   url=$(gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --label "$labels" --body "$body")
   n=${url##*/}
   if [ "${NEEDS:-0}" != 1 ]; then
@@ -65,7 +62,7 @@ self_test() {
   printf 'Failed.\n' | NEEDS=1 LABELS="lane:platform" open_run runner-image "Runner image, run 8: build failed" >/dev/null
   check "a run that needs a person: labelled needs:maintainer" "$(grep -c -- '--label run:runner-image,lane:platform,needs:maintainer ' "$log")" 1
   check "a run that needs a person: stays open" "$(grep -c '^issue close' "$log")" 0
-  check "every label is created when missing" "$(grep -c '^label create' "$log")" 3
+  check "only the kind's label is created when missing" "$(grep -c '^label create run:runner-image ' "$log"):$(grep -c '^label create' "$log")" "1:1"
 
   unset -f gh
   if [ "$fails" -ne 0 ]; then echo "$fails failed"; return 1; fi
