@@ -41,7 +41,8 @@ name: Issue accepted
 # When a lane's label (`lane:<name>`) is added to an issue, by a person or a
 # bot, the `lane` job asks the autonomy policy whether that lane accepts it
 # now (scripts/autonomy.py lane-announce, policy/autonomy.yml at
-# `central-ref`, the repository's own .github/autonomy.yml stricter only). A
+# `central-ref`, the repository's own .github/autonomy.yml stricter, or up to
+# a lane's ceiling, which no sync lane has). A
 # lane a person accepts, or one whose own workflow labels its issues
 # (platform, bugfix-reproduced), is left alone. For a sync lane it says so on the issue, in
 # one comment kept up to date that links the policy at the commit it read,

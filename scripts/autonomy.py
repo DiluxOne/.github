@@ -3,7 +3,9 @@
 
   autonomy.py policy        print the policy in force as JSON: the
                             organisation's, made stricter by a repository's own
-                            file, never looser
+                            file, never looser but up to a lane's ceiling
+  autonomy.py check         hold the organisation's policy to its schema;
+                            exit 1, with the reasons, when it does not
   autonomy.py lane-accept   say whether an issue is accepted by a lane; exit 0
                             when it is, 1 when not (the issue gate, the
                             autopilot and the reproduction call it)
@@ -60,6 +62,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -122,7 +125,8 @@ def stricter_level(a, b):
 
 
 def merge(org, repo):
-    """The organisation's policy, made stricter by a repository's: never looser."""
+    """The organisation's policy, made stricter by a repository's: never
+    looser, but what a lane merges may rise up to the lane's `ceiling`."""
     out = copy.deepcopy(org)
     out.setdefault("lanes", {})
     out["autopilot"] = bool(org.get("autopilot", False)) and repo.get("autopilot", True) is not False
@@ -150,14 +154,86 @@ def merge(org, repo):
             want = (mine.get("merge") or {}).get(key)
             if want is not None:
                 have = (lane.get("merge") or {}).get(key, "none")
-                lane.setdefault("merge", {})[key] = stricter_level(have, want)
-                if stricter_level(have, want) != want:
-                    warn(f"lanes.{name}.merge.{key}: a repository can only lower it; kept {have}.")
+                # Up to the lane's ceiling; without one, the default is the most.
+                ceiling = (lane.get("ceiling") or {}).get(key, have)
+                most = ceiling if stricter_level(have, ceiling) == have else have
+                got = stricter_level(want, most)
+                lane.setdefault("merge", {})[key] = got
+                if got != want:
+                    warn(f"lanes.{name}.merge.{key}: a repository can raise it only up to the lane's ceiling ({most}); kept {got}.")
         for key in mine:
             if key not in ("enabled", "accept", "repositories", "merge"):
                 warn(f"lanes.{name}.{key}: a repository cannot set it; ignored.")
     for name, lane in out["lanes"].items():
         lane.setdefault("enabled", True)
+    return out
+
+
+TOP_KEYS = {"autopilot", "autopilot-rounds", "autopilot-runs", "constitution", "lanes"}
+LANE_KEYS = {"description", "accept", "type", "origin", "repositories", "evidence", "merge", "ceiling", "enabled"}
+
+
+def problems(policy):
+    """What keeps the organisation's policy from its schema; empty when it holds."""
+    out = []
+    if not isinstance(policy, dict):
+        return ["the policy is not a mapping"]
+    for key in sorted(set(policy) - TOP_KEYS):
+        out.append(f"{key}: not a key of the policy")
+    if not isinstance(policy.get("autopilot"), bool):
+        out.append("autopilot: true or false")
+    for key in ("autopilot-rounds", "autopilot-runs"):
+        if key in policy and not (isinstance(policy[key], int) and not isinstance(policy[key], bool) and policy[key] > 0):
+            out.append(f"{key}: a whole number above 0")
+    constitution = policy.get("constitution")
+    if not isinstance(constitution, list) or not constitution or not all(isinstance(p, str) and p for p in constitution):
+        out.append("constitution: a list of paths")
+    else:
+        for path in ("policy/**", "rules/**"):
+            if path not in constitution:
+                out.append(f"constitution: {path} is always protected")
+    lanes = policy.get("lanes")
+    if not isinstance(lanes, dict) or not lanes:
+        return out + ["lanes: at least one"]
+    for name, lane in lanes.items():
+        if not isinstance(lane, dict):
+            out.append(f"lanes.{name}: a mapping")
+            continue
+        for key in sorted(set(lane) - LANE_KEYS):
+            out.append(f"lanes.{name}.{key}: not a key of a lane")
+        if lane.get("accept") not in ("human", "policy"):
+            out.append(f"lanes.{name}.accept: human or policy")
+        if not isinstance(lane.get("description"), str) or not lane.get("description"):
+            out.append(f"lanes.{name}.description: says what the lane covers")
+        repos = lane.get("repositories")
+        if not isinstance(repos, list) or not repos or not all(isinstance(r, str) and r for r in repos):
+            out.append(f"lanes.{name}.repositories: a list of names, or [\"*\"]")
+        if lane.get("accept") == "policy" and not isinstance(lane.get("origin"), dict):
+            out.append(f"lanes.{name}.origin: a lane that accepts by policy names who opens its issues")
+        for part in ("merge", "ceiling"):
+            if part not in lane:
+                if part == "merge":
+                    out.append(f"lanes.{name}.merge: max-risk and max-complexity")
+                continue
+            caps = lane[part]
+            if not isinstance(caps, dict) or set(caps) != {"max-risk", "max-complexity"}:
+                out.append(f"lanes.{name}.{part}: max-risk and max-complexity")
+                continue
+            for key, level in caps.items():
+                if level not in LEVELS:
+                    out.append(f"lanes.{name}.{part}.{key}: one of {', '.join(LEVELS)}")
+        merge_caps, ceiling = lane.get("merge") or {}, lane.get("ceiling")
+        if isinstance(ceiling, dict) and isinstance(merge_caps, dict):
+            for key in ("max-risk", "max-complexity"):
+                have, most = merge_caps.get(key), ceiling.get(key)
+                if have in LEVELS and most in LEVELS and LEVELS.index(have) > LEVELS.index(most):
+                    out.append(f"lanes.{name}.ceiling.{key}: {most} is below the lane's merge ({have})")
+    release = lanes.get("release")
+    if isinstance(release, dict):
+        if release.get("accept") != "human":
+            out.append("lanes.release.accept: publishing is always a person's decision")
+        if release.get("merge") != {"max-risk": "none", "max-complexity": "none"} or "ceiling" in release:
+            out.append("lanes.release: never merges on its own, and has no ceiling")
     return out
 
 
@@ -724,7 +800,36 @@ def self_test():
     m = merge(org, {"lanes": {"platform": {"enabled": False}}})
     check("a repository switches a lane off", m["lanes"]["platform"]["enabled"], False)
     m = merge(org, {"lanes": {"platform": {"merge": {"max-risk": "high"}}}})
-    check("a repository cannot raise what a lane merges", m["lanes"]["platform"]["merge"]["max-risk"], "medium")
+    check("a repository cannot raise what a lane without a ceiling merges", m["lanes"]["platform"]["merge"]["max-risk"], "medium")
+    check("#188: the organisation's policy holds to its schema", problems(org), [])
+    check("#188: human-issue merges up to medium by default, high at most", (org["lanes"]["human-issue"]["merge"]["max-risk"], org["lanes"]["human-issue"]["ceiling"]["max-risk"]), ("medium", "high"))
+    m = merge(org, {"lanes": {"human-issue": {"merge": {"max-risk": "high"}}}})
+    check("#188: a repository raises a lane up to its ceiling", m["lanes"]["human-issue"]["merge"]["max-risk"], "high")
+    capped = merge({**org, "lanes": {**org["lanes"], "human-issue": {**org["lanes"]["human-issue"], "merge": {"max-risk": "low", "max-complexity": "low"}, "ceiling": {"max-risk": "medium", "max-complexity": "medium"}}}},
+                   {"lanes": {"human-issue": {"merge": {"max-risk": "high", "max-complexity": "medium"}}}})
+    check("#188: never past the ceiling", (capped["lanes"]["human-issue"]["merge"]["max-risk"], capped["lanes"]["human-issue"]["merge"]["max-complexity"]), ("medium", "medium"))
+    m = merge(org, {"lanes": {"human-issue": {"merge": {"max-risk": "low"}}}})
+    check("#188: a repository still lowers a lane with a ceiling", m["lanes"]["human-issue"]["merge"]["max-risk"], "low")
+    m = merge(org, {"lanes": {"release": {"merge": {"max-risk": "high"}}}})
+    check("#188: a release never merges on its own, whatever a repository says", m["lanes"]["release"]["merge"]["max-risk"], "none")
+    lane = lambda **k: {"lanes": {**org["lanes"], "human-issue": {**org["lanes"]["human-issue"], **k}}}
+    check("#188 schema: a key the policy does not know", problems({**org, "owner": "me"}), ["owner: not a key of the policy"])
+    check("#188 schema: a lane's unknown key", problems({**org, **lane(budget=5)}), ["lanes.human-issue.budget: not a key of a lane"])
+    check("#188 schema: an unknown level", problems({**org, **lane(merge={"max-risk": "huge", "max-complexity": "low"})}), ["lanes.human-issue.merge.max-risk: one of none, low, medium, high"])
+    check("#188 schema: a ceiling below the default", problems({**org, **lane(ceiling={"max-risk": "low", "max-complexity": "high"})}), ["lanes.human-issue.ceiling.max-risk: low is below the lane's merge (medium)"])
+    check("#188 schema: merge names both caps", problems({**org, **lane(merge={"max-risk": "low"})}), ["lanes.human-issue.merge: max-risk and max-complexity"])
+    check("#188 schema: the policy and the rules are always protected", problems({**org, "constitution": [".github/**"]}), ["constitution: policy/** is always protected", "constitution: rules/** is always protected"])
+    with tempfile.TemporaryDirectory() as tmp:
+        bad_policy = os.path.join(tmp, "autonomy.yml")
+        with open(bad_policy, "w", encoding="utf-8") as fh:
+            fh.write("autopilot: true\nconstitution: [\"policy/**\", \"rules/**\"]\nlanes: {x: {accept: maybe}}\n")
+        run_check = lambda path: subprocess.run([sys.executable, os.path.abspath(__file__), "check"], env={**os.environ, "ORG_AUTONOMY": path}, capture_output=True, text=True)
+        got, good = run_check(bad_policy), run_check(os.path.join(HERE, "..", "policy", "autonomy.yml"))
+    check("#188 check: a policy off its schema exits 1 and says why", (got.returncode, "lanes.x.accept: human or policy" in got.stdout), (1, True))
+    check("#188 check: the organisation's policy passes", (good.returncode, good.stdout), (0, ""))
+    rel = {**org, "lanes": {**org["lanes"], "release": {**org["lanes"]["release"], "ceiling": {"max-risk": "high", "max-complexity": "high"}}}}
+    check("#188 schema: a release lane with a ceiling", problems(rel), ["lanes.release: never merges on its own, and has no ceiling"])
+    check("#188 schema: a policy lane without an origin", problems({**org, **lane(accept="policy")}), ["lanes.human-issue.origin: a lane that accepts by policy names who opens its issues"])
     m = merge(org, {"lanes": {"platform": {"merge": {"max-risk": "low"}}}})
     check("a repository lowers what a lane merges", m["lanes"]["platform"]["merge"]["max-risk"], "low")
     m = merge(org, {"lanes": {"human-issue": {"accept": "policy"}}})
@@ -955,6 +1060,11 @@ def main():
     if mode == "policy":
         print(json.dumps(policy_in_force(), indent=2))
         return 0
+    if mode == "check":
+        found = problems(load(os.environ.get("ORG_AUTONOMY") or os.path.join(HERE, "..", "policy", "autonomy.yml")))
+        for line in found:
+            print(line)
+        return 1 if found else 0
     var = os.environ.get("DX_AUTOPILOT", "")
     if mode == "lane-open":
         name = sys.argv[2] if len(sys.argv) > 2 else ""
