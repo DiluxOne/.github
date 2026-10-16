@@ -88,8 +88,11 @@ def lines(*args):
 def open_due(full, now, io=None):
     """Open what is due in one repository; returns the versions opened."""
     io = io or {
-        "milestones": lambda: lines("api", f"repos/{full}/milestones?state=closed&per_page=100", "--jq", ".[] | @json"),
-        "titles": lambda: {i["title"] for i in json.loads(gh("issue", "list", "--repo", full, "--state", "all", "--search", "in:title Release", "--limit", "200", "--json", "title"))},
+        # Every closed milestone, newest first, every page.
+        "milestones": lambda: lines("api", f"repos/{full}/milestones?state=closed&sort=updated&direction=desc&per_page=100", "--paginate", "--jq", ".[] | @json"),
+        # Every issue titled like a release, every page: a partial list could open a second one.
+        "titles": lambda: {i["title"] for i in lines("api", f"repos/{full}/issues?state=all&per_page=100", "--paginate", "--jq",
+                                                       '.[] | select(.title | startswith("Release ")) | {title} | @json')},
         "tags": lambda: set(gh("api", f"repos/{full}/tags?per_page=100", "--paginate", "--jq", ".[].name").split()),
         "open": lambda version, m: gh("issue", "create", "--repo", full, "--title", f"Release {version}", "--label", "lane:release", "--body", body(version, m)).strip(),
     }
@@ -97,7 +100,10 @@ def open_due(full, now, io=None):
     for version, m in due(io["milestones"](), io["titles"](), io["tags"](), now):
         url = io["open"](version, m)
         if not io.get("test"):
-            subprocess.run(["gh", "api", "-X", "PATCH", f"repos/{full}/issues/{url.rsplit('/', 1)[-1]}", "-f", "type=Task"], capture_output=True)
+            # The Release form's Type; one that fails is said, the issue stands.
+            typed = subprocess.run(["gh", "api", "-X", "PATCH", f"repos/{full}/issues/{url.rsplit('/', 1)[-1]}", "-f", "type=Task"], capture_output=True, text=True)
+            if typed.returncode != 0:
+                print(f"::warning::{url}: its Type could not be set to Task ({typed.stderr.strip()[:120]}); set it by hand")
         print(f"  {full}: Release {version}, {url}")
         opened.append(version)
     return opened
