@@ -64,7 +64,9 @@ permissions:
 jobs:
   plan:
     name: Fixes due
-    if: vars.DX_AUTOPILOT != 'off'
+    # Only from the caller's default branch: another branch's run would
+    # hold the App's key with whatever that branch changed.
+    if: vars.DX_AUTOPILOT != 'off' && (github.event_name == 'schedule' || github.ref_name == github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
@@ -110,14 +112,19 @@ jobs:
           # Each fix's fork, at the claimed commit, and its advisory: what
           # the agent's job gets instead of a token.
           mkdir -p "$RUNNER_TEMP/in"
+          # One that fails is warned about and the others go on; its fix
+          # job finds nothing and says so.
           jq -c '.[]' <<<"$fixes" | while read -r f; do
             ghsa=$(jq -r .ghsa <<<"$f"); fork=$(jq -r .fork <<<"$f"); repo=$(jq -r .repo <<<"$f"); start=$(jq -r .start <<<"$f")
             d="$RUNNER_TEMP/in/$ghsa"; mkdir -p "$d"
-            gh api "repos/$repo/security-advisories/$ghsa" > "$d/advisory.json"
-            git clone -q "https://x-access-token:$GH_TOKEN@github.com/$fork" "$d/fork"
-            git -C "$d/fork" remote set-url origin "https://github.com/$fork"
-            git -C "$d/fork" -c advice.detachedHead=false checkout -q "$start"
-            tar -C "$d" -czf "$RUNNER_TEMP/in/$ghsa.tgz" fork advisory.json
+            if gh api "repos/$repo/security-advisories/$ghsa" > "$d/advisory.json" \
+               && git clone -q "https://x-access-token:$GH_TOKEN@github.com/$fork" "$d/fork" \
+               && git -C "$d/fork" remote set-url origin "https://github.com/$fork" \
+               && git -C "$d/fork" -c advice.detachedHead=false checkout -q "$start"; then
+              tar -C "$d" -czf "$RUNNER_TEMP/in/$ghsa.tgz" fork advisory.json
+            else
+              echo "::warning::$ghsa: its fork or advisory could not be read; a maintainer takes it from the advisory's page."
+            fi
             rm -rf "$d"
           done
 
@@ -153,11 +160,13 @@ jobs:
       # the plan claimed; the engine's scripts go beside it, out of its
       # commits.
       - name: The working tree
+        id: tree
         env:
           GHSA: ${{ matrix.fix.ghsa }}
           BRANCH: ${{ matrix.fix.branch }}
         run: |
           set -euo pipefail
+          if [ ! -f "$RUNNER_TEMP/in/$GHSA.tgz" ]; then echo "::warning::$GHSA: the plan could not read its fork."; exit 1; fi
           tar -C "$RUNNER_TEMP" -xzf "$RUNNER_TEMP/in/$GHSA.tgz"
           rm -rf "$RUNNER_TEMP/in"
           shopt -s dotglob; mv "$RUNNER_TEMP/fork/"* .

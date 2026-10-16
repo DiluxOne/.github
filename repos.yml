@@ -39,6 +39,7 @@ repos:
   diluxone-users-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
   diluxone-website: {kinds: []}
   diluxone-wp-test: {kinds: []}
+  security: {kinds: []}   # private: only the runs of security-fix.yml (#194)
 
 # Which public Project of the organisation each repository's accepted issues
 # land on (its number: github.com/orgs/DiluxOne/projects/<n>). One per
