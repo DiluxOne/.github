@@ -105,8 +105,9 @@ rules. Everything else is a comment, not a block.
 
 When a finding is a pattern worth checking in every future PR (not a
 one-off typo), add one short, general sentence to `lessons`. The weekly
-learning job proposes as rules the ones seen in at least two pull requests
-in the last 7 days; a human merges them.
+learning job proposes as rules the ones seen in at least three pull requests
+in the last 7 days (its `min-repeats`), never one a maintainer already turned
+down; a human merges them.
 
 ## Lessons learned
 

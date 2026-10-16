@@ -5,8 +5,9 @@ name: Review learnings
 # reverted afterwards) and proposes, as pull requests a human approves:
 #
 #   - in this repository: new rules for review-profiles/*.md and
-#     kinds/*/review-profile.md, from lessons
-#     that repeated in the last 7 days;
+#     kinds/*/review-profile.md, from lessons that repeated in
+#     `min-repeats` (default 3) pull requests of the last 7 days, never one a
+#     maintainer closed before (#196);
 #   - in each repository concerned: changes to its .github/review-policy.yml
 #     (a path that behaved as low risk `min-evidence` times, default 5, to join the safe list, or
 #     a "safe" path that produced a revert and must leave it) and to its
@@ -122,21 +123,16 @@ jobs:
           done
           rm -f found.json pr.json commits.txt
           # What a person already turned down (#196): the learnings' pull
-          # requests closed without merging, never proposed again.
-          gh search prs --owner "$ORG" --author "$BOT" --state closed --archived=false --limit 200 \
-            --json repository,number,title,body,closedAt,url --jq '[.[] | select(.title | test("weekly review (lessons|policy proposal)"))]' > found-closed.json \
-            || echo '[]' > found-closed.json
-          rejected='[]'
-          while IFS= read -r row; do
-            [ -n "$row" ] || continue
-            merged=$(gh api "repos/$ORG/$(jq -r .repo <<<"$row")/pulls/$(jq -r .number <<<"$row")" --jq '.merged' 2>/dev/null || echo true)
-            if [ "$merged" = false ]; then
-              body=$(gh api "repos/$ORG/$(jq -r .repo <<<"$row")/pulls/$(jq -r .number <<<"$row")" --jq '.body // ""' 2>/dev/null | head -c 3000 || true)
-              rejected=$(jq -c --argjson r "$row" --arg b "$body" '. + [$r + {body: $b}]' <<<"$rejected")
-            fi
-          done < <(jq -c '.[] | {repo: .repository.name, number, title, url}' found-closed.json)
-          printf '%s\n' "$rejected" > rejected.json
-          rm -f found-closed.json
+          # requests closed without merging, every one of them, never proposed
+          # again. A list that cannot be read stops the run: proposing again
+          # what a person rejected is worse than proposing nothing this week.
+          q="org:$ORG is:pr is:closed is:unmerged author:app/${BOT%\[bot\]} \"weekly review\" in:title"
+          if ! gh api -X GET search/issues -f q="$q" -f per_page=100 --paginate \
+               --jq '.items[] | {url: .html_url, title, body: ((.body // "")[:3000])} | @json' > rejected.lines; then
+            echo "::error::The proposals a maintainer rejected could not be read; nothing is proposed this week."; exit 1
+          fi
+          jq -s . rejected.lines > rejected.json
+          rm -f rejected.lines
           echo "reviews=$(jq length learnings.json)" >> "$GITHUB_OUTPUT"
           echo "repos=${repos# }" >> "$GITHUB_OUTPUT"
           echo "$(jq length learnings.json) reviewed pull requests found with one search; repositories with evidence: ${repos:-none}."
