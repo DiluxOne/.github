@@ -159,8 +159,14 @@ For the team of the central repository (`.github`). Each phase is a sub-issue of
 
 ### Phase 12 · Setup for other organisations
 
-- **Delivers:** an installer that sets up `.github` with defaults, runs detection and opens the `repos.yml` pull request; the base kinds (wordpress-plugin, web-app, web-api and library); and later configuration with an agent.
-- **Done when:** DiluxOne is reinstalled with the setup without losing anything, and a test organisation is up and running by accepting a single pull request.
+- **Design (decided 2026-10-16):** the engine is ours, the configuration is theirs.
+  - **The engine:** the workflows, scripts, gates and base kinds stay in `DiluxOne/.github`, versioned. Another organisation never copies them: its callers name them (`uses: DiluxOne/.github/.github/workflows/<name>.yml@v5`), the way any repository uses `actions/checkout@v4` or the SLSA generator. A compatible improvement reaches every organisation when `v5` moves; a breaking one only comes in a new major, with its migration notes, as a Dependabot pull request each organisation merges when it chooses. This also settles the organisation's name in the `uses:` lines: pointing at the engine is what they are for.
+  - **The configuration:** each organisation's own `.github` holds `org.yml`, `repos.yml`, its autonomy policy, its own kinds and rules, and its deploy workflow. An improvement to the engine never touches it.
+  - **What it takes here:** the workflows read the configuration from the calling organisation's `.github`, never from the engine's repository, so `repos.yml` and `org.yml` of DiluxOne become one more configuration. Nothing that breaks a caller ships in a minor.
+  - **Secrets:** the runs are the calling organisation's (its runners, its logs, its secrets); nothing reaches us. Our code handles their secrets while it runs, so this repository is their supply chain: signed commits, protected tags, nothing reaches `main` without review. They pin the engine to a tag or SHA and pass each workflow only the secrets it needs (`secrets: inherit` does not cross organisations).
+  - **Publishing:** what every kind shares (the release issue, acceptance, the version, the changelog, the tag, the GitHub Release, the environment's approval) is the engine's. Where a kind publishes lives in its pack (`release:`). `library` publishes to a package registry (npm, PyPI, Packagist, NuGet), by trusted publishing (OIDC) where the registry has it, chosen in the configuration. `web-app` and `web-api` build a container image and push it to a registry (GHCR by default); the deploy is the organisation's own workflow, which the release calls after the approval with the version and the image.
+- **Delivers:** the engine reading the caller's configuration; an installer that sets up an organisation's `.github` with defaults, runs detection and opens the `repos.yml` pull request; the base kinds (wordpress-plugin, web-app, web-api and library); and later configuration with an agent.
+- **Done when:** DiluxOne runs as one more configuration of the engine without losing anything, and a test organisation is up and running by accepting a single pull request.
 
 ## The flow end to end
 
