@@ -42,6 +42,9 @@ name: Security fixes
 # DX_AUTOPILOT=off stops it.
 #
 # Needs dilux-bot's "Repository security advisories" permission (write).
+# The plan mints its token with scripts/app-token.sh (actions/create-github-
+# app-token has no input for that permission) and revokes it when its step
+# ends; the push job's token, which needs none, comes from the action.
 
 on:
   workflow_call:
