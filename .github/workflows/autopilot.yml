@@ -373,11 +373,15 @@ jobs:
         id: spec-task
         if: steps.may.outputs.go == 'true' && inputs.mode == 'start'
         env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
           NUMBER: ${{ steps.what.outputs.issue }}
           LANE: ${{ steps.may.outputs.lane }}
         run: |
           set -euo pipefail
           export BODY="$RUNNER_TEMP/body.md" REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml"
+          # A Feature's Spec carries its phases too (#193).
+          ISSUE_TYPE=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" --jq '.type.name // ""')
+          export ISSUE_TYPE
           # A random delimiter: the PRD's text cannot end the output early.
           eof="DX_$(openssl rand -hex 16)"
           { echo "prompt<<$eof"; python3 .dx-central/scripts/autopilot.py prompt spec; echo "$eof"; } >> "$GITHUB_OUTPUT"
@@ -428,12 +432,13 @@ jobs:
           gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/body.md"
           stopped=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json comments --jq '[.comments[] | select((.body | startswith("<!-- dx-autopilot-stop -->")) and (.author.login | test("^(app/)?dilux-bot(\\[bot\\])?$")) and .createdAt >= env.STARTED)] | length')
           if [ "$stopped" != 0 ]; then echo "The agent stopped after the Spec; it said why on the issue."; exit 0; fi
-          if ! python3 .dx-central/scripts/issue-schema.py check --stage spec < "$RUNNER_TEMP/body.md" > "$RUNNER_TEMP/g3.json"; then
+          # G3 by the issue's Type: a Feature's Spec has its phases (#193).
+          type=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" --jq '.type.name // ""')
+          if ! python3 .dx-central/scripts/issue-schema.py check --stage spec --type "$type" < "$RUNNER_TEMP/body.md" > "$RUNNER_TEMP/g3.json"; then
             echo "::warning::The Spec does not pass G3: $(jq -c .errors "$RUNNER_TEMP/g3.json")"
             echo "why=The Spec on the issue does not pass G3: $(jq -r '.errors | join("; ")' "$RUNNER_TEMP/g3.json" | head -c 300)" >> "$GITHUB_OUTPUT"; exit 0
           fi
           BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/receipts.py seal-spec
-          type=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" --jq '.type.name // ""')
           title=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json title --jq .title)
           # No checklist, no draft: the end rule then stops the run with a
           # comment and `needs-human`, as it does when G3 fails.
