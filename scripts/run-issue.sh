@@ -11,6 +11,10 @@
 #                                  run needs a person, LABELS for any other
 #                                  labels (comma-separated); prints the
 #                                  issue's number
+#   run-issue.sh settle KIND URL   closes, as completed, every open issue of
+#                                  KIND that waited on a person, saying that
+#                                  a later run (URL) needed no one: a failed
+#                                  build is settled by the next that passes
 #   run-issue.sh --test            self-test, with a stand-in for gh
 #
 # Environment: GITHUB_REPOSITORY, GH_TOKEN (issues: write). The kind's label
@@ -41,11 +45,22 @@ open_run() {
   printf '%s\n' "$n"
 }
 
+settle_runs() {
+  local kind=$1 url=$2 n
+  for n in $(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label "run:$kind" --label needs:maintainer --limit 100 --json number --jq '.[].number'); do
+    gh issue close "$n" --repo "$GITHUB_REPOSITORY" --reason completed --comment "A later run needed no one: $url" >/dev/null
+  done
+}
+
 self_test() {
   local fails=0 log got
   log=$(mktemp); trap 'rm -f "$log"' RETURN
   check() { if [ "$2" = "$3" ]; then echo "ok    $1"; else echo "FAIL  $1: got [$2], want [$3]"; fails=$((fails + 1)); fi; }
-  gh() { printf '%s\n' "$*" >> "$log"; if [ "$1 $2" = "issue create" ]; then echo "https://github.com/o/r/issues/12"; fi; }
+  gh() {
+    printf '%s\n' "$*" >> "$log"
+    if [ "$1 $2" = "issue create" ]; then echo "https://github.com/o/r/issues/12"; fi
+    if [ "$1 $2" = "issue list" ]; then printf '3\n5\n'; fi
+  }
   export -f gh 2>/dev/null || true
   GITHUB_REPOSITORY=o/r
 
@@ -64,6 +79,11 @@ self_test() {
   check "a run that needs a person: stays open" "$(grep -c '^issue close' "$log")" 0
   check "only the kind's label is created when missing" "$(grep -c '^label create run:runner-image ' "$log"):$(grep -c '^label create' "$log")" "1:1"
 
+  : > "$log"
+  settle_runs runner-image "https://github.com/o/r/actions/runs/9"
+  check "settle: asks for the kind's open issues that wait on a person" "$(grep -c -- '^issue list --repo o/r --state open --label run:runner-image --label needs:maintainer ' "$log")" 1
+  check "settle: closes each as completed, naming the run" "$(grep -c -- '--reason completed --comment A later run needed no one: https://github.com/o/r/actions/runs/9$' "$log")" 2
+
   unset -f gh
   if [ "$fails" -ne 0 ]; then echo "$fails failed"; return 1; fi
   echo "all passed"
@@ -72,5 +92,6 @@ self_test() {
 case "${1:-}" in
   --test) self_test ;;
   open) [ $# -eq 3 ] || { echo "usage: run-issue.sh open KIND TITLE < body" >&2; exit 64; }; open_run "$2" "$3" ;;
-  *) sed -n '2,19p' "$0" >&2; exit 64 ;;
+  settle) [ $# -eq 3 ] || { echo "usage: run-issue.sh settle KIND URL" >&2; exit 64; }; settle_runs "$2" "$3" ;;
+  *) sed -n '2,23p' "$0" >&2; exit 64 ;;
 esac

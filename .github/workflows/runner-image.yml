@@ -26,7 +26,8 @@ name: Runner image
 # `run:runner-image` (scripts/run-issue.sh, #188): a promoted one says its
 # versions and digest and closes as completed; a failed one stays open with
 # `needs:maintainer`, as a `platform` lane issue (accepted by policy), until
-# a person or the lane fixes the image. The closed issues are the record of
+# a person or the lane fixes the image, or the next build that passes closes
+# it. The closed issues are the record of
 # every build. The package must be public once (package settings) so the VM
 # pulls it without credentials.
 
@@ -224,9 +225,11 @@ jobs:
             fence='```'
             printf 'Promoted to :stable: %s\n\nactions/runner %s\n\n%s\n%s\n%s\n\nRun: %s\n\n%s\n' "$DIGEST" "$RUNNER" "$fence" "$SMOKE" "$fence" "$RUN_URL" "$ai" |
               NEEDS=0 bash scripts/run-issue.sh open runner-image "Runner image, run $RUN: promoted"
+            # The image builds again: a failed build's issue left open is settled.
+            bash scripts/run-issue.sh settle runner-image "$RUN_URL"
           else
             # A failed build is the `platform` lane's work: the lane checks
             # that dilux-bot opened it from this run, named in the body.
-            printf 'Not promoted; :stable stayed as it was. Fixing the image is work of the `platform` lane (policy/autonomy.yml): accepted by policy, no person needed to accept it. It closes when the fix merges.\n\nRun: %s\n\n<!-- dx-lane: platform run: %s -->\n\n%s\n' "$RUN_URL" "$RUN_URL" "$ai" |
+            printf 'Not promoted; :stable stayed as it was. Fixing the image is work of the `platform` lane (policy/autonomy.yml): accepted by policy, no person needed to accept it. It closes when the fix merges, or when a later build passes.\n\nRun: %s\n\n<!-- dx-lane: platform run: %s -->\n\n%s\n' "$RUN_URL" "$RUN_URL" "$ai" |
               NEEDS=1 LABELS="lane:platform,accepted-by:policy" bash scripts/run-issue.sh open runner-image "Runner image, run $RUN: build failed"
           fi
