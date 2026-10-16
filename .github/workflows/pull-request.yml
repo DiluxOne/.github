@@ -94,6 +94,7 @@ jobs:
       - run: python3 scripts/autonomy.py --test
       - run: python3 scripts/autonomy.py check
       - run: bash scripts/policy-digest.sh --test
+      - run: bash scripts/run-issue.sh --test
       - run: python3 scripts/needed-a-person.py --test
       - run: python3 scripts/issue-schema.py --test
       - run: bash scripts/review-type.sh --test

@@ -20,6 +20,12 @@
 - {name: autopilot, color: "1D76DB", description: "Opened by the autopilot from an accepted issue"}
 - {name: "autopilot:continue", color: "1D76DB", description: "On an issue: the autopilot continues its draft pull request"}
 - {name: needs-human, color: "D93F0B", description: "The autopilot handed this over to a person"}
+- {name: "needs:maintainer", color: "D93F0B", description: "Waits on a maintainer's decision"}
+
+# One issue per run of the bots' recurring work (scripts/run-issue.sh, #188):
+# closed when the run needed no one, open with needs:maintainer when it did.
+- {name: "run:runner-image", color: "C5DEF5", description: "A build of the runner image (runner-image.yml)"}
+- {name: "run:autonomy-digest", color: "C5DEF5", description: "A week's decisions by policy (autonomy-digest.yml)"}
 
 # Gate G8 (revert-on-red.yml): a merge that turned the default branch red.
 - {name: revert, color: "B60205", description: "Opened by dilux-bot to revert a merge that turned the default branch red"}
