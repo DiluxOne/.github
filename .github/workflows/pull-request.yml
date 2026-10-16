@@ -106,6 +106,7 @@ jobs:
       - run: python3 scripts/repos-config.py --test
       - run: python3 scripts/repos-config.py check
       - run: python3 scripts/detect.py --test
+      - run: python3 scripts/milestones.py --test
       - run: python3 scripts/design-tokens.py --test
       - run: python3 scripts/design-tokens.py build --check
       # stylelint, as scripts/stylelint/package-lock.json pins it: every CSS

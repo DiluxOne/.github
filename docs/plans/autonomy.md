@@ -120,6 +120,7 @@ For the team of the central repository (`.github`). Each phase is a sub-issue of
   - Removing the environment's reviewers, once the issue is enough.
   - For continuous kinds: deploy on merge, with gradual rollout, automatic rollback and feature flags.
 - **Done when:** a plugin is published by accepting an issue, and the environment has no human approver.
+- **So far:** closing a version milestone `X.Y.Z` opens "Release X.Y.Z" on the next daily run (`scripts/milestones.py`), without touching any repository's workflows; the release pull request already opened itself when a person accepted the issue (#159). The `wordpress-org` environments of Multisite, Offload and Users+ keep their reviewer until the maintainer says otherwise: Users+ kept it on purpose. No kind deploys continuously yet.
 
 ### Phase 8 · Autopilot by type of work
 
@@ -480,7 +481,7 @@ A release is only publishing an X.Y.Z version for users (wordpress.org, a downlo
 | How the "Release X.Y.Z" issue is born | Who decides |
 | --- | --- |
 | A maintainer opens it when they want to publish | The maintainer, by opening and accepting it |
-| The bot opens it when the last issue of a version milestone closes | The maintainer, when planning the milestone; they still accept it |
+| The bot opens it when a person closes a version milestone `X.Y.Z` (the next daily run) | The maintainer, when planning and closing the milestone; they still accept it |
 | The bot never opens it on its own initiative | It only suggests in the weekly summary: "7 unpublished changes in Offload for 30 days" |
 
 Once accepted: the agent opens the release pull request (removes `Unreleased.`, sets the markers), it passes the gates and merges, and the deploy checks that a person accepted the issue and that the version matches before publishing. The GitHub environment is left with no human approver: the approval is the issue. For other software, the `kind` defines where it is published; the circuit is the same.
