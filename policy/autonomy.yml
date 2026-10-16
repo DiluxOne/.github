@@ -69,7 +69,7 @@ constitution:
 # its own, whatever either says.
 lanes:
   platform:
-    description: The organisation's own machinery that a weekly job keeps current, starting with the runner image.
+    description: The organisation's own machinery that a scheduled job keeps current, starting with the runner image.
     accept: policy
     origin:
       app: dilux-bot

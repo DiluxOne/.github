@@ -347,7 +347,7 @@ The base is there (autopilot, gates, receipts, lanes, packs per kind); what is m
 
 | Part of the model | Today | Missing |
 | --- | --- | --- |
-| Maintenance | Automatic weekly image; a drift check that only reports; the sync run by hand. The organisation's Dependabot (#180), the sync lane (#171) and revert (#165) are merged | A schedule that runs the sync, not only the check; dependencies with majors merging on their own (today `composer.json` and `package.json` are high risk) |
+| Maintenance | Automatic daily image (#190); a drift check that only reports; the sync run by hand. The organisation's Dependabot (#180), the sync lane (#171) and revert (#165) are merged | A schedule that runs the sync, not only the check; dependencies with majors merging on their own (today `composer.json` and `package.json` are high risk) |
 | Bugs | Triage, reproduction, autopilot, gates and the reproduced-bugs lane (#166) exist | Making "Unreleased" part of the model: today it lives in WordPress's `readme.txt`; reproduction without hand-written PHPUnit |
 | Product | Sealed PRD (G1), Spec (G3), evidence per criterion (G6) | The type field (minor or feature); impact, threats and architecture; validation by an independent agent. **And lowering `human-issue` from high to medium risk:** today it merges on its own more than agreed |
 | Security | `SECURITY.md`; the triage locks the issue and sends it to private reporting | The private advisory flow; private reporting in private repositories too |

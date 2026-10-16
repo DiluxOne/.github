@@ -5,7 +5,7 @@
 # job should install itself: jobs still pick their PHP, Node or Python with the
 # setup-* actions, as on GitHub's runners; for PHP the image carries only the
 # shared libraries setup-php's prebuilt builds expect from GitHub's image.
-# Rebuilt every week and promoted to :stable only after a smoke test
+# Rebuilt every day and promoted to :stable only after a smoke test
 # (.github/workflows/runner-image.yml), which sets PHP up with setup-php.
 FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
 
