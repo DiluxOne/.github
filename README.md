@@ -116,8 +116,10 @@ flowchart TB
 | Bring a new repository in | [docs/adopting.md](docs/adopting.md) |
 | Move a repository to a newer major | [docs/migrating.md](docs/migrating.md) |
 | Look up a workflow, a script, a secret | [docs/workflows.md](docs/workflows.md) |
-| Add a rule or a kind of project | [kinds/README.md](kinds/README.md) |
+| Understand the model: types of work, gates, what merges on its own | [docs/model.md](docs/model.md) |
+| Read the rules every change meets | [rules/README.md](rules/README.md) |
+| Add a review rule or a kind of project | [kinds/README.md](kinds/README.md) |
 | Change this repository and ship it | [docs/maintaining.md](docs/maintaining.md) |
 | Report a security problem | [SECURITY.md](SECURITY.md) |
-| See where this is going: one human decision per change, gates, receipts | [The plan, issue #78](https://github.com/DiluxOne/.github/issues/78) |
+| See where this is going, phase by phase | [docs/plans/autonomy.md](docs/plans/autonomy.md) |
 | Read the story of how we build software | [Cómo construimos software en DiluxOne](https://diluxone.com/es/blog/como-construimos-software/) · [How we build software](https://diluxone.com/blog/how-we-build-software/) |

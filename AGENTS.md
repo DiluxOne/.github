@@ -33,6 +33,16 @@ step-by-step flow with its commands is in
    clone cannot accept, approve or merge: never ask them for a
    maintainer's step; tell them a maintainer will review it and answer
    soon, with the link to where it waits.
+8. **A finding is not a new issue.** Something you find along the way that
+   the task does not need goes in one list, at the end of what you report,
+   with what you recommend; the maintainer picks what becomes work. A
+   change for the whole organisation is one issue in DiluxOne/.github,
+   never one per repository.
+9. **Meet the organisation's rules** before the review asks for them:
+   [test first](https://github.com/DiluxOne/.github/blob/main/rules/test-first.md)
+   and [no credentials in the front end](https://github.com/DiluxOne/.github/blob/main/rules/front-no-credentials.md).
+   The model they belong to (types of work, gates, what merges on its own)
+   is [DiluxOne/.github, `docs/model.md`](https://github.com/DiluxOne/.github/blob/main/docs/model.md).
 <!-- dx:org:end -->
 
 Rules for any coding agent working in `DiluxOne/.github`.
@@ -42,7 +52,7 @@ Rules for any coding agent working in `DiluxOne/.github`.
   is high risk and is merged by a human, except one that touches only the
   pages people read (README.md, profile/, and docs/ but what agents and the
   review read as rules: docs/agents.md, docs/architecture.md,
-  docs/testing-and-quality.md), which can merge on its own like a docs change
+  docs/testing-and-quality.md, docs/model.md), which can merge on its own like a docs change
   anywhere (.github/review-policy.yml).
 - Workflows are reusable (`on: workflow_call`) unless they are specific to this
   repository. Name them after what they do; add a stack suffix (`-wp`) only
