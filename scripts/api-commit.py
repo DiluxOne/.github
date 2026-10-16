@@ -32,7 +32,7 @@ ZERO = "0" * 40
 
 
 def git(*args, cwd=None):
-    out = subprocess.run(["git", *args], capture_output=True, text=True, cwd=cwd)
+    out = subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=cwd)
     if out.returncode != 0:
         raise RuntimeError(f"git {args[0]} exited {out.returncode}: {out.stderr.strip()[:200]}")
     return out.stdout
@@ -84,6 +84,11 @@ def push(repo, branch, onto=None, force=False, api=gh_api, cwd=None):
         raise RuntimeError(f"{branch} is not on GitHub: say where it starts (--onto)")
     if not force and remote is not None and base and base != remote:
         raise RuntimeError(f"{branch} is at {remote[:12]} on GitHub, not at --onto; use --force to rewrite it")
+    # Only on top of what GitHub has: a branch that moved there since is not
+    # overwritten without --force.
+    known = subprocess.run(["git", "merge-base", "--is-ancestor", start, "HEAD"], cwd=cwd, capture_output=True)
+    if known.returncode != 0:
+        raise RuntimeError(f"{branch} on GitHub ({start[:12]}) is not under HEAD: fetch it and build on it, or use --force")
     commits = git("rev-list", "--reverse", "--topo-order", f"{start}..HEAD", cwd=cwd).split()
     head = start
     for c in commits:
@@ -225,6 +230,17 @@ def self_test():
         commit("test: a failing test", {"t.txt": "t\n"})
         again = push("o/r", "test/repro", onto=base, force=True, api=api, cwd=work)
         check("push --force: rewritten onto --onto", git("rev-parse", f"{again}~1", cwd=origin).strip(), base)
+        # GitHub's branch moved on its own: never written over without --force.
+        git("checkout", "-q", "feat/1-x", cwd=work)
+        moved = subprocess.run(["git", *env, "commit-tree", f"{head2}^{{tree}}", "-p", head2, "-m", "someone else"], cwd=origin, capture_output=True, text=True, check=True).stdout.strip()
+        git("update-ref", "refs/heads/feat/1-x", moved, cwd=origin)
+        commit("feat: four (C4)", {"d.txt": "d\n"})
+        try:
+            push("o/r", "feat/1-x", api=api, cwd=work)
+            check("push: a branch that moved on GitHub is not written over", "pushed", "refused")
+        except RuntimeError:
+            check("push: a branch that moved on GitHub is not written over", "refused", "refused")
+        check("main: --onto with no ref is a usage error", main(["push", "x", "--onto"]), 64)
         try:
             push("o/r", "nowhere", api=api, cwd=work)
             check("push: a new branch needs --onto", "pushed", "refused")
@@ -244,8 +260,18 @@ def main(argv):
     if argv == ["--test"]:
         return self_test()
     if len(argv) >= 2 and argv[0] == "push":
+        if "--onto" in argv and argv.index("--onto") + 1 >= len(argv):
+            print("--onto needs a ref", file=sys.stderr)
+            return 64
+        if not os.environ.get("GITHUB_REPOSITORY"):
+            print("GITHUB_REPOSITORY (owner/name) is not set", file=sys.stderr)
+            return 64
         onto = argv[argv.index("--onto") + 1] if "--onto" in argv else None
-        head = push(os.environ["GITHUB_REPOSITORY"], argv[1], onto=onto, force="--force" in argv)
+        try:
+            head = push(os.environ["GITHUB_REPOSITORY"], argv[1], onto=onto, force="--force" in argv)
+        except RuntimeError as exc:
+            print(f"Not pushed: {exc}", file=sys.stderr)
+            return 1
         print(f"{argv[1]} is at {head} on GitHub, signed by GitHub.")
         return 0
     print(__doc__, file=sys.stderr)
