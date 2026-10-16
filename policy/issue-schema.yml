@@ -69,6 +69,24 @@ spec:
     description: "One line per criterion: C1 → the test that proves it."
     required: true
     format: covers-criteria
+  # A feature's phases (#193): what it touches and can break, its threats,
+  # and where it goes, written at G3 before any code. Required only for an
+  # issue whose Type is in `types`; a minor change or a fix carries none.
+  - id: impact
+    heading: "Spec: impact"
+    description: What the change touches, sibling code that does the same, and what it can break.
+    required: true
+    types: [Feature]
+  - id: threats
+    heading: "Spec: threats"
+    description: "A short STRIDE over its data, permissions and inputs: each threat and what stops it."
+    required: true
+    types: [Feature]
+  - id: architecture
+    heading: "Spec: architecture"
+    description: Where the code goes, which pattern of the repository it follows, and what it must not break.
+    required: true
+    types: [Feature]
 
 # The reporters' forms' sections, allowed before the PRD.
 report:
