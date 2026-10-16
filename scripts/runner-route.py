@@ -333,6 +333,11 @@ def self_test():
         check(f"expression: {name}", got, want)
         check(f"decide: {name}", decide(var, event) or gh, want)
 
+    try:
+        evaluate(expr, {"vars": {"DX_RUNNER_HEAVY": "github"}, "github": {"event": {}}})
+        check("#190: a value that is not JSON fails, as on GitHub (so the docs name only JSON)", "read", "failed")
+    except ValueError:
+        check("#190: a value that is not JSON fails, as on GitHub (so the docs name only JSON)", "failed", "failed")
     check("the fallback is the one asked for", evaluate(expression("ubuntu-24.04"), {"vars": {}, "github": {"event": {}}}), "ubuntu-24.04")
     check("the expression is one line", "\n" in expr, False)
     check("the expression has no \" #\" (YAML would read the rest as a comment)", " #" in expr, False)
