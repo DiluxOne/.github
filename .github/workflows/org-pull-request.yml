@@ -54,8 +54,8 @@ jobs:
       DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
 
   # The VM the private repositories' jobs run on is off while idle: start it
-  # now (#154). On GitHub's runner, a few seconds; skipped where DX_RUNNER is
-  # not `self-hosted`, so in every public repository. Not on `edited`: an
+  # now (#154). On GitHub's runner, a few seconds; skipped where
+  # DX_RUNNER_HEAVY names no self-hosted runner, so in every public repository. Not on `edited`: an
   # edit queues only the conventions, mostly right after the push or the
   # review that already woke the VM, and the schedule covers the rest, so
   # edits spend no minutes on it.

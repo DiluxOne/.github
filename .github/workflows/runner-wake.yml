@@ -1,11 +1,11 @@
 name: Wake the organisation's VM
 
 # Reusable. A private repository's pull request queues jobs for the
-# organisation's VM (DX_RUNNER, runner-vm.yml), which is off while idle; this
+# organisation's VM (DX_RUNNER_HEAVY, runner-vm.yml), which is off while idle; this
 # asks runner-vm.yml to start it at once, instead of waiting for its schedule,
 # which GitHub delays or skips under load (#154). It runs on GitHub's runners
-# (it cannot wait for the VM it wakes), only where DX_RUNNER is
-# `self-hosted`, so only in the private repositories, and only on a branch of
+# (it cannot wait for the VM it wakes), only where DX_RUNNER_HEAVY names a
+# self-hosted runner, so only in the private repositories, and only on a branch of
 # the repository: a fork's pull request gets no secret. It reads no code of
 # the pull request: one call that dispatches runner-vm.yml with `start`,
 # with a dilux-bot token limited to this repository and to `actions: write`.
@@ -36,11 +36,11 @@ permissions: {}
 jobs:
   wake:
     name: Wake the VM
-    # GitHub's runner, never DX_RUNNER's: the VM may be the one that is off.
+    # GitHub's runner, never DX_RUNNER_HEAVY's: the VM may be the one that is off.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: >-
-      vars.DX_RUNNER == 'self-hosted' &&
+      contains(vars.DX_RUNNER_HEAVY, 'self-hosted') &&
       github.event.pull_request.head.repo.full_name == github.repository
     permissions: {}
     steps:
