@@ -53,6 +53,8 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import org  # noqa: E402  the organisation, from org.yml (#191)
 
 
 def _load(name, file):
@@ -66,8 +68,8 @@ autonomy = _load("autonomy", "autonomy.py")
 autopilot = _load("autopilot", "autopilot.py")
 
 LANE = "platform"
-BOT = "dilux-bot[bot]"
-BOT_EMAIL = "333187390+dilux-bot[bot]@users.noreply.github.com"
+BOT = org.BOT
+BOT_EMAIL = f"{org.BOT_ID}+{org.BOT}@users.noreply.github.com"
 AI_LINE = autopilot.AI_LINE
 RED = ("failure", "timed_out")
 WAIT = "<!-- dx-revert-wait -->"

@@ -34,6 +34,8 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import org  # noqa: E402  the organisation, from org.yml (#191)
 
 
 def _load(name, file):
@@ -46,7 +48,7 @@ def _load(name, file):
 autonomy = _load("autonomy", "autonomy.py")
 autopilot = _load("autopilot", "autopilot.py")
 
-BOT = "dilux-bot"
+BOT = org.APP
 WEEKS = 4
 PROPOSE_AT = 5
 # Each reason, in the order the digest lists them. A reason `risk-cap:<cap>`

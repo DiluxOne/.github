@@ -75,6 +75,8 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import org  # noqa: E402  the organisation, from org.yml (#191)
 
 
 def _load(name, file):
@@ -302,7 +304,7 @@ def end_verdict(mode, pr, draft_, stopped, done, total, limit_hit, runs, cap, pu
     return "silent"
 
 
-BOT_LOGINS = ("dilux-bot", "dilux-bot[bot]", "app/dilux-bot")
+BOT_LOGINS = (org.APP, org.BOT, f"app/{org.APP}")
 
 
 def stopped_since(comments, started):
@@ -498,7 +500,7 @@ def account(events, title="The autopilot's run"):
     ])
 
 
-BOT = "dilux-bot[bot]"
+BOT = org.BOT
 
 
 def decide(policy, body, risk, complexity, blocking, description_ok, files, head_files, autopilot_var, author=BOT, lane_name=LANE, repro_sha=""):

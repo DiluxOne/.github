@@ -69,8 +69,10 @@ import re
 import subprocess
 import sys
 
-ORG = os.environ.get("DX_ORG", "DiluxOne")
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import org  # noqa: E402  the organisation, from org.yml (#191)
+ORG = os.environ.get("DX_ORG", org.ORG)
 CENTRAL = os.path.join(HERE, "..")
 START = "<!-- dx:org:start"
 END = "<!-- dx:org:end -->"

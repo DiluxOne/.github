@@ -469,7 +469,8 @@ jobs:
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::$REF is not a ref of DiluxOne/.github."; exit 1; }
           mkdir -p .dx-central/scripts .dx-central/policy
           base="https://raw.githubusercontent.com/DiluxOne/.github/$sha"
-          for f in scripts/autonomy.py policy/autonomy.yml; do curl -fsSL --retry 3 "$base/$f" -o ".dx-central/$f"; done
+          # autonomy.py reads the organisation from org.yml, through org.py (#191).
+          for f in scripts/autonomy.py scripts/org.py org.yml policy/autonomy.yml; do curl -fsSL --retry 3 "$base/$f" -o ".dx-central/$f"; done
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: dilux-bot token

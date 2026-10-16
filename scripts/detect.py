@@ -28,7 +28,9 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ORG = "DiluxOne"
+sys.path.insert(0, HERE)
+import org  # noqa: E402  the organisation, from org.yml (#191)
+ORG = org.ORG
 HEAD_BYTES = 8192
 
 
@@ -193,7 +195,7 @@ def run_propose():
 
     def pull(n, text, title, new):
         branch = f"chore/{n}-new-repositories"
-        g = lambda *a: subprocess.run(["git", "-C", root, "-c", "user.name=dilux-bot[bot]", "-c", "user.email=dilux-bot[bot]@users.noreply.github.com", *a],
+        g = lambda *a: subprocess.run(["git", "-C", root, "-c", f"user.name={org.BOT}", "-c", f"user.email={org.BOT_ID}+{org.BOT}@users.noreply.github.com", *a],
                                       check=True, capture_output=True, text=True)
         g("checkout", "-q", "-b", branch)
         with open(os.path.join(root, "repos.yml"), "w", encoding="utf-8") as fh:

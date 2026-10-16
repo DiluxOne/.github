@@ -52,7 +52,10 @@ import os
 import re
 import sys
 
-BOT = "dilux-bot[bot]"
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import org  # noqa: E402  the organisation, from org.yml (#191)
+BOT = org.BOT
 REPRO_PREFIX = "test/repro-issue-"
 LANE_MARK = "-the-bug-reproduced-from-"
 # No "#": in a plain YAML value, " #" starts a comment and cuts the expression.
