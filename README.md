@@ -87,7 +87,7 @@ flowchart TB
 - **Policy is data.** Risk paths, models, budget and auto-merge live in [`policy/`](policy/) and in each repository's `.github/review-policy.yml`, read from the base branch, so a pull request cannot loosen its own rules.
 - **A review lesson becomes a rule.** Something a reviewer sent back once becomes one entry in its kind's `rules.yml`, with fixtures, never a new script ([`kinds/`](kinds/)).
 - **Secrets never meet a fork's code.** Actions are pinned to a commit and every token asks for the least it needs.
-- **Every job starts clean.** Public repositories run on GitHub's runners; private ones on the organisation's VM, each job in a disposable container of an image rebuilt and smoke-tested every week ([`runner/`](runner/)).
+- **Every job starts clean.** Public repositories run on GitHub's runners; private ones on the organisation's VM, each job in a disposable container of an image rebuilt and smoke-tested every day ([`runner/`](runner/)).
 - **Every pending step names its action and its URL.** Agents tell a maintainer exactly what to accept, approve or merge, with the link; an outside contributor is never asked for a maintainer's step.
 - **Versions are tags.** Repositories call `@v5`. A breaking change ships as `v6`, and older majors stay where they are.
 
