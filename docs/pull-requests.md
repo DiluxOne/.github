@@ -113,7 +113,10 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    repository, or a kind with no `surface.yml`, has none), the review does
    not block and its description is true, risk and complexity are within the
    caps of the lane it was worked under (`human-issue` for an issue a person
-   accepted, the lane's own for a lane's issue), the Spec is complete and every criterion's test is a test
+   accepted, the lane's own for a lane's issue), the review, an agent that
+   did not write the code, found every acceptance criterion of the issue met
+   at this head (G6, #193: the brief carries them, its record keeps the
+   verdict), the Spec is complete and every criterion's test is a test
    file the pull request adds or changes; for a reproduced bug, the
    reproduction test is in it with the SHA-256 the PRD sealed (the test that
    failed before; the autopilot ran it only in the sandbox, where it must
