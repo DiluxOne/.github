@@ -329,9 +329,10 @@ jobs:
             held="(the closed issues' labels could not be read)"
           elif ! git clone -q --depth 1 --branch "$CENTRAL_REF" https://github.com/DiluxOne/.github "$RUNNER_TEMP/central-held"; then
             held="(the policy could not be read)"
-          elif content=$(gh api "repos/$GITHUB_REPOSITORY/contents/.github/autonomy.yml?ref=$BASE_SHA" --jq .content 2>"$RUNNER_TEMP/held.err") \
-               || grep -qE '404|Not Found' "$RUNNER_TEMP/held.err"; then
-            printf '%s' "${content:-}" | base64 -d > "$RUNNER_TEMP/held-autonomy.yml"
+          # The repository's own policy: none only when the file is not there.
+          elif { content=$(gh api "repos/$GITHUB_REPOSITORY/contents/.github/autonomy.yml?ref=$BASE_SHA" --jq .content 2>"$RUNNER_TEMP/held.err") \
+                 && printf '%s' "$content" | base64 -d > "$RUNNER_TEMP/held-autonomy.yml"; } \
+               || { grep -qE '404|Not Found' "$RUNNER_TEMP/held.err" && : > "$RUNNER_TEMP/held-autonomy.yml"; }; then
             if ! listed=$(REPO_AUTONOMY="$RUNNER_TEMP/held-autonomy.yml" python3 "$RUNNER_TEMP/central-held/scripts/autonomy.py" policy 2>/dev/null | jq -er '."person-merges" | .[]'); then
               held="(the policy in force could not be read)"
             else
