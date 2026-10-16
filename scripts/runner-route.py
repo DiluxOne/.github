@@ -2,11 +2,13 @@
 """Where a shared job runs: the organisation's VM or GitHub's runners (#167).
 
 A private repository's jobs run on the organisation's VM when the
-organisation variable DX_RUNNER is `self-hosted` (runner-vm.yml). A job
+organisation variable DX_RUNNER_HEAVY names it (runner-vm.yml): the runs-on
+value as JSON, `["self-hosted","linux","x64","diluxone"]` here, so another
+organisation names its own runners without touching a workflow (#190). A job
 there reaches the VM's Docker socket. A pull request that dilux-bot opened
 from a reproduction never runs there: its test was written from an issue's
 text, which anyone can write, so it runs on GitHub's fresh runners whatever
-DX_RUNNER says. Those pull requests are, by their head branch and their
+DX_RUNNER_HEAVY says. Those pull requests are, by their head branch and their
 author (never by anything the pull request changes):
 
   - the reproduction's draft (issue-repro.yml): `test/repro-issue-<n>`;
@@ -23,7 +25,7 @@ runs on GitHub's runners too. So does every job of an issues event on the
 lane's own issue, the one dilux-bot opens titled "The bug reproduced from
 #<n>" (scripts/repro-lane.py of #166; keep the two in step): the autopilot that writes the fix from the
 reproduction's commit runs on it. A person's pull request or issue, or
-anything else, keeps DX_RUNNER's choice.
+anything else, keeps DX_RUNNER_HEAVY's choice.
 
 `runs-on` cannot call a script, so the decision is one expression, the same
 in every job of a shared workflow; this script writes it and checks that
@@ -35,9 +37,9 @@ Usage:
   runner-route.py check [FILE...]         every job of a shared workflow
                                           carries the expression, except
                                           those that always stay on GitHub's
-                                          runners (no DX_RUNNER at all);
+                                          runners (no DX_RUNNER_HEAVY at all);
                                           default: .github/workflows/*.yml
-  runner-route.py write [FILE...]         rewrite every DX_RUNNER runs-on
+  runner-route.py write [FILE...]         rewrite every DX_RUNNER_HEAVY runs-on
                                           line to the expression, keeping
                                           its fallback
   runner-route.py --test                  self-test: the expression, read
@@ -67,12 +69,13 @@ GITHUB_ONLY = ("plugin-release-wp.yml", "svn-auth-check.yml", "issue-repro.yml",
 # A job whose runner an earlier job of the same run decided (autopilot.yml's
 # `where`, #84: a reproduced bug's work never runs on the VM) keeps that
 # choice: `runs-on` names the earlier job's `github-hosted` output.
-DECIDED = re.compile(r"^\$\{\{ \(vars\.DX_RUNNER == 'self-hosted' && needs\.[a-z0-9_-]+\.outputs\.github-hosted == 'false'\) && fromJSON\('\[\"self-hosted\",\"linux\",\"x64\",\"diluxone\"\]'\) \|\| '([^']+)' \}\}$")
+DECIDED = re.compile(r"^\$\{\{ \(vars\.DX_RUNNER_HEAVY != '' && needs\.[a-z0-9_-]+\.outputs\.github-hosted == 'false'\) && fromJSON\(vars\.DX_RUNNER_HEAVY\) \|\| '([^']+)' \}\}$")
 
 
-def decide(dx_runner, event):
-    """The runner a job gets: VM_LABELS, or None for GitHub's (the fallback)."""
-    if dx_runner != "self-hosted":
+def decide(heavy, event):
+    """The runner a job gets: DX_RUNNER_HEAVY's (a runs-on value as JSON), or
+    None for GitHub's (the fallback)."""
+    if not heavy:
         return None
     pr = event.get("pull_request") or {}
     author = ((pr.get("user") or {}).get("login") or "").lower()
@@ -83,7 +86,7 @@ def decide(dx_runner, event):
     by_bot = ((issue.get("user") or {}).get("login") or "").lower() == BOT
     if by_bot and (issue.get("pull_request") or (issue.get("title") or "").lower().startswith(LANE_TITLE.lower())):
         return None
-    return VM_LABELS
+    return json.loads(heavy)
 
 
 def expression(fallback="ubuntu-latest"):
@@ -93,9 +96,8 @@ def expression(fallback="ubuntu-latest"):
              f" || (contains({head}, '/') && contains({head}, '{LANE_MARK}'))))")
     issue = "github.event.issue"
     comment = f"({issue}.user.login == '{BOT}' && ({issue}.pull_request || startsWith({issue}.title, '{LANE_TITLE}')))"
-    labels = json.dumps(VM_LABELS, separators=(",", ":"))
-    return (f"${{{{ vars.DX_RUNNER == 'self-hosted' && !({repro} || {comment})"
-            f" && fromJSON('{labels}') || '{fallback}' }}}}")
+    return (f"${{{{ vars.DX_RUNNER_HEAVY != '' && !({repro} || {comment})"
+            f" && fromJSON(vars.DX_RUNNER_HEAVY) || '{fallback}' }}}}")
 
 
 RUNS_ON = re.compile(r"^(\s+)runs-on:\s*(.*?)\s*$")
@@ -116,11 +118,11 @@ def problems(path, text):
     if not is_shared(text):
         return out
     if name in GITHUB_ONLY:
-        # Only the runs-on lines: a comment or an `if:` may name DX_RUNNER.
+        # Only the runs-on lines: a comment or an `if:` may name DX_RUNNER_HEAVY.
         for n, line in enumerate(text.splitlines(), 1):
             m = RUNS_ON.match(line)
             if m and ("DX_RUNNER" in m.group(2) or "self-hosted" in m.group(2)):
-                out.append(f"{path}:{n}: stays on GitHub's runners: no DX_RUNNER here")
+                out.append(f"{path}:{n}: stays on GitHub's runners: no DX_RUNNER_HEAVY here")
         return out
     for n, line in enumerate(text.splitlines(), 1):
         m = RUNS_ON.match(line)
@@ -237,7 +239,10 @@ def evaluate(src, context):
                 if fn == "contains":
                     return as_text(args[1]).lower() in as_text(args[0]).lower()
                 if fn == "fromjson":
-                    return json.loads(args[0])
+                    # This reader evaluates both sides of && and ||; GitHub
+                    # stops at the first that decides, so it never reads an
+                    # unset variable here.
+                    return json.loads(args[0]) if args[0] else None
                 raise ValueError(f"unknown function {value}")
             if value in ("true", "false"):
                 return value == "true"
@@ -251,6 +256,8 @@ def evaluate(src, context):
         while peek() in (("op", "=="), ("op", "!=")):
             op = take()[1]
             w = primary()
+            # As on GitHub: an unset variable is null, and null equals ''.
+            v, w = ("" if v is None and isinstance(w, str) else v), ("" if w is None and isinstance(v, str) else w)
             same = (v.lower() == w.lower()) if isinstance(v, str) and isinstance(w, str) else v == w
             v = same if op == "==" else not same
         return v
@@ -292,60 +299,67 @@ def self_test():
         return {"pull_request": {"user": {"login": author}, "head": {"ref": head}, **extra}}
 
     vm, gh = VM_LABELS, "ubuntu-latest"
+    VMJ = json.dumps(VM_LABELS)
     events = [
-        ("C1: the reproduction's draft runs on GitHub's runners", "self-hosted", pr(BOT, "test/repro-issue-12"), gh),
-        ("C1: the lane's fix runs on GitHub's runners", "self-hosted", pr(BOT, "fix/31-the-bug-reproduced-from-12"), gh),
-        ("C1: the lane's fix on a second attempt's branch too", "self-hosted", pr(BOT, "fix/31-the-bug-reproduced-from-12-987654"), gh),
-        ("C1: a comment on one of dilux-bot's pull requests (no branch in the event)", "self-hosted",
+        ("C1: the reproduction's draft runs on GitHub's runners", VMJ, pr(BOT, "test/repro-issue-12"), gh),
+        ("C1: the lane's fix runs on GitHub's runners", VMJ, pr(BOT, "fix/31-the-bug-reproduced-from-12"), gh),
+        ("C1: the lane's fix on a second attempt's branch too", VMJ, pr(BOT, "fix/31-the-bug-reproduced-from-12-987654"), gh),
+        ("C1: a comment on one of dilux-bot's pull requests (no branch in the event)", VMJ,
          {"issue": {"pull_request": {"url": "x"}, "user": {"login": BOT}}}, gh),
-        ("C1: a review comment on the reproduction's draft", "self-hosted", pr(BOT, "test/repro-issue-12") | {"comment": {"body": "x"}}, gh),
-        ("C2: a person's pull request keeps the VM", "self-hosted", pr("soydiloreto", "fix/40-the-login-loop"), vm),
-        ("C2: a person's branch named like a reproduction keeps the VM (the author decides too)", "self-hosted", pr("soydiloreto", "test/repro-issue-12"), vm),
-        ("C2: a person's lane-like branch keeps the VM", "self-hosted", pr("soydiloreto", "fix/31-the-bug-reproduced-from-12"), vm),
-        ("dilux-bot's other autopilot pull requests keep the VM", "self-hosted", pr(BOT, "fix/40-the-login-loop"), vm),
-        ("dilux-bot's feature from the autopilot keeps the VM", "self-hosted", pr(BOT, "feat/41-dark-mode"), vm),
-        ("C1: the lane's fix under another type (its issue's Type was not set)", "self-hosted", pr(BOT, "chore/31-the-bug-reproduced-from-12"), gh),
-        ("C1: the lane's fix under another type, second attempt", "self-hosted", pr(BOT, "feat/31-the-bug-reproduced-from-12-987654"), gh),
-        ("the lane's words without a type are not the lane", "self-hosted", pr(BOT, "the-bug-reproduced-from-12"), vm),
-        ("C2: a person's chore branch named like the lane keeps the VM", "self-hosted", pr("soydiloreto", "chore/31-the-bug-reproduced-from-12"), vm),
-        ("the title or labels do not decide", "self-hosted", pr("soydiloreto", "fix/40-x", title="test(repro): failing test for #12", labels=[{"name": "autopilot"}]), vm),
-        ("a comment on a person's pull request keeps the VM", "self-hosted", {"issue": {"pull_request": {"url": "x"}, "user": {"login": "soydiloreto"}}}, vm),
-        ("an issue event of dilux-bot (not a pull request) keeps the VM", "self-hosted", {"issue": {"user": {"login": BOT}, "title": "Runner image: build failed"}}, vm),
-        ("C1: the lane's issue (the autopilot writes the fix there) runs on GitHub's runners", "self-hosted",
+        ("C1: a review comment on the reproduction's draft", VMJ, pr(BOT, "test/repro-issue-12") | {"comment": {"body": "x"}}, gh),
+        ("C2: a person's pull request keeps the VM", VMJ, pr("soydiloreto", "fix/40-the-login-loop"), vm),
+        ("C2: a person's branch named like a reproduction keeps the VM (the author decides too)", VMJ, pr("soydiloreto", "test/repro-issue-12"), vm),
+        ("C2: a person's lane-like branch keeps the VM", VMJ, pr("soydiloreto", "fix/31-the-bug-reproduced-from-12"), vm),
+        ("dilux-bot's other autopilot pull requests keep the VM", VMJ, pr(BOT, "fix/40-the-login-loop"), vm),
+        ("dilux-bot's feature from the autopilot keeps the VM", VMJ, pr(BOT, "feat/41-dark-mode"), vm),
+        ("C1: the lane's fix under another type (its issue's Type was not set)", VMJ, pr(BOT, "chore/31-the-bug-reproduced-from-12"), gh),
+        ("C1: the lane's fix under another type, second attempt", VMJ, pr(BOT, "feat/31-the-bug-reproduced-from-12-987654"), gh),
+        ("the lane's words without a type are not the lane", VMJ, pr(BOT, "the-bug-reproduced-from-12"), vm),
+        ("C2: a person's chore branch named like the lane keeps the VM", VMJ, pr("soydiloreto", "chore/31-the-bug-reproduced-from-12"), vm),
+        ("the title or labels do not decide", VMJ, pr("soydiloreto", "fix/40-x", title="test(repro): failing test for #12", labels=[{"name": "autopilot"}]), vm),
+        ("a comment on a person's pull request keeps the VM", VMJ, {"issue": {"pull_request": {"url": "x"}, "user": {"login": "soydiloreto"}}}, vm),
+        ("an issue event of dilux-bot (not a pull request) keeps the VM", VMJ, {"issue": {"user": {"login": BOT}, "title": "Runner image: build failed"}}, vm),
+        ("C1: the lane's issue (the autopilot writes the fix there) runs on GitHub's runners", VMJ,
          {"issue": {"user": {"login": BOT}, "title": "The bug reproduced from #12"}, "label": {"name": "accepted"}}, gh),
-        ("a person's issue with the lane's title keeps the VM", "self-hosted", {"issue": {"user": {"login": "soydiloreto"}, "title": "The bug reproduced from #12"}}, vm),
-        ("a push or a schedule keeps the VM", "self-hosted", {"ref": "refs/heads/main"}, vm),
-        ("without DX_RUNNER, GitHub's runners", "", pr("soydiloreto", "fix/40-x"), gh),
-        ("DX_RUNNER=github, GitHub's runners", "github", pr("soydiloreto", "fix/40-x"), gh),
-        ("the bot's login matches ignoring case, as on GitHub", "self-hosted", pr("Dilux-Bot[bot]", "test/repro-issue-12"), gh),
+        ("a person's issue with the lane's title keeps the VM", VMJ, {"issue": {"user": {"login": "soydiloreto"}, "title": "The bug reproduced from #12"}}, vm),
+        ("a push or a schedule keeps the VM", VMJ, {"ref": "refs/heads/main"}, vm),
+        ("without DX_RUNNER_HEAVY, GitHub's runners", "", pr("soydiloreto", "fix/40-x"), gh),
+        ("DX_RUNNER_HEAVY naming GitHub's runner sends the jobs there", '"ubuntu-24.04"', pr("soydiloreto", "fix/40-x"), "ubuntu-24.04"),
+        ("the bot's login matches ignoring case, as on GitHub", VMJ, pr("Dilux-Bot[bot]", "test/repro-issue-12"), gh),
     ]
     expr = expression()
     for name, var, event, want in events:
-        got = evaluate(expr, {"vars": {"DX_RUNNER": var} if var else {}, "github": {"event": event}})
+        got = evaluate(expr, {"vars": {"DX_RUNNER_HEAVY": var} if var else {}, "github": {"event": event}})
         check(f"expression: {name}", got, want)
         check(f"decide: {name}", decide(var, event) or gh, want)
 
+    try:
+        evaluate(expr, {"vars": {"DX_RUNNER_HEAVY": "github"}, "github": {"event": {}}})
+        check("#190: a value that is not JSON fails, as on GitHub (so the docs name only JSON)", "read", "failed")
+    except ValueError:
+        check("#190: a value that is not JSON fails, as on GitHub (so the docs name only JSON)", "failed", "failed")
     check("the fallback is the one asked for", evaluate(expression("ubuntu-24.04"), {"vars": {}, "github": {"event": {}}}), "ubuntu-24.04")
     check("the expression is one line", "\n" in expr, False)
     check("the expression has no \" #\" (YAML would read the rest as a comment)", " #" in expr, False)
 
     old = "${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('[\"self-hosted\",\"linux\",\"x64\",\"diluxone\"]') || 'ubuntu-24.04' }}"
+    check("#190: the expression names no labels of its own: the variable holds them", "diluxone" in expr or "self-hosted" in expr, False)
     shared = "on:\n  workflow_call:\njobs:\n  a:\n    runs-on: " + old + "\n  b:\n    runs-on: ubuntu-latest\n"
     check("check: the old choice is a problem", len(problems("x.yml", shared)), 2)
     fixed = rewrite(shared)
-    check("write: rewrites the DX_RUNNER line, keeping its fallback", f"    runs-on: {expression('ubuntu-24.04')}\n" in fixed, True)
+    check("write: rewrites the DX_RUNNER_HEAVY line, keeping its fallback", f"    runs-on: {expression('ubuntu-24.04')}\n" in fixed, True)
     check("write: leaves a plain runs-on alone (check still names it)", "    runs-on: ubuntu-latest\n" in fixed and len(problems("x.yml", fixed)), 1)
     check("check: a workflow that is not shared is not read", problems("x.yml", "on:\n  push:\njobs:\n  a:\n    runs-on: ubuntu-latest\n"), [])
-    check("check: the reproduction carries no DX_RUNNER", len(problems("issue-repro.yml", "on:\n  workflow_call:\n    runs-on: " + expression() + "\n")), 1)
-    check("check: the reproduction's header may name DX_RUNNER (comments are not jobs)",
-          problems("issue-repro.yml", "# whatever DX_RUNNER says\non:\n  workflow_call:\njobs:\n  a:\n    runs-on: ubuntu-latest\n"), [])
+    check("check: the reproduction carries no DX_RUNNER_HEAVY", len(problems("issue-repro.yml", "on:\n  workflow_call:\n    runs-on: " + expression() + "\n")), 1)
+    check("check: the reproduction's header may name DX_RUNNER_HEAVY (comments are not jobs)",
+          problems("issue-repro.yml", "# whatever DX_RUNNER_HEAVY says\non:\n  workflow_call:\njobs:\n  a:\n    runs-on: ubuntu-latest\n"), [])
     check("check: an unknown fallback is a problem", len(problems("x.yml", "on:\n  workflow_call:\n    runs-on: " + expression("windows-latest") + "\n")), 1)
 
-    decided = "${{ (vars.DX_RUNNER == 'self-hosted' && needs.where.outputs.github-hosted == 'false') && fromJSON('[\"self-hosted\",\"linux\",\"x64\",\"diluxone\"]') || 'ubuntu-latest' }}"
+    decided = "${{ (vars.DX_RUNNER_HEAVY != '' && needs.where.outputs.github-hosted == 'false') && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}"
     later = "on:\n  workflow_call:\njobs:\n  run:\n    runs-on: " + decided + "\n"
     check("check: a job whose runner an earlier job decided keeps it", problems("autopilot.yml", later), [])
     check("write: leaves a job whose runner an earlier job decided alone", rewrite(later), later)
-    check("check: a GitHub-only workflow may name DX_RUNNER outside runs-on", problems("runner-wake.yml", "# DX_RUNNER\non:\n  workflow_call:\njobs:\n  a:\n    if: vars.DX_RUNNER == 'self-hosted'\n    runs-on: ubuntu-latest\n"), [])
+    check("check: a GitHub-only workflow may name DX_RUNNER_HEAVY outside runs-on", problems("runner-wake.yml", "# DX_RUNNER_HEAVY\non:\n  workflow_call:\njobs:\n  a:\n    if: vars.DX_RUNNER_HEAVY == 'self-hosted'\n    runs-on: ubuntu-latest\n"), [])
     check("check: the VM's wake-up stays on GitHub's runners", problems("runner-wake.yml", "on:\n  workflow_call:\njobs:\n  a:\n    runs-on: ubuntu-latest\n"), [])
 
     import tempfile
@@ -367,7 +381,7 @@ def self_test():
             sys.stdout = stdout
             quiet.close()
         check("cli: check exits 1 on the old choice", before, 1)
-        check("cli: write fixes a shared job, and still fails on the reproduction's DX_RUNNER", wrote, 1)
+        check("cli: write fixes a shared job, and still fails on the reproduction's DX_RUNNER_HEAVY", wrote, 1)
         check("cli: check exits 0 once written", after, 0)
         with open(repro_path) as f:
             check("cli: write never adds the choice to a GitHub-only workflow", f.read(), repro_text)

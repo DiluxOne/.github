@@ -92,7 +92,7 @@ permissions: {}
 jobs:
   rerun:
     name: Re-run the gate
-    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 5
     # After the seal (the ready job): the gate compares the PRD with the
     # newest seal, so a re-acceptance after an edit must be sealed first.
@@ -146,7 +146,7 @@ jobs:
 
   ready:
     name: Issue ready (G1)
-    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 5
     # When a person accepts it: is the issue's PRD complete, as the issue
     # schema says (policy/issue-schema.yml, gate G1)? One comment, kept up to
@@ -255,7 +255,7 @@ jobs:
 
   receipt:
     name: The merge's receipt
-    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 5
     # When an accepted issue closes as completed by a merged pull request: the
     # receipt (#81), committed to the receipts branch, and the board updated.
@@ -317,7 +317,7 @@ jobs:
 
   release:
     name: The release pull request
-    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 10
     # A person accepts a release issue (#82): the release pull request, as
     # the header says. Everything goes through dilux-bot's token, so the
@@ -446,7 +446,7 @@ jobs:
 
   lane:
     name: Accepted by policy
-    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 5
     # A lane's label added to an issue: whether its lane accepts it, as the
     # header says. Reads with the caller's token (the issue, and the run
@@ -526,7 +526,7 @@ jobs:
     name: The decision's sub-issues
     # After the seal: what is carried out is the PRD a person accepted.
     needs: ready
-    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 15
     # When a person accepts an issue of DiluxOne/.github whose PRD names
     # Repositories (#189): a sub-issue in each repository its rules select,
@@ -560,7 +560,7 @@ jobs:
 
   project:
     name: The product's Project
-    runs-on: ${{ vars.DX_RUNNER == 'self-hosted' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON('["self-hosted","linux","x64","diluxone"]') || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 5
     # The Projects go through the bot's own token; DiluxOne/.github is public,
     # so its checkout needs nothing from the workflow's.
