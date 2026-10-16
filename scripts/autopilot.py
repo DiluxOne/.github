@@ -224,8 +224,10 @@ def add_decision(pr_body, text, day):
     (#193): what the agent decided that the PRD does not say, and why. A
     draft opened before the log existed gets one, before "How I tested it".
     None when the text is empty."""
-    # Its text reaches the merge commit: no @mention, no "Closes #N".
+    # Its text reaches the merge commit: no @mention, and no closing keyword
+    # GitHub would act on, whatever follows it (#N, GH-N, owner/repo#N, a URL).
     text = " ".join((text or "").split())[:400].replace("@", "@\u200b").replace("#", "#\u200b")
+    text = re.sub(r"(?i)\b(clos|fix|resolv)", lambda m: m.group(0)[0] + "\u200b" + m.group(0)[1:], text)
     head = "## 🧭 Decisions"
     if not text:
         return None
@@ -838,7 +840,9 @@ A class on html.
           (f"{HELPER} decision" in prompt_work("o/r", "7", "8", "b", "x", [("C1", "a", None)], False), "a doubt changes the scope" in prompt_work("o/r", "7", "8", "b", "x", [("C1", "a", None)], False)), (True, True))
     old_draft = "## 📝 What changes\n\nx\n\n## 🧪 How I tested it\n\nlater"
     got = add_decision(old_draft, "y. Closes #12", "d")
-    check("#193: a draft from before the log gets one, before How I tested it", got.index("## 🧭 Decisions") < got.index("## 🧪 How I tested it") and "- d: y. Closes #\u200b12" in got, True)
+    check("#193: a draft from before the log gets one, before How I tested it", got.index("## 🧭 Decisions") < got.index("## 🧪 How I tested it") and "- d: y. C\u200bloses #\u200b12" in got, True)
+    url = add_decision(d0, "Fixes https://github.com/o/r/issues/3 and resolves GH-4", "d")
+    check("#193: no closing keyword survives, before a URL or GH-N", [k for k in ("Fixes", "resolves") if k in url], [])
     check("#193: no text, no decision", add_decision(d0, "  ", "d"), None)
     check("#190: the prompts never ask for git push, and name the helper", ("git push" not in prompt_work("o/r", "7", "8", "feat/7-x", "x", [("C1", "a", None)], False).replace("Never `git push`", ""),
           f"{HELPER} push" in prompt_work("o/r", "7", "8", "feat/7-x", "x", [("C1", "a", None)], False), f"{HELPER} push" in prompt_fix("o/r", "8", 1, 3)), (True, True, True))
