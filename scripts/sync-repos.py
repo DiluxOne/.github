@@ -10,22 +10,24 @@ archived and not excluded in repos.yml:
             description in line; never deletes one.
   settings  repos.yml `settings` and `security` (Dependabot's alerts and
             security updates among them), through the API.
-  files     repos.yml `files` (CODEOWNERS), the opening block of AGENTS.md
-            (agents-block.md, between its dx:org markers) and
-            .github/dependabot.yml, written from the template of the
-            repository's kind (kinds/<kind>/dependabot.yml, else
-            policy/dependabot.default.yml) with only the ecosystems it has
-            (github-actions always; npm, composer, docker by their manifest at
-            its root) and what repos.yml `dependabot` adds for it. These never
-            go straight to main: for a repository whose files differ, it opens
-            an issue (Type Task) and a pull request that closes it. When this
-            checkout is a commit merged into main, with nothing the sync
-            reads changed locally, and it writes only what the lane covers
-            (not the Dependabot file), the issue carries the run's marker and
-            `lane:org-sync`, and the autonomy policy accepts it (and may
+  files     repos.yml `files` (CODEOWNERS) and the opening block of
+            AGENTS.md (agents-block.md, between its dx:org markers). These
+            never go straight to main: for a repository whose files differ,
+            it opens an issue (Type Task) and a pull request that closes it.
+            When this checkout is a commit merged into main, with nothing the
+            sync reads changed locally, the issue carries the run's marker
+            and `lane:org-sync`, and the autonomy policy accepts it (and may
             merge its pull request) with no person (policy/autonomy.yml,
             lane org-sync, #155); otherwise the maintainer accepts the issue
             and merges, like any other change.
+  dependabot  .github/dependabot.yml, written from the template of the
+            repository's kind (kinds/<kind>/dependabot.yml, else
+            policy/dependabot.default.yml) with only the ecosystems it has
+            (github-actions always; npm, composer, docker by their manifest at
+            its root) and what repos.yml `dependabot` adds for it. Its own
+            issue and pull request, as `files` opens them, which a person
+            accepts: no lane covers this file, so it is kept apart and never
+            takes the lane away from the shared files. Not in `all`.
   own-checks  a repository whose kind asks for it (kinds/<kind>/pack.yml,
             `own-checks`) gets a ruleset named "own checks" requiring its own
             jobs' checks, from its last merged pull request; one that exists
@@ -53,7 +55,7 @@ archived and not excluded in repos.yml:
             repos.yml names no system of design-systems/, or is `local` with
             no docs/design-system/README.md.
 
-  sync-repos.py <labels|settings|files|own-checks|callers|all> [--repo NAME ...] [--dry-run]
+  sync-repos.py <labels|settings|files|dependabot|own-checks|callers|all> [--repo NAME ...] [--dry-run]
   sync-repos.py check [--repo NAME ...] [--report FILE]
   sync-repos.py --test
 
@@ -159,11 +161,15 @@ def sync_settings(repo, conf, dry):
     print("  settings in step")
 
 
-def sync_files(repo, conf, block, dry):
+def sync_files(repo, conf, block, dry, part="files"):
+    """The shared files (part "files": CODEOWNERS, the AGENTS.md block) or
+    the Dependabot file (part "dependabot"), each in its own issue and pull
+    request."""
     full = f"{ORG}/{repo['name']}"
+    suffix = "-org-shared-files" if part == "files" else "-org-dependabot"
     open_prs = json.loads(gh("pr", "list", "--repo", full, "--state", "open", "--limit", "500", "--json", "headRefName").stdout)
-    if any(p["headRefName"].endswith("-org-shared-files") for p in open_prs):
-        print("  a pull request for the shared files is already open; skipped")
+    if any(p["headRefName"].endswith(suffix) for p in open_prs):
+        print(f"  a pull request for the {'shared files' if part == 'files' else 'Dependabot file'} is already open; skipped")
         return
     default = (repo.get("defaultBranchRef") or {}).get("name") or "main"
 
@@ -178,26 +184,38 @@ def sync_files(repo, conf, block, dry):
         raise RuntimeError(f"could not read {path}: {out.stderr.strip()[:200]}")
 
     wanted = {}
-    for path, content in (conf.get("files") or {}).items():
-        if read(path) != content:
-            wanted[path] = content
-    _, dependabot = dependabot_wanted(repo, conf, default)
-    if read(DEPENDABOT) != dependabot:
-        wanted[DEPENDABOT] = dependabot
-    agents = read("AGENTS.md")
-    if agents is None:
-        print("  no AGENTS.md: the organisation's block waits until the repository has one")
-    elif with_block(agents, block) != agents:
-        wanted["AGENTS.md"] = with_block(agents, block)
+    if part == "dependabot":
+        _, dependabot = dependabot_wanted(repo, conf, default)
+        if read(DEPENDABOT) != dependabot:
+            wanted[DEPENDABOT] = dependabot
+    else:
+        for path, content in (conf.get("files") or {}).items():
+            if read(path) != content:
+                wanted[path] = content
+        agents = read("AGENTS.md")
+        if agents is None:
+            print("  no AGENTS.md: the organisation's block waits until the repository has one")
+        elif with_block(agents, block) != agents:
+            wanted["AGENTS.md"] = with_block(agents, block)
     if not wanted:
-        print("  files in step")
+        print(f"  {'files' if part == 'files' else 'Dependabot file'} in step")
         return
     changed = ", ".join(wanted)
     if dry:
         print(f"  would open an issue and a pull request for: {changed}")
         return
+    if part == "dependabot":
+        body = ("The organisation keeps each repository's Dependabot configuration in step with the template of its kind, "
+                f"because GitHub reads it only from the repository: {DEPENDABOT} differs here from it. This brings it in step.\n\n"
+                "🤖 AI-generated · scripts/sync-repos.py")
+        pr_body = (f"## 📝 What changes\n\n{DEPENDABOT} as DiluxOne/.github keeps it for a repository of this kind.\n\n"
+                   "## 💡 Why\n\nGitHub reads it only from the repository, so the organisation keeps it in step from one place.")
+        open_change(repo, default, wanted, "Keep the organisation's Dependabot configuration in step", body,
+                    "chore/{}-org-dependabot", "chore: keep the organisation's Dependabot configuration in step", pr_body,
+                    "chore: keep {} in step with the organisation")
+        return
     body = ("The organisation keeps some files the same in every repository, because GitHub reads them only from "
-            f"the repository: {changed} differ here from DiluxOne/.github (repos.yml, agents-block.md, the Dependabot template of its kind). "
+            f"the repository: {changed} differ here from DiluxOne/.github (repos.yml, agents-block.md). "
             "This brings them in step.\n\n🤖 AI-generated · scripts/sync-repos.py")
     pr_body = (f"## 📝 What changes\n\n{changed} as DiluxOne/.github keeps them for every repository.\n\n"
                "## 💡 Why\n\nGitHub reads these only from the repository, so the organisation keeps them in step from one place.")
@@ -1138,9 +1156,9 @@ def drift(repo, conf, labels, block, current=0):
     if out.returncode != 0 and "404" not in out.stderr:
         raise RuntimeError(f"could not read {DEPENDABOT}: {out.stderr.strip()[:200]}")
     if out.returncode != 0:
-        found.append(f"`{DEPENDABOT}` is missing (its template: `{template}`; `sync-repos.py files`)")
+        found.append(f"`{DEPENDABOT}` is missing (its template: `{template}`; `sync-repos.py dependabot`)")
     elif out.stdout != dependabot:
-        found.append(f"`{DEPENDABOT}` differs from its template, `{template}` (`sync-repos.py files`)")
+        found.append(f"`{DEPENDABOT}` differs from its template, `{template}` (`sync-repos.py dependabot`)")
     if (conf.get("security") or {}).get("automated_security_fixes"):
         out = gh("api", f"repos/{full}/automated-security-fixes", check=False)
         # Said only when GitHub answers that they are off.
@@ -1461,6 +1479,8 @@ def dependabot_test(check, conf, labels, block):
         state["dependabot"] = weekly
         with contextlib.redirect_stdout(io.StringIO()):
             sync_files(repo, conf, block, False)
+            files_wrote = dict(written)
+            sync_files(repo, conf, block, False, part="dependabot")
     finally:
         globals()["gh"], ORG = saved_gh, saved_org
     check("C3 (#178): the drift check names a dependabot.yml that differs, and its template",
@@ -1470,8 +1490,9 @@ def dependabot_test(check, conf, labels, block):
     check("drift: Dependabot security updates off are reported, on are not",
           any("security updates are off" in l for l in in_step) and not any("security updates" in l for l in lines), (lines, in_step))
     prs = [a for a in calls if a[:2] == ("pr", "create")]
-    check("C1 (#178): `files` writes the template's dependabot.yml, with the plugin's ecosystems, in a pull request that closes its issue",
-          written.get(DEPENDABOT) == ("chore/7-org-shared-files", want) and len(prs) == 1 and "Closes #7" in prs[0][prs[0].index("--body") + 1], (sorted(written), prs))
+    check("#187: `files` leaves the Dependabot file to its own run (with the shared files in step, it writes nothing)", files_wrote == {}, sorted(files_wrote))
+    check("C1 (#178): `dependabot` writes the template's dependabot.yml, with the plugin's ecosystems, in a pull request that closes its issue",
+          written.get(DEPENDABOT) == ("chore/7-org-dependabot", want) and len(prs) == 1 and "Closes #7" in prs[0][prs[0].index("--body") + 1], (sorted(written), prs))
     check("C1 (#178): the files in step are not rewritten", sorted(written) == [DEPENDABOT], sorted(written))
     saved_drift = globals()["drift"]
     for exc in (ValueError("the template has no entry for pip"), RuntimeError("could not read x")):
@@ -1723,7 +1744,7 @@ def self_test():
 def main(argv):
     if argv == ["--test"]:
         return self_test()
-    if not argv or argv[0] not in ("labels", "settings", "files", "own-checks", "callers", "all", "check"):
+    if not argv or argv[0] not in ("labels", "settings", "files", "dependabot", "own-checks", "callers", "all", "check"):
         print(__doc__)
         return 64
     what, rest = argv[0], argv[1:]
@@ -1740,7 +1761,7 @@ def main(argv):
         return 1
     if what == "check":
         report = [f"# Repositories out of step with {ORG}/.github", "",
-                  "What differs from `labels.yml`, `repos.yml`, `agents-block.md`, the Dependabot templates (`kinds/<kind>/dependabot.yml`, `policy/dependabot.default.yml`) and `workflow-templates/`. Labels and settings: `python3 scripts/sync-repos.py all`; files and Dependabot: the pull requests it opens; workflow callers: `python3 scripts/sync-repos.py callers --repo NAME`, a pull request each.", ""]
+                  "What differs from `labels.yml`, `repos.yml`, `agents-block.md`, the Dependabot templates (`kinds/<kind>/dependabot.yml`, `policy/dependabot.default.yml`) and `workflow-templates/`. Labels and settings: `python3 scripts/sync-repos.py all`; files: the pull requests it opens; Dependabot: the pull requests `sync-repos.py dependabot` opens; workflow callers: `python3 scripts/sync-repos.py callers --repo NAME`, a pull request each.", ""]
         dirty = 0
         current = current_major()
         for repo in repos:
@@ -1767,6 +1788,8 @@ def main(argv):
                 sync_settings(repo, conf, dry)
             if what in ("files", "all"):
                 sync_files(repo, conf, block, dry)
+            if what == "dependabot":
+                sync_files(repo, conf, block, dry, part="dependabot")
             if what in ("own-checks", "all"):
                 sync_own_checks(repo, dry)
             if what == "callers":
