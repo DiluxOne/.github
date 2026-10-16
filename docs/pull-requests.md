@@ -106,7 +106,9 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    A pull request the autopilot opened (#83, label `autopilot`)
    merges by policy when gate G7 passes ([`scripts/autopilot.py`](../scripts/autopilot.py)
    `decide`): the issue is not Critical, no protected path of
-   [`policy/autonomy.yml`](../policy/autonomy.yml) changes, the review does
+   [`policy/autonomy.yml`](../policy/autonomy.yml) changes, it adds no
+   public surface of its kind (`surface.yml`) unless its issue is a Feature
+   (escalation, #193; what cannot be told counts as surface), the review does
    not block and its description is true, risk and complexity are within the
    caps of the lane it was worked under (`human-issue` for an issue a person
    accepted, the lane's own for a lane's issue), the Spec is complete and every criterion's test is a test
