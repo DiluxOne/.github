@@ -52,6 +52,8 @@ def packs():
 def matches(rule, names, head):
     """Whether a repository's root (its file names, and `head(name)`, the
     first bytes of a file) meets a pack's `detect`."""
+    if not rule.get("files") and not rule.get("header"):
+        return False  # a rule that checks nothing recognises nothing
     if not all(f in names for f in rule.get("files") or []):
         return False
     header = rule.get("header")
@@ -112,12 +114,14 @@ def with_entries(text, lines):
     """repos.yml with each new line in its place, by name, in `repos:`."""
     out = text.split("\n")
     start = out.index("repos:")
-    end = start + 1
-    while end < len(out) and (out[end].startswith("  ") or out[end].strip() == "" and end + 1 < len(out) and out[end + 1].startswith("  ")):
-        end += 1
-    block = [l for l in out[start + 1:end] if l.strip()] + lines
-    block.sort(key=lambda l: l.strip().split(":", 1)[0].lower())
-    return "\n".join(out[:start + 1] + block + out[end:])
+    name = lambda l: l.strip().split(":", 1)[0].lower()
+    for line in sorted(lines, key=name):
+        # Before the first entry that sorts after it; the others stay as they are.
+        i = start + 1
+        while i < len(out) and out[i].startswith("  ") and name(out[i]) < name(line):
+            i += 1
+        out.insert(i, line)
+    return "\n".join(out)
 
 
 def propose(central, conf, repos, found_of, run_url, io):
@@ -127,17 +131,28 @@ def propose(central, conf, repos, found_of, run_url, io):
     if not new:
         print("Every repository is in repos.yml.")
         return None
-    if io["open_issue"](TITLE):
-        print(f"A proposal is already open: {TITLE}.")
+    issue = io["open_issue"](TITLE)
+    if issue and io["has_pull"](issue):
+        print(f"A proposal is already open: #{issue}.")
         return None
     rules = packs()
-    lines = [entry(n, found_of(n), rules) for n in new]
+    lines = []
+    for n in new:
+        # One repository that cannot be read is proposed unclassified.
+        try:
+            found = found_of(n)
+        except RuntimeError as exc:
+            print(f"  {n}: detection failed ({str(exc)[:120]}); proposed unclassified")
+            found = []
+        lines.append(entry(n, found, rules))
     body = ("The organisation has repositories that repos.yml does not list, so nothing says what they are. "
             "Detection (scripts/detect.py) read each one's root and proposes:\n\n" + "\n".join(f"- `{l.strip()}`" for l in lines) +
             "\n\nCorrect the kinds, paths and roles in the pull request if they are wrong; an empty list leaves a repository unclassified. "
             "This is work of the `platform` lane (policy/autonomy.yml): accepted by policy. repos.yml is high risk, so a person merges it."
             f"\n\n<!-- dx-lane: platform run: {run_url} -->\n\n🤖 AI-generated · scripts/detect.py")
-    issue = io["issue"](TITLE, body)
+    # A run that opened the issue and failed before its pull request: the
+    # issue is reused, never left to block the next run.
+    issue = issue or io["issue"](TITLE, body)
     text = with_entries(io["read"]("repos.yml"), lines)
     pr = io["pull"](issue, text, f"chore(repos): add {', '.join(new)} to repos.yml"[:72], new)
     return issue, pr
@@ -156,8 +171,11 @@ def run_propose():
     defaults = {r["name"]: (r.get("defaultBranchRef") or {}).get("name") or "main" for r in rows}
 
     def open_issue(title):
-        found = json.loads(gh("issue", "list", "--repo", central, "--state", "open", "--search", f"in:title \"{title}\"", "--json", "title"))
-        return any(i["title"] == title for i in found)
+        found = json.loads(gh("issue", "list", "--repo", central, "--state", "open", "--search", f"in:title \"{title}\"", "--json", "title,number"))
+        return next((str(i["number"]) for i in found if i["title"] == title), None)
+
+    def has_pull(n):
+        return bool(json.loads(gh("pr", "list", "--repo", central, "--state", "open", "--head", f"chore/{n}-new-repositories", "--json", "number")))
 
     def issue(title, body):
         url = gh("issue", "create", "--repo", central, "--title", title, "--label", "lane:platform,accepted-by:policy", "--body", body).strip()
@@ -184,7 +202,7 @@ def run_propose():
                 f"Closes #{n}\n\n🤖 AI-generated · scripts/detect.py")
         return gh("pr", "create", "--repo", central, "--head", branch, "--title", title, "--body", body).strip()
 
-    io = {"open_issue": open_issue, "issue": issue, "read": read, "pull": pull}
+    io = {"open_issue": open_issue, "has_pull": has_pull, "issue": issue, "read": read, "pull": pull}
     got = propose(central, conf, list(defaults), lambda name: remote(f"{ORG}/{name}", defaults[name]), os.environ.get("RUN_URL", ""), io)
     if got:
         print(f"Proposed in #{got[0]}: {got[1]}")
@@ -218,8 +236,11 @@ def self_test():
     check("propose: the file still parses, with the plugin's kind and roles",
           yaml.safe_load(added)["repos"]["m-plugin"], {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"], "roles": ["back", "front"]}]})
     check("propose: the rest of the file is untouched", added.endswith("\n\nprojects:\n  a-repo: 1\n") and added.startswith("# head\n"), True)
+    check("a rule that checks nothing recognises nothing", matches({"roles": ["back"]}, {"a"}, lambda n: ""), False)
+    hand = "repos:\n  zeta: {kinds: []}\n  alpha: {kinds: []}\n"
+    check("propose: hand-ordered lines stay where they are", with_entries(hand, ["  beta: {kinds: []}"]), "repos:\n  beta: {kinds: []}\n  zeta: {kinds: []}\n  alpha: {kinds: []}\n")
     calls = []
-    io = {"open_issue": lambda t: False, "read": lambda p: conf_text,
+    io = {"open_issue": lambda t: None, "has_pull": lambda n: False, "read": lambda p: conf_text,
           "issue": lambda t, b: calls.append(("issue", t, b)) or 41,
           "pull": lambda n, text, title, new: calls.append(("pull", n, title, new)) or 42}
     got = propose("DiluxOne/.github", yaml.safe_load(conf_text), ["a-repo", "z-repo", "new-one"], lambda n: ["wordpress-plugin"], "https://github.com/DiluxOne/.github/actions/runs/9", io)
@@ -228,8 +249,16 @@ def self_test():
     check("propose: the pull request's title names them", calls[1][2], "chore(repos): add new-one to repos.yml")
     calls.clear()
     check("propose: nothing when every repository is listed", propose("x", yaml.safe_load(conf_text), ["a-repo"], lambda n: [], "u", io), None)
-    check("propose: nothing while a proposal is open", propose("x", yaml.safe_load(conf_text), ["new"], lambda n: [], "u", dict(io, open_issue=lambda t: True)), None)
+    check("propose: nothing while a proposal is open", propose("x", yaml.safe_load(conf_text), ["new"], lambda n: [], "u", dict(io, open_issue=lambda t: 7, has_pull=lambda n: True)), None)
     check("propose: nothing opened in either case", calls, [])
+    got = propose("x", yaml.safe_load(conf_text), ["new"], lambda n: [], "u", dict(io, open_issue=lambda t: 7))
+    check("propose: an issue left without its pull request gets it, no second issue", (got, [c[0] for c in calls]), ((7, 42), ["pull"]))
+    calls.clear()
+
+    def broken(n):
+        raise RuntimeError("HTTP 502")
+    propose("x", yaml.safe_load(conf_text), ["new"], broken, "u", io)
+    check("propose: a repository that cannot be read is proposed unclassified", "new: {kinds: []}" in calls[0][2], True)
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 

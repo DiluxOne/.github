@@ -1139,10 +1139,9 @@ def drift(repo, conf, labels, block, current=0):
             proposal = f"; detection failed ({str(exc)[:120]})"
     if entry is None:
         found.append(f"is not in repos.yml `repos:`: add it with its kinds, paths and roles (an empty list leaves it unclassified){proposal}")
-    elif not entry.get("kinds"):
-        if seen:
-            found.append(f"is unclassified in repos.yml{proposal}")
     else:
+        if not entry.get("kinds") and seen:
+            found.append(f"is unclassified in repos.yml{proposal}")
         kinds = [k.get("kind") for k in entry.get("kinds") or []]
         own = policy_kind_of(full, default)
         if own and own not in kinds:
@@ -1547,6 +1546,9 @@ def dependabot_test(check, conf, labels, block):
         check("#191: a review policy that names another kind is reported", any("says `kind: wordpress-plugin`, but repos.yml gives it web-api" in l for l in drift(repo, conf, [], block)), True)
         globals()["listed"] = lambda name: {"kinds": []}
         check("#191: an unclassified repository has no kind", repo_kind("o/r", "main") is None, repo_kind("o/r", "main"))
+        lines_u = drift(repo, conf, [], block)
+        check("#191: an unclassified one whose review policy names a kind, and that looks like one, is reported",
+              (any("is unclassified in repos.yml; detection proposes wordpress-plugin" in l for l in lines_u), any("says `kind: wordpress-plugin`, but repos.yml gives it no kind" in l for l in lines_u)), (True, True))
     finally:
         globals()["gh"], ORG, globals()["listed"] = saved_gh, saved_org, saved_listed
     check("C3 (#178): a missing one is", any(f"`{DEPENDABOT}` is missing" in l for l in missing), missing)
