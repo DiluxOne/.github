@@ -50,7 +50,7 @@ archived and not excluded in repos.yml:
   all       labels, settings, files and own-checks, in that order.
   check     changes nothing: lists, as Markdown, what differs in each
             repository, its callers and its Dependabot configuration
-            included (the weekly drift check posts it as an issue), and a
+            included (the daily drift check posts it as an issue), and a
             repository whose `design-system` in
             repos.yml names no system of design-systems/, or is `local` with
             no docs/design-system/README.md.
@@ -398,7 +398,7 @@ def sync_callers(repo, conf, dry):
             "this repository's (its support URL, slug, version constant, profile) and its own jobs and inputs."
             "\n\n🤖 AI-generated · scripts/sync-repos.py")
     pr_body = (f"## 📝 What changes\n\n{changed} as {templates_named} has them, with this repository's own values and jobs kept.\n\n"
-               "## 💡 Why\n\nA job a template gains reaches every repository only through its callers; the weekly drift check "
+               "## 💡 Why\n\nA job a template gains reaches every repository only through its callers; the daily drift check "
                "(DiluxOne/.github, scripts/sync-repos.py check) found these out of step.")
     open_change(repo, default, wanted, "Keep the workflow callers in step with the organisation's templates", body,
                 "ci/{}-org-workflow-callers", "ci: keep the workflow callers in step with the templates", pr_body,

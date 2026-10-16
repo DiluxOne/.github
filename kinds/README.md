@@ -226,7 +226,7 @@ new file (a string), `{base, head, path}` for one file, or `{files: {path:
 
 Every repository's `.github/dependabot.yml` comes from the organisation
 (#178): `scripts/sync-repos.py dependabot` writes the kind's
-`dependabot.yml` there, as a pull request with its issue, and the weekly drift check
+`dependabot.yml` there, as a pull request with its issue, and the daily drift check
 (`sync-repos.py check`) reports a repository whose file differs. A kind
 without one, and a repository without a kind, get
 [`policy/dependabot.default.yml`](../policy/dependabot.default.yml).
