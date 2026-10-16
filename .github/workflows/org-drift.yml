@@ -36,7 +36,7 @@ jobs:
   drift:
     name: Drift check
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -47,6 +47,7 @@ jobs:
       - name: dilux-bot token (sync, every repository)
         id: sync
         if: github.ref == 'refs/heads/main'
+        continue-on-error: true # without it the check below still runs
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
@@ -60,13 +61,16 @@ jobs:
       # A failure in one repository is reported and the others go on; the
       # check below still runs and lists what is left.
       - name: Sync (labels, shared files)
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && steps.sync.outputs.token != ''
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.sync.outputs.token }}
+        # Each part runs whatever the other did; the step fails if either did.
         run: |
-          python3 scripts/sync-repos.py labels
-          python3 scripts/sync-repos.py files
+          rc=0
+          python3 scripts/sync-repos.py labels || rc=1
+          python3 scripts/sync-repos.py files || rc=1
+          exit "$rc"
 
       # Every repository the App is installed on, read-only, for the check.
       - name: dilux-bot token (read, every repository)
