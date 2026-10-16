@@ -14,7 +14,9 @@
 #   3. the Spec, written by the agent at G3: how, which files, which test
 #      proves each criterion.
 # Nothing else: text before the first section, an unknown heading or a
-# section out of order fails the check. The only lines allowed outside a
+# section out of order fails the check. A doubt the PRD still marks
+# ([Doubt: …], or [Duda: …]) fails it too (#193): what is not decided is
+# settled before the issue is accepted. The only lines allowed outside a
 # section's text are the organisation's markers (<!-- dx-… -->) and the AI
 # line at the end.
 
