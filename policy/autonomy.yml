@@ -55,7 +55,10 @@ constitution:
 # whatever its lane says (gate G7). `security` is always here (#194): in a
 # private repository a vulnerability is reported as an issue with that label
 # and goes through the usual lane, and its fix never merges on its own. A
-# repository's own file may add labels, never remove one.
+# repository's own file may add labels, never remove one. It holds only for
+# an issue that carries the label: a vulnerability someone files as a plain
+# Bug, which the triage did not read as one, merges like any Bug until a
+# person adds `security`.
 person-merges: [security]
 
 # A lane's issue is accepted by policy only when all of this holds, read from
