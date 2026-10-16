@@ -95,15 +95,14 @@ def open_due(full, now, io=None):
                                                        '.[] | select(.title | startswith("Release ")) | {title} | @json')},
         "tags": lambda: set(gh("api", f"repos/{full}/tags?per_page=100", "--paginate", "--jq", ".[].name").split()),
         "open": lambda version, m: gh("issue", "create", "--repo", full, "--title", f"Release {version}", "--label", "lane:release", "--body", body(version, m)).strip(),
+        "type": lambda url: gh("api", "-X", "PATCH", f"repos/{full}/issues/{url.rsplit('/', 1)[-1]}", "-f", "type=Task"),
     }
     opened = []
     for version, m in due(io["milestones"](), io["titles"](), io["tags"](), now):
         url = io["open"](version, m)
-        if not io.get("test"):
-            # The Release form's Type; one that fails is said, the issue stands.
-            typed = subprocess.run(["gh", "api", "-X", "PATCH", f"repos/{full}/issues/{url.rsplit('/', 1)[-1]}", "-f", "type=Task"], capture_output=True, text=True)
-            if typed.returncode != 0:
-                print(f"::warning::{url}: its Type could not be set to Task ({typed.stderr.strip()[:120]}); set it by hand")
+        # The Release form's Type: a failure fails the run, so it is seen
+        # (the issue stands; its Type is set by hand).
+        io["type"](url)
         print(f"  {full}: Release {version}, {url}")
         opened.append(version)
     return opened
@@ -128,13 +127,15 @@ def self_test():
     text = body("1.4.0", m("1.4.0"))
     check("body: the Release form's section", text.startswith("### Notes\n\n"), True)
     opened = []
-    io = {"test": True, "milestones": lambda: ms, "titles": lambda: {"Release 1.3.0"}, "tags": lambda: {"1.2.0"},
-          "open": lambda v, mm: opened.append(v) or f"https://github.com/o/r/issues/{len(opened)}"}
+    typed = []
+    io = {"milestones": lambda: ms, "titles": lambda: {"Release 1.3.0"}, "tags": lambda: {"1.2.0"},
+          "open": lambda v, mm: opened.append(v) or f"https://github.com/o/r/issues/{len(opened)}", "type": typed.append}
     import contextlib
     import io as _io
     with contextlib.redirect_stdout(_io.StringIO()):
         got = open_due("o/r", now, io)
-    check("open: one issue per version due", got, ["1.4.0", "2.0.0"])
+    check("open: one issue per version due, each given the Release form's Type", (got, typed), (["1.4.0", "2.0.0"], ["https://github.com/o/r/issues/1", "https://github.com/o/r/issues/2"]))
+    check("due: a version milestone closed 30 days ago still counts; 31 no", ([v for v, _ in due([m("3.0.0", days=30)], set(), set(), now)], due([m("3.0.0", days=31)], set(), set(), now)), (["3.0.0"], []))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
