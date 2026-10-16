@@ -136,23 +136,27 @@ def propose(central, conf, repos, found_of, run_url, io):
         print(f"A proposal is already open: #{issue}.")
         return None
     rules = packs()
-    lines = []
+    lines, unread = [], []
     for n in new:
-        # One repository that cannot be read is proposed unclassified.
+        # One repository that cannot be read is proposed unclassified, and said.
         try:
             found = found_of(n)
         except RuntimeError as exc:
             print(f"  {n}: detection failed ({str(exc)[:120]}); proposed unclassified")
-            found = []
+            found, unread = [], unread + [n]
         lines.append(entry(n, found, rules))
     body = ("The organisation has repositories that repos.yml does not list, so nothing says what they are. "
             "Detection (scripts/detect.py) read each one's root and proposes:\n\n" + "\n".join(f"- `{l.strip()}`" for l in lines) +
+            (f"\n\nDetection could not read {', '.join(unread)}: proposed unclassified." if unread else "") +
             "\n\nCorrect the kinds, paths and roles in the pull request if they are wrong; an empty list leaves a repository unclassified. "
             "This is work of the `platform` lane (policy/autonomy.yml): accepted by policy. repos.yml is high risk, so a person merges it."
             f"\n\n<!-- dx-lane: platform run: {run_url} -->\n\n🤖 AI-generated · scripts/detect.py")
     # A run that opened the issue and failed before its pull request: the
     # issue is reused, never left to block the next run.
-    issue = issue or io["issue"](TITLE, body)
+    if issue:
+        io["edit"](issue, body)  # what this run proposes, not an earlier one
+    else:
+        issue = io["issue"](TITLE, body)
     text = with_entries(io["read"]("repos.yml"), lines)
     pr = io["pull"](issue, text, f"chore(repos): add {', '.join(new)} to repos.yml"[:72], new)
     return issue, pr
@@ -195,14 +199,18 @@ def run_propose():
         with open(os.path.join(root, "repos.yml"), "w", encoding="utf-8") as fh:
             fh.write(text)
         g("commit", "-q", "-am", title)
-        # Through the API, so GitHub signs the commit (#190).
-        subprocess.run([sys.executable, os.path.join(HERE, "api-commit.py"), "push", branch, "--onto", "HEAD~1"], check=True, cwd=root)
+        # Through the API, so GitHub signs the commit (#190); the branch is
+        # this proposal's alone, so a run that left it is rewritten.
+        subprocess.run([sys.executable, os.path.join(HERE, "api-commit.py"), "push", branch, "--onto", "HEAD~1", "--force"], check=True, cwd=root)
         body = (f"## What changes\n\n`repos.yml` lists {', '.join(new)}, with what detection recognises in each.\n\n"
                 f"## Why\n\nNothing said what they are: until repos.yml does, they get the triage and the basic checks, and nothing merges on its own there.\n\n"
                 f"Closes #{n}\n\n🤖 AI-generated · scripts/detect.py")
         return gh("pr", "create", "--repo", central, "--head", branch, "--title", title, "--body", body).strip()
 
-    io = {"open_issue": open_issue, "has_pull": has_pull, "issue": issue, "read": read, "pull": pull}
+    def edit(n, body):
+        gh("issue", "edit", n, "--repo", central, "--body", body)
+
+    io = {"open_issue": open_issue, "has_pull": has_pull, "issue": issue, "edit": edit, "read": read, "pull": pull}
     got = propose(central, conf, list(defaults), lambda name: remote(f"{ORG}/{name}", defaults[name]), os.environ.get("RUN_URL", ""), io)
     if got:
         print(f"Proposed in #{got[0]}: {got[1]}")
@@ -241,6 +249,7 @@ def self_test():
     check("propose: hand-ordered lines stay where they are", with_entries(hand, ["  beta: {kinds: []}"]), "repos:\n  beta: {kinds: []}\n  zeta: {kinds: []}\n  alpha: {kinds: []}\n")
     calls = []
     io = {"open_issue": lambda t: None, "has_pull": lambda n: False, "read": lambda p: conf_text,
+          "edit": lambda n, b: calls.append(("edit", n, b)),
           "issue": lambda t, b: calls.append(("issue", t, b)) or 41,
           "pull": lambda n, text, title, new: calls.append(("pull", n, title, new)) or 42}
     got = propose("DiluxOne/.github", yaml.safe_load(conf_text), ["a-repo", "z-repo", "new-one"], lambda n: ["wordpress-plugin"], "https://github.com/DiluxOne/.github/actions/runs/9", io)
@@ -252,13 +261,13 @@ def self_test():
     check("propose: nothing while a proposal is open", propose("x", yaml.safe_load(conf_text), ["new"], lambda n: [], "u", dict(io, open_issue=lambda t: 7, has_pull=lambda n: True)), None)
     check("propose: nothing opened in either case", calls, [])
     got = propose("x", yaml.safe_load(conf_text), ["new"], lambda n: [], "u", dict(io, open_issue=lambda t: 7))
-    check("propose: an issue left without its pull request gets it, no second issue", (got, [c[0] for c in calls]), ((7, 42), ["pull"]))
+    check("propose: an issue left without its pull request gets it, with this run's text, no second issue", (got, [c[0] for c in calls]), ((7, 42), ["edit", "pull"]))
     calls.clear()
 
     def broken(n):
         raise RuntimeError("HTTP 502")
     propose("x", yaml.safe_load(conf_text), ["new"], broken, "u", io)
-    check("propose: a repository that cannot be read is proposed unclassified", "new: {kinds: []}" in calls[0][2], True)
+    check("propose: a repository that cannot be read is proposed unclassified, and named", ("new: {kinds: []}" in calls[0][2], "Detection could not read new" in calls[0][2]), (True, True))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
