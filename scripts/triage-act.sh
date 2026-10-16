@@ -4,7 +4,8 @@
 # locks a security report. Both triage jobs act here.
 #
 # Environment: VERDICT (JSON: category, exists_in_pro, duplicate_of), REPLY
-# and SUMMARY (the public text; an empty reply posts a plain one), NUMBER,
+# and SUMMARY (the public text; an empty reply posts a plain one), PRIVATE
+# (true in a private repository: a security report stays as the issue), NUMBER,
 # MAINTAINER, MODEL, COST (optional), GITHUB_REPOSITORY, GH_TOKEN. A verdict
 # with no category labels the issue needs-triage and stops.
 #
@@ -44,6 +45,8 @@ act() {
   # request. Any other Type someone set is never changed.
   case $category in
     bug_unconfirmed|needs_info) kind=Bug;;
+    # In a private repository the issue is the report (#194): a Bug.
+    security) [ "${PRIVATE:-false}" = true ] && kind=Bug || kind="";;
     pro_feature|planned|enhancement) kind=Feature;;
     *) kind="";;
   esac
@@ -71,11 +74,17 @@ act() {
   else
     dup=""
   fi
+  # A private repository has no private reporting (#194): only those with
+  # access see the issue, so it stays, unlocked, as the report; it follows
+  # the usual lane once accepted, and a person merges its fix.
+  if [ "$category" = security ] && [ "${PRIVATE:-false}" = true ]; then
+    reply="Thanks for reporting this. This repository is private, so this issue is the report: a maintainer will look at it, and the fix is always merged by a person."
+  fi
   if [ "$category" = security ]; then reply="$reply"$'\n\n'"@$MAINTAINER"; fi
   # The record is public too: only the checked duplicate goes in it.
   record=$(jq -c --arg cost "${COST:-}" --arg summary "${SUMMARY:-}" --arg dup "$dup" '{category, exists_in_pro: (.exists_in_pro == true), duplicate_of: (if $dup == "" then null else ($dup | tonumber) end), summary: $summary, cost: $cost}' <<<"$VERDICT")
   gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '%s\n\n<sub>🤖 AI triage · %s (Anthropic)</sub>\n<!-- dx-triage-record %s -->' "$reply" "$MODEL" "$record")" >/dev/null
-  if [ "$category" = security ]; then gh issue lock "$NUMBER" --repo "$GITHUB_REPOSITORY" --reason off-topic >/dev/null; fi
+  if [ "$category" = security ] && [ "${PRIVATE:-false}" != true ]; then gh issue lock "$NUMBER" --repo "$GITHUB_REPOSITORY" --reason off-topic >/dev/null; fi
   echo "Issue #$NUMBER: $category ($label)${COST:+, \$$COST}."
 }
 
@@ -111,6 +120,9 @@ if [ "${1:-}" = "--test" ]; then
   : > "$log"; if ( VERDICT='{"category":"enhancement"}' REPLY=x SUMMARY=s HAS_TYPE=Bug NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m act >/dev/null 2>&1; grep -q "add-label accepted" "$log" ); then echo "FAIL #84 a retyped request is never accepted"; fail=1; else echo "ok   #84 a retyped request is never accepted"; fi
   : > "$log"; if ( VERDICT='{"category":"enhancement"}' REPLY=x SUMMARY=s HAS_TYPE="" NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m act >/dev/null 2>&1; grep -q "its Type is now Feature" "$log" ); then echo "FAIL an issue with no Type gets one without the retype sentence"; fail=1; else echo "ok   an issue with no Type gets one without the retype sentence"; fi
   VERDICT='{"category":"security"}' REPLY=x SUMMARY=s t "a security report is locked" "issue lock 7"
+  PRIVATE=true VERDICT='{"category":"security"}' REPLY=x SUMMARY=s t "#194 in a private repository a security report is a Bug" "api -X PATCH repos/o/r/issues/7 -f type=Bug"
+  PRIVATE=true VERDICT='{"category":"security"}' REPLY="report it privately" SUMMARY=s t "#194 and the reply says the issue is the report" "issue comment 7 .*this issue is the report.*@boss"
+  : > "$log"; if ( PRIVATE=true VERDICT='{"category":"security"}' REPLY="report it privately" SUMMARY=s NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m act >/dev/null 2>&1; grep -qE "issue lock|issue comment .*report it privately" "$log" ); then echo "FAIL #194 nor locked, nor sent to private reporting"; fail=1; else echo "ok   #194 nor locked, nor sent to private reporting"; fi
   VERDICT='' REPLY=x SUMMARY=s t "no verdict waits for a person" "--add-label needs-triage"
   VERDICT='{"category":"nonsense"}' REPLY=x SUMMARY=s t "an unknown category waits for a person" "--add-label needs-triage"
   rm -f "$log"

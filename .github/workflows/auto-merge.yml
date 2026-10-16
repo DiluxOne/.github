@@ -21,7 +21,8 @@ name: Auto-merge
 # A pull request dilux-bot opened and labelled `autopilot` (#83) is decided
 # by the autonomy policy instead, gate G7 (scripts/autopilot.py decide, from
 # DiluxOne/.github at `central-ref`): it closes exactly one issue, which is
-# not Critical; no protected path changes (every file, renames by their old
+# not Critical and carries no label of the policy's `person-merges`
+# (`security`, #194); no protected path changes (every file, renames by their old
 # path too); the review does not block and its description is true, and it
 # found every acceptance criterion met at this head (G6, its record); risk and
 # complexity are within the caps of the lane it was worked under
@@ -118,7 +119,7 @@ jobs:
 
       # A pull request the autopilot opened is decided by the autonomy
       # policy instead (gate G7, scripts/autopilot.py decide): never a
-      # Critical issue or a protected path, never new public surface for an
+      # Critical issue, one labelled security, or a protected path, never new public surface for an
       # issue that is not a Feature (#193), never while the review blocks,
       # never before the review found every acceptance criterion met (G6),
       # within the lane's caps, with a test for every criterion at the head.
@@ -202,6 +203,10 @@ jobs:
             fi
           fi
           export SURFACE="$RUNNER_TEMP/surface" ISSUE_TYPE
+          # The issue's labels: one the policy lists in person-merges
+          # (security, #194) leaves the merge to a person.
+          gh api "repos/$GITHUB_REPOSITORY/issues/$issue" --jq '.labels[].name' > "$RUNNER_TEMP/issue-labels"
+          export ISSUE_LABELS="$RUNNER_TEMP/issue-labels"
           # G6 (#193): the review's verdict on each acceptance criterion, from
           # its record on the pull request, only when it judged this head.
           gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \

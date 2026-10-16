@@ -51,6 +51,13 @@ constitution:
   # Who the organisation and its App are (#191).
   - "org.yml"
 
+# An issue carrying one of these labels is always merged by a person,
+# whatever its lane says (gate G7). `security` is always here (#194): in a
+# private repository a vulnerability is reported as an issue with that label
+# and goes through the usual lane, and its fix never merges on its own. A
+# repository's own file may add labels, never remove one.
+person-merges: [security]
+
 # A lane's issue is accepted by policy only when all of this holds, read from
 # GitHub, never from the issue's text alone:
 #   - the issue carries the lane's label (`lane:<name>`), and the last to add

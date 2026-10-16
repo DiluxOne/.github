@@ -30,7 +30,7 @@ For the team of the central repository (`.github`). Each phase is a sub-issue of
 | 6. Organisation config and several kinds | `repos.yml` and `kinds/` with schemas, roles, release mode, detection, new repositories, code without proper names | 3 | - |
 | 7. Release and deploy | Release by milestone, an environment with no approver, continuous deploy with flags | 5, 6 | - |
 | 8. Autopilot by type of work | G1, types of work, escalation by kind, feature phases, review loop, G6, auto-merge, disambiguation, spike | 3, 6 | - |
-| 9. Security | Private advisory; merge by the policy, with a 4-hour veto | 8 | - |
+| 9. Security | Private advisory in public repositories, a `security` issue in private ones; a person merges the fix | 8 | - |
 | 10. Reproduced bugs | A real bug end to end through the lane that already exists | 8 | - |
 | 11. Learnings | Findings in the receipt, a weekly job, pull requests with evidence | 8 | - |
 | 12. Setup for other organisations | Installer, base kinds, configuration with an agent | 6, 11 | - |
@@ -140,11 +140,10 @@ For the team of the central repository (`.github`). Each phase is a sub-issue of
 ### Phase 9 · Security
 
 - **Today:** `SECURITY.md` exists, and the triage locks the issue and sends it to private reporting.
-- **Delivers:**
-  - The private advisory flow, with the fix in the private fork.
-  - Merge by the policy: low or medium risk merges on its own with a 4-hour veto; high or Critical is merged by a maintainer.
-  - Private reporting in private repositories too.
-- **Done when:** a test advisory goes from report to merge through the veto window.
+- **Redesigned (2026-10-16):** GitHub does not run Actions in an advisory's temporary private fork, merges that fork's pull request only from the advisory's page, and has no private reporting in private repositories. So a security fix never merges on its own, and there are two paths:
+  - **Public repositories:** private reporting opens the advisory; a maintainer moving it to draft accepts it. The engine creates the temporary private fork, an agent writes the fix and its test there, the tests run in a job of this repository, and the pull request waits in the fork. A maintainer merges it and publishes the advisory from its page.
+  - **Private repositories:** the report is an issue labelled `security` (the triage keeps it, unlocked, as a Bug), worked through the usual lane; `person-merges` in the policy leaves its merge to a person.
+- **Done when:** a test advisory goes from report to a fix waiting in its fork, and a test issue labelled `security` in a private repository reaches a pull request that does not merge on its own.
 
 ### Phase 10 · Reproduced bugs
 
@@ -176,7 +175,7 @@ Five types are enough; everything else (refactor, docs, perf, hotfix, migration)
 | Minor | The change fits in one sentence and does not change behaviour: text, a button, a select, docs, a small refactor, a revert | Code, checks, review | A maintainer accepts the issue | Yes |
 | Bugfix | Something behaves differently from what is expected, a performance regression included | A test that reproduces it, a test of what must NOT change, code, review, validation | The policy, if the bug was reproduced on its own; otherwise a maintainer | Yes, up to medium risk |
 | Feature | Something new, a public API or hook, a migration, a deprecation, a breaking change | PRD, impact, threats, architecture, code, review, independent validation against PRD and Spec | A maintainer accepts the PRD | Yes, up to medium risk |
-| Security | A vulnerability reported privately | A private GitHub advisory, never a public issue | A maintainer | Up to medium risk, with a veto |
+| Security | A vulnerability reported privately | A private GitHub advisory in a public repository; an issue labelled `security` in a private one | A maintainer | No |
 
 **What is not a type:** a spike or investigation produces no pull request; it is an outcome of the triage and ends in doing, clarifying or discarding. Release has its own flow (the "Release X.Y.Z" issue).
 
@@ -321,7 +320,7 @@ Three layers, from the strongest to the most local: the organisation (in `.githu
 
 | What | Organisation (`.github`) | Kind | Repository | Who merges a change |
 | --- | --- | --- | --- | --- |
-| Autonomy: lanes, thresholds, majors, security, veto | `policy/autonomy.yml` | - | `.github/policy.yml`: restricts, or widens up to the ceiling | A maintainer |
+| Autonomy: lanes, thresholds, majors, what a person always merges (`person-merges`, security) | `policy/autonomy.yml` | - | `.github/policy.yml`: restricts, or widens up to the ceiling | A maintainer |
 | Gates and workflows | The workflows of `.github` | The kind's checks | The callers the sync copies | A maintainer |
 | Mandatory rules (test-first, security…) | `rules/` (level: mandatory) | `kinds/<kind>/` | `AGENTS.md`: only adds | A maintainer |
 | Conventions and good practice | `docs/model.md` and the `AGENTS.md` block the sync copies | `kinds/<kind>/` | `AGENTS.md`, under the block | Organisation and kind: a maintainer. The repository's own: a lane, if it only tightens |
@@ -372,7 +371,7 @@ The base is there (autopilot, gates, receipts, lanes, packs per kind); what is m
 - [x] **Who curates a feature's threat model:** decided on 2026-10-15: a second AI, and a maintainer only if the issue is Critical.
 - [x] **Where the maintainer sees what waits for them:** every pending question or decision lives in the issue of its repository, labelled `needs:maintainer`. Decided on 2026-10-15: a view of the organisation's Project filtered by that label, which is already in use and needs nothing built.
 - [x] **Lowering `human-issue` to medium risk now:** today the lane of issues a maintainer accepts merges on its own up to high risk, more than the model says (medium). Decided on 2026-10-15: it is fixed now, because it is a configuration change that closes a gap that exists today. The risk up to which something merges on its own is configurable in `policy/autonomy.yml`: the organisation sets a default (medium) and a ceiling (high; Critical never merges on its own), and each repository overrides it. Lowering it is free; raising it, only up to the ceiling. As part of the autonomy policy, a change to it is merged by a maintainer.
-- [x] **Security fixes:** decided on 2026-10-15: configurable per organisation, and each repository overrides it. By default, low or medium risk merges on its own, after the gates and the independent validation, with a veto window (the maintainer is told and can stop it for 4 hours, configurable); high risk or Critical is merged by a maintainer.
+- [x] **Security fixes:** decided on 2026-10-15: configurable per organisation, and each repository overrides it. By default, low or medium risk merges on its own, after the gates and the independent validation, with a veto window (the maintainer is told and can stop it for 4 hours, configurable); high risk or Critical is merged by a maintainer. Superseded on 2026-10-16 (phase 9): GitHub merges an advisory's fix only from its page, so a person merges every security fix, in private repositories too.
 
 ## Today vs proposed
 

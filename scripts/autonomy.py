@@ -136,6 +136,10 @@ def merge(org, repo):
         warn("autopilot: the organisation has it off; a repository cannot turn it on. Ignored.")
     extra = [p for p in (repo.get("constitution") or []) if isinstance(p, str)]
     out["constitution"] = list(org.get("constitution") or []) + [p for p in extra if p not in (org.get("constitution") or [])]
+    # Labels whose issue a person always merges (#194): a repository adds to
+    # them, never takes one away.
+    more = [l for l in (repo.get("person-merges") or []) if isinstance(l, str) and l]
+    out["person-merges"] = list(org.get("person-merges") or []) + [l for l in more if l not in (org.get("person-merges") or [])]
     for name, mine in (repo.get("lanes") or {}).items():
         lane = out["lanes"].get(name)
         if lane is None:
@@ -171,7 +175,7 @@ def merge(org, repo):
     return out
 
 
-TOP_KEYS = {"autopilot", "autopilot-rounds", "autopilot-runs", "constitution", "lanes"}
+TOP_KEYS = {"autopilot", "autopilot-rounds", "autopilot-runs", "constitution", "person-merges", "lanes"}
 LANE_KEYS = {"description", "accept", "type", "origin", "repositories", "evidence", "merge", "ceiling", "enabled"}
 
 
@@ -194,6 +198,11 @@ def problems(policy):
         for path in ("policy/**", "rules/**"):
             if path not in constitution:
                 out.append(f"constitution: {path} is always protected")
+    held = policy.get("person-merges", [])
+    if not isinstance(held, list) or not all(isinstance(l, str) and l for l in held):
+        out.append("person-merges: a list of labels")
+    elif "security" not in held:
+        out.append("person-merges: security is always there")
     lanes = policy.get("lanes")
     if not isinstance(lanes, dict) or not lanes:
         return out + ["lanes: at least one"]
@@ -910,6 +919,9 @@ def self_test():
     check("#188 schema: a ceiling below the default", problems({**org, **lane(ceiling={"max-risk": "low", "max-complexity": "high"})}), ["lanes.human-issue.ceiling.max-risk: low is below the lane's merge (medium)"])
     check("#188 schema: merge names both caps", problems({**org, **lane(merge={"max-risk": "low"})}), ["lanes.human-issue.merge: max-risk and max-complexity"])
     check("#188 schema: the policy and the rules are always protected", problems({**org, "constitution": [".github/**"]}), ["constitution: policy/** is always protected", "constitution: rules/** is always protected"])
+    check("#194 schema: security is always a label a person merges", (problems({**org, "person-merges": []}), problems({**org, "person-merges": "security"})), (["person-merges: security is always there"], ["person-merges: a list of labels"]))
+    check("#194 merge: a repository adds labels a person merges, never takes security away", merge(org, {"person-merges": ["payments"]})["person-merges"][-2:], ["security", "payments"])
+    check("#194 merge: an empty list in a repository keeps security", "security" in merge(org, {"person-merges": []})["person-merges"], True)
     with tempfile.TemporaryDirectory() as tmp:
         bad_policy = os.path.join(tmp, "autonomy.yml")
         with open(bad_policy, "w", encoding="utf-8") as fh:

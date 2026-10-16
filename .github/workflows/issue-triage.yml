@@ -27,7 +27,10 @@ name: Issue triage
 #   duplicate             the reply links the original
 #   security              a vulnerability posted in public: the reply asks for
 #                         private reporting, the issue is locked, and the
-#                         maintainer is mentioned
+#                         maintainer is mentioned; in a private repository,
+#                         which has no private reporting, the issue is the
+#                         report (#194): a Bug, unlocked, and a person merges
+#                         its fix (policy/autonomy.yml, person-merges)
 #
 # It never adds `accepted`: only a person accepts an issue, and the
 # accepted-issue gate (scripts/issue-gate.sh) ignores a label a bot added.
@@ -351,6 +354,7 @@ jobs:
           OUT: ${{ steps.claude.outputs.structured_output }}
           NUMBER: ${{ github.event.issue.number }}
           MAINTAINER: ${{ inputs.maintainer }}
+          PRIVATE: ${{ github.event.repository.private }}
           MODEL: ${{ steps.policy.outputs.model }}
           COST: ${{ steps.verdict.outputs.cost }}
         run: |
@@ -462,6 +466,7 @@ jobs:
           WRITTEN: ${{ steps.write.outputs.structured_output }}
           NUMBER: ${{ github.event.issue.number }}
           MAINTAINER: ${{ inputs.maintainer }}
+          PRIVATE: ${{ github.event.repository.private }}
           MODEL: ${{ needs.triage.outputs.model }}
           COST: ${{ needs.triage.outputs.cost }}
         run: |
