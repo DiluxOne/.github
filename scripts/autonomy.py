@@ -273,9 +273,12 @@ def lane_open(policy, name, repository, autopilot_var):
 
 def lane_of(issue):
     """The lane an issue names with its labels: (name, None), or (None, why)
-    when it names none or more than one."""
+    when it names none or more than one. A sub-issue with no lane label is
+    the delegated lane's (#189): its parent is what it is recognised by."""
     labels = [n.get("name") for n in ((issue.get("labels") or {}).get("nodes") or [])]
     lanes = [l[len("lane:"):] for l in labels if l and l.startswith("lane:")]
+    if not lanes and issue.get("parent"):
+        return DELEGATED, None
     if len(lanes) != 1:
         return None, ("the issue needs exactly one lane:<name> label" if not lanes else "the issue carries more than one lane")
     return lanes[0], None
@@ -298,6 +301,8 @@ def lane_accepts(policy, issue, run, repository, autopilot_var, sync=None):
     origin = lane.get("origin") or {}
     if origin.get("runs"):
         return sync_accepts(name, lane, issue, repository, sync or {})
+    if origin.get("parent"):
+        return delegated_accepts(name, lane, issue, repository)
     app = origin.get("app", "")
     bot_logins = {app, f"{app}[bot]"}
     event = last_label_event(issue, f"lane:{name}")
@@ -324,6 +329,43 @@ def lane_accepts(policy, issue, run, repository, autopilot_var, sync=None):
     if not names & allowed:
         return False, f"the run's workflows ({', '.join(sorted(names)) or 'none'}) are not the lane's ({', '.join(sorted(allowed))})"
     return True, f"accepted by policy: lane {name}, opened by run {run_id}"
+
+
+DELEGATED = "delegated"
+MEMBERS = {"OWNER", "MEMBER"}
+
+
+def delegated_accepts(name, lane, issue, repository):
+    """(True, why) when the issue is a sub-issue the delegated lane accepts:
+    its parent open, in the organisation, accepted by a person (the last
+    `accepted` event a person's, the label still there); the sub-issue
+    opened by a member or the lane's App, and not edited after it was
+    linked. Pure: everything comes in `issue` (ISSUE_QUERY)."""
+    parent = issue.get("parent") or {}
+    if not parent:
+        return False, "the issue is no sub-issue"
+    where = ((parent.get("repository") or {}).get("nameWithOwner") or "")
+    if where.split("/", 1)[0].lower() != repository.split("/", 1)[0].lower():
+        return False, "its parent is outside the organisation"
+    ref = f"{where}#{parent.get('number')}"
+    if parent.get("state") != "OPEN":
+        return False, f"its parent {ref} is not open"
+    if "accepted" not in [n.get("name") for n in ((parent.get("labels") or {}).get("nodes") or [])]:
+        return False, f"its parent {ref} is not accepted"
+    event = last_label_event(parent, "accepted")
+    if not event or event.get("__typename") != "LabeledEvent" or (event.get("actor") or {}).get("__typename") != "User":
+        return False, f"its parent {ref} was not accepted by a person"
+    app = (lane.get("origin") or {}).get("app", "")
+    author = login((issue.get("author") or {}).get("login"))
+    if issue.get("authorAssociation") not in MEMBERS and author != login(app):
+        return False, "the sub-issue was not opened by a member of the organisation"
+    linked = [e.get("createdAt") for e in ((issue.get("timelineItems") or {}).get("nodes") or []) if e.get("__typename") == "ParentIssueAddedEvent"]
+    if not linked:
+        return False, "its link to the parent could not be read"
+    edited = issue.get("lastEditedAt")
+    if edited and edited > linked[-1]:
+        return False, "the sub-issue was edited after it was linked to its parent"
+    return True, f"accepted by policy: lane {name}, a sub-issue of {ref}, which {(event.get('actor') or {}).get('login')} accepted"
 
 
 # --- sync lanes (org-sync): what scripts/sync-repos.py opens ---------------
@@ -644,13 +686,25 @@ def sync_module():
 ISSUE_QUERY = """query($o: String!, $n: String!, $i: Int!) {
   repository(owner: $o, name: $n) {
     issue(number: $i) {
-      number body lastEditedAt author { login } issueType { name }
+      number body lastEditedAt authorAssociation author { login } issueType { name }
       labels(first: 50) { nodes { name } }
-      timelineItems(itemTypes: [LABELED_EVENT, UNLABELED_EVENT], last: 100) {
+      timelineItems(itemTypes: [LABELED_EVENT, UNLABELED_EVENT, PARENT_ISSUE_ADDED_EVENT], last: 100) {
         nodes {
           __typename
           ... on LabeledEvent { label { name } actor { __typename login } }
           ... on UnlabeledEvent { label { name } actor { __typename login } }
+          ... on ParentIssueAddedEvent { createdAt }
+        }
+      }
+      parent {
+        number state repository { nameWithOwner }
+        labels(first: 50) { nodes { name } }
+        timelineItems(itemTypes: [LABELED_EVENT, UNLABELED_EVENT], last: 100) {
+          nodes {
+            __typename
+            ... on LabeledEvent { label { name } actor { __typename login } }
+            ... on UnlabeledEvent { label { name } actor { __typename login } }
+          }
         }
       }
     }
@@ -786,7 +840,36 @@ def self_test():
             failed = 1
 
     org = load(os.path.join(HERE, "..", "policy", "autonomy.yml"))
-    check("the organisation's policy has the five lanes", sorted(org.get("lanes", {})), ["bugfix-reproduced", "human-issue", "org-sync", "platform", "release"])
+    check("the organisation's policy has the six lanes", sorted(org.get("lanes", {})), ["bugfix-reproduced", "delegated", "human-issue", "org-sync", "platform", "release"])
+
+    # #189: a sub-issue of an issue a person accepted.
+    def child(parent_labels=("accepted",), actor="User", state="OPEN", where="DiluxOne/.github", assoc="MEMBER",
+              author="someone", edited=None, linked="2026-10-16T10:00:00Z", labels=(), parent=True, unlabeled=False):
+        events = [{"__typename": "LabeledEvent", "label": {"name": "accepted"}, "actor": {"__typename": actor, "login": "soydiloreto" if actor == "User" else "dilux-bot"}}]
+        if unlabeled:
+            events.append({"__typename": "UnlabeledEvent", "label": {"name": "accepted"}, "actor": {"__typename": "User", "login": "soydiloreto"}})
+        return {"number": 9, "body": "Carry it out here.", "author": {"login": author}, "authorAssociation": assoc, "lastEditedAt": edited,
+                "labels": {"nodes": [{"name": n} for n in labels]},
+                "timelineItems": {"nodes": [{"__typename": "ParentIssueAddedEvent", "createdAt": linked}] if linked else []},
+                "parent": {"number": 189, "state": state, "repository": {"nameWithOwner": where},
+                           "labels": {"nodes": [{"name": n} for n in parent_labels]}, "timelineItems": {"nodes": events}} if parent else None}
+    dpol = merge(org, {})
+    acc = lambda i, var="": lane_accepts(dpol, i, None, "DiluxOne/diluxone-mail-wordpress", var)
+    check("#189 C1: a member's sub-issue of a person's accepted issue is accepted by policy", acc(child()), (True, "accepted by policy: lane delegated, a sub-issue of DiluxOne/.github#189, which soydiloreto accepted"))
+    check("#189 C1: one the lane's App opened is too", acc(child(assoc="NONE", author="dilux-bot[bot]"))[0], True)
+    check("#189 C2: a parent nobody accepted", acc(child(parent_labels=()))[0], False)
+    check("#189 C2: a parent a bot accepted", acc(child(actor="Bot"))[0], False)
+    check("#189 C3: a sub-issue from outside the organisation", acc(child(assoc="CONTRIBUTOR"))[0], False)
+    check("#189 C3: a sub-issue edited after it was linked", acc(child(edited="2026-10-16T11:00:00Z"))[0], False)
+    check("#189 C3: edited before it was linked counts as written then", acc(child(edited="2026-10-16T09:00:00Z"))[0], True)
+    check("#189 C3: no link event read, no acceptance", acc(child(linked=None))[0], False)
+    check("#189 C4: a closed parent takes it back", acc(child(state="CLOSED"))[0], False)
+    check("#189 C4: a parent whose accepted was removed takes it back", acc(child(parent_labels=(), unlabeled=True))[0], False)
+    check("#189: a parent in another organisation", acc(child(where="Other/.github"))[0], False)
+    check("#189: an issue with no parent and no lane is no lane's", acc(child(parent=False))[0], False)
+    check("#189: a lane label wins over the parent", lane_of(child(labels=("lane:platform",))), ("platform", None))
+    check("#189: DX_AUTOPILOT off stops it", acc(child(), "off")[0], False)
+    check("#189: a repository switches it off", lane_accepts(merge(org, {"lanes": {"delegated": {"enabled": False}}}), child(), None, "DiluxOne/x", "")[0], False)
     check("a release is never accepted by policy", org["lanes"]["release"]["accept"], "human")
 
     # The golden rule: every protected path is high risk, so it never merges on its own.
