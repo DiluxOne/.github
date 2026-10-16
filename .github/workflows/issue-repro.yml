@@ -591,7 +591,8 @@ jobs:
           g add -- "$test"
           if [ "$OUTCOME" = reproduced ]; then
             g commit -q -m "test(repro): failing test for #$NUMBER" -m "Written by the reproduction job from the report in #$NUMBER; it fails on main, which confirms the bug. The fix goes in on top of it." -m "🤖 AI-generated · $MODEL (Anthropic)"
-            g push -q -f -u origin "$branch"
+            # Through the API, so GitHub signs the commit (#190).
+            python3 .dx-central/scripts/api-commit.py push "$branch" --onto HEAD~1 --force
             gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label bug:confirmed --remove-label bug:unconfirmed >/dev/null
             if [ "$LANE_OPEN" = yes ]; then
               # The next step hands it to the lane and says so on the report.
@@ -604,7 +605,8 @@ jobs:
             echo "Reproduced: $url"
           else
             g commit -q -m "test(repro): attempt for #$NUMBER" -m "Written by the reproduction job from the report in #$NUMBER; it passes on main, so the report could not be reproduced this way." -m "🤖 AI-generated · $MODEL (Anthropic)"
-            g push -q -f -u origin "$branch"
+            # Through the API, so GitHub signs the commit (#190).
+            python3 .dx-central/scripts/api-commit.py push "$branch" --onto HEAD~1 --force
             gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label could-not-reproduce >/dev/null
             gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'I could not reproduce this. I wrote a unit test from the report (%s, on the branch %s) and it passes on %s: %s%s\n\nWhat would help: %s\n\nIf you add that here, a maintainer can ask for another attempt (the %s label).\n\n%s' "$code_test" "${BT}${branch}${BT}" "$code_main" "$SUMMARY" "$since" "$needs" "$code_again" "$sign")" >/dev/null
             echo "Not reproduced."

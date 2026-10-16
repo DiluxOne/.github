@@ -25,7 +25,7 @@ If the issue is accepted after the pull request was opened, the failed check run
 ## Pull requests
 
 1. Create a branch from `main`: in your fork if you are an outside contributor, in the repository itself if you are a maintainer.
-2. Make the change, with tests, and update any doc that describes what you changed.
+2. Make the change, with tests, and update any doc that describes what you changed. Sign every commit (GPG, SSH or S/MIME, [as GitHub explains](https://docs.github.com/en/authentication/managing-commit-signature-verification/signing-commits)): GitHub shows it as "Verified". The bots' commits go through GitHub's API, which signs them.
 3. Review it locally before you push (see "Review before the pull request" below): every review on GitHub costs money and a round of waiting, so the pull request should arrive clean.
 4. Open a pull request against `main` and fill in the template (see "Writing the pull request" below).
 5. Wait for CI. Pull requests are squash-merged: the PR title becomes the commit title on `main` and the PR description becomes its body.

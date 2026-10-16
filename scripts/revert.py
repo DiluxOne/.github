@@ -506,6 +506,16 @@ def run_git(args, env, check=True):
     return out
 
 
+def push_branch(repo, work, name, env):
+    """The revert's commit on its branch, made again through the API so
+    GitHub signs it (scripts/api-commit.py, #190). Fails with its exit code
+    only, as run_git: its output may hold the branch."""
+    out = subprocess.run([sys.executable, os.path.join(HERE, "api-commit.py"), "push", name, "--onto", "HEAD~1"],
+                         cwd=work, env=dict(env, GITHUB_REPOSITORY=repo), capture_output=True, text=True)
+    if out.returncode != 0:
+        raise RuntimeError(f"the signed push exited {out.returncode}")
+
+
 def guarded_act():
     """act, whose failure in a private repository says only that it failed."""
     try:
@@ -577,7 +587,7 @@ def act():
         issue = open_issue(repo, item, tmp)
         name = branch(issue, item["pr_title"])
         try:
-            git("push", "-q", "origin", f"HEAD:refs/heads/{name}")
+            push_branch(repo, work, name, env)
             pbody = os.path.join(tmp, "pr.md")
             with open(pbody, "w", encoding="utf-8") as fh:
                 fh.write(pr_body(item, issue))
@@ -858,9 +868,13 @@ def self_test():
                 calls.append(("gh",) + args[:2])
                 return "https://github.com/DiluxOne/x/issues/40\n" if args[:2] == ("issue", "create") else "{}"
 
-            saved = {k: globals()[k] for k in ("api", "api_lines", "gh", "GIT_BASE")}
+            saved = {k: globals()[k] for k in ("api", "api_lines", "gh", "GIT_BASE", "push_branch")}
             env = {k: os.environ.get(k) for k in ("ITEM", "GH_TOKEN", "DX_AUTOPILOT")}
-            globals().update(api=fake_api, api_lines=fake_lines, gh=fake_gh, GIT_BASE=base + os.sep)
+            # GitHub's API is played by the local remote: the push is git's.
+            def git_push(repo, work, name, env):
+                calls.append(("push", name))
+                run_git(["-C", work, "push", "-q", "origin", f"HEAD:refs/heads/{name}"], env)
+            globals().update(api=fake_api, api_lines=fake_lines, gh=fake_gh, GIT_BASE=base + os.sep, push_branch=git_push)
             os.environ.update(ITEM=json.dumps({"kind": kind, "repo_id": 7, "run_id": 4, "pr": 12}), GH_TOKEN="t", DX_AUTOPILOT="")
             import contextlib
             import io
@@ -884,6 +898,7 @@ def self_test():
     calls, pushed = act_offline()
     gh_calls = [c[1:] for c in calls if c[0] == "gh"]
     check("act: the revert is pushed on its branch", pushed, "revert: fix(sync): retry once")
+    check("#190: through push_branch, the signed push", [c for c in calls if c[0] == "push"], [("push", "revert/40-fix-sync-retry-once")])
     check("act: the issue, then the pull request, then `reverted`", [c for c in gh_calls if c in (("issue", "create"), ("pr", "create"), ("pr", "edit"))],
           [("issue", "create"), ("pr", "create"), ("pr", "edit")])
     lookup = [c[1] for c in calls if c[0] == "lines" and "/issues?" in c[1]]

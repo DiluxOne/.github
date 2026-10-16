@@ -439,7 +439,8 @@ jobs:
             exit 0
           fi
           git commit -q -m "$title"
-          git push -q origin "$branch"
+          # Through the API, so GitHub signs the commit (#190).
+          python3 .dx-central/scripts/api-commit.py push "$branch" --onto HEAD~1
           pr=$(gh pr create --repo "$GITHUB_REPOSITORY" --base "$BASE" --head "$branch" --title "$title" --body "$(jq -r .body "$RUNNER_TEMP/plan.json")")
           say "**The release pull request:** $pr. It goes through the checks and the review like any other; merging it publishes $version to $where, after the release workflow checks that a person accepted this issue and that its title still names $version."
 

@@ -238,14 +238,15 @@ jobs:
             body=$(jq -r ".proposals[$i] | \"## 📝 What changes\n\n\\(.changes)\n\n## 💡 Why\n\n\\(.why)\n\n## ✅ If you approve\n\n\\(.if_approved)\n\n<sub>Proposed by the weekly review learnings from the reviews of the last 90 days. A human merges this; nothing changes until then.</sub>\n\n🤖 AI-generated · $MODEL (Anthropic)${cost:+ · \$$cost for the whole weekly run}\"" <<<"$OUT")
             mapfile -t files <<<"$changed"
             # Whatever the action left in the checkout's git config (remote URL
-            # with a token, extra headers) goes before the push.
+            # with a token, extra headers) goes before the push, which goes
+            # through the API so GitHub signs the commit (#190).
             g -C "$dir" remote set-url origin "https://github.com/$ORG/$name.git"
             g -C "$dir" config --unset-all http.extraheader 2>/dev/null || true
             g -C "$dir" config --unset-all "http.https://github.com/.extraheader" 2>/dev/null || true
             if g -C "$dir" checkout -q -b "$branch" \
                && g -C "$dir" add -- "${files[@]}" \
                && g -C "$dir" commit -q -m "$title" -m "$(jq -r ".proposals[$i].changes" <<<"$OUT")" -m "🤖 AI-generated · $MODEL (Anthropic)" \
-               && g -C "$dir" push -q -u origin "$branch" \
+               && (cd "$dir" && GITHUB_REPOSITORY="$ORG/$name" python3 "$GITHUB_WORKSPACE/scripts/api-commit.py" push "$branch" --onto HEAD~1) \
                && url=$(gh pr create --repo "$ORG/$name" --head "$branch" --title "$title" --body "$body"); then
               echo "Opened $url"; opened=$((opened + 1))
             else

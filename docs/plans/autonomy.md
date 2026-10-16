@@ -93,6 +93,7 @@ For the team of the central repository (`.github`). Each phase is a sub-issue of
   - Ephemeral runners, each in its own container.
   - The `DX_RUNNER_HEAVY` and `DX_RUNNER_LIGHT` variables, the runner group and the block on forks.
 - **Done when:** a week of CI goes by with no jobs stepping on each other, and the image updates itself.
+- **Signed commits:** the bots push through GitHub's API (`scripts/api-commit.py`), which signs their commits: the autopilot and its agent, the release pull request, the reproduction, the weekly learnings and the revert. Then the organisation's ruleset requires signed commits on every branch.
 
 ### Phase 6 · Organisation config and several kinds
 

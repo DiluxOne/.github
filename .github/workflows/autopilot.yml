@@ -455,11 +455,14 @@ jobs:
               echo "why=The reproduction test on $REPRO_BRANCH is not the one the PRD sealed; the draft pull request is not opened." >> "$GITHUB_OUTPUT"; exit 0
             fi
             git checkout -q -b "$branch" FETCH_HEAD
+            onto=FETCH_HEAD
           else
+            onto=$(git rev-parse HEAD)
             git checkout -q -b "$branch"
             git commit -q --allow-empty -m "chore(autopilot): start on #$NUMBER" -m "The draft pull request opens before any code: the Spec as its checklist."
           fi
-          git push -q origin "$branch"
+          # Through the API, so GitHub signs the commit (#190).
+          python3 .dx-central/scripts/api-commit.py push "$branch" --onto "$onto"
           url=$(gh pr create --repo "$GITHUB_REPOSITORY" --draft --base "$(gh repo view "$GITHUB_REPOSITORY" --json defaultBranchRef --jq .defaultBranchRef.name)" \
             --head "$branch" --title "$(jq -r .title "$RUNNER_TEMP/draft.json")" --body-file "$RUNNER_TEMP/draft.md" --label autopilot)
           pr=${url##*/}

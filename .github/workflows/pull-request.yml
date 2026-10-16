@@ -115,6 +115,7 @@ jobs:
       - run: python3 scripts/receipts.py --test
       - run: python3 scripts/autopilot.py --test
       - run: python3 scripts/revert.py --test
+      - run: python3 scripts/api-commit.py --test
       - run: bash scripts/runner-vm/dx-runner-slot.sh --test
       - run: bash scripts/runner-vm/provision.sh --test
       - run: python3 scripts/runner-vm/clock/clock.py --test
