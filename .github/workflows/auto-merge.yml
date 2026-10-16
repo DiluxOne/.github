@@ -22,7 +22,8 @@ name: Auto-merge
 # by the autonomy policy instead, gate G7 (scripts/autopilot.py decide, from
 # DiluxOne/.github at `central-ref`): it closes exactly one issue, which is
 # not Critical; no protected path changes (every file, renames by their old
-# path too); the review does not block and its description is true; risk and
+# path too); the review does not block and its description is true, and it
+# found every acceptance criterion met at this head (G6, its record); risk and
 # complexity are within the caps of the lane it was worked under
 # (`scripts/autopilot.py lane`: a lane's own issue, that lane; one a person
 # accepted, `human-issue`); the Spec is the one sealed at G3; every

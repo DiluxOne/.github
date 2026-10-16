@@ -506,9 +506,9 @@ BOT = org.BOT
 def g6_verdict(path):
     """The review's G6 verdict from a file holding its record at the head
     (the dx-review-record JSON): {id: met}; None without one, or no
-    criteria in it; False when no file was named (not asked)."""
+    criteria in it, or no file named: the merge decision fails closed."""
     if not path:
-        return False
+        return None
     try:
         record = json.loads(open(path, encoding="utf-8").read() or "null")
     except (OSError, ValueError):
@@ -913,7 +913,7 @@ Clamp the value in Sum::add.
     import tempfile as _tf
     with _tf.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
         fh.write(json.dumps({"sha": "h", "criteria": [{"id": "C1", "met": True, "evidence": "t"}, {"id": "C2", "met": False, "evidence": "none"}]}))
-    check("#193 G6: the verdict read from the review's record", (g6_verdict(fh.name), g6_verdict(""), g6_verdict("/nonexistent")), ({"C1": True, "C2": False}, False, None))
+    check("#193 G6: the verdict read from the review's record", (g6_verdict(fh.name), g6_verdict(""), g6_verdict("/nonexistent")), ({"C1": True, "C2": False}, None, None))
     os.unlink(fh.name)
     check("#84 decide: never a protected path, in this lane either", lok(files=lhead + [".github/workflows/x.yml"]), False)
     check("#84 decide: never under the lane without its evidence in the PRD", lok(body=spec, files=["header.php", "tests/e2e/toggle.spec.ts"], head=head), False)

@@ -11,7 +11,10 @@ name: Claude review
 #      files say; a repository
 #      overrides any level in its .github/review-policy.yml (`review:`), which
 #      is read from the base branch so a change cannot pick its own reviewer. At a low floor the brief carries the profiles and the diff
-#      only; AGENTS.md and docs/architecture.md are added above it.
+#      only; AGENTS.md and docs/architecture.md are added above it. When
+#      the pull request closes one issue, the brief carries that issue's
+#      acceptance criteria and the review says, for each, whether the pull
+#      request meets it (G6, #193; kept in its record, read by G7).
 #   2. If the head commit was already reviewed (the description was edited, a
 #      check was re-run), the previous verdict is reused and Claude is not
 #      called at all.
