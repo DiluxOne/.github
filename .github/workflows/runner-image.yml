@@ -230,6 +230,7 @@ jobs:
           else
             # A failed build is the `platform` lane's work: the lane checks
             # that dilux-bot opened it from this run, named in the body.
+            # shellcheck disable=SC2016 # backticks in the Markdown of the issue, not commands.
             printf 'Not promoted; :stable stayed as it was. Fixing the image is work of the `platform` lane (policy/autonomy.yml): accepted by policy, no person needed to accept it. It closes when the fix merges, or when a later build passes.\n\nRun: %s\n\n<!-- dx-lane: platform run: %s -->\n\n%s\n' "$RUN_URL" "$RUN_URL" "$ai" |
               NEEDS=1 LABELS="lane:platform,accepted-by:policy" bash scripts/run-issue.sh open runner-image "Runner image, run $RUN: build failed"
           fi
