@@ -30,6 +30,18 @@ own-checks:
   jobs: [checks, tests]
   skip: [What changed]
 
+# How detection recognises a repository of this kind (#191,
+# scripts/detect.py): every file of `files` at its root, and a root file
+# matching `header.glob` whose first lines match `header.pattern` (a Python
+# regular expression). Detection only proposes: repos.yml says what a
+# repository is. `roles`: the roles a proposal gives its paths.
+detect:
+  roles: [back, front]
+  files: [readme.txt]
+  header:
+    glob: "*.php"
+    pattern: '(?m)^[ \t/*#@]*Plugin Name:'
+
 # The engines this kind's checks run, and the language adapter of each.
 adapters:
   - engine: scripts/review-rules.php

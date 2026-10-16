@@ -73,7 +73,10 @@ lanes:
     accept: policy
     origin:
       app: dilux-bot
-      workflows: [runner-image.yml]
+      # org-drift.yml: the daily run's proposal of the new repositories
+      # for repos.yml (scripts/detect.py, #191); repos.yml is high risk,
+      # so a person still merges it.
+      workflows: [runner-image.yml, org-drift.yml]
     repositories: [".github"]
     evidence: The workflow run that opened the issue, with its smoke test.
     # Also the limits of gate G8 (#142): a revert dilux-bot opens when a
