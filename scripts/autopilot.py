@@ -503,10 +503,13 @@ def account(events, title="The autopilot's run"):
 BOT = org.BOT
 
 
-def decide(policy, body, risk, complexity, blocking, description_ok, files, head_files, autopilot_var, author=BOT, lane_name=LANE, repro_sha=""):
+def decide(policy, body, risk, complexity, blocking, description_ok, files, head_files, autopilot_var, author=BOT, lane_name=LANE, repro_sha="",
+           surface=(), issue_type="Feature"):
     """Gate G7. lane_name is the lane the issue is worked under (which_lane);
     for a reproduced bug, repro_sha is the SHA-256 of the reproduction test
-    as it is at the head: it must be the one the PRD sealed."""
+    as it is at the head: it must be the one the PRD sealed. surface is what
+    the change adds to the kind's public surface (scripts/surface.py), or
+    ["unknown"] when that could not be told; issue_type the issue's Type."""
     if author != BOT:
         return False, f"the autopilot's pull requests are opened by {BOT}, not {author or 'unknown'}"
     if (autopilot_var or "").strip().lower() == "off":
@@ -532,6 +535,11 @@ def decide(policy, body, risk, complexity, blocking, description_ok, files, head
     protected = [f for f in files if any(fnmatch.fnmatch(f, p) for p in policy.get("constitution") or [])]
     if protected:
         return False, "it touches rules that govern autonomy (" + ", ".join(protected[:3]) + "): a person merges it"
+    # Escalation (#193): a change that adds to the kind's public surface (a
+    # hook, an endpoint, a shortcode…) is a feature, whatever its issue said.
+    # Only a Feature carries it in on its own; anything else stops here.
+    if surface and issue_type != "Feature":
+        return False, f"it adds public surface ({'; '.join(surface)[:200]}), which only a Feature issue carries: a person merges it"
     if blocking != "false":
         return False, "the review is blocking"
     if description_ok != "true":
@@ -868,6 +876,11 @@ Clamp the value in Sum::add.
     check("#84 decide: never without the test in the pull request", (lok(files=["src/Sum.php"]), lok(head=["src/Sum.php"])), (False, False))
     check("#84 decide: within the lane's caps", lok(risk="high"), False)
     check("#186 decide: human-issue merges up to medium risk, a person merges high", tuple(decide(pol, spec, r, "medium", "false", "true", ["header.php", "tests/e2e/toggle.spec.ts"], head, "")[0] for r in ("medium", "high")), (True, False))
+    plain = lambda **k: decide(pol, spec, "low", "low", "false", "true", ["header.php", "tests/e2e/toggle.spec.ts"], head, "", **k)[0]
+    check("#193 decide: a Bug's change that adds public surface stops for a person", plain(surface=["a new action hook: dx_x"], issue_type="Bug"), False)
+    check("#193 decide: a Feature may add it", plain(surface=["a new action hook: dx_x"], issue_type="Feature"), True)
+    check("#193 decide: surface that could not be told stops a Bug's change too", plain(surface=["unknown"], issue_type="Task"), False)
+    check("#193 decide: no surface, any Type", plain(surface=[], issue_type="Bug"), True)
     check("#84 decide: never a protected path, in this lane either", lok(files=lhead + [".github/workflows/x.yml"]), False)
     check("#84 decide: never under the lane without its evidence in the PRD", lok(body=spec, files=["header.php", "tests/e2e/toggle.spec.ts"], head=head), False)
     check("#84 decide: never when the repository switches the lane off", decide(autonomy.merge(org, {"lanes": {REPRO: {"enabled": False}}}), lane_spec, "low", "low", "false", "true", lhead, lhead, "", BOT, REPRO, sha)[0], False)
@@ -1247,7 +1260,7 @@ def main(argv):
         read_lines = lambda k: [l.strip() for l in open(os.environ[k], encoding="utf-8") if l.strip()] if os.environ.get(k) else []
         ok, why = decide(pol, body, os.environ.get("RISK", ""), os.environ.get("COMPLEXITY", ""), os.environ.get("BLOCKING", ""),
                          os.environ.get("DESCRIPTION_OK", ""), read_lines("FILES"), read_lines("HEAD_FILES"), var, os.environ.get("AUTHOR", ""),
-                         lane_name, os.environ.get("REPRO_SHA256", ""))
+                         lane_name, os.environ.get("REPRO_SHA256", ""), read_lines("SURFACE"), os.environ.get("ISSUE_TYPE", ""))
         print(why)
         return 0 if ok else 1
     print(__doc__, file=sys.stderr)

@@ -135,7 +135,7 @@ For the team of the central repository (`.github`). Each phase is a sub-issue of
   - The spike in the triage.
   - The layers of "Malicious text in issues", in all five types.
 - **Done when:** a minor change and a feature go from accepted to merged with no other intervention, and a high-risk one stops for a maintainer.
-- **So far:** G1 refuses a PRD that still marks a doubt (`[Doubt: …]`, `[Duda: …]`).
+- **So far:** G1 refuses a PRD that still marks a doubt (`[Doubt: …]`, `[Duda: …]`). G7 escalates: an autopilot pull request that adds to its kind's public surface (`surface.yml`: hooks, endpoints…) merges on its own only for a Feature issue; for anything else, a person merges it.
 
 ### Phase 9 · Security
 

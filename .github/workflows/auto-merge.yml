@@ -117,7 +117,8 @@ jobs:
 
       # A pull request the autopilot opened is decided by the autonomy
       # policy instead (gate G7, scripts/autopilot.py decide): never a
-      # Critical issue or a protected path, never while the review blocks,
+      # Critical issue or a protected path, never new public surface for an
+      # issue that is not a Feature (#193), never while the review blocks,
       # within the lane's caps, with a test for every criterion at the head.
       - name: An autopilot pull request
         id: autopilot
@@ -171,6 +172,34 @@ jobs:
           if [ "$LANE" = bugfix-reproduced ] && repro_test=$(python3 "$RUNNER_TEMP/central/scripts/repro-lane.py" evidence | jq -r .test); then
             REPRO_SHA256=$(gh api "repos/$GITHUB_REPOSITORY/contents/$repro_test?ref=$HEAD" --jq .content 2>/dev/null | base64 -d | sha256sum | cut -c1-64) || REPRO_SHA256=""
           fi
+          # Escalation (#193): what the change adds to its kind's public
+          # surface (scripts/surface.py, read from git objects only), and the
+          # issue's Type; only a Feature carries new surface in on its own.
+          # Anything that cannot be told counts as surface.
+          ISSUE_TYPE=$(gh api "repos/$GITHUB_REPOSITORY/issues/$issue" --jq '.type.name // ""' 2>/dev/null || true)
+          # The kind from repos.yml: an unclassified repository, or a kind
+          # whose pack names no surface, has none to add; one repos.yml does
+          # not list, or with several kinds, cannot be told.
+          kinds=$(yq -r ".repos[\"${GITHUB_REPOSITORY#*/}\"] | select(. != null) | (.kinds // []) | map(.kind) | join(\" \")" "$RUNNER_TEMP/central/repos.yml" 2>/dev/null || echo "?")
+          listed=$(yq -r ".repos | has(\"${GITHUB_REPOSITORY#*/}\")" "$RUNNER_TEMP/central/repos.yml" 2>/dev/null || echo false)
+          kind=$kinds
+          : > "$RUNNER_TEMP/surface"
+          if [ "$listed" != true ] || [ "$(wc -w <<<"$kinds")" -gt 1 ] || [ "$kinds" = "?" ]; then
+            echo unknown > "$RUNNER_TEMP/surface"
+          elif [ -n "$kind" ] && [ -f "$RUNNER_TEMP/central/kinds/$kind/surface.yml" ]; then
+            if git clone -q --filter=blob:none --no-checkout "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY" "$RUNNER_TEMP/repo" \
+               && git -C "$RUNNER_TEMP/repo" fetch -q origin "$BASE" "$HEAD"; then
+              rc=0; (cd "$RUNNER_TEMP/repo" && python3 "$RUNNER_TEMP/central/scripts/surface.py" --check "$kind" "$BASE" "$HEAD") > "$RUNNER_TEMP/surface" || rc=$?
+              case $rc in
+                0) : > "$RUNNER_TEMP/surface" ;;           # adds nothing
+                1) [ -s "$RUNNER_TEMP/surface" ] || echo unknown > "$RUNNER_TEMP/surface" ;; # its lines say what it adds; none: it crashed
+                *) echo unknown > "$RUNNER_TEMP/surface" ;; # could not tell
+              esac
+            else
+              echo unknown > "$RUNNER_TEMP/surface"
+            fi
+          fi
+          export SURFACE="$RUNNER_TEMP/surface" ISSUE_TYPE
           if why=$(python3 "$RUNNER_TEMP/central/scripts/autopilot.py" decide); then
             body=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq .body | tr -d '\r')
             gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --auto --squash --body "$body"
