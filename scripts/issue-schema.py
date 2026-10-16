@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The issue schema (policy/issue-schema.yml): check an issue's PRD and Spec.
 
-  issue-schema.py check [--stage prd|spec]   check the issue body on stdin;
+  issue-schema.py check [--stage prd|spec] [--type TYPE]   check the issue body on stdin;
         print what is missing or out of place as JSON; exit 0 when it passes.
         prd (G1, the default): the report sections, then every PRD section.
         spec (G3): the same, and every Spec section after them.
@@ -347,6 +347,9 @@ A class on <html> and a cookie.
     check_("#193: and passes with them", check(spec.rstrip("\n") + "\n" + phases, "spec", issue_type="Feature")["ok"], True)
     check_("#193: a Bug's Spec needs none of them", check(spec, "spec", issue_type="Bug")["ok"], True)
     check_("#193: without a Type, none are asked for", check(spec, "spec")["ok"], True)
+    import subprocess as _sp
+    cli = lambda *a: _sp.run([sys.executable, os.path.abspath(__file__), "check", *a], input=spec, capture_output=True, text=True).returncode
+    check_("#193: the CLI reads --stage and --type, in either order", (cli("--stage", "spec", "--type", "Feature"), cli("--type", "Bug", "--stage", "spec"), cli("--stage", "spec")), (1, 0, 0))
     check_("#193: fails: an open doubt in the PRD", check(good.replace("- A toggle in the header.", "- A toggle in the header. [Doubt: in the footer too?]"))["ok"], False)
     check_("#193: fails: a doubt marked in Spanish", check(good.replace("- A toggle in the header.", "- [Duda: ¿también en el pie?]"))["ok"], False)
     check_("#193: fails: a bare, lowercase, spaced or plural marker", [check(good.replace("- A toggle in the header.", f"- A toggle. {m}"))["ok"] for m in ("[Doubt]", "[doubt: where]", "[ Doubt: where]", "[Dudas: dónde]")], [False] * 4)
