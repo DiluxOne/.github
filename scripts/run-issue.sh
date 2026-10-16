@@ -93,5 +93,5 @@ case "${1:-}" in
   --test) self_test ;;
   open) [ $# -eq 3 ] || { echo "usage: run-issue.sh open KIND TITLE < body" >&2; exit 64; }; open_run "$2" "$3" ;;
   settle) [ $# -eq 3 ] || { echo "usage: run-issue.sh settle KIND URL" >&2; exit 64; }; settle_runs "$2" "$3" ;;
-  *) sed -n '2,23p' "$0" >&2; exit 64 ;;
+  *) sed -n '2,21p' "$0" >&2; exit 64 ;;
 esac

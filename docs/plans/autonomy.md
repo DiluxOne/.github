@@ -68,6 +68,7 @@ For the team of the central repository (`.github`). Each phase is a sub-issue of
   - The issue's board.
   - The view of the organisation's Project filtered by `needs:maintainer`.
 - **So far:** a lane's `ceiling` (human-issue: medium by default, high at most), up to which a repository's `.github/autonomy.yml` may raise it; `autonomy.py check` holding the policy to its schema in CI; `rules/**` and `docs/model.md` among the protected paths. The repository's file keeps its name, `.github/autonomy.yml`, not `.github/policy.yml`. Majors, the security veto, the budget, the parallel jobs and the spike's time join the schema with the phase that first reads each, so the policy names nothing that nothing applies.
+- **One issue per run:** each build of the runner image and each week's digest opens its own issue (`run:runner-image`, `run:autonomy-digest`, `scripts/run-issue.sh`): closed as completed when the run needs no one, open with `needs:maintainer` when it does; a build that passes settles the failed ones. #93 and #118 close.
 - **Done when:** changing a threshold is a pull request to one file; every automatic decision shows on the board with a link to its rule; and `DX_AUTOPILOT=off` stops everything autonomous.
 
 ### Phase 4 · Organisation decisions
