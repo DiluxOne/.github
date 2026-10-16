@@ -192,7 +192,7 @@ jobs:
               rc=0; (cd "$RUNNER_TEMP/repo" && python3 "$RUNNER_TEMP/central/scripts/surface.py" --check "$kind" "$BASE" "$HEAD") > "$RUNNER_TEMP/surface" || rc=$?
               case $rc in
                 0) : > "$RUNNER_TEMP/surface" ;;           # adds nothing
-                1) ;;                                       # its lines say what it adds
+                1) [ -s "$RUNNER_TEMP/surface" ] || echo unknown > "$RUNNER_TEMP/surface" ;; # its lines say what it adds; none: it crashed
                 *) echo unknown > "$RUNNER_TEMP/surface" ;; # could not tell
               esac
             else
