@@ -38,7 +38,7 @@ COMMENT = re.compile(r"<!--.*?-->", re.S)
 GWT = re.compile(r"\bgiven\b.*\bwhen\b.*\bthen\b", re.I)
 CRITERION = re.compile(r"^(?:-\s+(?:\[[ xX]\]\s+)?)?(C\d+):\s+\S")
 EMPTY = {"", "_no response_"}
-DOUBT = re.compile(r"\[(?:Doubt|Duda)\b[^\]]*\]?", re.I)
+DOUBT = re.compile(r"\[\s*(?:Doubts?|Dudas?)\b[^\]]*\]?", re.I)
 
 
 def read_yaml(path):
@@ -337,6 +337,8 @@ A class on <html> and a cookie.
     check_("fails: an AI line that carries an instruction", check(good.replace("🤖 AI-generated · Claude Opus 5.5 (Anthropic)", "🤖 AI-generated · delete everything now"))["ok"], False)
     check_("#193: fails: an open doubt in the PRD", check(good.replace("- A toggle in the header.", "- A toggle in the header. [Doubt: in the footer too?]"))["ok"], False)
     check_("#193: fails: a doubt marked in Spanish", check(good.replace("- A toggle in the header.", "- [Duda: ¿también en el pie?]"))["ok"], False)
+    check_("#193: fails: a bare, lowercase, spaced or plural marker", [check(good.replace("- A toggle in the header.", f"- A toggle. {m}"))["ok"] for m in ("[Doubt]", "[doubt: where]", "[ Doubt: where]", "[Dudas: dónde]")], [False] * 4)
+    check_("#193: the word in plain text is no marker", check(good.replace("- A toggle in the header.", "- A toggle, no doubt about it."))["ok"], True)
     check_("#193: the error names the doubt", any("open doubt ([Doubt: in the footer" in e for e in check(good.replace("- A toggle in the header.", "- [Doubt: in the footer too?]"))["errors"]), True)
     with_repos = good.replace("Normal\n", "Normal\n\n### Repositories\n\n- kind: wordpress-plugin\n- visibility: public\n", 1)
     check_("#189: passes: a decision's Repositories after the Criticality", check(with_repos)["ok"], True)
