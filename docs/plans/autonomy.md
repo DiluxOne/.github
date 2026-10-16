@@ -85,7 +85,7 @@ For the team of the central repository (`.github`). Each phase is a sub-issue of
 
 ### Phase 5 · Platform
 
-- **Today:** the image rebuilds itself once a week (on Mondays), and jobs share the operating system and step on each other. These are already in place: the VM as code (`scripts/runner-vm/`, #69), the organisation's Dependabot (#180; bringing it to each repository is pending) and the G8 sweep every 15 minutes (#165).
+- **Today:** the image rebuilds itself every day (#190). Each job already runs in its own container of the image, a one-job runner from a just-in-time configuration (`scripts/runner-vm/dx-runner-slot.sh`), so jobs no longer share the operating system. These are also in place: the VM as code (`scripts/runner-vm/`, #69), the organisation's Dependabot (#180; bringing it to each repository is pending) and the G8 sweep every 15 minutes (#165).
 - **Delivers:**
   - A daily image build, with a smoke test and promotion to `stable`.
   - Ephemeral runners, each in its own container.
