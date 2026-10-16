@@ -28,7 +28,9 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ORG = "DiluxOne"
+sys.path.insert(0, HERE)
+import org  # noqa: E402  the organisation, from org.yml (#191)
+ORG = org.ORG
 HEAD_BYTES = 8192
 
 

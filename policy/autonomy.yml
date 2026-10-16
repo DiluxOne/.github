@@ -48,6 +48,8 @@ constitution:
   # The organisation's rules and the model every agent reads (#187).
   - "rules/**"
   - "docs/model.md"
+  # Who the organisation and its App are (#191).
+  - "org.yml"
 
 # A lane's issue is accepted by policy only when all of this holds, read from
 # GitHub, never from the issue's text alone:

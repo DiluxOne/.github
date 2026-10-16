@@ -66,8 +66,10 @@ import tempfile
 import urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import org  # noqa: E402  the organisation, from org.yml (#191)
 LEVELS = ["none", "low", "medium", "high"]
-CENTRAL = "DiluxOne/.github"
+CENTRAL = org.CENTRAL
 MARKER = re.compile(r"<!--\s*dx-lane:\s*([a-z0-9-]+)\s+run:\s*(https://github\.com/([^/\s]+)/([^/\s]+)/actions/runs/(\d+))\s*-->")
 # What a run of scripts/sync-repos.py writes in the issue it opens (sync
 # lanes): the lane, the kind of run, the commit of DiluxOne/.github it brings
@@ -840,6 +842,12 @@ def self_test():
             failed = 1
 
     org = load(os.path.join(HERE, "..", "policy", "autonomy.yml"))
+    # issue-accepted.yml's lane job fetches autonomy.py alone: whatever it
+    # imports from this directory must be fetched with it.
+    with open(os.path.join(HERE, "..", ".github", "workflows", "issue-accepted.yml"), encoding="utf-8") as fh:
+        fetched = next((l for l in fh if "for f in scripts/autonomy.py" in l), "")
+    local = sorted(set(re.findall(r"^import (\w+)", open(__file__, encoding="utf-8").read(), re.M)) & {f[:-3] for f in os.listdir(HERE) if f.endswith(".py")})
+    check("#191: the lane job fetches what autonomy.py imports from here, and org.yml", (all(f"scripts/{m}.py" in fetched for m in local), "org.yml" in fetched), (True, True))
     check("the organisation's policy has the six lanes", sorted(org.get("lanes", {})), ["bugfix-reproduced", "delegated", "human-issue", "org-sync", "platform", "release"])
 
     # #189: a sub-issue of an issue a person accepted.

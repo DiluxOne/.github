@@ -34,6 +34,7 @@ high-risk:
   - "agents-block.md"
   - "labels.yml"
   - "repos.yml"
+  - "org.yml"
   - "CONTRIBUTING.md"
   - "SECURITY.md"
   - "SUPPORT.md"
