@@ -273,7 +273,7 @@ jobs:
           set -euo pipefail
           mkdir -p .dx-central/scripts .dx-central/policy
           base="https://raw.githubusercontent.com/DiluxOne/.github/$REF"
-          for f in scripts/issue-schema.py scripts/receipts.py policy/issue-schema.yml; do curl -fsSL --retry 3 "$base/$f" -o ".dx-central/$f"; done
+          for f in scripts/issue-schema.py scripts/receipts.py scripts/repro-lane.py policy/issue-schema.yml; do curl -fsSL --retry 3 "$base/$f" -o ".dx-central/$f"; done
           echo "ref=$(git ls-remote https://github.com/DiluxOne/.github "$REF" "$REF^{}" | tail -1 | cut -c1-12)" >> "$GITHUB_OUTPUT"
       - name: dilux-bot token
         id: bot
@@ -288,6 +288,7 @@ jobs:
           permission-pull-requests: read
           permission-checks: read
       - name: Write the receipt
+        id: receipt
         if: steps.bot.outputs.token != ''
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
@@ -304,6 +305,7 @@ jobs:
             --jq '.data.repository.issue.timelineItems.nodes[0].closer // empty')
           if [ -z "$pr" ] || [ "$(jq -r .merged <<<"$pr")" != true ]; then echo "Not closed by a merged pull request: no receipt."; exit 0; fi
           head=$(jq -r .headRefOid <<<"$pr")
+          echo "pr=$(jq -r .number <<<"$pr")" >> "$GITHUB_OUTPUT"
           PR_JSON=$(jq -c '{number, head: .headRefOid, merge: .mergeCommit.oid, merged_by: .mergedBy.login, labels: [.labels.nodes[].name]}' <<<"$pr")
           # The head commit's checks, counted by conclusion.
           CHECKS_JSON=$(gh api "repos/$GITHUB_REPOSITORY/commits/$head/check-runs" --paginate --jq '[.check_runs[].conclusion]' \
@@ -314,6 +316,25 @@ jobs:
           id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '.[] | select(.user.type == "Bot" and (.user.login | startswith("dilux-bot")) and (.body | startswith("<!-- dx-board -->"))) | .id' | tail -1)
           if [ -n "$id" ]; then gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$board" >/dev/null
           else gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$board" >/dev/null; fi
+      # A reproduced bug's fix merged (#271): the report it came from is
+      # closed as completed, naming the pull request. The report's number is
+      # read from the lane issue's sealed PRD (repro-lane.py evidence), never
+      # from its title, and only on an issue dilux-bot opened for the lane.
+      - name: Close the report it came from
+        if: steps.receipt.outputs.pr != '' && github.event.issue.user.login == 'dilux-bot[bot]' && contains(github.event.issue.labels.*.name, 'lane:bugfix-reproduced') && contains(github.event.issue.labels.*.name, 'accepted-by:policy')
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          BODY_TEXT: ${{ github.event.issue.body }}
+          NUMBER: ${{ github.event.issue.number }}
+          PR: ${{ steps.receipt.outputs.pr }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$BODY_TEXT" > "$RUNNER_TEMP/lane.md"
+          report=$(BODY="$RUNNER_TEMP/lane.md" python3 .dx-central/scripts/repro-lane.py evidence | jq -r '.report // empty' || true)
+          [ -n "$report" ] || { echo "::warning::#$NUMBER names no report in its PRD; nothing closed."; exit 0; }
+          if [ "$(gh issue view "$report" --repo "$GITHUB_REPOSITORY" --json state --jq .state)" != OPEN ]; then echo "#$report is already closed."; exit 0; fi
+          gh issue close "$report" --repo "$GITHUB_REPOSITORY" --reason completed --comment "$(printf 'Fixed by #%s, through #%s: the test this report became passes there, and it ships with the next release.\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)' "$PR" "$NUMBER")" >/dev/null
+          echo "Closed #$report (fixed by #$PR)."
 
   release:
     name: The release pull request
