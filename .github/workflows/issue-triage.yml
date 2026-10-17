@@ -428,10 +428,17 @@ jobs:
           NUMBER: ${{ github.event.issue.number }}
         run: |
           set -euo pipefail
-          if ! blocked=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/dependencies/blocking" --jq '.[] | select(.state == "open" and ([.labels[].name] | index("repro:blocked") != null)) | .number'); then
-            echo "::warning::Could not read what #$NUMBER blocks; a blocked report stays as it is. Re-run this job."; exit 1
-          fi
-          [ -n "$blocked" ] || exit 0
+          # What it blocks: GitHub's dependency, and the markers the App
+          # wrote on it (its first line, and its own comments), so a link the
+          # dependency API refused still unblocks.
+          deps=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/dependencies/blocking" --jq '.[].number' 2>/dev/null || true)
+          marks=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" --jq 'select(.user.login == "dilux-bot[bot]") | .body' 2>/dev/null | grep -oE '^<!-- dx-repro-blocker: #[0-9]+ -->' | grep -oE '[0-9]+' || true)
+          more=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '.[] | select(.user.login == "dilux-bot[bot]") | .body' 2>/dev/null | grep -oE '^<!-- dx-repro-blocks: #[0-9]+ -->' | grep -oE '[0-9]+' || true)
+          blocked=""
+          for n in $(printf '%s\n' $deps $marks $more | sort -un); do
+            if [ "$(gh issue view "$n" --repo "$GITHUB_REPOSITORY" --json state,labels --jq '.state == "OPEN" and ([.labels[].name] | index("repro:blocked") != null)')" = true ]; then blocked="$blocked $n"; fi
+          done
+          [ -n "${blocked// }" ] || exit 0
           gh label create "repro:unblocked" --repo "$GITHUB_REPOSITORY" --color 0E8A16 --force --description "What blocked the reproduction is fixed: it runs again" >/dev/null 2>&1 || true
           for n in $blocked; do
             # Off first, then on: a label already there would fire nothing.

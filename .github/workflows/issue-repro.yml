@@ -672,6 +672,11 @@ jobs:
                 blocker=${url##*/}
               fi
               if [ -n "$blocker" ]; then
+                # Written on the blocker too, so the unblock never depends on
+                # GitHub's dependency alone: a reused blocker gets a comment.
+                if [ "$(gh issue view "$blocker" --repo "$GITHUB_REPOSITORY" --json body --jq '.body | startswith("<!-- dx-repro-blocker: #'"$NUMBER"' -->")' 2>/dev/null)" != true ]; then
+                  gh issue comment "$blocker" --repo "$GITHUB_REPOSITORY" --body "$(printf '<!-- dx-repro-blocks: #%s -->\nIt also blocks the reproduction of #%s.\n\n%s' "$NUMBER" "$NUMBER" "$sign")" >/dev/null || true
+                fi
                 blocker_id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$blocker" --jq .id || true)
                 [ -n "$blocker_id" ] && gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$NUMBER/dependencies/blocked_by" -F issue_id="$blocker_id" >/dev/null \
                   || echo "::warning::Could not record #$blocker as blocking #$NUMBER."
