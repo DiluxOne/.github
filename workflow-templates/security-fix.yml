@@ -1,12 +1,12 @@
 name: Security fixes
 
-# A security advisory's fix, written in its temporary private fork, from the
+# A security advisory's fix, written in this private repository, from the
 # shared workflow in DiluxOne/.github (#194). Only in a PRIVATE repository
 # that does nothing else (DiluxOne/security): the runs' logs and artifacts
 # carry embargoed vulnerabilities, and the shared workflow refuses to run
-# from a public one. A maintainer accepting an advisory (starting its
-# temporary private fork on its page) starts its fix; a maintainer merges it and publishes the advisory from its
-# page.
+# from a public one. A maintainer accepting an advisory (moving it to
+# draft) starts its fix, which lands here as an issue and a branch; a
+# maintainer reviews it and publishes.
 
 on:
   schedule:
