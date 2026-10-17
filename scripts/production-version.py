@@ -10,7 +10,7 @@ such one. Where the repository's kind publishes somewhere else as well
 WordPress plugin), that place must say the same version; when it does not,
 there is no version in production to patch, and a person settles it.
 
-  production-version.py [--repo OWNER/REPO] [--slug SLUG] [--kind KIND] [--json]
+  production-version.py --kind KIND [--repo OWNER/REPO] [--slug SLUG] [--json]
       prints the version, its tag and the patch after it; exit 1, saying
       why, when there is none or the two places disagree
   production-version.py --test
@@ -62,15 +62,14 @@ def decide(releases, stable):
 
 
 def pack_stable(kind):
-    if not kind or not re.fullmatch(r"[a-z0-9-]+", kind):
-        return None
-    try:
-        import yaml
-    except ImportError:
-        return None
+    """The kind's `release.stable`, or None when the kind names none. A kind
+    asked for that cannot be read fails: the check is never skipped quietly."""
+    if not re.fullmatch(r"[a-z0-9-]+", kind or ""):
+        raise ValueError(f"not a kind: {kind!r}")
+    import yaml  # an ImportError fails too
     path = os.path.join(HERE, "..", "kinds", kind, "pack.yml")
     if not os.path.isfile(path):
-        return None
+        raise ValueError(f"no pack for the kind {kind!r}")
     with open(path, encoding="utf-8") as fh:
         return ((yaml.safe_load(fh) or {}).get("release") or {}).get("stable")
 
@@ -149,8 +148,14 @@ def self_test():
         check("fetch_stable: a slug that is not one is refused", "no error", "an error")
     except ValueError:
         check("fetch_stable: a slug that is not one is refused", True, True)
+    for bad in ("", "../x", "no-such-kind"):
+        try:
+            pack_stable(bad)
+            check(f"pack_stable: {bad!r} fails, never skips the check", "no error", "an error")
+        except ValueError:
+            check(f"pack_stable: {bad!r} fails, never skips the check", True, True)
     real = pack_stable("wordpress-plugin")
-    if real is not None:
+    if True:
         check("the WordPress pack checks against wordpress.org's version", ("api.wordpress.org" in real["url"], "{slug}" in real["url"], real["field"]), (True, True, "version"))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
@@ -162,10 +167,14 @@ def main(argv):
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""))
     ap.add_argument("--slug", default="")
-    ap.add_argument("--kind", default="")
+    ap.add_argument("--kind", required=True, help="the repository's kind (its pack says where else production is published)")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
-    spec = pack_stable(a.kind)
+    try:
+        spec = pack_stable(a.kind)
+    except (ValueError, ImportError) as exc:
+        print(f"the kind's pack cannot be read ({exc}): no version is trusted unchecked", file=sys.stderr)
+        return 1
     stable = None
     if spec:
         if not a.slug:
