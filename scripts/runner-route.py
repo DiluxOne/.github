@@ -70,7 +70,9 @@ GITHUB_ONLY = ("plugin-release-wp.yml", "svn-auth-check.yml", "issue-repro.yml",
                "runner-wake.yml",
                # An agent works on a stranger's report, and the job holds an
                # embargoed fix (#194): a fresh runner each time.
-               "security-fix.yml")
+               "security-fix.yml",
+               # What it finds can be a vulnerability (#234): a fresh runner.
+               "nightly-review.yml")
 
 # A job whose runner an earlier job of the same run decided (autopilot.yml's
 # `where`, #84: a reproduced bug's work never runs on the VM) keeps that
