@@ -110,6 +110,7 @@ jobs:
       - run: python3 scripts/spike.py --test
       - run: python3 scripts/review-outcomes.py --test
       - run: python3 scripts/advisory.py --test
+      - run: bash scripts/app-token.sh --test
       - run: python3 scripts/design-tokens.py --test
       - run: python3 scripts/design-tokens.py build --check
       # stylelint, as scripts/stylelint/package-lock.json pins it: every CSS
