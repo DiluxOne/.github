@@ -132,14 +132,16 @@ def merge(previous, findings, date):
     """The list: what was open stays (a finding seen again keeps its date),
     new ones join, and ticked or struck-out ones are never listed again."""
     gone = {(key(p), line_of(p)) for p in previous if p["state"] in ("done", "dropped", "closed")}
-    items = {key(p): p for p in previous if p["state"] == "open"}
+    # Keyed by the finding and its line: two alike findings far apart in
+    # one file are two entries.
+    items = {(key(p), line_of(p)): p for p in previous if p["state"] == "open"}
     for f in findings:
         if not isinstance(f, dict) or f.get("severity") not in SEVERITY or not f.get("file") or not f.get("title"):
             continue
         k, ln = key(f), line_of(f)
         if any(same(k, g, ln, gl) for g, gl in gone) or any(same(k, key(i), ln, line_of(i)) for i in items.values()):
             continue
-        items[k] = {"state": "open", "severity": f["severity"], "file": f"{f['file']}{':' + str(f['line']) if isinstance(f.get('line'), int) else ''}"
+        items[(k, ln)] = {"state": "open", "severity": f["severity"], "file": f"{f['file']}{':' + str(f['line']) if isinstance(f.get('line'), int) else ''}"
                     if ":" not in f["file"] else f["file"], "title": str(f["title"]).replace("\n", " ")[:300], "since": date}
     ordered = sorted(items.values(), key=lambda i: (SEVERITY.index(i["severity"]), i["since"], i["file"]))
     return ordered[:MAX_ITEMS], sorted(gone, key=lambda g: (g[0], g[1] or 0))[-MAX_CLOSED:]
@@ -192,6 +194,9 @@ def self_test():
     apart, _ = merge([], [{"severity": "major", "file": "a.php", "line": 10, "title": "Unescaped title in the list"},
                           {"severity": "major", "file": "a.php", "line": 200, "title": "Unescaped title in the editor"}], "d")
     check("near: two bugs of one pattern far apart in one file are two", len(apart), 2)
+    twins, _ = merge([], [{"severity": "major", "file": "a.php", "line": 10, "title": "Unescaped title"},
+                          {"severity": "major", "file": "a.php", "line": 300, "title": "Unescaped title"}], "d")
+    check("near: the same title far apart in one file is two findings", len(twins), 2)
     reworded, _ = merge(parse(out), [{"severity": "major", "file": "a.php", "line": 9, "title": "The title is unescaped"},
                                      {"severity": "minor", "file": "b.php", "title": "The old one, again"},
                                      {"severity": "major", "file": "b.php", "title": "Missing nonce on save"}], "2026-10-19")
