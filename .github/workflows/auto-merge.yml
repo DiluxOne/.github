@@ -410,6 +410,8 @@ jobs:
           # admin or maintain role, or by a maintainer's plan.
           VERSION="$version" LABEL=accepted python3 "$RUNNER_TEMP/central/scripts/release-issue.py" verify > "$RUNNER_TEMP/verify.json" || true
           [ "$(jq -r .ok "$RUNNER_TEMP/verify.json" 2>/dev/null)" = true ] || person "the release issue is not accepted ($(jq -r .why "$RUNNER_TEMP/verify.json" 2>/dev/null || echo unreadable))"
+          # The acceptance is the one of the issue this pull request closes.
+          [ "$(jq -r .issue "$RUNNER_TEMP/verify.json")" = "$issues" ] || person "the accepted release issue is #$(jq -r .issue "$RUNNER_TEMP/verify.json"), not #$issues, the one it closes"
           # The proof: the kind's command, run again on the base, makes the
           # same tree (file modes kept from the base).
           git init -q "$RUNNER_TEMP/repo"
