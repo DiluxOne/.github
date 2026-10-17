@@ -71,6 +71,14 @@ autopilot-mode:
 # person adds `security`.
 person-merges: [security]
 
+# A version planned as a milestone X.Y.Z (#247, scripts/milestones.py): when
+# its last issue closes, the bot opens "Release X.Y.Z" on it. `auto`:
+# approving the plan was approving the release, so when the milestone's
+# creator has the admin or maintain role the issue is accepted by policy, as
+# that person's decision, and its release pull request opens. `confirm`: a
+# person accepts it, one last click.
+planned-release: auto
+
 # A security patch on the version in production (#247, scripts/security-
 # patch.py, security-patch.yml) publishes on its own once this window is
 # over, unless a maintainer adds `patch:hold` to its issue in the private

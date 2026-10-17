@@ -141,7 +141,9 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    issue "Release X.Y.Z" (the Release form), or closes the milestone
    `X.Y.Z` and dilux-bot opens it on the next daily run
    ([`scripts/milestones.py`](../scripts/milestones.py), #192), and a
-   person accepts it; that opens the
+   person accepts it. A milestone whose issues are all closed opens it too;
+   with `planned-release: auto` and a milestone created by an administrator
+   or maintainer, the plan is the acceptance (#247). That opens the
    release pull request (the `Unreleased.` hold removed, the version
    markers set: the command the kind names), which goes through steps 1 to
    3 and closes the issue. It merges on its own when proved (#247): its
