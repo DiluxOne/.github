@@ -638,7 +638,8 @@ jobs:
             IFS='|' read -r name color desc <<<"$l"
             gh label create "$name" --repo "$GITHUB_REPOSITORY" --color "$color" --description "$desc" --force >/dev/null
           done
-          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "repro:run" --remove-label "repro:again" --remove-label "repro:retry" >/dev/null 2>&1 || true
+          # One label per call: gh refuses the whole edit when one is missing (#267).
+          for l in repro:run repro:again repro:retry; do gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$l" >/dev/null 2>&1 || true; done
           sign="<sub>🤖 AI reproduction · $MODEL (Anthropic)${COST:+ · \$$COST}</sub>"
           test="tests/Unit/Repro/Issue${NUMBER}Test.php"
           code_main="${BT}main${BT}"; code_test="${BT}${test}${BT}"; fence="${BT}${BT}${BT}"; code_again="${BT}repro:again${BT}"
