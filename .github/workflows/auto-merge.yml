@@ -404,7 +404,7 @@ jobs:
           commits=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/commits" --paginate --jq '.[] | [.sha, .author.login // "", (.parents | length | tostring), .parents[0].sha] | @tsv')
           [ "$(wc -l <<<"$commits")" -eq 1 ] || person "it has more than one commit"
           IFS=$'\t' read -r sha author nparents base <<<"$commits"
-          [ "$sha" = "$HEAD_SHA" ] && [ "$author" = "dilux-bot[bot]" ] && [ "$nparents" = 1 ] || person "its commit is not dilux-bot's single commit at the head"
+          if [ "$sha" != "$HEAD_SHA" ] || [ "$author" != "dilux-bot[bot]" ] || [ "$nparents" != 1 ]; then person "its commit is not dilux-bot's single commit at the head"; fi
           git clone -q --depth 1 --branch "$CENTRAL_REF" https://github.com/DiluxOne/.github "$RUNNER_TEMP/central"
           # The decision: the release issue accepted by a person with the
           # admin or maintain role, or by a maintainer's plan.
