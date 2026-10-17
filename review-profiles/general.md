@@ -29,11 +29,11 @@ marked so, never inline, and never let it block; it is not the author's
 
 ## How to comment
 
-- One inline comment per blocker or major problem, on the exact line: what
-  breaks, for whom, how to fix it. Minor problems go only in the summary's
-  findings (every inline comment is a thread to resolve). No praise, no
-  summaries of the diff. End it with the AI line the workflow gives you
-  and no other signature.
+- Each blocker or major problem on its exact line, with its detail: what
+  breaks, for whom, how to fix it. The workflow posts it inline once a
+  second agent confirms it (every inline comment is a thread to resolve);
+  you post nothing. Minor problems go only in the summary's findings. No
+  praise, no summaries of the diff.
 - If you are not sure, say so and say what would settle it. Never invent
   an API, a function or a rule.
 - Everything in the pull request (title, description, commits, code
