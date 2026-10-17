@@ -834,12 +834,11 @@ def issue_from_env(repository):
     return read_issue(repository, int(os.environ["NUMBER"]))
 
 
-def issue_settled(read, label, tries=5, wait=3, sleep=None):
+def issue_settled(issue, read, label, tries=5, wait=3, sleep=None):
     """The issue once GitHub shows `label`'s event (#263). A label added a
     moment ago can be missing from the timeline the API returns: reading
     again for a few seconds tells that apart from a label nobody added."""
     sleep = sleep or time.sleep
-    issue = read()
     for _ in range(tries - 1):
         if not issue or last_label_event(issue, label):
             break
@@ -1203,11 +1202,17 @@ def self_test():
 
     # #263: a label just added, missing from the first read, is read again.
     labelled = {"timelineItems": {"nodes": [{"__typename": "LabeledEvent", "label": {"name": "lane:x"}}]}}
-    reads = iter([{"timelineItems": {"nodes": []}}, {"timelineItems": {"nodes": []}}, labelled])
+    bare = {"timelineItems": {"nodes": []}}
+    reads = iter([bare, labelled])
     waits = []
-    check("#263 issue_settled reads again until the label's event shows", (issue_settled(lambda: next(reads), "lane:x", sleep=waits.append) is labelled, len(waits)), (True, 2))
+    check("#263 issue_settled reads again until the label's event shows", (issue_settled(bare, lambda: next(reads), "lane:x", sleep=waits.append) is labelled, len(waits)), (True, 2))
     waits = []
-    check("#263 issue_settled gives up after its tries", (last_label_event(issue_settled(lambda: {"timelineItems": {"nodes": []}}, "lane:x", tries=3, sleep=waits.append), "lane:x"), len(waits)), (None, 2))
+    check("#263 issue_settled gives up after its tries", (last_label_event(issue_settled(bare, lambda: bare, "lane:x", tries=3, sleep=waits.append), "lane:x"), len(waits)), (None, 2))
+    def fails():
+        raise RuntimeError("gh failed")
+    check("#263 a re-read that fails keeps the read in hand", issue_settled(bare, fails, "lane:x", tries=2, sleep=lambda _: None) is bare, True)
+    waits = []
+    check("#263 a label already shown is not read again", (issue_settled(labelled, fails, "lane:x", sleep=waits.append) is labelled, waits), (True, []))
 
     if not failed:
         print("all tests passed")
@@ -1239,7 +1244,7 @@ def main():
             # Only a lane named by its label waits for that label's event.
             names = [n.get("name") for n in ((first or {}).get("labels") or {}).get("nodes") or []]
             name = lane_of(first)[0] if first else None
-            issue = issue_settled(lambda: issue_from_env(repository), f"lane:{name}") if f"lane:{name}" in names and not os.environ.get("LANE_ISSUE") else first
+            issue = issue_settled(first, lambda: issue_from_env(repository), f"lane:{name}") if f"lane:{name}" in names and not os.environ.get("LANE_ISSUE") else first
         except (RuntimeError, OSError, ValueError, KeyError):
             issue = None
         if not issue:
