@@ -3,9 +3,9 @@
 #   decide  reads TRIGGER, EVENT, ACTION, LABEL, SENDER_TYPE, ROLE and
 #           TRIAGE_BUG from the environment and prints go=yes or go=no
 #           (appended to $GITHUB_OUTPUT when it is set).
-#   bug     reads VERDICT (the triage's verdict JSON) and PAID, and prints
-#           true when the verdict is bug_unconfirmed and the report is not
-#           paid: the triage's `bug` output.
+#   bug     reads VERDICT (the triage's verdict JSON) and prints true when
+#           it is bug_unconfirmed: the triage's `bug` output, whether or not
+#           the classifier read a paid add-on's roadmap (#247).
 #   setup   reads DIR (default: the current directory) and prints ready=yes
 #           when it has the unit-test setup a reproduction writes into
 #           (tests/bootstrap.php and tests/Unit/), ready=no otherwise
@@ -103,7 +103,7 @@ test_all() {
     fi
   }
   bug_from '{"category":"bug_unconfirmed"}' false true
-  bug_from '{"category":"bug_unconfirmed"}' true false
+  bug_from '{"category":"bug_unconfirmed"}' true true
   bug_from '{"category":"enhancement"}' false false
   bug_from '{"category":"needs_info"}' false false
   bug_from '' false false
@@ -137,9 +137,11 @@ test_all() {
   [ "$failed" -eq 0 ]
 }
 
-# bug_output reads VERDICT and PAID from the environment.
+# bug_output reads VERDICT from the environment. PAID (the classifier read
+# the paid add-on's private roadmap) no longer stops it (#247): the
+# reproduction writes its test from the report, never from that roadmap,
+# and a repository with a paid add-on reproduced no bug on its own.
 bug_output() {
-  if [ "${PAID:-false}" = true ]; then echo false; return; fi
   jq -r 'if .category == "bug_unconfirmed" then "true" else "false" end' <<<"${VERDICT:-null}" 2>/dev/null || echo false
 }
 
