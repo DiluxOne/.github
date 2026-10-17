@@ -66,6 +66,9 @@ jobs:
           persist-credentials: false
       - run: python3 scripts/needs-chain.py --test
       - run: python3 scripts/needs-chain.py
+      # gh refuses a whole edit when one of several labels it removes is
+      # missing, and the workflows hide that error: one label per call (#267).
+      - run: "! grep -nE -- '--remove-label[^;|]*--remove-label' .github/workflows/*.yml"
       - run: python3 scripts/next-version.py --test
       - run: python3 scripts/release-gate.py --test
       - run: python3 scripts/release-issue.py --test
