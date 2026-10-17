@@ -85,6 +85,10 @@ jobs:
           unset PRIVATE_KEY
           trap 'curl -fsS -o /dev/null -X DELETE -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/installation/token || true' EXIT
           now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          # Read first, whole: a list that fails stops the run, never reads as
+          # nothing to do.
+          gh api "repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" --paginate \
+            --jq '.[] | select(.pull_request | not) | [(.number|tostring), ((.body // "") | split("\n")[0]), ((.body // "") | split("\n")[1] // ""), ([.labels[].name] | join(","))] | @tsv' > "$RUNNER_TEMP/claims.tsv"
           todo='[]'
           # Every open claim issue: its repository and advisory from its
           # marker, its checks from the body's machine line.
@@ -103,13 +107,12 @@ jobs:
               todo=$(jq -c --argjson n "$n" --arg repo "$repo" --arg ghsa "$ghsa" --arg act "$act" --arg version "$version" \
                 '. + [{issue: $n, repo: $repo, ghsa: $ghsa, act: $act, version: $version}]' <<<"$todo") ;;
             esac
-          done < <(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 200 --json number,body,labels \
-                     --jq '.[] | [(.number|tostring), ((.body // "") | split("\n")[0]), ((.body // "") | split("\n")[1] // ""), ([.labels[].name] | join(","))] | @tsv')
+          done < "$RUNNER_TEMP/claims.tsv"
           echo "todo=$todo" >> "$GITHUB_OUTPUT"
 
-  # The tree, and the repository's checks on it, in a job with no token at
-  # all: the public repository's code runs here. Its patch comes from this
-  # repository's branch fix/<ghsa>, read by the plan's runner token.
+  # The tree, and the repository's checks on it: the public repository's
+  # code runs here, so the job's token reads this repository and nothing
+  # more (the patch, from its branch fix/<ghsa>), and nothing of the App's.
   build:
     name: Build ${{ matrix.p.ghsa }}
     needs: plan
@@ -162,7 +165,10 @@ jobs:
           version=$(jq -r .patch <<<"$prod")
           # The window was announced for one version; another one since (a
           # release in between) starts over instead of publishing it.
-          if [ -n "$WANT" ] && [ "$WANT" != "$version" ]; then echo "::error::The window was for $WANT, but the patch is now $version: it starts over."; echo "moved=true" >> "$GITHUB_OUTPUT"; exit 1; fi
+          if [ -n "$WANT" ] && [ "$WANT" != "$version" ]; then
+            echo "::warning::The window was for $WANT, but the patch is now $version: it starts over."
+            echo "moved=$version" > "$RUNNER_TEMP/out/build"; exit 0
+          fi
           # The changelog line is ours, never the reporter's words: it is public.
           bash "$GITHUB_WORKSPACE/.dx-central/scripts/security-patch-build.sh" "$(jq -r .tag <<<"$prod")" "$version" "$RUNNER_TEMP/fix.patch" "A security fix ($GHSA)."
           { echo "version=$version"; echo "tag=$(jq -r .tag <<<"$prod")"; } >> "$GITHUB_OUTPUT"
@@ -170,6 +176,7 @@ jobs:
 
       - name: The repository's checks on it
         if: matrix.p.act == 'start' && steps.tree.outcome == 'success'
+        # Only checks that ran and passed open the window: none is a stop.
         run: |
           set -uo pipefail
           cd "$RUNNER_TEMP/repo"
@@ -237,16 +244,21 @@ jobs:
           version=$(sed -n 's/^version=//p' "$RUNNER_TEMP/in/build" 2>/dev/null | head -1)
           tag=$(sed -n 's/^tag=//p' "$RUNNER_TEMP/in/build" 2>/dev/null | head -1)
           checks=$(sed -n 's/^checks=//p' "$RUNNER_TEMP/in/build" 2>/dev/null | head -1)
-          if [ -z "$version" ] || [ "$checks" = failed ] || [ -z "$checks" ]; then
+          if [ -z "$version" ] || [ "$checks" != passed ]; then
+            if [ -z "$version" ]; then why="the fix does not apply on the version in production, or there is no version in production"
+            elif [ "$checks" = none ]; then why="the repository names no checks to run (make pre-pr), and a patch is never published unchecked"
+            else why="the repository's checks failed on the patch"; fi
             gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --add-label patch:failed >/dev/null
             gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$(printf 'The security patch did not get ready: %s. Nothing is public; a maintainer takes it from here (the run: %s).\n\n%s' \
-              "$([ -z "$version" ] && echo "the fix does not apply on the version in production, or there is no version in production" || echo "the repository's checks failed on the patch")" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$sign")" >/dev/null
+              "$why" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$sign")" >/dev/null
             exit 0
           fi
           hours=$(python3 .dx-central/scripts/security-patch.py hours)
           due=$(date -u -d "+$(python3 -c "print(int(float('$hours') * 60))") minutes" +%Y-%m-%dT%H:%M:%SZ)
           mark=$(VERSION="$version" DUE="$due" python3 .dx-central/scripts/security-patch.py marker)
-          who=$(gh api "repos/$GITHUB_REPOSITORY/collaborators?permission=admin" --jq '[.[] | select(.type == "User") | "@" + .login] | join(" ")' || true)
+          # Whom the window waits on: never opened without telling someone.
+          who=$(gh api "repos/$GITHUB_REPOSITORY/collaborators?permission=admin" --jq '[.[] | select(.type == "User") | "@" + .login] | join(" ")')
+          [ -n "$who" ] || { echo "::error::No administrator of this repository to tell: the window does not open."; exit 1; }
           # shellcheck disable=SC2016 # backticks in the Markdown of the comment, not commands.
           gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$(printf '%s\n%s The security patch **%s** of %s is ready: the fix on top of %s, the version in production, and the repository'"'"'s checks passed on it (%s).\n\nIt publishes on its own at **%s** (UTC), %s hours from now: it is pushed to `security/%s`, released from there, and the advisory is published. To stop it, add the label `patch:hold` to this issue before then; removing it lets it go on.\n\n%s' \
             "$mark" "$who" "$version" "$REPO" "$tag" "$checks" "$due" "$hours" "$version" "$sign")" >/dev/null
@@ -269,6 +281,13 @@ jobs:
           say() { GH_TOKEN="$ISSUE_TOKEN" gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$1"$'\n\n'"$sign" >/dev/null; }
           version=$(sed -n 's/^version=//p' "$RUNNER_TEMP/in/build" 2>/dev/null | head -1)
           tag=$(sed -n 's/^tag=//p' "$RUNNER_TEMP/in/build" 2>/dev/null | head -1)
+          moved=$(sed -n 's/^moved=//p' "$RUNNER_TEMP/in/build" 2>/dev/null | head -1)
+          if [ -n "$moved" ]; then
+            # A release in between: the window starts over, for the new patch.
+            GH_TOKEN="$ISSUE_TOKEN" gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label patch:window >/dev/null
+            say "The version in production changed during the window: the patch is now $moved. It starts over, with a new window."
+            exit 0
+          fi
           if [ -z "$version" ] || [ ! -s "$RUNNER_TEMP/in/fix.patch" ]; then
             GH_TOKEN="$ISSUE_TOKEN" gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label patch:window --add-label patch:failed >/dev/null
             say "The window closed, but the patch could not be built again (the version in production moved, or the fix no longer applies). Nothing was published; a maintainer takes it from here."
@@ -284,8 +303,10 @@ jobs:
           export GH_TOKEN
           unset PRIVATE_KEY
           trap 'curl -fsS -o /dev/null -X DELETE -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/installation/token || true' EXIT
-          onto=$(gh api "repos/$REPO/git/ref/tags/$tag" --jq .object.sha)
-          GITHUB_REPOSITORY="$REPO" python3 "$GITHUB_WORKSPACE/.dx-central/scripts/api-commit.py" push "security/$version" --onto "$onto"
+          # The tag's commit (an annotated tag's ref names the tag object).
+          onto=$(gh api "repos/$REPO/commits/$tag" --jq .sha)
+          # --force: a push that failed half way is redone from the tag.
+          GITHUB_REPOSITORY="$REPO" python3 "$GITHUB_WORKSPACE/.dx-central/scripts/api-commit.py" push "security/$version" --onto "$onto" --force
           GH_TOKEN="$ISSUE_TOKEN" gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label patch:window --add-label patch:pushed >/dev/null
           say "The window closed with no hold: the patch **$version** is pushed to $GITHUB_SERVER_URL/$REPO/tree/security/$version, and its release runs there. Once it is released, the advisory is published."
           echo "Pushed security/$version to $REPO."

@@ -23,6 +23,10 @@ build() {
   local tag=$1 version=$2 patch=$3 note=$4 argv
   [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Not a version: $version" >&2; return 1; }
   g checkout -q -B "security/$version" "refs/tags/$tag" || return 1
+  # The release command is read from the production tag's tree, before the
+  # fix: what the fix changes never steers it.
+  argv=$(ROOT=. VERSION="$version" python3 "$HERE/security-patch.py" release | jq -r '.argv[]') || return 1
+  [ -n "$argv" ] || return 1
   if ! g am -q --3way "$patch"; then
     g am --abort >/dev/null 2>&1 || true
     echo "::error::The fix does not apply on $tag." >&2; return 1
@@ -30,8 +34,6 @@ build() {
   # Each step stops the build itself: errexit does not hold where a caller
   # tests the build in an `if`.
   README=readme.txt VERSION_TEXT="$note" python3 "$HERE/security-patch.py" entry || return 1
-  argv=$(ROOT=. VERSION="$version" python3 "$HERE/security-patch.py" release | jq -r '.argv[]') || return 1
-  [ -n "$argv" ] || return 1
   mapfile -t cmd <<<"$argv"
   "${cmd[@]}" || return 1
   g add -A || return 1
@@ -46,7 +48,11 @@ self_test() {
   dir=$(mktemp -d)
   (
     cd "$dir"
-    git init -q . && g commit -q --allow-empty -m init
+    git init -q .
+    mkdir -p .github/workflows
+    printf 'kind: wordpress-plugin\n' > .github/review-policy.yml
+    printf 'jobs:\n  r:\n    uses: DiluxOne/.github/.github/workflows/plugin-release-wp.yml@v5\n    with:\n      slug: x\n' > .github/workflows/release.yml
+    git add -A && g commit -q -m init
     git tag 1.0.0
     printf 'a\n' > f.txt && git add f.txt && g commit -q -m "fix: x"
     git format-patch -q -1 --stdout > "$dir/fix.patch"
