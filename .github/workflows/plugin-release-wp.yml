@@ -104,10 +104,12 @@ name: WordPress plugin release
 # (`environment`, default `wordpress-org`), and that is where the SVN
 # credentials and the release App's key live: as environment secrets, never
 # as repository or organisation secrets. The environment's deployment policy
-# admits main and X.Y.Z tags; it needs no required reviewer once releases
-# go through their issue (a repository that keeps them is asked twice).
-# The caller passes `secrets: inherit`, which is why it runs only on main and
-# on X.Y.Z tags. It calls this workflow at `v5`, like every other: a
+# admits main and X.Y.Z tags (and security/* when the security patch uses
+# it); it needs no required reviewer once releases go through their issue
+# (a repository that keeps them is asked twice). The caller passes
+# `secrets: inherit`, which is why it runs only on main, on X.Y.Z tags and on
+# security/X.Y.Z branches, which only dilux-bot can create (the organisation
+# ruleset "org: security branches"). It calls this workflow at `v5`, like every other: a
 # protected ref only an administrator moves, so nothing is pinned (#136).
 #
 #   on:
@@ -148,7 +150,7 @@ on:
         type: boolean
         default: false
       environment:
-        description: The repository environment the release job runs in. Its deployment policy should allow main and X.Y.Z tags, and the SVN secrets and the release App's key live in it. The approval is the accepted release issue (#82); required reviewers, if it has any, approve too.
+        description: The repository environment the release job runs in. Its deployment policy should allow main and X.Y.Z tags (and security/* when security-environment is empty), and the SVN secrets and the release App's key live in it. The approval is the accepted release issue (#82); required reviewers, if it has any, approve too.
         type: string
         default: wordpress-org
       auto-environment:
@@ -241,6 +243,12 @@ jobs:
               case "$from" in ahead) ;; *) echo "::error::security/$tag does not start from the version in production ($from)."; exit 1 ;; esac
               on_base=$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...$BASE" --jq .status)
               case "$on_base" in ahead|identical) echo "::error::security/$tag is on $BASE: a patch is built on the version in production."; exit 1 ;; esac
+              # Nothing of the base after the production tag: where the patch
+              # and the base meet is the tag or before it, so a branch that
+              # merged the base on top of the tag never ships unreleased work.
+              meet=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BASE...$GITHUB_SHA" --jq .merge_base_commit.sha)
+              since=$(gh api "repos/$GITHUB_REPOSITORY/compare/$meet...$(jq -r .tag <<<"$prod")" --jq .status)
+              case "$since" in ahead|identical) ;; *) echo "::error::security/$tag carries commits of $BASE made after the version in production ($since)."; exit 1 ;; esac
               if git rev-parse -q --verify "refs/tags/$tag" >/dev/null || gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
                 echo "Tag $tag exists: this patch was released." | tee -a "$GITHUB_STEP_SUMMARY"; exit 0
               fi
@@ -497,8 +505,10 @@ jobs:
     # One release at a time; a run waiting for approval is never cancelled by
     # a newer push (the approver decides), and a run deploying is never
     # cancelled at all.
+    # A security patch has a group of its own: a push to the base while it
+    # waits would otherwise replace it as the one pending run.
     concurrency:
-      group: release-${{ github.repository }}
+      group: release-${{ github.repository }}${{ needs.version.outputs.security == 'true' && '-security' || '' }}
       cancel-in-progress: false
     outputs:
       version: ${{ needs.version.outputs.version }}
@@ -631,7 +641,8 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
 
       - name: The release App's token
-        # Only after SVN took the version, only on main, never in a rehearsal:
+        # Only after SVN took the version, only on a branch (main, or a
+        # security patch's), never in a rehearsal:
         # the one token that can create a release tag, held by the one step
         # that does it. The App has contents: write and nothing else, and its
         # key lives in the environment, so only an approved job ever sees it.
