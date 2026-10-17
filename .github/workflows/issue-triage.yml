@@ -435,6 +435,7 @@ jobs:
           marks=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" --jq 'select(.user.login == "dilux-bot[bot]") | .body' 2>/dev/null | grep -oE '^<!-- dx-repro-blocker: #[0-9]+ -->' | grep -oE '[0-9]+' || true)
           more=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '.[] | select(.user.login == "dilux-bot[bot]") | .body' 2>/dev/null | grep -oE '^<!-- dx-repro-blocks: #[0-9]+ -->' | grep -oE '[0-9]+' || true)
           blocked=""
+          # shellcheck disable=SC2086 # lists of numbers, split on purpose.
           for n in $(printf '%s\n' $deps $marks $more | sort -un); do
             if [ "$(gh issue view "$n" --repo "$GITHUB_REPOSITORY" --json state,labels --jq '.state == "OPEN" and ([.labels[].name] | index("repro:blocked") != null)')" = true ]; then blocked="$blocked $n"; fi
           done
