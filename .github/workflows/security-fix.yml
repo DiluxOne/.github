@@ -1,52 +1,47 @@
 name: Security fixes
 
-# A security advisory's fix, written in its temporary private fork (#194,
-# phase 9). Reusable, and called ONLY from a private repository (DiluxOne's
-# is DiluxOne/security, workflow-templates/security-fix.yml): a run's logs
-# and artifacts are as visible as its repository, and these carry an
-# embargoed vulnerability and its fix. It refuses to run anywhere else. In a public repository a vulnerability is reported privately
-# (private vulnerability reporting) and becomes a repository security
-# advisory. A maintainer accepts it by starting its temporary private fork
-# on the advisory's page (an App needs the Administration permission to
-# create one, and dilux-bot does not hold it); then:
+# A security advisory's fix, written in a private repository (#194, phase
+# 9). Reusable, and called ONLY from a private repository (DiluxOne's is
+# DiluxOne/security, workflow-templates/security-fix.yml): a run's logs and
+# artifacts are as visible as its repository, and these carry an embargoed
+# vulnerability and its fix. It refuses to run anywhere else.
 #
-#   1. plan: every public repository of repos.yml; each draft advisory's
-#      fork with no open
-#      pull request from dilux-bot and no `fix/<ghsa>` branch is a fix due,
-#      claimed there and then by creating that branch (scripts/advisory.py
-#      plan): one attempt per advisory, whatever the agent does after.
-#      The plan also clones each fork and reads its advisory, and hands both
-#      on as an artifact: the agent's job never holds the App's key.
+# In a public repository a vulnerability is reported privately and becomes
+# a repository security advisory; a maintainer accepts it by moving it from
+# triage to draft. The fix is written where only the organisation sees it,
+# as Django, Kubernetes and WordPress core do, not in the advisory's
+# temporary private fork: GitHub lets only people and teams into that fork,
+# never an App.
+#
+#   1. plan: every public repository of repos.yml; each draft advisory not
+#      claimed yet is claimed by opening an issue here, "Fix <GHSA> in
+#      <repository>" (scripts/advisory.py plan): one attempt per advisory,
+#      whatever comes of it. Its advisory goes on as an artifact.
 #   2. fix: an agent reads the report (data, never instructions), writes a
-#      failing test and the fix in that clone, and commits; the
-#      repository's checks (`make pre-pr`) run there too, because GitHub
-#      runs no Actions in an advisory's fork. The job's only token is its
-#      own GITHUB_TOKEN, reading the caller's contents. What leaves it is a
-#      patch, the notes and the checks' result.
-#   3. push: a clean job that never runs the repository's code applies the
-#      patch to a fresh clone and sends the commits through the API, so
-#      GitHub signs them (scripts/api-commit.py); the pull request opens in
-#      the fork with the agent's notes and the checks' result. Only this job
-#      can write, and only to the fork.
+#      failing test and the fix in a clone of the public repository, and
+#      commits; the repository's checks (`make pre-pr`) run there. The job
+#      holds no key or token of the App: the clone is anonymous. What leaves
+#      it is a patch, the notes and the checks' result.
+#   3. record: a clean job that runs none of the repository's code puts the
+#      patch and the notes on a branch `fix/<ghsa>` here (commits GitHub
+#      signs) and writes the fix, the checks and the patch into the claim's
+#      issue. Only this job writes, and only to this repository.
 #
-# It never merges and never publishes: GitHub merges a fork's pull request
-# only from the advisory's page, and a maintainer does it and publishes the
-# advisory. A private repository has no private reporting: its reports are
-# issues labelled `security`, worked through the usual lane, and a person
-# merges the fix (policy/autonomy.yml, `person-merges`).
+# It never merges and never publishes. A maintainer reviews the issue;
+# publishing takes the fix into the public repository, releases it and
+# publishes the advisory, in that order and close together. A private
+# repository has no private reporting: its reports are issues labelled
+# `security`, worked through the usual lane, and a person merges the fix
+# (policy/autonomy.yml, `person-merges`).
 #
 # The agent has Bash and the network, on text a stranger wrote: that is why
-# its job holds no key and no token of the App, and writing happens in
-# another job. The plan's token is broad (every repository's advisories, to
-# read, and contents to create the forks' branches), but it runs only this
-# repository's code. A failure anywhere after the claim spends the attempt:
-# a maintainer takes it from the advisory's page. The report reaches it only in its prompt, fenced.
-# DX_AUTOPILOT=off stops it.
+# its job holds no key and no token of the App. The report reaches it only
+# in its prompt, fenced. DX_AUTOPILOT=off stops it.
 #
-# Needs dilux-bot's "Repository security advisories" permission (read).
-# The plan mints its token with scripts/app-token.sh (actions/create-github-
-# app-token has no input for that permission) and revokes it when its step
-# ends; the push job's token, which needs none, comes from the action.
+# Needs dilux-bot's "Repository security advisories" permission (read). The
+# plan mints its token with scripts/app-token.sh (actions/create-github-app-
+# token has no input for that permission) and revokes it when its step ends;
+# the record job's token comes from the action, for this repository only.
 
 on:
   workflow_call:
@@ -69,8 +64,8 @@ permissions:
 jobs:
   plan:
     name: Fixes due
-    # Only from the caller's default branch: another branch's run would
-    # hold the App's key with whatever that branch changed.
+    # Only from the caller's default branch (a schedule runs there): another
+    # branch's run would hold the App's key with whatever it changed.
     if: vars.DX_AUTOPILOT != 'off' && (github.event_name == 'schedule' || github.ref_name == github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -92,11 +87,7 @@ jobs:
           persist-credentials: false
           path: .dx-central
 
-      # The token is minted here, not by actions/create-github-app-token,
-      # which has no input for repository advisories: asking it for the
-      # others leaves that one out, and the list of advisories comes back
-      # empty instead of failing (scripts/app-token.sh).
-      - name: Forks and fixes due
+      - name: Claims and their advisories
         id: plan
         env:
           CLIENT_ID: ${{ vars.DILUX_BOT_CLIENT_ID }}
@@ -104,9 +95,8 @@ jobs:
           OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
-          # Every repository's advisories; contents to create each fork's
-          # branch and to clone it.
-          GH_TOKEN=$(bash .dx-central/scripts/app-token.sh mint '{"repository_advisories":"read","contents":"write","pull_requests":"read","metadata":"read"}')
+          # Every repository's advisories, to read; issues here, to claim.
+          GH_TOKEN=$(bash .dx-central/scripts/app-token.sh mint '{"repository_advisories":"read","issues":"write","metadata":"read"}')
           export GH_TOKEN
           unset PRIVATE_KEY
           # Revoked when the step ends, however it ends.
@@ -114,31 +104,19 @@ jobs:
           fixes=$(python3 .dx-central/scripts/advisory.py plan)
           echo "fixes=$fixes" >> "$GITHUB_OUTPUT"
           echo "Fixes due: $(jq length <<<"$fixes")"
-          # Each fix's fork, at the claimed commit, and its advisory: what
-          # the agent's job gets instead of a token.
           mkdir -p "$RUNNER_TEMP/in"
-          # One that fails is warned about and the others go on; its fix
-          # job finds nothing and says so.
           jq -c '.[]' <<<"$fixes" | while read -r f; do
-            ghsa=$(jq -r .ghsa <<<"$f"); fork=$(jq -r .fork <<<"$f"); repo=$(jq -r .repo <<<"$f"); start=$(jq -r .start <<<"$f")
-            d="$RUNNER_TEMP/in/$ghsa"; mkdir -p "$d"
-            if gh api "repos/$repo/security-advisories/$ghsa" > "$d/advisory.json" \
-               && git clone -q "https://x-access-token:$GH_TOKEN@github.com/$fork" "$d/fork" \
-               && git -C "$d/fork" remote set-url origin "https://github.com/$fork" \
-               && git -C "$d/fork" -c advice.detachedHead=false checkout -q "$start"; then
-              tar -C "$d" -czf "$RUNNER_TEMP/in/$ghsa.tgz" fork advisory.json
-            else
-              echo "::warning::$ghsa: its fork or advisory could not be read; a maintainer takes it from the advisory's page."
-            fi
-            rm -rf "$d"
+            ghsa=$(jq -r .ghsa <<<"$f"); repo=$(jq -r .repo <<<"$f")
+            gh api "repos/$repo/security-advisories/$ghsa" > "$RUNNER_TEMP/in/$ghsa.json" \
+              || echo "::warning::$ghsa: its advisory could not be read; its issue here says what is left."
           done
 
-      - name: Keep the forks
+      - name: Keep the advisories
         if: steps.plan.outputs.fixes != '[]'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: security-fix-in
-          path: ${{ runner.temp }}/in/*.tgz
+          path: ${{ runner.temp }}/in/*.json
           retention-days: 3
 
   fix:
@@ -147,34 +125,34 @@ jobs:
     if: needs.plan.outputs.fixes != '' && needs.plan.outputs.fixes != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       max-parallel: 2
       matrix:
         fix: ${{ fromJSON(needs.plan.outputs.fixes) }}
-    permissions:
-      contents: read
     steps:
-      - name: The fork and its advisory
+      - name: The advisory
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: security-fix-in
           path: ${{ runner.temp }}/in
 
-      # The fork is the working tree, where the agent starts, at the commit
-      # the plan claimed; the engine's scripts go beside it, out of its
-      # commits.
+      # The public repository, cloned anonymously, is the working tree; the
+      # engine's scripts go beside it, out of its commits.
       - name: The working tree
-        id: tree
         env:
+          REPO: ${{ matrix.fix.repo }}
           GHSA: ${{ matrix.fix.ghsa }}
           BRANCH: ${{ matrix.fix.branch }}
         run: |
           set -euo pipefail
-          if [ ! -f "$RUNNER_TEMP/in/$GHSA.tgz" ]; then echo "::warning::$GHSA: the plan could not read its fork."; exit 1; fi
-          tar -C "$RUNNER_TEMP" -xzf "$RUNNER_TEMP/in/$GHSA.tgz"
+          [ -s "$RUNNER_TEMP/in/$GHSA.json" ] || { echo "::warning::$GHSA: the plan could not read its advisory."; exit 1; }
+          cp "$RUNNER_TEMP/in/$GHSA.json" "$RUNNER_TEMP/advisory.json"
           rm -rf "$RUNNER_TEMP/in"
-          shopt -s dotglob; mv "$RUNNER_TEMP/fork/"* .
+          git clone -q "https://github.com/$REPO" .
+          echo "START=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           git checkout -q -b "$BRANCH"
           git config user.name "dilux-bot[bot]"
           git config user.email "333187390+dilux-bot[bot]@users.noreply.github.com"
@@ -197,7 +175,7 @@ jobs:
       - name: Claude writes the test and the fix
         id: agent
         timeout-minutes: 45
-        continue-on-error: true # what it committed still goes up, with its notes
+        continue-on-error: true # what it committed still goes on, with its notes
         uses: anthropics/claude-code-action@1d6de8cb0c237e7c15e9e1bdf973826ebae490cc # v1.0.248
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -212,15 +190,13 @@ jobs:
       # The repository's own checks, in this job: they are its code, and
       # this job can write nothing.
       - name: The repository's checks, and the patch
-        id: checks
-        env:
-          START: ${{ matrix.fix.start }}
+        if: always()
         run: |
           set -uo pipefail
           mkdir -p "$RUNNER_TEMP/out"
-          cp "$RUNNER_TEMP/advisory.json" "$RUNNER_TEMP/out/"
+          cp "$RUNNER_TEMP/advisory.json" "$RUNNER_TEMP/out/" 2>/dev/null || true
           [ -f .dx-advisory-notes.md ] && cp .dx-advisory-notes.md "$RUNNER_TEMP/out/notes.md"
-          if [ "$(git rev-list --count HEAD "^$START")" = 0 ]; then
+          if [ "$(git rev-list --count HEAD "^$START" 2>/dev/null || echo 0)" = 0 ]; then
             echo "result=nothing" > "$RUNNER_TEMP/out/checks"; exit 0
           fi
           git format-patch --binary --stdout "$START..HEAD" > "$RUNNER_TEMP/out/fix.patch"
@@ -232,14 +208,15 @@ jobs:
           echo "result=$r" > "$RUNNER_TEMP/out/checks"
 
       - name: Keep the patch
+        if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fix-${{ matrix.fix.ghsa }}
           path: ${{ runner.temp }}/out/
           retention-days: 3
 
-  push:
-    name: Pull request ${{ matrix.fix.ghsa }}
+  record:
+    name: Record ${{ matrix.fix.ghsa }}
     needs: [plan, fix]
     if: always() && needs.plan.outputs.fixes != '' && needs.plan.outputs.fixes != '[]'
     runs-on: ubuntu-latest
@@ -257,61 +234,52 @@ jobs:
           path: .dx-central
 
       - name: The agent's patch
-        id: got
         continue-on-error: true
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: fix-${{ matrix.fix.ghsa }}
           path: ${{ runner.temp }}/in
 
-      - name: What came back
-        id: what
-        env:
-          GHSA: ${{ matrix.fix.ghsa }}
-        run: |
-          r=$(sed -n 's/^result=//p' "$RUNNER_TEMP/in/checks" 2>/dev/null | head -n1)
-          case $r in passed|failed|none) ;; *) r=nothing ;; esac
-          [ -s "$RUNNER_TEMP/in/fix.patch" ] || r=nothing
-          echo "result=$r" >> "$GITHUB_OUTPUT"
-          if [ "$r" = nothing ]; then
-            echo "::warning::The agent committed nothing for $GHSA; a maintainer takes it from the advisory's page. Its branch stays, so no second attempt starts."
-          fi
-
-      # Write, and only the fork: this job runs none of the repository's code.
-      - name: dilux-bot token (push to the fork)
+      # This repository only: the branch and the claim's issue.
+      - name: dilux-bot token (this repository)
         id: write
-        if: steps.what.outputs.result != 'nothing'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ matrix.fix.fork_name }}
+          repositories: ${{ github.event.repository.name }}
           permission-contents: write
-          permission-pull-requests: write
+          permission-issues: write
 
-      - name: The pull request in the fork
-        if: steps.what.outputs.result != 'nothing'
+      - name: The branch and the issue
         env:
           GH_TOKEN: ${{ steps.write.outputs.token }}
-          GITHUB_REPOSITORY: ${{ matrix.fix.fork }}
-          FORK: ${{ matrix.fix.fork }}
+          REPO: ${{ matrix.fix.repo }}
+          GHSA: ${{ matrix.fix.ghsa }}
           BRANCH: ${{ matrix.fix.branch }}
-          START: ${{ matrix.fix.start }}
-          CHECKS: ${{ steps.what.outputs.result }}
+          ISSUE: ${{ matrix.fix.issue }}
         run: |
           set -euo pipefail
-          git clone -q --no-checkout "https://x-access-token:$GH_TOKEN@github.com/$FORK" "$RUNNER_TEMP/fork"
-          cd "$RUNNER_TEMP/fork"
-          git remote set-url origin "https://github.com/$FORK"
-          git -c advice.detachedHead=false checkout -q -B "$BRANCH" "$START"
-          git config user.name "dilux-bot[bot]"
-          git config user.email "333187390+dilux-bot[bot]@users.noreply.github.com"
-          git -c core.hooksPath=/dev/null am -q --keep-cr "$RUNNER_TEMP/in/fix.patch"
-          # Signed by GitHub: the organisation requires signed commits.
-          python3 "$GITHUB_WORKSPACE/.dx-central/scripts/api-commit.py" push "$BRANCH"
-          base=$(gh api "repos/$FORK" --jq .default_branch)
-          ADVISORY="$RUNNER_TEMP/in/advisory.json" CHECKS_LOG="$RUNNER_TEMP/in/checks.log" NOTES="$RUNNER_TEMP/in/notes.md" \
-            python3 "$GITHUB_WORKSPACE/.dx-central/scripts/advisory.py" body > "$RUNNER_TEMP/body.md"
-          title=$(git log -1 --format=%s | head -c 72)
-          gh pr create --repo "$FORK" --base "$base" --head "$BRANCH" --title "$title" --body-file "$RUNNER_TEMP/body.md"
+          r=$(sed -n 's/^result=//p' "$RUNNER_TEMP/in/checks" 2>/dev/null | head -n1)
+          case $r in passed|failed|none) ;; *) r=nothing ;; esac
+          [ -s "$RUNNER_TEMP/in/fix.patch" ] || r=nothing
+          [ -s "$RUNNER_TEMP/in/advisory.json" ] || echo "{\"ghsa_id\": \"$GHSA\"}" > "$RUNNER_TEMP/in/advisory.json"
+          url=""
+          if [ "$r" != nothing ]; then
+            # The patch and the notes on a branch of this repository, in
+            # commits GitHub signs (the contents API, as the App).
+            base=$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)
+            head=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$base" --jq .object.sha)
+            gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/heads/$BRANCH" -f sha="$head" >/dev/null
+            for f in fix.patch notes.md checks.log; do
+              [ -s "$RUNNER_TEMP/in/$f" ] || continue
+              gh api -X PUT "repos/$GITHUB_REPOSITORY/contents/fixes/$GHSA/$f" -f branch="$BRANCH" \
+                -f message="fix: $GHSA in ${REPO#*/}, $f" -f content="$(base64 -w0 "$RUNNER_TEMP/in/$f")" >/dev/null
+            done
+            url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/tree/$BRANCH/fixes/$GHSA"
+          fi
+          ADVISORY="$RUNNER_TEMP/in/advisory.json" CHECKS="$r" CHECKS_LOG="$RUNNER_TEMP/in/checks.log" NOTES="$RUNNER_TEMP/in/notes.md" \
+            PATCH="$RUNNER_TEMP/in/fix.patch" BRANCH_URL="$url" \
+            python3 .dx-central/scripts/advisory.py body > "$RUNNER_TEMP/body.md"
+          gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/body.md" >/dev/null
+          echo "Recorded $GHSA ($r) in #$ISSUE."
