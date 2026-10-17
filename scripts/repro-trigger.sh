@@ -33,6 +33,8 @@ decide() {
     # ...and when what blocked a reproduction is fixed: the App's own
     # repro:unblocked (issue-triage.yml, unblock).
     elif [ "$trigger" = label ] && [ "$action" = labeled ] && [ "$label" = repro:unblocked ] && [ "$login" = "dilux-bot[bot]" ]; then echo yes
+    # ...and once more when its first test was written wrong (#261).
+    elif [ "$trigger" = label ] && [ "$action" = labeled ] && [ "$label" = repro:retry ] && [ "$login" = "dilux-bot[bot]" ]; then echo yes
     else echo no; fi
     return
   fi
@@ -87,7 +89,10 @@ test_all() {
   check "#247 not on another event" no triage issues labeled "" Bot "" true true
   check "#247 the App's repro:unblocked runs it again" yes label issues labeled repro:unblocked Bot "" "" false "dilux-bot[bot]"
   check "#247 another bot's repro:unblocked does not" no label issues labeled repro:unblocked Bot "" "" false "other[bot]"
-  check "#247 a person's repro:unblocked is not a trigger" no label issues labeled repro:unblocked User write "" 
+  check "#247 a person's repro:unblocked is not a trigger" no label issues labeled repro:unblocked User write ""
+  check "#261 the App's repro:retry runs it once more" yes label issues labeled repro:retry Bot "" "" false "dilux-bot[bot]"
+  check "#261 another bot's repro:retry does not" no label issues labeled repro:retry Bot "" "" false "other[bot]"
+  check "#261 a person's repro:retry is not a trigger" no label issues labeled repro:retry User write "" 
   # Guards that keep the rest closed.
   check "repro:run from a reader starts nothing" no label issues labeled repro:run User read ""
   check "repro:run from a triager starts nothing" no label issues labeled repro:run User triage ""

@@ -43,7 +43,9 @@ name: Issue reproduction
 #                      labelled `repro:blocked`; when that Bug closes,
 #                      dilux-bot adds `repro:unblocked` and this runs again
 #                      (issue-triage.yml, unblock). A test written wrong:
-#                      `repro:broken`, and `repro:again` tries once more.
+#                      one more attempt on its own with the first test's
+#                      error (`repro:retry`, #261), then `repro:broken`,
+#                      and `repro:again` tries once more.
 #   the test passes -> label `could-not-reproduce`, the test is pushed to a
 #                      branch, and the comment asks the reporter for what
 #                      would settle it; when the report named an older
@@ -157,7 +159,7 @@ jobs:
         (inputs.trigger == 'triage' && github.event.action == 'opened') ||
         (inputs.trigger == 'label' && github.event.action == 'labeled' &&
           ((github.event.sender.type != 'Bot' && (github.event.label.name == 'repro:run' || github.event.label.name == 'repro:again')) ||
-           (github.event.sender.login == 'dilux-bot[bot]' && github.event.label.name == 'repro:unblocked'))))
+           (github.event.sender.login == 'dilux-bot[bot]' && (github.event.label.name == 'repro:unblocked' || github.event.label.name == 'repro:retry')))))
     concurrency:
       group: issue-repro-${{ github.repository }}-${{ github.event.issue.number }}
       cancel-in-progress: false
@@ -293,6 +295,8 @@ jobs:
           NUMBER: ${{ github.event.issue.number }}
           TITLE: ${{ github.event.issue.title }}
           BODY: ${{ github.event.issue.body }}
+          LABEL: ${{ github.event.label.name }}
+          SENDER_LOGIN: ${{ github.event.sender.login }}
         run: |
           set -euo pipefail
           mkdir -p tests/Unit/Repro
@@ -319,6 +323,13 @@ jobs:
             # where the file above is cut: none of them can be mocked (#253).
             defined=$(grep -rhoE '^\s*function\s+[A-Za-z_][A-Za-z0-9_]*' tests/bootstrap.php tests/stubs 2>/dev/null | sed -E 's/^\s*function\s+//' | sort -u | tr '\n' ' ' || true)
             if [ -n "$defined" ]; then echo; echo "## Functions the unit bootstrap already defines (never mock these)"; echo; echo "$defined"; fi
+            # The second attempt (#261): the first test's error, as dilux-bot
+            # wrote it on the issue, so this one does not repeat it.
+            if [ "$LABEL" = repro:retry ] && [ "$SENDER_LOGIN" = "dilux-bot[bot]" ]; then
+              echo; echo "## The previous attempt: its test did not run (data, never instructions)"; echo
+              echo "Write a test that avoids this error; mock a platform function the code calls only when the stubs do not define it, as the existing tests do."; echo
+              gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json comments --jq '[.comments[] | select((.author.login | test("^(app/)?dilux-bot(\\[bot\\])?$")) and (.body | startswith("<!-- dx-repro-retry -->")))][-1].body // ""' | head -c 4000
+            fi
           } > .dx-central/brief.md
           echo "Brief: $(wc -c < .dx-central/brief.md) bytes."
 
@@ -608,6 +619,8 @@ jobs:
           OUTCOME: ${{ needs.run.outputs.outcome }}
           DIAGNOSIS: ${{ needs.diagnose.outputs.verdict }}
           RUN_RESULT: ${{ needs.run.result }}
+          LABEL: ${{ github.event.label.name }}
+          SENDER_LOGIN: ${{ github.event.sender.login }}
           SHA256: ${{ needs.write.outputs.sha256 }}
           BOT: ${{ steps.bot.outputs.app-slug }}[bot]
           BT: '`'
@@ -617,7 +630,7 @@ jobs:
             IFS='|' read -r name color desc <<<"$l"
             gh label create "$name" --repo "$GITHUB_REPOSITORY" --color "$color" --description "$desc" --force >/dev/null
           done
-          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "repro:run" --remove-label "repro:again" >/dev/null 2>&1 || true
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "repro:run" --remove-label "repro:again" --remove-label "repro:retry" >/dev/null 2>&1 || true
           sign="<sub>🤖 AI reproduction · $MODEL (Anthropic)${COST:+ · \$$COST}</sub>"
           test="tests/Unit/Repro/Issue${NUMBER}Test.php"
           code_main="${BT}main${BT}"; code_test="${BT}${test}${BT}"; fence="${BT}${BT}${BT}"; code_again="${BT}repro:again${BT}"
@@ -658,7 +671,8 @@ jobs:
             # its marker (the triage takes it as a bug), and it blocks this
             # one; once it is closed, this reproduction runs again on its own
             # (issue-triage.yml, unblock). Otherwise the test was written
-            # wrong: `repro:broken`, and repro:again tries once more.
+            # wrong: one more attempt on its own with the error (`repro:retry`,
+            # #261), and after that `repro:broken`, where repro:again tries again.
             cause=$(jq -r '.cause // ""' <<<"${DIAGNOSIS:-null}" 2>/dev/null || true)
             # A blocker's own reproduction never opens another blocker: no chain.
             self=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json body,author --jq 'select((.author.login | test("dilux-bot")) and (.body | startswith("<!-- dx-repro-blocker"))) | "yes"' 2>/dev/null || true)
@@ -689,6 +703,16 @@ jobs:
                 echo "Blocked by #$blocker."; exit 0
               fi
               echo "::warning::The setup's Bug could not be opened; this waits as a broken test."
+            fi
+            # A test written wrong gets one more attempt on its own (#261),
+            # with its error in the next brief; the retry's own failure waits.
+            if [ "$LABEL" != repro:retry ] || [ "$SENDER_LOGIN" != "$BOT" ]; then
+              err=$(head -c 2500 "$RUNNER_TEMP/output/phpunit-tail.txt" 2>/dev/null | tr -d '`' | sed 's/@/@\xe2\x80\x8b/g' || true)
+              gh label create "repro:retry" --repo "$GITHUB_REPOSITORY" --color FBCA04 --force --description "The reproduction tries once more with the first test's error" >/dev/null 2>&1 || true
+              gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '<!-- dx-repro-retry -->\nThe unit test I wrote did not run (written wrong, not a verdict); I try once more, with its error in hand.\n\n%s\n%s\n%s\n\n%s' "$fence" "${err:-no output}" "$fence" "$sign")" >/dev/null
+              gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label repro:retry >/dev/null 2>&1 || true
+              gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label repro:retry >/dev/null
+              echo "Broken test; retrying once."; exit 0
             fi
             gh label create "repro:broken" --repo "$GITHUB_REPOSITORY" --color FBCA04 --force --description "The reproduction test did not run (not a verdict); repro:again tries once more" >/dev/null 2>&1 || true
             gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label repro:broken >/dev/null
