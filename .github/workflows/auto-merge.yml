@@ -61,6 +61,15 @@ name: Auto-merge
 # complexity are within the lane's caps. It is labelled `merged-by:policy`.
 # Never in DiluxOne/.github, and nothing while DX_AUTOPILOT is off.
 #
+# A release pull request (#247: it closes one issue `Release X.Y.Z` with
+# `lane:release`) merges once proved: the release issue is accepted, by a
+# maintainer or by a maintainer's plan (scripts/release-issue.py verify);
+# the pull request is dilux-bot's single commit on its base, whose tree is
+# exactly what the kind's command makes of that base for the version
+# (scripts/release-issue.py argv, run again here on a clone); the review does
+# not block and its description is true. It is labelled `merged-by:policy`.
+# Anything short of that, a person merges it.
+#
 # The dilux-bot App enables it, so the resulting push to main triggers the
 # post-merge workflows (a GITHUB_TOKEN merge would not).
 #
@@ -352,6 +361,77 @@ jobs:
             echo "A human merges this one: it closes an issue labelled $held."
           fi
 
+      # A release pull request (#247): the decision to publish was taken when
+      # the release issue was accepted, by a maintainer or by the plan a
+      # maintainer approved as its milestone (scripts/release-issue.py
+      # verify, read from GitHub). What is left is mechanical, and proved
+      # here: one commit by dilux-bot on the base, whose tree is exactly what
+      # the kind's command makes of that base for the version (the
+      # organisation's scripts, run again on a clone; no code of the
+      # repository runs). With the review not blocking and its description
+      # true, it merges once the checks are green. Anything else: a person.
+      - name: A release pull request
+        id: release
+        if: steps.autopilot.outputs.handled != 'true' && steps.revert.outputs.handled != 'true' && steps.held.outputs.label == ''
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          PR: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CENTRAL_REF: ${{ inputs.central-ref }}
+          DX_AUTOPILOT: ${{ vars.DX_AUTOPILOT }}
+          BLOCKING: ${{ inputs.blocking }}
+          DESCRIPTION_OK: ${{ inputs.description-ok }}
+        run: |
+          set -euo pipefail
+          issues=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences --jq '[.closingIssuesReferences[].number] | join(" ")')
+          [ "$(wc -w <<<"$issues")" -eq 1 ] || { echo "handled=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          # A read that fails holds the run: never decided as something else.
+          title=$(gh issue view "$issues" --repo "$GITHUB_REPOSITORY" --json title,labels --jq 'select([.labels[].name] | index("lane:release")) | .title') \
+            || { echo "::error::#$issues could not be read; a human merges this one."; gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --disable-auto >/dev/null 2>&1 || true; exit 1; }
+          [[ "$title" =~ ^Release\ ([0-9]+\.[0-9]+\.[0-9]+)$ ]] || { echo "handled=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          version=${BASH_REMATCH[1]}
+          # From here it is a release pull request: it merges by this proof
+          # or a person merges it.
+          echo "handled=true" >> "$GITHUB_OUTPUT"
+          gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --disable-auto >/dev/null 2>&1 || true
+          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label merged-by:policy >/dev/null 2>&1 || true
+          person() { echo "A human merges this one: $1."; exit 0; }
+          [ "$(tr '[:upper:]' '[:lower:]' <<<"${DX_AUTOPILOT:-}")" != off ] || person "DX_AUTOPILOT is off"
+          [ "$PR_AUTHOR" = "dilux-bot[bot]" ] || person "the release pull request was not opened by dilux-bot"
+          [ "$BLOCKING" = false ] || person "the review is blocking"
+          [ "$DESCRIPTION_OK" = true ] || person "the description does not match the code, or changed after the review"
+          commits=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/commits" --paginate --jq '.[] | [.sha, .author.login // "", (.parents | length | tostring), .parents[0].sha] | @tsv')
+          [ "$(wc -l <<<"$commits")" -eq 1 ] || person "it has more than one commit"
+          IFS=$'\t' read -r sha author nparents base <<<"$commits"
+          if [ "$sha" != "$HEAD_SHA" ] || [ "$author" != "dilux-bot[bot]" ] || [ "$nparents" != 1 ]; then person "its commit is not dilux-bot's single commit at the head"; fi
+          git clone -q --depth 1 --branch "$CENTRAL_REF" https://github.com/DiluxOne/.github "$RUNNER_TEMP/central"
+          # The decision: the release issue accepted by a person with the
+          # admin or maintain role, or by a maintainer's plan.
+          VERSION="$version" LABEL=accepted python3 "$RUNNER_TEMP/central/scripts/release-issue.py" verify > "$RUNNER_TEMP/verify.json" || true
+          [ "$(jq -r .ok "$RUNNER_TEMP/verify.json" 2>/dev/null)" = true ] || person "the release issue is not accepted ($(jq -r .why "$RUNNER_TEMP/verify.json" 2>/dev/null || echo unreadable))"
+          # The acceptance is the one of the issue this pull request closes.
+          [ "$(jq -r .issue "$RUNNER_TEMP/verify.json")" = "$issues" ] || person "the accepted release issue is #$(jq -r .issue "$RUNNER_TEMP/verify.json"), not #$issues, the one it closes"
+          # The proof: the kind's command, run again on the base, makes the
+          # same tree (file modes kept from the base).
+          git init -q "$RUNNER_TEMP/repo"
+          cd "$RUNNER_TEMP/repo"
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c "http.extraheader=$auth" fetch -q --depth 1 "https://github.com/$GITHUB_REPOSITORY" "$base"
+          git checkout -q --detach FETCH_HEAD
+          argv=$(ROOT=. VERSION="$version" CENTRAL="$RUNNER_TEMP/central" python3 "$RUNNER_TEMP/central/scripts/release-issue.py" argv | jq -r '.[]') || person "the kind's release command could not be read"
+          mapfile -t cmd <<<"$argv"
+          "${cmd[@]}" >/dev/null || person "the kind's release command failed on the base"
+          git -c core.fileMode=false add -A
+          made=$(git write-tree)
+          want=$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$HEAD_SHA" --jq .tree.sha)
+          [ "$made" = "$want" ] || person "its tree is not what the release command makes of the base ($made, not $want)"
+          body=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq .body | tr -d '\r')
+          # Tied to the head proved: a later push merges nothing until it is proved again.
+          gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --auto --squash --match-head-commit "$HEAD_SHA" --body "$body"
+          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label merged-by:policy >/dev/null
+          echo "Auto-merge enabled: release $version, $(jq -r .why "$RUNNER_TEMP/verify.json"), and its tree is the release command's."
+
       # A sync run's pull request (lane org-sync, #155: scripts/sync-repos.py
       # opened it and its issue) is decided by the autonomy policy too
       # (scripts/autonomy.py lane-merge): the lane accepts its issue, it
@@ -362,7 +442,7 @@ jobs:
       # goes on to the usual decision.
       - name: A sync run's pull request
         id: lane
-        if: steps.autopilot.outputs.handled != 'true' && steps.revert.outputs.handled != 'true' && steps.held.outputs.label == ''
+        if: steps.autopilot.outputs.handled != 'true' && steps.revert.outputs.handled != 'true' && steps.release.outputs.handled != 'true' && steps.held.outputs.label == ''
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           PR: ${{ github.event.pull_request.number }}
@@ -415,7 +495,7 @@ jobs:
           fi
 
       - name: Enable or disable
-        if: steps.autopilot.outputs.handled != 'true' && steps.revert.outputs.handled != 'true' && steps.lane.outputs.handled != 'true' && steps.held.outputs.label == ''
+        if: steps.autopilot.outputs.handled != 'true' && steps.revert.outputs.handled != 'true' && steps.release.outputs.handled != 'true' && steps.lane.outputs.handled != 'true' && steps.held.outputs.label == ''
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           PR: ${{ github.event.pull_request.number }}

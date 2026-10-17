@@ -19,6 +19,10 @@ counts, read from the issue's timeline, never from its text.
                             now, and its title still names VERSION; JSON on stdout,
                             exit 0 when it approves the release, 1 when not,
                             2 when the issues could not be read
+  release-issue.py argv     the kind's command that prepares VERSION in ROOT
+                            (a checkout of the repository), as a JSON list:
+                            what auto-merge.yml runs again on the release
+                            pull request's base to prove its tree (#247)
   release-issue.py --test   self-test
 
 Environment:
@@ -344,9 +348,28 @@ def role(repo, login):
 
 # --- the command line -------------------------------------------------------
 
+def release_argv(root, version, central, central_path=None):
+    """The kind's `prepare` command for `version`, filled from the
+    repository's release caller, or ValueError saying why there is none.
+    central is read for the pack; central_path is how the command names it."""
+    kind = kind_of(root)
+    release = pack_release(central, kind)
+    if not release or not release.get("workflow"):
+        raise ValueError(f"the kind {kind or '(none)'} publishes nothing")
+    return prepare_argv(release, caller_inputs(root, release["workflow"]) or {}, version, central_path or central)
+
+
 def main(argv):
     if argv[:1] == ["--test"]:
         return self_test()
+    if argv[:1] == ["argv"]:
+        central = os.environ.get("CENTRAL") or os.path.join(HERE, "..")
+        try:
+            print(json.dumps(release_argv(os.environ.get("ROOT", "."), os.environ["VERSION"], central)))
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            return 1
+        return 0
     if argv[:1] == ["plan"]:
         root = os.environ.get("ROOT", ".")
         central = os.environ.get("CENTRAL") or os.path.join(HERE, "..")
@@ -513,6 +536,20 @@ def self_test():
     check("C5: a former title quoted back cannot close its code span", "`b`" in vfy(answer(odd), "1.2.0")["why"], False)
     check("C5: a title changed in the same second as the acceptance approves nothing", vfy(answer(node(events=[ev("LabeledEvent", "2026-10-02T10:00:00Z"), ev("RenamedTitleEvent", "2026-10-02T10:00:00Z", previousTitle="Release 1.1.9", currentTitle="Release 1.2.0")])), "1.2.0")["ok"], False)
     check("C5: a title changed before it was accepted is fine", vfy(answer(node(events=[ev("RenamedTitleEvent", "2026-10-01T10:00:00Z", previousTitle="Release ", currentTitle="Release 1.2.0"), ev("LabeledEvent", "2026-10-02T10:00:00Z")])), "1.2.0")["ok"], True)
+    import tempfile
+    with tempfile.TemporaryDirectory() as root:
+        os.makedirs(os.path.join(root, ".github", "workflows"))
+        open(os.path.join(root, ".github", "review-policy.yml"), "w").write("kind: wordpress-plugin\n")
+        open(os.path.join(root, ".github", "workflows", "release.yml"), "w").write(
+            "jobs:\n  r:\n    uses: DiluxOne/.github/.github/workflows/plugin-release-wp.yml@v5\n    with:\n      slug: dx\n")
+        a = release_argv(root, "3.0.0", os.path.join(HERE, ".."), "/c")
+        check("#247 argv: the kind's command for the version, as the release pull request ran it", (a[1], a[2:5], a[5]), ("/c/scripts/release-markers.sh", ["prepare", ".", "3.0.0"], "dx.php"))
+        open(os.path.join(root, ".github", "review-policy.yml"), "w").write("kind: nothing-here\n")
+        try:
+            release_argv(root, "3.0.0", os.path.join(HERE, ".."))
+            check("#247 argv: a kind that publishes nothing has none", "an argv", "an error")
+        except ValueError:
+            check("#247 argv: a kind that publishes nothing has none", True, True)
     # #247: a planned release, accepted by the plan.
     def plan_node(author="dilux-bot", ms_title="1.2.0", creator="soydiloreto", added_by="Bot", extra=()):
         n = node(labels=("lane:release", "accepted-by:policy"),
