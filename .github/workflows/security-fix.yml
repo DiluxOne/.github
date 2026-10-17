@@ -29,9 +29,10 @@ name: Security fixes
 #      signs) and writes the fix, the checks and the patch into the claim's
 #      issue. Only this job writes, and only to this repository.
 #
-# It never merges and never publishes. A maintainer reviews the issue;
-# publishing takes the fix into the public repository, releases it and
-# publishes the advisory, in that order and close together. A private
+# It never merges and never publishes. security-patch.yml (#247) publishes
+# a fix whose checks passed once its advisory is a draft: a patch on the
+# version in production, after a veto window in which a maintainer can hold
+# it; the fix, the release and the advisory go public together. A private
 # repository has no private reporting: its reports are issues labelled
 # `security`, worked through the usual lane, and a person merges the fix
 # (policy/autonomy.yml, `person-merges`).

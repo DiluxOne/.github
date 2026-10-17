@@ -4,9 +4,10 @@ name: Security fixes
 # shared workflow in DiluxOne/.github (#194). Only in a PRIVATE repository
 # that does nothing else (DiluxOne/security): the runs' logs and artifacts
 # carry embargoed vulnerabilities, and the shared workflow refuses to run
-# from a public one. A maintainer accepting an advisory (moving it to
-# draft) starts its fix, which lands here as an issue and a branch; a
-# maintainer reviews it and publishes.
+# from a public one. An advisory in triage or draft starts its fix, which
+# lands here as an issue and a branch; one in triage is triaged first and
+# moved to draft when it is reproduced and fixed. security-patch.yml then
+# publishes it after its veto window (DiluxOne/.github#247).
 
 on:
   schedule:
