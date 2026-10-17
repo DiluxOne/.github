@@ -12,7 +12,9 @@ name: Nightly review
 # an issue in the calling repository, "Nightly review: <repository>": never
 # one issue per finding. A maintainer picks what becomes work; an item they
 # tick or strike out is never listed again, and one still open keeps the
-# date it was first seen.
+# date it was first seen (the closed ones are kept in a hidden line of the
+# body). A night whose agent did not finish, or gave no list, leaves the
+# list as it was and fails.
 #
 # The agent reads the repository's own code, cloned with a token that reads
 # only that repository; it changes nothing and its job's GITHUB_TOKEN holds
@@ -140,6 +142,8 @@ jobs:
           repo="$GITHUB_REPOSITORY_OWNER/$NAME"
           title="Nightly review: $NAME"
           printf '%s' "${OUT:-}" > "$RUNNER_TEMP/findings.json"
+          # An answer with no findings list is not a clean night.
+          jq -e '.findings | type == "array"' "$RUNNER_TEMP/findings.json" >/dev/null || { echo "::error::The agent gave no findings list; the list is as it was."; exit 1; }
           n=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number,title --jq "[.[] | select(.title == \"$title\")][0].number // empty")
           : > "$RUNNER_TEMP/previous.md"
           [ -z "$n" ] || gh issue view "$n" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/previous.md"

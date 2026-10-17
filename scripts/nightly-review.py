@@ -71,7 +71,7 @@ def parse(body):
         c = CLOSED.match(line.strip())
         if c:
             try:
-                out += [{"state": "closed", "key": tuple(k)} for k in json.loads(c.group(1)) if isinstance(k, list) and len(k) == 2]
+                out += [{"state": "closed", "key": tuple(k)} for k in json.loads(c.group(1)) if isinstance(k, list) and len(k) == 2 and all(isinstance(x, str) for x in k)]
             except ValueError:
                 pass
             continue
