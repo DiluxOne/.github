@@ -24,8 +24,11 @@ name: Claude review
 #      repository's AGENTS.md and docs/architecture.md, the design system its
 #      screens follow when the change touches one (repos.yml), its own
 #      earlier findings and threads. It reviews the new range, says what was fixed,
-#      leaves inline comments for blockers and majors, and returns a
-#      structured verdict.
+#      and returns a structured verdict; it posts nothing. A second agent, in
+#      a fresh context, checks each new blocker and major against the code
+#      (#234, scripts/review-verify.py): one it rejects stays in the summary
+#      as a minor marked not confirmed, and in the record; the workflow posts
+#      the confirmed ones inline, each a thread to resolve.
 #   4. The verdict becomes labels (risk:*, complexity:*), one summary comment
 #      (updated on every push, with the run's cost) and this job's result: red
 #      when blocking. Threads the push fixed are resolved. Replies to a thread
@@ -352,13 +355,12 @@ jobs:
             the diff. Open other files only when the diff alone
             cannot settle a finding (a caller, a definition, a test).
 
-            For each blocker or major problem, leave one inline comment on the exact line with
-            mcp__github_inline_comment__create_inline_comment. Every inline comment opens a thread
-            that must be resolved before merging, so minor problems go only in findings (the
-            summary), never inline. Do not post any other comment: the summary is built from your
-            structured output. End every inline comment with exactly this line and no other
-            signature:
-            <sub>🤖 AI review · ${{ steps.scope.outputs.model }} (Anthropic)</sub>
+            Post nothing: the workflow posts from your structured output. For each blocker or
+            major, give its exact `line` and, in `detail`, what breaks, for whom and how to fix it:
+            once a second agent confirms it, that text becomes its inline comment, a thread that
+            must be resolved before merging (#234). Minor problems need no detail; they go only in
+            the summary. Set `earlier` true on a finding your earlier threads already raised (the
+            brief lists them): it is not posted again.
 
             In findings, list every problem still open after this review (new ones and earlier
             ones the code did not fix). Set `pre_existing` true on a finding about code this pull
@@ -393,8 +395,58 @@ jobs:
             --effort ${{ steps.scope.outputs.effort }}
             --max-turns 60
             --max-budget-usd ${{ steps.policy.outputs.budget || '3' }}
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(git diff:*),Bash(git log:*),Read,Glob,Grep"
-            --json-schema '{"type":"object","additionalProperties":false,"required":["risk","complexity","blocking","type","description_matches","summary","findings","lessons","resolved_threads"],"properties":{"risk":{"type":"string","enum":["low","medium","high"]},"type":{"type":"string","enum":["breaking","feat","fix","perf","refactor","style","docs","test","ci","build","chore","revert"]},"description_matches":{"type":"boolean"},"complexity":{"type":"string","enum":["low","medium","high"]},"blocking":{"type":"boolean"},"summary":{"type":"string","maxLength":1500},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","file","title"],"properties":{"severity":{"type":"string","enum":["blocker","major","minor"]},"file":{"type":"string"},"line":{"type":"integer"},"title":{"type":"string","maxLength":200},"pre_existing":{"type":"boolean"}}}},"lessons":{"type":"array","items":{"type":"string","maxLength":300}},"resolved_threads":{"type":"array","items":{"type":"string"}},"criteria":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","met","evidence"],"properties":{"id":{"type":"string","pattern":"^C[0-9]+$"},"met":{"type":"boolean"},"evidence":{"type":"string","maxLength":300}}}}}}'
+            --allowedTools "Bash(git diff:*),Bash(git log:*),Read,Glob,Grep"
+            --json-schema '{"type":"object","additionalProperties":false,"required":["risk","complexity","blocking","type","description_matches","summary","findings","lessons","resolved_threads"],"properties":{"risk":{"type":"string","enum":["low","medium","high"]},"type":{"type":"string","enum":["breaking","feat","fix","perf","refactor","style","docs","test","ci","build","chore","revert"]},"description_matches":{"type":"boolean"},"complexity":{"type":"string","enum":["low","medium","high"]},"blocking":{"type":"boolean"},"summary":{"type":"string","maxLength":1500},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","file","title"],"properties":{"severity":{"type":"string","enum":["blocker","major","minor"]},"file":{"type":"string"},"line":{"type":"integer"},"title":{"type":"string","maxLength":200},"pre_existing":{"type":"boolean"},"earlier":{"type":"boolean"},"detail":{"type":"string","maxLength":1500}}}},"lessons":{"type":"array","items":{"type":"string","maxLength":300}},"resolved_threads":{"type":"array","items":{"type":"string"}},"criteria":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","met","evidence"],"properties":{"id":{"type":"string","pattern":"^C[0-9]+$"},"met":{"type":"boolean"},"evidence":{"type":"string","maxLength":300}}}}}}'
+
+      # Verification (#234): a second agent, in a fresh context, checks each
+      # new blocker and major against the code before anything is posted.
+      # One it rejects stays in the summary as a minor marked not confirmed,
+      # and in the record; one it confirms is posted inline by the verdict.
+      # No answer rejects nothing (scripts/review-verify.py).
+      - name: The verifier's task
+        id: verify-task
+        if: steps.claude.outcome == 'success' && steps.claude.outputs.structured_output != ''
+        env:
+          OUT: ${{ steps.claude.outputs.structured_output }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$OUT" > "$RUNNER_TEMP/review.json"
+          python3 .dx-central/scripts/review-verify.py prompt < "$RUNNER_TEMP/review.json" > "$RUNNER_TEMP/verify-prompt.md"
+          if [ -s "$RUNNER_TEMP/verify-prompt.md" ]; then
+            eof="DX_$(openssl rand -hex 16)"
+            { echo "prompt<<$eof"; sed "s/\${BASE}/$GITHUB_BASE_REF/g" "$RUNNER_TEMP/verify-prompt.md"; echo "$eof"; } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify the blockers and majors
+        id: verify
+        if: steps.verify-task.outputs.prompt != ''
+        continue-on-error: true # no answer rejects nothing
+        timeout-minutes: 15
+        uses: anthropics/claude-code-action@1d6de8cb0c237e7c15e9e1bdf973826ebae490cc # v1.0.248
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
+          github_token: ${{ steps.bot.outputs.token }}
+          allowed_bots: dependabot[bot],${{ steps.bot.outputs.app-slug }}
+          prompt: ${{ steps.verify-task.outputs.prompt }}
+          claude_args: |
+            --model ${{ steps.scope.outputs.model }}
+            --effort ${{ steps.scope.outputs.effort }}
+            --max-turns 40
+            --max-budget-usd 2
+            --allowedTools "Bash(git diff:*),Bash(git log:*),Read,Glob,Grep"
+            --json-schema '{"type":"object","additionalProperties":false,"required":["verdicts"],"properties":{"verdicts":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["i","real","why"],"properties":{"i":{"type":"integer"},"real":{"type":"boolean"},"why":{"type":"string","maxLength":300}}}}}}'
+
+      - name: Apply the verification
+        id: verified
+        if: steps.verify-task.outcome == 'success'
+        env:
+          VERIFIED: ${{ steps.verify.outputs.structured_output }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${VERIFIED:-}" > "$RUNNER_TEMP/verdicts.json"
+          REVIEW="$RUNNER_TEMP/review.json" VERDICTS="$RUNNER_TEMP/verdicts.json" python3 .dx-central/scripts/review-verify.py apply > "$RUNNER_TEMP/review-verified.json"
+          jq -c '.verification' "$RUNNER_TEMP/review-verified.json"
 
       - name: Verdict (labels, summary, result)
         id: verdict
@@ -416,6 +468,8 @@ jobs:
           MAX_AUTO: ${{ inputs.max-auto-reviews }}
         run: |
           set -euo pipefail
+          # The review's output after its verification, when it ran.
+          if [ -s "$RUNNER_TEMP/review-verified.json" ]; then OUT=$(cat "$RUNNER_TEMP/review-verified.json"); fi
           post() {
             local id
             # shellcheck disable=SC2016 # jq variable, not a shell one.
@@ -540,7 +594,7 @@ jobs:
 
           blk=""; if [ "$blocking" = true ]; then blk=" · **blocking**"; fi
           desc=""; if [ "$dmatch" != true ]; then desc=$'\n\n> ✍️ The description does not match the code (see the summary): no auto-merge until it does.'; fi
-          findings=$(jq -r '.findings[] | "- **\(.severity)**\(if .pre_existing then " (pre-existing)" else "" end) `\(.file)\(if .line then ":\(.line)" else "" end)`: \(.title)"' <<<"$OUT")
+          findings=$(jq -r '.findings[] | "- **\(.severity)**\(if .pre_existing then " (pre-existing)" else "" end) `\(.file)\(if .line then ":\(.line)" else "" end)`: \(.title)\(if .rejected then " (\(.rejected))" else "" end)"' <<<"$OUT")
           # The count first (#234): what is left to fix, or nothing.
           tally=$(jq -c '.findings' <<<"$OUT" | python3 .dx-central/scripts/review-count.py line) || tally="_The findings could not be counted._"
           # The changed files travel with the record: the weekly learning job
@@ -549,7 +603,7 @@ jobs:
           # `max` lets the conventions tell a capped review (no new reading
           # will come) from one still to run on a new commit.
           record=$(jq -c --arg risk "$risk" --arg floor "$FLOOR" --arg sha "$SHA" --arg model "$MODEL" --arg mode "$MODE" --argjson count "$count" --argjson max "${MAX_AUTO:-5}" --arg cost "${cost:-}" --argjson files "$files" --arg type "$type" --arg text "$text" \
-            '{risk:$risk, model_risk:.risk, floor:$floor, complexity, blocking, type:$type, description_matches:.description_matches, text:$text, lessons, findings, criteria:(.criteria // []), sha:$sha, model:$model, mode:$mode, count:$count, max:$max, cost:$cost, files:$files}' <<<"$OUT")
+            '{risk:$risk, model_risk:.risk, floor:$floor, complexity, blocking, type:$type, description_matches:.description_matches, text:$text, lessons, findings:[.findings[] | del(.detail)], verification:(.verification // null), criteria:(.criteria // []), sha:$sha, model:$model, mode:$mode, count:$count, max:$max, cost:$cost, files:$files}' <<<"$OUT")
           body=$(cat <<EOF
           <!-- dx-review -->
           ### Claude review · risk **$risk** · complexity **$complexity** · type **$type**$blk
@@ -567,6 +621,18 @@ jobs:
           EOF
           )
           post "$body"
+          # The confirmed new blockers and majors, inline on their line (or
+          # on their file when the line is outside the diff), each a thread
+          # to resolve before merging (#234).
+          printf '%s' "$OUT" | python3 .dx-central/scripts/review-verify.py inline | while IFS= read -r f; do
+            path=$(jq -r .file <<<"$f"); line=$(jq -r '.line // empty' <<<"$f")
+            text=$(jq -r '"**\(.severity)**: \(.title)\n\n\(.detail // "")"' <<<"$f")
+            text=$(printf '%s\n\n<sub>🤖 AI review · %s (Anthropic)</sub>' "$text" "$MODEL")
+            if [ -z "$line" ] || ! gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/comments" -f commit_id="$SHA" -f path="$path" -F line="$line" -f side=RIGHT -f body="$text" >/dev/null 2>&1; then
+              gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/comments" -f commit_id="$SHA" -f path="$path" -f subject_type=file -f body="$text" >/dev/null \
+                || echo "::warning::A confirmed finding on $path could not be posted inline; it is in the summary."
+            fi
+          done
           if [ "$blocking" = true ]; then
             echo "::error::The review found a blocking problem; see the summary comment."
             exit 1
