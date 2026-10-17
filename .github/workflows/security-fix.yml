@@ -6,10 +6,12 @@ name: Security fixes
 # and artifacts are as visible as its repository, and these carry an
 # embargoed vulnerability and its fix. It refuses to run anywhere else. In a public repository a vulnerability is reported privately
 # (private vulnerability reporting) and becomes a repository security
-# advisory. A maintainer moving it from triage to draft accepts it; then:
+# advisory. A maintainer accepts it by starting its temporary private fork
+# on the advisory's page (an App needs the Administration permission to
+# create one, and dilux-bot does not hold it); then:
 #
-#   1. plan: every public repository of repos.yml; each draft advisory
-#      without a temporary private fork gets one, and each fork with no open
+#   1. plan: every public repository of repos.yml; each draft advisory's
+#      fork with no open
 #      pull request from dilux-bot and no `fix/<ghsa>` branch is a fix due,
 #      claimed there and then by creating that branch (scripts/advisory.py
 #      plan): one attempt per advisory, whatever the agent does after.
@@ -35,13 +37,13 @@ name: Security fixes
 #
 # The agent has Bash and the network, on text a stranger wrote: that is why
 # its job holds no key and no token of the App, and writing happens in
-# another job. The plan's token is broad (every repository's advisories,
-# and contents to create the forks' branches), but it runs only this
+# another job. The plan's token is broad (every repository's advisories, to
+# read, and contents to create the forks' branches), but it runs only this
 # repository's code. A failure anywhere after the claim spends the attempt:
 # a maintainer takes it from the advisory's page. The report reaches it only in its prompt, fenced.
 # DX_AUTOPILOT=off stops it.
 #
-# Needs dilux-bot's "Repository security advisories" permission (write).
+# Needs dilux-bot's "Repository security advisories" permission (read).
 # The plan mints its token with scripts/app-token.sh (actions/create-github-
 # app-token has no input for that permission) and revokes it when its step
 # ends; the push job's token, which needs none, comes from the action.
@@ -104,7 +106,7 @@ jobs:
           set -euo pipefail
           # Every repository's advisories; contents to create each fork's
           # branch and to clone it.
-          GH_TOKEN=$(bash .dx-central/scripts/app-token.sh mint '{"repository_advisories":"write","contents":"write","pull_requests":"read","metadata":"read"}')
+          GH_TOKEN=$(bash .dx-central/scripts/app-token.sh mint '{"repository_advisories":"read","contents":"write","pull_requests":"read","metadata":"read"}')
           export GH_TOKEN
           unset PRIVATE_KEY
           # Revoked when the step ends, however it ends.

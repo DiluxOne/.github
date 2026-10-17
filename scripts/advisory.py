@@ -2,10 +2,12 @@
 """A security advisory's fix, written in its temporary private fork (#194).
 
 In a public repository a vulnerability is reported privately and becomes a
-repository security advisory. A maintainer accepting it (moving it from
-triage to draft) is what starts the fix: this finds those drafts, creates
-each one's temporary private fork when it has none, and names the fixes due,
-for security-fix.yml to write: an agent writes the fix and its test in the
+repository security advisory. A maintainer accepts it by starting its
+temporary private fork on the advisory's page ("Start a temporary private
+fork"): GitHub lets an App create that fork only with the Administration
+permission, which the organisation's App does not hold. This finds the
+draft advisories that have a fork and names the fixes due, for
+security-fix.yml to write: an agent writes the fix and its test in the
 fork, the repository's checks run there, and the pull request waits in the
 fork. GitHub runs no Actions in that fork and merges its pull request only
 from the advisory's page, so a maintainer always merges it and publishes the
@@ -17,8 +19,8 @@ over a maintainer's work. A private repository has no private reporting; its
 reports are issues labelled `security` (scripts/triage-act.sh, policy
 `person-merges`).
 
-  advisory.py plan      every public repository of repos.yml: create the
-                        forks, claim each fix due (its branch, at the fork's
+  advisory.py plan      every public repository of repos.yml: list the
+                        drafts still waiting for their fork, claim each fix due (its branch, at the fork's
                         head, before the agent runs: one attempt per
                         advisory, whatever the agent does), print them as a
                         JSON list of {repo, repo_name, ghsa, fork, fork_name,
@@ -28,7 +30,7 @@ reports are issues labelled `security` (scripts/triage-act.sh, policy
                         CHECKS (passed, failed or none), CHECKS_LOG (file)
   advisory.py --test    self-test
 
-Environment: GH_TOKEN (repository security advisories: write, contents:
+Environment: GH_TOKEN (repository security advisories: read, contents:
 write and pull requests: read on every repository and its forks).
 """
 import json
@@ -173,10 +175,8 @@ def plan(root):
         try:
             advisories = json.loads(gh("api", f"repos/{full}/security-advisories?state=draft&per_page=100"))
             for ghsa in needs_fork(advisories):
-                gh("api", "-X", "POST", f"repos/{full}/security-advisories/{ghsa}/forks")
-                print(f"  {full}: created the private fork of {ghsa}", file=sys.stderr)
-            if needs_fork(advisories):
-                advisories = json.loads(gh("api", f"repos/{full}/security-advisories?state=draft&per_page=100"))
+                # Not accepted yet: a maintainer starts its fork.
+                print(f"  {full}: {ghsa} waits for a maintainer to start its temporary private fork", file=sys.stderr)
             for f in due(full, advisories, fork_busy):
                 # Each as it is claimed: one that fails leaves the others in.
                 fixes.append(claim(f))
