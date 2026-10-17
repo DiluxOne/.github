@@ -168,7 +168,7 @@ The tree says {version}: the hold on the newest changelog entry is removed and t
 
 ## 💡 Why
 
-Closes #{number}. A person accepted the release issue, which is the decision to publish {version}. Once this pull request merges, the release workflow checks that the issue is still accepted by a person and that its version is the one computed, then publishes {version} to {where}.
+Closes #{number}. The release issue was accepted, by a person or by the plan a maintainer approved as its milestone, which is the decision to publish {version}. Once this pull request merges, the release workflow checks that the issue is still accepted by a person and that its version is the one computed, then publishes {version} to {where}.
 
 {AI_LINE}"""
     return {"ok": True, "version": version, "branch": branch, "title": pr_title, "body": body, "argv": argv,
@@ -188,6 +188,8 @@ QUERY = """query($owner: String!, $name: String!, $label: String!) {
         state
         stateReason
         labels(first: 50) { nodes { name } }
+        author { login }
+        milestone { title creator { login } }
         timelineItems(itemTypes: [LABELED_EVENT, UNLABELED_EVENT, RENAMED_TITLE_EVENT], last: 100) {
           nodes {
             __typename
@@ -236,7 +238,56 @@ def judge(node, label):
     return True, f"#{n}", actor.get("login"), at
 
 
-def verify(answer, version, label="accepted", role_of=None):
+# A planned release (#247): the bot opens "Release X.Y.Z" when its version's
+# milestone is done, and in `planned-release: auto` (policy/autonomy.yml) it
+# marks it accepted by policy. Approving the plan was approving the release:
+# the person is whoever created the milestone, and their role is read now.
+PLANNED_LABEL = "accepted-by:policy"
+BOT_LOGINS = ("dilux-bot", "dilux-bot[bot]", "app/dilux-bot")
+
+
+def planned(node, version):
+    """(ok, why, by, at) for a release issue the plan accepted."""
+    n = node.get("number")
+    # A release cancelled by closing its issue is no release, planned or not.
+    if node.get("state") == "CLOSED" and node.get("stateReason") != "COMPLETED":
+        return False, f"#{n} was closed as {str(node.get('stateReason') or 'not completed').lower().replace('_', ' ')}", None, None
+    labels = [l.get("name") for l in (node.get("labels") or {}).get("nodes") or []]
+    if PLANNED_LABEL not in labels or LANE_LABEL not in labels:
+        return False, f"#{n} is not accepted by the plan", None, None
+    if ((node.get("author") or {}).get("login") or "") not in BOT_LOGINS:
+        return False, f"#{n} carries `{PLANNED_LABEL}` but was not opened by the bot for a milestone", None, None
+    events = (node.get("timelineItems") or {}).get("nodes") or []
+    last = None
+    for e in events:
+        if e.get("__typename") in ("LabeledEvent", "UnlabeledEvent") and (e.get("label") or {}).get("name") == PLANNED_LABEL:
+            last = e
+    if not last or last.get("__typename") != "LabeledEvent" or ((last.get("actor") or {}).get("login") or "") not in BOT_LOGINS:
+        return False, f"#{n}'s `{PLANNED_LABEL}` was not added by the bot", None, None
+    ms = node.get("milestone") or {}
+    if (ms.get("title") or "").strip().lstrip("v") != version:
+        return False, f"#{n} is not on the milestone {version}", None, None
+    at = last.get("createdAt") or ""
+    for e in events:
+        if e.get("__typename") == "RenamedTitleEvent" and (e.get("createdAt") or "") >= at:
+            return False, f"#{n}'s title changed after the plan accepted it", None, None
+    creator = (ms.get("creator") or {}).get("login")
+    if not creator:
+        return False, f"#{n}'s milestone names no creator", None, None
+    return True, f"#{n}", creator, at
+
+
+def planned_mode(path=None):
+    """The organisation's `planned-release`: auto or confirm (the default)."""
+    path = path or os.path.join(HERE, "..", "policy", "autonomy.yml")
+    try:
+        mode = str((schema.read_yaml(path) or {}).get("planned-release") or "confirm")
+    except Exception:  # noqa: BLE001  unreadable is the safe answer
+        return "confirm"
+    return mode if mode in ("auto", "confirm") else "confirm"
+
+
+def verify(answer, version, label="accepted", role_of=None, mode=None):
     """Whether a person approved releasing `version`. `role_of(login)` is
     that person's role_name on the repository now, or None when it could not
     be read (which approves nothing)."""
@@ -249,8 +300,13 @@ def verify(answer, version, label="accepted", role_of=None):
     if not mine:
         return {"ok": False, "version": version, "why": f"no issue titled `{wanted}` with the `{LANE_LABEL}` label exists"}
     whys = []
+    mode = mode or planned_mode()
     for node in mine:
         ok, why, by, at = judge(node, label)
+        if not ok and mode == "auto":
+            pok, pwhy, pby, pat = planned(node, version)
+            if pok:
+                ok, why, by, at = pok, pwhy, pby, pat
         if ok:
             role = role_of(by) if role_of else None
             if role is None:
@@ -423,9 +479,9 @@ def self_test():
     def answer(*nodes):
         return {"data": {"repository": {"issues": {"nodes": list(nodes)}}}}
 
-    def vfy(a, version, label="accepted", roles=None):
+    def vfy(a, version, label="accepted", roles=None, mode="confirm"):
         roles = {"soydiloreto": "admin"} if roles is None else roles
-        return verify(a, version, label, lambda who: roles.get(who))
+        return verify(a, version, label, lambda who: roles.get(who), mode)
 
     def ev(kind, at, label="accepted", who="User", **extra):
         e = {"__typename": kind, "createdAt": at, "actor": {"__typename": who, "login": "dilux-bot" if who == "Bot" else "soydiloreto"}}
@@ -457,6 +513,24 @@ def self_test():
     check("C5: a former title quoted back cannot close its code span", "`b`" in vfy(answer(odd), "1.2.0")["why"], False)
     check("C5: a title changed in the same second as the acceptance approves nothing", vfy(answer(node(events=[ev("LabeledEvent", "2026-10-02T10:00:00Z"), ev("RenamedTitleEvent", "2026-10-02T10:00:00Z", previousTitle="Release 1.1.9", currentTitle="Release 1.2.0")])), "1.2.0")["ok"], False)
     check("C5: a title changed before it was accepted is fine", vfy(answer(node(events=[ev("RenamedTitleEvent", "2026-10-01T10:00:00Z", previousTitle="Release ", currentTitle="Release 1.2.0"), ev("LabeledEvent", "2026-10-02T10:00:00Z")])), "1.2.0")["ok"], True)
+    # #247: a planned release, accepted by the plan.
+    def plan_node(author="dilux-bot", ms_title="1.2.0", creator="soydiloreto", added_by="Bot", extra=()):
+        n = node(labels=("lane:release", "accepted-by:policy"),
+                 events=[ev("LabeledEvent", "2026-10-02T10:00:00Z", label="accepted-by:policy", who=added_by), *extra])
+        n["author"] = {"login": author}
+        n["milestone"] = {"title": ms_title, "creator": {"login": creator}} if ms_title else None
+        return n
+    r = vfy(answer(plan_node()), "1.2.0", mode="auto")
+    check("#247 planned: the bot's issue on the version's milestone, in auto, approves it as its planner", (r["ok"], r["by"]), (True, "soydiloreto"))
+    check("#247 planned: in confirm it approves nothing", vfy(answer(plan_node()), "1.2.0")["ok"], False)
+    closed = plan_node(); closed["state"], closed["stateReason"] = "CLOSED", "NOT_PLANNED"
+    check("#247 planned: a release cancelled by closing it as not planned approves nothing", vfy(answer(closed), "1.2.0", mode="auto")["ok"], False)
+    check("#247 planned: a planner who is not admin or maintain approves nothing", vfy(answer(plan_node()), "1.2.0", roles={"soydiloreto": "write"}, mode="auto")["ok"], False)
+    check("#247 planned: not opened by the bot, another milestone, no milestone, the label by a person: nothing",
+          [vfy(answer(n), "1.2.0", mode="auto")["ok"] for n in (plan_node(author="someone"), plan_node(ms_title="1.3.0"), plan_node(ms_title=None), plan_node(added_by="User"))],
+          [False] * 4)
+    check("#247 planned: a title changed after the plan accepted it approves nothing",
+          vfy(answer(plan_node(extra=[ev("RenamedTitleEvent", "2026-10-03T10:00:00Z", previousTitle="Release 1.1.0", currentTitle="Release 1.2.0")])), "1.2.0", mode="auto")["ok"], False)
     r = vfy(answer(node(number=3, state="CLOSED", reason="NOT_PLANNED"), node(number=9)), "1.2.0")
     check("one accepted issue among several for the version is enough", (r["ok"], r["issue"]), (True, 9))
     check("no release issue at all", vfy(answer(), "1.2.0")["ok"], False)
