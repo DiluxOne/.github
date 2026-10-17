@@ -215,14 +215,35 @@ def claim(central, fix):
     return {**fix, "issue": int(url.rsplit("/", 1)[-1])}
 
 
+# Advisories in triage are a stranger's text that starts a paid agent run
+# with no person in between: at most this many are taken a run (each one
+# claimed once, ever), and the rest wait for the next hour (#273).
+TRIAGE_PER_RUN = 2
+
+
+def capped(due_list, taken):
+    """due_list, without the triage ones past the run's cap; taken counts
+    the triage ones already taken in this run."""
+    out = []
+    for f in due_list:
+        if f.get("state") == "triage":
+            if taken >= TRIAGE_PER_RUN:
+                continue
+            taken += 1
+        out.append(f)
+    return out, taken
+
+
 def plan(root, central):
     have = claimed(central)
     fixes = []
+    taken = 0
     for name in public_repos(root):
         full = f"{org.ORG}/{name}"
         try:
             advisories = [a for st in ("triage", "draft") for a in json.loads(gh("api", f"repos/{full}/security-advisories?state={st}&per_page=100"))]
-            for f in due(full, advisories, have):
+            todo, taken = capped(due(full, advisories, have), taken)
+            for f in todo:
                 # Each as it is claimed: one that fails leaves the others in.
                 fixes.append(claim(central, f))
         except RuntimeError as exc:
@@ -256,6 +277,9 @@ def self_test():
     check("#247 verdict: unreadable, odd or tampered verdicts read as none",
           (verdict("nope")["verdict"], verdict('["vulnerability"]')["verdict"], verdict('{"verdict": "VULN", "reproduced": "true"}'), len(verdict('{"why": "' + "x" * 5000 + '"}')["why"])),
           ("", "", {"verdict": "", "reproduced": False, "why": ""}, 1500))
+    tri = [{"ghsa": f"G{i}", "state": "triage"} for i in range(4)] + [{"ghsa": "D", "state": "draft"}]
+    check("#273 capped: at most TRIAGE_PER_RUN in triage a run, every draft", [f["ghsa"] for f in capped(tri, 0)[0]], ["G0", "G1", "D"])
+    check("#273 capped: the cap counts across repositories", ([f["ghsa"] for f in capped(tri, 1)[0]], capped(tri, 1)[1]), (["G0", "D"], 2))
     pt = prompt({"ghsa_id": g3, "state": "triage", "summary": "x"})
     check("#247 prompt: one in triage is triaged first and asks for the verdict file", ("Nobody has accepted" in pt, ".dx-advisory-verdict.json" in pt, "change of behaviour" in pt), (True, True, True))
     check("title: names the advisory and the repository", title("o/r", g1), f"Fix {g1} in r")
