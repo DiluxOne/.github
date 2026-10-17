@@ -825,7 +825,9 @@ jobs:
   autopilot:
     name: Autopilot
     needs: report
-    if: needs.report.outputs.lane-issue != ''
+    # `report` runs after the optional `diagnose`; without a status function
+    # this job would be skipped with it (#257, scripts/needs-chain.py).
+    if: "!cancelled() && needs.report.result == 'success' && needs.report.outputs.lane-issue != ''"
     permissions: {}
     uses: DiluxOne/.github/.github/workflows/autopilot.yml@v5
     with:
