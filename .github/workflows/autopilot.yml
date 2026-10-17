@@ -39,7 +39,10 @@ name: Autopilot
 #
 # A run never ends in silence (scripts/autopilot.py end): the pull request is
 # ready for review, or the agent said where it stopped and why (a comment and
-# `needs-human`), or the run continues; otherwise this workflow says so
+# `needs-human`), or, in `guided` mode (policy/autonomy.yml, autopilot-mode,
+# #247), it asked a maintainer a question and waits (`autopilot:waiting`):
+# their answer, in their own words, brings it back (review-reply.yml) and
+# reaches its prompt; or the run continues; otherwise this workflow says so
 # itself, adds `needs-human` and fails. Every run writes a readable account
 # to its job summary and keeps the agent's full transcript as an artifact,
 # and the issue's board links the pull request, the run and the criteria
@@ -496,6 +499,21 @@ jobs:
           set -euo pipefail
           export BODY="$RUNNER_TEMP/body.md" REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml"
           [ "$MODE" != continue ] || AUTOPILOT_RUN="$RUN_URL" python3 .dx-central/scripts/autopilot.py board
+          # What maintainers answered its last question (#247, guided mode):
+          # the comments after it, on the pull request and the issue, by
+          # people with write access to the repository, checked now.
+          if [ "$MODE" = continue ]; then
+            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "autopilot:waiting" >/dev/null 2>&1 || true
+            { gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments'; gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments'; } \
+              | jq -s 'add | map({body, createdAt, author: {login: .author.login}})' > "$RUNNER_TEMP/comments.json"
+            : > "$RUNNER_TEMP/writers.txt"
+            for login in $(jq -r '.[].author.login' "$RUNNER_TEMP/comments.json" | sort -u); do
+              role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$login/permission" --jq .role_name 2>/dev/null || echo none)
+              case $role in admin|maintain|write) echo "$login" >> "$RUNNER_TEMP/writers.txt" ;; esac
+            done
+            COMMENTS="$RUNNER_TEMP/comments.json" WRITERS="$RUNNER_TEMP/writers.txt" python3 .dx-central/scripts/autopilot.py answers > "$RUNNER_TEMP/answers.md"
+            export ANSWERS="$RUNNER_TEMP/answers.md"
+          fi
           eof="DX_$(openssl rand -hex 16)"
           { echo "prompt<<$eof"; python3 .dx-central/scripts/autopilot.py prompt work; echo "$eof"; } >> "$GITHUB_OUTPUT"
 
