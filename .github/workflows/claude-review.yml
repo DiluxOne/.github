@@ -406,6 +406,7 @@ jobs:
       - name: The verifier's task
         id: verify-task
         if: steps.claude.outcome == 'success' && steps.claude.outputs.structured_output != ''
+        continue-on-error: true # the verdict runs whatever happens here
         env:
           OUT: ${{ steps.claude.outputs.structured_output }}
         run: |
@@ -440,6 +441,7 @@ jobs:
       - name: Apply the verification
         id: verified
         if: steps.verify-task.outcome == 'success'
+        continue-on-error: true # without it, the verdict posts what the review found
         env:
           VERIFIED: ${{ steps.verify.outputs.structured_output }}
         run: |
@@ -594,7 +596,7 @@ jobs:
 
           blk=""; if [ "$blocking" = true ]; then blk=" · **blocking**"; fi
           desc=""; if [ "$dmatch" != true ]; then desc=$'\n\n> ✍️ The description does not match the code (see the summary): no auto-merge until it does.'; fi
-          findings=$(jq -r '.findings[] | "- **\(.severity)**\(if .pre_existing then " (pre-existing)" else "" end) `\(.file)\(if .line then ":\(.line)" else "" end)`: \(.title)\(if .rejected then " (\(.rejected))" else "" end)"' <<<"$OUT")
+          findings=$(jq -r '.findings[] | "- **\(.severity)**\(if .pre_existing then " (pre-existing)" else "" end) `\(.file)\(if .line then ":\(.line)" else "" end)`: \(.title)\(if (.rejected // "") != "" then " (\(.rejected))" else "" end)"' <<<"$OUT")
           # The count first (#234): what is left to fix, or nothing.
           tally=$(jq -c '.findings' <<<"$OUT" | python3 .dx-central/scripts/review-count.py line) || tally="_The findings could not be counted._"
           # The changed files travel with the record: the weekly learning job
