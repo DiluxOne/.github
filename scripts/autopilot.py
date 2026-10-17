@@ -1343,8 +1343,15 @@ def main(argv):
                 text = text.rstrip() + f"\n\nThe reproduction test `{test}` passes at {pushed[:12]}, the pull request's head, in the sandbox (a clean copy of that commit; no network, no secrets), where it failed on the default branch.\n"
             set_body(repo, pr, set_tested(body, text))
             gh("pr", "ready", str(pr), "--repo", repo)
+            try:
+                review_push(repo, pr)
+            except (RuntimeError, OSError, ValueError, KeyError) as exc:
+                # Ready without that push is never reviewed: back to a draft,
+                # so finishing again (or a continue run) redoes both.
+                gh("pr", "ready", str(pr), "--repo", repo, "--undo")
+                print(f"Not ready: the push that starts the review failed ({str(exc)[:200]}); #{pr} is a draft again. Run finish ready again.")
+                return 1
             print(f"#{pr} is ready for review.")
-            review_push(repo, pr)
             refresh_board(repo, number)
             return 0
         if how == "ask":

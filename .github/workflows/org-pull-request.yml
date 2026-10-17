@@ -18,7 +18,9 @@ name: Pull request (organisation)
 # (claude-review.yml keeps an edit in a concurrency group of its own, so
 # nothing is cancelled). In the other repositories, where the ruleset runs it,
 # only a push does: not an edit, and not a draft marked ready, so the
-# autopilot pushes an empty commit once it marks one ready (#269).
+# autopilot pushes an empty commit once it marks one ready (#269). The `on:`
+# types below still list them for this repository; elsewhere they gave no run
+# (DiluxOne/diluxone-users-wordpress#62: marked ready, then edited).
 #
 # A repository's own checks of its kind (a WordPress plugin's Plugin Check
 # and suites, its release) stay in its own workflow; the review does not
