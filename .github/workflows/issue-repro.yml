@@ -175,6 +175,7 @@ jobs:
       reported: ${{ steps.collect.outputs.reported }}
       model: ${{ steps.policy.outputs.model }}
       cost: ${{ steps.collect.outputs.cost }}
+      agent: ${{ steps.collect.outputs.agent }}
     steps:
       - name: The bot's name
         id: bot
@@ -376,7 +377,7 @@ jobs:
           claude_args: |
             --model ${{ steps.policy.outputs.model }}
             --effort ${{ steps.policy.outputs.effort }}
-            --max-turns 30
+            --max-turns 60
             --max-budget-usd 2
             --allowedTools "Read,Glob,Grep,Write(tests/Unit/Repro/**),Edit(tests/Unit/Repro/**)"
             --json-schema '{"type":"object","additionalProperties":false,"required":["wrote_test","summary","needs_from_reporter"],"properties":{"wrote_test":{"type":"boolean"},"summary":{"type":"string","maxLength":1200},"needs_from_reporter":{"type":"string","maxLength":600},"reported_version":{"type":"string","maxLength":40}}}'
@@ -387,9 +388,13 @@ jobs:
         env:
           OUT: ${{ steps.claude.outputs.structured_output }}
           EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+          AGENT: ${{ steps.claude.outcome }}
           NUMBER: ${{ github.event.issue.number }}
         run: |
           set -euo pipefail
+          # Whether the agent finished (#265): one stopped by its turns or
+          # its budget wrote nothing for a reason that is not the report's.
+          echo "agent=$AGENT" >> "$GITHUB_OUTPUT"
           test="tests/Unit/Repro/Issue${NUMBER}Test.php"
           # Only the one test file may exist as a change; anything else is discarded.
           stray=$(git status --porcelain --untracked-files=all | awk '{print $2}' | grep -vx "$test" | grep -v '^\.dx-central/' || true)
@@ -616,6 +621,7 @@ jobs:
           REPORTED: ${{ needs.write.outputs.reported }}
           DEV_TAG: ${{ inputs.dev-tag }}
           WROTE: ${{ needs.write.outputs.wrote }}
+          AGENT: ${{ needs.write.outputs.agent }}
           OUTCOME: ${{ needs.run.outputs.outcome }}
           DIAGNOSIS: ${{ needs.diagnose.outputs.verdict }}
           RUN_RESULT: ${{ needs.run.result }}
@@ -656,6 +662,20 @@ jobs:
             fi
           fi
 
+          # The agent stopped before it finished (its turns or its budget,
+          # #265): no verdict on the report. One more attempt on its own,
+          # like a test written wrong; after that it waits for a person.
+          if [ "$WROTE" != true ] && [ "$AGENT" != success ]; then
+            if [ "$LABEL" != repro:retry ] || [ "$SENDER_LOGIN" != "$BOT" ]; then
+              gh label create "repro:retry" --repo "$GITHUB_REPOSITORY" --color FBCA04 --force --description "The reproduction tries once more with the first test's error" >/dev/null 2>&1 || true
+              gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '<!-- dx-repro-retry -->\nThe attempt to write a test stopped before it finished (it ran out of turns or budget: the tooling, not this report), so there is no verdict. I try once more.\n\n%s' "$sign")" >/dev/null
+              gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label repro:retry >/dev/null 2>&1 || true
+              gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label repro:retry >/dev/null
+              echo "The agent stopped ($AGENT); retrying once."; exit 0
+            fi
+            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'The attempt to write a test stopped before it finished, twice (the tooling, not this report), so there is no verdict. A person will look; %s tries again. The run is in %s.\n\n%s' "$code_again" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$sign")" >/dev/null
+            echo "The agent stopped ($AGENT); no verdict."; exit 0
+          fi
           if [ "$WROTE" != true ]; then
             gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label could-not-reproduce >/dev/null
             gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'I tried to turn this report into a unit test and could not: %s\n\nWhat would settle it: %s\n\n%s' "${SUMMARY:-no test could be written}" "$needs" "$sign")" >/dev/null
