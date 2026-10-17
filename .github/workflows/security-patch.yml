@@ -149,9 +149,12 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/contents/fixes/$GHSA/fix.patch?ref=$b" -H "Accept: application/vnd.github.raw" > "$RUNNER_TEMP/in/fix.patch"
           git clone -q --depth 1 "https://github.com/$REPO" "$RUNNER_TEMP/repo"
           rel=$(ROOT="$RUNNER_TEMP/repo" VERSION=0.0.0 python3 .dx-central/scripts/security-patch.py release)
-          # No version in production is an answer, not a failure: the build says so.
-          python3 .dx-central/scripts/production-version.py --repo "$REPO" --kind "$(jq -r .kind <<<"$rel")" --slug "$(jq -r .slug <<<"$rel")" --json > "$RUNNER_TEMP/in/prod.json" \
-            || echo '{}' > "$RUNNER_TEMP/in/prod.json"
+          # No version in production (exit 1) is an answer: the build says so.
+          # Could not tell (exit 2, GitHub or wordpress.org failed): this leg
+          # fails, and the next run tries again.
+          rc=0
+          python3 .dx-central/scripts/production-version.py --repo "$REPO" --kind "$(jq -r .kind <<<"$rel")" --slug "$(jq -r .slug <<<"$rel")" --json > "$RUNNER_TEMP/in/prod.json" || rc=$?
+          case "$rc" in 0) ;; 1) echo '{}' > "$RUNNER_TEMP/in/prod.json" ;; *) echo "::error::The version in production could not be read; the next run tries again."; exit 1 ;; esac
 
       - name: Keep them
         if: matrix.p.act != 'finish'
