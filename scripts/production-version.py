@@ -12,7 +12,9 @@ there is no version in production to patch, and a person settles it.
 
   production-version.py --kind KIND [--repo OWNER/REPO] [--slug SLUG] [--json]
       prints the version, its tag and the patch after it; exit 1, saying
-      why, when there is none or the two places disagree
+      why, when there is none or the two places disagree (an answer), and
+      exit 2 when it could not tell (GitHub or the other place failed: try
+      again)
   production-version.py --test
 
 Environment: GH_TOKEN (contents: read). The kind and the pack are read from
@@ -164,6 +166,21 @@ def self_test():
            "is on $BASE" in sec, "release-ready.sh" in sec), (True, True, True, True, True))
     tpl = open(os.path.join(HERE, "..", "workflow-templates", "release-wp.yml"), encoding="utf-8").read()
     check("wiring: the release caller runs on security/X.Y.Z", "'security/[0-9]+.[0-9]+.[0-9]+'" in tpl, True)
+    # Exit codes (#247): 1 is a no, an answer; 2 is a failure to tell, retried.
+    real = {k: globals()[k] for k in ("releases", "fetch_stable")}
+    import contextlib
+    import io
+    try:
+        def down(repo):
+            raise RuntimeError("HTTP 502")
+        globals()["fetch_stable"] = lambda spec, slug, opener=None: "1.0.0"
+        globals()["releases"] = down
+        with contextlib.redirect_stderr(io.StringIO()):
+            check("run: GitHub failing is exit 2, tried again, never a no", run(["--kind", "wordpress-plugin", "--slug", "x", "--repo", "o/r"]), 2)
+            globals()["releases"] = lambda repo: []
+            check("run: nothing published is exit 1, an answer", run(["--kind", "wordpress-plugin", "--slug", "x", "--repo", "o/r"]), 1)
+    finally:
+        globals().update(real)
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
@@ -189,12 +206,25 @@ def main(argv):
             return 1
         stable = fetch_stable(spec, a.slug)
     result, why = decide(releases(a.repo), stable)
+    return show(result, why, a.json)
+
+
+def show(result, why, as_json):
     if not result:
         print(why, file=sys.stderr)
         return 1
-    print(json.dumps(result) if a.json else result["version"])
+    print(json.dumps(result) if as_json else result["version"])
     return 0
 
 
+def run(argv):
+    """main, with every failure to read an answer kept apart from a no."""
+    try:
+        return main(argv)
+    except (RuntimeError, OSError, ValueError, urllib.error.URLError) as exc:
+        print(f"could not tell the version in production: {exc}", file=sys.stderr)
+        return 2
+
+
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    sys.exit(run(sys.argv[1:]))
