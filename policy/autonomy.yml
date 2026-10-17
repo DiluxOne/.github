@@ -71,6 +71,14 @@ autopilot-mode:
 # person adds `security`.
 person-merges: [security]
 
+# A version planned as a milestone X.Y.Z (#247, scripts/milestones.py): when
+# its last issue closes, the bot opens "Release X.Y.Z" on it. `auto`:
+# approving the plan was approving the release, so when the milestone's
+# creator has the admin or maintain role the issue is accepted by policy, as
+# that person's decision, and its release pull request opens. `confirm`: a
+# person accepts it, one last click.
+planned-release: auto
+
 # A lane's issue is accepted by policy only when all of this holds, read from
 # GitHub, never from the issue's text alone:
 #   - the issue carries the lane's label (`lane:<name>`), and the last to add
