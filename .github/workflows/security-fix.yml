@@ -260,6 +260,7 @@ jobs:
           ISSUE: ${{ matrix.fix.issue }}
         run: |
           set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/in"
           r=$(sed -n 's/^result=//p' "$RUNNER_TEMP/in/checks" 2>/dev/null | head -n1)
           case $r in passed|failed|none) ;; *) r=nothing ;; esac
           [ -s "$RUNNER_TEMP/in/fix.patch" ] || r=nothing
@@ -273,8 +274,10 @@ jobs:
             gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/heads/$BRANCH" -f sha="$head" >/dev/null
             for f in fix.patch notes.md checks.log; do
               [ -s "$RUNNER_TEMP/in/$f" ] || continue
-              gh api -X PUT "repos/$GITHUB_REPOSITORY/contents/fixes/$GHSA/$f" -f branch="$BRANCH" \
-                -f message="fix: $GHSA in ${REPO#*/}, $f" -f content="$(base64 -w0 "$RUNNER_TEMP/in/$f")" >/dev/null
+              # The request as a file: a large patch or log never goes as an argument.
+              python3 -c 'import base64, json, sys; print(json.dumps({"branch": sys.argv[1], "message": sys.argv[2], "content": base64.b64encode(open(sys.argv[3], "rb").read()).decode()}))' \
+                "$BRANCH" "fix: $GHSA in ${REPO#*/}, $f" "$RUNNER_TEMP/in/$f" > "$RUNNER_TEMP/put.json"
+              gh api -X PUT "repos/$GITHUB_REPOSITORY/contents/fixes/$GHSA/$f" --input "$RUNNER_TEMP/put.json" >/dev/null
             done
             url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/tree/$BRANCH/fixes/$GHSA"
           fi

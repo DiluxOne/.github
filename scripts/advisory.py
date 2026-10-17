@@ -65,7 +65,8 @@ def due(repo, advisories, claimed):
         # Draft is the acceptance; never triage, never once published or closed.
         if a.get("state") != "draft" or not GHSA.match(ghsa):
             continue
-        if MARK.format(repo=repo, ghsa=ghsa) in claimed:
+        # By its marker, or by its title when someone edited the body.
+        if MARK.format(repo=repo, ghsa=ghsa) in claimed or title(repo, ghsa) in claimed:
             continue
         out.append({"repo": repo, "ghsa": ghsa, "branch": branch(ghsa)})
     return out
@@ -154,8 +155,8 @@ def public_repos(root):
 def claimed(central):
     """The markers of every claim issue in this repository, in any state.
     A list that cannot be read fails, never "none claimed"."""
-    bodies = gh("api", f"repos/{central}/issues?state=all&per_page=100", "--paginate", "--jq", '.[] | (.body // "") | split("\n")[0]')
-    return set(l.strip() for l in bodies.splitlines() if l.startswith("<!-- dx-advisory-fix:"))
+    rows = gh("api", f"repos/{central}/issues?state=all&per_page=100", "--paginate", "--jq", '.[] | .title, ((.body // "") | split("\n")[0])')
+    return set(l.strip() for l in rows.splitlines() if l.startswith("<!-- dx-advisory-fix:") or l.startswith("Fix GHSA-"))
 
 
 def claim(central, fix):
@@ -215,8 +216,18 @@ def self_test():
         globals()["gh"] = lambda *a: calls.append(a) or "https://github.com/o/security/issues/7\n"
         got = claim("o/security", {"repo": "o/r", "ghsa": g1, "branch": "fix/x"})
         check("claim: an issue in the private repository, with the marker, before the agent", (got["issue"], calls[-1][:4], MARK.format(repo="o/r", ghsa=g1) in calls[-1][-1]), (7, ("issue", "create", "--repo", "o/security"), True))
-        globals()["gh"] = lambda *a: "<!-- dx-advisory-fix: o/r G -->\nsomething else\n"
-        check("claimed: the markers of every issue", claimed("o/security"), {"<!-- dx-advisory-fix: o/r G -->"})
+        globals()["gh"] = lambda *a: "<!-- dx-advisory-fix: o/r G -->\nsomething else\nFix GHSA-2c2f-4m5q-jw7x in r\n"
+        have2 = claimed("o/security")
+        check("claimed: the markers and the titles of every issue", have2, {"<!-- dx-advisory-fix: o/r G -->", "Fix GHSA-2c2f-4m5q-jw7x in r"})
+        check("due: an issue whose body was edited still holds its claim, by its title", due("o/r", [{"ghsa_id": g1, "state": "draft"}], have2), [])
+        def boom(*a):
+            raise RuntimeError("HTTP 502")
+        globals()["gh"] = boom
+        try:
+            claimed("o/security")
+            check("claimed: a list that cannot be read fails, never reads as none", "no error", "an error")
+        except RuntimeError:
+            check("claimed: a list that cannot be read fails, never reads as none", True, True)
     finally:
         globals()["gh"] = real_gh
     print("all tests passed" if not failed else "some tests failed")
