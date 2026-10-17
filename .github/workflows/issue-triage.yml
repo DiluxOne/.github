@@ -113,8 +113,9 @@ on:
         type: string
         default: v5
     outputs:
-      # true when the verdict is a bug worth a reproduction (bug:unconfirmed,
-      # not a paid report): the caller starts one on its own.
+      # true when the verdict is a bug worth a reproduction (bug:unconfirmed),
+      # whether or not the classifier read a paid roadmap (#247): the caller
+      # starts one on its own.
       bug:
         description: true when the triage classified the report as bug_unconfirmed.
         value: ${{ jobs.triage.outputs.bug || jobs.nightly.outputs.bug }}
@@ -347,7 +348,7 @@ jobs:
           language=$(jq -r '.language // "en"' <<<"${OUT:-null}" 2>/dev/null || echo en)
           case "$language" in en|es|pt|other) ;; *) language=en ;; esac
           cost=""; if [ -n "$EXECUTION_FILE" ] && [ -f "$EXECUTION_FILE" ]; then cost=$(jq -r '[.[] | select(.type == "result")] | last | .total_cost_usd // empty' "$EXECUTION_FILE" 2>/dev/null || true); fi
-          bug=$(VERDICT=$verdict PAID=${PAID:-false} bash .dx-central/scripts/repro-trigger.sh bug)
+          bug=$(VERDICT=$verdict bash .dx-central/scripts/repro-trigger.sh bug)
           { echo "paid=${PAID:-false}"; echo "verdict=$verdict"; echo "bug=$bug"; echo "language=$language"; echo "cost=$cost"; } >> "$GITHUB_OUTPUT"
 
       - name: Act (label, reply, lock)
