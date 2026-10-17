@@ -13,9 +13,12 @@ name: Pull request (organisation)
 # the check names stay "conventions / Conventions (branch, title, commits)",
 # "conventions / Docs (links and names)" and "review / Claude review".
 #
-# An edit of the title or description runs it too: the conventions check it,
-# and the review spends nothing on a commit it already read (claude-review.yml
-# keeps an edit in a concurrency group of its own, so nothing is cancelled).
+# Here, an edit of the title or description runs it too: the conventions check
+# it, and the review spends nothing on a commit it already read
+# (claude-review.yml keeps an edit in a concurrency group of its own, so
+# nothing is cancelled). In the other repositories, where the ruleset runs it,
+# only a push does: not an edit, and not a draft marked ready, so the
+# autopilot pushes an empty commit once it marks one ready (#269).
 #
 # A repository's own checks of its kind (a WordPress plugin's Plugin Check
 # and suites, its release) stay in its own workflow; the review does not
