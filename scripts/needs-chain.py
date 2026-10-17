@@ -58,6 +58,13 @@ jobs:
 """)
     assert problems(good) == [], problems(good)
     assert problems(wf("jobs:\n  a: {needs: b}\n")) == []
+    plain = wf("""
+jobs:
+  a: {}
+  b: {needs: a, if: "always()"}
+  c: {needs: [a, b]}
+""")
+    assert len(problems(plain)) == 1 and "`b`" in problems(plain)[0], problems(plain)
     print("needs-chain: ok")
 
 
