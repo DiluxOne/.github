@@ -431,15 +431,23 @@ jobs:
           # What it blocks: GitHub's dependency, and the markers the App
           # wrote on it (its first line, and its own comments), so a link the
           # dependency API refused still unblocks.
-          deps=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/dependencies/blocking" --jq '.[].number' 2>/dev/null || true)
-          marks=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" --jq 'select(.user.login == "dilux-bot[bot]") | .body' 2>/dev/null | grep -oE '^<!-- dx-repro-blocker: #[0-9]+ -->' | grep -oE '[0-9]+' || true)
-          more=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '.[] | select(.user.login == "dilux-bot[bot]") | .body' 2>/dev/null | grep -oE '^<!-- dx-repro-blocks: #[0-9]+ -->' | grep -oE '[0-9]+' || true)
+          # A read that fails is said and fails the job (after doing what the
+          # others found), never read as "blocks nothing".
+          failed=0
+          deps=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/dependencies/blocking" --jq '.[].number') || { echo "::warning::Could not read #$NUMBER's dependencies."; failed=1; deps=""; }
+          body=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" --jq 'select(.user.login == "dilux-bot[bot]") | .body') || { echo "::warning::Could not read #$NUMBER."; failed=1; body=""; }
+          comments=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '.[] | select(.user.login == "dilux-bot[bot]") | .body') || { echo "::warning::Could not read #$NUMBER's comments."; failed=1; comments=""; }
+          marks=$(grep -oE '^<!-- dx-repro-blocker: #[0-9]+ -->' <<<"$body" | grep -oE '[0-9]+' || true)
+          more=$(grep -oE '^<!-- dx-repro-blocks: #[0-9]+ -->' <<<"$comments" | grep -oE '[0-9]+' || true)
           blocked=""
           # shellcheck disable=SC2086 # lists of numbers, split on purpose.
           for n in $(printf '%s\n' $deps $marks $more | sort -un); do
-            if [ "$(gh issue view "$n" --repo "$GITHUB_REPOSITORY" --json state,labels --jq '.state == "OPEN" and ([.labels[].name] | index("repro:blocked") != null)')" = true ]; then blocked="$blocked $n"; fi
+            if ! state=$(gh issue view "$n" --repo "$GITHUB_REPOSITORY" --json state,labels --jq '.state == "OPEN" and ([.labels[].name] | index("repro:blocked") != null)'); then
+              echo "::warning::Could not read #$n."; failed=1; continue
+            fi
+            [ "$state" != true ] || blocked="$blocked $n"
           done
-          [ -n "${blocked// }" ] || exit 0
+          [ -n "${blocked// }" ] || exit "$failed"
           gh label create "repro:unblocked" --repo "$GITHUB_REPOSITORY" --color 0E8A16 --force --description "What blocked the reproduction is fixed: it runs again" >/dev/null 2>&1 || true
           for n in $blocked; do
             # Off first, then on: a label already there would fire nothing.
@@ -447,6 +455,7 @@ jobs:
             gh issue edit "$n" --repo "$GITHUB_REPOSITORY" --add-label repro:unblocked >/dev/null
             echo "#$n: its reproduction runs again."
           done
+          exit "$failed"
 
   # When the classifier read the paid add-on's roadmap: a fresh runner, where
   # that roadmap, the classifier's transcript and its execution file never
