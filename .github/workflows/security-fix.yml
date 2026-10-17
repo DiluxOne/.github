@@ -35,7 +35,8 @@ name: Security fixes
 # (policy/autonomy.yml, `person-merges`).
 #
 # The agent has Bash and the network, on text a stranger wrote: that is why
-# its job holds no key and no token of the App. The report reaches it only
+# its job holds no key, no token of the App, and a GITHUB_TOKEN with no
+# permission at all (this repository holds other advisories' fixes). The report reaches it only
 # in its prompt, fenced. DX_AUTOPILOT=off stops it.
 #
 # Needs dilux-bot's "Repository security advisories" permission (read). The
@@ -125,8 +126,10 @@ jobs:
     if: needs.plan.outputs.fixes != '' && needs.plan.outputs.fixes != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    permissions:
-      contents: read
+    # None: the agent works on a stranger's report, and this repository
+    # holds other advisories' unpublished fixes. Its token reads nothing
+    # here (the artifacts go by the runner's own token).
+    permissions: {}
     strategy:
       fail-fast: false
       max-parallel: 2
