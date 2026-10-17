@@ -386,7 +386,9 @@ jobs:
           set -euo pipefail
           issues=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences --jq '[.closingIssuesReferences[].number] | join(" ")')
           [ "$(wc -w <<<"$issues")" -eq 1 ] || { echo "handled=false" >> "$GITHUB_OUTPUT"; exit 0; }
-          title=$(gh issue view "$issues" --repo "$GITHUB_REPOSITORY" --json title,labels --jq 'select([.labels[].name] | index("lane:release")) | .title' || true)
+          # A read that fails holds the run: never decided as something else.
+          title=$(gh issue view "$issues" --repo "$GITHUB_REPOSITORY" --json title,labels --jq 'select([.labels[].name] | index("lane:release")) | .title') \
+            || { echo "::error::#$issues could not be read; a human merges this one."; gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --disable-auto >/dev/null 2>&1 || true; exit 1; }
           [[ "$title" =~ ^Release\ ([0-9]+\.[0-9]+\.[0-9]+)$ ]] || { echo "handled=false" >> "$GITHUB_OUTPUT"; exit 0; }
           version=${BASH_REMATCH[1]}
           # From here it is a release pull request: it merges by this proof

@@ -1200,6 +1200,14 @@ def self_test():
     step = am[am.index("name: A sync run's pull request"):am.index("name: Enable or disable")]
     check("auto-merge.yml: the sync lane reads only a missing .github/autonomy.yml as none",
           ("|| : >" not in step, "grep -qE '404|Not Found'" in step, "autonomy.py\" lane-merge" in step), (True, True, True))
+    # #283: a release pull request is decided by its own proof, before the
+    # lane and the usual decision, which both stand aside once it handled it.
+    rel = am[am.index("name: A release pull request"):am.index("name: A sync run's pull request")]
+    gated_by_release = lambda name: "steps.release.outputs.handled != 'true'" in am[am.index(f"name: {name}"):][:400]
+    check("#283 auto-merge.yml: a release pull request merges only by its proof, and nothing else decides it",
+          (gated_by_release("A sync run's pull request"), gated_by_release("Enable or disable"), "release-issue.py\" verify" in rel,
+           "release-issue.py\" argv" in rel, "git write-tree" in rel, "--match-head-commit \"$HEAD_SHA\"" in rel, 'person "' in rel),
+          (True, True, True, True, True, True, True))
     merges = [l for l in am.splitlines() if "gh pr merge" in l and "--auto" in l and "--disable-auto" not in l]
     check("auto-merge.yml: every auto-merge is tied to the head it decided on", (len(merges) >= 4, all("--match-head-commit" in l for l in merges)), (True, True))
     held = am[am.index("name: Labels a person merges"):am.index("name: A sync run's pull request")]
