@@ -49,14 +49,12 @@ jobs:
     permissions: {}
     steps:
       - name: Only from a private repository
-        env:
-          CLIENT_ID: ${{ vars.DILUX_BOT_CLIENT_ID }}
         run: |
-          # The event says whether the caller is private; a schedule's event
-          # does not carry the repository, so the API answers then.
-          private=$(curl -fsS "https://api.github.com/repos/$GITHUB_REPOSITORY" -o /dev/null -w '%{http_code}' || true)
-          if [ "$private" = 200 ]; then
-            echo "::error::nightly-review.yml runs only from a private repository: what it finds can be a vulnerability."; exit 1
+          # Asked without a token: a private repository is not found (404).
+          # Anything else (public, rate limited, unreachable) stops the run.
+          code=$(curl -sS "https://api.github.com/repos/$GITHUB_REPOSITORY" -o /dev/null -w '%{http_code}' || echo 000)
+          if [ "$code" != 404 ]; then
+            echo "::error::nightly-review.yml runs only from a private repository (the API answered $code without a token): what it finds can be a vulnerability."; exit 1
           fi
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -122,6 +120,8 @@ jobs:
       # The calling repository's issues only, after the agent.
       - name: dilux-bot token (the list)
         id: write
+        # A night that did not finish leaves the list as it was.
+        if: steps.agent.outcome == 'success'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
@@ -130,6 +130,7 @@ jobs:
           permission-issues: write
 
       - name: The list
+        if: steps.agent.outcome == 'success'
         env:
           GH_TOKEN: ${{ steps.write.outputs.token }}
           NAME: ${{ steps.pick.outputs.name }}
@@ -150,3 +151,9 @@ jobs:
             gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body-file "$RUNNER_TEMP/body.md" >/dev/null
           fi
           echo "$(jq '.findings | length' "$RUNNER_TEMP/findings.json" 2>/dev/null || echo 0) findings tonight on $repo."
+
+      - name: A night that did not finish
+        if: steps.agent.outcome != 'success'
+        env:
+          NAME: ${{ steps.pick.outputs.name }}
+        run: echo "::error::The review of $NAME did not finish; its list is as it was."; exit 1
