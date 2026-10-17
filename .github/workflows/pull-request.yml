@@ -70,6 +70,7 @@ jobs:
       # missing, and the workflows hide that error: one label per call (#267).
       - run: "! grep -nE -- '--remove-label[^;|]*--remove-label' .github/workflows/*.yml"
       - run: python3 scripts/next-version.py --test
+      - run: python3 scripts/production-version.py --test
       - run: python3 scripts/release-gate.py --test
       - run: python3 scripts/release-issue.py --test
       - run: bash scripts/release-ready.sh --test
