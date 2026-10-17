@@ -22,8 +22,10 @@ In this order:
    code no longer does. A stale doc is a bug.
 
 Do **not** comment on formatting, naming or style the linters already
-enforce, on personal preference, or on code the PR did not touch (unless
-the change breaks it).
+enforce, or on personal preference. A real problem in code the PR did not
+touch (and that the change does not break) is **pre-existing**: list it
+marked so, never inline, and never let it block; it is not the author's
+(#234).
 
 ## How to comment
 
