@@ -149,7 +149,9 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/contents/fixes/$GHSA/fix.patch?ref=$b" -H "Accept: application/vnd.github.raw" > "$RUNNER_TEMP/in/fix.patch"
           git clone -q --depth 1 "https://github.com/$REPO" "$RUNNER_TEMP/repo"
           rel=$(ROOT="$RUNNER_TEMP/repo" VERSION=0.0.0 python3 .dx-central/scripts/security-patch.py release)
-          python3 .dx-central/scripts/production-version.py --repo "$REPO" --kind "$(jq -r .kind <<<"$rel")" --slug "$(jq -r .slug <<<"$rel")" --json > "$RUNNER_TEMP/in/prod.json"
+          # No version in production is an answer, not a failure: the build says so.
+          python3 .dx-central/scripts/production-version.py --repo "$REPO" --kind "$(jq -r .kind <<<"$rel")" --slug "$(jq -r .slug <<<"$rel")" --json > "$RUNNER_TEMP/in/prod.json" \
+            || echo '{}' > "$RUNNER_TEMP/in/prod.json"
 
       - name: Keep them
         if: matrix.p.act != 'finish'
@@ -165,7 +167,8 @@ jobs:
   build:
     name: Build ${{ matrix.p.ghsa }}
     needs: [plan, fetch]
-    if: needs.plan.outputs.todo != '' && needs.plan.outputs.todo != '[]'
+    # Each leg on its own: one fetch that failed leaves the others to build.
+    if: ${{ !cancelled() && needs.plan.outputs.todo != '' && needs.plan.outputs.todo != '[]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions: {}
@@ -202,9 +205,12 @@ jobs:
           mkdir -p "$RUNNER_TEMP/out"
           cp "$RUNNER_TEMP/in/fix.patch" "$RUNNER_TEMP/out/"
           prod=$(cat "$RUNNER_TEMP/in/prod.json")
+          version=$(jq -r '.patch // ""' <<<"$prod")
+          # No version in production, or a fix that does not apply on it: a
+          # result with no version, which marks the claim failed.
+          [ -n "$version" ] || { echo "version=" > "$RUNNER_TEMP/out/build"; echo "::warning::No version in production to patch."; exit 0; }
           git clone -q "https://github.com/$REPO" "$RUNNER_TEMP/repo"
           cd "$RUNNER_TEMP/repo"
-          version=$(jq -r .patch <<<"$prod")
           # The window was announced for one version; another one since (a
           # release in between) starts over instead of publishing it.
           if [ -n "$WANT" ] && [ "$WANT" != "$version" ]; then
@@ -212,12 +218,14 @@ jobs:
             echo "moved=$version" > "$RUNNER_TEMP/out/build"; exit 0
           fi
           # The changelog line is ours, never the reporter's words: it is public.
-          bash "$GITHUB_WORKSPACE/.dx-central/scripts/security-patch-build.sh" "$(jq -r .tag <<<"$prod")" "$version" "$RUNNER_TEMP/in/fix.patch" "A security fix ($GHSA)."
+          if ! bash "$GITHUB_WORKSPACE/.dx-central/scripts/security-patch-build.sh" "$(jq -r .tag <<<"$prod")" "$version" "$RUNNER_TEMP/in/fix.patch" "A security fix ($GHSA)."; then
+            echo "version=" > "$RUNNER_TEMP/out/build"; exit 0
+          fi
           { echo "version=$version"; echo "tag=$(jq -r .tag <<<"$prod")"; } >> "$GITHUB_OUTPUT"
           { echo "version=$version"; echo "tag=$(jq -r .tag <<<"$prod")"; } > "$RUNNER_TEMP/out/build"
 
       - name: The repository's checks on it
-        if: matrix.p.act == 'start' && steps.tree.outcome == 'success'
+        if: matrix.p.act == 'start' && steps.tree.outputs.version != ''
         # Only checks that ran and passed open the window: none is a stop.
         run: |
           set -uo pipefail
@@ -283,6 +291,9 @@ jobs:
             IFS='|' read -r name color desc <<<"$l"; gh label create "$name" --repo "$GITHUB_REPOSITORY" --color "$color" --description "$desc" --force >/dev/null
           done
           sign="🤖 AI-generated · Claude Opus 5.5 (Anthropic), in a private repository"
+          # No result at all is the tooling (a fetch or a build that did not
+          # run): the next run tries again, and nothing is marked.
+          [ -f "$RUNNER_TEMP/in/build" ] || { echo "::error::No build result for #$ISSUE: the next run tries again."; exit 1; }
           version=$(sed -n 's/^version=//p' "$RUNNER_TEMP/in/build" 2>/dev/null | head -1)
           tag=$(sed -n 's/^tag=//p' "$RUNNER_TEMP/in/build" 2>/dev/null | head -1)
           checks=$(sed -n 's/^checks=//p' "$RUNNER_TEMP/in/build" 2>/dev/null | head -1)
@@ -321,6 +332,7 @@ jobs:
           set -euo pipefail
           sign="🤖 AI-generated · Claude Opus 5.5 (Anthropic), in a private repository"
           say() { GH_TOKEN="$ISSUE_TOKEN" gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$1"$'\n\n'"$sign" >/dev/null; }
+          [ -f "$RUNNER_TEMP/in/build" ] || { echo "::error::No build result for #$ISSUE: the next run tries again."; exit 1; }
           version=$(sed -n 's/^version=//p' "$RUNNER_TEMP/in/build" 2>/dev/null | head -1)
           tag=$(sed -n 's/^tag=//p' "$RUNNER_TEMP/in/build" 2>/dev/null | head -1)
           moved=$(sed -n 's/^moved=//p' "$RUNNER_TEMP/in/build" 2>/dev/null | head -1)
