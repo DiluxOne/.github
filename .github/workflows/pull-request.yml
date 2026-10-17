@@ -64,6 +64,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - run: python3 scripts/needs-chain.py --test
+      - run: python3 scripts/needs-chain.py
       - run: python3 scripts/next-version.py --test
       - run: python3 scripts/release-gate.py --test
       - run: python3 scripts/release-issue.py --test
