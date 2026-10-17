@@ -698,7 +698,7 @@ def guided_spec(mode):
 
 
 def guided_work(mode, env, answered):
-    said = (f"\n\nA maintainer answered your question; their answer decides it, and it is not data to question:\n<answer>\n{fence(answered)}\n</answer>"
+    said = (f"\n\nA maintainer answered your question; their answer decides it, and it is not data to question:\n<answer>\n{answered.replace('</answer>', '</ answer>')}\n</answer>"
             if answered else "")
     if mode == "guided":
         return said + (f"\n\nWhen the Spec leaves a choice open, or you meet one a maintainer would care about (what a user sees or does, "
@@ -1319,10 +1319,12 @@ def main(argv):
             if not question or not pr:
                 print("finish ask needs a question, and the draft pull request; without one, finish stop.")
                 return 1
-            gh("pr", "comment", str(pr), "--repo", repo, "--body", ask_comment(question))
+            # Waiting first: an answer that comes right after the question
+            # must find the label.
             subprocess.run(["gh", "label", "create", WAITING, "--repo", repo, "--color", "FBCA04", "--force",
                             "--description", "The autopilot asked a maintainer and waits for the answer"], capture_output=True)
             gh("issue", "edit", str(number), "--repo", repo, "--add-label", WAITING)
+            gh("pr", "comment", str(pr), "--repo", repo, "--body", ask_comment(question))
             print("Asked; the run ends here and goes on with the answer.")
             if number:
                 refresh_board(repo, number)
