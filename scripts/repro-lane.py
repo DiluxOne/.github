@@ -165,6 +165,10 @@ def self_test():
         check("wiring: a hand-off that fails says so on the report, and closes the lane issue it opened",
               ("failure()" in failed_step["if"], "steps.lane.outputs.created" in failed_step["env"]["CREATED"], 'gh issue close "$CREATED"' in failed_step["run"],
                steps["lane"]["run"].index('echo "created=') < steps["lane"]["run"].index("lane-accept")), (True, True, True, True))
+        rc = {s.get("id") or s.get("name"): s for s in wf("issue-accepted.yml")["jobs"]["receipt"]["steps"]}
+        close = rc["Close the report it came from"]
+        check("wiring (#271): a merged fix closes its report, read from the sealed PRD, only on dilux-bot's lane issue",
+              ("steps.receipt.outputs.pr != ''" in close["if"], "dilux-bot[bot]" in close["if"], "repro-lane.py evidence" in close["run"], "scripts/repro-lane.py" in rc["central"]["run"]), (True, True, True, True))
         decide_run = next(s["run"] for s in merge_wf["jobs"]["decide"]["steps"] if s.get("id") == "autopilot")
         check("wiring: G7 gets the lane from GitHub and the test's SHA-256 at the head", ("autopilot.py\" lane" in decide_run, "REPRO_SHA256=$(gh api" in decide_run), (True, True))
     for bad, args in (("a number", ("12; rm", run, sha, base)), ("a run URL", (12, "https://evil.example/actions/runs/1", sha, base)),
