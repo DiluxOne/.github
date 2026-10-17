@@ -415,7 +415,9 @@ jobs:
           python3 .dx-central/scripts/review-verify.py prompt < "$RUNNER_TEMP/review.json" > "$RUNNER_TEMP/verify-prompt.md"
           if [ -s "$RUNNER_TEMP/verify-prompt.md" ]; then
             eof="DX_$(openssl rand -hex 16)"
-            { echo "prompt<<$eof"; sed "s/\${BASE}/$GITHUB_BASE_REF/g" "$RUNNER_TEMP/verify-prompt.md"; echo "$eof"; } >> "$GITHUB_OUTPUT"
+            # The base branch put in with bash, not sed: its name may hold / or &.
+            text=$(cat "$RUNNER_TEMP/verify-prompt.md"); text=${text//'${BASE}'/$GITHUB_BASE_REF}
+            { echo "prompt<<$eof"; printf '%s\n' "$text"; echo "$eof"; } >> "$GITHUB_OUTPUT"
           fi
 
       - name: Verify the blockers and majors
@@ -459,6 +461,7 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           OUT: ${{ steps.claude.outputs.structured_output }}
           EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+          VERIFY_EXECUTION_FILE: ${{ steps.verify.outputs.execution_file }}
           FLOOR: ${{ steps.policy.outputs.floor }}
           REASONS: ${{ steps.policy.outputs.reasons }}
           TRUSTED: ${{ steps.policy.outputs.trusted }}
@@ -589,6 +592,11 @@ jobs:
           if [ -n "$EXECUTION_FILE" ] && [ -f "$EXECUTION_FILE" ]; then
             cost=$(jq -r '[.[] | select(.type == "result")] | last | .total_cost_usd // empty' "$EXECUTION_FILE" 2>/dev/null || true)
             turns=$(jq -r '[.[] | select(.type == "result")] | last | .num_turns // empty' "$EXECUTION_FILE" 2>/dev/null || true)
+          fi
+          # The verifier's spend counts too (#234).
+          if [ -n "$cost" ] && [ -n "${VERIFY_EXECUTION_FILE:-}" ] && [ -f "$VERIFY_EXECUTION_FILE" ]; then
+            vcost=$(jq -r '[.[] | select(.type == "result")] | last | .total_cost_usd // 0' "$VERIFY_EXECUTION_FILE" 2>/dev/null || echo 0)
+            cost=$(python3 -c 'import sys; print(float(sys.argv[1]) + float(sys.argv[2] or 0))' "$cost" "${vcost:-0}" 2>/dev/null || echo "$cost")
           fi
           spent=""; if [ -n "$cost" ]; then spent=$(printf ' · $%.2f, %s turns' "$cost" "${turns:-?}"); fi
           count=$((COUNT + 1))
