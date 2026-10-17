@@ -261,18 +261,12 @@ jobs:
 
       # The triage (#247): one still in triage moves to draft only when the
       # agent found a vulnerability, reproduced it with a failing test and
-      # fixed it with checks that did not fail (advisory.py advance). The
-      # token can write that one repository's advisories, nothing else, and
-      # is revoked when the step ends.
+      # fixed it with checks that did not fail (advisory.py advance). It is
+      # decided here and done last, once the fix is recorded.
       - name: The triage
         id: triage
         env:
-          REPO: ${{ matrix.fix.repo }}
-          GHSA: ${{ matrix.fix.ghsa }}
           STATE: ${{ matrix.fix.state }}
-          CLIENT_ID: ${{ vars.DILUX_BOT_CLIENT_ID }}
-          PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
-          OWNER: ${{ github.repository_owner }}
         # Never fatal: whatever happens here, the next step records the fix.
         run: |
           set -uo pipefail
@@ -284,28 +278,10 @@ jobs:
           d=$(STATE="$STATE" CHECKS="$r" VERDICT="$RUNNER_TEMP/in/verdict.json" python3 .dx-central/scripts/advisory.py advance) \
             || d='{"act": "wait", "why": "the triage could not decide", "verdict": {}}'
           act=$(jq -r .act <<<"$d"); why=$(jq -r .why <<<"$d"); said=$(jq -r '.verdict.verdict // ""' <<<"$d")
+          echo "act=$act" >> "$GITHUB_OUTPUT"
           text=""
           if [ "$act" = draft ]; then
-            export REPOSITORIES="${REPO#*/}"
-            if GH_TOKEN=$(bash .dx-central/scripts/app-token.sh mint '{"repository_advisories":"write","metadata":"read"}'); then
-              export GH_TOKEN
-              unset PRIVATE_KEY
-              trap 'curl -fsS -o /dev/null -X DELETE -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/installation/token || true' EXIT
-              # As it is now, not as the plan saw it: a maintainer may have
-              # closed or moved it during the run.
-              now=$(gh api "repos/$REPO/security-advisories/$GHSA" --jq .state 2>/dev/null || true)
-              if [ "$now" != triage ]; then
-                text="Triaged here: $why. The advisory is no longer in triage (${now:-unreadable}), so the bot left it as it is."
-              elif gh api -X PATCH "repos/$REPO/security-advisories/$GHSA" -f state=draft >/dev/null; then
-                text="Triaged here: $why. The bot moved the advisory from triage to draft; nobody had to accept it."
-              else
-                text="Triaged here: $why, but moving the advisory to draft failed: a maintainer moves it by hand."
-                echo "::warning::$GHSA: the advisory could not be moved to draft."
-              fi
-            else
-              text="Triaged here: $why, but the App could not get a token that writes advisories (its \"Repository security advisories\" permission must be write): a maintainer moves it to draft by hand."
-              echo "::warning::$GHSA: no token to write advisories."
-            fi
+            text="Triaged here: $why. The bot moves the advisory from triage to draft once this fix is recorded; nobody has to accept it."
           elif [ "$act" = wait ]; then
             text="Triaged here (verdict: ${said:-none}): $why. The advisory stays in triage and waits for a maintainer, who moves it to draft or closes it."
           fi
@@ -345,3 +321,37 @@ jobs:
             python3 .dx-central/scripts/advisory.py body > "$RUNNER_TEMP/body.md"
           gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/body.md" >/dev/null
           echo "Recorded $GHSA ($r) in #$ISSUE."
+
+      # Last, once the fix is recorded: the move to draft, with a token that
+      # writes that one repository's advisories and is revoked when the step
+      # ends. Anything that stops it is said on the issue.
+      - name: The advisory to draft
+        if: steps.triage.outputs.act == 'draft'
+        env:
+          REPO: ${{ matrix.fix.repo }}
+          GHSA: ${{ matrix.fix.ghsa }}
+          ISSUE: ${{ matrix.fix.issue }}
+          ISSUE_TOKEN: ${{ steps.write.outputs.token }}
+          CLIENT_ID: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -uo pipefail
+          say() { GH_TOKEN="$ISSUE_TOKEN" gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$1"$'\n\n'"🤖 AI-generated · Claude Opus 5.5 (Anthropic), in a private repository" >/dev/null || true; echo "::warning::$GHSA: $1"; }
+          export REPOSITORIES="${REPO#*/}"
+          if ! GH_TOKEN=$(bash .dx-central/scripts/app-token.sh mint '{"repository_advisories":"write","metadata":"read"}'); then
+            say "The advisory was not moved to draft: the App could not get a token that writes advisories (its \"Repository security advisories\" permission must be write). A maintainer moves it by hand."; exit 0
+          fi
+          export GH_TOKEN
+          unset PRIVATE_KEY
+          trap 'curl -fsS -o /dev/null -X DELETE -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/installation/token || true' EXIT
+          # As it is now, not as the plan saw it: a maintainer may have closed
+          # or moved it during the run.
+          now=$(gh api "repos/$REPO/security-advisories/$GHSA" --jq .state 2>/dev/null || true)
+          if [ "$now" != triage ]; then
+            say "The advisory was not moved: it is no longer in triage (${now:-unreadable})."
+          elif gh api -X PATCH "repos/$REPO/security-advisories/$GHSA" -f state=draft >/dev/null; then
+            echo "$GHSA moved to draft."
+          else
+            say "Moving the advisory to draft failed: a maintainer moves it by hand."
+          fi
