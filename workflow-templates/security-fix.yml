@@ -4,8 +4,8 @@ name: Security fixes
 # shared workflow in DiluxOne/.github (#194). Only in a PRIVATE repository
 # that does nothing else (DiluxOne/security): the runs' logs and artifacts
 # carry embargoed vulnerabilities, and the shared workflow refuses to run
-# from a public one. A maintainer accepting an advisory (moving it to draft)
-# starts its fix; a maintainer merges it and publishes the advisory from its
+# from a public one. A maintainer accepting an advisory (starting its
+# temporary private fork on its page) starts its fix; a maintainer merges it and publishes the advisory from its
 # page.
 
 on:
