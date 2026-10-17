@@ -428,11 +428,15 @@ jobs:
           NUMBER: ${{ github.event.issue.number }}
         run: |
           set -euo pipefail
-          blocked=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/dependencies/blocking" --jq '.[] | select(.state == "open" and ([.labels[].name] | index("repro:blocked") != null)) | .number' 2>/dev/null || true)
+          if ! blocked=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/dependencies/blocking" --jq '.[] | select(.state == "open" and ([.labels[].name] | index("repro:blocked") != null)) | .number'); then
+            echo "::warning::Could not read what #$NUMBER blocks; a blocked report stays as it is. Re-run this job."; exit 1
+          fi
           [ -n "$blocked" ] || exit 0
           gh label create "repro:unblocked" --repo "$GITHUB_REPOSITORY" --color 0E8A16 --force --description "What blocked the reproduction is fixed: it runs again" >/dev/null 2>&1 || true
           for n in $blocked; do
-            gh issue edit "$n" --repo "$GITHUB_REPOSITORY" --remove-label repro:blocked --add-label repro:unblocked >/dev/null
+            # Off first, then on: a label already there would fire nothing.
+            gh issue edit "$n" --repo "$GITHUB_REPOSITORY" --remove-label repro:blocked --remove-label repro:unblocked >/dev/null 2>&1 || true
+            gh issue edit "$n" --repo "$GITHUB_REPOSITORY" --add-label repro:unblocked >/dev/null
             echo "#$n: its reproduction runs again."
           done
 

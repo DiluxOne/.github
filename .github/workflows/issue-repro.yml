@@ -656,16 +656,24 @@ jobs:
             # (issue-triage.yml, unblock). Otherwise the test was written
             # wrong: `repro:broken`, and repro:again tries once more.
             cause=$(jq -r '.cause // ""' <<<"${DIAGNOSIS:-null}" 2>/dev/null || true)
-            if [ "$cause" = harness ]; then
+            # A blocker's own reproduction never opens another blocker: no chain.
+            self=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json body,author --jq 'select((.author.login | test("dilux-bot")) and (.body | startswith("<!-- dx-repro-blocker"))) | "yes"' 2>/dev/null || true)
+            if [ "$cause" = harness ] && [ "$self" != yes ]; then
               gh label create "repro:blocked" --repo "$GITHUB_REPOSITORY" --color B60205 --force --description "The reproduction waits for a bug in the repository's test setup it is blocked by" >/dev/null 2>&1 || true
-              title=$(jq -r '.title // "The unit test setup breaks a reproduction"' <<<"$DIAGNOSIS" | tr -d '\r' | head -c 120)
+              title=$(jq -r '.title // "The unit test setup breaks a reproduction"' <<<"$DIAGNOSIS" | tr -d '\r\n' | cut -c1-120)
               detail=$(jq -r '.detail // ""' <<<"$DIAGNOSIS" | head -c 3000 | sed 's/@/@\xe2\x80\x8b/g')
               printf '<!-- dx-repro-blocker: #%s -->\n\n### What happens\n\n%s\n\n### Why it matters\n\nIt blocks the reproduction of #%s: any unit test of that code fails the same way, so no reproduction can reach a verdict until the unit setup behaves like the platform. Once this is closed, that reproduction runs again on its own.\n\n%s\n' \
                 "$NUMBER" "$detail" "$NUMBER" "$sign" > "$RUNNER_TEMP/blocker.md"
-              if url=$(gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body-file "$RUNNER_TEMP/blocker.md"); then
+              # One Bug per setup defect: an open blocker with the same title
+              # is reused, never opened twice.
+              blocker=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --author "app/dilux-bot" --search "dx-repro-blocker in:body" --json number,title 2>/dev/null \
+                | jq -r --arg t "$title" '[.[] | select(.title == $t)][0].number // empty' 2>/dev/null || true)
+              if [ -z "$blocker" ] && url=$(gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body-file "$RUNNER_TEMP/blocker.md"); then
                 blocker=${url##*/}
-                blocker_id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$blocker" --jq .id)
-                gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$NUMBER/dependencies/blocked_by" -F issue_id="$blocker_id" >/dev/null \
+              fi
+              if [ -n "$blocker" ]; then
+                blocker_id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$blocker" --jq .id || true)
+                [ -n "$blocker_id" ] && gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$NUMBER/dependencies/blocked_by" -F issue_id="$blocker_id" >/dev/null \
                   || echo "::warning::Could not record #$blocker as blocking #$NUMBER."
                 gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label repro:blocked --remove-label could-not-reproduce >/dev/null 2>&1 || gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label repro:blocked >/dev/null
                 gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'The test I wrote did not run, and the cause is the repository'"'"'s unit setup, not this report: #%s. It blocks this reproduction; once it is fixed and closed, this one runs again on its own.\n\n%s' "$blocker" "$sign")" >/dev/null
