@@ -10,7 +10,12 @@ name: Nightly review
 # and this one), in turn (scripts/nightly-review.py pick), is reviewed whole
 # by an agent within a budget. What it finds joins one list per repository,
 # an issue in the calling repository, "Nightly review: <repository>": never
-# one issue per finding. A maintainer picks what becomes work; an item they
+# one issue per finding there; but a new blocker or major that is not about
+# security is also opened as a Bug issue in the reviewed repository (two a
+# night at most, #247), where the triage labels it and the usual bug path
+# reproduces and fixes it. In a public repository, a second agent first
+# judges whether publishing it could help an attacker; unsure, it stays in
+# the private list. A maintainer picks what else becomes work; an item they
 # tick or strike out is never listed again, and one still open keeps the
 # date it was first seen (the closed ones are kept in a hidden line of the
 # body). A night whose agent did not finish, or gave no list, leaves the
@@ -117,7 +122,20 @@ jobs:
             --max-turns 80
             --max-budget-usd 2
             --allowedTools "Read,Glob,Grep"
-            --json-schema '{"type":"object","additionalProperties":false,"required":["findings"],"properties":{"findings":{"type":"array","maxItems":20,"items":{"type":"object","additionalProperties":false,"required":["severity","file","title"],"properties":{"severity":{"type":"string","enum":["blocker","major","minor"]},"file":{"type":"string","maxLength":300},"line":{"type":"integer"},"title":{"type":"string","maxLength":300}}}}}}'
+            --json-schema '{"type":"object","additionalProperties":false,"required":["findings"],"properties":{"findings":{"type":"array","maxItems":20,"items":{"type":"object","additionalProperties":false,"required":["severity","file","title","security","detail"],"properties":{"severity":{"type":"string","enum":["blocker","major","minor"]},"file":{"type":"string","maxLength":300},"line":{"type":"integer"},"title":{"type":"string","maxLength":300},"security":{"type":"boolean"},"detail":{"type":"string","maxLength":3000}}}}}}'
+
+      # The reviewed repository's issues only, after the agent: its Bug
+      # issues (#247).
+      - name: dilux-bot token (the repository's bugs)
+        id: bugs-token
+        if: steps.agent.outcome == 'success'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.pick.outputs.name }}
+          permission-issues: write
 
       # The calling repository's issues only, after the agent.
       - name: dilux-bot token (the list)
@@ -131,7 +149,8 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-issues: write
 
-      - name: The list
+      - name: The candidates
+        id: cand
         if: steps.agent.outcome == 'success'
         env:
           GH_TOKEN: ${{ steps.write.outputs.token }}
@@ -145,16 +164,83 @@ jobs:
           # An answer with no findings list is not a clean night.
           jq -e '.findings | type == "array"' "$RUNNER_TEMP/findings.json" >/dev/null || { echo "::error::The agent gave no findings list; the list is as it was."; exit 1; }
           n=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number,title --jq "[.[] | select(.title == \"$title\")][0].number // empty")
+          echo "list=$n" >> "$GITHUB_OUTPUT"
           : > "$RUNNER_TEMP/previous.md"
           [ -z "$n" ] || gh issue view "$n" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/previous.md"
-          REPO="$repo" FINDINGS="$RUNNER_TEMP/findings.json" PREVIOUS="$RUNNER_TEMP/previous.md" DATE=$(date -u +%Y-%m-%d) \
+          # New blockers and majors the review says are not about security
+          # (#247), at most two.
+          REPO="$repo" FINDINGS="$RUNNER_TEMP/findings.json" PREVIOUS="$RUNNER_TEMP/previous.md" \
+            python3 .dx-central/scripts/nightly-review.py bugs > "$RUNNER_TEMP/bugs.jsonl"
+          # A public repository's issue is public: a second agent judges each
+          # one first. Asked without a token, a private repository is not found.
+          code=$(curl -sS "https://api.github.com/repos/$repo" -o /dev/null -w '%{http_code}' || echo 000)
+          echo "public=$([ "$code" = 200 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          if [ "$code" != 404 ] && [ -s "$RUNNER_TEMP/bugs.jsonl" ]; then
+            eof="DX_$(openssl rand -hex 16)"
+            { echo "second<<$eof"; python3 .dx-central/scripts/nightly-review.py second < "$RUNNER_TEMP/bugs.jsonl"; echo "$eof"; } >> "$GITHUB_OUTPUT"
+          fi
+
+      # Before anything becomes a public issue: a second agent, which did not
+      # review the code, says whether publishing it could help an attacker.
+      # Unsure, no answer, or a failure: it stays in the private list.
+      - name: A second opinion on security
+        id: second
+        if: steps.cand.outputs.second != ''
+        continue-on-error: true
+        timeout-minutes: 10
+        uses: anthropics/claude-code-action@1d6de8cb0c237e7c15e9e1bdf973826ebae490cc # v1.0.248
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
+          github_token: ${{ github.token }}
+          prompt: ${{ steps.cand.outputs.second }}
+          claude_args: |
+            --model claude-opus-5-5
+            --max-turns 5
+            --max-budget-usd 0.5
+            --allowedTools "Read"
+            --json-schema '{"type":"object","additionalProperties":false,"required":["verdicts"],"properties":{"verdicts":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["i","safe"],"properties":{"i":{"type":"integer"},"safe":{"type":"boolean"}}}}}}'
+
+      - name: The bugs and the list
+        if: steps.cand.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ steps.write.outputs.token }}
+          BUGS_TOKEN: ${{ steps.bugs-token.outputs.token }}
+          NAME: ${{ steps.pick.outputs.name }}
+          LIST: ${{ steps.cand.outputs.list }}
+          PUBLIC: ${{ steps.cand.outputs.public }}
+          ASKED: ${{ steps.cand.outputs.second != '' }}
+          VERDICT: ${{ steps.second.outputs.structured_output }}
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY_OWNER/$NAME"
+          title="Nightly review: $NAME"
+          if [ "$ASKED" = true ]; then
+            printf '%s' "${VERDICT:-}" > "$RUNNER_TEMP/verdict.json"
+            VERDICTS="$RUNNER_TEMP/verdict.json" python3 .dx-central/scripts/nightly-review.py safe < "$RUNNER_TEMP/bugs.jsonl" > "$RUNNER_TEMP/open.jsonl"
+          elif [ "$PUBLIC" = true ]; then
+            : > "$RUNNER_TEMP/open.jsonl"   # public with no second opinion: none
+          else
+            cp "$RUNNER_TEMP/bugs.jsonl" "$RUNNER_TEMP/open.jsonl"
+          fi
+          : > "$RUNNER_TEMP/issued.txt"
+          while IFS= read -r b; do
+            [ -n "$b" ] || continue
+            jq -r .issue_body <<<"$b" > "$RUNNER_TEMP/bug.md"
+            if url=$(GH_TOKEN="$BUGS_TOKEN" gh issue create --repo "$repo" --title "$(jq -r .issue_title <<<"$b")" --body-file "$RUNNER_TEMP/bug.md"); then
+              printf '%s\t%s\n' "$(jq -r .where <<<"$b")" "$url" >> "$RUNNER_TEMP/issued.txt"
+            else
+              echo "::warning::A finding could not be opened as a Bug in $repo; it stays in the list."
+            fi
+          done < "$RUNNER_TEMP/open.jsonl"
+          REPO="$repo" FINDINGS="$RUNNER_TEMP/findings.json" PREVIOUS="$RUNNER_TEMP/previous.md" ISSUED="$RUNNER_TEMP/issued.txt" DATE=$(date -u +%Y-%m-%d) \
             python3 .dx-central/scripts/nightly-review.py list > "$RUNNER_TEMP/body.md"
-          if [ -n "$n" ]; then
-            gh issue edit "$n" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/body.md" >/dev/null
+          if [ -n "$LIST" ]; then
+            gh issue edit "$LIST" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/body.md" >/dev/null
           else
             gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body-file "$RUNNER_TEMP/body.md" >/dev/null
           fi
-          echo "$(jq '.findings | length' "$RUNNER_TEMP/findings.json" 2>/dev/null || echo 0) findings tonight on $repo."
+          echo "$(jq '.findings | length' "$RUNNER_TEMP/findings.json") findings tonight on $repo; $(wc -l < "$RUNNER_TEMP/issued.txt") opened as Bug issues."
 
       - name: A night that did not finish
         if: steps.agent.outcome != 'success'
