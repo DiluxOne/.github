@@ -28,6 +28,9 @@ high-risk:
   - "design-systems/**"
   - "policy/**"
   - "review-profiles/**"
+  # The review's evaluation set and its baseline (#234): they decide
+  # whether a change to the review may merge.
+  - "evals/**"
   - "scripts/**"
   - "runner/**"
   - "workflow-templates/**"
