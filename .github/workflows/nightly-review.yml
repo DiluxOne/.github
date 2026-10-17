@@ -10,7 +10,10 @@ name: Nightly review
 # and this one), in turn (scripts/nightly-review.py pick), is reviewed whole
 # by an agent within a budget. What it finds joins one list per repository,
 # an issue in the calling repository, "Nightly review: <repository>": never
-# one issue per finding. A maintainer picks what becomes work; an item they
+# one issue per finding there; but a new blocker or major that is not about
+# security is also opened as a Bug issue in the reviewed repository (two a
+# night at most, #247), where the triage labels it and the usual bug path
+# reproduces and fixes it. A maintainer picks what else becomes work; an item they
 # tick or strike out is never listed again, and one still open keeps the
 # date it was first seen (the closed ones are kept in a hidden line of the
 # body). A night whose agent did not finish, or gave no list, leaves the
@@ -117,7 +120,20 @@ jobs:
             --max-turns 80
             --max-budget-usd 2
             --allowedTools "Read,Glob,Grep"
-            --json-schema '{"type":"object","additionalProperties":false,"required":["findings"],"properties":{"findings":{"type":"array","maxItems":20,"items":{"type":"object","additionalProperties":false,"required":["severity","file","title"],"properties":{"severity":{"type":"string","enum":["blocker","major","minor"]},"file":{"type":"string","maxLength":300},"line":{"type":"integer"},"title":{"type":"string","maxLength":300}}}}}}'
+            --json-schema '{"type":"object","additionalProperties":false,"required":["findings"],"properties":{"findings":{"type":"array","maxItems":20,"items":{"type":"object","additionalProperties":false,"required":["severity","file","title","security","detail"],"properties":{"severity":{"type":"string","enum":["blocker","major","minor"]},"file":{"type":"string","maxLength":300},"line":{"type":"integer"},"title":{"type":"string","maxLength":300},"security":{"type":"boolean"},"detail":{"type":"string","maxLength":3000}}}}}}'
+
+      # The reviewed repository's issues only, after the agent: its Bug
+      # issues (#247).
+      - name: dilux-bot token (the repository's bugs)
+        id: bugs-token
+        if: steps.agent.outcome == 'success'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.pick.outputs.name }}
+          permission-issues: write
 
       # The calling repository's issues only, after the agent.
       - name: dilux-bot token (the list)
@@ -135,6 +151,7 @@ jobs:
         if: steps.agent.outcome == 'success'
         env:
           GH_TOKEN: ${{ steps.write.outputs.token }}
+          BUGS_TOKEN: ${{ steps.bugs-token.outputs.token }}
           NAME: ${{ steps.pick.outputs.name }}
           OUT: ${{ steps.agent.outputs.structured_output }}
         run: |
@@ -147,7 +164,22 @@ jobs:
           n=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number,title --jq "[.[] | select(.title == \"$title\")][0].number // empty")
           : > "$RUNNER_TEMP/previous.md"
           [ -z "$n" ] || gh issue view "$n" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/previous.md"
-          REPO="$repo" FINDINGS="$RUNNER_TEMP/findings.json" PREVIOUS="$RUNNER_TEMP/previous.md" DATE=$(date -u +%Y-%m-%d) \
+          # New blockers and majors not about security become Bug issues in
+          # the repository (#247): its triage labels them and their
+          # reproduction starts. Security findings never leave this list.
+          : > "$RUNNER_TEMP/issued.txt"
+          REPO="$repo" FINDINGS="$RUNNER_TEMP/findings.json" PREVIOUS="$RUNNER_TEMP/previous.md" \
+            python3 .dx-central/scripts/nightly-review.py bugs > "$RUNNER_TEMP/bugs.jsonl"
+          while IFS= read -r b; do
+            [ -n "$b" ] || continue
+            jq -r .issue_body <<<"$b" > "$RUNNER_TEMP/bug.md"
+            if url=$(GH_TOKEN="$BUGS_TOKEN" gh issue create --repo "$repo" --title "$(jq -r .issue_title <<<"$b")" --body-file "$RUNNER_TEMP/bug.md"); then
+              printf '%s %s\n' "$(jq -r .where <<<"$b")" "$url" >> "$RUNNER_TEMP/issued.txt"
+            else
+              echo "::warning::A finding could not be opened as a Bug in $repo; it stays in the list."
+            fi
+          done < "$RUNNER_TEMP/bugs.jsonl"
+          REPO="$repo" FINDINGS="$RUNNER_TEMP/findings.json" PREVIOUS="$RUNNER_TEMP/previous.md" ISSUED="$RUNNER_TEMP/issued.txt" DATE=$(date -u +%Y-%m-%d) \
             python3 .dx-central/scripts/nightly-review.py list > "$RUNNER_TEMP/body.md"
           if [ -n "$n" ]; then
             gh issue edit "$n" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/body.md" >/dev/null

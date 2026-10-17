@@ -211,6 +211,9 @@ jobs:
           SENDER_TYPE: ${{ github.event.sender.type }}
           ROLE: ${{ steps.who.outputs.role }}
           TRIAGE_BUG: ${{ inputs.triage-bug }}
+          # The nightly review's own Bug issue (#247): opened by the App,
+          # with its marker on the first line.
+          NIGHTLY: ${{ github.event.issue.user.login == 'dilux-bot[bot]' && startsWith(github.event.issue.body, '<!-- dx-nightly-finding') }}
         run: bash .dx-central/scripts/repro-trigger.sh decide
 
       # Nothing to reproduce against without a unit-test setup: the run ends
