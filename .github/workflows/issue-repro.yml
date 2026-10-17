@@ -304,6 +304,10 @@ jobs:
             if [ -n "$example" ]; then echo; echo "## Example test: $example"; echo; echo '```php'; cat "$example"; echo '```'; fi
             echo; echo "## Unit bootstrap: tests/bootstrap.php"; echo; echo '```php'; cat tests/bootstrap.php; echo '```'
             if [ -f tests/stubs/wordpress-stubs.php ]; then echo; echo "## Stubs available to unit tests: tests/stubs/wordpress-stubs.php"; echo; echo '```php'; head -c 30000 tests/stubs/wordpress-stubs.php; echo '```'; fi
+            # Every function the bootstrap and the stubs define, whole even
+            # where the file above is cut: none of them can be mocked (#253).
+            defined=$(grep -rhoE '^\s*function\s+[A-Za-z_][A-Za-z0-9_]*' tests/bootstrap.php tests/stubs 2>/dev/null | sed -E 's/^\s*function\s+//' | sort -u | tr '\n' ' ' || true)
+            if [ -n "$defined" ]; then echo; echo "## Functions the unit bootstrap already defines (never mock these)"; echo; echo "$defined"; fi
           } > .dx-central/brief.md
           echo "Brief: $(wc -c < .dx-central/brief.md) bytes."
 
@@ -323,7 +327,10 @@ jobs:
             You try to reproduce a reported bug in ${{ github.repository }}, issue #${{ github.event.issue.number }}.
             Read .dx-central/brief.md, whole. Then read the source files the report points at, and
             any class or stub the test will use: you cannot run the test, so every class name,
-            method and stub in it must come from files you have read.
+            method and stub in it must come from files you have read. A function the unit bootstrap
+            or its stubs already define (the brief shows them) cannot be redefined with Brain Monkey
+            (Patchwork refuses it: DefinedTooEarly): use it as it is defined there, and mock only
+            functions those files do not define.
 
             Write ONE PHPUnit unit test at tests/Unit/Repro/Issue${{ github.event.issue.number }}Test.php,
             in the style of the example test, using the unit bootstrap (brain/monkey, stubs, fake
