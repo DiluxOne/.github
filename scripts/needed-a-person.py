@@ -139,7 +139,8 @@ def clean_review(pr):
     rec = review_record(pr)
     if not rec or rec.get("blocking") is True:
         return False
-    return not any((f or {}).get("severity") in ("blocker", "major") for f in rec.get("findings") or [])
+    # A pre-existing finding is not the pull request's (#234): it never counts.
+    return not any((f or {}).get("severity") in ("blocker", "major") and not (f or {}).get("pre_existing") for f in rec.get("findings") or [])
 
 
 def lane_of(pr):
@@ -199,7 +200,7 @@ def classify(pr, pol):
         reasons.append("protected-path")
     if any(autopilot.criticality(i.get("body") or "") == "critical" for i in nodes(pr.get("closingIssuesReferences"))):
         reasons.append("critical")
-    blocker = rec.get("blocking") is True or any((f or {}).get("severity") == "blocker" for f in rec.get("findings") or [])
+    blocker = rec.get("blocking") is True or any((f or {}).get("severity") == "blocker" and not (f or {}).get("pre_existing") for f in rec.get("findings") or [])
     if blocker:
         reasons.append("review-blocker")
     if any(by_bot(c) and (c.get("body") or "").startswith(ROUNDS_SPENT) for c in comments(pr)):
@@ -508,6 +509,9 @@ def self_test():
     major = '<!-- dx-review -->\n<!-- dx-review-record {"risk":"low","complexity":"low","floor":"low","blocking":false,"findings":[{"severity":"major","file":"a","title":"t"}]} -->'
     major_only = dict(decided, url="u-major", title="Major", early={"nodes": []}, comments={"nodes": [{"author": {"__typename": "Bot", "login": BOT}, "body": major}]})
     check("C1: one whose review has a major, not blocking, is still the autopilot's", "Major" in digest([major_only], pol, now), False)
+    pre = major.replace('"title":"t"}', '"title":"t","pre_existing":true}')
+    pre_rec = dict(decided, early={"nodes": []}, comments={"nodes": [{"author": {"__typename": "Bot", "login": BOT}, "body": pre}]})
+    check("#234: a pre-existing major leaves the review clean; one of the pull request's own does not", (clean_review(pre_rec), clean_review(dict(pre_rec, comments={"nodes": [{"author": {"__typename": "Bot", "login": BOT}, "body": major}]}))), (True, False))
     handed = dict(fixing, labels={"nodes": [{"name": "autopilot"}, {"name": "needs-human"}]})
     check("C1: one the autopilot handed to a person is waiting", "`Fixing` (u-fixing), waiting: review blocker" in digest([handed], pol, now), True)
     check("C1: an empty week says so", "Nothing in the organisation was merged by a person" in digest([], pol, now), True)
