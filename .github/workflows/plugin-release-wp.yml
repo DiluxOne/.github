@@ -27,6 +27,15 @@ name: WordPress plugin release
 # waited for approval queues behind it (one release at a time) and, once
 # the first shipped, finds the tag and stops.
 #
+# On a branch security/X.Y.Z (#247): a security patch, pushed by dilux-bot
+# from the private repository once its veto window closed. It must be the
+# version in production plus one patch (scripts/production-version.py,
+# checked against wordpress.org), start from that version's tag and not be
+# on the default branch; the labels and the release issue do not apply. It
+# deploys from `security-environment` (default: `environment`, whose
+# deployment policy must then admit security/*), and the environment's own
+# reviewers, if any, still approve. The tag is created as for any release.
+#
 # On a tag X.Y.Z: the same, except that the tag is the version, it must be
 # the one the labels say is next (a typed number cannot skip the pipeline),
 # and the release is created on the existing tag. A tag this workflow
@@ -146,6 +155,10 @@ on:
         description: 'The environment used instead when the policy says release.<bump>: auto (same secrets, no reviewers). Empty means auto behaves like approve.'
         type: string
         default: ''
+      security-environment:
+        description: The environment a security patch (a push of security/X.Y.Z by dilux-bot, #247) deploys from. Empty uses `environment`; its deployment policy must admit security/* branches, and its required reviewers, if any, still approve.
+        type: string
+        default: ''
       central-ref:
         description: The ref of DiluxOne/.github whose scripts and policy to use.
         type: string
@@ -181,6 +194,7 @@ jobs:
       version: ${{ steps.next.outputs.version }}
       environment: ${{ steps.next.outputs.environment }}
       dev: ${{ steps.next.outputs.dev }}
+      security: ${{ steps.next.outputs.security }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -200,9 +214,44 @@ jobs:
           BASE: ${{ github.event.repository.default_branch }}
           PRIVATE: ${{ github.event.repository.private }}
           DRY_RUN: ${{ inputs.dry-run }}
+          SLUG: ${{ inputs.slug }}
+          SECURITY_ENVIRONMENT: ${{ inputs.security-environment }}
+          ACTOR: ${{ github.actor }}
         run: |
           set -euo pipefail
           { echo "version="; echo "dev="; echo "environment=$ENVIRONMENT"; } >> "$GITHUB_OUTPUT"
+          # A security patch (#247): dilux-bot pushes security/X.Y.Z once the
+          # veto window in the private repository closed. It is the version
+          # in production plus one patch, built on that version's tag, never
+          # on the default branch; the labels of what merged do not apply,
+          # and nobody accepts it here (the window was the chance to stop
+          # it). The environment's own reviewers, if any, still approve.
+          case "$GITHUB_REF" in
+            refs/heads/security/*)
+              tag="${GITHUB_REF#refs/heads/security/}"
+              [[ "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::security/$tag is not security/X.Y.Z."; exit 1; }
+              [ "$ACTOR" = "dilux-bot[bot]" ] || { echo "::error::A security patch is pushed by dilux-bot only, not $ACTOR."; exit 1; }
+              prod=$(python3 .dx-central/scripts/production-version.py --repo "$GITHUB_REPOSITORY" --kind wordpress-plugin --slug "$SLUG" --json) \
+                || { echo "::error::No version in production to patch (see above)."; exit 1; }
+              [ "$(jq -r .patch <<<"$prod")" = "$tag" ] || { echo "::error::security/$tag is not the patch after the version in production, $(jq -r .version <<<"$prod")."; exit 1; }
+              # Where it starts, from GitHub (the checkout is shallow, and a
+              # private repository's history needs a token): the production
+              # tag is behind the patch, and the patch is not on the base.
+              from=$(gh api "repos/$GITHUB_REPOSITORY/compare/$(jq -r .tag <<<"$prod")...$GITHUB_SHA" --jq .status)
+              case "$from" in ahead) ;; *) echo "::error::security/$tag does not start from the version in production ($from)."; exit 1 ;; esac
+              on_base=$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...$BASE" --jq .status)
+              case "$on_base" in ahead|identical) echo "::error::security/$tag is on $BASE: a patch is built on the version in production."; exit 1 ;; esac
+              if git rev-parse -q --verify "refs/tags/$tag" >/dev/null || gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
+                echo "Tag $tag exists: this patch was released." | tee -a "$GITHUB_STEP_SUMMARY"; exit 0
+              fi
+              rc=0; bash .dx-central/scripts/release-ready.sh readme.txt || rc=$?
+              [ "$rc" != 1 ] || { echo "::error file=readme.txt::The patch's changelog entry still says 'Unreleased.'."; exit 1; }
+              { echo "version=$tag"; echo "environment=${SECURITY_ENVIRONMENT:-$ENVIRONMENT}"; echo "security=true"; } >> "$GITHUB_OUTPUT"
+              # shellcheck disable=SC2016 # backticks in the Markdown of the summary, not commands.
+              printf '## Security patch %s\n\nOn the version in production, %s, pushed by dilux-bot after the veto window. It deploys from the environment `%s`; its own reviewers, if any, approve.\n' "$tag" "$(jq -r .version <<<"$prod")" "${SECURITY_ENVIRONMENT:-$ENVIRONMENT}" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+              ;;
+          esac
           # On a tag run the tag itself is already the newest X.Y.Z: it is
           # left out, so the labels are read from the last release before it.
           exclude=""; case "$GITHUB_REF" in refs/tags/*) exclude="${GITHUB_REF#refs/tags/}";; esac
@@ -479,9 +528,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           BASE: ${{ github.event.repository.default_branch }}
+          SECURITY: ${{ needs.version.outputs.security }}
         run: |
           set -euo pipefail
           echo "go=true" >> "$GITHUB_OUTPUT"
+          # A security patch (#247) was checked by the version job against
+          # the version in production; here only that its tag is still free.
+          if [ "$SECURITY" = true ]; then
+            if git rev-parse -q --verify "refs/tags/$VERSION^{commit}" >/dev/null; then
+              echo "go=false" >> "$GITHUB_OUTPUT"; echo "Tag $VERSION exists: released already." >> "$GITHUB_STEP_SUMMARY"; exit 0
+            fi
+            echo "Security patch $VERSION, no tag yet."; exit 0
+          fi
           case "$GITHUB_REF" in refs/tags/*) on_tag=true;; *) on_tag=false;; esac
           # The checkout has every tag (fetch-depth 0), so no call is needed.
           if [ "$on_tag" = false ] && git rev-parse -q --verify "refs/tags/$VERSION^{commit}" >/dev/null; then
