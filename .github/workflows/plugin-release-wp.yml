@@ -506,7 +506,9 @@ jobs:
     # a newer push (the approver decides), and a run deploying is never
     # cancelled at all.
     # A security patch has a group of its own: a push to the base while it
-    # waits would otherwise replace it as the one pending run.
+    # waits would otherwise replace it as the one pending run. Both may then
+    # deploy at once; SVN refuses the second commit on an out-of-date trunk,
+    # and that run is re-run.
     concurrency:
       group: release-${{ github.repository }}${{ needs.version.outputs.security == 'true' && '-security' || '' }}
       cancel-in-progress: false
