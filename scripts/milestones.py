@@ -83,10 +83,11 @@ def due(milestones, titles, tags, now):
 
 
 def body(version, milestone, auto=False):
-    how = (f"It was planned: approving the milestone was approving {version}, so it is accepted by policy and its release pull request opens."
+    how = (f"It was planned by {(milestone.get('creator') or {}).get('login') or 'a maintainer'}: approving the milestone was approving {version}, so it is accepted by policy and its release pull request opens."
            if auto else f"Accepting it is the decision to publish {version}; until then nothing is published.")
+    what = "Every issue of the milestone {v} is closed" if done(milestone) else "The milestone {v} was closed"
     return ("### Notes\n\n"
-            f"Every issue of the milestone {version} is closed ({milestone.get('html_url', '')}): this opens its release. "
+            f"{what.format(v=version)} ({milestone.get('html_url', '')}): this opens its release. "
             f"{how}\n\n{AI}\n")
 
 

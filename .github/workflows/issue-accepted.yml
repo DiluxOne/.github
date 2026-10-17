@@ -398,6 +398,9 @@ jobs:
           BASE: ${{ github.event.repository.default_branch }}
           DX_AUTOPILOT: ${{ vars.DX_AUTOPILOT }}
           SENDER: ${{ github.event.sender.login }}
+          # On the planned path (#247) the decision is the milestone's planner's.
+          PLANNED: ${{ github.event.label.name == 'accepted-by:policy' }}
+          PLANNER: ${{ github.event.issue.milestone.creator.login }}
         run: |
           set -euo pipefail
           echo ".dx-central/" >> .git/info/exclude
@@ -417,10 +420,11 @@ jobs:
           # Only the admin or maintain role approves a release (the release
           # workflow checks it again before publishing): no pull request for
           # anyone else's acceptance, nor when the role cannot be read.
-          role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$SENDER/permission" --jq .role_name 2>/dev/null || true)
+          who=$SENDER; [ "$PLANNED" != true ] || who=$PLANNER
+          role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$who/permission" --jq .role_name 2>/dev/null || true)
           case "$role" in
             admin|maintain) ;;
-            *) say "**No release pull request:** $SENDER accepted this issue with the role ${role:-unknown (it could not be read)} on the repository, and only a person with the admin or maintain role approves a release. One of them accepts it again (remove and add \`accepted\`)."; exit 0 ;;
+            *) say "**No release pull request:** $who $([ "$PLANNED" = true ] && echo "planned this version" || echo "accepted this issue") with the role ${role:-unknown (it could not be read)} on the repository, and only a person with the admin or maintain role approves a release. One of them accepts it (add \`accepted\`)."; exit 0 ;;
           esac
           python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$BASE" --json > "$RUNNER_TEMP/next.json"
           rc=0

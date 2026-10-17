@@ -168,7 +168,7 @@ The tree says {version}: the hold on the newest changelog entry is removed and t
 
 ## 💡 Why
 
-Closes #{number}. A person accepted the release issue, which is the decision to publish {version}. Once this pull request merges, the release workflow checks that the issue is still accepted by a person and that its version is the one computed, then publishes {version} to {where}.
+Closes #{number}. The release issue was accepted, by a person or by the plan a maintainer approved as its milestone, which is the decision to publish {version}. Once this pull request merges, the release workflow checks that the issue is still accepted by a person and that its version is the one computed, then publishes {version} to {where}.
 
 {AI_LINE}"""
     return {"ok": True, "version": version, "branch": branch, "title": pr_title, "body": body, "argv": argv,
