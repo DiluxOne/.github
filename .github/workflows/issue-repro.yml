@@ -323,7 +323,10 @@ jobs:
             You try to reproduce a reported bug in ${{ github.repository }}, issue #${{ github.event.issue.number }}.
             Read .dx-central/brief.md, whole. Then read the source files the report points at, and
             any class or stub the test will use: you cannot run the test, so every class name,
-            method and stub in it must come from files you have read.
+            method and stub in it must come from files you have read. A function the unit bootstrap
+            or its stubs already define (the brief shows them) cannot be redefined with Brain Monkey
+            (Patchwork refuses it: DefinedTooEarly): use it as it is defined there, and mock only
+            functions those files do not define.
 
             Write ONE PHPUnit unit test at tests/Unit/Repro/Issue${{ github.event.issue.number }}Test.php,
             in the style of the example test, using the unit bootstrap (brain/monkey, stubs, fake
