@@ -71,7 +71,9 @@ def parse(body):
         c = CLOSED.match(line.strip())
         if c:
             try:
-                out += [{"state": "closed", "key": tuple(k)} for k in json.loads(c.group(1)) if isinstance(k, list) and len(k) == 2 and all(isinstance(x, str) for x in k)]
+                for k in json.loads(c.group(1)):
+                    if isinstance(k, list) and len(k) in (2, 3) and all(isinstance(x, str) for x in k[:2]) and (len(k) == 2 or k[2] is None or isinstance(k[2], int)):
+                        out.append({"state": "closed", "key": (k[0], k[1]), "line": k[2] if len(k) == 3 else None})
             except ValueError:
                 pass
             continue
@@ -92,6 +94,19 @@ def key(f):
     return (re.sub(r":\d+$", "", f.get("file") or ""), re.sub(r"\W+", " ", (f.get("title") or "").lower()).strip()[:60])
 
 
+def line_of(f):
+    """The line a finding points at, from `line` or the file's `:N`."""
+    if f.get("state") == "closed":
+        return f.get("line")
+    if isinstance(f.get("line"), int):
+        return f["line"]
+    m = re.search(r":(\d+)$", f.get("file") or "")
+    return int(m.group(1)) if m else None
+
+
+NEAR = 40
+
+
 SIMILAR = 0.5
 STOP = {"the", "a", "an", "is", "are", "of", "on", "in", "to", "and", "or", "it", "its", "again", "be", "can", "not", "no", "with", "for", "when"}
 
@@ -100,11 +115,14 @@ def words(title):
     return {w for w in title.split() if w not in STOP}
 
 
-def same(a, b):
-    """Two keys are one problem: the same file, and titles sharing most of
-    their words, so the agent's rewording of a night (word order, a word
-    more) does not make it a new one."""
+def same(a, b, la=None, lb=None):
+    """Two findings are one problem: the same file, near the same line when
+    both have one (lines move a little; two bugs of one pattern sit apart),
+    and titles sharing most of their words, so the agent's rewording of a
+    night (word order, a word more) does not make it a new one."""
     if a[0] != b[0]:
+        return False
+    if la is not None and lb is not None and abs(la - lb) > NEAR:
         return False
     wa, wb = words(a[1]), words(b[1])
     return a[1] == b[1] or (bool(wa | wb) and len(wa & wb) / len(wa | wb) >= SIMILAR)
@@ -113,18 +131,18 @@ def same(a, b):
 def merge(previous, findings, date):
     """The list: what was open stays (a finding seen again keeps its date),
     new ones join, and ticked or struck-out ones are never listed again."""
-    gone = {key(p) for p in previous if p["state"] in ("done", "dropped", "closed")}
+    gone = {(key(p), line_of(p)) for p in previous if p["state"] in ("done", "dropped", "closed")}
     items = {key(p): p for p in previous if p["state"] == "open"}
     for f in findings:
         if not isinstance(f, dict) or f.get("severity") not in SEVERITY or not f.get("file") or not f.get("title"):
             continue
-        k = key(f)
-        if any(same(k, g) for g in gone) or any(same(k, i) for i in items):
+        k, ln = key(f), line_of(f)
+        if any(same(k, g, ln, gl) for g, gl in gone) or any(same(k, key(i), ln, line_of(i)) for i in items.values()):
             continue
         items[k] = {"state": "open", "severity": f["severity"], "file": f"{f['file']}{':' + str(f['line']) if isinstance(f.get('line'), int) else ''}"
                     if ":" not in f["file"] else f["file"], "title": str(f["title"]).replace("\n", " ")[:300], "since": date}
     ordered = sorted(items.values(), key=lambda i: (SEVERITY.index(i["severity"]), i["since"], i["file"]))
-    return ordered[:MAX_ITEMS], sorted(gone)[-MAX_CLOSED:]
+    return ordered[:MAX_ITEMS], sorted(gone, key=lambda g: (g[0], g[1] or 0))[-MAX_CLOSED:]
 
 
 def body(repo, items, date, closed=()):
@@ -137,7 +155,7 @@ def body(repo, items, date, closed=()):
         out.append(f"- [ ] **{i['severity']}** `{i['file']}`: {i['title']} _(since {i['since']})_")
     out += ["", AI]
     if closed:
-        out.append("<!-- dx-nightly-closed: " + json.dumps([list(k) for k in closed]) + " -->")
+        out.append("<!-- dx-nightly-closed: " + json.dumps([[k[0], k[1], ln] for k, ln in closed]) + " -->")
     return "\n".join(out)
 
 
@@ -170,7 +188,10 @@ def self_test():
                                         {"severity": "major", "file": "a.php", "line": 5, "title": "Unescaped title"}], "2026-10-18")
     check("round trip: a closed one never returns, an open one seen again at another line keeps its date",
           [(i["file"], i["since"]) for i in again], [("d.php:7", "2026-10-17"), ("a.php:3", "2026-10-01")])
-    check("round trip: the closed keys stay in the body", ("b.php", "old one") in closed2, True)
+    check("round trip: the closed keys stay in the body, with their line", (("b.php", "old one"), 9) in closed2, True)
+    apart, _ = merge([], [{"severity": "major", "file": "a.php", "line": 10, "title": "Unescaped title in the list"},
+                          {"severity": "major", "file": "a.php", "line": 200, "title": "Unescaped title in the editor"}], "d")
+    check("near: two bugs of one pattern far apart in one file are two", len(apart), 2)
     reworded, _ = merge(parse(out), [{"severity": "major", "file": "a.php", "line": 9, "title": "The title is unescaped"},
                                      {"severity": "minor", "file": "b.php", "title": "The old one, again"},
                                      {"severity": "major", "file": "b.php", "title": "Missing nonce on save"}], "2026-10-19")
