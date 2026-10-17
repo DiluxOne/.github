@@ -45,7 +45,9 @@ name: Issue reproduction
 #                      (issue-triage.yml, unblock). A test written wrong:
 #                      one more attempt on its own with the first test's
 #                      error (`repro:retry`, #261), then `repro:broken`,
-#                      and `repro:again` tries once more.
+#                      and `repro:again` tries once more. A writer that
+#                      stops before it finishes (turns, budget, service)
+#                      is no verdict: one more attempt, then a person (#265).
 #   the test passes -> label `could-not-reproduce`, the test is pushed to a
 #                      branch, and the comment asks the reporter for what
 #                      would settle it; when the report named an older
@@ -668,12 +670,12 @@ jobs:
           if [ "$WROTE" != true ] && [ "$AGENT" != success ]; then
             if [ "$LABEL" != repro:retry ] || [ "$SENDER_LOGIN" != "$BOT" ]; then
               gh label create "repro:retry" --repo "$GITHUB_REPOSITORY" --color FBCA04 --force --description "The reproduction tries once more with the first test's error" >/dev/null 2>&1 || true
-              gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '<!-- dx-repro-retry -->\nThe attempt to write a test stopped before it finished (it ran out of turns or budget: the tooling, not this report), so there is no verdict. I try once more.\n\n%s' "$sign")" >/dev/null
+              gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '<!-- dx-repro-retry -->\nThe attempt to write a test stopped before it finished (its turns, its budget or the service: the tooling, not this report), so there is no verdict. I try once more.\n\n%s' "$sign")" >/dev/null
               gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label repro:retry >/dev/null 2>&1 || true
               gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label repro:retry >/dev/null
               echo "The agent stopped ($AGENT); retrying once."; exit 0
             fi
-            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'The attempt to write a test stopped before it finished, twice (the tooling, not this report), so there is no verdict. A person will look; %s tries again. The run is in %s.\n\n%s' "$code_again" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$sign")" >/dev/null
+            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'The attempt to write a test stopped before it finished again (the tooling, not this report), so there is no verdict. A person will look; %s tries again. The run is in %s.\n\n%s' "$code_again" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$sign")" >/dev/null
             echo "The agent stopped ($AGENT); no verdict."; exit 0
           fi
           if [ "$WROTE" != true ]; then
