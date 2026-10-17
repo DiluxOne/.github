@@ -47,7 +47,7 @@ QUERY = """
 query($q: String!) {
   search(query: $q, type: ISSUE, first: 50) {
     nodes { ... on PullRequest {
-      number title baseRefOid headRefOid
+      number title baseRefOid headRefOid isCrossRepository
       reviewThreads(first: 50) { nodes {
         isResolved isOutdated path resolvedBy { login }
         comments(first: 1) { nodes { author { login } body originalCommit { oid } } }
@@ -67,6 +67,10 @@ def cases_from(repo, prs, n):
     """Up to n `flag` and n `clean` cases from one repository's pull requests."""
     flag, clean = [], []
     for pr in prs:
+        # Only a branch of the repository itself: a fork's code never runs
+        # where the review's key is (#234).
+        if pr.get("isCrossRepository") is not False:
+            continue
         threads = [t for t in ((pr.get("reviewThreads") or {}).get("nodes") or [])]
         fixed = [t for t in threads if is_review(t) and (((t.get("resolvedBy") or {}).get("login") == org.APP) or t.get("isOutdated"))]
         if fixed:
@@ -170,7 +174,7 @@ def worse(now, base):
         why.append(f"it found {now['found']} of {now['flag']} known bugs, the baseline {base['found']} of {base['flag']}")
     if now["blocked"] > base.get("blocked", 0) + SLACK:
         why.append(f"it blocked {now['blocked']} of {now['clean']} clean pull requests, the baseline {base.get('blocked', 0)}")
-    if now["unreviewed"] > (now["flag"] + now["clean"] + now["unreviewed"]) // 2:
+    if now["unreviewed"] > SLACK:
         why.append(f"{now['unreviewed']} cases could not be reviewed")
     return "; ".join(why)
 
@@ -195,12 +199,15 @@ def self_test():
 
     bot = {"login": org.APP}
     first = lambda oid: {"nodes": [{"author": bot, "body": "x\n<sub>🤖 AI review · m (Anthropic)</sub>", "originalCommit": {"oid": oid}}]}
-    prs = [{"number": 1, "title": "fix: a", "baseRefOid": "b1", "headRefOid": "h1", "reviewThreads": {"nodes": [{"isOutdated": True, "path": "a.php", "resolvedBy": None, "comments": first("c1")}]}},
-           {"number": 2, "title": "feat: b", "baseRefOid": "b2", "headRefOid": "h2", "reviewThreads": {"nodes": []}},
-           {"number": 3, "title": "fix: c", "baseRefOid": "b3", "headRefOid": "h3", "reviewThreads": {"nodes": [{"isOutdated": False, "path": "c.php", "resolvedBy": {"login": "me"}, "comments": first("c3")}]}}]
+    prs = [{"number": 1, "title": "fix: a", "baseRefOid": "b1", "headRefOid": "h1", "isCrossRepository": False, "reviewThreads": {"nodes": [{"isOutdated": True, "path": "a.php", "resolvedBy": None, "comments": first("c1")}]}},
+           {"number": 2, "title": "feat: b", "baseRefOid": "b2", "headRefOid": "h2", "isCrossRepository": False, "reviewThreads": {"nodes": []}},
+           {"number": 3, "title": "fix: c", "baseRefOid": "b3", "headRefOid": "h3", "isCrossRepository": False, "reviewThreads": {"nodes": [{"isOutdated": False, "path": "c.php", "resolvedBy": {"login": "me"}, "comments": first("c3")}]}}]
     flag, clean = cases_from("o/r", prs, 5)
     check("cases: a fixed finding is a flag case at the commit it was raised on", [(c["pr"], c["head"], c["path"]) for c in flag], [(1, "c1", "a.php")])
     check("cases: a pull request with no thread is clean at its last commit; a dismissed one is neither", [(c["pr"], c["head"]) for c in clean], [(2, "h2")])
+    fork = [{"number": 9, "title": "x", "baseRefOid": "b", "headRefOid": "h", "isCrossRepository": True, "reviewThreads": {"nodes": []}},
+            {"number": 8, "title": "y", "baseRefOid": "b", "headRefOid": "h", "reviewThreads": {"nodes": []}}]
+    check("cases: never a fork's pull request, nor one that does not say", cases_from("o/r", fork, 5), ([], []))
     picked = pick({"o/a": ([{"id": "a1"}, {"id": "a2"}], []), "o/b": ([{"id": "b1"}], [])}, 2)
     check("pick: round the repositories", [c["id"] for c in picked], ["a1", "b1"])
     case_f = {"expect": "flag", "path": "a.php"}
@@ -214,7 +221,7 @@ def self_test():
     check("worse: within one case of the baseline is not worse", worse(now, {"found": 2, "flag": 2, "blocked": 0}), "")
     check("worse: two fewer bugs found is", worse({**now, "found": 0}, {"found": 2, "flag": 2, "blocked": 0}).startswith("it found 0 of 2"), True)
     check("worse: two more clean ones blocked is", "it blocked 2" in worse({**now, "blocked": 2}, {"found": 1, "flag": 2, "blocked": 0}), True)
-    check("worse: most cases unreviewed is", "could not be reviewed" in worse({"found": 0, "flag": 0, "blocked": 0, "clean": 1, "unreviewed": 3}, {}), True)
+    check("worse: more than one case unreviewed is", ("could not be reviewed" in worse({"found": 1, "flag": 1, "blocked": 0, "clean": 8, "unreviewed": 2}, {"found": 1, "flag": 1}), worse({"found": 1, "flag": 1, "blocked": 0, "clean": 9, "unreviewed": 1}, {"found": 1, "flag": 1})), (True, ""))
     check("table: says what was missed", "**missed**" in table(res, now, {}), True)
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
@@ -247,6 +254,9 @@ def main(argv):
             results = json.load(fh)
         now = score(results)
         if argv[0] == "baseline":
+            if now["unreviewed"]:
+                print(f"review-eval.py: {now['unreviewed']} cases were not reviewed; a baseline is written only from a whole run", file=sys.stderr)
+                return 1
             with open(BASELINE, "w", encoding="utf-8") as fh:
                 json.dump(now, fh, indent=2)
                 fh.write("\n")
