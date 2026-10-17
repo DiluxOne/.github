@@ -28,14 +28,16 @@ name: Release
 # environment's secrets can only be handed over with `secrets: inherit`
 # (verified: passed by name, SVN_USERNAME arrived empty), which passes every
 # repository and organisation secret too. That is why
-# this workflow runs only on main and X.Y.Z tags. It calls the shared
+# this workflow runs only on main, X.Y.Z tags and security/X.Y.Z branches. It calls the shared
 # workflow at `v5`, like every other workflow here: `v5` is a protected ref
 # of DiluxOne/.github that only an administrator moves, so nothing pinned
 # is needed, and nothing is pinned in any repository (DiluxOne/.github#136).
 
 on:
   push:
-    branches: [$default-branch]
+    # security/X.Y.Z: a security patch on the version in production, pushed
+    # by dilux-bot once the private veto window closed (DiluxOne/.github#247).
+    branches: [$default-branch, 'security/[0-9]+.[0-9]+.[0-9]+']
     tags: ['[0-9]+.[0-9]+.[0-9]+']
 
 permissions:
