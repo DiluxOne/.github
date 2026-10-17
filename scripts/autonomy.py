@@ -833,6 +833,20 @@ def issue_from_env(repository):
     return read_issue(repository, int(os.environ["NUMBER"]))
 
 
+def issue_settled(read, label, tries=5, wait=3, sleep=None):
+    """The issue once GitHub shows `label`'s event (#263). A label added a
+    moment ago can be missing from the timeline the API returns: reading
+    again for a few seconds tells that apart from a label nobody added."""
+    sleep = sleep or __import__("time").sleep
+    issue = read()
+    for _ in range(tries - 1):
+        if not issue or last_label_event(issue, label):
+            break
+        sleep(wait)
+        issue = read()
+    return issue
+
+
 def read_run(issue, repository):
     m = MARKER.search(issue.get("body") or "")
     if not m:
@@ -1182,6 +1196,14 @@ def self_test():
     check("#194 auto-merge.yml: an issue a person merges holds the sync lane and the usual decision, and a read that fails holds them too",
           (gated("A sync run's pull request"), gated("Enable or disable"), "could not be read" in held, "|| : >" not in held, '"person-merges"' in held), (True, True, True, True, True))
 
+    # #263: a label just added, missing from the first read, is read again.
+    labelled = {"timelineItems": {"nodes": [{"__typename": "LabeledEvent", "label": {"name": "lane:x"}}]}}
+    reads = iter([{"timelineItems": {"nodes": []}}, {"timelineItems": {"nodes": []}}, labelled])
+    waits = []
+    check("#263 issue_settled reads again until the label's event shows", (issue_settled(lambda: next(reads), "lane:x", sleep=waits.append) is labelled, len(waits)), (True, 2))
+    waits = []
+    check("#263 issue_settled gives up after its tries", (last_label_event(issue_settled(lambda: {"timelineItems": {"nodes": []}}, "lane:x", tries=3, sleep=waits.append), "lane:x"), len(waits)), (None, 2))
+
     if not failed:
         print("all tests passed")
     return failed
@@ -1208,7 +1230,11 @@ def main():
     if mode == "lane-accept":
         repository = os.environ["GITHUB_REPOSITORY"]
         try:
-            issue = issue_from_env(repository)
+            first = issue_from_env(repository)
+            # Only a lane named by its label waits for that label's event.
+            names = [n.get("name") for n in ((first or {}).get("labels") or {}).get("nodes") or []]
+            name = lane_of(first)[0] if first else None
+            issue = issue_settled(lambda: issue_from_env(repository), f"lane:{name}") if f"lane:{name}" in names and not os.environ.get("LANE_ISSUE") else first
         except (RuntimeError, OSError, ValueError, KeyError):
             issue = None
         if not issue:
