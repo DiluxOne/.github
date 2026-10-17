@@ -63,6 +63,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -837,13 +838,17 @@ def issue_settled(read, label, tries=5, wait=3, sleep=None):
     """The issue once GitHub shows `label`'s event (#263). A label added a
     moment ago can be missing from the timeline the API returns: reading
     again for a few seconds tells that apart from a label nobody added."""
-    sleep = sleep or __import__("time").sleep
+    sleep = sleep or time.sleep
     issue = read()
     for _ in range(tries - 1):
         if not issue or last_label_event(issue, label):
             break
         sleep(wait)
-        issue = read()
+        # A read that fails keeps the last good one.
+        try:
+            issue = read() or issue
+        except (RuntimeError, OSError, ValueError, KeyError):
+            pass
     return issue
 
 
