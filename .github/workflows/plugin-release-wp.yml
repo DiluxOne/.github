@@ -541,6 +541,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BASE: ${{ github.event.repository.default_branch }}
           SECURITY: ${{ needs.version.outputs.security }}
+          SLUG: ${{ inputs.slug }}
         run: |
           set -euo pipefail
           echo "go=true" >> "$GITHUB_OUTPUT"
@@ -550,7 +551,13 @@ jobs:
             if git rev-parse -q --verify "refs/tags/$VERSION^{commit}" >/dev/null; then
               echo "go=false" >> "$GITHUB_OUTPUT"; echo "Tag $VERSION exists: released already." >> "$GITHUB_STEP_SUMMARY"; exit 0
             fi
-            echo "Security patch $VERSION, no tag yet."; exit 0
+            # Time may have passed while the environment's reviewers decided:
+            # the version in production is read again, and the patch must
+            # still be the one after it.
+            again=$(python3 .dx-central/scripts/production-version.py --repo "$GITHUB_REPOSITORY" --kind wordpress-plugin --slug "$SLUG" --json | jq -r .patch) \
+              || { echo "::error::No version in production to patch any more. Nothing reached wordpress.org."; exit 1; }
+            [ "$again" = "$VERSION" ] || { echo "::error::The patch after the version in production is now $again, not $VERSION. Nothing reached wordpress.org."; exit 1; }
+            echo "Security patch $VERSION, still the one after production, no tag yet."; exit 0
           fi
           case "$GITHUB_REF" in refs/tags/*) on_tag=true;; *) on_tag=false;; esac
           # The checkout has every tag (fetch-depth 0), so no call is needed.
