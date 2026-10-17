@@ -23,13 +23,17 @@
 set -euo pipefail
 
 decide() {
-  local trigger=$1 event=$2 action=$3 label=$4 sender=$5 role=$6 triage_bug=$7 nightly=${8:-false}
+  local trigger=$1 event=$2 action=$3 label=$4 sender=$5 role=$6 triage_bug=$7 nightly=${8:-false} login=${9:-}
   [ "$event" = issues ] || { echo no; return; }
   # A bot starts one in a single case (#247): the nightly review's own Bug
   # issue, opened by the organisation's App with its marker, which the
   # triage vouched for. Any other bot, label or event starts nothing.
   if [ "$sender" = Bot ]; then
-    if [ "$nightly" = true ] && [ "$trigger" = triage ] && [ "$action" = opened ] && [ "$triage_bug" = true ]; then echo yes; else echo no; fi
+    if [ "$nightly" = true ] && [ "$trigger" = triage ] && [ "$action" = opened ] && [ "$triage_bug" = true ]; then echo yes
+    # ...and when what blocked a reproduction is fixed: the App's own
+    # repro:unblocked (issue-triage.yml, unblock).
+    elif [ "$trigger" = label ] && [ "$action" = labeled ] && [ "$label" = repro:unblocked ] && [ "$login" = "dilux-bot[bot]" ]; then echo yes
+    else echo no; fi
     return
   fi
   case "$trigger" in
@@ -53,7 +57,7 @@ test_all() {
   # check NAME WANT TRIGGER EVENT ACTION LABEL SENDER ROLE TRIAGE_BUG [NIGHTLY]
   check() {
     total=$((total + 1))
-    got=$(decide "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10:-false}")
+    got=$(decide "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10:-false}" "${11:-}")
     if [ "$got" != "$2" ]; then
       failed=$((failed + 1))
       echo "not ok $total - $1 (want $2, got $got)"
@@ -81,6 +85,9 @@ test_all() {
   check "#247 not without the triage's verdict" no triage issues opened "" Bot "" false true
   check "#247 not by a label" no label issues labeled repro:run Bot write "" true
   check "#247 not on another event" no triage issues labeled "" Bot "" true true
+  check "#247 the App's repro:unblocked runs it again" yes label issues labeled repro:unblocked Bot "" "" false "dilux-bot[bot]"
+  check "#247 another bot's repro:unblocked does not" no label issues labeled repro:unblocked Bot "" "" false "other[bot]"
+  check "#247 a person's repro:unblocked is not a trigger" no label issues labeled repro:unblocked User write "" 
   # Guards that keep the rest closed.
   check "repro:run from a reader starts nothing" no label issues labeled repro:run User read ""
   check "repro:run from a triager starts nothing" no label issues labeled repro:run User triage ""
@@ -153,7 +160,7 @@ case "${1:-}" in
     if [ -n "${GITHUB_OUTPUT:-}" ]; then echo "ready=$ready" >> "$GITHUB_OUTPUT"; fi
     ;;
   decide)
-    go=$(decide "${TRIGGER:-label}" "${EVENT:-}" "${ACTION:-}" "${LABEL:-}" "${SENDER_TYPE:-}" "${ROLE:-}" "${TRIAGE_BUG:-false}" "${NIGHTLY:-false}")
+    go=$(decide "${TRIGGER:-label}" "${EVENT:-}" "${ACTION:-}" "${LABEL:-}" "${SENDER_TYPE:-}" "${ROLE:-}" "${TRIAGE_BUG:-false}" "${NIGHTLY:-false}" "${SENDER_LOGIN:-}")
     echo "go=$go"
     if [ -n "${GITHUB_OUTPUT:-}" ]; then echo "go=$go" >> "$GITHUB_OUTPUT"; fi
     ;;

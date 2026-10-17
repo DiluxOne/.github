@@ -368,9 +368,10 @@ jobs:
           SUMMARY=$(jq -r '.summary // ""' <<<"${OUT:-null}" 2>/dev/null || true)
           REPLY=$REPLY SUMMARY=$SUMMARY bash .dx-central/scripts/triage-act.sh
 
-  # The nightly review's own Bug issue (#247): opened by the organisation's
-  # App with the marker on its first line, from a finding the review rated
-  # blocker or major and not about security (scripts/nightly-review.py). It
+  # The bot's own Bug issues (#247), opened by the organisation's App with
+  # a marker on the first line: the nightly review's finding, rated blocker
+  # or major and not about security (scripts/nightly-review.py), and the
+  # test setup that blocks a reproduction (issue-repro.yml). It
   # is already a classified bug report, so no classifier runs: it gets
   # `bug:unconfirmed`, and the reproduction starts on it as on any bug the
   # triage finds. Any other issue a bot opens is never triaged.
@@ -378,7 +379,7 @@ jobs:
     name: A nightly review's bug
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 5
-    if: github.event_name == 'issues' && github.event.action == 'opened' && github.event.issue.user.login == 'dilux-bot[bot]' && startsWith(github.event.issue.body, '<!-- dx-nightly-finding')
+    if: github.event_name == 'issues' && github.event.action == 'opened' && github.event.issue.user.login == 'dilux-bot[bot]' && (startsWith(github.event.issue.body, '<!-- dx-nightly-finding') || startsWith(github.event.issue.body, '<!-- dx-repro-blocker'))
     outputs:
       bug: ${{ steps.mark.outputs.bug }}
     steps:
@@ -402,6 +403,59 @@ jobs:
           gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "bug:unconfirmed" >/dev/null
           gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/$NUMBER" -f type=Bug >/dev/null || echo "::warning::Could not set #$NUMBER's Type to Bug."
           echo "bug=true" >> "$GITHUB_OUTPUT"
+
+  # A bug that blocked a reproduction (#247) closed as done: each issue it
+  # blocked and that waits for it (`repro:blocked`) gets `repro:unblocked`
+  # from dilux-bot, and its reproduction runs again (issue-repro.yml).
+  unblock:
+    name: What this unblocks
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    if: github.event_name == 'issues' && github.event.action == 'closed' && github.event.issue.state_reason == 'completed'
+    steps:
+      - name: dilux-bot token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-issues: write
+
+      - name: Run their reproductions again
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          # What it blocks: GitHub's dependency, and the markers the App
+          # wrote on it (its first line, and its own comments), so a link the
+          # dependency API refused still unblocks.
+          # A read that fails is said and fails the job (after doing what the
+          # others found), never read as "blocks nothing".
+          failed=0
+          deps=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/dependencies/blocking" --jq '.[].number') || { echo "::warning::Could not read #$NUMBER's dependencies."; failed=1; deps=""; }
+          body=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" --jq 'select(.user.login == "dilux-bot[bot]") | .body') || { echo "::warning::Could not read #$NUMBER."; failed=1; body=""; }
+          comments=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '.[] | select(.user.login == "dilux-bot[bot]") | .body') || { echo "::warning::Could not read #$NUMBER's comments."; failed=1; comments=""; }
+          marks=$(grep -oE '^<!-- dx-repro-blocker: #[0-9]+ -->' <<<"$body" | grep -oE '[0-9]+' || true)
+          more=$(grep -oE '^<!-- dx-repro-blocks: #[0-9]+ -->' <<<"$comments" | grep -oE '[0-9]+' || true)
+          blocked=""
+          # shellcheck disable=SC2086 # lists of numbers, split on purpose.
+          for n in $(printf '%s\n' $deps $marks $more | sort -un); do
+            if ! state=$(gh issue view "$n" --repo "$GITHUB_REPOSITORY" --json state,labels --jq '.state == "OPEN" and ([.labels[].name] | index("repro:blocked") != null)'); then
+              echo "::warning::Could not read #$n."; failed=1; continue
+            fi
+            [ "$state" != true ] || blocked="$blocked $n"
+          done
+          [ -n "${blocked// }" ] || exit "$failed"
+          gh label create "repro:unblocked" --repo "$GITHUB_REPOSITORY" --color 0E8A16 --force --description "What blocked the reproduction is fixed: it runs again" >/dev/null 2>&1 || true
+          for n in $blocked; do
+            # Off first, then on: a label already there would fire nothing.
+            gh issue edit "$n" --repo "$GITHUB_REPOSITORY" --remove-label repro:blocked --remove-label repro:unblocked >/dev/null 2>&1 || true
+            gh issue edit "$n" --repo "$GITHUB_REPOSITORY" --add-label repro:unblocked >/dev/null
+            echo "#$n: its reproduction runs again."
+          done
+          exit "$failed"
 
   # When the classifier read the paid add-on's roadmap: a fresh runner, where
   # that roadmap, the classifier's transcript and its execution file never
