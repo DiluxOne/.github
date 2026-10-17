@@ -249,6 +249,9 @@ BOT_LOGINS = ("dilux-bot", "dilux-bot[bot]", "app/dilux-bot")
 def planned(node, version):
     """(ok, why, by, at) for a release issue the plan accepted."""
     n = node.get("number")
+    # A release cancelled by closing its issue is no release, planned or not.
+    if node.get("state") == "CLOSED" and node.get("stateReason") != "COMPLETED":
+        return False, f"#{n} was closed as {str(node.get('stateReason') or 'not completed').lower().replace('_', ' ')}", None, None
     labels = [l.get("name") for l in (node.get("labels") or {}).get("nodes") or []]
     if PLANNED_LABEL not in labels or LANE_LABEL not in labels:
         return False, f"#{n} is not accepted by the plan", None, None
@@ -520,6 +523,8 @@ def self_test():
     r = vfy(answer(plan_node()), "1.2.0", mode="auto")
     check("#247 planned: the bot's issue on the version's milestone, in auto, approves it as its planner", (r["ok"], r["by"]), (True, "soydiloreto"))
     check("#247 planned: in confirm it approves nothing", vfy(answer(plan_node()), "1.2.0")["ok"], False)
+    closed = plan_node(); closed["state"], closed["stateReason"] = "CLOSED", "NOT_PLANNED"
+    check("#247 planned: a release cancelled by closing it as not planned approves nothing", vfy(answer(closed), "1.2.0", mode="auto")["ok"], False)
     check("#247 planned: a planner who is not admin or maintain approves nothing", vfy(answer(plan_node()), "1.2.0", roles={"soydiloreto": "write"}, mode="auto")["ok"], False)
     check("#247 planned: not opened by the bot, another milestone, no milestone, the label by a person: nothing",
           [vfy(answer(n), "1.2.0", mode="auto")["ok"] for n in (plan_node(author="someone"), plan_node(ms_title="1.3.0"), plan_node(ms_title=None), plan_node(added_by="User"))],

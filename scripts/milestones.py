@@ -97,6 +97,26 @@ def planned_mode(root):
 
 
 PLANNERS = ("admin", "maintain")
+BOTS = ("dilux-bot[bot]",)
+
+
+def plan_kept(issues, removed, role_of):
+    """(ok, why): whether the plan is still the planner's when the milestone
+    is done (#247). Every issue on it closed as completed, each closed by the
+    bot (a merged pull request it merged) or by someone with the admin or
+    maintain role; and no issue taken off it by anyone else. Otherwise a
+    person accepts the release. role_of(login) is the role now, or None."""
+    def trusted(login):
+        return login in BOTS or role_of(login) in PLANNERS
+    for i in issues:
+        if i.get("state_reason") != "completed":
+            return False, f"#{i.get('number')} was closed as {i.get('state_reason') or 'not completed'}"
+        if not trusted(i.get("closed_by") or ""):
+            return False, f"#{i.get('number')} was closed by {i.get('closed_by') or 'someone unknown'}, not a maintainer"
+    for who in removed:
+        if not trusted(who):
+            return False, f"{who}, not a maintainer, took an issue off the milestone"
+    return True, "every issue closed as completed by a maintainer or the bot, none taken off by anyone else"
 
 
 def gh(*args):
@@ -123,13 +143,39 @@ def open_due(full, now, io=None, mode="confirm"):
                                             "--milestone", m["title"], "--body", body(version, m, auto)).strip(),
         "type": lambda url: gh("api", "-X", "PATCH", f"repos/{full}/issues/{url.rsplit('/', 1)[-1]}", "-f", "type=Task"),
         "role": lambda login: gh("api", f"repos/{full}/collaborators/{login}/permission", "--jq", ".role_name").strip(),
+        # The milestone's issues, with who closed each (the issue's own
+        # `closed_by`), and who took any issue off it.
+        "issues": lambda m: lines("api", f"repos/{full}/issues?milestone={m['number']}&state=all&per_page=100", "--paginate", "--jq",
+                                  '.[] | select(.pull_request | not) | {number, state_reason, closed_by: (.closed_by.login // "")} | @json'),
+        "removed": lambda m: [e["actor"] for e in lines("api", f"repos/{full}/issues/events?per_page=100", "--paginate", "--jq",
+                                                       f'.[] | select(.event == "demilestoned" and .milestone.title == {json.dumps(m["title"])}) | {{actor: (.actor.login // "")}} | @json')],
         "accept": lambda url: gh("issue", "edit", url, "--add-label", "accepted-by:policy"),
         "close": lambda m: gh("api", "-X", "PATCH", f"repos/{full}/milestones/{m['number']}", "-f", "state=closed"),
     }
+    roles = {}
+
+    def role_of(login):
+        # Read once each; one that cannot be read is no role (never fatal).
+        if login not in roles:
+            try:
+                roles[login] = io["role"](login) if login else None
+            except RuntimeError:
+                roles[login] = None
+        return roles[login]
+
     opened = []
     for version, m in due(io["milestones"](), io["titles"](), io["tags"](), now):
         creator = (m.get("creator") or {}).get("login") or ""
-        auto = mode == "auto" and bool(creator) and io["role"](creator) in PLANNERS
+        # Only a milestone done by its plan: one a person closed early, or
+        # one changed by someone else, waits for a person's acceptance.
+        auto = mode == "auto" and done(m) and role_of(creator) in PLANNERS
+        if auto:
+            try:
+                auto, why = plan_kept(io["issues"](m), io["removed"](m), role_of)
+            except RuntimeError as exc:
+                auto, why = False, f"the milestone's issues could not be read ({exc})"
+            if not auto:
+                print(f"  {full}: {version} waits for a person: {why}")
         url = io["open"](version, m, auto)
         # The Release form's Type: a failure fails the run, so it is seen
         # (the issue stands; its Type is set by hand).
@@ -167,7 +213,8 @@ def self_test():
     typed = []
     io = {"milestones": lambda: ms, "titles": lambda: {"Release 1.3.0"}, "tags": lambda: {"1.2.0"},
           "open": lambda v, mm, auto: opened.append(v) or f"https://github.com/o/r/issues/{len(opened)}", "type": typed.append,
-          "role": lambda who: "admin", "accept": lambda url: None, "close": lambda mm: None}
+          "role": lambda who: "admin", "accept": lambda url: None, "close": lambda mm: None,
+          "issues": lambda mm: [], "removed": lambda mm: []}
     import contextlib
     import io as _io
     with contextlib.redirect_stdout(_io.StringIO()):
@@ -178,18 +225,31 @@ def self_test():
     d = {"title": "1.6.0", "state": "open", "open_issues": 0, "closed_issues": 3, "number": 7, "html_url": "u", "creator": {"login": "boss"}}
     check("due: an open version milestone with every issue closed is due", [v for v, _ in due([d, {**d, "title": "1.7.0", "open_issues": 1}, {**d, "title": "1.8.0", "closed_issues": 0}], set(), set(), now)], ["1.6.0"])
     seen = {"accept": [], "close": [], "auto": []}
-    def run(mode, role):
+    def run(mode, role, issues=None, removed=(), ms=None):
         for k in seen:
             seen[k] = []
-        io2 = {"milestones": lambda: [d], "titles": lambda: set(), "tags": lambda: set(),
+        def role_fn(who):
+            if role == "boom":
+                raise RuntimeError("HTTP 502")
+            return role if who == "boss" else {"bot": None}.get(who, "write")
+        io2 = {"milestones": lambda: [ms or d], "titles": lambda: set(), "tags": lambda: set(),
                "open": lambda v, mm, auto: seen["auto"].append(auto) or "https://github.com/o/r/issues/5", "type": lambda url: None,
-               "role": lambda who: role, "accept": seen["accept"].append, "close": lambda mm: seen["close"].append(mm["number"])}
+               "role": role_fn, "accept": seen["accept"].append, "close": lambda mm: seen["close"].append(mm["number"]),
+               "issues": lambda mm: issues if issues is not None else [{"number": 1, "state_reason": "completed", "closed_by": "dilux-bot[bot]"}],
+               "removed": lambda mm: list(removed)}
         with contextlib.redirect_stdout(_io.StringIO()):
             open_due("o/r", now, io2, mode)
         return (seen["auto"], len(seen["accept"]), seen["close"])
     check("#247 auto: a maintainer's plan is accepted by policy, and the done milestone closes", run("auto", "maintain"), ([True], 1, [7]))
     check("#247 auto: a writer's plan waits for a person", run("auto", "write"), ([False], 0, [7]))
     check("#247 confirm: a person accepts, the last click", run("confirm", "admin"), ([False], 0, [7]))
+    check("#247 auto: an issue closed as not planned, or closed by a writer, waits for a person",
+          [run("auto", "admin", issues=[{"number": 1, "state_reason": "not_planned", "closed_by": "boss"}])[0],
+           run("auto", "admin", issues=[{"number": 1, "state_reason": "completed", "closed_by": "someone"}])[0]], [[False], [False]])
+    check("#247 auto: an issue a writer took off the milestone waits for a person", run("auto", "admin", removed=["someone"])[0], [False])
+    check("#247 auto: closed by a maintainer and taken off by one is still the plan", run("auto", "admin", issues=[{"number": 1, "state_reason": "completed", "closed_by": "boss"}], removed=["boss"])[0], [True])
+    check("#247 auto: a milestone a person closed early is never the plan", run("auto", "admin", ms={**d, "state": "closed", "closed_at": "2026-10-15T00:00:00Z", "open_issues": 2})[0], [False])
+    check("#247 auto: a role that cannot be read waits for a person, and stops nothing", run("auto", "boom"), ([False], 0, [7]))
     check("#247 body: says which", ("accepted by policy" in body("1.6.0", d, True), "Accepting it is the decision" in body("1.6.0", d, False)), (True, True))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
