@@ -22,7 +22,9 @@
                             branch is BRANCH, else the pull request's
   autopilot.py tick C<n>     tick a criterion's box on the pull request, once
                              a pushed commit names it (the agent runs it)
-  autopilot.py finish ready FILE | stop WHY
+  autopilot.py finish ready FILE | stop WHY | ask QUESTION
+  autopilot.py answers      what maintainers answered the autopilot's last
+                            question (COMMENTS, WRITERS)
                              how the agent ends a run: the pull request ready
                              for review (FILE: how it was tested), or a stop
                              comment and `needs-human` (the agent runs it); in
@@ -103,6 +105,12 @@ LANE = "human-issue"
 REPRO = repro.LANE
 
 
+def mode_of(policy):
+    """guided or full: the policy in force (#247); guided when unsure."""
+    m = (policy.get("autopilot-mode") or {}).get("mode") or (policy.get("autopilot-mode") or {}).get("default")
+    return m if m in ("guided", "full") else "guided"
+
+
 def within(level, cap):
     return level in LEVELS and cap in LEVELS and LEVELS.index(level) <= LEVELS.index(cap) and level != "none"
 
@@ -179,6 +187,10 @@ def criteria_evidence(body, head_files, changed=None):
 CHECKLIST_START = "<!-- dx-checklist -->"
 CHECKLIST_END = "<!-- /dx-checklist -->"
 STOP = "<!-- dx-autopilot-stop -->"
+# A question to a maintainer in `guided` mode (#247): the run waits for the
+# answer, labelled autopilot:waiting, and goes on once one comes.
+ASK = "<!-- dx-autopilot-ask -->"
+WAITING = "autopilot:waiting"
 SILENT = "<!-- dx-autopilot-silent -->"
 TESTED = "<!-- dx-tested -->"
 AI_LINE = "🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
@@ -324,11 +336,13 @@ def may_continue(labels, pr_body, runs, cap):
     return True, f"{total - done} of {total} criteria left, run {runs + 1} of {cap}"
 
 
-def end_verdict(mode, pr, draft_, stopped, done, total, limit_hit, runs, cap, pushed=False):
-    """ready | stopped | continue | silent. A run never ends without one of
-    the first three: silent is the workflow saying so for the agent."""
+def end_verdict(mode, pr, draft_, stopped, done, total, limit_hit, runs, cap, pushed=False, asked=False):
+    """ready | stopped | asked | continue | silent. A run never ends without
+    one of the first four: silent is the workflow saying so for the agent."""
     if stopped:
         return "stopped"
+    if asked:
+        return "asked"
     if mode == "fix":
         return "ready" if pushed else "silent"
     if pr and not draft_:
@@ -339,6 +353,29 @@ def end_verdict(mode, pr, draft_, stopped, done, total, limit_hit, runs, cap, pu
 
 
 BOT_LOGINS = (org.APP, org.BOT, f"app/{org.APP}")
+
+
+def asked_since(comments, started):
+    """A question the autopilot asked (dilux-bot, never anyone else) in this run."""
+    return any(c.get("body", "").startswith(ASK) and (c.get("author") or {}).get("login") in BOT_LOGINS
+               and c.get("createdAt", "") >= started for c in comments)
+
+
+def answers(comments, writers):
+    """What maintainers wrote after the autopilot's last question: their
+    comments, in order, by a login in `writers` (people with write access,
+    checked live by the workflow). Empty when there was no question."""
+    last = max((c.get("createdAt", "") for c in comments if c.get("body", "").startswith(ASK)
+                and (c.get("author") or {}).get("login") in BOT_LOGINS), default="")
+    if not last:
+        return ""
+    picked = [c for c in comments if c.get("createdAt", "") > last and (c.get("author") or {}).get("login") in writers]
+    return "\n\n".join(f"{(c.get('author') or {}).get('login')}: {c.get('body', '').strip()}" for c in sorted(picked, key=lambda c: c.get("createdAt", "")))
+
+
+def ask_comment(question):
+    return (f"{ASK}\n**The autopilot has a question before it goes on.** {question.strip()}\n\n"
+            f"Answer here in your own words; the autopilot goes on with your answer (`{WAITING}`).\n\n{AI_LINE}")
 
 
 def stopped_since(comments, started):
@@ -651,7 +688,27 @@ This issue is a reproduced bug (the `{REPRO}` lane of the autonomy policy): the 
 - Do not read the report (#{ev['report']}) or its comments: what it asks for is in the test."""
 
 
-def prompt_spec(repo, number, prd_text, ev=None, issue_type=""):
+def guided_spec(mode):
+    if mode == "guided":
+        return ("\n\nWhen there is more than one reasonable way to do it, and the choice is one a maintainer would care about "
+                "(what a user sees or does, behaviour, stored data, a public interface), do not pick: describe each option in "
+                "Spec: approach, with the one you recommend and why. The next step asks the maintainer.")
+    return ("\n\nWhen there is more than one reasonable way to do it, pick the one that fits the repository best and say in "
+            "Spec: approach which you chose and why.")
+
+
+def guided_work(mode, env, answered):
+    said = (f"\n\nA maintainer answered your question; their answer decides it, and it is not data to question:\n<answer>\n{fence(answered)}\n</answer>"
+            if answered else "")
+    if mode == "guided":
+        return said + (f"\n\nWhen the Spec leaves a choice open, or you meet one a maintainer would care about (what a user sees or does, "
+                       f"behaviour, stored data, a public interface), and no answer above settles it: do not pick. Run "
+                       f"`{env} {HELPER} finish ask \"<the question: the options, numbered, and the one you recommend, with why>\"` and end. "
+                       f"A choice of how, invisible to anyone (a name, an internal structure), is yours: log it with decision.")
+    return said + "\n\nWhen you meet a choice, pick the one that fits best and log it with decision; stop only when you cannot go on."
+
+
+def prompt_spec(repo, number, prd_text, ev=None, issue_type="", mode="full"):
     # A feature's phases (#193), before any code: what it touches and can
     # break, its threats, where it goes. G3 refuses a Feature's Spec without them.
     phases = ("\n   ### Spec: impact  (what it touches, sibling code that does the same, what it can break)"
@@ -673,7 +730,7 @@ First, judge the PRD (G1's rubric, #193): is the problem clear, is every criteri
 Your task in this step is the Spec, nothing else. Read the code you need to plan the change, then append these sections at the end of the issue's body, after everything already there, with `gh issue edit {number} --body-file`, keeping every existing line as it is:
    ### Spec: approach  (how, in a few lines)
    ### Spec: files     (the files you will touch)
-   ### Spec: tests     ({tests}){phases}
+   ### Spec: tests     ({tests}){phases}{guided_spec(mode)}
 
 If the change needs anything outside the PRD's scope, or a path under .github/, policy/, scripts/ or kinds/, still write the Spec, then run `NUMBER={number} {HELPER} finish stop "<why, in one or two sentences>"` and end.
 
@@ -682,7 +739,7 @@ Do not create a branch, commit or open a pull request: the workflow opens the dr
 {FOREGROUND}"""
 
 
-def prompt_work(repo, number, pr, branch, prd_text, unticked, resumed, ev=None):
+def prompt_work(repo, number, pr, branch, prd_text, unticked, resumed, ev=None, mode="full", answered=""):
     todo = "\n".join(f"   - {cid}: {text}" + (f" (test: {test})" if test else "") for cid, text, test in unticked) or "   (none: every box is ticked; only the checks and the finish below are left)"
     first = "the reproduction test's commit, which you build on" if ev else "its first, empty commit"
     start = ("This run continues earlier work: the branch already has the commits of the ticked criteria. Read `git log` and the pull request first, and do not redo them."
@@ -713,7 +770,7 @@ For each one, in that order:
 
 When every box is ticked, run the repository's own checks (`make pre-pr` if the Makefile has it, else its test commands), fix, commit and push (`{env} {HELPER} push`) what fails, write a short "How I tested it" into a file, and run `{env} {HELPER} finish ready <file>`: it marks the pull request ready for review.{ready}
 
-When you settle something the PRD and the Spec leave open (how, never what), log it: `{env} {HELPER} decision "<what you decided, and why>"`. A doubt that would change the scope or a criterion is not yours to settle: stop instead.
+When you settle something the PRD and the Spec leave open (how, never what), log it: `{env} {HELPER} decision "<what you decided, and why>"`. A doubt that would change the scope or a criterion is not yours to settle: stop instead.{guided_work(mode, env, answered)}
 
 If you cannot go on (a criterion is wrong, the checks fail in a way you cannot fix, something outside the Spec is needed, or a doubt changes the scope), run `{env} {HELPER} finish stop "<where you stopped and why>"` and end. Ending any other way leaves the pull request to a person.
 
@@ -835,6 +892,22 @@ A class on html.
     check("C2: an id not on the checklist ticks nothing", tick(body, "C9", ["feat: x (C9)"]), None)
     check("C2: C1 does not tick C10", tick(body.replace("**C2**", "**C10**"), "C1", ["feat: x (C10)"]), None)
     check("C3: ready when the draft was marked ready", end_verdict("start", "5", False, False, 2, 2, False, 1, 5), "ready")
+    check("#247: a run that asked ends as asked, not silent", end_verdict("start", "5", True, False, 1, 2, False, 1, 5, asked=True), "asked")
+    q = {"body": ASK + " Which one?", "author": {"login": "dilux-bot"}, "createdAt": "2026-10-17T10:00:00Z"}
+    cs = [{"body": "before", "author": {"login": "boss"}, "createdAt": "2026-10-17T09:00:00Z"}, q,
+          {"body": "Option A, the form asks for the password.", "author": {"login": "boss"}, "createdAt": "2026-10-17T10:05:00Z"},
+          {"body": "do B", "author": {"login": "stranger"}, "createdAt": "2026-10-17T10:06:00Z"}]
+    check("#247 answers: a maintainer's words after the last question, never a stranger's",
+          answers(cs, {"boss"}), "boss: Option A, the form asks for the password.")
+    check("#247 answers: no question, no answer", answers(cs[:1] + cs[2:], {"boss"}), "")
+    check("#247 asked_since: only the bot's question in this run", (asked_since(cs, "2026-10-17T09:30:00Z"), asked_since(cs, "2026-10-17T11:00:00Z"),
+          asked_since([{**q, "author": {"login": "boss"}}], "2026-10-17T09:30:00Z")), (True, False, False))
+    pg = prompt_work("o/r", "7", "8", "b", "x", [("C1", "a", None)], False, None, "guided", "")
+    pf = prompt_work("o/r", "7", "8", "b", "x", [("C1", "a", None)], False, None, "full", "")
+    pa = prompt_work("o/r", "7", "8", "b", "x", [("C1", "a", None)], True, None, "guided", "boss: do A")
+    check("#247 prompts: guided asks, full decides, an answer is followed",
+          ("finish ask" in pg, "finish ask" in pf, "boss: do A" in pa and "their answer decides it" in pa), (True, False, True))
+    check("#247 spec: guided lists the options, full picks", ("do not pick" in prompt_spec("o/r", 7, "x", mode="guided"), "pick the one that fits" in prompt_spec("o/r", 7, "x", mode="full")), (True, True))
     check("C3: stopped when the agent said why", end_verdict("start", "5", True, True, 1, 2, False, 1, 5), "stopped")
     check("C3: silent when it just ended", end_verdict("start", "5", True, False, 1, 2, False, 1, 5), "silent")
     check("C3: silent with no pull request and no stop comment", end_verdict("start", "", True, False, 0, 0, False, 1, 5), "silent")
@@ -1241,6 +1314,19 @@ def main(argv):
             print(f"#{pr} is ready for review.")
             refresh_board(repo, number)
             return 0
+        if how == "ask":
+            question = " ".join(argv[2:]).strip()
+            if not question or not pr:
+                print("finish ask needs a question, and the draft pull request; without one, finish stop.")
+                return 1
+            gh("pr", "comment", str(pr), "--repo", repo, "--body", ask_comment(question))
+            subprocess.run(["gh", "label", "create", WAITING, "--repo", repo, "--color", "FBCA04", "--force",
+                            "--description", "The autopilot asked a maintainer and waits for the answer"], capture_output=True)
+            gh("issue", "edit", str(number), "--repo", repo, "--add-label", WAITING)
+            print("Asked; the run ends here and goes on with the answer.")
+            if number:
+                refresh_board(repo, number)
+            return 0
         if how == "stop":
             why = " ".join(argv[2:]).strip() or "No reason given."
             if pr:
@@ -1253,7 +1339,7 @@ def main(argv):
             if number:
                 refresh_board(repo, number)
             return 0
-        print("finish ready FILE | finish stop WHY", file=sys.stderr)
+        print("finish ready FILE | finish stop WHY | finish ask QUESTION", file=sys.stderr)
         return 64
     if argv[:1] == ["draft"]:
         body = open(os.environ["BODY"], encoding="utf-8").read()
@@ -1285,13 +1371,14 @@ def main(argv):
         target = ("pr", pr) if pr else ("issue", number)
         comments = json.loads(gh(target[0], "view", str(target[1]), "--repo", repo, "--json", "comments"))["comments"]
         stopped = stopped_since(comments, started)
+        asked = asked_since(comments, started)
         draft_, done, total, pushed = True, 0, 0, False
         if pr:
             info = pr_json(repo, pr, "body,isDraft,headRefOid")
             draft_ = info["isDraft"]
             done, total = progress(info["body"])
             pushed = bool(os.environ.get("HEAD_BEFORE")) and info["headRefOid"] != os.environ.get("HEAD_BEFORE")
-        v = end_verdict(mode, pr, draft_, stopped, done, total, limit, runs, cap, pushed)
+        v = end_verdict(mode, pr, draft_, stopped, done, total, limit, runs, cap, pushed, asked)
         print(v)
 
         def said():
@@ -1318,6 +1405,14 @@ def main(argv):
         if number:
             refresh_board(repo, number)
         return 1 if v == "silent" else 0
+    if argv[:1] == ["answers"]:
+        # COMMENTS: the pull request's and the issue's comments (JSON list);
+        # WRITERS: logins with write access, one per line, checked live.
+        with open(os.environ["COMMENTS"], encoding="utf-8") as fh:
+            comments = json.load(fh)
+        writers = {l.strip() for l in open(os.environ["WRITERS"], encoding="utf-8") if l.strip()} if os.environ.get("WRITERS") else set()
+        print(answers(comments, writers))
+        return 0
     if argv[:1] == ["work-log"]:
         homes = [os.environ.get("CLAUDE_CONFIG_DIR", ""), os.path.join(os.environ.get("HOME", ""), ".claude")]
         print(work_log(os.environ.get("WORK_LOG", ""), os.environ.get("RUNNER_TEMP", "/tmp"), os.environ.get("WORK_STARTED", ""), homes, os.environ.get("GITHUB_WORKSPACE", "")))
@@ -1363,13 +1458,14 @@ def main(argv):
         print(why)
         return 0 if ok else 1
     if argv[:2] == ["prompt", "spec"]:
-        print(prompt_spec(repo, number, schema.part_text(body, "prd"), ev, os.environ.get("ISSUE_TYPE", "")))
+        print(prompt_spec(repo, number, schema.part_text(body, "prd"), ev, os.environ.get("ISSUE_TYPE", ""), mode_of(pol)))
         return 0
     if argv[:2] == ["prompt", "work"]:
         info = pr_json(repo, pr, "body")
         ticked = boxes(info["body"])
         left = [c for c in criteria(body) if not ticked.get(c[0])]
-        print(prompt_work(repo, number, pr, os.environ["BRANCH"], schema.part_text(body, "prd"), left, any(ticked.values()), ev))
+        answered = open(os.environ["ANSWERS"], encoding="utf-8").read() if os.environ.get("ANSWERS") and os.path.exists(os.environ["ANSWERS"]) else ""
+        print(prompt_work(repo, number, pr, os.environ["BRANCH"], schema.part_text(body, "prd"), left, any(ticked.values()), ev, mode_of(pol), answered))
         return 0
     if argv[:2] == ["prompt", "fix"]:
         print(prompt_fix(os.environ["GITHUB_REPOSITORY"], os.environ["PR"], os.environ.get("ROUND", "1"), pol.get("autopilot-rounds", 3), ev))

@@ -136,6 +136,18 @@ def merge(org, repo):
         warn("autopilot: the organisation has it off; a repository cannot turn it on. Ignored.")
     extra = [p for p in (repo.get("constitution") or []) if isinstance(p, str)]
     out["constitution"] = list(org.get("constitution") or []) + [p for p in extra if p not in (org.get("constitution") or [])]
+    # How the autopilot settles a choice (#247): `guided` asks a maintainer,
+    # `full` decides and logs it. A repository may choose up to the
+    # organisation's ceiling; guided is always allowed (it is stricter).
+    org_mode = dict(org.get("autopilot-mode") or {"default": "guided", "ceiling": "guided"})
+    want = repo.get("autopilot-mode")
+    mode = org_mode.get("default", "guided")
+    if want in MODES:
+        if want == "guided" or org_mode.get("ceiling", mode) == "full":
+            mode = want
+        else:
+            warn("autopilot-mode: the organisation's ceiling is guided; a repository cannot choose full. Kept guided.")
+    out["autopilot-mode"] = {**org_mode, "mode": mode}
     # Labels whose issue a person always merges (#194): a repository adds to
     # them, never takes one away.
     more = [l for l in (repo.get("person-merges") or []) if isinstance(l, str) and l]
@@ -175,7 +187,8 @@ def merge(org, repo):
     return out
 
 
-TOP_KEYS = {"autopilot", "autopilot-rounds", "autopilot-runs", "constitution", "person-merges", "lanes"}
+TOP_KEYS = {"autopilot", "autopilot-rounds", "autopilot-runs", "autopilot-mode", "constitution", "person-merges", "lanes"}
+MODES = ("guided", "full")
 LANE_KEYS = {"description", "accept", "type", "origin", "repositories", "evidence", "merge", "ceiling", "enabled"}
 
 
@@ -198,6 +211,11 @@ def problems(policy):
         for path in ("policy/**", "rules/**"):
             if path not in constitution:
                 out.append(f"constitution: {path} is always protected")
+    am = policy.get("autopilot-mode", {"default": "guided", "ceiling": "guided"})
+    if not isinstance(am, dict) or am.get("default") not in MODES or am.get("ceiling", am.get("default")) not in MODES:
+        out.append("autopilot-mode: default and ceiling, each guided or full")
+    elif am.get("default") == "full" and am.get("ceiling", "full") == "guided":
+        out.append("autopilot-mode: a ceiling below the default")
     held = policy.get("person-merges", [])
     if not isinstance(held, list) or not all(isinstance(l, str) and l for l in held):
         out.append("person-merges: a list of labels")
@@ -922,6 +940,13 @@ def self_test():
     check("#194 schema: security is always a label a person merges", (problems({**org, "person-merges": []}), problems({**org, "person-merges": "security"})), (["person-merges: security is always there"], ["person-merges: a list of labels"]))
     check("#194 merge: a repository adds labels a person merges, never takes security away", merge(org, {"person-merges": ["payments"]})["person-merges"][-2:], ["security", "payments"])
     check("#194 merge: an empty list in a repository keeps security", "security" in merge(org, {"person-merges": []})["person-merges"], True)
+    g = {**org, "autopilot-mode": {"default": "guided", "ceiling": "full"}}
+    check("#247 mode: the organisation's default; a repository chooses up to the ceiling",
+          (merge(g, {})["autopilot-mode"]["mode"], merge(g, {"autopilot-mode": "full"})["autopilot-mode"]["mode"],
+           merge({**org, "autopilot-mode": {"default": "full", "ceiling": "full"}}, {"autopilot-mode": "guided"})["autopilot-mode"]["mode"]), ("guided", "full", "guided"))
+    check("#247 mode: never past a guided ceiling", merge({**org, "autopilot-mode": {"default": "guided", "ceiling": "guided"}}, {"autopilot-mode": "full"})["autopilot-mode"]["mode"], "guided")
+    check("#247 schema: modes and their order", (problems({**org, "autopilot-mode": {"default": "auto"}}), problems({**org, "autopilot-mode": {"default": "full", "ceiling": "guided"}})),
+          (["autopilot-mode: default and ceiling, each guided or full"], ["autopilot-mode: a ceiling below the default"]))
     with tempfile.TemporaryDirectory() as tmp:
         bad_policy = os.path.join(tmp, "autonomy.yml")
         with open(bad_policy, "w", encoding="utf-8") as fh:
