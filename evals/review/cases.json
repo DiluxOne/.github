@@ -1,0 +1,116 @@
+[
+  {
+    "id": "DiluxOne/.github#239:flag",
+    "repo": "DiluxOne/.github",
+    "pr": 239,
+    "title": "feat(digest): what became of the review's findings, and its noise",
+    "base": "fcbcb40b5820b4a3fc64c5dc2fcdc56559bd0a14",
+    "head": "aded572a54f737a1a2e1b4f96bd28be09c230c0e",
+    "expect": "flag",
+    "path": "docs/workflows.md"
+  },
+  {
+    "id": "DiluxOne/.github#241:clean",
+    "repo": "DiluxOne/.github",
+    "pr": 241,
+    "title": "fix(security): the plan's token can read the advisories",
+    "base": "db11e407b5d0820af456ee71231b4104893296e9",
+    "head": "44874c2edba584913234b75359b2c7a777338c5c",
+    "expect": "clean"
+  },
+  {
+    "id": "DiluxOne/.github#242:clean",
+    "repo": "DiluxOne/.github",
+    "pr": 242,
+    "title": "feat(security): a maintainer starting the fork accepts an advisory",
+    "base": "d42e252e8ab755ecbb93ccf80664acdfc473bfe9",
+    "head": "9f7e641ba40c1f2b13172f4b93599bdf2a7868bc",
+    "expect": "clean"
+  },
+  {
+    "id": "DiluxOne/.github#244:flag",
+    "repo": "DiluxOne/.github",
+    "pr": 244,
+    "title": "feat(security): an advisory's fix is written in the private repository",
+    "base": "dfd6a02d63ee4eca019f5a208b3960c9cceff02c",
+    "head": "68c9da196157ed79792cf54fd3c1e1fa03870564",
+    "expect": "flag",
+    "path": ".github/workflows/security-fix.yml"
+  },
+  {
+    "id": "DiluxOne/diluxone-multisite-user-sync-wordpress#26:flag",
+    "repo": "DiluxOne/diluxone-multisite-user-sync-wordpress",
+    "pr": 26,
+    "title": "chore(plugin)!: join the DiluxOne family as DiluxOne Multisite User Sync on PHP 8.0",
+    "base": "b5dfd849d20cad49a78696b70bd31288a4a44a18",
+    "head": "0e7fb224121f1144d563b0a03bd22cdb9572a960",
+    "expect": "flag",
+    "path": "readme.txt"
+  },
+  {
+    "id": "DiluxOne/diluxone-multisite-user-sync-wordpress#59:clean",
+    "repo": "DiluxOne/diluxone-multisite-user-sync-wordpress",
+    "pr": 59,
+    "title": "chore: keep the organisation's shared files in step",
+    "base": "22c20f735ee62c68c7025ca0b80d4b2e7e712c11",
+    "head": "a17031815e681a868e902ba7584e916905669c5c",
+    "expect": "clean"
+  },
+  {
+    "id": "DiluxOne/diluxone-multisite-user-sync-wordpress#61:clean",
+    "repo": "DiluxOne/diluxone-multisite-user-sync-wordpress",
+    "pr": 61,
+    "title": "chore: keep the organisation's shared files in step",
+    "base": "d410f0dbaf261f3645767142225b108b0b3ee308",
+    "head": "58ffb4a2c03c7544653ac4e34357ccf8cb7ddff4",
+    "expect": "clean"
+  },
+  {
+    "id": "DiluxOne/diluxone-offload-wordpress#30:flag",
+    "repo": "DiluxOne/diluxone-offload-wordpress",
+    "pr": 30,
+    "title": "feat(sync): one pool of files and parts, and a large file resumes in the next request",
+    "base": "e6120d64d6e4e07bf4aeefa447e66fa82fb1aa2d",
+    "head": "3afdbc5ead2140d6cfd1aee5c3497938622e13a4",
+    "expect": "flag",
+    "path": "includes/class-diluxone-offload-sync-manager.php"
+  },
+  {
+    "id": "DiluxOne/diluxone-offload-wordpress#32:flag",
+    "repo": "DiluxOne/diluxone-offload-wordpress",
+    "pr": 32,
+    "title": "ci(tests): Dependabot pull requests skip the keyed real-storage suites, like forks",
+    "base": "89b1c6d1e07f675177a8466284a32a23ab1c9bf7",
+    "head": "f41bcedfae6c6712873ead50c72c7878bfa3d1d4",
+    "expect": "flag",
+    "path": ".github/workflows/tests-real-azure.yml"
+  },
+  {
+    "id": "DiluxOne/diluxone-offload-wordpress#84:clean",
+    "repo": "DiluxOne/diluxone-offload-wordpress",
+    "pr": 84,
+    "title": "docs: keep the organisation's shared files in step",
+    "base": "7b463129c68f81148753c7c96e45d3d021d26a94",
+    "head": "3dbfa4b773273231ace0ed7a4e737e2a4d73c234",
+    "expect": "clean"
+  },
+  {
+    "id": "DiluxOne/diluxone-users-wordpress#28:flag",
+    "repo": "DiluxOne/diluxone-users-wordpress",
+    "pr": 28,
+    "title": "ci(release): pin the shared release to v5.4.0",
+    "base": "27e7c4cbef38562d8f0f05a939eb6c65e70e2feb",
+    "head": "1f7f239778d830d32ef6e26f439bc69052ecea27",
+    "expect": "flag",
+    "path": ".github/workflows/release.yml"
+  },
+  {
+    "id": "DiluxOne/diluxone-users-wordpress#55:clean",
+    "repo": "DiluxOne/diluxone-users-wordpress",
+    "pr": 55,
+    "title": "chore: keep the organisation's shared files in step",
+    "base": "4b49e529c4a1209844db12fb1a8c8b652cf676b7",
+    "head": "e7deb795a0ec6d34254cd17c8065621bba573f7a",
+    "expect": "clean"
+  }
+]
