@@ -33,7 +33,8 @@ For the team of the central repository (`.github`). Each phase is a sub-issue of
 | 9. Security | Private advisory in public repositories, a `security` issue in private ones; a person merges the fix | 8 | - |
 | 10. Reproduced bugs | A real bug end to end through the lane that already exists | 8 | - |
 | 11. Learnings | Findings in the receipt, a weekly job, pull requests with evidence | 8 | - |
-| 12. Setup for other organisations | Installer, base kinds, configuration with an agent | 6, 11 | - |
+| 12. Setup for other organisations | Our engine with each organisation's configuration, the merge queue, installer, base kinds, configuration with an agent | 6, 11 | - |
+| 13. Review quality | Findings' outcomes measured, an evaluation set that scores every change to the review, verified blockers, pre-existing findings, a nightly review | 11 | - |
 
 ### Phase 0 · Stabilise what runs today
 
@@ -164,8 +165,21 @@ For the team of the central repository (`.github`). Each phase is a sub-issue of
   - **What it takes here:** the workflows read the configuration from the calling organisation's `.github`, never from the engine's repository, so `repos.yml` and `org.yml` of DiluxOne become one more configuration. Nothing that breaks a caller ships in a minor.
   - **Secrets:** the runs are the calling organisation's (its runners, its logs, its secrets); nothing reaches us. Our code handles their secrets while it runs, so this repository is their supply chain: signed commits, protected tags, nothing reaches `main` without review. They pin the engine to a tag or SHA and pass each workflow only the secrets it needs (`secrets: inherit` does not cross organisations).
   - **Publishing:** what every kind shares (the release issue, acceptance, the version, the changelog, the tag, the GitHub Release, the environment's approval) is the engine's. Where a kind publishes lives in its pack (`release:`). `library` publishes to a package registry (npm, PyPI, Packagist, NuGet), by trusted publishing (OIDC) where the registry has it, chosen in the configuration. `web-app` and `web-api` build a container image and push it to a registry (GHCR by default); the deploy is the organisation's own workflow, which the release calls after the approval with the version and the image.
-- **Delivers:** the engine reading the caller's configuration; an installer that sets up an organisation's `.github` with defaults, runs detection and opens the `repos.yml` pull request; the base kinds (wordpress-plugin, web-app, web-api and library); and later configuration with an agent.
+  - **Merge queue:** GitHub's own merge queue on `main` (the ruleset) replaces bringing pull requests up to date by hand: a pull request set to merge joins the queue, GitHub tests it on top of `main` and of the ones ahead of it, and merges it only if that passes, so two pull requests that pass apart cannot break `main` together. The callers listen to `merge_group` too, running the checks there and never the paid review again.
+- **Delivers:** the engine reading the caller's configuration; the merge queue; an installer that sets up an organisation's `.github` with defaults, runs detection and opens the `repos.yml` pull request; the base kinds (wordpress-plugin, web-app, web-api and library); and later configuration with an agent.
 - **Done when:** DiluxOne runs as one more configuration of the engine without losing anything, and a test organisation is up and running by accepting a single pull request.
+
+### Phase 13 · Review quality
+
+- **Source:** how Anthropic's Claude Code team reviews code (https://claude.dev/blog/solving-code-review-at-anthropic/), compared on 2026-10-16 with what this organisation does. We already had risk tiers decided by the change, protected paths, verification before the pull request, a cap on rounds, incremental re-review, rules from repeated findings and the revert on red; what we lacked is measuring the review itself.
+- **Delivers:**
+  - **Outcomes:** every finding classified by what became of it (fixed, wrong, intentional, does not matter); the noise per repository and per kind in the weekly digest.
+  - **Evaluation set:** reverted merges and pull requests known to be clean, with the expected verdict; every change to the review (prompts, profiles, model, rules) is scored against it in CI and does not merge if the score drops.
+  - **Verification:** a blocker or a major is posted only when separate agents, checking it against the code, agree it is real; minors are not verified.
+  - **Pre-existing:** a finding about code the pull request did not introduce says so and never blocks it.
+  - **Summary first:** the review's comment opens with the count by severity, or says plainly that nothing needs fixing.
+  - **Nightly review:** existing code, one repository at a time, within a budget, into one list per repository for a maintainer to pick from (maintenance lane).
+- **Done when:** a month of findings classified with the noise in the digest; the evaluation set held a change to the review at least once; a blocker the verification rejected was not posted; the nightly review's list reached a maintainer.
 
 ## The flow end to end
 
