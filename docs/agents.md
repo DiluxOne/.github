@@ -39,7 +39,7 @@ CI holds you to it: a `feat` or `!` pull request must close a Feature, a `fix` a
 
 ## 4. Check it
 
-Fill in What changes and Why in `.git/dx/pr.md`, then `dx check`. It runs what CI will: the conventions, the description, and the Claude review on your own account. Fix every blocker and major it lists, commit, and run it again until it says "Ready for a pull request".
+Fill in What changes and Why in `.git/dx/pr.md`, then `dx check`. It runs what CI will: the conventions, the description, and the Claude review on your own account. Fix every blocker and major it lists (a pre-existing one, in code you did not touch, is listed but never stops you), commit, and run it again until it says "Ready for a pull request".
 
 ## 5. The pull request
 

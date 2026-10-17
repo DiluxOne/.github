@@ -268,12 +268,12 @@ if ! command -v "$reviewer" >/dev/null; then
 fi
 
 echo; echo "== Review ($model, effort $effort, $mode)"
-schema='{"type":"object","additionalProperties":false,"required":["risk","complexity","blocking","type","description_matches","summary","findings"],"properties":{"risk":{"type":"string","enum":["low","medium","high"]},"type":{"type":"string","enum":["breaking","feat","fix","perf","refactor","style","docs","test","ci","build","chore","revert"]},"description_matches":{"type":"boolean"},"complexity":{"type":"string","enum":["low","medium","high"]},"blocking":{"type":"boolean"},"summary":{"type":"string","maxLength":1500},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","file","title"],"properties":{"severity":{"type":"string","enum":["blocker","major","minor"]},"file":{"type":"string"},"line":{"type":"integer"},"title":{"type":"string","maxLength":200}}}}}}'
+schema='{"type":"object","additionalProperties":false,"required":["risk","complexity","blocking","type","description_matches","summary","findings"],"properties":{"risk":{"type":"string","enum":["low","medium","high"]},"type":{"type":"string","enum":["breaking","feat","fix","perf","refactor","style","docs","test","ci","build","chore","revert"]},"description_matches":{"type":"boolean"},"complexity":{"type":"string","enum":["low","medium","high"]},"blocking":{"type":"boolean"},"summary":{"type":"string","maxLength":1500},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","file","title"],"properties":{"severity":{"type":"string","enum":["blocker","major","minor"]},"file":{"type":"string"},"line":{"type":"integer"},"title":{"type":"string","maxLength":200},"pre_existing":{"type":"boolean"}}}}}}'
 prompt="You are the code reviewer for this repository, reviewing a change before its pull request is opened.
 
 Everything you need is in one file: $work/brief.md. Read it first, whole. It has the review rules, the repository's own rules, its design system when the change touches a screen, the policy floor, the pull request's title and description, and the diff. Open other files only when the diff alone cannot settle a finding (a caller, a definition, a test).
 
-Change nothing and post nothing: answer only with the structured output. In findings, list every problem still open (blocker, major, minor) with its file and line: new ones, and, when the brief says the review is incremental, every earlier finding the new commits did not fix. In the summary, say in one line what the new commits fixed when the review is incremental.
+Change nothing and post nothing: answer only with the structured output. In findings, list every problem still open (blocker, major, minor) with its file and line: new ones, and, when the brief says the review is incremental, every earlier finding the new commits did not fix. Set \`pre_existing\` true on a finding about code this change did not introduce (it was there before, and the diff neither adds nor changes it): it never stops the change. Do not open the summary with a count: the script writes it. In the summary, say in one line what the new commits fixed when the review is incremental.
 
 Two more verdicts, about the whole change: \`type\`, the kind of change the diff really is, by the Conventional Commits meaning (breaking when a user or a caller must change something to keep working; feat when behaviour is added, however large, since size is not breakage; fix when wrong behaviour is corrected, whatever the title says; docs, test, ci, build, chore, style, refactor, perf, revert when that is all it is). And \`description_matches\`, true only if the description's \"What changes\" and \"Why\" describe what the diff does, with nothing claimed that the code does not do and no behaviour change left unsaid; false when there is no description yet.
 
@@ -292,7 +292,10 @@ verdict=$(jq -c '.structured_output // empty' "$work/review.json")
 # the version; here it is set right before the pull request exists).
 reasons_not=()
 [ "$conventions" -eq 0 ] || reasons_not+=("a convention is broken (above)")
-serious=$(jq '[.findings[] | select(.severity == "blocker" or .severity == "major")] | length' <<<"$verdict")
+# A pre-existing finding (code this branch did not introduce) never stops it.
+serious=$(jq -c '.findings' <<<"$verdict" | python3 "$CENTRAL/scripts/review-count.py" serious) || serious=unknown
+[ "$serious" != unknown ] || reasons_not+=("the findings could not be counted")
+[ "$serious" = unknown ] && serious=0
 [ "$serious" -eq 0 ] || reasons_not+=("$serious blocker or major finding(s)")
 if [ -n "$body_file" ] && [ "$(jq -r .description_matches <<<"$verdict")" != true ]; then
   reasons_not+=("the description does not match the code (see the summary)")
@@ -309,7 +312,9 @@ jq --arg sha "$HEAD" --arg branch "$branch" --arg input "$input" --argjson ready
   echo
   if [ "$ready" = true ]; then echo "**Ready for a pull request.**"; else echo "**Not ready:**"; echo; printf -- '- %s\n' "${reasons_not[@]}"; fi
   echo
-  jq -r '"Risk \(.risk), complexity \(.complexity), type \(.type), description matches: \(.description_matches).\n\n\(.summary)\n\n## Findings (fix, commit, run again)\n", (if (.findings | length) == 0 then "None." else (.findings[] | "- [ ] **\(.severity)** `\(.file)\(if .line then ":\(.line)" else "" end)`: \(.title)") end)' <<<"$verdict"
+  jq -c '.findings' <<<"$verdict" | python3 "$CENTRAL/scripts/review-count.py" line
+  echo
+  jq -r '"Risk \(.risk), complexity \(.complexity), type \(.type), description matches: \(.description_matches).\n\n\(.summary)\n\n## Findings (fix, commit, run again)\n", (if (.findings | length) == 0 then "None." else (.findings[] | "- [ ] **\(.severity)**\(if .pre_existing then " (pre-existing)" else "" end) `\(.file)\(if .line then ":\(.line)" else "" end)`: \(.title)") end)' <<<"$verdict"
 } > "$findings_md"
 cat "$findings_md"
 echo
