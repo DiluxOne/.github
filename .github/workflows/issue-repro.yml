@@ -341,7 +341,11 @@ jobs:
             method and stub in it must come from files you have read. A function the unit bootstrap
             or its stubs already define (the brief shows them) cannot be redefined with Brain Monkey
             (Patchwork refuses it: DefinedTooEarly): use it as it is defined there, and mock only
-            functions those files do not define.
+            functions those files do not define. Never mock a function the code under test defines
+            (a plugin function, in its own file): Brain Monkey declares it for the rest of the run,
+            and the next test that loads the real file dies with "Cannot redeclare". Require the
+            file that defines it and give it the inputs it reads instead. The test is run alone and
+            then with the rest of tests/Unit; a test that breaks the others proves nothing (#259).
 
             Write ONE PHPUnit unit test at tests/Unit/Repro/Issue${{ github.event.issue.number }}Test.php,
             in the style of the example test, using the unit bootstrap (brain/monkey, stubs, fake

@@ -10,15 +10,16 @@
 # (none of the runner's variables, its tokens among them), the checkout in
 # the current directory mounted read-only, the test mounted read-only as
 # tests/Unit/Repro/<name> (the one file in that folder), nothing writable
-# but a scratch /tmp, no capabilities, 1 GB and 256 processes at most, ten
-# minutes. The checkout's vendor/ must be installed already (by the caller,
+# but a scratch /tmp, no capabilities, 1 GB and 256 processes at most, five
+# minutes alone and seven with the rest of tests/Unit (the run job has 15). The checkout's vendor/ must be installed already (by the caller,
 # with the repository's own Composer scripts, before the test is anywhere
 # near). It refuses to run on a self-hosted runner: such code runs on
 # GitHub's fresh runners only (autopilot.yml sends a reproduced bug's work
 # there). The scratch folder lives under $RUNNER_TEMP, or TMPDIR elsewhere.
 #
 #   repro-sandbox.sh run FILE NAME [DIR]  run the test in FILE as NAME
-#                                         (IssueNTest.php); print
+#                                         (IssueNTest.php), then again with
+#                                         the rest of tests/Unit; print
 #                                         outcome=reproduced|passed|broken
 #                                         (also to $GITHUB_OUTPUT when set),
 #                                         and keep PHPUnit's last lines in
@@ -49,6 +50,24 @@ verdict() {
   elif [ "$rc" -eq 0 ] && grep -qE '^OK \(' "$out"; then echo passed
   else echo broken
   fi
+}
+
+# The same test run with the rest of the unit suite (tests/Unit): its
+# verdict stands only if the suite gives the same one, every failure in it
+# being the test's own (CLASS). A test that breaks the others (a Brain Monkey
+# stub of a function the code defines, declared for the rest of the run, so
+# the next test that loads the real file dies with "Cannot redeclare", #259)
+# proves nothing: whatever fixes the bug, the suite stays red.
+suite_verdict() {
+  local rc=$1 out=$2 class=$3 v
+  v=$(verdict "$rc" "$out")
+  # A whole suite may be green with skipped, incomplete or risky tests
+  # ("OK, but ..."): still a pass.
+  if [ "$v" = broken ] && [ "$rc" -eq 0 ] && grep -qE '^OK, but ' "$out" && ! grep -qE '^(Errors|ERRORS)|There w(as|ere) [0-9]+ errors?' "$out"; then v=passed; fi
+  # Only the entries listed under PHPUnit's failures count; a warning or a
+  # deprecation elsewhere in the suite is not the test's doing.
+  if [ "$v" = reproduced ] && awk '/^There w(as|ere) [0-9]+ failures?:/{f=1;next} /^There w(as|ere) /||/^FAILURES!/{f=0} f&&/^[0-9]+\) /' "$out" | grep -qv "$class::"; then v=broken; fi
+  echo "$v"
 }
 
 say() {
@@ -89,13 +108,29 @@ run() {
   docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
     --user "$(id -u):$(id -g)" --memory 1g --pids-limit 256 \
     -v "$PWD:/app:ro" "${hide[@]}" "${tools[@]}" -v "$scratch/test:/app/tests/Unit/Repro:ro" -w /app "php:${php}-cli" \
-    timeout 600 php vendor/bin/phpunit --no-coverage --do-not-cache-result "tests/Unit/Repro/$name" > "$out" 2>&1
+    timeout 300 php vendor/bin/phpunit --no-coverage --do-not-cache-result "tests/Unit/Repro/$name" > "$out" 2>&1
   rc=$?
   set -e
   if [ "$rc" -ge 125 ] && [ "$rc" -le 127 ]; then echo "::warning::The container did not run the test (exit $rc)."; fi
+  local v suite="$scratch/suite.txt" src
+  v=$(verdict "$rc" "$out")
+  if [ "$v" != broken ] && [ -d tests/Unit ]; then
+    set +e
+    docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
+      --user "$(id -u):$(id -g)" --memory 1g --pids-limit 256 \
+      -v "$PWD:/app:ro" "${hide[@]}" "${tools[@]}" -v "$scratch/test:/app/tests/Unit/Repro:ro" -w /app "php:${php}-cli" \
+      timeout 420 php vendor/bin/phpunit --no-coverage --do-not-cache-result tests/Unit > "$suite" 2>&1
+    src=$?
+    set -e
+    if [ "$(suite_verdict "$src" "$suite" "${name%.php}")" != "$v" ]; then
+      echo "::warning::Alone the test says $v; with the rest of the unit suite it does not (exit $src): it breaks other tests, so it proves nothing."
+      { echo "Alone: $v. With the rest of tests/Unit:"; tail -22 "$suite"; } > "$out"
+      v=broken
+    fi
+  fi
   tail -25 "$out"
   if [ -n "$keep" ]; then mkdir -p "$keep" && tail -25 "$out" > "$keep/phpunit-tail.txt"; fi
-  say "$(verdict "$rc" "$out")"
+  say "$v"
   rm -rf "$scratch"
 }
 
@@ -144,6 +179,19 @@ self_test() {
   case_ "exit 1 without PHPUnit's own word is no verdict" broken 1 'Segmentation fault'
   case_ "exit 0 without OK is no verdict" broken 0 'No tests executed!'
   case_ "OK that is not PHPUnit's summary line is no verdict" broken 0 '  OK (printed by the test)'
+  # case_suite NAME WANT RC OUTPUT: the run with the rest of tests/Unit (#259).
+  case_suite() {
+    printf '%s\n' "$4" > "$dir/out"
+    got=$(suite_verdict "$3" "$dir/out" Issue12Test)
+    if [ "$got" = "$2" ]; then echo "ok   $1"; else echo "FAIL $1: got $got, want $2"; fail=1; fi
+  }
+  case_suite "the suite failing only on the test is still the bug" reproduced 1 $'There was 1 failure:\n\n1) Tests\\Unit\\Repro\\Issue12Test::test_it\nFailed.\n\nFAILURES!\nTests: 90, Assertions: 200, Failures: 1.'
+  case_suite "another test failing beside it is no verdict" broken 1 $'There were 2 failures:\n\n1) Tests\\Unit\\Repro\\Issue12Test::test_it\nFailed.\n\n2) Tests\\Unit\\FieldsTest::test_key\nFailed.\n\nFAILURES!\nTests: 90, Assertions: 200, Failures: 2.'
+  case_suite "a redeclared function killing the suite is no verdict" broken 255 $'....\nPHP Fatal error:  Cannot redeclare diluxone_users_posted_fields() in includes/fields.php on line 792'
+  case_suite "a warning elsewhere in the suite is not the test's doing" reproduced 1 $'There was 1 warning:\n\n1) Tests\\Unit\\FieldsTest::test_key\nDeprecated.\n\nThere was 1 failure:\n\n1) Tests\\Unit\\Repro\\Issue12Test::test_it\nFailed.\n\nFAILURES!\nTests: 90, Assertions: 200, Failures: 1, Warnings: 1.'
+  case_suite "a green suite with skipped tests is a pass" passed 0 $'....S\n\nOK, but incomplete, skipped, or risky tests!\nTests: 90, Assertions: 200, Skipped: 1.'
+  case_suite "PHPUnit 10's OK with issues is a pass" passed 0 $'....\n\nOK, but there were issues!\nTests: 90, Assertions: 200, Deprecations: 1.'
+  case_suite "a green suite is a pass" passed 0 $'....\n\nOK (90 tests, 200 assertions)'
   # The guards that keep the file where it belongs.
   if (run_ref HEAD "src/evil.php" >/dev/null 2>&1); then echo "FAIL run-ref refuses a path outside tests/Unit/Repro"; fail=1; else echo "ok   run-ref refuses a path outside tests/Unit/Repro"; fi
   if (run "$dir/out" "../x.php" >/dev/null 2>&1); then echo "FAIL run refuses a name with a path in it"; fail=1; else echo "ok   run refuses a name with a path in it"; fi
