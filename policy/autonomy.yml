@@ -71,6 +71,15 @@ autopilot-mode:
 # person adds `security`.
 person-merges: [security]
 
+# A security patch on the version in production (#247, scripts/security-
+# patch.py, security-patch.yml) publishes on its own once this window is
+# over, unless a maintainer adds `patch:hold` to its issue in the private
+# repository. The maintainers are told when it starts. It is the one release
+# a person does not approve; the window is their chance to stop it, and it
+# runs in private, before the fix is public. Hours, at most 720.
+security-patch:
+  veto-hours: 6
+
 # A lane's issue is accepted by policy only when all of this holds, read from
 # GitHub, never from the issue's text alone:
 #   - the issue carries the lane's label (`lane:<name>`), and the last to add

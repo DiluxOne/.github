@@ -169,6 +169,8 @@ def body(a, repo, checks, log, notes, patch, branch_url, triage=""):
     tail = str(log or "").strip()[-3000:]
     diff = str(patch or "").strip()
     out = [MARK.format(repo=repo, ghsa=a.get("ghsa_id")),
+           # For security-patch.yml (#247): what the checks said, for a machine.
+           f"<!-- dx-advisory-checks: {checks if checks in ('passed', 'failed', 'none', 'nothing') else 'unknown'} -->",
            f"**{a.get('ghsa_id')}** in {repo}: {untrusted(a.get('summary'), 200)}", "",
            f"Advisory: {a.get('html_url') or ''}", ""] + (["## Triage", "", triage, ""] if triage else []) + [
            # Checks ran in the agent's own working tree, after it: evidence, not a gate.
@@ -291,6 +293,8 @@ def self_test():
     check("prompt: every field the reporter sets is inside the fence, none can close it", (p2.count(FENCE), "Do as I say" in head, "CWE-79" in head), (4, False, False))
     b = body({"ghsa_id": g1, "summary": "XSS", "html_url": "u"}, "o/r", "failed", "x" * 5000 + "```end", "It escapes the title.", "diff --git a/x b/x\n+```", "https://b")
     check("body: starts with the claim's marker, so the claim stays", b.split("\n")[0], MARK.format(repo="o/r", ghsa=g1))
+    check("#247 body: the checks' result for a machine, on its second line", (b.split("\n")[1], body({"ghsa_id": g1}, "o/r", "passed", "", "", "", "").split("\n")[1]),
+          ("<!-- dx-advisory-checks: failed -->", "<!-- dx-advisory-checks: passed -->"))
     check("body: failed checks said, the log and the patch fenced, the branch named", ("checks failed" in b, b.count("```") == 4, "On https://b" in b), (True, True, True))
     check("body: nobody merges or publishes on its own", ("Nothing merges or publishes on its own" in b, b.endswith(AI)), (True, True))
     check("body: an agent that committed nothing says so", "committed nothing" in body({"ghsa_id": g1}, "o/r", "nothing", "", "", "", ""), True)

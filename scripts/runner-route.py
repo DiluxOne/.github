@@ -71,6 +71,8 @@ GITHUB_ONLY = ("plugin-release-wp.yml", "svn-auth-check.yml", "issue-repro.yml",
                # An agent works on a stranger's report, and the job holds an
                # embargoed fix (#194): a fresh runner each time.
                "security-fix.yml",
+               # It holds an embargoed fix and pushes it out (#247): a fresh runner.
+               "security-patch.yml",
                # What it finds can be a vulnerability (#234): a fresh runner.
                "nightly-review.yml")
 

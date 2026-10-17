@@ -188,7 +188,7 @@ def merge(org, repo):
     return out
 
 
-TOP_KEYS = {"autopilot", "autopilot-rounds", "autopilot-runs", "autopilot-mode", "constitution", "person-merges", "lanes"}
+TOP_KEYS = {"autopilot", "autopilot-rounds", "autopilot-runs", "autopilot-mode", "constitution", "person-merges", "security-patch", "lanes"}
 MODES = ("guided", "full")
 LANE_KEYS = {"description", "accept", "type", "origin", "repositories", "evidence", "merge", "ceiling", "enabled"}
 
@@ -222,6 +222,10 @@ def problems(policy):
         out.append("person-merges: a list of labels")
     elif "security" not in held:
         out.append("person-merges: security is always there")
+    sp = policy.get("security-patch", {"veto-hours": 6})
+    hrs = sp.get("veto-hours") if isinstance(sp, dict) else None
+    if not isinstance(sp, dict) or set(sp) - {"veto-hours"} or isinstance(hrs, bool) or not isinstance(hrs, (int, float)) or not 0 < hrs <= 720:
+        out.append("security-patch: veto-hours, a number of hours above 0 and at most 720")
     lanes = policy.get("lanes")
     if not isinstance(lanes, dict) or not lanes:
         return out + ["lanes: at least one"]
@@ -950,6 +954,9 @@ def self_test():
     check("#188: a release never merges on its own, whatever a repository says", m["lanes"]["release"]["merge"]["max-risk"], "none")
     lane = lambda **k: {"lanes": {**org["lanes"], "human-issue": {**org["lanes"]["human-issue"], **k}}}
     check("#188 schema: a key the policy does not know", problems({**org, "owner": "me"}), ["owner: not a key of the policy"])
+    check("#247 schema: the veto window is hours, above 0, at most 720",
+          [problems({**org, "security-patch": v}) for v in ({"veto-hours": 2}, {"veto-hours": 0}, {"veto-hours": True}, {"veto-hours": 721}, {"hours": 6})],
+          [[]] + [["security-patch: veto-hours, a number of hours above 0 and at most 720"]] * 4)
     check("#188 schema: a lane's unknown key", problems({**org, **lane(budget=5)}), ["lanes.human-issue.budget: not a key of a lane"])
     check("#188 schema: an unknown level", problems({**org, **lane(merge={"max-risk": "huge", "max-complexity": "low"})}), ["lanes.human-issue.merge.max-risk: one of none, low, medium, high"])
     check("#188 schema: a ceiling below the default", problems({**org, **lane(ceiling={"max-risk": "low", "max-complexity": "high"})}), ["lanes.human-issue.ceiling.max-risk: low is below the lane's merge (medium)"])

@@ -1,0 +1,6 @@
+{
+  "name": "Security patches (private repository only)",
+  "description": "Publishes a recorded security fix as a patch on the version in production after a veto window. Only in a private repository.",
+  "iconName": "octicon shield",
+  "categories": ["Automation"]
+}

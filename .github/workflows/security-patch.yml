@@ -1,0 +1,330 @@
+name: Security patches
+
+# A security patch on the version in production, after a veto window
+# (#247). Reusable, and called ONLY from a private repository (DiluxOne's
+# is DiluxOne/security, workflow-templates/security-patch.yml), the one
+# security-fix.yml records its fixes in: until the window closes, the fix
+# exists nowhere public. It refuses to run anywhere else.
+#
+# It takes each claim issue of security-fix.yml ("Fix <GHSA> in
+# <repository>") whose fix's checks passed and whose advisory is a draft,
+# and moves it through the stages of scripts/security-patch.py, one label
+# each, all set by dilux-bot:
+#
+#   start    the fix (its branch fix/<ghsa> here) is applied on the version
+#            in production (scripts/production-version.py) with the patch's
+#            release prepared (scripts/security-patch-build.sh), and the
+#            repository's checks run on that tree in a job with no token. If
+#            they pass, the maintainers (the administrators of this
+#            repository) are told on the issue when it publishes, and the
+#            issue gets `patch:window`; if not, `patch:failed`.
+#   publish  once the window (policy/autonomy.yml `security-patch.veto-hours`,
+#            6) is over and nobody added `patch:hold`: the same tree, built
+#            again, is pushed to security/X.Y.Z in the public repository
+#            through the API (GitHub signs the commits; only dilux-bot may
+#            create those branches, ruleset `org: security branches`). That
+#            push is what releases it there (plugin-release-wp.yml, whose
+#            environment's reviewers, if any, still approve). `patch:pushed`.
+#   finish   once that release exists: the advisory is published, an issue
+#            in the public repository asks to carry the fix into its default
+#            branch, and the claim's issue closes. `patch:released`.
+#
+# `patch:hold` on the issue stops it at any stage, until a maintainer
+# removes it. DX_AUTOPILOT=off stops it all. Nothing here runs the public
+# repository's code with a token: the checks run in a job that has none,
+# and the push builds the tree with the organisation's scripts only.
+
+on:
+  workflow_call:
+    inputs:
+      central-ref:
+        description: The ref of DiluxOne/.github whose scripts run (the caller's major tag).
+        type: string
+        default: v5
+    secrets:
+      DILUX_BOT_PRIVATE_KEY:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Patches due
+    if: vars.DX_AUTOPILOT != 'off' && (github.event_name == 'schedule' || github.ref_name == github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      todo: ${{ steps.plan.outputs.todo }}
+    steps:
+      - name: Only from a private repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" != true ]; then
+            echo "::error::security-patch.yml runs only from a private repository: until a patch publishes, its fix is embargoed."; exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref }}
+          persist-credentials: false
+          path: .dx-central
+
+      - name: The claims and their stage
+        id: plan
+        env:
+          CLIENT_ID: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          GH_TOKEN=$(bash .dx-central/scripts/app-token.sh mint '{"repository_advisories":"read","issues":"read","contents":"read","metadata":"read"}')
+          export GH_TOKEN
+          unset PRIVATE_KEY
+          trap 'curl -fsS -o /dev/null -X DELETE -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/installation/token || true' EXIT
+          now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          todo='[]'
+          # Every open claim issue: its repository and advisory from its
+          # marker, its checks from the body's machine line.
+          while IFS=$'\t' read -r n first second labels; do
+            [[ "$first" =~ ^\<\!--\ dx-advisory-fix:\ ([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)\ (GHSA-[a-z0-9-]+)\ --\>$ ]] || continue
+            repo=${BASH_REMATCH[1]}; ghsa=${BASH_REMATCH[2]}
+            [ "$second" = "<!-- dx-advisory-checks: passed -->" ] || continue
+            state=$(gh api "repos/$repo/security-advisories/$ghsa" --jq .state 2>/dev/null || echo unreadable)
+            [ "$state" = draft ] || { echo "#$n: the advisory is $state, not a draft: not patched."; continue; }
+            mark=$(gh api "repos/$GITHUB_REPOSITORY/issues/$n/comments" --paginate --jq '.[] | select(.user.login == "dilux-bot[bot]") | .body' | grep -o '<!-- dx-security-patch: [^>]*-->' | tail -1 || true)
+            d=$(LABELS="$labels" MARKER="$mark" NOW="$now" python3 .dx-central/scripts/security-patch.py stage)
+            act=$(jq -r .act <<<"$d")
+            echo "#$n $repo $ghsa: $act ($(jq -r .why <<<"$d"))"
+            case "$act" in start|publish|finish)
+              version=$(sed -n 's/.*version=\([0-9.]*\).*/\1/p' <<<"$mark")
+              todo=$(jq -c --argjson n "$n" --arg repo "$repo" --arg ghsa "$ghsa" --arg act "$act" --arg version "$version" \
+                '. + [{issue: $n, repo: $repo, ghsa: $ghsa, act: $act, version: $version}]' <<<"$todo") ;;
+            esac
+          done < <(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 200 --json number,body,labels \
+                     --jq '.[] | [(.number|tostring), ((.body // "") | split("\n")[0]), ((.body // "") | split("\n")[1] // ""), ([.labels[].name] | join(","))] | @tsv')
+          echo "todo=$todo" >> "$GITHUB_OUTPUT"
+
+  # The tree, and the repository's checks on it, in a job with no token at
+  # all: the public repository's code runs here. Its patch comes from this
+  # repository's branch fix/<ghsa>, read by the plan's runner token.
+  build:
+    name: Build ${{ matrix.p.ghsa }}
+    needs: plan
+    if: needs.plan.outputs.todo != '' && needs.plan.outputs.todo != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        p: ${{ fromJSON(needs.plan.outputs.todo) }}
+    steps:
+      - name: The fix
+        if: matrix.p.act != 'finish'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GHSA: ${{ matrix.p.ghsa }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/out"
+          b="fix/$(tr '[:upper:]' '[:lower:]' <<<"$GHSA")"
+          gh api "repos/$GITHUB_REPOSITORY/contents/fixes/$GHSA/fix.patch?ref=$b" -H "Accept: application/vnd.github.raw" > "$RUNNER_TEMP/fix.patch"
+          gh api "repos/$GITHUB_REPOSITORY/contents/fixes/$GHSA/notes.md?ref=$b" -H "Accept: application/vnd.github.raw" > "$RUNNER_TEMP/notes.md" 2>/dev/null || : > "$RUNNER_TEMP/notes.md"
+          cp "$RUNNER_TEMP/fix.patch" "$RUNNER_TEMP/out/"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: matrix.p.act != 'finish'
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref }}
+          persist-credentials: false
+          path: .dx-central
+
+      - name: The tree on the version in production
+        id: tree
+        if: matrix.p.act != 'finish'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ matrix.p.repo }}
+          GHSA: ${{ matrix.p.ghsa }}
+          WANT: ${{ matrix.p.version }}
+        run: |
+          set -euo pipefail
+          git clone -q "https://github.com/$REPO" "$RUNNER_TEMP/repo"
+          cd "$RUNNER_TEMP/repo"
+          rel=$(ROOT=. VERSION=0.0.0 python3 "$GITHUB_WORKSPACE/.dx-central/scripts/security-patch.py" release)
+          prod=$(python3 "$GITHUB_WORKSPACE/.dx-central/scripts/production-version.py" --repo "$REPO" --kind "$(jq -r .kind <<<"$rel")" --slug "$(jq -r .slug <<<"$rel")" --json)
+          version=$(jq -r .patch <<<"$prod")
+          # The window was announced for one version; another one since (a
+          # release in between) starts over instead of publishing it.
+          if [ -n "$WANT" ] && [ "$WANT" != "$version" ]; then echo "::error::The window was for $WANT, but the patch is now $version: it starts over."; echo "moved=true" >> "$GITHUB_OUTPUT"; exit 1; fi
+          # The changelog line is ours, never the reporter's words: it is public.
+          bash "$GITHUB_WORKSPACE/.dx-central/scripts/security-patch-build.sh" "$(jq -r .tag <<<"$prod")" "$version" "$RUNNER_TEMP/fix.patch" "A security fix ($GHSA)."
+          { echo "version=$version"; echo "tag=$(jq -r .tag <<<"$prod")"; } >> "$GITHUB_OUTPUT"
+          { echo "version=$version"; echo "tag=$(jq -r .tag <<<"$prod")"; } > "$RUNNER_TEMP/out/build"
+
+      - name: The repository's checks on it
+        if: matrix.p.act == 'start' && steps.tree.outcome == 'success'
+        run: |
+          set -uo pipefail
+          cd "$RUNNER_TEMP/repo"
+          if [ -f Makefile ] && make -n pre-pr >/dev/null 2>&1; then
+            if make pre-pr > "$RUNNER_TEMP/out/checks.log" 2>&1; then r=passed; else r=failed; fi
+          else
+            r=none
+          fi
+          echo "checks=$r" >> "$RUNNER_TEMP/out/build"
+
+      - name: Keep the result
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: patch-${{ matrix.p.ghsa }}
+          path: ${{ runner.temp }}/out/
+          retention-days: 3
+
+  act:
+    name: ${{ matrix.p.act }} ${{ matrix.p.ghsa }}
+    needs: [plan, build]
+    if: always() && needs.plan.outputs.todo != '' && needs.plan.outputs.todo != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        p: ${{ fromJSON(needs.plan.outputs.todo) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref }}
+          persist-credentials: false
+          path: .dx-central
+
+      - name: The build
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: patch-${{ matrix.p.ghsa }}
+          path: ${{ runner.temp }}/in
+
+      - name: dilux-bot token (this repository)
+        id: here
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-issues: write
+
+      - name: Start the window
+        if: matrix.p.act == 'start'
+        env:
+          GH_TOKEN: ${{ steps.here.outputs.token }}
+          ISSUE: ${{ matrix.p.issue }}
+          REPO: ${{ matrix.p.repo }}
+        run: |
+          set -euo pipefail
+          for l in "patch:window|FBCA04|A security patch waits for its veto window" "patch:hold|B60205|A maintainer holds the security patch" "patch:failed|B60205|The security patch did not build or its checks failed" "patch:pushed|0E8A16|The security patch is pushed for release" "patch:released|0E8A16|The security patch is released"; do
+            IFS='|' read -r name color desc <<<"$l"; gh label create "$name" --repo "$GITHUB_REPOSITORY" --color "$color" --description "$desc" --force >/dev/null
+          done
+          sign="🤖 AI-generated · Claude Opus 5.5 (Anthropic), in a private repository"
+          version=$(sed -n 's/^version=//p' "$RUNNER_TEMP/in/build" 2>/dev/null | head -1)
+          tag=$(sed -n 's/^tag=//p' "$RUNNER_TEMP/in/build" 2>/dev/null | head -1)
+          checks=$(sed -n 's/^checks=//p' "$RUNNER_TEMP/in/build" 2>/dev/null | head -1)
+          if [ -z "$version" ] || [ "$checks" = failed ] || [ -z "$checks" ]; then
+            gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --add-label patch:failed >/dev/null
+            gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$(printf 'The security patch did not get ready: %s. Nothing is public; a maintainer takes it from here (the run: %s).\n\n%s' \
+              "$([ -z "$version" ] && echo "the fix does not apply on the version in production, or there is no version in production" || echo "the repository's checks failed on the patch")" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$sign")" >/dev/null
+            exit 0
+          fi
+          hours=$(python3 .dx-central/scripts/security-patch.py hours)
+          due=$(date -u -d "+$(python3 -c "print(int(float('$hours') * 60))") minutes" +%Y-%m-%dT%H:%M:%SZ)
+          mark=$(VERSION="$version" DUE="$due" python3 .dx-central/scripts/security-patch.py marker)
+          who=$(gh api "repos/$GITHUB_REPOSITORY/collaborators?permission=admin" --jq '[.[] | select(.type == "User") | "@" + .login] | join(" ")' || true)
+          # shellcheck disable=SC2016 # backticks in the Markdown of the comment, not commands.
+          gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$(printf '%s\n%s The security patch **%s** of %s is ready: the fix on top of %s, the version in production, and the repository'"'"'s checks passed on it (%s).\n\nIt publishes on its own at **%s** (UTC), %s hours from now: it is pushed to `security/%s`, released from there, and the advisory is published. To stop it, add the label `patch:hold` to this issue before then; removing it lets it go on.\n\n%s' \
+            "$mark" "$who" "$version" "$REPO" "$tag" "$checks" "$due" "$hours" "$version" "$sign")" >/dev/null
+          gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --add-label patch:window >/dev/null
+          echo "#$ISSUE: $version publishes at $due."
+
+      - name: Publish
+        if: matrix.p.act == 'publish'
+        env:
+          ISSUE_TOKEN: ${{ steps.here.outputs.token }}
+          ISSUE: ${{ matrix.p.issue }}
+          REPO: ${{ matrix.p.repo }}
+          GHSA: ${{ matrix.p.ghsa }}
+          CLIENT_ID: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          sign="🤖 AI-generated · Claude Opus 5.5 (Anthropic), in a private repository"
+          say() { GH_TOKEN="$ISSUE_TOKEN" gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$1"$'\n\n'"$sign" >/dev/null; }
+          version=$(sed -n 's/^version=//p' "$RUNNER_TEMP/in/build" 2>/dev/null | head -1)
+          tag=$(sed -n 's/^tag=//p' "$RUNNER_TEMP/in/build" 2>/dev/null | head -1)
+          if [ -z "$version" ] || [ ! -s "$RUNNER_TEMP/in/fix.patch" ]; then
+            GH_TOKEN="$ISSUE_TOKEN" gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label patch:window --add-label patch:failed >/dev/null
+            say "The window closed, but the patch could not be built again (the version in production moved, or the fix no longer applies). Nothing was published; a maintainer takes it from here."
+            exit 0
+          fi
+          # The tree again, here, with the organisation's scripts only: the
+          # public repository's code does not run in a job with a token.
+          git clone -q "https://github.com/$REPO" "$RUNNER_TEMP/repo"
+          cd "$RUNNER_TEMP/repo"
+          bash "$GITHUB_WORKSPACE/.dx-central/scripts/security-patch-build.sh" "$tag" "$version" "$RUNNER_TEMP/in/fix.patch" "A security fix ($GHSA)."
+          export REPOSITORIES="${REPO#*/}"
+          GH_TOKEN=$(bash "$GITHUB_WORKSPACE/.dx-central/scripts/app-token.sh" mint '{"contents":"write","metadata":"read"}')
+          export GH_TOKEN
+          unset PRIVATE_KEY
+          trap 'curl -fsS -o /dev/null -X DELETE -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/installation/token || true' EXIT
+          onto=$(gh api "repos/$REPO/git/ref/tags/$tag" --jq .object.sha)
+          GITHUB_REPOSITORY="$REPO" python3 "$GITHUB_WORKSPACE/.dx-central/scripts/api-commit.py" push "security/$version" --onto "$onto"
+          GH_TOKEN="$ISSUE_TOKEN" gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label patch:window --add-label patch:pushed >/dev/null
+          say "The window closed with no hold: the patch **$version** is pushed to $GITHUB_SERVER_URL/$REPO/tree/security/$version, and its release runs there. Once it is released, the advisory is published."
+          echo "Pushed security/$version to $REPO."
+
+      - name: Finish
+        if: matrix.p.act == 'finish'
+        env:
+          ISSUE_TOKEN: ${{ steps.here.outputs.token }}
+          ISSUE: ${{ matrix.p.issue }}
+          REPO: ${{ matrix.p.repo }}
+          GHSA: ${{ matrix.p.ghsa }}
+          VERSION: ${{ matrix.p.version }}
+          CLIENT_ID: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          sign="🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
+          # Released when its GitHub release exists (plugin-release-wp.yml
+          # makes the tag and the release together, after wordpress.org).
+          if ! GH_TOKEN="$ISSUE_TOKEN" gh api "repos/$REPO/releases/tags/$VERSION" --jq .tag_name >/dev/null 2>&1; then
+            echo "$VERSION is not released yet in $REPO: the next run looks again."; exit 0
+          fi
+          export REPOSITORIES="${REPO#*/}"
+          GH_TOKEN=$(bash .dx-central/scripts/app-token.sh mint '{"repository_advisories":"write","issues":"write","metadata":"read"}')
+          export GH_TOKEN
+          unset PRIVATE_KEY
+          trap 'curl -fsS -o /dev/null -X DELETE -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/installation/token || true' EXIT
+          # The advisory, with the patched version on every package it names.
+          gh api "repos/$REPO/security-advisories/$GHSA" > "$RUNNER_TEMP/adv.json"
+          jq --arg v "$VERSION" '{state: "published", vulnerabilities: [.vulnerabilities[] | {package, vulnerable_version_range, patched_versions: $v, vulnerable_functions}]}' "$RUNNER_TEMP/adv.json" > "$RUNNER_TEMP/publish.json"
+          published=false
+          if gh api -X PATCH "repos/$REPO/security-advisories/$GHSA" --input "$RUNNER_TEMP/publish.json" >/dev/null; then published=true; fi
+          # The fix into the default branch: an issue there, for the usual flow.
+          # shellcheck disable=SC2016 # backticks in the Markdown of the issue, not commands.
+          url=$(gh issue create --repo "$REPO" --title "Carry the security fix of $VERSION into the default branch" \
+            --body "$(printf 'The security patch %s was released from `security/%s`, on top of the version in production. Its fix is not on the default branch yet: carry the commits of that branch after the production tag, without the release commit, into the default branch.\n\n%s' "$VERSION" "$VERSION" "$sign")" || true)
+          GH_TOKEN="$ISSUE_TOKEN" gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label patch:pushed --add-label patch:released >/dev/null
+          GH_TOKEN="$ISSUE_TOKEN" gh issue close "$ISSUE" --repo "$GITHUB_REPOSITORY" --reason completed --comment "$(printf '%s is released. %s %s\n\n%s, in a private repository' "$VERSION" \
+            "$([ "$published" = true ] && echo "The advisory is published." || echo "**Publishing the advisory failed**: a maintainer publishes it by hand.")" \
+            "${url:+The fix goes into the default branch through $url.}" "$sign")" >/dev/null
+          echo "Finished $GHSA ($VERSION)."

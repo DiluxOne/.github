@@ -1,6 +1,6 @@
 {
   "name": "Security fixes (private repository only)",
-  "description": "Writes an accepted security advisory's fix in its temporary private fork. Only in a private repository.",
+  "description": "Triages a security advisory and writes its fix in this private repository. Only in a private repository.",
   "iconName": "octicon shield",
   "categories": ["Automation"]
 }
