@@ -61,6 +61,9 @@ verdict() {
 suite_verdict() {
   local rc=$1 out=$2 class=$3 v
   v=$(verdict "$rc" "$out")
+  # A whole suite may be green with skipped, incomplete or risky tests
+  # ("OK, but ..."): still a pass.
+  if [ "$v" = broken ] && [ "$rc" -eq 0 ] && grep -qE '^OK, but ' "$out" && ! grep -qE '^(Errors|ERRORS)|There w(as|ere) [0-9]+ errors?' "$out"; then v=passed; fi
   # Only the entries listed under PHPUnit's failures count; a warning or a
   # deprecation elsewhere in the suite is not the test's doing.
   if [ "$v" = reproduced ] && awk '/^There w(as|ere) [0-9]+ failures?:/{f=1;next} /^There w(as|ere) /||/^FAILURES!/{f=0} f&&/^[0-9]+\) /' "$out" | grep -qv "$class::"; then v=broken; fi
@@ -186,6 +189,8 @@ self_test() {
   case_suite "another test failing beside it is no verdict" broken 1 $'There were 2 failures:\n\n1) Tests\\Unit\\Repro\\Issue12Test::test_it\nFailed.\n\n2) Tests\\Unit\\FieldsTest::test_key\nFailed.\n\nFAILURES!\nTests: 90, Assertions: 200, Failures: 2.'
   case_suite "a redeclared function killing the suite is no verdict" broken 255 $'....\nPHP Fatal error:  Cannot redeclare diluxone_users_posted_fields() in includes/fields.php on line 792'
   case_suite "a warning elsewhere in the suite is not the test's doing" reproduced 1 $'There was 1 warning:\n\n1) Tests\\Unit\\FieldsTest::test_key\nDeprecated.\n\nThere was 1 failure:\n\n1) Tests\\Unit\\Repro\\Issue12Test::test_it\nFailed.\n\nFAILURES!\nTests: 90, Assertions: 200, Failures: 1, Warnings: 1.'
+  case_suite "a green suite with skipped tests is a pass" passed 0 $'....S\n\nOK, but incomplete, skipped, or risky tests!\nTests: 90, Assertions: 200, Skipped: 1.'
+  case_suite "PHPUnit 10's OK with issues is a pass" passed 0 $'....\n\nOK, but there were issues!\nTests: 90, Assertions: 200, Deprecations: 1.'
   case_suite "a green suite is a pass" passed 0 $'....\n\nOK (90 tests, 200 assertions)'
   # The guards that keep the file where it belongs.
   if (run_ref HEAD "src/evil.php" >/dev/null 2>&1); then echo "FAIL run-ref refuses a path outside tests/Unit/Repro"; fail=1; else echo "ok   run-ref refuses a path outside tests/Unit/Repro"; fi
