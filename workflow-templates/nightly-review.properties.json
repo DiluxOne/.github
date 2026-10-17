@@ -1,0 +1,6 @@
+{
+  "name": "Nightly review (private repository only)",
+  "description": "Reviews one repository's existing code each night and keeps one list of findings per repository. Only in a private repository.",
+  "iconName": "octicon eye",
+  "categories": ["Automation"]
+}
