@@ -104,10 +104,13 @@ def plan_kept(issues, removed, role_of):
     """(ok, why): whether the plan is still the planner's when the milestone
     is done (#247). Every issue on it closed as completed, each closed by the
     bot (a merged pull request it merged) or by someone with the admin or
-    maintain role; and no issue taken off it by anyone else. Otherwise a
+    maintain role (a pull request on it: merged); and no issue taken off it
+    by anyone else. Otherwise a
     person accepts the release. role_of(login) is the role now, or None."""
     def trusted(login):
         return login in BOTS or role_of(login) in PLANNERS
+    if not issues:
+        return False, "the milestone's issues could not be listed"
     for i in issues:
         if i.get("state_reason") != "completed":
             return False, f"#{i.get('number')} was closed as {i.get('state_reason') or 'not completed'}"
@@ -146,7 +149,7 @@ def open_due(full, now, io=None, mode="confirm"):
         # The milestone's issues, with who closed each (the issue's own
         # `closed_by`), and who took any issue off it.
         "issues": lambda m: lines("api", f"repos/{full}/issues?milestone={m['number']}&state=all&per_page=100", "--paginate", "--jq",
-                                  '.[] | select(.pull_request | not) | {number, state_reason, closed_by: (.closed_by.login // "")} | @json'),
+                                  '.[] | {number, state_reason: (if .pull_request then (if .pull_request.merged_at then "completed" else "not merged" end) else .state_reason end), closed_by: (.closed_by.login // "")} | @json'),
         "removed": lambda m: [e["actor"] for e in lines("api", f"repos/{full}/issues/events?per_page=100", "--paginate", "--jq",
                                                        f'.[] | select(.event == "demilestoned" and .milestone.title == {json.dumps(m["title"])}) | {{actor: (.actor.login // "")}} | @json')],
         "accept": lambda url: gh("issue", "edit", url, "--add-label", "accepted-by:policy"),
@@ -246,6 +249,8 @@ def self_test():
     check("#247 auto: an issue closed as not planned, or closed by a writer, waits for a person",
           [run("auto", "admin", issues=[{"number": 1, "state_reason": "not_planned", "closed_by": "boss"}])[0],
            run("auto", "admin", issues=[{"number": 1, "state_reason": "completed", "closed_by": "someone"}])[0]], [[False], [False]])
+    check("#247 auto: an empty list, or a pull request not merged, waits for a person",
+          [run("auto", "admin", issues=[])[0], run("auto", "admin", issues=[{"number": 2, "state_reason": "not merged", "closed_by": "boss"}])[0]], [[False], [False]])
     check("#247 auto: an issue a writer took off the milestone waits for a person", run("auto", "admin", removed=["someone"])[0], [False])
     check("#247 auto: closed by a maintainer and taken off by one is still the plan", run("auto", "admin", issues=[{"number": 1, "state_reason": "completed", "closed_by": "boss"}], removed=["boss"])[0], [True])
     check("#247 auto: a milestone a person closed early is never the plan", run("auto", "admin", ms={**d, "state": "closed", "closed_at": "2026-10-15T00:00:00Z", "open_issues": 2})[0], [False])
