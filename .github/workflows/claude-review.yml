@@ -412,13 +412,16 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s' "$OUT" > "$RUNNER_TEMP/review.json"
+          # A `central-ref` older than the verification has no script: no
+          # verification, and the verdict posts what the review found.
+          [ -f .dx-central/scripts/review-verify.py ] || { echo "No review-verify.py at this central-ref."; exit 0; }
           python3 .dx-central/scripts/review-verify.py prompt < "$RUNNER_TEMP/review.json" > "$RUNNER_TEMP/verify-prompt.md"
           if [ -s "$RUNNER_TEMP/verify-prompt.md" ]; then
             eof="DX_$(openssl rand -hex 16)"
             # The base branch put in with bash, not sed: its name may hold / or &.
             text=$(cat "$RUNNER_TEMP/verify-prompt.md")
             # shellcheck disable=SC2016 # the literal ${BASE} of the prompt, not a variable.
-            text=${text//'${BASE}'/$GITHUB_BASE_REF}
+            text=${text//'${BASE}'/"$GITHUB_BASE_REF"}
             { echo "prompt<<$eof"; printf '%s\n' "$text"; echo "$eof"; } >> "$GITHUB_OUTPUT"
           fi
 
@@ -636,7 +639,12 @@ jobs:
           # The confirmed new blockers and majors, inline on their line (or
           # on their file when the line is outside the diff), each a thread
           # to resolve before merging (#234).
-          printf '%s' "$OUT" | python3 .dx-central/scripts/review-verify.py inline | while IFS= read -r f; do
+          # Without the script (an older central-ref), the same choice in jq.
+          if [ -f .dx-central/scripts/review-verify.py ]; then
+            printf '%s' "$OUT" | python3 .dx-central/scripts/review-verify.py inline
+          else
+            jq -c '.findings[] | select((.severity == "blocker" or .severity == "major") and (.pre_existing | not) and (.earlier | not))' <<<"$OUT"
+          fi | while IFS= read -r f; do
             path=$(jq -r .file <<<"$f"); line=$(jq -r '.line // empty' <<<"$f")
             text=$(jq -r '"**\(.severity)**: \(.title)\n\n\(.detail // "")"' <<<"$f")
             text=$(printf '%s\n\n<sub>🤖 AI review · %s (Anthropic)</sub>' "$text" "$MODEL")
