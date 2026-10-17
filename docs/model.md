@@ -37,7 +37,7 @@ Five types are enough; everything else (refactor, docs, performance, hotfix, mig
 5. **Merge.** Up to medium risk it merges on its own, into Unreleased (or into production, for a continuous kind).
 6. **Publish.** A maintainer decides when, by accepting a release issue.
 
-The agent stops and asks a person when the fix contradicts documented behaviour, when it must choose between two reasonable behaviours, when the test does not pass in three rounds, or when it touches the risk list. Asking is a comment with options, not a new issue.
+The agent stops and asks a person when the fix contradicts documented behaviour, when the test does not pass in three rounds, or when it touches the risk list. When it must choose between two reasonable behaviours, the organisation's `autopilot-mode` decides (policy/autonomy.yml, and a repository's own file up to its ceiling): `guided`, the default, asks a maintainer, with the options and its recommendation, and goes on with their answer, written in their own words; `full` picks one, logs it on the pull request, and stops only when it is stuck. Asking is a comment with options, not a new issue.
 
 ## Product requests: minor or feature
 

@@ -51,6 +51,16 @@ constitution:
   # Who the organisation and its App are (#191).
   - "org.yml"
 
+# How the autopilot settles a choice the PRD and the Spec leave open, when
+# there is more than one reasonable way (#247): `guided` stops and asks a
+# maintainer, with the options and its recommendation, and goes on with
+# their answer, written as they like; `full` picks one, logs it on the pull
+# request and stops only when it is stuck. A repository's own file may
+# choose either, up to `ceiling`.
+autopilot-mode:
+  default: guided
+  ceiling: full
+
 # An issue carrying one of these labels is always merged by a person,
 # whatever its lane says (gate G7). `security` is always here (#194): in a
 # private repository a vulnerability is reported as an issue with that label
