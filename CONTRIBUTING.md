@@ -82,6 +82,8 @@ Every pull request runs the conventions check (branch name, PR title, every comm
 
 Pull requests from branches of the repository (not drafts, not forks) are reviewed by Claude, which comments inline on blockers and majors, lists minor findings in its summary and labels the risk and complexity. Its comment opens with the count of what is left to fix, or says nothing needs fixing; a finding about code the pull request did not introduce is marked pre-existing, never inline and never blocking.
 
+- To dismiss a blocker or major instead of fixing it, reply on its thread starting with `wrong:`, `intentional:` or `does not matter:` and why, then resolve it. The weekly digest counts what became of every finding, and that word is how a dismissed one counts for what it was (`scripts/review-outcomes.py`).
+
 - The first review reads the whole change; later ones read only what you pushed since, so keep pushes meaningful. Editing the title or description does not trigger a new review; an edited description counts as unchecked (no auto-merge) until the next push or the `review:full` label.
 - The review decides the type of the change from the diff and sets it as a `type:*` label; it corrects the title's type to match (the version number is computed from these labels). If it is wrong, set a different `type:*` label yourself: the bot keeps a label a person set.
 - Every change is reviewed by the same model; the risk decides the effort: low for docs, tests and lockfiles, medium for ordinary code, high for high-risk changes.

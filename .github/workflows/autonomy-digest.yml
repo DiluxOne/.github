@@ -24,6 +24,12 @@ name: Decided by policy
 # closes as completed when it proposes nothing; with a proposal, it stays
 # open with `needs:maintainer` until a person decides it. The closed issues
 # are the record of every week.
+#
+# And what became of the review's blockers and majors over the same four
+# weeks (#234, scripts/review-outcomes.py): each inline thread fixed, wrong,
+# intentional, does not matter, dismissed or open, per kind and per
+# repository (private ones counted, never named), and the noise: the share
+# that changed nothing.
 
 on:
   schedule:
@@ -68,9 +74,11 @@ jobs:
           since=$(date -u -d '7 days ago' +%Y-%m-%d)
           body=$(SINCE="$since" bash scripts/policy-digest.sh)
           person=$(python3 scripts/needed-a-person.py)
+          # What became of the review's findings (#234): its noise.
+          outcomes=$(python3 scripts/review-outcomes.py)
           # A proposal is a decision for a person; a week without one needs
           # no one (needed-a-person.py counts them in a dx-proposals comment).
           needs=0
           if grep -qE '<!-- dx-proposals: [1-9][0-9]* -->' <<<"$person"; then needs=1; fi
-          printf 'Week since %s:\n\n%s\n\n%s\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)\n' "$since" "$body" "$person" |
+          printf 'Week since %s:\n\n%s\n\n%s\n\n%s\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)\n' "$since" "$body" "$person" "$outcomes" |
             NEEDS=$needs bash scripts/run-issue.sh open autonomy-digest "Decided by policy, week since $since"
