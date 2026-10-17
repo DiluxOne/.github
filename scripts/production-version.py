@@ -155,8 +155,7 @@ def self_test():
         except ValueError:
             check(f"pack_stable: {bad!r} fails, never skips the check", True, True)
     real = pack_stable("wordpress-plugin")
-    if True:
-        check("the WordPress pack checks against wordpress.org's version", ("api.wordpress.org" in real["url"], "{slug}" in real["url"], real["field"]), (True, True, "version"))
+    check("the WordPress pack checks against wordpress.org's version", ("api.wordpress.org" in real["url"], "{slug}" in real["url"], real["field"]), (True, True, "version"))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 

@@ -103,7 +103,8 @@ settings:
 #   stable        where the version in production is published, to check the
 #                 last GitHub release against (scripts/production-version.py,
 #                 #247): `url` ({slug} the caller's input) returns JSON whose
-#                 `field` is that version; a 404 means nothing is published
+#                 `field` is that version; a 404, an error answer or no such
+#                 field means nothing is published there
 release:
   publishes-to: wordpress.org
   workflow: plugin-release-wp.yml
