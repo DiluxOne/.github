@@ -132,7 +132,8 @@ def run_case(case, central, work):
     repo_dir = os.path.join(work, case["repo"].replace("/", "_"))
     git = lambda *a: subprocess.run(["git", "-C", repo_dir, *a], capture_output=True, text=True)
     if not os.path.isdir(repo_dir):
-        subprocess.run(["git", "clone", "-q", f"https://github.com/{case['repo']}", repo_dir], check=True)
+        if subprocess.run(["git", "clone", "-q", f"https://github.com/{case['repo']}", repo_dir]).returncode != 0:
+            return None
     git("fetch", "-q", "origin", f"refs/pull/{case['pr']}/head", case["base"])
     if git("cat-file", "-e", case["head"] + "^{commit}").returncode != 0:
         git("fetch", "-q", "origin", case["head"])
@@ -141,8 +142,12 @@ def run_case(case, central, work):
     state = os.path.join(repo_dir, ".git", "dx-review", "last.json")
     if os.path.exists(state):
         os.remove(state)
-    subprocess.run(["bash", os.path.join(central, "scripts", "local-review.sh"), "--base", case["base"], "--full", "--title", case["title"]],
-                   cwd=repo_dir, capture_output=True, text=True)
+    try:
+        # One case never holds the run: 15 minutes, then it is unreviewed.
+        subprocess.run(["bash", os.path.join(central, "scripts", "local-review.sh"), "--base", case["base"], "--full", "--title", case["title"]],
+                       cwd=repo_dir, capture_output=True, text=True, timeout=900)
+    except subprocess.TimeoutExpired:
+        return None
     try:
         with open(state, encoding="utf-8") as fh:
             return verdict(case, json.load(fh))
@@ -250,10 +255,13 @@ def main(argv):
         try:
             with open(BASELINE, encoding="utf-8") as fh:
                 base = json.load(fh)
-        except OSError:
-            base = {}
+        except (OSError, ValueError):
+            # No baseline is no gate: that fails, it never passes quietly.
+            print(table(results, now, {}))
+            print(f"\n**No baseline** at {BASELINE}: write one with `review-eval.py baseline`.")
+            return 1
         print(table(results, now, base))
-        why = worse(now, base) if base else ""
+        why = worse(now, base)
         if why:
             print(f"\n**Worse than the baseline:** {why}.")
         return 1 if why else 0
