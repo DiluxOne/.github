@@ -215,8 +215,11 @@ def second_prompt(candidates):
 def keep_safe(candidates, verdicts):
     """The candidates a second agent called safe to publish; no answer, or a
     malformed one, keeps none."""
-    ok = {v["i"] for v in (verdicts or {}).get("verdicts") or [] if isinstance(v, dict) and isinstance(v.get("i"), int) and v.get("safe") is True}
-    return [c for i, c in enumerate(candidates) if i in ok]
+    vs = [v for v in (verdicts or {}).get("verdicts") or [] if isinstance(v, dict) and isinstance(v.get("i"), int)]
+    ok = {v["i"] for v in vs if v.get("safe") is True}
+    no = {v["i"] for v in vs if v.get("safe") is not True}
+    # Any verdict that is not a clear "safe" vetoes it.
+    return [c for i, c in enumerate(candidates) if i in ok and i not in no]
 
 
 def self_test():
@@ -282,6 +285,7 @@ def self_test():
     check("keep_safe: only what the second agent called safe; no answer keeps none",
           ([c["where"] for c in keep_safe(cands, {"verdicts": [{"i": 0, "safe": True}, {"i": 1, "safe": False}]})], keep_safe(cands, None), keep_safe(cands, {"verdicts": [{"i": 0, "safe": "yes"}]})),
           (["a.php:3"], [], []))
+    check("keep_safe: a second verdict that is not safe vetoes it", keep_safe(cands, {"verdicts": [{"i": 0, "safe": True}, {"i": 0, "safe": False}]}), [])
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
