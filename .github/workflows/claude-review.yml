@@ -416,8 +416,9 @@ jobs:
           if [ -s "$RUNNER_TEMP/verify-prompt.md" ]; then
             eof="DX_$(openssl rand -hex 16)"
             # The base branch put in with bash, not sed: its name may hold / or &.
+            text=$(cat "$RUNNER_TEMP/verify-prompt.md")
             # shellcheck disable=SC2016 # the literal ${BASE} of the prompt, not a variable.
-            text=$(cat "$RUNNER_TEMP/verify-prompt.md"); text=${text//'${BASE}'/$GITHUB_BASE_REF}
+            text=${text//'${BASE}'/$GITHUB_BASE_REF}
             { echo "prompt<<$eof"; printf '%s\n' "$text"; echo "$eof"; } >> "$GITHUB_OUTPUT"
           fi
 
