@@ -10,8 +10,8 @@
 # (none of the runner's variables, its tokens among them), the checkout in
 # the current directory mounted read-only, the test mounted read-only as
 # tests/Unit/Repro/<name> (the one file in that folder), nothing writable
-# but a scratch /tmp, no capabilities, 1 GB and 256 processes at most, ten
-# minutes. The checkout's vendor/ must be installed already (by the caller,
+# but a scratch /tmp, no capabilities, 1 GB and 256 processes at most, five
+# minutes alone and seven with the rest of tests/Unit (the run job has 15). The checkout's vendor/ must be installed already (by the caller,
 # with the repository's own Composer scripts, before the test is anywhere
 # near). It refuses to run on a self-hosted runner: such code runs on
 # GitHub's fresh runners only (autopilot.yml sends a reproduced bug's work
@@ -61,7 +61,9 @@ verdict() {
 suite_verdict() {
   local rc=$1 out=$2 class=$3 v
   v=$(verdict "$rc" "$out")
-  if [ "$v" = reproduced ] && grep -E '^[0-9]+\) ' "$out" | grep -qv "$class::"; then v=broken; fi
+  # Only the entries listed under PHPUnit's failures count; a warning or a
+  # deprecation elsewhere in the suite is not the test's doing.
+  if [ "$v" = reproduced ] && awk '/^There w(as|ere) [0-9]+ failures?:/{f=1;next} /^There w(as|ere) /||/^FAILURES!/{f=0} f&&/^[0-9]+\) /' "$out" | grep -qv "$class::"; then v=broken; fi
   echo "$v"
 }
 
@@ -103,7 +105,7 @@ run() {
   docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
     --user "$(id -u):$(id -g)" --memory 1g --pids-limit 256 \
     -v "$PWD:/app:ro" "${hide[@]}" "${tools[@]}" -v "$scratch/test:/app/tests/Unit/Repro:ro" -w /app "php:${php}-cli" \
-    timeout 600 php vendor/bin/phpunit --no-coverage --do-not-cache-result "tests/Unit/Repro/$name" > "$out" 2>&1
+    timeout 300 php vendor/bin/phpunit --no-coverage --do-not-cache-result "tests/Unit/Repro/$name" > "$out" 2>&1
   rc=$?
   set -e
   if [ "$rc" -ge 125 ] && [ "$rc" -le 127 ]; then echo "::warning::The container did not run the test (exit $rc)."; fi
@@ -114,7 +116,7 @@ run() {
     docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
       --user "$(id -u):$(id -g)" --memory 1g --pids-limit 256 \
       -v "$PWD:/app:ro" "${hide[@]}" "${tools[@]}" -v "$scratch/test:/app/tests/Unit/Repro:ro" -w /app "php:${php}-cli" \
-      timeout 600 php vendor/bin/phpunit --no-coverage --do-not-cache-result tests/Unit > "$suite" 2>&1
+      timeout 420 php vendor/bin/phpunit --no-coverage --do-not-cache-result tests/Unit > "$suite" 2>&1
     src=$?
     set -e
     if [ "$(suite_verdict "$src" "$suite" "${name%.php}")" != "$v" ]; then
@@ -183,6 +185,7 @@ self_test() {
   case_suite "the suite failing only on the test is still the bug" reproduced 1 $'There was 1 failure:\n\n1) Tests\\Unit\\Repro\\Issue12Test::test_it\nFailed.\n\nFAILURES!\nTests: 90, Assertions: 200, Failures: 1.'
   case_suite "another test failing beside it is no verdict" broken 1 $'There were 2 failures:\n\n1) Tests\\Unit\\Repro\\Issue12Test::test_it\nFailed.\n\n2) Tests\\Unit\\FieldsTest::test_key\nFailed.\n\nFAILURES!\nTests: 90, Assertions: 200, Failures: 2.'
   case_suite "a redeclared function killing the suite is no verdict" broken 255 $'....\nPHP Fatal error:  Cannot redeclare diluxone_users_posted_fields() in includes/fields.php on line 792'
+  case_suite "a warning elsewhere in the suite is not the test's doing" reproduced 1 $'There was 1 warning:\n\n1) Tests\\Unit\\FieldsTest::test_key\nDeprecated.\n\nThere was 1 failure:\n\n1) Tests\\Unit\\Repro\\Issue12Test::test_it\nFailed.\n\nFAILURES!\nTests: 90, Assertions: 200, Failures: 1, Warnings: 1.'
   case_suite "a green suite is a pass" passed 0 $'....\n\nOK (90 tests, 200 assertions)'
   # The guards that keep the file where it belongs.
   if (run_ref HEAD "src/evil.php" >/dev/null 2>&1); then echo "FAIL run-ref refuses a path outside tests/Unit/Repro"; fail=1; else echo "ok   run-ref refuses a path outside tests/Unit/Repro"; fi
