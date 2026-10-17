@@ -144,7 +144,9 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    person accepts it; that opens the
    release pull request (the `Unreleased.` hold removed, the version
    markers set: the command the kind names), which goes through steps 1 to
-   3 and closes the issue. When it merges, the release workflow publishes
+   3 and closes the issue. It merges on its own when proved (#247): its
+   issue is accepted, it is dilux-bot's single commit, and its tree is
+   exactly what that command makes of its base; otherwise a person merges it. When it merges, the release workflow publishes
    only if that issue was accepted last by a person, not a bot, with the
    admin or maintain role on the repository (triage or write is not
    enough), and its title still names the version the labels give
