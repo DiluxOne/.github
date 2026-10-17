@@ -103,7 +103,9 @@ jobs:
             act=$(jq -r .act <<<"$d")
             echo "#$n $repo $ghsa: $act ($(jq -r .why <<<"$d"))"
             case "$act" in start|publish|finish)
-              version=$(sed -n 's/.*version=\([0-9.]*\).*/\1/p' <<<"$mark")
+              # The window's version, for publish and finish only: a start
+              # (again, after the version in production moved) builds anew.
+              version=""; [ "$act" = start ] || version=$(sed -n 's/.*version=\([0-9.]*\).*/\1/p' <<<"$mark")
               todo=$(jq -c --argjson n "$n" --arg repo "$repo" --arg ghsa "$ghsa" --arg act "$act" --arg version "$version" \
                 '. + [{issue: $n, repo: $repo, ghsa: $ghsa, act: $act, version: $version}]' <<<"$todo") ;;
             esac
