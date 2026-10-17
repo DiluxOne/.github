@@ -891,6 +891,19 @@ A class on html.
     check("C2: a mention in the commit's body does not tick", tick(body, "C2", ["feat: toggle (C1)\n\nC2 is next"]), None)
     check("C2: an id not on the checklist ticks nothing", tick(body, "C9", ["feat: x (C9)"]), None)
     check("C2: C1 does not tick C10", tick(body.replace("**C2**", "**C10**"), "C1", ["feat: x (C10)"]), None)
+    calls = []
+    def fake(*args):
+        calls.append(args)
+        if args[1].endswith("/pulls/7"):
+            return '{"sha": "h1", "ref": "fix/7-x"}'
+        if args[1].endswith("/git/commits/h1"):
+            return "t1\n"
+        if "POST" in args:
+            return "c2\n"
+        return ""
+    check("#269 the ready push is an empty commit on the head, moving the branch",
+          (review_push("o/r", 7, fake), "tree=t1" in calls[2], "parents[]=h1" in calls[2], f"message={READY_COMMIT}" in calls[2], calls[3][3].endswith("refs/heads/fix/7-x"), "sha=c2" in calls[3]),
+          ("c2", True, True, True, True, True))
     check("C3: ready when the draft was marked ready", end_verdict("start", "5", False, False, 2, 2, False, 1, 5), "ready")
     check("#247: a run that asked ends as asked, not silent", end_verdict("start", "5", True, False, 1, 2, False, 1, 5, asked=True), "asked")
     q = {"body": ASK + " Which one?", "author": {"login": "dilux-bot"}, "createdAt": "2026-10-17T10:00:00Z"}
@@ -1185,6 +1198,25 @@ def repro_needed(body, labels, seal):
     return "", ev["test"]
 
 
+READY_COMMIT = "chore: ready for review"
+
+
+def review_push(repo, pr, call=None):
+    """One empty commit on the branch once it is ready, made through the API
+    so GitHub signs it (#269). The organisation's required workflow, which
+    runs the review, runs on a push to a pull request, not on it being
+    marked ready or edited, and it skips a draft: without a push after the
+    draft, the review never runs. Same tree as the head, so every test and
+    the reproduction's proof still hold."""
+    call = call or gh
+    head = json.loads(call("api", f"repos/{repo}/pulls/{pr}", "--jq", "{sha: .head.sha, ref: .head.ref}"))
+    tree = call("api", f"repos/{repo}/git/commits/{head['sha']}", "--jq", ".tree.sha").strip()
+    sha = call("api", "-X", "POST", f"repos/{repo}/git/commits", "-f", f"message={READY_COMMIT}", "-f", f"tree={tree}",
+               "-f", f"parents[]={head['sha']}", "--jq", ".sha").strip()
+    call("api", "-X", "PATCH", f"repos/{repo}/git/refs/heads/{head['ref']}", "-f", f"sha={sha}")
+    return sha
+
+
 def proof_head(local, pushed):
     """Why finish ready cannot prove the test at the pull request's head
     yet; "" when it can: the local HEAD is the head GitHub has. Pure."""
@@ -1311,6 +1343,14 @@ def main(argv):
                 text = text.rstrip() + f"\n\nThe reproduction test `{test}` passes at {pushed[:12]}, the pull request's head, in the sandbox (a clean copy of that commit; no network, no secrets), where it failed on the default branch.\n"
             set_body(repo, pr, set_tested(body, text))
             gh("pr", "ready", str(pr), "--repo", repo)
+            try:
+                review_push(repo, pr)
+            except (RuntimeError, OSError, ValueError, KeyError) as exc:
+                # Ready without that push is never reviewed: back to a draft,
+                # so finishing again (or a continue run) redoes both.
+                gh("pr", "ready", str(pr), "--repo", repo, "--undo")
+                print(f"Not ready: the push that starts the review failed ({str(exc)[:200]}); #{pr} is a draft again. Run finish ready again.")
+                return 1
             print(f"#{pr} is ready for review.")
             refresh_board(repo, number)
             return 0
