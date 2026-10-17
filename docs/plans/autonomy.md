@@ -142,7 +142,7 @@ For the team of the central repository (`.github`). Each phase is a sub-issue of
 
 - **Today:** `SECURITY.md` exists, and the triage locks the issue and sends it to private reporting.
 - **Redesigned (2026-10-16):** GitHub does not run Actions in an advisory's temporary private fork, merges that fork's pull request only from the advisory's page, and has no private reporting in private repositories. So a security fix never merges on its own, and there are two paths:
-  - **Public repositories:** private reporting opens the advisory; a maintainer moving it to draft accepts it. The engine creates the temporary private fork, an agent writes the fix and its test there, the tests run in a job of this repository, and the pull request waits in the fork. A maintainer merges it and publishes the advisory from its page.
+  - **Public repositories:** private reporting opens the advisory; a maintainer accepts it by starting its temporary private fork on the advisory's page (an App needs the Administration permission to create one, which ours does not hold, by choice). An agent writes the fix and its test there, the tests run in a job of this repository, and the pull request waits in the fork. A maintainer merges it and publishes the advisory from its page.
   - **Private repositories:** the report is an issue labelled `security` (the triage keeps it, unlocked, as a Bug), worked through the usual lane; `person-merges` in the policy leaves its merge to a person.
 - **Done when:** a test advisory goes from report to a fix waiting in its fork, and a test issue labelled `security` in a private repository reaches a pull request that does not merge on its own.
 
