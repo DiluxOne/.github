@@ -92,6 +92,24 @@ def key(f):
     return (re.sub(r":\d+$", "", f.get("file") or ""), re.sub(r"\W+", " ", (f.get("title") or "").lower()).strip()[:60])
 
 
+SIMILAR = 0.5
+STOP = {"the", "a", "an", "is", "are", "of", "on", "in", "to", "and", "or", "it", "its", "again", "be", "can", "not", "no", "with", "for", "when"}
+
+
+def words(title):
+    return {w for w in title.split() if w not in STOP}
+
+
+def same(a, b):
+    """Two keys are one problem: the same file, and titles sharing most of
+    their words, so the agent's rewording of a night (word order, a word
+    more) does not make it a new one."""
+    if a[0] != b[0]:
+        return False
+    wa, wb = words(a[1]), words(b[1])
+    return a[1] == b[1] or (bool(wa | wb) and len(wa & wb) / len(wa | wb) >= SIMILAR)
+
+
 def merge(previous, findings, date):
     """The list: what was open stays (a finding seen again keeps its date),
     new ones join, and ticked or struck-out ones are never listed again."""
@@ -101,7 +119,7 @@ def merge(previous, findings, date):
         if not isinstance(f, dict) or f.get("severity") not in SEVERITY or not f.get("file") or not f.get("title"):
             continue
         k = key(f)
-        if k in gone or k in items:
+        if any(same(k, g) for g in gone) or any(same(k, i) for i in items):
             continue
         items[k] = {"state": "open", "severity": f["severity"], "file": f"{f['file']}{':' + str(f['line']) if isinstance(f.get('line'), int) else ''}"
                     if ":" not in f["file"] else f["file"], "title": str(f["title"]).replace("\n", " ")[:300], "since": date}
@@ -153,6 +171,11 @@ def self_test():
     check("round trip: a closed one never returns, an open one seen again at another line keeps its date",
           [(i["file"], i["since"]) for i in again], [("d.php:7", "2026-10-17"), ("a.php:3", "2026-10-01")])
     check("round trip: the closed keys stay in the body", ("b.php", "old one") in closed2, True)
+    reworded, _ = merge(parse(out), [{"severity": "major", "file": "a.php", "line": 9, "title": "The title is unescaped"},
+                                     {"severity": "minor", "file": "b.php", "title": "The old one, again"},
+                                     {"severity": "major", "file": "b.php", "title": "Missing nonce on save"}], "2026-10-19")
+    check("reworded: a closed or open finding said another way is the same one; a different one in the same file is new",
+          sorted(i["title"] for i in reworded), ["Missing nonce on save", "SQL injection", "Unescaped title"])
     check("body: nothing open says so", "_Nothing open._" in body("o/r", [], "d"), True)
     many, _ = merge([], [{"severity": "minor", "file": f"f{i}.php", "title": f"t{i}"} for i in range(MAX_ITEMS + 5)], "d")
     check("merge: the list is capped", len(many), MAX_ITEMS)
