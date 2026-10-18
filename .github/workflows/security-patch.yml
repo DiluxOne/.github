@@ -612,7 +612,12 @@ jobs:
           # shellcheck disable=SC2016 # backticks in the Markdown of the issue, not commands.
           body=$(printf '<!-- dx-lane: security-carry version: %s ghsa: %s -->\nThe security patch %s was released from `security/%s`, on top of the version in production, and its advisory is published. Its fix is not on `%s` yet: until it is, no release goes out from `%s`, or the vulnerability would come back.\n\nThe pull request that closes this issue carries that fix, its commits cherry-picked as they were released; it merges on its own only while they are exactly that fix (the `security-carry` lane of the organisation'"'"'s autonomy policy).\n\n%s' \
             "$VERSION" "$GHSA" "$VERSION" "$VERSION" "$default" "$default" "$sign")
-          if [ -z "$num" ] && num=$(GH_TOKEN="$BOT_TOKEN" gh api -X POST "repos/$REPO/issues" -f title="Carry the security fix of $VERSION into $default" -f body="$body" -f type=Bug -f 'labels[]=lane:security-carry' --jq .number); then
+          if [ -z "$num" ]; then
+            num=$(GH_TOKEN="$BOT_TOKEN" gh api -X POST "repos/$REPO/issues" -f title="Carry the security fix of $VERSION into $default" -f body="$body" -f type=Bug -f 'labels[]=lane:security-carry' --jq .number) || num=""
+          fi
+          # The pull request, unless one closes the issue already (a run that
+          # died between the two opens it now).
+          if [ -n "$num" ] && [ -z "$pr_url" ]; then
             url="$GITHUB_SERVER_URL/$REPO/issues/$num"
             git clone -q "https://github.com/$REPO" "$RUNNER_TEMP/carry"
             branch="fix/$num-carry-security-fix-of-${VERSION//./-}"
@@ -625,7 +630,7 @@ jobs:
               # shellcheck disable=SC2016 # backticks in the Markdown of the pull request, not commands.
               pr_body=$(printf '## What changes\n\nThe fix of the security patch %s, cherry-picked onto `%s` as it was released from `security/%s`.\n\n## Why\n\nThe patch was released on top of the version in production; until its fix is on `%s`, no release goes out from it, or the vulnerability would come back.\n\nCloses #%s\n\n%s' \
                 "$VERSION" "$default" "$VERSION" "$default" "$num" "$sign")
-              if (cd "$RUNNER_TEMP/carry" && GH_TOKEN="$BOT_TOKEN" GITHUB_REPOSITORY="$REPO" python3 "$GITHUB_WORKSPACE/.dx-central/scripts/api-commit.py" push "$branch" --onto "$onto") \
+              if (cd "$RUNNER_TEMP/carry" && GH_TOKEN="$BOT_TOKEN" GITHUB_REPOSITORY="$REPO" python3 "$GITHUB_WORKSPACE/.dx-central/scripts/api-commit.py" push "$branch" --onto "$onto" --force) \
                 && pr_url=$(GH_TOKEN="$BOT_TOKEN" gh pr create --repo "$REPO" --base "$default" --head "$branch" --title "fix(security): carry the security fix of $VERSION into $default" --body "$pr_body"); then
                 echo "Carry: $pr_url"
               else

@@ -211,6 +211,14 @@ def self_test():
         try:
             check("cli: missing says which and exits 1", main(["check", "main"]), 1)
             check("cli: a branch it cannot read exits 2", main(["check", "no-such-branch"]), 2)
+            g("tag", "v9.9.9", "1.1.1")
+            g("tag", "-d", "1.1.1")
+            import contextlib
+            import io
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = main(["fix", "9.9.9"])
+            check("cli: fix finds a v-prefixed tag by its version", (rc, buf.getvalue().strip() != ""), (0, True))
         finally:
             os.chdir(cwd)
             if kept is None:
