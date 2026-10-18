@@ -209,7 +209,10 @@ def answer(text, comments, roles, labels):
     if set(labels or ()) & set(DONE_LABELS):
         return "", "its patch was already pushed or released"
     at = ATTEMPT_RE.match(lines[2]) if len(lines) > 2 else None
-    since = at.group(1) if at else ""
+    if not at:
+        # Recorded before #313: what was said on it was never an answer.
+        return "", "its attempt was recorded without its start"
+    since = at.group(1)
     people = []
     for c in comments or []:
         user = c.get("user") or {}
@@ -337,7 +340,8 @@ def claim(central, fix):
 
 # Advisories in triage are a stranger's text that starts a paid agent run
 # with no person in between: at most this many are taken a run (each one
-# claimed once, ever), and the rest wait for the next hour (#273).
+# claimed once; only a maintainer's answer sends it back, #313), and the
+# rest wait for the next hour (#273).
 TRIAGE_PER_RUN = 2
 
 
@@ -408,7 +412,9 @@ def plan(root, central):
     # A maintainer's retries first: a person asked for them (#313).
     fixes = retries(central, pending)
     taken = 0
-    for name in public_repos(root):
+    # A comment starts a run for the retries only: new reports keep the
+    # hourly pace of the schedule (#273).
+    for name in ([] if os.environ.get("GITHUB_EVENT_NAME") == "issue_comment" else public_repos(root)):
         full = f"{org.ORG}/{name}"
         try:
             advisories = [a for st in ("triage", "draft") for a in json.loads(gh("api", f"repos/{full}/security-advisories?state={st}&per_page=100", token=os.environ.get("ADV_TOKEN")))]
@@ -525,6 +531,8 @@ def self_test():
     check("#313 answer: only maintainers count, the latest of them",
           (answer(claim_body("failed"), [said("dev", "2026-10-18T07:00:00Z")], roles, [])[0],
            answer(claim_body("failed"), [said("boss", "2026-10-18T07:00:00Z", "a"), said("helper", "2026-10-18T07:10:00Z", "b")], roles, [])), ("", ("helper", "b")))
+    old_claim = "\n".join(claim_body("failed").split("\n")[:2] + ["text"])
+    check("#313 answer: a claim recorded before #313 (no attempt line) is not sent back by what was said on it", answer(old_claim, notes, roles, [])[0], "")
     check("#313 answer: nothing said since the attempt started, nothing to retry", answer(claim_body("failed"), [notes[0]], roles, [])[0], "")
     check("#313 answer: the bot's own words never count, and its 'Trying again' starts an attempt",
           (answer(claim_body("failed"), [said(org.BOT, "2026-10-18T07:00:00Z", "x", "Bot")], {org.BOT: "admin"}, [])[0],
@@ -567,6 +575,14 @@ def self_test():
         check("#313 retries: an answer from someone who does not maintain it starts nothing, and says nothing", (retries("o/security", set()), [a for a in log if a[:2] == ("issue", "comment")]), ([], []))
         globals()["gh"], log = fake("passed", notes, "admin")
         check("#313 retries: a claim whose fix passed costs no read of its comments", (retries("o/security", set()), any("/comments" in (a[1] if len(a) > 1 else "") for a in log)), ([], False))
+        globals()["gh"], log = fake("failed", notes, "admin")
+        os.environ["GITHUB_EVENT_NAME"] = "issue_comment"
+        try:
+            got = plan(os.path.join(HERE, ".."), "o/security")
+        finally:
+            del os.environ["GITHUB_EVENT_NAME"]
+        check("#313 plan: a comment's run takes the retries only, never a new report (#273)",
+              ([f["issue"] for f in got], any(a[:2] == ("repo", "list") or "security-advisories?state=" in (a[1] if len(a) > 1 else "") for a in log), all("at" in f for f in got)), ([7], False, True))
         globals()["gh"], log = fake("failed", notes, "admin", "published")
         check("#313 retries: a published advisory is not retried", retries("o/security", set()), [])
     finally:
