@@ -164,8 +164,15 @@ def self_test():
     check("wiring: a security patch is dilux-security's (#287), the production patch, from its tag, off the base, ready",
           ('[ "$ACTOR" = "dilux-security[bot]" ]' in sec, "production-version.py" in sec and '.patch' in sec, "compare/$(jq -r .tag" in sec,
            "is on $BASE" in sec, "release-ready.sh" in sec), (True, True, True, True, True))
+    pub = open(os.path.join(HERE, "..", ".github", "workflows", "plugin-publish-wp.yml"), encoding="utf-8").read()
+    check("wiring (#287): the release ends at the GitHub release with the zip; wordpress.org is the publish workflow's, from that zip, only the release App's",
+          ("action-wordpress-plugin-deploy" in rel_wf, "files: ${{ steps.zip.outputs.path }}" in rel_wf,
+           'author" = "dilux-release[bot]"' in pub, "gh release download" in pub, "BUILD_DIR" in pub, ".draft or .prerelease" in pub),
+          (False, True, True, True, True, True))
     tpl = open(os.path.join(HERE, "..", "workflow-templates", "release-wp.yml"), encoding="utf-8").read()
     check("wiring: the release caller runs on security/X.Y.Z", "'security/[0-9]+.[0-9]+.[0-9]+'" in tpl, True)
+    check("wiring (#287): the release caller publishes on a published release, and the release job only on a push",
+          ("types: [published]" in tpl, "plugin-publish-wp.yml@v5" in tpl, "if: github.event_name == 'push'" in tpl), (True, True, True))
     # Exit codes (#247): 1 is a no, an answer; 2 is a failure to tell, retried.
     real = {k: globals()[k] for k in ("releases", "fetch_stable")}
     import contextlib

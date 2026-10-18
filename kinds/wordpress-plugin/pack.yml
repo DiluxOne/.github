@@ -16,6 +16,7 @@ workflows:
   - plugin-checks-wp.yml
   - plugin-tests-wp.yml
   - plugin-release-wp.yml
+  - plugin-publish-wp.yml
 
 # What a repository of this kind requires of its own jobs, beside the
 # organisation's pipeline: a repository ruleset named "own checks"
@@ -108,6 +109,9 @@ settings:
 release:
   publishes-to: wordpress.org
   workflow: plugin-release-wp.yml
+  # After the GitHub release, which ends the engine's release (#287): what
+  # sends that release's zip where the kind publishes.
+  publish: plugin-publish-wp.yml
   prepare: [bash, "{central}/scripts/release-markers.sh", prepare, ., "{version}", "{main-file}", "{version-constant}"]
   defaults:
     main-file: "{slug}.php"

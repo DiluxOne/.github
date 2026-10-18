@@ -65,7 +65,7 @@ FALLBACKS = ("ubuntu-latest", "ubuntu-24.04")
 
 # Shared workflows that never run on the VM: they hold secrets (the release,
 # the credentials check) or run code written from an issue (the reproduction).
-GITHUB_ONLY = ("plugin-release-wp.yml", "svn-auth-check.yml", "issue-repro.yml",
+GITHUB_ONLY = ("plugin-release-wp.yml", "plugin-publish-wp.yml", "svn-auth-check.yml", "issue-repro.yml",
                # It wakes the VM (#154): it cannot wait for the VM it starts.
                "runner-wake.yml",
                # An agent works on a stranger's report, and the job holds an

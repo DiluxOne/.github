@@ -1,0 +1,120 @@
+name: Publish to wordpress.org
+
+# Reusable (#287). The engine's release ends at the GitHub release
+# (plugin-release-wp.yml: the tag, the notes and the plugin's zip, made by
+# the release App); where a kind publishes after it is a separate step, and
+# for a WordPress plugin this is it: a published release vX.Y.Z of the
+# repository goes to wordpress.org's SVN, from the very zip attached to that
+# release, so what reaches users is exactly what the release holds. A
+# repository's caller runs it on `release: published` (the release-wp.yml
+# template), or by hand with the tag to publish again after a failure.
+#
+# Only a version the release App made publishes: a release that is a draft,
+# a pre-release (the development build), not a plain X.Y.Z, or made by
+# anyone else is refused, so creating a release by hand never reaches
+# wordpress.org. It runs in the environment that holds the SVN credentials
+# (`environment`, default `wordpress-org`, whose deployment policy admits
+# X.Y.Z tags: a release's run is on its tag). SVN already holding the
+# version is no error: the deploy action stops there, and a re-run is safe.
+
+on:
+  workflow_call:
+    inputs:
+      slug:
+        description: The plugin's wordpress.org slug, and its zip's name in the release (<slug>.zip).
+        type: string
+        required: true
+      tag:
+        description: The release to publish, X.Y.Z. Empty, the default, the release whose publishing started the run.
+        type: string
+        default: ''
+      environment:
+        description: The repository environment that holds SVN_USERNAME and SVN_PASSWORD.
+        type: string
+        default: wordpress-org
+      dry-run:
+        description: Everything but the SVN commit.
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  # Which release, and whether it publishes at all, before any deployment
+  # starts in the environment.
+  check:
+    name: The release to publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.rel.outputs.tag }}
+    steps:
+      - name: The release to publish
+        id: rel
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "'$TAG' is not a version: nothing to publish."; exit 0
+          fi
+          info=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq '{draft, prerelease, author: .author.login}')
+          if [ "$(jq -r '.draft or .prerelease' <<<"$info")" = true ]; then
+            echo "$TAG is a draft or a pre-release: nothing to publish."; exit 0
+          fi
+          # Only the release App's: a release made by hand never publishes.
+          author=$(jq -r .author <<<"$info")
+          [ "$author" = "dilux-release[bot]" ] || { echo "::error::$TAG was released by $author, not the release App: it is not published to wordpress.org."; exit 1; }
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Publish to wordpress.org
+    needs: check
+    if: needs.check.outputs.tag != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read # the release's zip, and the tag's assets
+    environment: ${{ inputs.environment }}
+    # One at a time: SVN refuses a second commit on an out-of-date trunk.
+    concurrency:
+      group: publish-wp-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - name: The release's zip
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.check.outputs.tag }}
+          SLUG: ${{ inputs.slug }}
+        run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$SLUG.zip" --dir "$RUNNER_TEMP/release"
+
+      # The tag's checkout, for the assets wordpress.org shows (.wordpress-org)
+      # and nothing else: the plugin itself is the release's zip.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ needs.check.outputs.tag }}
+          persist-credentials: false
+
+      - name: The plugin as released
+        env:
+          SLUG: ${{ inputs.slug }}
+        run: |
+          set -euo pipefail
+          unzip -q "$RUNNER_TEMP/release/$SLUG.zip" -d "$RUNNER_TEMP/build"
+          [ -d "$RUNNER_TEMP/build/$SLUG" ] || { echo "::error::$SLUG.zip holds no $SLUG/ folder."; exit 1; }
+
+      - name: Deploy to SVN
+        uses: 10up/action-wordpress-plugin-deploy@54bd289b8525fd23a5c365ec369185f2966529c2 # 2.3.0
+        with:
+          generate-zip: false
+          # The action runs `if $INPUT_DRY_RUN`: pass exactly true or false.
+          dry-run: ${{ inputs.dry-run && 'true' || 'false' }}
+        env:
+          SVN_USERNAME: ${{ secrets.SVN_USERNAME }}
+          SVN_PASSWORD: ${{ secrets.SVN_PASSWORD }}
+          SLUG: ${{ inputs.slug }}
+          VERSION: ${{ needs.check.outputs.tag }}
+          BUILD_DIR: ${{ runner.temp }}/build/${{ inputs.slug }}

@@ -1,18 +1,21 @@
 name: Release
 
-# Publishes this plugin to wordpress.org through the shared workflow in
-# DiluxOne/.github: on every push to main the workflow computes the next
+# Releases this plugin through the shared workflows in DiluxOne/.github, then
+# publishes it to wordpress.org: the release ends at the GitHub release (the
+# tag, the notes and the plugin's zip, #287), and the `publish` job, on that
+# release's publishing, sends that very zip to wordpress.org
+# (plugin-publish-wp.yml). On every push to main the workflow computes the next
 # version from the type:* labels of what merged. A release is a person's
 # decision (DiluxOne/.github#82): a maintainer opens the issue "Release
 # X.Y.Z" (the Release form) and accepts it, which opens the release pull
 # request (the `Unreleased.` line removed and the version markers set, with
 # scripts/release-markers.sh prepare). Once it merges, this workflow checks
 # that a person accepted that issue and that its title still names the
-# version (that is what the `issues: read` below is for), then deploys, tags
-# and creates the release. Without an accepted release issue, the
+# version (that is what the `issues: read` below is for), then tags and
+# creates the release, which the `publish` job sends to wordpress.org. Without an accepted release issue, the
 # environment's required reviewers approve instead, if it has any (that is
 # what the `actions: read` is for, and a private repository below GitHub
-# Enterprise cannot have them); without either, nothing deploys. A tag X.Y.Z
+# Enterprise cannot have them); without either, nothing is released. A tag X.Y.Z
 # an administrator pushes by hand goes through the same job, and must be the
 # version the labels say is next. While the readme's newest changelog entry
 # starts with the line `Unreleased.` nothing is released: the notes under it
@@ -40,6 +43,15 @@ on:
     # repository (DiluxOne/.github#247, #287).
     branches: [$default-branch, 'security/[0-9]+.[0-9]+.[0-9]+']
     tags: ['[0-9]+.[0-9]+.[0-9]+']
+  # The release, published: where the plugin goes next (#287).
+  release:
+    types: [published]
+  # Publish a release again by hand (after a failure), by its tag.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release to publish to wordpress.org again (X.Y.Z).
+        required: true
 
 permissions:
   contents: write
@@ -49,10 +61,19 @@ permissions:
 
 jobs:
   release:
+    if: github.event_name == 'push'
     # At `v5`, never a pinned commit: see the header.
     uses: DiluxOne/.github/.github/workflows/plugin-release-wp.yml@v5
     with:
       slug: my-plugin
       version-constant: MY_PLUGIN_VERSION
-      dry-run: true # rehearse first: everything but the SVN commit, the tag and the release
+      dry-run: true # rehearse first: everything but the tag and the release
+    secrets: inherit
+
+  publish:
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    uses: DiluxOne/.github/.github/workflows/plugin-publish-wp.yml@v5
+    with:
+      slug: my-plugin
+      tag: ${{ inputs.tag || '' }}
     secrets: inherit
