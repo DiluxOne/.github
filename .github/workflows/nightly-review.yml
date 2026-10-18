@@ -269,8 +269,13 @@ jobs:
                   if [ -n "$made" ]; then
                     gh label create "security:unvetted" --repo "$GITHUB_REPOSITORY" --color FBCA04 --force --description "A draft advisory not confirmed yet: triaged like a report, never patched" >/dev/null 2>&1 || true
                     python3 -c 'import sys, importlib.util as u; s = u.spec_from_file_location("a", ".dx-central/scripts/advisory.py"); m = u.module_from_spec(s); s.loader.exec_module(m); print(m.unvetted_body(sys.argv[1], sys.argv[2], "the nightly review found it."))' "$repo" "${made%% *}" > "$RUNNER_TEMP/unvetted.md"
-                    gh issue create --repo "$GITHUB_REPOSITORY" --title "Unvetted ${made%% *} in $repo" --label "security:unvetted" --body-file "$RUNNER_TEMP/unvetted.md" >/dev/null \
-                      || echo "::warning::${made%% *} could not be marked unvetted here: a maintainer looks before it is patched."
+                    # Unmarked, it would read as confirmed: withdrawn instead,
+                    # and the finding stays in the private list.
+                    if ! gh issue create --repo "$GITHUB_REPOSITORY" --title "Unvetted ${made%% *} in $repo" --label "security:unvetted" --body-file "$RUNNER_TEMP/unvetted.md" >/dev/null; then
+                      GH_TOKEN="$adv" gh api -X PATCH "repos/$repo/security-advisories/${made%% *}" -f state=closed >/dev/null 2>&1 || true
+                      echo "::warning::${made%% *} could not be marked unvetted here, so it was closed; the finding stays in the private list."
+                      url=""
+                    fi
                   fi
                 fi
               else
