@@ -193,7 +193,7 @@ QUERY = """query($owner: String!, $name: String!, $label: String!) {
         stateReason
         labels(first: 50) { nodes { name } }
         author { login }
-        milestone { title creator { login } }
+        milestone { title state creator { login } }
         timelineItems(itemTypes: [LABELED_EVENT, UNLABELED_EVENT, RENAMED_TITLE_EVENT], last: 100) {
           nodes {
             __typename
@@ -271,6 +271,10 @@ def planned(node, version):
     ms = node.get("milestone") or {}
     if (ms.get("title") or "").strip().lstrip("v") != version:
         return False, f"#{n} is not on the milestone {version}", None, None
+    # Done, as the plan said (#287): the bot closes the milestone when its
+    # last issue closes; one still open was not done when it was accepted.
+    if ms.get("state") != "CLOSED":
+        return False, f"#{n}'s milestone {version} is not done", None, None
     at = last.get("createdAt") or ""
     for e in events:
         if e.get("__typename") == "RenamedTitleEvent" and (e.get("createdAt") or "") >= at:
@@ -555,15 +559,16 @@ def self_test():
         except ValueError:
             check("#247 argv: a kind that publishes nothing has none", True, True)
     # #247: a planned release, accepted by the plan.
-    def plan_node(author="dilux-bot", ms_title="1.2.0", creator="soydiloreto", added_by="Bot", extra=()):
+    def plan_node(author="dilux-bot", ms_title="1.2.0", creator="soydiloreto", added_by="Bot", extra=(), ms_state="CLOSED"):
         n = node(labels=("lane:release", "accepted-by:policy"),
                  events=[ev("LabeledEvent", "2026-10-02T10:00:00Z", label="accepted-by:policy", who=added_by), *extra])
         n["author"] = {"login": author}
-        n["milestone"] = {"title": ms_title, "creator": {"login": creator}} if ms_title else None
+        n["milestone"] = {"title": ms_title, "state": ms_state, "creator": {"login": creator}} if ms_title else None
         return n
     r = vfy(answer(plan_node()), "1.2.0", mode="auto")
     check("#247 planned: the bot's issue on the version's milestone, in auto, approves it as its planner", (r["ok"], r["by"]), (True, "soydiloreto"))
     check("#247 planned: in confirm it approves nothing", vfy(answer(plan_node()), "1.2.0")["ok"], False)
+    check("#287 planned: a milestone still open was not done, and approves nothing", vfy(answer(plan_node(ms_state="OPEN")), "1.2.0", mode="auto")["ok"], False)
     closed = plan_node(); closed["state"], closed["stateReason"] = "CLOSED", "NOT_PLANNED"
     check("#247 planned: a release cancelled by closing it as not planned approves nothing", vfy(answer(closed), "1.2.0", mode="auto")["ok"], False)
     check("#247 planned: a planner who is not admin or maintain approves nothing", vfy(answer(plan_node()), "1.2.0", roles={"soydiloreto": "write"}, mode="auto")["ok"], False)

@@ -127,6 +127,39 @@ def plan_kept(issues, removed, role_of):
     return True, "every issue closed as completed by a maintainer or the bot, none taken off by anyone else"
 
 
+# What may merge between two versions without being part of a plan (#287):
+# maintenance a lane carries in on its own (Dependabot's, the organisation's
+# sync, the release pull request).
+UNPLANNED_AUTHORS = ("dependabot[bot]",)
+UNPLANNED_LANES = ("lane:org-sync", "lane:platform", "lane:release")
+
+
+def outside_plan(prs, version):
+    """The pull requests merged since the last version that are not part of
+    the plan for `version` (#287): each one must close an issue on that
+    milestone, unless it is maintenance (UNPLANNED_*). Pure: prs is
+    [{number, author, issues: [{milestone, labels}]}]."""
+    out = []
+    for pr in prs:
+        if pr.get("author") in UNPLANNED_AUTHORS:
+            continue
+        issues = pr.get("issues") or []
+        if issues and all(set(i.get("labels") or []) & set(UNPLANNED_LANES) for i in issues):
+            continue
+        if not issues or any((i.get("milestone") or "").strip().lstrip("v") != version for i in issues):
+            out.append(pr.get("number"))
+    return out
+
+
+def recent(released_at, now, hours=24):
+    """Whether a version was released less than `hours` ago (#287: one
+    release by policy a day in a repository). Pure."""
+    if not released_at:
+        return False
+    when = datetime.datetime.fromisoformat(released_at.replace("Z", "+00:00"))
+    return (now - when).total_seconds() < hours * 3600
+
+
 def gh(*args):
     out = subprocess.run(["gh", *args], capture_output=True, text=True)
     if out.returncode != 0:
@@ -136,6 +169,33 @@ def gh(*args):
 
 def lines(*args):
     return [json.loads(l) for l in gh(*args).splitlines() if l.strip()]
+
+
+def merged_since(full):
+    """The pull requests merged into the default branch since the last
+    version tag, each with its author and the issues it closes (their
+    milestone and labels), read from GitHub. Raises when it cannot tell."""
+    owner, name = full.split("/", 1)
+    tags = lines("api", f"repos/{full}/tags?per_page=100", "--paginate", "--jq", ".[] | {name, sha: .commit.sha} | @json")
+    versions = sorted((t for t in tags if re.fullmatch(r"v?\d+\.\d+\.\d+", t["name"])), key=lambda t: tuple(int(x) for x in t["name"].lstrip("v").split(".")))
+    since = ""
+    if versions:
+        since = gh("api", f"repos/{full}/commits/{versions[-1]['sha']}", "--jq", ".commit.committer.date").strip()
+    q = ("query($q:String!,$c:String){search(type:ISSUE,query:$q,first:50,after:$c){pageInfo{hasNextPage endCursor} nodes{... on PullRequest{"
+         "number author{login} closingIssuesReferences(first:20){nodes{milestone{title} labels(first:20){nodes{name}}}}}}}}")
+    search = f"repo:{full} is:pr is:merged" + (f" merged:>{since}" if since else "")
+    out, cursor = [], None
+    while True:
+        args = ["api", "graphql", "-f", f"query={q}", "-f", f"q={search}"] + (["-f", f"c={cursor}"] if cursor else [])
+        page = json.loads(gh(*args))["data"]["search"]
+        for n in page["nodes"]:
+            login = (n.get("author") or {}).get("login") or ""
+            out.append({"number": n["number"], "author": login if login != "dependabot" else "dependabot[bot]",
+                        "issues": [{"milestone": (i.get("milestone") or {}).get("title") or "", "labels": [l["name"] for l in (i.get("labels") or {}).get("nodes") or []]}
+                                   for i in (n.get("closingIssuesReferences") or {}).get("nodes") or []]})
+        if not page["pageInfo"]["hasNextPage"]:
+            return out
+        cursor = page["pageInfo"]["endCursor"]
 
 
 def open_due(full, now, io=None, mode="confirm"):
@@ -159,6 +219,10 @@ def open_due(full, now, io=None, mode="confirm"):
                                                        f'.[] | select(.event == "demilestoned" and .milestone.title == {json.dumps(m["title"])}) | {{actor: (.actor.login // "")}} | @json')],
         "accept": lambda url: gh("issue", "edit", url, "--add-label", "accepted-by:policy"),
         "close": lambda m: gh("api", "-X", "PATCH", f"repos/{full}/milestones/{m['number']}", "-f", "state=closed"),
+        # What merged since the last version (#287): every pull request
+        # merged into the default branch after it, with the issues it closes.
+        "merged": lambda: merged_since(full),
+        "released": lambda: (lines("api", f"repos/{full}/releases?per_page=20", "--jq", '[.[] | select(.draft | not) | select(.prerelease | not)][0] // {} | {published_at} | @json') or [{}])[0].get("published_at") or "",
     }
     roles = {}
 
@@ -182,6 +246,18 @@ def open_due(full, now, io=None, mode="confirm"):
                 auto, why = plan_kept(io["issues"](m), io["removed"](m), role_of)
             except RuntimeError as exc:
                 auto, why = False, f"the milestone's issues could not be read ({exc})"
+            if auto:
+                # Only the plan ships (#287): nothing merged since the last
+                # version may be outside it, and at most one release by
+                # policy a day.
+                try:
+                    outside = outside_plan(io["merged"](), version)
+                    if outside:
+                        auto, why = False, "merged outside the plan: " + ", ".join(f"#{n}" for n in outside[:10])
+                    elif recent(io["released"](), now):
+                        auto, why = False, "a version was released less than 24 hours ago"
+                except RuntimeError as exc:
+                    auto, why = False, f"what merged since the last version could not be read ({exc})"
             if not auto:
                 print(f"  {full}: {version} waits for a person: {why}")
         url = io["open"](version, m, auto)
@@ -233,7 +309,7 @@ def self_test():
     d = {"title": "1.6.0", "state": "open", "open_issues": 0, "closed_issues": 3, "number": 7, "html_url": "u", "creator": {"login": "boss"}}
     check("due: an open version milestone with every issue closed is due", [v for v, _ in due([d, {**d, "title": "1.7.0", "open_issues": 1}, {**d, "title": "1.8.0", "closed_issues": 0}], set(), set(), now)], ["1.6.0"])
     seen = {"accept": [], "close": [], "auto": []}
-    def run(mode, role, issues=None, removed=(), ms=None):
+    def run(mode, role, issues=None, removed=(), ms=None, merged=(), released=""):
         for k in seen:
             seen[k] = []
         def role_fn(who):
@@ -244,7 +320,7 @@ def self_test():
                "open": lambda v, mm, auto: seen["auto"].append(auto) or "https://github.com/o/r/issues/5", "type": lambda url: None,
                "role": role_fn, "accept": seen["accept"].append, "close": lambda mm: seen["close"].append(mm["number"]),
                "issues": lambda mm: issues if issues is not None else [{"number": 1, "state_reason": "completed", "closed_by": "dilux-bot[bot]"}],
-               "removed": lambda mm: list(removed)}
+               "removed": lambda mm: list(removed), "merged": lambda: list(merged), "released": lambda: released}
         with contextlib.redirect_stdout(_io.StringIO()):
             open_due("o/r", now, io2, mode)
         return (seen["auto"], len(seen["accept"]), seen["close"])
@@ -260,6 +336,13 @@ def self_test():
     check("#247 auto: closed by a maintainer and taken off by one is still the plan", run("auto", "admin", issues=[{"number": 1, "state_reason": "completed", "closed_by": "boss"}], removed=["boss"])[0], [True])
     check("#247 auto: a milestone a person closed early is never the plan", run("auto", "admin", ms={**d, "state": "closed", "closed_at": "2026-10-15T00:00:00Z", "open_issues": 2})[0], [False])
     check("#247 auto: a role that cannot be read waits for a person, and stops nothing", run("auto", "boom"), ([False], 0, [7]))
+    on = lambda n, ms_="1.6.0", labels=(), author="dev": {"number": n, "author": author, "issues": [{"milestone": ms_, "labels": list(labels)}]}
+    check("#287 auto: only the plan ships; maintenance a lane carries is allowed",
+          [run("auto", "admin", merged=[on(1), on(2, labels=["lane:org-sync"], ms_=""), {"number": 3, "author": "dependabot[bot]", "issues": []}])[0],
+           run("auto", "admin", merged=[on(1), on(4, ms_="")])[0], run("auto", "admin", merged=[{"number": 5, "author": "dev", "issues": []}])[0]],
+          [[True], [False], [False]])
+    check("#287 auto: one release by policy a day", [run("auto", "admin", released="2026-10-15T12:00:00Z")[0], run("auto", "admin", released="2026-10-14T23:00:00Z")[0]], [[False], [True]])
+    check("#287 outside_plan: v in the milestone's title is the same version", outside_plan([on(1, "v1.6.0")], "1.6.0"), [])
     check("#247 body: says which", ("accepted by policy" in body("1.6.0", d, True), "Accepting it is the decision" in body("1.6.0", d, False)), (True, True))
     import tempfile as _tf
     with _tf.TemporaryDirectory() as root_:
