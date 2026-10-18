@@ -2,6 +2,8 @@
 
 What a repository changes to move from one major of the shared workflows to the next, newest first.
 
+A major whose migration is nothing but the callers is named in `repos.yml` (`callers: migrates-from`): `python3 scripts/sync-repos.py callers` then moves each repository on its own, in one issue and pull request of the org-sync lane, every call of the shared workflows at the new major (its own jobs' too) and its callers in step with the templates (#320). Any other major is migrated by hand, as below.
+
 ## Migrating a repository from `v4` to `v5`
 
 `v5` moves the pull request pipeline to the organisation and reads an issue's native Type.
