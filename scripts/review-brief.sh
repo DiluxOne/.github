@@ -85,8 +85,13 @@ if [ "${1:-}" = "--test" ]; then
   lacks "#287: with DIFF_DIR, no git command"      "git diff $base..."
   if grep -q '^+aaaa' "$dir/repo/.dx-diff/big.txt.diff" && grep -q '^+changed' "$dir/repo/.dx-diff/small.txt.diff"; then echo "ok   #287: each file's diff is written"; else echo "FAIL #287: each file's diff is written"; fail=1; fi
   if [ ! -e "$dir/repo/.dx-diff/package-lock.json.diff" ]; then echo "ok   #287: no diff of a lock file"; else echo "FAIL #287: no diff of a lock file"; fail=1; fi
-  build "$base" "$head" high env DIFF_DIR=../outside
-  if [ ! -e "$dir/outside" ]; then echo "ok   #287: DIFF_DIR stays inside the repository"; else echo "FAIL #287: DIFF_DIR stays inside the repository"; fail=1; fi
+  if ( build "$base" "$head" high env DIFF_DIR=../outside ) 2>/dev/null || [ -e "$dir/outside" ]; then echo "FAIL #287: a DIFF_DIR outside the repository fails"; fail=1; else echo "ok   #287: a DIFF_DIR outside the repository fails"; fi
+  ( cd "$dir/repo" && echo hola > "año.txt" && git add -A && git commit -q -m "fix(a): accent" )
+  build "$base" "$(git -C "$dir/repo" rev-parse HEAD)" high env DIFF_DIR=.dx-diff-accent
+  if grep -q '^+hola' "$dir/repo/.dx-diff-accent/año.txt.diff"; then echo "ok   #287: a path git would quote gets its diff"; else echo "FAIL #287: a path git would quote gets its diff"; fail=1; fi
+  acc=$(git -C "$dir/repo" rev-parse HEAD)
+  build "$base" "$acc" high env DIFF_DIR=.dx-diff-inc PR=7 MODE=incremental RANGE="$head..$acc" LAST="$head" PREVIOUS_JSON="$dir/prev.json" OPEN_THREADS="$dir/threads.json" SETTLED_THREADS="$dir/threads.json"
+  if grep -q '^+changed' "$dir/repo/.dx-diff-inc/small.txt.diff"; then echo "ok   #287: incremental files are against the base"; else echo "FAIL #287: incremental files are against the base"; fail=1; fi
   if ( build "$base" "$head" high env DIFF_DIR=.dx-diff ) 2>/dev/null; then echo "FAIL #287: an existing DIFF_DIR is refused, never emptied"; fail=1; else echo "ok   #287: an existing DIFF_DIR is refused, never emptied"; fi
   build "$base" "$head" high env PROFILE=plugin-wp
   check "the old profile name reads the kind's profile" "Review profile: WordPress plugin"
@@ -161,22 +166,22 @@ while IFS=$'\t' read -r add del path; do
 done < <(git diff "$diffspec" --numstat -- . "${noise[@]}")
 # ${arr[@]+"${arr[@]}"}: an empty array under set -u, on the bash 3.2 of macOS too.
 git diff "$diffspec" -U3 -- . "${noise[@]}" ${exclude[@]+"${exclude[@]}"} > "$WORK/diff.patch"
-# For a reviewer with no shell (#287): each shown file's diff, as a file it
-# can read: a new directory, at a relative path inside the repository.
+# For a reviewer with no shell (#287): each shown file's whole diff against
+# the base (in an incremental review too, as the verifier judges the pull
+# request as it stands), as a file it can read: a new directory, at a
+# relative path inside the repository.
 diff_dir=''
 if [ -n "${DIFF_DIR:-}" ]; then
   case "/$DIFF_DIR/" in
-    //*|*/../*|*/./*) echo "DIFF_DIR must be a relative path inside the repository: $DIFF_DIR" >&2 ;;
-    *)
-      diff_dir=${DIFF_DIR%/}
-      if [ -e "$diff_dir" ]; then echo "DIFF_DIR must not exist yet: $DIFF_DIR" >&2; exit 1; fi
-      while IFS= read -r path; do
-        [ -n "$path" ] || continue
-        mkdir -p "$diff_dir/$(dirname "$path")"
-        git diff "$diffspec" -U3 -- "$path" > "$diff_dir/$path.diff"
-      done < "$WORK/shown-files.txt"
-      ;;
+    //*|*/../*|*/./*) echo "DIFF_DIR must be a relative path inside the repository: $DIFF_DIR" >&2; exit 1 ;;
   esac
+  diff_dir=${DIFF_DIR%/}
+  if [ -e "$diff_dir" ]; then echo "DIFF_DIR must not exist yet: $DIFF_DIR" >&2; exit 1; fi
+  mkdir -p "$diff_dir"
+  while IFS= read -r -d '' path; do
+    mkdir -p "$diff_dir/$(dirname "$path")"
+    git diff "$BASE...$HEAD" -U3 -- "$path" > "$diff_dir/$path.diff"
+  done < <(git diff "$BASE...$HEAD" --name-only -z -- . "${noise[@]}")
 fi
 for path in ${rewritten[@]+"${rewritten[@]}"}; do
   # Numbered lines, so a comment can name the exact line; a longer
@@ -249,7 +254,7 @@ limit=250000
     sed -n '/^### Rewritten: /,$p' "$WORK/diff.patch"
   else
     if [ -n "$diff_dir" ]; then
-      echo "The diff is larger than $limit bytes, so it is not inlined. Read it file by file from \`$diff_dir/<path>.diff\` for the files above, largest risk first."
+      echo "The diff is larger than $limit bytes, so it is not inlined. Read it file by file from \`$diff_dir/<path>.diff\` (each file's whole diff against the base) for the files above, largest risk first."
     else
       echo "The diff is larger than $limit bytes, so it is not inlined. Read it file by file with \`git diff $diffspec -- <path>\` for the files above, largest risk first."
     fi
