@@ -17,7 +17,7 @@ A breaking change is said in its commit (`!`), so the changelog lists it first; 
 ## Which version a caller runs
 
 - **This organisation's repositories** call `@v5`: a moving tag that points at the last `v5.Y.Z`. Their callers are kept in step by `scripts/sync-repos.py`, so a change their callers need ships with the callers changed. Moving it is a release to every repository at once: it moves only once a change ran end to end in the sandbox, and always as a lightweight tag (an annotated one breaks the organisation's required workflow).
-- **Any other organisation** pins a full commit SHA, with the version in a comment: `uses: DiluxOne/.github/.github/workflows/<name>.yml@<sha> # v5.25.0`. Dependabot (the `github-actions` ecosystem) proposes the next version as a pull request, with its release notes, and they merge it when they choose. A major never reaches them on its own.
+- **Any other organisation** pins a full commit SHA, with the version in a comment: `uses: DiluxOne/.github/.github/workflows/<name>.yml@<sha> # v5.25.0`. Dependabot (the `github-actions` ecosystem) proposes the next version as a pull request, with its release notes, and they merge it when they choose. A major never reaches them on its own. The scripts, profiles and policy a workflow reads run at the same commit as its `uses:` (`central-ref` empty, `job.workflow_sha`), with nothing to set. Known limit: a workflow that calls another names it at `@v5` inside it (GitHub reads `uses:` before any expression), so that inner one follows the moving tag; making the engine's own calls follow the caller's pin is part of setting up other organisations (phase 12).
 
 ## How a version is made
 

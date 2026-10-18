@@ -55,9 +55,9 @@ on:
   workflow_call:
     inputs:
       central-ref:
-        description: The ref of DiluxOne/.github whose scripts run (the caller's major tag).
+        description: The ref of DiluxOne/.github whose scripts and policy run. Empty (the default) means the very commit this workflow runs from, job.workflow_sha, so a caller that pins a SHA or a tag runs that commit's scripts too (#287).
         type: string
-        default: v5
+        default: ''
     secrets:
       DILUX_BOT_PRIVATE_KEY:
         required: true
@@ -95,7 +95,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           persist-credentials: false
           path: .dx-central
 
@@ -193,7 +193,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           persist-credentials: false
           path: .dx-central
 
@@ -263,7 +263,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           persist-credentials: false
           path: .dx-central
 

@@ -134,9 +134,9 @@ on:
         type: string
         default: '8.5'
       central-ref:
-        description: Ref of DiluxOne/.github to read the policy from.
+        description: The ref of DiluxOne/.github whose scripts and policy run. Empty (the default) means the very commit this workflow runs from, job.workflow_sha, so a caller that pins a SHA or a tag runs that commit's scripts too (#287).
         type: string
-        default: v5
+        default: ''
       dev-tag:
         description: The moving tag of the repository's "Development build" pre-release (as in plugin-release-wp.yml), linked when a report names an older version. Empty when the repository publishes none.
         type: string
@@ -202,7 +202,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
 
@@ -471,7 +471,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
       - name: Run
@@ -593,7 +593,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
       # Whether a reproduced bug goes to the `bugfix-reproduced` lane: the

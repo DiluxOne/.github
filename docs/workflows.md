@@ -7,8 +7,10 @@ Every workflow here, what it does and what it takes; the scripts behind them; an
 Call them at `@v5`, every one of them, the release included: never at a pinned commit (`v5` is a protected ref that only an administrator moves, #136); a breaking change ships as the next major (`v6`), and the previous one stays where it is. A stack suffix
 (`-wp`) appears only when the steps are specific to that stack. A workflow
 with a `central-ref` input reads the scripts, profiles and policy at that
-ref (default `v5`), not at the ref of its `uses:` line: a caller that pins
-`uses:` to a version passes the same version as `central-ref`.
+ref; empty, the default, at the very commit its `uses:` line resolved to
+(`job.workflow_sha`, #287), so a caller that pins a SHA runs that commit's
+scripts with nothing else to set. A workflow another one calls is named at
+`@v5` inside it, and runs its own commit's scripts. A caller that still passes `central-ref: v5` keeps reading the moving tag.
 
 | Workflow | Does | Inputs |
 | --- | --- | --- |

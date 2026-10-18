@@ -48,9 +48,9 @@ name: Claude review
 # kind of project, kinds/<kind>/review-profile.md; a `kind:` in the policy
 # adds it on its own, and `plugin-wp` still names the WordPress one),
 # central-ref (where the profiles, the policy and scripts/review-brief.sh
-# are read from, default v5: a caller that pins `uses:` to a version, say
-# @v3.0.0, passes the same version here, or the workflow runs at its pin
-# while the policy and the brief follow v5),
+# are read from; empty, the default, is the very commit this workflow runs
+# from, job.workflow_sha, so a caller that pins `uses:` reads that commit's
+# with nothing to pass, #287),
 # max-auto-reviews.
 #
 #   Called by org-pull-request.yml, the organisation's required pipeline,
@@ -65,9 +65,9 @@ on:
         type: string
         default: general
       central-ref:
-        description: Ref of DiluxOne/.github to read the profiles and policy from.
+        description: The ref of DiluxOne/.github whose scripts and policy run. Empty (the default) means the very commit this workflow runs from, job.workflow_sha, so a caller that pins a SHA or a tag runs that commit's scripts too (#287).
         type: string
-        default: v5
+        default: ''
       max-auto-reviews:
         description: Automatic reviews per pull request before the next push needs the review:full label.
         type: number
@@ -161,7 +161,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
 

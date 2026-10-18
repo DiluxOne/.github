@@ -49,9 +49,9 @@ on:
         type: string
         default: 'dilux-bot[bot]'
       central-ref:
-        description: Ref of DiluxOne/.github to read the conventions script from.
+        description: The ref of DiluxOne/.github whose scripts and policy run. Empty (the default) means the very commit this workflow runs from, job.workflow_sha, so a caller that pins a SHA or a tag runs that commit's scripts too (#287).
         type: string
-        default: v5
+        default: ''
 
 permissions:
   contents: read
@@ -107,7 +107,7 @@ jobs:
           repository: DiluxOne/.github
           # This repository's own pull requests check themselves with their
           # own script: they can change this workflow anyway.
-          ref: ${{ github.repository == 'DiluxOne/.github' && github.event.pull_request.head.sha || inputs.central-ref }}
+          ref: ${{ github.repository == 'DiluxOne/.github' && github.event.pull_request.head.sha || inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
 

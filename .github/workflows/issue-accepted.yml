@@ -74,9 +74,9 @@ on:
         type: string
         default: Pull request (organisation)
       central-ref:
-        description: Ref of DiluxOne/.github to read repos.yml (the Projects) from.
+        description: The ref of DiluxOne/.github whose scripts and policy run. Empty (the default) means the very commit this workflow runs from, job.workflow_sha, so a caller that pins a SHA or a tag runs that commit's scripts too (#287).
         type: string
-        default: v5
+        default: ''
     secrets:
       # Optional: a caller that does not pass it (one from before Projects)
       # keeps the re-run and skips the Project.
@@ -166,7 +166,7 @@ jobs:
       - name: The issue schema and its script
         id: central
         env:
-          REF: ${{ inputs.central-ref }}
+          REF: ${{ inputs.central-ref || job.workflow_sha }}
         run: |
           set -euo pipefail
           mkdir -p .dx-central/scripts .dx-central/policy
@@ -178,7 +178,7 @@ jobs:
           curl -fsSL --retry 3 "$base/scripts/issue-assignee.sh" -o .dx-central/scripts/issue-assignee.sh \
             || echo "::warning::scripts/issue-assignee.sh is not at $REF; the issue is not assigned."
           curl -fsSL --retry 3 "$base/policy/issue-schema.yml" -o .dx-central/policy/issue-schema.yml
-          echo "ref=$(git ls-remote https://github.com/DiluxOne/.github "$REF" "$REF^{}" | tail -1 | cut -c1-12)" >> "$GITHUB_OUTPUT"
+          if [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then echo "ref=${REF:0:12}" >> "$GITHUB_OUTPUT"; else echo "ref=$(git ls-remote https://github.com/DiluxOne/.github "$REF" "$REF^{}" | tail -1 | cut -c1-12)" >> "$GITHUB_OUTPUT"; fi
       - name: dilux-bot token
         id: bot
         continue-on-error: true
@@ -310,13 +310,13 @@ jobs:
       - name: The scripts
         id: central
         env:
-          REF: ${{ inputs.central-ref }}
+          REF: ${{ inputs.central-ref || job.workflow_sha }}
         run: |
           set -euo pipefail
           mkdir -p .dx-central/scripts .dx-central/policy
           base="https://raw.githubusercontent.com/DiluxOne/.github/$REF"
           for f in scripts/issue-schema.py scripts/receipts.py scripts/repro-lane.py policy/issue-schema.yml; do curl -fsSL --retry 3 "$base/$f" -o ".dx-central/$f"; done
-          echo "ref=$(git ls-remote https://github.com/DiluxOne/.github "$REF" "$REF^{}" | tail -1 | cut -c1-12)" >> "$GITHUB_OUTPUT"
+          if [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then echo "ref=${REF:0:12}" >> "$GITHUB_OUTPUT"; else echo "ref=$(git ls-remote https://github.com/DiluxOne/.github "$REF" "$REF^{}" | tail -1 | cut -c1-12)" >> "$GITHUB_OUTPUT"; fi
       - name: dilux-bot token
         id: bot
         continue-on-error: true
@@ -427,7 +427,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
 
@@ -535,10 +535,10 @@ jobs:
       - name: The autonomy policy and its script
         id: central
         env:
-          REF: ${{ inputs.central-ref }}
+          REF: ${{ inputs.central-ref || job.workflow_sha }}
         run: |
           set -euo pipefail
-          sha=$(git ls-remote https://github.com/DiluxOne/.github "$REF" "$REF^{}" | tail -1 | cut -f1)
+          if [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then sha=$REF; else sha=$(git ls-remote https://github.com/DiluxOne/.github "$REF" "$REF^{}" | tail -1 | cut -f1); fi
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::$REF is not a ref of DiluxOne/.github."; exit 1; }
           mkdir -p .dx-central/scripts .dx-central/policy
           base="https://raw.githubusercontent.com/DiluxOne/.github/$sha"
@@ -614,7 +614,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           persist-credentials: false
       - name: dilux-bot token (issues, every repository)
         id: bot
@@ -647,7 +647,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
 
