@@ -183,12 +183,23 @@ def merge(org, repo):
         for key in mine:
             if key not in ("enabled", "accept", "repositories", "merge"):
                 warn(f"lanes.{name}.{key}: a repository cannot set it; ignored.")
+    # What an agent's run may cost (#287): a repository only lowers it.
+    mine = repo.get("budgets-usd") if isinstance(repo.get("budgets-usd"), dict) else {}
+    budgets = dict(org.get("budgets-usd") or {})
+    for key, value in mine.items():
+        if key in budgets and isinstance(value, (int, float)) and not isinstance(value, bool) and 0 < value < budgets[key]:
+            budgets[key] = value
+        elif key in budgets and value != budgets[key]:
+            warn(f"budgets-usd.{key}: a repository can only lower it; kept {budgets[key]}.")
+    if budgets:
+        out["budgets-usd"] = budgets
     for name, lane in out["lanes"].items():
         lane.setdefault("enabled", True)
     return out
 
 
-TOP_KEYS = {"autopilot", "autopilot-rounds", "autopilot-runs", "autopilot-mode", "constitution", "person-merges", "planned-release", "security-patch", "lanes"}
+TOP_KEYS = {"autopilot", "autopilot-rounds", "autopilot-runs", "autopilot-mode", "budgets-usd", "constitution", "person-merges", "planned-release", "security-patch", "lanes"}
+BUDGETS = ("autopilot-spec", "autopilot-work", "autopilot-fix", "security-fix")
 MODES = ("guided", "full")
 LANE_KEYS = {"description", "accept", "type", "origin", "repositories", "evidence", "merge", "ceiling", "enabled"}
 
@@ -202,6 +213,9 @@ def problems(policy):
         out.append(f"{key}: not a key of the policy")
     if not isinstance(policy.get("autopilot"), bool):
         out.append("autopilot: true or false")
+    b = policy.get("budgets-usd", {})
+    if not isinstance(b, dict) or set(b) - set(BUDGETS) or not all(isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v <= 200 for v in b.values()):
+        out.append(f"budgets-usd: {', '.join(BUDGETS)}, each a number of dollars above 0 and at most 200")
     for key in ("autopilot-rounds", "autopilot-runs"):
         if key in policy and not (isinstance(policy[key], int) and not isinstance(policy[key], bool) and policy[key] > 0):
             out.append(f"{key}: a whole number above 0")
@@ -958,6 +972,10 @@ def self_test():
     check("#188 schema: a key the policy does not know", problems({**org, "owner": "me"}), ["owner: not a key of the policy"])
     check("#247 schema: a planned release is auto or confirm", [problems({**org, "planned-release": v}) for v in ("auto", "confirm", "yes")],
           [[], [], ["planned-release: auto or confirm"]])
+    check("#287 budgets: the organisation's, lowered by a repository and never raised",
+          (merge({**org, "budgets-usd": {"autopilot-work": 20, "security-fix": 10}}, {"budgets-usd": {"autopilot-work": 5, "security-fix": 50}})["budgets-usd"],
+           problems({**org, "budgets-usd": {"autopilot-work": 0}}) != [], problems({**org, "budgets-usd": {"other": 1}}) != [], problems({**org, "budgets-usd": {"autopilot-fix": 8}})),
+          ({"autopilot-work": 5, "security-fix": 10}, True, True, []))
     check("#247 schema: the veto window is hours, above 0, at most 720",
           [problems({**org, "security-patch": v}) for v in ({"veto-hours": 2}, {"veto-hours": 0}, {"veto-hours": True}, {"veto-hours": 721}, {"hours": 6})],
           [[]] + [["security-patch: veto-hours, a number of hours above 0 and at most 720"]] * 4)

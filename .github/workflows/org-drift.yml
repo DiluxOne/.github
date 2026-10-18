@@ -72,6 +72,8 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.sync.outputs.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          # Off, a done milestone's release issue waits for a person (#287).
+          DX_AUTOPILOT: ${{ vars.DX_AUTOPILOT }}
         # Each part runs whatever the others did; the step fails if any did.
         run: |
           rc=0

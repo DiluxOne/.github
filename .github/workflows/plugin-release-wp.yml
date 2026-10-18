@@ -219,6 +219,8 @@ jobs:
           SLUG: ${{ inputs.slug }}
           SECURITY_ENVIRONMENT: ${{ inputs.security-environment }}
           ACTOR: ${{ github.actor }}
+          # Off, a planned release's acceptance by policy approves nothing (#287).
+          DX_AUTOPILOT: ${{ vars.DX_AUTOPILOT }}
         run: |
           set -euo pipefail
           { echo "version="; echo "dev="; echo "environment=$ENVIRONMENT"; } >> "$GITHUB_OUTPUT"

@@ -85,8 +85,11 @@ name: Issue reproduction
 # author (dilux-bot) of the pull request, never what it changes, and the
 # autopilot that writes the lane's fix, from dilux-bot's issue "The bug
 # reproduced from #<n>" (scripts/runner-route.py, #167).
-# At most `max-per-day` runs a day (10000: the runs go on the
-# subscription, so it only stops a flood). The `high` reviewer of the policy
+# A stranger's report waits for a person past `max-per-day` issues opened
+# in the repository in 24 hours (20, not counting the bot's) or
+# `max-per-author` by its author (3) (#287, scripts/repro-cap.py): it starts
+# a paid run with no person in between. A maintainer's report, the nightly
+# review's (dilux-bot's) and a run a maintainer asked for are never held. The `high` reviewer of the policy
 # writes the test.
 #
 #   on:
@@ -119,9 +122,13 @@ on:
         type: string
         default: ''
       max-per-day:
-        description: Runs of an issues event per day across the repository before a reproduction waits (a flood stop).
+        description: Issues opened in 24 hours across the repository (not by the bot) past which a stranger's report waits for a person.
         type: number
-        default: 10000
+        default: 20
+      max-per-author:
+        description: Reports by one author reproduced in 24 hours before the next waits for a person.
+        type: number
+        default: 3
       php-version:
         description: PHP the test runs on.
         type: string
@@ -269,18 +276,25 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           MAX: ${{ inputs.max-per-day }}
+          MAX_AUTHOR: ${{ inputs.max-per-author }}
+          AUTHOR: ${{ github.event.issue.user.login }}
+          SENDER: ${{ github.event.sender.login }}
+          SENDER_TYPE: ${{ github.event.sender.type }}
         run: |
           set -euo pipefail
-          today=$(date -u +%Y-%m-%d)
-          # Every run of an issues event today counts, attempt or not: the
-          # count errs high, costs one listing, and the cap only stops a flood.
-          n=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=issues&created=>=$today&per_page=100" --paginate --jq ".workflow_runs[] | select(.id != $GITHUB_RUN_ID) | .id" | wc -l)
-          if [ "$n" -ge "$MAX" ]; then
-            echo "::warning::$n issue runs already ran today (cap $MAX); this one waits for tomorrow or for a person."
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=true" >> "$GITHUB_OUTPUT"
+          role() { [[ "$1" =~ ^[A-Za-z0-9-]+$ ]] || return 0; gh api "repos/$GITHUB_REPOSITORY/collaborators/$1/permission" --jq .role_name 2>/dev/null || true; }
+          AUTHOR_ROLE=$(role "$AUTHOR")
+          SENDER_ROLE=""; [ "$SENDER_TYPE" = Bot ] || SENDER_ROLE=$(role "$SENDER")
+          since=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+          # Issues opened in the last 24 hours, not by the bot; empty when
+          # the search fails, which holds the report (scripts/repro-cap.py).
+          ALL=""; MINE=""
+          if [[ "$AUTHOR" =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]]; then
+            ALL=$(gh api -X GET search/issues -f q="repo:$GITHUB_REPOSITORY is:issue created:>=$since -author:app/dilux-bot" --jq .total_count 2>/dev/null || true)
+            MINE=$(gh api -X GET search/issues -f q="repo:$GITHUB_REPOSITORY is:issue created:>=$since author:$AUTHOR" --jq .total_count 2>/dev/null || true)
           fi
+          export AUTHOR_ROLE SENDER_ROLE ALL MINE
+          python3 .dx-central/scripts/repro-cap.py decide >> "$GITHUB_OUTPUT"
 
       - name: The high reviewer from the policy
         id: policy

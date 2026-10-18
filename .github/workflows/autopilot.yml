@@ -182,6 +182,8 @@ jobs:
       started: ${{ steps.when.outputs.started }}
       head: ${{ steps.when.outputs.head }}
       default: ${{ steps.when.outputs.default }}
+      budget-spec: ${{ steps.when.outputs.budget-spec }}
+      budget-work: ${{ steps.when.outputs.budget-work }}
     steps:
       - name: dilux-bot token
         id: bot
@@ -342,10 +344,16 @@ jobs:
         if: steps.may.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
+          MODE: ${{ inputs.mode }}
           PR: ${{ steps.what.outputs.pr }}
         run: |
           set -euo pipefail
           echo "started=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          # What the agent's run may cost (#287, policy/autonomy.yml
+          # budgets-usd, the repository's file only lowering it).
+          pol=$(REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml" python3 .dx-central/scripts/autonomy.py policy)
+          work_key=autopilot-work; [ "$MODE" != fix ] || work_key=autopilot-fix
+          { echo "budget-spec=$(jq -r '."budgets-usd"."autopilot-spec" // 3' <<<"$pol")"; echo "budget-work=$(jq -r --arg k "$work_key" '."budgets-usd"[$k] // (if $k == "autopilot-fix" then 10 else 20 end)' <<<"$pol")"; } >> "$GITHUB_OUTPUT"
           echo "default=$(gh repo view "$GITHUB_REPOSITORY" --json defaultBranchRef --jq .defaultBranchRef.name)" >> "$GITHUB_OUTPUT"
           # A fix round's head before it: the end rule tells a round that
           # pushed from one that did not.
@@ -498,6 +506,7 @@ jobs:
           claude_args: |
             --model claude-opus-5-5
             --max-turns 60
+            --max-budget-usd ${{ needs.prep.outputs.budget-spec || '3' }}
             --allowedTools "Bash,Read,Write,Glob,Grep"
 
       - name: What the agent left
@@ -772,6 +781,7 @@ jobs:
           claude_args: |
             --model claude-opus-5-5
             --max-turns 150
+            --max-budget-usd ${{ needs.prep.outputs.budget-work || (inputs.mode == 'fix' && '10' || '20') }}
             --allowedTools "Bash,Read,Edit,MultiEdit,Write,Glob,Grep"
 
       - name: What the agent left

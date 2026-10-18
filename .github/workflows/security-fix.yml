@@ -77,6 +77,7 @@ jobs:
     timeout-minutes: 30
     outputs:
       fixes: ${{ steps.plan.outputs.fixes }}
+      budget: ${{ steps.plan.outputs.budget }}
     steps:
       - name: Only from a private repository
         env:
@@ -107,6 +108,8 @@ jobs:
           unset PRIVATE_KEY
           # Revoked when the step ends, however it ends.
           trap 'curl -fsS -o /dev/null -X DELETE -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/installation/token || true' EXIT
+          # What one fix may cost (#287, policy/autonomy.yml budgets-usd).
+          echo "budget=$(python3 .dx-central/scripts/autonomy.py policy | jq -r '."budgets-usd"."security-fix" // 10')" >> "$GITHUB_OUTPUT"
           fixes=$(python3 .dx-central/scripts/advisory.py plan)
           echo "fixes=$fixes" >> "$GITHUB_OUTPUT"
           echo "Fixes due: $(jq length <<<"$fixes")"
@@ -193,6 +196,7 @@ jobs:
           claude_args: |
             --model claude-opus-5-5
             --max-turns 120
+            --max-budget-usd ${{ needs.plan.outputs.budget || '10' }}
             --allowedTools "Bash,Read,Edit,Write,Glob,Grep"
 
       # The repository's own checks, in this job: they are its code, and

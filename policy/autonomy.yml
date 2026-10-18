@@ -36,6 +36,14 @@ autopilot-rounds: 3
 # the workflow when a run ran out of turns or time with criteria left). Past
 # it, a person takes the pull request.
 autopilot-runs: 5
+# The most one agent's run may cost, in US dollars (#287): Claude stops
+# there (--max-budget-usd), and the run is handed to a person, never
+# continued. A repository may lower each one, never raise it.
+budgets-usd:
+  autopilot-spec: 3
+  autopilot-work: 20
+  autopilot-fix: 10
+  security-fix: 10
 
 constitution:
   - "policy/**"
@@ -76,8 +84,10 @@ person-merges: [security]
 # approving the plan was approving the release, so when the milestone's
 # creator has the admin or maintain role the issue is accepted by policy, as
 # that person's decision, and its release pull request opens. `confirm`: a
-# person accepts it, one last click.
-planned-release: auto
+# person accepts it, one last click. With DX_AUTOPILOT=off it is always
+# `confirm`. `confirm` until a planned release is bound to its plan (#287:
+# only what closes the milestone's issues, the commit that was tested).
+planned-release: confirm
 
 # A security patch on the version in production (#247, scripts/security-
 # patch.py, security-patch.yml) publishes on its own once this window is

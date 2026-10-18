@@ -82,7 +82,7 @@ A change moves only if it passes each gate in order. The deterministic gates alw
 | G7 Merge | G1 to G6 green, not Critical, not labelled `security`, no protected path, within budget | A person merges, with the reason and the URL |
 | G8 Healthy main | The default branch's CI green after the merge | An automatic revert pull request and an issue |
 
-Limits that always cut: rounds per pull request (3), cost per issue, the agent's jobs in parallel, and an organisation switch (`DX_AUTOPILOT=off`) that stops everything autonomous without touching code.
+Limits that always cut: rounds per pull request (3), runs per issue (5), what one agent's run may cost (`budgets-usd`), how many strangers' reports are reproduced a day and by one author, the agent's jobs in parallel, and an organisation switch (`DX_AUTOPILOT=off`) that stops everything autonomous without touching code, a planned release's approval by policy included.
 
 ## What merges on its own
 
@@ -154,6 +154,6 @@ The system learns from its receipts but does not change itself. The receipt reco
 
 ## Release
 
-A release publishes an X.Y.Z version for users; development builds come out on their own. Publishing is a maintainer's decision, taken by accepting a "Release X.Y.Z" issue, which a maintainer opens, or the bot opens when every issue of a version's milestone is closed. Planning is deciding too: with the organisation's `planned-release: auto`, a milestone a maintainer planned is accepted when it is done, as that maintainer's decision; with `confirm`, accepting the issue is the last click. Once accepted, the agent opens the release pull request, it passes the gates and merges once its tree is proved to be exactly the release command's (no second approval: the decision was the acceptance), and the publishing job checks that the issue was accepted and that the version matches.
+A release publishes an X.Y.Z version for users; development builds come out on their own. Publishing is a maintainer's decision, taken by accepting a "Release X.Y.Z" issue, which a maintainer opens, or the bot opens when every issue of a version's milestone is closed. Planning is deciding too: with the organisation's `planned-release: auto`, a milestone a maintainer planned is accepted when it is done, as that maintainer's decision; with `confirm`, accepting the issue is the last click. The organisation runs `confirm` until a planned release is bound to its plan (#287), and always while `DX_AUTOPILOT` is off. Once accepted, the agent opens the release pull request, it passes the gates and merges once its tree is proved to be exactly the release command's (no second approval: the decision was the acceptance), and the publishing job checks that the issue was accepted and that the version matches.
 
 One release is not approved by a person: a **security patch** (#247). A private report that is reproduced and fixed in private becomes a patch on the version in production (the highest published release, checked against where the kind publishes it), holding only the fix. The maintainers are told when it will publish, and it publishes on its own after a veto window (6 hours unless the organisation's policy says otherwise) unless one of them holds it. The window runs in private, before the fix is public; the patch is then released, the advisory published, and the fix carried into the default branch.
