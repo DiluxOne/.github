@@ -388,6 +388,8 @@ def self_test():
           (pl["summary"], "Steps: ..." in pl["description"], "by @alice" in pl["description"], pl["vulnerabilities"][0]["package"], pl.get("credits")),
           ("XSS in the title", True, True, {"ecosystem": "other", "name": "diluxone-x"}, [{"login": "alice", "type": "reporter"}]))
     check("#287 intake: no login, no credit", "credits" in intake_payload("t", "b", "DiluxOne/x", "", "u"), False)
+    a12 = {"description": intake_payload("t", "b", "DiluxOne/x", "", "https://github.com/o/s/issues/12")["description"]}
+    check("#287 intake: an advisory is found by its own issue's URL, whole", (opened_for(a12, "https://github.com/o/s/issues/12"), opened_for(a12, "https://github.com/o/s/issues/1")), (True, False))
     pend = unvetted([{"user": {"login": org.BOT}, "state": "open", "body": UNVETTED_MARK.format(repo="o/r", ghsa="GHSA-2345-6789-cfgh") + "\nx"},
                      {"user": {"login": "reporter"}, "state": "open", "body": UNVETTED_MARK.format(repo="o/r", ghsa="GHSA-jmpq-rvwx-2345")}])
     check("#287 unvetted: what the bot says here, never the advisory's text, keeps a draft a report",
@@ -421,6 +423,13 @@ def intake_payload(title, text, repo, reporter, issue_url):
     return out
 
 
+def opened_for(advisory, issue_url):
+    """Whether the advisory is the one the intake opened for this issue: its
+    text holds the note intake_payload() writes, with the URL whole (issue
+    1's is no part of issue 12's). Pure."""
+    return bool(issue_url) and f"({issue_url}, private)" in (advisory.get("description") or "")
+
+
 def intake(central, adv_token):
     """Every open issue labelled security:intake here: its advisory opened,
     its author invited, the issue closed. Returns the lines it says."""
@@ -452,7 +461,7 @@ def intake(central, adv_token):
             said.append(f"#{n}: the drafts of {repo} could not be read; the next run tries again")
             continue
         listed = [json.loads(l) for l in (drafts.stdout or "").splitlines() if l.strip()]
-        earlier = next((a for a in listed if issue.get("html_url", "") and issue["html_url"] in (a.get("description") or "")), None)
+        earlier = next((a for a in listed if opened_for(a, issue.get("html_url", ""))), None)
         if earlier:
             # Marked unvetted before the issue closes, or it stays open.
             if not ensure_unvetted(central, repo, earlier["ghsa_id"], "it came from a public issue the triage moved here."):
