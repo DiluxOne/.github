@@ -393,12 +393,13 @@ def intake(central, adv_token):
         payload = intake_payload(issue.get("title"), issue.get("body"), repo, reporter, issue.get("html_url", ""))
         # Opened already, by a run that stopped before it closed the issue:
         # found by this issue's link in its text, never opened twice.
-        drafts = subprocess.run(["gh", "api", f"repos/{repo}/security-advisories?state=draft&per_page=100"], capture_output=True, text=True,
+        drafts = subprocess.run(["gh", "api", "--paginate", "--jq", ".[] | @json", f"repos/{repo}/security-advisories?per_page=100"], capture_output=True, text=True,
                                 env=dict(os.environ, GH_TOKEN=adv_token))
         if drafts.returncode != 0:
             said.append(f"#{n}: the drafts of {repo} could not be read; the next run tries again")
             continue
-        earlier = next((a for a in json.loads(drafts.stdout or "[]") if issue.get("html_url", "") and issue["html_url"] in (a.get("description") or "")), None)
+        listed = [json.loads(l) for l in (drafts.stdout or "").splitlines() if l.strip()]
+        earlier = next((a for a in listed if issue.get("html_url", "") and issue["html_url"] in (a.get("description") or "")), None)
         if earlier:
             gh("issue", "comment", str(n), "--repo", central, "--body", f"Its draft security advisory is {earlier.get('html_url')}.\n\n{AI}")
             gh("issue", "close", str(n), "--repo", central, "--reason", "completed")

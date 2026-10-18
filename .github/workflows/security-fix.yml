@@ -378,7 +378,7 @@ jobs:
           # scripts/advisory.py UNVETTED) is confirmed by taking out its line.
           desc=$(gh api "repos/$REPO/security-advisories/$GHSA" --jq '.description // ""' 2>/dev/null || true)
           mark=$(python3 -c 'import sys; sys.path.insert(0, ".dx-central/scripts"); import importlib.util as u; s = u.spec_from_file_location("a", ".dx-central/scripts/advisory.py"); m = u.module_from_spec(s); s.loader.exec_module(m); print(m.UNVETTED)')
-          if [ "$now" = draft ] && [[ "$desc" == *"$mark"* ]]; then
+          if [ -n "$mark" ] && [ "$now" = draft ] && [[ "$desc" == *"$mark"* ]]; then
             if jq -n --arg d "${desc//"$mark"/}" '{description: $d}' | gh api -X PATCH "repos/$REPO/security-advisories/$GHSA" --input - >/dev/null; then
               echo "$GHSA confirmed."
             else

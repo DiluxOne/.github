@@ -311,6 +311,7 @@ def self_test():
     check("bugs: new, not security (and only when it says so), blocker or major, most severe first, every one",
           [b["file"] for b in got], ["b.php", "f.php", "g.php"])
     vs = vulns(prevb, found, "o/r")
+    check("#287 the unvetted line is the one advisory.py reads", UNVETTED in open(os.path.join(HERE, "advisory.py"), encoding="utf-8").read(), True)
     check("#287 vulns: new security findings, blocker or major, as a draft advisory credited to the review",
           ([v["file"] for v in vs], vs[0]["advisory"]["severity"], FOUND_BY in vs[0]["advisory"]["description"], vs[0]["advisory"]["vulnerabilities"][0]["package"]["name"]),
           (["c.php"], "medium", True, "r"))
