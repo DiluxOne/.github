@@ -169,15 +169,10 @@ jobs:
           REF: ${{ inputs.central-ref || job.workflow_sha }}
         run: |
           set -euo pipefail
-          mkdir -p .dx-central/scripts .dx-central/policy
-          base="https://raw.githubusercontent.com/DiluxOne/.github/$REF"
-          curl -fsSL --retry 3 "$base/scripts/issue-schema.py" -o .dx-central/scripts/issue-schema.py
-          curl -fsSL --retry 3 "$base/scripts/receipts.py" -o .dx-central/scripts/receipts.py
-          # The assignee is bookkeeping: a ref without the script skips it,
-          # never the check and the seal.
-          curl -fsSL --retry 3 "$base/scripts/issue-assignee.sh" -o .dx-central/scripts/issue-assignee.sh \
-            || echo "::warning::scripts/issue-assignee.sh is not at $REF; the issue is not assigned."
-          curl -fsSL --retry 3 "$base/policy/issue-schema.yml" -o .dx-central/policy/issue-schema.yml
+          # The organisation's scripts as one checkout at the ref, so whatever
+          # a script loads is there (receipts.py loads autopilot.py for the
+          # board of an autopilot pull request).
+          git init -q .dx-central && git -C .dx-central fetch -q --depth 1 https://github.com/DiluxOne/.github "$REF" && git -C .dx-central checkout -q FETCH_HEAD
           if [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then echo "ref=${REF:0:12}" >> "$GITHUB_OUTPUT"; else echo "ref=$(git ls-remote https://github.com/DiluxOne/.github "$REF" "$REF^{}" | tail -1 | cut -c1-12)" >> "$GITHUB_OUTPUT"; fi
       - name: dilux-bot token
         id: bot
@@ -313,9 +308,10 @@ jobs:
           REF: ${{ inputs.central-ref || job.workflow_sha }}
         run: |
           set -euo pipefail
-          mkdir -p .dx-central/scripts .dx-central/policy
-          base="https://raw.githubusercontent.com/DiluxOne/.github/$REF"
-          for f in scripts/issue-schema.py scripts/receipts.py scripts/repro-lane.py policy/issue-schema.yml; do curl -fsSL --retry 3 "$base/$f" -o ".dx-central/$f"; done
+          # The organisation's scripts as one checkout at the ref, so whatever
+          # a script loads is there (receipts.py loads autopilot.py for the
+          # board of an autopilot pull request).
+          git init -q .dx-central && git -C .dx-central fetch -q --depth 1 https://github.com/DiluxOne/.github "$REF" && git -C .dx-central checkout -q FETCH_HEAD
           if [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then echo "ref=${REF:0:12}" >> "$GITHUB_OUTPUT"; else echo "ref=$(git ls-remote https://github.com/DiluxOne/.github "$REF" "$REF^{}" | tail -1 | cut -c1-12)" >> "$GITHUB_OUTPUT"; fi
       - name: dilux-bot token
         id: bot

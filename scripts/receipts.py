@@ -354,6 +354,15 @@ Normal
         r10 = sp.run([sys.executable, os.path.abspath(__file__), "verify-prd"], env=dict(env, NUMBER="10"), capture_output=True, text=True)
         check("cli: a seal that cannot be read exits 2", r10.returncode, 2)
         del os.environ["RECEIPTS_FIXTURE"]
+    # A job that runs this script reads the organisation's scripts whole:
+    # it loads autopilot.py for an autopilot pull request's board (#306).
+    try:
+        import yaml
+        wf = yaml.safe_load(open(os.path.join(HERE, "..", ".github", "workflows", "issue-accepted.yml"), encoding="utf-8"))
+        runs = {name: json.dumps(job) for name, job in wf["jobs"].items() if "receipts.py" in json.dumps(job)}
+        check("#306 every job that runs receipts.py checks the scripts out whole", sorted(n for n, t in runs.items() if "git init -q .dx-central" not in t), [])
+    except ImportError:
+        print("skip the workflow's wiring (no PyYAML here)")
     if not failed:
         print("all tests passed")
     return failed
