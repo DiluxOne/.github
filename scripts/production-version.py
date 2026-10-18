@@ -8,7 +8,9 @@ pre-release, whose tag is a plain X.Y.Z (with or without a `v`), the highest
 such one. Where the repository's kind publishes somewhere else as well
 (`release.stable` in its pack: wordpress.org's stable version for a
 WordPress plugin), that place must say the same version; when it does not,
-there is no version in production to patch, and a person settles it.
+there is no version in production to patch, and a person settles it. A
+project that place does not have at all (a plugin not on wordpress.org,
+#315) publishes nowhere else: its last GitHub release is in production.
 
   production-version.py --kind KIND [--repo OWNER/REPO] [--slug SLUG] [--json]
       prints the version, its tag and the patch after it; exit 1, saying
@@ -77,8 +79,10 @@ def pack_stable(kind):
 
 
 def fetch_stable(spec, slug, opener=urllib.request.urlopen):
-    """The version the pack's place publishes: "" when it publishes nothing
-    (404 or no field); an error that is not a 404 raises."""
+    """The version the pack's place publishes: None when it has no such
+    project (a 404 or an error answer: the repository publishes nowhere
+    else, #315), "" when it has one with no version; an error that is not a
+    404 raises."""
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug or ""):
         raise ValueError(f"not a slug: {slug!r}")
     url = spec["url"].replace("{slug}", slug)
@@ -87,10 +91,10 @@ def fetch_stable(spec, slug, opener=urllib.request.urlopen):
             data = json.loads(resp.read().decode("utf-8") or "{}")
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
-            return ""
+            return None
         raise
     if not isinstance(data, dict) or data.get("error"):
-        return ""
+        return None
     return str(data.get(spec.get("field") or "version") or "")
 
 
@@ -134,10 +138,12 @@ def self_test():
     seen = []
     check("fetch_stable: the field, from the url with the slug", fetch_stable(spec, "diluxone-users", lambda u, timeout: seen.append(u) or Resp('{"version": "1.2.0"}')), "1.2.0")
     check("fetch_stable: the slug goes into the url", seen, ["https://x/?s=diluxone-users"])
-    check("fetch_stable: an error answer is nothing published", fetch_stable(spec, "a", lambda u, timeout: Resp('{"error": "Plugin not found."}')), "")
+    check("fetch_stable: an error answer is a plugin that is not there, so it publishes nowhere else", fetch_stable(spec, "a", lambda u, timeout: Resp('{"error": "Plugin not found."}')), None)
+    check("fetch_stable: there, but with no version, is nothing published", fetch_stable(spec, "a", lambda u, timeout: Resp('{"name": "x"}')), "")
     def nf(u, timeout):
         raise urllib.error.HTTPError(u, 404, "nf", {}, None)
-    check("fetch_stable: a 404 is nothing published", fetch_stable(spec, "a", nf), "")
+    check("fetch_stable: a 404 is a plugin that is not there", fetch_stable(spec, "a", nf), None)
+    check("#315: a plugin not on the other place is in production at its last GitHub release", decide(rel, fetch_stable(spec, "a", nf))[0]["version"], "1.10.2")
     def boom(u, timeout):
         raise urllib.error.HTTPError(u, 502, "bad", {}, None)
     try:
