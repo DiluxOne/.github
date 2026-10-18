@@ -34,7 +34,7 @@ archived and not excluded in repos.yml:
             is left as it is. Then its rulesets the organisation's cover
             (another one on the default branch, a tag ruleset the same as the
             organisation's) are deleted.
-  callers   the workflows that call the shared ones, held job for job to
+  callers   the workflows that call the shared ones, held job for job (and trigger for trigger, #324) to
             the templates in workflow-templates/ (repos.yml `callers`): the
             ones in `every-repository`, and any other whose shared workflows
             the repository calls. Each template job must be there with the
@@ -376,13 +376,16 @@ def sync_callers(repo, conf, dry):
         return
     moved = {p: to_major(t, old, current) for p, t in files.items()} if old else dict(files)
     major = (old, current) if old else None
+    branch = (repo.get("defaultBranchRef") or {}).get("name") or "main"
+    parsed_moved = {p: (t, parse_yaml(t)) for p, t in moved.items()}
+    shared = shared_callers([(n, d, caller_for(dict(d, _name=n), parsed_moved, False)) for n, (_, d) in templates(major).items()])
     open_prs = json.loads(gh("pr", "list", "--repo", full, "--state", "open", "--limit", "500", "--json", "headRefName").stdout)
     if any(p["headRefName"].endswith("-org-workflow-callers") for p in open_prs):
         print("  a pull request for the workflow callers is already open; skipped")
         return
     owned = (conf.get("callers") or {}).get("repository-owned") or {}
     wanted, notes, stuck = {}, [], set()
-    for name, path, found in callers_drift(moved, conf, major=major):
+    for name, path, found in callers_drift(moved, conf, major=major, default=branch):
         if not path:
             notes.append(f"no caller of workflow-templates/{name}: add it from the template by hand (docs/adopting.md)")
             continue
@@ -391,7 +394,14 @@ def sync_callers(repo, conf, dry):
         text = to_major(open(os.path.join(TEMPLATES, name), encoding="utf-8").read(), old, current)
         # A file that is the caller of two templates takes both rewrites.
         new, missing = rewrite_caller(wanted.get(path, moved[path]), text, set(owned.get(name) or []))
-        left = [f for n, p, f in callers_drift({**moved, path: new}, conf, major=major) if p == path and n == name] if new else []
+        # And the template's triggers (#324), unless the file has its own.
+        triggered = (new if path in shared else with_triggers(new, text, branch)) if new is not None else None
+        if new is not None and triggered is None:
+            notes.append(f"{path}: has triggers of its own that workflow-templates/{name} lacks; bring them in step by hand")
+            stuck.add(path)
+            continue
+        new = triggered if new is not None else new
+        left = [f for n, p, f in callers_drift({**moved, path: new}, conf, major=major, default=branch) if p == path and n == name] if new else []
         if new is None:
             notes.append(f"{path}: no job of the repository gives {', '.join(missing)}; bring it in step by hand")
             stuck.add(path)
@@ -424,7 +434,7 @@ def sync_callers(repo, conf, dry):
             sys.stdout.writelines("    " + l for l in difflib.unified_diff(files[path].splitlines(True), new.splitlines(True), path, path))
         return
     default = (repo.get("defaultBranchRef") or {}).get("name") or "main"
-    templates_named = ", ".join(sorted({f"workflow-templates/{n}" for n, p, _ in callers_drift(moved, conf, major=major) if p in wanted})) or "the templates"
+    templates_named = ", ".join(sorted({f"workflow-templates/{n}" for n, p, _ in callers_drift(moved, conf, major=major, default=branch) if p in wanted})) or "the templates"
     to = f"@v{current}"
     move = (f" It also moves every call of the shared workflows from {', '.join('@v' + str(v) for v in old)} to {to}, the repository's own jobs too: "
             f"that major asks a repository for nothing but its callers (docs/migrating.md)." if old else "")
@@ -505,7 +515,7 @@ def workflow_texts(full):
 
 
 # The callers: each repository's workflows that call the shared ones, held
-# job for job to the templates in workflow-templates/ (repos.yml `callers`).
+# job for job, and trigger for trigger (#324), to the templates in workflow-templates/ (repos.yml `callers`).
 
 TEMPLATES = os.path.join(CENTRAL, "workflow-templates")
 SHARED_PREFIX = "DiluxOne/.github/.github/workflows/"
@@ -624,23 +634,38 @@ def job_differences(name, want, have, owned, central=False):
     return [f"job `{name}` {f}" for f in found]
 
 
-def callers_drift(files, conf, central=False, major=None):
+def shared_callers(found_for):
+    """The paths that are the caller of more than one template, from
+    [(template, data, path)]: their triggers are the union of those
+    templates', so they are never compared with one (#324). Pure."""
+    paths = [p for _, _, p in found_for if p]
+    return {p for p in paths if paths.count(p) > 1}
+
+
+def callers_drift(files, conf, central=False, major=None, default="main"):
     """What differs in a repository's callers from the templates that apply
     to it, as [(template, caller path or None, [phrases])], only those that
-    differ. `files` is {path: text}; major, as templates() takes it."""
+    differ. `files` is {path: text}; major, as templates() takes it; default,
+    the repository's default branch (a template's `$default-branch`)."""
     spec = conf.get("callers") or {}
     every, owned = set(spec.get("every-repository") or []), spec.get("repository-owned") or {}
     parsed = {p: (t, parse_yaml(t)) for p, t in files.items()}
     out = []
-    for name, (_, data) in templates(major).items():
+    found_for = [(name, data, caller_for(dict(data, _name=name), parsed, central)) for name, (_, data) in templates(major).items()]
+    shared = shared_callers(found_for)
+    for name, data, path in found_for:
         data = dict(data, _name=name)
-        path = caller_for(data, parsed, central)
         if path is None:
             if name in every:
                 out.append((name, None, [f"has no caller of `workflow-templates/{name}`"]))
             continue
         mine = jobs_of(parsed[path][1])
         found = []
+        # Its triggers too (#324), unless the file is the caller of two
+        # templates: then they are the union of both.
+        if path not in shared and not central:
+            missing, extra = trigger_gaps(triggers(parsed[path][1]), triggers(data), default)
+            found += missing + [f"{e}, which the template does not (bring it in step by hand)" for e in extra]
         for job, want in jobs_of(data).items():
             if job not in mine:
                 found.append(f"lacks the job `{job}`")
@@ -674,6 +699,80 @@ KEY_RE = re.compile(r"^    ([A-Za-z0-9_-]+):")
 INPUT_RE = re.compile(r"^      ([A-Za-z0-9_-]+):")
 # What job_differences() compares: a rewrite takes these from the template.
 COMPARED = ("uses", "needs", "if", "permissions", "with", "secrets")
+
+
+def triggers(data):
+    """A workflow's `on:` as {event: settings} (#324): a string or a list of
+    events reads as events with no settings. YAML 1.1 reads `on` as true."""
+    on = (data or {}).get("on", (data or {}).get(True)) if isinstance(data, dict) else None
+    if isinstance(on, str):
+        return {on: None}
+    if isinstance(on, list):
+        return {e: None for e in on}
+    return dict(on or {})
+
+
+def _as_list(v):
+    return [v] if isinstance(v, str) else list(v or [])
+
+
+def trigger_gaps(have, want, default):
+    """([what the caller lacks], [what it has that the template does not])
+    between two triggers(), the template's `$default-branch` read as the
+    repository's default branch. Pure."""
+    missing, extra = [], []
+    sub = lambda x: default if x == "$default-branch" else x
+    for event in want:
+        if event not in have:
+            missing.append(f"lacks the trigger `{event}`")
+            continue
+        w, h = want[event] or {}, have[event] or {}
+        if not isinstance(w, dict) or not isinstance(h, dict):
+            continue
+        for key in set(w) | set(h):
+            if key == "inputs":
+                wi, hi = set(w.get(key) or {}), set(h.get(key) or {})
+                missing += [f"`{event}` lacks the input `{i}`" for i in sorted(wi - hi)]
+                extra += [f"`{event}` has the input `{i}`" for i in sorted(hi - wi)]
+                continue
+            wl, hl = [sub(x) for x in _as_list(w.get(key))], [sub(x) for x in _as_list(h.get(key))]
+            missing += [f"`{event}.{key}` lacks `{x}`" for x in wl if x not in hl]
+            extra += [f"`{event}.{key}` has `{x}`" for x in hl if x not in wl]
+    extra += [f"has the trigger `{e}`" for e in have if e not in want]
+    return missing, extra
+
+
+def on_block(lines):
+    """(start, end) of the `on:` block in a workflow's lines: its key and
+    every line under it, up to the next line at column 0 that is not blank,
+    trailing blank lines left out; None when there is none."""
+    start = next((i for i, l in enumerate(lines) if re.match(r"^(on|\"on\"|'on'):", l)), None)
+    if start is None:
+        return None
+    end = start + 1
+    while end < len(lines) and (not lines[end].strip() or lines[end][0] in " \t"):
+        end += 1
+    while end > start + 1 and not lines[end - 1].strip():
+        end -= 1
+    return start, end
+
+
+def with_triggers(text, template_text, default):
+    """The caller's text with its template's triggers (#324), the default
+    branch for `$default-branch`; the text itself when they are in step;
+    None when the caller has a trigger of its own the template lacks (a
+    person brings those in step)."""
+    missing, extra = trigger_gaps(triggers(parse_yaml(text)), triggers(parse_yaml(template_text)), default)
+    if extra:
+        return None
+    if not missing:
+        return text
+    mine, theirs = text.splitlines(keepends=True), template_text.splitlines(keepends=True)
+    a, b = on_block(mine), on_block(theirs)
+    if not a or not b:
+        return None
+    block = "".join(theirs[b[0]:b[1]]).replace("$default-branch", default)
+    return "".join(mine[:a[0]]) + block + "".join(mine[a[1]:])
 
 
 def job_blocks(text):
@@ -1210,7 +1309,7 @@ def drift(repo, conf, labels, block, current=0):
             # once it is on the current one.
             try:
                 central = repo["name"] == ".github"
-                found += caller_lines(callers_drift(files, conf, central), central)
+                found += caller_lines(callers_drift(files, conf, central, default=default or "main"), central)
             except ValueError as exc:  # a workflow that does not parse is reported, not skipped
                 found.append(f"its workflow callers could not be compared: {str(exc)[:200]}")
         for w, r in pinned_calls(texts):
@@ -1280,6 +1379,28 @@ def drift(repo, conf, labels, block, current=0):
     elif system is not None and system not in design_systems():
         found.append(f"its design system `{system}` (repos.yml) is not one of design-systems/")
     return found
+
+
+def triggers_test(check):
+    """#324: a caller's triggers against its template's."""
+    tpl = open(os.path.join(TEMPLATES, "release-wp.yml"), encoding="utf-8").read()
+    old_on = "on:\n  push:\n    branches: [main]\n    # X.Y.Z tags only.\n    tags: ['[0-9]+.[0-9]+.[0-9]+']\n"
+    caller = "name: Release\n\n" + old_on + "\n# Mine: this header stays.\n\npermissions:\n  contents: read\n\njobs:\n  release:\n    uses: x\n"
+    missing, extra = trigger_gaps(triggers(parse_yaml(caller)), triggers(parse_yaml(tpl)), "main")
+    check("#324 triggers: the ones a caller lacks are found, its own extra none",
+          extra == [] and any("security/" in m for m in missing) and any("`release`" in m for m in missing) and any("`workflow_dispatch`" in m for m in missing), (missing, extra))
+    new = with_triggers(caller, tpl, "main")
+    got = triggers(parse_yaml(new or ""))
+    check("#324 triggers: written from the template, its default branch for $default-branch, the rest of the head kept",
+          new is not None and "$default-branch" not in new and got.get("push", {}).get("branches") == ["main", "security/[0-9]+.[0-9]+.[0-9]+"]
+          and "release" in got and "# Mine: this header stays." in new and new.startswith("name: Release\n") and "jobs:\n  release:\n    uses: x\n" in new, new)
+    check("#324 triggers: a caller already in step is left as it is", with_triggers(new or "", tpl, "main") == new, new)
+    trunk = caller.replace("branches: [main]", "branches: [trunk]")
+    check("#324 triggers: the repository's default branch, not main", "branches: [trunk, " in (with_triggers(trunk, tpl, "trunk") or ""), with_triggers(trunk, tpl, "trunk"))
+    own = caller.replace("    tags:", "    paths: ['src/**']\n    tags:")
+    m2, e2 = trigger_gaps(triggers(parse_yaml(own)), triggers(parse_yaml(tpl)), "main")
+    check("#324 triggers: a trigger of the repository's own the template lacks stops the rewrite, and is said",
+          (with_triggers(own, tpl, "main"), bool(e2)), (None, True))
 
 
 def callers_test(check, conf):
@@ -1804,6 +1925,7 @@ def self_test():
     check("superseded: a disabled \"own checks\" covers nothing", superseded("r", [mine[0], dict(own_rs, enforcement="disabled")], org, pipe) == [], "")
     paused = [dict(o, enforcement="evaluate") for o in org]
     check("superseded: nothing when the organisation's are not active", superseded("r", mine, paused, pipe) == [], superseded("r", mine, paused, pipe))
+    triggers_test(check)
     callers_test(check, conf)
     dependabot_test(check, conf, labels, block_file)
     # The org-sync lane (#155): a run from a merged commit marks its issue,
