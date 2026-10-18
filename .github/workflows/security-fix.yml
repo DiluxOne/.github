@@ -109,7 +109,7 @@ jobs:
           OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
-          [ -n "$SECURITY_CLIENT_ID" ] && [ -n "$SECURITY_KEY" ] || { echo "::error::dilux-security's key (DILUX_SECURITY_PRIVATE_KEY, DILUX_SECURITY_CLIENT_ID) is not set here: no advisory is read."; exit 1; }
+          if ! { [ -n "$SECURITY_CLIENT_ID" ] && [ -n "$SECURITY_KEY" ]; }; then echo "::error::dilux-security's key (DILUX_SECURITY_PRIVATE_KEY, DILUX_SECURITY_CLIENT_ID) is not set here: no advisory is read."; exit 1; fi
           # The issues here, to claim, with dilux-bot; every repository's
           # advisories, to read, with dilux-security.
           GH_TOKEN=$(REPOSITORIES="${GITHUB_REPOSITORY#*/}" bash .dx-central/scripts/app-token.sh mint '{"issues":"write","metadata":"read"}')

@@ -98,7 +98,7 @@ jobs:
           OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
-          [ -n "$SECURITY_CLIENT_ID" ] && [ -n "$SECURITY_KEY" ] || { echo "::error::dilux-security's key (DILUX_SECURITY_PRIVATE_KEY, DILUX_SECURITY_CLIENT_ID) is not set here: no patch moves."; exit 1; }
+          if ! { [ -n "$SECURITY_CLIENT_ID" ] && [ -n "$SECURITY_KEY" ]; }; then echo "::error::dilux-security's key (DILUX_SECURITY_PRIVATE_KEY, DILUX_SECURITY_CLIENT_ID) is not set here: no patch moves."; exit 1; fi
           # This repository's issues, with dilux-bot; the advisories, with
           # dilux-security, which alone may read and publish them.
           GH_TOKEN=$(REPOSITORIES="${GITHUB_REPOSITORY#*/}" bash .dx-central/scripts/app-token.sh mint '{"issues":"read","metadata":"read"}')
@@ -507,14 +507,15 @@ jobs:
           moved=$(sed -n 's/^moved=//p' "$RUNNER_TEMP/in/build" | head -1)
           if [ -n "$moved" ]; then
             # A release in between: it is announced again, for the new patch.
-            GH_TOKEN="$ISSUE_TOKEN" gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label patch:ready --remove-label patch:go >/dev/null
+            GH_TOKEN="$ISSUE_TOKEN" gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label patch:ready >/dev/null
+            GH_TOKEN="$ISSUE_TOKEN" gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label patch:go >/dev/null 2>&1 || true
             say "The version in production changed after it was announced: the patch is now $moved. It is built and announced again, and needs a new \`patch:go\`."
             exit 0
           fi
-          [ -n "$version" ] && [ -s "$RUNNER_TEMP/in/fix.patch" ] || fail "It was approved, but the patch could not be built again (the version in production moved, or the fix no longer applies). Nothing was published; a maintainer takes it from here."
+          if ! { [ -n "$version" ] && [ -s "$RUNNER_TEMP/in/fix.patch" ]; }; then fail "It was approved, but the patch could not be built again (the version in production moved, or the fix no longer applies). Nothing was published; a maintainer takes it from here."; fi
           # The push token first, and the key out of the environment before
           # anything of the public repository is touched.
-          [ -n "$CLIENT_ID" ] && [ -n "$PRIVATE_KEY" ] || { echo "::error::dilux-security's key is not set here: nothing pushed."; exit 1; }
+          if ! { [ -n "$CLIENT_ID" ] && [ -n "$PRIVATE_KEY" ]; }; then echo "::error::dilux-security's key is not set here: nothing pushed."; exit 1; fi
           export REPOSITORIES="${REPO#*/}"
           GH_TOKEN=$(bash "$GITHUB_WORKSPACE/.dx-central/scripts/app-token.sh" mint '{"contents":"write","metadata":"read"}')
           export GH_TOKEN
@@ -527,7 +528,7 @@ jobs:
           cd "$RUNNER_TEMP/repo"
           bash "$GITHUB_WORKSPACE/.dx-central/scripts/security-patch-build.sh" "$tag" "$version" "$RUNNER_TEMP/in/fix.patch" "A security fix ($GHSA)."
           tree=$(git rev-parse 'HEAD^{tree}')
-          [ -n "$ANNOUNCED" ] && [ "$tree" = "$ANNOUNCED" ] || fail "The tree built now ($tree) is not the one announced and approved (${ANNOUNCED:-none}). Nothing was published; a maintainer takes it from here."
+          if ! { [ -n "$ANNOUNCED" ] && [ "$tree" = "$ANNOUNCED" ]; }; then fail "The tree built now ($tree) is not the one announced and approved (${ANNOUNCED:-none}). Nothing was published; a maintainer takes it from here."; fi
           # patch:go read again, last, with who added it: still a
           # maintainer's, after the announcement; removing it stops the push.
           GH_TOKEN="$ISSUE_TOKEN" gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE/timeline" --paginate --jq '[.[] | select(.event == "labeled") | {event, label: {name: .label.name}, actor: {login: .actor.login}, created_at}]' | jq -s 'add // []' > "$RUNNER_TEMP/events.json" \
@@ -540,7 +541,7 @@ jobs:
           labels=$(GH_TOKEN="$ISSUE_TOKEN" gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | join(",")') \
             || { echo "::error::#$ISSUE's labels could not be read: nothing pushed."; exit 1; }
           go=$(EVENTS="$(cat "$RUNNER_TEMP/events.json")" AT="$AT" ROLES="$roles" python3 "$GITHUB_WORKSPACE/.dx-central/scripts/security-patch.py" go)
-          [[ ",$labels," == *,patch:go,* ]] && [ "$go" = ok ] || { echo "#$ISSUE: not approved now (${go:-no patch:go}): nothing pushed."; exit 0; }
+          if ! { [[ ",$labels," == *,patch:go,* ]] && [ "$go" = ok ]; }; then echo "#$ISSUE: not approved now (${go:-no patch:go}): nothing pushed."; exit 0; fi
           # The tag's commit (an annotated tag's ref names the tag object).
           onto=$(gh api "repos/$REPO/commits/$tag" --jq .sha)
           # --force: a push that failed half way is redone from the tag.
