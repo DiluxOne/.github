@@ -4,7 +4,8 @@
 # locks a security report. Both triage jobs act here. A vulnerability posted
 # in a public repository's issue (#287) is moved out of sight, into the
 # organisation's private security repository (SECURITY_REPO, with
-# SECURITY_TOKEN, which writes the issues of both), where a private security
+# SECURITY_TOKEN, which writes the issues and the contents of both, as an
+# App needs to transfer an issue), where a private security
 # advisory is opened for it, its author credited (advisory.py intake); the
 # author does not have to delete anything. If the move fails, the issue is
 # locked and the author asked to report it privately, as before.
