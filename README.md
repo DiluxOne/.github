@@ -120,6 +120,7 @@ flowchart TB
 | Read the rules every change meets | [rules/README.md](rules/README.md) |
 | Add a review rule or a kind of project | [kinds/README.md](kinds/README.md) |
 | Change this repository and ship it | [docs/maintaining.md](docs/maintaining.md) |
+| Know what a version of this engine means, and pin it | [docs/versioning.md](docs/versioning.md), [CHANGELOG.md](CHANGELOG.md) |
 | Report a security problem | [SECURITY.md](SECURITY.md) |
 | See where this is going, phase by phase | [docs/plans/autonomy.md](docs/plans/autonomy.md) |
 | Read the story of how we build software | [Cómo construimos software en DiluxOne](https://diluxone.com/es/blog/como-construimos-software/) · [How we build software](https://diluxone.com/blog/how-we-build-software/) |
