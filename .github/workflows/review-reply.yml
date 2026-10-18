@@ -11,7 +11,9 @@ name: Claude review reply
 # Only people who can write to the repository can wake the bot (checked
 # against the repository, not against author_association), and only on pull
 # requests from branches of the repository itself: a fork's code never runs
-# with the organisation's keys.
+# with the organisation's keys. Anyone may comment on the autopilot's
+# question (#287): someone who is not a maintainer is not an answer, and
+# their comments are summarised for the maintainers by a model with no tools.
 #
 #   on:
 #     issue_comment:
@@ -62,7 +64,7 @@ jobs:
     name: The autopilot's answer
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     if: github.event_name == 'issue_comment' && github.event.action == 'created' && github.event.sender.type == 'User'
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: dilux-bot token
         id: bot
@@ -150,6 +152,9 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
           github_token: ${{ github.token }}
+          # A stranger's comment started it: the action allows that only when
+          # told, and this model has no tool to do anything with it.
+          allowed_non_write_users: '*'
           prompt: ${{ steps.others.outputs.prompt }}
           claude_args: |
             --model claude-sonnet-5-5
@@ -169,12 +174,14 @@ jobs:
           set -euo pipefail
           COMMENTS="$RUNNER_TEMP/comments.json" WRITERS="$RUNNER_TEMP/writers.txt" python3 .dx-central/scripts/autopilot.py others-comment > "$RUNNER_TEMP/others.md"
           [ -s "$RUNNER_TEMP/others.md" ] || { echo "Nothing argued about the question."; exit 0; }
-          # One comment, kept up to date.
-          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate --jq '.[] | select(.user.login == "dilux-bot[bot]" and (.body | startswith("<!-- dx-autopilot-others -->"))) | .id' | tail -1)
+          # One comment a question, kept up to date.
+          for_line=$(sed -n 2p "$RUNNER_TEMP/others.md")
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate --jq '.[] | select(.user.login == "dilux-bot[bot]" and (.body | startswith("<!-- dx-autopilot-others -->"))) | [.id, .body] | @json' \
+            | while IFS= read -r c; do jq -r --arg f "$for_line" 'select(.[1] | contains($f)) | .[0]' <<<"$c"; done | tail -1)
           if [ -n "$id" ]; then
             gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -F body=@"$RUNNER_TEMP/others.md" >/dev/null
           else
-            gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/others.md" >/dev/null
+            gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@"$RUNNER_TEMP/others.md" >/dev/null
           fi
 
   reply:
