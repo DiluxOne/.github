@@ -6,7 +6,9 @@ name: Security fixes
 # carry embargoed vulnerabilities, and the shared workflow refuses to run
 # from a public one. An advisory in triage or draft starts its fix, which
 # lands here as an issue and a branch; one in triage is triaged first and
-# moved to draft when it is reproduced and fixed. security-patch.yml then
+# moved to draft when it is reproduced and fixed; a fix whose checks fail
+# goes back to the agent when a maintainer comments what to change and adds
+# `fix:retry` to its issue here. security-patch.yml then
 # publishes it once a maintainer approves it (DiluxOne/.github#247, #287).
 # The advisories are read and moved with dilux-security's key, which lives
 # only here.
