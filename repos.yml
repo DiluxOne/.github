@@ -149,7 +149,13 @@ dependabot:
 # their values are the repository's, never compared and always kept. An input
 # a repository passes that its template does not set (main-file,
 # requires-plugins-from), and a job of its own, are its own too.
+# `migrates-from` names the older majors whose migration asks a repository
+# for nothing but its callers (docs/migrating.md): `callers` moves one at
+# such a major to the current one in the same pull request, every call of
+# the shared workflows, its own jobs' too (#320). Any other older major is
+# migrated by hand first.
 callers:
+  migrates-from: []
   every-repository: [issues.yml, pull-request-comments.yml]
   repository-owned:
     issues.yml: [support-url]

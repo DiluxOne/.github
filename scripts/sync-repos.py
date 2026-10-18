@@ -358,29 +358,43 @@ def sync_callers(repo, conf, dry):
     if not any(CALLS_RE.search(t) for t in files.values()):
         print("  calls none of the shared workflows: nothing to compare (docs/adopting.md)")
         return
-    if old_versions(files.values(), current_major()):
+    current = current_major()
+    old = old_versions(files.values(), current)
+    # A major whose migration is only the callers (repos.yml, callers:
+    # migrates-from, #320) moves here: every call at the current major, the
+    # repository's own jobs too, then the callers in step.
+    movable = set((conf.get("callers") or {}).get("migrates-from") or [])
+    if old and not set(old) <= movable:
         print("  calls the shared workflows at an older major: migrate it first (docs/migrating.md)")
         return
+    moved = {p: to_major(t, old, current) for p, t in files.items()} if old else dict(files)
+    major = (old, current) if old else None
     open_prs = json.loads(gh("pr", "list", "--repo", full, "--state", "open", "--limit", "500", "--json", "headRefName").stdout)
     if any(p["headRefName"].endswith("-org-workflow-callers") for p in open_prs):
         print("  a pull request for the workflow callers is already open; skipped")
         return
     owned = (conf.get("callers") or {}).get("repository-owned") or {}
     wanted, notes = {}, []
-    for name, path, found in callers_drift(files, conf):
+    for name, path, found in callers_drift(moved, conf, major=major):
         if not path:
             notes.append(f"no caller of workflow-templates/{name}: add it from the template by hand (docs/adopting.md)")
             continue
-        text = open(os.path.join(TEMPLATES, name), encoding="utf-8").read()
+        # The template at the major the repository moves to (it already is,
+        # once that major is released).
+        text = to_major(open(os.path.join(TEMPLATES, name), encoding="utf-8").read(), old, current)
         # A file that is the caller of two templates takes both rewrites.
-        new, missing = rewrite_caller(wanted.get(path, files[path]), text, set(owned.get(name) or []))
-        left = [f for n, p, f in callers_drift({**files, path: new}, conf) if p == path and n == name] if new else []
+        new, missing = rewrite_caller(wanted.get(path, moved[path]), text, set(owned.get(name) or []))
+        left = [f for n, p, f in callers_drift({**moved, path: new}, conf, major=major) if p == path and n == name] if new else []
         if new is None:
             notes.append(f"{path}: no job of the repository gives {', '.join(missing)}; bring it in step by hand")
         elif left:
             notes.append(f"{path}: still differs after the rewrite ({'; '.join(left[0])}); bring it in step by hand")
         else:
             wanted[path] = new
+    # A file the move changed and the callers did not still goes in.
+    for path, text in moved.items():
+        if text != files[path] and path not in wanted:
+            wanted[path] = text
     for note in notes:
         print(f"  {note}")
     if not wanted:
@@ -394,14 +408,22 @@ def sync_callers(repo, conf, dry):
             sys.stdout.writelines("    " + l for l in difflib.unified_diff(files[path].splitlines(True), new.splitlines(True), path, path))
         return
     default = (repo.get("defaultBranchRef") or {}).get("name") or "main"
-    templates_named = ", ".join(sorted({f"workflow-templates/{n}" for n, p, _ in callers_drift(files, conf) if p in wanted}))
+    templates_named = ", ".join(sorted({f"workflow-templates/{n}" for n, p, _ in callers_drift(moved, conf, major=major) if p in wanted})) or "the templates"
+    to = f"@v{current}"
+    move = (f" It also moves every call of the shared workflows from {', '.join('@v' + str(v) for v in old)} to {to}, the repository's own jobs too: "
+            f"that major asks a repository for nothing but its callers (docs/migrating.md)." if old else "")
     body = (f"The organisation's workflow templates ({templates_named} in DiluxOne/.github) have jobs or settings "
             f"that {changed} here lack. This brings each caller in step, job by job, keeping the values that are "
-            "this repository's (its support URL, slug, version constant, profile) and its own jobs and inputs."
+            f"this repository's (its support URL, slug, version constant, profile) and its own jobs and inputs.{move}"
             "\n\n🤖 AI-generated · scripts/sync-repos.py")
-    pr_body = (f"## 📝 What changes\n\n{changed} as {templates_named} has them, with this repository's own values and jobs kept.\n\n"
+    pr_body = (f"## 📝 What changes\n\n{changed} as {templates_named} has them, with this repository's own values and jobs kept.{move}\n\n"
                "## 💡 Why\n\nA job a template gains reaches every repository only through its callers; the daily drift check "
                "(DiluxOne/.github, scripts/sync-repos.py check) found these out of step.")
+    if old:
+        open_change(repo, default, wanted, f"Move the workflow callers to {to} of the shared workflows", body,
+                    "ci/{}-org-workflow-callers", f"ci: move the workflow callers to {to}", pr_body,
+                    f"ci: move {{}} to {to}", mode="callers")
+        return
     open_change(repo, default, wanted, "Keep the workflow callers in step with the organisation's templates", body,
                 "ci/{}-org-workflow-callers", "ci: keep the workflow callers in step with the templates", pr_body,
                 "ci: keep {} in step with its template", mode="callers")
@@ -418,6 +440,12 @@ def current_major():
     tags = [t for page in tags for t in page] if tags and isinstance(tags[0], list) else tags
     majors = [int(m.group(1)) for t in tags if (m := re.fullmatch(r"refs/tags/v(\d+)", t["ref"]))]
     return max(majors) if majors else 0
+
+
+def to_major(text, olds, current):
+    """text with every call of a shared workflow at one of the majors olds
+    moved to the current one (#320). Pure."""
+    return USES_RE.sub(lambda m: m.group(0)[: m.start(1) - m.start(0)] + str(current) if int(m.group(1)) in olds else m.group(0), text)
 
 
 def old_versions(texts, current):
@@ -484,12 +512,14 @@ def parse_yaml(text):
         raise ValueError(f"not YAML: {exc}") from exc
 
 
-def templates():
-    """{name: (text, data)} of every workflow template."""
+def templates(major=None):
+    """{name: (text, data)} of every workflow template; major (olds,
+    current) moves their calls from those majors to the current one."""
     found = {}
     for name in sorted(os.listdir(TEMPLATES)):
         if name.endswith(".yml"):
             text = open(os.path.join(TEMPLATES, name), encoding="utf-8").read()
+            text = to_major(text, *major) if major else text
             found[name] = (text, parse_yaml(text))
     return found
 
@@ -578,15 +608,15 @@ def job_differences(name, want, have, owned, central=False):
     return [f"job `{name}` {f}" for f in found]
 
 
-def callers_drift(files, conf, central=False):
+def callers_drift(files, conf, central=False, major=None):
     """What differs in a repository's callers from the templates that apply
     to it, as [(template, caller path or None, [phrases])], only those that
-    differ. `files` is {path: text}."""
+    differ. `files` is {path: text}; major, as templates() takes it."""
     spec = conf.get("callers") or {}
     every, owned = set(spec.get("every-repository") or []), spec.get("repository-owned") or {}
     parsed = {p: (t, parse_yaml(t)) for p, t in files.items()}
     out = []
-    for name, (_, data) in templates().items():
+    for name, (_, data) in templates(major).items():
         data = dict(data, _name=name)
         path = caller_for(data, parsed, central)
         if path is None:
@@ -1404,6 +1434,41 @@ def callers_test(check, conf):
     both = written.get(".github/workflows/all.yml", ("", ""))[1]
     check("callers: a file that is the caller of two templates takes both rewrites",
           "  repro-triaged:" in both and "  reply:" in both and callers_drift({".github/workflows/all.yml": both}, conf) == [], both)
+    # #320: a repository at a major whose migration is only the callers
+    # moves to the current one in the same issue and pull request.
+    files.clear()
+    mine_job = "\n  mine:\n    uses: DiluxOne/.github/.github/workflows/svn-auth-check.yml@v5\n"
+    files[".github/workflows/issues.yml"] = old.rstrip("\n") + "\n" + mine_job
+    files[".github/workflows/pull-request-comments.yml"] = comments.replace("@v6", "@v5")
+    current_tag = "refs/tags/v6"
+
+    def at_major(cfg):
+        global ORG
+        calls.clear()
+        written.clear()
+        out = io.StringIO()
+        globals()["gh"], ORG = fake, "o"
+        globals()["current_major"] = lambda: int(current_tag.rsplit("v", 1)[1])
+        try:
+            with contextlib.redirect_stdout(out):
+                sync_callers({"name": "r", "defaultBranchRef": {"name": "main"}}, cfg, False)
+        finally:
+            globals()["gh"], ORG = saved_gh, saved_org
+            globals()["current_major"] = saved_major
+        return out.getvalue()
+    saved_major = globals()["current_major"]
+    plain = {**conf, "callers": {k: v for k, v in (conf.get("callers") or {}).items() if k != "migrates-from"}}
+    said = at_major({**plain, "callers": {**plain["callers"], "migrates-from": [5]}})
+    moved = {p: t for p, (b, t) in written.items()}
+    prs = [a for a in calls if a[:2] == ("pr", "create")]
+    title = prs[0][prs[0].index("--title") + 1] if len(prs) == 1 else ""
+    got = (sorted(moved), any("@v5" in t for t in moved.values()), "svn-auth-check.yml@v6" in moved.get(".github/workflows/issues.yml", ""),
+           "  repro-triaged:" in moved.get(".github/workflows/issues.yml", ""), "@v6" in title)
+    check("#320 migrates-from: one pull request moves every call to the current major, the repository's own jobs too, and brings the callers in step",
+          got == ([".github/workflows/issues.yml", ".github/workflows/pull-request-comments.yml"], False, True, True, True), (got, said))
+    said = at_major(plain)
+    opened = [a for a in calls if a[:2] in (("issue", "create"), ("pr", "create"))]
+    check("#320 migrates-from: a major not named there migrates by hand first, and nothing is opened", "migrate it first" in said and not opened, (said, opened))
 
 
 def drift_or_reason(repo, conf, labels, block, current=0):
