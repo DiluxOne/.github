@@ -171,19 +171,22 @@ def lines(*args):
     return [json.loads(l) for l in gh(*args).splitlines() if l.strip()]
 
 
+def last_version_date(full):
+    """The date of the newest version tag's commit, "" when none."""
+    tags = lines("api", f"repos/{full}/tags?per_page=100", "--paginate", "--jq", ".[] | {name, sha: .commit.sha} | @json")
+    versions = sorted((t for t in tags if re.fullmatch(r"v?\d+\.\d+\.\d+", t["name"])), key=lambda t: tuple(int(x) for x in t["name"].lstrip("v").split(".")))
+    return gh("api", f"repos/{full}/commits/{versions[-1]['sha']}", "--jq", ".commit.committer.date").strip() if versions else ""
+
+
 def merged_since(full):
     """The pull requests merged into the default branch since the last
     version tag, each with its author and the issues it closes (their
     milestone and labels), read from GitHub. Raises when it cannot tell."""
-    owner, name = full.split("/", 1)
-    tags = lines("api", f"repos/{full}/tags?per_page=100", "--paginate", "--jq", ".[] | {name, sha: .commit.sha} | @json")
-    versions = sorted((t for t in tags if re.fullmatch(r"v?\d+\.\d+\.\d+", t["name"])), key=lambda t: tuple(int(x) for x in t["name"].lstrip("v").split(".")))
-    since = ""
-    if versions:
-        since = gh("api", f"repos/{full}/commits/{versions[-1]['sha']}", "--jq", ".commit.committer.date").strip()
+    since = last_version_date(full)
     q = ("query($q:String!,$c:String){search(type:ISSUE,query:$q,first:50,after:$c){pageInfo{hasNextPage endCursor} nodes{... on PullRequest{"
          "number author{login} closingIssuesReferences(first:20){nodes{milestone{title} labels(first:20){nodes{name}}}}}}}}")
-    search = f"repo:{full} is:pr is:merged" + (f" merged:>{since}" if since else "")
+    base = gh("api", f"repos/{full}", "--jq", ".default_branch").strip()
+    search = f"repo:{full} is:pr is:merged base:{base}" + (f" merged:>{since}" if since else "")
     out, cursor = [], None
     while True:
         args = ["api", "graphql", "-f", f"query={q}", "-f", f"q={search}"] + (["-f", f"c={cursor}"] if cursor else [])
@@ -222,7 +225,9 @@ def open_due(full, now, io=None, mode="confirm"):
         # What merged since the last version (#287): every pull request
         # merged into the default branch after it, with the issues it closes.
         "merged": lambda: merged_since(full),
-        "released": lambda: (lines("api", f"repos/{full}/releases?per_page=20", "--jq", '[.[] | select(.draft | not) | select(.prerelease | not)][0] // {} | {published_at} | @json') or [{}])[0].get("published_at") or "",
+        # When the last version was released: its tag's commit (a
+        # repository may publish no GitHub release).
+        "released": lambda: last_version_date(full),
     }
     roles = {}
 
@@ -264,12 +269,13 @@ def open_due(full, now, io=None, mode="confirm"):
         # The Release form's Type: a failure fails the run, so it is seen
         # (the issue stands; its Type is set by hand).
         io["type"](url)
+        # Done is closed, first: the release checks it (#287).
+        if done(m):
+            io["close"](m)
         if auto:
             # Last, once the issue is whole: this label opens the release pull
             # request (issue-accepted.yml).
             io["accept"](url)
-        if done(m):
-            io["close"](m)
         print(f"  {full}: Release {version}, {url}{' (accepted by the plan of ' + creator + ')' if auto else ''}")
         opened.append(version)
     return opened

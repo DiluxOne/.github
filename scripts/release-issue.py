@@ -299,7 +299,7 @@ def planned_mode(path=None, autopilot_var=None):
     return mode if mode in ("auto", "confirm") else "confirm"
 
 
-def verify(answer, version, label="accepted", role_of=None, mode=None):
+def verify(answer, version, label="accepted", role_of=None, mode=None, plan_holds=None):
     """Whether a person approved releasing `version`. `role_of(login)` is
     that person's role_name on the repository now, or None when it could not
     be read (which approves nothing)."""
@@ -317,6 +317,12 @@ def verify(answer, version, label="accepted", role_of=None, mode=None):
         ok, why, by, at = judge(node, label)
         if not ok and mode == "auto":
             pok, pwhy, pby, pat = planned(node, version)
+            # Only the plan ships (#287): read again now, since something
+            # may have merged after the plan was accepted.
+            if pok and plan_holds:
+                hold, hwhy = plan_holds(version)
+                if not hold:
+                    pok, why = False, f"#{node.get('number')} was accepted by the plan, but {hwhy}"
             if pok:
                 ok, why, by, at = pok, pwhy, pby, pat
         if ok:
@@ -415,7 +421,19 @@ def main(argv):
             role_of = lambda who: roles.get(who) if isinstance(roles, dict) else None  # noqa: E731
         else:
             role_of = lambda who: role(os.environ.get("GITHUB_REPOSITORY", "/"), who)  # noqa: E731
-        result = verify(answer, version, os.environ.get("LABEL") or "accepted", role_of)
+        def plan_holds(v):
+            # What merged since the last version, read now: anything outside
+            # the milestone sends the release back to a person (#287).
+            import importlib.util as iu
+            spec = iu.spec_from_file_location("milestones", os.path.join(HERE, "milestones.py"))
+            ms = iu.module_from_spec(spec)
+            spec.loader.exec_module(ms)
+            try:
+                outside = ms.outside_plan(ms.merged_since(os.environ.get("GITHUB_REPOSITORY", "/")), v)
+            except (RuntimeError, ValueError, KeyError) as exc:
+                return False, f"what merged since the last version could not be read ({str(exc)[:200]})"
+            return (False, "merged outside the plan: " + ", ".join(f"#{n}" for n in outside[:10])) if outside else (True, "")
+        result = verify(answer, version, os.environ.get("LABEL") or "accepted", role_of, plan_holds=None if fixture else plan_holds)
         print(json.dumps(result, indent=2))
         return 0 if result["ok"] else (2 if result.get("unreadable") else 1)
     print(__doc__, file=sys.stderr)
@@ -569,6 +587,9 @@ def self_test():
     check("#247 planned: the bot's issue on the version's milestone, in auto, approves it as its planner", (r["ok"], r["by"]), (True, "soydiloreto"))
     check("#247 planned: in confirm it approves nothing", vfy(answer(plan_node()), "1.2.0")["ok"], False)
     check("#287 planned: a milestone still open was not done, and approves nothing", vfy(answer(plan_node(ms_state="OPEN")), "1.2.0", mode="auto")["ok"], False)
+    held = verify(answer(plan_node()), "1.2.0", role_of=lambda who: "admin", mode="auto", plan_holds=lambda v: (False, "merged outside the plan: #9"))
+    check("#287 planned: something merged outside the plan since it was accepted sends it back to a person", (held["ok"], "#9" in held["why"]), (False, True))
+    check("#287 planned: a person's acceptance is not held by the plan", verify(answer(node()), "1.2.0", role_of=lambda who: "admin", mode="auto", plan_holds=lambda v: (False, "x"))["ok"], True)
     closed = plan_node(); closed["state"], closed["stateReason"] = "CLOSED", "NOT_PLANNED"
     check("#247 planned: a release cancelled by closing it as not planned approves nothing", vfy(answer(closed), "1.2.0", mode="auto")["ok"], False)
     check("#247 planned: a planner who is not admin or maintain approves nothing", vfy(answer(plan_node()), "1.2.0", roles={"soydiloreto": "write"}, mode="auto")["ok"], False)
