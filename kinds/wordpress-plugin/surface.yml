@@ -189,9 +189,9 @@ surface:
             src/blocks/form/block.json:
               head: "{\n  \"name\": \"dx/form\"\n}\n"
 
-# Security-sensitive code (#287): a change that adds or removes a line that
-# matches one of these is merged by a person, whatever its issue's Type and
-# whatever the review rated its risk. Decided by code, never by the review.
+# Security-sensitive code (#287): an autopilot's change that adds or removes
+# a line that matches one of these is merged by a person, whatever its
+# issue's Type and whatever the review rated its risk. Decided by code, never by the review.
 # A pattern is a Python regular expression over one line; `when: removed` for
 # what only weakens when it goes (an escape, a sanitiser), so adding one does
 # not stop a fix. Conservative on purpose: a person reading more is the
@@ -200,7 +200,7 @@ surface:
 sensitive:
   - id: capability
     what: a permission check or a capability (current_user_can, roles, caps)
-    pattern: '(?i)\b(?:current_user_can|user_can|author_can|current_user_can_for_blog|map_meta_cap|add_cap|remove_cap|add_role|remove_role|set_role|grant_super_admin|is_super_admin|permission_callback)\b'
+    pattern: '(?i)\b(?:current_user_can|user_can|author_can|current_user_can_for_blog|map_meta_cap|add_cap|remove_cap|add_role|remove_role|set_role|grant_super_admin|is_super_admin|permission_callback|wp_ajax_nopriv_\w*|admin_post_nopriv_\w*)\b'
     fixtures:
       fail:
         - base: "<?php\nif ( ! current_user_can( 'manage_options' ) ) { return; }\n"
@@ -241,13 +241,16 @@ sensitive:
         - "<?php\n$user = wp_get_current_user();\n"
   - id: execution
     what: code or commands run, or a file written (eval, exec, unserialize, move_uploaded_file)
-    pattern: '(?i)(?<![\w$>:])(?:eval|assert|create_function|exec|shell_exec|system|passthru|proc_open|popen|unserialize|maybe_unserialize|base64_decode|move_uploaded_file|file_put_contents|wp_handle_upload)\s*\('
+    pattern: '(?i)(?:(?<![\w$>:])(?:eval|assert|create_function|exec|shell_exec|system|passthru|proc_open|popen|unserialize|maybe_unserialize|base64_decode|move_uploaded_file|file_put_contents|fopen|fwrite|unlink|rename|copy|wp_handle_upload|wp_remote_\w+|wp_safe_remote_\w+|curl_exec)\s*\(|\bWP_Filesystem\b|\b(?:include|require)(?:_once)?\s*\(?\s*\$|->exec\s*\()'
     fixtures:
       fail:
         - base: "<?php\nfunction a() {}\n"
           head: "<?php\nfunction a() {}\n$data = unserialize( $_POST['x'] );\n"
+        - "<?php\ninclude $_GET['page'];\n"
+        - "<?php\n$r = wp_remote_get( $url );\n"
       pass:
         - "<?php\n$this->exec_later();\n"
+        - "<?php\nrequire_once __DIR__ . '/includes/a.php';\n"
   - id: escape-removed
     what: an escape or a sanitiser taken out (esc_*, sanitize_*, wp_kses)
     when: removed

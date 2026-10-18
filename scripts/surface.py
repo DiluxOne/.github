@@ -35,8 +35,9 @@ Security-sensitive code (#287) is another list in the same pack,
 the default, for a line added or removed, or removed, for one that only
 weakens when it goes; not `on`, which YAML reads as true, and `fixtures`) a change may not touch without a
 person merging it, whatever its issue's Type: what a line the diff adds or
-removes matches. It is read by the auto-merge decision, never by the
-accepted-issue gate.
+removes matches. It is read by the auto-merge decision on the autopilot's
+pull requests, never by the accepted-issue gate. A kind with no list has
+nothing sensitive to touch.
 
   surface.py --sensitive KIND BASE HEAD print the sensitive code the diff
                                         touches (exit 1), nothing (exit 0);
@@ -194,11 +195,13 @@ def touched_lines(base_text, head_text):
     """(removed, added): the lines the change takes out and puts in. Pure."""
     import difflib
     removed, added = [], []
-    for line in difflib.ndiff((base_text or "").splitlines(), (head_text or "").splitlines()):
-        if line.startswith("- "):
-            removed.append(line[2:])
-        elif line.startswith("+ "):
-            added.append(line[2:])
+    for line in difflib.unified_diff((base_text or "").splitlines(), (head_text or "").splitlines(), n=0, lineterm=""):
+        if line.startswith(("---", "+++", "@@")):
+            continue
+        if line.startswith("-"):
+            removed.append(line[1:])
+        elif line.startswith("+"):
+            added.append(line[1:])
     return removed, added
 
 
@@ -335,6 +338,13 @@ def self_test():
             write("includes/b.php", "<?php\nfunction b() { do_action( 'dx_saved' ); return 2; }\n")
             sh("commit", "-qam", "fix: b")
             ok("git: an existing hook fired again is not new", check("wordpress-plugin", base, "HEAD") == [])
+            ok("git (#287): a change that touches no sensitive code is clean", check_sensitive("wordpress-plugin", base, "HEAD") == [])
+            sens_base = git("-C", d, "rev-parse", "HEAD").decode().strip()
+            write("includes/b.php", "<?php\nfunction b() { if ( ! current_user_can( 'edit_posts' ) ) { return 0; } do_action( 'dx_saved' ); return 2; }\n")
+            sh("commit", "-qam", "fix: check")
+            got_s = describe(check_sensitive("wordpress-plugin", sens_base, "HEAD"))
+            ok(f"git (#287): a permission check added is sensitive ({got_s})", any("permission" in g and "includes/b.php" in g for g in got_s))
+            ok("git (#287): a kind with no list has nothing sensitive", check_sensitive("", sens_base, "HEAD") == [])
             write("includes/b.php", "<?php\nadd_action( 'rest_api_init', function () {\n  register_rest_route( 'dx/v1', '/x', array() );\n} );\n")
             sh("commit", "-qam", "fix: b")
             got = describe(check("wordpress-plugin", base, "HEAD"))

@@ -653,14 +653,14 @@ def decide(policy, body, risk, complexity, blocking, description_ok, files, head
     protected = [f for f in files if any(fnmatch.fnmatch(f, p) for p in policy.get("constitution") or [])]
     if protected:
         return False, "it touches rules that govern autonomy (" + ", ".join(protected[:3]) + "): a person merges it"
-    # Escalation (#193): a change that adds to the kind's public surface (a
-    # hook, an endpoint, a shortcode…) is a feature, whatever its issue said.
-    # Only a Feature carries it in on its own; anything else stops here.
     # Security-sensitive code (#287): a permission, a nonce, SQL, what runs
     # or authenticates. Told by code, never by the review's risk; a person
     # merges it, whatever the issue's Type.
     if sensitive:
         return False, f"it touches security-sensitive code ({'; '.join(sensitive)[:200]}): a person merges it"
+    # Escalation (#193): a change that adds to the kind's public surface (a
+    # hook, an endpoint, a shortcode…) is a feature, whatever its issue said.
+    # Only a Feature carries it in on its own; anything else stops here.
     if surface and issue_type != "Feature":
         return False, f"it adds public surface ({'; '.join(surface)[:200]}), which only a Feature issue carries: a person merges it"
     if blocking != "false":
