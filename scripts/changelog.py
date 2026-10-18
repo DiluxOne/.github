@@ -58,6 +58,8 @@ def previous(tag, tags, cwd=None):
 def line(subject):
     """A changelog line for one commit subject, and its group: the text, its
     scope in bold, and its pull request linked. Pure."""
+    # Straight quotes in what is published, whatever the commit used.
+    subject = subject.replace("«", '"').replace("»", '"')
     m = SUBJECT.match(subject.strip())
     if not m:
         return "other", f"- {subject.strip()}"
@@ -117,6 +119,7 @@ def self_test():
 
     check("line: scope, text and the pull request linked", line("feat(review): no shell (#288)"),
           ("feat", f"- **review:** no shell ([#288]({REPO_URL}/pull/288))"))
+    check("line: straight quotes in what is published", line("fix: the «Unreleased.» line")[1], '- the "Unreleased." line')
     check("line: a breaking change and a subject that is no Conventional Commit",
           (line("feat(org)!: one pipeline (#33)")[0], line("Initial commit")), ("breaking", ("other", "- Initial commit")))
     sec = section(["fix: b", "feat(x)!: a", "feat: c", "whatever"])
@@ -155,7 +158,7 @@ def main(argv):
     if argv == ["--test"]:
         return self_test()
     if argv[:1] == ["build"]:
-        nxt = argv[2] if argv[1:2] == ["--next"] and len(argv) > 2 and VERSION.match(argv[2]) else ""
+        nxt = argv[2] if argv[1:2] == ["--next"] and len(argv) == 3 and VERSION.match(argv[2]) else ""
         if len(argv) > 1 and not nxt:
             print(__doc__, file=sys.stderr)
             return 64
