@@ -76,6 +76,11 @@ GITHUB_ONLY = ("plugin-release-wp.yml", "svn-auth-check.yml", "issue-repro.yml",
                # What it finds can be a vulnerability (#234): a fresh runner.
                "nightly-review.yml")
 
+# A job that holds a key beside an agent's work, in a workflow that is
+# otherwise shared (autopilot.yml's prep, draft and apply, #287): a fresh
+# runner, never one an agent's job may have run on before. Its line says so.
+FRESH = re.compile(r"^ubuntu-latest\s+#\s*fresh: .*\(#287\)$")
+
 # A job whose runner an earlier job of the same run decided (autopilot.yml's
 # `where`, #84: a reproduced bug's work never runs on the VM) keeps that
 # choice: `runs-on` names the earlier job's `github-hosted` output.
@@ -141,6 +146,8 @@ def problems(path, text):
         value = m.group(2)
         decided = DECIDED.match(value)
         if decided and decided.group(1) in FALLBACKS:
+            continue
+        if FRESH.match(value):
             continue
         fb = FALLBACK_OF.search(value)
         if not fb or fb.group(1) not in FALLBACKS or value != expression(fb.group(1)):
@@ -369,6 +376,9 @@ def self_test():
     later = "on:\n  workflow_call:\njobs:\n  run:\n    runs-on: " + decided + "\n"
     check("check: a job whose runner an earlier job decided keeps it", problems("autopilot.yml", later), [])
     check("write: leaves a job whose runner an earlier job decided alone", rewrite(later), later)
+    fresh = "on:\n  workflow_call:\njobs:\n  apply:\n    runs-on: ubuntu-latest # fresh: it holds the key beside an agent's work (#287)\n"
+    check("#287: a job that holds the key beside an agent's work stays on a fresh runner, said on its line",
+          (problems("autopilot.yml", fresh), rewrite(fresh) == fresh, len(problems("autopilot.yml", fresh.replace(" # fresh: it holds the key beside an agent's work (#287)", "")))), ([], True, 1))
     check("check: a GitHub-only workflow may name DX_RUNNER_HEAVY outside runs-on", problems("runner-wake.yml", "# DX_RUNNER_HEAVY\non:\n  workflow_call:\njobs:\n  a:\n    if: vars.DX_RUNNER_HEAVY == 'self-hosted'\n    runs-on: ubuntu-latest\n"), [])
     check("check: the VM's wake-up stays on GitHub's runners", problems("runner-wake.yml", "on:\n  workflow_call:\njobs:\n  a:\n    runs-on: ubuntu-latest\n"), [])
 
