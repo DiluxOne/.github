@@ -238,6 +238,36 @@ lanes:
     evidence: The merged commit of DiluxOne/.github the issue names, and the run's fingerprint, which the pull request's files must give again.
     merge: {max-risk: high, max-complexity: low}
 
+  # A security patch's carry (#287): once a patch released from
+  # security/X.Y.Z, security-patch.yml (in the private repository) opens a
+  # Bug issue here naming the version and its advisory, and a pull request
+  # that cherry-picks the patch's fix onto the default branch. Accepted when
+  # all of this holds, read from GitHub (scripts/autonomy.py,
+  # carry_accepts()): dilux-bot opened the issue and added the label last,
+  # nobody edited it, it is a Bug, and the advisory it names is published
+  # with that version patched and that version released. Only dilux-security
+  # publishes an advisory, once a maintainer approved the patch with
+  # `patch:go`: that approval is what this lane carries. Its pull request
+  # merges on its own (auto-merge.yml, autonomy.py lane-merge) only from
+  # `branch`, when the review does not block and its description is true,
+  # within `merge`, and its commits are exactly the released fix (each one
+  # patch-equivalent to a commit of the fix, and every commit of the fix
+  # there, scripts/carry-lock.py). Until it merges, no release goes out
+  # from the default branch (the carry lock, plugin-release-wp.yml).
+  # `max-risk: high` because the fix is security code, whose floor is high;
+  # the equivalence, not the rating, is what holds it.
+  security-carry:
+    description: The fix of a security patch already released, carried into the default branch.
+    accept: policy
+    type: Bug
+    origin:
+      app: dilux-bot
+      evidence: published-advisory
+      branch: "fix/{issue}-carry-security-fix-of-{version}"
+    repositories: ["*"]
+    evidence: The published advisory that names the version patched, the version's release, and the pull request's commits equivalent to its fix.
+    merge: {max-risk: high, max-complexity: high}
+
   # The issue "Release X.Y.Z" (#82, the Release form, label lane:release):
   # a person's acceptance opens the release pull request
   # (issue-accepted.yml), and the release workflow publishes only a version
