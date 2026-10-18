@@ -75,6 +75,7 @@ jobs:
           permission-pull-requests: read
 
       - name: Bring the autopilot back
+        id: back
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           NUMBER: ${{ github.event.issue.number }}
@@ -90,10 +91,91 @@ jobs:
           waiting=$(gh issue view "$issue" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | index("autopilot:waiting") != null')
           [ "$waiting" = true ] || exit 0
           role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$LOGIN/permission" --jq .role_name 2>/dev/null || echo none)
-          case $role in admin|maintain|write) ;; *) echo "$LOGIN cannot answer for the maintainers ($role)."; exit 0 ;; esac
+          case $role in
+            admin|maintain|write) ;;
+            *)
+              # Someone else's opinion (#287): summarised for the maintainers
+              # next to the question, never an answer.
+              echo "$LOGIN cannot answer for the maintainers ($role): their opinion is summarised."
+              { echo "others=true"; echo "issue=$issue"; } >> "$GITHUB_OUTPUT"
+              exit 0 ;;
+          esac
           gh label create "autopilot:continue" --repo "$GITHUB_REPOSITORY" --color 1D76DB --force --description "On an issue: the autopilot continues its draft pull request" >/dev/null 2>&1 || true
           gh issue edit "$issue" --repo "$GITHUB_REPOSITORY" --add-label "autopilot:continue" --remove-label "autopilot:waiting" >/dev/null
           echo "$LOGIN answered; the autopilot goes on with #$issue."
+
+      # The others' opinions (#287), summarised by a model with no tools and
+      # no key worth anything to it, for the maintainers: who said what, with
+      # a link to their comment, all from GitHub but the one sentence each.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.back.outputs.others == 'true'
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref }}
+          path: .dx-central
+          persist-credentials: false
+
+      - name: What others said since the question
+        id: others
+        if: steps.back.outputs.others == 'true'
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          ISSUE: ${{ steps.back.outputs.issue }}
+        run: |
+          set -euo pipefail
+          pr=$(gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json closedByPullRequestsReferences --jq '[.closedByPullRequestsReferences[].number] | last // empty')
+          [ -n "$pr" ] || exit 0
+          { gh pr view "$pr" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments'; gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments'; } \
+            | jq -s 'add | map({body, createdAt, url, author: {login: .author.login}})' > "$RUNNER_TEMP/comments.json"
+          : > "$RUNNER_TEMP/writers.txt"
+          for login in $(jq -r '.[].author.login' "$RUNNER_TEMP/comments.json" | sort -u); do
+            role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$login/permission" --jq .role_name 2>/dev/null || echo none)
+            case $role in admin|maintain|write) echo "$login" >> "$RUNNER_TEMP/writers.txt" ;; esac
+          done
+          COMMENTS="$RUNNER_TEMP/comments.json" WRITERS="$RUNNER_TEMP/writers.txt" OTHERS_FILE="$RUNNER_TEMP/others.json" python3 .dx-central/scripts/autopilot.py others > "$RUNNER_TEMP/others-prompt.md"
+          # A paid run per comment: past 20 others since the question, the
+          # summary stays as it was and the maintainers read the thread.
+          if [ "$(jq length "$RUNNER_TEMP/others.json")" -gt 20 ]; then echo "More than 20 comments by others since the question: not summarised again."; exit 0; fi
+          eof="DX_$(openssl rand -hex 16)"
+          { echo "prompt<<$eof"; cat "$RUNNER_TEMP/others-prompt.md"; echo "$eof"; } >> "$GITHUB_OUTPUT"
+          echo "pr=$pr" >> "$GITHUB_OUTPUT"
+
+      - name: A model with no tools summarises them
+        id: summary
+        if: steps.others.outputs.prompt != ''
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: anthropics/claude-code-action@1d6de8cb0c237e7c15e9e1bdf973826ebae490cc # v1.0.248
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
+          github_token: ${{ github.token }}
+          prompt: ${{ steps.others.outputs.prompt }}
+          claude_args: |
+            --model claude-sonnet-5-5
+            --max-turns 2
+            --max-budget-usd 0.3
+            --allowedTools ""
+            --disallowedTools "Bash,Read,Write,Edit,MultiEdit,Glob,Grep,WebFetch,WebSearch,NotebookEdit,Task"
+            --json-schema '{"type":"object","additionalProperties":false,"required":["points"],"properties":{"points":{"type":"array","maxItems":30,"items":{"type":"object","additionalProperties":false,"required":["i","argument"],"properties":{"i":{"type":"integer"},"argument":{"type":"string","maxLength":400}}}}}}'
+
+      - name: For the maintainers, next to the question
+        if: steps.summary.outputs.structured_output != ''
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          PR: ${{ steps.others.outputs.pr }}
+          POINTS: ${{ steps.summary.outputs.structured_output }}
+        run: |
+          set -euo pipefail
+          COMMENTS="$RUNNER_TEMP/comments.json" WRITERS="$RUNNER_TEMP/writers.txt" python3 .dx-central/scripts/autopilot.py others-comment > "$RUNNER_TEMP/others.md"
+          [ -s "$RUNNER_TEMP/others.md" ] || { echo "Nothing argued about the question."; exit 0; }
+          # One comment, kept up to date.
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate --jq '.[] | select(.user.login == "dilux-bot[bot]" and (.body | startswith("<!-- dx-autopilot-others -->"))) | .id' | tail -1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -F body=@"$RUNNER_TEMP/others.md" >/dev/null
+          else
+            gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/others.md" >/dev/null
+          fi
 
   reply:
     name: Claude reply
