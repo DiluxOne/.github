@@ -53,8 +53,13 @@ def problems(workflow):
                 shell = True
         if not shell:
             continue
-        text = json.dumps(job)
-        secrets = set(re.findall(r"secrets\.([A-Za-z_][A-Za-z0-9_]*)", text)) - MODEL_SECRETS
+        # The job, and what it inherits from the workflow's own env.
+        text = json.dumps(job) + json.dumps(workflow.get("env") or {})
+        secrets = set(re.findall(r"secrets\.([A-Za-z_][A-Za-z0-9_]*)", text))
+        secrets |= set(re.findall(r"secrets\[\s*['\"]([^'\"]+)['\"]\s*\]", text))
+        secrets -= MODEL_SECRETS
+        if re.search(r"toJSON\(\s*secrets\s*\)|secrets\[\s*[^'\"\s]", text, re.I):
+            secrets.add("every secret")
         if secrets:
             out.append(f"{name}: an agent with a shell shares the job with {', '.join(sorted(secrets))}")
         if any("create-github-app-token" in str(s.get("uses", "")) for s in steps):
@@ -84,6 +89,12 @@ def self_test():
     check("a token that writes", problems(wf({"permissions": {"contents": "write"}, "steps": [agent("Bash")]})), ["j: an agent with a shell runs with a token that writes ({'contents': 'write'})"])
     check("the workflow's permissions when the job sets none", len(problems(wf({"steps": [agent("Bash")]}, {"issues": "write"}))), 1)
     check("no tools named is a shell, and said", len(problems(wf({"permissions": {}, "steps": [key, agent(None)]}))), 3)
+    check("the workflow's env counts", problems({"env": {"K": "${{ secrets.DILUX_BOT_PRIVATE_KEY }}"}, "jobs": {"j": {"permissions": {}, "steps": [agent("Bash")]}}}),
+          ["j: an agent with a shell shares the job with DILUX_BOT_PRIVATE_KEY"])
+    check("secrets['X'] and toJSON(secrets) count",
+          (problems(wf({"permissions": {}, "steps": [{"env": {"K": "${{ secrets['SVN_PASSWORD'] }}"}}, agent("Bash")]})),
+           problems(wf({"permissions": {}, "steps": [{"env": {"K": "${{ toJSON(secrets) }}"}}, agent("Bash")]}))),
+          (["j: an agent with a shell shares the job with SVN_PASSWORD"], ["j: an agent with a shell shares the job with every secret"]))
     check("no shell: a key in the job is allowed", problems(wf({"permissions": {"issues": "write"}, "steps": [key, agent("Read,Glob,Grep")]})), [])
     print("all tests passed" if not failed else "FAILED")
     return 1 if failed else 0

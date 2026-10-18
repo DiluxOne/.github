@@ -407,9 +407,10 @@ jobs:
         if: steps.may.outputs.go == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: autopilot-in-${{ inputs.mode == 'start' && 'spec' || 'work' }}-${{ github.run_attempt }}
+          name: autopilot-in-${{ inputs.mode == 'start' && 'spec' || 'work' }}
           path: .dx-io
           include-hidden-files: true
+          overwrite: true
           retention-days: 3
 
   # --- start: the Spec, by the agent, with no key ---------------------------
@@ -459,7 +460,7 @@ jobs:
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: autopilot-in-spec-${{ github.run_attempt }}
+          name: autopilot-in-spec
           path: .dx-io
 
       - name: The Spec's task
@@ -510,10 +511,11 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: autopilot-out-spec-${{ github.run_attempt }}
+          name: autopilot-out-spec
           path: .dx-out
           include-hidden-files: true
           if-no-files-found: ignore
+          overwrite: true
           retention-days: 30
 
   # --- start: the Spec on the issue, and the draft, with the key ------------
@@ -567,7 +569,7 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
         with:
-          name: autopilot-out-spec-${{ github.run_attempt }}
+          name: autopilot-out-spec
           path: .dx-out
 
       # The Spec the agent wrote (only "### Spec: " sections, appended), or
@@ -580,7 +582,7 @@ jobs:
         run: |
           git config user.name "dilux-bot[bot]"
           git config user.email "333187390+dilux-bot[bot]@users.noreply.github.com"
-          python3 .dx-central/scripts/autopilot.py apply .dx-out/outbox.jsonl || true
+          python3 .dx-central/scripts/autopilot.py apply .dx-out/outbox.jsonl spec,stop || true
 
       - name: The Spec (G3), sealed, and the draft pull request
         id: draft
@@ -669,9 +671,10 @@ jobs:
         if: steps.draft.outputs.pr != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: autopilot-in-work-${{ github.run_attempt }}
+          name: autopilot-in-work
           path: .dx-io
           include-hidden-files: true
+          overwrite: true
           retention-days: 3
 
   # --- the work, by the agent, with no key ----------------------------------
@@ -721,7 +724,7 @@ jobs:
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: autopilot-in-work-${{ github.run_attempt }}
+          name: autopilot-in-work
           path: .dx-io
 
       - name: The work's task
@@ -789,10 +792,11 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: autopilot-out-work-${{ github.run_attempt }}
+          name: autopilot-out-work
           path: .dx-out
           include-hidden-files: true
           if-no-files-found: ignore
+          overwrite: true
           retention-days: 30
 
   # --- every mode: the agent's work on GitHub, and the verdict --------------
@@ -842,14 +846,14 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
         with:
-          name: autopilot-out-work-${{ github.run_attempt }}
+          name: autopilot-out-work
           path: .dx-out
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: inputs.mode == 'start'
         continue-on-error: true
         with:
-          name: autopilot-out-spec-${{ github.run_attempt }}
+          name: autopilot-out-spec
           path: .dx-out-spec
 
       # The agent's commits, onto the branch as GitHub has it (never over
@@ -874,7 +878,10 @@ jobs:
             if ! git merge-base --is-ancestor "origin/$BRANCH" "$new"; then
               echo "::error::The agent's commits do not build on $BRANCH as GitHub has it: nothing is pushed."; exit 1
             fi
-            if git diff --name-only "origin/$BRANCH" "$new" | grep -q '^\.github/workflows/'; then
+            # Read whole, then searched: a pipe into grep -q could end early
+            # and, under pipefail, read as no match.
+            changed=$(git diff --name-only "origin/$BRANCH" "$new")
+            if grep -q '^\.github/workflows/' <<<"$changed"; then
               echo "::error::The agent's commits change .github/workflows: nothing is pushed."; exit 1
             fi
             git checkout -q -B "$BRANCH" "$new"

@@ -61,8 +61,10 @@
                              agent runs it; only to one of the review's own)
   autopilot.py spec FILE     the Spec the agent wrote (the agent runs it):
                              appended to the issue, only "### Spec: " sections
-  autopilot.py apply FILE    the agent's outbox, applied with the key: each
+  autopilot.py apply FILE [KINDS]
+                             the agent's outbox, applied with the key: each
                              intent through the command a person's run uses
+                             (KINDS: only those, comma-separated)
   autopilot.py --test        self-test
 
 With DX_IO set (the agent's job, which holds no key, #287), push, decision,
@@ -1227,7 +1229,9 @@ Clamp the value in Sum::add.
         check("#84: the lane is decided before the autopilot may start, from GitHub", "autopilot.py lane" in steps("prep")[sid("prep", "may")].get("run", ""), True)
         pushed = next(st for st in steps("apply") if st.get("id") == "applied")["run"]
         check("#287: the agent's commits go only onto the branch's head, never with a workflow, then its intents",
-              ("merge-base --is-ancestor" in pushed, ".github/workflows/" in pushed, pushed.index("autopilot.py push") < pushed.index("autopilot.py apply")), (True, True, True))
+              ("merge-base --is-ancestor" in pushed, ".github/workflows/" in pushed, "| grep -q" in pushed, pushed.index("autopilot.py push") < pushed.index("autopilot.py apply")), (True, True, False, True))
+        spec_apply = next(st for st in steps("draft") if st.get("name") == "The agent's Spec")["run"]
+        check("#287: before a draft exists, only the Spec or a stop applies", "apply .dx-out/outbox.jsonl spec,stop" in spec_apply, True)
         end, last, fresh = sid("apply", "end"), sid("apply", "last-resort"), sid("apply", "bot-end")
         check("C1 (#126): a fresh token after the work, however it ended, before the end rule, and the last resort after it",
               (fresh < end < last, "always()" in str(steps("apply")[fresh].get("if", "")), "verdict" in str(steps("apply")[last].get("if", ""))), (True, True, True))
@@ -1534,11 +1538,17 @@ def reply_target(comment, pr, author):
             and (comment.get("user") or {}).get("login") == author)
 
 
-def apply_outbox(path, repo, number, pr):
+def apply_outbox(path, repo, number, pr, kinds=None):
     """Every intent of the agent's outbox, in order, with the key: each one
     through the same command a person's run uses, so GitHub's state is
-    checked again here. Returns how many failed."""
+    checked again here; with kinds, only those (the rest are skipped, said).
+    Returns how many failed."""
     intents, rejected = read_outbox(path)
+    if kinds:
+        skipped = [it["kind"] for it in intents if it["kind"] not in kinds]
+        if skipped:
+            print(f"::warning::Not applied at this point of the run: {', '.join(skipped)}.")
+        intents = [it for it in intents if it["kind"] in kinds]
     if rejected:
         print(f"::warning::{rejected} line(s) of the outbox were not intents; ignored.")
     failed = 0
@@ -1659,7 +1669,8 @@ def main(argv):
     if argv[:1] == ["apply"]:
         # The agent's outbox, applied with the key (#287): its commits are
         # pushed first, by the workflow.
-        failed = apply_outbox(argv[1] if len(argv) > 1 else "", repo, number, pr)
+        kinds = set(argv[2].split(",")) if len(argv) > 2 else None
+        failed = apply_outbox(argv[1] if len(argv) > 1 else "", repo, number, pr, kinds)
         return 1 if failed else 0
     if argv[:1] == ["inputs"]:
         # What the agent reads, written to DX_IO by the job that holds the
