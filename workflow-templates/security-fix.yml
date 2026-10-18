@@ -7,8 +7,8 @@ name: Security fixes
 # from a public one. An advisory in triage or draft starts its fix, which
 # lands here as an issue and a branch; one in triage is triaged first and
 # moved to draft when it is reproduced and fixed; a fix whose checks fail
-# goes back to the agent when a maintainer comments what to change and adds
-# `fix:retry` to its issue here. security-patch.yml then
+# goes back to the agent when a maintainer answers on its issue here what to
+# change (the comment starts a run). security-patch.yml then
 # publishes it once a maintainer approves it (DiluxOne/.github#247, #287).
 # The advisories are read and moved with dilux-security's key, which lives
 # only here.
@@ -17,6 +17,10 @@ on:
   schedule:
     - cron: '17 * * * *'
   workflow_dispatch:
+  # A maintainer's answer on a failed fix's issue sends it back now, not
+  # at the next hour (DiluxOne/.github#313).
+  issue_comment:
+    types: [created]
 
 permissions:
   contents: read
@@ -27,8 +31,9 @@ concurrency:
 
 jobs:
   fix:
-    # A schedule runs on the default branch; a dispatch, only from it.
-    if: github.event_name == 'schedule' || github.ref_name == github.event.repository.default_branch
+    # A schedule and a comment run on the default branch; a dispatch, only
+    # from it. The bot's own comments start nothing.
+    if: (github.event_name == 'schedule' || github.ref_name == github.event.repository.default_branch) && (github.event_name != 'issue_comment' || github.event.comment.user.type != 'Bot')
     permissions:
       contents: read
     uses: DiluxOne/.github/.github/workflows/security-fix.yml@v5

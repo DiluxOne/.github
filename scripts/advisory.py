@@ -184,37 +184,46 @@ def untrusted(text, limit):
     return str(text or "").replace("~~~", "~ ~ ~")[:limit]
 
 
-# A failed fix goes back to the agent (#313): a maintainer comments what to
-# change and adds this label to the claim's issue; the next run takes it,
-# one attempt at a time, as many times as it takes.
-RETRY_LABEL = "fix:retry"
+# A failed fix goes back to the agent (#313): a maintainer answers on the
+# claim's issue what to change, and the next run (the comment starts one)
+# tries again with that answer as guidance, as many times as it takes, one
+# attempt at a time. Each attempt notes when it started, on the body's third
+# line; an answer after it is a new one.
+ATTEMPT = "<!-- dx-advisory-attempt: {at} -->"
+ATTEMPT_RE = re.compile(r"^<!-- dx-advisory-attempt: (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ) -->$")
+CHECKS_RE = re.compile(r"^<!-- dx-advisory-checks: ([a-z]+) -->$")
+RETRYING = "Trying again"
 DONE_LABELS = ("patch:pushed", "patch:released")
 RETRY_ROLES = ("admin", "maintain")
 
 
-def retry_verdict(events, roles, labels):
-    """("ok", who, at) when the last `fix:retry` on the issue was added by a
-    maintainer (admin or maintain, read live: roles) and its fix is neither
-    pushed nor released; else ("", who, why). Pure."""
-    added = [e for e in events or [] if e.get("event") == "labeled" and (e.get("label") or {}).get("name") == RETRY_LABEL]
-    if not added:
-        return "", "", "no fix:retry was added"
-    last = max(added, key=lambda e: e.get("created_at", ""))
-    who = (last.get("actor") or {}).get("login", "")
-    if roles.get(who) not in RETRY_ROLES:
-        return "", who, f"fix:retry was added by {who or 'someone unknown'}, who does not maintain this repository"
+def answer(text, comments, roles, labels):
+    """(who, guidance) of the maintainer (admin or maintain, read live:
+    roles) who answered last on a claim whose fix failed or committed
+    nothing, after its last attempt started; ("", why) when there is none.
+    A fix already pushed or released is never sent back. Pure."""
+    lines = (text or "").split("\n")
+    checks = CHECKS_RE.match(lines[1]) if len(lines) > 1 else None
+    if not checks or checks.group(1) not in ("failed", "nothing"):
+        return "", "its fix did not fail"
     if set(labels or ()) & set(DONE_LABELS):
-        return "", who, "its patch was already pushed or released: a new report starts a new fix"
-    return "ok", who, last.get("created_at", "")
-
-
-def hint(comments, who):
-    """The latest comment of who, the maintainer who asked for the retry,
-    fenced like any text: what to change this time. Pure."""
-    mine = [c for c in comments or [] if (c.get("user") or {}).get("login") == who]
-    if not mine:
-        return ""
-    return untrusted(max(mine, key=lambda c: c.get("created_at", "")).get("body"), 4000).strip()
+        return "", "its patch was already pushed or released"
+    at = ATTEMPT_RE.match(lines[2]) if len(lines) > 2 else None
+    since = at.group(1) if at else ""
+    people = []
+    for c in comments or []:
+        user = c.get("user") or {}
+        if user.get("type") == "Bot" or user.get("login") == org.BOT:
+            # The bot saying it tries again is an attempt starting too.
+            if str(c.get("body") or "").startswith(RETRYING):
+                since = max(since, c.get("created_at", ""))
+            continue
+        people.append(c)
+    fresh = [c for c in people if c.get("created_at", "") > since and roles.get((c.get("user") or {}).get("login")) in RETRY_ROLES]
+    if not fresh:
+        return "", "no maintainer answered since the last attempt"
+    last = max(fresh, key=lambda c: c.get("created_at", ""))
+    return last["user"]["login"], untrusted(last.get("body"), 4000).strip()
 
 
 def prompt(a, guidance=""):
@@ -262,7 +271,7 @@ Report:
 """
 
 
-def body(a, repo, checks, log, notes, patch, branch_url, triage=""):
+def body(a, repo, checks, log, notes, patch, branch_url, triage="", at=""):
     state = {"passed": "The repository's checks passed with the fix.",
              "failed": "**The repository's checks failed with the fix**: see the log below.",
              "none": "The repository names no checks to run (`make pre-pr`); run them before publishing.",
@@ -272,6 +281,8 @@ def body(a, repo, checks, log, notes, patch, branch_url, triage=""):
     out = [MARK.format(repo=repo, ghsa=a.get("ghsa_id")),
            # For security-patch.yml (#247): what the checks said, for a machine.
            f"<!-- dx-advisory-checks: {checks if checks in ('passed', 'failed', 'none', 'nothing') else 'unknown'} -->",
+           # When this attempt started (#313): an answer after it sends the fix back.
+           ATTEMPT.format(at=at if re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", at or "") else "1970-01-01T00:00:00Z"),
            f"**{a.get('ghsa_id')}** in {repo}: {untrusted(a.get('summary'), 200)}", "",
            f"Advisory: {a.get('html_url') or ''}", ""] + (["## Triage", "", triage, ""] if triage else []) + [
            # Checks ran in the agent's own working tree, after it: evidence, not a gate.
@@ -284,7 +295,7 @@ def body(a, repo, checks, log, notes, patch, branch_url, triage=""):
         out += ["", "## The patch", "", f"On {branch_url}" if branch_url else "", "", "```diff", shown.replace("```", "'''"), "```"]
     if checks in ("failed", "nothing"):
         out += ["", "## Sending it back", "",
-                f"A maintainer comments here what to change, then adds `{RETRY_LABEL}`: the next run gives the agent that comment and tries again (#313), as many times as it takes."]
+                "Answer here what to change: your answer starts another attempt, with it as the agent's guidance (#313), as many times as it takes."]
     out += ["", "## Publishing", "",
             "A maintainer reviews this here. Publishing is: the fix into the public repository, its release, and the advisory published, in that order and close together; until then nothing is public. Nothing merges or publishes on its own.", "", AI]
     return "\n".join(out)
@@ -347,65 +358,51 @@ MARK_RE = re.compile(r"^<!-- dx-advisory-fix: ([A-Za-z0-9-]+/[A-Za-z0-9._-]+) (G
 
 
 def retries(central, pending):
-    """The claims a maintainer sent back (#313), each as a fix for this run
-    with their hint. The label comes off as it is taken, so one attempt runs
-    at a time; one that may not be retried loses it too, with the reason."""
+    """The claims a maintainer answered after their fix failed (#313), each
+    as a fix for this run with that answer as its guidance. Saying so on the
+    issue starts the attempt, so the same answer is not taken twice."""
     out = []
-    # The label a maintainer adds, there before the first fix fails.
-    try:
-        gh("label", "create", RETRY_LABEL, "--repo", central, "--color", "D93F0B", "--force",
-           "--description", "A maintainer sends this fix back to the agent, with their latest comment as its guidance")
-    except RuntimeError as exc:
-        print(f"::warning::the {RETRY_LABEL} label could not be created ({str(exc)[:200]})", file=sys.stderr)
-    rows = gh("api", f"repos/{central}/issues?state=open&labels={RETRY_LABEL}&per_page=100", "--paginate", "--jq",
-              ".[] | {number, body: ((.body // \"\") | split(\"\\n\")[0]), labels: [.labels[].name]} | @json")
+    rows = gh("api", f"repos/{central}/issues?state=open&per_page=100", "--paginate", "--jq",
+              '.[] | select(.pull_request == null) | select((.body // "") | startswith("<!-- dx-advisory-fix:")) | {number, body: ((.body // "")[:600]), labels: [.labels[].name]} | @json')
     for row in [json.loads(l) for l in rows.splitlines() if l.strip()]:
         n = row["number"]
-
-        def say(text):
-            gh("issue", "comment", str(n), "--repo", central, "--body", text + "\n\n" + AI)
-
         try:
-            gh("issue", "edit", str(n), "--repo", central, "--remove-label", RETRY_LABEL)
-            m = MARK_RE.match(row.get("body") or "")
-            events = [json.loads(l) for l in gh("api", f"repos/{central}/issues/{n}/events?per_page=100", "--paginate", "--jq", ".[] | @json").splitlines() if l.strip()]
-            added = [e for e in events if e.get("event") == "labeled" and (e.get("label") or {}).get("name") == RETRY_LABEL]
-            who = (max(added, key=lambda e: e.get("created_at", "")).get("actor") or {}).get("login", "") if added else ""
+            m = MARK_RE.match(row["body"])
+            lines = row["body"].split("\n")
+            checks = CHECKS_RE.match(lines[1]) if len(lines) > 1 else None
+            # Most claims did not fail: they cost no more reads.
+            if not m or not checks or checks.group(1) not in ("failed", "nothing"):
+                continue
+            comments = [json.loads(l) for l in gh("api", f"repos/{central}/issues/{n}/comments?per_page=100", "--paginate", "--jq", ".[] | @json").splitlines() if l.strip()]
             roles = {}
-            if LOGIN.match(who or ""):
-                try:
-                    roles[who] = gh("api", f"repos/{central}/collaborators/{who}/permission", "--jq", ".role_name").strip()
-                except RuntimeError:
-                    roles[who] = "none"
-            ok, who, why = retry_verdict(events, roles, row.get("labels"))
-            if not m:
-                ok, why = "", "this issue is not a fix's claim (its first line is not the marker)"
-            if not ok:
-                say(f"Not retried: {why}.")
+            for login in {(c.get("user") or {}).get("login", "") for c in comments if (c.get("user") or {}).get("type") != "Bot"}:
+                if LOGIN.match(login):
+                    try:
+                        roles[login] = gh("api", f"repos/{central}/collaborators/{login}/permission", "--jq", ".role_name").strip()
+                    except RuntimeError:
+                        roles[login] = "none"
+            who, guidance = answer(row["body"], comments, roles, row.get("labels"))
+            if not who:
                 continue
             repo, ghsa = m.group(1), m.group(2)
             state = json.loads(gh("api", f"repos/{repo}/security-advisories/{ghsa}", "--jq", "{state}", token=os.environ.get("ADV_TOKEN"))).get("state")
             if state not in ("triage", "draft"):
-                say(f"Not retried: the advisory is {state or 'unreadable'}, not in triage or draft.")
                 continue
-            comments = [json.loads(l) for l in gh("api", f"repos/{central}/issues/{n}/comments?per_page=100", "--paginate", "--jq", ".[] | @json").splitlines() if l.strip()]
             for old in ("patch:ready", "patch:failed"):
                 if old in (row.get("labels") or []):
                     gh("issue", "edit", str(n), "--repo", central, "--remove-label", old)
-            guidance = hint(comments, who)
-            say(f"Trying again, as @{who} asked" + (": the agent gets their latest comment as its guidance." if guidance else ", with no comment of theirs to guide it."))
+            gh("issue", "comment", str(n), "--repo", central, "--body", f"{RETRYING}, with @{who}'s answer as the agent's guidance.\n\n{AI}")
             out.append({"repo": repo, "ghsa": ghsa, "branch": branch(ghsa), "issue": n, "hint": guidance,
                         "state": "triage" if state == "draft" and (repo, ghsa) in pending else state})
         except (RuntimeError, ValueError, KeyError) as exc:
-            print(f"::warning::#{n}: not retried ({str(exc)[:200]})", file=sys.stderr)
-            try:
-                say(f"Not retried: GitHub could not be read ({str(exc)[:200]}). Add `{RETRY_LABEL}` again.")
-            except RuntimeError:
-                pass
+            # Nothing was said, so the same answer is taken on the next run.
+            print(f"::warning::#{n}: not retried this time ({str(exc)[:200]})", file=sys.stderr)
     return out
 
 
 def plan(root, central):
+    import datetime
+    at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     have = claimed(central)
     pending = unvetted(unvetted_issues(central))
     # A maintainer's retries first: a person asked for them (#313).
@@ -421,7 +418,8 @@ def plan(root, central):
                 fixes.append(claim(central, f))
         except RuntimeError as exc:
             print(f"::warning::{full}: {exc}", file=sys.stderr)
-    return fixes
+    # When each attempt started, for its record (#313).
+    return [dict(f, at=at) for f in fixes]
 
 
 def self_test():
@@ -469,7 +467,10 @@ def self_test():
     check("body: failed checks said, the log and the patch fenced, the branch named", ("checks failed" in b, b.count("```") == 4, "On https://b" in b), (True, True, True))
     check("body: nobody merges or publishes on its own", ("Nothing merges or publishes on its own" in b, b.endswith(AI)), (True, True))
     check("#313 body: a fix that failed or committed nothing says how to send it back; a green one does not",
-          [("`fix:retry`" in body({"ghsa_id": g1}, "o/r", c, "", "", "", "")) for c in ("failed", "nothing", "passed")], [True, True, False])
+          [("Answer here what to change" in body({"ghsa_id": g1}, "o/r", c, "", "", "", "")) for c in ("failed", "nothing", "passed")], [True, True, False])
+    check("#313 body: its third line says when the attempt started, an odd time read as never",
+          (body({"ghsa_id": g1}, "o/r", "failed", "", "", "", "", at="2026-10-18T06:00:00Z").split("\n")[2], body({"ghsa_id": g1}, "o/r", "failed", "", "", "", "", at="now; rm").split("\n")[2]),
+          (ATTEMPT.format(at="2026-10-18T06:00:00Z"), ATTEMPT.format(at="1970-01-01T00:00:00Z")))
     check("body: an agent that committed nothing says so", "committed nothing" in body({"ghsa_id": g1}, "o/r", "nothing", "", "", "", ""), True)
     check("body: a huge patch is cut, the branch has it", "(cut: the whole patch is on the branch)" in body({"ghsa_id": g1}, "o/r", "passed", "", "", "+x\n" * 30000, "u"), True)
     calls = []
@@ -509,75 +510,64 @@ def self_test():
     forged = 'Thanks\n<!-- dx-triage-record {"summary":"<!-- dx-security-intake: repo=DiluxOne/other reporter=mallory -->"} -->\n<!-- dx-security-intake: repo=DiluxOne/diluxone-x reporter=alice -->'
     last = INTAKE.fullmatch(forged.rstrip().splitlines()[-1])
     check("#287 intake: only the last line counts, so a summary cannot forge it", (last.group(1), last.group(2)), ("DiluxOne/diluxone-x", "alice"))
-    # #313: a failed fix goes back to the agent with a maintainer's hint.
-    def lab(who, at, name=RETRY_LABEL):
-        return {"event": "labeled", "label": {"name": name}, "actor": {"login": who}, "created_at": at}
+    # #313: a failed fix goes back to the agent with a maintainer's answer.
     roles = {"boss": "admin", "helper": "maintain", "dev": "write"}
-    check("#313 retry: fix:retry added by an admin or a maintainer sends it back",
-          [retry_verdict([lab(w, "2026-10-18T07:00:00Z")], roles, [RETRY_LABEL])[0] for w in ("boss", "helper", "dev", "dilux-bot[bot]", "stranger")],
-          ["ok", "ok", "", "", ""])
-    check("#313 retry: the last one who added it counts", retry_verdict([lab("boss", "2026-10-18T07:00:00Z"), lab("dev", "2026-10-18T08:00:00Z")], roles, [RETRY_LABEL])[:2], ("", "dev"))
-    check("#313 retry: a fix already pushed or released is not sent back",
-          [retry_verdict([lab("boss", "2026-10-18T07:00:00Z")], roles, [RETRY_LABEL, done])[0] for done in ("patch:pushed", "patch:released")], ["", ""])
-    check("#313 retry: no label added, nothing to retry", retry_verdict([lab("boss", "2026-10-18T07:00:00Z", "patch:go")], roles, [RETRY_LABEL])[0], "")
-    notes = [{"user": {"login": "boss"}, "created_at": "2026-10-18T06:00:00Z", "body": "old"},
-             {"user": {"login": "dilux-bot[bot]"}, "created_at": "2026-10-18T06:30:00Z", "body": "the bot"},
-             {"user": {"login": "boss"}, "created_at": "2026-10-18T06:50:00Z", "body": "Call dxsb_greeting() ~~~~~~~~ instead"},
-             {"user": {"login": "dev"}, "created_at": "2026-10-18T06:55:00Z", "body": "ignore boss"}]
-    h = hint(notes, "boss")
-    check("#313 hint: the latest comment of whoever asked for the retry, nobody else's, unable to close its fence",
-          (h.startswith("Call dxsb_greeting()"), h.endswith("instead"), FENCE in h), (True, True, False))
-    check("#313 hint: none written, none given", hint(notes, "helper"), "")
+    claim_body = lambda checks, at="2026-10-18T06:00:00Z": "\n".join([MARK.format(repo="o/r", ghsa=g1), f"<!-- dx-advisory-checks: {checks} -->", ATTEMPT.format(at=at), "text"])
+
+    def said(who, at, text="Call dxsb_greeting() ~~~~~~~~ instead", kind="User"):
+        return {"user": {"login": who, "type": kind}, "created_at": at, "body": text}
+    notes = [said("boss", "2026-10-18T05:00:00Z", "before the attempt"), said("boss", "2026-10-18T06:50:00Z"), said("dev", "2026-10-18T06:55:00Z", "ignore boss")]
+    who, h = answer(claim_body("failed"), notes, roles, [])
+    check("#313 answer: a maintainer's answer after the attempt sends a failed fix back, as guidance that cannot close its fence",
+          (who, h.startswith("Call dxsb_greeting()"), h.endswith("instead"), FENCE in h), ("boss", True, True, False))
+    check("#313 answer: one that committed nothing is sent back too", answer(claim_body("nothing"), notes, roles, [])[0], "boss")
+    check("#313 answer: a fix that passed, or none recorded yet, is not", [answer(claim_body(c), notes, roles, [])[0] for c in ("passed", "none", "unknown")], ["", "", ""])
+    check("#313 answer: only maintainers count, the latest of them",
+          (answer(claim_body("failed"), [said("dev", "2026-10-18T07:00:00Z")], roles, [])[0],
+           answer(claim_body("failed"), [said("boss", "2026-10-18T07:00:00Z", "a"), said("helper", "2026-10-18T07:10:00Z", "b")], roles, [])), ("", ("helper", "b")))
+    check("#313 answer: nothing said since the attempt started, nothing to retry", answer(claim_body("failed"), [notes[0]], roles, [])[0], "")
+    check("#313 answer: the bot's own words never count, and its 'Trying again' starts an attempt",
+          (answer(claim_body("failed"), [said(org.BOT, "2026-10-18T07:00:00Z", "x", "Bot")], {org.BOT: "admin"}, [])[0],
+           answer(claim_body("failed"), [notes[1], said(org.BOT, "2026-10-18T06:51:00Z", RETRYING + ", with @boss's answer", "Bot")], roles, [])[0]), ("", ""))
+    check("#313 answer: a fix already pushed or released is never sent back",
+          [answer(claim_body("failed"), notes, roles, [d])[0] for d in DONE_LABELS], ["", ""])
     ph = prompt({"ghsa_id": g1, "summary": "x"}, "Call dxsb_greeting() instead")
     check("#313 prompt: a retry carries the maintainer's hint, fenced, and says the last attempt failed",
           ("A maintainer sent back an earlier attempt" in ph, "Call dxsb_greeting() instead" in ph, ph.count(FENCE)), (True, True, 6))
     check("#313 prompt: a first attempt has no hint section", "A maintainer sent back" in prompt({"ghsa_id": g1, "summary": "x"}), False)
     # #313 retries(), against a stand-in for gh.
-    def fake(issue_labels, adder, role, adv_state="draft"):
+    def fake(checks, comments, role, adv_state="draft", labels=()):
         log = []
 
         def g(*a, token=None):
             log.append(a)
             path = a[1] if len(a) > 1 else ""
             if path.startswith("repos/o/security/issues?"):
-                return json.dumps({"number": 7, "body": MARK.format(repo="o/r", ghsa=g1), "labels": issue_labels}) + "\n"
-            if path.endswith("/events?per_page=100"):
-                return json.dumps(lab(adder, "2026-10-18T07:00:00Z")) + "\n"
+                return json.dumps({"number": 7, "body": claim_body(checks), "labels": list(labels)}) + "\n"
+            if path.endswith("/comments?per_page=100"):
+                return "\n".join(json.dumps(c) for c in comments) + "\n"
             if "/collaborators/" in path:
-                return role + "\n"
+                login = path.split("/collaborators/")[1].split("/")[0]
+                return (role if login == "boss" else roles.get(login, "none")) + "\n"
             if "/security-advisories/" in path:
                 return json.dumps({"state": adv_state})
-            if path.endswith("/comments?per_page=100"):
-                return "\n".join(json.dumps(c) for c in notes) + "\n"
             return ""
         return g, log
     real_gh = globals()["gh"]
     try:
-        globals()["gh"], log = fake([RETRY_LABEL, "patch:failed"], "boss", "admin")
+        globals()["gh"], log = fake("failed", notes, "admin", labels=("patch:failed",))
         got = retries("o/security", set())
-        said = [a[-1] for a in log if a[:2] == ("issue", "comment")]
-        check("#313 retries: a maintainer's retry runs with their hint, the label and patch:failed off, said on the issue",
+        says = [a[-1] for a in log if a[:2] == ("issue", "comment")]
+        check("#313 retries: a maintainer's answer runs the fix again with it, patch:failed off, said on the issue",
               (got and {k: got[0][k] for k in ("repo", "ghsa", "issue", "state")}, got and got[0]["hint"].startswith("Call dxsb_greeting()"),
-               ("issue", "edit", "7", "--repo", "o/security", "--remove-label", RETRY_LABEL) in log, ("issue", "edit", "7", "--repo", "o/security", "--remove-label", "patch:failed") in log,
-               any("Trying again, as @boss asked" in t for t in said)),
-              ({"repo": "o/r", "ghsa": g1, "issue": 7, "state": "draft"}, True, True, True, True))
+               ("issue", "edit", "7", "--repo", "o/security", "--remove-label", "patch:failed") in log, any(t.startswith(RETRYING + ", with @boss's answer") for t in says)),
+              ({"repo": "o/r", "ghsa": g1, "issue": 7, "state": "draft"}, True, True, True))
         check("#313 retries: an unvetted draft is retried as one in triage", retries("o/security", {("o/r", g1)})[0]["state"], "triage")
-        globals()["gh"], log = fake([RETRY_LABEL], "dev", "write")
-        got = retries("o/security", set())
-        check("#313 retries: someone who does not maintain it retries nothing, the label comes off, the issue says why",
-              (got, ("issue", "edit", "7", "--repo", "o/security", "--remove-label", RETRY_LABEL) in log,
-               any("Not retried: fix:retry was added by dev" in a[-1] for a in log if a[:2] == ("issue", "comment"))), ([], True, True))
-        check("#313 retries: the label exists before anyone needs it", any(a[:3] == ("label", "create", RETRY_LABEL) for a in log), True)
-        g_ok, log = fake([RETRY_LABEL], "boss", "admin")
-
-        def flaky(*a, token=None):
-            if len(a) > 1 and "/security-advisories/" in a[1]:
-                raise RuntimeError("HTTP 502")
-            return g_ok(*a, token=token)
-        globals()["gh"] = flaky
-        check("#313 retries: a failure after the label came off is said on the issue, so the maintainer adds it again",
-              (retries("o/security", set()), any("Add `fix:retry` again" in a[-1] for a in log if a[:2] == ("issue", "comment"))), ([], True))
-        globals()["gh"], log = fake([RETRY_LABEL], "boss", "admin", "published")
+        globals()["gh"], log = fake("failed", notes, "read")
+        check("#313 retries: an answer from someone who does not maintain it starts nothing, and says nothing", (retries("o/security", set()), [a for a in log if a[:2] == ("issue", "comment")]), ([], []))
+        globals()["gh"], log = fake("passed", notes, "admin")
+        check("#313 retries: a claim whose fix passed costs no read of its comments", (retries("o/security", set()), any("/comments" in (a[1] if len(a) > 1 else "") for a in log)), ([], False))
+        globals()["gh"], log = fake("failed", notes, "admin", "published")
         check("#313 retries: a published advisory is not retried", retries("o/security", set()), [])
     finally:
         globals()["gh"] = real_gh
@@ -591,8 +581,12 @@ def self_test():
         task = next(st for st in wf["jobs"]["fix"]["steps"] if st.get("id") == "task")
         rec = next(st for st in wf["jobs"]["record"]["steps"] if st.get("name") == "The branch and the issue")
         check("#313 wiring: the fix job hands the maintainer's hint to the prompt, through env; a retry resets its branch",
-              ((task.get("env") or {}).get("HINT"), "advisory.py prompt" in task["run"], "git/refs/heads/$BRANCH\" -f sha=\"$head\" -F force=true" in rec["run"]),
-              ("${{ matrix.fix.hint }}", True, True))
+              ((task.get("env") or {}).get("HINT"), "advisory.py prompt" in task["run"], "git/refs/heads/$BRANCH\" -f sha=\"$head\" -F force=true" in rec["run"], (rec.get("env") or {}).get("AT"), 'AT="$AT"' in rec["run"]),
+              ("${{ matrix.fix.hint }}", True, True, "${{ matrix.fix.at }}", True))
+        tpl = open(os.path.join(HERE, "..", "workflow-templates", "security-fix.yml"), encoding="utf-8").read()
+        tw = yaml.safe_load(tpl)
+        check("#313 wiring: the caller runs on a person's comment, never on a bot's",
+              ("issue_comment" in (tw.get(True) or tw.get("on") or {}), "github.event.comment.user.type != 'Bot'" in str(tw["jobs"]["fix"].get("if"))), (True, True))
     except ImportError:
         print("skip #313 wiring: no PyYAML")
     print("all tests passed" if not failed else "some tests failed")
@@ -713,7 +707,7 @@ def main(argv):
         with open(os.environ["ADVISORY"], encoding="utf-8") as fh:
             a = json.load(fh)
         read = lambda k: open(os.environ[k], encoding="utf-8", errors="replace").read() if os.environ.get(k) and os.path.isfile(os.environ[k]) else ""
-        print(body(a, os.environ.get("REPO", ""), os.environ.get("CHECKS", ""), read("CHECKS_LOG"), read("NOTES"), read("PATCH"), os.environ.get("BRANCH_URL", ""), os.environ.get("TRIAGE", "")))
+        print(body(a, os.environ.get("REPO", ""), os.environ.get("CHECKS", ""), read("CHECKS_LOG"), read("NOTES"), read("PATCH"), os.environ.get("BRANCH_URL", ""), os.environ.get("TRIAGE", ""), os.environ.get("AT", "")))
         return 0
     if argv == ["advance"]:
         # STATE, CHECKS, VERDICT (the agent's file): {act, why, verdict}.

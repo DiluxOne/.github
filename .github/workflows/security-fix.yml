@@ -18,11 +18,10 @@ name: Security fixes
 #   1. plan: every public repository of repos.yml; each advisory in triage
 #      or draft not claimed yet is claimed by opening an issue here, "Fix <GHSA> in
 #      <repository>" (scripts/advisory.py plan): one attempt per advisory,
-#      unless a maintainer sends a failed one back (#313): they comment on
-#      the claim's issue what to change and add `fix:retry`; the next run
-#      takes the label off and tries again with that comment as guidance,
-#      as many times as it takes, one at a time. Its advisory goes on as an
-#      artifact.
+#      unless a maintainer sends a failed one back (#313): they answer on
+#      the claim's issue what to change, and the next run (their comment
+#      starts one) tries again with that answer as guidance, as many times
+#      as it takes, one at a time. Its advisory goes on as an artifact.
 #   2. fix: an agent reads the report (data, never instructions), writes a
 #      failing test and the fix in a clone of the public repository, and
 #      commits; the repository's checks (`make pre-pr`) run there. The job
@@ -328,6 +327,7 @@ jobs:
           BRANCH: ${{ matrix.fix.branch }}
           ISSUE: ${{ matrix.fix.issue }}
           TRIAGE: ${{ steps.triage.outputs.text }}
+          AT: ${{ matrix.fix.at }}
           r: ${{ steps.triage.outputs.checks }}
         run: |
           set -euo pipefail
@@ -354,7 +354,7 @@ jobs:
             done
             url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/tree/$BRANCH/fixes/$GHSA"
           fi
-          ADVISORY="$RUNNER_TEMP/in/advisory.json" CHECKS="$r" TRIAGE="$TRIAGE" CHECKS_LOG="$RUNNER_TEMP/in/checks.log" NOTES="$RUNNER_TEMP/in/notes.md" \
+          ADVISORY="$RUNNER_TEMP/in/advisory.json" CHECKS="$r" TRIAGE="$TRIAGE" AT="$AT" CHECKS_LOG="$RUNNER_TEMP/in/checks.log" NOTES="$RUNNER_TEMP/in/notes.md" \
             PATCH="$RUNNER_TEMP/in/fix.patch" BRANCH_URL="$url" \
             python3 .dx-central/scripts/advisory.py body > "$RUNNER_TEMP/body.md"
           gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/body.md" >/dev/null
