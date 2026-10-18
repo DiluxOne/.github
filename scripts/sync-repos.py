@@ -316,23 +316,30 @@ def git_branch(full, default, branch, wanted, message_form, git=run_git, workdir
     """`wanted` ({path: content}) on branch, one commit per file signed with
     the person's own key (`git commit -S`), pushed; the branch as it is
     when it exists, else from default (#327)."""
+    import shutil
     import tempfile
     work = workdir or tempfile.mkdtemp(prefix="dx-sync-")
-    url = f"https://github.com/{full}.git"
-    git("clone", "-q", "--depth", "1", "--branch", default, url, work)
-    if git("ls-remote", "--heads", "origin", branch, cwd=work).strip():
-        git("fetch", "-q", "--depth", "1", "origin", branch, cwd=work)
-        git("checkout", "-q", "-B", branch, "FETCH_HEAD", cwd=work)
-    else:
-        git("checkout", "-q", "-B", branch, cwd=work)
-    for path, content in wanted.items():
-        target = os.path.join(work, path)
-        os.makedirs(os.path.dirname(target) or work, exist_ok=True)
-        with open(target, "w", encoding="utf-8") as fh:
-            fh.write(content)
-        git("add", "--", path, cwd=work)
-        git("commit", "-q", "-S", "-m", message_form.format(path), cwd=work)
-    git("push", "-q", "origin", f"HEAD:refs/heads/{branch}", cwd=work)
+    try:
+        url = f"https://github.com/{full}.git"
+        git("clone", "-q", "--depth", "1", "--branch", default, url, work)
+        if git("ls-remote", "--heads", "origin", branch, cwd=work).strip():
+            git("fetch", "-q", "--depth", "1", "origin", branch, cwd=work)
+            git("checkout", "-q", "-B", branch, "FETCH_HEAD", cwd=work)
+        else:
+            git("checkout", "-q", "-B", branch, cwd=work)
+        for path, content in wanted.items():
+            target = os.path.join(work, path)
+            os.makedirs(os.path.dirname(target) or work, exist_ok=True)
+            with open(target, "w", encoding="utf-8") as fh:
+                fh.write(content)
+            git("add", "--", path, cwd=work)
+            # Already so on a branch an earlier run left: nothing to commit.
+            if git("status", "--porcelain", "--", path, cwd=work).strip():
+                git("commit", "-q", "-S", "-m", message_form.format(path), cwd=work)
+        git("push", "-q", "origin", f"HEAD:refs/heads/{branch}", cwd=work)
+    finally:
+        if not workdir:
+            shutil.rmtree(work, ignore_errors=True)
 
 
 def open_change(repo, default, wanted, title, body, branch_form, pr_title, pr_body, message_form, mode=None):
@@ -1441,8 +1448,14 @@ def signed_test(check):
           (by_git({"GITHUB_ACTIONS": "true"}), by_git({})) == (False, True), "")
     ran = []
 
+    exists, same = [False], [False]
+
     def fake_git(*args, cwd=None):
         ran.append(args)
+        if args[:1] == ("ls-remote",):
+            return "abc\trefs/heads/ci/7-x\n" if exists[0] else ""
+        if args[:1] == ("status",):
+            return "" if same[0] else " M x\n"
         return ""
     import tempfile
     with tempfile.TemporaryDirectory() as d:
@@ -1450,6 +1463,12 @@ def signed_test(check):
     commits = [a for a in ran if a[:1] == ("commit",)]
     check("#327: one signed commit per file, then one push of the branch",
           (len(commits), all("-S" in a for a in commits), [a for a in ran if a[:1] == ("push",)]) == (2, True, [("push", "-q", "origin", "HEAD:refs/heads/ci/7-x")]), ran)
+    ran.clear()
+    exists[0], same[0] = True, True
+    with tempfile.TemporaryDirectory() as d:
+        git_branch("o/r", "main", "ci/7-x", {"b.txt": "B\n"}, "ci: keep {} in step", fake_git, d)
+    check("#327: a branch an earlier run left is built on, and a file already so there is not committed again",
+          (("checkout", "-q", "-B", "ci/7-x", "FETCH_HEAD") in ran, [a for a in ran if a[:1] == ("commit",)]) == (True, []), ran)
 
 
 def triggers_test(check):
