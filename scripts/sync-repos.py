@@ -44,7 +44,8 @@ archived and not excluded in repos.yml:
             the repository's own are never compared. Like `files`, it opens
             an issue (Type Task) and a pull request rewriting each caller
             that differs, only the jobs that differ, keeping the
-            repository's values, header, triggers and own jobs. A repository
+            repository's values, header and own jobs, and taking the
+            template's triggers where it lacks one (#324). A repository
             at an older major migrates first (docs/migrating.md), unless
             repos.yml names that major in `callers: migrates-from`: then it
             moves every call to the current major in the same pull request
@@ -664,7 +665,7 @@ def callers_drift(files, conf, central=False, major=None, default="main"):
         # Its triggers too (#324), unless the file is the caller of two
         # templates: then they are the union of both.
         if path not in shared and not central:
-            missing, extra = trigger_gaps(triggers(parsed[path][1]), triggers(data), default)
+            missing, extra, _own = trigger_gaps(triggers(parsed[path][1]), triggers(data), default)
             found += missing + [f"{e}, which the template does not (bring it in step by hand)" for e in extra]
         for job, want in jobs_of(data).items():
             if job not in mine:
@@ -717,10 +718,12 @@ def _as_list(v):
 
 
 def trigger_gaps(have, want, default):
-    """([what the caller lacks], [what it has that the template does not])
-    between two triggers(), the template's `$default-branch` read as the
-    repository's default branch. Pure."""
-    missing, extra = [], []
+    """([what the caller lacks], [what it has that the template does not],
+    [events it sets its own way]) between two triggers(), the template's
+    `$default-branch` read as the repository's default branch. An event set
+    its own way (a schedule's crons) is the repository's: never drift, but
+    a rewrite would lose it. Pure."""
+    missing, extra, own = [], [], []
     sub = lambda x: default if x == "$default-branch" else x
     for event in want:
         if event not in have:
@@ -728,6 +731,10 @@ def trigger_gaps(have, want, default):
             continue
         w, h = want[event] or {}, have[event] or {}
         if not isinstance(w, dict) or not isinstance(h, dict):
+            # A schedule's crons, or an event written otherwise: the
+            # repository's own when they differ, so never overwritten.
+            if w != h:
+                own.append(f"sets `{event}` its own way")
             continue
         for key in set(w) | set(h):
             if key == "inputs":
@@ -739,7 +746,7 @@ def trigger_gaps(have, want, default):
             missing += [f"`{event}.{key}` lacks `{x}`" for x in wl if x not in hl]
             extra += [f"`{event}.{key}` has `{x}`" for x in hl if x not in wl]
     extra += [f"has the trigger `{e}`" for e in have if e not in want]
-    return missing, extra
+    return missing, extra, own
 
 
 def on_block(lines):
@@ -762,11 +769,11 @@ def with_triggers(text, template_text, default):
     branch for `$default-branch`; the text itself when they are in step;
     None when the caller has a trigger of its own the template lacks (a
     person brings those in step)."""
-    missing, extra = trigger_gaps(triggers(parse_yaml(text)), triggers(parse_yaml(template_text)), default)
-    if extra:
-        return None
+    missing, extra, own = trigger_gaps(triggers(parse_yaml(text)), triggers(parse_yaml(template_text)), default)
     if not missing:
         return text
+    if extra or own:
+        return None
     mine, theirs = text.splitlines(keepends=True), template_text.splitlines(keepends=True)
     a, b = on_block(mine), on_block(theirs)
     if not a or not b:
@@ -1386,7 +1393,7 @@ def triggers_test(check):
     tpl = open(os.path.join(TEMPLATES, "release-wp.yml"), encoding="utf-8").read()
     old_on = "on:\n  push:\n    branches: [main]\n    # X.Y.Z tags only.\n    tags: ['[0-9]+.[0-9]+.[0-9]+']\n"
     caller = "name: Release\n\n" + old_on + "\n# Mine: this header stays.\n\npermissions:\n  contents: read\n\njobs:\n  release:\n    uses: x\n"
-    missing, extra = trigger_gaps(triggers(parse_yaml(caller)), triggers(parse_yaml(tpl)), "main")
+    missing, extra, _ = trigger_gaps(triggers(parse_yaml(caller)), triggers(parse_yaml(tpl)), "main")
     check("#324 triggers: the ones a caller lacks are found, its own extra none",
           extra == [] and any("security/" in m for m in missing) and any("`release`" in m for m in missing) and any("`workflow_dispatch`" in m for m in missing), (missing, extra))
     new = with_triggers(caller, tpl, "main")
@@ -1398,9 +1405,23 @@ def triggers_test(check):
     trunk = caller.replace("branches: [main]", "branches: [trunk]")
     check("#324 triggers: the repository's default branch, not main", "branches: [trunk, " in (with_triggers(trunk, tpl, "trunk") or ""), with_triggers(trunk, tpl, "trunk"))
     own = caller.replace("    tags:", "    paths: ['src/**']\n    tags:")
-    m2, e2 = trigger_gaps(triggers(parse_yaml(own)), triggers(parse_yaml(tpl)), "main")
+    m2, e2, _ = trigger_gaps(triggers(parse_yaml(own)), triggers(parse_yaml(tpl)), "main")
     check("#324 triggers: a trigger of the repository's own the template lacks stops the rewrite, and is said",
-          (with_triggers(own, tpl, "main"), bool(e2)), (None, True))
+          (with_triggers(own, tpl, "main"), bool(e2)) == (None, True), e2)
+    cron = lambda c: {"schedule": [{"cron": c}]}
+    mine_cron = "on:\n  schedule:\n    - cron: '0 1 * * *'\n  push:\n    branches: [main]\njobs:\n  x:\n    uses: y\n"
+    their_cron = "on:\n  schedule:\n    - cron: '0 2 * * *'\n  push:\n    branches: [$default-branch]\njobs:\n  x:\n    uses: y\n"
+    check("#324 triggers: a schedule of its own is the repository's: no drift, kept when nothing else is missing, never overwritten",
+          (trigger_gaps(cron("0 1 * * *"), cron("0 2 * * *"), "main")[:2], with_triggers(mine_cron, their_cron, "main") == mine_cron,
+           with_triggers(mine_cron, their_cron.replace("  push:", "  release:\n    types: [published]\n  push:"), "main")) == (([], []), True, None),
+          trigger_gaps(cron("0 1 * * *"), cron("0 2 * * *"), "main"))
+    conf = {"callers": {"every-repository": [], "repository-owned": {"release-wp.yml": ["slug", "version-constant", "dry-run"]}}}
+    rel = tpl.replace("$default-branch, 'security/[0-9]+.[0-9]+.[0-9]+'", "main")
+    got = [f for n, p, f in callers_drift({".github/workflows/release.yml": rel}, conf) if n == "release-wp.yml"]
+    check("#324 drift: a caller lacking a trigger of its template is reported", bool(got) and any("security/" in x for x in got[0]), got)
+    both = rel.rstrip("\n") + "\n\n  auth:\n    uses: DiluxOne/.github/.github/workflows/svn-auth-check.yml@v6\n"
+    got2 = [f for n, p, f in callers_drift({".github/workflows/all.yml": both}, conf) if any("trigger" in x or "lacks `" in x for x in f)]
+    check("#324 drift: a file that is the caller of two templates is held to neither's triggers", got2 == [], got2)
 
 
 def callers_test(check, conf):
