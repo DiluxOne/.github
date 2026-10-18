@@ -26,7 +26,14 @@ never listed again.
   nightly-review.py bugs         the findings to open as Bug issues in the
                                  repository (#247), one JSON per line, with
                                  the issue's title and body: FINDINGS,
-                                 PREVIOUS, REPO; at most MAX_BUGS
+                                 PREVIOUS, REPO; every one (#287: every bug
+                                 found is worked)
+  nightly-review.py vulns        the security findings, new, blocker or
+                                 major, to open as a draft security advisory
+                                 in the repository (a public one; a private
+                                 one gets a `security` issue), one JSON per
+                                 line with the advisory's payload (#287):
+                                 FINDINGS, PREVIOUS, REPO
   nightly-review.py --test       self-test
 """
 import datetime
@@ -47,8 +54,9 @@ AI = "🤖 AI-generated · Claude Opus 5.5 (Anthropic), the nightly review"
 ITEM = re.compile(r"^- \[( |x|X)\] (~~)?\*\*(blocker|major|minor)\*\* `([^`]+)`: (.*?)( → (https://\S+))?(~~)?( _\(since [^)]+\)_)?$")
 SEVERITY = ("blocker", "major", "minor")
 MAX_ITEMS = 60
-# A night opens at most this many Bug issues in a repository (#247).
-MAX_BUGS = 2
+# What the statistics count as found by DiluxOne's own AI (#287): a label
+# on its issues, a line in its advisories.
+FOUND_BY = "found-by:dilux-ai"
 BUG_MARK = "<!-- dx-nightly-finding: {repo} -->"
 
 
@@ -178,7 +186,7 @@ def body(repo, items, date, closed=(), issued=None):
 def bugs(previous, findings, repo):
     """The findings to open as Bug issues: blocker or major, not about
     security, new tonight (not in the list before, open or closed), at most
-    MAX_BUGS, the most severe first."""
+    the most severe first (every one: every bug found is worked, #287)."""
     known = [(key(p), line_of(p)) for p in previous]
     out = []
     for f in sorted((f for f in findings if isinstance(f, dict)), key=lambda f: SEVERITY.index(f.get("severity")) if f.get("severity") in SEVERITY else 9):
@@ -195,8 +203,31 @@ def bugs(previous, findings, repo):
                            "", AI])
         out.append({**f, "where": where, "issue_title": title, "issue_body": body})
         known.append((k, ln))
-        if len(out) >= MAX_BUGS:
-            break
+    return out
+
+
+def vulns(previous, findings, repo):
+    """The security findings to report as such (#287): blocker or major,
+    marked security, new tonight; each with a draft advisory's payload,
+    credited in its text to DiluxOne's automated review (an advisory's
+    credits name people only) and marked found-by:dilux-ai."""
+    known = [(key(p), line_of(p)) for p in previous]
+    out = []
+    for f in sorted((f for f in findings if isinstance(f, dict)), key=lambda f: SEVERITY.index(f.get("severity")) if f.get("severity") in SEVERITY else 9):
+        if f.get("severity") not in ("blocker", "major") or f.get("security") is not True or not f.get("file") or not f.get("title"):
+            continue
+        k, ln = key(f), line_of(f)
+        if any(same(k, g, ln, gl) for g, gl in known):
+            continue
+        where = f"{f['file']}{':' + str(f['line']) if isinstance(f.get('line'), int) else ''}"
+        title = str(f["title"]).replace("\n", " ")[:200]
+        text = "\n".join([str(f.get("detail") or f["title"])[:6000], "", f"Where: `{where}`", "",
+                           f"Found by DiluxOne's automated nightly review of the existing code (AI). {FOUND_BY}"])
+        payload = {"summary": title, "description": text, "severity": "high" if f["severity"] == "blocker" else "medium",
+                   "vulnerabilities": [{"package": {"ecosystem": "other", "name": repo.split("/", 1)[-1]}}]}
+        out.append({**f, "where": where, "issue_title": title,
+                    "issue_body": "\n".join([BUG_MARK.format(repo=repo), "", text, "", AI]), "advisory": payload})
+        known.append((k, ln))
     return out
 
 
@@ -275,8 +306,12 @@ def self_test():
              {"severity": "major", "file": "f.php", "title": "Second", "security": False},
              {"severity": "major", "file": "g.php", "title": "Third", "security": False}]
     got = bugs(prevb, found, "o/r")
-    check("bugs: new, not security (and only when it says so), blocker or major, most severe first, at most two",
-          [b["file"] for b in got], ["b.php", "f.php"])
+    check("bugs: new, not security (and only when it says so), blocker or major, most severe first, every one",
+          [b["file"] for b in got], ["b.php", "f.php", "g.php"])
+    vs = vulns(prevb, found, "o/r")
+    check("#287 vulns: new security findings, blocker or major, as a draft advisory credited to the review",
+          ([v["file"] for v in vs], vs[0]["advisory"]["severity"], FOUND_BY in vs[0]["advisory"]["description"], vs[0]["advisory"]["vulnerabilities"][0]["package"]["name"]),
+          (["c.php"], "medium", True, "r"))
     check("bugs: the issue carries the marker, the detail and where", (got[0]["issue_body"].startswith(BUG_MARK.format(repo="o/r")), "Steps..." in got[0]["issue_body"], "`b.php:5`" in got[0]["issue_body"]), (True, True, True))
     linked = body("o/r", [{"state": "open", "severity": "blocker", "file": "b.php:5", "title": "Account stuck", "since": "d"}], "d", (), {"b.php:5": "https://github.com/o/r/issues/9"})
     check("list: a finding opened as a Bug links its issue, and reads back with it", (" → https://github.com/o/r/issues/9" in linked, parse(linked)[0]["issue"]), (True, "https://github.com/o/r/issues/9"))
@@ -333,7 +368,7 @@ def main(argv):
             for c in keep_safe(cands, verdicts):
                 print(json.dumps(c))
         return 0
-    if argv == ["bugs"]:
+    if argv in (["bugs"], ["vulns"]):
         def read2(k):
             try:
                 with open(os.environ[k], encoding="utf-8") as fh:
@@ -344,7 +379,7 @@ def main(argv):
             findings = (json.loads(read2("FINDINGS") or "{}") or {}).get("findings") or []
         except ValueError:
             findings = []
-        for b in bugs(parse(read2("PREVIOUS")), findings, os.environ["REPO"]):
+        for b in (bugs if argv == ["bugs"] else vulns)(parse(read2("PREVIOUS")), findings, os.environ["REPO"]):
             print(json.dumps(b))
         return 0
     print(__doc__, file=sys.stderr)
