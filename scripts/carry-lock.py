@@ -13,7 +13,9 @@ from git alone (a checkout with the whole history and the tags):
   - its fix is the commits since the version it was built on (the nearest
     version tag among its ancestors), but that release commit;
   - it is carried when every one of them has a patch-equivalent commit on
-    the branch (`git cherry`), however it got there.
+    the branch (`git cherry`), or one commit on the branch since they parted
+    carries the whole fix at once (a squash merge): the same patch id as the
+    fix's whole diff, however it got there.
 
   carry-lock.py check [BRANCH]   one line per patch not carried (exit 1);
                                  nothing (exit 0); 2 when it cannot tell
@@ -86,6 +88,33 @@ def fix_commits(tag, all_tags=None, cwd=None):
     return [r for r in revs if r != release]
 
 
+def patch_id(diff, cwd=None):
+    """The stable patch id of a diff ("" for an empty one)."""
+    out = subprocess.run(["git", "patch-id", "--stable"], input=diff, capture_output=True, text=True, cwd=cwd)
+    return (out.stdout.split() or [""])[0]
+
+
+def fix_id(tag, all_tags=None, cwd=None):
+    """The patch id of a patch's whole fix: what the commits since the
+    version it was built on change, but its release commit (the tag's own,
+    the last)."""
+    all_tags = all_tags if all_tags is not None else tags(cwd)
+    return patch_id(git("diff", base_of(tag, all_tags, cwd), f"{tag}^{{commit}}^", cwd=cwd), cwd)
+
+
+def squashed_in(tag, branch, all_tags, cwd=None):
+    """Whether one commit on the branch, since it parted from the patch,
+    carries the patch's whole fix at once (a squash merge)."""
+    want = fix_id(tag, all_tags, cwd)
+    if not want:
+        return False
+    since = git("merge-base", branch, tag, cwd=cwd).strip()
+    for rev in git("rev-list", "--no-merges", f"{since}..{branch}", cwd=cwd).split():
+        if patch_id(git("show", "--format=", rev, cwd=cwd), cwd) == want:
+            return True
+    return False
+
+
 def missing(branch="HEAD", cwd=None):
     """[(version, commits not carried)] for each security patch not on the
     branch, oldest first."""
@@ -100,7 +129,7 @@ def missing(branch="HEAD", cwd=None):
         # with no patch-equivalent on the branch.
         left = [l.split()[1] for l in git("cherry", branch, t, base, cwd=cwd).splitlines() if l.startswith("+ ")]
         left = [c for c in left if c in fix]
-        if left:
+        if left and not squashed_in(t, branch, all_tags, cwd):
             out.append((version_of(t), left))
     return out
 
@@ -148,6 +177,23 @@ def self_test():
         # Carried by a cherry-pick: an equivalent commit on main.
         g("cherry-pick", fix)
         check("check: carried by an equivalent commit, nothing is missing", missing("main", d), [])
+        # A fix of two commits, carried by one squash merge.
+        g("checkout", "-q", "-b", "security/1.0.2", "1.0.1")
+        write("c.php", "<?php\n$c = intval( 1 );\n")
+        g("add", "c.php")
+        g("commit", "-qm", "fix: intval c")
+        write("a.php", "<?php\n$a = esc_html( absint( 1 ) );\n")
+        g("commit", "-qam", "fix: absint a")
+        g("commit", "-q", "--allow-empty", "-m", "chore(release): 1.0.2, a security patch")
+        g("tag", "1.0.2")
+        g("checkout", "-q", "main")
+        check("check: a fix of two commits not carried is missing", [m[0] for m in missing("main", d)], ["1.0.2"])
+        g("checkout", "-q", "-b", "squash", "main")
+        g("cherry-pick", "--no-commit", "1.0.2~2", "1.0.2~1")
+        g("commit", "-q", "-m", "fix(security): carry 1.0.2 (#9)")
+        check("check: carried by one squash commit, nothing is missing", missing("squash", d), [])
+        g("checkout", "-q", "main")
+        g("merge", "-q", "--ff-only", "squash")
         # A later release from main contains it: ancestors are never patches to carry.
         g("tag", "1.1.0")
         check("check: a release tag on the branch is no patch to carry", missing("main", d), [])
@@ -199,7 +245,9 @@ def main(argv):
                 print(f"{version}: {len(commits)} commit(s) of its fix are not on {branch}")
             return 1 if left else 0
         if argv[:1] == ["fix"] and len(argv) == 2 and VERSION.match(argv[1]):
-            print("\n".join(fix_commits(argv[1])))
+            have = tags()
+            tag = argv[1] if argv[1] in have else (f"v{argv[1]}" if f"v{argv[1]}" in have else argv[1])
+            print("\n".join(fix_commits(tag, have)))
             return 0
     except (RuntimeError, OSError) as err:
         print(f"carry-lock.py: {err}", file=sys.stderr)

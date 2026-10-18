@@ -605,11 +605,14 @@ jobs:
           # A fix that does not apply there is left to a person, on the issue.
           url=""; pr_url=""
           default=$(GH_TOKEN="$BOT_TOKEN" gh api "repos/$REPO" --jq .default_branch)
+          # A run that failed after opening it: the carry is not opened twice.
+          num=$(GH_TOKEN="$BOT_TOKEN" gh issue list --repo "$REPO" --state all --label lane:security-carry --search "\"Carry the security fix of $VERSION into\" in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$num" ]; then url="$GITHUB_SERVER_URL/$REPO/issues/$num"; pr_url=$(GH_TOKEN="$BOT_TOKEN" gh pr list --repo "$REPO" --state all --search "Closes #$num" --json url --jq '.[0].url // empty'); fi
           GH_TOKEN="$BOT_TOKEN" gh label create lane:security-carry --repo "$REPO" --color 0E8A16 --description "A released security patch's fix, carried into the default branch" --force >/dev/null || true
           # shellcheck disable=SC2016 # backticks in the Markdown of the issue, not commands.
           body=$(printf '<!-- dx-lane: security-carry version: %s ghsa: %s -->\nThe security patch %s was released from `security/%s`, on top of the version in production, and its advisory is published. Its fix is not on `%s` yet: until it is, no release goes out from `%s`, or the vulnerability would come back.\n\nThe pull request that closes this issue carries that fix, its commits cherry-picked as they were released; it merges on its own only while they are exactly that fix (the `security-carry` lane of the organisation'"'"'s autonomy policy).\n\n%s' \
             "$VERSION" "$GHSA" "$VERSION" "$VERSION" "$default" "$default" "$sign")
-          if num=$(GH_TOKEN="$BOT_TOKEN" gh api -X POST "repos/$REPO/issues" -f title="Carry the security fix of $VERSION into $default" -f body="$body" -f type=Bug -f 'labels[]=lane:security-carry' --jq .number); then
+          if [ -z "$num" ] && num=$(GH_TOKEN="$BOT_TOKEN" gh api -X POST "repos/$REPO/issues" -f title="Carry the security fix of $VERSION into $default" -f body="$body" -f type=Bug -f 'labels[]=lane:security-carry' --jq .number); then
             url="$GITHUB_SERVER_URL/$REPO/issues/$num"
             git clone -q "https://github.com/$REPO" "$RUNNER_TEMP/carry"
             branch="fix/$num-carry-security-fix-of-${VERSION//./-}"

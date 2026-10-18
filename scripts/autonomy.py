@@ -993,11 +993,11 @@ def carry_module():
 
 
 def git_equivalent(repository, version, base, head, cwd=None):
-    """(ok, why): whether the commits base..head are exactly the fix of the
-    security patch `version` (scripts/carry-lock.py): each one has an
-    equivalent in the fix, and each commit of the fix has one among them.
-    Fetched into a scratch repository with GH_TOKEN; anything that fails
-    is a no."""
+    """(ok, why): whether base..head is exactly the fix of the security
+    patch `version` (scripts/carry-lock.py): no merge commit, and its whole
+    diff has the patch id of the fix's whole diff, so nothing is added,
+    left out or hidden. Fetched into a scratch repository with GH_TOKEN;
+    anything that fails is a no."""
     import tempfile
     cl = carry_module()
     if not re.fullmatch(r"[0-9a-f]{40}", base or "") or not re.fullmatch(r"[0-9a-f]{40}", head or ""):
@@ -1010,20 +1010,19 @@ def git_equivalent(repository, version, base, head, cwd=None):
                 auth = "AUTHORIZATION: basic " + __import__("base64").b64encode(f"x-access-token:{os.environ.get('GH_TOKEN', '')}".encode()).decode()
                 cl.git("-c", f"http.extraheader={auth}", "fetch", "-q", f"https://github.com/{repository}", "+refs/tags/*:refs/tags/*", base, head, cwd=work)
             tag = version if version in cl.git("tag", "-l", cwd=work).split() else f"v{version}"
-            fix = cl.fix_commits(tag, cwd=work)
-            ours = [l for l in cl.git("cherry", tag, head, base, cwd=work).splitlines() if l.strip()]
-            theirs = [l for l in cl.git("cherry", head, tag, cl.base_of(tag, cl.tags(work), work), cwd=work).splitlines() if l.strip()]
+            merges = cl.git("rev-list", "--merges", f"{base}..{head}", cwd=work).split()
+            commits = cl.git("rev-list", f"{base}..{head}", cwd=work).split()
+            ours = cl.patch_id(cl.git("diff", base, head, cwd=work), work)
+            want = cl.fix_id(tag, cwd=work)
         except RuntimeError as exc:
             return False, f"the patch could not be compared ({str(exc)[:160]})"
-    if not ours:
+    if not commits:
         return False, "the pull request carries no commit"
-    extra = [l.split()[1][:12] for l in ours if l.startswith("+ ")]
-    if extra:
-        return False, f"commits not in the fix of {version}: {', '.join(extra)}"
-    left = [l.split()[1][:12] for l in theirs if l.startswith("+ ") and l.split()[1] in fix]
-    if left:
-        return False, f"commits of the fix of {version} not carried: {', '.join(left)}"
-    return True, f"its commits are the fix of {version}"
+    if merges:
+        return False, f"the pull request holds a merge commit ({merges[0][:12]}): only the fix's commits"
+    if not want or ours != want:
+        return False, f"what the pull request changes is not the fix of {version} as it was released"
+    return True, f"what it changes is the fix of {version} as it was released"
 
 
 def issue_from_env(repository):
@@ -1145,6 +1144,12 @@ def self_test():
         g("checkout", "-q", "-b", "carry", main_sha)
         g("cherry-pick", fix_sha)
         carried = g("rev-parse", "HEAD")
+        g("checkout", "-q", "-b", "merged", main_sha)
+        g("merge", "-q", "--no-ff", "-m", "merge", carried)
+        put("b.php", "<?php\n$b = 9;\n")
+        g("commit", "-q", "--amend", "-am", "merge, with something hidden")
+        hidden = g("rev-parse", "HEAD")
+        g("checkout", "-q", "carry")
         put("b.php", "<?php\n$b = 3;\n")
         g("commit", "-qam", "fix: something else")
         extra = g("rev-parse", "HEAD")
@@ -1154,6 +1159,7 @@ def self_test():
             check("#287 carry merge (git): the fix cherry-picked is the fix; one commit more is not; nothing is not",
                   (git_equivalent("o/r", "1.0.1", main_sha, carried, cwd=d)[0], git_equivalent("o/r", "1.0.1", main_sha, extra, cwd=d)[0],
                    git_equivalent("o/r", "1.0.1", main_sha, main_sha, cwd=d)[0]), (True, False, False))
+            check("#287 carry merge (git): a merge commit, even one hiding a change, is not the fix", git_equivalent("o/r", "1.0.1", main_sha, hidden, cwd=d)[0], False)
         finally:
             if kept is None:
                 os.environ.pop("GIT_CONFIG_GLOBAL", None)
