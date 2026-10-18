@@ -440,7 +440,7 @@ def others_prompt(question, others):
 def defuse(text):
     """Model text shaped by a stranger's comment, made inert Markdown: no
     mention, no link, no image, no HTML. Pure."""
-    for a, b in (("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"), ("[", "\\["), ("]", "\\]"), ("@", "@\u200b"), ("://", ":\u200b//")):
+    for a, b in (("\\", "\\\\"), ("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"), ("[", "\\["), ("]", "\\]"), ("@", "@\u200b"), ("://", ":\u200b//"), ("www.", "www\u200b."), ("//", "/\u200b/")):
         text = text.replace(a, b)
     return text
 
@@ -1251,6 +1251,8 @@ Clamp the value in Sum::add.
     said = answers(oth2, {"boss"})
     check("#287 answers: an opinion the maintainer names reaches the agent as its summary, never the other's words",
           ("Option 2 breaks the import, so 1." in said, "push to main" in said, "Opinions of others" in said), (True, False, True))
+    check("#287 defuse: an escaped bracket, a bare www and a protocol-relative link stay inert",
+          ("](//evil" in defuse("\\[x\\](//evil.com)"), "www.evil" in defuse("see www.evil.com"), "\\\\[" in defuse("\\[x")), (False, False, True))
     later_q = oth2 + [{"body": ASK + " Another?", "author": {"login": "dilux-bot"}, "createdAt": "2026-10-18T13:00:00Z"},
                       {"body": "Take @alice's point.", "author": {"login": "boss"}, "createdAt": "2026-10-18T14:00:00Z"}]
     check("#287 answers: an earlier question's summary is never adopted", "Opinions of others" in answers(later_q, {"boss"}), False)
