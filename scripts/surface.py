@@ -48,6 +48,7 @@ nothing sensitive to touch.
   surface.py --test                     every pack's fixtures, and the
                                         workflow that runs it (C5)
 """
+from collections import Counter
 import os
 import re
 import subprocess
@@ -209,8 +210,11 @@ def touched_lines(base_text, head_text):
 
 def sensitive_findings(pack, changed, base_files, head_files):
     """The sensitive code the change touches, as (what, path, line) triples:
-    a line added or removed that an entry's pattern matches (only a removed
-    one for an entry `when: removed`)."""
+    a line added or removed that an entry's pattern matches. For an entry
+    `when: removed`, a call the change takes out of the file more times than
+    it puts back: one moved or rewritten onto another line is still there
+    (#308). Netted per file on purpose: one taken from an output and one
+    added to another cancel out, which the review reads, not this list."""
     found = []
     default_files = pack.get("files") or []
     exclude = pack.get("exclude") or []
@@ -221,8 +225,12 @@ def sensitive_findings(pack, changed, base_files, head_files):
             if not take(p):
                 continue
             removed, added = touched_lines(base_files.get(p), head_files.get(p))
-            lines = removed if entry.get("when") == "removed" else removed + added
-            hit = next((l for l in lines if rx.search(l)), None)
+            if entry.get("when") == "removed":
+                gone = Counter(squash(m.group(0)).lower() for l in removed for m in rx.finditer(l))
+                gone.subtract(squash(m.group(0)).lower() for l in added for m in rx.finditer(l))
+                hit = next((l for l in removed if any(gone[squash(m.group(0)).lower()] > 0 for m in rx.finditer(l))), None)
+            else:
+                hit = next((l for l in removed + added if rx.search(l)), None)
             if hit is not None:
                 found.append((entry["what"], p, hit.strip()[:80]))
     return found

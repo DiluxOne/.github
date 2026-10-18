@@ -193,7 +193,8 @@ surface:
 # a line that matches one of these is merged by a person, whatever its
 # issue's Type and whatever the review rated its risk. Decided by code, never by the review.
 # A pattern is a Python regular expression over one line; `when: removed` for
-# what only weakens when it goes (an escape, a sanitiser), so adding one does
+# what only weakens when it goes (an escape, a sanitiser): a call the file
+# holds fewer times after the change, so one moved to another line or added does
 # not stop a fix. Conservative on purpose: a person reading more is the
 # cost of a false hit, an unread change to who may do what is the cost of a
 # missed one.
@@ -261,6 +262,12 @@ sensitive:
       fail:
         - base: "<?php\necho esc_html( $title );\n"
           head: "<?php\necho $title;\n"
+        - base: "<?php\necho esc_html( $a ) . esc_html( $b );\n"
+          head: "<?php\necho esc_html( $a ) . $b;\n"
+        - base: "<?php\necho esc_html( $url );\n"
+          head: "<?php\necho esc_attr( $url );\n"
       pass:
         - base: "<?php\necho $title;\n"
           head: "<?php\necho esc_html( $title );\n"
+        - base: "<?php\nreturn esc_html( sprintf( '%s', $name ) );\n"
+          head: "<?php\n$greeting = sprintf( '%s', $name );\nreturn esc_html( $greeting );\n"
