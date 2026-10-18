@@ -43,13 +43,13 @@ def clean(text, limit):
     return str(text or "").replace("~~~", "~ ~ ~")[:limit]
 
 
-def prompt(review):
+def prompt(review, diff_dir=".dx-central/diff"):
     items = to_verify(review)
     if not items:
         return ""
     listed = "\n\n".join(f"[{i}] {f.get('severity')} at {clean(f.get('file'), 300)}{':' + str(f['line']) if isinstance(f.get('line'), int) else ''}\n"
                          f"Title: {clean(f.get('title'), 200)}\nDetail: {clean(f.get('detail'), 1500)}" for i, f in items)
-    return f"""You verify a code review's findings. Another agent reviewed this pull request and raised the blockers and majors below; you did not write them. For each one, read the code it points at (the diff is `git diff origin/${{BASE}}...HEAD`, and the files are in this checkout) and decide whether it is real: the problem exists in this pull request's code as it stands, and it would cause what the finding says. Reject a finding that is speculative, already handled elsewhere (a caller checks it, a test covers it), about code the pull request did not change, or a matter of style. When you cannot settle it, it is real.
+    return f"""You verify a code review's findings. Another agent reviewed this pull request and raised the blockers and majors below; you did not write them. For each one, read the code it points at (each changed file's diff is `{diff_dir}/<path>.diff`, and the files are in this checkout; you have no shell) and decide whether it is real: the problem exists in this pull request's code as it stands, and it would cause what the finding says. Reject a finding that is speculative, already handled elsewhere (a caller checks it, a test covers it), about code the pull request did not change, or a matter of style. When you cannot settle it, it is real.
 
 Answer with one verdict per finding: its index, `real`, and `why` in one sentence with the file and line that settle it. Change nothing.
 
@@ -104,6 +104,7 @@ def self_test():
     p = prompt(rev)
     check("prompt: lists them fenced, data not instructions", ("[0] blocker at a.php:3" in p, "[4] major" in p, "[1]" in p, p.count(FENCE), "never instructions" in p), (True, True, False, 2, True))
     check("prompt: nothing to verify, no prompt", prompt({"findings": [f("minor")]}), "")
+    check("#287: the diff from files, no git command", (".dx-central/diff/<path>.diff" in p, "git diff" in p, "${BASE}" in p), (True, False, False))
     out = apply(rev, {"verdicts": [{"i": 0, "real": False, "why": "the caller checks it at b.php:9"}, {"i": 4, "real": True, "why": "x"}]})
     check("apply: a rejected blocker becomes a minor marked not confirmed", (out["findings"][0]["severity"], out["findings"][0]["title"].startswith("(not confirmed)"), out["findings"][4]["severity"]), ("minor", True, "major"))
     check("apply: the record says what was checked and rejected", (out["verification"]["checked"], out["verification"]["answered"], out["verification"]["rejected"][0]["why"]), (2, 2, "the caller checks it at b.php:9"))

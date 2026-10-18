@@ -191,9 +191,16 @@ jobs:
           path: .dx-central
           persist-credentials: false
 
-      - name: Thread for the reviewer
+      # The thread and the diff as files (#287): the reviewer has no shell.
+      - name: Thread and diff for the reviewer
         if: steps.pr.outputs.run == 'true'
-        run: cp "$RUNNER_TEMP/thread.json" .dx-central/thread.json
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          PR: ${{ steps.pr.outputs.pr }}
+        run: |
+          cp "$RUNNER_TEMP/thread.json" .dx-central/thread.json
+          gh pr diff "$PR" --repo "$GITHUB_REPOSITORY" > .dx-central/pr.diff \
+            || echo "The diff could not be read (GitHub refuses it for very large pull requests): read the files themselves." > .dx-central/pr.diff
 
       - name: The high reviewer from the policy
         id: policy
@@ -244,7 +251,7 @@ jobs:
 
             Read .dx-central/review-profiles/general.md, .dx-central/${{ steps.profile.outputs.path }},
             and the repository's AGENTS.md and docs/architecture.md when they exist. Look at the
-            code (`gh pr diff ${{ steps.pr.outputs.pr }}`, and any file) before you answer.
+            code (the pull request's diff is .dx-central/pr.diff; read any file) before you answer.
 
             Answer the question or the objection in the language it was written in: short, precise,
             pointing at file and line. If the person is right, say so plainly. Set resolve to true
@@ -258,7 +265,7 @@ jobs:
             --effort ${{ steps.policy.outputs.effort }}
             --max-turns 25
             --max-budget-usd 1
-            --allowedTools "Bash(gh pr diff:*),Bash(gh pr view:*),Read,Glob,Grep"
+            --allowedTools "Read,Glob,Grep"
             --json-schema '{"type":"object","additionalProperties":false,"required":["reply","resolve"],"properties":{"reply":{"type":"string","maxLength":4000},"resolve":{"type":"boolean"}}}'
 
       - name: Post the reply

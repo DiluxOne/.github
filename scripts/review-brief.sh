@@ -25,6 +25,10 @@
 #   OPEN_THREADS, SETTLED_THREADS   JSON files of the review threads; none before a pull request
 #   CRITERIA                 a file holding the acceptance criteria of the issue the
 #                            pull request closes (G6, #193); empty or unset: none
+#   DIFF_DIR                 optional: a directory, relative to the repository, where
+#                            each changed file's diff is written as <path>.diff, for a
+#                            reviewer that has no shell to run git (#287); unset, the
+#                            brief points at `git diff` instead
 #
 # Run from the repository under review. `review-brief.sh --test` checks it
 # against scratch repositories.
@@ -75,6 +79,15 @@ if [ "${1:-}" = "--test" ]; then
   ( cd "$dir/repo" && head -c 300000 /dev/zero | tr '\0' 'a' | fold -w 100 > big.txt && git add -A && git commit -q -m "fix(a): big" )
   build "$base" "$(git -C "$dir/repo" rev-parse HEAD)" high
   check "a diff over the limit is not inlined"    "larger than 250000 bytes"
+  check "without DIFF_DIR, read with git"         "git diff $base..."
+  build "$base" "$(git -C "$dir/repo" rev-parse HEAD)" high env DIFF_DIR=.dx-diff
+  check "#287: with DIFF_DIR, read from its files" '.dx-diff/<path>.diff'
+  lacks "#287: with DIFF_DIR, no git command"      "git diff $base..."
+  if grep -q '^+aaaa' "$dir/repo/.dx-diff/big.txt.diff" && grep -q '^+changed' "$dir/repo/.dx-diff/small.txt.diff"; then echo "ok   #287: each file's diff is written"; else echo "FAIL #287: each file's diff is written"; fail=1; fi
+  if [ ! -e "$dir/repo/.dx-diff/package-lock.json.diff" ]; then echo "ok   #287: no diff of a lock file"; else echo "FAIL #287: no diff of a lock file"; fail=1; fi
+  build "$base" "$head" high env DIFF_DIR=../outside
+  if [ ! -e "$dir/outside" ]; then echo "ok   #287: DIFF_DIR stays inside the repository"; else echo "FAIL #287: DIFF_DIR stays inside the repository"; fail=1; fi
+  if ( build "$base" "$head" high env DIFF_DIR=.dx-diff ) 2>/dev/null; then echo "FAIL #287: an existing DIFF_DIR is refused, never emptied"; fail=1; else echo "ok   #287: an existing DIFF_DIR is refused, never emptied"; fi
   build "$base" "$head" high env PROFILE=plugin-wp
   check "the old profile name reads the kind's profile" "Review profile: WordPress plugin"
   build "$base" "$head" high env KIND=wordpress-plugin
@@ -148,6 +161,23 @@ while IFS=$'\t' read -r add del path; do
 done < <(git diff "$diffspec" --numstat -- . "${noise[@]}")
 # ${arr[@]+"${arr[@]}"}: an empty array under set -u, on the bash 3.2 of macOS too.
 git diff "$diffspec" -U3 -- . "${noise[@]}" ${exclude[@]+"${exclude[@]}"} > "$WORK/diff.patch"
+# For a reviewer with no shell (#287): each shown file's diff, as a file it
+# can read: a new directory, at a relative path inside the repository.
+diff_dir=''
+if [ -n "${DIFF_DIR:-}" ]; then
+  case "/$DIFF_DIR/" in
+    //*|*/../*|*/./*) echo "DIFF_DIR must be a relative path inside the repository: $DIFF_DIR" >&2 ;;
+    *)
+      diff_dir=${DIFF_DIR%/}
+      if [ -e "$diff_dir" ]; then echo "DIFF_DIR must not exist yet: $DIFF_DIR" >&2; exit 1; fi
+      while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        mkdir -p "$diff_dir/$(dirname "$path")"
+        git diff "$diffspec" -U3 -- "$path" > "$diff_dir/$path.diff"
+      done < "$WORK/shown-files.txt"
+      ;;
+  esac
+fi
 for path in ${rewritten[@]+"${rewritten[@]}"}; do
   # Numbered lines, so a comment can name the exact line; a longer
   # fence, so a code block inside the file cannot close it.
@@ -218,7 +248,11 @@ limit=250000
     echo '```diff'; awk '/^### Rewritten: /{exit} {print}' "$WORK/diff.patch"; echo '```'
     sed -n '/^### Rewritten: /,$p' "$WORK/diff.patch"
   else
-    echo "The diff is larger than $limit bytes, so it is not inlined. Read it file by file with \`git diff $diffspec -- <path>\` for the files above, largest risk first."
+    if [ -n "$diff_dir" ]; then
+      echo "The diff is larger than $limit bytes, so it is not inlined. Read it file by file from \`$diff_dir/<path>.diff\` for the files above, largest risk first."
+    else
+      echo "The diff is larger than $limit bytes, so it is not inlined. Read it file by file with \`git diff $diffspec -- <path>\` for the files above, largest risk first."
+    fi
   fi
 } > "$OUT"
 echo "Brief: $(wc -c < "$OUT" | tr -d ' ') bytes, diff $(wc -c < "$WORK/diff.patch" | tr -d ' ') bytes ($MODE, ${#rewritten[@]} file(s) shown as new content)."
