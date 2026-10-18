@@ -241,13 +241,15 @@ sensitive:
         - "<?php\n$user = wp_get_current_user();\n"
   - id: execution
     what: code or commands run, a file read or written, or a remote call (eval, exec, unserialize, files, wp_remote_*, an include of a variable)
-    pattern: '(?i)(?:(?<![\w$>:])(?:eval|assert|create_function|exec|shell_exec|system|passthru|proc_open|popen|unserialize|maybe_unserialize|base64_decode|move_uploaded_file|file_put_contents|fopen|fwrite|unlink|rename|copy|wp_handle_upload|wp_remote_\w+|wp_safe_remote_\w+|curl_exec)\s*\(|\bWP_Filesystem\b|\b(?:include|require)(?:_once)?\s*\(?\s*\$|->exec\s*\()'
+    pattern: '(?i)(?:(?<![\w$>:])(?:eval|assert|create_function|exec|shell_exec|system|passthru|proc_open|popen|unserialize|maybe_unserialize|base64_decode|move_uploaded_file|file_put_contents|file_get_contents|readfile|file|fread|fputs|fopen|fwrite|unlink|rename|copy|mkdir|rmdir|chmod|touch|wp_delete_file|wp_handle_upload|wp_remote_\w+|wp_safe_remote_\w+|curl_init|curl_exec|fsockopen|call_user_func|call_user_func_array)\s*\(|\bWP_Filesystem\b|\b(?:include|require)(?:_once)?\s*\(?\s*\$|->exec\s*\()'
     fixtures:
       fail:
         - base: "<?php\nfunction a() {}\n"
           head: "<?php\nfunction a() {}\n$data = unserialize( $_POST['x'] );\n"
         - "<?php\ninclude $_GET['page'];\n"
         - "<?php\n$r = wp_remote_get( $url );\n"
+        - "<?php\n$x = file_get_contents( $_GET['f'] );\n"
+        - "<?php\n$c = curl_init( $url );\n"
       pass:
         - "<?php\n$this->exec_later();\n"
         - "<?php\nrequire_once __DIR__ . '/includes/a.php';\n"
