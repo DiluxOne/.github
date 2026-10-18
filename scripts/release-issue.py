@@ -281,8 +281,12 @@ def planned(node, version):
     return True, f"#{n}", creator, at
 
 
-def planned_mode(path=None):
-    """The organisation's `planned-release`: auto or confirm (the default)."""
+def planned_mode(path=None, autopilot_var=None):
+    """The organisation's `planned-release`: auto or confirm (the default);
+    confirm whenever DX_AUTOPILOT is off (#287)."""
+    var = os.environ.get("DX_AUTOPILOT", "") if autopilot_var is None else autopilot_var
+    if var.strip().lower() == "off":
+        return "confirm"
     path = path or os.path.join(HERE, "..", "policy", "autonomy.yml")
     try:
         mode = str((schema.read_yaml(path) or {}).get("planned-release") or "confirm")
@@ -619,6 +623,11 @@ def self_test():
     for wf in ("issue-accepted.yml", "issue-triage.yml"):
         text = open(os.path.join(central, ".github", "workflows", wf), encoding="utf-8").read()
         check(f"{wf} names the schema's release label", f"'{LANE_LABEL}'" in text, True)
+    import tempfile as _tf
+    with _tf.NamedTemporaryFile("w", suffix=".yml", delete=False) as fh_:
+        fh_.write("planned-release: auto\n")
+    check("#287: DX_AUTOPILOT=off makes a planned release confirm", (planned_mode(fh_.name, "OFF"), planned_mode(fh_.name, ""), planned_mode(fh_.name, "on")), ("confirm", "auto", "auto"))
+    os.unlink(fh_.name)
     print("all tests passed" if not failed else f"{failed} failed")
     return 1 if failed else 0
 

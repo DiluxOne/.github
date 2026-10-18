@@ -547,6 +547,12 @@ def limit_hit(events, work_outcome):
     return not results or all((e.get("subtype") or "") == "stopped" for e in results)
 
 
+def budget_hit(events):
+    """Whether the agent stopped because it spent its run's budget (#287,
+    --max-budget-usd): such a run is not continued; a person looks."""
+    return any("budget" in (e.get("subtype") or "") for e in events if e.get("type") == "result")
+
+
 def account(events, title="The autopilot's run"):
     """The run's account as Markdown, from the agent's execution log (the
     stream of messages claude-code-action writes)."""
@@ -1129,6 +1135,9 @@ Clamp the value in Sum::add.
     check("#84 the agent is told the sandbox runs the committed code, not its changes", "never your uncommitted changes" in pw, True)
     check("#84 the sandbox's verdict is its last outcome line", (sandbox_outcome("x\noutcome=reproduced\noutcome=passed\n"), sandbox_outcome("OK\noutcome=passed"), sandbox_outcome("outcome=passed (said the test)"), sandbox_outcome("")), ("passed", "passed", "", ""))
 
+    check("#287 budget: a run that spent its budget is said so, and not continued",
+          (budget_hit([{"type": "result", "subtype": "error_max_budget_usd"}]), budget_hit([{"type": "result", "subtype": "error_max_turns"}]),
+           limit_hit([{"type": "result", "subtype": "error_max_budget_usd"}], "failure")), (True, False, False))
     # #287: the agent's outbox.
     check("#287 intents: each kind as applied, nothing else",
           (valid_intent({"kind": "tick", "id": "C3"}), valid_intent({"kind": "tick", "id": "C3; rm"}), valid_intent({"kind": "merge", "text": "x"}),
@@ -1827,7 +1836,10 @@ def main(argv):
         mode = os.environ.get("MODE", "start")
         started = os.environ.get("STARTED", "")
         run_url = os.environ.get("RUN_URL", "")
-        limit = limit_hit(read_events(os.environ.get("WORK_LOG", "")), os.environ.get("WORK_OUTCOME", ""))
+        events_ = read_events(os.environ.get("WORK_LOG", ""))
+        limit = limit_hit(events_, os.environ.get("WORK_OUTCOME", ""))
+        if budget_hit(events_) and not os.environ.get("WHY"):
+            os.environ["WHY"] = "It spent its run's budget (policy/autonomy.yml, budgets-usd) before it finished."
         target = ("pr", pr) if pr else ("issue", number)
         comments = json.loads(gh(target[0], "view", str(target[1]), "--repo", repo, "--json", "comments"))["comments"]
         stopped = stopped_since(comments, started)

@@ -82,7 +82,7 @@ A change moves only if it passes each gate in order. The deterministic gates alw
 | G7 Merge | G1 to G6 green, not Critical, not labelled `security`, no protected path, within budget | A person merges, with the reason and the URL |
 | G8 Healthy main | The default branch's CI green after the merge | An automatic revert pull request and an issue |
 
-Limits that always cut: rounds per pull request (3), cost per issue, the agent's jobs in parallel, and an organisation switch (`DX_AUTOPILOT=off`) that stops everything autonomous without touching code.
+Limits that always cut: rounds per pull request (3), runs per issue (5), what one agent's run may cost (`budgets-usd`), how many strangers' reports are reproduced a day and by one author, the agent's jobs in parallel, and an organisation switch (`DX_AUTOPILOT=off`) that stops everything autonomous without touching code, a planned release's approval by policy included.
 
 ## What merges on its own
 

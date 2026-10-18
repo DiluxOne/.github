@@ -91,7 +91,12 @@ def body(version, milestone, auto=False):
             f"{how}\n\n{AI}\n")
 
 
-def planned_mode(root):
+def planned_mode(root, autopilot_var=None):
+    """auto or confirm: the policy's `planned-release`; confirm whenever the
+    organisation's DX_AUTOPILOT is off (#287)."""
+    var = os.environ.get("DX_AUTOPILOT", "") if autopilot_var is None else autopilot_var
+    if var.strip().lower() == "off":
+        return "confirm"
     mode = str((load(os.path.join(root, "policy", "autonomy.yml")) or {}).get("planned-release") or "confirm")
     return mode if mode in ("auto", "confirm") else "confirm"
 
@@ -256,6 +261,11 @@ def self_test():
     check("#247 auto: a milestone a person closed early is never the plan", run("auto", "admin", ms={**d, "state": "closed", "closed_at": "2026-10-15T00:00:00Z", "open_issues": 2})[0], [False])
     check("#247 auto: a role that cannot be read waits for a person, and stops nothing", run("auto", "boom"), ([False], 0, [7]))
     check("#247 body: says which", ("accepted by policy" in body("1.6.0", d, True), "Accepting it is the decision" in body("1.6.0", d, False)), (True, True))
+    import tempfile as _tf
+    with _tf.TemporaryDirectory() as root_:
+        os.makedirs(os.path.join(root_, "policy"))
+        open(os.path.join(root_, "policy", "autonomy.yml"), "w").write("planned-release: auto\n")
+        check("#287: DX_AUTOPILOT=off makes a planned release confirm", (planned_mode(root_, "off"), planned_mode(root_, ""), planned_mode(root_, "on")), ("confirm", "auto", "auto"))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
