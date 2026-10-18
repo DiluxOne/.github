@@ -115,6 +115,20 @@ def squashed_in(tag, branch, all_tags, cwd=None):
     return False
 
 
+TRAILER = "Carries-security-patch"
+
+
+def acknowledged(version, tag, branch, cwd=None):
+    """Whether a commit on the branch, since it parted from the patch, says
+    it carries it: a line `Carries-security-patch: X.Y.Z` in its message.
+    The way out for a fix carried by hand or with other context, whose
+    patch is no longer the released one; auditable, since that commit
+    reached the branch through a reviewed pull request."""
+    since = git("merge-base", branch, tag, cwd=cwd).strip()
+    line = re.compile(rf"^{TRAILER}:\s*v?{re.escape(version)}\s*$", re.M)
+    return any(line.search(m) for m in git("log", "--format=%B%x00", f"{since}..{branch}", cwd=cwd).split("\0"))
+
+
 def missing(branch="HEAD", cwd=None):
     """[(version, commits not carried)] for each security patch not on the
     branch, oldest first."""
@@ -129,7 +143,7 @@ def missing(branch="HEAD", cwd=None):
         # with no patch-equivalent on the branch.
         left = [l.split()[1] for l in git("cherry", branch, t, base, cwd=cwd).splitlines() if l.startswith("+ ")]
         left = [c for c in left if c in fix]
-        if left and not squashed_in(t, branch, all_tags, cwd):
+        if left and not squashed_in(t, branch, all_tags, cwd) and not acknowledged(version_of(t), t, branch, cwd):
             out.append((version_of(t), left))
     return out
 
@@ -192,6 +206,16 @@ def self_test():
         g("cherry-pick", "--no-commit", "1.0.2~2", "1.0.2~1")
         g("commit", "-q", "-m", "fix(security): carry 1.0.2 (#9)")
         check("check: carried by one squash commit, nothing is missing", missing("squash", d), [])
+        # Carried by hand, with other context: no longer the released patch.
+        g("checkout", "-q", "-b", "byhand", "main")
+        write("c.php", "<?php\n// carried by hand\n$c = intval( 1 ) + 0;\n")
+        g("add", "c.php")
+        write("a.php", "<?php\n$a = esc_html( absint( 1 ) ); // by hand\n")
+        g("commit", "-qam", "fix(security): carry 1.0.2 by hand")
+        check("check: a fix carried by hand, unsaid, is still missing", [m[0] for m in missing("byhand", d)], ["1.0.2"])
+        g("commit", "-q", "--allow-empty", "-m", "fix(security): say so", "-m", "Carries-security-patch: 1.0.2")
+        check("check: the trailer on a commit of the branch lifts it", missing("byhand", d), [])
+        check("check: the trailer names one version only", acknowledged("1.0.20", "1.0.2", "byhand", d), False)
         g("checkout", "-q", "main")
         g("merge", "-q", "--ff-only", "squash")
         # A later release from main contains it: ancestors are never patches to carry.

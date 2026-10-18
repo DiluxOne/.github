@@ -634,12 +634,13 @@ jobs:
                 && pr_url=$(GH_TOKEN="$BOT_TOKEN" gh pr create --repo "$REPO" --base "$default" --head "$branch" --title "fix(security): carry the security fix of $VERSION into $default" --body "$pr_body"); then
                 echo "Carry: $pr_url"
               else
-                GH_TOKEN="$BOT_TOKEN" gh issue comment "$num" --repo "$REPO" --body "$(printf 'The carry pull request could not be opened (the run: %s). A maintainer carries the fix by hand.\n\n%s' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$sign")" >/dev/null || true
+                # shellcheck disable=SC2016 # backticks in the Markdown of the comment, not commands.
+                GH_TOKEN="$BOT_TOKEN" gh issue comment "$num" --repo "$REPO" --body "$(printf 'The carry pull request could not be opened (the run: %s). A maintainer carries the fix by hand, with the line `Carries-security-patch: %s` in a commit message, which lifts the release lock.\n\n%s' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$VERSION" "$sign")" >/dev/null || true
               fi
             else
               git -C "$RUNNER_TEMP/carry" cherry-pick --abort >/dev/null 2>&1 || true
               # shellcheck disable=SC2016 # backticks in the Markdown of the comment, not commands.
-              GH_TOKEN="$BOT_TOKEN" gh issue comment "$num" --repo "$REPO" --body "$(printf 'The fix of %s does not apply on `%s` as it was released (a conflict, or no fix commit found): a maintainer carries it by hand.\n\n%s' "$VERSION" "$default" "$sign")" >/dev/null || true
+              GH_TOKEN="$BOT_TOKEN" gh issue comment "$num" --repo "$REPO" --body "$(printf 'The fix of %s does not apply on `%s` as it was released (a conflict, or no fix commit found): a maintainer carries it by hand, with the line `Carries-security-patch: %s` in a commit message, which lifts the release lock.\n\n%s' "$VERSION" "$default" "$VERSION" "$sign")" >/dev/null || true
             fi
           fi
           GH_TOKEN="$ISSUE_TOKEN" gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label patch:pushed --add-label patch:released >/dev/null
