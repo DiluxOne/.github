@@ -236,11 +236,16 @@ jobs:
             comments=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '[.[] | {user: {login: .user.login, type: .user.type}, created_at, html_url}]' | jq -s 'add // []')
             maintainers=""
             for who in $(jq -r '.[] | select(.user.type != "Bot") | .user.login' <<<"$comments" | sort -u); do
-              case "$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$who/permission" --jq .role_name 2>/dev/null || echo none)" in
-                admin|maintain|write) maintainers+="$who"$'\n' ;;
-              esac
+              # A role that cannot be read stops the check: it must never
+              # read as "not a maintainer".
+              role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$who/permission" --jq .role_name) \
+                || { echo "::error::$who's role could not be read; nothing said on the issue."; exit 1; }
+              case "$role" in admin|maintain|write) maintainers+="$who"$'\n' ;; esac
             done
-            open=$(COMMENTS="$comments" EDITED_AT="$edited" MAINTAINERS="$maintainers" python3 .dx-central/scripts/issue-schema.py conversation || true)
+            # Exit 1 is "open", with the comments; anything above is the
+            # checker failing, which fails this job rather than seal.
+            orc=0; open=$(COMMENTS="$comments" EDITED_AT="$edited" MAINTAINERS="$maintainers" python3 .dx-central/scripts/issue-schema.py conversation) || orc=$?
+            if [ "$orc" -gt 1 ]; then echo "::error::The conversation check itself failed (exit $orc); nothing said on the issue."; exit 1; fi
           fi
           ready=false
           if [ "$(jq -r .ok <<<"$result")" = true ] && [ -z "$open" ]; then

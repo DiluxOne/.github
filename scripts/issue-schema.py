@@ -424,6 +424,12 @@ A class on <html> and a cookie.
            ([], ["u/dev/2026-10-18T12:00:00Z"]))
     check_("#287 conversation: before the PRD's last edit, or a bot's, counts for nothing",
            (oc([c_("dev", "2026-10-18T09:00:00Z")]), oc([c_("dilux-bot[bot]", "2026-10-18T11:00:00Z", "Bot")]), oc([])), ([], [], []))
+    run_cli = lambda **env: subprocess.run([sys.executable, os.path.abspath(__file__), "conversation"], capture_output=True, text=True, env=dict(os.environ, **env))
+    got_open = run_cli(COMMENTS=json.dumps([c_("dev", "2026-10-18T11:00:00Z")]), EDITED_AT="2026-10-18T10:00:00Z", MAINTAINERS="boss\n")
+    got_closed = run_cli(COMMENTS=json.dumps([c_("dev", "2026-10-18T11:00:00Z"), c_("boss", "2026-10-18T12:00:00Z")]), EDITED_AT="2026-10-18T10:00:00Z", MAINTAINERS="boss\n")
+    got_bad = run_cli(COMMENTS="not json")
+    check_("#287 cli conversation: exit 1 with the URLs when open, 0 when not, above 1 when it cannot tell",
+           (got_open.returncode, got_open.stdout.strip(), got_closed.returncode, got_closed.stdout, got_bad.returncode > 1), (1, "u/dev/2026-10-18T11:00:00Z", 0, "", True))
     wf_path = os.path.join(HERE, "..", ".github", "workflows", "issue-accepted.yml")
     try:
         import yaml
@@ -449,7 +455,11 @@ def main(argv):
         print(json.dumps(result, indent=2))
         return 0 if result["ok"] else 1
     if argv[:1] == ["conversation"]:
-        comments = json.loads(os.environ.get("COMMENTS") or "[]")
+        try:
+            comments = json.loads(os.environ.get("COMMENTS") or "[]")
+        except ValueError as err:
+            print(f"COMMENTS is not JSON: {err}", file=sys.stderr)
+            return 2
         maintainers = {l.strip() for l in (os.environ.get("MAINTAINERS") or "").splitlines() if l.strip()}
         left = open_conversation(comments, os.environ.get("EDITED_AT", ""), maintainers)
         for c in left:
