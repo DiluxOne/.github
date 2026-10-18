@@ -127,7 +127,10 @@ move_private() {
     -f i="$issue_id" -f r="$repo_id" --jq .data.transferIssue.issue.number) || return 1
   [[ "$moved" =~ ^[0-9]+$ ]] || return 1
   GH_TOKEN="$SECURITY_TOKEN" gh label create "security:intake" --repo "$SECURITY_REPO" --color B60205 --description "A vulnerability moved here from a public issue: its advisory opens next" --force >/dev/null 2>&1 || true
-  GH_TOKEN="$SECURITY_TOKEN" gh issue edit "$moved" --repo "$SECURITY_REPO" --add-label "security:intake" >/dev/null || return 1
+  # Moved is what matters here: a label that does not stick is said, and
+  # the issue is out of sight either way.
+  GH_TOKEN="$SECURITY_TOKEN" gh issue edit "$moved" --repo "$SECURITY_REPO" --add-label "security:intake" >/dev/null \
+    || echo "::warning::$SECURITY_REPO#$moved could not be labelled security:intake: a maintainer adds it, and its advisory opens on the next run."
 }
 
 if [ "${1:-}" = "--test" ]; then

@@ -57,6 +57,8 @@ MAX_ITEMS = 60
 # What the statistics count as found by DiluxOne's own AI (#287): a label
 # on its issues, a line in its advisories.
 FOUND_BY = "found-by:dilux-ai"
+# The line that says an advisory is not confirmed yet (scripts/advisory.py).
+UNVETTED = "<!-- dx-unvetted: not confirmed yet; a maintainer deletes this line to confirm it -->"
 BUG_MARK = "<!-- dx-nightly-finding: {repo} -->"
 
 
@@ -222,7 +224,7 @@ def vulns(previous, findings, repo):
         where = f"{f['file']}{':' + str(f['line']) if isinstance(f.get('line'), int) else ''}"
         title = str(f["title"]).replace("\n", " ")[:200]
         text = "\n".join([str(f.get("detail") or f["title"])[:6000], "", f"Where: `{where}`", "",
-                           f"Found by DiluxOne's automated nightly review of the existing code (AI). {FOUND_BY}"])
+                           f"Found by DiluxOne's automated nightly review of the existing code (AI). {FOUND_BY}", UNVETTED])
         payload = {"summary": title, "description": text, "severity": "high" if f["severity"] == "blocker" else "medium",
                    "vulnerabilities": [{"package": {"ecosystem": "other", "name": repo.split("/", 1)[-1]}}]}
         out.append({**f, "where": where, "issue_title": title,

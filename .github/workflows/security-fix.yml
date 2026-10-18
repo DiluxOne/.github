@@ -374,7 +374,17 @@ jobs:
           # As it is now, not as the plan saw it: a maintainer may have closed
           # or moved it during the run.
           now=$(gh api "repos/$REPO/security-advisories/$GHSA" --jq .state 2>/dev/null || true)
-          if [ "$now" != triage ]; then
+          # An unvetted draft (#287: the intake's or the nightly review's,
+          # scripts/advisory.py UNVETTED) is confirmed by taking out its line.
+          desc=$(gh api "repos/$REPO/security-advisories/$GHSA" --jq '.description // ""' 2>/dev/null || true)
+          mark=$(python3 -c 'import sys; sys.path.insert(0, ".dx-central/scripts"); import importlib.util as u; s = u.spec_from_file_location("a", ".dx-central/scripts/advisory.py"); m = u.module_from_spec(s); s.loader.exec_module(m); print(m.UNVETTED)')
+          if [ "$now" = draft ] && [[ "$desc" == *"$mark"* ]]; then
+            if jq -n --arg d "${desc//"$mark"/}" '{description: $d}' | gh api -X PATCH "repos/$REPO/security-advisories/$GHSA" --input - >/dev/null; then
+              echo "$GHSA confirmed."
+            else
+              say "Confirming the advisory failed: a maintainer deletes its unvetted line by hand."
+            fi
+          elif [ "$now" != triage ]; then
             say "The advisory was not moved: it is no longer in triage (${now:-unreadable})."
           elif gh api -X PATCH "repos/$REPO/security-advisories/$GHSA" -f state=draft >/dev/null; then
             echo "$GHSA moved to draft."

@@ -69,6 +69,15 @@ def title(repo, ghsa):
     return f"Fix {ghsa} in {repo.split('/', 1)[-1]}"
 
 
+# A draft nobody vetted yet (#287): one the intake or the nightly review
+# opened. GitHub creates every advisory as a draft, so this line in its
+# description is what says it is still a report: it is triaged like one
+# (and counted against TRIAGE_PER_RUN), and no patch is built for it until
+# the triage confirms it (the line is then taken out) or a maintainer
+# deletes the line by hand.
+UNVETTED = "<!-- dx-unvetted: not confirmed yet; a maintainer deletes this line to confirm it -->"
+
+
 def due(repo, advisories, claimed):
     """The advisories of one repository not claimed yet, in triage or draft.
     claimed is the set of markers of the issues already opened, in any state.
@@ -83,7 +92,8 @@ def due(repo, advisories, claimed):
         # By its marker, or by its title when someone edited the body.
         if MARK.format(repo=repo, ghsa=ghsa) in claimed or title(repo, ghsa) in claimed:
             continue
-        out.append({"repo": repo, "ghsa": ghsa, "branch": branch(ghsa), "state": a["state"]})
+        state = "triage" if a["state"] == "draft" and UNVETTED in (a.get("description") or "") else a["state"]
+        out.append({"repo": repo, "ghsa": ghsa, "branch": branch(ghsa), "state": state})
     return out
 
 
@@ -333,6 +343,10 @@ def self_test():
           (pl["summary"], "Steps: ..." in pl["description"], "by @alice" in pl["description"], pl["vulnerabilities"][0]["package"], pl.get("credits")),
           ("XSS in the title", True, True, {"ecosystem": "other", "name": "diluxone-x"}, [{"login": "alice", "type": "reporter"}]))
     check("#287 intake: no login, no credit", "credits" in intake_payload("t", "b", "DiluxOne/x", "", "u"), False)
+    check("#287 intake: an unvetted draft is triaged like a report, and counted",
+          (UNVETTED in pl["description"], [d["state"] for d in due("o/r", [{"ghsa_id": "GHSA-2345-6789-cfgh", "state": "draft", "description": "x " + UNVETTED},
+                                                                           {"ghsa_id": "GHSA-jmpq-rvwx-2345", "state": "draft", "description": "x"}], set())]),
+          (True, ["triage", "draft"]))
     m = INTAKE.search("x\n<!-- dx-security-intake: repo=DiluxOne/diluxone-x reporter=alice -->")
     check("#287 intake: the marker the triage writes is read", (m.group(1), m.group(2)), ("DiluxOne/diluxone-x", "alice"))
     print("all tests passed" if not failed else "some tests failed")
@@ -350,7 +364,7 @@ def intake_payload(title, text, repo, reporter, issue_url):
     note = (f"Reported in a public issue of {repo} by @{reporter}, moved out of sight by DiluxOne's triage ({issue_url}, private)."
             if reporter else f"Reported in a public issue of {repo}, moved out of sight by DiluxOne's triage ({issue_url}, private).")
     out = {"summary": (title or "A vulnerability reported in a public issue").strip()[:1000],
-           "description": (text or "").strip()[:60000] + "\n\n---\n" + note,
+           "description": (text or "").strip()[:60000] + "\n\n---\n" + note + "\n" + UNVETTED,
            "severity": "medium",
            "vulnerabilities": [{"package": {"ecosystem": "other", "name": repo.split("/", 1)[1]}}]}
     if reporter and LOGIN.match(reporter):
@@ -377,6 +391,19 @@ def intake(central, adv_token):
             said.append(f"#{n}: {repo} is not this organisation's, left to a person")
             continue
         payload = intake_payload(issue.get("title"), issue.get("body"), repo, reporter, issue.get("html_url", ""))
+        # Opened already, by a run that stopped before it closed the issue:
+        # found by this issue's link in its text, never opened twice.
+        drafts = subprocess.run(["gh", "api", f"repos/{repo}/security-advisories?state=draft&per_page=100"], capture_output=True, text=True,
+                                env=dict(os.environ, GH_TOKEN=adv_token))
+        if drafts.returncode != 0:
+            said.append(f"#{n}: the drafts of {repo} could not be read; the next run tries again")
+            continue
+        earlier = next((a for a in json.loads(drafts.stdout or "[]") if issue.get("html_url", "") and issue["html_url"] in (a.get("description") or "")), None)
+        if earlier:
+            gh("issue", "comment", str(n), "--repo", central, "--body", f"Its draft security advisory is {earlier.get('html_url')}.\n\n{AI}")
+            gh("issue", "close", str(n), "--repo", central, "--reason", "completed")
+            said.append(f"#{n}: {earlier.get('ghsa_id')} was opened already")
+            continue
         out = subprocess.run(["gh", "api", "-X", "POST", f"repos/{repo}/security-advisories", "--input", "-"], input=json.dumps(payload),
                              capture_output=True, text=True, env=dict(os.environ, GH_TOKEN=adv_token))
         if out.returncode != 0 and "credits" in payload:

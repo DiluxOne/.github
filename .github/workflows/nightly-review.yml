@@ -175,7 +175,7 @@ jobs:
           : > "$RUNNER_TEMP/previous.md"
           [ -z "$n" ] || gh issue view "$n" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/previous.md"
           # New blockers and majors the review says are not about security
-          # (#247), at most two.
+          # (#247), every one (#287).
           REPO="$repo" FINDINGS="$RUNNER_TEMP/findings.json" PREVIOUS="$RUNNER_TEMP/previous.md" \
             python3 .dx-central/scripts/nightly-review.py bugs > "$RUNNER_TEMP/bugs.jsonl"
           # New security findings, blocker or major (#287): reported as such.
