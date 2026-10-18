@@ -213,7 +213,8 @@ def sensitive_findings(pack, changed, base_files, head_files):
     a line added or removed that an entry's pattern matches. For an entry
     `when: removed`, a call the change takes out of the file more times than
     it puts back: one moved or rewritten onto another line is still there
-    (#308)."""
+    (#308). Netted per file on purpose: one taken from an output and one
+    added to another cancel out, which the review reads, not this list."""
     found = []
     default_files = pack.get("files") or []
     exclude = pack.get("exclude") or []
