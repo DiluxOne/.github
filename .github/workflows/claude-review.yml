@@ -48,9 +48,9 @@ name: Claude review
 # kind of project, kinds/<kind>/review-profile.md; a `kind:` in the policy
 # adds it on its own, and `plugin-wp` still names the WordPress one),
 # central-ref (where the profiles, the policy and scripts/review-brief.sh
-# are read from, default v5: a caller that pins `uses:` to a version, say
-# @v3.0.0, passes the same version here, or the workflow runs at its pin
-# while the policy and the brief follow v5),
+# are read from; empty, the default, is the very commit this workflow runs
+# from, job.workflow_sha, so a caller that pins `uses:` reads that commit's
+# with nothing to pass, #287),
 # max-auto-reviews.
 #
 #   Called by org-pull-request.yml, the organisation's required pipeline,
