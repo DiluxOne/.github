@@ -245,7 +245,7 @@ jobs:
             # Exit 1 is "open", with the comments; anything above is the
             # checker failing, which fails this job rather than seal.
             orc=0; open=$(COMMENTS="$comments" EDITED_AT="$edited" MAINTAINERS="$maintainers" python3 .dx-central/scripts/issue-schema.py conversation) || orc=$?
-            if [ "$orc" -gt 1 ]; then echo "::error::The conversation check itself failed (exit $orc); nothing said on the issue."; exit 1; fi
+            if [ "$orc" -gt 1 ] || { [ "$orc" = 1 ] && [ -z "$open" ]; }; then echo "::error::The conversation check itself failed (exit $orc); nothing said on the issue."; exit 1; fi
           fi
           ready=false
           if [ "$(jq -r .ok <<<"$result")" = true ] && [ -z "$open" ]; then
