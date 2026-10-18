@@ -674,12 +674,13 @@ jobs:
           echo "path=$RUNNER_TEMP/$SLUG.zip" >> "$GITHUB_OUTPUT"
 
       - name: The release App's token
-        # Only on a branch (main, or a security patch's), never in a
-        # rehearsal:
+        # Never in a rehearsal; on a tag pushed by hand too, so its release
+        # is the App's and its publishing starts plugin-publish-wp.yml (a
+        # release made with the job's own token starts no workflow):
         # the one token that can create a release tag, held by the one step
         # that does it. The App has contents: write and nothing else, and its
         # key lives in the environment, so only an approved job ever sees it.
-        if: ${{ steps.still.outputs.go == 'true' && !inputs.dry-run && startsWith(github.ref, 'refs/heads/') }}
+        if: ${{ steps.still.outputs.go == 'true' && !inputs.dry-run }}
         id: app
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:

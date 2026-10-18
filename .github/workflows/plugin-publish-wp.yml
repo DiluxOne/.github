@@ -40,49 +40,65 @@ on:
 permissions: {}
 
 jobs:
-  publish:
-    name: Publish to wordpress.org
+  # Which release, and whether it publishes at all, before any deployment
+  # starts in the environment.
+  check:
+    name: The release to publish
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 5
     permissions:
-      contents: read # the release and its zip, and the tag's assets
-    environment: ${{ inputs.environment }}
-    # One at a time: SVN refuses a second commit on an out-of-date trunk.
-    concurrency:
-      group: publish-wp-${{ github.repository }}
-      cancel-in-progress: false
+      contents: read
+    outputs:
+      tag: ${{ steps.rel.outputs.tag }}
     steps:
       - name: The release to publish
         id: rel
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag || github.event.release.tag_name }}
-          SLUG: ${{ inputs.slug }}
         run: |
           set -euo pipefail
           if ! [[ "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "'$TAG' is not a version: nothing to publish."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+            echo "'$TAG' is not a version: nothing to publish."; exit 0
           fi
           info=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq '{draft, prerelease, author: .author.login}')
           if [ "$(jq -r '.draft or .prerelease' <<<"$info")" = true ]; then
-            echo "$TAG is a draft or a pre-release: nothing to publish."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+            echo "$TAG is a draft or a pre-release: nothing to publish."; exit 0
           fi
           # Only the release App's: a release made by hand never publishes.
           author=$(jq -r .author <<<"$info")
           [ "$author" = "dilux-release[bot]" ] || { echo "::error::$TAG was released by $author, not the release App: it is not published to wordpress.org."; exit 1; }
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$SLUG.zip" --dir "$RUNNER_TEMP/release"
-          { echo "go=true"; echo "tag=$TAG"; } >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Publish to wordpress.org
+    needs: check
+    if: needs.check.outputs.tag != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read # the release's zip, and the tag's assets
+    environment: ${{ inputs.environment }}
+    # One at a time: SVN refuses a second commit on an out-of-date trunk.
+    concurrency:
+      group: publish-wp-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - name: The release's zip
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.check.outputs.tag }}
+          SLUG: ${{ inputs.slug }}
+        run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$SLUG.zip" --dir "$RUNNER_TEMP/release"
 
       # The tag's checkout, for the assets wordpress.org shows (.wordpress-org)
       # and nothing else: the plugin itself is the release's zip.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: steps.rel.outputs.go == 'true'
         with:
-          ref: refs/tags/${{ steps.rel.outputs.tag }}
+          ref: refs/tags/${{ needs.check.outputs.tag }}
           persist-credentials: false
 
       - name: The plugin as released
-        if: steps.rel.outputs.go == 'true'
         env:
           SLUG: ${{ inputs.slug }}
         run: |
@@ -91,7 +107,6 @@ jobs:
           [ -d "$RUNNER_TEMP/build/$SLUG" ] || { echo "::error::$SLUG.zip holds no $SLUG/ folder."; exit 1; }
 
       - name: Deploy to SVN
-        if: steps.rel.outputs.go == 'true'
         uses: 10up/action-wordpress-plugin-deploy@54bd289b8525fd23a5c365ec369185f2966529c2 # 2.3.0
         with:
           generate-zip: false
@@ -101,5 +116,5 @@ jobs:
           SVN_USERNAME: ${{ secrets.SVN_USERNAME }}
           SVN_PASSWORD: ${{ secrets.SVN_PASSWORD }}
           SLUG: ${{ inputs.slug }}
-          VERSION: ${{ steps.rel.outputs.tag }}
+          VERSION: ${{ needs.check.outputs.tag }}
           BUILD_DIR: ${{ runner.temp }}/build/${{ inputs.slug }}

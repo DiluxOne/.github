@@ -15,7 +15,7 @@ name: Release
 # creates the release, which the `publish` job sends to wordpress.org. Without an accepted release issue, the
 # environment's required reviewers approve instead, if it has any (that is
 # what the `actions: read` is for, and a private repository below GitHub
-# Enterprise cannot have them); without either, nothing deploys. A tag X.Y.Z
+# Enterprise cannot have them); without either, nothing is released. A tag X.Y.Z
 # an administrator pushes by hand goes through the same job, and must be the
 # version the labels say is next. While the readme's newest changelog entry
 # starts with the line `Unreleased.` nothing is released: the notes under it
