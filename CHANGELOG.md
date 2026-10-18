@@ -11,14 +11,6 @@ Every version of the engine (the workflows, scripts, policy and kinds other repo
 - **issues:** take back an acceptance when the issue is not ready ([#291](https://github.com/DiluxOne/.github/pull/291))
 - **autopilot:** the agent works with no key, through an outbox ([#289](https://github.com/DiluxOne/.github/pull/289))
 
-### Fixes
-
-- **versioning:** changelog listed high risk; straight quotes; clearer rules
-
-### Documentation
-
-- **versioning:** the engine's changelog, its versions and releases
-
 ### CI
 
 - **review:** reviewers read the diff from files, with no shell ([#288](https://github.com/DiluxOne/.github/pull/288))

@@ -9,10 +9,13 @@ commits on the default branch after the last version are "Unreleased".
 Nobody writes it by hand: it is rebuilt before each version is tagged, and
 the same notes go into that version's GitHub Release.
 
-    changelog.py build [--next vX.Y.Z]
+    changelog.py build [--next vX.Y.Z] [--head REF]
                                   the whole CHANGELOG.md, to stdout; with
                                   --next, what is unreleased is headed as
-                                  that version (the release pull request)
+                                  that version (the release pull request);
+                                  --head, what is on REF (default HEAD; in a
+                                  branch, origin/main, since its own commits
+                                  become one when it merges)
     changelog.py notes vX.Y.Z     one version's notes (its GitHub Release)
     changelog.py --test
 """
@@ -150,6 +153,7 @@ def self_test():
               (True, 1, True))
         nxt = build(d, next_tag="v2.2.0")
         check("build --next: what is unreleased is headed as that version", ("## Unreleased" in nxt, "## [2.2.0]" in nxt), (False, True))
+        check("build --head: only what is on that ref (a branch's own commits left out)", "later" in build(d, head="v2.1.0"), False)
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
@@ -158,11 +162,13 @@ def main(argv):
     if argv == ["--test"]:
         return self_test()
     if argv[:1] == ["build"]:
-        nxt = argv[2] if argv[1:2] == ["--next"] and len(argv) == 3 and VERSION.match(argv[2]) else ""
-        if len(argv) > 1 and not nxt:
+        opts, rest = {}, argv[1:]
+        while len(rest) >= 2 and rest[0] in ("--next", "--head") and rest[0] not in opts:
+            opts[rest[0]], rest = rest[1], rest[2:]
+        if rest or ("--next" in opts and not VERSION.match(opts["--next"])):
             print(__doc__, file=sys.stderr)
             return 64
-        sys.stdout.write(build(next_tag=nxt))
+        sys.stdout.write(build(head=opts.get("--head", "HEAD"), next_tag=opts.get("--next", "")))
         return 0
     if len(argv) == 2 and argv[0] == "notes" and VERSION.match(argv[1]):
         sys.stdout.write(notes(argv[1]))

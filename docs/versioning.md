@@ -21,7 +21,7 @@ A breaking change is said in its commit (`!`), so the changelog lists it first; 
 
 ## How a version is made
 
-1. The pull request that releases it rebuilds the changelog with the version: `python3 scripts/changelog.py build --next vX.Y.Z > CHANGELOG.md`.
+1. The pull request that releases it rebuilds the changelog with the version, from what is on `main`: `python3 scripts/changelog.py build --next vX.Y.Z --head origin/main > CHANGELOG.md`.
 2. Once it merges and `main` is green, an administrator tags that commit `vX.Y.Z`.
 3. The tag's push publishes its GitHub Release, with the notes of that version (`engine-release.yml`, `scripts/changelog.py notes`). The notes are read from git at the tag, so they hold everything in it; the changelog the pull request wrote catches up at the next rebuild if something merged after it.
 4. When it is to reach this organisation's repositories, `v5` moves to it.
