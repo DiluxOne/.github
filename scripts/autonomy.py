@@ -16,9 +16,10 @@
   autonomy.py lane-announce what a lane's label on an issue means, as JSON
                             for issue-accepted.yml: {"act": "skip", "accept"
                             or "refuse", "comment": what to say on the issue}
-  autonomy.py lane-merge    whether a sync lane's pull request (org-sync)
+  autonomy.py lane-merge    whether a sync lane's pull request (org-sync), or
+                            a security patch's carry (security-carry, #287),
                             merges on its own: exit 0 when it does, 1 when a
-                            person merges it, 2 when it is no sync lane's
+                            person merges it, 2 when it is neither lane's
                             (auto-merge.yml then decides it as any other)
   autonomy.py --test        self-test
 
@@ -48,6 +49,10 @@ Environment:
   LANE_ORG         a file holding what DiluxOne/.github has at the commit
                    the issue names ({merged, repos.yml, agents-block.md,
                    templates: {name: text}}); read from the API when unset
+  For the security-carry lane (#287): LANE_ADVISORY (a file holding the
+                   advisory), LANE_RELEASED (true or false), LANE_EQUIVALENT
+                   (a file holding {ok, why}); each read from GitHub, or
+                   with git, when unset
   For lane-announce: LANE (the label added, lane:<name>) and POLICY_SHA (the
   commit of the policy read, for its link). For lane-merge: RISK,
   COMPLEXITY, BLOCKING, DESCRIPTION_OK (the review's outputs).
@@ -75,6 +80,9 @@ MARKER = re.compile(r"<!--\s*dx-lane:\s*([a-z0-9-]+)\s+run:\s*(https://github\.c
 # What a run of scripts/sync-repos.py writes in the issue it opens (sync
 # lanes): the lane, the kind of run, the commit of DiluxOne/.github it brings
 # the repository in line with, and the run's fingerprint (fingerprint()).
+# A security patch's carry (#287): the issue security-patch.yml opens in the
+# public repository, naming the version released and its advisory.
+CARRY_MARKER = re.compile(r"<!--\s*dx-lane:\s*([a-z0-9-]+)\s+version:\s*(\d+\.\d+\.\d+)\s+ghsa:\s*(GHSA(?:-[a-z0-9]{4}){3})\s*-->")
 SYNC_MARKER = re.compile(r"<!--\s*dx-lane:\s*([a-z0-9-]+)\s+sync:\s*([a-z-]+)\s+org:\s*([0-9a-f]{40})\s+files:\s*([0-9a-f]{64})\s*-->")
 # A call of a shared workflow at a version tag, the only call a sync lane's
 # caller may make in a job it changes.
@@ -354,6 +362,8 @@ def lane_accepts(policy, issue, run, repository, autopilot_var, sync=None):
     origin = lane.get("origin") or {}
     if origin.get("runs"):
         return sync_accepts(name, lane, issue, repository, sync or {})
+    if origin.get("evidence") == "published-advisory":
+        return carry_accepts(name, lane, issue, repository, sync or {})
     if origin.get("parent"):
         return delegated_accepts(name, lane, issue, repository)
     app = origin.get("app", "")
@@ -419,6 +429,105 @@ def delegated_accepts(name, lane, issue, repository):
     if edited and edited > linked[-1]:
         return False, "the sub-issue was edited after it was linked to its parent"
     return True, f"accepted by policy: lane {name}, a sub-issue of {ref}, which {(event.get('actor') or {}).get('login')} accepted"
+
+
+# --- the security-carry lane (#287): a published patch, into the default branch
+
+def carry_branch(lane, issue_number, version):
+    """The branch the lane's pull request comes from."""
+    pattern = (lane.get("origin") or {}).get("branch") or "fix/{issue}-carry-security-fix-of-{version}"
+    return pattern.format(issue=issue_number, version=version.replace(".", "-"))
+
+
+def patched(advisory, version):
+    """Whether a published advisory names `version` among its patched
+    versions. Pure."""
+    if not isinstance(advisory, dict) or advisory.get("state") != "published":
+        return False
+    for v in advisory.get("vulnerabilities") or []:
+        names = [x.strip().lstrip("v=") for x in str((v or {}).get("patched_versions") or "").split(",")]
+        if version in names:
+            return True
+    return False
+
+
+def carry_accepts(name, lane, issue, repository, carry):
+    """(True, why) when the security-carry lane accepts the issue: opened by
+    the lane's App, which added its label last, never edited, a Bug, naming
+    a version and its advisory; and GitHub shows that advisory published
+    with that version patched and that version released. Only dilux-security
+    publishes advisories, once a maintainer approved the patch (patch:go):
+    that is the acceptance this lane carries. Pure: `carry` holds
+    advisory(ghsa) and released(version)."""
+    app = (lane.get("origin") or {}).get("app", "")
+    if login((issue.get("author") or {}).get("login")) != login(app):
+        return False, f"the issue was not opened by {app}"
+    event = last_label_event(issue, f"lane:{name}")
+    if not event or event.get("__typename") != "LabeledEvent" or login((event.get("actor") or {}).get("login")) != login(app):
+        return False, f"the last to add lane:{name} was not {app}"
+    if issue.get("lastEditedAt"):
+        return False, "the issue was edited after it was opened"
+    if lane.get("type") and ((issue.get("issueType") or {}).get("name") or "") != lane["type"]:
+        return False, f"the issue's Type is not {lane['type']}"
+    m = CARRY_MARKER.search(issue.get("body") or "")
+    if not m or m.group(1) != name:
+        return False, "the issue does not name the version and the advisory it carries"
+    version, ghsa = m.group(2), m.group(3)
+    read_advisory, released = carry.get("advisory"), carry.get("released")
+    if not read_advisory or not released:
+        return False, "the advisory and the release could not be read"
+    if not patched(read_advisory(ghsa), version):
+        return False, f"{ghsa} is not a published advisory of this repository that names {version} patched"
+    if not released(version):
+        return False, f"{version} is not released"
+    return True, f"accepted by policy: lane {name}, the fix of {version}, released, with {ghsa} published"
+
+
+def carry_merge(policy, issue, repository, autopilot_var, carry, review):
+    """(True, why) when the lane's pull request merges on its own: the lane
+    accepts its issue, it is the App's, from the lane's branch, the review
+    does not block, its description is true, within the lane's caps, and its
+    commits are exactly the released patch's fix (each one patch-equivalent
+    to a commit of the fix, and every commit of the fix carried). Pure:
+    `carry` also holds pr and equivalent(version, base, head) -> (ok, why)."""
+    ok, why = lane_accepts(policy, issue, None, repository, autopilot_var, carry)
+    if not ok:
+        return False, why
+    name = next(l[len("lane:"):] for l in (n.get("name") or "" for n in issue["labels"]["nodes"]) if l.startswith("lane:"))
+    lane = policy["lanes"][name]
+    version = CARRY_MARKER.search(issue.get("body") or "").group(2)
+    pr = carry.get("pr") or {}
+    app = (lane.get("origin") or {}).get("app", "")
+    if login((pr.get("author") or {}).get("login")) != login(app):
+        return False, f"the pull request was not opened by {app}"
+    want = carry_branch(lane, issue.get("number"), version)
+    if pr.get("headRefName") != want:
+        return False, f"the pull request does not come from {want}"
+    if review.get("blocking") != "false":
+        return False, "the review is blocking"
+    if review.get("description_ok") != "true":
+        return False, "the description does not match the code"
+    caps = lane.get("merge") or {}
+    for key, cap in (("risk", caps.get("max-risk", "none")), ("complexity", caps.get("max-complexity", "none"))):
+        level = review.get(key) or ""
+        if level not in LEVELS or cap not in LEVELS or level == "none" or LEVELS.index(level) > LEVELS.index(cap):
+            return False, f"{key} {level or 'unknown'} is above the lane's {cap}"
+    equivalent = carry.get("equivalent")
+    if not equivalent:
+        return False, "the pull request's commits could not be compared with the patch"
+    same, why = equivalent(version, pr.get("baseRefOid", ""), pr.get("headRefOid", ""))
+    if not same:
+        return False, why
+    return True, f"merges by policy: lane {name}, the fix of {version} as it was released"
+
+
+def carry_lane_of(policy, issue):
+    """The security-carry lane an issue's lane:<name> label names, or None."""
+    for n in ((issue.get("labels") or {}).get("nodes") or []):
+        name = (n.get("name") or "")
+        if name.startswith("lane:") and ((((policy.get("lanes") or {}).get(name[len("lane:"):]) or {}).get("origin") or {}).get("evidence")) == "published-advisory":
+            return name[len("lane:"):]
+    return None
 
 
 # --- sync lanes (org-sync): what scripts/sync-repos.py opens ---------------
@@ -851,6 +960,71 @@ def sync_from_env(repository, issue_only):
     return {"issue_only": issue_only, "pr": pr, "change": change, "org": org}
 
 
+def carry_from_env(repository, pr=None):
+    """What the security-carry lane reads, from fixtures the environment
+    names (LANE_ADVISORY, LANE_RELEASED, LANE_EQUIVALENT) or from GitHub."""
+    env = os.environ
+
+    def advisory(ghsa):
+        if env.get("LANE_ADVISORY"):
+            return load_json(env["LANE_ADVISORY"])
+        out = subprocess.run(["gh", "api", f"repos/{repository}/security-advisories/{ghsa}"], capture_output=True, text=True)
+        return json.loads(out.stdout) if out.returncode == 0 else None
+
+    def released(version):
+        if env.get("LANE_RELEASED"):
+            return env["LANE_RELEASED"] == "true"
+        out = subprocess.run(["gh", "api", f"repos/{repository}/releases/tags/{version}", "--jq", ".tag_name"], capture_output=True, text=True)
+        return out.returncode == 0 and out.stdout.strip() == version
+
+    def equivalent(version, base, head):
+        if env.get("LANE_EQUIVALENT"):
+            got = load_json(env["LANE_EQUIVALENT"])
+            return bool(got.get("ok")), got.get("why", "")
+        return git_equivalent(repository, version, base, head)
+    return {"advisory": advisory, "released": released, "equivalent": equivalent, "pr": pr}
+
+
+def carry_module():
+    spec = importlib.util.spec_from_file_location("carry_lock", os.path.join(HERE, "carry-lock.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def git_equivalent(repository, version, base, head, cwd=None):
+    """(ok, why): whether base..head is exactly the fix of the security
+    patch `version` (scripts/carry-lock.py): no merge commit, and its whole
+    diff has the patch id of the fix's whole diff, so nothing is added,
+    left out or hidden. Fetched into a scratch repository with GH_TOKEN;
+    anything that fails is a no."""
+    import tempfile
+    cl = carry_module()
+    if not re.fullmatch(r"[0-9a-f]{40}", base or "") or not re.fullmatch(r"[0-9a-f]{40}", head or ""):
+        return False, "the pull request's base and head could not be read"
+    with tempfile.TemporaryDirectory() as d:
+        work = cwd or d
+        try:
+            if not cwd:
+                cl.git("init", "-q", cwd=work)
+                auth = "AUTHORIZATION: basic " + __import__("base64").b64encode(f"x-access-token:{os.environ.get('GH_TOKEN', '')}".encode()).decode()
+                cl.git("-c", f"http.extraheader={auth}", "fetch", "-q", f"https://github.com/{repository}", "+refs/tags/*:refs/tags/*", base, head, cwd=work)
+            tag = version if version in cl.git("tag", "-l", cwd=work).split() else f"v{version}"
+            merges = cl.git("rev-list", "--merges", f"{base}..{head}", cwd=work).split()
+            commits = cl.git("rev-list", f"{base}..{head}", cwd=work).split()
+            ours = cl.patch_id(cl.git("diff", base, head, cwd=work), work)
+            want = cl.fix_id(tag, cwd=work)
+        except RuntimeError as exc:
+            return False, f"the patch could not be compared ({str(exc)[:160]})"
+    if not commits:
+        return False, "the pull request carries no commit"
+    if merges:
+        return False, f"the pull request holds a merge commit ({merges[0][:12]}): only the fix's commits"
+    if not want or ours != want:
+        return False, f"what the pull request changes is not the fix of {version} as it was released"
+    return True, f"what it changes is the fix of {version} as it was released"
+
+
 def issue_from_env(repository):
     if os.environ.get("LANE_ISSUE"):
         return load_json(os.environ["LANE_ISSUE"])
@@ -916,7 +1090,82 @@ def self_test():
         fetched = next((l for l in fh if "for f in scripts/autonomy.py" in l), "")
     local = sorted(set(re.findall(r"^import (\w+)", open(__file__, encoding="utf-8").read(), re.M)) & {f[:-3] for f in os.listdir(HERE) if f.endswith(".py")})
     check("#191: the lane job fetches what autonomy.py imports from here, and org.yml", (all(f"scripts/{m}.py" in fetched for m in local), "org.yml" in fetched), (True, True))
-    check("the organisation's policy has the six lanes", sorted(org.get("lanes", {})), ["bugfix-reproduced", "delegated", "human-issue", "org-sync", "platform", "release"])
+    check("the organisation's policy has the seven lanes", sorted(org.get("lanes", {})), ["bugfix-reproduced", "delegated", "human-issue", "org-sync", "platform", "release", "security-carry"])
+    # The security-carry lane (#287).
+    pol_c = merge(org, {})
+    lane_c = pol_c["lanes"]["security-carry"]
+    ghsa = "GHSA-abcd-efgh-ijkl"
+    body_c = f"<!-- dx-lane: security-carry version: 2.1.1 ghsa: {ghsa} -->\nCarry it."
+    issue_c = lambda **k: {"number": 9, "body": k.get("body", body_c), "lastEditedAt": k.get("edited"), "author": {"login": k.get("author", "dilux-bot")},
+                           "issueType": {"name": k.get("type", "Bug")}, "labels": {"nodes": [{"name": "lane:security-carry"}]},
+                           "timelineItems": {"nodes": [{"__typename": "LabeledEvent", "label": {"name": "lane:security-carry"}, "actor": {"__typename": "Bot", "login": k.get("actor", "dilux-bot")}}]}}
+    adv = {"state": "published", "vulnerabilities": [{"patched_versions": "2.1.1"}]}
+    carry_ok = {"advisory": lambda g: adv if g == ghsa else None, "released": lambda v: v == "2.1.1"}
+    acc = lambda iss, c=carry_ok: lane_accepts(pol_c, iss, None, "DiluxOne/x", "", c)[0]
+    check("#287 carry: the bot's untouched Bug naming a published, released patch is accepted", acc(issue_c()), True)
+    check("#287 carry: another author, a person's label, an edit, another Type, no marker",
+          [acc(issue_c(author="someone")), acc(issue_c(actor="someone")), acc(issue_c(edited="2026-10-18T00:00:00Z")), acc(issue_c(type="Feature")), acc(issue_c(body="Carry it."))],
+          [False] * 5)
+    check("#287 carry: an advisory not published, not naming the version, or no release",
+          [acc(issue_c(), {**carry_ok, "advisory": lambda g: {**adv, "state": "draft"}}), acc(issue_c(), {**carry_ok, "advisory": lambda g: {**adv, "vulnerabilities": [{"patched_versions": "2.1.2"}]}}),
+           acc(issue_c(), {**carry_ok, "released": lambda v: False})], [False, False, False])
+    check("#287 carry: patched versions read from a list", (patched({"state": "published", "vulnerabilities": [{"patched_versions": "1.9.9, 2.1.1"}]}, "2.1.1"), patched(None, "2.1.1")), (True, False))
+    pr_c = {"number": 10, "author": {"login": "dilux-bot[bot]"}, "headRefName": "fix/9-carry-security-fix-of-2-1-1", "baseRefOid": "a" * 40, "headRefOid": "b" * 40}
+    review_ok = {"risk": "high", "complexity": "low", "blocking": "false", "description_ok": "true"}
+    merge_c = lambda pr=pr_c, review=review_ok, same=(True, "same"): carry_merge(pol_c, issue_c(), "DiluxOne/x", "", {**carry_ok, "pr": pr, "equivalent": lambda v, b, h: same}, review)[0]
+    check("#287 carry merge: the released fix, from the lane's branch, a review that does not block", merge_c(), True)
+    check("#287 carry merge: another branch, another author, a blocking review, commits that are not the fix",
+          [merge_c(pr={**pr_c, "headRefName": "fix/9-other"}), merge_c(pr={**pr_c, "author": {"login": "someone"}}), merge_c(review={**review_ok, "blocking": "true"}), merge_c(same=(False, "extra"))],
+          [False] * 4)
+    check("#287 carry merge: off with DX_AUTOPILOT", carry_merge(pol_c, issue_c(), "DiluxOne/x", "off", {**carry_ok, "pr": pr_c, "equivalent": lambda v, b, h: (True, "")}, review_ok)[0], False)
+    import tempfile as _tfc
+    with _tfc.TemporaryDirectory() as d:
+        envg = dict(os.environ, GIT_CONFIG_GLOBAL="/dev/null", GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+        g = lambda *a: subprocess.run(["git", *a], cwd=d, env=envg, capture_output=True, text=True, check=True).stdout.strip()
+
+        def put(path, text):
+            with open(os.path.join(d, path), "w", encoding="utf-8") as fh:
+                fh.write(text)
+        g("init", "-q", "-b", "main")
+        put("a.php", "<?php\n$a = 1;\n")
+        put("b.php", "<?php\n$b = 1;\n")
+        g("add", "-A")
+        g("commit", "-q", "-m", "feat: one")
+        g("tag", "1.0.0")
+        put("b.php", "<?php\n$b = 2;\n")
+        g("commit", "-qam", "feat: two")
+        main_sha = g("rev-parse", "HEAD")
+        g("checkout", "-q", "-b", "security/1.0.1", "1.0.0")
+        put("a.php", "<?php\n$a = esc_html( 1 );\n")
+        g("commit", "-qam", "fix: escape a")
+        fix_sha = g("rev-parse", "HEAD")
+        g("commit", "-q", "--allow-empty", "-m", "chore(release): 1.0.1, a security patch")
+        g("tag", "1.0.1")
+        g("checkout", "-q", "-b", "carry", main_sha)
+        g("cherry-pick", fix_sha)
+        carried = g("rev-parse", "HEAD")
+        g("checkout", "-q", "-b", "merged", main_sha)
+        g("merge", "-q", "--no-ff", "-m", "merge", carried)
+        put("b.php", "<?php\n$b = 9;\n")
+        g("commit", "-q", "--amend", "-am", "merge, with something hidden")
+        hidden = g("rev-parse", "HEAD")
+        g("checkout", "-q", "carry")
+        put("b.php", "<?php\n$b = 3;\n")
+        g("commit", "-qam", "fix: something else")
+        extra = g("rev-parse", "HEAD")
+        kept = os.environ.get("GIT_CONFIG_GLOBAL")
+        os.environ["GIT_CONFIG_GLOBAL"] = "/dev/null"
+        try:
+            check("#287 carry merge (git): the fix cherry-picked is the fix; one commit more is not; nothing is not",
+                  (git_equivalent("o/r", "1.0.1", main_sha, carried, cwd=d)[0], git_equivalent("o/r", "1.0.1", main_sha, extra, cwd=d)[0],
+                   git_equivalent("o/r", "1.0.1", main_sha, main_sha, cwd=d)[0]), (True, False, False))
+            check("#287 carry merge (git): a merge commit, even one hiding a change, is not the fix", git_equivalent("o/r", "1.0.1", main_sha, hidden, cwd=d)[0], False)
+        finally:
+            if kept is None:
+                os.environ.pop("GIT_CONFIG_GLOBAL", None)
+            else:
+                os.environ["GIT_CONFIG_GLOBAL"] = kept
+    check("#287 carry: the lane is told apart from a sync lane", (carry_lane_of(pol_c, issue_c()), sync_lane_of(pol_c, issue_c())), ("security-carry", None))
 
     # #189: a sub-issue of an issue a person accepted.
     def child(parent_labels=("accepted",), actor="User", state="OPEN", where="DiluxOne/.github", assoc="MEMBER",
@@ -1293,7 +1542,7 @@ def main():
             print("the issue could not be read")
             return 1
         sync = sync_from_env(repository, os.environ.get("LANE_SCOPE") == "issue")
-        ok, why = lane_accepts(policy_in_force(), issue, read_run(issue, repository), repository, var, sync)
+        ok, why = lane_accepts(policy_in_force(), issue, read_run(issue, repository), repository, var, {**carry_from_env(repository), **sync})
         print(why)
         return 0 if ok else 1
     if mode == "lane-announce":
@@ -1318,11 +1567,21 @@ def main():
         except (RuntimeError, OSError, ValueError, KeyError) as exc:
             print(f"the issue could not be read ({exc}): no sync lane's")
             return 2
+        review = {"risk": os.environ.get("RISK", ""), "complexity": os.environ.get("COMPLEXITY", ""),
+                  "blocking": os.environ.get("BLOCKING", ""), "description_ok": os.environ.get("DESCRIPTION_OK", "")}
+        if carry_lane_of(policy, issue):
+            # A security patch's carry (#287): its commits must be the fix
+            # that was released, nothing more and nothing less.
+            try:
+                ok, why = carry_merge(policy, issue, repository, var, carry_from_env(repository, sync_from_env(repository, False)["pr"]), review)
+            except Exception as exc:  # any failure is a person's merge, said as a failure
+                print(f"the decision failed: {exc}")
+                return 3
+            print(why)
+            return 0 if ok else 1
         if not sync_lane_of(policy, issue):
             print("no sync lane's issue")
             return 2
-        review = {"risk": os.environ.get("RISK", ""), "complexity": os.environ.get("COMPLEXITY", ""),
-                  "blocking": os.environ.get("BLOCKING", ""), "description_ok": os.environ.get("DESCRIPTION_OK", "")}
         try:
             ok, why = sync_merge(policy, issue, repository, var, sync_from_env(repository, False), review)
         except Exception as exc:  # any failure is a person's merge, said as a failure

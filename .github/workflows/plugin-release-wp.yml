@@ -574,7 +574,20 @@ jobs:
           exclude=""; if [ "$on_tag" = true ]; then exclude="$VERSION"; fi
           again=$(python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$BASE" ${exclude:+--exclude-tag "$exclude"} --json | jq -r 'if .pending then .next else "" end')
           [ "$again" = "$VERSION" ] || { echo "::error::The labels now give '${again:-nothing}' where $VERSION was approved; something merged or was relabelled meanwhile. Nothing reached wordpress.org; the next push to $BASE computes again."; exit 1; }
-          echo "Still $VERSION, on $BASE, no tag yet."
+          # The carry lock (#287): a security patch released from
+          # security/X.Y.Z must be on this commit before a release from $BASE,
+          # or the vulnerability comes back. Its carry pull request (opened
+          # by security-patch.yml) merges first. Not knowing stops it too.
+          rc=0; left=$(python3 .dx-central/scripts/carry-lock.py check "$GITHUB_SHA") || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            if [ "$rc" = 1 ]; then
+              echo "::error::A security patch is not carried into $BASE yet: ${left//$'\n'/; }. Its carry pull request merges first. Nothing reached wordpress.org."
+            else
+              echo "::error::Whether every security patch is carried into $BASE could not be told (exit $rc). Nothing reached wordpress.org."
+            fi
+            exit 1
+          fi
+          echo "Still $VERSION, on $BASE, no tag yet, every security patch carried."
 
       - name: The markers say this version
         if: steps.still.outputs.go == 'true'

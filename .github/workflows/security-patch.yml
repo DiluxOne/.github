@@ -31,8 +31,12 @@ name: Security patches
 #            That push is what releases it there (plugin-release-wp.yml,
 #            which accepts only dilux-security's push). `patch:pushed`.
 #   finish   once that release exists: dilux-security publishes the
-#            advisory, an issue in the public repository asks to carry the
-#            fix into its default branch, and the claim's issue closes.
+#            advisory; dilux-bot opens, in the public repository, a Bug
+#            issue of the security-carry lane and a pull request that
+#            cherry-picks the released fix onto its default branch, which
+#            merges on its own while its commits are exactly that fix (#287;
+#            until then no release goes out from the default branch,
+#            scripts/carry-lock.py); and the claim's issue closes.
 #            `patch:released`.
 #
 # Nothing publishes without `patch:go`, and one patch per repository is in
@@ -580,9 +584,9 @@ jobs:
             echo "$VERSION is not released yet in $REPO: the next run looks again."; exit 0
           fi
           export REPOSITORIES="${REPO#*/}"
-          # The advisory with dilux-security; the carry issue with dilux-bot.
+          # The advisory with dilux-security; the carry with dilux-bot.
           GH_TOKEN=$(bash .dx-central/scripts/app-token.sh mint '{"repository_advisories":"write","metadata":"read"}')
-          BOT_TOKEN=$(CLIENT_ID="$BOT_ID" PRIVATE_KEY="$BOT_KEY" bash .dx-central/scripts/app-token.sh mint '{"issues":"write","metadata":"read"}')
+          BOT_TOKEN=$(CLIENT_ID="$BOT_ID" PRIVATE_KEY="$BOT_KEY" bash .dx-central/scripts/app-token.sh mint '{"issues":"write","contents":"write","pull_requests":"write","metadata":"read"}')
           export GH_TOKEN
           unset PRIVATE_KEY BOT_KEY
           trap 'for t in "$GH_TOKEN" "$BOT_TOKEN"; do curl -fsS -o /dev/null -X DELETE -H "Authorization: Bearer $t" https://api.github.com/installation/token || true; done' EXIT
@@ -591,12 +595,56 @@ jobs:
           jq --arg v "$VERSION" '{state: "published", vulnerabilities: [.vulnerabilities[] | {package, vulnerable_version_range, patched_versions: $v, vulnerable_functions}]}' "$RUNNER_TEMP/adv.json" > "$RUNNER_TEMP/publish.json"
           published=false
           if gh api -X PATCH "repos/$REPO/security-advisories/$GHSA" --input "$RUNNER_TEMP/publish.json" >/dev/null; then published=true; fi
-          # The fix into the default branch: an issue there, for the usual flow.
+          # The fix into the default branch (#287), on its own: a Bug issue
+          # of the security-carry lane (policy/autonomy.yml), which accepts it
+          # because the advisory is now published with this version patched,
+          # and a pull request that cherry-picks the released fix onto the
+          # default branch, which merges on its own only while its commits
+          # are exactly that fix. Until it merges, no release goes out from
+          # the default branch (scripts/carry-lock.py, plugin-release-wp.yml).
+          # A fix that does not apply there is left to a person, on the issue.
+          url=""; pr_url=""
+          default=$(GH_TOKEN="$BOT_TOKEN" gh api "repos/$REPO" --jq .default_branch)
+          # A run that failed after opening it: the carry is not opened twice.
+          num=$(GH_TOKEN="$BOT_TOKEN" gh issue list --repo "$REPO" --state all --label lane:security-carry --search "\"Carry the security fix of $VERSION into\" in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$num" ]; then url="$GITHUB_SERVER_URL/$REPO/issues/$num"; pr_url=$(GH_TOKEN="$BOT_TOKEN" gh pr list --repo "$REPO" --state all --search "Closes #$num" --json url --jq '.[0].url // empty'); fi
+          GH_TOKEN="$BOT_TOKEN" gh label create lane:security-carry --repo "$REPO" --color 0E8A16 --description "A released security patch's fix, carried into the default branch" --force >/dev/null || true
           # shellcheck disable=SC2016 # backticks in the Markdown of the issue, not commands.
-          url=$(GH_TOKEN="$BOT_TOKEN" gh issue create --repo "$REPO" --title "Carry the security fix of $VERSION into the default branch" \
-            --body "$(printf 'The security patch %s was released from `security/%s`, on top of the version in production. Its fix is not on the default branch yet: carry the commits of that branch after the production tag, without the release commit, into the default branch.\n\n%s' "$VERSION" "$VERSION" "$sign")" || true)
+          body=$(printf '<!-- dx-lane: security-carry version: %s ghsa: %s -->\nThe security patch %s was released from `security/%s`, on top of the version in production, and its advisory is published. Its fix is not on `%s` yet: until it is, no release goes out from `%s`, or the vulnerability would come back.\n\nThe pull request that closes this issue carries that fix, its commits cherry-picked as they were released; it merges on its own only while they are exactly that fix (the `security-carry` lane of the organisation'"'"'s autonomy policy).\n\n%s' \
+            "$VERSION" "$GHSA" "$VERSION" "$VERSION" "$default" "$default" "$sign")
+          if [ -z "$num" ]; then
+            num=$(GH_TOKEN="$BOT_TOKEN" gh api -X POST "repos/$REPO/issues" -f title="Carry the security fix of $VERSION into $default" -f body="$body" -f type=Bug -f 'labels[]=lane:security-carry' --jq .number) || num=""
+          fi
+          # The pull request, unless one closes the issue already (a run that
+          # died between the two opens it now).
+          if [ -n "$num" ] && [ -z "$pr_url" ]; then
+            url="$GITHUB_SERVER_URL/$REPO/issues/$num"
+            git clone -q "https://github.com/$REPO" "$RUNNER_TEMP/carry"
+            branch="fix/$num-carry-security-fix-of-${VERSION//./-}"
+            if (cd "$RUNNER_TEMP/carry" \
+                && git config user.name "dilux-bot[bot]" && git config user.email "333187390+dilux-bot[bot]@users.noreply.github.com" \
+                && git checkout -q -b "$branch" "origin/$default" \
+                && mapfile -t fix < <(python3 "$GITHUB_WORKSPACE/.dx-central/scripts/carry-lock.py" fix "$VERSION") \
+                && [ "${#fix[@]}" -gt 0 ] && git cherry-pick "${fix[@]}" >/dev/null); then
+              onto=$(git -C "$RUNNER_TEMP/carry" rev-parse "origin/$default")
+              # shellcheck disable=SC2016 # backticks in the Markdown of the pull request, not commands.
+              pr_body=$(printf '## What changes\n\nThe fix of the security patch %s, cherry-picked onto `%s` as it was released from `security/%s`.\n\n## Why\n\nThe patch was released on top of the version in production; until its fix is on `%s`, no release goes out from it, or the vulnerability would come back.\n\nCloses #%s\n\n%s' \
+                "$VERSION" "$default" "$VERSION" "$default" "$num" "$sign")
+              if (cd "$RUNNER_TEMP/carry" && GH_TOKEN="$BOT_TOKEN" GITHUB_REPOSITORY="$REPO" python3 "$GITHUB_WORKSPACE/.dx-central/scripts/api-commit.py" push "$branch" --onto "$onto" --force) \
+                && pr_url=$(GH_TOKEN="$BOT_TOKEN" gh pr create --repo "$REPO" --base "$default" --head "$branch" --title "fix(security): carry the security fix of $VERSION into $default" --body "$pr_body"); then
+                echo "Carry: $pr_url"
+              else
+                # shellcheck disable=SC2016 # backticks in the Markdown of the comment, not commands.
+                GH_TOKEN="$BOT_TOKEN" gh issue comment "$num" --repo "$REPO" --body "$(printf 'The carry pull request could not be opened (the run: %s). A maintainer carries the fix by hand, with the line `Carries-security-patch: %s` in a commit message, which lifts the release lock.\n\n%s' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$VERSION" "$sign")" >/dev/null || true
+              fi
+            else
+              git -C "$RUNNER_TEMP/carry" cherry-pick --abort >/dev/null 2>&1 || true
+              # shellcheck disable=SC2016 # backticks in the Markdown of the comment, not commands.
+              GH_TOKEN="$BOT_TOKEN" gh issue comment "$num" --repo "$REPO" --body "$(printf 'The fix of %s does not apply on `%s` as it was released (a conflict, or no fix commit found): a maintainer carries it by hand, with the line `Carries-security-patch: %s` in a commit message, which lifts the release lock.\n\n%s' "$VERSION" "$default" "$VERSION" "$sign")" >/dev/null || true
+            fi
+          fi
           GH_TOKEN="$ISSUE_TOKEN" gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label patch:pushed --add-label patch:released >/dev/null
           GH_TOKEN="$ISSUE_TOKEN" gh issue close "$ISSUE" --repo "$GITHUB_REPOSITORY" --reason completed --comment "$(printf '%s is released. %s %s\n\n%s, in a private repository' "$VERSION" \
             "$([ "$published" = true ] && echo "The advisory is published." || echo "**Publishing the advisory failed**: a maintainer publishes it by hand.")" \
-            "${url:+The fix goes into the default branch through $url.}" "$sign")" >/dev/null
+            "${pr_url:+The fix goes into the default branch through $pr_url, which merges on its own.}${pr_url:-${url:+The fix goes into the default branch through $url, by hand.}}" "$sign")" >/dev/null
           echo "Finished $GHSA ($VERSION)."
