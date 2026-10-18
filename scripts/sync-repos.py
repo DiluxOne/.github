@@ -34,7 +34,8 @@ archived and not excluded in repos.yml:
             is left as it is. Then its rulesets the organisation's cover
             (another one on the default branch, a tag ruleset the same as the
             organisation's) are deleted.
-  callers   the workflows that call the shared ones, held job for job (and trigger for trigger, #324) to
+  callers   the workflows that call the shared ones, held job for job (and trigger for trigger, #324, and permission for
+            permission, #329) to
             the templates in workflow-templates/ (repos.yml `callers`): the
             ones in `every-repository`, and any other whose shared workflows
             the repository calls. Each template job must be there with the
@@ -460,7 +461,7 @@ def sync_callers(repo, conf, dry):
         if new is not None and path not in shared:
             granted = with_permissions(new, text)
             if granted is None:
-                notes.append(f"{path}: its permissions are not a block this script can add to; bring them in step by hand")
+                notes.append(f"{path}: lacks permissions its template grants, in a form this script does not add to; bring them in step by hand")
                 stuck.add(path)
                 continue
             new = granted
@@ -578,7 +579,7 @@ def workflow_texts(full):
 
 
 # The callers: each repository's workflows that call the shared ones, held
-# job for job, and trigger for trigger (#324), to the templates in workflow-templates/ (repos.yml `callers`).
+# job for job, trigger for trigger (#324) and permission for permission (#329), to the templates in workflow-templates/ (repos.yml `callers`).
 
 TEMPLATES = os.path.join(CENTRAL, "workflow-templates")
 SHARED_PREFIX = "DiluxOne/.github/.github/workflows/"
@@ -876,6 +877,9 @@ def with_permissions(text, template_text):
         return None
     end = a + 1
     while end < len(mine) and mine[end].startswith("  "):
+        # Another indent than the template's: a person adds them.
+        if not re.match(r"^  [\w#-]", mine[end]):
+            return None
         end += 1
     lines = {m.group(1): l for l in theirs[b + 1:] if (m := re.match(r"^  ([\w-]+):", l))}
     return "".join(mine[:end]) + "".join(lines[k] for k in missing if k in lines) + "".join(mine[end:])
