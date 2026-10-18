@@ -698,17 +698,19 @@ def job_vs_template(have, before, want, owned):
     return None
 
 
-def moved_major(before, have):
+def moved_major(before, have, majors):
     """Whether the job have is before with its call of a shared workflow
-    moved to a newer major of that same workflow, and nothing else changed
-    (#320: a callers-only major). Pure."""
+    moved to a newer major of that same workflow, one of majors (those the
+    templates call), and nothing else changed (#320: a callers-only major).
+    Pure."""
     if not isinstance(before, dict) or not isinstance(have, dict):
         return False
     old, new = str(before.get("uses") or ""), str(have.get("uses") or "")
     if not (SHARED_USES.fullmatch(old) and SHARED_USES.fullmatch(new)):
         return False
     (wo, vo), (wn, vn) = old.rsplit("@v", 1), new.rsplit("@v", 1)
-    return wo == wn and int(vn) > int(vo) and {k: v for k, v in before.items() if k != "uses"} == {k: v for k, v in have.items() if k != "uses"}
+    return (wo == wn and int(vo) < int(vn) and int(vn) in majors
+            and {k: v for k, v in before.items() if k != "uses"} == {k: v for k, v in have.items() if k != "uses"})
 
 
 def caller_problem(path, base_text, head_text, templates, owned):
@@ -740,7 +742,9 @@ def caller_problem(path, base_text, head_text, templates, owned):
         uses = str(have.get("uses") or "")
         if not SHARED_USES.fullmatch(uses):
             return f"{path}: the job {job} calls `{uses or 'nothing'}`, not a shared workflow at a version tag", False
-        if moved_major(before, have):
+        majors = {int(u.rsplit("@v", 1)[1]) for d in templates.values() for j in jobs_of(d).values()
+                  if isinstance(j, dict) and SHARED_USES.fullmatch(u := str(j.get("uses") or ""))}
+        if moved_major(before, have, majors):
             # Its call at a newer major and nothing else (#320).
             continue
         found = [(t, jobs_of(d)[job]) for t, d in sorted(templates.items())
@@ -1461,14 +1465,17 @@ def self_test():
                        ("drops an input of the repository's own", caller_head.replace("      own-input: mine\n", "")),
                        ("drops an input the repository fills in", caller_head.replace("      support-url: https://mine.example\n", ""))):
         check(f"a caller that {name} does not merge on its own", merges(sync_case("callers", files={".github/workflows/issues.yml": text}))[0], False)
-    # #320: a callers-only major moves the repository's own jobs too.
+    # #320: a callers-only major moves the repository's own jobs too (the
+    # templates here call v5, the major moved to).
     own_at = lambda v, extra="": caller_head + f"  own:\n    uses: DiluxOne/.github/.github/workflows/svn-auth-check.yml@{v}\n{extra}"
-    check("#320: a job of the repository's own whose only change is its call moved to a newer major merges on its own",
-          merges(sync_case("callers", files={".github/workflows/issues.yml": own_at("v6")}, base={".github/workflows/issues.yml": caller_base + own_at("v5")[len(caller_head):]}))[0], True)
-    for name, head_own in (("an older major", own_at("v4")), ("another workflow", own_at("v6").replace("svn-auth-check.yml", "issue-triage.yml")),
-                           ("a ref that is not a major", own_at("main")), ("more than its call", own_at("v6", "    with:\n      x: y\n"))):
+    own_base = {".github/workflows/issues.yml": caller_base + own_at("v4")[len(caller_head):]}
+    check("#320: a job of the repository's own whose only change is its call moved to the templates' newer major merges on its own",
+          merges(sync_case("callers", files={".github/workflows/issues.yml": own_at("v5")}, base=own_base))[0], True)
+    for name, head_own in (("an older major", own_at("v3")), ("a major no template calls", own_at("v99")),
+                           ("another workflow", own_at("v5").replace("svn-auth-check.yml", "issue-triage.yml")),
+                           ("a ref that is not a major", own_at("main")), ("more than its call", own_at("v5", "    with:\n      x: y\n"))):
         check(f"#320: a job of the repository's own moved to {name} does not merge on its own",
-              merges(sync_case("callers", files={".github/workflows/issues.yml": head_own}, base={".github/workflows/issues.yml": caller_base + own_at("v5")[len(caller_head):]}))[0], False)
+              merges(sync_case("callers", files={".github/workflows/issues.yml": head_own}, base=own_base))[0], False)
     check("a CODEOWNERS that is not repos.yml's does not merge on its own", merges(sync_case(files={".github/CODEOWNERS": "* @someone\n", "AGENTS.md": agents_head}))[0], False)
     check("an AGENTS.md changed outside its block does not merge on its own", merges(sync_case(files={".github/CODEOWNERS": owners, "AGENTS.md": agents_head + "\nMore.\n"}))[0], False)
     check("a stale files run (main's repos.yml moved on) does not merge on its own",
