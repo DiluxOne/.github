@@ -39,6 +39,7 @@ repos:
   diluxone-users-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
   diluxone-website: {kinds: []}
   diluxone-wp-test: {kinds: []}
+  sandbox-wordpress-plugin: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}   # a toy plugin where the workflows are proved end to end (#287)
   security: {kinds: []}   # private: only the runs of security-fix.yml (#194)
 
 # Which public Project of the organisation each repository's accepted issues
