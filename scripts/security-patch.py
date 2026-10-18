@@ -140,9 +140,12 @@ def _path(text):
 
 def changed(patch):
     """{path: changed lines} of a patch as git format-patch writes it: every
-    path a change touches (both ends of a rename or a copy), and only the
-    lines inside its hunks, counted from their headers."""
-    out, paths, old, new = {}, [], 0, 0
+    path a change touches (both ends of a rename or a copy; for a change with
+    no other name, every way its header can be read, so a forbidden path is
+    never missed), and only the lines inside its hunks, counted from their
+    headers, on the path the hunk writes."""
+    out, paths, target, old, new, seen = {}, [], "", 0, 0, False
+    add = lambda p_: (out.setdefault(p_, 0), paths.append(p_) if p_ not in paths else None) if p_ else None
     for line in (patch or "").splitlines():
         if old > 0 or new > 0:
             if line.startswith("-"):
@@ -154,36 +157,44 @@ def changed(patch):
             else:
                 old, new = old - 1, new - 1
                 continue
-            for p_ in paths:
-                out[p_] = out.get(p_, 0) + 1
+            out[target] = out.get(target, 0) + 1
             continue
         if line.startswith("diff --git "):
-            paths = []
-            # The header alone, when nothing else names the path (a binary
-            # or a mode change): split where " b/" starts the second path.
+            seen, paths, target = True, [], ""
             rest = line[len("diff --git "):]
             if rest.startswith('"'):
-                end = rest.index('"', 1) + 1 if '"' in rest[1:] else len(rest)
-                guess = _path(rest[end + 1:]) or _path(rest[:end])
+                end = rest.find('"', 1)
+                add(_path(rest[:end + 1]))
+                add(_path(rest[end + 2:]))
             else:
-                guess = _path(rest[rest.rfind(" b/") + 1:]) if " b/" in rest else ""
-            if guess:
-                paths.append(guess)
-                out.setdefault(guess, 0)
+                # Every split where " b/" may start the second path.
+                i = rest.find(" b/")
+                while i != -1:
+                    add(_path(rest[i + 1:]))
+                    add(_path(rest[:i]))
+                    i = rest.find(" b/", i + 1)
             continue
-        m = re.match(r"^(?:rename|copy) (?:from|to) (.+)$", line) or re.match(r"^(?:---|\+\+\+) (.+)$", line)
+        if not seen:
+            continue  # the commit message: no path is named there
+        m = re.match(r"^(rename|copy) (from|to) (.+)$", line)
         if m:
-            p_ = _path(m.group(1)) if not line.startswith(("rename", "copy")) else _path('"' + m.group(1)[1:-1] + '"' if m.group(1).startswith('"') else m.group(1))
-            if p_ and p_ not in paths:
-                paths.append(p_)
-                out.setdefault(p_, 0)
+            add(_path(m.group(3)))
+            if m.group(2) == "to":
+                target = _path(m.group(3))
+            continue
+        m = re.match(r"^(---|\+\+\+) (.+)$", line)
+        if m:
+            add(_path(m.group(2)))
+            if m.group(1) == "+++" and _path(m.group(2)):
+                target = _path(m.group(2))
+            elif m.group(1) == "---" and not target:
+                target = _path(m.group(2))
             continue
         h = re.match(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@", line)
         if h:
             old = int(h.group(1)) if h.group(1) is not None else 1
             new = int(h.group(2)) if h.group(2) is not None else 1
-            # A line counts once for the change, on its newest path.
-            paths = paths[-1:] if paths else []
+            target = target or (paths[-1] if paths else "")
     return out
 
 
@@ -281,6 +292,11 @@ def self_test():
     got = changed(tricky)
     check("changed: spaces, quoted non-ASCII paths, both ends of a rename, only hunk lines (not format-patch's trailer)",
           (got.get("my file.php"), got.get("año/Makefile"), "Makefile" in got, "src/Moved.php" in got, sum(got.values())), (2, 2, True, True, 4))
+    odd = "From x\nSubject: [PATCH] fix\n\n--- not a path\n---\ndiff --git a/.github/a b/c.yml b/.github/a b/c.yml\nold mode 100644\nnew mode 100755\n"
+    check("changed: no path from the commit message; a header with ' b/' read every way",
+          ("not a path" in changed(odd), ".github/a b/c.yml" in changed(odd)), (False, True))
+    ren = "diff --git a/old.php b/new.php\nsimilarity index 90%\nrename from old.php\nrename to new.php\n--- a/old.php\n+++ b/new.php\n@@ -1 +1 @@\n-a\n+b\n"
+    check("changed: a renamed file's lines go to its new path", (changed(ren)["new.php"], changed(ren)["old.php"]), (2, 0))
     check("limits: a forbidden path is caught when quoted or renamed away",
           [l for l in limits(tricky, rules) if "may not touch" in l], ["it changes Makefile, which a security fix may not touch (*Makefile)", "it changes año/Makefile, which a security fix may not touch (*Makefile)"])
     check("limits: too many lines, and an empty patch", (limits("diff --git a/a.php b/a.php\n--- a/a.php\n+++ b/a.php\n@@ -1 +1,402 @@\n-old\n" + "+x\n" * 402, rules), limits("", rules)), (["it changes 403 lines, more than 400"], ["the patch changes nothing"]))
@@ -305,6 +321,15 @@ def self_test():
         check("release: the kind, the caller's slug and the release command for the version",
               (r["kind"], r["slug"], "release-markers.sh" in r["argv"][1], "2.1.1" in r["argv"], "diluxone-x.php" in r["argv"], "DX_VERSION" in r["argv"]),
               ("wordpress-plugin", "diluxone-x", True, True, True, True))
+    import subprocess
+    import tempfile as _tf
+    with _tf.NamedTemporaryFile("w", suffix=".patch", delete=False) as fh:
+        fh.write(fp("Makefile"))
+    cli = lambda *a, **env: subprocess.run([sys.executable, os.path.abspath(__file__), *a], capture_output=True, text=True, env=dict(os.environ, **env))
+    lim, rev = cli("limits", PATCH=fh.name), cli("reviewer")
+    os.unlink(fh.name)
+    check("cli: limits says what breaks and exits 1; reviewer prints the policy's model",
+          (lim.returncode, "Makefile" in lim.stdout, rev.returncode, rev.stdout.strip().startswith("claude-")), (1, True, 0, True))
     # The workflow holds to the stages (#287).
     try:
         import yaml
