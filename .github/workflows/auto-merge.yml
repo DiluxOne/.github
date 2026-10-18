@@ -30,7 +30,9 @@ name: Auto-merge
 # DiluxOne/.github at `central-ref`): it closes exactly one issue, which is
 # not Critical and carries no label of the policy's `person-merges`
 # (`security`, #194); no protected path changes (every file, renames by their old
-# path too); the review does not block and its description is true, and it
+# path too); it touches no security-sensitive code of its kind (surface.yml
+# `sensitive`, scripts/surface.py --sensitive, #287; not knowing counts as
+# touching); the review does not block and its description is true, and it
 # found every acceptance criterion met at this head (G6, its record); risk and
 # complexity are within the caps of the lane it was worked under
 # (`scripts/autopilot.py lane`: a lane's own issue, that lane; one a person
@@ -218,7 +220,25 @@ jobs:
               echo unknown > "$RUNNER_TEMP/surface"
             fi
           fi
-          export SURFACE="$RUNNER_TEMP/surface" ISSUE_TYPE
+          # Security-sensitive code (#287): what a line the change adds or
+          # removes touches of its kind's sensitive list (scripts/surface.py
+          # --sensitive). A person merges it; not knowing counts as touching.
+          echo unknown > "$RUNNER_TEMP/sensitive"
+          if [ "$listed" = true ] && [ "$(wc -w <<<"$kinds")" -le 1 ] && [ "$kinds" != "?" ]; then
+            if [ -z "$kind" ] || [ ! -f "$RUNNER_TEMP/central/kinds/$kind/surface.yml" ]; then
+              : > "$RUNNER_TEMP/sensitive"
+            elif [ -d "$RUNNER_TEMP/repo/.git" ] || git clone -q --filter=blob:none --no-checkout "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY" "$RUNNER_TEMP/repo"; then
+              if git -C "$RUNNER_TEMP/repo" fetch -q origin "$BASE" "$HEAD"; then
+                rc=0; (cd "$RUNNER_TEMP/repo" && python3 "$RUNNER_TEMP/central/scripts/surface.py" --sensitive "$kind" "$BASE" "$HEAD") > "$RUNNER_TEMP/sensitive" || rc=$?
+                case $rc in
+                  0) : > "$RUNNER_TEMP/sensitive" ;;
+                  1) [ -s "$RUNNER_TEMP/sensitive" ] || echo unknown > "$RUNNER_TEMP/sensitive" ;;
+                  *) echo unknown > "$RUNNER_TEMP/sensitive" ;;
+                esac
+              fi
+            fi
+          fi
+          export SURFACE="$RUNNER_TEMP/surface" SENSITIVE="$RUNNER_TEMP/sensitive" ISSUE_TYPE
           # The issue's labels: one the policy lists in person-merges
           # (security, #194) leaves the merge to a person.
           gh api "repos/$GITHUB_REPOSITORY/issues/$issue" --jq '.labels[].name' > "$RUNNER_TEMP/issue-labels"

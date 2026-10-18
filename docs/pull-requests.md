@@ -110,7 +110,11 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    public surface of its kind (`surface.yml`) unless its issue is a Feature
    (escalation, #193; what cannot be told, in a repository `repos.yml` does
    not list or with several kinds, counts as surface; an unclassified
-   repository, or a kind with no `surface.yml`, has none), the review does
+   repository, or a kind with no `surface.yml`, has none), it touches no
+   security-sensitive code of its kind (`surface.yml` `sensitive`, #287:
+   permissions, nonces, SQL, authentication, what runs commands or writes
+   files, an escape taken out; any Type, whatever the review's risk; not
+   knowing counts as touching), the review does
    not block and its description is true, risk and complexity are within the
    caps of the lane it was worked under (`human-issue` for an issue a person
    accepted, the lane's own for a lane's issue), the review, an agent that

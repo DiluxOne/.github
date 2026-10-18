@@ -613,7 +613,7 @@ def g6_verdict(path):
 
 
 def decide(policy, body, risk, complexity, blocking, description_ok, files, head_files, autopilot_var, author=BOT, lane_name=LANE, repro_sha="",
-           surface=(), issue_type="", criteria_verdict=False, issue_labels=()):
+           surface=(), issue_type="", criteria_verdict=False, issue_labels=(), sensitive=()):
     """Gate G7. lane_name is the lane the issue is worked under (which_lane);
     for a reproduced bug, repro_sha is the SHA-256 of the reproduction test
     as it is at the head: it must be the one the PRD sealed. surface is what
@@ -622,7 +622,9 @@ def decide(policy, body, risk, complexity, blocking, description_ok, files, head
     issue_labels the issue's labels (one of the policy's `person-merges`,
     `security` among them, leaves it to a person, #194).
     criteria_verdict is the review's G6 verdict at this head, {id: met}, or
-    None when the review gave none (False: not asked, the old callers)."""
+    None when the review gave none (False: not asked, the old callers).
+    sensitive is the security-sensitive code the change touches
+    (scripts/surface.py --sensitive), or ["unknown"]: a person merges it."""
     if author != BOT:
         return False, f"the autopilot's pull requests are opened by {BOT}, not {author or 'unknown'}"
     if (autopilot_var or "").strip().lower() == "off":
@@ -651,6 +653,11 @@ def decide(policy, body, risk, complexity, blocking, description_ok, files, head
     protected = [f for f in files if any(fnmatch.fnmatch(f, p) for p in policy.get("constitution") or [])]
     if protected:
         return False, "it touches rules that govern autonomy (" + ", ".join(protected[:3]) + "): a person merges it"
+    # Security-sensitive code (#287): a permission, a nonce, SQL, what runs
+    # or authenticates. Told by code, never by the review's risk; a person
+    # merges it, whatever the issue's Type.
+    if sensitive:
+        return False, f"it touches security-sensitive code ({'; '.join(sensitive)[:200]}): a person merges it"
     # Escalation (#193): a change that adds to the kind's public surface (a
     # hook, an endpoint, a shortcode…) is a feature, whatever its issue said.
     # Only a Feature carries it in on its own; anything else stops here.
@@ -1102,6 +1109,9 @@ Clamp the value in Sum::add.
     check("#193 decide: a Feature may add it", decide(pol, fspec, "low", "low", "false", "true", ["header.php", "tests/e2e/toggle.spec.ts"], head, "", surface=["a new action hook: dx_x"], issue_type="Feature")[0], True)
     check("#193 decide: surface that could not be told stops a Bug's change too", plain(surface=["unknown"], issue_type="Task"), False)
     check("#193 decide: no surface, any Type", plain(surface=[], issue_type="Bug"), True)
+    check("#287 decide: security-sensitive code, or not knowing, stops for a person, even a Feature",
+          (plain(sensitive=["a nonce or a referer check (a.php: check_admin_referer( 'x' );)"], issue_type="Feature"), plain(sensitive=["unknown"], issue_type="Bug"), plain(sensitive=[], issue_type="Bug")),
+          (False, False, True))
     check("#194 decide: an issue labelled security is merged by a person", (plain(surface=[], issue_type="Bug", issue_labels=["accepted", "security"]), plain(surface=[], issue_type="Bug", issue_labels=["accepted"])), (False, True))
     check("#194 decide: with no person-merges in the policy, security still holds", decide({k: v for k, v in pol.items() if k != "person-merges"}, spec, "low", "low", "false", "true", ["header.php", "tests/e2e/toggle.spec.ts"], head, "", issue_type="Bug", issue_labels=["security"])[0], False)
     check("#193 decide: a Feature's Spec without its impact, threats and architecture stops", plain(surface=[], issue_type="Feature"), False)
@@ -1947,7 +1957,7 @@ def main(argv):
         ok, why = decide(pol, body, os.environ.get("RISK", ""), os.environ.get("COMPLEXITY", ""), os.environ.get("BLOCKING", ""),
                          os.environ.get("DESCRIPTION_OK", ""), read_lines("FILES"), read_lines("HEAD_FILES"), var, os.environ.get("AUTHOR", ""),
                          lane_name, os.environ.get("REPRO_SHA256", ""), read_lines("SURFACE"), os.environ.get("ISSUE_TYPE", ""),
-                         g6_verdict(os.environ.get("CRITERIA_VERDICT", "")), read_lines("ISSUE_LABELS"))
+                         g6_verdict(os.environ.get("CRITERIA_VERDICT", "")), read_lines("ISSUE_LABELS"), read_lines("SENSITIVE"))
         print(why)
         return 0 if ok else 1
     print(__doc__, file=sys.stderr)
