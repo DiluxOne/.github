@@ -6,9 +6,14 @@ Every version of the engine (the workflows, scripts, policy and kinds other repo
 
 ### Features
 
+- **security:** publish a patch only on a maintainer's patch:go ([#290](https://github.com/DiluxOne/.github/pull/290))
 - **autonomy:** brakes and budgets on every agent and release ([#292](https://github.com/DiluxOne/.github/pull/292))
 - **issues:** take back an acceptance when the issue is not ready ([#291](https://github.com/DiluxOne/.github/pull/291))
 - **autopilot:** the agent works with no key, through an outbox ([#289](https://github.com/DiluxOne/.github/pull/289))
+
+### Fixes
+
+- **versioning:** changelog listed high risk; straight quotes; clearer rules
 
 ### Documentation
 
