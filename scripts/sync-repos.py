@@ -297,6 +297,44 @@ def with_lane(body, text, marker):
     return f"{head}\n\n{text}\n\n{marker}\n\n{last}" if head else f"{text}\n\n{marker}\n\n{body}"
 
 
+def by_git(env=None):
+    """Whether this run writes a repository's branch as git commits (#327):
+    run by a person, whose commits the contents API does not sign and the
+    organisation's ruleset refuses; dilux-bot's run, in Actions, uses the
+    API, whose commits GitHub signs as the App."""
+    return (os.environ if env is None else env).get("GITHUB_ACTIONS") != "true"
+
+
+def run_git(*args, cwd=None):
+    out = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    if out.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args[:2])}: {out.stderr.strip()[:300]}")
+    return out.stdout
+
+
+def git_branch(full, default, branch, wanted, message_form, git=run_git, workdir=None):
+    """`wanted` ({path: content}) on branch, one commit per file signed with
+    the person's own key (`git commit -S`), pushed; the branch as it is
+    when it exists, else from default (#327)."""
+    import tempfile
+    work = workdir or tempfile.mkdtemp(prefix="dx-sync-")
+    url = f"https://github.com/{full}.git"
+    git("clone", "-q", "--depth", "1", "--branch", default, url, work)
+    if git("ls-remote", "--heads", "origin", branch, cwd=work).strip():
+        git("fetch", "-q", "--depth", "1", "origin", branch, cwd=work)
+        git("checkout", "-q", "-B", branch, "FETCH_HEAD", cwd=work)
+    else:
+        git("checkout", "-q", "-B", branch, cwd=work)
+    for path, content in wanted.items():
+        target = os.path.join(work, path)
+        os.makedirs(os.path.dirname(target) or work, exist_ok=True)
+        with open(target, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        git("add", "--", path, cwd=work)
+        git("commit", "-q", "-S", "-m", message_form.format(path), cwd=work)
+    git("push", "-q", "origin", f"HEAD:refs/heads/{branch}", cwd=work)
+
+
 def open_change(repo, default, wanted, title, body, branch_form, pr_title, pr_body, message_form, mode=None):
     """An issue (Type Task) and a pull request that closes it, writing
     `wanted` ({path: content}) on the branch branch_form.format(<issue>),
@@ -332,6 +370,20 @@ def open_change(repo, default, wanted, title, body, branch_form, pr_title, pr_bo
         print(f"  warning: could not add lane:{LANE} to #{number} (labels.yml not synced there yet?); a person accepts it")
         lane = False
     branch = branch_form.format(number)
+    if by_git():
+        git_branch(full, default, branch, wanted, message_form)
+    else:
+        api_branch(full, default, branch, wanted, message_form)
+    pr_body = f"{pr_body}\n\nCloses #{number}\n\n🤖 AI-generated · scripts/sync-repos.py"
+    pr = gh("pr", "create", "--repo", full, "--base", default, "--head", branch,
+            "--title", pr_title, "--body", pr_body).stdout.strip()
+    print(f"  issue #{number} ({f'lane {LANE}: the policy accepts it' if lane else 'accept it'}) and {pr}")
+    return number, pr
+
+
+def api_branch(full, default, branch, wanted, message_form):
+    """`wanted` on branch through the contents API, one commit per file:
+    dilux-bot's run, whose commits GitHub signs."""
     if gh("api", f"repos/{full}/git/ref/heads/{branch}", check=False).returncode != 0:
         base = json.loads(gh("api", f"repos/{full}/git/ref/heads/{default}").stdout)["object"]["sha"]
         gh("api", "-X", "POST", f"repos/{full}/git/refs", "-f", f"ref=refs/heads/{branch}", "-f", f"sha={base}")
@@ -342,11 +394,6 @@ def open_change(repo, default, wanted, title, body, branch_form, pr_title, pr_bo
         if current.returncode == 0 and current.stdout.strip():
             payload["sha"] = current.stdout.strip()
         gh("api", "-X", "PUT", f"repos/{full}/contents/{path}", "--input", "-", input_text=json.dumps(payload))
-    pr_body = f"{pr_body}\n\nCloses #{number}\n\n🤖 AI-generated · scripts/sync-repos.py"
-    pr = gh("pr", "create", "--repo", full, "--base", default, "--head", branch,
-            "--title", pr_title, "--body", pr_body).stdout.strip()
-    print(f"  issue #{number} ({f'lane {LANE}: the policy accepts it' if lane else 'accept it'}) and {pr}")
-    return number, pr
 
 
 def sync_callers(repo, conf, dry):
@@ -1388,6 +1435,23 @@ def drift(repo, conf, labels, block, current=0):
     return found
 
 
+def signed_test(check):
+    """#327: a person's run writes signed git commits; the bot's, the API."""
+    check("#327: in Actions (dilux-bot) the contents API writes, run by a person git does",
+          (by_git({"GITHUB_ACTIONS": "true"}), by_git({})) == (False, True), "")
+    ran = []
+
+    def fake_git(*args, cwd=None):
+        ran.append(args)
+        return ""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        git_branch("o/r", "main", "ci/7-x", {".github/workflows/a.yml": "A\n", "b.txt": "B\n"}, "ci: keep {} in step", fake_git, d)
+    commits = [a for a in ran if a[:1] == ("commit",)]
+    check("#327: one signed commit per file, then one push of the branch",
+          (len(commits), all("-S" in a for a in commits), [a for a in ran if a[:1] == ("push",)]) == (2, True, [("push", "-q", "origin", "HEAD:refs/heads/ci/7-x")]), ran)
+
+
 def triggers_test(check):
     """#324: a caller's triggers against its template's."""
     tpl = open(os.path.join(TEMPLATES, "release-wp.yml"), encoding="utf-8").read()
@@ -1809,6 +1873,10 @@ def dependabot_test(check, conf, labels, block):
 
 def self_test():
     failed = 0
+    # The runs below write through a stand-in for gh, never a real clone:
+    # as dilux-bot's would, unless a test names the environment (#327).
+    real_by_git = globals()["by_git"]
+    globals()["by_git"] = lambda env=None: False if env is None else real_by_git(env)
 
     def check(name, ok, detail=""):
         nonlocal failed
@@ -1946,6 +2014,7 @@ def self_test():
     check("superseded: a disabled \"own checks\" covers nothing", superseded("r", [mine[0], dict(own_rs, enforcement="disabled")], org, pipe) == [], "")
     paused = [dict(o, enforcement="evaluate") for o in org]
     check("superseded: nothing when the organisation's are not active", superseded("r", mine, paused, pipe) == [], superseded("r", mine, paused, pipe))
+    signed_test(check)
     triggers_test(check)
     callers_test(check, conf)
     dependabot_test(check, conf, labels, block_file)
