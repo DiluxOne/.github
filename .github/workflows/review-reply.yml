@@ -36,9 +36,9 @@ on:
         type: string
         default: general
       central-ref:
-        description: Ref of DiluxOne/.github to read the profiles from.
+        description: X
         type: string
-        default: v5
+        default: ''
     secrets:
       # The maintainer's Claude subscription (`claude setup-token`); the API
       # key is used only when it is missing.
@@ -298,7 +298,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
 

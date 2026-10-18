@@ -33,9 +33,9 @@ on:
   workflow_call:
     inputs:
       central-ref:
-        description: Ref of DiluxOne/.github to read scripts/issue-assignee.sh from.
+        description: X
         type: string
-        default: v5
+        default: ''
     secrets:
       DILUX_BOT_PRIVATE_KEY:
         required: false
@@ -62,7 +62,7 @@ jobs:
       - name: The script
         id: central
         env:
-          REF: ${{ inputs.central-ref }}
+          REF: ${{ inputs.central-ref || job.workflow_sha }}
           HAS_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY != '' }}
         run: |
           set -euo pipefail

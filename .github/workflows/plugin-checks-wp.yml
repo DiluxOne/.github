@@ -91,9 +91,9 @@ on:
         type: string
         default: ''
       central-ref:
-        description: Ref of DiluxOne/.github to read the policy from.
+        description: X
         type: string
-        default: v5
+        default: ''
       kind:
         description: The kind of project whose rules and settings these checks read (kinds/<kind>/). A repository whose policy declares another kind fails.
         type: string
@@ -142,7 +142,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
       - name: The kind's settings
@@ -197,7 +197,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
           sparse-checkout: scripts/stage-plugin.sh
@@ -232,7 +232,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
       - name: The organisation's scripts, out of the tree
@@ -282,7 +282,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
       # Out of the workspace the gates scan: a ruleset or config that reads
@@ -371,7 +371,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
           sparse-checkout: scripts/stage-plugin.sh
@@ -446,7 +446,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
       - id: changes
@@ -475,7 +475,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
       - name: The repositories
@@ -531,7 +531,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
       - name: The kind's settings
@@ -605,7 +605,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
       - name: The kind
@@ -658,7 +658,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
       - name: Which design system, which CSS
@@ -704,7 +704,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
           sparse-checkout: scripts/stage-plugin.sh
@@ -809,7 +809,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
       - name: Headers, version alignment, changelog

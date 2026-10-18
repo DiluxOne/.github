@@ -37,7 +37,11 @@ jobs:
       - name: Lint workflows
         run: |
           bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
-          ./actionlint -color
+          # job.workflow_sha (the commit of the workflow that defines the
+          # job, which the central scripts run at, #287) is documented by
+          # GitHub but not known to actionlint 1.7.12 yet: that one error is
+          # ignored until a release knows it.
+          ./actionlint -color -ignore 'property "workflow_sha" is not defined in object type'
       - name: Every shared job picks its runner, but those that stay on GitHub's
         # The private repositories' jobs run on the organisation's VM through
         # DX_RUNNER_HEAVY (runner-vm.yml), all with the one expression of

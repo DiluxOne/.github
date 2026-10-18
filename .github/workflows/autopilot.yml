@@ -201,7 +201,7 @@ jobs:
       - name: The organisation's scripts and policy
         id: central
         env:
-          REF: ${{ inputs.central-ref }}
+          REF: ${{ inputs.central-ref || job.workflow_sha }}
         run: |
           set -euo pipefail
           git clone -q --depth 1 --branch "$REF" https://github.com/DiluxOne/.github .dx-central 2>/dev/null \
@@ -465,7 +465,7 @@ jobs:
       - name: The organisation's scripts and policy
         id: central
         env:
-          REF: ${{ inputs.central-ref }}
+          REF: ${{ inputs.central-ref || job.workflow_sha }}
         run: |
           set -euo pipefail
           git clone -q --depth 1 --branch "$REF" https://github.com/DiluxOne/.github .dx-central 2>/dev/null \
@@ -568,7 +568,7 @@ jobs:
       - name: The organisation's scripts and policy
         id: central
         env:
-          REF: ${{ inputs.central-ref }}
+          REF: ${{ inputs.central-ref || job.workflow_sha }}
         run: |
           set -euo pipefail
           git clone -q --depth 1 --branch "$REF" https://github.com/DiluxOne/.github .dx-central 2>/dev/null \
@@ -730,7 +730,7 @@ jobs:
       - name: The organisation's scripts and policy
         id: central
         env:
-          REF: ${{ inputs.central-ref }}
+          REF: ${{ inputs.central-ref || job.workflow_sha }}
         run: |
           set -euo pipefail
           git clone -q --depth 1 --branch "$REF" https://github.com/DiluxOne/.github .dx-central 2>/dev/null \
@@ -846,7 +846,7 @@ jobs:
       - name: The organisation's scripts and policy
         id: central
         env:
-          REF: ${{ inputs.central-ref }}
+          REF: ${{ inputs.central-ref || job.workflow_sha }}
         run: |
           set -euo pipefail
           git clone -q --depth 1 --branch "$REF" https://github.com/DiluxOne/.github .dx-central 2>/dev/null \

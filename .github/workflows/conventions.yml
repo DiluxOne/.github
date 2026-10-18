@@ -49,9 +49,9 @@ on:
         type: string
         default: 'dilux-bot[bot]'
       central-ref:
-        description: Ref of DiluxOne/.github to read the conventions script from.
+        description: X
         type: string
-        default: v5
+        default: ''
 
 permissions:
   contents: read
@@ -107,7 +107,7 @@ jobs:
           repository: DiluxOne/.github
           # This repository's own pull requests check themselves with their
           # own script: they can change this workflow anyway.
-          ref: ${{ github.repository == 'DiluxOne/.github' && github.event.pull_request.head.sha || inputs.central-ref }}
+          ref: ${{ github.repository == 'DiluxOne/.github' && github.event.pull_request.head.sha || inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
 

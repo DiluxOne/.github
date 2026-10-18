@@ -101,9 +101,9 @@ on:
         type: string
         default: ''
       central-ref:
-        description: Ref of DiluxOne/.github to read the policy from.
+        description: X
         type: string
-        default: v5
+        default: ''
     secrets:
       # Only with requires-plugins-from: a token that reads those repositories.
       DILUX_BOT_PRIVATE_KEY:
@@ -146,7 +146,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
       - name: The jobs to run (one per target and suite)
@@ -192,7 +192,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
       - name: The repositories
@@ -299,7 +299,7 @@ jobs:
         if: inputs.requires-plugins-from != '' && env.GO == 'true'
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -433,7 +433,7 @@ jobs:
         if: inputs.requires-plugins-from != '' && env.GO == 'true'
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2

@@ -109,9 +109,9 @@ on:
         type: number
         default: 10000
       central-ref:
-        description: Ref of DiluxOne/.github to read the policy from.
+        description: X
         type: string
-        default: v5
+        default: ''
     outputs:
       # true when the verdict is a bug worth a reproduction (bug:unconfirmed),
       # whether or not the classifier read a paid roadmap (#247): the caller
@@ -168,7 +168,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
 
@@ -510,7 +510,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
 
@@ -643,7 +643,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref }}
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
       - name: The issue, as data
