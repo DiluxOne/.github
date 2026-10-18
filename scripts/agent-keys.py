@@ -58,7 +58,9 @@ def problems(workflow):
         secrets = set(re.findall(r"secrets\.([A-Za-z_][A-Za-z0-9_]*)", text))
         secrets |= set(re.findall(r"secrets\[\s*['\"]([^'\"]+)['\"]\s*\]", text))
         secrets -= MODEL_SECRETS
-        if re.search(r"toJSON\(\s*secrets\s*\)|secrets\[\s*[^'\"\s]", text, re.I):
+        # Any other use of the context (toJSON, format, an expression key)
+        # can reach every secret.
+        if re.search(r"\bsecrets\b(?!\.[A-Za-z_]|\[\s*['\"])", re.sub(r"secrets\.(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)\b", "", text)):
             secrets.add("every secret")
         if secrets:
             out.append(f"{name}: an agent with a shell shares the job with {', '.join(sorted(secrets))}")
@@ -93,8 +95,9 @@ def self_test():
           ["j: an agent with a shell shares the job with DILUX_BOT_PRIVATE_KEY"])
     check("secrets['X'] and toJSON(secrets) count",
           (problems(wf({"permissions": {}, "steps": [{"env": {"K": "${{ secrets['SVN_PASSWORD'] }}"}}, agent("Bash")]})),
-           problems(wf({"permissions": {}, "steps": [{"env": {"K": "${{ toJSON(secrets) }}"}}, agent("Bash")]}))),
-          (["j: an agent with a shell shares the job with SVN_PASSWORD"], ["j: an agent with a shell shares the job with every secret"]))
+           problems(wf({"permissions": {}, "steps": [{"env": {"K": "${{ toJSON(secrets) }}"}}, agent("Bash")]})),
+           problems(wf({"permissions": {}, "steps": [{"env": {"K": "${{ format('{0}', secrets) }}"}}, agent("Bash")]}))),
+          (["j: an agent with a shell shares the job with SVN_PASSWORD"], ["j: an agent with a shell shares the job with every secret"], ["j: an agent with a shell shares the job with every secret"]))
     check("no shell: a key in the job is allowed", problems(wf({"permissions": {"issues": "write"}, "steps": [key, agent("Read,Glob,Grep")]})), [])
     print("all tests passed" if not failed else "FAILED")
     return 1 if failed else 0
