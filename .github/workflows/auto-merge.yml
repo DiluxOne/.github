@@ -30,7 +30,9 @@ name: Auto-merge
 # DiluxOne/.github at `central-ref`): it closes exactly one issue, which is
 # not Critical and carries no label of the policy's `person-merges`
 # (`security`, #194); no protected path changes (every file, renames by their old
-# path too); the review does not block and its description is true, and it
+# path too); it touches no security-sensitive code of its kind (surface.yml
+# `sensitive`, scripts/surface.py --sensitive, #287; not knowing counts as
+# touching); the review does not block and its description is true, and it
 # found every acceptance criterion met at this head (G6, its record); risk and
 # complexity are within the caps of the lane it was worked under
 # (`scripts/autopilot.py lane`: a lane's own issue, that lane; one a person

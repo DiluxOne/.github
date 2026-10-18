@@ -195,8 +195,10 @@ def touched_lines(base_text, head_text):
     """(removed, added): the lines the change takes out and puts in. Pure."""
     import difflib
     removed, added = [], []
-    for line in difflib.unified_diff((base_text or "").splitlines(), (head_text or "").splitlines(), n=0, lineterm=""):
-        if line.startswith(("---", "+++", "@@")):
+    for i, line in enumerate(difflib.unified_diff((base_text or "").splitlines(), (head_text or "").splitlines(), n=0, lineterm="")):
+        # The two file header lines, then each hunk's header: the rest are
+        # lines, whatever they start with (a "-- comment" removed).
+        if i < 2 or line.startswith("@@"):
             continue
         if line.startswith("-"):
             removed.append(line[1:])
@@ -345,6 +347,7 @@ def self_test():
             got_s = describe(check_sensitive("wordpress-plugin", sens_base, "HEAD"))
             ok(f"git (#287): a permission check added is sensitive ({got_s})", any("permission" in g and "includes/b.php" in g for g in got_s))
             ok("git (#287): a kind with no list has nothing sensitive", check_sensitive("", sens_base, "HEAD") == [])
+            ok("#287: a changed line that starts like a diff header still counts", touched_lines("<?php\n-- x\n", "<?php\n++$i;\n"), (["-- x"], ["++$i;"]))
             write("includes/b.php", "<?php\nadd_action( 'rest_api_init', function () {\n  register_rest_route( 'dx/v1', '/x', array() );\n} );\n")
             sh("commit", "-qam", "fix: b")
             got = describe(check("wordpress-plugin", base, "HEAD"))

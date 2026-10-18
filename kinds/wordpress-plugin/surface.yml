@@ -240,7 +240,7 @@ sensitive:
       pass:
         - "<?php\n$user = wp_get_current_user();\n"
   - id: execution
-    what: code or commands run, or a file written (eval, exec, unserialize, move_uploaded_file)
+    what: code or commands run, a file read or written, or a remote call (eval, exec, unserialize, files, wp_remote_*, an include of a variable)
     pattern: '(?i)(?:(?<![\w$>:])(?:eval|assert|create_function|exec|shell_exec|system|passthru|proc_open|popen|unserialize|maybe_unserialize|base64_decode|move_uploaded_file|file_put_contents|fopen|fwrite|unlink|rename|copy|wp_handle_upload|wp_remote_\w+|wp_safe_remote_\w+|curl_exec)\s*\(|\bWP_Filesystem\b|\b(?:include|require)(?:_once)?\s*\(?\s*\$|->exec\s*\()'
     fixtures:
       fail:
