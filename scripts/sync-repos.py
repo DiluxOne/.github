@@ -45,7 +45,10 @@ archived and not excluded in repos.yml:
             an issue (Type Task) and a pull request rewriting each caller
             that differs, only the jobs that differ, keeping the
             repository's values, header, triggers and own jobs. A repository
-            at an older major migrates first (docs/migrating.md). Not in
+            at an older major migrates first (docs/migrating.md), unless
+            repos.yml names that major in `callers: migrates-from`: then it
+            moves every call to the current major in the same pull request
+            (#320). Not in
             `all`: a template change is a pull request in every repository.
   all       labels, settings, files and own-checks, in that order.
   check     changes nothing: lists, as Markdown, what differs in each
@@ -348,8 +351,11 @@ def open_change(repo, default, wanted, title, body, branch_form, pr_title, pr_bo
 def sync_callers(repo, conf, dry):
     """Opens an issue and a pull request that bring the repository's callers
     in step with their templates (callers_drift(), rewrite_caller()). A
-    repository at an older major migrates first (docs/migrating.md);
-    DiluxOne/.github changes its own callers by hand."""
+    repository at an older major migrates first (docs/migrating.md), unless
+    that major is in `callers: migrates-from` (#320): then every call moves
+    to the current major in the same pull request, or nothing does while a
+    caller cannot be brought in step. DiluxOne/.github changes its own
+    callers by hand."""
     full = f"{ORG}/{repo['name']}"
     if repo["name"] == ".github":
         print("  this repository's own callers change in a pull request here, by hand")
@@ -374,7 +380,7 @@ def sync_callers(repo, conf, dry):
         print("  a pull request for the workflow callers is already open; skipped")
         return
     owned = (conf.get("callers") or {}).get("repository-owned") or {}
-    wanted, notes = {}, []
+    wanted, notes, stuck = {}, [], set()
     for name, path, found in callers_drift(moved, conf, major=major):
         if not path:
             notes.append(f"no caller of workflow-templates/{name}: add it from the template by hand (docs/adopting.md)")
@@ -387,10 +393,19 @@ def sync_callers(repo, conf, dry):
         left = [f for n, p, f in callers_drift({**moved, path: new}, conf, major=major) if p == path and n == name] if new else []
         if new is None:
             notes.append(f"{path}: no job of the repository gives {', '.join(missing)}; bring it in step by hand")
+            stuck.add(path)
         elif left:
             notes.append(f"{path}: still differs after the rewrite ({'; '.join(left[0])}); bring it in step by hand")
+            stuck.add(path)
         else:
             wanted[path] = new
+    if old and stuck:
+        # A move that leaves a caller out of step is no move: it waits until
+        # that caller is brought in step by hand.
+        for note in notes:
+            print(f"  {note}")
+        print(f"  the move to @v{current} waits: {', '.join(sorted(stuck))} must be brought in step by hand first")
+        return
     # A file the move changed and the callers did not still goes in.
     for path, text in moved.items():
         if text != files[path] and path not in wanted:
@@ -1186,7 +1201,9 @@ def drift(repo, conf, labels, block, current=0):
         if not adopted and repo["name"] not in (conf.get("no-workflows") or []):
             found.append("calls none of the shared workflows (docs/adopting.md)")
         if old:
-            found.append(f"calls the shared workflows at {', '.join('@v' + str(v) for v in old)}; the current is @v{current} (docs/migrating.md)")
+            movable = set((conf.get("callers") or {}).get("migrates-from") or [])
+            how = "`sync-repos.py callers` moves it (#320)" if set(old) <= movable else "docs/migrating.md"
+            found.append(f"calls the shared workflows at {', '.join('@v' + str(v) for v in old)}; the current is @v{current} ({how})")
         elif adopted:
             # At an older major the migration rewrites every caller; compared
             # once it is on the current one.
@@ -1466,6 +1483,14 @@ def callers_test(check, conf):
            "  repro-triaged:" in moved.get(".github/workflows/issues.yml", ""), "@v6" in title)
     check("#320 migrates-from: one pull request moves every call to the current major, the repository's own jobs too, and brings the callers in step",
           got == ([".github/workflows/issues.yml", ".github/workflows/pull-request-comments.yml"], False, True, True, True), (got, said))
+    saved_rewrite = globals()["rewrite_caller"]
+    globals()["rewrite_caller"] = lambda *a: (None, ["support-url"])
+    try:
+        said = at_major({**plain, "callers": {**plain["callers"], "migrates-from": [5]}})
+    finally:
+        globals()["rewrite_caller"] = saved_rewrite
+    opened = [a for a in calls if a[:2] in (("issue", "create"), ("pr", "create"))]
+    check("#320 migrates-from: a caller the rewrite cannot bring in step stops the move, nothing half done is opened", "by hand" in said and not opened, (said, opened))
     said = at_major(plain)
     opened = [a for a in calls if a[:2] in (("issue", "create"), ("pr", "create"))]
     check("#320 migrates-from: a major not named there migrates by hand first, and nothing is opened", "migrate it first" in said and not opened, (said, opened))
