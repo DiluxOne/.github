@@ -34,7 +34,8 @@ archived and not excluded in repos.yml:
             is left as it is. Then its rulesets the organisation's cover
             (another one on the default branch, a tag ruleset the same as the
             organisation's) are deleted.
-  callers   the workflows that call the shared ones, held job for job (and trigger for trigger, #324) to
+  callers   the workflows that call the shared ones, held job for job (and trigger for trigger, #324, and permission for
+            permission, #329) to
             the templates in workflow-templates/ (repos.yml `callers`): the
             ones in `every-repository`, and any other whose shared workflows
             the repository calls. Each template job must be there with the
@@ -456,6 +457,14 @@ def sync_callers(repo, conf, dry):
             stuck.add(path)
             continue
         new = triggered if new is not None else new
+        # And the permissions it grants that the caller lacks (#329).
+        if new is not None and path not in shared:
+            granted = with_permissions(new, text)
+            if granted is None:
+                notes.append(f"{path}: lacks permissions its template grants, in a form this script does not add to; bring them in step by hand")
+                stuck.add(path)
+                continue
+            new = granted
         left = [f for n, p, f in callers_drift({**moved, path: new}, conf, major=major, default=branch) if p == path and n == name] if new else []
         if new is None:
             notes.append(f"{path}: no job of the repository gives {', '.join(missing)}; bring it in step by hand")
@@ -570,7 +579,7 @@ def workflow_texts(full):
 
 
 # The callers: each repository's workflows that call the shared ones, held
-# job for job, and trigger for trigger (#324), to the templates in workflow-templates/ (repos.yml `callers`).
+# job for job, trigger for trigger (#324) and permission for permission (#329), to the templates in workflow-templates/ (repos.yml `callers`).
 
 TEMPLATES = os.path.join(CENTRAL, "workflow-templates")
 SHARED_PREFIX = "DiluxOne/.github/.github/workflows/"
@@ -721,6 +730,8 @@ def callers_drift(files, conf, central=False, major=None, default="main"):
         if path not in shared and not central:
             missing, extra, _own = trigger_gaps(triggers(parsed[path][1]), triggers(data), default)
             found += missing + [f"{e}, which the template does not (bring it in step by hand)" for e in extra]
+            # And the permissions the template grants (#329).
+            found += [f"lacks the permission `{k}`" for k in permission_gaps(parsed[path][1], data)]
         for job, want in jobs_of(data).items():
             if job not in mine:
                 found.append(f"lacks the job `{job}`")
@@ -834,6 +845,44 @@ def with_triggers(text, template_text, default):
         return None
     block = "".join(theirs[b[0]:b[1]]).replace("$default-branch", default)
     return "".join(mine[:a[0]]) + block + "".join(mine[a[1]:])
+
+
+def permission_gaps(have, want):
+    """The top-level permissions the template grants that the caller does
+    not name, in the template's order (#329); a caller's own extra ones and
+    its levels are its own. Pure."""
+    h, w = (have or {}).get("permissions"), (want or {}).get("permissions")
+    if not isinstance(w, dict):
+        return []
+    if not isinstance(h, dict):
+        return list(w) if h is None else []
+    return [k for k in w if k not in h]
+
+
+def with_permissions(text, template_text):
+    """The caller's text with the top-level permissions its template grants
+    and it lacks, each the template's line (#329); the text itself when none
+    is missing or the caller writes them its own way (`read-all`); None
+    when its block cannot be found, for a person."""
+    have, want = parse_yaml(text), parse_yaml(template_text)
+    missing = permission_gaps(have, want)
+    if not missing:
+        return text
+    if not isinstance((have or {}).get("permissions"), dict):
+        return None
+    mine, theirs = text.splitlines(keepends=True), template_text.splitlines(keepends=True)
+    a = next((i for i, l in enumerate(mine) if re.match(r"^permissions:\s*(#.*)?$", l)), None)
+    b = next((i for i, l in enumerate(theirs) if re.match(r"^permissions:\s*(#.*)?$", l)), None)
+    if a is None or b is None:
+        return None
+    end = a + 1
+    while end < len(mine) and mine[end].startswith("  "):
+        # Another indent than the template's: a person adds them.
+        if not re.match(r"^  [\w#-]", mine[end]):
+            return None
+        end += 1
+    lines = {m.group(1): l for l in theirs[b + 1:] if (m := re.match(r"^  ([\w-]+):", l))}
+    return "".join(mine[:end]) + "".join(lines[k] for k in missing if k in lines) + "".join(mine[end:])
 
 
 def job_blocks(text):
@@ -1471,6 +1520,23 @@ def signed_test(check):
           (("checkout", "-q", "-B", "ci/7-x", "FETCH_HEAD") in ran, [a for a in ran if a[:1] == ("commit",)]) == (True, []), ran)
 
 
+def permissions_test(check):
+    """#329: a caller's top-level permissions against its template's."""
+    tpl = open(os.path.join(TEMPLATES, "release-wp.yml"), encoding="utf-8").read()
+    old = ("name: Release\non:\n  push:\n    branches: [main]\n\npermissions:\n  contents: write\n"
+           "  pull-requests: read # mine\n  statuses: read\n\njobs:\n  release:\n    uses: x\n")
+    check("#329 permissions: the ones a caller lacks are found", permission_gaps(parse_yaml(old), parse_yaml(tpl)) == ["issues", "actions"],
+          permission_gaps(parse_yaml(old), parse_yaml(tpl)))
+    new = with_permissions(old, tpl)
+    got = (parse_yaml(new) or {}).get("permissions") or {}
+    check("#329 permissions: added from the template with its comments, the caller's own kept, nothing else touched",
+          got == {"contents": "write", "pull-requests": "read", "statuses": "read", "issues": "read", "actions": "read"}
+          and "  pull-requests: read # mine\n" in new and "  issues: read # the release issue" in new and new.endswith("jobs:\n  release:\n    uses: x\n"), new)
+    check("#329 permissions: a caller in step is left as it is", with_permissions(new, tpl) == new, "")
+    readall = old.replace("permissions:\n  contents: write\n  pull-requests: read # mine\n  statuses: read\n", "permissions: read-all\n")
+    check("#329 permissions: one written its own way (read-all) is the caller's, left as it is", with_permissions(readall, tpl) == readall, "")
+
+
 def triggers_test(check):
     """#324: a caller's triggers against its template's."""
     tpl = open(os.path.join(TEMPLATES, "release-wp.yml"), encoding="utf-8").read()
@@ -2034,6 +2100,7 @@ def self_test():
     paused = [dict(o, enforcement="evaluate") for o in org]
     check("superseded: nothing when the organisation's are not active", superseded("r", mine, paused, pipe) == [], superseded("r", mine, paused, pipe))
     signed_test(check)
+    permissions_test(check)
     triggers_test(check)
     callers_test(check, conf)
     dependabot_test(check, conf, labels, block_file)

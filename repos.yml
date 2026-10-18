@@ -140,7 +140,7 @@ dependabot:
           update-types: ["version-update:semver-major", "version-update:semver-minor"]
 
 # The workflow callers (workflow-templates/) every repository that calls the
-# shared workflows keeps job for job, and trigger for trigger, as its template: the drift check
+# shared workflows keeps job for job, trigger for trigger and permission for permission (#329), as its template: the drift check
 # compares them and `sync-repos.py callers` brings one in step, as a pull
 # request that closes an issue it opens there. The templates in
 # `every-repository` apply to each of them; any other template, to a
