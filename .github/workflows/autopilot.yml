@@ -903,6 +903,17 @@ jobs:
             fi
             git checkout -q -B "$BRANCH" "$new"
             python3 .dx-central/scripts/autopilot.py push
+            # The pull request shows a push a few seconds after the branch
+            # moves; a tick read before then finds no commit (the sandbox's
+            # first run, #287). Wait for it, a minute at most.
+            # Read where tick reads it: the pull request's commits.
+            pushed=$(git rev-parse HEAD); shown=false
+            for _ in $(seq 1 30); do
+              listed=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/commits" --paginate --jq '.[].sha' 2>/dev/null || true)
+              if grep -qx "$pushed" <<<"$listed"; then shown=true; break; fi
+              sleep 2
+            done
+            [ "$shown" = true ] || echo "::warning::#$PR does not show $pushed after a minute; a tick may find no commit (a continue run ticks it)."
           fi
           python3 .dx-central/scripts/autopilot.py apply .dx-out/outbox.jsonl
 
