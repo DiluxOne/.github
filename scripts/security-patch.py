@@ -66,7 +66,8 @@ STAGES = ("patch:ready", "patch:go", "patch:pushed", "patch:released", "patch:fa
 # project is built, released or checked.
 LIMITS = {"max-files": 10, "max-lines": 400,
           "forbidden": [".github/*", "*composer.json", "*composer.lock", "*package.json", "*package-lock.json",
-                        "*yarn.lock", "*pnpm-lock.yaml", "*Makefile", "*.sh", "*.distignore", "*phpunit.xml*", "*phpcs.xml*"]}
+                        "*yarn.lock", "*pnpm-lock.yaml", "*makefile", "*.mk", "*.sh", "*.distignore", "*phpunit.xml*",
+                        "*phpcs.xml*", "*phpstan*.neon*", "*psalm.xml*", "*tests/bootstrap.php"]}
 REVIEWER = "claude-sonnet-5-5"
 
 
@@ -198,6 +199,23 @@ def changed(patch):
     return out
 
 
+def binaries(patch):
+    """The paths a patch changes as binary files (`GIT binary patch`, or
+    `Binary files ... differ`): no line count bounds them. Pure."""
+    out, current = [], ""
+    for line in (patch or "").splitlines():
+        m = re.match(r"^\+\+\+ (.+)$", line)
+        if line.startswith("diff --git "):
+            rest = line[len("diff --git "):]
+            current = _path(rest[rest.rfind(" b/") + 1:]) if " b/" in rest else rest
+        elif m and _path(m.group(1)):
+            current = _path(m.group(1))
+        elif line.startswith("GIT binary patch") or (line.startswith("Binary files ") and line.endswith(" differ")):
+            if current and current not in out:
+                out.append(current)
+    return out
+
+
 def limits(patch, rules):
     """What the patch breaks of the limits, one sentence each. Pure."""
     files = changed(patch)
@@ -209,8 +227,11 @@ def limits(patch, rules):
     total = sum(files.values())
     if total > rules["max-lines"]:
         out.append(f"it changes {total} lines, more than {rules['max-lines']}")
+    for f in binaries(patch):
+        out.append(f"it changes {f} as a binary file, which a security fix never carries")
     for f in sorted(files):
-        hit = next((g for g in rules["forbidden"] if fnmatch.fnmatch(f, g)), None)
+        # Case does not matter: make reads makefile and GNUmakefile too.
+        hit = next((g for g in rules["forbidden"] if fnmatch.fnmatchcase(f.lower(), g.lower())), None)
         if hit:
             out.append(f"it changes {f}, which a security fix may not touch ({hit})")
     return out
@@ -297,8 +318,13 @@ def self_test():
           ("not a path" in changed(odd), ".github/a b/c.yml" in changed(odd)), (False, True))
     ren = "diff --git a/old.php b/new.php\nsimilarity index 90%\nrename from old.php\nrename to new.php\n--- a/old.php\n+++ b/new.php\n@@ -1 +1 @@\n-a\n+b\n"
     check("changed: a renamed file's lines go to its new path", (changed(ren)["new.php"], changed(ren)["old.php"]), (2, 0))
+    binpatch = "diff --git a/x.phar b/x.phar\nnew file mode 100644\nindex 0000000..abc\nGIT binary patch\nliteral 10\nzcmV?d00001\n\nliteral 0\nHcmV?d00001\n\n"
+    check("limits: a binary file is never carried (#287 review)", [l for l in limits(binpatch, rules) if "binary" in l], ["it changes x.phar as a binary file, which a security fix never carries"])
+    check("limits: case does not matter, and every file that steers the checks is forbidden",
+          [bool(limits(fp(f), rules)) for f in ("makefile", "GNUmakefile", "build/rules.mk", "phpstan.neon.dist", "psalm.xml", "tests/bootstrap.php", "includes/fix.php")],
+          [True, True, True, True, True, True, False])
     check("limits: a forbidden path is caught when quoted or renamed away",
-          [l for l in limits(tricky, rules) if "may not touch" in l], ["it changes Makefile, which a security fix may not touch (*Makefile)", "it changes año/Makefile, which a security fix may not touch (*Makefile)"])
+          [l for l in limits(tricky, rules) if "may not touch" in l], ["it changes Makefile, which a security fix may not touch (*makefile)", "it changes año/Makefile, which a security fix may not touch (*makefile)"])
     check("limits: too many lines, and an empty patch", (limits("diff --git a/a.php b/a.php\n--- a/a.php\n+++ b/a.php\n@@ -1 +1,402 @@\n-old\n" + "+x\n" * 402, rules), limits("", rules)), (["it changes 403 lines, more than 400"], ["the patch changes nothing"]))
     check("policy: the organisation narrows the limits and names the reviewer",
           policy_of({"security-patch": {"max-files": 3, "reviewer-model": "claude-opus-5-5", "nonsense": 1}}), ({**LIMITS, "max-files": 3}, "claude-opus-5-5"))
