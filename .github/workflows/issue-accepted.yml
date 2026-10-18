@@ -149,9 +149,11 @@ jobs:
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 5
     # When a person accepts it: is the issue's PRD complete, as the issue
-    # schema says (policy/issue-schema.yml, gate G1)? One comment, kept up to
-    # date, says it is ready or what is missing. It decides nothing yet: the
-    # autopilot (#83) starts only on a ready issue. It also assigns the issue
+    # schema says (policy/issue-schema.yml, gate G1), with no comment after
+    # its last edit left without a maintainer's answer (#287)? One comment,
+    # kept up to date, says it is ready or what is missing. Not ready, the
+    # acceptance does not stand: the label comes off and nothing is sealed,
+    # so the autopilot (#83) never starts on it. It also assigns the issue
     # to whoever accepted it, if nobody has it (#73). Needs the bot's key to
     # comment and assign; without it the check runs and only logs. Not on a
     # release issue (#82): the `release` job is its acceptance.
@@ -202,11 +204,17 @@ jobs:
           SENDER: ${{ github.event.sender.login }}
           SENDER_TYPE: ${{ github.event.sender.type }}
         run: bash .dx-central/scripts/issue-assignee.sh accepted
+      # Not ready (#287): the schema says something is missing, or a person
+      # commented after the PRD's last edit and no maintainer answered yet.
+      # Then the acceptance does not stand: the label comes off, the issue
+      # says why, and nothing is sealed, so nothing starts.
       - name: Check the PRD and say so on the issue
+        id: check
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           BODY: ${{ github.event.issue.body }}
           NUMBER: ${{ github.event.issue.number }}
+          LABEL: ${{ inputs.label }}
         run: |
           set -euo pipefail
           # Exit 1 is "not ready" with its reasons (each in code, so text the
@@ -216,13 +224,42 @@ jobs:
           if [ "$rc" -gt 1 ] || ! jq -e 'has("ok")' <<<"$result" >/dev/null 2>&1; then
             echo "::error::The schema check itself failed (exit $rc); nothing said on the issue."; exit 1
           fi
-          if [ "$(jq -r .ok <<<"$result")" = true ]; then
+          open=""
+          if [ -n "$GH_TOKEN" ]; then
+            # The conversation, read from GitHub: when the body was last
+            # edited, every comment since, and who of their authors has
+            # write access or more, checked now.
+            # shellcheck disable=SC2016 # GraphQL variables, not shell ones.
+            edited=$(gh api graphql -F o="${GITHUB_REPOSITORY%/*}" -F n="${GITHUB_REPOSITORY#*/}" -F i="$NUMBER" \
+              -f query='query($o:String!,$n:String!,$i:Int!){repository(owner:$o,name:$n){issue(number:$i){lastEditedAt createdAt}}}' \
+              --jq '.data.repository.issue | .lastEditedAt // .createdAt')
+            comments=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '[.[] | {user: {login: .user.login, type: .user.type}, created_at, html_url}]' | jq -s 'add // []')
+            maintainers=""
+            for who in $(jq -r '.[] | select(.user.type != "Bot") | .user.login' <<<"$comments" | sort -u); do
+              case "$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$who/permission" --jq .role_name 2>/dev/null || echo none)" in
+                admin|maintain|write) maintainers+="$who"$'\n' ;;
+              esac
+            done
+            open=$(COMMENTS="$comments" EDITED_AT="$edited" MAINTAINERS="$maintainers" python3 .dx-central/scripts/issue-schema.py conversation || true)
+          fi
+          ready=false
+          if [ "$(jq -r .ok <<<"$result")" = true ] && [ -z "$open" ]; then
+            ready=true
             text="**Issue ready (G1):** the PRD has every section of the schema ($(jq -r '.criteria | length' <<<"$result") acceptance criteria)."
           else
-            text="**Issue not ready (G1):** the PRD does not follow the schema yet (policy/issue-schema.yml in DiluxOne/.github). The autopilot will not start until it does:"$'\n\n'"$(jq -r '.errors[] | "- `" + gsub("`"; "\u0027") + "`"' <<<"$result")"
+            text="**Issue not ready (G1):**"
+            if [ "$(jq -r .ok <<<"$result")" != true ]; then
+              text+=" the PRD does not follow the schema yet (policy/issue-schema.yml in DiluxOne/.github):"$'\n\n'"$(jq -r '.errors[] | "- `" + gsub("`"; "\u0027") + "`"' <<<"$result")"$'\n'
+            fi
+            if [ -n "$open" ]; then
+              text+=$'\n'"A comment after the PRD's last edit waits for a maintainer's answer (answer it, or settle it in the PRD):"$'\n\n'"$(while IFS= read -r u; do printf -- '- %s\n' "$u"; done <<<"$open")"$'\n'
+            fi
+            text+=$'\n'"The \`$LABEL\` label was taken off: add it again once the issue is ready."
           fi
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
           echo "$text"
           [ -n "$GH_TOKEN" ] || { echo "No bot key: the result stays in this log."; exit 0; }
+          [ "$ready" = true ] || gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$LABEL" >/dev/null
           body="<!-- dx-g1 -->"$'\n'"$text"$'\n\n'"🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
           id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '.[] | select(.user.type == "Bot" and (.user.login | startswith("dilux-bot")) and (.body | startswith("<!-- dx-g1 -->"))) | .id' | tail -1)
           if [ -n "$id" ]; then
@@ -235,7 +272,7 @@ jobs:
       # ruleset lets only dilux-bot write there, and nobody delete or
       # rewrite it). The pull request gate compares the PRD with it.
       - name: Seal the PRD and update the issue's board
-        if: steps.bot.outputs.token != ''
+        if: steps.bot.outputs.token != '' && steps.check.outputs.ready == 'true'
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           BODY_TEXT: ${{ github.event.issue.body }}

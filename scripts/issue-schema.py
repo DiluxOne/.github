@@ -14,6 +14,12 @@
         (.github/ISSUE_TEMPLATE/task.yml) and the Release form (release.yml,
         #82) from the schema; --check fails when a file differs from what it
         would write.
+  issue-schema.py conversation              COMMENTS (the issue's comments,
+        JSON: user.login, user.type, created_at, html_url), EDITED_AT (when
+        the body was last edited, or created), MAINTAINERS (logins with write
+        access or more, one per line): the comments a maintainer has not
+        answered yet, after the PRD's last edit (#287), one URL per line;
+        exit 1 when any
   issue-schema.py --test                     self-test
 
 Environment: ISSUE_SCHEMA, the schema (default: policy/issue-schema.yml next
@@ -228,6 +234,18 @@ def check(body, stage="prd", sch=None, issue_type=None):
     return {"ok": not errors, "errors": errors, "criteria": ids}
 
 
+def open_conversation(comments, edited_at, maintainers):
+    """The comments that leave the conversation open (#287): after the PRD's
+    last edit, every person's comment since the last one a maintainer wrote.
+    A bot's comment (the triage, the G1 check) neither opens nor closes it.
+    The issue is not ready while one is left: a maintainer answers it, or
+    the PRD is edited to settle it. Pure."""
+    people = [c for c in comments or [] if (c.get("user") or {}).get("type") != "Bot" and c.get("created_at", "") > (edited_at or "")]
+    people.sort(key=lambda c: c.get("created_at", ""))
+    last = max((i for i, c in enumerate(people) if (c.get("user") or {}).get("login") in maintainers), default=-1)
+    return [c for c in people[last + 1:]]
+
+
 def form(sch=None):
     sch = sch or schema()
     body = [{
@@ -397,6 +415,25 @@ A class on <html> and a cookie.
         check_("the Release form has a field GitHub can show (a form needs one besides Markdown)", any(b["type"] != "markdown" for b in rel["body"]), True)
     except ImportError:
         print("skip the form is the schema's (no PyYAML here; the Linux job checks it)")
+    c_ = lambda who, t, kind="User": {"user": {"login": who, "type": kind}, "created_at": t, "html_url": f"u/{who}/{t}"}
+    oc = lambda cs, at="2026-10-18T10:00:00Z": [c["html_url"] for c in open_conversation(cs, at, {"boss"})]
+    check_("#287 conversation: a person's comment after the PRD's last edit, unanswered, is open",
+           oc([c_("dev", "2026-10-18T11:00:00Z")]), ["u/dev/2026-10-18T11:00:00Z"])
+    check_("#287 conversation: a maintainer's later comment closes it; one before it does not",
+           (oc([c_("dev", "2026-10-18T11:00:00Z"), c_("boss", "2026-10-18T12:00:00Z")]), oc([c_("boss", "2026-10-18T11:00:00Z"), c_("dev", "2026-10-18T12:00:00Z")])),
+           ([], ["u/dev/2026-10-18T12:00:00Z"]))
+    check_("#287 conversation: before the PRD's last edit, or a bot's, counts for nothing",
+           (oc([c_("dev", "2026-10-18T09:00:00Z")]), oc([c_("dilux-bot[bot]", "2026-10-18T11:00:00Z", "Bot")]), oc([])), ([], [], []))
+    wf_path = os.path.join(HERE, "..", ".github", "workflows", "issue-accepted.yml")
+    try:
+        import yaml
+        ready = yaml.safe_load(open(wf_path, encoding="utf-8"))["jobs"]["ready"]["steps"]
+        chk = next(st for st in ready if st.get("id") == "check")
+        seal = next(st for st in ready if st.get("name", "").startswith("Seal the PRD"))
+        check_("#287 wiring: not ready takes the label off, reads the conversation, and seals nothing",
+               ('--remove-label "$LABEL"' in chk["run"], "issue-schema.py conversation" in chk["run"], "steps.check.outputs.ready == 'true'" in seal.get("if", "")), (True, True, True))
+    except ImportError:
+        print("skip the ready job's wiring (no PyYAML here)")
     if not failed:
         print("all tests passed")
     return failed
@@ -411,6 +448,13 @@ def main(argv):
         result = check(sys.stdin.read(), stage, issue_type=issue_type)
         print(json.dumps(result, indent=2))
         return 0 if result["ok"] else 1
+    if argv[:1] == ["conversation"]:
+        comments = json.loads(os.environ.get("COMMENTS") or "[]")
+        maintainers = {l.strip() for l in (os.environ.get("MAINTAINERS") or "").splitlines() if l.strip()}
+        left = open_conversation(comments, os.environ.get("EDITED_AT", ""), maintainers)
+        for c in left:
+            print(c.get("html_url", ""))
+        return 1 if left else 0
     if argv[:1] == ["criteria"]:
         # The PRD's acceptance criteria, for the review that checks them (G6, #193).
         sections, _ = parse(sys.stdin.read())
