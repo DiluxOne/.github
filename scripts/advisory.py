@@ -282,6 +282,9 @@ def body(a, repo, checks, log, notes, patch, branch_url, triage=""):
     if diff:
         shown = diff if len(diff) <= 40000 else diff[:40000] + "\n... (cut: the whole patch is on the branch)"
         out += ["", "## The patch", "", f"On {branch_url}" if branch_url else "", "", "```diff", shown.replace("```", "'''"), "```"]
+    if checks in ("failed", "nothing"):
+        out += ["", "## Sending it back", "",
+                f"A maintainer comments here what to change, then adds `{RETRY_LABEL}`: the next run gives the agent that comment and tries again (#313), as many times as it takes."]
     out += ["", "## Publishing", "",
             "A maintainer reviews this here. Publishing is: the fix into the public repository, its release, and the advisory published, in that order and close together; until then nothing is public. Nothing merges or publishes on its own.", "", AI]
     return "\n".join(out)
@@ -348,6 +351,12 @@ def retries(central, pending):
     with their hint. The label comes off as it is taken, so one attempt runs
     at a time; one that may not be retried loses it too, with the reason."""
     out = []
+    # The label a maintainer adds, there before the first fix fails.
+    try:
+        gh("label", "create", RETRY_LABEL, "--repo", central, "--color", "D93F0B", "--force",
+           "--description", "A maintainer sends this fix back to the agent, with their latest comment as its guidance")
+    except RuntimeError as exc:
+        print(f"::warning::the {RETRY_LABEL} label could not be created ({str(exc)[:200]})", file=sys.stderr)
     rows = gh("api", f"repos/{central}/issues?state=open&labels={RETRY_LABEL}&per_page=100", "--paginate", "--jq",
               ".[] | {number, body: ((.body // \"\") | split(\"\\n\")[0]), labels: [.labels[].name]} | @json")
     for row in [json.loads(l) for l in rows.splitlines() if l.strip()]:
@@ -389,6 +398,10 @@ def retries(central, pending):
                         "state": "triage" if state == "draft" and (repo, ghsa) in pending else state})
         except (RuntimeError, ValueError, KeyError) as exc:
             print(f"::warning::#{n}: not retried ({str(exc)[:200]})", file=sys.stderr)
+            try:
+                say(f"Not retried: GitHub could not be read ({str(exc)[:200]}). Add `{RETRY_LABEL}` again.")
+            except RuntimeError:
+                pass
     return out
 
 
@@ -455,6 +468,8 @@ def self_test():
           ("<!-- dx-advisory-checks: failed -->", "<!-- dx-advisory-checks: passed -->"))
     check("body: failed checks said, the log and the patch fenced, the branch named", ("checks failed" in b, b.count("```") == 4, "On https://b" in b), (True, True, True))
     check("body: nobody merges or publishes on its own", ("Nothing merges or publishes on its own" in b, b.endswith(AI)), (True, True))
+    check("#313 body: a fix that failed or committed nothing says how to send it back; a green one does not",
+          [("`fix:retry`" in body({"ghsa_id": g1}, "o/r", c, "", "", "", "")) for c in ("failed", "nothing", "passed")], [True, True, False])
     check("body: an agent that committed nothing says so", "committed nothing" in body({"ghsa_id": g1}, "o/r", "nothing", "", "", "", ""), True)
     check("body: a huge patch is cut, the branch has it", "(cut: the whole patch is on the branch)" in body({"ghsa_id": g1}, "o/r", "passed", "", "", "+x\n" * 30000, "u"), True)
     calls = []
@@ -552,10 +567,34 @@ def self_test():
         check("#313 retries: someone who does not maintain it retries nothing, the label comes off, the issue says why",
               (got, ("issue", "edit", "7", "--repo", "o/security", "--remove-label", RETRY_LABEL) in log,
                any("Not retried: fix:retry was added by dev" in a[-1] for a in log if a[:2] == ("issue", "comment"))), ([], True, True))
+        check("#313 retries: the label exists before anyone needs it", any(a[:3] == ("label", "create", RETRY_LABEL) for a in log), True)
+        g_ok, log = fake([RETRY_LABEL], "boss", "admin")
+
+        def flaky(*a, token=None):
+            if len(a) > 1 and "/security-advisories/" in a[1]:
+                raise RuntimeError("HTTP 502")
+            return g_ok(*a, token=token)
+        globals()["gh"] = flaky
+        check("#313 retries: a failure after the label came off is said on the issue, so the maintainer adds it again",
+              (retries("o/security", set()), any("Add `fix:retry` again" in a[-1] for a in log if a[:2] == ("issue", "comment"))), ([], True))
         globals()["gh"], log = fake([RETRY_LABEL], "boss", "admin", "published")
         check("#313 retries: a published advisory is not retried", retries("o/security", set()), [])
     finally:
         globals()["gh"] = real_gh
+    cli = subprocess.run([sys.executable, os.path.abspath(__file__), "prompt"], input=json.dumps({"ghsa_id": g1, "summary": "x"}), capture_output=True, text=True,
+                         env=dict(os.environ, HINT="Call dxsb_greeting() instead"))
+    check("#313 prompt: the command line reads the hint from HINT", "Call dxsb_greeting() instead" in cli.stdout, True)
+    try:
+        import yaml
+        with open(os.path.join(HERE, "..", ".github", "workflows", "security-fix.yml"), encoding="utf-8") as fh:
+            wf = yaml.safe_load(fh)
+        task = next(st for st in wf["jobs"]["fix"]["steps"] if st.get("id") == "task")
+        rec = next(st for st in wf["jobs"]["record"]["steps"] if st.get("name") == "The branch and the issue")
+        check("#313 wiring: the fix job hands the maintainer's hint to the prompt, through env; a retry resets its branch",
+              ((task.get("env") or {}).get("HINT"), "advisory.py prompt" in task["run"], "git/refs/heads/$BRANCH\" -f sha=\"$head\" -F force=true" in rec["run"]),
+              ("${{ matrix.fix.hint }}", True, True))
+    except ImportError:
+        print("skip #313 wiring: no PyYAML")
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
