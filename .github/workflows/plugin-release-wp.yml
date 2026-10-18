@@ -114,7 +114,7 @@ name: WordPress plugin release
 # (a repository that keeps them is asked twice). The caller passes
 # `secrets: inherit`, which is why it runs only on main, on X.Y.Z tags and on
 # security/X.Y.Z branches, which only dilux-security can create (the
-# organisation ruleset "org: security branches"). It calls this workflow at `v5`, like every other: a
+# organisation ruleset "org: security branches"). It calls this workflow at `v6`, like every other: a
 # protected ref only an administrator moves, so nothing is pinned (#136).
 #
 #   on:
@@ -130,7 +130,7 @@ name: WordPress plugin release
 #   jobs:
 #     release:
 #       if: github.event_name == 'push'
-#       uses: DiluxOne/.github/.github/workflows/plugin-release-wp.yml@v5
+#       uses: DiluxOne/.github/.github/workflows/plugin-release-wp.yml@v6
 #       with:
 #         slug: diluxone-offload
 #         version-constant: DILUXONE_OFFLOAD_VERSION   # optional

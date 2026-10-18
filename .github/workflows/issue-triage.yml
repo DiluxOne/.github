@@ -76,7 +76,7 @@ name: Issue triage
 #   jobs:
 #     triage:
 #       permissions: { contents: read, issues: write }
-#       uses: DiluxOne/.github/.github/workflows/issue-triage.yml@v5
+#       uses: DiluxOne/.github/.github/workflows/issue-triage.yml@v6
 #       with:
 #         support-url: https://wordpress.org/support/plugin/diluxone-offload/
 #       secrets: inherit
@@ -755,7 +755,7 @@ jobs:
     # The agent's jobs read the repository with the job's own token (#287).
     permissions:
       contents: read
-    uses: DiluxOne/.github/.github/workflows/autopilot.yml@v5
+    uses: DiluxOne/.github/.github/workflows/autopilot.yml@v6
     with:
       mode: ${{ github.event.label.name == 'accepted' && 'start' || 'continue' }}
       issue: ${{ format('{0}', github.event.issue.number) }}
