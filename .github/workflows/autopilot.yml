@@ -903,6 +903,14 @@ jobs:
             fi
             git checkout -q -B "$BRANCH" "$new"
             python3 .dx-central/scripts/autopilot.py push
+            # The pull request shows a push a few seconds after the branch
+            # moves; a tick read before then finds no commit (the sandbox's
+            # first run, #287). Wait for it, a minute at most.
+            pushed=$(git rev-parse HEAD)
+            for _ in $(seq 1 30); do
+              [ "$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid)" = "$pushed" ] && break
+              sleep 2
+            done
           fi
           python3 .dx-central/scripts/autopilot.py apply .dx-out/outbox.jsonl
 

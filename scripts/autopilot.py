@@ -1356,6 +1356,8 @@ Clamp the value in Sum::add.
               (all("!cancelled()" in str(jobs[j].get("if", "")) for j in agents), "always()" in str(jobs["apply"].get("if", ""))), (True, True))
         check("#84: the lane is decided before the autopilot may start, from GitHub", "autopilot.py lane" in steps("prep")[sid("prep", "may")].get("run", ""), True)
         pushed = next(st for st in steps("apply") if st.get("id") == "applied")["run"]
+        check("#287: the intents wait until the pull request shows the push (the sandbox's first run)",
+              pushed.index("autopilot.py push") < pushed.index("headRefOid") < pushed.index("autopilot.py apply"), True)
         check("#287: the agent's commits go only onto the branch's head, never with a workflow, then its intents",
               ("merge-base --is-ancestor" in pushed, ".github/workflows/" in pushed, "| grep -q" in pushed, pushed.index("autopilot.py push") < pushed.index("autopilot.py apply")), (True, True, False, True))
         spec_apply = next(st for st in steps("draft") if st.get("name") == "The agent's Spec")["run"]
