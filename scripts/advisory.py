@@ -186,8 +186,11 @@ def body(a, repo, checks, log, notes, patch, branch_url, triage=""):
     return "\n".join(out)
 
 
-def gh(*args):
-    out = subprocess.run(["gh", *args], capture_output=True, text=True)
+def gh(*args, token=None):
+    """gh with GH_TOKEN, or with token (ADV_TOKEN: dilux-security's, for the
+    advisories, #287)."""
+    env = dict(os.environ, GH_TOKEN=token) if token else None
+    out = subprocess.run(["gh", *args], capture_output=True, text=True, env=env)
     if out.returncode != 0:
         raise RuntimeError(f"gh {' '.join(args[:2])}: {out.stderr.strip()[:200]}")
     return out.stdout
@@ -243,7 +246,7 @@ def plan(root, central):
     for name in public_repos(root):
         full = f"{org.ORG}/{name}"
         try:
-            advisories = [a for st in ("triage", "draft") for a in json.loads(gh("api", f"repos/{full}/security-advisories?state={st}&per_page=100"))]
+            advisories = [a for st in ("triage", "draft") for a in json.loads(gh("api", f"repos/{full}/security-advisories?state={st}&per_page=100", token=os.environ.get("ADV_TOKEN")))]
             todo, taken = capped(due(full, advisories, have), taken)
             for f in todo:
                 # Each as it is claimed: one that fails leaves the others in.

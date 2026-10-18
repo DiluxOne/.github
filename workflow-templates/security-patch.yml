@@ -1,15 +1,16 @@
 name: Security patches
 
 # A security patch on the version in production, from the shared workflow
-# in DiluxOne/.github (#247). Only in the PRIVATE repository that holds the
-# security fixes (DiluxOne/security, beside security-fix.yml): until its
-# veto window closes, a patch exists nowhere public, and the shared
-# workflow refuses to run from a public repository. Once a fix recorded
-# here passed its checks and its advisory is a draft, the patch is built on
-# the version in production and checked, the maintainers are told when it
-# publishes, and unless one adds `patch:hold` to its issue it is pushed to
-# security/X.Y.Z in the public repository, released from there, and its
-# advisory published.
+# in DiluxOne/.github (#247, #287). Only in the PRIVATE repository that
+# holds the security fixes (DiluxOne/security, beside security-fix.yml):
+# until a maintainer approves it, a patch exists nowhere public, and the
+# shared workflow refuses to run from a public repository. Once a fix
+# recorded here passed its checks and its advisory is a draft, the patch is
+# built on the version in production within the policy's limits, checked,
+# and reviewed by a second model; the maintainers are told, and when one
+# adds `patch:go` to its issue it is pushed to security/X.Y.Z in the public
+# repository by dilux-security (whose key lives only here), released from
+# there, and its advisory published.
 
 on:
   schedule:
@@ -32,3 +33,6 @@ jobs:
     uses: DiluxOne/.github/.github/workflows/security-patch.yml@v5
     secrets:
       DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+      DILUX_SECURITY_PRIVATE_KEY: ${{ secrets.DILUX_SECURITY_PRIVATE_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

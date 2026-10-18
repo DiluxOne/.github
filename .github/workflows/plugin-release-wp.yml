@@ -27,8 +27,9 @@ name: WordPress plugin release
 # waited for approval queues behind it (one release at a time) and, once
 # the first shipped, finds the tag and stops.
 #
-# On a branch security/X.Y.Z (#247): a security patch, pushed by dilux-bot
-# from the private repository once its veto window closed. It must be the
+# On a branch security/X.Y.Z (#247, #287): a security patch, pushed by
+# dilux-security from the private repository once a maintainer approved it
+# there (`patch:go`); a push by anyone else is refused. It must be the
 # version in production plus one patch (scripts/production-version.py,
 # checked against wordpress.org), start from that version's tag and not be
 # on the default branch; the labels and the release issue do not apply. It
@@ -108,8 +109,8 @@ name: WordPress plugin release
 # it); it needs no required reviewer once releases go through their issue
 # (a repository that keeps them is asked twice). The caller passes
 # `secrets: inherit`, which is why it runs only on main, on X.Y.Z tags and on
-# security/X.Y.Z branches, which only dilux-bot can create (the organisation
-# ruleset "org: security branches"). It calls this workflow at `v5`, like every other: a
+# security/X.Y.Z branches, which only dilux-security can create (the
+# organisation ruleset "org: security branches"). It calls this workflow at `v5`, like every other: a
 # protected ref only an administrator moves, so nothing is pinned (#136).
 #
 #   on:
@@ -158,7 +159,7 @@ on:
         type: string
         default: ''
       security-environment:
-        description: The environment a security patch (a push of security/X.Y.Z by dilux-bot, #247) deploys from. Empty uses `environment`; its deployment policy must admit security/* branches, and its required reviewers, if any, still approve.
+        description: The environment a security patch (a push of security/X.Y.Z by dilux-security, #247, #287) deploys from. Empty uses `environment`; its deployment policy must admit security/* branches, and its required reviewers, if any, still approve.
         type: string
         default: ''
       central-ref:
@@ -224,17 +225,18 @@ jobs:
         run: |
           set -euo pipefail
           { echo "version="; echo "dev="; echo "environment=$ENVIRONMENT"; } >> "$GITHUB_OUTPUT"
-          # A security patch (#247): dilux-bot pushes security/X.Y.Z once the
-          # veto window in the private repository closed. It is the version
+          # A security patch (#247, #287): dilux-security pushes
+          # security/X.Y.Z once a maintainer approved it in the private
+          # repository (`patch:go`), and no one else may. It is the version
           # in production plus one patch, built on that version's tag, never
           # on the default branch; the labels of what merged do not apply,
-          # and nobody accepts it here (the window was the chance to stop
-          # it). The environment's own reviewers, if any, still approve.
+          # and nobody accepts it here (`patch:go` was the acceptance). The
+          # environment's own reviewers, if any, still approve.
           case "$GITHUB_REF" in
             refs/heads/security/*)
               tag="${GITHUB_REF#refs/heads/security/}"
               [[ "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::security/$tag is not security/X.Y.Z."; exit 1; }
-              [ "$ACTOR" = "dilux-bot[bot]" ] || { echo "::error::A security patch is pushed by dilux-bot only, not $ACTOR."; exit 1; }
+              [ "$ACTOR" = "dilux-security[bot]" ] || { echo "::error::A security patch is pushed by dilux-security only, not $ACTOR."; exit 1; }
               prod=$(python3 .dx-central/scripts/production-version.py --repo "$GITHUB_REPOSITORY" --kind wordpress-plugin --slug "$SLUG" --json) \
                 || { echo "::error::No version in production to patch (see above)."; exit 1; }
               [ "$(jq -r .patch <<<"$prod")" = "$tag" ] || { echo "::error::security/$tag is not the patch after the version in production, $(jq -r .version <<<"$prod")."; exit 1; }
@@ -258,7 +260,7 @@ jobs:
               [ "$rc" != 1 ] || { echo "::error file=readme.txt::The patch's changelog entry still says 'Unreleased.'."; exit 1; }
               { echo "version=$tag"; echo "environment=${SECURITY_ENVIRONMENT:-$ENVIRONMENT}"; echo "security=true"; } >> "$GITHUB_OUTPUT"
               # shellcheck disable=SC2016 # backticks in the Markdown of the summary, not commands.
-              printf '## Security patch %s\n\nOn the version in production, %s, pushed by dilux-bot after the veto window. It deploys from the environment `%s`; its own reviewers, if any, approve.\n' "$tag" "$(jq -r .version <<<"$prod")" "${SECURITY_ENVIRONMENT:-$ENVIRONMENT}" >> "$GITHUB_STEP_SUMMARY"
+              printf '## Security patch %s\n\nOn the version in production, %s, pushed by dilux-security once a maintainer approved it (patch:go). It deploys from the environment `%s`; its own reviewers, if any, approve.\n' "$tag" "$(jq -r .version <<<"$prod")" "${SECURITY_ENVIRONMENT:-$ENVIRONMENT}" >> "$GITHUB_STEP_SUMMARY"
               exit 0
               ;;
           esac

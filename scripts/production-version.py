@@ -161,8 +161,8 @@ def self_test():
     # The release workflow's security path (#247) holds to every condition.
     rel_wf = open(os.path.join(HERE, "..", ".github", "workflows", "plugin-release-wp.yml"), encoding="utf-8").read()
     sec = rel_wf[rel_wf.index("refs/heads/security/*)"):rel_wf.index('echo "security=true"')]
-    check("wiring: a security patch is dilux-bot's, the production patch, from its tag, off the base, ready",
-          ('[ "$ACTOR" = "dilux-bot[bot]" ]' in sec, "production-version.py" in sec and '.patch' in sec, "compare/$(jq -r .tag" in sec,
+    check("wiring: a security patch is dilux-security's (#287), the production patch, from its tag, off the base, ready",
+          ('[ "$ACTOR" = "dilux-security[bot]" ]' in sec, "production-version.py" in sec and '.patch' in sec, "compare/$(jq -r .tag" in sec,
            "is on $BASE" in sec, "release-ready.sh" in sec), (True, True, True, True, True))
     tpl = open(os.path.join(HERE, "..", "workflow-templates", "release-wp.yml"), encoding="utf-8").read()
     check("wiring: the release caller runs on security/X.Y.Z", "'security/[0-9]+.[0-9]+.[0-9]+'" in tpl, True)

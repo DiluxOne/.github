@@ -89,14 +89,19 @@ person-merges: [security]
 # only what closes the milestone's issues, the commit that was tested).
 planned-release: confirm
 
-# A security patch on the version in production (#247, scripts/security-
-# patch.py, security-patch.yml) publishes on its own once this window is
-# over, unless a maintainer adds `patch:hold` to its issue in the private
-# repository. The maintainers are told when it starts. It is the one release
-# a person does not approve; the window is their chance to stop it, and it
-# runs in private, before the fix is public. Hours, at most 720.
+# A security patch on the version in production (#247, #287, scripts/
+# security-patch.py, security-patch.yml) publishes only when a maintainer
+# adds `patch:go` to its issue in the private repository, after it was
+# announced with its tree: a stranger's report never reaches users on its
+# own. Before it is announced the fix must stay within these limits (files,
+# changed lines, paths it may never touch) and pass a second review by
+# another model that never sees the report. Every key is optional; the
+# defaults are in scripts/security-patch.py (10 files, 400 lines, nothing
+# that builds, releases or checks the project).
 security-patch:
-  veto-hours: 6
+  max-files: 10
+  max-lines: 400
+  reviewer-model: claude-sonnet-5-5
 
 # A lane's issue is accepted by policy only when all of this holds, read from
 # GitHub, never from the issue's text alone:

@@ -31,8 +31,8 @@ name: Security fixes
 #
 # It never merges and never publishes. security-patch.yml (#247) publishes
 # a fix whose checks passed once its advisory is a draft: a patch on the
-# version in production, after a veto window in which a maintainer can hold
-# it; the fix, the release and the advisory go public together. A private
+# version in production, once a maintainer approves it (`patch:go`, #287);
+# the fix, the release and the advisory go public together. A private
 # repository has no private reporting: its reports are issues labelled
 # `security`, worked through the usual lane, and a person merges the fix
 # (policy/autonomy.yml, `person-merges`).
@@ -42,12 +42,14 @@ name: Security fixes
 # permission at all (this repository holds other advisories' fixes). The report reaches it only
 # in its prompt, fenced. DX_AUTOPILOT=off stops it.
 #
-# Needs dilux-bot's "Repository security advisories" permission (write: the
-# triage moves one to draft). The plan and the triage mint their tokens with
-# scripts/app-token.sh (actions/create-github-app-token has no input for
-# that permission), read for the plan and write for the one repository the
-# triage moves, and revoke them when their step ends; the record job's other
-# token comes from the action, for this repository only.
+# The advisories are read and moved with dilux-security's key (#287), the
+# one App that may touch them, so dilux-bot, which works beside agents
+# elsewhere, needs no advisory permission; the issues here are dilux-bot's.
+# The plan and the triage mint their tokens with scripts/app-token.sh
+# (actions/create-github-app-token has no input for that permission), read
+# for the plan and write for the one repository the triage moves, and
+# revoke them when their step ends; the record job's other token comes from
+# the action, for this repository only.
 
 on:
   workflow_call:
@@ -59,6 +61,9 @@ on:
     secrets:
       DILUX_BOT_PRIVATE_KEY:
         required: true
+      # dilux-security's key: the advisories (#287).
+      DILUX_SECURITY_PRIVATE_KEY:
+        required: false
       CLAUDE_CODE_OAUTH_TOKEN:
         required: false
       ANTHROPIC_API_KEY:
@@ -99,15 +104,20 @@ jobs:
         env:
           CLIENT_ID: ${{ vars.DILUX_BOT_CLIENT_ID }}
           PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          SECURITY_CLIENT_ID: ${{ vars.DILUX_SECURITY_CLIENT_ID }}
+          SECURITY_KEY: ${{ secrets.DILUX_SECURITY_PRIVATE_KEY }}
           OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
-          # Every repository's advisories, to read; issues here, to claim.
-          GH_TOKEN=$(bash .dx-central/scripts/app-token.sh mint '{"repository_advisories":"read","issues":"write","metadata":"read"}')
-          export GH_TOKEN
-          unset PRIVATE_KEY
+          if ! { [ -n "$SECURITY_CLIENT_ID" ] && [ -n "$SECURITY_KEY" ]; }; then echo "::error::dilux-security's key (DILUX_SECURITY_PRIVATE_KEY, DILUX_SECURITY_CLIENT_ID) is not set here: no advisory is read."; exit 1; fi
+          # The issues here, to claim, with dilux-bot; every repository's
+          # advisories, to read, with dilux-security.
+          GH_TOKEN=$(REPOSITORIES="${GITHUB_REPOSITORY#*/}" bash .dx-central/scripts/app-token.sh mint '{"issues":"write","metadata":"read"}')
+          ADV_TOKEN=$(CLIENT_ID="$SECURITY_CLIENT_ID" PRIVATE_KEY="$SECURITY_KEY" bash .dx-central/scripts/app-token.sh mint '{"repository_advisories":"read","metadata":"read"}')
+          export GH_TOKEN ADV_TOKEN
+          unset PRIVATE_KEY SECURITY_KEY
           # Revoked when the step ends, however it ends.
-          trap 'curl -fsS -o /dev/null -X DELETE -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/installation/token || true' EXIT
+          trap 'for t in "$GH_TOKEN" "$ADV_TOKEN"; do curl -fsS -o /dev/null -X DELETE -H "Authorization: Bearer $t" https://api.github.com/installation/token || true; done' EXIT
           # What one fix may cost (#287, policy/autonomy.yml budgets-usd).
           echo "budget=$(python3 .dx-central/scripts/autonomy.py policy | jq -r '."budgets-usd"."security-fix" // 10')" >> "$GITHUB_OUTPUT"
           fixes=$(python3 .dx-central/scripts/advisory.py plan)
@@ -116,7 +126,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/in"
           jq -c '.[]' <<<"$fixes" | while read -r f; do
             ghsa=$(jq -r .ghsa <<<"$f"); repo=$(jq -r .repo <<<"$f")
-            gh api "repos/$repo/security-advisories/$ghsa" > "$RUNNER_TEMP/in/$ghsa.json" \
+            GH_TOKEN="$ADV_TOKEN" gh api "repos/$repo/security-advisories/$ghsa" > "$RUNNER_TEMP/in/$ghsa.json" \
               || echo "::warning::$ghsa: its advisory could not be read; its issue here says what is left."
           done
 
@@ -337,15 +347,15 @@ jobs:
           GHSA: ${{ matrix.fix.ghsa }}
           ISSUE: ${{ matrix.fix.issue }}
           ISSUE_TOKEN: ${{ steps.write.outputs.token }}
-          CLIENT_ID: ${{ vars.DILUX_BOT_CLIENT_ID }}
-          PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          CLIENT_ID: ${{ vars.DILUX_SECURITY_CLIENT_ID }}
+          PRIVATE_KEY: ${{ secrets.DILUX_SECURITY_PRIVATE_KEY }}
           OWNER: ${{ github.repository_owner }}
         run: |
           set -uo pipefail
           say() { GH_TOKEN="$ISSUE_TOKEN" gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$1"$'\n\n'"🤖 AI-generated · Claude Opus 5.5 (Anthropic), in a private repository" >/dev/null || true; echo "::warning::$GHSA: $1"; }
           export REPOSITORIES="${REPO#*/}"
           if ! GH_TOKEN=$(bash .dx-central/scripts/app-token.sh mint '{"repository_advisories":"write","metadata":"read"}'); then
-            say "The advisory was not moved to draft: the App could not get a token that writes advisories (its \"Repository security advisories\" permission must be write). A maintainer moves it by hand."; exit 0
+            say "The advisory was not moved to draft: dilux-security could not get a token that writes advisories (its key must be set here, and its \"Repository security advisories\" permission write). A maintainer moves it by hand."; exit 0
           fi
           export GH_TOKEN
           unset PRIVATE_KEY
