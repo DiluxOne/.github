@@ -578,10 +578,19 @@ jobs:
         run: |
           set -euo pipefail
           sign="🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
-          # Released when its GitHub release exists (plugin-release-wp.yml
-          # makes the tag and the release together, after wordpress.org).
+          # Released when it is the version in production (#287): its GitHub
+          # release exists (plugin-release-wp.yml) and, where the kind
+          # publishes too, that place says it (plugin-publish-wp.yml sends it
+          # to wordpress.org after the release): the advisory is published
+          # once users can get the fix.
           if ! GH_TOKEN="$ISSUE_TOKEN" gh api "repos/$REPO/releases/tags/$VERSION" --jq .tag_name >/dev/null 2>&1; then
             echo "$VERSION is not released yet in $REPO: the next run looks again."; exit 0
+          fi
+          git clone -q --depth 1 "https://github.com/$REPO" "$RUNNER_TEMP/repo"
+          rel=$(ROOT="$RUNNER_TEMP/repo" VERSION="$VERSION" python3 .dx-central/scripts/security-patch.py release)
+          now=$(GH_TOKEN="$ISSUE_TOKEN" python3 .dx-central/scripts/production-version.py --repo "$REPO" --kind "$(jq -r .kind <<<"$rel")" --slug "$(jq -r .slug <<<"$rel")" --json 2>/dev/null | jq -r '.version // ""' || true)
+          if [ "$now" != "$VERSION" ]; then
+            echo "$VERSION is released in $REPO but not where the kind publishes yet (${now:-unknown}): the next run looks again."; exit 0
           fi
           export REPOSITORIES="${REPO#*/}"
           # The advisory with dilux-security; the carry with dilux-bot.

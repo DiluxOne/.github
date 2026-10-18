@@ -1,7 +1,7 @@
 name: WordPress plugin release
 
-# Reusable. Publishes a WordPress plugin to wordpress.org once a person has
-# accepted the issue "Release X.Y.Z" (#82), from the version the labels of
+# Reusable. Releases a WordPress plugin once a person has accepted the issue
+# "Release X.Y.Z" (#82), from the version the labels of
 # what merged say is next; or from a tag X.Y.Z an administrator pushes by hand, which is
 # the same pipeline with the version typed instead of computed.
 #
@@ -14,10 +14,13 @@ name: WordPress plugin release
 # summary shows the version, the bump and the pull requests that justify
 # it), then the `release` job checks that the three version markers
 # already say X.Y.Z (the release pull request, the one that removed the
-# `Unreleased.` line, set them: scripts/release-markers.sh prepare), commits
-# trunk + tags/X.Y.Z + assets to SVN, then creates the tag and the GitHub
-# release in one call with the release App's token, with the changelog and
-# what was merged, grouped by type. Nothing is ever committed to main by
+# `Unreleased.` line, set them: scripts/release-markers.sh prepare), builds
+# the plugin's zip (the checkout minus .distignore), then creates the tag
+# and the GitHub release in one call with the release App's token, with the
+# changelog, what was merged, grouped by type, and the zip. The release ends
+# there (#287): where the plugin is published next is another workflow's,
+# plugin-publish-wp.yml, which sends that very zip to wordpress.org when the
+# release is published. Nothing is ever committed to main by
 # this workflow: the markers there say the last released version, or the
 # one being released once its pull request merged (the checks' readme job
 # holds every pull request to that), and every development build stamps
@@ -96,15 +99,16 @@ name: WordPress plugin release
 # notes go to the summary, but no tag moves and no pre-release is published:
 # a rehearsal publishes nothing, as documented.
 #
-# Release tags are permanent (tag protection): a failed deploy is fixed and
-# re-run, never re-tagged. `dry-run: true` rehearses everything but the SVN
-# commit, the tag and the release, and shows the release notes in the run's
-# summary.
+# Release tags are permanent (tag protection): a failed release is fixed and
+# re-run, never re-tagged; a failed publishing to wordpress.org is re-run
+# from its release (plugin-publish-wp.yml, by hand with the tag).
+# `dry-run: true` rehearses everything but the tag and the release (the zip
+# is built), and shows the release notes in the run's summary.
 #
 # The release job runs in the calling repository's environment
-# (`environment`, default `wordpress-org`), and that is where the SVN
-# credentials and the release App's key live: as environment secrets, never
-# as repository or organisation secrets. The environment's deployment policy
+# (`environment`, default `wordpress-org`), and that is where the release
+# App's key lives (the SVN credentials too, for plugin-publish-wp.yml): as
+# environment secrets, never as repository or organisation secrets. The environment's deployment policy
 # admits main and X.Y.Z tags (and security/* when the security patch uses
 # it); it needs no required reviewer once releases go through their issue
 # (a repository that keeps them is asked twice). The caller passes
@@ -117,6 +121,7 @@ name: WordPress plugin release
 #     push:
 #       branches: [main]
 #       tags: ['[0-9]+.[0-9]+.[0-9]+']
+#     release: { types: [published] }   # the publish job, plugin-publish-wp.yml
 #   permissions:
 #     contents: write
 #     pull-requests: read   # the labels of what merged decide the version
@@ -124,6 +129,7 @@ name: WordPress plugin release
 #     actions: read         # the environment's rules, and the runs still waiting
 #   jobs:
 #     release:
+#       if: github.event_name == 'push'
 #       uses: DiluxOne/.github/.github/workflows/plugin-release-wp.yml@v5
 #       with:
 #         slug: diluxone-offload
@@ -147,11 +153,11 @@ on:
         type: string
         default: ''
       dry-run:
-        description: Check out SVN and prepare the commit without committing it, create no tag and no release, show the notes in the summary. For rehearsing.
+        description: Build the zip, create no tag and no release, show the notes in the summary. For rehearsing.
         type: boolean
         default: false
       environment:
-        description: The repository environment the release job runs in. Its deployment policy should allow main and X.Y.Z tags (and security/* when security-environment is empty), and the SVN secrets and the release App's key live in it. The approval is the accepted release issue (#82); required reviewers, if it has any, approve too.
+        description: The repository environment the release job runs in. Its deployment policy should allow main and X.Y.Z tags (and security/* when security-environment is empty), and the release App's key lives in it. The approval is the accepted release issue (#82); required reviewers, if it has any, approve too.
         type: string
         default: wordpress-org
       auto-environment:
@@ -498,7 +504,7 @@ jobs:
           printf '## Development build %s\n\nPublished as the pre-release [%s](%s), replacing the previous one: tag `%s` now points at `%s`, the asset is `%s.zip`. Not a release: nothing reached wordpress.org.\n' "$DEV" "$title" "$url" "$DEV_TAG" "$BUILD" "$SLUG" >> "$GITHUB_STEP_SUMMARY"
 
   release:
-    name: Deploy to wordpress.org
+    name: Release
     needs: version
     if: needs.version.outputs.version != ''
     runs-on: ubuntu-latest
@@ -507,12 +513,12 @@ jobs:
       contents: write # what the workflow granted every job before: the checkout, and the tag through the App's token
     environment: ${{ needs.version.outputs.environment }}
     # One release at a time; a run waiting for approval is never cancelled by
-    # a newer push (the approver decides), and a run deploying is never
+    # a newer push (the approver decides), and a run releasing is never
     # cancelled at all.
     # A security patch has a group of its own: a push to the base while it
     # waits would otherwise replace it as the one pending run. Both may then
-    # deploy at once; SVN refuses the second commit on an out-of-date trunk,
-    # and that run is re-run.
+    # release at once; their publishing to wordpress.org is one at a time
+    # (plugin-publish-wp.yml).
     concurrency:
       group: release-${{ github.repository }}${{ needs.version.outputs.security == 'true' && '-security' || '' }}
       cancel-in-progress: false
@@ -559,8 +565,8 @@ jobs:
             # the version in production is read again, and the patch must
             # still be the one after it.
             again=$(python3 .dx-central/scripts/production-version.py --repo "$GITHUB_REPOSITORY" --kind wordpress-plugin --slug "$SLUG" --json | jq -r .patch) \
-              || { echo "::error::No version in production to patch any more. Nothing reached wordpress.org."; exit 1; }
-            [ "$again" = "$VERSION" ] || { echo "::error::The patch after the version in production is now $again, not $VERSION. Nothing reached wordpress.org."; exit 1; }
+              || { echo "::error::No version in production to patch any more. Nothing was released."; exit 1; }
+            [ "$again" = "$VERSION" ] || { echo "::error::The patch after the version in production is now $again, not $VERSION. Nothing was released."; exit 1; }
             echo "Security patch $VERSION, still the one after production, no tag yet."; exit 0
           fi
           case "$GITHUB_REF" in refs/tags/*) on_tag=true;; *) on_tag=false;; esac
@@ -573,7 +579,7 @@ jobs:
           git merge-base --is-ancestor "$GITHUB_SHA" "origin/$BASE" || { echo "::error::$GITHUB_SHA is not on $BASE; a release is a commit of $BASE."; exit 1; }
           exclude=""; if [ "$on_tag" = true ]; then exclude="$VERSION"; fi
           again=$(python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$BASE" ${exclude:+--exclude-tag "$exclude"} --json | jq -r 'if .pending then .next else "" end')
-          [ "$again" = "$VERSION" ] || { echo "::error::The labels now give '${again:-nothing}' where $VERSION was approved; something merged or was relabelled meanwhile. Nothing reached wordpress.org; the next push to $BASE computes again."; exit 1; }
+          [ "$again" = "$VERSION" ] || { echo "::error::The labels now give '${again:-nothing}' where $VERSION was approved; something merged or was relabelled meanwhile. Nothing was released; the next push to $BASE computes again."; exit 1; }
           # The carry lock (#287): a security patch released from
           # security/X.Y.Z must be on this commit before a release from $BASE,
           # or the vulnerability comes back. Its carry pull request (opened
@@ -581,9 +587,9 @@ jobs:
           rc=0; left=$(python3 .dx-central/scripts/carry-lock.py check "$GITHUB_SHA") || rc=$?
           if [ "$rc" -ne 0 ]; then
             if [ "$rc" = 1 ]; then
-              echo "::error::A security patch is not carried into $BASE yet: ${left//$'\n'/; }. Its carry pull request merges first. Nothing reached wordpress.org."
+              echo "::error::A security patch is not carried into $BASE yet: ${left//$'\n'/; }. Its carry pull request merges first. Nothing was released."
             else
-              echo "::error::Whether every security patch is carried into $BASE could not be told (exit $rc). Nothing reached wordpress.org."
+              echo "::error::Whether every security patch is carried into $BASE could not be told (exit $rc). Nothing was released."
             fi
             exit 1
           fi
@@ -593,7 +599,7 @@ jobs:
         if: steps.still.outputs.go == 'true'
         # The release pull request set the three markers and the changelog
         # heading to this version, so main already says what ships: nothing
-        # reaches wordpress.org from a commit that names another version
+        # is released from a commit that names another version
         # (scripts/release-markers.sh). The stamp that follows then changes
         # nothing but the readme's line endings (LF), and fails when a marker
         # does not hold the version: a file whose shape changed.
@@ -606,19 +612,19 @@ jobs:
 
       - name: This version's changelog
         if: steps.still.outputs.go == 'true'
-        # Before touching SVN: a release without its changelog stops here,
+        # Before the release: one without its changelog stops here,
         # and so does a readme that announces another version or is still
         # held (the version job holds it first; this is the second guard).
         run: |
           set -euo pipefail
           rc=0; bash .dx-central/scripts/release-ready.sh readme.txt || rc=$?
           if [ "$rc" -eq 1 ]; then
-            echo "::error file=readme.txt::The newest changelog entry still says 'Unreleased.': the version is not ready. Nothing reached wordpress.org."
+            echo "::error file=readme.txt::The newest changelog entry still says 'Unreleased.': the version is not ready. Nothing was released."
             exit 1
           fi
           newest=$(grep -m1 -oP '^= \K[0-9]+\.[0-9]+\.[0-9]+(?= =$)' readme.txt || true)
           if [ "$newest" != "$VERSION" ]; then
-            echo "::error file=readme.txt::The newest changelog entry is '= ${newest:-none} =' but the labels of what merged give $VERSION. Either the readme announces a version the labels do not reach (add version:major, version:minor or version:patch to a merged pull request) or the labels went further than the readme (head the entry and set the markers to $VERSION in a pull request). Nothing reached wordpress.org."
+            echo "::error file=readme.txt::The newest changelog entry is '= ${newest:-none} =' but the labels of what merged give $VERSION. Either the readme announces a version the labels do not reach (add version:major, version:minor or version:patch to a merged pull request) or the labels went further than the readme (head the entry and set the markers to $VERSION in a pull request). Nothing was released."
             exit 1
           fi
           awk -v head="= ${VERSION} =" '$0 == head { found = 1; next } found && /^=/ { exit } found { print }' readme.txt > "$RUNNER_TEMP/notes.md"
@@ -648,27 +654,28 @@ jobs:
       - name: Only the plugin ships
         if: steps.still.outputs.go == 'true'
         # The central's checkout has done its work; it leaves the workspace
-        # now, because the deploy action copies the workspace minus
-        # .distignore into SVN, and nothing that is not the plugin may ship.
+        # now, because the zip is the workspace minus .distignore, and
+        # nothing that is not the plugin may ship.
         run: rm -rf .dx-central
 
-      - name: Deploy to SVN
+      - name: The plugin's zip
+        # What the release carries, and what plugin-publish-wp.yml sends to
+        # wordpress.org: the checkout minus .distignore, as wordpress.org's
+        # deploy action builds it. Built in a rehearsal too, to prove it.
         if: steps.still.outputs.go == 'true'
-        id: deploy
-        uses: 10up/action-wordpress-plugin-deploy@54bd289b8525fd23a5c365ec369185f2966529c2 # 2.3.0
-        with:
-          generate-zip: true
-          # The action runs `if $INPUT_DRY_RUN`: pass exactly true or false.
-          dry-run: ${{ inputs.dry-run && 'true' || 'false' }}
+        id: zip
         env:
-          SVN_USERNAME: ${{ secrets.SVN_USERNAME }}
-          SVN_PASSWORD: ${{ secrets.SVN_PASSWORD }}
           SLUG: ${{ inputs.slug }}
-          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          exclude=(); [ -f .distignore ] && exclude=(--exclude-from=.distignore)
+          rsync -rc "${exclude[@]}" --exclude=.git --exclude=.github ./ "$RUNNER_TEMP/$SLUG/" --delete
+          (cd "$RUNNER_TEMP" && zip -qr "$SLUG.zip" "$SLUG")
+          echo "path=$RUNNER_TEMP/$SLUG.zip" >> "$GITHUB_OUTPUT"
 
       - name: The release App's token
-        # Only after SVN took the version, only on a branch (main, or a
-        # security patch's), never in a rehearsal:
+        # Only on a branch (main, or a security patch's), never in a
+        # rehearsal:
         # the one token that can create a release tag, held by the one step
         # that does it. The App has contents: write and nothing else, and its
         # key lives in the environment, so only an approved job ever sees it.
@@ -681,40 +688,25 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-contents: write
 
-      - name: The zip, when the deploy action made none
-        # The deploy action stops early, with no zip, when SVN already has
-        # tags/X.Y.Z: a re-run after the release step failed. The release
-        # still needs its file, so it is built here the way the action
-        # builds it (the checkout minus .distignore, when there is one).
-        if: steps.still.outputs.go == 'true' && !inputs.dry-run && steps.deploy.outputs.zip-path == ''
-        id: zip
-        env:
-          SLUG: ${{ inputs.slug }}
-        run: |
-          set -euo pipefail
-          exclude=(); [ -f .distignore ] && exclude=(--exclude-from=.distignore)
-          rsync -rc "${exclude[@]}" --exclude=.git --exclude=.github ./ "$RUNNER_TEMP/$SLUG/" --delete
-          (cd "$RUNNER_TEMP" && zip -qr "$SLUG.zip" "$SLUG")
-          echo "path=$RUNNER_TEMP/$SLUG.zip" >> "$GITHUB_OUTPUT"
-
       - name: The release notes, in a rehearsal
         if: steps.still.outputs.go == 'true' && inputs.dry-run
+        env:
+          ZIP: ${{ steps.zip.outputs.path }}
         run: |
-          printf '## Rehearsal of %s\n\nNothing was committed to SVN, no tag and no release were created. The notes would be:\n\n' "$VERSION" >> "$GITHUB_STEP_SUMMARY"
+          printf '## Rehearsal of %s\n\nNo tag and no release were created (the zip was built, %s). The notes would be:\n\n' "$VERSION" "$(du -h "$ZIP" | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
           cat "$RUNNER_TEMP/notes.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: GitHub release, and the tag with it
         # One API call creates the tag on the commit and the release, so no
         # tag ever exists without its release (the tag run this starts finds
-        # the release and stops) and no release without its tag. If SVN took
-        # the version but this step failed, Re-run jobs: the deploy action
-        # sees tags/X.Y.Z already on SVN, the zip is rebuilt above, and the
-        # release is created then.
+        # the release and stops) and no release without its tag. Its
+        # publishing starts plugin-publish-wp.yml in the repository, which
+        # sends its zip to wordpress.org (#287).
         if: steps.still.outputs.go == 'true' && !inputs.dry-run
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ needs.version.outputs.version }}
           target_commitish: ${{ github.sha }}
-          files: ${{ steps.deploy.outputs.zip-path || steps.zip.outputs.path }}
+          files: ${{ steps.zip.outputs.path }}
           body_path: ${{ runner.temp }}/notes.md
           token: ${{ steps.app.outputs.token || github.token }}
