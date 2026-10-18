@@ -105,9 +105,9 @@ settings:
 #                 last GitHub release against (scripts/production-version.py,
 #                 #247): `url` ({slug} the caller's input) returns JSON whose
 #                 `field` is that version; no such field means nothing is
-#                 published there yet, and a 404 or an error answer that the
-#                 place has no such project, so the last GitHub release is in
-#                 production (#315)
+#                 published there yet, any other error answer too, and a 404
+#                 or a "not found" answer that the place has no such project,
+#                 so the last GitHub release is in production (#315)
 release:
   publishes-to: wordpress.org
   workflow: plugin-release-wp.yml

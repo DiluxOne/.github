@@ -80,9 +80,10 @@ def pack_stable(kind):
 
 def fetch_stable(spec, slug, opener=urllib.request.urlopen):
     """The version the pack's place publishes: None when it has no such
-    project (a 404 or an error answer: the repository publishes nowhere
-    else, #315), "" when it has one with no version; an error that is not a
-    404 raises."""
+    project (a 404, or an error answer saying it is not found: the
+    repository publishes nowhere else, #315); "" when it has one with no
+    version, or answers any other error; a failure that is not a 404, or an
+    answer that is not an object, raises."""
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug or ""):
         raise ValueError(f"not a slug: {slug!r}")
     url = spec["url"].replace("{slug}", slug)
@@ -93,8 +94,12 @@ def fetch_stable(spec, slug, opener=urllib.request.urlopen):
         if exc.code == 404:
             return None
         raise
-    if not isinstance(data, dict) or data.get("error"):
-        return None
+    if not isinstance(data, dict):
+        raise ValueError(f"{url} answered something that is not an object")
+    if data.get("error"):
+        # Only an answer that it has no such project; any other error
+        # (closed, a limit) is not that, and a person settles it.
+        return None if "not found" in str(data["error"]).lower() else ""
     return str(data.get(spec.get("field") or "version") or "")
 
 
@@ -140,6 +145,15 @@ def self_test():
     check("fetch_stable: the slug goes into the url", seen, ["https://x/?s=diluxone-users"])
     check("fetch_stable: an error answer is a plugin that is not there, so it publishes nowhere else", fetch_stable(spec, "a", lambda u, timeout: Resp('{"error": "Plugin not found."}')), None)
     check("fetch_stable: there, but with no version, is nothing published", fetch_stable(spec, "a", lambda u, timeout: Resp('{"name": "x"}')), "")
+    check("fetch_stable: any other error answer (closed, a limit) is not 'not there', so a person settles it",
+          [fetch_stable(spec, "a", lambda u, timeout, b=b: Resp(b)) for b in ('{"error": "closed"}', '{"error": "Too many requests"}')], ["", ""])
+    check("#315: a 'Plugin not found.' answer is in production at its last GitHub release, any other error is not",
+          (decide(rel, fetch_stable(spec, "a", lambda u, timeout: Resp('{"error": "Plugin not found."}')))[0]["version"], decide(rel, fetch_stable(spec, "a", lambda u, timeout: Resp('{"error": "closed"}')))[0]), ("1.10.2", None))
+    try:
+        fetch_stable(spec, "a", lambda u, timeout: Resp('["x"]'))
+        check("fetch_stable: an answer that is not an object cannot tell", "no error", "an error")
+    except ValueError:
+        check("fetch_stable: an answer that is not an object cannot tell", True, True)
     def nf(u, timeout):
         raise urllib.error.HTTPError(u, 404, "nf", {}, None)
     check("fetch_stable: a 404 is a plugin that is not there", fetch_stable(spec, "a", nf), None)
