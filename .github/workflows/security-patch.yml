@@ -599,9 +599,10 @@ jobs:
           export GH_TOKEN
           unset PRIVATE_KEY BOT_KEY
           trap 'for t in "$GH_TOKEN" "$BOT_TOKEN"; do curl -fsS -o /dev/null -X DELETE -H "Authorization: Bearer $t" https://api.github.com/installation/token || true; done' EXIT
-          # The advisory, with the patched version on every package it names.
+          # The advisory, with the patched version on every package it names,
+          # and a range where it had none (#317).
           gh api "repos/$REPO/security-advisories/$GHSA" > "$RUNNER_TEMP/adv.json"
-          jq --arg v "$VERSION" '{state: "published", vulnerabilities: [.vulnerabilities[] | {package, vulnerable_version_range, patched_versions: $v, vulnerable_functions}]}' "$RUNNER_TEMP/adv.json" > "$RUNNER_TEMP/publish.json"
+          ADVISORY="$RUNNER_TEMP/adv.json" python3 .dx-central/scripts/security-patch.py publish > "$RUNNER_TEMP/publish.json"
           published=false
           if gh api -X PATCH "repos/$REPO/security-advisories/$GHSA" --input "$RUNNER_TEMP/publish.json" >/dev/null; then published=true; fi
           # The fix into the default branch (#287), on its own: a Bug issue
@@ -655,5 +656,5 @@ jobs:
           GH_TOKEN="$ISSUE_TOKEN" gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label patch:pushed --add-label patch:released >/dev/null
           GH_TOKEN="$ISSUE_TOKEN" gh issue close "$ISSUE" --repo "$GITHUB_REPOSITORY" --reason completed --comment "$(printf '%s is released. %s %s\n\n%s, in a private repository' "$VERSION" \
             "$([ "$published" = true ] && echo "The advisory is published." || echo "**Publishing the advisory failed**: a maintainer publishes it by hand.")" \
-            "${pr_url:+The fix goes into the default branch through $pr_url, which merges on its own.}${pr_url:-${url:+The fix goes into the default branch through $url, by hand.}}" "$sign")" >/dev/null
+            "$(if [ -n "$pr_url" ]; then echo "The fix goes into the default branch through $pr_url, which merges on its own."; elif [ -n "$url" ]; then echo "The fix goes into the default branch through $url, by hand."; fi)" "$sign")" >/dev/null
           echo "Finished $GHSA ($VERSION)."

@@ -275,6 +275,22 @@ def release(root, version):
     return {"kind": kind, "slug": inputs["slug"], "argv": ri.prepare_argv(rel, inputs, version, os.path.join(HERE, ".."))}
 
 
+def publish_payload(adv, version, repo=""):
+    """The PATCH that publishes the advisory once its patch is released
+    (#317): every package it names patched at the version, and a package
+    with no vulnerable range given everything before it, since GitHub
+    publishes none without one; one naming no package names the
+    repository's. Pure."""
+    vulns = [v for v in (adv or {}).get("vulnerabilities") or [] if isinstance(v, dict)]
+    if not vulns and repo:
+        vulns = [{"package": {"ecosystem": "other", "name": repo.split("/")[-1]}}]
+    return {"state": "published",
+            "vulnerabilities": [{"package": v.get("package"),
+                                 "vulnerable_version_range": v.get("vulnerable_version_range") or f"< {version}",
+                                 "patched_versions": version,
+                                 "vulnerable_functions": v.get("vulnerable_functions") or []} for v in vulns]}
+
+
 def self_test():
     failed = 0
 
@@ -283,6 +299,14 @@ def self_test():
         print(("ok   " if got == want else "FAIL ") + name + ("" if got == want else f": got {got!r}, want {want!r}"))
         failed |= got != want
 
+    adv = {"vulnerabilities": [{"package": {"ecosystem": "other", "name": "x"}, "vulnerable_version_range": None, "patched_versions": None, "vulnerable_functions": []},
+                               {"package": {"ecosystem": "other", "name": "y"}, "vulnerable_version_range": ">= 1.0, < 2.1.0", "patched_versions": "2.0.9", "vulnerable_functions": ["f"]}]}
+    pub = publish_payload(adv, "2.1.1")
+    check("#317 publish: published, every package patched at the patch's version, an empty range filled as everything before it, a range it had kept",
+          (pub["state"], [v["patched_versions"] for v in pub["vulnerabilities"]], [v["vulnerable_version_range"] for v in pub["vulnerabilities"]], pub["vulnerabilities"][1]["vulnerable_functions"]),
+          ("published", ["2.1.1", "2.1.1"], ["< 2.1.1", ">= 1.0, < 2.1.0"], ["f"]))
+    check("#317 publish: an advisory naming no package names the repository's, so it is publishable",
+          publish_payload({"vulnerabilities": []}, "0.2.1", "o/r")["vulnerabilities"], [{"package": {"ecosystem": "other", "name": "r"}, "vulnerable_version_range": "< 0.2.1", "patched_versions": "0.2.1", "vulnerable_functions": []}])
     m = marker("2.1.1", "a" * 40, "2026-10-18T06:00:00Z")
     check("marker: reads back", parse("text\n" + m), {"version": "2.1.1", "tree": "a" * 40, "at": "2026-10-18T06:00:00Z"})
     check("stage: nothing yet starts", stage([], "", "")[0], "start")
@@ -382,6 +406,8 @@ def self_test():
               (True, False, True, True, True))
         fin = run("act", "Finish")
         check("wiring: the advisory is published with dilux-security's key", "DILUX_SECURITY_PRIVATE_KEY" in fin["env"]["PRIVATE_KEY"], True)
+        check("wiring (#317): the advisory's PATCH comes from publish_payload, and the closing comment names the carry once",
+              ("security-patch.py publish" in fin["run"], "${pr_url:-" in fin["run"], "VERSION" in fin["env"] and "REPO" in fin["env"]), (True, False, True))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
@@ -418,6 +444,11 @@ def main(argv):
             text = entry(fh.read(), os.environ.get("VERSION_TEXT", ""))
         with open(os.environ["README"], "w", encoding="utf-8") as fh:
             fh.write(text)
+        return 0
+    if argv == ["publish"]:
+        # ADVISORY (the advisory's JSON), VERSION, REPO: the PATCH to send.
+        with open(os.environ["ADVISORY"], encoding="utf-8") as fh:
+            print(json.dumps(publish_payload(json.load(fh), os.environ["VERSION"], os.environ.get("REPO", ""))))
         return 0
     if argv == ["release"]:
         print(json.dumps(release(os.environ["ROOT"], os.environ["VERSION"])))
