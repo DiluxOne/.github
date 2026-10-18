@@ -238,10 +238,13 @@ def problems(policy):
         out.append("person-merges: security is always there")
     if policy.get("planned-release", "confirm") not in ("auto", "confirm"):
         out.append("planned-release: auto or confirm")
-    sp = policy.get("security-patch", {"veto-hours": 6})
-    hrs = sp.get("veto-hours") if isinstance(sp, dict) else None
-    if not isinstance(sp, dict) or set(sp) - {"veto-hours"} or isinstance(hrs, bool) or not isinstance(hrs, (int, float)) or not 0 < hrs <= 720:
-        out.append("security-patch: veto-hours, a number of hours above 0 and at most 720")
+    sp = policy.get("security-patch", {})
+    count = lambda v, top: isinstance(v, int) and not isinstance(v, bool) and 0 < v <= top
+    if (not isinstance(sp, dict) or set(sp) - {"max-files", "max-lines", "forbidden", "reviewer-model"}
+            or not count(sp.get("max-files", 1), 100) or not count(sp.get("max-lines", 1), 5000)
+            or not (isinstance(sp.get("forbidden", []), list) and all(isinstance(g, str) and g for g in sp.get("forbidden", [])))
+            or not (isinstance(sp.get("reviewer-model", "x"), str) and re.fullmatch(r"claude-[a-z0-9.-]+", sp.get("reviewer-model", "claude-x")))):
+        out.append("security-patch: max-files (1 to 100), max-lines (1 to 5000), forbidden (a list of globs), reviewer-model (a Claude model)")
     lanes = policy.get("lanes")
     if not isinstance(lanes, dict) or not lanes:
         return out + ["lanes: at least one"]
@@ -976,9 +979,11 @@ def self_test():
           (merge({**org, "budgets-usd": {"autopilot-work": 20, "security-fix": 10}}, {"budgets-usd": {"autopilot-work": 5, "security-fix": 50}})["budgets-usd"],
            problems({**org, "budgets-usd": {"autopilot-work": 0}}) != [], problems({**org, "budgets-usd": {"other": 1}}) != [], problems({**org, "budgets-usd": {"autopilot-fix": 8}})),
           ({"autopilot-work": 5, "security-fix": 10}, True, True, []))
-    check("#247 schema: the veto window is hours, above 0, at most 720",
-          [problems({**org, "security-patch": v}) for v in ({"veto-hours": 2}, {"veto-hours": 0}, {"veto-hours": True}, {"veto-hours": 721}, {"hours": 6})],
-          [[]] + [["security-patch: veto-hours, a number of hours above 0 and at most 720"]] * 4)
+    sp_err = ["security-patch: max-files (1 to 100), max-lines (1 to 5000), forbidden (a list of globs), reviewer-model (a Claude model)"]
+    check("#287 schema: a patch's limits and its reviewer; no veto window any more",
+          [problems({**org, "security-patch": v}) for v in ({"max-files": 3, "max-lines": 100, "reviewer-model": "claude-sonnet-5-5"}, {}, {"veto-hours": 6},
+                                                             {"max-files": 0}, {"max-lines": True}, {"forbidden": "x"}, {"reviewer-model": "gpt"})],
+          [[], []] + [sp_err] * 5)
     check("#188 schema: a lane's unknown key", problems({**org, **lane(budget=5)}), ["lanes.human-issue.budget: not a key of a lane"])
     check("#188 schema: an unknown level", problems({**org, **lane(merge={"max-risk": "huge", "max-complexity": "low"})}), ["lanes.human-issue.merge.max-risk: one of none, low, medium, high"])
     check("#188 schema: a ceiling below the default", problems({**org, **lane(ceiling={"max-risk": "low", "max-complexity": "high"})}), ["lanes.human-issue.ceiling.max-risk: low is below the lane's merge (medium)"])

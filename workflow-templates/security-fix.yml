@@ -7,7 +7,9 @@ name: Security fixes
 # from a public one. An advisory in triage or draft starts its fix, which
 # lands here as an issue and a branch; one in triage is triaged first and
 # moved to draft when it is reproduced and fixed. security-patch.yml then
-# publishes it after its veto window (DiluxOne/.github#247).
+# publishes it once a maintainer approves it (DiluxOne/.github#247, #287).
+# The advisories are read and moved with dilux-security's key, which lives
+# only here.
 
 on:
   schedule:
@@ -30,5 +32,6 @@ jobs:
     uses: DiluxOne/.github/.github/workflows/security-fix.yml@v5
     secrets:
       DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+      DILUX_SECURITY_PRIVATE_KEY: ${{ secrets.DILUX_SECURITY_PRIVATE_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
