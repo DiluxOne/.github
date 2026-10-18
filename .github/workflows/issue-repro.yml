@@ -85,11 +85,11 @@ name: Issue reproduction
 # author (dilux-bot) of the pull request, never what it changes, and the
 # autopilot that writes the lane's fix, from dilux-bot's issue "The bug
 # reproduced from #<n>" (scripts/runner-route.py, #167).
-# At most `max-per-day` reports reproduced a day in the repository (20) and
-# `max-per-author` by one author (3), counted from the issues opened in the
-# last 24 hours (#287): a stranger's report starts a paid run with no person
-# in between. A maintainer's issue and the nightly review's (dilux-bot's)
-# count for nothing and are never held: every bug found is worked. The `high` reviewer of the policy
+# A stranger's report waits for a person past `max-per-day` issues opened
+# in the repository in 24 hours (20, not counting the bot's) or
+# `max-per-author` by its author (3) (#287, scripts/repro-cap.py): it starts
+# a paid run with no person in between. A maintainer's report, the nightly
+# review's (dilux-bot's) and a run a maintainer asked for are never held. The `high` reviewer of the policy
 # writes the test.
 #
 #   on:
@@ -122,7 +122,7 @@ on:
         type: string
         default: ''
       max-per-day:
-        description: Reports reproduced in 24 hours across the repository before the next waits for a person (maintainers' and the bot's issues do not count).
+        description: Issues opened in 24 hours across the repository (not by the bot) past which a stranger's report waits for a person.
         type: number
         default: 20
       max-per-author:
@@ -278,29 +278,23 @@ jobs:
           MAX: ${{ inputs.max-per-day }}
           MAX_AUTHOR: ${{ inputs.max-per-author }}
           AUTHOR: ${{ github.event.issue.user.login }}
+          SENDER: ${{ github.event.sender.login }}
+          SENDER_TYPE: ${{ github.event.sender.type }}
         run: |
           set -euo pipefail
-          [[ "$AUTHOR" =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || { echo "::warning::An author login that is not one; this report waits for a person."; echo "run=false" >> "$GITHUB_OUTPUT"; exit 0; }
-          # The bot's (the nightly review's) and a maintainer's are never held.
-          role=none
-          [ "$AUTHOR" = "dilux-bot[bot]" ] || role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$AUTHOR/permission" --jq .role_name 2>/dev/null || echo none)
-          if [ "$AUTHOR" = "dilux-bot[bot]" ] || [ "$role" = admin ] || [ "$role" = maintain ] || [ "$role" = write ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
-          fi
+          role() { [[ "$1" =~ ^[A-Za-z0-9-]+$ ]] || return 0; gh api "repos/$GITHUB_REPOSITORY/collaborators/$1/permission" --jq .role_name 2>/dev/null || true; }
+          AUTHOR_ROLE=$(role "$AUTHOR")
+          SENDER_ROLE=""; [ "$SENDER_TYPE" = Bot ] || SENDER_ROLE=$(role "$SENDER")
           since=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)
-          # Issues opened in the last 24 hours, not by the bot: a count that
-          # cannot be read holds the report, never lets it through.
-          all=$(gh api -X GET search/issues -f q="repo:$GITHUB_REPOSITORY is:issue created:>=$since -author:app/dilux-bot" --jq .total_count) || all=999999
-          mine=$(gh api -X GET search/issues -f q="repo:$GITHUB_REPOSITORY is:issue created:>=$since author:$AUTHOR" --jq .total_count) || mine=999999
-          if [ "$mine" -gt "$MAX_AUTHOR" ]; then
-            echo "::warning::$AUTHOR opened $mine issues in 24 hours (cap $MAX_AUTHOR); this one waits for a person."
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          elif [ "$all" -gt "$MAX" ]; then
-            echo "::warning::$all issues were opened in 24 hours (cap $MAX); this one waits for a person."
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=true" >> "$GITHUB_OUTPUT"
+          # Issues opened in the last 24 hours, not by the bot; empty when
+          # the search fails, which holds the report (scripts/repro-cap.py).
+          ALL=""; MINE=""
+          if [[ "$AUTHOR" =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]]; then
+            ALL=$(gh api -X GET search/issues -f q="repo:$GITHUB_REPOSITORY is:issue created:>=$since -author:app/dilux-bot" --jq .total_count 2>/dev/null || true)
+            MINE=$(gh api -X GET search/issues -f q="repo:$GITHUB_REPOSITORY is:issue created:>=$since author:$AUTHOR" --jq .total_count 2>/dev/null || true)
           fi
+          export AUTHOR_ROLE SENDER_ROLE ALL MINE
+          python3 .dx-central/scripts/repro-cap.py decide >> "$GITHUB_OUTPUT"
 
       - name: The high reviewer from the policy
         id: policy

@@ -1867,7 +1867,7 @@ def main(argv):
             said()
         elif v == "silent":
             why = silent_why(mode, pr, os.environ.get("WHY", ""), os.environ.get("SPEC_OUTCOME", ""), limit, done, total, runs, cap)
-            if mode == "fix":
+            if mode == "fix" and not os.environ.get("WHY"):
                 why = "The fix round pushed nothing and the agent did not say why."
             gh(target[0], "comment", str(target[1]), "--repo", repo, "--body", silent_comment(why, run_url))
             said()

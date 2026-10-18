@@ -37,8 +37,8 @@ autopilot-rounds: 3
 # it, a person takes the pull request.
 autopilot-runs: 5
 # The most one agent's run may cost, in US dollars (#287): Claude stops
-# there (--max-budget-usd), and the run ends as one out of turns. A
-# repository may lower each one, never raise it.
+# there (--max-budget-usd), and the run is handed to a person, never
+# continued. A repository may lower each one, never raise it.
 budgets-usd:
   autopilot-spec: 3
   autopilot-work: 20

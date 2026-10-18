@@ -353,7 +353,7 @@ jobs:
           # budgets-usd, the repository's file only lowering it).
           pol=$(REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml" python3 .dx-central/scripts/autonomy.py policy)
           work_key=autopilot-work; [ "$MODE" != fix ] || work_key=autopilot-fix
-          { echo "budget-spec=$(jq -r '."budgets-usd"."autopilot-spec" // 3' <<<"$pol")"; echo "budget-work=$(jq -r --arg k "$work_key" '."budgets-usd"[$k] // 10' <<<"$pol")"; } >> "$GITHUB_OUTPUT"
+          { echo "budget-spec=$(jq -r '."budgets-usd"."autopilot-spec" // 3' <<<"$pol")"; echo "budget-work=$(jq -r --arg k "$work_key" '."budgets-usd"[$k] // (if $k == "autopilot-fix" then 10 else 20 end)' <<<"$pol")"; } >> "$GITHUB_OUTPUT"
           echo "default=$(gh repo view "$GITHUB_REPOSITORY" --json defaultBranchRef --jq .defaultBranchRef.name)" >> "$GITHUB_OUTPUT"
           # A fix round's head before it: the end rule tells a round that
           # pushed from one that did not.
@@ -781,7 +781,7 @@ jobs:
           claude_args: |
             --model claude-opus-5-5
             --max-turns 150
-            --max-budget-usd ${{ needs.prep.outputs.budget-work || '10' }}
+            --max-budget-usd ${{ needs.prep.outputs.budget-work || (inputs.mode == 'fix' && '10' || '20') }}
             --allowedTools "Bash,Read,Edit,MultiEdit,Write,Glob,Grep"
 
       - name: What the agent left
