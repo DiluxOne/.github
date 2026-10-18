@@ -153,12 +153,13 @@ jobs:
               # The announced version and tree, for publish and finish only:
               # a start (again, after the version in production moved)
               # builds anew.
-              version=""; tree=""
+              version=""; tree=""; at=""
               if [ "$act" != start ]; then
                 version=$(sed -n 's/.*version=\([0-9.]*\).*/\1/p' <<<"$mark"); tree=$(sed -n 's/.*tree=\([0-9a-f]*\).*/\1/p' <<<"$mark")
+                at=$(sed -n 's/.* at=\([^ ]*\) -->.*/\1/p' <<<"$mark")
               fi
-              todo=$(jq -c --argjson n "$n" --arg repo "$repo" --arg ghsa "$ghsa" --arg act "$act" --arg version "$version" --arg tree "$tree" \
-                '. + [{issue: $n, repo: $repo, ghsa: $ghsa, act: $act, version: $version, tree: $tree}]' <<<"$todo") ;;
+              todo=$(jq -c --argjson n "$n" --arg repo "$repo" --arg ghsa "$ghsa" --arg act "$act" --arg version "$version" --arg tree "$tree" --arg at "$at" \
+                '. + [{issue: $n, repo: $repo, ghsa: $ghsa, act: $act, version: $version, tree: $tree, at: $at}]' <<<"$todo") ;;
             esac
           done < "$RUNNER_TEMP/claims.tsv"
           echo "todo=$todo" >> "$GITHUB_OUTPUT"
@@ -456,13 +457,15 @@ jobs:
           tag=$(sed -n 's/^tag=//p' "$RUNNER_TEMP/in/build" | head -1)
           tree=$(sed -n 's/^tree=//p' "$RUNNER_TEMP/in/build" | head -1)
           checks=$(sed -n 's/^checks=//p' "$RUNNER_TEMP/in/build" | head -1)
-          safe=$(jq -r '.safe // false' "$RUNNER_TEMP/review/review.json" 2>/dev/null || echo false)
+          safe=$(jq -r '.safe // false' "$RUNNER_TEMP/review/review.json" 2>/dev/null || true)
+          [ -n "$safe" ] || safe=none
           why=""
           if [ -s "$RUNNER_TEMP/in/limits.txt" ]; then why="the fix breaks the patch's limits: $(paste -sd ';' "$RUNNER_TEMP/in/limits.txt")"
           elif [ -z "$version" ]; then why="the fix does not apply on the version in production, or there is no version in production"
           elif [ "$checks" = none ]; then why="the repository names no checks to run (make pre-pr), and a patch is never published unchecked"
           elif [ "$checks" != passed ]; then why="the repository's checks failed on the patch"
-          elif [ "$safe" != true ]; then why="the second review did not find it safe: $(jq -r '[.why] + .concerns | join(" ")' "$RUNNER_TEMP/review/review.json" 2>/dev/null || echo 'it gave no verdict')"
+          elif [ "$safe" = none ]; then why="the second review gave no verdict"
+          elif [ "$safe" != true ]; then why="the second review did not find it safe: $(jq -r '[.why] + .concerns | join(" ")' "$RUNNER_TEMP/review/review.json")"
           fi
           if [ -n "$why" ]; then
             gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --add-label patch:failed >/dev/null
@@ -489,6 +492,7 @@ jobs:
           REPO: ${{ matrix.p.repo }}
           GHSA: ${{ matrix.p.ghsa }}
           ANNOUNCED: ${{ matrix.p.tree }}
+          AT: ${{ matrix.p.at }}
           CLIENT_ID: ${{ vars.DILUX_SECURITY_CLIENT_ID }}
           PRIVATE_KEY: ${{ secrets.DILUX_SECURITY_PRIVATE_KEY }}
           OWNER: ${{ github.repository_owner }}
@@ -508,6 +512,14 @@ jobs:
             exit 0
           fi
           [ -n "$version" ] && [ -s "$RUNNER_TEMP/in/fix.patch" ] || fail "It was approved, but the patch could not be built again (the version in production moved, or the fix no longer applies). Nothing was published; a maintainer takes it from here."
+          # The push token first, and the key out of the environment before
+          # anything of the public repository is touched.
+          [ -n "$CLIENT_ID" ] && [ -n "$PRIVATE_KEY" ] || { echo "::error::dilux-security's key is not set here: nothing pushed."; exit 1; }
+          export REPOSITORIES="${REPO#*/}"
+          GH_TOKEN=$(bash "$GITHUB_WORKSPACE/.dx-central/scripts/app-token.sh" mint '{"contents":"write","metadata":"read"}')
+          export GH_TOKEN
+          unset PRIVATE_KEY
+          trap 'curl -fsS -o /dev/null -X DELETE -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/installation/token || true' EXIT
           # The tree again, here, with the organisation's scripts only: the
           # public repository's code does not run in a job with a key. It
           # must be the tree that was announced and approved.
@@ -516,16 +528,19 @@ jobs:
           bash "$GITHUB_WORKSPACE/.dx-central/scripts/security-patch-build.sh" "$tag" "$version" "$RUNNER_TEMP/in/fix.patch" "A security fix ($GHSA)."
           tree=$(git rev-parse 'HEAD^{tree}')
           [ -n "$ANNOUNCED" ] && [ "$tree" = "$ANNOUNCED" ] || fail "The tree built now ($tree) is not the one announced and approved (${ANNOUNCED:-none}). Nothing was published; a maintainer takes it from here."
-          [ -n "$CLIENT_ID" ] && [ -n "$PRIVATE_KEY" ] || { echo "::error::dilux-security's key is not set here: nothing pushed."; exit 1; }
-          # patch:go still there, read last: removing it stops the push.
-          held=$(GH_TOKEN="$ISSUE_TOKEN" gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | index("patch:go") == null') \
+          # patch:go read again, last, with who added it: still a
+          # maintainer's, after the announcement; removing it stops the push.
+          GH_TOKEN="$ISSUE_TOKEN" gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE/timeline" --paginate --jq '[.[] | select(.event == "labeled") | {event, label: {name: .label.name}, actor: {login: .actor.login}, created_at}]' | jq -s 'add // []' > "$RUNNER_TEMP/events.json" \
+            || { echo "::error::#$ISSUE's timeline could not be read: nothing pushed."; exit 1; }
+          roles='{}'
+          for who in $(jq -r '.[] | select(.label.name == "patch:go") | .actor.login' "$RUNNER_TEMP/events.json" | sort -u); do
+            role=$(GH_TOKEN="$ISSUE_TOKEN" gh api "repos/$GITHUB_REPOSITORY/collaborators/$who/permission" --jq .role_name 2>/dev/null || echo none)
+            roles=$(jq -c --arg w "$who" --arg r "$role" '. + {($w): $r}' <<<"$roles")
+          done
+          labels=$(GH_TOKEN="$ISSUE_TOKEN" gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | join(",")') \
             || { echo "::error::#$ISSUE's labels could not be read: nothing pushed."; exit 1; }
-          [ "$held" = false ] || { echo "#$ISSUE no longer has patch:go: nothing pushed."; exit 0; }
-          export REPOSITORIES="${REPO#*/}"
-          GH_TOKEN=$(bash "$GITHUB_WORKSPACE/.dx-central/scripts/app-token.sh" mint '{"contents":"write","metadata":"read"}')
-          export GH_TOKEN
-          unset PRIVATE_KEY
-          trap 'curl -fsS -o /dev/null -X DELETE -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/installation/token || true' EXIT
+          go=$(EVENTS="$(cat "$RUNNER_TEMP/events.json")" AT="$AT" ROLES="$roles" python3 "$GITHUB_WORKSPACE/.dx-central/scripts/security-patch.py" go)
+          [[ ",$labels," == *,patch:go,* ]] && [ "$go" = ok ] || { echo "#$ISSUE: not approved now (${go:-no patch:go}): nothing pushed."; exit 0; }
           # The tag's commit (an annotated tag's ref names the tag object).
           onto=$(gh api "repos/$REPO/commits/$tag" --jq .sha)
           # --force: a push that failed half way is redone from the tag.

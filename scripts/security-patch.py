@@ -66,7 +66,7 @@ STAGES = ("patch:ready", "patch:go", "patch:pushed", "patch:released", "patch:fa
 # project is built, released or checked.
 LIMITS = {"max-files": 10, "max-lines": 400,
           "forbidden": [".github/*", "*composer.json", "*composer.lock", "*package.json", "*package-lock.json",
-                        "*yarn.lock", "*pnpm-lock.yaml", "Makefile", "*.sh", "*.distignore", "*phpunit.xml*", "*phpcs.xml*"]}
+                        "*yarn.lock", "*pnpm-lock.yaml", "*Makefile", "*.sh", "*.distignore", "*phpunit.xml*", "*phpcs.xml*"]}
 REVIEWER = "claude-sonnet-5-5"
 
 
@@ -125,17 +125,65 @@ def stage(labels, mark, go):
     return "start", "a recorded fix on a draft advisory"
 
 
+def _path(text):
+    """A path as git writes it in a patch: a/ or b/ before it, and in double
+    quotes with C escapes when it has unusual characters (non-ASCII, a
+    quote). /dev/null is no path."""
+    text = text.rstrip("\t\n")
+    if text.startswith('"') and text.endswith('"'):
+        raw = text[1:-1].encode("latin-1", "backslashreplace").decode("unicode_escape").encode("latin-1")
+        text = raw.decode("utf-8", "replace")
+    if text == "/dev/null":
+        return ""
+    return text[2:] if text[:2] in ("a/", "b/") else text
+
+
 def changed(patch):
-    """{path: changed lines} of a patch as git format-patch writes it."""
-    out, path = {}, None
+    """{path: changed lines} of a patch as git format-patch writes it: every
+    path a change touches (both ends of a rename or a copy), and only the
+    lines inside its hunks, counted from their headers."""
+    out, paths, old, new = {}, [], 0, 0
     for line in (patch or "").splitlines():
-        m = re.match(r"^diff --git a/(\S+) b/(\S+)$", line)
-        if m:
-            path = m.group(2)
-            out.setdefault(path, 0)
+        if old > 0 or new > 0:
+            if line.startswith("-"):
+                old -= 1
+            elif line.startswith("+"):
+                new -= 1
+            elif line.startswith("\\"):
+                continue
+            else:
+                old, new = old - 1, new - 1
+                continue
+            for p_ in paths:
+                out[p_] = out.get(p_, 0) + 1
             continue
-        if path and line[:1] in "+-" and not line.startswith(("+++ ", "--- ")):
-            out[path] += 1
+        if line.startswith("diff --git "):
+            paths = []
+            # The header alone, when nothing else names the path (a binary
+            # or a mode change): split where " b/" starts the second path.
+            rest = line[len("diff --git "):]
+            if rest.startswith('"'):
+                end = rest.index('"', 1) + 1 if '"' in rest[1:] else len(rest)
+                guess = _path(rest[end + 1:]) or _path(rest[:end])
+            else:
+                guess = _path(rest[rest.rfind(" b/") + 1:]) if " b/" in rest else ""
+            if guess:
+                paths.append(guess)
+                out.setdefault(guess, 0)
+            continue
+        m = re.match(r"^(?:rename|copy) (?:from|to) (.+)$", line) or re.match(r"^(?:---|\+\+\+) (.+)$", line)
+        if m:
+            p_ = _path(m.group(1)) if not line.startswith(("rename", "copy")) else _path('"' + m.group(1)[1:-1] + '"' if m.group(1).startswith('"') else m.group(1))
+            if p_ and p_ not in paths:
+                paths.append(p_)
+                out.setdefault(p_, 0)
+            continue
+        h = re.match(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@", line)
+        if h:
+            old = int(h.group(1)) if h.group(1) is not None else 1
+            new = int(h.group(2)) if h.group(2) is not None else 1
+            # A line counts once for the change, on its newest path.
+            paths = paths[-1:] if paths else []
     return out
 
 
@@ -226,7 +274,16 @@ def self_test():
     check("limits: a small fix passes", limits(fp("includes/a.php", "tests/Unit/ATest.php"), rules), [])
     check("limits: too many files, a forbidden path", limits(fp(*[f"f{i}.php" for i in range(11)]) + fp(".github/workflows/x.yml", "composer.json"), rules)[:3],
           ["it changes 13 files, more than 10", "it changes .github/workflows/x.yml, which a security fix may not touch (.github/*)", "it changes composer.json, which a security fix may not touch (*composer.json)"])
-    check("limits: too many lines, and an empty patch", (limits(fp("a.php") + "+x\n" * 400, rules), limits("", rules)), (["it changes 402 lines, more than 400"], ["the patch changes nothing"]))
+    tricky = ('diff --git a/my file.php b/my file.php\n--- a/my file.php\n+++ b/my file.php\n@@ -1 +1 @@\n-old\n+new\n'
+              'diff --git "a/a\\303\\261o/Makefile" "b/a\\303\\261o/Makefile"\n--- "a/a\\303\\261o/Makefile"\n+++ "b/a\\303\\261o/Makefile"\n@@ -1 +1 @@\n-x\n+y\n'
+              'diff --git a/Makefile b/src/Moved.php\nsimilarity index 100%\nrename from Makefile\nrename to src/Moved.php\n'
+              '-- \n2.43.0\n\n')
+    got = changed(tricky)
+    check("changed: spaces, quoted non-ASCII paths, both ends of a rename, only hunk lines (not format-patch's trailer)",
+          (got.get("my file.php"), got.get("año/Makefile"), "Makefile" in got, "src/Moved.php" in got, sum(got.values())), (2, 2, True, True, 4))
+    check("limits: a forbidden path is caught when quoted or renamed away",
+          [l for l in limits(tricky, rules) if "may not touch" in l], ["it changes Makefile, which a security fix may not touch (*Makefile)", "it changes año/Makefile, which a security fix may not touch (*Makefile)"])
+    check("limits: too many lines, and an empty patch", (limits("diff --git a/a.php b/a.php\n--- a/a.php\n+++ b/a.php\n@@ -1 +1,402 @@\n-old\n" + "+x\n" * 402, rules), limits("", rules)), (["it changes 403 lines, more than 400"], ["the patch changes nothing"]))
     check("policy: the organisation narrows the limits and names the reviewer",
           policy_of({"security-patch": {"max-files": 3, "reviewer-model": "claude-opus-5-5", "nonsense": 1}}), ({**LIMITS, "max-files": 3}, "claude-opus-5-5"))
     readme = "=== X ===\nStable tag: 2.1.0\n\n== Changelog ==\n\n= 2.1.0 =\n\n* Old.\n"
@@ -248,6 +305,32 @@ def self_test():
         check("release: the kind, the caller's slug and the release command for the version",
               (r["kind"], r["slug"], "release-markers.sh" in r["argv"][1], "2.1.1" in r["argv"], "diluxone-x.php" in r["argv"], "DX_VERSION" in r["argv"]),
               ("wordpress-plugin", "diluxone-x", True, True, True, True))
+    # The workflow holds to the stages (#287).
+    try:
+        import yaml
+        wf = yaml.safe_load(open(os.path.join(HERE, "..", ".github", "workflows", "security-patch.yml"), encoding="utf-8"))
+    except ImportError:
+        wf = None
+        print("skip the workflow's wiring: PyYAML is not installed here")
+    if wf:
+        jobs = wf["jobs"]
+        run = lambda job, name: next(st for st in jobs[job]["steps"] if st.get("name") == name)
+        plan_ = run("plan", "The claims and their stage")["run"]
+        check("wiring: the plan reads who added patch:go and their role, and holds one patch per repository",
+              ("security-patch.py go" in plan_, "collaborators/$who/permission" in plan_, "another patch of $repo is in progress" in plan_), (True, True, True))
+        check("wiring: the build checks the limits before it builds",
+              run("build", "The tree on the version in production")["run"].index("security-patch.py\" limits") < run("build", "The tree on the version in production")["run"].index("security-patch-build.sh"), True)
+        rv = jobs["review"]
+        rv_step = next(st for st in rv["steps"] if "claude-code-action" in str(st.get("uses", "")))
+        check("wiring: the second review has no shell, no key, and another model",
+              ("Bash" in rv_step["with"]["claude_args"], "PRIVATE_KEY" in json.dumps(rv), "needs.plan.outputs.reviewer" in rv_step["with"]["claude_args"]), (False, False, True))
+        pub = run("act", "Publish")
+        check("wiring: publish pushes with dilux-security only, the announced tree, approved again last",
+              ("DILUX_SECURITY_PRIVATE_KEY" in pub["env"]["PRIVATE_KEY"], "DILUX_BOT" in json.dumps(pub["env"]), '"$tree" = "$ANNOUNCED"' in pub["run"],
+               pub["run"].index("security-patch.py\" go") < pub["run"].index("api-commit.py"), pub["run"].index("unset PRIVATE_KEY") < pub["run"].index("security-patch-build.sh")),
+              (True, False, True, True, True))
+        fin = run("act", "Finish")
+        check("wiring: the advisory is published with dilux-security's key", "DILUX_SECURITY_PRIVATE_KEY" in fin["env"]["PRIVATE_KEY"], True)
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 

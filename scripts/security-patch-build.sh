@@ -61,7 +61,7 @@ self_test() {
   # Without a readme the build stops after applying: enough to see it apply on the tag.
   if (cd "$dir" && build 1.0.0 1.0.1 "$dir/fix.patch" "x" >/dev/null 2>&1); then echo "FAIL a tree with no readme builds"; fail=1; else echo "ok   a tree with no readme does not build"; fi
   if [ "$(cd "$dir" && git rev-parse --abbrev-ref HEAD)" = security/1.0.1 ] && [ -f "$dir/f.txt" ] && [ "$(cd "$dir" && git log -1 --format=%an)" = "$BOT" ]; then
-    echo "ok   the fix goes on the tag, on security/VERSION, as dilux-bot"
+    echo "ok   the fix goes on the tag, on security/VERSION, authored by dilux-bot (dilux-security pushes it)"
   else echo "FAIL the fix on the tag"; fail=1; fi
   if (cd "$dir" && build 1.0.0 nope "$dir/fix.patch" x >/dev/null 2>&1); then echo "FAIL a version that is not one builds"; fail=1; else echo "ok   a version that is not one is refused"; fi
   rm -rf "$dir"
