@@ -125,8 +125,16 @@ jobs:
             [[ "$first" =~ ^\<\!--\ dx-advisory-fix:\ ([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)\ (GHSA-[a-z0-9-]+)\ --\>$ ]] || continue
             repo=${BASH_REMATCH[1]}; ghsa=${BASH_REMATCH[2]}
             [ "$second" = "<!-- dx-advisory-checks: passed -->" ] || continue
-            state=$(GH_TOKEN="$ADV_TOKEN" gh api "repos/$repo/security-advisories/$ghsa" --jq 'if .state == "draft" and ((.description // "") | contains("<!-- dx-unvetted:")) then "unvetted" else .state end' 2>/dev/null || echo unreadable)
+            state=$(GH_TOKEN="$ADV_TOKEN" gh api "repos/$repo/security-advisories/$ghsa" --jq .state 2>/dev/null || echo unreadable)
             [ "$state" = draft ] || { echo "#$n: the advisory is $state, not a confirmed draft: not patched."; continue; }
+            # Not confirmed yet (#287): an open issue of the bot's here says so.
+            # Read whole, then searched (a pipe into grep -q can read as no
+            # match under pipefail); a read that fails stops the run.
+            pending=$(gh api "repos/$GITHUB_REPOSITORY/issues?state=open&labels=security:unvetted&per_page=100" --paginate \
+                 --jq ".[] | select(.user.login == \"dilux-bot[bot]\") | (.body // \"\") | startswith(\"<!-- dx-unvetted: $repo $ghsa -->\")")
+            if grep -qx true <<<"$pending"; then
+              echo "#$n: $ghsa is not confirmed yet: not patched."; continue
+            fi
             mark=$(gh api "repos/$GITHUB_REPOSITORY/issues/$n/comments" --paginate --jq '.[] | select(.user.login == "dilux-bot[bot]") | .body' | grep -o '<!-- dx-security-patch: [^>]*-->' | tail -1 || true)
             # Whether patch:go is a maintainer's, added after the
             # announcement: who added it, read from the timeline, and their

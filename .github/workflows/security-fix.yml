@@ -374,16 +374,17 @@ jobs:
           # As it is now, not as the plan saw it: a maintainer may have closed
           # or moved it during the run.
           now=$(gh api "repos/$REPO/security-advisories/$GHSA" --jq .state 2>/dev/null || true)
-          # An unvetted draft (#287: the intake's or the nightly review's,
-          # scripts/advisory.py UNVETTED) is confirmed by taking out its line.
-          desc=$(gh api "repos/$REPO/security-advisories/$GHSA" --jq '.description // ""' 2>/dev/null || true)
-          mark=$(python3 -c 'import sys; sys.path.insert(0, ".dx-central/scripts"); import importlib.util as u; s = u.spec_from_file_location("a", ".dx-central/scripts/advisory.py"); m = u.module_from_spec(s); s.loader.exec_module(m); print(m.UNVETTED)')
-          if [ -n "$mark" ] && [ "$now" = draft ] && [[ "$desc" == *"$mark"* ]]; then
-            if jq -n --arg d "${desc//"$mark"/}" '{description: $d}' | gh api -X PATCH "repos/$REPO/security-advisories/$GHSA" --input - >/dev/null; then
-              echo "$GHSA confirmed."
-            else
-              say "Confirming the advisory failed: a maintainer deletes its unvetted line by hand."
-            fi
+          # An unvetted draft (#287: the intake's or the nightly review's) is
+          # confirmed by closing its issue here (scripts/advisory.py
+          # UNVETTED_MARK), the bot's, never by anything in the advisory.
+          pending=$(GH_TOKEN="$ISSUE_TOKEN" gh api "repos/$GITHUB_REPOSITORY/issues?state=open&labels=security:unvetted&per_page=100" --paginate \
+            --jq ".[] | select(.user.login == \"dilux-bot[bot]\") | select((.body // \"\") | startswith(\"<!-- dx-unvetted: $REPO $GHSA -->\")) | .number" 2>/dev/null || true)
+          if [ "$now" = draft ] && [ -n "$pending" ]; then
+            for p in $pending; do
+              GH_TOKEN="$ISSUE_TOKEN" gh issue close "$p" --repo "$GITHUB_REPOSITORY" --reason completed --comment "Confirmed: the triage reproduced it and fixed it with checks that did not fail."$'\n\n'"🤖 AI-generated · Claude Opus 5.5 (Anthropic), in a private repository" >/dev/null \
+                || say "Confirming the advisory failed: a maintainer closes #$p by hand."
+            done
+            echo "$GHSA confirmed."
           elif [ "$now" != triage ]; then
             say "The advisory was not moved: it is no longer in triage (${now:-unreadable})."
           elif gh api -X PATCH "repos/$REPO/security-advisories/$GHSA" -f state=draft >/dev/null; then

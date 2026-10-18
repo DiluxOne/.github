@@ -57,8 +57,6 @@ MAX_ITEMS = 60
 # What the statistics count as found by DiluxOne's own AI (#287): a label
 # on its issues, a line in its advisories.
 FOUND_BY = "found-by:dilux-ai"
-# The line that says an advisory is not confirmed yet (scripts/advisory.py).
-UNVETTED = "<!-- dx-unvetted: not confirmed yet; a maintainer deletes this line to confirm it -->"
 BUG_MARK = "<!-- dx-nightly-finding: {repo} -->"
 
 
@@ -224,7 +222,7 @@ def vulns(previous, findings, repo):
         where = f"{f['file']}{':' + str(f['line']) if isinstance(f.get('line'), int) else ''}"
         title = str(f["title"]).replace("\n", " ")[:200]
         text = "\n".join([str(f.get("detail") or f["title"])[:6000], "", f"Where: `{where}`", "",
-                           f"Found by DiluxOne's automated nightly review of the existing code (AI). {FOUND_BY}", UNVETTED])
+                           f"Found by DiluxOne's automated nightly review of the existing code (AI). {FOUND_BY}"])
         payload = {"summary": title, "description": text, "severity": "high" if f["severity"] == "blocker" else "medium",
                    "vulnerabilities": [{"package": {"ecosystem": "other", "name": repo.split("/", 1)[-1]}}]}
         out.append({**f, "where": where, "issue_title": title,
@@ -311,7 +309,6 @@ def self_test():
     check("bugs: new, not security (and only when it says so), blocker or major, most severe first, every one",
           [b["file"] for b in got], ["b.php", "f.php", "g.php"])
     vs = vulns(prevb, found, "o/r")
-    check("#287 the unvetted line is the one advisory.py reads", UNVETTED in open(os.path.join(HERE, "advisory.py"), encoding="utf-8").read(), True)
     check("#287 vulns: new security findings, blocker or major, as a draft advisory credited to the review",
           ([v["file"] for v in vs], vs[0]["advisory"]["severity"], FOUND_BY in vs[0]["advisory"]["description"], vs[0]["advisory"]["vulnerabilities"][0]["package"]["name"]),
           (["c.php"], "medium", True, "r"))

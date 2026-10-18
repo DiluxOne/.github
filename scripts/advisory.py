@@ -70,19 +70,47 @@ def title(repo, ghsa):
 
 
 # A draft nobody vetted yet (#287): one the intake or the nightly review
-# opened. GitHub creates every advisory as a draft, so this line in its
-# description is what says it is still a report: it is triaged like one
-# (and counted against TRIAGE_PER_RUN), and no patch is built for it until
-# the triage confirms it (the line is then taken out) or a maintainer
-# deletes the line by hand.
-UNVETTED = "<!-- dx-unvetted: not confirmed yet; a maintainer deletes this line to confirm it -->"
+# opened. GitHub creates every advisory as a draft, and whoever it is shared
+# with can edit its text, so what says it is still a report lives here, in
+# the private repository, never in the advisory: an open issue of dilux-bot's,
+# labelled UNVETTED_LABEL, with UNVETTED_MARK on its first line. Such a draft
+# is triaged like a report (and counted against TRIAGE_PER_RUN), and no patch
+# is built for it until the triage confirms it or a maintainer closes that
+# issue.
+UNVETTED_LABEL = "security:unvetted"
+UNVETTED_MARK = "<!-- dx-unvetted: {repo} {ghsa} -->"
+UNVETTED_RE = re.compile(r"^<!-- dx-unvetted: ([A-Za-z0-9-]+/[A-Za-z0-9._-]+) (GHSA(?:-[23456789cfghjmpqrvwx]{4}){3}) -->")
 
 
-def due(repo, advisories, claimed):
+def unvetted_body(repo, ghsa, why):
+    return "\n".join([UNVETTED_MARK.format(repo=repo, ghsa=ghsa), "", f"{ghsa} in {repo} is not confirmed yet: {why} "
+                       "It is triaged like any report, and no patch is built for it until the triage confirms it or a maintainer closes this issue.", "", AI])
+
+
+def unvetted(issues):
+    """{(repo, ghsa)} not confirmed yet: the open issues the bot opened with
+    the marker on their first line. Pure."""
+    out = set()
+    for i in issues:
+        if (i.get("user") or {}).get("login") != org.BOT or i.get("state", "open") != "open":
+            continue
+        m = UNVETTED_RE.match(i.get("body") or "")
+        if m:
+            out.add((m.group(1), m.group(2)))
+    return out
+
+
+def unvetted_issues(central):
+    return [json.loads(l) for l in gh("api", f"repos/{central}/issues?state=open&labels={UNVETTED_LABEL}&per_page=100", "--paginate", "--jq",
+                                      ".[] | {user: {login: .user.login}, state, body, number} | @json").splitlines() if l.strip()]
+
+
+def due(repo, advisories, claimed, pending=frozenset()):
     """The advisories of one repository not claimed yet, in triage or draft.
     claimed is the set of markers of the issues already opened, in any state.
     A draft is one a maintainer accepted; one in triage is triaged here first
-    (#247): reproduced and fixed, the bot moves it to draft (advance())."""
+    (#247): reproduced and fixed, the bot moves it to draft (advance()); so is
+    a draft still pending, {(repo, ghsa)} not confirmed yet (unvetted())."""
     out = []
     for a in advisories:
         ghsa = a.get("ghsa_id") or ""
@@ -92,7 +120,7 @@ def due(repo, advisories, claimed):
         # By its marker, or by its title when someone edited the body.
         if MARK.format(repo=repo, ghsa=ghsa) in claimed or title(repo, ghsa) in claimed:
             continue
-        state = "triage" if a["state"] == "draft" and UNVETTED in (a.get("description") or "") else a["state"]
+        state = "triage" if a["state"] == "draft" and (repo, ghsa) in pending else a["state"]
         out.append({"repo": repo, "ghsa": ghsa, "branch": branch(ghsa), "state": state})
     return out
 
@@ -257,13 +285,14 @@ def capped(due_list, taken):
 
 def plan(root, central):
     have = claimed(central)
+    pending = unvetted(unvetted_issues(central))
     fixes = []
     taken = 0
     for name in public_repos(root):
         full = f"{org.ORG}/{name}"
         try:
             advisories = [a for st in ("triage", "draft") for a in json.loads(gh("api", f"repos/{full}/security-advisories?state={st}&per_page=100", token=os.environ.get("ADV_TOKEN")))]
-            todo, taken = capped(due(full, advisories, have), taken)
+            todo, taken = capped(due(full, advisories, have, pending), taken)
             for f in todo:
                 # Each as it is claimed: one that fails leaves the others in.
                 fixes.append(claim(central, f))
@@ -343,10 +372,11 @@ def self_test():
           (pl["summary"], "Steps: ..." in pl["description"], "by @alice" in pl["description"], pl["vulnerabilities"][0]["package"], pl.get("credits")),
           ("XSS in the title", True, True, {"ecosystem": "other", "name": "diluxone-x"}, [{"login": "alice", "type": "reporter"}]))
     check("#287 intake: no login, no credit", "credits" in intake_payload("t", "b", "DiluxOne/x", "", "u"), False)
-    check("#287 intake: an unvetted draft is triaged like a report, and counted",
-          (UNVETTED in pl["description"], [d["state"] for d in due("o/r", [{"ghsa_id": "GHSA-2345-6789-cfgh", "state": "draft", "description": "x " + UNVETTED},
-                                                                           {"ghsa_id": "GHSA-jmpq-rvwx-2345", "state": "draft", "description": "x"}], set())]),
-          (True, ["triage", "draft"]))
+    pend = unvetted([{"user": {"login": org.BOT}, "state": "open", "body": UNVETTED_MARK.format(repo="o/r", ghsa="GHSA-2345-6789-cfgh") + "\nx"},
+                     {"user": {"login": "reporter"}, "state": "open", "body": UNVETTED_MARK.format(repo="o/r", ghsa="GHSA-jmpq-rvwx-2345")}])
+    check("#287 unvetted: what the bot says here, never the advisory's text, keeps a draft a report",
+          (pend, [d["state"] for d in due("o/r", [{"ghsa_id": "GHSA-2345-6789-cfgh", "state": "draft"}, {"ghsa_id": "GHSA-jmpq-rvwx-2345", "state": "draft"}], set(), pend)]),
+          ({("o/r", "GHSA-2345-6789-cfgh")}, ["triage", "draft"]))
     m = INTAKE.search("x\n<!-- dx-security-intake: repo=DiluxOne/diluxone-x reporter=alice -->")
     check("#287 intake: the marker the triage writes is read", (m.group(1), m.group(2)), ("DiluxOne/diluxone-x", "alice"))
     print("all tests passed" if not failed else "some tests failed")
@@ -364,7 +394,7 @@ def intake_payload(title, text, repo, reporter, issue_url):
     note = (f"Reported in a public issue of {repo} by @{reporter}, moved out of sight by DiluxOne's triage ({issue_url}, private)."
             if reporter else f"Reported in a public issue of {repo}, moved out of sight by DiluxOne's triage ({issue_url}, private).")
     out = {"summary": (title or "A vulnerability reported in a public issue").strip()[:1000],
-           "description": (text or "").strip()[:60000] + "\n\n---\n" + note + "\n" + UNVETTED,
+           "description": (text or "").strip()[:60000] + "\n\n---\n" + note,
            "severity": "medium",
            "vulnerabilities": [{"package": {"ecosystem": "other", "name": repo.split("/", 1)[1]}}]}
     if reporter and LOGIN.match(reporter):
@@ -416,6 +446,11 @@ def intake(central, adv_token):
             said.append(f"#{n}: the advisory could not be opened in {repo} ({out.stderr.strip()[:200]}); the next run tries again")
             continue
         adv = json.loads(out.stdout)
+        # Not confirmed yet, said here where no reporter can edit it.
+        subprocess.run(["gh", "label", "create", UNVETTED_LABEL, "--repo", central, "--color", "FBCA04", "--force",
+                        "--description", "A draft advisory not confirmed yet: triaged like a report, never patched"], capture_output=True)
+        gh("issue", "create", "--repo", central, "--title", f"Unvetted {adv['ghsa_id']} in {repo}", "--label", UNVETTED_LABEL,
+           "--body", unvetted_body(repo, adv["ghsa_id"], "it came from a public issue the triage moved here."))
         invited = False
         if reporter and LOGIN.match(reporter):
             inv = subprocess.run(["gh", "api", "-X", "PATCH", f"repos/{repo}/security-advisories/{adv['ghsa_id']}", "-f", f"collaborating_users[]={reporter}"],
