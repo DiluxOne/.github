@@ -237,6 +237,8 @@ def self_test():
     check("wiring: the finish opens the lane's issue and cherry-picks the released fix",
           ("lane:security-carry" in fin, "dx-lane: security-carry version:" in fin, "carry-lock.py\" fix" in fin, "git cherry-pick" in fin, "api-commit.py\" push" in fin),
           (True, True, True, True, True))
+    check("wiring: a retried finish reuses the carry issue and opens the pull request it missed",
+          ('gh issue list --repo "$REPO" --state all --label lane:security-carry' in fin, 'if [ -n "$num" ] && [ -z "$pr_url" ]' in fin, '--onto "$onto" --force' in fin), (True, True, True))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
