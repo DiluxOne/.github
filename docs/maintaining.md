@@ -4,20 +4,20 @@ For whoever changes `DiluxOne/.github`: what the tokens may do, and how a change
 
 **What waits on a maintainer**, in every repository at once: [the open issues and pull requests labelled `needs:maintainer` or `needs-human`](https://github.com/issues?q=is%3Aopen+org%3ADiluxOne+label%3Aneeds%3Amaintainer%2Cneeds-human) (a failed build of the runner image, a week's digest with a proposal, a pull request the autopilot handed over). Every automatic decision says on its issue's board which rule it followed, with the link (#188).
 
-Every place the bot's token is minted asks only for what that job does: the review, the replies and the triage get `contents: read` while the model runs; `contents: write` is minted only by the merge, the reproduction push, the weekly learnings, and the step that resolves review threads after the model has finished (resolving a thread is a write on the repository), which nothing that read the pull request's text ever holds. Tags are not creatable by `dilux-bot` at all: the ruleset an adopting repository sets at step 3 allows `X.Y.Z` tag creation to administrators and the release App only, and this repository's `v*` tags (the moving `v5`, the frozen `v4`, `v3`, `v2` and `v1`) can be created, moved or deleted only by administrators (ruleset `moving tags`: creation, update, deletion). The wordpress.org credentials live in the repository environment `wordpress-org`, whose deployment policy admits only `X.Y.Z` tags and `main`, so no pull request or branch job can read them; the check `svn-auth-check.yml` runs inside that environment.
+Every place the bot's token is minted asks only for what that job does: the review, the replies and the triage get `contents: read` while the model runs; `contents: write` is minted only by the merge, the reproduction push, the weekly learnings, and the step that resolves review threads after the model has finished (resolving a thread is a write on the repository), which nothing that read the pull request's text ever holds. Tags are not creatable by `dilux-bot` at all: the ruleset an adopting repository sets at step 3 allows `X.Y.Z` tag creation to administrators and the release App only, and this repository's `v*` tags (the moving `v6`, the frozen `v5`, `v4`, `v3`, `v2` and `v1`) can be created, moved or deleted only by administrators (ruleset `moving tags`: creation, update, deletion). The wordpress.org credentials live in the repository environment `wordpress-org`, whose deployment policy admits only `X.Y.Z` tags and `main`, so no pull request or branch job can read them; the check `svn-auth-check.yml` runs inside that environment.
 
 Almost everything here is high risk, and a human merges it. A change that touches only the pages people read (`README.md`, the Markdown of `profile/`, and `docs/` except what agents and the review read as rules: `docs/agents.md`, `docs/architecture.md`, `docs/testing-and-quality.md`, `docs/model.md`) can merge on its own under the usual conditions; [`.github/review-policy.yml`](../.github/review-policy.yml) lists the rest, and `policy.py --test` fails when a file is in no list. After merging, tag
 the exact version (its GitHub Release follows, from `engine-release.yml`; the
 release pull request rebuilt `CHANGELOG.md` with `scripts/changelog.py build
 --next`; [versioning.md](versioning.md) says what a major is for a caller) and
-move `v5` (or cut `v6` for a breaking change: `scripts/next-version.py
---tag-prefix v` says which). Moving `v5` also ships the review
+move `v6` (or cut `v7` for a breaking change: `scripts/next-version.py
+--tag-prefix v` says which). Moving `v6` also ships the review
 profiles, the packs, the default policy and the organisation's required
-workflow, which every repository on `v5` reads from that tag. A run that
+workflow, which every repository on `v6` reads from that tag. A run that
 already exists keeps the workflow it was created with: re-running a failed
-job after `v5` moved re-runs the old workflow. Reopen the pull request, or
-push to it, for a run on the new one. `v4`, `v3`, `v2` and `v1` stay where
-they are.
+job after `v6` moved re-runs the old workflow. Reopen the pull request, or
+push to it, for a run on the new one. `v5`, `v4`, `v3`, `v2` and `v1` stay
+where they are.
 
 A change to a template in [`workflow-templates/`](../workflow-templates/) reaches no repository by itself: each one has its own copy, its caller. The daily drift check lists every caller that differs from its template, with the job and the template's path (it compares what the jobs do, never their comments, so a template's comment can change without putting any repository out of step), in the issue "Repositories out of step"; `python3 scripts/sync-repos.py callers --repo NAME` opens the issue and the pull request that bring that repository in step. Run from a checkout that is `main` as it is now, the `org-sync` lane of [`policy/autonomy.yml`](../policy/autonomy.yml) accepts the issue, and the pull request merges on its own when every job it changes is its template's and none changes its permissions or secrets (a new job always waits); otherwise the maintainer accepts and merges them there. A new input a template asks to fill in goes into `repos.yml` (`callers`, `repository-owned`) in the same pull request, or the check would hold every repository to the template's example value.
 

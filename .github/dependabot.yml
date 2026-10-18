@@ -13,7 +13,7 @@
 version: 2
 updates:
   # The actions this repository's workflows use. The shared workflows of
-  # DiluxOne/.github are called at a major tag (`@v5`), never pinned, so
+  # DiluxOne/.github are called at a major tag (`@v6`), never pinned, so
   # there is nothing of theirs to bump.
   - package-ecosystem: github-actions
     directories: ["/"]

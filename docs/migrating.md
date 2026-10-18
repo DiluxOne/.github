@@ -4,6 +4,10 @@ What a repository changes to move from one major of the shared workflows to the 
 
 A major whose migration is nothing but the callers is named in `repos.yml` (`callers: migrates-from`): `python3 scripts/sync-repos.py callers` then moves each repository on its own, in one issue and pull request of the org-sync lane, every call of the shared workflows at the new major (its own jobs' too) and its callers in step with the templates (#320). Any other major is migrated by hand, as below.
 
+## Migrating a repository from `v5` to `v6`
+
+`v6` ends a plugin's release at its GitHub release (the tag, the notes and the zip), and sends that release to wordpress.org in a job of its own, `publish` (`plugin-publish-wp.yml`), which runs when the release is published and only for one `dilux-release` made (#287). It asks a repository for nothing but its callers, so `python3 scripts/sync-repos.py callers` moves each one on its own (`repos.yml`, `callers: migrates-from`, #320): every call of the shared workflows at `@v6`, its own jobs' too, and `release.yml` with the `publish` job of `workflow-templates/release-wp.yml`. The private security repository's callers (`nightly-review.yml`, `security-fix.yml`, `security-patch.yml`) pass `DILUX_SECURITY_PRIVATE_KEY`, and `security-fix.yml` also runs on a maintainer's comment (#313).
+
 ## Migrating a repository from `v4` to `v5`
 
 `v5` moves the pull request pipeline to the organisation and reads an issue's native Type.

@@ -2,18 +2,44 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
-## Unreleased
+## [6.0.0](https://github.com/DiluxOne/.github/releases/tag/v6.0.0) · 2026-10-18
+
+### Breaking changes
+
+- **release:** the release ends at the GitHub release; wordpress.org follows it ([#300](https://github.com/DiluxOne/.github/pull/300))
 
 ### Features
 
+- **sync:** a callers-only major moves every repository on its own ([#321](https://github.com/DiluxOne/.github/pull/321))
+- **security:** a maintainer's answer sends a failed fix back ([#314](https://github.com/DiluxOne/.github/pull/314))
+- **ci:** the engine's scripts run at the commit its uses: names ([#299](https://github.com/DiluxOne/.github/pull/299))
+- **autopilot:** others' opinions summarised for the maintainer ([#298](https://github.com/DiluxOne/.github/pull/298))
+- **release:** a planned release ships only its plan ([#297](https://github.com/DiluxOne/.github/pull/297))
+- **security:** carry a released patch into main on its own ([#296](https://github.com/DiluxOne/.github/pull/296))
+- **security:** every report of a vulnerability takes the private path ([#295](https://github.com/DiluxOne/.github/pull/295))
+- **release:** the engine's changelog, its versions and releases ([#293](https://github.com/DiluxOne/.github/pull/293))
+- **autonomy:** a person merges an agent's change to sensitive code ([#294](https://github.com/DiluxOne/.github/pull/294))
 - **security:** publish a patch only on a maintainer's patch:go ([#290](https://github.com/DiluxOne/.github/pull/290))
 - **autonomy:** brakes and budgets on every agent and release ([#292](https://github.com/DiluxOne/.github/pull/292))
 - **issues:** take back an acceptance when the issue is not ready ([#291](https://github.com/DiluxOne/.github/pull/291))
 - **autopilot:** the agent works with no key, through an outbox ([#289](https://github.com/DiluxOne/.github/pull/289))
 
+### Fixes
+
+- **security:** a released patch publishes its advisory ([#318](https://github.com/DiluxOne/.github/pull/318))
+- **security:** a plugin not on wordpress.org can be patched ([#316](https://github.com/DiluxOne/.github/pull/316))
+- **triage:** a public security report is moved, or locked ([#312](https://github.com/DiluxOne/.github/pull/312))
+- **surface:** an escape moved to another line is not taken out ([#309](https://github.com/DiluxOne/.github/pull/309))
+- **receipts:** the jobs that seal and receipt read the whole engine ([#307](https://github.com/DiluxOne/.github/pull/307))
+- **autopilot:** apply waits until the pull request shows the push ([#305](https://github.com/DiluxOne/.github/pull/305))
+
 ### CI
 
 - **review:** reviewers read the diff from files, with no shell ([#288](https://github.com/DiluxOne/.github/pull/288))
+
+### Maintenance
+
+- **repos:** the sandbox plugin, where the workflows are proved ([#301](https://github.com/DiluxOne/.github/pull/301))
 
 ## [5.24.0](https://github.com/DiluxOne/.github/releases/tag/v5.24.0) · 2026-10-17
 

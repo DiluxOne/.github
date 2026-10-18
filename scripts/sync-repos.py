@@ -1335,16 +1335,16 @@ def callers_test(check, conf):
     named = same.replace(f"    with:\n      support-url: https://diluxone.com/support/{note}    secrets: inherit",
                          f"    with:\n      support-url: https://diluxone.com/support/{note}    secrets:\n      DILUX_BOT_PRIVATE_KEY: ${{{{ secrets.DILUX_BOT_PRIVATE_KEY }}}}")
     named = named.replace("      trigger: triage", "      trigger: label").replace("      actions: write\n", "      actions: read\n")
-    named = named.replace("uses: DiluxOne/.github/.github/workflows/issue-accepted.yml@v5", "uses: DiluxOne/.github/.github/workflows/issue-accepted.yml@v4")
+    named = named.replace("uses: DiluxOne/.github/.github/workflows/issue-accepted.yml@v6", "uses: DiluxOne/.github/.github/workflows/issue-accepted.yml@v5")
     got = callers_drift({**c2, ".github/workflows/issues.yml": named}, conf)
     text = "\n".join(got[0][2]) if got else ""
     check("callers: secrets by name where the template inherits, an input, permissions and a major that differ",
           all(s in text for s in ("job `triage` passes its secrets by name", "job `repro-triaged` passes `trigger: label`, not `triage`",
-                                  "job `accepted` has other permissions", "job `accepted` calls `DiluxOne/.github/.github/workflows/issue-accepted.yml@v4`")), got)
+                                  "job `accepted` has other permissions", "job `accepted` calls `DiluxOne/.github/.github/workflows/issue-accepted.yml@v5`")), got)
     weekly = checks.replace("needs: [checks, tests, coverage]", "needs: [checks]")
     got = callers_drift({**c2, ".github/workflows/plugin-checks.yml": weekly}, conf)
     check("callers: a `needs` without one of the template's jobs differs", got and "job `weekly-failure` needs `checks`, not `checks, tests`" in got[0][2], got)
-    local = comments.replace("DiluxOne/.github/.github/workflows/review-reply.yml@v5", "./.github/workflows/review-reply.yml")
+    local = comments.replace("DiluxOne/.github/.github/workflows/review-reply.yml@v6", "./.github/workflows/review-reply.yml")
     check("callers: in DiluxOne/.github a local call is the same workflow",
           callers_drift({**c2, ".github/workflows/pull-request-comments.yml": local}, conf, central=True) == [], "")
     check("callers: DiluxOne/.github's own lines say by hand, not `callers` (which skips it)",

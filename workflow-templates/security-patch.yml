@@ -30,7 +30,7 @@ jobs:
     if: github.event_name == 'schedule' || github.ref_name == github.event.repository.default_branch
     permissions:
       contents: read
-    uses: DiluxOne/.github/.github/workflows/security-patch.yml@v5
+    uses: DiluxOne/.github/.github/workflows/security-patch.yml@v6
     secrets:
       DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
       DILUX_SECURITY_PRIVATE_KEY: ${{ secrets.DILUX_SECURITY_PRIVATE_KEY }}
