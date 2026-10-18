@@ -63,7 +63,7 @@ name: WordPress plugin tests (slow)
 #
 #   jobs:
 #     tests:
-#       uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v5
+#       uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@rc-v5
 #       with:                                   # all optional
 #         integration-targets: '["single","network"]'
 #         e2e-suites: >-

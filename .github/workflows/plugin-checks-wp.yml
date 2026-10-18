@@ -50,7 +50,7 @@ name: WordPress plugin checks (fast)
 #
 #   jobs:
 #     checks:
-#       uses: DiluxOne/.github/.github/workflows/plugin-checks-wp.yml@v5
+#       uses: DiluxOne/.github/.github/workflows/plugin-checks-wp.yml@rc-v5
 #       with:
 #         slug: diluxone-offload
 #         version-constant: DILUXONE_OFFLOAD_VERSION   # optional
@@ -62,7 +62,7 @@ name: WordPress plugin checks (fast)
 #       secrets:
 #         DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}   # with requires-plugins-from
 #     tests:
-#       uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v5
+#       uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@rc-v5
 #       with:                                    # optional: the suites mount it too
 #         requires-plugins-from: diluxone-users=DiluxOne/diluxone-users-wordpress@main
 #       secrets:

@@ -26,7 +26,7 @@ jobs:
     permissions:
       contents: read
       issues: write
-    uses: DiluxOne/.github/.github/workflows/issue-triage.yml@v5
+    uses: DiluxOne/.github/.github/workflows/issue-triage.yml@rc-v5
     with:
       support-url: https://github.com/DiluxOne/.github/blob/main/SUPPORT.md
     secrets: inherit
@@ -37,7 +37,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: DiluxOne/.github/.github/workflows/issue-repro.yml@v5
+    uses: DiluxOne/.github/.github/workflows/issue-repro.yml@rc-v5
     secrets: inherit
 
   repro-triaged:
@@ -48,7 +48,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: DiluxOne/.github/.github/workflows/issue-repro.yml@v5
+    uses: DiluxOne/.github/.github/workflows/issue-repro.yml@rc-v5
     with:
       trigger: triage
       triage-bug: ${{ needs.triage.outputs.bug }}
@@ -59,7 +59,7 @@ jobs:
       actions: write
       issues: read
       pull-requests: read
-    uses: DiluxOne/.github/.github/workflows/issue-accepted.yml@v5
+    uses: DiluxOne/.github/.github/workflows/issue-accepted.yml@rc-v5
     with:
       # Here the gate runs in this repository's own pipeline
       # (pull-request.yml); the organisation's skips this repository.
