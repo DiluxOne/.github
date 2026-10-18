@@ -143,7 +143,7 @@ The agent reads text anyone can write. No layer depends on the agent behaving we
 1. The issue has exactly its form's headings; loose text fails the gate.
 2. The maintainer reads the PRD before accepting, and the hash freezes it; the agent reads the PRD and the Spec at those hashes, never third parties' comments.
 3. The prompt presents the issue as a specification, never as instructions.
-4. The agent's token cannot push to the default branch, delete anything or touch workflows; everything goes through a pull request with gates.
+4. The agent that can run commands holds no key and its token writes nothing: what it would do on GitHub, a separate job that runs no agent does, within a fixed list of actions (push onto its pull request's branch, never a workflow; tick, decide, ask, stop, reply), and everything goes through a pull request with gates.
 5. A reproduction runs in a sandbox with no network and no secrets.
 6. A reproduced bug's fix is accepted without the original report.
 7. The AI can only stop a gate, never skip one.

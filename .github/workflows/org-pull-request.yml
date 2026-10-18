@@ -108,7 +108,9 @@ jobs:
     # of the description keeps the review's verdict and must not spend a
     # round).
     if: always() && github.repository != 'DiluxOne/.github' && needs.review.outputs.blocking == 'true' && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == 'dilux-bot[bot]' && github.event.action != 'edited'
-    permissions: {}
+    # The agent's jobs read the repository with the job's own token (#287).
+    permissions:
+      contents: read
     uses: DiluxOne/.github/.github/workflows/autopilot.yml@v5
     with:
       mode: fix
