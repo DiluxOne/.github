@@ -352,7 +352,8 @@ jobs:
           { echo "paid=${PAID:-false}"; echo "verdict=$verdict"; echo "bug=$bug"; echo "language=$language"; echo "cost=$cost"; } >> "$GITHUB_OUTPUT"
 
       # Where a vulnerability posted here is moved (#287, org.yml security),
-      # and a token that writes the issues of both repositories.
+      # and a token that writes the issues of both repositories (and their
+      # contents, which an App needs to transfer an issue).
       - name: The security repository
         id: sec
         if: steps.cap.outputs.over != 'true' && steps.brief.outputs.paid != 'true' && !github.event.repository.private && contains(steps.verdict.outputs.verdict, '"security"')
@@ -371,6 +372,7 @@ jobs:
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }},${{ steps.sec.outputs.name }}
           permission-issues: write
+          permission-contents: write # transferIssue asks an App for it on both repositories (#311)
 
       - name: Act (label, reply, lock)
         if: steps.cap.outputs.over != 'true' && steps.brief.outputs.paid != 'true'
@@ -576,7 +578,8 @@ jobs:
             --json-schema '{"type":"object","additionalProperties":false,"required":["reply","summary"],"properties":{"reply":{"type":"string","maxLength":2500},"summary":{"type":"string","maxLength":300}}}'
 
       # Where a vulnerability posted here is moved (#287, org.yml security),
-      # and a token that writes the issues of both repositories.
+      # and a token that writes the issues of both repositories (and their
+      # contents, which an App needs to transfer an issue).
       - name: The security repository
         id: sec
         if: ${{ !github.event.repository.private && contains(needs.triage.outputs.verdict, '"security"') }}
@@ -595,6 +598,7 @@ jobs:
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }},${{ steps.sec.outputs.name }}
           permission-issues: write
+          permission-contents: write # transferIssue asks an App for it on both repositories (#311)
 
       - name: Act (label, reply, lock)
         env:
