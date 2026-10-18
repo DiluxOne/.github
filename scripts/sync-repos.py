@@ -354,7 +354,8 @@ def sync_callers(repo, conf, dry):
     repository at an older major migrates first (docs/migrating.md), unless
     that major is in `callers: migrates-from` (#320): then every call moves
     to the current major in the same pull request, or nothing does while a
-    caller cannot be brought in step. DiluxOne/.github changes its own
+    caller it has cannot be brought in step (a template it has no caller
+    of is said, and added by hand). DiluxOne/.github changes its own
     callers by hand."""
     full = f"{ORG}/{repo['name']}"
     if repo["name"] == ".github":

@@ -730,6 +730,9 @@ def caller_problem(path, base_text, head_text, templates, owned):
     if {k: v for k, v in base.items() if k != "jobs"} != {k: v for k, v in head.items() if k != "jobs"}:
         return f"{path} changes more than its jobs (its triggers, permissions or settings)", False
     bj, hj = jobs_of(base), jobs_of(head)
+    # The majors the templates call: the one a callers-only move goes to.
+    majors = {int(u.rsplit("@v", 1)[1]) for d in templates.values() for j in jobs_of(d).values()
+              if isinstance(j, dict) and SHARED_USES.fullmatch(u := str(j.get("uses") or ""))}
     gone = sorted(set(bj) - set(hj))
     if gone:
         return f"{path} removes the job {gone[0]}", False
@@ -742,8 +745,6 @@ def caller_problem(path, base_text, head_text, templates, owned):
         uses = str(have.get("uses") or "")
         if not SHARED_USES.fullmatch(uses):
             return f"{path}: the job {job} calls `{uses or 'nothing'}`, not a shared workflow at a version tag", False
-        majors = {int(u.rsplit("@v", 1)[1]) for d in templates.values() for j in jobs_of(d).values()
-                  if isinstance(j, dict) and SHARED_USES.fullmatch(u := str(j.get("uses") or ""))}
         if moved_major(before, have, majors):
             # Its call at a newer major and nothing else (#320).
             continue
