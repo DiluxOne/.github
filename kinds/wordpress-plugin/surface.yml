@@ -188,3 +188,74 @@ surface:
               base: "{\n  \"name\": \"dx/form\"\n}\n"
             src/blocks/form/block.json:
               head: "{\n  \"name\": \"dx/form\"\n}\n"
+
+# Security-sensitive code (#287): a change that adds or removes a line that
+# matches one of these is merged by a person, whatever its issue's Type and
+# whatever the review rated its risk. Decided by code, never by the review.
+# A pattern is a Python regular expression over one line; `when: removed` for
+# what only weakens when it goes (an escape, a sanitiser), so adding one does
+# not stop a fix. Conservative on purpose: a person reading more is the
+# cost of a false hit, an unread change to who may do what is the cost of a
+# missed one.
+sensitive:
+  - id: capability
+    what: a permission check or a capability (current_user_can, roles, caps)
+    pattern: '(?i)\b(?:current_user_can|user_can|author_can|current_user_can_for_blog|map_meta_cap|add_cap|remove_cap|add_role|remove_role|set_role|grant_super_admin|is_super_admin|permission_callback)\b'
+    fixtures:
+      fail:
+        - base: "<?php\nif ( ! current_user_can( 'manage_options' ) ) { return; }\n"
+          head: "<?php\n"
+        - base: "<?php\nfunction a() {}\n"
+          head: "<?php\nfunction a() {}\n$role->add_cap( 'edit_dx' );\n"
+      pass:
+        - base: "<?php\n$title = 'x';\n"
+          head: "<?php\n$title = 'y';\n"
+  - id: nonce
+    what: a nonce or a referer check (wp_verify_nonce, check_admin_referer)
+    pattern: '(?i)\b(?:wp_verify_nonce|check_admin_referer|check_ajax_referer|wp_create_nonce|wp_nonce_field|wp_nonce_url)\b'
+    fixtures:
+      fail:
+        - base: "<?php\ncheck_admin_referer( 'dx_save' );\nsave();\n"
+          head: "<?php\nsave();\n"
+      pass:
+        - base: "<?php\ncheck_admin_referer( 'dx_save' );\nsave();\n"
+          head: "<?php\ncheck_admin_referer( 'dx_save' );\nsave_all();\n"
+  - id: sql
+    what: SQL ($wpdb)
+    pattern: '(?i)\$wpdb\s*->|\bdbDelta\s*\('
+    fixtures:
+      fail:
+        - base: "<?php\nfunction a() {}\n"
+          head: "<?php\nfunction a() {}\n$wpdb->query( \"DELETE FROM {$wpdb->posts} WHERE ID = $id\" );\n"
+      pass:
+        - base: "<?php\n$posts = get_posts();\n"
+          head: "<?php\n$posts = get_posts( array( 'numberposts' => 5 ) );\n"
+  - id: auth
+    what: authentication or a user's password (wp_set_auth_cookie, wp_set_current_user)
+    pattern: '(?i)\b(?:wp_set_auth_cookie|wp_set_current_user|wp_signon|wp_authenticate|wp_set_password|wp_hash_password|wp_check_password|wp_clear_auth_cookie|is_user_logged_in|application_password)\b'
+    fixtures:
+      fail:
+        - base: "<?php\nfunction a() {}\n"
+          head: "<?php\nfunction a() {}\nwp_set_auth_cookie( $user_id );\n"
+      pass:
+        - "<?php\n$user = wp_get_current_user();\n"
+  - id: execution
+    what: code or commands run, or a file written (eval, exec, unserialize, move_uploaded_file)
+    pattern: '(?i)(?<![\w$>:])(?:eval|assert|create_function|exec|shell_exec|system|passthru|proc_open|popen|unserialize|maybe_unserialize|base64_decode|move_uploaded_file|file_put_contents|wp_handle_upload)\s*\('
+    fixtures:
+      fail:
+        - base: "<?php\nfunction a() {}\n"
+          head: "<?php\nfunction a() {}\n$data = unserialize( $_POST['x'] );\n"
+      pass:
+        - "<?php\n$this->exec_later();\n"
+  - id: escape-removed
+    what: an escape or a sanitiser taken out (esc_*, sanitize_*, wp_kses)
+    when: removed
+    pattern: '(?i)\b(?:esc_(?:html|attr|url|js|textarea|sql)\w*|sanitize_\w+|wp_kses\w*|absint|intval|wp_unslash)\s*\('
+    fixtures:
+      fail:
+        - base: "<?php\necho esc_html( $title );\n"
+          head: "<?php\necho $title;\n"
+      pass:
+        - base: "<?php\necho $title;\n"
+          head: "<?php\necho esc_html( $title );\n"

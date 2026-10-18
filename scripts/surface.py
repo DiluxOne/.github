@@ -30,6 +30,17 @@ moved, or fired a second time, is not new. An entry without one is new when
 the changed files hold more matches at the head than at the base: a call
 moved from one file to another, or changed in place, is not new.
 
+Security-sensitive code (#287) is another list in the same pack,
+`sensitive`: entries (`id`, `what`, `pattern` over one line, `when`: changed,
+the default, for a line added or removed, or removed, for one that only
+weakens when it goes; not `on`, which YAML reads as true, and `fixtures`) a change may not touch without a
+person merging it, whatever its issue's Type: what a line the diff adds or
+removes matches. It is read by the auto-merge decision, never by the
+accepted-issue gate.
+
+  surface.py --sensitive KIND BASE HEAD print the sensitive code the diff
+                                        touches (exit 1), nothing (exit 0);
+                                        2 when it cannot tell
   surface.py --docs-paths [KIND]        print the docs globs, one per line
   surface.py --check KIND BASE HEAD     print what the diff adds (exit 1),
                                         nothing (exit 0); 2 when it cannot tell
@@ -179,6 +190,49 @@ def check(kind, base, head):
     return findings(pack, changed, base_files, head_files, base_corpus)
 
 
+def touched_lines(base_text, head_text):
+    """(removed, added): the lines the change takes out and puts in. Pure."""
+    import difflib
+    removed, added = [], []
+    for line in difflib.ndiff((base_text or "").splitlines(), (head_text or "").splitlines()):
+        if line.startswith("- "):
+            removed.append(line[2:])
+        elif line.startswith("+ "):
+            added.append(line[2:])
+    return removed, added
+
+
+def sensitive_findings(pack, changed, base_files, head_files):
+    """The sensitive code the change touches, as (what, path, line) triples:
+    a line added or removed that an entry's pattern matches (only a removed
+    one for an entry `when: removed`)."""
+    found = []
+    default_files = pack.get("files") or []
+    exclude = pack.get("exclude") or []
+    for entry in pack.get("sensitive") or []:
+        rx = compile_entry(entry)
+        take = selector(entry.get("files") or default_files, exclude)
+        for p in changed:
+            if not take(p):
+                continue
+            removed, added = touched_lines(base_files.get(p), head_files.get(p))
+            lines = removed if entry.get("when") == "removed" else removed + added
+            hit = next((l for l in lines if rx.search(l)), None)
+            if hit is not None:
+                found.append((entry["what"], p, hit.strip()[:80]))
+    return found
+
+
+def check_sensitive(kind, base, head):
+    pack = load_pack(kind)
+    if not pack.get("sensitive"):
+        return []
+    mb = git("merge-base", base, head).decode().strip()
+    takes = [selector(e.get("files") or pack.get("files") or [], pack.get("exclude") or []) for e in pack["sensitive"]]
+    changed = [p for p in git("diff", "--no-renames", "--name-only", "-z", mb, head).decode().split("\0") if p and any(t(p) for t in takes)]
+    return sensitive_findings(pack, changed, read_blobs(mb, changed, strict=True), read_blobs(head, changed, strict=True))
+
+
 def describe(found):
     return [f"{what} ({path}{': ' + name if name else ''})" for what, path, name in found]
 
@@ -236,6 +290,20 @@ def self_test():
             for i, f in enumerate(fx.get("pass") or []):
                 got = scratch_findings(one, fixture_files(pack, entry, f))
                 ok(f"{kind}/{eid}: pass fixture {i + 1} is not" + (f" (found {describe(got)})" if got else ""), not got)
+        for entry in pack.get("sensitive") or []:
+            eid = entry.get("id", "?")
+            fx = entry.get("fixtures") or {}
+            ok(f"{kind}/sensitive/{eid}: has what, a pattern, a `when` it knows, and fail and pass fixtures",
+               bool(entry.get("what")) and bool(entry.get("pattern")) and entry.get("when", "changed") in ("changed", "removed") and bool(fx.get("fail")) and bool(fx.get("pass")))
+            one = dict(pack, sensitive=[entry])
+            for i, f in enumerate(fx.get("fail") or []):
+                files = fixture_files(pack, entry, f)
+                ok(f"{kind}/sensitive/{eid}: fail fixture {i + 1} is found",
+                   bool(sensitive_findings(one, [p for p, (b, h) in files.items() if b != h], {p: b for p, (b, h) in files.items() if b is not None}, {p: h for p, (b, h) in files.items() if h is not None})))
+            for i, f in enumerate(fx.get("pass") or []):
+                files = fixture_files(pack, entry, f)
+                got = sensitive_findings(one, [p for p, (b, h) in files.items() if b != h], {p: b for p, (b, h) in files.items() if b is not None}, {p: h for p, (b, h) in files.items() if h is not None})
+                ok(f"{kind}/sensitive/{eid}: pass fixture {i + 1} is not" + (f" (found {describe(got)})" if got else ""), not got)
     ok("a kind with no pack is refused", _raises(lambda: load_pack("no-such-kind")))
     ok("a kind that is not a name is refused", _raises(lambda: load_pack("../x")))
     ok("the organisation's docs paths are there without a kind", "*.md" in docs_paths(""))
@@ -302,6 +370,9 @@ def self_test():
     org = open(os.path.join(CENTRAL, ".github", "workflows", "org-pull-request.yml"), encoding="utf-8").read()
     ok("C5: the organisation's pipeline runs it on pull_request (forks included), never pull_request_target",
        "\n  pull_request:\n" in org and "pull_request_target" not in org)
+    am = open(os.path.join(CENTRAL, ".github", "workflows", "auto-merge.yml"), encoding="utf-8").read()
+    ok("#287: the auto-merge decision reads the sensitive code a change touches, and not knowing counts as touching",
+       "surface.py\" --sensitive" in am and 'SENSITIVE="$RUNNER_TEMP/sensitive"' in am and 'echo unknown > "$RUNNER_TEMP/sensitive"' in am)
     if not fail:
         print("all tests passed")
     return fail
@@ -326,10 +397,14 @@ def main(argv):
             found = describe(check(*argv[1:]))
             print("\n".join(found))
             return 1 if found else 0
+        if argv[:1] == ["--sensitive"] and len(argv) == 4:
+            found = describe(check_sensitive(*argv[1:]))
+            print("\n".join(found))
+            return 1 if found else 0
     except (ValueError, subprocess.CalledProcessError, OSError) as e:
         print(f"surface.py: {e}", file=sys.stderr)
         return 2
-    print("usage: surface.py --docs-paths [KIND] | --check KIND BASE HEAD | --test", file=sys.stderr)
+    print("usage: surface.py --docs-paths [KIND] | --check KIND BASE HEAD | --sensitive KIND BASE HEAD | --test", file=sys.stderr)
     return 64
 
 
