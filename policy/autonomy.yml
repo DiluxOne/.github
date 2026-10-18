@@ -85,9 +85,9 @@ person-merges: [security]
 # creator has the admin or maintain role the issue is accepted by policy, as
 # that person's decision, and its release pull request opens. `confirm`: a
 # person accepts it, one last click. With DX_AUTOPILOT=off it is always
-# `confirm`. `confirm` until a planned release is bound to its plan (#287:
-# only what closes the milestone's issues, the commit that was tested).
-planned-release: confirm
+# `confirm`. A planned release ships only its plan (#287, #297: anything
+# merged outside the milestone sends it back to a person).
+planned-release: auto
 
 # A security patch on the version in production (#247, #287, scripts/
 # security-patch.py, security-patch.yml) publishes only when a maintainer
