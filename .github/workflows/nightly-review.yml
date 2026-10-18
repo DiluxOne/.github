@@ -11,9 +11,13 @@ name: Nightly review
 # by an agent within a budget. What it finds joins one list per repository,
 # an issue in the calling repository, "Nightly review: <repository>": never
 # one issue per finding there; but a new blocker or major that is not about
-# security is also opened as a Bug issue in the reviewed repository (two a
-# night at most, #247), where the triage labels it and the usual bug path
-# reproduces and fixes it. In a public repository, a second agent first
+# security is also opened as a Bug issue in the reviewed repository (every
+# one, #247, #287), where the triage labels it and the usual bug path
+# reproduces and fixes it; and a new blocker or major about security
+# follows a report's path (#287): a draft security advisory in a public
+# repository, opened with dilux-security's key and credited in its text to
+# this review, which security-fix.yml then fixes; a `security` issue in a
+# private one. What it opens carries `found-by:dilux-ai`. In a public repository, a second agent first
 # judges whether publishing it could help an attacker; unsure, it stays in
 # the private list. A maintainer picks what else becomes work; an item they
 # tick or strike out is never listed again, and one still open keeps the
@@ -40,6 +44,9 @@ on:
     secrets:
       DILUX_BOT_PRIVATE_KEY:
         required: true
+      # dilux-security's key: a security finding's draft advisory (#287).
+      DILUX_SECURITY_PRIVATE_KEY:
+        required: false
       CLAUDE_CODE_OAUTH_TOKEN:
         required: false
       ANTHROPIC_API_KEY:
@@ -171,6 +178,9 @@ jobs:
           # (#247), at most two.
           REPO="$repo" FINDINGS="$RUNNER_TEMP/findings.json" PREVIOUS="$RUNNER_TEMP/previous.md" \
             python3 .dx-central/scripts/nightly-review.py bugs > "$RUNNER_TEMP/bugs.jsonl"
+          # New security findings, blocker or major (#287): reported as such.
+          REPO="$repo" FINDINGS="$RUNNER_TEMP/findings.json" PREVIOUS="$RUNNER_TEMP/previous.md" \
+            python3 .dx-central/scripts/nightly-review.py vulns > "$RUNNER_TEMP/vulns.jsonl"
           # A public repository's issue is public: a second agent judges each
           # one first. Asked without a token, a private repository is not found.
           code=$(curl -sS "https://api.github.com/repos/$repo" -o /dev/null -w '%{http_code}' || echo 000)
@@ -211,6 +221,9 @@ jobs:
           PUBLIC: ${{ steps.cand.outputs.public }}
           ASKED: ${{ steps.cand.outputs.second != '' }}
           VERDICT: ${{ steps.second.outputs.structured_output }}
+          SECURITY_CLIENT_ID: ${{ vars.DILUX_SECURITY_CLIENT_ID }}
+          SECURITY_KEY: ${{ secrets.DILUX_SECURITY_PRIVATE_KEY }}
+          OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
           repo="$GITHUB_REPOSITORY_OWNER/$NAME"
@@ -224,15 +237,46 @@ jobs:
             cp "$RUNNER_TEMP/bugs.jsonl" "$RUNNER_TEMP/open.jsonl"
           fi
           : > "$RUNNER_TEMP/issued.txt"
+          # What DiluxOne's own AI found, for the statistics (#287).
+          GH_TOKEN="$BUGS_TOKEN" gh label create "found-by:dilux-ai" --repo "$repo" --color 5319E7 --description "Found by DiluxOne's automated review" --force >/dev/null 2>&1 || true
           while IFS= read -r b; do
             [ -n "$b" ] || continue
             jq -r .issue_body <<<"$b" > "$RUNNER_TEMP/bug.md"
-            if url=$(GH_TOKEN="$BUGS_TOKEN" gh issue create --repo "$repo" --title "$(jq -r .issue_title <<<"$b")" --body-file "$RUNNER_TEMP/bug.md"); then
+            if url=$(GH_TOKEN="$BUGS_TOKEN" gh issue create --repo "$repo" --title "$(jq -r .issue_title <<<"$b")" --body-file "$RUNNER_TEMP/bug.md" --label "found-by:dilux-ai"); then
               printf '%s\t%s\n' "$(jq -r .where <<<"$b")" "$url" >> "$RUNNER_TEMP/issued.txt"
             else
               echo "::warning::A finding could not be opened as a Bug in $repo; it stays in the list."
             fi
           done < "$RUNNER_TEMP/open.jsonl"
+          # A security finding follows the path of a report (#287): a draft
+          # advisory in a public repository, with dilux-security's key, where
+          # security-fix.yml takes it; a `security` issue in a private one.
+          if [ -s "$RUNNER_TEMP/vulns.jsonl" ]; then
+            adv=""
+            if [ "$PUBLIC" = true ] && [ -n "$SECURITY_CLIENT_ID" ] && [ -n "$SECURITY_KEY" ]; then
+              adv=$(CLIENT_ID="$SECURITY_CLIENT_ID" PRIVATE_KEY="$SECURITY_KEY" REPOSITORIES="$NAME" bash .dx-central/scripts/app-token.sh mint '{"repository_advisories":"write","metadata":"read"}' || true)
+            fi
+            unset SECURITY_KEY
+            while IFS= read -r v; do
+              [ -n "$v" ] || continue
+              url=""
+              if [ "$PUBLIC" = true ]; then
+                if [ -n "$adv" ]; then
+                  url=$(jq -c .advisory <<<"$v" | GH_TOKEN="$adv" gh api -X POST "repos/$repo/security-advisories" --input - --jq .html_url 2>/dev/null) || url=""
+                fi
+              else
+                jq -r .issue_body <<<"$v" > "$RUNNER_TEMP/vuln.md"
+                GH_TOKEN="$BUGS_TOKEN" gh label create security --repo "$repo" --color B60205 --description "A vulnerability report; a person merges its fix" --force >/dev/null 2>&1 || true
+                url=$(GH_TOKEN="$BUGS_TOKEN" gh issue create --repo "$repo" --title "$(jq -r .issue_title <<<"$v")" --body-file "$RUNNER_TEMP/vuln.md" --label security --label "found-by:dilux-ai" 2>/dev/null) || url=""
+              fi
+              if [ -n "$url" ]; then
+                printf '%s\t%s\n' "$(jq -r .where <<<"$v")" "$url" >> "$RUNNER_TEMP/issued.txt"
+              else
+                echo "::warning::A security finding could not be reported in $repo; it stays in the private list."
+              fi
+            done < "$RUNNER_TEMP/vulns.jsonl"
+            [ -z "$adv" ] || curl -fsS -o /dev/null -X DELETE -H "Authorization: Bearer $adv" https://api.github.com/installation/token || true
+          fi
           REPO="$repo" FINDINGS="$RUNNER_TEMP/findings.json" PREVIOUS="$RUNNER_TEMP/previous.md" ISSUED="$RUNNER_TEMP/issued.txt" DATE=$(date -u +%Y-%m-%d) \
             python3 .dx-central/scripts/nightly-review.py list > "$RUNNER_TEMP/body.md"
           if [ -n "$LIST" ]; then

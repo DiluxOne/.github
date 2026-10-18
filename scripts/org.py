@@ -32,6 +32,8 @@ CENTRAL = _conf["central"]
 APP = _conf["bot"]["app"]
 BOT = f"{APP}[bot]"
 BOT_ID = int(_conf["bot"]["id"])
+# The private repository security work happens in (#287); "" when none.
+SECURITY = str(_conf.get("security") or "")
 
 
 def self_test():

@@ -106,6 +106,7 @@ jobs:
           PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           SECURITY_CLIENT_ID: ${{ vars.DILUX_SECURITY_CLIENT_ID }}
           SECURITY_KEY: ${{ secrets.DILUX_SECURITY_PRIVATE_KEY }}
+          SECURITY_KEY_INTAKE: ${{ secrets.DILUX_SECURITY_PRIVATE_KEY }}
           OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
@@ -118,6 +119,16 @@ jobs:
           unset PRIVATE_KEY SECURITY_KEY
           # Revoked when the step ends, however it ends.
           trap 'for t in "$GH_TOKEN" "$ADV_TOKEN"; do curl -fsS -o /dev/null -X DELETE -H "Authorization: Bearer $t" https://api.github.com/installation/token || true; done' EXIT
+          # A vulnerability the triage moved here from a public issue (#287):
+          # its draft advisory first, with a token that writes advisories,
+          # so it is fixed in this same run.
+          if ADV_WRITE=$(CLIENT_ID="$SECURITY_CLIENT_ID" PRIVATE_KEY="$SECURITY_KEY_INTAKE" bash .dx-central/scripts/app-token.sh mint '{"repository_advisories":"write","metadata":"read"}'); then
+            ADV_TOKEN="$ADV_WRITE" python3 .dx-central/scripts/advisory.py intake || echo "::warning::The intake of moved reports failed; the next run tries again."
+            curl -fsS -o /dev/null -X DELETE -H "Authorization: Bearer $ADV_WRITE" https://api.github.com/installation/token || true
+          else
+            echo "::warning::No token that writes advisories: the moved reports wait for the next run."
+          fi
+          unset SECURITY_KEY_INTAKE
           # What one fix may cost (#287, policy/autonomy.yml budgets-usd).
           echo "budget=$(python3 .dx-central/scripts/autonomy.py policy | jq -r '."budgets-usd"."security-fix" // 10')" >> "$GITHUB_OUTPUT"
           fixes=$(python3 .dx-central/scripts/advisory.py plan)

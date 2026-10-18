@@ -9,3 +9,7 @@ central: DiluxOne/.github
 bot:
   app: dilux-bot
   id: 333187390
+# The private repository where security work happens (#194, #287): the
+# advisories' fixes, the patches, the nightly review, and where a
+# vulnerability posted in a public issue is moved, out of sight.
+security: DiluxOne/security

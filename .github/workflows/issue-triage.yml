@@ -351,11 +351,35 @@ jobs:
           bug=$(VERDICT=$verdict bash .dx-central/scripts/repro-trigger.sh bug)
           { echo "paid=${PAID:-false}"; echo "verdict=$verdict"; echo "bug=$bug"; echo "language=$language"; echo "cost=$cost"; } >> "$GITHUB_OUTPUT"
 
+      # Where a vulnerability posted here is moved (#287, org.yml security),
+      # and a token that writes the issues of both repositories.
+      - name: The security repository
+        id: sec
+        if: steps.cap.outputs.over != 'true' && steps.brief.outputs.paid != 'true' && !github.event.repository.private && contains(steps.verdict.outputs.verdict, '"security"')
+        run: |
+          repo=$(python3 -c 'import sys; sys.path.insert(0, ".dx-central/scripts"); import org; print(org.SECURITY)' 2>/dev/null || true)
+          if [[ "$repo" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]] && [ "$repo" != "$GITHUB_REPOSITORY" ]; then
+            { echo "repo=$repo"; echo "name=${repo#*/}"; } >> "$GITHUB_OUTPUT"
+          fi
+      - name: dilux-bot token (this repository and the security one)
+        id: sectoken
+        if: steps.cap.outputs.over != 'true' && steps.brief.outputs.paid != 'true' && !github.event.repository.private && contains(steps.verdict.outputs.verdict, '"security"') && steps.sec.outputs.name != ''
+        continue-on-error: true # without it, the report is locked as before
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }},${{ steps.sec.outputs.name }}
+          permission-issues: write
+
       - name: Act (label, reply, lock)
         if: steps.cap.outputs.over != 'true' && steps.brief.outputs.paid != 'true'
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           VERDICT: ${{ steps.verdict.outputs.verdict }}
+          AUTHOR: ${{ github.event.issue.user.login }}
+          SECURITY_REPO: ${{ steps.sec.outputs.repo }}
+          SECURITY_TOKEN: ${{ steps.sectoken.outputs.token }}
           OUT: ${{ steps.claude.outputs.structured_output }}
           NUMBER: ${{ github.event.issue.number }}
           MAINTAINER: ${{ inputs.maintainer }}
@@ -551,10 +575,34 @@ jobs:
             --allowedTools "Read,Glob,Grep"
             --json-schema '{"type":"object","additionalProperties":false,"required":["reply","summary"],"properties":{"reply":{"type":"string","maxLength":2500},"summary":{"type":"string","maxLength":300}}}'
 
+      # Where a vulnerability posted here is moved (#287, org.yml security),
+      # and a token that writes the issues of both repositories.
+      - name: The security repository
+        id: sec
+        if: ${{ !github.event.repository.private && contains(needs.triage.outputs.verdict, '"security"') }}
+        run: |
+          repo=$(python3 -c 'import sys; sys.path.insert(0, ".dx-central/scripts"); import org; print(org.SECURITY)' 2>/dev/null || true)
+          if [[ "$repo" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]] && [ "$repo" != "$GITHUB_REPOSITORY" ]; then
+            { echo "repo=$repo"; echo "name=${repo#*/}"; } >> "$GITHUB_OUTPUT"
+          fi
+      - name: dilux-bot token (this repository and the security one)
+        id: sectoken
+        if: ${{ !github.event.repository.private && contains(needs.triage.outputs.verdict, '"security"') && steps.sec.outputs.name != '' }}
+        continue-on-error: true # without it, the report is locked as before
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }},${{ steps.sec.outputs.name }}
+          permission-issues: write
+
       - name: Act (label, reply, lock)
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           VERDICT: ${{ needs.triage.outputs.verdict }}
+          AUTHOR: ${{ github.event.issue.user.login }}
+          SECURITY_REPO: ${{ steps.sec.outputs.repo }}
+          SECURITY_TOKEN: ${{ steps.sectoken.outputs.token }}
           FIXED: ${{ steps.fixed.outputs.text }}
           CATEGORY: ${{ steps.fixed.outputs.category }}
           WRITTEN: ${{ steps.write.outputs.structured_output }}
