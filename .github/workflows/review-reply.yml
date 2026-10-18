@@ -62,14 +62,12 @@ jobs:
   # accepts). The autopilot reads the answer itself, from the comments.
   answer:
     name: The autopilot's answer
-    # One at a time a conversation: two comments close together would
-    # otherwise both open the summary of the others' opinions.
-    concurrency:
-      group: autopilot-answer-${{ github.repository }}-${{ github.event.issue.number }}
-      cancel-in-progress: false
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     if: github.event_name == 'issue_comment' && github.event.action == 'created' && github.event.sender.type == 'User'
-    timeout-minutes: 10
+    timeout-minutes: 5
+    outputs:
+      others: ${{ steps.back.outputs.others }}
+      issue: ${{ steps.back.outputs.issue }}
     steps:
       - name: dilux-bot token
         id: bot
@@ -111,11 +109,30 @@ jobs:
           gh issue edit "$issue" --repo "$GITHUB_REPOSITORY" --add-label "autopilot:continue" --remove-label "autopilot:waiting" >/dev/null
           echo "$LOGIN answered; the autopilot goes on with #$issue."
 
-      # The others' opinions (#287), summarised by a model with no tools and
-      # no key worth anything to it, for the maintainers: who said what, with
-      # a link to their comment, all from GitHub but the one sentence each.
+  # The others' opinions (#287), on their own: a summary waiting here never
+  # holds a maintainer's answer, and a newer comment's run replaces a
+  # pending one, which summarises every comment again anyway.
+  others:
+    name: What others said
+    needs: answer
+    if: needs.answer.outputs.others == 'true'
+    concurrency:
+      group: autopilot-others-${{ github.repository }}-${{ needs.answer.outputs.issue }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest # fresh: it holds the key beside an agent's work (#287)
+    timeout-minutes: 10
+    steps:
+      - name: dilux-bot token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-issues: write
+          permission-pull-requests: read
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: steps.back.outputs.others == 'true'
         with:
           repository: DiluxOne/.github
           ref: ${{ inputs.central-ref }}
@@ -124,10 +141,9 @@ jobs:
 
       - name: What others said since the question
         id: others
-        if: steps.back.outputs.others == 'true'
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
-          ISSUE: ${{ steps.back.outputs.issue }}
+          ISSUE: ${{ needs.answer.outputs.issue }}
         run: |
           set -euo pipefail
           pr=$(gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json closedByPullRequestsReferences --jq '[.closedByPullRequestsReferences[].number] | last // empty')
@@ -188,6 +204,7 @@ jobs:
           else
             gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@"$RUNNER_TEMP/others.md" >/dev/null
           fi
+
 
   reply:
     name: Claude reply
