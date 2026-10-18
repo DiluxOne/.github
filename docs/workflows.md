@@ -10,7 +10,7 @@ with a `central-ref` input reads the scripts, profiles and policy at that
 ref; empty, the default, at the very commit its `uses:` line resolved to
 (`job.workflow_sha`, #287), so a caller that pins a SHA runs that commit's
 scripts with nothing else to set. A workflow another one calls is named at
-`@v5` inside it, and runs its own commit's scripts.
+`@v5` inside it, and runs its own commit's scripts. A caller that still passes `central-ref: v5` keeps reading the moving tag.
 
 | Workflow | Does | Inputs |
 | --- | --- | --- |

@@ -109,7 +109,7 @@ on:
         default: ''
       central-ref:
         type: string
-        default: v5
+        default: ''
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: false

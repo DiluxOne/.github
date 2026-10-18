@@ -73,6 +73,11 @@ jobs:
       - run: python3 scripts/agent-keys.py --test
       - run: python3 scripts/agent-keys.py
       - run: python3 scripts/repro-cap.py --test
+      # The engine's scripts run at the commit its uses: names (#287): no
+      # central-ref defaults to a moving tag, and a step never reads it
+      # without falling back to the workflow's own commit.
+      - run: "! grep -nA4 '^      central-ref:$' .github/workflows/*.yml | grep -E 'default: v[0-9]'"
+      - run: "! grep -n --exclude=pull-request.yml 'inputs.central-ref }}' .github/workflows/*.yml | grep -vE ':      central-ref: \\$\\{\\{ inputs.central-ref \\}\\}$'"
       - run: python3 scripts/changelog.py --test
       - run: python3 scripts/carry-lock.py --test
       # gh refuses a whole edit when one of several labels it removes is

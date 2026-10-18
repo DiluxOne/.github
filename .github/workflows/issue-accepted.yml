@@ -74,7 +74,7 @@ on:
         type: string
         default: Pull request (organisation)
       central-ref:
-        description: X
+        description: The ref of DiluxOne/.github whose scripts and policy run. Empty (the default) means the very commit this workflow runs from, job.workflow_sha, so a caller that pins a SHA or a tag runs that commit's scripts too (#287).
         type: string
         default: ''
     secrets:

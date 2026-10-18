@@ -83,7 +83,7 @@ on:
   workflow_call:
     inputs:
       central-ref:
-        description: X
+        description: The ref of DiluxOne/.github whose scripts and policy run. Empty (the default) means the very commit this workflow runs from, job.workflow_sha, so a caller that pins a SHA or a tag runs that commit's scripts too (#287).
         type: string
         default: ''
       risk:
@@ -166,7 +166,7 @@ jobs:
           # Off first: if anything below fails, nothing stays set to merge.
           gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --disable-auto >/dev/null 2>&1 || true
           gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label merged-by:policy >/dev/null 2>&1 || true
-          { git init -q "$RUNNER_TEMP/central" \&\& git -C "$RUNNER_TEMP/central" fetch -q --depth 1 https://github.com/DiluxOne/.github "$CENTRAL_REF" \&\& git -C "$RUNNER_TEMP/central" checkout -q FETCH_HEAD; }
+          { git init -q "$RUNNER_TEMP/central" && git -C "$RUNNER_TEMP/central" fetch -q --depth 1 https://github.com/DiluxOne/.github "$CENTRAL_REF" && git -C "$RUNNER_TEMP/central" checkout -q FETCH_HEAD; }
           issues=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences --jq '[.closingIssuesReferences[].number] | join(" ")')
           if [ "$(wc -w <<<"$issues")" -ne 1 ]; then echo "A human merges this one: it closes ${issues:-no issue}, not exactly one."; exit 0; fi
           issue=$issues
@@ -297,7 +297,7 @@ jobs:
           # Off first: if anything below fails, nothing stays set to merge.
           gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --disable-auto >/dev/null 2>&1 || true
           gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label merged-by:policy >/dev/null 2>&1 || true
-          { git init -q "$RUNNER_TEMP/central" \&\& git -C "$RUNNER_TEMP/central" fetch -q --depth 1 https://github.com/DiluxOne/.github "$CENTRAL_REF" \&\& git -C "$RUNNER_TEMP/central" checkout -q FETCH_HEAD; }
+          { git init -q "$RUNNER_TEMP/central" && git -C "$RUNNER_TEMP/central" fetch -q --depth 1 https://github.com/DiluxOne/.github "$CENTRAL_REF" && git -C "$RUNNER_TEMP/central" checkout -q FETCH_HEAD; }
           # Every file, renames by their old path too, so a protected path
           # cannot leave by a rename.
           gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/files"
@@ -361,7 +361,7 @@ jobs:
           if ! labels=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences --jq '.closingIssuesReferences[].url' \
                | while read -r url; do gh api "repos/${url#https://github.com/}" --jq '.labels[].name' || exit 1; done); then
             held="(the closed issues' labels could not be read)"
-          elif ! { git init -q "$RUNNER_TEMP/central-held" \&\& git -C "$RUNNER_TEMP/central-held" fetch -q --depth 1 https://github.com/DiluxOne/.github "$CENTRAL_REF" \&\& git -C "$RUNNER_TEMP/central-held" checkout -q FETCH_HEAD; }; then
+          elif ! { git init -q "$RUNNER_TEMP/central-held" && git -C "$RUNNER_TEMP/central-held" fetch -q --depth 1 https://github.com/DiluxOne/.github "$CENTRAL_REF" && git -C "$RUNNER_TEMP/central-held" checkout -q FETCH_HEAD; }; then
             held="(the policy could not be read)"
           # The repository's own policy: none only when the file is not there.
           elif { content=$(gh api "repos/$GITHUB_REPOSITORY/contents/.github/autonomy.yml?ref=$BASE_SHA" --jq .content 2>"$RUNNER_TEMP/held.err") \
@@ -425,7 +425,7 @@ jobs:
           [ "$(wc -l <<<"$commits")" -eq 1 ] || person "it has more than one commit"
           IFS=$'\t' read -r sha author nparents base <<<"$commits"
           if [ "$sha" != "$HEAD_SHA" ] || [ "$author" != "dilux-bot[bot]" ] || [ "$nparents" != 1 ]; then person "its commit is not dilux-bot's single commit at the head"; fi
-          { git init -q "$RUNNER_TEMP/central" \&\& git -C "$RUNNER_TEMP/central" fetch -q --depth 1 https://github.com/DiluxOne/.github "$CENTRAL_REF" \&\& git -C "$RUNNER_TEMP/central" checkout -q FETCH_HEAD; }
+          { git init -q "$RUNNER_TEMP/central" && git -C "$RUNNER_TEMP/central" fetch -q --depth 1 https://github.com/DiluxOne/.github "$CENTRAL_REF" && git -C "$RUNNER_TEMP/central" checkout -q FETCH_HEAD; }
           # The decision: the release issue accepted by a person with the
           # admin or maintain role, or by a maintainer's plan.
           VERSION="$version" LABEL=accepted python3 "$RUNNER_TEMP/central/scripts/release-issue.py" verify > "$RUNNER_TEMP/verify.json" || true
@@ -483,7 +483,7 @@ jobs:
           # Only an issue with a lane's label is worth asking the policy about.
           lanes=$(gh issue view "$issues" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(startswith("lane:"))] | length' 2>/dev/null || echo 0)
           if [ "$lanes" = 0 ]; then echo "handled=false" >> "$GITHUB_OUTPUT"; exit 0; fi
-          { git init -q "$RUNNER_TEMP/central" \&\& git -C "$RUNNER_TEMP/central" fetch -q --depth 1 https://github.com/DiluxOne/.github "$CENTRAL_REF" \&\& git -C "$RUNNER_TEMP/central" checkout -q FETCH_HEAD; }
+          { git init -q "$RUNNER_TEMP/central" && git -C "$RUNNER_TEMP/central" fetch -q --depth 1 https://github.com/DiluxOne/.github "$CENTRAL_REF" && git -C "$RUNNER_TEMP/central" checkout -q FETCH_HEAD; }
           # The repository's own autonomy policy: none only when the file is
           # not there; a read that fails otherwise leaves the merge to a person.
           rc=0
