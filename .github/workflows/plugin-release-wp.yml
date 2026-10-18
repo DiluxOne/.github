@@ -134,7 +134,7 @@ name: WordPress plugin release
 #       with:
 #         slug: diluxone-offload
 #         version-constant: DILUXONE_OFFLOAD_VERSION   # optional
-#         dry-run: false                               # true rehearses without committing
+#         dry-run: false                               # true rehearses, with no tag and no release
 #       secrets: inherit
 
 on:
