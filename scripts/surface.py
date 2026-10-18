@@ -347,7 +347,7 @@ def self_test():
             got_s = describe(check_sensitive("wordpress-plugin", sens_base, "HEAD"))
             ok(f"git (#287): a permission check added is sensitive ({got_s})", any("permission" in g and "includes/b.php" in g for g in got_s))
             ok("git (#287): a kind with no list has nothing sensitive", check_sensitive("", sens_base, "HEAD") == [])
-            ok("#287: a changed line that starts like a diff header still counts", touched_lines("<?php\n-- x\n", "<?php\n++$i;\n"), (["-- x"], ["++$i;"]))
+            ok("#287: a changed line that starts like a diff header still counts", touched_lines("<?php\n-- x\n", "<?php\n++$i;\n") == (["-- x"], ["++$i;"]))
             write("includes/b.php", "<?php\nadd_action( 'rest_api_init', function () {\n  register_rest_route( 'dx/v1', '/x', array() );\n} );\n")
             sh("commit", "-qam", "fix: b")
             got = describe(check("wordpress-plugin", base, "HEAD"))
