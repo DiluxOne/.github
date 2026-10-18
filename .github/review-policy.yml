@@ -35,6 +35,9 @@ high-risk:
   - "runner/**"
   - "workflow-templates/**"
   - "agents-block.md"
+  # Rebuilt by scripts/changelog.py in the pull request that releases a
+  # version, with what it releases.
+  - "CHANGELOG.md"
   - "labels.yml"
   - "repos.yml"
   - "org.yml"

@@ -1,0 +1,42 @@
+name: Engine release
+
+# Not reusable: this repository's own. A version tag vX.Y.Z pushed here
+# publishes its GitHub Release, with that version's notes from git
+# (scripts/changelog.py notes; docs/versioning.md). Dependabot shows them in
+# the pull request it opens for an organisation that pins this engine by
+# SHA. Only the tag's own notes; the moving vN tags are not versions.
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+
+permissions: {}
+
+jobs:
+  release:
+    name: Release ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write # the release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: The release, with its notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          python3 scripts/changelog.py notes "$TAG" > "$RUNNER_TEMP/notes.md"
+          # The highest version is the latest; a patch on an older line is not.
+          top=$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          latest=false; [ "$top" != "$TAG" ] || latest=true
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/notes.md"
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag --latest="$latest"
+          fi
