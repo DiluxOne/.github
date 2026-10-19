@@ -2,10 +2,23 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [6.0.1](https://github.com/DiluxOne/.github/releases/tag/v6.0.1) · 2026-10-19
+
+### Fixes
+
+- **sync:** a caller's top-level permissions are held to its template's ([#331](https://github.com/DiluxOne/.github/pull/331))
+- **sync:** a person's run writes signed git commits ([#328](https://github.com/DiluxOne/.github/pull/328))
+- **sync:** a caller's triggers are held to its template's ([#326](https://github.com/DiluxOne/.github/pull/326))
+
+### Maintenance
+
+- **policy:** planned releases go out on their own again ([#333](https://github.com/DiluxOne/.github/pull/333))
+
 ## [6.0.0](https://github.com/DiluxOne/.github/releases/tag/v6.0.0) · 2026-10-18
 
 ### Breaking changes
 
+- v6, every repository's release ends at the GitHub release ([#323](https://github.com/DiluxOne/.github/pull/323))
 - **release:** the release ends at the GitHub release; wordpress.org follows it ([#300](https://github.com/DiluxOne/.github/pull/300))
 
 ### Features
