@@ -257,19 +257,23 @@ def _trivial(text):
     return not re.search(r"[A-Za-z0-9]", text)
 
 
-def anchors(patch):
-    """{path: [line numbers on the side the patch applies to]} of the lines
-    that place each change: every line it removes, and the nearest line on
-    each side of a change that is not trivial. A new file has none. Pure."""
-    out, target, seen = {}, "", False
-    old_no = old = new = 0
-    before, block, pending = None, False, False
+def _norm(text):
+    """A line with its whitespace collapsed: a reformat keeps it the same."""
+    return " ".join(text.split())
 
-    def mark(n):
-        if target and n:
-            lines = out.setdefault(target, [])
-            if n not in lines:
-                lines.append(n)
+
+def anchors(patch):
+    """[(path, [lines])] for each hunk of a file that already existed: the
+    lines that place its change, as text with whitespace collapsed, every
+    line it removes and the nearest line on each side of a change that is
+    not trivial. A new file has no hunk here; a hunk with no such line has
+    an empty list. Pure."""
+    out, target, seen, old, new = [], "", False, 0, 0
+    before, block, pending, hunk = None, False, False, None
+
+    def mark(text):
+        if hunk is not None and text is not None and text not in hunk[1]:
+            hunk[1].append(text)
 
     for line in (patch or "").splitlines():
         if old > 0 or new > 0:
@@ -280,19 +284,20 @@ def anchors(patch):
                     mark(before)
                     block = True
                 if line.startswith("-"):
-                    mark(old_no)
-                    old_no, old = old_no + 1, old - 1
+                    old -= 1
+                    if not _trivial(line[1:]):
+                        mark(_norm(line[1:]))
                 else:
                     new -= 1
                 pending = True
                 continue
-            if pending and not _trivial(line[1:]):
-                mark(old_no)
-                pending = False
             if not _trivial(line[1:]):
-                before = old_no
+                if pending:
+                    mark(_norm(line[1:]))
+                    pending = False
+                before = _norm(line[1:])
             block = False
-            old_no, old, new = old_no + 1, old - 1, new - 1
+            old, new = old - 1, new - 1
             continue
         if line.startswith("diff --git "):
             seen, target = True, ""
@@ -305,24 +310,45 @@ def anchors(patch):
             continue
         h = re.match(r"^@@ -(\d+)(?:,(\d+))? \+\d+(?:,(\d+))? @@", line)
         if h:
-            old_no = int(h.group(1))
             old = int(h.group(2)) if h.group(2) is not None else 1
             new = int(h.group(3)) if h.group(3) is not None else 1
             before, block, pending = None, False, False
-    return {k: sorted(v) for k, v in out.items() if v}
+            hunk = (target, []) if target else None
+            if hunk:
+                out.append(hunk)
+    return out
+
+
+def held(anchor_list, released_lines, current):
+    """(True, why) when no line that places the fix is in the released
+    tree, whatever file or indentation it has there, and every hunk has
+    one. Only a line found once in the current tree (`current`, a count per
+    line) places anything: `return false;` says nothing of where it is.
+    Fails closed: a hunk that no such line places, or one such line the
+    release already has, is (False, why). Pure."""
+    if not anchor_list:
+        return False, "the fix changes no line that was already there"
+    for path, lines in anchor_list:
+        own = [t for t in lines if current.get(t, 0) == 1]
+        if not own:
+            return False, f"a change of {path} has no line of its own to tell where it is"
+        for text in own:
+            if text in released_lines:
+                return False, f"{path} holds code the fix changes that the release already has"
+    return True, ""
 
 
 def unreleased(root, patch, tag):
     """(True, why) when the version in production does not hold the code
     the fix changes: the fix applies on the default branch as it is, and
-    every line that places it there (`anchors`) was written by a commit
-    the tag does not contain (git blame). One such line already in the tag,
-    a fix that does not apply, or no line to place it: (False, why)."""
+    no line that places it (`anchors`) is anywhere in the tag's tree, with
+    its whitespace collapsed, so a reformat or a move after the release
+    does not hide it. Otherwise (False, why), and a person decides."""
     import subprocess
     import tempfile
 
     def git(*a):
-        return subprocess.run(["git", "-C", root, *a], capture_output=True, text=True)
+        return subprocess.run(["git", "-C", root, *a], capture_output=True, text=True, errors="replace")
 
     with tempfile.NamedTemporaryFile("w", suffix=".patch", delete=False, encoding="utf-8") as fh:
         fh.write(patch)
@@ -332,23 +358,21 @@ def unreleased(root, patch, tag):
             return False, "the fix does not apply on the default branch either"
     finally:
         os.unlink(name)
-    places = anchors(patch)
-    if not places:
-        return False, "the fix changes no line that was already there"
-    shipped = {}
-    for path, lines in sorted(places.items()):
-        args = ["blame", "--porcelain"]
-        for n in lines:
-            args += ["-L", f"{n},{n}"]
-        b = git(*args, "HEAD", "--", path)
-        if b.returncode != 0:
-            return False, f"{path} could not be read on the default branch"
-        for sha in re.findall(r"^([0-9a-f]{40}) \d+ \d+", b.stdout, re.M):
-            if sha not in shipped:
-                shipped[sha] = git("merge-base", "--is-ancestor", sha, tag).returncode == 0
-            if shipped[sha]:
-                return False, f"{path} holds code the fix changes that {tag} already has"
-    return True, f"every line the fix changes was written after {tag}"
+    # Every line of every text file, of the release and of the default
+    # branch as it is, at once.
+    trees = {}
+    for rev in (tag, "HEAD"):
+        g = git("grep", "-h", "-I", "--no-color", "-e", "", rev)
+        if g.returncode not in (0, 1):
+            return False, f"{rev} could not be read"
+        trees[rev] = [_norm(l) for l in g.stdout.splitlines()]
+    current = {}
+    for line in trees["HEAD"]:
+        current[line] = current.get(line, 0) + 1
+    ok, why = held(anchors(patch), set(trees[tag]), current)
+    if not ok:
+        return False, why.replace("the release", tag)
+    return True, f"no line the fix changes is in {tag}"
 
 
 def entry(readme, text):
@@ -435,9 +459,16 @@ def self_test():
     # Unreleased: which lines place a fix, and whether the tag holds them.
     hunk = ("diff --git a/f.php b/f.php\n--- a/f.php\n+++ b/f.php\n@@ -2,5 +2,6 @@ x\n"
             " function old() {}\n \n function reset() {\n-\tdelete();\n+\tif ( ok() ) {\n+\t\tdelete();\n+\t}\n }\n")
-    check("unreleased: the lines that place a change are the nearest real ones and the removed ones, not braces or blanks",
-          anchors(hunk), {"f.php": [4, 5]})
-    check("unreleased: a new file has no line to place it", anchors("diff --git a/n.php b/n.php\n--- /dev/null\n+++ b/n.php\n@@ -0,0 +1,2 @@\n+a\n+b\n"), {})
+    check("unreleased: the lines that place a change are the nearest real ones and the removed ones, not braces or blanks, whitespace collapsed",
+          anchors(hunk), [("f.php", ["function reset() {", "delete();"])])
+    check("unreleased: a new file has no hunk to place", anchors("diff --git a/n.php b/n.php\n--- /dev/null\n+++ b/n.php\n@@ -0,0 +1,2 @@\n+a\n+b\n"), [])
+    check("unreleased: a hunk with only braces around it has nothing to place it, and fails closed",
+          held([("f.php", ["x();"]), ("f.php", [])], set(), {"x();": 1}), (False, "a change of f.php has no line of its own to tell where it is"))
+    check("unreleased: one line of its own the release has, even moved or reindented, is enough to call it released",
+          (held([("f.php", ["a();", "b();"])], {"b();"}, {"a();": 1, "b();": 1})[0], held([("f.php", ["a();"])], {"c();"}, {"a();": 1})[0]), (False, True))
+    check("unreleased: a line found more than once now places nothing, released or not; with nothing else, it fails closed",
+          (held([("f.php", ["return false;", "a();"])], {"return false;"}, {"return false;": 3, "a();": 1})[0],
+           held([("f.php", ["return false;"])], set(), {"return false;": 3})[0]), (True, False))
     import subprocess
     import tempfile
     with tempfile.TemporaryDirectory() as d:
@@ -460,6 +491,30 @@ def self_test():
               unreleased(d, new_fix, "1.0.0")[0], True)
         check("unreleased: a fix of code the tag holds is in production",
               unreleased(d, old_fix, "1.0.0"), (False, "f.php holds code the fix changes that 1.0.0 already has"))
+        # The weakness released in 1.0.0, then reformatted and moved to another
+        # file after it: the fix of the new file is still a fix of released code.
+        g("checkout", "-q", "-b", "moved", "1.0.0")
+        with open(os.path.join(d, "f.php"), "a") as fh:
+            fh.write("function reset() {\n\tdelete();\n}\n")
+        g("commit", "-q", "-am", "released weakness")
+        g("tag", "1.1.0")
+        g("mv", "f.php", "g.php")
+        with open(os.path.join(d, "g.php")) as fh:
+            body = fh.read().replace("\tdelete();", "    delete( );").replace("delete( );", "delete();")
+        with open(os.path.join(d, "g.php"), "w") as fh:
+            fh.write(body)
+        g("commit", "-q", "-am", "moved and reindented")
+        moved_fix = ("diff --git a/g.php b/g.php\n--- a/g.php\n+++ b/g.php\n@@ -3,3 +3,5 @@ function old() { return 1; }\n"
+                     " function reset() {\n-    delete();\n+    if ( ok() ) {\n+        delete();\n+    }\n }\n")
+        check("unreleased: a released weakness moved to another file and reindented is still released (fails closed)",
+              unreleased(d, moved_fix, "1.1.0"), (False, "g.php holds code the fix changes that 1.1.0 already has"))
+        with tempfile.NamedTemporaryFile("w", suffix=".patch", delete=False) as fh:
+            fh.write(new_fix)
+        g("checkout", "-q", "master" if "master" in g("branch").stdout.decode() else "main")
+        rc = subprocess.run([sys.executable, __file__, "unreleased"], env={**env, "ROOT": d, "PATCH": fh.name, "TAG": "1.0.0"}, capture_output=True, text=True)
+        os.unlink(fh.name)
+        check("unreleased: the command exits 0 with its JSON when no release holds it",
+              (rc.returncode, json.loads(rc.stdout or "{}").get("unreleased")), (0, True))
         check("unreleased: a fix that does not apply on the default branch is no answer",
               unreleased(d, stale, "1.0.0"), (False, "the fix does not apply on the default branch either"))
     ev = lambda who, t, name="patch:go", kind="labeled": {"event": kind, "label": {"name": name}, "actor": {"login": who}, "created_at": t}

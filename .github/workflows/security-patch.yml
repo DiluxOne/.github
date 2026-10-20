@@ -24,9 +24,10 @@ name: Security patches
 #            hash, and the issue gets `patch:ready`; if not, `patch:failed`,
 #            saying which: no version in production, a fix that does not
 #            apply on it, a limit, the checks or the review. A fix that does
-#            not apply because every line it changes was written after the
-#            version in production (git blame, `security-patch.py
-#            unreleased`) is no patch at all: no release holds the weakness,
+#            not apply because no line of its own that places it is anywhere
+#            in the version in production, reindented or moved
+#            (`security-patch.py unreleased`, failing closed), is no patch
+#            at all: no release holds the weakness,
 #            so dilux-bot opens a `security` issue and a pull request with
 #            the fix on the default branch (a person merges it), the draft
 #            advisory is closed unpublished, and the issue here gets
@@ -548,25 +549,27 @@ jobs:
           held=$(sed -n 's/^why=//p' "$RUNNER_TEMP/in/build" | head -1)
           [ -s "$RUNNER_TEMP/in/fix.patch" ] && [ -n "$default" ] || { echo "::error::No fix or default branch for #$ISSUE: the next run tries again."; exit 1; }
           export REPOSITORIES="${REPO#*/}"
+          GH_TOKEN=""; BOT_TOKEN=""
+          # Each token revoked on the way out, even when the next mint fails.
+          trap 'for t in "$GH_TOKEN" "$BOT_TOKEN"; do [ -n "$t" ] && curl -fsS -o /dev/null -X DELETE -H "Authorization: Bearer $t" https://api.github.com/installation/token || true; done' EXIT
           GH_TOKEN=$(bash .dx-central/scripts/app-token.sh mint '{"repository_advisories":"write","metadata":"read"}')
           BOT_TOKEN=$(CLIENT_ID="$BOT_ID" PRIVATE_KEY="$BOT_KEY" bash .dx-central/scripts/app-token.sh mint '{"issues":"write","contents":"write","pull_requests":"write","metadata":"read"}')
           export GH_TOKEN
           unset PRIVATE_KEY BOT_KEY
-          trap 'for t in "$GH_TOKEN" "$BOT_TOKEN"; do curl -fsS -o /dev/null -X DELETE -H "Authorization: Bearer $t" https://api.github.com/installation/token || true; done' EXIT
           # A run that failed after opening them: nothing is opened twice.
           num=$(GH_TOKEN="$BOT_TOKEN" gh issue list --repo "$REPO" --state all --label security --author "app/dilux-bot" --limit 200 --json number,body \
             --jq "[.[] | select(.body | startswith(\"<!-- dx-security-forward: $GHSA -->\"))][0].number // empty")
           GH_TOKEN="$BOT_TOKEN" gh label create security --repo "$REPO" --color B60205 --description "A vulnerability report; a person merges its fix" --force >/dev/null || true
           if [ -z "$num" ]; then
             # shellcheck disable=SC2016 # backticks in the Markdown of the issue, not commands.
-            body=$(printf '<!-- dx-security-forward: %s -->\nA security weakness in code on `%s` that no release holds yet (it was written after %s, the version in production). There is no patch to release and no advisory to publish: the pull request that closes this issue fixes it on `%s` before any release does. A person merges it.\n\n%s' \
+            body=$(printf '<!-- dx-security-forward: %s -->\nA security weakness in code on `%s` that no release holds yet (it was written after %s, the version in production). There is no patch to release and no advisory to publish: the pull request that closes this issue fixes it on `%s` before any release does. A maintainer accepts this issue and merges it.\n\n%s' \
               "$GHSA" "$default" "$tag" "$default" "$sign")
             num=$(GH_TOKEN="$BOT_TOKEN" gh api -X POST "repos/$REPO/issues" -f title="Fix a security weakness not released yet" -f body="$body" -f type=Bug -f 'labels[]=security' --jq .number)
           fi
-          pr_url=$(GH_TOKEN="$BOT_TOKEN" gh pr list --repo "$REPO" --state all --search "Closes #$num" --json url --jq '.[0].url // empty')
+          branch="fix/$num-security-fix-not-released"
+          pr_url=$(GH_TOKEN="$BOT_TOKEN" gh pr list --repo "$REPO" --state all --head "$branch" --json url --jq '.[0].url // empty')
           if [ -z "$pr_url" ]; then
             git clone -q "https://github.com/$REPO" "$RUNNER_TEMP/forward"
-            branch="fix/$num-security-fix-not-released"
             onto=$(git -C "$RUNNER_TEMP/forward" rev-parse "origin/$default")
             if ! (cd "$RUNNER_TEMP/forward" \
                 && git config user.name "dilux-bot[bot]" && git config user.email "333187390+dilux-bot[bot]@users.noreply.github.com" \
@@ -584,8 +587,8 @@ jobs:
           closed=false
           if gh api -X PATCH "repos/$REPO/security-advisories/$GHSA" -f state=closed >/dev/null; then closed=true; fi
           GH_TOKEN="$ISSUE_TOKEN" gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --add-label patch:not-released >/dev/null
-          GH_TOKEN="$ISSUE_TOKEN" gh issue close "$ISSUE" --repo "$GITHUB_REPOSITORY" --reason completed --comment "$(printf 'No released version holds %s: %s. There is no patch: the fix goes into `%s` through %s, which a person merges. %s\n\n%s, in a private repository' \
-            "$GHSA" "$held" "$default" "$pr_url" "$([ "$closed" = true ] && echo "The advisory is closed, unpublished." || echo "**Closing the advisory failed**: a maintainer closes it by hand.")" "$sign")" >/dev/null
+          GH_TOKEN="$ISSUE_TOKEN" gh issue close "$ISSUE" --repo "$GITHUB_REPOSITORY" --reason completed --comment "$(printf 'No released version holds %s: %s. There is no patch: the fix goes into `%s` through %s, which waits for a maintainer to add `accepted` to %s and merge it. %s\n\n%s, in a private repository' \
+            "$GHSA" "$held" "$default" "$pr_url" "$GITHUB_SERVER_URL/$REPO/issues/$num" "$([ "$closed" = true ] && echo "The advisory is closed, unpublished." || echo "**Closing the advisory failed**: a maintainer closes it by hand.")" "$sign")" >/dev/null
           echo "$GHSA: not released; fix into $default by $pr_url."
 
       - name: Publish
