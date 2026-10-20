@@ -36,6 +36,33 @@ BOT_ID = int(_conf["bot"]["id"])
 SECURITY = str(_conf.get("security") or "")
 
 
+def hardwired_bot(root=os.path.join(HERE, "..", ".github", "workflows")):
+    """Where a shared workflow writes this organisation's App in (#197):
+    another organisation calls them with its own App, named by its variables
+    DX_BOT_LOGIN, DX_BOT_APP and DX_BOT_ID, so the App's login, slug or id
+    may stand only as their fallback (or in a comment or a message)."""
+    import glob
+    import re
+    fallbacks = (f"vars.DX_BOT_LOGIN || '{BOT}'", f"vars.DX_BOT_APP || '{APP}'", f"vars.DX_BOT_ID || '{BOT_ID}'",
+                 f"inputs.review-bot != '{BOT}'", f"default: '{BOT}'")
+    found = []
+    for path in sorted(glob.glob(os.path.join(root, "*.yml"))):
+        text = open(path, encoding="utf-8").read()
+        if not re.search(r"^  workflow_call:", text, re.M):
+            continue
+        for n, line in enumerate(text.split("\n"), 1):
+            code = line.strip()
+            if code.startswith("#") or re.match(r"(- )?name: ", code):
+                continue
+            for f in fallbacks:
+                code = code.replace(f, "")
+            # The slug as a value (quoted, a path, a pattern, a YAML value),
+            # not as a word in a message ("opened by dilux-bot").
+            if BOT in code or str(BOT_ID) in code or re.search(r"(^|[\"'/?|(]|: )" + re.escape(APP) + r"(?![\w-])", code):
+                found.append(f"{os.path.basename(path)}:{n}")
+    return found
+
+
 def self_test():
     failed = 0
 
@@ -54,6 +81,7 @@ def self_test():
         check("load: reads an org.yml", load(fh.name)["bot"], {"app": "x-bot", "id": 7})
     finally:
         os.unlink(fh.name)
+    check("#197: the shared workflows name the App only as the caller's variables' fallback", hardwired_bot(), [])
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 

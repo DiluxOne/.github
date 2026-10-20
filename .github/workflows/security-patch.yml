@@ -78,6 +78,14 @@ on:
 permissions:
   contents: read
 
+# The organisation's App, as GitHub shows it (#197): the calling
+# organisation's variables DX_BOT_LOGIN, DX_BOT_APP and DX_BOT_ID, or
+# DiluxOne's dilux-bot when it sets none.
+env:
+  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
+  DX_BOT_APP: ${{ vars.DX_BOT_APP || 'dilux-bot' }}
+  DX_BOT_ID: ${{ vars.DX_BOT_ID || '333187390' }}
+
 jobs:
   plan:
     name: Patches due
@@ -146,11 +154,11 @@ jobs:
             # Read whole, then searched (a pipe into grep -q can read as no
             # match under pipefail); a read that fails stops the run.
             pending=$(gh api "repos/$GITHUB_REPOSITORY/issues?state=open&labels=security:unvetted&per_page=100" --paginate \
-                 --jq ".[] | select(.user.login == \"dilux-bot[bot]\") | (.body // \"\") | startswith(\"<!-- dx-unvetted: $repo $ghsa -->\")")
+                 --jq ".[] | select(.user.login == env.DX_BOT_LOGIN) | (.body // \"\") | startswith(\"<!-- dx-unvetted: $repo $ghsa -->\")")
             if grep -qx true <<<"$pending"; then
               echo "#$n: $ghsa is not confirmed yet: not patched."; continue
             fi
-            mark=$(gh api "repos/$GITHUB_REPOSITORY/issues/$n/comments" --paginate --jq '.[] | select(.user.login == "dilux-bot[bot]") | .body' | grep -o '<!-- dx-security-patch: [^>]*-->' | tail -1 || true)
+            mark=$(gh api "repos/$GITHUB_REPOSITORY/issues/$n/comments" --paginate --jq '.[] | select(.user.login == env.DX_BOT_LOGIN) | .body' | grep -o '<!-- dx-security-patch: [^>]*-->' | tail -1 || true)
             # Whether patch:go is a maintainer's, added after the
             # announcement: who added it, read from the timeline, and their
             # role, read now.
@@ -729,7 +737,7 @@ jobs:
             git clone -q "https://github.com/$REPO" "$RUNNER_TEMP/carry"
             branch="fix/$num-carry-security-fix-of-${VERSION//./-}"
             if (cd "$RUNNER_TEMP/carry" \
-                && git config user.name "dilux-bot[bot]" && git config user.email "333187390+dilux-bot[bot]@users.noreply.github.com" \
+                && git config user.name "$DX_BOT_LOGIN" && git config user.email "$DX_BOT_ID+$DX_BOT_LOGIN@users.noreply.github.com" \
                 && git checkout -q -b "$branch" "origin/$default" \
                 && mapfile -t fix < <(python3 "$GITHUB_WORKSPACE/.dx-central/scripts/carry-lock.py" fix "$VERSION") \
                 && [ "${#fix[@]}" -gt 0 ] && git cherry-pick "${fix[@]}" >/dev/null); then

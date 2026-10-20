@@ -75,6 +75,14 @@ on:
 permissions:
   contents: read
 
+# The organisation's App, as GitHub shows it (#197): the calling
+# organisation's variables DX_BOT_LOGIN, DX_BOT_APP and DX_BOT_ID, or
+# DiluxOne's dilux-bot when it sets none.
+env:
+  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
+  DX_BOT_APP: ${{ vars.DX_BOT_APP || 'dilux-bot' }}
+  DX_BOT_ID: ${{ vars.DX_BOT_ID || '333187390' }}
+
 jobs:
   plan:
     name: Fixes due
@@ -189,8 +197,8 @@ jobs:
           git clone -q "https://github.com/$REPO" .
           echo "START=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           git checkout -q -b "$BRANCH"
-          git config user.name "dilux-bot[bot]"
-          git config user.email "333187390+dilux-bot[bot]@users.noreply.github.com"
+          git config user.name "$DX_BOT_LOGIN"
+          git config user.email "$DX_BOT_ID+$DX_BOT_LOGIN@users.noreply.github.com"
           printf '%s\n' /.dx-central/ /.dx-advisory-notes.md /.dx-advisory-verdict.json >> .git/info/exclude
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -390,7 +398,7 @@ jobs:
           # confirmed by closing its issue here (scripts/advisory.py
           # UNVETTED_MARK), the bot's, never by anything in the advisory.
           pending=$(GH_TOKEN="$ISSUE_TOKEN" gh api "repos/$GITHUB_REPOSITORY/issues?state=open&labels=security:unvetted&per_page=100" --paginate \
-            --jq ".[] | select(.user.login == \"dilux-bot[bot]\") | select((.body // \"\") | startswith(\"<!-- dx-unvetted: $REPO $GHSA -->\")) | .number" 2>/dev/null || true)
+            --jq ".[] | select(.user.login == env.DX_BOT_LOGIN) | select((.body // \"\") | startswith(\"<!-- dx-unvetted: $REPO $GHSA -->\")) | .number" 2>/dev/null || true)
           if [ "$now" = draft ] && [ -n "$pending" ]; then
             for p in $pending; do
               GH_TOKEN="$ISSUE_TOKEN" gh issue close "$p" --repo "$GITHUB_REPOSITORY" --reason completed --comment "Confirmed: the triage reproduced it and fixed it with checks that did not fail."$'\n\n'"🤖 AI-generated · Claude Opus 5.5 (Anthropic), in a private repository" >/dev/null \

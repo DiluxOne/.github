@@ -126,10 +126,18 @@ concurrency:
   group: autopilot-${{ github.repository }}-${{ inputs.issue || inputs.pr }}
   cancel-in-progress: false
 
+# The organisation's App, as GitHub shows it (#197): the calling
+# organisation's variables DX_BOT_LOGIN, DX_BOT_APP and DX_BOT_ID, or
+# DiluxOne's dilux-bot when it sets none.
+env:
+  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
+  DX_BOT_APP: ${{ vars.DX_BOT_APP || 'dilux-bot' }}
+  DX_BOT_ID: ${{ vars.DX_BOT_ID || '333187390' }}
+
 jobs:
   where:
     name: Where the autopilot runs
-    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions: {}
     outputs:
@@ -218,7 +226,7 @@ jobs:
           PR: ${{ inputs.pr }}
         run: |
           set -euo pipefail
-          is_bot() { case "$1" in dilux-bot|"dilux-bot[bot]"|app/dilux-bot) return 0 ;; *) return 1 ;; esac; }
+          is_bot() { case "$1" in "$DX_BOT_APP"|"$DX_BOT_LOGIN"|"app/$DX_BOT_APP") return 0 ;; *) return 1 ;; esac; }
           if [ "$MODE" = continue ]; then
             # The label asked for one run: it goes now, so it can be asked again.
             gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label "autopilot:continue" >/dev/null 2>&1 || true
@@ -459,8 +467,8 @@ jobs:
           git -c "http.extraheader=$auth" fetch -q origin '+refs/heads/*:refs/remotes/origin/*'
           if [ -n "$REPRO_TEST" ]; then git sparse-checkout set --no-cone '/*' "!/$REPRO_TEST"; fi
           if [ -n "$BRANCH" ]; then git checkout -q -B "$BRANCH" "origin/$BRANCH"; else git checkout -q -B "$DEFAULT" "origin/$DEFAULT"; fi
-          git config user.name "dilux-bot[bot]"
-          git config user.email "333187390+dilux-bot[bot]@users.noreply.github.com"
+          git config user.name "$DX_BOT_LOGIN"
+          git config user.email "$DX_BOT_ID+$DX_BOT_LOGIN@users.noreply.github.com"
 
       - name: The organisation's scripts and policy
         id: central
@@ -499,9 +507,9 @@ jobs:
           # The job's own token, which can only read this repository: the
           # agent holds nothing that writes (#287).
           github_token: ${{ github.token }}
-          bot_name: dilux-bot[bot]
-          bot_id: '333187390'
-          allowed_bots: dilux-bot
+          bot_name: ${{ vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
+          bot_id: ${{ vars.DX_BOT_ID || '333187390' }}
+          allowed_bots: ${{ vars.DX_BOT_APP || 'dilux-bot' }}
           prompt: ${{ steps.task.outputs.prompt }}
           claude_args: |
             --model claude-opus-5-5
@@ -596,8 +604,8 @@ jobs:
           NUMBER: ${{ needs.prep.outputs.issue }}
           REPO_AUTONOMY: ${{ runner.temp }}/repo-autonomy.yml
         run: |
-          git config user.name "dilux-bot[bot]"
-          git config user.email "333187390+dilux-bot[bot]@users.noreply.github.com"
+          git config user.name "$DX_BOT_LOGIN"
+          git config user.email "$DX_BOT_ID+$DX_BOT_LOGIN@users.noreply.github.com"
           python3 .dx-central/scripts/autopilot.py apply .dx-out/outbox.jsonl spec,stop || true
 
       - name: The Spec (G3), sealed, and the draft pull request
@@ -617,7 +625,7 @@ jobs:
         run: |
           set -euo pipefail
           gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/body.md"
-          stopped=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json comments --jq '[.comments[] | select((.body | startswith("<!-- dx-autopilot-stop -->")) and (.author.login | test("^(app/)?dilux-bot(\\[bot\\])?$")) and .createdAt >= env.STARTED)] | length')
+          stopped=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json comments --jq '[.comments[] | select((.body | startswith("<!-- dx-autopilot-stop -->")) and (.author.login | test("^(app/)?" + env.DX_BOT_APP + "(\\[bot\\])?$")) and .createdAt >= env.STARTED)] | length')
           if [ "$stopped" != 0 ]; then echo "The agent stopped after the Spec; it said why on the issue."; exit 0; fi
           # G3 by the issue's Type: a Feature's Spec has its phases (#193).
           # A Type that cannot be read opens nothing.
@@ -724,8 +732,8 @@ jobs:
           git -c "http.extraheader=$auth" fetch -q origin '+refs/heads/*:refs/remotes/origin/*'
           if [ -n "$REPRO_TEST" ]; then git sparse-checkout set --no-cone '/*' "!/$REPRO_TEST"; fi
           if [ -n "$BRANCH" ]; then git checkout -q -B "$BRANCH" "origin/$BRANCH"; else git checkout -q -B "$DEFAULT" "origin/$DEFAULT"; fi
-          git config user.name "dilux-bot[bot]"
-          git config user.email "333187390+dilux-bot[bot]@users.noreply.github.com"
+          git config user.name "$DX_BOT_LOGIN"
+          git config user.email "$DX_BOT_ID+$DX_BOT_LOGIN@users.noreply.github.com"
 
       - name: The organisation's scripts and policy
         id: central
@@ -774,9 +782,9 @@ jobs:
           # The job's own token, which can only read this repository: the
           # agent holds nothing that writes (#287).
           github_token: ${{ github.token }}
-          bot_name: dilux-bot[bot]
-          bot_id: '333187390'
-          allowed_bots: dilux-bot
+          bot_name: ${{ vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
+          bot_id: ${{ vars.DX_BOT_ID || '333187390' }}
+          allowed_bots: ${{ vars.DX_BOT_APP || 'dilux-bot' }}
           prompt: ${{ steps.task.outputs.prompt }}
           claude_args: |
             --model claude-opus-5-5
@@ -887,8 +895,8 @@ jobs:
           REPO_AUTONOMY: ${{ runner.temp }}/repo-autonomy.yml
         run: |
           set -euo pipefail
-          git config user.name "dilux-bot[bot]"
-          git config user.email "333187390+dilux-bot[bot]@users.noreply.github.com"
+          git config user.name "$DX_BOT_LOGIN"
+          git config user.email "$DX_BOT_ID+$DX_BOT_LOGIN@users.noreply.github.com"
           if [ -f .dx-out/work.bundle ]; then
             git fetch -q .dx-out/work.bundle HEAD
             new=$(git rev-parse FETCH_HEAD)

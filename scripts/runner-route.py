@@ -87,18 +87,20 @@ FRESH = re.compile(r"^ubuntu-latest\s+#\s*fresh: .*\(#287\)$")
 DECIDED = re.compile(r"^\$\{\{ \(vars\.DX_RUNNER_HEAVY != '' && needs\.[a-z0-9_-]+\.outputs\.github-hosted == 'false'\) && fromJSON\(vars\.DX_RUNNER_HEAVY\) \|\| '([^']+)' \}\}$")
 
 
-def decide(heavy, event):
+def decide(heavy, event, bot=None):
     """The runner a job gets: DX_RUNNER_HEAVY's (a runs-on value as JSON), or
-    None for GitHub's (the fallback)."""
+    None for GitHub's (the fallback). `bot`: the calling organisation's App
+    login (DX_BOT_LOGIN, #197), this one's by default."""
+    bot = (bot or BOT).lower()
     if not heavy:
         return None
     pr = event.get("pull_request") or {}
     author = ((pr.get("user") or {}).get("login") or "").lower()
     head = ((pr.get("head") or {}).get("ref") or "").lower()
-    if author == BOT and (head.startswith(REPRO_PREFIX) or ("/" in head and LANE_MARK in head)):
+    if author == bot and (head.startswith(REPRO_PREFIX) or ("/" in head and LANE_MARK in head)):
         return None
     issue = event.get("issue") or {}
-    by_bot = ((issue.get("user") or {}).get("login") or "").lower() == BOT
+    by_bot = ((issue.get("user") or {}).get("login") or "").lower() == bot
     if by_bot and (issue.get("pull_request") or (issue.get("title") or "").lower().startswith(LANE_TITLE.lower())):
         return None
     return json.loads(heavy)
@@ -107,10 +109,12 @@ def decide(heavy, event):
 def expression(fallback="ubuntu-latest"):
     pr = "github.event.pull_request"
     head = f"{pr}.head.ref"
-    repro = (f"({pr}.user.login == '{BOT}' && (startsWith({head}, '{REPRO_PREFIX}')"
+    # The calling organisation's App (#197): its DX_BOT_LOGIN, else ours.
+    bot = f"(vars.DX_BOT_LOGIN || '{BOT}')"
+    repro = (f"({pr}.user.login == {bot} && (startsWith({head}, '{REPRO_PREFIX}')"
              f" || (contains({head}, '/') && contains({head}, '{LANE_MARK}'))))")
     issue = "github.event.issue"
-    comment = f"({issue}.user.login == '{BOT}' && ({issue}.pull_request || startsWith({issue}.title, '{LANE_TITLE}')))"
+    comment = f"({issue}.user.login == {bot} && ({issue}.pull_request || startsWith({issue}.title, '{LANE_TITLE}')))"
     return (f"${{{{ vars.DX_RUNNER_HEAVY != '' && !({repro} || {comment})"
             f" && fromJSON(vars.DX_RUNNER_HEAVY) || '{fallback}' }}}}")
 
@@ -349,6 +353,17 @@ def self_test():
         got = evaluate(expr, {"vars": {"DX_RUNNER_HEAVY": var} if var else {}, "github": {"event": event}})
         check(f"expression: {name}", got, want)
         check(f"decide: {name}", decide(var, event) or gh, want)
+
+    # Another organisation's App, named by its DX_BOT_LOGIN (#197): its
+    # reproduction leaves the VM, and ours is nobody special there.
+    other = "acme-bot[bot]"
+    for name, event, want in [
+        ("#197: another organisation's bot's reproduction runs on GitHub's runners", pr(other, "test/repro-issue-12"), gh),
+        ("#197: there, dilux-bot's is a stranger's branch and keeps the VM", pr(BOT, "test/repro-issue-12"), vm),
+    ]:
+        got = evaluate(expr, {"vars": {"DX_RUNNER_HEAVY": VMJ, "DX_BOT_LOGIN": other}, "github": {"event": event}})
+        check(f"expression: {name}", got, want)
+        check(f"decide: {name}", decide(VMJ, event, other) or gh, want)
 
     try:
         evaluate(expr, {"vars": {"DX_RUNNER_HEAVY": "github"}, "github": {"event": {}}})
