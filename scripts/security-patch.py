@@ -26,6 +26,12 @@ label on that issue:
                   the claim's issue closes; `patch:released`
   patch:failed    the fix did not apply, broke a limit, failed its checks or
                   its review; a maintainer takes it from there
+  patch:not-released  the version in production is not affected: the code
+                  the fix changes was written after it (`unreleased`), so
+                  no release holds the weakness. The fix goes into the
+                  default branch as a pull request a person merges, the
+                  advisory is closed unpublished, and the claim's issue
+                  closes
 
 Nothing publishes without `patch:go`: a stranger's report never reaches
 users on its own. One patch per repository at a time.
@@ -44,6 +50,12 @@ users on its own. One patch per repository at a time.
   security-patch.py marker   VERSION, TREE, AT: the marker line
   security-patch.py entry    README, VERSION_TEXT: the readme with a held
                              changelog entry for the patch on top
+  security-patch.py unreleased  ROOT (a clone of the public repository with
+                             its whole history and tags, the default branch
+                             checked out), PATCH, TAG (the version in
+                             production): whether the fix only changes code
+                             written after TAG, as JSON {unreleased, why};
+                             exit 0 when it does, 1 when not
   security-patch.py release  ROOT (the public repository's checkout),
                              VERSION: its kind's release command for that
                              version and its caller's slug, as JSON
@@ -111,6 +123,8 @@ def stage(labels, mark, go):
     advisory is a draft (the caller checks both). go: "ok" when patch:go is
     a maintainer's, after the announcement; otherwise why not."""
     labels = set(labels)
+    if "patch:not-released" in labels:
+        return "none", "no released version holds it; its fix went to the default branch"
     if "patch:failed" in labels or "patch:released" in labels:
         return "none", "done" if "patch:released" in labels else "it failed; a maintainer takes it"
     if "patch:pushed" in labels:
@@ -237,6 +251,182 @@ def limits(patch, rules):
     return out
 
 
+def _trivial(text):
+    """A line that says nothing of where it is: blank, or only punctuation
+    and comment marks (a brace, ` */`, ` *`)."""
+    return not re.search(r"[A-Za-z0-9]", text)
+
+
+def _norm(text):
+    """A line with its whitespace collapsed: a reformat keeps it the same."""
+    return " ".join(text.split())
+
+
+def anchors(patch):
+    """[(path, [lines])] for each hunk of a file that already existed: the
+    lines that place its change, as text with whitespace collapsed, every
+    line it removes and the nearest line on each side of a change that is
+    not trivial. A new file has no hunk here; a hunk with no such line has
+    an empty list. Pure."""
+    out, target, seen, old, new = [], "", False, 0, 0
+    before, block, pending, hunk = None, False, False, None
+
+    def mark(text):
+        if hunk is not None and text is not None and text not in hunk[1]:
+            hunk[1].append(text)
+
+    for line in (patch or "").splitlines():
+        if old > 0 or new > 0:
+            if line.startswith("\\"):
+                continue
+            if line[:1] in ("-", "+"):
+                if not block:
+                    mark(before)
+                    block = True
+                if line.startswith("-"):
+                    old -= 1
+                    if not _trivial(line[1:]):
+                        mark(_norm(line[1:]))
+                else:
+                    new -= 1
+                pending = True
+                continue
+            if not _trivial(line[1:]):
+                if pending:
+                    mark(_norm(line[1:]))
+                    pending = False
+                before = _norm(line[1:])
+            block = False
+            old, new = old - 1, new - 1
+            continue
+        if line.startswith("diff --git "):
+            seen, target = True, ""
+            continue
+        if not seen:
+            continue
+        m = re.match(r"^--- (.+)$", line)
+        if m:
+            target = _path(m.group(1))
+            continue
+        h = re.match(r"^@@ -(\d+)(?:,(\d+))? \+\d+(?:,(\d+))? @@", line)
+        if h:
+            old = int(h.group(2)) if h.group(2) is not None else 1
+            new = int(h.group(3)) if h.group(3) is not None else 1
+            before, block, pending = None, False, False
+            hunk = (target, []) if target else None
+            if hunk:
+                out.append(hunk)
+    return out
+
+
+def held(anchor_list, released_lines, current):
+    """(True, why) when no line that places the fix is in the released
+    tree, whatever file or indentation it has there, and every hunk has
+    one. Only a line found once in the current tree (`current`, a count per
+    line) places anything: `return false;` says nothing of where it is.
+    Fails closed: a hunk that no such line places, or one such line the
+    release already has, is (False, why). Pure."""
+    if not anchor_list:
+        return False, "the fix changes no line that was already there"
+    for path, lines in anchor_list:
+        own = [t for t in lines if current.get(t, 0) == 1]
+        if not own:
+            return False, f"a change of {path} has no line of its own to tell where it is"
+        for text in own:
+            if text in released_lines:
+                return False, f"{path} holds code the fix changes that the release already has"
+    return True, ""
+
+
+def unreleased(root, patch, tag):
+    """(True, why) when the version in production does not hold the code
+    the fix changes: the fix applies on the default branch as it is, and
+    no line that places it (`anchors`) is anywhere in the tag's tree, with
+    its whitespace collapsed, so a reformat or a move after the release
+    does not hide it. Otherwise (False, why), and a person decides."""
+    import subprocess
+    import tempfile
+
+    def git(*a):
+        return subprocess.run(["git", "-C", root, *a], capture_output=True, text=True, errors="replace")
+
+    with tempfile.NamedTemporaryFile("w", suffix=".patch", delete=False, encoding="utf-8") as fh:
+        fh.write(patch)
+        name = fh.name
+    try:
+        if git("apply", "--check", name).returncode != 0:
+            return False, "the fix does not apply on the default branch either"
+    finally:
+        os.unlink(name)
+    # Every line of every text file, of the release and of the default
+    # branch as it is, at once.
+    trees = {}
+    for rev in (tag, "HEAD"):
+        g = git("grep", "-h", "-I", "--no-color", "-e", "", rev)
+        if g.returncode not in (0, 1):
+            return False, f"{rev} could not be read"
+        trees[rev] = [_norm(l) for l in g.stdout.splitlines()]
+    current = {}
+    for line in trees["HEAD"]:
+        current[line] = current.get(line, 0) + 1
+    places = anchors(patch)
+    ok, why = held(places, set(trees[tag]), current)
+    if not ok:
+        return False, why.replace("the release", tag)
+    # And from the history: each such line was born adding code, never
+    # editing what was there (a rename or a rewrite after the release would
+    # hide released code from the text alone).
+    where = {}
+    g = git("grep", "-n", "-I", "--no-color", "-e", "", "HEAD")
+    if g.returncode != 0:
+        return False, "the default branch could not be read"
+    for row in g.stdout.splitlines():
+        m = re.match(r"^HEAD:(.+?):(\d+):(.*)$", row)
+        if m and current.get(_norm(m.group(3))) == 1:
+            where[_norm(m.group(3))] = (m.group(1), int(m.group(2)))
+    for path, lines in places:
+        for text in (t for t in lines if current.get(t, 0) == 1):
+            if text not in where:
+                return False, f"{path}: a line the fix changes could not be found on the default branch"
+            file_, n = where[text]
+            b = git("blame", "--porcelain", "-L", f"{n},{n}", "HEAD", "--", file_)
+            m = re.match(r"^([0-9a-f]{40}) (\d+) \d+", b.stdout)
+            name = re.search(r"^filename (.+)$", b.stdout, re.M)
+            if b.returncode != 0 or not m or not name:
+                return False, f"the history of {file_} could not be read"
+            # The whole commit, renames paired (-M): a rename that also
+            # edits shows its edits, never the file as all new.
+            show = git("show", "-M", "--format=", "-U0", "--no-color", m.group(1))
+            part = section(show.stdout, name.group(1))
+            # A file born in a commit that deletes another may be that one,
+            # rewritten past what git pairs as a rename: an edit.
+            reborn = "--- /dev/null" in part and re.search(r"^\+\+\+ /dev/null$", show.stdout, re.M)
+            if show.returncode != 0 or reborn or not edit_free(part, int(m.group(2))):
+                return False, f"{path}: a line the fix changes was written by editing older code, which {tag} may hold"
+    return True, f"no line the fix changes is in {tag}, and each was written as new code"
+
+
+def section(diff, path):
+    """The part of a whole commit's diff that writes `path` (its new name
+    after a rename); "" when none does. Pure."""
+    parts = re.split(r"^(?=diff --git )", diff, flags=re.M)
+    for part in parts:
+        if re.search(r"^\+\+\+ " + re.escape("b/" + path) + r"$", part, re.M):
+            return part
+    return ""
+
+
+def edit_free(diff, line):
+    """Whether the hunk of a -U0 diff that writes `line` (on its new side)
+    only adds lines. Pure."""
+    for h in re.finditer(r"^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", diff, re.M):
+        removed = int(h.group(1)) if h.group(1) is not None else 1
+        start, count = int(h.group(2)), int(h.group(3)) if h.group(3) is not None else 1
+        if start <= line < start + count:
+            return removed == 0
+    return False
+
+
 def entry(readme, text):
     """The readme with a held entry for the patch on top of its changelog:
     `= Unreleased =`, the line `Unreleased.` and one note. release-markers.sh
@@ -317,6 +507,128 @@ def self_test():
     check("stage: pushed finishes", stage(["patch:pushed"], m, "")[0], "finish")
     check("stage: released or failed does nothing", [stage([s_], m, "ok")[0] for s_ in ("patch:released", "patch:failed")], ["none", "none"])
     check("stage: announced without its marker waits for a person", stage(["patch:ready", "patch:go"], "", "ok")[0], "wait")
+    check("stage: not released does nothing more", stage(["patch:not-released"], "", "")[0], "none")
+    # Unreleased: which lines place a fix, and whether the tag holds them.
+    hunk = ("diff --git a/f.php b/f.php\n--- a/f.php\n+++ b/f.php\n@@ -2,5 +2,6 @@ x\n"
+            " function old() {}\n \n function reset() {\n-\tdelete();\n+\tif ( ok() ) {\n+\t\tdelete();\n+\t}\n }\n")
+    check("unreleased: the lines that place a change are the nearest real ones and the removed ones, not braces or blanks, whitespace collapsed",
+          anchors(hunk), [("f.php", ["function reset() {", "delete();"])])
+    check("unreleased: a new file has no hunk to place", anchors("diff --git a/n.php b/n.php\n--- /dev/null\n+++ b/n.php\n@@ -0,0 +1,2 @@\n+a\n+b\n"), [])
+    check("unreleased: a hunk with only braces around it has nothing to place it, and fails closed",
+          held([("f.php", ["x();"]), ("f.php", [])], set(), {"x();": 1}), (False, "a change of f.php has no line of its own to tell where it is"))
+    check("unreleased: one line of its own the release has, even moved or reindented, is enough to call it released",
+          (held([("f.php", ["a();", "b();"])], {"b();"}, {"a();": 1, "b();": 1})[0], held([("f.php", ["a();"])], {"c();"}, {"a();": 1})[0]), (False, True))
+    check("unreleased: a line found more than once now places nothing, released or not; with nothing else, it fails closed",
+          (held([("f.php", ["return false;", "a();"])], {"return false;"}, {"return false;": 3, "a();": 1})[0],
+           held([("f.php", ["return false;"])], set(), {"return false;": 3})[0]), (True, False))
+    import subprocess
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
+        g = lambda *a: subprocess.run(["git", "-C", d, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", *a], check=True, capture_output=True, env=env)
+        g("init", "-q")
+        with open(os.path.join(d, "f.php"), "w") as fh:
+            fh.write("<?php\nfunction old() { return 1; }\n")
+        g("add", "-A")
+        g("commit", "-q", "-m", "one")
+        g("tag", "1.0.0")
+        with open(os.path.join(d, "f.php"), "a") as fh:
+            fh.write("\nfunction reset() {\n\tdelete();\n}\n")
+        g("commit", "-q", "-am", "two")
+        new_fix = ("diff --git a/f.php b/f.php\n--- a/f.php\n+++ b/f.php\n@@ -3,4 +3,6 @@ function old() { return 1; }\n"
+                   " \n function reset() {\n-\tdelete();\n+\tif ( ok() ) {\n+\t\tdelete();\n+\t}\n }\n")
+        old_fix = ("diff --git a/f.php b/f.php\n--- a/f.php\n+++ b/f.php\n@@ -1,3 +1,3 @@\n <?php\n-function old() { return 1; }\n+function old() { return 2; }\n \n")
+        stale = new_fix.replace("-\tdelete();", "-\tdelete_all();")
+        check("unreleased: a fix of code written after the tag is not in production",
+              unreleased(d, new_fix, "1.0.0")[0], True)
+        check("unreleased: a fix of code the tag holds is in production",
+              unreleased(d, old_fix, "1.0.0"), (False, "f.php holds code the fix changes that 1.0.0 already has"))
+        # The weakness released in 1.0.0, then reformatted and moved to another
+        # file after it: the fix of the new file is still a fix of released code.
+        g("checkout", "-q", "-b", "moved", "1.0.0")
+        with open(os.path.join(d, "f.php"), "a") as fh:
+            fh.write("function reset() {\n\tdelete();\n}\n")
+        g("commit", "-q", "-am", "released weakness")
+        g("tag", "1.1.0")
+        g("mv", "f.php", "g.php")
+        with open(os.path.join(d, "g.php")) as fh:
+            body = fh.read().replace("\tdelete();", "    delete( );").replace("delete( );", "delete();")
+        with open(os.path.join(d, "g.php"), "w") as fh:
+            fh.write(body)
+        g("commit", "-q", "-am", "moved and reindented")
+        moved_fix = ("diff --git a/g.php b/g.php\n--- a/g.php\n+++ b/g.php\n@@ -3,3 +3,5 @@ function old() { return 1; }\n"
+                     " function reset() {\n-    delete();\n+    if ( ok() ) {\n+        delete();\n+    }\n }\n")
+        check("unreleased: a released weakness moved to another file and reindented is still released (fails closed)",
+              unreleased(d, moved_fix, "1.1.0"), (False, "g.php holds code the fix changes that 1.1.0 already has"))
+        with tempfile.NamedTemporaryFile("w", suffix=".patch", delete=False) as fh:
+            fh.write(new_fix)
+        g("checkout", "-q", "master" if "master" in g("branch").stdout.decode() else "main")
+        rc = subprocess.run([sys.executable, __file__, "unreleased"], env={**env, "ROOT": d, "PATCH": fh.name, "TAG": "1.0.0"}, capture_output=True, text=True)
+        os.unlink(fh.name)
+        check("unreleased: the command exits 0 with its JSON when no release holds it",
+              (rc.returncode, json.loads(rc.stdout or "{}").get("unreleased")), (0, True))
+        with tempfile.NamedTemporaryFile("w", suffix=".patch", delete=False) as fh:
+            fh.write(old_fix)
+        rc = subprocess.run([sys.executable, __file__, "unreleased"], env={**env, "ROOT": d, "PATCH": fh.name, "TAG": "1.0.0"}, capture_output=True, text=True)
+        os.unlink(fh.name)
+        check("unreleased: the command exits 1 when the release holds it", (rc.returncode, json.loads(rc.stdout or "{}").get("unreleased")), (1, False))
+        check("unreleased: a tag that does not exist cannot be read, and is no answer", unreleased(d, new_fix, "9.9.9")[0], False)
+        # Released as wipe(), then renamed and rewritten in substance: no line
+        # of the fix is in the release, but it was written by editing it.
+        g("checkout", "-q", "-b", "renamed", "1.0.0")
+        with open(os.path.join(d, "f.php"), "a") as fh:
+            fh.write("\nfunction reset_v1() {\n\twipe_it();\n}\n")
+        g("commit", "-q", "-am", "released as reset_v1")
+        g("tag", "1.2.0")
+        with open(os.path.join(d, "f.php")) as fh:
+            body = fh.read().replace("function reset_v1() {\n\twipe_it();", "function reset() {\n\tdelete();")
+        with open(os.path.join(d, "f.php"), "w") as fh:
+            fh.write(body)
+        g("commit", "-q", "-am", "renamed")
+        check("unreleased: code released and then rewritten in substance is not taken for new (fails closed)",
+              unreleased(d, new_fix, "1.2.0"), (False, "f.php: a line the fix changes was written by editing older code, which 1.2.0 may hold"))
+        # Released, then renamed to another file and edited in the same commit.
+        g("checkout", "-q", "-b", "renamed-edited", "1.2.0")
+        g("mv", "f.php", "h.php")
+        with open(os.path.join(d, "h.php")) as fh:
+            body = fh.read().replace("function reset_v1() {\n\twipe_it();", "function reset() {\n\tdelete();")
+        with open(os.path.join(d, "h.php"), "w") as fh:
+            fh.write(body)
+        g("commit", "-q", "-am", "moved and rewritten at once")
+        check("unreleased: a rename and an edit in one commit is an edit, not new code (fails closed)",
+              unreleased(d, new_fix.replace("f.php", "h.php"), "1.2.0"), (False, "h.php: a line the fix changes was written by editing older code, which 1.2.0 may hold"))
+        # Released, then deleted and written again in another file, too
+        # different for git to pair it as a rename.
+        g("checkout", "-q", "-b", "reborn", "1.2.0")
+        g("rm", "-q", "f.php")
+        with open(os.path.join(d, "k.php"), "w") as fh:
+            fh.write("<?php\n// all new words here\nfunction reset() {\n\tdelete();\n}\n")
+        g("add", "-A")
+        g("commit", "-q", "-m", "rewritten elsewhere")
+        k_fix = ("diff --git a/k.php b/k.php\n--- a/k.php\n+++ b/k.php\n@@ -3,3 +3,5 @@ // all new words here\n"
+                 " function reset() {\n-\tdelete();\n+\tif ( ok() ) {\n+\t\tdelete();\n+\t}\n }\n")
+        check("unreleased: a file born in a commit that deletes another is taken for a rewrite of it (fails closed)",
+              unreleased(d, k_fix, "1.2.0"), (False, "k.php: a line the fix changes was written by editing older code, which 1.2.0 may hold"))
+        # A patch with two hunks: one on new code, one on code the release has.
+        g("checkout", "-q", "-b", "mixed", "1.0.0")
+        with open(os.path.join(d, "f.php"), "a") as fh:
+            fh.write("\n// one\n// two\n// three\n// four\n\nfunction reset() {\n\tdelete();\n}\n")
+        g("commit", "-q", "-am", "new reset")
+        with open(os.path.join(d, "f.php")) as fh:
+            body = fh.read()
+        with open(os.path.join(d, "f.php"), "w") as fh:
+            fh.write(body.replace("return 1;", "return 2;").replace("\tdelete();", "\tif ( ok() ) {\n\t\tdelete();\n\t}"))
+        mixed = subprocess.run(["git", "-C", d, "diff"], capture_output=True, text=True, env=env).stdout
+        g("checkout", "-q", "--", "f.php")
+        check("unreleased: a patch of two hunks, one on new code and one on released code, goes to a person",
+              (len(anchors(mixed)), unreleased(d, mixed, "1.0.0")), (2, (False, "f.php holds code the fix changes that 1.0.0 already has")))
+        check("unreleased: a fix that does not apply on the default branch is no answer",
+              unreleased(d, stale, "1.0.0"), (False, "the fix does not apply on the default branch either"))
+    two = "diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-x\n+y\ndiff --git a/c b/d\nsimilarity index 90%\nrename from c\nrename to d\n--- a/c\n+++ b/d\n@@ -2,0 +3 @@\n+z\n"
+    check("unreleased: a commit's part for a file is found by its new name, after a rename; none is empty",
+          (section(two, "d").startswith("diff --git a/c b/d"), "+z" in section(two, "d"), section(two, "c")), (True, True, ""))
+    check("unreleased: a -U0 hunk that only adds is edit-free, one that replaces is not",
+          (edit_free("@@ -4,0 +5,3 @@\n+a\n+b\n+c\n", 6), edit_free("@@ -4,1 +4,2 @@\n-a\n+b\n+c\n", 5), edit_free("@@ -4,0 +5,1 @@\n+a\n", 9)), (True, False, False))
     ev = lambda who, t, name="patch:go", kind="labeled": {"event": kind, "label": {"name": name}, "actor": {"login": who}, "created_at": t}
     roles = {"boss": "admin", "helper": "maintain", "dev": "write", "dilux-bot[bot]": "none"}
     at = "2026-10-18T06:00:00Z"
@@ -395,6 +707,15 @@ def self_test():
               ("security-patch.py go" in plan_, "collaborators/$who/permission" in plan_, "another patch of $repo is in progress" in plan_), (True, True, True))
         check("wiring: the build checks the limits before it builds",
               run("build", "The tree on the version in production")["run"].index("security-patch.py\" limits") < run("build", "The tree on the version in production")["run"].index("security-patch-build.sh"), True)
+        tree_run = run("build", "The tree on the version in production")["run"]
+        check("wiring (#247): the build asks whether the fix is unreleased only when it does not apply, on the default branch, and says each reason",
+              (tree_run.index("security-patch-build.sh") < tree_run.index("security-patch.py\" unreleased"), 'git checkout -q -f "$default"' in tree_run,
+               all(r in tree_run for r in ("reason=no-production", "reason=unreleased", "reason=does-not-apply"))), (True, True, True))
+        fwd = run("act", "Into the default branch")
+        check("wiring (#247): an unreleased fix goes to the default branch as a pull request a person merges, and the advisory closes unpublished",
+              ("steps.announce.outputs.unreleased" in fwd["if"], "labels[]=security" in fwd["run"], "state=closed" in fwd["run"], "patch:not-released" in fwd["run"],
+               "security-patch.py publish" in fwd["run"], fwd["run"].index("unset PRIVATE_KEY BOT_KEY") < fwd["run"].index("git clone")),
+              (True, True, True, True, False, True))
         rv = jobs["review"]
         rv_step = next(st for st in rv["steps"] if "claude-code-action" in str(st.get("uses", "")))
         check("wiring: the second review has no shell, no key, and another model",
@@ -450,6 +771,11 @@ def main(argv):
         with open(os.environ["ADVISORY"], encoding="utf-8") as fh:
             print(json.dumps(publish_payload(json.load(fh), os.environ["VERSION"], os.environ.get("REPO", ""))))
         return 0
+    if argv == ["unreleased"]:
+        with open(os.environ["PATCH"], encoding="utf-8", errors="replace") as fh:
+            ok, why = unreleased(os.environ["ROOT"], fh.read(), os.environ["TAG"])
+        print(json.dumps({"unreleased": ok, "why": why}))
+        return 0 if ok else 1
     if argv == ["release"]:
         print(json.dumps(release(os.environ["ROOT"], os.environ["VERSION"])))
         return 0

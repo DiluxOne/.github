@@ -21,7 +21,18 @@ name: Security patches
 #            model, which never sees the report and has no shell, reviews
 #            the fix on its own. All green, the maintainers (the
 #            administrators of this repository) are told, with the tree's
-#            hash, and the issue gets `patch:ready`; if not, `patch:failed`.
+#            hash, and the issue gets `patch:ready`; if not, `patch:failed`,
+#            saying which: no version in production, a fix that does not
+#            apply on it, a limit, the checks or the review. A fix that does
+#            not apply because no line of its own that places it is anywhere
+#            in the version in production, reindented or moved, and each
+#            was born as new code, not by editing older code
+#            (`security-patch.py unreleased`, failing closed), is no patch
+#            at all: no release holds the weakness,
+#            so dilux-bot opens a `security` issue and a pull request with
+#            the fix on the default branch (a person merges it), the draft
+#            advisory is closed unpublished, and the issue here gets
+#            `patch:not-released` and closes.
 #   publish  once a maintainer (admin or maintain, checked now) added
 #            `patch:go` after that announcement: the same tree, built again
 #            and checked against the announced hash, is pushed to
@@ -280,10 +291,11 @@ jobs:
           prod=$(cat "$RUNNER_TEMP/in/prod.json")
           version=$(jq -r '.patch // ""' <<<"$prod")
           # No version in production, or a fix that does not apply on it: a
-          # result with no version, which marks the claim failed.
-          [ -n "$version" ] || { echo "version=" > "$RUNNER_TEMP/out/build"; echo "::warning::No version in production to patch."; exit 0; }
+          # result with no version, and the reason, which the act job tells.
+          [ -n "$version" ] || { printf 'version=\nreason=no-production\n' > "$RUNNER_TEMP/out/build"; echo "::warning::No version in production to patch."; exit 0; }
           git clone -q "https://github.com/$REPO" "$RUNNER_TEMP/repo"
           cd "$RUNNER_TEMP/repo"
+          default=$(git symbolic-ref --short refs/remotes/origin/HEAD); default=${default#origin/}
           # It was announced for one version; another one since (a release
           # in between) starts over instead of publishing it.
           if [ -n "$WANT" ] && [ "$WANT" != "$version" ]; then
@@ -292,7 +304,14 @@ jobs:
           fi
           # The changelog line is ours, never the reporter's words: it is public.
           if ! bash "$GITHUB_WORKSPACE/.dx-central/scripts/security-patch-build.sh" "$(jq -r .tag <<<"$prod")" "$version" "$RUNNER_TEMP/in/fix.patch" "A security fix ($GHSA)."; then
-            echo "version=" > "$RUNNER_TEMP/out/build"; exit 0
+            # Not applying on the version in production is either code that
+            # was never released (every line the fix changes was written
+            # after it: no release holds the weakness, and the fix goes into
+            # the default branch) or a fix a person has to port. git alone
+            # decides; no code of the repository runs.
+            git checkout -q -f "$default"
+            if verdict=$(ROOT=. PATCH="$RUNNER_TEMP/in/fix.patch" TAG="$(jq -r .tag <<<"$prod")" python3 "$GITHUB_WORKSPACE/.dx-central/scripts/security-patch.py" unreleased); then reason=unreleased; else reason=does-not-apply; fi
+            printf 'version=\nreason=%s\ntag=%s\ndefault=%s\nwhy=%s\n' "$reason" "$(jq -r .tag <<<"$prod")" "$default" "$(jq -r .why <<<"$verdict")" > "$RUNNER_TEMP/out/build"; exit 0
           fi
           tree=$(git rev-parse 'HEAD^{tree}')
           { echo "version=$version"; echo "tag=$(jq -r .tag <<<"$prod")"; echo "tree=$tree"; } >> "$GITHUB_OUTPUT"
@@ -450,6 +469,7 @@ jobs:
           permission-issues: write
 
       - name: Announce it
+        id: announce
         if: matrix.p.act == 'start'
         env:
           GH_TOKEN: ${{ steps.here.outputs.token }}
@@ -458,7 +478,7 @@ jobs:
           GHSA: ${{ matrix.p.ghsa }}
         run: |
           set -euo pipefail
-          for l in "patch:ready|FBCA04|A security patch is ready and waits for a maintainer's patch:go" "patch:go|0E8A16|A maintainer approves the security patch as announced" "patch:failed|B60205|The security patch did not get ready" "patch:pushed|0E8A16|The security patch is pushed for release" "patch:released|0E8A16|The security patch is released"; do
+          for l in "patch:ready|FBCA04|A security patch is ready and waits for a maintainer's patch:go" "patch:go|0E8A16|A maintainer approves the security patch as announced" "patch:failed|B60205|The security patch did not get ready" "patch:pushed|0E8A16|The security patch is pushed for release" "patch:released|0E8A16|The security patch is released" "patch:not-released|C5DEF5|No released version holds it: its fix goes into the default branch"; do
             IFS='|' read -r name color desc <<<"$l"; gh label create "$name" --repo "$GITHUB_REPOSITORY" --color "$color" --description "$desc" --force >/dev/null
           done
           sign="🤖 AI-generated · Claude Opus 5.5 (Anthropic), in a private repository"
@@ -469,11 +489,18 @@ jobs:
           tag=$(sed -n 's/^tag=//p' "$RUNNER_TEMP/in/build" | head -1)
           tree=$(sed -n 's/^tree=//p' "$RUNNER_TEMP/in/build" | head -1)
           checks=$(sed -n 's/^checks=//p' "$RUNNER_TEMP/in/build" | head -1)
+          reason=$(sed -n 's/^reason=//p' "$RUNNER_TEMP/in/build" | head -1)
+          held=$(sed -n 's/^why=//p' "$RUNNER_TEMP/in/build" | head -1)
+          # No release holds the weakness: the next step takes the fix into
+          # the default branch instead of a patch.
+          if [ "$reason" = unreleased ]; then echo "unreleased=true" >> "$GITHUB_OUTPUT"; echo "#$ISSUE: $held; no patch, the fix goes into the default branch."; exit 0; fi
           safe=$(jq -r '.safe // false' "$RUNNER_TEMP/review/review.json" 2>/dev/null || true)
           [ -n "$safe" ] || safe=none
           why=""
           if [ -s "$RUNNER_TEMP/in/limits.txt" ]; then why="the fix breaks the patch's limits: $(paste -sd ';' "$RUNNER_TEMP/in/limits.txt")"
-          elif [ -z "$version" ]; then why="the fix does not apply on the version in production, or there is no version in production"
+          elif [ "$reason" = no-production ]; then why="there is no version in production to patch (no published release with a plain X.Y.Z tag)"
+          elif [ "$reason" = does-not-apply ]; then why="the fix does not apply on the version in production ($tag), and that version is affected or it cannot be told ($held): a person ports it"
+          elif [ -z "$version" ]; then why="the patch could not be built on the version in production"
           elif [ "$checks" = none ]; then why="the repository names no checks to run (make pre-pr), and a patch is never published unchecked"
           elif [ "$checks" != passed ]; then why="the repository's checks failed on the patch"
           elif [ "$safe" = none ]; then why="the second review gave no verdict"
@@ -495,6 +522,76 @@ jobs:
             "$mark" "$who" "$version" "$REPO" "$tag" "$(jq -r .why "$RUNNER_TEMP/review/review.json")" "$tree" "$(tr '[:upper:]' '[:lower:]' <<<"$GHSA")" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$version" "$sign")" >/dev/null
           gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --add-label patch:ready >/dev/null
           echo "#$ISSUE: $version announced, waiting for patch:go."
+
+      # No release holds the weakness (#247): the code the fix changes was
+      # written after the version in production. There is nothing to patch
+      # nor to announce to users, so the fix goes into the default branch as
+      # a pull request of dilux-bot, closing a `security` issue (a person
+      # merges it, policy person-merges), and the draft advisory is closed
+      # unpublished. The public text names no detail of the weakness.
+      - name: Into the default branch
+        if: matrix.p.act == 'start' && steps.announce.outputs.unreleased == 'true'
+        env:
+          ISSUE_TOKEN: ${{ steps.here.outputs.token }}
+          ISSUE: ${{ matrix.p.issue }}
+          REPO: ${{ matrix.p.repo }}
+          GHSA: ${{ matrix.p.ghsa }}
+          BOT_ID: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          BOT_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          CLIENT_ID: ${{ vars.DILUX_SECURITY_CLIENT_ID }}
+          PRIVATE_KEY: ${{ secrets.DILUX_SECURITY_PRIVATE_KEY }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          sign="🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
+          say() { GH_TOKEN="$ISSUE_TOKEN" gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$1"$'\n\n'"$sign, in a private repository" >/dev/null; }
+          tag=$(sed -n 's/^tag=//p' "$RUNNER_TEMP/in/build" | head -1)
+          default=$(sed -n 's/^default=//p' "$RUNNER_TEMP/in/build" | head -1)
+          held=$(sed -n 's/^why=//p' "$RUNNER_TEMP/in/build" | head -1)
+          if ! { [ -s "$RUNNER_TEMP/in/fix.patch" ] && [ -n "$default" ]; }; then echo "::error::No fix or default branch for #$ISSUE: the next run tries again."; exit 1; fi
+          export REPOSITORIES="${REPO#*/}"
+          GH_TOKEN=""; BOT_TOKEN=""
+          # Each token revoked on the way out, even when the next mint fails.
+          trap 'for t in "$GH_TOKEN" "$BOT_TOKEN"; do if [ -n "$t" ]; then curl -fsS -o /dev/null -X DELETE -H "Authorization: Bearer $t" https://api.github.com/installation/token || true; fi; done' EXIT
+          GH_TOKEN=$(bash .dx-central/scripts/app-token.sh mint '{"repository_advisories":"write","metadata":"read"}')
+          BOT_TOKEN=$(CLIENT_ID="$BOT_ID" PRIVATE_KEY="$BOT_KEY" bash .dx-central/scripts/app-token.sh mint '{"issues":"write","contents":"write","pull_requests":"write","metadata":"read"}')
+          export GH_TOKEN
+          unset PRIVATE_KEY BOT_KEY
+          # A run that failed after opening them: nothing is opened twice.
+          num=$(GH_TOKEN="$BOT_TOKEN" gh issue list --repo "$REPO" --state all --label security --author "app/dilux-bot" --limit 200 --json number,body \
+            --jq "[.[] | select(.body | startswith(\"<!-- dx-security-forward: $GHSA -->\"))][0].number // empty")
+          GH_TOKEN="$BOT_TOKEN" gh label create security --repo "$REPO" --color B60205 --description "A vulnerability report; a person merges its fix" --force >/dev/null || true
+          if [ -z "$num" ]; then
+            # shellcheck disable=SC2016 # backticks in the Markdown of the issue, not commands.
+            body=$(printf '<!-- dx-security-forward: %s -->\nA security weakness in code on `%s` that no release holds yet (it was written after %s, the version in production). There is no patch to release and no advisory to publish: the pull request that closes this issue fixes it on `%s` before any release does. A maintainer accepts this issue and merges it.\n\n%s' \
+              "$GHSA" "$default" "$tag" "$default" "$sign")
+            num=$(GH_TOKEN="$BOT_TOKEN" gh api -X POST "repos/$REPO/issues" -f title="Fix a security weakness not released yet" -f body="$body" -f type=Bug -f 'labels[]=security' --jq .number)
+          fi
+          branch="fix/$num-security-fix-not-released"
+          pr_url=$(GH_TOKEN="$BOT_TOKEN" gh pr list --repo "$REPO" --state all --head "$branch" --author "app/dilux-bot" --json url --jq '.[0].url // empty')
+          if [ -z "$pr_url" ]; then
+            git clone -q "https://github.com/$REPO" "$RUNNER_TEMP/forward"
+            onto=$(git -C "$RUNNER_TEMP/forward" rev-parse "origin/$default")
+            if ! (cd "$RUNNER_TEMP/forward" \
+                && git config user.name "dilux-bot[bot]" && git config user.email "333187390+dilux-bot[bot]@users.noreply.github.com" \
+                && git checkout -q -b "$branch" "origin/$default" && git -c core.hooksPath=/dev/null am -q --3way "$RUNNER_TEMP/in/fix.patch"); then
+              say "No released version holds $GHSA ($held), but its fix no longer applies on \`$default\` of $REPO: a maintainer takes it from here, on $GITHUB_SERVER_URL/$REPO/issues/$num."
+              GH_TOKEN="$ISSUE_TOKEN" gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --add-label patch:failed >/dev/null
+              exit 0
+            fi
+            # shellcheck disable=SC2016 # backticks in the Markdown of the pull request, not commands.
+            pr_body=$(printf '## What changes\n\nA security fix for code on `%s` that no release holds yet.\n\n## Why\n\nIt was written after %s, the version in production, so the fix goes here before any release, with no patch nor advisory.\n\nCloses #%s\n\n%s' "$default" "$tag" "$num" "$sign")
+            (cd "$RUNNER_TEMP/forward" && GH_TOKEN="$BOT_TOKEN" GITHUB_REPOSITORY="$REPO" python3 "$GITHUB_WORKSPACE/.dx-central/scripts/api-commit.py" push "$branch" --onto "$onto" --force)
+            pr_url=$(GH_TOKEN="$BOT_TOKEN" gh pr create --repo "$REPO" --base "$default" --head "$branch" --title "fix(security): a weakness not released yet" --body "$pr_body")
+          fi
+          # The advisory, closed unpublished: no release holds the weakness.
+          closed=false
+          if gh api -X PATCH "repos/$REPO/security-advisories/$GHSA" -f state=closed >/dev/null; then closed=true; fi
+          GH_TOKEN="$ISSUE_TOKEN" gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --add-label patch:not-released >/dev/null
+          # shellcheck disable=SC2016 # backticks in the Markdown of the comment, not commands.
+          GH_TOKEN="$ISSUE_TOKEN" gh issue close "$ISSUE" --repo "$GITHUB_REPOSITORY" --reason completed --comment "$(printf 'No released version holds %s: %s. There is no patch: the fix goes into `%s` through %s, which waits for a maintainer to add `accepted` to %s and merge it. %s\n\n%s, in a private repository' \
+            "$GHSA" "$held" "$default" "$pr_url" "$GITHUB_SERVER_URL/$REPO/issues/$num" "$([ "$closed" = true ] && echo "The advisory is closed, unpublished." || echo "**Closing the advisory failed**: a maintainer closes it by hand.")" "$sign")" >/dev/null
+          echo "$GHSA: not released; fix into $default by $pr_url."
 
       - name: Publish
         if: matrix.p.act == 'publish'
