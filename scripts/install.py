@@ -174,7 +174,7 @@ def plan(owner, app, app_id, target, repos, found_of, engine=ENGINE):
         # unclassified and said so, not taken for a repository of no kind.
         try:
             lines.append(detect.entry(name, found_of(name), rules))
-        except RuntimeError as exc:
+        except Exception as exc:  # noqa: BLE001  any failure to read it, said and not fatal
             lines.append(detect.entry(name, [], rules) + "   # detection could not read it: classify it by hand")
             unread.append(f"could not read {name} ({str(exc)[:80]}): unclassified")
     if os.path.exists(path):
@@ -329,7 +329,13 @@ def main(argv):
     work = tempfile.mkdtemp()
     subprocess.run(["gh", "repo", "clone", full, work, "--", "-q"], check=True)
     g = lambda *x: subprocess.run(["git", "-C", work, *x], check=True, capture_output=True, text=True)  # noqa: E731
-    g("checkout", "-q", "-B", BRANCH)
+    # Run again while its pull request is open: on top of that branch, so a
+    # correction made there is kept (plan never replaces what is there).
+    if subprocess.run(["git", "-C", work, "ls-remote", "--exit-code", "--heads", "origin", BRANCH], capture_output=True).returncode == 0:
+        g("fetch", "-q", "origin", BRANCH)
+        g("checkout", "-q", "-B", BRANCH, "FETCH_HEAD")
+    else:
+        g("checkout", "-q", "-B", BRANCH)
     did = plan(a.org, a.app, a.app_id, work, repos, found_of)
     print("\n".join(did))
     if not material(did):
@@ -337,7 +343,7 @@ def main(argv):
         return 0
     g("add", "-A")
     g("commit", "-q", "-m", "chore: install the engine's configuration")
-    g("push", "-q", "-u", "origin", BRANCH, "--force")
+    g("push", "-q", "-u", "origin", BRANCH)
     body = ("## What changes\n\n" + "\n".join(f"- {d}" for d in material(did)) +
             f"\n\n## Why\n\nThe configuration of the engine in {org.CENTRAL} for {a.org}: the engine is called by tag and reads this repository's "
             "configuration over its own defaults. Correct the kinds detection proposed in repos.yml before merging.\n\n" + steps(a.org, a.app))

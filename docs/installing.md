@@ -34,7 +34,7 @@ Then, what no pull request can do (the installer prints it with each URL):
 
 ## Known limits
 
-- **Environment secrets across organisations.** A release that publishes with its environment's secrets (a WordPress plugin's `wordpress-org`: the SVN credentials and the release App's key) receives them only through `secrets: inherit`, which GitHub honours within one organisation. Its callers keep `inherit`; until the engine declares those secrets, another organisation's plugin builds and tags its release, and publishing to wordpress.org needs that change first.
+- **Environment secrets across organisations.** A release that publishes with its environment's secrets (a WordPress plugin's `wordpress-org`: the SVN credentials and the release App's key) receives them only through `secrets: inherit`, which GitHub honours within one organisation. Its callers keep `inherit`, so from another organisation those secrets may not arrive: until the engine declares them, publishing a plugin to wordpress.org from another organisation is not supported.
 
 ## Install again
 
