@@ -61,7 +61,9 @@ scan() {
 # pull_request run of a private repository whose pull requests (the run's,
 # or those of its branch when GitHub no longer lists them) are all closed
 # unmerged is cancelled; one line each: repository, run id. A pull request
-# that cannot be read keeps its run.
+# that cannot be read keeps its run. Only private repositories, which take
+# no fork's pull request, so a branch names the repository's own (`head=`
+# is that repository's branch, never a fork's of the same name).
 stale() {
   local repos repo status id branch numbers n state keep
   repos=$(gh api --paginate "orgs/$OWNER/repos?type=private&per_page=100" --jq '.[] | select(.archived | not) | .name') || return 3
@@ -227,7 +229,7 @@ if [ "${1:-}" = "--test" ]; then
       *orgs/*) printf 'alpha\n' ;;
       *runs\?status=queued*) printf '1\tfix/1-a\t5\n2\tfeat/2-b\t6\n3\tfix/3-c\t\n4\tfix/4-d\t7\n' ;;
       *runs\?status=in_progress*) printf '1\tfix/1-a\t5\n8\tfix/8-e\t9\n' ;;
-      *pulls\?state=all*fix/3-c*) printf '5' ;;
+      *pulls\?state=all*head=DiluxOne:fix/3-c*) printf '5' ;;
       *pulls/5\ *) echo closed ;;
       *pulls/6\ *) echo open ;;
       *pulls/7\ *) return 1 ;;

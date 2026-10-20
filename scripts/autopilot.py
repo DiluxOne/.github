@@ -888,7 +888,7 @@ def notes_text(kind, notes):
 
 
 def prompt_work(repo, number, pr, branch, prd_text, unticked, resumed, ev=None, mode="full", answered="", notes=("", ())):
-    todo ="\n".join(f"   - {cid}: {text}" + (f" (test: {test})" if test else "") for cid, text, test in unticked) or "   (none: every box is ticked; only the checks and the finish below are left)"
+    todo = "\n".join(f"   - {cid}: {text}" + (f" (test: {test})" if test else "") for cid, text, test in unticked) or "   (none: every box is ticked; only the checks and the finish below are left)"
     first = "the reproduction test's commit, which you build on" if ev else "its first, empty commit"
     start = ("This run continues earlier work: the branch already has the commits of the ticked criteria. Read `git log` and the pull request first, and do not redo them."
              if resumed else f"The draft pull request is new: the branch has only {first}.")
