@@ -11,7 +11,10 @@
 #                                      of pull requests closed unmerged, one
 #                                      per line: repository, run id
 #                                      (tab-separated; DEMAND_DRY=1 lists
-#                                      them and cancels nothing)
+#                                      them and cancels nothing); exit 1
+#                                      when a read or a cancel failed (each
+#                                      said on stderr), 3 when the
+#                                      repositories could not be listed
 #   runner-demand.sh decide <power> <waiting>
 #                                      what `auto` does with the VM's power
 #                                      state and the number of jobs waiting
