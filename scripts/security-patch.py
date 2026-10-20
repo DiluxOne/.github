@@ -378,21 +378,38 @@ def unreleased(root, patch, tag):
     # hide released code from the text alone).
     where = {}
     g = git("grep", "-n", "-I", "--no-color", "-e", "", "HEAD")
+    if g.returncode != 0:
+        return False, "the default branch could not be read"
     for row in g.stdout.splitlines():
         m = re.match(r"^HEAD:(.+?):(\d+):(.*)$", row)
         if m and current.get(_norm(m.group(3))) == 1:
             where[_norm(m.group(3))] = (m.group(1), int(m.group(2)))
     for path, lines in places:
-        for text in (t for t in lines if t in where):
+        for text in (t for t in lines if current.get(t, 0) == 1):
+            if text not in where:
+                return False, f"{path}: a line the fix changes could not be found on the default branch"
             file_, n = where[text]
             b = git("blame", "--porcelain", "-L", f"{n},{n}", "HEAD", "--", file_)
             m = re.match(r"^([0-9a-f]{40}) (\d+) \d+", b.stdout)
             name = re.search(r"^filename (.+)$", b.stdout, re.M)
             if b.returncode != 0 or not m or not name:
                 return False, f"the history of {file_} could not be read"
-            if not edit_free(git("show", "--format=", "-U0", "--no-color", m.group(1), "--", name.group(1)).stdout, int(m.group(2))):
+            # The whole commit, renames paired (-M): a rename that also
+            # edits shows its edits, never the file as all new.
+            show = git("show", "-M", "--format=", "-U0", "--no-color", m.group(1))
+            if show.returncode != 0 or not edit_free(section(show.stdout, name.group(1)), int(m.group(2))):
                 return False, f"{path}: a line the fix changes was written by editing older code, which {tag} may hold"
     return True, f"no line the fix changes is in {tag}, and each was written as new code"
+
+
+def section(diff, path):
+    """The part of a whole commit's diff that writes `path` (its new name
+    after a rename); "" when none does. Pure."""
+    parts = re.split(r"^(?=diff --git )", diff, flags=re.M)
+    for part in parts:
+        if re.search(r"^\+\+\+ " + re.escape("b/" + path) + r"$", part, re.M):
+            return part
+    return ""
 
 
 def edit_free(diff, line):
@@ -566,6 +583,29 @@ def self_test():
         g("commit", "-q", "-am", "renamed")
         check("unreleased: code released and then rewritten in substance is not taken for new (fails closed)",
               unreleased(d, new_fix, "1.2.0"), (False, "f.php: a line the fix changes was written by editing older code, which 1.2.0 may hold"))
+        # Released, then renamed to another file and edited in the same commit.
+        g("checkout", "-q", "-b", "renamed-edited", "1.2.0")
+        g("mv", "f.php", "h.php")
+        with open(os.path.join(d, "h.php")) as fh:
+            body = fh.read().replace("function reset_v1() {\n\twipe_it();", "function reset() {\n\tdelete();")
+        with open(os.path.join(d, "h.php"), "w") as fh:
+            fh.write(body)
+        g("commit", "-q", "-am", "moved and rewritten at once")
+        check("unreleased: a rename and an edit in one commit is an edit, not new code (fails closed)",
+              unreleased(d, new_fix.replace("f.php", "h.php"), "1.2.0")[0], False)
+        # A patch with two hunks: one on new code, one on code the release has.
+        g("checkout", "-q", "-b", "mixed", "1.0.0")
+        with open(os.path.join(d, "f.php"), "a") as fh:
+            fh.write("\n// one\n// two\n// three\n// four\n\nfunction reset() {\n\tdelete();\n}\n")
+        g("commit", "-q", "-am", "new reset")
+        with open(os.path.join(d, "f.php")) as fh:
+            body = fh.read()
+        with open(os.path.join(d, "f.php"), "w") as fh:
+            fh.write(body.replace("return 1;", "return 2;").replace("\tdelete();", "\tif ( ok() ) {\n\t\tdelete();\n\t}"))
+        mixed = subprocess.run(["git", "-C", d, "diff"], capture_output=True, text=True, env=env).stdout
+        g("checkout", "-q", "--", "f.php")
+        check("unreleased: a patch of two hunks, one on new code and one on released code, goes to a person",
+              (len(anchors(mixed)), unreleased(d, mixed, "1.0.0")), (2, (False, "f.php holds code the fix changes that 1.0.0 already has")))
         check("unreleased: a fix that does not apply on the default branch is no answer",
               unreleased(d, stale, "1.0.0"), (False, "the fix does not apply on the default branch either"))
     check("unreleased: a -U0 hunk that only adds is edit-free, one that replaces is not",
