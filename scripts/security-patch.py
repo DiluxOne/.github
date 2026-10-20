@@ -397,7 +397,11 @@ def unreleased(root, patch, tag):
             # The whole commit, renames paired (-M): a rename that also
             # edits shows its edits, never the file as all new.
             show = git("show", "-M", "--format=", "-U0", "--no-color", m.group(1))
-            if show.returncode != 0 or not edit_free(section(show.stdout, name.group(1)), int(m.group(2))):
+            part = section(show.stdout, name.group(1))
+            # A file born in a commit that deletes another may be that one,
+            # rewritten past what git pairs as a rename: an edit.
+            reborn = "--- /dev/null" in part and re.search(r"^\+\+\+ /dev/null$", show.stdout, re.M)
+            if show.returncode != 0 or reborn or not edit_free(part, int(m.group(2))):
                 return False, f"{path}: a line the fix changes was written by editing older code, which {tag} may hold"
     return True, f"no line the fix changes is in {tag}, and each was written as new code"
 
@@ -592,7 +596,19 @@ def self_test():
             fh.write(body)
         g("commit", "-q", "-am", "moved and rewritten at once")
         check("unreleased: a rename and an edit in one commit is an edit, not new code (fails closed)",
-              unreleased(d, new_fix.replace("f.php", "h.php"), "1.2.0")[0], False)
+              unreleased(d, new_fix.replace("f.php", "h.php"), "1.2.0"), (False, "h.php: a line the fix changes was written by editing older code, which 1.2.0 may hold"))
+        # Released, then deleted and written again in another file, too
+        # different for git to pair it as a rename.
+        g("checkout", "-q", "-b", "reborn", "1.2.0")
+        g("rm", "-q", "f.php")
+        with open(os.path.join(d, "k.php"), "w") as fh:
+            fh.write("<?php\n// all new words here\nfunction reset() {\n\tdelete();\n}\n")
+        g("add", "-A")
+        g("commit", "-q", "-m", "rewritten elsewhere")
+        k_fix = ("diff --git a/k.php b/k.php\n--- a/k.php\n+++ b/k.php\n@@ -3,3 +3,5 @@ // all new words here\n"
+                 " function reset() {\n-\tdelete();\n+\tif ( ok() ) {\n+\t\tdelete();\n+\t}\n }\n")
+        check("unreleased: a file born in a commit that deletes another is taken for a rewrite of it (fails closed)",
+              unreleased(d, k_fix, "1.2.0"), (False, "k.php: a line the fix changes was written by editing older code, which 1.2.0 may hold"))
         # A patch with two hunks: one on new code, one on code the release has.
         g("checkout", "-q", "-b", "mixed", "1.0.0")
         with open(os.path.join(d, "f.php"), "a") as fh:
@@ -608,6 +624,9 @@ def self_test():
               (len(anchors(mixed)), unreleased(d, mixed, "1.0.0")), (2, (False, "f.php holds code the fix changes that 1.0.0 already has")))
         check("unreleased: a fix that does not apply on the default branch is no answer",
               unreleased(d, stale, "1.0.0"), (False, "the fix does not apply on the default branch either"))
+    two = "diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-x\n+y\ndiff --git a/c b/d\nsimilarity index 90%\nrename from c\nrename to d\n--- a/c\n+++ b/d\n@@ -2,0 +3 @@\n+z\n"
+    check("unreleased: a commit's part for a file is found by its new name, after a rename; none is empty",
+          (section(two, "d").startswith("diff --git a/c b/d"), "+z" in section(two, "d"), section(two, "c")), (True, True, ""))
     check("unreleased: a -U0 hunk that only adds is edit-free, one that replaces is not",
           (edit_free("@@ -4,0 +5,3 @@\n+a\n+b\n+c\n", 6), edit_free("@@ -4,1 +4,2 @@\n-a\n+b\n+c\n", 5), edit_free("@@ -4,0 +5,1 @@\n+a\n", 9)), (True, False, False))
     ev = lambda who, t, name="patch:go", kind="labeled": {"event": kind, "label": {"name": name}, "actor": {"login": who}, "created_at": t}
