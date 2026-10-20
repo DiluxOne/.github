@@ -20,10 +20,13 @@
 # trigger "label": a person with write access labels the issue repro:run or
 #   repro:again. ROLE is that person's permission on the repository.
 # A bot as the sender never starts one, on either trigger.
+#
+# The organisation's App is DX_BOT_LOGIN, the calling organisation's (the
+# workflow's env, #197), DiluxOne's dilux-bot by default.
 set -euo pipefail
 
 decide() {
-  local trigger=$1 event=$2 action=$3 label=$4 sender=$5 role=$6 triage_bug=$7 nightly=${8:-false} login=${9:-}
+  local trigger=$1 event=$2 action=$3 label=$4 sender=$5 role=$6 triage_bug=$7 nightly=${8:-false} login=${9:-} bot=${DX_BOT_LOGIN:-dilux-bot[bot]}
   [ "$event" = issues ] || { echo no; return; }
   # A bot starts one in a single case (#247): the nightly review's own Bug
   # issue, opened by the organisation's App with its marker, which the
@@ -32,9 +35,9 @@ decide() {
     if [ "$nightly" = true ] && [ "$trigger" = triage ] && [ "$action" = opened ] && [ "$triage_bug" = true ]; then echo yes
     # ...and when what blocked a reproduction is fixed: the App's own
     # repro:unblocked (issue-triage.yml, unblock).
-    elif [ "$trigger" = label ] && [ "$action" = labeled ] && [ "$label" = repro:unblocked ] && [ "$login" = "dilux-bot[bot]" ]; then echo yes
+    elif [ "$trigger" = label ] && [ "$action" = labeled ] && [ "$label" = repro:unblocked ] && [ "$login" = "$bot" ]; then echo yes
     # ...and once more when its first test was written wrong (#261).
-    elif [ "$trigger" = label ] && [ "$action" = labeled ] && [ "$label" = repro:retry ] && [ "$login" = "dilux-bot[bot]" ]; then echo yes
+    elif [ "$trigger" = label ] && [ "$action" = labeled ] && [ "$label" = repro:retry ] && [ "$login" = "$bot" ]; then echo yes
     else echo no; fi
     return
   fi
@@ -92,7 +95,10 @@ test_all() {
   check "#247 a person's repro:unblocked is not a trigger" no label issues labeled repro:unblocked User write ""
   check "#261 the App's repro:retry runs it once more" yes label issues labeled repro:retry Bot "" "" false "dilux-bot[bot]"
   check "#261 another bot's repro:retry does not" no label issues labeled repro:retry Bot "" "" false "other[bot]"
-  check "#261 a person's repro:retry is not a trigger" no label issues labeled repro:retry User write "" 
+  check "#261 a person's repro:retry is not a trigger" no label issues labeled repro:retry User write ""
+  # #197: another organisation's App, named by its DX_BOT_LOGIN.
+  DX_BOT_LOGIN="acme-bot[bot]" check "#197 another organisation's App's repro:retry runs it" yes label issues labeled repro:retry Bot "" "" false "acme-bot[bot]"
+  DX_BOT_LOGIN="acme-bot[bot]" check "#197 there, dilux-bot's repro:unblocked does not" no label issues labeled repro:unblocked Bot "" "" false "dilux-bot[bot]"
   # Guards that keep the rest closed.
   check "repro:run from a reader starts nothing" no label issues labeled repro:run User read ""
   check "repro:run from a triager starts nothing" no label issues labeled repro:run User triage ""
