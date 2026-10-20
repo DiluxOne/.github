@@ -867,8 +867,28 @@ Do not create a branch, commit or open a pull request: the workflow opens the dr
 {FOREGROUND}"""
 
 
-def prompt_work(repo, number, pr, branch, prd_text, unticked, resumed, ev=None, mode="full", answered=""):
-    todo = "\n".join(f"   - {cid}: {text}" + (f" (test: {test})" if test else "") for cid, text, test in unticked) or "   (none: every box is ticked; only the checks and the finish below are left)"
+def kind_notes(root=".", central=None):
+    """What every change of the repository's kind also carries (#341): the
+    `autopilot:` lines of kinds/<kind>/pack.yml, for the kind its
+    .github/review-policy.yml declares. None, or no pack, is no lines."""
+    policy = schema.read_yaml(os.path.join(root, ".github", "review-policy.yml")) or {}
+    kind = str(policy.get("kind") or "").strip() if isinstance(policy, dict) else ""
+    if not re.fullmatch(r"[a-z0-9-]+", kind):
+        return kind, []
+    pack = schema.read_yaml(os.path.join(central or os.path.dirname(HERE), "kinds", kind, "pack.yml")) or {}
+    notes = pack.get("autopilot") if isinstance(pack, dict) else None
+    return kind, [n.strip() for n in (notes if isinstance(notes, list) else []) if isinstance(n, str) and n.strip()]
+
+
+def notes_text(kind, notes):
+    if not notes:
+        return ""
+    lines = "\n".join(f"- {n}" for n in notes)
+    return f"\n\nWhat every change of a `{kind}` repository also carries (the kind's pack), in a commit of its own before you finish, when it applies:\n{lines}"
+
+
+def prompt_work(repo, number, pr, branch, prd_text, unticked, resumed, ev=None, mode="full", answered="", notes=("", ())):
+    todo ="\n".join(f"   - {cid}: {text}" + (f" (test: {test})" if test else "") for cid, text, test in unticked) or "   (none: every box is ticked; only the checks and the finish below are left)"
     first = "the reproduction test's commit, which you build on" if ev else "its first, empty commit"
     start = ("This run continues earlier work: the branch already has the commits of the ticked criteria. Read `git log` and the pull request first, and do not redo them."
              if resumed else f"The draft pull request is new: the branch has only {first}.")
@@ -896,7 +916,7 @@ For each one, in that order:
 4. `{env} {HELPER} push`: your commits go to GitHub when you end, through its API, which signs them.
 5. `{env} {HELPER} tick <id>`: it ticks the box once a commit names the criterion. If it says no, commit first.
 
-When every box is ticked, run the repository's own checks (`make pre-pr` if the Makefile has it, else its test commands), fix, commit and push (`{env} {HELPER} push`) what fails, write a short "How I tested it" into a file, and run `{env} {HELPER} finish ready <file>`: it marks the pull request ready for review.{ready}
+When every box is ticked, run the repository's own checks (`make pre-pr` if the Makefile has it, else its test commands), fix, commit and push (`{env} {HELPER} push`) what fails, write a short "How I tested it" into a file, and run `{env} {HELPER} finish ready <file>`: it marks the pull request ready for review.{ready}{notes_text(*notes)}
 
 When you settle something the PRD and the Spec leave open (how, never what), log it: `{env} {HELPER} decision "<what you decided, and why>"`. A doubt that would change the scope or a criterion is not yours to settle: stop instead.{guided_work(mode, env, answered)}
 
@@ -1049,6 +1069,22 @@ A class on html.
     check("#247 answers: no question, no answer", answers(cs[:1] + cs[2:], {"boss"}), "")
     check("#247 asked_since: only the bot's question in this run", (asked_since(cs, "2026-10-17T09:30:00Z"), asked_since(cs, "2026-10-17T11:00:00Z"),
           asked_since([{**q, "author": {"login": "boss"}}], "2026-10-17T09:30:00Z")), (True, False, False))
+    import tempfile
+    with tempfile.TemporaryDirectory() as kd:
+        os.makedirs(os.path.join(kd, ".github"))
+        with open(os.path.join(kd, ".github", "review-policy.yml"), "w", encoding="utf-8") as fh:
+            fh.write("kind: wordpress-plugin\n")
+        wp = kind_notes(kd)
+        with open(os.path.join(kd, ".github", "review-policy.yml"), "w", encoding="utf-8") as fh:
+            fh.write("kind: ../x\n")
+        bad = kind_notes(kd)
+        os.remove(os.path.join(kd, ".github", "review-policy.yml"))
+        none = kind_notes(kd)
+    pn = prompt_work("o/r", "7", "8", "b", "x", [("C1", "a", None)], False, None, "full", "", wp)
+    check("#341 a wordpress-plugin change carries its changelog line; no kind, or a bad one, nothing",
+          (wp[0], any("== Changelog ==" in n for n in wp[1]), "readme.txt's `== Changelog ==`" in pn, "a `wordpress-plugin` repository also carries" in pn,
+           bad[1], none[1], "also carries" in prompt_work("o/r", "7", "8", "b", "x", [("C1", "a", None)], False)),
+          ("wordpress-plugin", True, True, True, [], [], False))
     pg = prompt_work("o/r", "7", "8", "b", "x", [("C1", "a", None)], False, None, "guided", "")
     pf = prompt_work("o/r", "7", "8", "b", "x", [("C1", "a", None)], False, None, "full", "")
     pa = prompt_work("o/r", "7", "8", "b", "x", [("C1", "a", None)], True, None, "guided", "boss: do A")
@@ -2081,7 +2117,7 @@ def main(argv):
         ticked = boxes(info["body"])
         left = [c for c in criteria(body) if not ticked.get(c[0])]
         answered = open(os.environ["ANSWERS"], encoding="utf-8").read() if os.environ.get("ANSWERS") and os.path.exists(os.environ["ANSWERS"]) else ""
-        print(prompt_work(repo, number, pr, os.environ["BRANCH"], schema.part_text(body, "prd"), left, any(ticked.values()), ev, mode_of(pol), answered))
+        print(prompt_work(repo, number, pr, os.environ["BRANCH"], schema.part_text(body, "prd"), left, any(ticked.values()), ev, mode_of(pol), answered, kind_notes()))
         return 0
     if argv[:2] == ["prompt", "fix"]:
         print(prompt_fix(os.environ["GITHUB_REPOSITORY"], os.environ["PR"], os.environ.get("ROUND", "1"), pol.get("autopilot-rounds", 3), ev))
