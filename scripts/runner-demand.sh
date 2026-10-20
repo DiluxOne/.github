@@ -7,6 +7,11 @@
 #                                      line: repository, queued at (ISO 8601),
 #                                      the job's link (tab-separated);
 #                                      exit 3 when GitHub did not answer
+#   runner-demand.sh stale             cancels the queued or in-progress runs
+#                                      of pull requests closed unmerged, one
+#                                      per line: repository, run id
+#                                      (tab-separated; DEMAND_DRY=1 lists
+#                                      them and cancels nothing)
 #   runner-demand.sh decide <power> <waiting>
 #                                      what `auto` does with the VM's power
 #                                      state and the number of jobs waiting
@@ -24,7 +29,8 @@
 #   runner-demand.sh --test            self-test
 #
 # Environment: `scan` OWNER and GH_TOKEN (actions: read on the organisation's
-# repositories); `report` GITHUB_REPOSITORY, GH_TOKEN (issues: write here),
+# repositories); `stale` OWNER and GH_TOKEN (actions: write, pull requests:
+# read); `report` GITHUB_REPOSITORY, GH_TOKEN (issues: write here),
 # LONG_MINUTES (15), RUN_URL (the run that writes it), DEMAND_DRY=1 prints
 # the plan and changes nothing.
 #
@@ -48,6 +54,36 @@ scan() {
       done
     done
   done | sort -u
+}
+
+# The runs of a pull request closed without merging (#341): nothing will
+# read them, and on the VM they hold a slot. Each queued or in-progress
+# pull_request run of a private repository whose pull requests (the run's,
+# or those of its branch when GitHub no longer lists them) are all closed
+# unmerged is cancelled; one line each: repository, run id. A pull request
+# that cannot be read keeps its run.
+stale() {
+  local repos repo status id branch numbers n state keep
+  repos=$(gh api --paginate "orgs/$OWNER/repos?type=private&per_page=100" --jq '.[] | select(.archived | not) | .name') || return 3
+  for repo in $repos; do
+    for status in queued in_progress; do
+      gh api --paginate "repos/$OWNER/$repo/actions/runs?status=$status&event=pull_request&per_page=100" \
+        --jq '.workflow_runs[] | [(.id | tostring), .head_branch, ([.pull_requests[].number | tostring] | join(","))] | @tsv' || continue
+    done | sort -u | while IFS=$'\t' read -r id branch numbers; do
+      [ -n "$id" ] || continue
+      [ -n "$numbers" ] || numbers=$(gh api "repos/$OWNER/$repo/pulls?state=all&head=$OWNER:$branch&per_page=100" --jq '[.[].number | tostring] | join(",")') || continue
+      [ -n "$numbers" ] || continue
+      keep=no
+      for n in ${numbers//,/ }; do
+        state=$(gh api "repos/$OWNER/$repo/pulls/$n" --jq 'if .state == "closed" and .merged_at == null then "closed" else "open" end') || state=open
+        [ "$state" = closed ] || keep=yes
+      done
+      [ "$keep" = no ] || continue
+      if [ "${DEMAND_DRY:-}" = 1 ] || gh api -X POST "repos/$OWNER/$repo/actions/runs/$id/cancel" >/dev/null; then
+        printf '%s\t%s\n' "$repo" "$id"
+      fi
+    done
+  done
 }
 
 # Unsure (an API error) starts a VM that is off, but does not keep one on: it
@@ -185,6 +221,25 @@ if [ "${1:-}" = "--test" ]; then
   is "scan: a jobs read that fails, inside the loop, is exit 3" "$(OWNER=DiluxOne scan >/dev/null; echo $?)" 3
   gh() { return 1; }
   is "scan: GitHub not answering is exit 3" "$(OWNER=DiluxOne scan >/dev/null; echo $?)" 3
+  # stale (#341): only the runs whose pull requests are all closed unmerged.
+  gh() {
+    case "$*" in
+      *orgs/*) printf 'alpha\n' ;;
+      *runs\?status=queued*) printf '1\tfix/1-a\t5\n2\tfeat/2-b\t6\n3\tfix/3-c\t\n4\tfix/4-d\t7\n' ;;
+      *runs\?status=in_progress*) printf '1\tfix/1-a\t5\n8\tfix/8-e\t9\n' ;;
+      *pulls\?state=all*fix/3-c*) printf '5' ;;
+      *pulls/5\ *) echo closed ;;
+      *pulls/6\ *) echo open ;;
+      *pulls/7\ *) return 1 ;;
+      *pulls/9\ *) echo open ;;
+      *"-X POST"*) echo "$*" >> "$log" ;;
+    esac
+  }
+  : > "$log"
+  is "C2 stale: the closed pull request's runs, once each" "$(OWNER=DiluxOne stale | cut -f2 | tr '\n' ' ')" "1 3 "
+  is "C2 stale: and they are cancelled" "$(grep -c '/actions/runs/[13]/cancel' "$log")" 2
+  : > "$log"
+  is "C2 stale, dry: listed, nothing cancelled" "$(OWNER=DiluxOne DEMAND_DRY=1 stale | wc -l | tr -d ' ')/$(wc -l < "$log" | tr -d ' ')" "2/0"
   unset -f gh; rm -f "$f" "$log"
   [ "$fail" -eq 0 ] && echo "all tests passed"
   exit "$fail"
@@ -192,8 +247,9 @@ fi
 
 case "${1:-}" in
   scan) scan ;;
+  stale) stale ;;
   decide) decide "$2" "$3" ;;
   long) long "$2" "$3" ;;
   report) report "$2" ;;
-  *) echo "usage: runner-demand.sh scan|decide|long|report|--test" >&2; exit 2 ;;
+  *) echo "usage: runner-demand.sh scan|stale|decide|long|report|--test" >&2; exit 2 ;;
 esac
