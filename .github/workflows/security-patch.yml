@@ -548,11 +548,11 @@ jobs:
           tag=$(sed -n 's/^tag=//p' "$RUNNER_TEMP/in/build" | head -1)
           default=$(sed -n 's/^default=//p' "$RUNNER_TEMP/in/build" | head -1)
           held=$(sed -n 's/^why=//p' "$RUNNER_TEMP/in/build" | head -1)
-          [ -s "$RUNNER_TEMP/in/fix.patch" ] && [ -n "$default" ] || { echo "::error::No fix or default branch for #$ISSUE: the next run tries again."; exit 1; }
+          if ! { [ -s "$RUNNER_TEMP/in/fix.patch" ] && [ -n "$default" ]; }; then echo "::error::No fix or default branch for #$ISSUE: the next run tries again."; exit 1; fi
           export REPOSITORIES="${REPO#*/}"
           GH_TOKEN=""; BOT_TOKEN=""
           # Each token revoked on the way out, even when the next mint fails.
-          trap 'for t in "$GH_TOKEN" "$BOT_TOKEN"; do [ -n "$t" ] && curl -fsS -o /dev/null -X DELETE -H "Authorization: Bearer $t" https://api.github.com/installation/token || true; done' EXIT
+          trap 'for t in "$GH_TOKEN" "$BOT_TOKEN"; do if [ -n "$t" ]; then curl -fsS -o /dev/null -X DELETE -H "Authorization: Bearer $t" https://api.github.com/installation/token || true; fi; done' EXIT
           GH_TOKEN=$(bash .dx-central/scripts/app-token.sh mint '{"repository_advisories":"write","metadata":"read"}')
           BOT_TOKEN=$(CLIENT_ID="$BOT_ID" PRIVATE_KEY="$BOT_KEY" bash .dx-central/scripts/app-token.sh mint '{"issues":"write","contents":"write","pull_requests":"write","metadata":"read"}')
           export GH_TOKEN
