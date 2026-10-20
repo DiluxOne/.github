@@ -132,6 +132,7 @@ jobs:
       - run: python3 scripts/repos-config.py --test
       - run: python3 scripts/repos-config.py check
       - run: python3 scripts/detect.py --test
+      - run: python3 scripts/install.py --test
       - run: python3 scripts/milestones.py --test
       - run: python3 scripts/spike.py --test
       - run: python3 scripts/review-eval.py --test
