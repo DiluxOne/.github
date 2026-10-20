@@ -124,7 +124,8 @@ jobs:
           OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
-          bash scripts/runner-demand.sh stale | while IFS=$'\t' read -r repo id; do echo "Cancelled $OWNER/$repo run $id: its pull request is closed."; done
+          bash scripts/runner-demand.sh stale > "$RUNNER_TEMP/stale.tsv" || echo "::warning::The runs of closed pull requests could not all be read or cancelled; the next run tries again."
+          while IFS=$'\t' read -r repo id; do echo "Cancelled $OWNER/$repo run $id: its pull request is closed."; done < "$RUNNER_TEMP/stale.tsv"
 
       - name: Jobs waiting for the VM
         id: demand

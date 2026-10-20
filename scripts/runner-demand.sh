@@ -73,7 +73,7 @@ stale() {
         --jq '.workflow_runs[] | [(.id | tostring), .head_branch, ([.pull_requests[].number | tostring] | join(","))] | @tsv' || continue
     done | sort -u | while IFS=$'\t' read -r id branch numbers; do
       [ -n "$id" ] || continue
-      [ -n "$numbers" ] || numbers=$(gh api "repos/$OWNER/$repo/pulls?state=all&head=$OWNER:$branch&per_page=100" --jq '[.[].number | tostring] | join(",")') || continue
+      [ -n "$numbers" ] || numbers=$(gh api -X GET "repos/$OWNER/$repo/pulls" -f state=all -f head="$OWNER:$branch" -f per_page=100 --jq '[.[].number | tostring] | join(",")') || continue
       [ -n "$numbers" ] || continue
       keep=no
       for n in ${numbers//,/ }; do
@@ -229,7 +229,7 @@ if [ "${1:-}" = "--test" ]; then
       *orgs/*) printf 'alpha\n' ;;
       *runs\?status=queued*) printf '1\tfix/1-a\t5\n2\tfeat/2-b\t6\n3\tfix/3-c\t\n4\tfix/4-d\t7\n' ;;
       *runs\?status=in_progress*) printf '1\tfix/1-a\t5\n8\tfix/8-e\t9\n' ;;
-      *pulls\?state=all*head=DiluxOne:fix/3-c*) printf '5' ;;
+      *"/pulls -f state=all -f head=DiluxOne:fix/3-c "*) printf '5' ;;
       *pulls/5\ *) echo closed ;;
       *pulls/6\ *) echo open ;;
       *pulls/7\ *) return 1 ;;
