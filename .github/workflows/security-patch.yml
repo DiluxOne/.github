@@ -25,7 +25,8 @@ name: Security patches
 #            saying which: no version in production, a fix that does not
 #            apply on it, a limit, the checks or the review. A fix that does
 #            not apply because no line of its own that places it is anywhere
-#            in the version in production, reindented or moved
+#            in the version in production, reindented or moved, and each
+#            was born as new code, not by editing older code
 #            (`security-patch.py unreleased`, failing closed), is no patch
 #            at all: no release holds the weakness,
 #            so dilux-bot opens a `security` issue and a pull request with
@@ -567,7 +568,7 @@ jobs:
             num=$(GH_TOKEN="$BOT_TOKEN" gh api -X POST "repos/$REPO/issues" -f title="Fix a security weakness not released yet" -f body="$body" -f type=Bug -f 'labels[]=security' --jq .number)
           fi
           branch="fix/$num-security-fix-not-released"
-          pr_url=$(GH_TOKEN="$BOT_TOKEN" gh pr list --repo "$REPO" --state all --head "$branch" --json url --jq '.[0].url // empty')
+          pr_url=$(GH_TOKEN="$BOT_TOKEN" gh pr list --repo "$REPO" --state all --head "$branch" --author "app/dilux-bot" --json url --jq '.[0].url // empty')
           if [ -z "$pr_url" ]; then
             git clone -q "https://github.com/$REPO" "$RUNNER_TEMP/forward"
             onto=$(git -C "$RUNNER_TEMP/forward" rev-parse "origin/$default")

@@ -369,10 +369,41 @@ def unreleased(root, patch, tag):
     current = {}
     for line in trees["HEAD"]:
         current[line] = current.get(line, 0) + 1
-    ok, why = held(anchors(patch), set(trees[tag]), current)
+    places = anchors(patch)
+    ok, why = held(places, set(trees[tag]), current)
     if not ok:
         return False, why.replace("the release", tag)
-    return True, f"no line the fix changes is in {tag}"
+    # And from the history: each such line was born adding code, never
+    # editing what was there (a rename or a rewrite after the release would
+    # hide released code from the text alone).
+    where = {}
+    g = git("grep", "-n", "-I", "--no-color", "-e", "", "HEAD")
+    for row in g.stdout.splitlines():
+        m = re.match(r"^HEAD:(.+?):(\d+):(.*)$", row)
+        if m and current.get(_norm(m.group(3))) == 1:
+            where[_norm(m.group(3))] = (m.group(1), int(m.group(2)))
+    for path, lines in places:
+        for text in (t for t in lines if t in where):
+            file_, n = where[text]
+            b = git("blame", "--porcelain", "-L", f"{n},{n}", "HEAD", "--", file_)
+            m = re.match(r"^([0-9a-f]{40}) (\d+) \d+", b.stdout)
+            name = re.search(r"^filename (.+)$", b.stdout, re.M)
+            if b.returncode != 0 or not m or not name:
+                return False, f"the history of {file_} could not be read"
+            if not edit_free(git("show", "--format=", "-U0", "--no-color", m.group(1), "--", name.group(1)).stdout, int(m.group(2))):
+                return False, f"{path}: a line the fix changes was written by editing older code, which {tag} may hold"
+    return True, f"no line the fix changes is in {tag}, and each was written as new code"
+
+
+def edit_free(diff, line):
+    """Whether the hunk of a -U0 diff that writes `line` (on its new side)
+    only adds lines. Pure."""
+    for h in re.finditer(r"^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", diff, re.M):
+        removed = int(h.group(1)) if h.group(1) is not None else 1
+        start, count = int(h.group(2)), int(h.group(3)) if h.group(3) is not None else 1
+        if start <= line < start + count:
+            return removed == 0
+    return False
 
 
 def entry(readme, text):
@@ -515,8 +546,30 @@ def self_test():
         os.unlink(fh.name)
         check("unreleased: the command exits 0 with its JSON when no release holds it",
               (rc.returncode, json.loads(rc.stdout or "{}").get("unreleased")), (0, True))
+        with tempfile.NamedTemporaryFile("w", suffix=".patch", delete=False) as fh:
+            fh.write(old_fix)
+        rc = subprocess.run([sys.executable, __file__, "unreleased"], env={**env, "ROOT": d, "PATCH": fh.name, "TAG": "1.0.0"}, capture_output=True, text=True)
+        os.unlink(fh.name)
+        check("unreleased: the command exits 1 when the release holds it", (rc.returncode, json.loads(rc.stdout or "{}").get("unreleased")), (1, False))
+        check("unreleased: a tag that does not exist cannot be read, and is no answer", unreleased(d, new_fix, "9.9.9")[0], False)
+        # Released as wipe(), then renamed and rewritten in substance: no line
+        # of the fix is in the release, but it was written by editing it.
+        g("checkout", "-q", "-b", "renamed", "1.0.0")
+        with open(os.path.join(d, "f.php"), "a") as fh:
+            fh.write("\nfunction reset_v1() {\n\twipe_it();\n}\n")
+        g("commit", "-q", "-am", "released as reset_v1")
+        g("tag", "1.2.0")
+        with open(os.path.join(d, "f.php")) as fh:
+            body = fh.read().replace("function reset_v1() {\n\twipe_it();", "function reset() {\n\tdelete();")
+        with open(os.path.join(d, "f.php"), "w") as fh:
+            fh.write(body)
+        g("commit", "-q", "-am", "renamed")
+        check("unreleased: code released and then rewritten in substance is not taken for new (fails closed)",
+              unreleased(d, new_fix, "1.2.0"), (False, "f.php: a line the fix changes was written by editing older code, which 1.2.0 may hold"))
         check("unreleased: a fix that does not apply on the default branch is no answer",
               unreleased(d, stale, "1.0.0"), (False, "the fix does not apply on the default branch either"))
+    check("unreleased: a -U0 hunk that only adds is edit-free, one that replaces is not",
+          (edit_free("@@ -4,0 +5,3 @@\n+a\n+b\n+c\n", 6), edit_free("@@ -4,1 +4,2 @@\n-a\n+b\n+c\n", 5), edit_free("@@ -4,0 +5,1 @@\n+a\n", 9)), (True, False, False))
     ev = lambda who, t, name="patch:go", kind="labeled": {"event": kind, "label": {"name": name}, "actor": {"login": who}, "created_at": t}
     roles = {"boss": "admin", "helper": "maintain", "dev": "write", "dilux-bot[bot]": "none"}
     at = "2026-10-18T06:00:00Z"
