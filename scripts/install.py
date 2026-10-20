@@ -112,10 +112,14 @@ def render(text, owner):
         s = re.match(r"^(\s+)secrets: inherit\s*$", line)
         if s and called:
             names = secrets_of(called)
+            # A workflow that declares none reads its environment's secrets
+            # (the release's wordpress-org: SVN, the release App's key), which
+            # only `inherit` hands over, and only within one organisation: it
+            # stays, and docs/installing.md says what that leaves out.
             if names:
                 out.append(f"{s.group(1)}secrets:")
                 out += [f"{s.group(1)}  {n}: ${{{{ secrets.{n} }}}}" for n in names]
-            continue
+                continue
         out.append(line)
     return "\n".join(out)
 
@@ -164,12 +168,15 @@ def plan(owner, app, app_id, target, repos, found_of, engine=ENGINE):
         excluded = set(conf.get("exclude") or [])
     new = sorted(n for n in repos if n not in known and n not in excluded)
     lines = []
+    unread = []
     for name in new:
+        # One that cannot be read (a rate limit, a permission) is written
+        # unclassified and said so, not taken for a repository of no kind.
         try:
-            found = found_of(name)
-        except RuntimeError:
-            found = []
-        lines.append(detect.entry(name, found, rules))
+            lines.append(detect.entry(name, found_of(name), rules))
+        except RuntimeError as exc:
+            lines.append(detect.entry(name, [], rules) + "   # detection could not read it: classify it by hand")
+            unread.append(f"could not read {name} ({str(exc)[:80]}): unclassified")
     if os.path.exists(path):
         if lines:
             with open(path, encoding="utf-8") as fh:
@@ -184,6 +191,7 @@ def plan(owner, app, app_id, target, repos, found_of, engine=ENGINE):
             fh.write(repos_yml(lines))
         yaml.safe_load(open(path, encoding="utf-8"))
         did.append(f"wrote repos.yml ({len(lines)} repositories)")
+    did += unread
     with open(os.path.join(engine, ".github", "workflows", "org-pull-request.yml"), encoding="utf-8") as fh:
         pipeline = fh.read()
     write(os.path.join(".github", "workflows", "org-pull-request.yml"), render(pipeline, owner))
@@ -231,6 +239,11 @@ def self_test():
     check("render: the review gets the secrets claude-review.yml asks for", sorted(review.get("secrets") or {}), sorted(secrets_of("claude-review.yml")))
     check("render: the engine is still called by tag", review["uses"].startswith(f"{org.CENTRAL}/.github/workflows/claude-review.yml@v"), True)
     check("render: the App is the organisation's variable", f"== '{org.BOT}'" in pipeline, False)
+    with open(os.path.join(ENGINE, "workflow-templates", "release-wp.yml"), encoding="utf-8") as fh:
+        release = yaml.safe_load(render(fh.read(), "Acme"))
+    check("render: a caller of a workflow that declares no secrets keeps inherit (its environment's secrets)",
+          sorted((j, job.get("secrets")) for j, job in release["jobs"].items() if "uses" in job),
+          [("publish", "inherit"), ("release", "inherit")])
 
     found = {"plugin-a": ["wordpress-plugin"], "site": []}
     with tempfile.TemporaryDirectory() as t:
@@ -249,6 +262,14 @@ def self_test():
         found["new-one"] = []
         more = plan("Acme", "acme-bot", 7, t, {"plugin-a": "main", "site": "main", "new-one": "main"}, lambda n: found[n])
         check("a new repository is added, the rest kept", material(more), ["added new-one to repos.yml"])
+
+    def unreadable(name):
+        raise RuntimeError("HTTP 403: rate limit")
+    with tempfile.TemporaryDirectory() as t:
+        did = plan("Acme", "acme-bot", 7, t, {"locked": "main"}, unreadable)
+        text = open(os.path.join(t, "repos.yml")).read()
+        check("a repository detection cannot read is unclassified and said so",
+              ("# detection could not read it" in text, any(d.startswith("could not read locked") for d in did)), (True, True))
 
     # DiluxOne's own configuration, installed again over itself: nothing
     # of it is lost (the "done when" of phase 12).
@@ -300,7 +321,8 @@ def main(argv):
     full = f"{a.org}/.github"
     rc, _, _ = run_gh("repo", "view", full, "--json", "name")
     if rc != 0:
-        rc, _, err = run_gh("repo", "create", full, "--public", "--description", "The organisation's configuration of the engine")
+        # With a first commit, so the pull request has a branch to go into.
+        rc, _, err = run_gh("repo", "create", full, "--public", "--add-readme", "--description", "The organisation's configuration of the engine")
         if rc != 0:
             print(f"Could not create {full}: {err.strip()[:200]}", file=sys.stderr)
             return 1
@@ -319,8 +341,13 @@ def main(argv):
     body = ("## What changes\n\n" + "\n".join(f"- {d}" for d in material(did)) +
             f"\n\n## Why\n\nThe configuration of the engine in {org.CENTRAL} for {a.org}: the engine is called by tag and reads this repository's "
             "configuration over its own defaults. Correct the kinds detection proposed in repos.yml before merging.\n\n" + steps(a.org, a.app))
-    rc, out, err = run_gh("pr", "create", "--repo", full, "--head", BRANCH, "--title", "chore: install the engine's configuration", "--body", body)
-    print(out.strip() or err.strip())
+    # Run again while its pull request is open: the push updated it.
+    rc, out, err = run_gh("pr", "list", "--repo", full, "--head", BRANCH, "--state", "open", "--json", "url", "--jq", ".[0].url // empty")
+    if rc == 0 and out.strip():
+        print(f"Updated {out.strip()}")
+    else:
+        rc, out, err = run_gh("pr", "create", "--repo", full, "--head", BRANCH, "--title", "chore: install the engine's configuration", "--body", body)
+        print(out.strip() or err.strip())
     print("\n" + steps(a.org, a.app))
     return 0 if rc == 0 else 1
 

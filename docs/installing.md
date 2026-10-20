@@ -21,7 +21,7 @@ It reads the organisation's repositories and what each one is (detection, each p
 | --- | --- |
 | `org.yml` | The organisation and its App. |
 | `repos.yml` | Every repository and its kinds, from detection: correct what it got wrong before merging. |
-| `.github/workflows/org-pull-request.yml` | The pull request pipeline every repository runs (conventions, review, auto-merge), calling the engine; each `secrets: inherit` written out as the secrets the called workflow asks for, since `inherit` does not cross organisations. |
+| `.github/workflows/org-pull-request.yml` | The pull request pipeline every repository runs (conventions, review, auto-merge), calling the engine; each `secrets: inherit` written out as the secrets the called workflow asks for, since `inherit` does not cross organisations (one to a workflow that declares none stays: see the limits below). |
 | `workflow-templates/` | The callers a repository adds from *Actions, New workflow*. |
 
 What it leaves out keeps the engine's default: `policy/` (the review and autonomy policies), `labels.yml`, `kinds/`. The organisation adds any of them to its `.github`, whole files, when it wants its own; a kind it adds joins the engine's.
@@ -31,6 +31,10 @@ Then, what no pull request can do (the installer prints it with each URL):
 1. Organisation secrets: `DILUX_BOT_PRIVATE_KEY` (its App's key) and the Claude token.
 2. Organisation variables: `DILUX_BOT_CLIENT_ID` (its App's client ID), and `DX_BOT_LOGIN`, `DX_BOT_APP` and `DX_BOT_ID` (its App's login, slug and bot user id), so the workflows recognise its App where they would recognise dilux-bot ([workflows](workflows.md#organisation-secrets-and-variables)).
 3. An organisation ruleset requiring `<Org>/.github/.github/workflows/org-pull-request.yml` on every repository's default branch.
+
+## Known limits
+
+- **Environment secrets across organisations.** A release that publishes with its environment's secrets (a WordPress plugin's `wordpress-org`: the SVN credentials and the release App's key) receives them only through `secrets: inherit`, which GitHub honours within one organisation. Its callers keep `inherit`; until the engine declares those secrets, another organisation's plugin builds and tags its release, and publishing to wordpress.org needs that change first.
 
 ## Install again
 
