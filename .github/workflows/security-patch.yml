@@ -588,6 +588,7 @@ jobs:
           closed=false
           if gh api -X PATCH "repos/$REPO/security-advisories/$GHSA" -f state=closed >/dev/null; then closed=true; fi
           GH_TOKEN="$ISSUE_TOKEN" gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --add-label patch:not-released >/dev/null
+          # shellcheck disable=SC2016 # backticks in the Markdown of the comment, not commands.
           GH_TOKEN="$ISSUE_TOKEN" gh issue close "$ISSUE" --repo "$GITHUB_REPOSITORY" --reason completed --comment "$(printf 'No released version holds %s: %s. There is no patch: the fix goes into `%s` through %s, which waits for a maintainer to add `accepted` to %s and merge it. %s\n\n%s, in a private repository' \
             "$GHSA" "$held" "$default" "$pr_url" "$GITHUB_SERVER_URL/$REPO/issues/$num" "$([ "$closed" = true ] && echo "The advisory is closed, unpublished." || echo "**Closing the advisory failed**: a maintainer closes it by hand.")" "$sign")" >/dev/null
           echo "$GHSA: not released; fix into $default by $pr_url."
