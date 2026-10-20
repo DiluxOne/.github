@@ -511,6 +511,7 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: write # what the workflow granted every job before: the checkout, and the tag through the App's token
+      issues: read # a weakness still being fixed forward holds the release (#341)
     environment: ${{ needs.version.outputs.environment }}
     # One release at a time; a run waiting for approval is never cancelled by
     # a newer push (the approver decides), and a run releasing is never
@@ -593,7 +594,21 @@ jobs:
             fi
             exit 1
           fi
-          echo "Still $VERSION, on $BASE, no tag yet, every security patch carried."
+          # A weakness written after the version in production is fixed
+          # forward instead (#341, security-patch.yml): its `security` issue,
+          # dilux-bot's with the dx-security-forward mark, closes when the fix
+          # merges into $BASE. Until then this release would publish it.
+          rc=0; held=$(gh issue list --repo "$GITHUB_REPOSITORY" --label security --state open --author "app/dilux-bot" --limit 200 --json number,body,author \
+            | python3 .dx-central/scripts/carry-lock.py forward) || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            if [ "$rc" = 1 ]; then
+              echo "::error::A security weakness not released yet is still being fixed on $BASE (issue #${held//$'\n'/, #}): its fix merges first. Nothing was released."
+            else
+              echo "::error::Whether a security weakness is still being fixed on $BASE could not be told (exit $rc). Nothing was released."
+            fi
+            exit 1
+          fi
+          echo "Still $VERSION, on $BASE, no tag yet, every security patch carried, no weakness waiting for its fix."
 
       - name: The markers say this version
         if: steps.still.outputs.go == 'true'
