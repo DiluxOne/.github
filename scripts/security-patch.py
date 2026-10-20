@@ -26,6 +26,12 @@ label on that issue:
                   the claim's issue closes; `patch:released`
   patch:failed    the fix did not apply, broke a limit, failed its checks or
                   its review; a maintainer takes it from there
+  patch:not-released  the version in production is not affected: the code
+                  the fix changes was written after it (`unreleased`), so
+                  no release holds the weakness. The fix goes into the
+                  default branch as a pull request a person merges, the
+                  advisory is closed unpublished, and the claim's issue
+                  closes
 
 Nothing publishes without `patch:go`: a stranger's report never reaches
 users on its own. One patch per repository at a time.
@@ -44,6 +50,12 @@ users on its own. One patch per repository at a time.
   security-patch.py marker   VERSION, TREE, AT: the marker line
   security-patch.py entry    README, VERSION_TEXT: the readme with a held
                              changelog entry for the patch on top
+  security-patch.py unreleased  ROOT (a clone of the public repository with
+                             its whole history and tags, the default branch
+                             checked out), PATCH, TAG (the version in
+                             production): whether the fix only changes code
+                             written after TAG, as JSON {unreleased, why};
+                             exit 0 when it does, 1 when not
   security-patch.py release  ROOT (the public repository's checkout),
                              VERSION: its kind's release command for that
                              version and its caller's slug, as JSON
@@ -111,6 +123,8 @@ def stage(labels, mark, go):
     advisory is a draft (the caller checks both). go: "ok" when patch:go is
     a maintainer's, after the announcement; otherwise why not."""
     labels = set(labels)
+    if "patch:not-released" in labels:
+        return "none", "no released version holds it; its fix went to the default branch"
     if "patch:failed" in labels or "patch:released" in labels:
         return "none", "done" if "patch:released" in labels else "it failed; a maintainer takes it"
     if "patch:pushed" in labels:
@@ -237,6 +251,106 @@ def limits(patch, rules):
     return out
 
 
+def _trivial(text):
+    """A line that says nothing of where it is: blank, or only punctuation
+    and comment marks (a brace, ` */`, ` *`)."""
+    return not re.search(r"[A-Za-z0-9]", text)
+
+
+def anchors(patch):
+    """{path: [line numbers on the side the patch applies to]} of the lines
+    that place each change: every line it removes, and the nearest line on
+    each side of a change that is not trivial. A new file has none. Pure."""
+    out, target, seen = {}, "", False
+    old_no = old = new = 0
+    before, block, pending = None, False, False
+
+    def mark(n):
+        if target and n:
+            lines = out.setdefault(target, [])
+            if n not in lines:
+                lines.append(n)
+
+    for line in (patch or "").splitlines():
+        if old > 0 or new > 0:
+            if line.startswith("\\"):
+                continue
+            if line[:1] in ("-", "+"):
+                if not block:
+                    mark(before)
+                    block = True
+                if line.startswith("-"):
+                    mark(old_no)
+                    old_no, old = old_no + 1, old - 1
+                else:
+                    new -= 1
+                pending = True
+                continue
+            if pending and not _trivial(line[1:]):
+                mark(old_no)
+                pending = False
+            if not _trivial(line[1:]):
+                before = old_no
+            block = False
+            old_no, old, new = old_no + 1, old - 1, new - 1
+            continue
+        if line.startswith("diff --git "):
+            seen, target = True, ""
+            continue
+        if not seen:
+            continue
+        m = re.match(r"^--- (.+)$", line)
+        if m:
+            target = _path(m.group(1))
+            continue
+        h = re.match(r"^@@ -(\d+)(?:,(\d+))? \+\d+(?:,(\d+))? @@", line)
+        if h:
+            old_no = int(h.group(1))
+            old = int(h.group(2)) if h.group(2) is not None else 1
+            new = int(h.group(3)) if h.group(3) is not None else 1
+            before, block, pending = None, False, False
+    return {k: sorted(v) for k, v in out.items() if v}
+
+
+def unreleased(root, patch, tag):
+    """(True, why) when the version in production does not hold the code
+    the fix changes: the fix applies on the default branch as it is, and
+    every line that places it there (`anchors`) was written by a commit
+    the tag does not contain (git blame). One such line already in the tag,
+    a fix that does not apply, or no line to place it: (False, why)."""
+    import subprocess
+    import tempfile
+
+    def git(*a):
+        return subprocess.run(["git", "-C", root, *a], capture_output=True, text=True)
+
+    with tempfile.NamedTemporaryFile("w", suffix=".patch", delete=False, encoding="utf-8") as fh:
+        fh.write(patch)
+        name = fh.name
+    try:
+        if git("apply", "--check", name).returncode != 0:
+            return False, "the fix does not apply on the default branch either"
+    finally:
+        os.unlink(name)
+    places = anchors(patch)
+    if not places:
+        return False, "the fix changes no line that was already there"
+    shipped = {}
+    for path, lines in sorted(places.items()):
+        args = ["blame", "--porcelain"]
+        for n in lines:
+            args += ["-L", f"{n},{n}"]
+        b = git(*args, "HEAD", "--", path)
+        if b.returncode != 0:
+            return False, f"{path} could not be read on the default branch"
+        for sha in re.findall(r"^([0-9a-f]{40}) \d+ \d+", b.stdout, re.M):
+            if sha not in shipped:
+                shipped[sha] = git("merge-base", "--is-ancestor", sha, tag).returncode == 0
+            if shipped[sha]:
+                return False, f"{path} holds code the fix changes that {tag} already has"
+    return True, f"every line the fix changes was written after {tag}"
+
+
 def entry(readme, text):
     """The readme with a held entry for the patch on top of its changelog:
     `= Unreleased =`, the line `Unreleased.` and one note. release-markers.sh
@@ -317,6 +431,37 @@ def self_test():
     check("stage: pushed finishes", stage(["patch:pushed"], m, "")[0], "finish")
     check("stage: released or failed does nothing", [stage([s_], m, "ok")[0] for s_ in ("patch:released", "patch:failed")], ["none", "none"])
     check("stage: announced without its marker waits for a person", stage(["patch:ready", "patch:go"], "", "ok")[0], "wait")
+    check("stage: not released does nothing more", stage(["patch:not-released"], "", "")[0], "none")
+    # Unreleased: which lines place a fix, and whether the tag holds them.
+    hunk = ("diff --git a/f.php b/f.php\n--- a/f.php\n+++ b/f.php\n@@ -2,5 +2,6 @@ x\n"
+            " function old() {}\n \n function reset() {\n-\tdelete();\n+\tif ( ok() ) {\n+\t\tdelete();\n+\t}\n }\n")
+    check("unreleased: the lines that place a change are the nearest real ones and the removed ones, not braces or blanks",
+          anchors(hunk), {"f.php": [4, 5]})
+    check("unreleased: a new file has no line to place it", anchors("diff --git a/n.php b/n.php\n--- /dev/null\n+++ b/n.php\n@@ -0,0 +1,2 @@\n+a\n+b\n"), {})
+    import subprocess
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
+        g = lambda *a: subprocess.run(["git", "-C", d, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", *a], check=True, capture_output=True, env=env)
+        g("init", "-q")
+        with open(os.path.join(d, "f.php"), "w") as fh:
+            fh.write("<?php\nfunction old() { return 1; }\n")
+        g("add", "-A")
+        g("commit", "-q", "-m", "one")
+        g("tag", "1.0.0")
+        with open(os.path.join(d, "f.php"), "a") as fh:
+            fh.write("\nfunction reset() {\n\tdelete();\n}\n")
+        g("commit", "-q", "-am", "two")
+        new_fix = ("diff --git a/f.php b/f.php\n--- a/f.php\n+++ b/f.php\n@@ -3,4 +3,6 @@ function old() { return 1; }\n"
+                   " \n function reset() {\n-\tdelete();\n+\tif ( ok() ) {\n+\t\tdelete();\n+\t}\n }\n")
+        old_fix = ("diff --git a/f.php b/f.php\n--- a/f.php\n+++ b/f.php\n@@ -1,3 +1,3 @@\n <?php\n-function old() { return 1; }\n+function old() { return 2; }\n \n")
+        stale = new_fix.replace("-\tdelete();", "-\tdelete_all();")
+        check("unreleased: a fix of code written after the tag is not in production",
+              unreleased(d, new_fix, "1.0.0")[0], True)
+        check("unreleased: a fix of code the tag holds is in production",
+              unreleased(d, old_fix, "1.0.0"), (False, "f.php holds code the fix changes that 1.0.0 already has"))
+        check("unreleased: a fix that does not apply on the default branch is no answer",
+              unreleased(d, stale, "1.0.0"), (False, "the fix does not apply on the default branch either"))
     ev = lambda who, t, name="patch:go", kind="labeled": {"event": kind, "label": {"name": name}, "actor": {"login": who}, "created_at": t}
     roles = {"boss": "admin", "helper": "maintain", "dev": "write", "dilux-bot[bot]": "none"}
     at = "2026-10-18T06:00:00Z"
@@ -395,6 +540,15 @@ def self_test():
               ("security-patch.py go" in plan_, "collaborators/$who/permission" in plan_, "another patch of $repo is in progress" in plan_), (True, True, True))
         check("wiring: the build checks the limits before it builds",
               run("build", "The tree on the version in production")["run"].index("security-patch.py\" limits") < run("build", "The tree on the version in production")["run"].index("security-patch-build.sh"), True)
+        tree_run = run("build", "The tree on the version in production")["run"]
+        check("wiring (#247): the build asks whether the fix is unreleased only when it does not apply, on the default branch, and says each reason",
+              (tree_run.index("security-patch-build.sh") < tree_run.index("security-patch.py\" unreleased"), 'git checkout -q -f "$default"' in tree_run,
+               all(r in tree_run for r in ("reason=no-production", "reason=unreleased", "reason=does-not-apply"))), (True, True, True))
+        fwd = run("act", "Into the default branch")
+        check("wiring (#247): an unreleased fix goes to the default branch as a pull request a person merges, and the advisory closes unpublished",
+              ("steps.announce.outputs.unreleased" in fwd["if"], "labels[]=security" in fwd["run"], "state=closed" in fwd["run"], "patch:not-released" in fwd["run"],
+               "security-patch.py publish" in fwd["run"], fwd["run"].index("unset PRIVATE_KEY BOT_KEY") < fwd["run"].index("git clone")),
+              (True, True, True, True, False, True))
         rv = jobs["review"]
         rv_step = next(st for st in rv["steps"] if "claude-code-action" in str(st.get("uses", "")))
         check("wiring: the second review has no shell, no key, and another model",
@@ -450,6 +604,11 @@ def main(argv):
         with open(os.environ["ADVISORY"], encoding="utf-8") as fh:
             print(json.dumps(publish_payload(json.load(fh), os.environ["VERSION"], os.environ.get("REPO", ""))))
         return 0
+    if argv == ["unreleased"]:
+        with open(os.environ["PATCH"], encoding="utf-8", errors="replace") as fh:
+            ok, why = unreleased(os.environ["ROOT"], fh.read(), os.environ["TAG"])
+        print(json.dumps({"unreleased": ok, "why": why}))
+        return 0 if ok else 1
     if argv == ["release"]:
         print(json.dumps(release(os.environ["ROOT"], os.environ["VERSION"])))
         return 0
