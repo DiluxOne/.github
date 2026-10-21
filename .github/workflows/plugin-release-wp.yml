@@ -114,7 +114,10 @@ name: WordPress plugin release
 # (a repository that keeps them is asked twice). The caller passes
 # `secrets: inherit`, which is why it runs only on main, on X.Y.Z tags and on
 # security/X.Y.Z branches, which only dilux-security can create (the
-# organisation ruleset "org: security branches"). It calls this workflow at `v6`, like every other: a
+# organisation ruleset "org: security branches"). Through it the release
+# job also gets dilux-bot's key (DILUX_BOT_PRIVATE_KEY, an organisation
+# secret), with which it reads the open `security` issues (#341) instead of
+# asking the caller for an issues permission. It calls this workflow at `v6`, like every other: a
 # protected ref only an administrator moves, so nothing is pinned (#136).
 #
 #   on:
@@ -540,6 +543,20 @@ jobs:
           path: .dx-central
           persist-credentials: false
 
+      # The open `security` issues (#341), read with dilux-bot's key, which
+      # the caller already hands over (`secrets: inherit`): the job's own
+      # token gets no issues permission, so no caller has to grant one.
+      # Without the key, not knowing holds the release (the step below).
+      - name: dilux-bot token (read the security issues)
+        id: issues
+        continue-on-error: true
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-issues: read
+
       - name: Still the release to make
         # Time passed while a person decided. The version is computed again
         # and must be the one approved; the commit must be on the default
@@ -552,6 +569,7 @@ jobs:
           BASE: ${{ github.event.repository.default_branch }}
           SECURITY: ${{ needs.version.outputs.security }}
           SLUG: ${{ inputs.slug }}
+          ISSUES_TOKEN: ${{ steps.issues.outputs.token }}
         run: |
           set -euo pipefail
           echo "go=true" >> "$GITHUB_OUTPUT"
@@ -593,7 +611,24 @@ jobs:
             fi
             exit 1
           fi
-          echo "Still $VERSION, on $BASE, no tag yet, every security patch carried."
+          # A weakness written after the version in production is fixed
+          # forward instead (#341, security-patch.yml): its `security` issue,
+          # dilux-bot's with the dx-security-forward mark, closes when the fix
+          # merges into $BASE. Until then this release would publish it.
+          rc=0; held=""
+          if [ -z "$ISSUES_TOKEN" ]; then rc=2; else
+            held=$(GH_TOKEN="$ISSUES_TOKEN" gh issue list --repo "$GITHUB_REPOSITORY" --label security --state open --author "app/dilux-bot" --limit 200 --json number,body,author \
+              | python3 .dx-central/scripts/carry-lock.py forward) || rc=$?
+          fi
+          if [ "$rc" -ne 0 ]; then
+            if [ "$rc" = 1 ]; then
+              echo "::error::A security weakness not released yet is still being fixed on $BASE (issue #${held//$'\n'/, #}): its fix merges first. Nothing was released."
+            else
+              echo "::error::Whether a security weakness is still being fixed on $BASE could not be told (exit $rc; without dilux-bot's key, DILUX_BOT_PRIVATE_KEY, the issues are not read). Nothing was released."
+            fi
+            exit 1
+          fi
+          echo "Still $VERSION, on $BASE, no tag yet, every security patch carried, no weakness waiting for its fix."
 
       - name: The markers say this version
         if: steps.still.outputs.go == 'true'

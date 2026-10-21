@@ -34,8 +34,10 @@ name: Organisation VM
 # (runner-wake.yml). The schedule here stays as the fallback if the Function
 # stops. Every run also keeps one issue here, "Jobs waiting for the
 # organisation's VM", listing the jobs queued for more than LONG_MINUTES
-# with their links, closed when none waits that long (#154). The decisions
-# are scripts/runner-demand.sh, with its self-test.
+# with their links, closed when none waits that long (#154), and first
+# cancels the runs of pull requests closed without merging, which nothing
+# reads and which would hold the VM (#341). The decisions are
+# scripts/runner-demand.sh, with its self-test.
 #
 # What runs there, and with what: the private repositories' jobs, the review
 # and the issue triage among them, with the Claude token and dilux-bot's key.
@@ -99,6 +101,31 @@ jobs:
           owner: ${{ github.repository_owner }}
           permission-actions: read
           permission-metadata: read
+
+      - name: dilux-bot token (cancel the runs of closed pull requests)
+        id: cancel
+        continue-on-error: true
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-actions: write
+          permission-pull-requests: read
+          permission-metadata: read
+
+      # Before the count, so a run nothing will read neither waits for the
+      # VM nor holds it on (#341).
+      - name: Runs of pull requests closed unmerged
+        continue-on-error: true
+        if: steps.cancel.outputs.token != ''
+        env:
+          GH_TOKEN: ${{ steps.cancel.outputs.token }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          bash scripts/runner-demand.sh stale > "$RUNNER_TEMP/stale.tsv" || echo "::warning::The runs of closed pull requests could not all be read or cancelled; the next run tries again."
+          while IFS=$'\t' read -r repo id; do echo "Cancelled $OWNER/$repo run $id: its pull request is closed."; done < "$RUNNER_TEMP/stale.tsv"
 
       - name: Jobs waiting for the VM
         id: demand

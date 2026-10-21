@@ -41,7 +41,8 @@ name: Issue triage
 # An issue with no Type gets the category's; a bug report it reads as a
 # request (enhancement, planned, pro-feature) is retyped Feature and the
 # reply says so (#84): no reproduction starts, no `fix` can close it, and it
-# waits for a person like any request (scripts/triage-act.sh).
+# waits for a person like any request (scripts/triage-act.sh). A Type a
+# maintainer set is never changed (#341).
 #
 # A repository whose paid add-on keeps its roadmap in a private repository
 # names it in its policy (`paid-roadmap:` in .github/review-policy.yml). The

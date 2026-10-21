@@ -23,8 +23,22 @@ from git alone (a checkout with the whole history and the tags):
   carry-lock.py fix TAG          the fix's commits of a security patch tag,
                                  oldest first, one SHA per line (the carry
                                  cherry-picks them)
+  carry-lock.py forward          of the open `security` issues on stdin
+                                 (gh issue list --json number,body,author),
+                                 those of a weakness no release holds yet
+                                 (#341: the bot's, with the
+                                 `dx-security-forward` mark): one number
+                                 per line (exit 1); none (exit 0); 2 when
+                                 the list cannot be read
   carry-lock.py --test
+
+A weakness written after the version in production has no patch to carry:
+security-patch.yml fixes it forward, with a `security` issue of dilux-bot's
+marked `dx-security-forward` and a pull request into the default branch.
+Until that issue closes, a release from the default branch would publish
+the weakness, so it is held as an uncarried patch is.
 """
+import json
 import os
 import re
 import subprocess
@@ -113,6 +127,19 @@ def squashed_in(tag, branch, all_tags, cwd=None):
         if patch_id(git("show", "--format=", rev, cwd=cwd), cwd) == want:
             return True
     return False
+
+
+FORWARD = "<!-- dx-security-forward:"
+
+
+def forward_open(issues):
+    """The open issues of a weakness fixed forward and not merged yet: a
+    bot's (a person cannot write the mark into one that holds a release
+    back) whose body starts with the mark."""
+    return [i["number"] for i in issues
+            if isinstance(i, dict) and isinstance(i.get("number"), int)
+            and ((i.get("author") or {}).get("is_bot") is True)
+            and str(i.get("body") or "").startswith(FORWARD)]
 
 
 TRAILER = "Carries-security-patch"
@@ -256,6 +283,29 @@ def self_test():
     still = rel[rel.index("      - name: Still the release to make"):rel.index("      - name: The markers say this version")]
     check("wiring: a release from the default branch is locked until every patch is carried, the security path is not",
           ("carry-lock.py check" in still, still.index('if [ "$SECURITY" = true ]') < still.index("carry-lock.py check")), (True, True))
+    # C4 (#341): a weakness fixed forward and not merged holds the release.
+    bot = {"login": "app/dilux-bot", "is_bot": True}
+    issues = [{"number": 4, "body": FORWARD + " GHSA-x -->\nA weakness", "author": bot},
+              {"number": 5, "body": FORWARD + " GHSA-y -->\nForged", "author": {"login": "someone", "is_bot": False}},
+              {"number": 6, "body": "A report.\n" + FORWARD + " GHSA-z -->", "author": bot},
+              {"number": 7, "body": "<!-- dx-lane: security-carry version: 1.0.1 -->", "author": bot}]
+    check("C4 forward: only the bot's issue that starts with the mark holds it", forward_open(issues), [4])
+    import io
+    import contextlib
+    for given, want in ((issues, 1), ([], 0), ("not json", 2), ({"a": 1}, 2)):
+        sys.stdin = io.StringIO(given if isinstance(given, str) else json.dumps(given))
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            got = main(["forward"])
+        sys.stdin = sys.__stdin__
+        check(f"C4 cli forward: {str(given)[:20]} exits {want}", got, want)
+    job = rel[rel.index("  release:"):rel.index("      - name: Still the release to make")]
+    perms = job[job.index("    permissions:"):job.index("    environment:")]
+    check("C4 wiring: the release from the default branch checks the forward issues too, after the security path's exit, read with dilux-bot's key, never a new grant of the caller's",
+          ("carry-lock.py forward" in still, still.index('if [ "$SECURITY" = true ]') < still.index("carry-lock.py forward"),
+           "--label security" in still and "--state open" in still and '--author "app/' in still,
+           "issues:" in perms, "permission-issues: read" in job and "DILUX_BOT_PRIVATE_KEY" in job,
+           'GH_TOKEN="$ISSUES_TOKEN" gh issue list' in still, 'if [ -z "$ISSUES_TOKEN" ]; then rc=2' in still),
+          (True, True, True, False, True, True, True))
     sec = open(os.path.join(here, "..", ".github", "workflows", "security-patch.yml"), encoding="utf-8").read()
     fin = sec[sec.index("      - name: Finish"):]
     check("wiring: the finish opens the lane's issue and cherry-picks the released fix",
@@ -278,6 +328,17 @@ def main(argv):
             for version, commits in left:
                 print(f"{version}: {len(commits)} commit(s) of its fix are not on {branch}")
             return 1 if left else 0
+        if argv == ["forward"]:
+            try:
+                issues = json.load(sys.stdin)
+            except ValueError as err:
+                raise RuntimeError(f"the issues are not JSON: {err}")
+            if not isinstance(issues, list):
+                raise RuntimeError("the issues are not a list")
+            held = forward_open(issues)
+            for n in held:
+                print(n)
+            return 1 if held else 0
         if argv[:1] == ["fix"] and len(argv) == 2 and VERSION.match(argv[1]):
             have = tags()
             tag = argv[1] if argv[1] in have else (f"v{argv[1]}" if f"v{argv[1]}" in have else argv[1])

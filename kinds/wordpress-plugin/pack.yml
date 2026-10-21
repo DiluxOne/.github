@@ -108,6 +108,12 @@ settings:
 #                 published there yet, any other error answer too, and a 404
 #                 or a "not found" answer that the place has no such project,
 #                 so the last GitHub release is in production (#315)
+# What the autopilot adds to every change of this kind, beside what the Spec
+# names (#341, scripts/autopilot.py): one instruction per line, for its
+# work prompt.
+autopilot:
+  - "readme.txt's `== Changelog ==`: one line for this change, as the lines already there are written, under the newest entry when that entry is held (its first line is `Unreleased.`); otherwise a new entry at the top, headed `= Unreleased =` with `Unreleased.` as its first line and then the change's line (scripts/release-markers.sh releases it). None for a change no user sees (tests, tooling, CI)."
+
 release:
   publishes-to: wordpress.org
   workflow: plugin-release-wp.yml
