@@ -298,11 +298,14 @@ def self_test():
             got = main(["forward"])
         sys.stdin = sys.__stdin__
         check(f"C4 cli forward: {str(given)[:20]} exits {want}", got, want)
-    check("C4 wiring: the release from the default branch checks the forward issues too, after the security path's exit, with issues read",
+    job = rel[rel.index("  release:"):rel.index("      - name: Still the release to make")]
+    perms = job[job.index("    permissions:"):job.index("    environment:")]
+    check("C4 wiring: the release from the default branch checks the forward issues too, after the security path's exit, read with dilux-bot's key, never a new grant of the caller's",
           ("carry-lock.py forward" in still, still.index('if [ "$SECURITY" = true ]') < still.index("carry-lock.py forward"),
            "--label security" in still and "--state open" in still and '--author "app/' in still,
-           "issues: read" in rel[rel.index("  release:"):rel.index("      - name: Still the release to make")]),
-          (True, True, True, True))
+           "issues:" in perms, "permission-issues: read" in job and "DILUX_BOT_PRIVATE_KEY" in job,
+           'GH_TOKEN="$ISSUES_TOKEN" gh issue list' in still, 'if [ -z "$ISSUES_TOKEN" ]; then rc=2' in still),
+          (True, True, True, False, True, True, True))
     sec = open(os.path.join(here, "..", ".github", "workflows", "security-patch.yml"), encoding="utf-8").read()
     fin = sec[sec.index("      - name: Finish"):]
     check("wiring: the finish opens the lane's issue and cherry-picks the released fix",
