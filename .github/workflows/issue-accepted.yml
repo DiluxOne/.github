@@ -181,6 +181,7 @@ jobs:
           # a script loads is there (receipts.py loads autopilot.py for the
           # board of an autopilot pull request).
           git init -q .dx-central && git -C .dx-central fetch -q --depth 1 https://github.com/DiluxOne/.github "$REF" && git -C .dx-central checkout -q FETCH_HEAD
+          test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh .dx-central
           if [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then echo "ref=${REF:0:12}" >> "$GITHUB_OUTPUT"; else echo "ref=$(git ls-remote https://github.com/DiluxOne/.github "$REF" "$REF^{}" | tail -1 | cut -c1-12)" >> "$GITHUB_OUTPUT"; fi
       - name: dilux-bot token
         id: bot
@@ -320,6 +321,7 @@ jobs:
           # a script loads is there (receipts.py loads autopilot.py for the
           # board of an autopilot pull request).
           git init -q .dx-central && git -C .dx-central fetch -q --depth 1 https://github.com/DiluxOne/.github "$REF" && git -C .dx-central checkout -q FETCH_HEAD
+          test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh .dx-central
           if [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then echo "ref=${REF:0:12}" >> "$GITHUB_OUTPUT"; else echo "ref=$(git ls-remote https://github.com/DiluxOne/.github "$REF" "$REF^{}" | tail -1 | cut -c1-12)" >> "$GITHUB_OUTPUT"; fi
       - name: dilux-bot token
         id: bot
@@ -552,6 +554,10 @@ jobs:
           base="https://raw.githubusercontent.com/DiluxOne/.github/$sha"
           # autonomy.py reads the organisation from org.yml, through org.py (#191).
           for f in scripts/autonomy.py scripts/org.py org.yml policy/autonomy.yml; do curl -fsSL --retry 3 "$base/$f" -o ".dx-central/$f"; done
+          # The organisation's configuration over those (#197); a ref from
+          # before the overlay has none.
+          curl -fsSL --retry 3 "$base/scripts/config-overlay.sh" -o .dx-central/scripts/config-overlay.sh || rm -f .dx-central/scripts/config-overlay.sh
+          test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh .dx-central
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: dilux-bot token

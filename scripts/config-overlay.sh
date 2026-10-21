@@ -27,7 +27,7 @@ set -euo pipefail
 # the engine's scripts, workflows and gates are never replaced.
 PATHS=(org.yml repos.yml labels.yml policy kinds)
 
-org_of() { sed -n 's/^org:[[:space:]]*\([A-Za-z0-9-]*\).*/\1/p' "$1" | head -n 1; }
+org_of() { sed -n "s/^org:[[:space:]]*[\"']\{0,1\}\([A-Za-z0-9-]*\).*/\1/p" "$1" | head -n 1; }
 
 overlay() {
   local dir=${1:-.dx-central} owner=${GITHUB_REPOSITORY_OWNER:-} engine src tmp
@@ -58,6 +58,13 @@ lay() {
   theirs=$(org_of "$tmp/config/org.yml")
   [ "${theirs,,}" = "${owner,,}" ] \
     || { echo "::error::$owner/.github's org.yml names '$theirs', not $owner."; return 1; }
+  # A link would lay a file of anywhere over the engine's: none is taken.
+  for p in "${PATHS[@]}"; do
+    if [ -n "$(find "$tmp/config/$p" -type l 2>/dev/null | head -n 1)" ]; then
+      echo "::error::$owner/.github's $p holds a symbolic link: the configuration is plain files."
+      return 1
+    fi
+  done
   for p in "${PATHS[@]}"; do
     [ -e "$tmp/config/$p" ] || continue
     if [ -d "$tmp/config/$p" ]; then
@@ -73,6 +80,9 @@ lay() {
 
 self_test() {
   local t fail=0 out
+  # The fixtures' commits are local and thrown away: no global config (and
+  # no signing key) of whoever runs the test applies to them.
+  export GIT_CONFIG_GLOBAL=/dev/null
   t=$(mktemp -d)
   # shellcheck disable=SC2064
   trap "rm -rf '$t'" RETURN
@@ -93,7 +103,7 @@ self_test() {
     echo 'budgets-usd: {autopilot-work: 5}' > "$t/c/policy/autonomy.yml"
     echo 'name: Web app' > "$t/c/kinds/web-app/pack.yml"
     echo 'theirs' > "$t/c/scripts/x.sh"
-    git -C "$t/c" init -q && git -C "$t/c" add -A && git -C "$t/c" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm c
+    git -C "$t/c" init -q && git -C "$t/c" add -A && git -C "$t/c" -c user.name=t -c user.email=t@t commit -qm c
   }
 
   engine
@@ -122,6 +132,16 @@ self_test() {
 
   rm -rf "$t/none"; mkdir -p "$t/none"
   GITHUB_REPOSITORY_OWNER=Acme overlay "$t/none" >/dev/null
+  engine; config Acme; mkdir -p "$t/c/kinds/evil"; ln -s /etc/passwd "$t/c/kinds/evil/pack.yml"
+  git -C "$t/c" add -A && git -C "$t/c" -c user.name=t -c user.email=t@t commit -qm link
+  if GITHUB_REPOSITORY_OWNER=Acme DX_CONFIG_SOURCE="$t/c" overlay "$t/e" >/dev/null 2>&1; then ok "a symbolic link in the configuration stops it" ran stopped; else ok "a symbolic link in the configuration stops it" stopped stopped; fi
+  ok "and nothing was laid over" "$(cat "$t/e/repos.yml")" 'repos: {a: {}}'
+
+  engine; config Acme; printf 'org: "Acme"\ncentral: Acme/.github\n' > "$t/c/org.yml"
+  git -C "$t/c" add -A && git -C "$t/c" -c user.name=t -c user.email=t@t commit -qm quoted
+  GITHUB_REPOSITORY_OWNER=Acme DX_CONFIG_SOURCE="$t/c" overlay "$t/e" >/dev/null
+  ok "a quoted org in its org.yml is read" "$(cat "$t/e/repos.yml")" 'repos: {b: {}}'
+
   ok "a checkout that was never made is left alone" "$(find "$t/none" -mindepth 1 | wc -l)" 0
 
   # Every full checkout of the engine in the shared workflows is followed by
@@ -154,8 +174,15 @@ for f in sorted(glob.glob(os.path.join(sys.argv[1], "*.yml"))):
                 bad.append(f"{name}:{p + 1}: no overlay after the engine's checkout")
             elif cond and "if: " + cond.group(1) not in following:
                 bad.append(f"{name}:{p + 1}: the overlay does not carry the checkout's condition")
-        if 'git -C .dx-central checkout -q "$REF"; }' in line and "config-overlay.sh" not in lines[p + 1]:
-            bad.append(f"{name}:{p + 1}: no overlay after the engine's clone")
+        # The engine cloned or fetched by git anywhere (.dx-central,
+        # $RUNNER_TEMP/central): the overlay on that line or the next.
+        if re.search(r"git (-C \S+ )?(clone|fetch)\b.*github\.com/DiluxOne/\.github", line) and not line.rstrip().endswith("\\"):
+            if "config-overlay.sh" not in line and "config-overlay.sh" not in lines[p + 1]:
+                bad.append(f"{name}:{p + 1}: no overlay after the engine's clone")
+        # Its files fetched one by one, configuration among them.
+        if "raw.githubusercontent.com/DiluxOne/.github" in line and any(c in "\n".join(lines[p:p + 3]) for c in ("org.yml", "policy/")):
+            if "config-overlay.sh" not in "\n".join(lines[p:p + 8]):
+                bad.append(f"{name}:{p + 1}: no overlay after the engine's files")
 print("\n".join(bad))
 PY
 )
