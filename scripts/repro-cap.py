@@ -16,7 +16,10 @@ not be read (empty) holds the report, never lets it through.
 import os
 import sys
 
-BOT = "dilux-bot[bot]"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import org  # noqa: E402  the organisation's App, from org.yml (#191, #197)
+
+BOT = org.BOT
 MAINTAINERS = ("admin", "maintain", "write")
 
 

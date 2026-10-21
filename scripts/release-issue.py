@@ -53,6 +53,8 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import org  # noqa: E402  the organisation's App, from org.yml (#191, #197)
 TITLE = re.compile(r"^Release (\d+\.\d+\.\d+)$")
 AI_LINE = "🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
 # Who may approve a release: the roles that administer or maintain the
@@ -247,7 +249,7 @@ def judge(node, label):
 # marks it accepted by policy. Approving the plan was approving the release:
 # the person is whoever created the milestone, and their role is read now.
 PLANNED_LABEL = "accepted-by:policy"
-BOT_LOGINS = ("dilux-bot", "dilux-bot[bot]", "app/dilux-bot")
+BOT_LOGINS = (org.APP, org.BOT, f"app/{org.APP}")
 
 
 def planned(node, version):

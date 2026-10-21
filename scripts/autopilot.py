@@ -1442,7 +1442,7 @@ def _refresh_board(repo, number):
     board = subprocess.run([sys.executable, os.path.join(HERE, "receipts.py"), "board"], env=env,
                            capture_output=True, text=True, check=True).stdout.strip()
     ids = gh("api", f"repos/{repo}/issues/{number}/comments", "--paginate", "--jq",
-             '.[] | select(.user.type == "Bot" and (.user.login | startswith("dilux-bot")) and (.body | startswith("<!-- dx-board -->"))) | .id').split()
+             '.[] | select(.user.type == "Bot" and (.user.login | startswith("' + org.APP + '")) and (.body | startswith("<!-- dx-board -->"))) | .id').split()
     if ids:
         gh("api", "-X", "PATCH", f"repos/{repo}/issues/comments/{ids[-1]}", "-f", f"body={board}")
     else:

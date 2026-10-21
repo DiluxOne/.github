@@ -58,7 +58,7 @@ def hardwired_bot(root=os.path.join(HERE, "..", ".github", "workflows")):
                 code = code.replace(f, "")
             # The slug as a value (quoted, a path, a pattern, a YAML value),
             # not as a word in a message ("opened by dilux-bot").
-            if BOT in code or str(BOT_ID) in code or re.search(r"(^|[\"'/?|(]|: )" + re.escape(APP) + r"(?![\w-])", code):
+            if BOT in code or str(BOT_ID) in code or re.search(r"(^|[\"'/?|(@=]|: )" + re.escape(APP) + r"(?![\w-])", code):
                 found.append(f"{os.path.basename(path)}:{n}")
     return found
 
