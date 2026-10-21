@@ -26,12 +26,18 @@ def load(path=os.path.join(HERE, "..", "org.yml")):
         return yaml.safe_load(fh) or {}
 
 
+def app(conf, env):
+    """(slug, login, id) of the organisation's App: the calling
+    organisation's DX_BOT_APP, DX_BOT_LOGIN and DX_BOT_ID, which every
+    shared workflow sets in its env (#197), else org.yml's."""
+    slug = env.get("DX_BOT_APP") or conf["bot"]["app"]
+    return slug, env.get("DX_BOT_LOGIN") or f"{slug}[bot]", int(env.get("DX_BOT_ID") or conf["bot"]["id"])
+
+
 _conf = load()
 ORG = _conf["org"]
 CENTRAL = _conf["central"]
-APP = _conf["bot"]["app"]
-BOT = f"{APP}[bot]"
-BOT_ID = int(_conf["bot"]["id"])
+APP, BOT, BOT_ID = app(_conf, os.environ)
 # The private repository security work happens in (#287); "" when none.
 SECURITY = str(_conf.get("security") or "")
 
@@ -81,6 +87,9 @@ def self_test():
         check("load: reads an org.yml", load(fh.name)["bot"], {"app": "x-bot", "id": 7})
     finally:
         os.unlink(fh.name)
+    conf = {"bot": {"app": "dilux-bot", "id": 1}}
+    check("#197: the App from org.yml when no variable is set", app(conf, {}), ("dilux-bot", "dilux-bot[bot]", 1))
+    check("#197: the calling organisation's variables win", app(conf, {"DX_BOT_APP": "acme-bot", "DX_BOT_LOGIN": "acme-bot[bot]", "DX_BOT_ID": "7"}), ("acme-bot", "acme-bot[bot]", 7))
     check("#197: the shared workflows name the App only as the caller's variables' fallback", hardwired_bot(), [])
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
