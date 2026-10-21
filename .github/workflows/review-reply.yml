@@ -54,6 +54,14 @@ permissions:
   pull-requests: write
   issues: write
 
+# The organisation's App, as GitHub shows it (#197): the calling
+# organisation's variables DX_BOT_LOGIN, DX_BOT_APP and DX_BOT_ID, or
+# DiluxOne's dilux-bot when it sets none.
+env:
+  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
+  DX_BOT_APP: ${{ vars.DX_BOT_APP || 'dilux-bot' }}
+  DX_BOT_ID: ${{ vars.DX_BOT_ID || '333187390' }}
+
 jobs:
   # A maintainer's answer to the autopilot's question (#247, guided mode):
   # a comment by someone with write access on an issue waiting for one
@@ -62,7 +70,7 @@ jobs:
   # accepts). The autopilot reads the answer itself, from the comments.
   answer:
     name: The autopilot's answer
-    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     if: github.event_name == 'issue_comment' && github.event.action == 'created' && github.event.sender.type == 'User'
     timeout-minutes: 5
     outputs:
@@ -197,7 +205,7 @@ jobs:
           [ -s "$RUNNER_TEMP/others.md" ] || { echo "Nothing argued about the question."; exit 0; }
           # One comment a question, kept up to date.
           for_line=$(sed -n 2p "$RUNNER_TEMP/others.md")
-          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate --jq '.[] | select(.user.login == "dilux-bot[bot]" and (.body | startswith("<!-- dx-autopilot-others -->"))) | [.id, .body] | @json' \
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate --jq '.[] | select(.user.login == env.DX_BOT_LOGIN and (.body | startswith("<!-- dx-autopilot-others -->"))) | [.id, .body] | @json' \
             | while IFS= read -r c; do jq -r --arg f "$for_line" 'select(.[1] | contains($f)) | .[0]' <<<"$c"; done | tail -1)
           if [ -n "$id" ]; then
             gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -F body=@"$RUNNER_TEMP/others.md" >/dev/null
@@ -208,10 +216,10 @@ jobs:
 
   reply:
     name: Claude reply
-    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 15
     if: >-
-      contains(github.event.comment.body, '@dilux-bot') &&
+      contains(github.event.comment.body, format('@{0}', vars.DX_BOT_APP || 'dilux-bot')) &&
       github.event.comment.user.type != 'Bot' &&
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
       (github.event_name == 'pull_request_review_comment' || github.event.issue.pull_request)

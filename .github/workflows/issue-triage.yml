@@ -134,10 +134,18 @@ permissions:
   contents: read
   issues: write
 
+# The organisation's App, as GitHub shows it (#197): the calling
+# organisation's variables DX_BOT_LOGIN, DX_BOT_APP and DX_BOT_ID, or
+# DiluxOne's dilux-bot when it sets none.
+env:
+  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
+  DX_BOT_APP: ${{ vars.DX_BOT_APP || 'dilux-bot' }}
+  DX_BOT_ID: ${{ vars.DX_BOT_ID || '333187390' }}
+
 jobs:
   triage:
     name: Triage
-    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 10
     # Not a release issue (#82, `lane:release`): it asks for no answer, only
     # a person's acceptance (issue-accepted.yml).
@@ -404,9 +412,9 @@ jobs:
   # triage finds. Any other issue a bot opens is never triaged.
   nightly:
     name: A nightly review's bug
-    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 5
-    if: github.event_name == 'issues' && github.event.action == 'opened' && github.event.issue.user.login == 'dilux-bot[bot]' && (startsWith(github.event.issue.body, '<!-- dx-nightly-finding') || startsWith(github.event.issue.body, '<!-- dx-repro-blocker'))
+    if: github.event_name == 'issues' && github.event.action == 'opened' && github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.issue.body, '<!-- dx-nightly-finding') || startsWith(github.event.issue.body, '<!-- dx-repro-blocker'))
     outputs:
       bug: ${{ steps.mark.outputs.bug }}
     steps:
@@ -436,7 +444,7 @@ jobs:
   # from dilux-bot, and its reproduction runs again (issue-repro.yml).
   unblock:
     name: What this unblocks
-    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 5
     if: github.event_name == 'issues' && github.event.action == 'closed' && github.event.issue.state_reason == 'completed'
     steps:
@@ -462,8 +470,8 @@ jobs:
           # others found), never read as "blocks nothing".
           failed=0
           deps=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/dependencies/blocking" --jq '.[].number') || { echo "::warning::Could not read #$NUMBER's dependencies."; failed=1; deps=""; }
-          body=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" --jq 'select(.user.login == "dilux-bot[bot]") | .body') || { echo "::warning::Could not read #$NUMBER."; failed=1; body=""; }
-          comments=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '.[] | select(.user.login == "dilux-bot[bot]") | .body') || { echo "::warning::Could not read #$NUMBER's comments."; failed=1; comments=""; }
+          body=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" --jq 'select(.user.login == env.DX_BOT_LOGIN) | .body') || { echo "::warning::Could not read #$NUMBER."; failed=1; body=""; }
+          comments=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '.[] | select(.user.login == env.DX_BOT_LOGIN) | .body') || { echo "::warning::Could not read #$NUMBER's comments."; failed=1; comments=""; }
           marks=$(grep -oE '^<!-- dx-repro-blocker: #[0-9]+ -->' <<<"$body" | grep -oE '[0-9]+' || true)
           more=$(grep -oE '^<!-- dx-repro-blocks: #[0-9]+ -->' <<<"$comments" | grep -oE '[0-9]+' || true)
           blocked=""
@@ -493,7 +501,7 @@ jobs:
     name: Reply without the paid roadmap
     needs: triage
     if: needs.triage.outputs.paid == 'true'
-    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - name: dilux-bot token
@@ -631,7 +639,7 @@ jobs:
   # issue gets `needs:maintainer`, and a maintainer decides what follows.
   spike:
     name: Spike
-    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 35
     if: github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'spike' && github.event.sender.type != 'Bot'
     # One spike per issue at a time: labelling it again waits for the first
@@ -708,7 +716,7 @@ jobs:
 
   stale:
     name: Close needs-info issues nobody answered
-    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 5
     if: github.event_name == 'schedule'
     steps:
@@ -752,7 +760,7 @@ jobs:
     if: >-
       github.event_name == 'issues' && github.event.action == 'labeled' && !contains(github.event.issue.labels.*.name, 'lane:release') && (
         (github.event.label.name == 'accepted' && github.event.sender.type != 'Bot') ||
-        (github.event.label.name == 'autopilot:continue' && (github.event.sender.type != 'Bot' || github.event.sender.login == 'dilux-bot[bot]')))
+        (github.event.label.name == 'autopilot:continue' && (github.event.sender.type != 'Bot' || github.event.sender.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]'))))
     # The agent's jobs read the repository with the job's own token (#287).
     permissions:
       contents: read

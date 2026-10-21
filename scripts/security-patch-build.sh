@@ -14,8 +14,11 @@
 #   security-patch-build.sh --test
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
-BOT="dilux-bot[bot]"
-BOT_EMAIL="333187390+dilux-bot[bot]@users.noreply.github.com"
+# The organisation's App authors the patch: the calling organisation's
+# DX_BOT_LOGIN and DX_BOT_ID (security-patch.yml's env, #197), DiluxOne's
+# dilux-bot by default.
+BOT=${DX_BOT_LOGIN:-dilux-bot[bot]}
+BOT_EMAIL="${DX_BOT_ID:-333187390}+$BOT@users.noreply.github.com"
 
 g() { git -c core.hooksPath=/dev/null -c "user.name=$BOT" -c "user.email=$BOT_EMAIL" "$@"; }
 
@@ -64,6 +67,11 @@ self_test() {
     echo "ok   the fix goes on the tag, on security/VERSION, authored by dilux-bot (dilux-security pushes it)"
   else echo "FAIL the fix on the tag"; fail=1; fi
   if (cd "$dir" && build 1.0.0 nope "$dir/fix.patch" x >/dev/null 2>&1); then echo "FAIL a version that is not one builds"; fail=1; else echo "ok   a version that is not one is refused"; fi
+  # #197: another organisation's App commits its patch, named by its DX_BOT_LOGIN and DX_BOT_ID.
+  (cd "$dir" && DX_BOT_LOGIN='acme-bot[bot]' DX_BOT_ID=7 bash "$HERE/security-patch-build.sh" 1.0.0 1.0.2 "$dir/fix.patch" x >/dev/null 2>&1) || true
+  if [ "$(cd "$dir" && git log -1 --format='%cn %ce')" = "acme-bot[bot] 7+acme-bot[bot]@users.noreply.github.com" ]; then
+    echo "ok   #197 another organisation's App commits its patch"
+  else echo "FAIL #197 another organisation's App commits its patch: $(cd "$dir" && git log -1 --format='%cn %ce')"; fail=1; fi
   rm -rf "$dir"
   [ "$fail" = 0 ] && echo "all tests passed"
   return "$fail"

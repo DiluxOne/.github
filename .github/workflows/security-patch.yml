@@ -78,6 +78,14 @@ on:
 permissions:
   contents: read
 
+# The organisation's App, as GitHub shows it (#197): the calling
+# organisation's variables DX_BOT_LOGIN, DX_BOT_APP and DX_BOT_ID, or
+# DiluxOne's dilux-bot when it sets none.
+env:
+  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
+  DX_BOT_APP: ${{ vars.DX_BOT_APP || 'dilux-bot' }}
+  DX_BOT_ID: ${{ vars.DX_BOT_ID || '333187390' }}
+
 jobs:
   plan:
     name: Patches due
@@ -146,11 +154,11 @@ jobs:
             # Read whole, then searched (a pipe into grep -q can read as no
             # match under pipefail); a read that fails stops the run.
             pending=$(gh api "repos/$GITHUB_REPOSITORY/issues?state=open&labels=security:unvetted&per_page=100" --paginate \
-                 --jq ".[] | select(.user.login == \"dilux-bot[bot]\") | (.body // \"\") | startswith(\"<!-- dx-unvetted: $repo $ghsa -->\")")
+                 --jq ".[] | select(.user.login == env.DX_BOT_LOGIN) | (.body // \"\") | startswith(\"<!-- dx-unvetted: $repo $ghsa -->\")")
             if grep -qx true <<<"$pending"; then
               echo "#$n: $ghsa is not confirmed yet: not patched."; continue
             fi
-            mark=$(gh api "repos/$GITHUB_REPOSITORY/issues/$n/comments" --paginate --jq '.[] | select(.user.login == "dilux-bot[bot]") | .body' | grep -o '<!-- dx-security-patch: [^>]*-->' | tail -1 || true)
+            mark=$(gh api "repos/$GITHUB_REPOSITORY/issues/$n/comments" --paginate --jq '.[] | select(.user.login == env.DX_BOT_LOGIN) | .body' | grep -o '<!-- dx-security-patch: [^>]*-->' | tail -1 || true)
             # Whether patch:go is a maintainer's, added after the
             # announcement: who added it, read from the timeline, and their
             # role, read now.
@@ -558,7 +566,7 @@ jobs:
           export GH_TOKEN
           unset PRIVATE_KEY BOT_KEY
           # A run that failed after opening them: nothing is opened twice.
-          num=$(GH_TOKEN="$BOT_TOKEN" gh issue list --repo "$REPO" --state all --label security --author "app/dilux-bot" --limit 200 --json number,body \
+          num=$(GH_TOKEN="$BOT_TOKEN" gh issue list --repo "$REPO" --state all --label security --author "app/$DX_BOT_APP" --limit 200 --json number,body \
             --jq "[.[] | select(.body | startswith(\"<!-- dx-security-forward: $GHSA -->\"))][0].number // empty")
           GH_TOKEN="$BOT_TOKEN" gh label create security --repo "$REPO" --color B60205 --description "A vulnerability report; a person merges its fix" --force >/dev/null || true
           if [ -z "$num" ]; then
@@ -568,12 +576,12 @@ jobs:
             num=$(GH_TOKEN="$BOT_TOKEN" gh api -X POST "repos/$REPO/issues" -f title="Fix a security weakness not released yet" -f body="$body" -f type=Bug -f 'labels[]=security' --jq .number)
           fi
           branch="fix/$num-security-fix-not-released"
-          pr_url=$(GH_TOKEN="$BOT_TOKEN" gh pr list --repo "$REPO" --state all --head "$branch" --author "app/dilux-bot" --json url --jq '.[0].url // empty')
+          pr_url=$(GH_TOKEN="$BOT_TOKEN" gh pr list --repo "$REPO" --state all --head "$branch" --author "app/$DX_BOT_APP" --json url --jq '.[0].url // empty')
           if [ -z "$pr_url" ]; then
             git clone -q "https://github.com/$REPO" "$RUNNER_TEMP/forward"
             onto=$(git -C "$RUNNER_TEMP/forward" rev-parse "origin/$default")
             if ! (cd "$RUNNER_TEMP/forward" \
-                && git config user.name "dilux-bot[bot]" && git config user.email "333187390+dilux-bot[bot]@users.noreply.github.com" \
+                && git config user.name "$DX_BOT_LOGIN" && git config user.email "$DX_BOT_ID+$DX_BOT_LOGIN@users.noreply.github.com" \
                 && git checkout -q -b "$branch" "origin/$default" && git -c core.hooksPath=/dev/null am -q --3way "$RUNNER_TEMP/in/fix.patch"); then
               say "No released version holds $GHSA ($held), but its fix no longer applies on \`$default\` of $REPO: a maintainer takes it from here, on $GITHUB_SERVER_URL/$REPO/issues/$num."
               GH_TOKEN="$ISSUE_TOKEN" gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --add-label patch:failed >/dev/null
@@ -729,7 +737,7 @@ jobs:
             git clone -q "https://github.com/$REPO" "$RUNNER_TEMP/carry"
             branch="fix/$num-carry-security-fix-of-${VERSION//./-}"
             if (cd "$RUNNER_TEMP/carry" \
-                && git config user.name "dilux-bot[bot]" && git config user.email "333187390+dilux-bot[bot]@users.noreply.github.com" \
+                && git config user.name "$DX_BOT_LOGIN" && git config user.email "$DX_BOT_ID+$DX_BOT_LOGIN@users.noreply.github.com" \
                 && git checkout -q -b "$branch" "origin/$default" \
                 && mapfile -t fix < <(python3 "$GITHUB_WORKSPACE/.dx-central/scripts/carry-lock.py" fix "$VERSION") \
                 && [ "${#fix[@]}" -gt 0 ] && git cherry-pick "${fix[@]}" >/dev/null); then

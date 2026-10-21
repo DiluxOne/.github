@@ -189,6 +189,14 @@ on:
 
 # No workflow-level permissions: each job says its own, and `version` takes
 # the caller's as granted (see it).
+# The organisation's App, as GitHub shows it (#197): the calling
+# organisation's variables DX_BOT_LOGIN, DX_BOT_APP and DX_BOT_ID, or
+# DiluxOne's dilux-bot when it sets none.
+env:
+  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
+  DX_BOT_APP: ${{ vars.DX_BOT_APP || 'dilux-bot' }}
+  DX_BOT_ID: ${{ vars.DX_BOT_ID || '333187390' }}
+
 jobs:
   version:
     name: What is next
@@ -617,7 +625,7 @@ jobs:
           # merges into $BASE. Until then this release would publish it.
           rc=0; held=""
           if [ -z "$ISSUES_TOKEN" ]; then rc=2; else
-            held=$(GH_TOKEN="$ISSUES_TOKEN" gh issue list --repo "$GITHUB_REPOSITORY" --label security --state open --author "app/dilux-bot" --limit 200 --json number,body,author \
+            held=$(GH_TOKEN="$ISSUES_TOKEN" gh issue list --repo "$GITHUB_REPOSITORY" --label security --state open --author "app/$DX_BOT_APP" --limit 200 --json number,body,author \
               | python3 .dx-central/scripts/carry-lock.py forward) || rc=$?
           fi
           if [ "$rc" -ne 0 ]; then

@@ -116,10 +116,18 @@ on:
 permissions:
   contents: read
 
+# The organisation's App, as GitHub shows it (#197): the calling
+# organisation's variables DX_BOT_LOGIN, DX_BOT_APP and DX_BOT_ID, or
+# DiluxOne's dilux-bot when it sets none.
+env:
+  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
+  DX_BOT_APP: ${{ vars.DX_BOT_APP || 'dilux-bot' }}
+  DX_BOT_ID: ${{ vars.DX_BOT_ID || '333187390' }}
+
 jobs:
   decide:
     name: Auto-merge decision
-    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == 'dilux-bot[bot]' && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == 'dilux-bot[bot]' && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 5
     if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     steps:
@@ -161,7 +169,7 @@ jobs:
           # Only a pull request dilux-bot opened and labelled autopilot;
           # anyone else's goes through the usual decision below.
           case ",$LABELS," in *,autopilot,*) ;; *) echo "handled=false" >> "$GITHUB_OUTPUT"; exit 0 ;; esac
-          [ "$AUTHOR" = "dilux-bot[bot]" ] || { echo "handled=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          [ "$AUTHOR" = "$DX_BOT_LOGIN" ] || { echo "handled=false" >> "$GITHUB_OUTPUT"; exit 0; }
           echo "handled=true" >> "$GITHUB_OUTPUT"
           # Off first: if anything below fails, nothing stays set to merge.
           gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --disable-auto >/dev/null 2>&1 || true
@@ -246,7 +254,7 @@ jobs:
           # G6 (#193): the review's verdict on each acceptance criterion, from
           # its record on the pull request, only when it judged this head.
           gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
-            | jq -r '.[] | select(.user.login == "dilux-bot[bot]" and (.body | startswith("<!-- dx-review -->"))) | .body' \
+            | jq -r '.[] | select(.user.login == env.DX_BOT_LOGIN and (.body | startswith("<!-- dx-review -->"))) | .body' \
             | grep -oP '<!-- dx-review-record \K.*(?= -->)' | tail -1 \
             | jq -c --arg head "$HEAD" 'select(.sha == $head)' > "$RUNNER_TEMP/review-record.json" 2>/dev/null || : > "$RUNNER_TEMP/review-record.json"
           export CRITERIA_VERDICT="$RUNNER_TEMP/review-record.json"
@@ -264,7 +272,7 @@ jobs:
       # a token of its own, since that needs issues: write.
       - name: dilux-bot token (a revert's issue)
         id: revert-bot
-        if: contains(github.event.pull_request.labels.*.name, 'revert') && github.event.pull_request.user.login == 'dilux-bot[bot]' && startsWith(github.event.pull_request.head.ref, 'revert/') && steps.autopilot.outputs.handled != 'true'
+        if: contains(github.event.pull_request.labels.*.name, 'revert') && github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && startsWith(github.event.pull_request.head.ref, 'revert/') && steps.autopilot.outputs.handled != 'true'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
@@ -333,7 +341,7 @@ jobs:
           # waits for a person; once it no longer does, it says so.
           issue=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // empty')
           [ -n "$issue" ] || exit 0
-          id=$(GH_TOKEN="$ISSUE_TOKEN" gh api "repos/$GITHUB_REPOSITORY/issues/$issue/comments" --paginate --jq '.[] | select(.user.login == "dilux-bot[bot]" and (.body | startswith("<!-- dx-revert-wait -->"))) | .id' | tail -n1)
+          id=$(GH_TOKEN="$ISSUE_TOKEN" gh api "repos/$GITHUB_REPOSITORY/issues/$issue/comments" --paginate --jq '.[] | select(.user.login == env.DX_BOT_LOGIN and (.body | startswith("<!-- dx-revert-wait -->"))) | .id' | tail -n1)
           [ "$ok" = false ] || [ -n "$id" ] || exit 0
           comment=$(WHY="$why" MERGING="$ok" python3 "$RUNNER_TEMP/central/scripts/revert.py" wait-comment)
           if [ -n "$id" ]; then
@@ -418,13 +426,13 @@ jobs:
           gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label merged-by:policy >/dev/null 2>&1 || true
           person() { echo "A human merges this one: $1."; exit 0; }
           [ "$(tr '[:upper:]' '[:lower:]' <<<"${DX_AUTOPILOT:-}")" != off ] || person "DX_AUTOPILOT is off"
-          [ "$PR_AUTHOR" = "dilux-bot[bot]" ] || person "the release pull request was not opened by dilux-bot"
+          [ "$PR_AUTHOR" = "$DX_BOT_LOGIN" ] || person "the release pull request was not opened by dilux-bot"
           [ "$BLOCKING" = false ] || person "the review is blocking"
           [ "$DESCRIPTION_OK" = true ] || person "the description does not match the code, or changed after the review"
           commits=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/commits" --paginate --jq '.[] | [.sha, .author.login // "", (.parents | length | tostring), .parents[0].sha] | @tsv')
           [ "$(wc -l <<<"$commits")" -eq 1 ] || person "it has more than one commit"
           IFS=$'\t' read -r sha author nparents base <<<"$commits"
-          if [ "$sha" != "$HEAD_SHA" ] || [ "$author" != "dilux-bot[bot]" ] || [ "$nparents" != 1 ]; then person "its commit is not dilux-bot's single commit at the head"; fi
+          if [ "$sha" != "$HEAD_SHA" ] || [ "$author" != "$DX_BOT_LOGIN" ] || [ "$nparents" != 1 ]; then person "its commit is not dilux-bot's single commit at the head"; fi
           { git init -q "$RUNNER_TEMP/central" && git -C "$RUNNER_TEMP/central" fetch -q --depth 1 https://github.com/DiluxOne/.github "$CENTRAL_REF" && git -C "$RUNNER_TEMP/central" checkout -q FETCH_HEAD; }
           # The decision: the release issue accepted by a person with the
           # admin or maintain role, or by a maintainer's plan.

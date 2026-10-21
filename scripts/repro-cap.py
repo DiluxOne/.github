@@ -16,7 +16,10 @@ not be read (empty) holds the report, never lets it through.
 import os
 import sys
 
-BOT = "dilux-bot[bot]"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import org  # noqa: E402  the organisation's App, from org.yml (#191, #197)
+
+BOT = org.BOT
 MAINTAINERS = ("admin", "maintain", "write")
 
 
@@ -51,6 +54,12 @@ def self_test():
     check("the bot's, a maintainer's, or one a maintainer asked for always runs",
           (run(BOT, "", "", "999", "999", 20, 3), run("boss", "admin", "", "999", "999", 20, 3), run("x", "read", "maintain", "999", "999", 20, 3)), (True, True, True))
     check("a count that could not be read holds it", (run("x", "read", "", "", "1", 20, 3), run("x", "read", "", "5", "", 20, 3)), (False, False))
+    # #197: another organisation's App, named by its DX_BOT_LOGIN (org.py).
+    import subprocess
+    env = dict(os.environ, DX_BOT_LOGIN="acme-bot[bot]", DX_BOT_APP="acme-bot", DX_BOT_ID="7",
+               AUTHOR="acme-bot[bot]", AUTHOR_ROLE="", SENDER_ROLE="", ALL="999", MINE="999")
+    out = subprocess.run([sys.executable, os.path.abspath(__file__), "decide"], env=env, capture_output=True, text=True).stdout.strip()
+    check("#197: another organisation's App's report always runs", out, "run=true")
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
