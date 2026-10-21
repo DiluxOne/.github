@@ -149,6 +149,8 @@ jobs:
           ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
       - name: The jobs to run (one per target and suite)
         id: plan
         env:
@@ -195,6 +197,8 @@ jobs:
           ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
       - name: The repositories
         id: repos
         env:
@@ -302,6 +306,9 @@ jobs:
           ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
+      - name: The organisation's configuration (#197)
+        if: inputs.requires-plugins-from != '' && env.GO == 'true'
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         id: required-download
         if: inputs.requires-plugins-from != '' && env.GO == 'true'
@@ -436,6 +443,9 @@ jobs:
           ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
+      - name: The organisation's configuration (#197)
+        if: inputs.requires-plugins-from != '' && env.GO == 'true'
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         id: required-download
         if: inputs.requires-plugins-from != '' && env.GO == 'true'

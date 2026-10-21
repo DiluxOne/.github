@@ -110,6 +110,9 @@ jobs:
           persist-credentials: false
           path: .dx-central
 
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+
       - name: Claims and their advisories
         id: plan
         env:
@@ -208,6 +211,9 @@ jobs:
           persist-credentials: false
           path: .dx-central
 
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+
       - name: The agent's task
         id: task
         env:
@@ -280,6 +286,9 @@ jobs:
           ref: ${{ inputs.central-ref || job.workflow_sha }}
           persist-credentials: false
           path: .dx-central
+
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
 
       - name: The agent's patch
         continue-on-error: true

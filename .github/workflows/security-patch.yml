@@ -111,6 +111,9 @@ jobs:
           persist-credentials: false
           path: .dx-central
 
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+
       - name: The claims and their stage
         id: plan
         env:
@@ -219,6 +222,10 @@ jobs:
           persist-credentials: false
           path: .dx-central
 
+      - name: The organisation's configuration (#197)
+        if: matrix.p.act != 'finish'
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+
       - name: The fix and the version in production
         if: matrix.p.act != 'finish'
         env:
@@ -278,6 +285,10 @@ jobs:
           ref: ${{ inputs.central-ref || job.workflow_sha }}
           persist-credentials: false
           path: .dx-central
+
+      - name: The organisation's configuration (#197)
+        if: matrix.p.act != 'finish'
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
 
       - name: The tree on the version in production
         id: tree
@@ -451,6 +462,9 @@ jobs:
           ref: ${{ inputs.central-ref || job.workflow_sha }}
           persist-credentials: false
           path: .dx-central
+
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
 
       - name: The build
         continue-on-error: true
