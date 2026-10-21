@@ -68,10 +68,13 @@ lay() {
   for p in "${PATHS[@]}"; do
     [ -e "$tmp/config/$p" ] || continue
     if [ -d "$tmp/config/$p" ]; then
-      mkdir -p "$dir/$p"
-      cp -R "$tmp/config/$p/." "$dir/$p/"
+      # Each step checked: lay runs where errexit is off (a caller's ||),
+      # and a half-laid configuration must stop the run, not pass.
+      if ! { mkdir -p "$dir/$p" && cp -R "$tmp/config/$p/." "$dir/$p/"; }; then
+        echo "::error::$owner's $p could not be laid over the engine's."; return 1
+      fi
     else
-      cp "$tmp/config/$p" "$dir/$p"
+      cp "$tmp/config/$p" "$dir/$p" || { echo "::error::$owner's $p could not be laid over the engine's."; return 1; }
     fi
     echo "$owner's $p"
   done
@@ -141,6 +144,9 @@ self_test() {
   git -C "$t/c" add -A && git -C "$t/c" -c user.name=t -c user.email=t@t commit -qm quoted
   GITHUB_REPOSITORY_OWNER=Acme DX_CONFIG_SOURCE="$t/c" overlay "$t/e" >/dev/null
   ok "a quoted org in its org.yml is read" "$(cat "$t/e/repos.yml")" 'repos: {b: {}}'
+
+  engine; config Acme; rm -rf "$t/e/kinds"; echo file > "$t/e/kinds"
+  if GITHUB_REPOSITORY_OWNER=Acme DX_CONFIG_SOURCE="$t/c" overlay "$t/e" >/dev/null 2>&1; then ok "a copy that fails stops it" ran stopped; else ok "a copy that fails stops it" stopped stopped; fi
 
   ok "a checkout that was never made is left alone" "$(find "$t/none" -mindepth 1 | wc -l)" 0
 
