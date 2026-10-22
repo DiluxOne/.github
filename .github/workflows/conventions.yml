@@ -111,6 +111,9 @@ jobs:
           path: .dx-central
           persist-credentials: false
 
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+
       - name: The accepted-issue gate and the size limit, as the base branch's policy says
         id: gate
         env:

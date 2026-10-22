@@ -245,7 +245,8 @@ def self_test():
     failed += 0 if ok else 1
     # C2 (#148): without requires-plugins-from nothing of it runs. Every step
     # of the suites that fetches, mounts or checks the required plugins is
-    # guarded by the input, and so is the job that fetches them.
+    # guarded by the input, and so is the job that fetches them (the engine's
+    # checkout and the organisation's configuration over it among them, #197).
     guard = "inputs.requires-plugins-from != ''"
     try:
         jobs = text[text.index("\njobs:\n"):]
@@ -259,7 +260,7 @@ def self_test():
             steps = code.split("\n      - ")[1:]
             ours = [s for s in steps if "required-plugins" in s or ".dx-central" in s]
             ifs = [[line for line in s.split("\n") if line.strip().startswith("if:")] for s in ours]
-            ok = ok and len(ours) == 4 and all(i and guard in i[0] for i in ifs)
+            ok = ok and len(ours) == 5 and all(i and guard in i[0] for i in ifs)
     except (ValueError, IndexError):
         ok = False
     print(("ok   " if ok else "FAIL ") + "C2 (#148): every required-plugins step of the suites, and its job, runs only with requires-plugins-from")

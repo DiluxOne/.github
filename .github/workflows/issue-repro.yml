@@ -214,6 +214,9 @@ jobs:
           path: .dx-central
           persist-credentials: false
 
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+
       - name: Who asked, by label
         id: who
         if: inputs.trigger == 'label' && github.event.sender.type != 'Bot'
@@ -482,6 +485,8 @@ jobs:
           ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
       - name: Run
         id: run
         env:
@@ -604,6 +609,8 @@ jobs:
           ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
       # Whether a reproduced bug goes to the `bugfix-reproduced` lane: the
       # autopilot on (the policy, this repository's .github/autonomy.yml,
       # DX_AUTOPILOT) and the lane on here (scripts/autonomy.py). If not, the

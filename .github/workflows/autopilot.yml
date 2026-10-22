@@ -214,6 +214,7 @@ jobs:
           set -euo pipefail
           git clone -q --depth 1 --branch "$REF" https://github.com/DiluxOne/.github .dx-central 2>/dev/null \
             || { git clone -q https://github.com/DiluxOne/.github .dx-central && git -C .dx-central checkout -q "$REF"; }
+          test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
           echo "ref=$(git -C .dx-central rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
           if [ -d .git ]; then printf '%s\n' /.dx-central/ /.dx-io/ /.dx-out/ >> .git/info/exclude; fi
 
@@ -478,6 +479,7 @@ jobs:
           set -euo pipefail
           git clone -q --depth 1 --branch "$REF" https://github.com/DiluxOne/.github .dx-central 2>/dev/null \
             || { git clone -q https://github.com/DiluxOne/.github .dx-central && git -C .dx-central checkout -q "$REF"; }
+          test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
           echo "ref=$(git -C .dx-central rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
           if [ -d .git ]; then printf '%s\n' /.dx-central/ /.dx-io/ /.dx-out/ >> .git/info/exclude; fi
 
@@ -581,6 +583,7 @@ jobs:
           set -euo pipefail
           git clone -q --depth 1 --branch "$REF" https://github.com/DiluxOne/.github .dx-central 2>/dev/null \
             || { git clone -q https://github.com/DiluxOne/.github .dx-central && git -C .dx-central checkout -q "$REF"; }
+          test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
           echo "ref=$(git -C .dx-central rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
           if [ -d .git ]; then printf '%s\n' /.dx-central/ /.dx-io/ /.dx-out/ >> .git/info/exclude; fi
 
@@ -743,6 +746,7 @@ jobs:
           set -euo pipefail
           git clone -q --depth 1 --branch "$REF" https://github.com/DiluxOne/.github .dx-central 2>/dev/null \
             || { git clone -q https://github.com/DiluxOne/.github .dx-central && git -C .dx-central checkout -q "$REF"; }
+          test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
           echo "ref=$(git -C .dx-central rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
           if [ -d .git ]; then printf '%s\n' /.dx-central/ /.dx-io/ /.dx-out/ >> .git/info/exclude; fi
 
@@ -859,6 +863,7 @@ jobs:
           set -euo pipefail
           git clone -q --depth 1 --branch "$REF" https://github.com/DiluxOne/.github .dx-central 2>/dev/null \
             || { git clone -q https://github.com/DiluxOne/.github .dx-central && git -C .dx-central checkout -q "$REF"; }
+          test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
           echo "ref=$(git -C .dx-central rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
           if [ -d .git ]; then printf '%s\n' /.dx-central/ /.dx-io/ /.dx-out/ >> .git/info/exclude; fi
 

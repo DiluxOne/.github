@@ -147,6 +147,9 @@ jobs:
           path: .dx-central
           persist-credentials: false
 
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+
       - name: What others said since the question
         id: others
         env:
@@ -309,6 +312,10 @@ jobs:
           ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
+
+      - name: The organisation's configuration (#197)
+        if: steps.pr.outputs.run == 'true'
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
 
       # The thread and the diff as files (#287): the reviewer has no shell.
       - name: Thread and diff for the reviewer

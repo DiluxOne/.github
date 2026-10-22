@@ -225,6 +225,8 @@ jobs:
           ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
       - id: next
         env:
           GH_TOKEN: ${{ github.token }}
@@ -431,6 +433,9 @@ jobs:
           path: .dx-central
           persist-credentials: false
 
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+
       - name: The development version
         id: dev
         env:
@@ -550,6 +555,9 @@ jobs:
           ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
+
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
 
       # The open `security` issues (#341), read with dilux-bot's key, which
       # the caller already hands over (`secrets: inherit`): the job's own

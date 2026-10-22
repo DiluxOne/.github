@@ -181,6 +181,7 @@ jobs:
           # a script loads is there (receipts.py loads autopilot.py for the
           # board of an autopilot pull request).
           git init -q .dx-central && git -C .dx-central fetch -q --depth 1 https://github.com/DiluxOne/.github "$REF" && git -C .dx-central checkout -q FETCH_HEAD
+          test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh .dx-central
           if [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then echo "ref=${REF:0:12}" >> "$GITHUB_OUTPUT"; else echo "ref=$(git ls-remote https://github.com/DiluxOne/.github "$REF" "$REF^{}" | tail -1 | cut -c1-12)" >> "$GITHUB_OUTPUT"; fi
       - name: dilux-bot token
         id: bot
@@ -320,6 +321,7 @@ jobs:
           # a script loads is there (receipts.py loads autopilot.py for the
           # board of an autopilot pull request).
           git init -q .dx-central && git -C .dx-central fetch -q --depth 1 https://github.com/DiluxOne/.github "$REF" && git -C .dx-central checkout -q FETCH_HEAD
+          test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh .dx-central
           if [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then echo "ref=${REF:0:12}" >> "$GITHUB_OUTPUT"; else echo "ref=$(git ls-remote https://github.com/DiluxOne/.github "$REF" "$REF^{}" | tail -1 | cut -c1-12)" >> "$GITHUB_OUTPUT"; fi
       - name: dilux-bot token
         id: bot
@@ -435,6 +437,10 @@ jobs:
           path: .dx-central
           persist-credentials: false
 
+      - name: The organisation's configuration (#197)
+        if: steps.bot.outputs.token != ''
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+
       - name: Open it, or say why not
         if: steps.bot.outputs.token != ''
         env:
@@ -548,6 +554,11 @@ jobs:
           base="https://raw.githubusercontent.com/DiluxOne/.github/$sha"
           # autonomy.py reads the organisation from org.yml, through org.py (#191).
           for f in scripts/autonomy.py scripts/org.py org.yml policy/autonomy.yml; do curl -fsSL --retry 3 "$base/$f" -o ".dx-central/$f"; done
+          # The organisation's configuration over those (#197); a ref from
+          # before the overlay has none.
+          code=$(curl -sSL --retry 3 -w '%{http_code}' "$base/scripts/config-overlay.sh" -o .dx-central/scripts/config-overlay.sh || echo 000)
+          case "$code" in 200) ;; 404) rm -f .dx-central/scripts/config-overlay.sh ;; *) echo "::error::scripts/config-overlay.sh could not be fetched ($code)."; exit 1 ;; esac
+          test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh .dx-central
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: dilux-bot token
@@ -654,6 +665,9 @@ jobs:
           ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
+
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
 
       - name: The Project of this repository
         id: which
