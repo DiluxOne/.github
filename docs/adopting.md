@@ -14,6 +14,10 @@ script or workflow. [`kinds/README.md`](../kinds/README.md) explains the model,
 how to add a rule and how to add a kind; the one kind today is
 [`wordpress-plugin`](../kinds/wordpress-plugin/).
 
+## Another organisation
+
+An organisation other than DiluxOne does not adopt repository by repository first: it installs the engine's configuration in its own `.github` with `scripts/install.py`, which also prints the link to create its own App with the permissions the engine needs, and the secret and variables that follow ([installing](installing.md)). Then each of its repositories joins as below.
+
 ## Adopt it in a new repository
 
 Most of it is the organisation's already: a new repository gets the pull request pipeline, the rulesets, the issue forms and the community files without a file of its own (docs/plans/org-first.md). What it adds:

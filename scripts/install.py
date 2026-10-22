@@ -53,6 +53,28 @@ import org  # noqa: E402  the engine's organisation, from org.yml (#191)
 
 BRANCH = "chore/install-engine"
 
+# What the organisation's App needs for the engine's workflows: the one
+# list the creation link and the steps are written from.
+APP_PERMISSIONS = {
+    "actions": "write",
+    "checks": "read",
+    "contents": "write",
+    "issues": "write",
+    "metadata": "read",
+    "organization_administration": "read",
+    "organization_projects": "write",
+    "pull_requests": "write",
+    "repository_projects": "write",
+}
+
+
+def app_url(owner, name=None):
+    """GitHub's form to create the organisation's App, filled in: private,
+    with no webhook, and APP_PERMISSIONS."""
+    from urllib.parse import urlencode
+    query = {"name": name or f"{owner}-bot", "url": f"https://github.com/{owner}", "public": "false", "webhook_active": "false", **APP_PERMISSIONS}
+    return f"https://github.com/organizations/{owner}/settings/apps/new?" + urlencode(query)
+
 
 def _module(name, file):
     spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, file))
@@ -213,9 +235,10 @@ def material(did):
 def steps(owner, app):
     """What only the organisation's administrator can do: no pull request
     holds a secret, a variable or a ruleset."""
+    perms = ", ".join(f"{k} {v}" for k, v in APP_PERMISSIONS.items())
     return f"""The organisation's own steps, after merging the pull request:
 
-1. Its App ({app}), installed on every repository: Contents, Issues, Pull requests, Actions and Checks (read and write), Metadata (read). https://github.com/organizations/{owner}/settings/apps
+1. Its App ({app}): create it with the form filled in ({perms}), generate its private key, and install it on all repositories. {app_url(owner, app)}
 2. Organisation secrets: DILUX_BOT_PRIVATE_KEY (the App's private key), CLAUDE_CODE_OAUTH_TOKEN (`claude setup-token`) or ANTHROPIC_API_KEY. https://github.com/organizations/{owner}/settings/secrets/actions
 3. Organisation variables: DILUX_BOT_CLIENT_ID (the App's client ID), DX_BOT_LOGIN ({app}[bot]), DX_BOT_APP ({app}), DX_BOT_ID (the App's bot user id: gh api users/{app}%5Bbot%5D --jq .id). https://github.com/organizations/{owner}/settings/variables/actions
 4. An organisation ruleset on every repository's default branch that requires the workflow {owner}/.github/.github/workflows/org-pull-request.yml (GitHub Team; on Free, each repository adds a copy of it as .github/workflows/pull-request.yml). https://github.com/organizations/{owner}/settings/rules
@@ -288,7 +311,11 @@ def self_test():
                           {"name": "someone-else", "isFork": True, "defaultBranchRef": {"name": "main"}},
                           {"name": "plugin-a-ghsa-jg3v-wpv3-q3cc", "isFork": False, "defaultBranchRef": {"name": "main"}}])
     check("repositories: its own, not forks nor an advisory's temporary fork", repositories("Acme", lambda *a: (0, listing, "")), {"plugin-a": "trunk"})
-    check("the steps name each URL of the organisation", all(f"/organizations/Acme/settings/{p}" in steps("Acme", "acme-bot") for p in ("apps", "secrets/actions", "variables/actions", "rules")), True)
+    check("the steps name each URL of the organisation", all(f"/organizations/Acme/settings/{p}" in steps("Acme", "acme-bot") for p in ("apps/new", "secrets/actions", "variables/actions", "rules")), True)
+    from urllib.parse import parse_qs, urlparse
+    q = {k: v[0] for k, v in parse_qs(urlparse(app_url("Acme")).query).items()}
+    check("the App's form: named, private, no webhook, every permission the engine needs",
+          (q.pop("name"), q.pop("url"), q.pop("public"), q.pop("webhook_active"), q), ("Acme-bot", "https://github.com/Acme", "false", "false", APP_PERMISSIONS))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 

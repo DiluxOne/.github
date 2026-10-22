@@ -4,7 +4,7 @@ The engine is DiluxOne's; the configuration is the organisation's ([phase 12](pl
 
 ## What the organisation needs first
 
-- **Its own App**, made by an administrator of the organisation and installed on every repository: Contents, Issues, Pull requests, Actions and Checks (read and write), Metadata (read). DiluxOne's App and its key never leave DiluxOne.
+- **Its own App**, made by an administrator of the organisation and installed on every repository. The installer prints GitHub's form to create it, filled in (`scripts/install.py`, `APP_PERMISSIONS`: actions, contents, issues, pull requests, organisation and repository projects write; checks, metadata and organisation administration read; private, no webhook): `https://github.com/organizations/<Org>/settings/apps/new?name=<Org>-bot&...`. Then its private key, its installation on all repositories, the secret `DILUX_BOT_PRIVATE_KEY` and the variables below. DiluxOne's App and its key never leave DiluxOne.
 - **A token for Claude**: `CLAUDE_CODE_OAUTH_TOKEN` (`claude setup-token`) or `ANTHROPIC_API_KEY`.
 
 ## Install
