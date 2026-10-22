@@ -36,6 +36,8 @@ Then, what no pull request can do (the installer prints it with each URL):
 
 - **Environment secrets across organisations.** A release that publishes with its environment's secrets (a WordPress plugin's `wordpress-org`: the SVN credentials and the release App's key) receives them only through `secrets: inherit`, which GitHub honours within one organisation. Its callers keep `inherit`, so from another organisation those secrets may not arrive: until the engine declares them, publishing a plugin to wordpress.org from another organisation is not supported.
 
+- **GitHub Free.** Organisation rulesets need GitHub Team, so on Free nothing can require the pipeline of every repository: each repository adds it as its own `.github/workflows/pull-request.yml`, a copy of the organisation's `org-pull-request.yml`, and protects its default branch on its own.
+
 ## Install again
 
 `install.py diff --org <Org> --app <app-slug> --app-id <app-id> --dir <checkout of Org/.github>` says what installing again would change, touching nothing. Nothing that is there is replaced: a file that exists is kept, and a repository `repos.yml` lacks is added. DiluxOne, whose configuration is this repository's own, comes out with nothing to change: installing again loses nothing (`install.py --test` holds it).

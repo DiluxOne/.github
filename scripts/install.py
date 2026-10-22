@@ -216,7 +216,7 @@ def steps(owner, app):
 1. Its App ({app}), installed on every repository: Contents, Issues, Pull requests, Actions and Checks (read and write), Metadata (read). https://github.com/organizations/{owner}/settings/apps
 2. Organisation secrets: DILUX_BOT_PRIVATE_KEY (the App's private key), CLAUDE_CODE_OAUTH_TOKEN (`claude setup-token`) or ANTHROPIC_API_KEY. https://github.com/organizations/{owner}/settings/secrets/actions
 3. Organisation variables: DILUX_BOT_CLIENT_ID (the App's client ID), DX_BOT_LOGIN ({app}[bot]), DX_BOT_APP ({app}), DX_BOT_ID (the App's bot user id: gh api users/{app}%5Bbot%5D --jq .id). https://github.com/organizations/{owner}/settings/variables/actions
-4. An organisation ruleset on every repository's default branch that requires the workflow {owner}/.github/.github/workflows/org-pull-request.yml. https://github.com/organizations/{owner}/settings/rules
+4. An organisation ruleset on every repository's default branch that requires the workflow {owner}/.github/.github/workflows/org-pull-request.yml (GitHub Team; on Free, each repository adds a copy of it as .github/workflows/pull-request.yml). https://github.com/organizations/{owner}/settings/rules
 """
 
 
