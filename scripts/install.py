@@ -80,6 +80,8 @@ def repositories(owner, run=run_gh):
     rc, out, err = run("repo", "list", owner, "--limit", "1000", "--no-archived", "--json", "name,isFork,defaultBranchRef")
     if rc != 0:
         raise RuntimeError(f"could not list {owner}'s repositories: {err.strip()[:200]}")
+    if len(json.loads(out or "[]")) >= 1000:
+        raise RuntimeError("1000 repositories or more: the list would be cut; raise the limit")
     return {r["name"]: (r.get("defaultBranchRef") or {}).get("name") or "main" for r in json.loads(out or "[]")
             if not r.get("isFork") and not ADVISORY_FORK.search(r["name"])}
 
@@ -331,19 +333,23 @@ def main(argv):
     g = lambda *x: subprocess.run(["git", "-C", work, *x], check=True, capture_output=True, text=True)  # noqa: E731
     # Run again while its pull request is open: on top of that branch, so a
     # correction made there is kept (plan never replaces what is there).
-    if subprocess.run(["git", "-C", work, "ls-remote", "--exit-code", "--heads", "origin", BRANCH], capture_output=True).returncode == 0:
+    pushed = subprocess.run(["git", "-C", work, "ls-remote", "--exit-code", "--heads", "origin", BRANCH], capture_output=True).returncode == 0
+    if pushed:
         g("fetch", "-q", "origin", BRANCH)
         g("checkout", "-q", "-B", BRANCH, "FETCH_HEAD")
     else:
         g("checkout", "-q", "-B", BRANCH)
     did = plan(a.org, a.app, a.app_id, work, repos, found_of)
     print("\n".join(did))
-    if not material(did):
+    if material(did):
+        g("add", "-A")
+        g("commit", "-q", "-m", "chore: install the engine's configuration")
+        g("push", "-q", "-u", "origin", BRANCH)
+    elif not pushed:
         print("Nothing to change: the configuration is installed.")
         return 0
-    g("add", "-A")
-    g("commit", "-q", "-m", "chore: install the engine's configuration")
-    g("push", "-q", "-u", "origin", BRANCH)
+    # A branch pushed by an earlier run whose pull request was never opened
+    # (or a run that changes nothing more) still gets its pull request.
     body = ("## What changes\n\n" + "\n".join(f"- {d}" for d in material(did)) +
             f"\n\n## Why\n\nThe configuration of the engine in {org.CENTRAL} for {a.org}: the engine is called by tag and reads this repository's "
             "configuration over its own defaults. Correct the kinds detection proposed in repos.yml before merging.\n\n" + steps(a.org, a.app))
