@@ -15,7 +15,11 @@ signed by GitHub and show as Verified.
                            (an autopilot merge needs the Spec it sealed)
   receipts.py verify-prd   the PRD now against its last seal: prints "match",
                            "changed" or "unsealed"; exit 1 when changed, 2 when
-                           the seal could not be read (never taken as unsealed)
+                           the seal could not be read (never taken as unsealed).
+                           With --wait N: up to N tries, 10 seconds apart,
+                           while it is "unsealed" or "changed", for the seal
+                           of an acceptance that runs alongside (a
+                           re-acceptance meets the old seal first, #353)
   receipts.py merged       when the issue closes as completed: the receipt
                            (issues/<n>/merged-<UTC>.json; a reopened and
                            merged-again issue gets another): PRD and Spec hashes, the
@@ -79,6 +83,22 @@ def verdict(body, last_seal):
     if not last_seal:
         return "unsealed"
     return "match" if last_seal.get("prd_sha256") == prd_hash(body) else "changed"
+
+
+def wait_verdict(get, tries, sleep):
+    """The verdict once it is "match", or the last one after `tries` reads:
+    "unsealed" and "changed" are read again, as the acceptance that runs
+    alongside may not have sealed yet; a re-acceptance after an edit meets
+    the old seal first and reads "changed" (#353). A seal that cannot be
+    read (an exception from `get`) is not waited on."""
+    v = "unsealed"
+    for i in range(max(1, tries)):
+        v = get()
+        if v not in ("unsealed", "changed"):
+            return v
+        if i < tries - 1:
+            sleep()
+    return v
 
 
 def receipt(number, body, last_seal, pr, checks, policy_ref, at):
@@ -294,6 +314,17 @@ Normal
     check("verify: a report added above does not matter", verdict("### What happened?\n\nx\n\n" + body, s), "match")
     check("verify: a changed criterion is caught", verdict(body.replace("turns dark", "turns light"), s), "changed")
     check("verify: no seal is unsealed", verdict(body, None), "unsealed")
+    def reads(*vs):
+        it = iter(vs)
+        return lambda: next(it)
+    naps = []
+    check("#353 wait: a re-acceptance's old seal (changed) is read again until the new one matches",
+          (wait_verdict(reads("changed", "changed", "match"), 12, lambda: naps.append(1)), len(naps)), ("match", 2))
+    check("#353 wait: a seal that never comes ends unsealed after every try",
+          wait_verdict(reads(*["unsealed"] * 3), 3, lambda: None), "unsealed")
+    check("#353 wait: an edit after acceptance stays changed after every try",
+          wait_verdict(reads(*["changed"] * 3), 3, lambda: None), "changed")
+    check("#353 wait: a match on the first read does not wait", wait_verdict(reads("match"), 12, lambda: 1 / 0), "match")
     pr = {"number": 12, "head": "h1", "merge": "m1", "merged_by": "soydiloreto", "labels": ["risk:low", "complexity:low", "type:feat"]}
     r = receipt(7, body, s, pr, {"success": 20, "failure": 0}, "abc123", "2026-10-11T01:00:00Z")
     check("a receipt says the PRD matches its seal", r["prd_matches_seal"], True)
@@ -404,12 +435,13 @@ def main(argv):
         print(v)
         return 0 if v == "match" else 1
     if mode == "verify-prd":
+        tries = int(argv[2]) if argv[1:2] == ["--wait"] and len(argv) > 2 else 1
         try:
-            sealed = last_seal(repo, number)
+            import time
+            v = wait_verdict(lambda: verdict(body, last_seal(repo, number)), tries, lambda: time.sleep(10))
         except Exception as e:  # noqa: BLE001 — any failure to read is "unknown", never "unsealed" nor "changed"
             print(f"error: {e}")
             return 2
-        v = verdict(body, sealed)
         print(v)
         return 1 if v == "changed" else 0
     if mode == "merged":
