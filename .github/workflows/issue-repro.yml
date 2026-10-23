@@ -898,9 +898,14 @@ jobs:
               gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label repro:retry >/dev/null
               echo "CSS read as text; retrying as a browser test."; exit 0
             fi
+            if [ -n "$BROWSER" ]; then
+              why="this needs a browser test, and the attempt I had for one read a stylesheet as text again. A person will look; ${BT}repro:again${BT} tries once more"
+            else
+              why="this needs a browser test, and this repository declares no way to run one (repro.ways). A person will look"
+            fi
             gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label could-not-reproduce >/dev/null
-            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'The test I wrote read a stylesheet as text, which proves nothing about how a page looks, so it was discarded: this needs a browser test, and this repository declares no way to run one (repro.ways). A person will look.\n\n%s' "$sign")" >/dev/null
-            echo "CSS read as text; no browser way."; exit 0
+            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'The test I wrote read a stylesheet as text, which proves nothing about how a page looks, so it was discarded: %s.\n\n%s' "$why" "$sign")" >/dev/null
+            echo "CSS read as text; no further attempt."; exit 0
           fi
           if [ "$WROTE" != true ]; then
             gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label could-not-reproduce >/dev/null

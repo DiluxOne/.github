@@ -160,11 +160,15 @@ repro:
         - The site's default theme; another only when the report names it: return its wordpress.org
           slug as `theme` and it is installed and activated before the test runs.
         - Small: one describe, one or two tests, named after the expectation.
-  # A repository maps its paths to the tests that cover them:
+  # A repository maps its paths to the tests that cover them, and a pull
+  # request then runs only those, when every path it touches is mapped:
   #   affected:
   #     - paths: ["assets/**/*.css", "templates/**"]
   #       tests: [tests/e2e/specs/front-layout.spec.ts]
-  affected: []
+  # What no end-to-end test covers, mapped to none.
+  affected:
+    - paths: [readme.txt, "*.md", "docs/**", "languages/**", ".wordpress-org/**"]
+      tests: []
 
 release:
   publishes-to: wordpress.org

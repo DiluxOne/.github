@@ -218,9 +218,8 @@ def brief(root, central, layer, number):
 # A stylesheet read as text: a file-reading call with a .css path, in PHP,
 # JavaScript or Python. How a page looks is the browser's to say (#352).
 CSS_AS_TEXT = re.compile(
-    r"(file_get_contents|fopen|file|readFileSync|readFile|open|read_text|Path)\s*\(\s*[^)]*?\.css\b"
-    r"|\.css['\"]\s*\)\s*(->|\.)?\s*(read|text|contents)"
-    r"|(Sabberworm|CssParser|css-tree|postcss)\b", re.I)
+    r"\b(file_get_contents|fopen|file|readFileSync|readFile|open|read_text)\s*\([^;]*?\.css['\"]"
+    r"|\b(Sabberworm|CssParser|csstree|postcss)\b")
 
 
 def lint(path):
@@ -269,15 +268,21 @@ def glob_match(path, pattern):
 
 def affected(conf, paths, repro_dirs):
     """The tests a pull request runs: the reproduction tests it carries, and
-    the tests mapped to the paths it touches. Targeted only when the
-    repository maps paths and one of them, or a reproduction test, is there;
-    otherwise the whole suite runs, as before."""
+    the tests mapped to the paths it touches. Targeted only when every path
+    it touches is a reproduction test, one of the mapped tests, or matches
+    an entry of `affected` (one with no tests: what no test covers, such as
+    a readme), and there is something to run; otherwise the whole suite
+    runs, as before: a path no entry names may break any test."""
     repro = sorted(p for p in paths if any(p.startswith(d.rstrip("/") + "/") for d in repro_dirs))
-    tests = []
+    tests, covered = [], set(repro)
     for entry in conf["affected"]:
-        if any(glob_match(p, g) for p in paths for g in entry.get("paths") or []):
+        hit = [p for p in paths if any(glob_match(p, g) for g in entry.get("paths") or [])]
+        covered.update(hit)
+        if hit:
             tests += [t for t in entry.get("tests") or [] if t not in tests]
-    return {"targeted": bool(conf["affected"]) and bool(repro or tests), "tests": tests, "repro": repro}
+    covered.update(p for p in paths if p in tests)
+    every = bool(paths) and covered >= set(paths)
+    return {"targeted": bool(conf["affected"]) and every and bool(repro or tests), "tests": tests, "repro": repro}
 
 
 def emit(pairs):
@@ -357,6 +362,10 @@ def self_test():
               (lint_of("$css = file_get_contents( DIR . '/assets/css/front.css' );"), lint_of("const css = fs.readFileSync('assets/front.css', 'utf8');", "ts")), (True, True))
         check("C4 a browser test that measures the page is not", lint_of("const box = await page.locator('.card').boundingBox();\nawait expect(page).toHaveCSS", "ts"), False)
         check("C4 a test naming a stylesheet in a URL is not", lint_of("await page.goto('/wp-admin/');\nexpect(href).toContain('front.css');", "ts"), False)
+        check("C4 a logic test that builds a stylesheet's path is not",
+              lint_of("$url = plugin_dir_path( __FILE__ ) . 'css/front.css';\nwp_enqueue_style( 'x', $url );"), False)
+        check("C4 one that reads it through a built path is",
+              lint_of("$css = file_get_contents( plugin_dir_path( __FILE__ ) . 'css/front.css' );"), True)
 
         def junit(xml):
             p = os.path.join(d, "j.xml")
@@ -378,6 +387,13 @@ def self_test():
               affected(conf, ["assets/css/front.css", "tests/e2e/repro/issue-69.spec.ts"], ["tests/e2e/repro"]),
               {"targeted": True, "tests": ["tests/e2e/specs/layout.spec.ts"], "repro": ["tests/e2e/repro/issue-69.spec.ts"]})
         check("C5 one touching nothing mapped runs the whole suite", affected(conf, ["includes/a.php"], ["tests/e2e/repro"])["targeted"], False)
+        check("C5 one touching a mapped path and an unmapped one runs the whole suite",
+              affected(conf, ["assets/css/front.css", "includes/a.php"], ["tests/e2e/repro"])["targeted"], False)
+        docs = merged({"repro": {"affected": [{"paths": ["assets/**/*.css"], "tests": ["tests/e2e/specs/layout.spec.ts"]}, {"paths": ["readme.txt"], "tests": []}]}}, {})
+        check("C5 a path an entry maps to no tests (the changelog) keeps it targeted",
+              affected(docs, ["assets/css/front.css", "readme.txt"], [])["targeted"], True)
+        check("C5 a change to a mapped test itself keeps it targeted",
+              affected(docs, ["assets/css/front.css", "tests/e2e/specs/layout.spec.ts"], [])["targeted"], True)
         check("C5 a repository that maps nothing runs the whole suite", affected(merged({}, {}), ["assets/a.css"], [])["targeted"], False)
         check("** spans folders, * does not", (glob_match("assets/css/a.css", "assets/**/*.css"), glob_match("assets/a.css", "assets/**/*.css"), glob_match("assets/css/a.css", "assets/*.css")), (True, True, False))
     print(f"{'all tests passed' if not failed else f'{failed} failed'}")
