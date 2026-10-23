@@ -2,11 +2,21 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [6.4.3](https://github.com/DiluxOne/.github/releases/tag/v6.4.3) · 2026-10-23
+
+### Fixes
+
+- **repro:** a failed assertion's call log is no missing element ([#367](https://github.com/DiluxOne/.github/pull/367))
+
 ## [6.4.2](https://github.com/DiluxOne/.github/releases/tag/v6.4.2) · 2026-10-23
 
 ### Fixes
 
 - **conventions:** no size cap on the organisation's own bot ([#364](https://github.com/DiluxOne/.github/pull/364))
+
+### Maintenance
+
+- **release:** v6.4.2, no size cap on the organisation's own bot ([#365](https://github.com/DiluxOne/.github/pull/365))
 
 ## [6.4.1](https://github.com/DiluxOne/.github/releases/tag/v6.4.1) · 2026-10-23
 
