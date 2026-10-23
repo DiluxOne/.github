@@ -7,9 +7,9 @@ name: Issues
 # triage calls a bug (or that a maintainer labels repro:run; with no unit
 # tests here it ends green and the report waits for a person), the issue
 # schema checked when a person opens or edits an issue not accepted yet
-# (awaiting-acceptance or incomplete, #353), and, when a person accepts one, the Platform Project (#9, repos.yml), its assignee
-# (#73), the gate re-run on its pull requests, the PRD's seal, and the
-# autopilot (issue-triage.yml calls it). Most of this repository is a
+# (awaiting-acceptance or incomplete, #353), and, when a person accepts
+# one, the Platform Project (#9, repos.yml), its assignee (#73), the gate
+# re-run on its pull requests, the PRD's seal, and the autopilot (issue-triage.yml calls it). Most of this repository is a
 # protected path of policy/autonomy.yml, and an autopilot pull request that
 # touches one is never merged by policy.
 

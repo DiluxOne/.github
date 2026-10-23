@@ -11,16 +11,17 @@ name: Issue accepted
 # request opened before its issue was accepted would otherwise stay red until
 # its next push. A bot's label starts nothing, as the gate ignores it anyway.
 # The same acceptance checks the issue's PRD against the issue schema (gate
-# G1, policy/issue-schema.yml) and says on the issue whether it is ready,
-# and removes `needs-triage`. The check runs before the decision too (#353):
+# G1, policy/issue-schema.yml) and says on the issue whether it is ready.
+# The check runs before the decision too (#353):
 # when a person opens an issue and every time a person edits one not
 # accepted yet, it labels it `awaiting-acceptance` (complete, it waits for a
 # maintainer) or `incomplete` (one comment, kept up to date, says exactly
 # what is missing). Accepting it removes `awaiting-acceptance`; accepting an
 # `incomplete` one takes the label off with a comment that mentions who
-# added it and says what is missing. The acceptance also marks that
-# a person has looked at the issue: a person has looked at the issue. It assigns
-# the issue to the person who accepted it, unless it has an assignee
+# added it and says what is missing. A maintainer's answer to an open
+# comment is read on the next edit or acceptance, not on its own. The
+# acceptance removes `needs-triage`: a person has looked at the issue. It
+# assigns the issue to the person who accepted it, unless it has an assignee
 # already (#73; scripts/issue-assignee.sh): with the bot's key, like the
 # comment. A lane's issue, accepted by policy and never labelled by a
 # person, stays unassigned.
