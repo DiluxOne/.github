@@ -355,6 +355,9 @@ def self_test():
             rc, out = apply("Acme", "acme-bot", 7, {"plugin-a": "main", "plugin-b": "main", "plugin-c": "main"}, lambda n: [], run=fake, clone_url=origin)
             parent = subprocess.run(["git", "--git-dir", origin, "rev-parse", BRANCH + "^"], capture_output=True, text=True).stdout.strip()
             check("apply: with its pull request open, it builds on that branch and opens none", (rc, parent == before, ("pr", "create") in calls, "Updated" in out), (0, True, False, True))
+            before = heads()
+            rc, out = apply("Acme", "acme-bot", 7, {"plugin-d": "main"}, lambda n: [], run=lambda *a: (1, "", "HTTP 502") if a[:2] == ("pr", "list") else fake(*a), clone_url=origin)
+            check("apply: open pull requests that cannot be read stop it, nothing pushed", (rc, heads() == before), (1, True))
             calls.clear()
             rc, out = apply("Acme", "acme-bot", 7, {"plugin-a": "main", "plugin-b": "main", "plugin-c": "main"}, lambda n: [], run=fake, clone_url=origin)
             check("apply: nothing more to change pushes and opens nothing", (rc, ("pr", "create") in calls, "Nothing to change" in out), (0, False, True))
@@ -420,8 +423,11 @@ def apply(owner, app, app_id, repos, found_of, run=run_gh, clone_url=None):
         rc, _, err = run("repo", "create", full, "--public", "--add-readme", "--description", "The organisation's configuration of the engine")
         if rc != 0:
             return 1, f"Could not create {full}: {err.strip()[:200]}"
-    rc, out, _ = run("pr", "list", "--repo", full, "--head", BRANCH, "--state", "open", "--json", "url", "--jq", ".[0].url // empty")
-    open_pr = out.strip() if rc == 0 else ""
+    # Unread is not "none open": that would force-push over an open one.
+    rc, out, err = run("pr", "list", "--repo", full, "--head", BRANCH, "--state", "open", "--json", "url", "--jq", ".[0].url // empty")
+    if rc != 0:
+        return 1, f"Could not read {full}'s open pull requests: {err.strip()[:200]}"
+    open_pr = out.strip()
     work = tempfile.mkdtemp()
     try:
         g = lambda *x: subprocess.run(["git", "-C", work, *x], check=True, capture_output=True, text=True)  # noqa: E731
