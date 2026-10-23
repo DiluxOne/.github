@@ -2,7 +2,13 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
-## [6.3.0](https://github.com/DiluxOne/.github/releases/tag/v6.3.0) · 2026-10-23
+## [6.4.0](https://github.com/DiluxOne/.github/releases/tag/v6.4.0) · 2026-10-23
+
+### Features
+
+- **repro:** reproduce each bug the way its repository declares ([#356](https://github.com/DiluxOne/.github/pull/356))
+
+## [6.3.0](https://github.com/DiluxOne/.github/releases/tag/v6.3.0) · 2026-10-22
 
 ### Features
 
@@ -13,6 +19,10 @@ Every version of the engine (the workflows, scripts, policy and kinds other repo
 ### Build and dependencies
 
 - **deps:** Bump ubuntu from `534baea` to `68ee220` in /runner ([#340](https://github.com/DiluxOne/.github/pull/340))
+
+### Maintenance
+
+- **release:** v6.3.0, the issue schema checked before acceptance ([#355](https://github.com/DiluxOne/.github/pull/355))
 
 ## [6.2.0](https://github.com/DiluxOne/.github/releases/tag/v6.2.0) · 2026-10-20
 
