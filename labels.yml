@@ -8,6 +8,10 @@
 
 # The maintainer's decision: a pull request may close this issue.
 - {name: accepted, color: "0E8A16", description: "A maintainer accepted this issue; a pull request may close it"}
+# Gate G1 before the decision (#353): checked when the issue opens and every
+# time it is edited (issue-accepted.yml), one of the two at a time.
+- {name: awaiting-acceptance, color: "FBCA04", description: "The issue follows the schema; it waits for a maintainer's decision"}
+- {name: incomplete, color: "D4C5F9", description: "The issue does not follow the schema yet; a comment says what is missing"}
 
 # The autonomy policy (policy/autonomy.yml): a lane's issue, and what was
 # decided by policy rather than by a person (the weekly summary lists them).

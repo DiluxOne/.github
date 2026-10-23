@@ -20,6 +20,11 @@
         access or more, one per line): the comments a maintainer has not
         answered yet, after the PRD's last edit (#287), one URL per line;
         exit 1 when any
+  issue-schema.py g1-labels ACTION READY LABEL   the labels the G1 check
+        adds and removes (#353), for the issue event ACTION (opened, edited,
+        labeled), READY (true or false) and LABEL (the one that accepts):
+        two lines, the labels to add, then the labels to remove, each
+        comma-separated (empty when none)
   issue-schema.py --test                     self-test
 
 Environment: ISSUE_SCHEMA, the schema (default: policy/issue-schema.yml next
@@ -246,6 +251,21 @@ def open_conversation(comments, edited_at, maintainers):
     return [c for c in people[last + 1:]]
 
 
+def g1_labels(action, ready, label="accepted"):
+    """What the G1 check does to the labels (#353), as (add, remove). Opened
+    or edited: one of `awaiting-acceptance` (complete, the maintainer
+    decides) and `incomplete`, never the acceptance itself. Accepted: a
+    complete issue loses `awaiting-acceptance`; an incomplete one loses the
+    acceptance and is marked `incomplete`. Pure."""
+    if action == "labeled":
+        if ready:
+            return [], ["awaiting-acceptance", "incomplete"]
+        return ["incomplete"], [label, "awaiting-acceptance"]
+    if action in ("opened", "edited"):
+        return (["awaiting-acceptance"], ["incomplete"]) if ready else (["incomplete"], ["awaiting-acceptance"])
+    return [], []
+
+
 def form(sch=None):
     sch = sch or schema()
     body = [{
@@ -440,6 +460,37 @@ A class on <html> and a cookie.
                ('--remove-label "$LABEL"' in chk["run"], "issue-schema.py conversation" in chk["run"], "steps.check.outputs.ready == 'true'" in seal.get("if", "")), (True, True, True))
     except ImportError:
         print("skip the ready job's wiring (no PyYAML here)")
+    check_("#353 C1: a complete issue opened waits for the maintainer", g1_labels("opened", True), (["awaiting-acceptance"], ["incomplete"]))
+    check_("#353 C2: an incomplete issue opened is marked so", g1_labels("opened", False), (["incomplete"], ["awaiting-acceptance"]))
+    check_("#353 C3: an edit that completes it moves it to awaiting-acceptance", g1_labels("edited", True), (["awaiting-acceptance"], ["incomplete"]))
+    check_("#353 C4: accepting a complete issue removes awaiting-acceptance", g1_labels("labeled", True), ([], ["awaiting-acceptance", "incomplete"]))
+    check_("#353 C5: accepting an incomplete issue takes the acceptance off", g1_labels("labeled", False, "accepted"), (["incomplete"], ["accepted", "awaiting-acceptance"]))
+    check_("#353: opened or edited never touches the acceptance", any("accepted" in a + r for a, r in (g1_labels(x, y) for x in ("opened", "edited") for y in (True, False))), False)
+    cli = subprocess.run([sys.executable, os.path.abspath(__file__), "g1-labels", "labeled", "false", "accepted"], capture_output=True, text=True)
+    check_("#353 cli g1-labels: the labels to add, then to remove", cli.stdout, "incomplete\naccepted,awaiting-acceptance\n")
+    try:
+        import yaml
+        wf = yaml.safe_load(open(wf_path, encoding="utf-8"))
+        job = wf["jobs"]["ready"]
+        steps = job["steps"]
+        chk = next(st for st in steps if st.get("id") == "check")
+        seal = next(st for st in steps if st.get("name", "").startswith("Seal the PRD"))
+        assign = next(st for st in steps if st.get("name", "").startswith("Assign it"))
+        cond = " ".join(job["if"].split())
+        check_("#353 wiring: the check runs on opened and edited, not on an accepted issue, never for a bot",
+               ("github.event.action == 'opened'" in cond, "github.event.action == 'edited'" in cond,
+                "!contains(github.event.issue.labels.*.name, inputs.label)" in cond, "github.event.sender.type != 'Bot'" in cond,
+                "github.event.issue.user.type != 'Bot'" in cond), (True, True, True, True, True))
+        check_("#353 wiring: only an acceptance seals and assigns; the labels come from g1-labels; who accepted is named",
+               ("github.event.action == 'labeled'" in seal.get("if", ""), "github.event.action == 'labeled'" in assign.get("if", ""),
+                "issue-schema.py g1-labels" in chk["run"], "@$SENDER" in chk["run"]), (True, True, True, True))
+        tpl = yaml.safe_load(open(os.path.join(ROOT, "workflow-templates", "issues.yml"), encoding="utf-8"))
+        on = tpl.get("on", tpl.get(True))
+        check_("#353 wiring: the issues template starts it on opened and edited", sorted(set(["opened", "edited"]) & set(on["issues"]["types"])), ["edited", "opened"])
+        labels = {l["name"] for l in yaml.safe_load(open(os.path.join(ROOT, "labels.yml"), encoding="utf-8"))}
+        check_("#353: labels.yml holds both labels", {"awaiting-acceptance", "incomplete"} <= labels, True)
+    except ImportError:
+        print("skip the #353 wiring (no PyYAML here)")
     if not failed:
         print("all tests passed")
     return failed
@@ -465,6 +516,11 @@ def main(argv):
         for c in left:
             print(c.get("html_url", ""))
         return 1 if left else 0
+    if argv[:1] == ["g1-labels"] and len(argv) == 4:
+        add, remove = g1_labels(argv[1], argv[2] == "true", argv[3])
+        print(",".join(add))
+        print(",".join(remove))
+        return 0
     if argv[:1] == ["criteria"]:
         # The PRD's acceptance criteria, for the review that checks them (G6, #193).
         sections, _ = parse(sys.stdin.read())

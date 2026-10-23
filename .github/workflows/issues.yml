@@ -5,8 +5,9 @@ name: Issues
 # tag, job for job as the template (scripts/sync-repos.py check compares
 # them): the triage when an issue opens, the reproduction of a report the
 # triage calls a bug (or that a maintainer labels repro:run; with no unit
-# tests here it ends green and the report waits for a person), and, when a
-# person accepts one, the Platform Project (#9, repos.yml), its assignee
+# tests here it ends green and the report waits for a person), the issue
+# schema checked when a person opens or edits an issue not accepted yet
+# (awaiting-acceptance or incomplete, #353), and, when a person accepts one, the Platform Project (#9, repos.yml), its assignee
 # (#73), the gate re-run on its pull requests, the PRD's seal, and the
 # autopilot (issue-triage.yml calls it). Most of this repository is a
 # protected path of policy/autonomy.yml, and an autopilot pull request that
@@ -14,7 +15,7 @@ name: Issues
 
 on:
   issues:
-    types: [opened, labeled, closed]
+    types: [opened, edited, labeled, closed]
   schedule:
     - cron: '0 13 * * *'
 

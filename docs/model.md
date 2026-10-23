@@ -73,7 +73,7 @@ A change moves only if it passes each gate in order. The deterministic gates alw
 
 | Gate | What it verifies | If it fails |
 | --- | --- | --- |
-| G1 Issue ready | Problem, scope, out of scope, verifiable criteria, the tests that prove them, criticality | It cannot be accepted; the agent asks for what is missing |
+| G1 Issue ready | Problem, scope, out of scope, verifiable criteria, the tests that prove them, criticality; checked when the issue opens and on every edit (`awaiting-acceptance` or `incomplete`) | It cannot be accepted; the issue says what is missing |
 | G2 Acceptance | `accepted` from a person, or a lane of the policy | Nothing starts |
 | G3 Plan | Files, approach and tests before code; in scope, no protected path | It asks the maintainer, with the action and its URL |
 | G4 The kind's checks | Conventions, lint, static analysis, tests | The agent fixes and pushes again (a round) |
