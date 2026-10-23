@@ -11,9 +11,17 @@ name: Issue accepted
 # request opened before its issue was accepted would otherwise stay red until
 # its next push. A bot's label starts nothing, as the gate ignores it anyway.
 # The same acceptance checks the issue's PRD against the issue schema (gate
-# G1, policy/issue-schema.yml) and says on the issue whether it is ready,
-# and removes `needs-triage`: a person has looked at the issue. It assigns
-# the issue to the person who accepted it, unless it has an assignee
+# G1, policy/issue-schema.yml) and says on the issue whether it is ready.
+# The check runs before the decision too (#353):
+# when a person opens an issue and every time a person edits one not
+# accepted yet, it labels it `awaiting-acceptance` (complete, it waits for a
+# maintainer) or `incomplete` (one comment, kept up to date, says exactly
+# what is missing). Accepting it removes `awaiting-acceptance`; accepting an
+# `incomplete` one takes the label off with a comment that mentions who
+# added it and says what is missing. A maintainer's answer to an open
+# comment is read on the next edit or acceptance, not on its own. The
+# acceptance removes `needs-triage`: a person has looked at the issue. It
+# assigns the issue to the person who accepted it, unless it has an assignee
 # already (#73; scripts/issue-assignee.sh): with the bot's key, like the
 # comment. A lane's issue, accepted by policy and never labelled by a
 # person, stays unassigned.
@@ -54,7 +62,7 @@ name: Issue accepted
 #
 #   on:
 #     issues:
-#       types: [labeled, closed]
+#       types: [opened, edited, labeled, closed]
 #   jobs:
 #     accepted:
 #       permissions: { actions: write, issues: read, pull-requests: read }
@@ -165,7 +173,19 @@ jobs:
     # to whoever accepted it, if nobody has it (#73). Needs the bot's key to
     # comment and assign; without it the check runs and only logs. Not on a
     # release issue (#82): the `release` job is its acceptance.
-    if: github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == inputs.label && github.event.sender.type != 'Bot' && !contains(github.event.issue.labels.*.name, 'lane:release')
+    # Before the decision (#353): when a person opens an issue, or edits one
+    # that is not accepted yet, the same check labels it
+    # `awaiting-acceptance` or `incomplete` and says what is missing; it
+    # never touches `accepted` then. A bot's issue (a lane's) is left alone.
+    if: >-
+      github.event_name == 'issues' && github.event.sender.type != 'Bot' && !contains(github.event.issue.labels.*.name, 'lane:release') && (
+        (github.event.action == 'labeled' && github.event.label.name == inputs.label) ||
+        ((github.event.action == 'opened' || github.event.action == 'edited') && github.event.issue.user.type != 'Bot' && !contains(github.event.issue.labels.*.name, inputs.label)))
+    # One check at a time per issue: a later edit waits for the earlier run
+    # rather than racing it on the labels and the comment.
+    concurrency:
+      group: issue-g1-${{ github.repository }}-${{ github.event.issue.number }}
+      cancel-in-progress: false
     # Nothing from the caller's token: the callers grant this workflow
     # actions: write, issues: read and pull-requests: read only, and the
     # schema and its script are read from this public repository.
@@ -199,7 +219,7 @@ jobs:
       # member's pull request that closes it later takes it over
       # (pull-request-assignee.yml).
       - name: Assign it to whoever accepted it
-        if: steps.bot.outputs.token != '' && hashFiles('.dx-central/scripts/issue-assignee.sh') != ''
+        if: github.event.action == 'labeled' && steps.bot.outputs.token != '' && hashFiles('.dx-central/scripts/issue-assignee.sh') != ''
         # Never in the way of the check and the seal that follow.
         continue-on-error: true
         env:
@@ -211,7 +231,9 @@ jobs:
       # Not ready (#287): the schema says something is missing, or a person
       # commented after the PRD's last edit and no maintainer answered yet.
       # Then the acceptance does not stand: the label comes off, the issue
-      # says why, and nothing is sealed, so nothing starts.
+      # says why and whose acceptance it was (#353), and nothing is sealed,
+      # so nothing starts. Opened or edited (#353): the issue is labelled
+      # `awaiting-acceptance` or `incomplete` and `accepted` is not touched.
       - name: Check the PRD and say so on the issue
         id: check
         env:
@@ -219,6 +241,8 @@ jobs:
           BODY: ${{ github.event.issue.body }}
           NUMBER: ${{ github.event.issue.number }}
           LABEL: ${{ inputs.label }}
+          ACTION: ${{ github.event.action }}
+          SENDER: ${{ github.event.sender.login }}
         run: |
           set -euo pipefail
           # Exit 1 is "not ready" with its reasons (each in code, so text the
@@ -252,28 +276,57 @@ jobs:
             if [ "$orc" -gt 1 ] || { [ "$orc" = 1 ] && [ -z "$open" ]; }; then echo "::error::The conversation check itself failed (exit $orc); nothing said on the issue."; exit 1; fi
           fi
           ready=false
-          if [ "$(jq -r .ok <<<"$result")" = true ] && [ -z "$open" ]; then
-            ready=true
-            text="**Issue ready (G1):** the PRD has every section of the schema ($(jq -r '.criteria | length' <<<"$result") acceptance criteria)."
-          else
-            text="**Issue not ready (G1):**"
+          if [ "$(jq -r .ok <<<"$result")" = true ] && [ -z "$open" ]; then ready=true; fi
+          missing=""
+          if [ "$ready" != true ]; then
             if [ "$(jq -r .ok <<<"$result")" != true ]; then
-              text+=" the PRD does not follow the schema yet (policy/issue-schema.yml in DiluxOne/.github):"$'\n\n'"$(jq -r '.errors[] | "- `" + gsub("`"; "\u0027") + "`"' <<<"$result")"$'\n'
+              missing+="The PRD does not follow the schema yet (policy/issue-schema.yml in DiluxOne/.github):"$'\n\n'"$(jq -r '.errors[] | "- `" + gsub("`"; "\u0027") + "`"' <<<"$result")"$'\n'
             fi
             if [ -n "$open" ]; then
-              text+=$'\n'"A comment after the PRD's last edit waits for a maintainer's answer (answer it, or settle it in the PRD):"$'\n\n'"$(while IFS= read -r u; do printf -- '- %s\n' "$u"; done <<<"$open")"$'\n'
+              missing+=$'\n'"A comment after the PRD's last edit waits for a maintainer's answer (answer it, or settle it in the PRD):"$'\n\n'"$(while IFS= read -r u; do printf -- '- %s\n' "$u"; done <<<"$open")"$'\n'
             fi
-            text+=$'\n'"The \`$LABEL\` label was taken off: add it again once the issue is ready."
+          fi
+          n=$(jq -r '.criteria | length' <<<"$result")
+          if [ "$ACTION" = labeled ]; then
+            if [ "$ready" = true ]; then
+              text="**Issue ready (G1):** the PRD has every section of the schema ($n acceptance criteria)."
+            else
+              # Who accepted it is named, so the label that comes off is never
+              # a silent change (#353). A login holds no markup.
+              text="**Issue not ready (G1):** @$SENDER added \`$LABEL\`, but the issue is \`incomplete\`, so the label was taken off. What is missing:"$'\n\n'"$missing"$'\n'"Add \`$LABEL\` again once the issue is ready."
+            fi
+          elif [ "$ready" = true ]; then
+            text="**Issue complete (G1):** the PRD has every section of the schema ($n acceptance criteria). It is \`awaiting-acceptance\`: the decision is a maintainer's."
+          else
+            text="**Issue incomplete (G1):** what is missing before a maintainer can accept it:"$'\n\n'"$missing"$'\n'"It is checked again every time the issue is edited."
           fi
           echo "ready=$ready" >> "$GITHUB_OUTPUT"
           echo "$text"
           [ -n "$GH_TOKEN" ] || { echo "No bot key: the result stays in this log."; exit 0; }
-          [ "$ready" = true ] || gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$LABEL" >/dev/null
+          # The state's labels (#353), one of the two at a time, created where
+          # the repository does not have them yet (labels.yml has them).
+          for l in "awaiting-acceptance|FBCA04|The issue follows the schema; it waits for a maintainer's decision" "incomplete|D4C5F9|The issue does not follow the schema yet; a comment says what is missing"; do
+            IFS='|' read -r ln lc ld <<<"$l"
+            gh label create "$ln" --repo "$GITHUB_REPOSITORY" --color "$lc" --description "$ld" >/dev/null 2>&1 || true
+          done
+          # Which labels go on and come off: scripts/issue-schema.py g1-labels.
+          { read -r add; read -r remove; } < <(python3 .dx-central/scripts/issue-schema.py g1-labels "$ACTION" "$ready" "$LABEL")
+          if [ -n "$remove" ]; then
+            # A label the issue does not have is no error: each comes off alone.
+            IFS=',' read -ra rm <<<"$remove"
+            for l in "${rm[@]}"; do
+              if [ "$l" = "$LABEL" ]; then gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$LABEL" >/dev/null
+              else gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$l" >/dev/null 2>&1 || true; fi
+            done
+          fi
+          if [ -n "$add" ]; then gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "$add" >/dev/null; fi
           body="<!-- dx-g1 -->"$'\n'"$text"$'\n\n'"🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
           id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '.[] | select(.user.type == "Bot" and (.user.login | startswith(env.DX_BOT_APP)) and (.body | startswith("<!-- dx-g1 -->"))) | .id' | tail -1)
           if [ -n "$id" ]; then
             gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$body" >/dev/null
-          else
+          elif [ "$ACTION" = labeled ] || [ "$ready" != true ]; then
+            # A complete issue just opened needs no comment: its label says
+            # so. One that was incomplete has its comment, updated above.
             gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$body" >/dev/null
           fi
       # Gate G2's seal (#81): the PRD's SHA-256, who accepted and when, in a
@@ -281,7 +334,7 @@ jobs:
       # ruleset lets only dilux-bot write there, and nobody delete or
       # rewrite it). The pull request gate compares the PRD with it.
       - name: Seal the PRD and update the issue's board
-        if: steps.bot.outputs.token != '' && steps.check.outputs.ready == 'true'
+        if: github.event.action == 'labeled' && steps.bot.outputs.token != '' && steps.check.outputs.ready == 'true'
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           BODY_TEXT: ${{ github.event.issue.body }}

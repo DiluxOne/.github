@@ -8,7 +8,7 @@ name: Issues
 
 on:
   issues:
-    types: [opened, labeled, closed]
+    types: [opened, edited, labeled, closed]
   schedule:
     - cron: '0 13 * * *'
 
@@ -48,6 +48,8 @@ jobs:
       triage-bug: ${{ needs.triage.outputs.bug }}
     secrets: inherit
 
+  # When a person opens or edits an issue not accepted yet: it is checked
+  # against the issue schema and labelled awaiting-acceptance or incomplete.
   # When a person accepts an issue: it lands on its product's Project as
   # Accepted, it is assigned to that person if nobody has it, and a pull
   # request opened before gets its gate re-run; a release issue ("Release
