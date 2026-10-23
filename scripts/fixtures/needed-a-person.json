@@ -747,6 +747,91 @@
       ]
     },
     {
+      "name": "the organisation's bot has no size cap from a branch of its repository (#361)",
+      "pr": {
+        "author": {
+          "__typename": "Bot",
+          "login": "dilux-bot"
+        },
+        "labels": {
+          "nodes": [
+            {
+              "name": "needs-human"
+            },
+            {
+              "name": "autopilot"
+            }
+          ]
+        },
+        "files": {
+          "nodes": [
+            {
+              "path": "includes/a.php",
+              "additions": 900,
+              "deletions": 0
+            }
+          ]
+        },
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "__typename": "Bot",
+                "login": "dilux-bot"
+              },
+              "body": "<!-- dx-review -->\n### Claude review · risk **low**\n\n<!-- dx-review-record {\"risk\":\"low\",\"complexity\":\"low\",\"floor\":\"low\",\"blocking\":false,\"findings\":[]} -->"
+            }
+          ]
+        }
+      },
+      "want": [
+        "unknown"
+      ]
+    },
+    {
+      "name": "the bot's login from a fork keeps the size cap (#361)",
+      "pr": {
+        "author": {
+          "__typename": "Bot",
+          "login": "dilux-bot"
+        },
+        "labels": {
+          "nodes": [
+            {
+              "name": "needs-human"
+            },
+            {
+              "name": "autopilot"
+            }
+          ]
+        },
+        "files": {
+          "nodes": [
+            {
+              "path": "includes/a.php",
+              "additions": 900,
+              "deletions": 0
+            }
+          ]
+        },
+        "comments": {
+          "nodes": [
+            {
+              "author": {
+                "__typename": "Bot",
+                "login": "dilux-bot"
+              },
+              "body": "<!-- dx-review -->\n### Claude review · risk **low**\n\n<!-- dx-review-record {\"risk\":\"low\",\"complexity\":\"low\",\"floor\":\"low\",\"blocking\":false,\"findings\":[]} -->"
+            }
+          ]
+        },
+        "isCrossRepository": true
+      },
+      "want": [
+        "size-cap"
+      ]
+    },
+    {
       "name": "no reason recorded",
       "pr": {},
       "want": [
