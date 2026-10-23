@@ -275,8 +275,10 @@ def mine_verdict(mine):
             if not re.search(r"\bexpect\(|AssertionError|toBe|toEqual|toHave|assert", text):
                 return "broken"
             # An element the test never found says its selector is wrong as
-            # often as that the bug is there: no verdict.
-            if re.search(r"element\(s\) not found|waiting for (get|locator)", text):
+            # often as that the bug is there: no verdict. Only Playwright's
+            # own words for it: its call log says "waiting for locator" on
+            # every failed expect(locator), the element there or not (#366).
+            if re.search(r"element\(s\) not found", text):
                 return "broken"
             failed = True
         elif c.find("skipped") is not None:
@@ -424,6 +426,19 @@ def self_test():
         check("C8 even when the test itself never ran",
               junit('<testsuites><testsuite><testcase name="s" classname="global.setup.ts"><failure message="page.goto: Protocol error"/></testcase><testcase name="t" classname="global.teardown.ts"><failure message="TypeError: Invalid URL"/></testcase></testsuite></testsuites>'), "environment")
         check("C8 no test of the file is no verdict", junit("<testsuites><testsuite/></testsuites>"), "broken")
+        # Playwright's report of a failed expect(locator): its message, and
+        # the details with the call log as the failure's text (#366).
+        def report(message, details):
+            return ('<testsuites><testsuite><testcase name="x" classname="issue-69.spec.ts">'
+                    f'<failure message="{message}">{details}</failure></testcase></testsuite></testsuites>')
+        underline = ("Locator: .diluxone-users-account--guest a.diluxone-users-button\nExpected: &quot;none&quot;\n"
+                     "Received: &quot;underline&quot;\nTimeout: 10000ms\nCall log:\n  - Expect &quot;toHaveCSS&quot; with timeout 10000ms\n"
+                     "  - waiting for locator('.diluxone-users-account--guest a.diluxone-users-button')\n")
+        check("#366 C1 an assertion on an element that exists reproduces, whatever its call log says",
+              junit(report("Error: expect(locator).toHaveCSS(expected) failed", underline)), "reproduced")
+        missing = "Locator: .nope\nExpected: visible\nReceived: &lt;element(s) not found&gt;\nCall log:\n  - waiting for locator('.nope')\n"
+        check("#366 C2 an element the test never found is no verdict (a wrong selector)",
+              junit(report("Error: expect(locator).toBeVisible() failed", missing)), "broken")
         check("C8 an element the test never found is no verdict (a wrong selector)",
               junit('<testsuites><testsuite><testcase name="x" classname="issue-69.spec.ts"><failure message="Error: expect(locator).toBeVisible() failed. Locator: .nope Expected: visible Received: &lt;element(s) not found&gt;"/></testcase></testsuite></testsuites>'), "broken")
         check("C8 no report is no verdict", verdict(os.path.join(d, "none.xml"), "issue-69.spec.ts"), "broken")
