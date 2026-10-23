@@ -10,8 +10,8 @@
 # Targeted: the mapped tests through the suite's own command, when that
 # command is Playwright's own (`npx playwright test ...`, which takes file
 # filters and --pass-with-no-tests, so a suite they are not part of runs
-# none); any other command (an npm script, a wrapper) runs whole, as it may
-# not pass the filters on. The reproduction tests run on the single site, in
+# none), alone: any other command (an npm script, a wrapper, a list of
+# commands) runs whole, as the filters could land on the wrong part. The reproduction tests run on the single site, in
 # chromium, through the kind's playwright.dx-repro.config.ts.
 set -euo pipefail
 
@@ -25,7 +25,7 @@ run() {
   mapfile -t repro < <(jq -r '.repro[]' <<<"$plan")
   echo "Targeted (#352): ${tests[*]:-no mapped tests}; ${repro[*]:-no reproduction tests}."
   if [ "${#tests[@]}" -gt 0 ]; then
-    if [[ "$run" =~ ^[[:space:]]*(([A-Z_][A-Z0-9_]*=[^[:space:]]*[[:space:]]+)*)npx[[:space:]]+playwright[[:space:]]+test([[:space:]]|$) ]]; then
+    if [[ "$run" =~ ^[[:space:]]*(([A-Z_][A-Z0-9_]*=[^[:space:]]*[[:space:]]+)*)npx[[:space:]]+playwright[[:space:]]+test([[:space:]]|$) ]] && [[ "$run" != *[\;\&\|\`\$\(\)\<\>]* ]]; then
       bash -c "$run --pass-with-no-tests $(printf '%q ' "${tests[@]}")"
     else
       echo "The suite's command is not Playwright's own, so it runs whole: $run"
@@ -61,6 +61,7 @@ self_test() {
   RUN="npx playwright test -c playwright.network.config.ts" TARGETED=$plan SITE=network t "C5 the network suite runs the mapped tests, not the reproduction" "network.config.ts --pass-with-no-tests" "dx-repro"
   RUN="DU_SNAPSHOTS=1 npx playwright test --project=visual" TARGETED=$plan SITE=single t "a command with variables first is still Playwright's" "--project=visual --pass-with-no-tests"
   RUN="npm run test:e2e" TARGETED=$plan SITE=single t "an npm script runs whole, its arguments untouched" "^npm run test:e2e$" "npm run test:e2e --pass"
+  RUN="npx playwright test && npm run report" TARGETED=$plan SITE=single t "a compound command runs whole, the flags on no part of it" "^npx playwright test$" "pass-with-no-tests"
   rm -rf "$d"
   if [ "$fail" -eq 0 ]; then echo "all tests passed"; else return 1; fi
 }

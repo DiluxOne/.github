@@ -219,6 +219,7 @@ def brief(root, central, layer, number):
 # JavaScript or Python. How a page looks is the browser's to say (#352).
 CSS_AS_TEXT = re.compile(
     r"\b(file_get_contents|fopen|file|readFileSync|readFile|open|read_text)\s*\([^;]*?\.css['\"]"
+    r"|\bPath\s*\([^;)]*?\.css['\"]\s*\)\s*\.\s*read_(text|bytes)\b"
     r"|\b(Sabberworm|CssParser|csstree|postcss)\b")
 
 
@@ -364,6 +365,7 @@ def self_test():
         check("C4 a test naming a stylesheet in a URL is not", lint_of("await page.goto('/wp-admin/');\nexpect(href).toContain('front.css');", "ts"), False)
         check("C4 a logic test that builds a stylesheet's path is not",
               lint_of("$url = plugin_dir_path( __FILE__ ) . 'css/front.css';\nwp_enqueue_style( 'x', $url );"), False)
+        check("C4 a Python test reading it through pathlib is", lint_of("css = Path('assets/front.css').read_text()", "py"), True)
         check("C4 one that reads it through a built path is",
               lint_of("$css = file_get_contents( plugin_dir_path( __FILE__ ) . 'css/front.css' );"), True)
 
