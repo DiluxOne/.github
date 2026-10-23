@@ -15,9 +15,14 @@
 #      own user could sudo its way around all of that, so it never runs the
 #      test;
 #   3. the verdict is the way's JUnit report (scripts/repro-ways.py verdict):
-#      outcome=reproduced|passed|broken, or `limit` when setup failed or
-#      setup and run took longer than the way's `minutes`: the environment,
-#      not the bug, so no verdict (its reason in DIR/reason.txt).
+#      outcome=reproduced|passed|broken, or `limit` when setup failed, the
+#      repository's own test setup (or its teardown, when the test reached
+#      no verdict) failed around the test, or setup and run took longer than
+#      the way's `minutes`: the environment, not the bug, so no verdict (its
+#      reason in DIR/reason.txt). The test is handed the site's addresses
+#      (WP_BASE_URL, WP_NETWORK_URL, WP_ENV_PORT, WP_ENV_TESTS_PORT) only
+#      when they are set, so the repository's configuration keeps its own
+#      defaults otherwise.
 # The command's last lines are kept in DIR/output-tail.txt (untrusted text).
 #
 #   repro-run.sh run SRC DIR   SPEC (the way, JSON from repro-ways.py
@@ -58,19 +63,31 @@ isolate() {
   fi
 }
 
+# What a test may see of this environment: the site's addresses, and only
+# when they are set. An empty WP_BASE_URL is not unset to a configuration
+# that reads `process.env.WP_BASE_URL ?? 'http://localhost:8892'`: it would
+# take the empty one, and every page.goto would fail.
+passed_env() {
+  local v
+  for v in WP_BASE_URL WP_NETWORK_URL WP_ENV_PORT WP_ENV_TESTS_PORT; do
+    [ -z "${!v:-}" ] || printf '%s=%s\n' "$v" "${!v}"
+  done
+}
+
 # Run CMD as dxrepro with no environment but what a test needs.
 confined() {
-  local cmd=$1 secs=$2
+  local cmd=$1 secs=$2 extra=()
+  mapfile -t extra < <(passed_env)
   if [ "${DX_REPRO_UNCONFINED:-}" = 1 ]; then
-    timeout "$secs" env -i PATH="$PATH" HOME="${HOME:-/tmp}" CI=1 bash -c "$cmd"; return
+    timeout "$secs" env -i PATH="$PATH" HOME="${HOME:-/tmp}" CI=1 "${extra[@]}" bash -c "$cmd"; return
   fi
   sudo -u dxrepro timeout "$secs" env -i PATH="$PATH" HOME=/home/dxrepro CI=1 \
-    PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWSERS_PATH" WP_BASE_URL="${WP_BASE_URL:-}" \
+    PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWSERS_PATH" "${extra[@]}" \
     bash -c "cd $(printf '%q' "$PWD") && $cmd"
 }
 
 run() {
-  local src=$1 dir=$2 spec=${SPEC:?} test=${TEST:?} theme=${THEME:-} minutes deadline left rc=0 cmd junit
+  local src=$1 dir=$2 spec=${SPEC:?} test=${TEST:?} theme=${THEME:-} minutes deadline left rc=0 cmd junit v
   mkdir -p "$dir"
   : > "$dir/output-tail.txt"
   if [ "${RUNNER_ENVIRONMENT:-}" = self-hosted ]; then
@@ -131,10 +148,17 @@ run() {
   tail -n 60 "$dir/run.log"
 
   # 3. The verdict.
+  # The repository's own setup or teardown failing around the test is the
+  # environment, not a test written wrong: no verdict, said as such.
   if [ "$rc" -eq 124 ]; then
     limit "The test took longer than the way's $minutes minutes, setup included."
   else
-    say "$(python3 "$HERE/repro-ways.py" verdict "$junit" "$(basename "$test")")"
+    v=$(python3 "$HERE/repro-ways.py" verdict "$junit" "$(basename "$test")")
+    if [ "$v" = environment ]; then
+      limit "The repository's own test setup failed around the test (its setup or teardown project, before or after it): the environment, not the test or the report."
+    else
+      say "$v"
+    fi
   fi
   cmd=$(jq -r '.teardown // empty' <<<"$spec")
   [ -z "$cmd" ] || timeout 120 bash -c "$cmd" >/dev/null 2>&1 || true
@@ -162,6 +186,12 @@ self_test() {
   t "the test is in place when the command runs" passed "$(jq -nc --arg x "$pass" '{run: ("test -f tests/e2e/repro/issue-1.spec.ts && printf %s " + ($x|@sh) + " > build/j.xml"), junit: "build/j.xml", minutes: 1}')"
   t "but not while setup runs" limit '{"setup":["test ! -f tests/e2e/repro/issue-1.spec.ts && exit 9"],"run":"true","junit":"build/j.xml","minutes":1}'
   rm -rf tests build
+  # #352: an unset address stays unset (an empty one breaks a config that
+  # falls back with ??), and a set one reaches the test.
+  t "an unset site address is not handed over empty" passed "$(jq -nc --arg x "$pass" '{run: ("[ -z \"${WP_BASE_URL+set}\" ] && printf %s " + ($x|@sh) + " > build/j.xml"), junit: "build/j.xml", minutes: 1}')"
+  WP_BASE_URL=http://localhost:8892 t "a set site address reaches the test" passed "$(jq -nc --arg x "$pass" '{run: ("[ \"$WP_BASE_URL\" = http://localhost:8892 ] && printf %s " + ($x|@sh) + " > build/j.xml"), junit: "build/j.xml", minutes: 1}')"
+  t "C8 the repository's setup failing around the test is the environment (limit)" limit "$(jq -nc '{run: "printf %s \"<testsuites><testsuite><testcase name=\\\"s\\\" classname=\\\"global.setup.ts\\\"><failure message=\\\"page.goto: Invalid URL\\\"/></testcase></testsuite></testsuites>\" > build/j.xml; exit 1", junit: "build/j.xml", minutes: 1}')"
+  if grep -q "test setup failed" "$d/out/reason.txt"; then echo "ok   C8 and its reason says the environment"; else echo "FAIL C8 and its reason says the environment"; fail=1; fi
   t "the command sees none of the runner's variables" passed "$(jq -nc --arg x "$pass" '{run: ("[ -z \"${GH_TOKEN:-}\" ] && printf %s " + ($x|@sh) + " > build/j.xml"), junit: "build/j.xml", minutes: 1}')"
   THEME='x; rm -rf /' t "a theme that is not a slug is not installed" passed "$(jq -nc --arg x "$pass" '{theme: "exit 7", run: ("printf %s " + ($x|@sh) + " > build/j.xml"), junit: "build/j.xml", minutes: 1}')"
   THEME=astra t "a theme that cannot be installed is no verdict" limit "$(jq -nc --arg x "$pass" '{theme: "exit 7", run: ("printf %s " + ($x|@sh) + " > build/j.xml"), junit: "build/j.xml", minutes: 1}')"

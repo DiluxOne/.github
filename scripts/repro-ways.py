@@ -39,8 +39,8 @@ runs (`{paths: [globs], tests: [paths]}`), instead of the whole suite.
   repro-ways.py lint FILE exit 1, saying why, when FILE reads a stylesheet
                           as text: never a reproduction of how a page looks
   repro-ways.py verdict JUNIT NAME
-                          reproduced|passed|broken from a JUnit report, for
-                          the test file NAME
+                          reproduced|passed|broken|environment from a JUnit
+                          report, for the test file NAME
   repro-ways.py affected  the tests a pull request runs, from the changed
                           paths on stdin: JSON {"targeted", "tests", "repro"}
   repro-ways.py --test    self-test
@@ -242,21 +242,29 @@ def lint(path):
 
 def verdict(junit, name):
     """reproduced when a test of NAME failed an assertion; passed when every
-    test of NAME ran and passed; broken otherwise (no report, no test of
-    NAME, an error that is not an assertion, a setup that failed)."""
+    test of NAME ran and passed; environment when the repository's setup
+    beside it failed (the site, not the test, whatever became of the test),
+    or its teardown failed and the test reached no verdict of its own; broken
+    otherwise (no report, no test of NAME, an error that is not an
+    assertion). A teardown that fails after the test failed an assertion,
+    or passed, does not undo what the test showed."""
     try:
         root = ET.parse(junit).getroot()
     except (OSError, ET.ParseError):
         return "broken"
     cases = list(root.iter("testcase"))
     mine = [c for c in cases if name in " ".join(filter(None, (c.get("classname"), c.get("name"), c.get("file"))))]
+    others = [c for c in cases if c not in mine and (c.find("failure") is not None or c.find("error") is not None)]
+    after = [c for c in others if "teardown" in " ".join(filter(None, (c.get("classname"), c.get("name"), c.get("file")))).lower()]
+    if len(after) < len(others):
+        return "environment"
+    own = mine_verdict(mine)
+    return "environment" if after and own == "broken" else own
+
+
+def mine_verdict(mine):
     if not mine:
         return "broken"
-    # Anything else that ran with it (a setup project) and did not pass:
-    # the environment, not the bug.
-    for c in cases:
-        if c not in mine and (c.find("failure") is not None or c.find("error") is not None):
-            return "broken"
     failed = False
     for c in mine:
         if c.find("error") is not None:
@@ -404,8 +412,17 @@ def self_test():
         check("a test that passes does not", junit('<testsuites><testsuite><testcase name="x" classname="issue-69.spec.ts"/></testsuite></testsuites>'), "passed")
         check("C8 an error that is not an assertion is no verdict",
               junit('<testsuites><testsuite><testcase name="x" classname="issue-69.spec.ts"><failure message="TypeError: page.lokator is not a function"/></testcase></testsuite></testsuites>'), "broken")
-        check("C8 a setup that failed is no verdict",
-              junit('<testsuites><testsuite><testcase name="s" classname="global.setup.ts"><failure message="Timeout"/></testcase><testcase name="x" classname="issue-69.spec.ts"><failure message="expect(x)"/></testcase></testsuite></testsuites>'), "broken")
+        check("C8 a setup that failed is the environment, not the test",
+              junit('<testsuites><testsuite><testcase name="s" classname="global.setup.ts"><failure message="Timeout"/></testcase><testcase name="x" classname="issue-69.spec.ts"><failure message="expect(x)"/></testcase></testsuite></testsuites>'), "environment")
+        check("a teardown that fails after the test failed an assertion does not undo the reproduction",
+              junit('<testsuites><testsuite><testcase name="x" classname="issue-69.spec.ts"><failure message="Error: expect(received).toBe(expected)"/></testcase><testcase name="t" classname="global.teardown.ts"><failure message="TypeError: Invalid URL"/></testcase></testsuite></testsuites>'), "reproduced")
+        teardown = '<testcase name="t" classname="global.teardown.ts"><failure message="TypeError: Invalid URL"/></testcase>'
+        check("a teardown that fails after the test passed does not undo the pass",
+              junit(f'<testsuites><testsuite><testcase name="x" classname="issue-69.spec.ts"/>{teardown}</testsuite></testsuites>'), "passed")
+        check("C8 a teardown that fails when the test errored is the environment",
+              junit(f'<testsuites><testsuite><testcase name="x" classname="issue-69.spec.ts"><failure message="page.goto: Invalid URL"/></testcase>{teardown}</testsuite></testsuites>'), "environment")
+        check("C8 even when the test itself never ran",
+              junit('<testsuites><testsuite><testcase name="s" classname="global.setup.ts"><failure message="page.goto: Protocol error"/></testcase><testcase name="t" classname="global.teardown.ts"><failure message="TypeError: Invalid URL"/></testcase></testsuite></testsuites>'), "environment")
         check("C8 no test of the file is no verdict", junit("<testsuites><testsuite/></testsuites>"), "broken")
         check("C8 an element the test never found is no verdict (a wrong selector)",
               junit('<testsuites><testsuite><testcase name="x" classname="issue-69.spec.ts"><failure message="Error: expect(locator).toBeVisible() failed. Locator: .nope Expected: visible Received: &lt;element(s) not found&gt;"/></testcase></testsuite></testsuites>'), "broken")
