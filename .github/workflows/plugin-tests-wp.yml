@@ -176,14 +176,17 @@ jobs:
       # in its kind's pack and its .github/review-policy.yml), not the whole
       # end-to-end suite: that is for a push to main and the weekly run. A
       # repository that maps nothing, or a change that touches nothing
-      # mapped, runs the whole suite as before.
+      # mapped, runs the whole suite as before. The map is the base branch's
+      # (HEAD^1 of the merge commit), as scripts/changes.sh reads the policy:
+      # a pull request cannot narrow its own required run.
       - name: The tests this pull request runs
         id: targeted
         if: github.event_name == 'pull_request'
         env:
           CENTRAL: .dx-central
         run: |
-          plan=$(git diff --name-only HEAD^1 HEAD 2>/dev/null | DIR=. python3 .dx-central/scripts/repro-ways.py affected 2>/dev/null) || plan='{"targeted":false}'
+          git show HEAD^1:.github/review-policy.yml > "$RUNNER_TEMP/base-policy.yml" 2>/dev/null || : > "$RUNNER_TEMP/base-policy.yml"
+          plan=$(git diff --name-only HEAD^1 HEAD 2>/dev/null | DIR=. REPO_POLICY="$RUNNER_TEMP/base-policy.yml" python3 .dx-central/scripts/repro-ways.py affected 2>/dev/null) || plan='{"targeted":false}'
           echo "plan=$plan" >> "$GITHUB_OUTPUT"
           echo "$plan"
       - id: changes

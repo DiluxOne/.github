@@ -11,7 +11,11 @@ import { defineConfig, devices } from '@playwright/test';
 import base from './playwright.config';
 
 const REPRO = './tests/e2e/repro';
-const own = (base.projects ?? []).filter((p) => p.name !== 'chromium' && (p.name === 'setup' || p.name === 'teardown'));
+// The repository's setup and teardown projects, where they were: a project
+// without a testDir of its own keeps the repository's, not the one below.
+const own = (base.projects ?? [])
+	.filter((p) => p.name === 'setup' || p.name === 'teardown')
+	.map((p) => ({ ...p, testDir: p.testDir ?? base.testDir ?? '.' }));
 const chromium = (base.projects ?? []).find((p) => p.name === 'chromium');
 
 export default defineConfig({

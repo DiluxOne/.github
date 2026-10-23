@@ -267,6 +267,16 @@ def self_test():
         ok = False
     print(("ok   " if ok else "FAIL ") + "C2 (#148): every required-plugins step of the suites, and its job, runs only with requires-plugins-from")
     failed += 0 if ok else 1
+    # #352: the map of paths to tests is the base branch's policy, never the
+    # pull request's own, which could narrow its required run.
+    try:
+        step = text[text.index("id: targeted"):]
+        step = step[:step.index("\n      - ")]
+        ok = "git show HEAD^1:.github/review-policy.yml" in step and "REPO_POLICY=" in step
+    except ValueError:
+        ok = False
+    print(("ok   " if ok else "FAIL ") + "#352: a pull request's targeted run reads the base branch's map, not its own")
+    failed += 0 if ok else 1
     if not failed:
         print("all tests passed")
     return 1 if failed else 0

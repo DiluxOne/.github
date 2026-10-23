@@ -122,7 +122,9 @@ autopilot:
 repro:
   ways:
     unit:
-      layer: logic
+      # A WP-CLI command's output and a REST response are code a unit test
+      # reaches too.
+      layer: [logic, cli, api]
       noun: unit test
       test: tests/Unit/Repro/Issue{n}Test.php
       needs: [tests/bootstrap.php, tests/Unit/]

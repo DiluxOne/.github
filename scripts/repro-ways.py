@@ -10,7 +10,9 @@ may add a way, change one, or switch one off (`repro: {ways: {name: false}}`).
 Nothing about a tool is written in the workflows: issue-repro.yml asks here.
 
 A way is one entry of `repro.ways`:
-  layer     the layer it reproduces
+  layer     the layer it reproduces, or a list of them; for a layer two
+            ways cover, the repository's own comes first, then the pack's
+            in the order written
   noun      what the comments call its test ("unit test", "browser test")
   test      the file the agent writes, `{n}` the issue's number
   needs     paths that must exist for the way to work (a trailing / is a folder)
@@ -96,6 +98,9 @@ def merged(pack, repo):
             ways.pop(name, None)
         elif isinstance(way, dict):
             ways[name] = {**ways.get(name, {}), **way}
+    # The repository's ways first: for a layer two ways cover, its own wins.
+    own = [n for n in (mine.get("ways") or {}) if n in ways]
+    ways = {**{n: ways[n] for n in own}, **{n: w for n, w in ways.items() if n not in own}}
     if not base.get("ways") and not mine.get("ways"):
         # Neither the kind nor the repository says anything: the PHP unit
         # test every repository had before #352, which needs its setup.
@@ -113,8 +118,8 @@ def problems(conf):
         unknown = set(way) - KEYS
         if unknown:
             out.append(f"repro.ways.{name}: unknown keys {sorted(unknown)}")
-        if way.get("layer") not in LAYERS:
-            out.append(f"repro.ways.{name}.layer: one of {', '.join(LAYERS)}")
+        if not layers(way) or any(x not in LAYERS for x in layers(way)):
+            out.append(f"repro.ways.{name}.layer: one of {', '.join(LAYERS)}, or a list of them")
         test = str(way.get("test") or "")
         if "{n}" not in test or test.startswith("/") or ".." in test.split("/"):
             out.append(f"repro.ways.{name}.test: a relative path with {{n}}")
@@ -134,10 +139,16 @@ def config(root, central):
     return kind, merged(pack, repo)
 
 
+def layers(way):
+    """The layers a way reproduces: `layer` is one, or a list."""
+    value = way.get("layer")
+    return [value] if isinstance(value, str) else [x for x in value] if isinstance(value, list) else []
+
+
 def pick(conf, layer):
     """The first way, in the order declared, for LAYER; None when none."""
     for name, way in conf["ways"].items():
-        if way.get("layer") == layer:
+        if layer in layers(way):
             return name, way
     return None, None
 
@@ -255,6 +266,10 @@ def verdict(junit, name):
             text = " ".join(filter(None, (f.get("message"), f.get("type"), f.text)))
             if not re.search(r"\bexpect\(|AssertionError|toBe|toEqual|toHave|assert", text):
                 return "broken"
+            # An element the test never found says its selector is wrong as
+            # often as that the bug is there: no verdict.
+            if re.search(r"element\(s\) not found|waiting for (get|locator)", text):
+                return "broken"
             failed = True
         elif c.find("skipped") is not None:
             return "broken"
@@ -267,14 +282,22 @@ def glob_match(path, pattern):
     return re.fullmatch(rx, path) is not None
 
 
-def affected(conf, paths, repro_dirs):
-    """The tests a pull request runs: the reproduction tests it carries, and
-    the tests mapped to the paths it touches. Targeted only when every path
-    it touches is a reproduction test, one of the mapped tests, or matches
-    an entry of `affected` (one with no tests: what no test covers, such as
-    a readme), and there is something to run; otherwise the whole suite
-    runs, as before: a path no entry names may break any test."""
-    repro = sorted(p for p in paths if any(p.startswith(d.rstrip("/") + "/") for d in repro_dirs))
+def repro_tests(conf):
+    """What a command way's reproduction test is called, as a pattern: its
+    `test` with any issue number."""
+    return [re.compile(re.escape(str(w["test"])).replace(r"\{n\}", "[1-9][0-9]*"))
+            for w in conf["ways"].values() if w.get("sandbox") is None and w.get("test")]
+
+
+def affected(conf, paths, root="."):
+    """The tests a pull request runs: the reproduction tests it carries (the
+    files there now, named as a way names its test), and the tests mapped to
+    the paths it touches. Targeted only when every path it touches is one of
+    those, or matches an entry of `affected` (one with no tests: what no test
+    covers, such as a readme), and there is something to run; otherwise the
+    whole suite runs, as before: a path no entry names may break any test."""
+    named = repro_tests(conf)
+    repro = sorted(p for p in paths if any(rx.fullmatch(p) for rx in named) and os.path.isfile(os.path.join(root, p)))
     tests, covered = [], set(repro)
     for entry in conf["affected"]:
         hit = [p for p in paths if any(glob_match(p, g) for g in entry.get("paths") or [])]
@@ -333,7 +356,8 @@ def self_test():
         check("C2 a logic bug keeps the unit test", (r["way"], r["test"], r["sandbox"], r["ready"]), ("unit", "tests/Unit/Repro/Issue12Test.php", "php-unit", "yes"))
         check("C2 no layer is a logic bug", resolve(d, central, "", 12)["way"], "unit")
         check("C6 a plugin with no reproduction settings gets the pack's unit and browser",
-              sorted(w["layer"] for w in config(d, central)[1]["ways"].values()), ["browser", "logic"])
+              sorted(x for w in config(d, central)[1]["ways"].values() for x in layers(w)), ["api", "browser", "cli", "logic"])
+        check("a WP-CLI or REST bug in a plugin is a unit test there", (resolve(d, central, "cli", 3)["way"], resolve(d, central, "api", 3)["way"]), ("unit", "unit"))
         repo(wp + "repro:\n  ways:\n    browser: false\n", ["tests/bootstrap.php", "tests/Unit/"])
         r = resolve(d, central, "browser", 69)
         check("C3 a repository with no browser way declares nothing for that layer", (r["way"], r["ready"]), ("", "no"))
@@ -351,8 +375,9 @@ def self_test():
         check("a way whose files are missing is not ready", resolve(d, central, "browser", 1)["ready"], "no")
         repo(wp, ["playwright.config.ts", "tests/e2e/specs/a.spec.ts"])
         b = brief(d, central, "browser", 69)
-        check("C7 the brief tells the writer about colour scheme and theme only when the report says so",
-              ("colorScheme" in b, "theme" in b, "tests/e2e/repro/issue-69.spec.ts" in b, "tests/e2e/specs/a.spec.ts" in b), (True, True, True, True))
+        check("C7 the brief asks for a phone, dark mode or another theme only when the report says so",
+              ("only when the report talks about a phone" in b, "only when the report mentions it" in b, "another only when the report names it" in b,
+               "tests/e2e/repro/issue-69.spec.ts" in b, "tests/e2e/specs/a.spec.ts" in b), (True, True, True, True, True))
         check("the brief forbids screenshots compared pixel by pixel", "toHaveScreenshot" in b, True)
 
         def lint_of(text, ext="php"):
@@ -382,21 +407,29 @@ def self_test():
         check("C8 a setup that failed is no verdict",
               junit('<testsuites><testsuite><testcase name="s" classname="global.setup.ts"><failure message="Timeout"/></testcase><testcase name="x" classname="issue-69.spec.ts"><failure message="expect(x)"/></testcase></testsuite></testsuites>'), "broken")
         check("C8 no test of the file is no verdict", junit("<testsuites><testsuite/></testsuites>"), "broken")
+        check("C8 an element the test never found is no verdict (a wrong selector)",
+              junit('<testsuites><testsuite><testcase name="x" classname="issue-69.spec.ts"><failure message="Error: expect(locator).toBeVisible() failed. Locator: .nope Expected: visible Received: &lt;element(s) not found&gt;"/></testcase></testsuite></testsuites>'), "broken")
         check("C8 no report is no verdict", verdict(os.path.join(d, "none.xml"), "issue-69.spec.ts"), "broken")
 
-        conf = merged({"repro": {"affected": [{"paths": ["assets/**/*.css", "templates/**"], "tests": ["tests/e2e/specs/layout.spec.ts"]}]}}, {})
+        way = {"browser": {"layer": "browser", "test": "tests/e2e/repro/issue-{n}.spec.ts", "run": "x", "junit": "y"}}
+        conf = merged({"repro": {"ways": way, "affected": [{"paths": ["assets/**/*.css", "templates/**"], "tests": ["tests/e2e/specs/layout.spec.ts"]}]}}, {})
+        repo(wp, ["tests/e2e/repro/issue-69.spec.ts", "tests/e2e/repro/helpers.ts"])
         check("C5 a pull request touching mapped paths runs the reproduction and the mapped tests",
-              affected(conf, ["assets/css/front.css", "tests/e2e/repro/issue-69.spec.ts"], ["tests/e2e/repro"]),
+              affected(conf, ["assets/css/front.css", "tests/e2e/repro/issue-69.spec.ts"], d),
               {"targeted": True, "tests": ["tests/e2e/specs/layout.spec.ts"], "repro": ["tests/e2e/repro/issue-69.spec.ts"]})
-        check("C5 one touching nothing mapped runs the whole suite", affected(conf, ["includes/a.php"], ["tests/e2e/repro"])["targeted"], False)
+        check("C5 a file beside the reproduction tests that is not one is not run, and keeps it whole",
+              affected(conf, ["assets/css/front.css", "tests/e2e/repro/helpers.ts"], d), {"targeted": False, "tests": ["tests/e2e/specs/layout.spec.ts"], "repro": []})
+        check("C5 a reproduction test the pull request deletes is not run",
+              affected(conf, ["assets/css/front.css", "tests/e2e/repro/issue-70.spec.ts"], d)["repro"], [])
+        check("C5 one touching nothing mapped runs the whole suite", affected(conf, ["includes/a.php"], d)["targeted"], False)
         check("C5 one touching a mapped path and an unmapped one runs the whole suite",
-              affected(conf, ["assets/css/front.css", "includes/a.php"], ["tests/e2e/repro"])["targeted"], False)
-        docs = merged({"repro": {"affected": [{"paths": ["assets/**/*.css"], "tests": ["tests/e2e/specs/layout.spec.ts"]}, {"paths": ["readme.txt"], "tests": []}]}}, {})
+              affected(conf, ["assets/css/front.css", "includes/a.php"], d)["targeted"], False)
+        docs = merged({"repro": {"ways": way, "affected": [{"paths": ["assets/**/*.css"], "tests": ["tests/e2e/specs/layout.spec.ts"]}, {"paths": ["readme.txt"], "tests": []}]}}, {})
         check("C5 a path an entry maps to no tests (the changelog) keeps it targeted",
-              affected(docs, ["assets/css/front.css", "readme.txt"], [])["targeted"], True)
+              affected(docs, ["assets/css/front.css", "readme.txt"], d)["targeted"], True)
         check("C5 a change to a mapped test itself keeps it targeted",
-              affected(docs, ["assets/css/front.css", "tests/e2e/specs/layout.spec.ts"], [])["targeted"], True)
-        check("C5 a repository that maps nothing runs the whole suite", affected(merged({}, {}), ["assets/a.css"], [])["targeted"], False)
+              affected(docs, ["assets/css/front.css", "tests/e2e/specs/layout.spec.ts"], d)["targeted"], True)
+        check("C5 a repository that maps nothing runs the whole suite", affected(merged({}, {}), ["assets/a.css"], d)["targeted"], False)
         check("** spans folders, * does not", (glob_match("assets/css/a.css", "assets/**/*.css"), glob_match("assets/a.css", "assets/**/*.css"), glob_match("assets/css/a.css", "assets/*.css")), (True, True, False))
     print(f"{'all tests passed' if not failed else f'{failed} failed'}")
     return 1 if failed else 0
@@ -430,9 +463,8 @@ def main():
         return 0
     if args == ["affected"]:
         _, conf = config(root, central)
-        repro_dirs = sorted({os.path.dirname(str(w.get("test") or "")) for w in conf["ways"].values() if w.get("sandbox") is None and w.get("test")})
         paths = [line.strip() for line in sys.stdin if line.strip()]
-        print(json.dumps(affected(conf, paths, repro_dirs)))
+        print(json.dumps(affected(conf, paths, root)))
         return 0
     print(__doc__, file=sys.stderr)
     return 2
