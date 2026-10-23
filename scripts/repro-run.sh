@@ -15,9 +15,14 @@
 #      own user could sudo its way around all of that, so it never runs the
 #      test;
 #   3. the verdict is the way's JUnit report (scripts/repro-ways.py verdict):
-#      outcome=reproduced|passed|broken, or `limit` when setup failed or
-#      setup and run took longer than the way's `minutes`: the environment,
-#      not the bug, so no verdict (its reason in DIR/reason.txt).
+#      outcome=reproduced|passed|broken, or `limit` when setup failed, the
+#      repository's own test setup (or its teardown, when the test reached
+#      no verdict) failed around the test, or setup and run took longer than
+#      the way's `minutes`: the environment, not the bug, so no verdict (its
+#      reason in DIR/reason.txt). The test is handed the site's addresses
+#      (WP_BASE_URL, WP_NETWORK_URL, WP_ENV_PORT, WP_ENV_TESTS_PORT) only
+#      when they are set, so the repository's configuration keeps its own
+#      defaults otherwise.
 # The command's last lines are kept in DIR/output-tail.txt (untrusted text).
 #
 #   repro-run.sh run SRC DIR   SPEC (the way, JSON from repro-ways.py
