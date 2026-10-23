@@ -39,8 +39,8 @@ runs (`{paths: [globs], tests: [paths]}`), instead of the whole suite.
   repro-ways.py lint FILE exit 1, saying why, when FILE reads a stylesheet
                           as text: never a reproduction of how a page looks
   repro-ways.py verdict JUNIT NAME
-                          reproduced|passed|broken from a JUnit report, for
-                          the test file NAME
+                          reproduced|passed|broken|environment from a JUnit
+                          report, for the test file NAME
   repro-ways.py affected  the tests a pull request runs, from the changed
                           paths on stdin: JSON {"targeted", "tests", "repro"}
   repro-ways.py --test    self-test
@@ -242,21 +242,23 @@ def lint(path):
 
 def verdict(junit, name):
     """reproduced when a test of NAME failed an assertion; passed when every
-    test of NAME ran and passed; broken otherwise (no report, no test of
-    NAME, an error that is not an assertion, a setup that failed)."""
+    test of NAME ran and passed; environment when anything the repository
+    runs beside it (its setup or teardown project) failed: the site, not the
+    test; broken otherwise (no report, no test of NAME, an error that is not
+    an assertion)."""
     try:
         root = ET.parse(junit).getroot()
     except (OSError, ET.ParseError):
         return "broken"
     cases = list(root.iter("testcase"))
     mine = [c for c in cases if name in " ".join(filter(None, (c.get("classname"), c.get("name"), c.get("file"))))]
-    if not mine:
-        return "broken"
-    # Anything else that ran with it (a setup project) and did not pass:
-    # the environment, not the bug.
+    # Anything else that ran with it and did not pass: the environment,
+    # whatever became of the test, which may not have run at all.
     for c in cases:
         if c not in mine and (c.find("failure") is not None or c.find("error") is not None):
-            return "broken"
+            return "environment"
+    if not mine:
+        return "broken"
     failed = False
     for c in mine:
         if c.find("error") is not None:
@@ -404,8 +406,10 @@ def self_test():
         check("a test that passes does not", junit('<testsuites><testsuite><testcase name="x" classname="issue-69.spec.ts"/></testsuite></testsuites>'), "passed")
         check("C8 an error that is not an assertion is no verdict",
               junit('<testsuites><testsuite><testcase name="x" classname="issue-69.spec.ts"><failure message="TypeError: page.lokator is not a function"/></testcase></testsuite></testsuites>'), "broken")
-        check("C8 a setup that failed is no verdict",
-              junit('<testsuites><testsuite><testcase name="s" classname="global.setup.ts"><failure message="Timeout"/></testcase><testcase name="x" classname="issue-69.spec.ts"><failure message="expect(x)"/></testcase></testsuite></testsuites>'), "broken")
+        check("C8 a setup that failed is the environment, not the test",
+              junit('<testsuites><testsuite><testcase name="s" classname="global.setup.ts"><failure message="Timeout"/></testcase><testcase name="x" classname="issue-69.spec.ts"><failure message="expect(x)"/></testcase></testsuite></testsuites>'), "environment")
+        check("C8 even when the test itself never ran",
+              junit('<testsuites><testsuite><testcase name="s" classname="global.setup.ts"><failure message="page.goto: Protocol error"/></testcase><testcase name="t" classname="global.teardown.ts"><failure message="TypeError: Invalid URL"/></testcase></testsuite></testsuites>'), "environment")
         check("C8 no test of the file is no verdict", junit("<testsuites><testsuite/></testsuites>"), "broken")
         check("C8 an element the test never found is no verdict (a wrong selector)",
               junit('<testsuites><testsuite><testcase name="x" classname="issue-69.spec.ts"><failure message="Error: expect(locator).toBeVisible() failed. Locator: .nope Expected: visible Received: &lt;element(s) not found&gt;"/></testcase></testsuite></testsuites>'), "broken")
