@@ -31,6 +31,15 @@ name: WordPress plugin tests (slow)
 #                        "E2E (Playwright)": `npx playwright test` on the
 #                        development site.
 #
+# A pull request runs only what it touches when its repository maps paths to
+# tests (#352, `repro.affected` in kinds/wordpress-plugin/pack.yml and the
+# repository's .github/review-policy.yml, scripts/repro-ways.py affected):
+# each suite's command with the mapped tests (`--pass-with-no-tests`, so a
+# suite they are not part of runs none), and the reproduction tests it
+# carries (tests/e2e/repro/) on the single site, in chromium. A change that
+# touches nothing mapped, a push to main and the weekly run get every suite
+# whole.
+#
 # The PHP is the pack's (kinds/wordpress-plugin/pack.yml, `settings.php.tools`,
 # #85): the sites run on it (WP_ENV_PHP_VERSION, over the `phpVersion` of
 # the repository's `.wp-env.json`, which stays what a person runs locally),
@@ -137,6 +146,7 @@ jobs:
       integration: ${{ steps.plan.outputs.integration }}
       e2e: ${{ steps.plan.outputs.e2e }}
       php: ${{ fromJSON(steps.kind.outputs.settings || '{}').php.tools }}
+      targeted: ${{ steps.targeted.outputs.plan }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -160,6 +170,21 @@ jobs:
           E2E: ${{ inputs.e2e }}
           E2E_SUITES: ${{ inputs.e2e-suites }}
         run: python3 .dx-central/scripts/test-targets.py
+      # A pull request runs the reproduction tests it carries and the tests
+      # its repository maps to the paths it touches (#352, `repro.affected`
+      # in its kind's pack and its .github/review-policy.yml), not the whole
+      # end-to-end suite: that is for a push to main and the weekly run. A
+      # repository that maps nothing, or a change that touches nothing
+      # mapped, runs the whole suite as before.
+      - name: The tests this pull request runs
+        id: targeted
+        if: github.event_name == 'pull_request'
+        env:
+          CENTRAL: .dx-central
+        run: |
+          plan=$(git diff --name-only HEAD^1 HEAD 2>/dev/null | DIR=. python3 .dx-central/scripts/repro-ways.py affected 2>/dev/null) || plan='{"targeted":false}'
+          echo "plan=$plan" >> "$GITHUB_OUTPUT"
+          echo "$plan"
       - id: changes
         env:
           EVENT: ${{ github.event_name }}
@@ -437,14 +462,14 @@ jobs:
         run: |
           [ "$RESULT" = success ] || { echo "::error::The required plugins ($(printf '%s' "$REQUIRES" | tr '\n' ' ')) could not be fetched (the Required plugins job: $RESULT; its log names the repository). The suite does not run without them."; exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: inputs.requires-plugins-from != '' && env.GO == 'true'
+        if: (inputs.requires-plugins-from != '' || fromJSON(needs.changes.outputs.targeted || '{}').targeted) && env.GO == 'true'
         with:
           repository: DiluxOne/.github
           ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
       - name: The organisation's configuration (#197)
-        if: inputs.requires-plugins-from != '' && env.GO == 'true'
+        if: (inputs.requires-plugins-from != '' || fromJSON(needs.changes.outputs.targeted || '{}').targeted) && env.GO == 'true'
         run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         id: required-download
@@ -522,16 +547,30 @@ jobs:
         env:
           CI: 'true'
           RUN: ${{ matrix.suite.run }}
+          TARGETED: ${{ needs.changes.outputs.targeted }}
+          SITE: ${{ matrix.suite.site }}
         # A runner with ports of its own (the organisation's VM, one pair per
         # runner, so suites side by side never share one) states them alone;
         # the addresses every suite reads come from them: WP_BASE_URL, the
         # development site, and WP_NETWORK_URL, the tests site. Elsewhere
         # neither port is set and each repository keeps its own defaults.
+        # A targeted pull request (#352) runs the mapped tests through the
+        # suite's own command (a suite whose tests they are not runs none)
+        # and its reproduction tests on the single site, through
+        # kinds/wordpress-plugin/playwright.dx-repro.config.ts.
         run: |
           [ -z "${WP_ENV_PORT:-}" ] || export WP_BASE_URL="http://localhost:$WP_ENV_PORT"
           [ -z "${WP_ENV_TESTS_PORT:-}" ] || export WP_NETWORK_URL="http://localhost:$WP_ENV_TESTS_PORT"
           mkdir -p build
-          bash -c "$RUN"
+          if [ -z "$TARGETED" ] || [ "$(jq -r '.targeted // false' <<<"$TARGETED" 2>/dev/null)" != true ]; then bash -c "$RUN"; exit; fi
+          mapfile -t tests < <(jq -r '.tests[]' <<<"$TARGETED")
+          mapfile -t repro < <(jq -r '.repro[]' <<<"$TARGETED")
+          echo "Targeted: ${tests[*]:-no mapped tests}; ${repro[*]:-no reproduction tests}."
+          if [ "${#tests[@]}" -gt 0 ]; then bash -c "$RUN --pass-with-no-tests $(printf '%q ' "${tests[@]}")"; fi
+          if [ "${#repro[@]}" -gt 0 ] && [ "$SITE" = single ]; then
+            cp .dx-central/kinds/wordpress-plugin/playwright.dx-repro.config.ts playwright.dx-repro.config.ts
+            npx playwright test -c playwright.dx-repro.config.ts --project=chromium "${repro[@]}"
+          fi
       - if: failure() && env.GO == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
