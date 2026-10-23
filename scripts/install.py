@@ -311,6 +311,57 @@ def self_test():
                           {"name": "someone-else", "isFork": True, "defaultBranchRef": {"name": "main"}},
                           {"name": "plugin-a-ghsa-jg3v-wpv3-q3cc", "isFork": False, "defaultBranchRef": {"name": "main"}}])
     check("repositories: its own, not forks nor an advisory's temporary fork", repositories("Acme", lambda *a: (0, listing, "")), {"plugin-a": "trunk"})
+    # apply against a local stand-in for ORG/.github and for gh.
+    with tempfile.TemporaryDirectory() as t:
+        env = dict(os.environ, GIT_CONFIG_GLOBAL="/dev/null", GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+        old = dict(os.environ)
+        os.environ.update(env)
+        try:
+            origin = os.path.join(t, "origin.git")
+            subprocess.run(["git", "init", "-q", "--bare", "-b", "main", origin], check=True)
+            seed = os.path.join(t, "seed")
+            subprocess.run(["git", "clone", "-q", origin, seed], check=True, capture_output=True)
+            open(os.path.join(seed, "README.md"), "w").write("x\n")
+            subprocess.run(["git", "-C", seed, "add", "-A"], check=True)
+            subprocess.run(["git", "-C", seed, "commit", "-q", "-m", "init"], check=True)
+            subprocess.run(["git", "-C", seed, "push", "-q", "origin", "HEAD:main"], check=True, capture_output=True)
+            calls, state = [], {"open": ""}
+
+            def fake(*args):
+                calls.append(args[:2])
+                if args[:2] == ("pr", "list"):
+                    return 0, state["open"], ""
+                if args[:2] == ("pr", "create"):
+                    return 0, "https://github.com/Acme/.github/pull/1", ""
+                return 0, "", ""
+            heads = lambda: subprocess.run(["git", "--git-dir", origin, "rev-parse", BRANCH], capture_output=True, text=True).stdout.strip()  # noqa: E731
+            rc, out = apply("Acme", "acme-bot", 7, {"plugin-a": "main"}, lambda n: [], run=fake, clone_url=origin)
+            check("apply: the first run pushes the branch and opens its pull request", (rc, bool(heads()), ("pr", "create") in calls), (0, True, True))
+            first = heads()
+            # Its pull request was merged and the branch left: start again from main.
+            subprocess.run(["git", "-C", seed, "pull", "-q", "origin", BRANCH], check=True, capture_output=True)
+            open(os.path.join(seed, "org.yml"), "w").write(open(os.path.join(seed, "org.yml")).read().replace("id: 7", "id: 8"))
+            subprocess.run(["git", "-C", seed, "commit", "-q", "-am", "merged, then corrected"], check=True)
+            subprocess.run(["git", "-C", seed, "push", "-q", "origin", "HEAD:main"], check=True, capture_output=True)
+            calls.clear()
+            rc, out = apply("Acme", "acme-bot", 7, {"plugin-a": "main", "plugin-b": "main"}, lambda n: [], run=fake, clone_url=origin)
+            log = subprocess.run(["git", "--git-dir", origin, "log", "--format=%s", BRANCH], capture_output=True, text=True).stdout
+            check("apply: a stale branch of a merged pull request starts again from main, keeping main's corrections",
+                  (rc, "merged, then corrected" in log, ("pr", "create") in calls, heads() != first), (0, True, True, True))
+            # With its pull request open, a run builds on it and pushes, no new one.
+            state["open"] = "https://github.com/Acme/.github/pull/2"
+            calls.clear()
+            before = heads()
+            rc, out = apply("Acme", "acme-bot", 7, {"plugin-a": "main", "plugin-b": "main", "plugin-c": "main"}, lambda n: [], run=fake, clone_url=origin)
+            parent = subprocess.run(["git", "--git-dir", origin, "rev-parse", BRANCH + "^"], capture_output=True, text=True).stdout.strip()
+            check("apply: with its pull request open, it builds on that branch and opens none", (rc, parent == before, ("pr", "create") in calls, "Updated" in out), (0, True, False, True))
+            calls.clear()
+            rc, out = apply("Acme", "acme-bot", 7, {"plugin-a": "main", "plugin-b": "main", "plugin-c": "main"}, lambda n: [], run=fake, clone_url=origin)
+            check("apply: nothing more to change pushes and opens nothing", (rc, ("pr", "create") in calls, "Nothing to change" in out), (0, False, True))
+        finally:
+            os.environ.clear()
+            os.environ.update(old)
+
     check("the steps name each URL of the organisation", all(f"/organizations/Acme/settings/{p}" in steps("Acme", "acme-bot") for p in ("apps/new", "secrets/actions", "variables/actions", "rules")), True)
     from urllib.parse import parse_qs, urlparse
     q = {k: v[0] for k, v in parse_qs(urlparse(app_url("Acme")).query).items()}
@@ -340,55 +391,68 @@ def main(argv):
             tmp = tempfile.mkdtemp()
             shutil.copytree(a.dir, tmp, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git"))
             target = tmp
-        did = plan(a.org, a.app, a.app_id, target, repos, found_of)
+        try:
+            did = plan(a.org, a.app, a.app_id, target, repos, found_of)
+        finally:
+            if a.mode == "diff":
+                shutil.rmtree(target, ignore_errors=True)
         print("\n".join(did))
         if a.mode == "diff":
             print("\nWhat installing again would change: " + ("nothing." if not material(did) else ", ".join(material(did))))
-            shutil.rmtree(target)
         return 0
-    # apply: one pull request in ORG/.github.
-    full = f"{a.org}/.github"
-    rc, _, _ = run_gh("repo", "view", full, "--json", "name")
+    rc, out = apply(a.org, a.app, a.app_id, repos, found_of)
+    print(out)
+    return rc
+
+
+def apply(owner, app, app_id, repos, found_of, run=run_gh, clone_url=None):
+    """The one pull request in OWNER/.github: (exit code, what it says).
+    `run` calls gh and `clone_url` is where to clone from (the self-test's
+    stand-ins). The install branch is built on only while its pull request
+    is open (a correction made there is kept, since plan never replaces
+    what is there); one left by a merged or closed pull request is started
+    again from the default branch."""
+    full = f"{owner}/.github"
+    said = []
+    rc, _, _ = run("repo", "view", full, "--json", "name")
     if rc != 0:
         # With a first commit, so the pull request has a branch to go into.
-        rc, _, err = run_gh("repo", "create", full, "--public", "--add-readme", "--description", "The organisation's configuration of the engine")
+        rc, _, err = run("repo", "create", full, "--public", "--add-readme", "--description", "The organisation's configuration of the engine")
         if rc != 0:
-            print(f"Could not create {full}: {err.strip()[:200]}", file=sys.stderr)
-            return 1
+            return 1, f"Could not create {full}: {err.strip()[:200]}"
+    rc, out, _ = run("pr", "list", "--repo", full, "--head", BRANCH, "--state", "open", "--json", "url", "--jq", ".[0].url // empty")
+    open_pr = out.strip() if rc == 0 else ""
     work = tempfile.mkdtemp()
-    subprocess.run(["gh", "repo", "clone", full, work, "--", "-q"], check=True)
-    g = lambda *x: subprocess.run(["git", "-C", work, *x], check=True, capture_output=True, text=True)  # noqa: E731
-    # Run again while its pull request is open: on top of that branch, so a
-    # correction made there is kept (plan never replaces what is there).
-    pushed = subprocess.run(["git", "-C", work, "ls-remote", "--exit-code", "--heads", "origin", BRANCH], capture_output=True).returncode == 0
-    if pushed:
-        g("fetch", "-q", "origin", BRANCH)
-        g("checkout", "-q", "-B", BRANCH, "FETCH_HEAD")
-    else:
-        g("checkout", "-q", "-B", BRANCH)
-    did = plan(a.org, a.app, a.app_id, work, repos, found_of)
-    print("\n".join(did))
-    if material(did):
+    try:
+        g = lambda *x: subprocess.run(["git", "-C", work, *x], check=True, capture_output=True, text=True)  # noqa: E731
+        subprocess.run(["git", "clone", "-q", clone_url or f"https://github.com/{full}", work], check=True, capture_output=True)
+        if open_pr:
+            g("fetch", "-q", "origin", BRANCH)
+            g("checkout", "-q", "-B", BRANCH, "FETCH_HEAD")
+        else:
+            g("checkout", "-q", "-B", BRANCH)
+        did = plan(owner, app, app_id, work, repos, found_of)
+        said.append("\n".join(did))
+        if not material(did):
+            said.append(f"Nothing to change: {open_pr} already holds it." if open_pr else "Nothing to change: the configuration is installed.")
+            return 0, "\n".join(said)
         g("add", "-A")
         g("commit", "-q", "-m", "chore: install the engine's configuration")
-        g("push", "-q", "-u", "origin", BRANCH)
-    elif not pushed:
-        print("Nothing to change: the configuration is installed.")
-        return 0
-    # A branch pushed by an earlier run whose pull request was never opened
-    # (or a run that changes nothing more) still gets its pull request.
-    body = ("## What changes\n\n" + "\n".join(f"- {d}" for d in material(did)) +
-            f"\n\n## Why\n\nThe configuration of the engine in {org.CENTRAL} for {a.org}: the engine is called by tag and reads this repository's "
-            "configuration over its own defaults. Correct the kinds detection proposed in repos.yml before merging.\n\n" + steps(a.org, a.app))
-    # Run again while its pull request is open: the push updated it.
-    rc, out, err = run_gh("pr", "list", "--repo", full, "--head", BRANCH, "--state", "open", "--json", "url", "--jq", ".[0].url // empty")
-    if rc == 0 and out.strip():
-        print(f"Updated {out.strip()}")
+        # Over a stale branch only when no pull request is open on it.
+        g("push", "-q", "-u", "origin", BRANCH, *([] if open_pr else ["--force"]))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    if open_pr:
+        said.append(f"Updated {open_pr}")
+        rc = 0
     else:
-        rc, out, err = run_gh("pr", "create", "--repo", full, "--head", BRANCH, "--title", "chore: install the engine's configuration", "--body", body)
-        print(out.strip() or err.strip())
-    print("\n" + steps(a.org, a.app))
-    return 0 if rc == 0 else 1
+        body = ("## What changes\n\n" + "\n".join(f"- {d}" for d in material(did)) +
+                f"\n\n## Why\n\nThe configuration of the engine in {org.CENTRAL} for {owner}: the engine is called by tag and reads this repository's "
+                "configuration over its own defaults. Correct the kinds detection proposed in repos.yml before merging.\n\n" + steps(owner, app))
+        rc, out, err = run("pr", "create", "--repo", full, "--head", BRANCH, "--title", "chore: install the engine's configuration", "--body", body)
+        said.append(out.strip() or err.strip())
+    said.append("\n" + steps(owner, app))
+    return (0 if rc == 0 else 1), "\n".join(said)
 
 
 if __name__ == "__main__":
