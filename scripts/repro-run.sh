@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# Runs ONE reproduction test of a way that is a command (#352): a browser
+# test on wp-env, a command's output, an API. issue-repro.yml's run job, on
+# a GitHub runner with no secret and a read-only token. The test was written
+# from an outsider's report, so it is untrusted code:
+#   1. the way's `setup` runs first, with the network, before the test is in
+#      the tree (installing the repository's own tools, starting its site),
+#      and then `theme`, when the report named one (a slug, nothing else);
+#   2. the test is copied into place and the network is cut for it: the
+#      command runs with no environment (none of the runner's variables, its
+#      tokens among them) as a user of its own, `dxrepro`, with no sudo, who
+#      can read the checkout and write only build/, and whose packets reach
+#      only this machine (loopback and Docker's own networks); the site's
+#      containers reach nothing outside either (DOCKER-USER). The runner's
+#      own user could sudo its way around all of that, so it never runs the
+#      test;
+#   3. the verdict is the way's JUnit report (scripts/repro-ways.py verdict):
+#      outcome=reproduced|passed|broken, or `limit` when setup failed or
+#      setup and run took longer than the way's `minutes`: the environment,
+#      not the bug, so no verdict (its reason in DIR/reason.txt).
+# The command's last lines are kept in DIR/output-tail.txt (untrusted text).
+#
+#   repro-run.sh run SRC DIR   SPEC (the way, JSON from repro-ways.py
+#                              resolve), TEST (where the test goes), THEME
+#   repro-run.sh --test        self-test (no network change, no Docker)
+#
+# It refuses a self-hosted runner, as scripts/repro-sandbox.sh does.
+set -euo pipefail
+
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
+say() {
+  echo "outcome=$1"
+  if [ -n "${GITHUB_OUTPUT:-}" ]; then echo "outcome=$1" >> "$GITHUB_OUTPUT"; fi
+}
+
+# The dxrepro user: no sudo, the checkout and the browsers readable (every
+# folder above them traversable), build/ writable, and its packets to this
+# machine only. The runner keeps its own network (it reports the job), and
+# so does everything else on it.
+isolate() {
+  local uid p
+  id dxrepro >/dev/null 2>&1 || sudo useradd --create-home --shell /bin/bash dxrepro
+  uid=$(id -u dxrepro)
+  for p in "$PWD" "$PLAYWRIGHT_BROWSERS_PATH"; do
+    while [ "$p" != / ]; do sudo chmod o+x "$p"; p=$(dirname "$p"); done
+  done
+  chmod -R o+rX . "$PLAYWRIGHT_BROWSERS_PATH" 2>/dev/null || true
+  sudo iptables -I OUTPUT 1 -m owner --uid-owner "$uid" -j REJECT
+  sudo iptables -I OUTPUT 1 -m owner --uid-owner "$uid" -d 172.16.0.0/12 -j ACCEPT
+  sudo iptables -I OUTPUT 1 -m owner --uid-owner "$uid" -o lo -j ACCEPT
+  sudo ip6tables -I OUTPUT 1 -m owner --uid-owner "$uid" -j REJECT 2>/dev/null || true
+  sudo ip6tables -I OUTPUT 1 -m owner --uid-owner "$uid" -o lo -j ACCEPT 2>/dev/null || true
+  # The site's containers: their own networks and nothing else.
+  if sudo iptables -L DOCKER-USER -n >/dev/null 2>&1; then
+    sudo iptables -I DOCKER-USER 1 -i br-+ ! -d 172.16.0.0/12 -j REJECT
+    sudo iptables -I DOCKER-USER 1 -i docker0 ! -d 172.16.0.0/12 -j REJECT
+  fi
+}
+
+# Run CMD as dxrepro with no environment but what a test needs.
+confined() {
+  local cmd=$1 secs=$2
+  if [ "${DX_REPRO_UNCONFINED:-}" = 1 ]; then
+    timeout "$secs" env -i PATH="$PATH" HOME="${HOME:-/tmp}" CI=1 bash -c "$cmd"; return
+  fi
+  sudo -u dxrepro timeout "$secs" env -i PATH="$PATH" HOME=/home/dxrepro CI=1 \
+    PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWSERS_PATH" WP_BASE_URL="${WP_BASE_URL:-}" \
+    bash -c "cd $(printf '%q' "$PWD") && $cmd"
+}
+
+run() {
+  local src=$1 dir=$2 spec=${SPEC:?} test=${TEST:?} theme=${THEME:-} minutes deadline left rc=0 cmd junit
+  mkdir -p "$dir"
+  : > "$dir/output-tail.txt"
+  if [ "${RUNNER_ENVIRONMENT:-}" = self-hosted ]; then
+    echo "::error::A reproduction test runs on GitHub's runners only, not on a self-hosted one." >&2; return 2
+  fi
+  case "$test" in /* | *..* | "") echo "::error::Not a test path: $test" >&2; return 2 ;; esac
+  [ -f "$src" ] || { echo "::error::No test at $src" >&2; return 2; }
+  minutes=$(jq -r '.minutes // 15' <<<"$spec")
+  deadline=$(( $(date +%s) + minutes * 60 ))
+  remaining() { left=$(( deadline - $(date +%s) )); [ "$left" -gt 0 ] || left=1; }
+  limit() { printf '%s\n' "$1" > "$dir/reason.txt"; echo "$1"; say limit; }
+
+  # Shared with the confined user: Playwright's browsers outside $HOME.
+  export PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH:-${RUNNER_TEMP:-/tmp}/dx-browsers}
+  mkdir -p "$PLAYWRIGHT_BROWSERS_PATH"
+
+  # 1. Setup, with the network, before the test is anywhere near.
+  while IFS= read -r cmd; do
+    [ -n "$cmd" ] || continue
+    remaining
+    echo "::group::$cmd"
+    rc=0; timeout "$left" bash -c "$cmd" > "$dir/setup.log" 2>&1 || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      tail -n 40 "$dir/setup.log" | tee -a "$dir/output-tail.txt"
+      echo "::endgroup::"
+      if [ "$rc" -eq 124 ]; then limit "Setting up took longer than the way's $minutes minutes ($cmd)."
+      else limit "Setting up the way failed ($cmd, exit $rc): the repository's environment, not the report."; fi
+      return 0
+    fi
+    tail -n 5 "$dir/setup.log"
+    echo "::endgroup::"
+  done < <(jq -r '(.setup // []) | if type == "array" then .[] else . end' <<<"$spec")
+  if [ -n "$theme" ]; then
+    if [[ "$theme" =~ ^[a-z0-9][a-z0-9-]{0,60}$ ]] && cmd=$(jq -r '.theme // empty' <<<"$spec") && [ -n "$cmd" ]; then
+      remaining
+      timeout "$left" bash -c "${cmd//\{theme\}/$theme}" > "$dir/setup.log" 2>&1 \
+        || { tail -n 20 "$dir/setup.log" >> "$dir/output-tail.txt"; limit "The theme the report names ($theme) could not be installed."; return 0; }
+    else
+      echo "::warning::Not a theme slug, or no way to install one: $theme"
+    fi
+  fi
+
+  # 2. The test, in place; the network cut for it.
+  mkdir -p "$(dirname "$test")"
+  cp "$src" "$test"
+  junit=$(jq -r '.junit' <<<"$spec")
+  rm -f "$junit"
+  mkdir -p build "$(dirname "$junit")"
+  chmod -R a+rwX build "$(dirname "$junit")"
+  [ "${DX_REPRO_UNCONFINED:-}" = 1 ] || isolate
+  remaining
+  cmd=$(jq -r '.run' <<<"$spec")
+  set +e
+  confined "$cmd" "$left" > "$dir/run.log" 2>&1
+  rc=$?
+  set -e
+  tail -c 6000 "$dir/run.log" >> "$dir/output-tail.txt"
+  tail -n 60 "$dir/run.log"
+
+  # 3. The verdict.
+  if [ "$rc" -eq 124 ]; then
+    limit "The test took longer than the way's $minutes minutes, setup included."
+  else
+    say "$(python3 "$HERE/repro-ways.py" verdict "$junit" "$(basename "$test")")"
+  fi
+  cmd=$(jq -r '.teardown // empty' <<<"$spec")
+  [ -z "$cmd" ] || timeout 120 bash -c "$cmd" >/dev/null 2>&1 || true
+}
+
+self_test() {
+  local d fail=0 got
+  d=$(mktemp -d)
+  cd "$d"
+  printf 'x\n' > src.ts
+  t() {
+    local name=$1 want=$2 spec=$3
+    got=$(DX_REPRO_UNCONFINED=1 SPEC=$spec TEST=tests/e2e/repro/issue-1.spec.ts THEME=${THEME:-} GITHUB_OUTPUT='' run "$d/src.ts" "$d/out" 2>/dev/null | grep '^outcome=' | tail -1)
+    if [ "$got" = "outcome=$want" ]; then echo "ok   $name"; else echo "FAIL $name (want $want, got $got)"; fail=1; fi
+  }
+  pass='<testsuites><testsuite><testcase name="x" classname="issue-1.spec.ts"/></testsuite></testsuites>'
+  fails='<testsuites><testsuite><testcase name="x" classname="issue-1.spec.ts"><failure message="expect(a).toBe(b)"/></testcase></testsuite></testsuites>'
+  t "C1 a failing assertion reproduces" reproduced "$(jq -nc --arg x "$fails" '{run: ("printf %s " + ($x|@sh) + " > build/j.xml; exit 1"), junit: "build/j.xml", minutes: 1}')"
+  t "a passing test passes" passed "$(jq -nc --arg x "$pass" '{run: ("printf %s " + ($x|@sh) + " > build/j.xml"), junit: "build/j.xml", minutes: 1}')"
+  t "C8 a setup that fails is no verdict (limit)" limit '{"setup":["exit 3"],"run":"true","junit":"build/j.xml","minutes":1}'
+  t "C8 a run past the way's minutes is no verdict (limit)" limit '{"run":"sleep 5","junit":"build/j.xml","minutes":0}'
+  t "C8 a setup past the way's minutes is no verdict (limit)" limit '{"setup":["sleep 5"],"run":"true","junit":"build/j.xml","minutes":0}'
+  if grep -q "longer than" "$d/out/reason.txt"; then echo "ok   C8 its reason names the time"; else echo "FAIL C8 its reason names the time"; fail=1; fi
+  t "a run that writes no report is broken" broken '{"run":"true","junit":"build/j.xml","minutes":1}'
+  t "the test is in place when the command runs" passed "$(jq -nc --arg x "$pass" '{run: ("test -f tests/e2e/repro/issue-1.spec.ts && printf %s " + ($x|@sh) + " > build/j.xml"), junit: "build/j.xml", minutes: 1}')"
+  t "but not while setup runs" limit '{"setup":["test ! -f tests/e2e/repro/issue-1.spec.ts && exit 9"],"run":"true","junit":"build/j.xml","minutes":1}'
+  rm -rf tests build
+  t "the command sees none of the runner's variables" passed "$(jq -nc --arg x "$pass" '{run: ("[ -z \"${GH_TOKEN:-}\" ] && printf %s " + ($x|@sh) + " > build/j.xml"), junit: "build/j.xml", minutes: 1}')"
+  THEME='x; rm -rf /' t "a theme that is not a slug is not installed" passed "$(jq -nc --arg x "$pass" '{theme: "exit 7", run: ("printf %s " + ($x|@sh) + " > build/j.xml"), junit: "build/j.xml", minutes: 1}')"
+  THEME=astra t "a theme that cannot be installed is no verdict" limit "$(jq -nc --arg x "$pass" '{theme: "exit 7", run: ("printf %s " + ($x|@sh) + " > build/j.xml"), junit: "build/j.xml", minutes: 1}')"
+  if (DX_REPRO_UNCONFINED=1 SPEC='{}' TEST=../x run "$d/src.ts" "$d/out" >/dev/null 2>&1); then echo "FAIL a path outside the checkout is refused"; fail=1; else echo "ok   a path outside the checkout is refused"; fi
+  if (RUNNER_ENVIRONMENT=self-hosted DX_REPRO_UNCONFINED=1 SPEC='{}' TEST=a/b run "$d/src.ts" "$d/out" >/dev/null 2>&1); then echo "FAIL a self-hosted runner is refused"; fail=1; else echo "ok   a self-hosted runner is refused"; fi
+  cd / && rm -rf "$d"
+  if [ "$fail" -eq 0 ]; then echo "all tests passed"; else return 1; fi
+}
+
+case "${1:-}" in
+  run) shift; run "$@" ;;
+  --test) GH_TOKEN=secret self_test ;;
+  *) echo "usage: repro-run.sh run SRC DIR | --test" >&2; exit 2 ;;
+esac

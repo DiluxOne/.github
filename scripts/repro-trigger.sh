@@ -6,13 +6,9 @@
 #   bug     reads VERDICT (the triage's verdict JSON) and prints true when
 #           it is bug_unconfirmed: the triage's `bug` output, whether or not
 #           the classifier read a paid add-on's roadmap (#247).
-#   setup   reads DIR (default: the current directory) and prints ready=yes
-#           when it has the unit-test setup a reproduction writes into
-#           (tests/bootstrap.php and tests/Unit/), ready=no otherwise
-#           (appended to $GITHUB_OUTPUT when it is set). A repository
-#           without one has nothing to reproduce against: the run ends
-#           there, green, and the report waits for a person.
 #   --test  the cases behind each acceptance criterion of the issue.
+# Whether the repository can reproduce the bug, and how, is
+# scripts/repro-ways.py (#352).
 #
 # trigger "triage": the triage classified the report as a bug (TRIAGE_BUG),
 #   on the event that opened it. Nobody's permission is asked: the report's
@@ -50,11 +46,6 @@ decide() {
       case "$role" in admin | maintain | write) echo yes ;; *) echo no ;; esac ;;
     *) echo no ;;
   esac
-}
-
-# setup_ready DIR: yes when DIR has tests/bootstrap.php and tests/Unit/.
-setup_ready() {
-  if [ -f "$1/tests/bootstrap.php" ] && [ -d "$1/tests/Unit" ]; then echo yes; else echo no; fi
 }
 
 test_all() {
@@ -127,30 +118,6 @@ test_all() {
   bug_from '' false false
   bug_from 'not json' false false
 
-  # ready NAME WANT PATHS...: a scratch repository with these paths (a
-  # trailing / is a directory).
-  ready() {
-    local name=$1 want=$2 dir path
-    shift 2
-    total=$((total + 1))
-    dir=$(mktemp -d)
-    for path in "$@"; do
-      case "$path" in */) mkdir -p "$dir/$path" ;; *) mkdir -p "$dir/$(dirname "$path")"; : > "$dir/$path" ;; esac
-    done
-    got=$(DIR=$dir bash "${BASH_SOURCE[0]}" setup)
-    rm -rf "$dir"
-    if [ "$got" != "ready=$want" ]; then
-      failed=$((failed + 1))
-      echo "not ok $total - $name (want ready=$want, got $got)"
-    else
-      echo "ok $total - $name"
-    fi
-  }
-  ready "a plugin with tests/bootstrap.php and tests/Unit/ is ready" yes tests/bootstrap.php tests/Unit/
-  ready "a repository with no tests is not ready (the run skips, green)" no README.md
-  ready "tests/Unit/ without its bootstrap is not ready" no tests/Unit/
-  ready "a bootstrap without tests/Unit/ is not ready" no tests/bootstrap.php
-
   echo "$((total - failed))/$total passed"
   [ "$failed" -eq 0 ]
 }
@@ -165,16 +132,11 @@ bug_output() {
 
 case "${1:-}" in
   bug) bug_output ;;
-  setup)
-    ready=$(setup_ready "${DIR:-.}")
-    echo "ready=$ready"
-    if [ -n "${GITHUB_OUTPUT:-}" ]; then echo "ready=$ready" >> "$GITHUB_OUTPUT"; fi
-    ;;
   decide)
     go=$(decide "${TRIGGER:-label}" "${EVENT:-}" "${ACTION:-}" "${LABEL:-}" "${SENDER_TYPE:-}" "${ROLE:-}" "${TRIAGE_BUG:-false}" "${NIGHTLY:-false}" "${SENDER_LOGIN:-}")
     echo "go=$go"
     if [ -n "${GITHUB_OUTPUT:-}" ]; then echo "go=$go" >> "$GITHUB_OUTPUT"; fi
     ;;
   --test) test_all ;;
-  *) echo "usage: repro-trigger.sh decide | bug | setup | --test" >&2; exit 2 ;;
+  *) echo "usage: repro-trigger.sh decide | bug | --test" >&2; exit 2 ;;
 esac
