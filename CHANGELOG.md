@@ -2,11 +2,21 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [6.4.1](https://github.com/DiluxOne/.github/releases/tag/v6.4.1) · 2026-10-23
+
+### Fixes
+
+- **repro:** the site's address, and setup failures as the environment ([#358](https://github.com/DiluxOne/.github/pull/358))
+
 ## [6.4.0](https://github.com/DiluxOne/.github/releases/tag/v6.4.0) · 2026-10-23
 
 ### Features
 
 - **repro:** reproduce each bug the way its repository declares ([#356](https://github.com/DiluxOne/.github/pull/356))
+
+### Maintenance
+
+- **release:** v6.4.0, each bug reproduced the way its repo says ([#357](https://github.com/DiluxOne/.github/pull/357))
 
 ## [6.3.0](https://github.com/DiluxOne/.github/releases/tag/v6.3.0) · 2026-10-22
 
