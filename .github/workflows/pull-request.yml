@@ -107,6 +107,8 @@ jobs:
       - run: bash scripts/repro-trigger.sh --test
       - run: bash scripts/repro-sandbox.sh --test
       - run: python3 scripts/repro-lane.py --test
+      - run: python3 scripts/repro-ways.py --test
+      - run: bash scripts/repro-run.sh --test
       - run: bash scripts/triage-brief.sh --test
       - run: python3 scripts/sync-repos.py --test
       - run: bash scripts/dx.sh --test
