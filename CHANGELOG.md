@@ -2,11 +2,27 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
-## [6.2.0](https://github.com/DiluxOne/.github/releases/tag/v6.2.0) · 2026-10-21
+## [6.3.0](https://github.com/DiluxOne/.github/releases/tag/v6.3.0) · 2026-10-23
+
+### Features
+
+- **g1:** check the issue schema when an issue opens and on each edit ([#354](https://github.com/DiluxOne/.github/pull/354))
+- **engine:** read the calling organisation's configuration ([#342](https://github.com/DiluxOne/.github/pull/342))
+- **engine:** the calling organisation's App, not dilux-bot ([#344](https://github.com/DiluxOne/.github/pull/344))
+
+### Build and dependencies
+
+- **deps:** Bump ubuntu from `534baea` to `68ee220` in /runner ([#340](https://github.com/DiluxOne/.github/pull/340))
+
+## [6.2.0](https://github.com/DiluxOne/.github/releases/tag/v6.2.0) · 2026-10-20
 
 ### Features
 
 - close four small gaps of the agentic model ([#347](https://github.com/DiluxOne/.github/pull/347))
+
+### Maintenance
+
+- **release:** v6.2.0, four small gaps of the agentic model ([#348](https://github.com/DiluxOne/.github/pull/348))
 
 ## [6.1.0](https://github.com/DiluxOne/.github/releases/tag/v6.1.0) · 2026-10-20
 
