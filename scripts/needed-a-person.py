@@ -206,8 +206,9 @@ def classify(pr, pol):
     if any(by_bot(c) and (c.get("body") or "").startswith(ROUNDS_SPENT) for c in comments(pr)):
         reasons.append("rounds-exhausted")
     outside = not is_autopilot and author not in pol["trusted"]
-    # A bot's pull request a maintainer took over (no `autopilot` label) has no cap.
-    capped = outside or (is_autopilot and "autopilot" in labels)
+    # The organisation's own bot has no cap from a branch of its repository
+    # (#361), nor, so, a pull request of its a maintainer took over (#130).
+    capped = outside or (is_autopilot and pr.get("isCrossRepository") is True)
     size = capped and pol["max-lines"] > 0 and changed_lines(pr) > pol["max-lines"]
     # A failing check the reasons above already explain is not a gate of its
     # own. Every gate is a check run of a workflow; the token reads no
