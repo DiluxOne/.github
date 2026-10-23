@@ -416,6 +416,11 @@ def self_test():
               junit('<testsuites><testsuite><testcase name="s" classname="global.setup.ts"><failure message="Timeout"/></testcase><testcase name="x" classname="issue-69.spec.ts"><failure message="expect(x)"/></testcase></testsuite></testsuites>'), "environment")
         check("a teardown that fails after the test failed an assertion does not undo the reproduction",
               junit('<testsuites><testsuite><testcase name="x" classname="issue-69.spec.ts"><failure message="Error: expect(received).toBe(expected)"/></testcase><testcase name="t" classname="global.teardown.ts"><failure message="TypeError: Invalid URL"/></testcase></testsuite></testsuites>'), "reproduced")
+        teardown = '<testcase name="t" classname="global.teardown.ts"><failure message="TypeError: Invalid URL"/></testcase>'
+        check("a teardown that fails after the test passed does not undo the pass",
+              junit(f'<testsuites><testsuite><testcase name="x" classname="issue-69.spec.ts"/>{teardown}</testsuite></testsuites>'), "passed")
+        check("C8 a teardown that fails when the test errored is the environment",
+              junit(f'<testsuites><testsuite><testcase name="x" classname="issue-69.spec.ts"><failure message="page.goto: Invalid URL"/></testcase>{teardown}</testsuite></testsuites>'), "environment")
         check("C8 even when the test itself never ran",
               junit('<testsuites><testsuite><testcase name="s" classname="global.setup.ts"><failure message="page.goto: Protocol error"/></testcase><testcase name="t" classname="global.teardown.ts"><failure message="TypeError: Invalid URL"/></testcase></testsuite></testsuites>'), "environment")
         check("C8 no test of the file is no verdict", junit("<testsuites><testsuite/></testsuites>"), "broken")

@@ -58,8 +58,9 @@ name: Issue reproduction
 #                      stops before it finishes (turns, budget, service)
 #                      is no verdict: one more attempt, then a person (#265).
 #   no verdict for the environment (`limit`, #352) -> a way's setup failed,
-#                      the repository's own test setup or teardown failed
-#                      around the test, or setup and run took longer than
+#                      the repository's own test setup failed around the
+#                      test (or its teardown, when the test reached no
+#                      verdict of its own), or setup and run took longer than
 #                      its `minutes`: `bug:unconfirmed` stays and the
 #                      comment says why; it is never a test written wrong.
 #   a stylesheet read as text (#352) -> the test is discarded, the issue
