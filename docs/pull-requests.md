@@ -79,7 +79,9 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    trusted, `composer.lock`, `package-lock.json` and translation files aside;
    an autopilot pull request a maintainer took over, with `needs-human`
    added, `autopilot` removed and a commit of the maintainer's own pushed
-   from a clone, counts as the maintainer's) and the fast gates of the repository's kind of project, among them
+   from a clone, counts as the maintainer's, and the organisation's own
+   bot, `DX_BOT_LOGIN`, from a branch of the same repository, never a
+   fork, has no cap, #361) and the fast gates of the repository's kind of project, among them
    its review rules: what that kind's reviewers sent back before, as data
    ([`kinds/`](../kinds/)). Deterministic, no AI.
 2. **Review.** [`scripts/policy.py`](../scripts/policy.py) sets the lowest risk

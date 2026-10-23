@@ -53,7 +53,10 @@ With POLICY_MODE=issue-gate it writes, for the conventions check:
   trusted   true | false   PR_AUTHOR is a trusted author
   max_lines the most lines PR_AUTHOR's pull request may change; empty when
             the author is trusted, a maintainer took the pull request
-            over, or there is no limit
+            over, the author is the organisation's own bot (PR_AUTHOR is
+            DX_BOT_LOGIN, dilux-bot[bot] when unset, PR_AUTHOR_TYPE Bot)
+            from a branch of this repository (HEAD_IN_REPO true, never a
+            fork, #361), or there is no limit
   taken_over the trusted author who took a bot's pull request over (#130):
             PR_AUTHOR_TYPE is Bot, the head is in this repository
             (HEAD_IN_REPO true, never a fork), PR_LABELS carry `needs-human`
@@ -190,6 +193,15 @@ def taken_over_by(trusted_authors, env):
     return who[0]
 
 
+def own_bot(env):
+    """True when the pull request is the organisation's own bot's, from a
+    branch of this repository (#361): only someone with write access
+    pushes there, so a fork cannot borrow the bot's login."""
+    bot = env.get("DX_BOT_LOGIN", "") or "dilux-bot[bot]"
+    return (env.get("PR_AUTHOR", "") == bot and env.get("PR_AUTHOR_TYPE", "") == "Bot"
+            and env.get("HEAD_IN_REPO", "") == "true")
+
+
 def issue_gate(defaults, repo):
     org = defaults.get("issue-gate") or {}
     mine = repo.get("issue-gate") or {}
@@ -210,6 +222,9 @@ def issue_gate(defaults, repo):
     taken_over = taken_over_by(trusted_authors, os.environ)
     if taken_over:
         print(f"taken over by {taken_over}: the head commit is {taken_over}'s and so is `needs-human`; the size cap does not apply")
+    bot = own_bot(os.environ)
+    if bot:
+        print("the organisation's own bot, from a branch of this repository (#361): the size cap does not apply")
     max_lines = ""
     try:
         org_max = int(defaults.get("max-changed-lines-untrusted", 0) or 0)
@@ -222,7 +237,7 @@ def issue_gate(defaults, repo):
         limit = mine_max if 0 < mine_max < org_max else org_max
         if mine_max != limit and "max-changed-lines-untrusted" in repo:
             print("::warning::max-changed-lines-untrusted: a repository can lower the limit, not raise or remove it; ignored.")
-        if not trusted and not taken_over:
+        if not trusted and not taken_over and not bot:
             max_lines = str(limit)
     with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
         fh.write(f"required={'true' if required else 'false'}\nlabel={label}\ntrusted={'true' if trusted else 'false'}\nmax_lines={max_lines}\ntaken_over={taken_over}\n")
@@ -383,7 +398,7 @@ def run_case(defaults_path, repo_text, files, **env):
         open(out_path, "w").close()
         saved = dict(os.environ)
         os.environ.update({"DEFAULT_POLICY": defaults_path, "REPO_POLICY": repo_path, "CHANGED_FILES": "\n".join(files), "GITHUB_OUTPUT": out_path})
-        for key in ("PR_AUTHOR", "POLICY_LEVEL", "POLICY_MODE", "KIND_DEFAULT", "PR_AUTHOR_TYPE", "HEAD_IN_REPO", "PR_LABELS", "HEAD_AUTHOR", "HEAD_COMMITTER", "NEEDS_HUMAN_BY"):
+        for key in ("PR_AUTHOR", "POLICY_LEVEL", "POLICY_MODE", "KIND_DEFAULT", "PR_AUTHOR_TYPE", "HEAD_IN_REPO", "PR_LABELS", "HEAD_AUTHOR", "HEAD_COMMITTER", "NEEDS_HUMAN_BY", "DX_BOT_LOGIN"):
             os.environ.pop(key, None)
         os.environ.update(env)
         try:
@@ -413,6 +428,9 @@ def self_test():
         gate_bad = fh.name
     TAKEN = {"POLICY_MODE": "issue-gate", "PR_AUTHOR": "dilux-bot[bot]", "PR_AUTHOR_TYPE": "Bot", "HEAD_IN_REPO": "true", "PR_LABELS": "needs-human,type:fix",
              "HEAD_AUTHOR": "soydiloreto", "HEAD_COMMITTER": "soydiloreto", "NEEDS_HUMAN_BY": "soydiloreto"}
+    # The organisation's own bot has no cap from a branch of its repository
+    # (#361), so the takeover's refusals are shown on another bot's.
+    TAKEN_ELSE = dict(TAKEN, PR_AUTHOR="renovate[bot]")
     cases = [
         # (name, defaults, repo policy, files, extra env, expected outputs, expected exit)
         ("docs only is low", default, "", ["docs/a.md", "README.md"], {}, {"floor": "low", "model": "claude-sonnet-5-5"}, 0),
@@ -465,12 +483,19 @@ def self_test():
         ("size: but cannot raise it", default, "max-changed-lines-untrusted: 5000\n", [], {"POLICY_MODE": "issue-gate", "PR_AUTHOR": "someone"}, {"max_lines": "600"}, 0),
         ("size: nor remove it", default, "max-changed-lines-untrusted: 0\n", [], {"POLICY_MODE": "issue-gate", "PR_AUTHOR": "someone"}, {"max_lines": "600"}, 0),
         ("C1 (#130): a bot's pull request a maintainer took over has no cap", default, "", [], dict(TAKEN, PR_AUTHOR="dilux-bot[bot]"), {"trusted": "false", "max_lines": "", "taken_over": "soydiloreto"}, 0),
-        ("C2 (#130): with the bot's own head, the cap stays", default, "", [], dict(TAKEN, HEAD_AUTHOR="dilux-bot[bot]", HEAD_COMMITTER="dilux-bot[bot]"), {"max_lines": "600", "taken_over": ""}, 0),
-        ("C2 (#130): a trusted head without a trusted needs-human keeps the cap", default, "", [], dict(TAKEN, NEEDS_HUMAN_BY="someone"), {"max_lines": "600", "taken_over": ""}, 0),
-        ("C2 (#130): still labelled autopilot, the cap stays", default, "", [], dict(TAKEN, PR_LABELS="autopilot,needs-human"), {"max_lines": "600", "taken_over": ""}, 0),
-        ("C2 (#130): a head from a fork is never taken over", default, "", [], dict(TAKEN, HEAD_IN_REPO="false"), {"max_lines": "600", "taken_over": ""}, 0),
-        ("C2 (#130): a committer who is not trusted keeps the cap", default, "", [], dict(TAKEN, HEAD_COMMITTER="web-flow"), {"max_lines": "600", "taken_over": ""}, 0),
-        ("C2 (#130): only a bot's pull request can be taken over", default, "", [], dict(TAKEN, PR_AUTHOR_TYPE="User"), {"max_lines": "600", "taken_over": ""}, 0),
+        ("C2 (#130): with the bot's own head, the cap stays", default, "", [], dict(TAKEN_ELSE, HEAD_AUTHOR="dilux-bot[bot]", HEAD_COMMITTER="dilux-bot[bot]"), {"max_lines": "600", "taken_over": ""}, 0),
+        ("C2 (#130): a trusted head without a trusted needs-human keeps the cap", default, "", [], dict(TAKEN_ELSE, NEEDS_HUMAN_BY="someone"), {"max_lines": "600", "taken_over": ""}, 0),
+        ("C2 (#130): still labelled autopilot, the cap stays", default, "", [], dict(TAKEN_ELSE, PR_LABELS="autopilot,needs-human"), {"max_lines": "600", "taken_over": ""}, 0),
+        ("C2 (#130): a head from a fork is never taken over", default, "", [], dict(TAKEN_ELSE, HEAD_IN_REPO="false"), {"max_lines": "600", "taken_over": ""}, 0),
+        ("C2 (#130): a committer who is not trusted keeps the cap", default, "", [], dict(TAKEN_ELSE, HEAD_COMMITTER="web-flow"), {"max_lines": "600", "taken_over": ""}, 0),
+        ("C1 (#361): the organisation's bot from a branch of the repository has no cap", default, "", [], {"POLICY_MODE": "issue-gate", "PR_AUTHOR": "dilux-bot[bot]", "PR_AUTHOR_TYPE": "Bot", "HEAD_IN_REPO": "true"}, {"trusted": "false", "max_lines": ""}, 0),
+        ("C1 (#361): another organisation's bot, named by DX_BOT_LOGIN", default, "", [], {"POLICY_MODE": "issue-gate", "PR_AUTHOR": "acme-bot[bot]", "PR_AUTHOR_TYPE": "Bot", "HEAD_IN_REPO": "true", "DX_BOT_LOGIN": "acme-bot[bot]"}, {"max_lines": ""}, 0),
+        ("C2 (#361): the bot's login from a fork keeps the cap", default, "", [], {"POLICY_MODE": "issue-gate", "PR_AUTHOR": "dilux-bot[bot]", "PR_AUTHOR_TYPE": "Bot", "HEAD_IN_REPO": "false"}, {"max_lines": "600"}, 0),
+        ("C2 (#361): a user named like the bot keeps the cap", default, "", [], {"POLICY_MODE": "issue-gate", "PR_AUTHOR": "dilux-bot[bot]", "PR_AUTHOR_TYPE": "User", "HEAD_IN_REPO": "true"}, {"max_lines": "600"}, 0),
+        ("C2 (#361): another bot from the repository keeps the cap", default, "", [], {"POLICY_MODE": "issue-gate", "PR_AUTHOR": "renovate[bot]", "PR_AUTHOR_TYPE": "Bot", "HEAD_IN_REPO": "true"}, {"max_lines": "600"}, 0),
+        ("C2 (#361): dilux-bot is not the bot where DX_BOT_LOGIN names another", default, "", [], {"POLICY_MODE": "issue-gate", "PR_AUTHOR": "dilux-bot[bot]", "PR_AUTHOR_TYPE": "Bot", "HEAD_IN_REPO": "true", "DX_BOT_LOGIN": "acme-bot[bot]"}, {"max_lines": "600"}, 0),
+        ("C2 (#361): an untrusted person in the repository keeps the cap", default, "", [], {"POLICY_MODE": "issue-gate", "PR_AUTHOR": "someone", "PR_AUTHOR_TYPE": "User", "HEAD_IN_REPO": "true"}, {"max_lines": "600"}, 0),
+        ("C2 (#130): only a bot's pull request can be taken over", default, "", [], dict(TAKEN_ELSE, PR_AUTHOR_TYPE="User"), {"max_lines": "600", "taken_over": ""}, 0),
     ]
     failed = 0
     for name, defaults_path, repo_text, files, env, want, want_code in cases:

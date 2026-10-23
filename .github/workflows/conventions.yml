@@ -13,7 +13,9 @@ name: Conventions
 # `needs-human`, removing `autopilot` and then pushing a commit of their own,
 # is the maintainer's: the gate reads the head commit's author and who added
 # the label from GitHub, and the cap does not apply, #130; labels alone do
-# not run this workflow, the push does); and that one from an author who is
+# not run this workflow, the push does; nor to the organisation's own bot,
+# DX_BOT_LOGIN, from a branch of the same repository, never a fork, #361);
+# and that one from an author who is
 # not trusted, whose type is not feat, adds no public surface (what the
 # kind's pack lists in kinds/<kind>/surface.yml: a WordPress plugin's
 # settings, REST routes, AJAX endpoints, admin pages, post types,
@@ -122,6 +124,9 @@ jobs:
           PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           HEAD_IN_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+          # The organisation's own bot, from a branch of this repository, has
+          # no size cap (#361); another organisation names its App here.
+          DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
           PR: ${{ github.event.pull_request.number }}
           GH_TOKEN: ${{ github.token }}
         # Read from the base branch, never the pull request's own copy: a
@@ -194,8 +199,9 @@ jobs:
           LABELS: ${{ steps.live.outputs.labels }}
           COMMENTS_FILE: ${{ runner.temp }}/comments.json
           REVIEW_BOT: ${{ inputs.review-bot != 'dilux-bot[bot]' && inputs.review-bot || vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
-          # Empty for a trusted author, or a pull request a maintainer took
-          # over: the policy's max-changed-lines-untrusted.
+          # Empty for a trusted author, a pull request a maintainer took
+          # over, or the organisation's own bot from a branch of this
+          # repository: the policy's max-changed-lines-untrusted.
           MAX_LINES: ${{ steps.gate.outputs.max_lines }}
           TAKEN_OVER: ${{ steps.gate.outputs.taken_over }}
           # The base branch's policy: the kind whose pack says what public

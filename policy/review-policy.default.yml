@@ -31,7 +31,9 @@ issue-gate:
 # A repository can lower it, never raise it; 0 is no limit, and only this
 # file can say that. A pull request the autopilot opened and a maintainer
 # took over (`needs-human`, no `autopilot`, the head commit the
-# maintainer's) is the maintainer's: no cap (#130).
+# maintainer's) is the maintainer's: no cap (#130). Nor has the
+# organisation's own bot (DX_BOT_LOGIN, dilux-bot when unset) from a
+# branch of the same repository, never a fork (#361).
 max-changed-lines-untrusted: 600
 
 # What a pull request titled docs may change: shell `case` globs (`*` crosses
