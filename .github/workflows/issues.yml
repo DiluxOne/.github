@@ -9,9 +9,10 @@ name: Issues
 # schema checked when a person opens or edits an issue not accepted yet
 # (awaiting-acceptance or incomplete, #353), and, when a person accepts
 # one, the Platform Project (#9, repos.yml), its assignee (#73), the gate
-# re-run on its pull requests, the PRD's seal, and the autopilot (issue-triage.yml calls it). Most of this repository is a
-# protected path of policy/autonomy.yml, and an autopilot pull request that
-# touches one is never merged by policy.
+# re-run on its pull requests, the PRD's seal, and the autopilot
+# (issue-triage.yml calls it). Most of this repository is a protected path
+# of policy/autonomy.yml, and an autopilot pull request that touches one is
+# never merged by policy.
 
 on:
   issues:
