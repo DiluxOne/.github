@@ -258,7 +258,9 @@ def self_test():
             job = job[:following.start()] if following else job
             code = "\n".join(line for line in job.split("\n") if not line.strip().startswith("#"))
             steps = code.split("\n      - ")[1:]
-            ours = [s for s in steps if "required-plugins" in s or ".dx-central" in s]
+            # The suite's own run reads the engine only for a targeted pull
+            # request (#352), when the checkout is there for that too.
+            ours = [s for s in steps if ("required-plugins" in s or ".dx-central" in s) and not s.startswith("name: Run the suite")]
             ifs = [[line for line in s.split("\n") if line.strip().startswith("if:")] for s in ours]
             ok = ok and len(ours) == 5 and all(i and guard in i[0] for i in ifs)
     except (ValueError, IndexError):
