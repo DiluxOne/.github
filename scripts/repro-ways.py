@@ -2,12 +2,16 @@
 """The ways a repository reproduces a bug (#352): which test, where, with
 what, for the layer the bug lives in.
 
-A bug lives in a layer: `logic`, `browser`, `cli` or `api`. The triage says
-which (the `layer:<name>` label), knowing nothing of the repository's tools.
-The repository says how it reproduces each layer: its kind's pack gives the
-default (kinds/<kind>/pack.yml, `repro:`), and its own .github/review-policy.yml
-may add a way, change one, or switch one off (`repro: {ways: {name: false}}`).
-Nothing about a tool is written in the workflows: issue-repro.yml asks here.
+A bug lives in a layer: `logic`, `browser`, `cli`, `api` or `workflow` (a
+CI workflow's wiring: its triggers, its steps' order and conditions, #376).
+The triage says which (the `layer:<name>` label), knowing nothing of the
+repository's tools. The repository says how it reproduces each layer: its
+kind's pack gives the default (kinds/<kind>/pack.yml, `repro:`), and its own
+.github/review-policy.yml may add a way, change one, or switch one off
+(`repro: {ways: {name: false}}`). Nothing about a tool is written here or in
+the workflows: a repository whose kind and policy declare no way for a layer
+has none, whatever its stack, and `resolve` says why and how to declare one
+(`why`) instead of guessing a stack (#376).
 
 A way is one entry of `repro.ways`:
   layer     the layer it reproduces, or a list of them; for a layer two
@@ -34,7 +38,9 @@ runs (`{paths: [globs], tests: [paths]}`), instead of the whole suite.
   repro-ways.py resolve   the way for LAYER (default logic) in the repository
                           at DIR (default .): key=value lines (also to
                           $GITHUB_OUTPUT), way= empty when it declares none,
-                          ready=yes|no for its `needs`
+                          ready=yes|no for its `needs`, why= what keeps it
+                          from reproducing (no way, settings not valid,
+                          `needs` missing) and how to fix it; empty when ready
   repro-ways.py brief     the way's part of the writer's brief (markdown)
   repro-ways.py lint FILE exit 1, saying why, when FILE reads a stylesheet
                           as text: never a reproduction of how a page looks
@@ -60,12 +66,16 @@ import tempfile
 import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-LAYERS = ("logic", "browser", "cli", "api")
+LAYERS = ("logic", "browser", "cli", "api", "workflow")
 KEYS = {"layer", "noun", "test", "needs", "sandbox", "setup", "theme", "run", "junit", "teardown",
         "minutes", "context", "list", "example", "guide"}
 SANDBOXES = ("php-unit",)
-DEFAULT_UNIT = {"layer": "logic", "noun": "unit test", "test": "tests/Unit/Repro/Issue{n}Test.php",
-                "needs": ["tests/bootstrap.php", "tests/Unit/"], "sandbox": "php-unit"}
+# How the comments say each layer is reproduced.
+WHERE = {"logic": "with a test of the code's logic", "browser": "in a browser", "cli": "through a command's output",
+         "api": "through its API", "workflow": "with a test that reads the workflow's file (its triggers, steps and conditions)"}
+HOW = ("declare one in `repro.ways` of the repository's .github/review-policy.yml (or of its kind's pack, "
+       "kinds/<kind>/pack.yml in DiluxOne/.github): the `layer` it reproduces, the `test` the agent writes "
+       "(with `{n}`), the `run` command and the `junit` report it writes; scripts/repro-ways.py says what each key means")
 
 
 def _load(name, file):
@@ -99,12 +109,9 @@ def merged(pack, repo):
         elif isinstance(way, dict):
             ways[name] = {**ways.get(name, {}), **way}
     # The repository's ways first: for a layer two ways cover, its own wins.
+    # Neither saying anything is no way at all: no stack is assumed (#376).
     own = [n for n in (mine.get("ways") or {}) if n in ways]
     ways = {**{n: ways[n] for n in own}, **{n: w for n, w in ways.items() if n not in own}}
-    if not base.get("ways") and not mine.get("ways"):
-        # Neither the kind nor the repository says anything: the PHP unit
-        # test every repository had before #352, which needs its setup.
-        ways = {"unit": dict(DEFAULT_UNIT)}
     affected = [a for a in (base.get("affected") or []) + (mine.get("affected") or []) if isinstance(a, dict)]
     return {"ways": ways, "affected": affected}
 
@@ -174,10 +181,18 @@ def resolve(root, central, layer, number):
     kind, conf = config(root, central)
     bad = problems(conf)
     name, way = pick(conf, layer)
-    out = {"layer": layer, "way": "", "ready": "no", "problems": "; ".join(bad)}
-    if not way or bad:
+    out = {"layer": layer, "way": "", "ready": "no", "problems": "; ".join(bad), "why": ""}
+    if bad:
+        out["why"] = f"its reproduction settings are not valid ({out['problems']}); to fix them, {HOW}"
+        return out
+    if not way:
+        covered = sorted({x for w in conf["ways"].values() for x in layers(w)})
+        out["why"] = (f"this repository declares no way to reproduce a {layer} bug {WHERE[layer]} (its ways cover "
+                      f"{', '.join(covered)}); to add one, {HOW}" if covered else
+                      f"this repository declares no way to reproduce a bug; to reproduce one {WHERE[layer]}, {HOW}")
         return out
     test = fill(way["test"], number, central, kind)
+    is_ready = ready(root, way.get("needs"))
     out.update({
         "way": name,
         "test": test,
@@ -185,7 +200,10 @@ def resolve(root, central, layer, number):
         "noun": str(way.get("noun") or "test"),
         "sandbox": str(way.get("sandbox") or ""),
         "minutes": str(int(way.get("minutes") or 15)),
-        "ready": "yes" if ready(root, way.get("needs")) else "no",
+        "ready": "yes" if is_ready else "no",
+        "why": "" if is_ready else (f"its `{name}` way needs {', '.join(str(x) for x in way.get('needs') or [])}, "
+                                    "which this repository does not have yet; add them, or switch the way off "
+                                    f"(`repro: {{ways: {{{name}: false}}}}`) and declare another"),
         # The command way whole, as JSON, for scripts/repro-run.sh.
         "spec": json.dumps({k: (fill(v, number, central, kind, test) if isinstance(v, str) else [fill(x, number, central, kind, test) for x in v] if isinstance(v, list) else v)
                             for k, v in way.items() if k in ("setup", "theme", "run", "junit", "teardown", "minutes", "test")}, separators=(",", ":")),
@@ -211,7 +229,9 @@ def brief(root, central, layer, number):
             parts += [f"## Repository file: {path}", "", "```", text, "```", ""]
     files = []
     for dirpath, _, names in os.walk(root):
-        if "/." in dirpath[len(root):] or "node_modules" in dirpath or "vendor" in dirpath:
+        # Hidden folders are skipped but .github, where the workflows a
+        # `workflow` way reads live (#376).
+        if any(p.startswith(".") and p != ".github" for p in dirpath[len(root):].split("/")) or "node_modules" in dirpath or "vendor" in dirpath:
             continue
         for n in names:
             files.append(os.path.relpath(os.path.join(dirpath, n), root))
@@ -272,7 +292,14 @@ def mine_verdict(mine):
         f = c.find("failure")
         if f is not None:
             text = " ".join(filter(None, (f.get("message"), f.get("type"), f.text)))
-            if not re.search(r"\bexpect\(|AssertionError|toBe|toEqual|toHave|assert", text):
+            # An exception that is not an assertion's (pytest's TypeError,
+            # ImportError, KeyError) is a test that did not run, whatever
+            # `assert` its traceback quotes from the test's source (#376).
+            raised = re.match(r"\s*(?:[A-Za-z_]\w*\.)*([A-Za-z_]\w*(?:Error|Exception))\b", f.get("message") or "")
+            if raised and raised.group(1) not in ("AssertionError", "Error", "AssertionFailedError", "ExpectationFailedException"):
+                return "broken"
+            # pytest.raises that saw nothing raised is an assertion too.
+            if not re.search(r"\bexpect\(|AssertionError|toBe|toEqual|toHave|assert|DID NOT RAISE", text):
                 return "broken"
             # An element the test never found says its selector is wrong as
             # often as that the bug is there: no verdict. Only Playwright's
@@ -373,7 +400,47 @@ def self_test():
         check("C3 a repository with no browser way declares nothing for that layer", (r["way"], r["ready"]), ("", "no"))
         repo("kind: library\n")
         check("C3 a kind with no ways reproduces nothing in a browser", resolve(d, central, "browser", 1)["way"], "")
-        check("a repository that declares nothing keeps the unit test it had", (resolve(d, central, "logic", 1)["way"], resolve(d, central, "logic", 1)["ready"]), ("unit", "no"))
+        # #376: no stack is assumed. A repository whose kind and policy
+        # declare nothing has no way, and says how to declare one.
+        r = resolve(d, central, "logic", 1)
+        check("#376 C3 a repository that declares nothing has no way, not a PHP unit test",
+              (r["way"], r["ready"], "declares no way to reproduce a bug" in r["why"], "repro.ways" in r["why"]), ("", "no", True, True))
+        repo("high-risk: [scripts/**]\n", ["pyproject.toml", "tests/bootstrap.php", "tests/Unit/"])
+        check("#376 C3 whatever files it has (Python, or PHP's own) it gets no way of a stack",
+              (resolve(d, central, "logic", 1)["way"], resolve(d, central, "workflow", 1)["way"]), ("", ""))
+        repo(wp, ["tests/bootstrap.php", "tests/Unit/"])
+        check("#376 a plugin keeps its unit way: the pack declares it, nothing falls back",
+              (resolve(d, central, "logic", 1)["way"], resolve(d, central, "logic", 1)["sandbox"], resolve(d, central, "logic", 1)["why"]), ("unit", "php-unit", ""))
+        r = resolve(d, central, "workflow", 1)
+        check("#376 C3 a layer no way covers says which it covers and how to add one",
+              (r["way"], "no way to reproduce a workflow bug" in r["why"], "api, browser, cli, logic" in r["why"]), ("", True, True))
+        repo(wp)
+        check("#376 C3 a way whose files are missing says which", "tests/bootstrap.php, tests/Unit/" in resolve(d, central, "logic", 1)["why"], True)
+        repo(wp + "repro:\n  ways:\n    bad:\n      layer: screen\n")
+        check("#376 C3 settings that are not valid say so", "not valid" in resolve(d, central, "logic", 1)["why"], True)
+        # This repository's own ways (#376): a Python test for a script's
+        # logic, one that reads the workflow's file for its wiring.
+        here = {"REPO_POLICY": os.path.join(central, ".github", "review-policy.yml")}
+        saved = {k: os.environ.get(k) for k in here}
+        os.environ.update(here)
+        try:
+            logic, wf, cli = (resolve(central, central, x, 366) for x in ("logic", "workflow", "cli"))
+            spec = json.loads(logic["spec"])
+            check("#376 C1 a logic bug here is a Python test, run by pytest with a JUnit report",
+                  (logic["way"], logic["test"], logic["ready"], logic["sandbox"], "pytest" in spec["run"], "tests/repro/test_issue_366.py" in spec["run"], spec["junit"]),
+                  ("python", "tests/repro/test_issue_366.py", "yes", "", True, True, "build/dx-repro-junit.xml"))
+            check("#376 pytest is installed in setup, before the test is in the tree", any("pytest" in s for s in spec["setup"]), True)
+            check("#376 C2 a workflow bug here is a test that reads the workflow",
+                  (wf["way"], wf["test"], wf["ready"], wf["noun"]), ("workflow", "tests/repro/test_issue_366.py", "yes", "workflow test"))
+            check("#376 a script's command is a Python test too", cli["way"], "python")
+            b = brief(central, central, "workflow", 375)
+            check("#376 C2 the workflow way's brief lists the workflows and shows its example",
+                  (".github/workflows/weekly-failure.yml" in b, "## Example: tests/examples/test_workflow.py" in b, "wf.get(True)" in b), (True, True, True))
+            b = brief(central, central, "logic", 366)
+            check("#376 C1 the logic way's brief shows how a script is loaded", ("## Example: tests/examples/test_logic.py" in b, "spec_from_file_location" in b), (True, True))
+        finally:
+            for k, v in saved.items():
+                os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
         repo(wp + "repro:\n  ways:\n    cli:\n      layer: cli\n      noun: CLI test\n      test: tests/cli/issue-{n}.sh\n      run: bash {test}\n      junit: build/cli.xml\n")
         r = resolve(d, central, "cli", 5)
         check("a repository adds a way of its own", (r["way"], r["test"]), ("cli", "tests/cli/issue-5.sh"))
@@ -404,10 +471,13 @@ def self_test():
         check("C4 one that reads it through a built path is",
               lint_of("$css = file_get_contents( plugin_dir_path( __FILE__ ) . 'css/front.css' );"), True)
 
-        def junit(xml):
+        def junit_any(xml, name):
             p = os.path.join(d, "j.xml")
             open(p, "w").write(xml)
-            return verdict(p, "issue-69.spec.ts")
+            return verdict(p, name)
+
+        def junit(xml):
+            return junit_any(xml, "issue-69.spec.ts")
         ok_setup = '<testcase name="sign in" classname="global.setup.ts"/>'
         check("C1 an assertion that fails reproduces",
               junit(f'<testsuites><testsuite>{ok_setup}<testcase name="x" classname="issue-69.spec.ts"><failure message="Error: expect(received).toBe(expected)"/></testcase></testsuite></testsuites>'), "reproduced")
@@ -442,6 +512,23 @@ def self_test():
         check("C8 an element the test never found is no verdict (a wrong selector)",
               junit('<testsuites><testsuite><testcase name="x" classname="issue-69.spec.ts"><failure message="Error: expect(locator).toBeVisible() failed. Locator: .nope Expected: visible Received: &lt;element(s) not found&gt;"/></testcase></testsuite></testsuites>'), "broken")
         check("C8 no report is no verdict", verdict(os.path.join(d, "none.xml"), "issue-69.spec.ts"), "broken")
+        # pytest's report (#376, junit_family=xunit1, so `file` names the test).
+        def pytest_report(*cases):
+            p = os.path.join(d, "p.xml")
+            body = "".join(f'<testcase classname="tests.repro.test_issue_7" name="t{i}" file="tests/repro/test_issue_7.py">{c}</testcase>' for i, c in enumerate(cases))
+            open(p, "w").write(f"<testsuites><testsuite>{body}</testsuite></testsuites>")
+            return verdict(p, "test_issue_7.py")
+        trace = "def test_x():\n&gt;       assert f() == 2\nE       TypeError: unsupported operand"
+        check("#376 C1 a pytest assertion that fails reproduces", pytest_report('<failure message="assert 1 == 2">E  assert 1 == 2</failure>'), "reproduced")
+        check("#376 a pytest exception is no verdict, whatever assert its traceback quotes",
+              pytest_report(f'<failure message="TypeError: unsupported operand type(s)">{trace}</failure>'), "broken")
+        check("#376 a dotted exception is no verdict either", pytest_report('<failure message="json.decoder.JSONDecodeError: Expecting value">assert x</failure>'), "broken")
+        check("#376 an AssertionError with a message reproduces", pytest_report('<failure message="AssertionError: the bot has a cap">assert</failure>'), "reproduced")
+        check("#376 a pytest.raises that saw nothing raised reproduces",
+              pytest_report('<failure message="Failed: DID NOT RAISE &lt;class \'ValueError\'&gt;">E   Failed: DID NOT RAISE</failure>'), "reproduced")
+        check("#376 a passing pytest test passes", pytest_report(""), "passed")
+        check("#376 a test file that does not import is no verdict",
+              junit_any('<testsuites><testsuite><testcase classname="" name="tests.repro.test_issue_7" file="tests/repro/test_issue_7.py"><error message="collection failure"/></testcase></testsuite></testsuites>', "test_issue_7.py"), "broken")
 
         way = {"browser": {"layer": "browser", "test": "tests/e2e/repro/issue-{n}.spec.ts", "run": "x", "junit": "y"}}
         conf = merged({"repro": {"ways": way, "affected": [{"paths": ["assets/**/*.css", "templates/**"], "tests": ["tests/e2e/specs/layout.spec.ts"]}]}}, {})

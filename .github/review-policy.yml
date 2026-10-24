@@ -32,6 +32,8 @@ high-risk:
   # whether a change to the review may merge.
   - "evals/**"
   - "scripts/**"
+  # The reproduction's examples and the tests CI runs (#376).
+  - "tests/**"
   - "runner/**"
   - "workflow-templates/**"
   - "agents-block.md"
@@ -48,3 +50,61 @@ high-risk:
   - "pull_request_template.md"
   - "LICENSE"
   - ".gitignore"
+
+# How a bug in this repository is reproduced (#376, scripts/repro-ways.py,
+# which says what each key means). It has no kind, so nothing else declares
+# a way for it: a script's logic is a Python test that calls the script, and
+# a workflow's wiring a Python test that reads the workflow's file. Both run
+# with pytest, installed by `setup` before the test is in the tree, through
+# scripts/repro-run.sh: no network, no secrets, a JUnit report.
+repro:
+  ways:
+    python:
+      layer: [logic, cli]
+      noun: Python test
+      test: tests/repro/test_issue_{n}.py
+      needs: [scripts/]
+      setup:
+        - python3 -m pip install --quiet --disable-pip-version-check --target .dx-pytest pytest==9.1.1 PyYAML==6.0.3
+      run: PYTHONPATH="$PWD/.dx-pytest" PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider --rootdir=. -o junit_family=xunit1 --junitxml=build/dx-repro-junit.xml {test}
+      junit: build/dx-repro-junit.xml
+      minutes: 10
+      list: ["tests/**"]
+      example: tests/examples/test_logic.py
+      guide: |
+        A pytest test, in Python, of the script the report names, as the script's own `--test` cases
+        check it: call its functions, or run it as a command, and assert what the report expected.
+        - The scripts' names have hyphens: load one with importlib, as the example does
+          (`spec_from_file_location` on `scripts/<name>.py`), from the repository's root
+          (`Path(__file__).resolve().parents[2]`); a shell script runs with `subprocess.run(["bash", ...])`.
+        - Feed it what the report describes (an environment through `monkeypatch.setenv` or `env=`,
+          a file in `tmp_path`), never the network, `gh` or a token: it runs with neither.
+        - A plain `assert` on the value the report expected, so the test FAILS while the bug is there
+          (`pytest.raises` for an error the report expected). Any other exception (an ImportError, a
+          TypeError, the CalledProcessError of `check=True`) is no verdict: run a command without
+          `check` and assert on its `returncode` and output.
+        - Small: one or two test functions, named after the expectation.
+    workflow:
+      layer: workflow
+      noun: workflow test
+      test: tests/repro/test_issue_{n}.py
+      needs: [.github/workflows/]
+      setup:
+        - python3 -m pip install --quiet --disable-pip-version-check --target .dx-pytest pytest==9.1.1 PyYAML==6.0.3
+      run: PYTHONPATH="$PWD/.dx-pytest" PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider --rootdir=. -o junit_family=xunit1 --junitxml=build/dx-repro-junit.xml {test}
+      junit: build/dx-repro-junit.xml
+      minutes: 10
+      list: [".github/workflows/*.yml", "workflow-templates/*.yml"]
+      example: tests/examples/test_workflow.py
+      guide: |
+        A pytest test that reads the workflow the report names as YAML (PyYAML, `yaml.safe_load`) and
+        asserts its wiring: its triggers (`on:`), a job's or a step's `if:`, the order of the steps, the
+        inputs and `env:` a step gets, the arguments a `run:` passes. It never runs the workflow.
+        - PyYAML reads the key `on` as the boolean True: take the triggers with `wf.get("on", wf.get(True))`.
+        - Find a step by its `name` or `id`, never by its position, and compare positions to assert an
+          order: `names.index("A") < names.index("B")`.
+        - For what a `run:` script does, assert on its text (the command and the flags the report says
+          are missing or wrong); when the logic lives in a script under scripts/, test that script
+          instead, as a logic bug.
+        - A plain `assert` on what the report expected, so the test FAILS while the bug is there.
+        - Small: one or two test functions, named after the expectation.

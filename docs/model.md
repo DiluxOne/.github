@@ -30,8 +30,8 @@ Five types are enough; everything else (refactor, docs, performance, hotfix, mig
 
 ## Bugs, from report to fix
 
-1. **Triage.** Anyone opens an issue. The triage classifies it: bug, product request, question, duplicate or security; a bug, with the layer it shows in (logic, browser, a command's output, an API).
-2. **Reproduction.** An agent writes a failing test the way the repository declares for that layer (a unit test, a browser test, a command's output), and only that test runs, in a sandbox with no network and no secrets. If it cannot reproduce it, it says what it tried and what it is missing; a layer the repository has no way for is not reproduced, and says so.
+1. **Triage.** Anyone opens an issue. The triage classifies it: bug, product request, question, duplicate or security; a bug, with the layer it shows in (logic, browser, a command's output, an API, a CI workflow's wiring).
+2. **Reproduction.** An agent writes a failing test the way the repository declares for that layer (a unit test, a browser test, a command's output), and only that test runs, in a sandbox with no network and no secrets. If it cannot reproduce it, it says what it tried and what it is missing; a layer the repository has no way for is not reproduced, and says so with a label of its own (`repro:no-way`) and how to declare one: no stack is assumed.
 3. **Acceptance by policy.** A bug reproduced by a unit test has its fix accepted by a lane of the policy, without a word of the original report: the test is the specification. One reproduced another way waits for a person.
 4. **Fix.** The autopilot makes the test pass, adds the test of what must not change, and passes every gate.
 5. **Merge.** Up to medium risk it merges on its own, into Unreleased (or into production, for a continuous kind).

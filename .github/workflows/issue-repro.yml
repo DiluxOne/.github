@@ -3,25 +3,24 @@ name: Issue reproduction
 # Reusable. Claude writes ONE test that fails if a reported bug exists; then
 # the test runs, and the outcome is reported. Which test is the repository's
 # to say (#352, scripts/repro-ways.py): the triage labels the layer the bug
-# shows in (`layer:logic|browser|cli|api`, logic when none), and the
-# repository's kind (kinds/<kind>/pack.yml, `repro:`) and its own
+# shows in (`layer:logic|browser|cli|api|workflow`, logic when none), and
+# the repository's kind (kinds/<kind>/pack.yml, `repro:`) and its own
 # .github/review-policy.yml declare a way for each layer: a PHP unit test
-# under tests/Unit/Repro/ (`unit`, the default), a Playwright test on wp-env
-# under tests/e2e/repro/ (`browser`, WordPress plugins), or any command that
-# writes a JUnit report. A layer with no way declared builds nothing: the
-# issue gets `could-not-reproduce` and says why. The rest of this header
-# names the unit way's files; another way's are its own.
+# under tests/Unit/Repro/ (`unit`, WordPress plugins), a Playwright test on
+# wp-env under tests/e2e/repro/ (`browser`, WordPress plugins), or any
+# command that writes a JUnit report (DiluxOne/.github's own: a pytest test
+# of a script, or one that reads a workflow's file, #376). No stack is
+# assumed: a layer with no way declared, or a way whose `needs` are missing,
+# builds nothing, before any model runs: `bug:unconfirmed` becomes
+# `repro:no-way`, and the comment says why and how to declare a way. The
+# rest of this header names the unit way's files; another way's are its own.
 # It starts in two ways (scripts/repro-trigger.sh decides which):
 #   trigger `triage`  the triage classified the report as a bug
 #                     (`bug:unconfirmed`), on the event that opened it;
 #   trigger `label`   a person who can write to the repository labels the
 #                     issue `repro:run` (or `repro:again` for another try).
 # A label a bot adds starts nothing, and so does one added by someone with
-# less than write access (checked live, not from the event). A repository
-# without a unit-test setup (tests/bootstrap.php and tests/Unit/: one with
-# no PHP yet, or DiluxOne/.github) has nothing to reproduce against: the run
-# ends green with a notice, before any model runs, and a report the triage
-# sent gets one comment saying it waits for a person.
+# less than write access (checked live, not from the event).
 #
 #   the test fails  -> the bug is real: label `bug:confirmed`, the test on
 #                      the branch test/repro-issue-<n>, and a comment on the
@@ -65,7 +64,7 @@ name: Issue reproduction
 #                      comment says why; it is never a test written wrong.
 #   a stylesheet read as text (#352) -> the test is discarded, the issue
 #                      gets `layer:browser` and one more attempt as a
-#                      browser test (`could-not-reproduce` when there is no
+#                      browser test (`repro:no-way` when there is no
 #                      browser way): how a page looks is never a unit test.
 #   the test passes -> label `could-not-reproduce`, the test is pushed to a
 #                      branch, and the comment asks the reporter for what
@@ -307,23 +306,15 @@ jobs:
           layer=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(startswith("layer:")) | ltrimstr("layer:")][0] // "logic"' 2>/dev/null || echo logic)
           LAYER=$layer python3 .dx-central/scripts/repro-ways.py resolve
 
-      # Nothing to reproduce against without the way's setup (for a unit
-      # test, tests/bootstrap.php and tests/Unit/): the run ends here, green,
-      # before any model runs, and a report the triage sent waits for a
-      # person (one comment on the issue says so). No way at all for the
-      # bug's layer is an answer too: could-not-reproduce, saying why.
-      - name: Ready to reproduce?
-        id: setup
-        if: steps.start.outputs.go == 'yes'
-        env:
-          WAY: ${{ steps.way.outputs.way }}
-          READY: ${{ steps.way.outputs.ready }}
-        run: |
-          if [ -z "$WAY" ]; then echo "ready=none" >> "$GITHUB_OUTPUT"; else echo "ready=$READY" >> "$GITHUB_OUTPUT"; fi
-
+      # No way can reproduce it (#376): the repository declares none for the
+      # bug's layer (no stack is assumed), its settings are not valid, or
+      # its way's `needs` are missing. Said before any model runs, and never
+      # left hanging: `bug:unconfirmed` becomes `repro:no-way`, and the
+      # comment says why and how to declare a way (scripts/repro-ways.py,
+      # `why`). `repro:again` tries again once one is declared.
       - name: dilux-bot token (the issue's comment)
         id: say
-        if: steps.setup.outputs.ready == 'none' || (steps.setup.outputs.ready == 'no' && inputs.trigger == 'triage')
+        if: steps.start.outputs.go == 'yes' && steps.way.outputs.ready != 'yes'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
@@ -331,40 +322,26 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-issues: write
 
-      - name: No setup for the way
-        if: steps.setup.outputs.ready == 'no'
-        env:
-          GH_TOKEN: ${{ steps.say.outputs.token }}
-          TRIGGER: ${{ inputs.trigger }}
-          NUMBER: ${{ github.event.issue.number }}
-          NOUN: ${{ steps.way.outputs.noun }}
-        run: |
-          set -euo pipefail
-          echo "::notice::This repository does not have what a $NOUN needs yet (repro.ways in its kind's pack), so there is nothing to reproduce against; the report waits for a person."
-          if [ "$TRIGGER" = triage ]; then
-            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'This repository has no setup for a %s to reproduce a report against yet, so no reproduction ran. A person will look at it.\n\n<sub>🤖 Issue reproduction</sub>' "$NOUN")" >/dev/null
-          fi
-
-      - name: No way for this layer
-        if: steps.setup.outputs.ready == 'none'
+      - name: No way reproduces it
+        if: steps.start.outputs.go == 'yes' && steps.way.outputs.ready != 'yes'
         env:
           GH_TOKEN: ${{ steps.say.outputs.token }}
           NUMBER: ${{ github.event.issue.number }}
           LAYER: ${{ steps.way.outputs.layer }}
-          PROBLEMS: ${{ steps.way.outputs.problems }}
+          WHY: ${{ steps.way.outputs.why }}
+          BT: '`'
         run: |
           set -euo pipefail
-          case "$LAYER" in browser) where="in a browser";; cli) where="through a command's output";; api) where="through its API";; *) where="with a unit test";; esac
-          why="this repository has no way to reproduce $where (repro.ways in its .github/review-policy.yml or its kind's pack), so no test was written and nothing was set up for it"
-          [ -z "$PROBLEMS" ] || why="the repository's reproduction settings are not valid ($PROBLEMS), so no test was written"
-          gh label create could-not-reproduce --repo "$GITHUB_REPOSITORY" --color FBCA04 --description "The reproduction attempt found nothing" --force >/dev/null 2>&1 || true
-          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label could-not-reproduce >/dev/null
-          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'I could not reproduce this: %s. A person will look at it.\n\n<sub>🤖 Issue reproduction</sub>' "$why")" >/dev/null
-          echo "No way for the $LAYER layer: $why."
+          gh label create repro:no-way --repo "$GITHUB_REPOSITORY" --color D4C5F9 --description "No way this repository declares can reproduce this bug; the comment says why" --force >/dev/null 2>&1 || true
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label repro:no-way >/dev/null
+          # One label per call: gh refuses the whole edit when one is missing (#267).
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label bug:unconfirmed >/dev/null 2>&1 || true
+          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'No reproduction can run for this %s bug: %s.\n\nNo test was written, so the report is labelled %s instead of waiting as %s. A person will look at it, and %s tries again once a way is declared.\n\n<sub>🤖 Issue reproduction</sub>' "$LAYER" "$WHY" "${BT}repro:no-way${BT}" "${BT}bug:unconfirmed${BT}" "${BT}repro:again${BT}")" >/dev/null
+          echo "::notice::No way reproduces this $LAYER bug: $WHY"
 
       - name: Daily cap
         id: cap
-        if: steps.start.outputs.go == 'yes' && steps.setup.outputs.ready == 'yes'
+        if: steps.start.outputs.go == 'yes' && steps.way.outputs.ready == 'yes'
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           MAX: ${{ inputs.max-per-day }}
@@ -847,7 +824,8 @@ jobs:
             gh label create "$name" --repo "$GITHUB_REPOSITORY" --color "$color" --description "$desc" --force >/dev/null
           done
           # One label per call: gh refuses the whole edit when one is missing (#267).
-          for l in repro:run repro:again repro:retry; do gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$l" >/dev/null 2>&1 || true; done
+          # A way exists now, so an earlier `repro:no-way` no longer holds (#376).
+          for l in repro:run repro:again repro:retry repro:no-way; do gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$l" >/dev/null 2>&1 || true; done
           sign="<sub>🤖 AI reproduction · $MODEL (Anthropic)${COST:+ · \$$COST}</sub>"
           test=$TEST; noun=${NOUN:-unit test}
           code_main="${BT}main${BT}"; code_test="${BT}${test}${BT}"; fence="${BT}${BT}${BT}"; code_again="${BT}repro:again${BT}"
@@ -892,7 +870,7 @@ jobs:
           # repository has a browser way, otherwise it waits for a person.
           if [ "$REJECTED" = css ]; then
             gh label create "layer:browser" --repo "$GITHUB_REPOSITORY" --color C5DEF5 --force --description "Where the defect shows: the reproduction uses the way the repository declares for it" >/dev/null 2>&1 || true
-            for l in layer:logic layer:cli layer:api; do gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$l" >/dev/null 2>&1 || true; done
+            for l in layer:logic layer:cli layer:api layer:workflow; do gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$l" >/dev/null 2>&1 || true; done
             gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label layer:browser >/dev/null
             if [ -n "$BROWSER" ] && { [ "$LABEL" != repro:retry ] || [ "$SENDER_LOGIN" != "$BOT" ]; }; then
               gh label create "repro:retry" --repo "$GITHUB_REPOSITORY" --color FBCA04 --force --description "The reproduction tries once more with the first test's error" >/dev/null 2>&1 || true
@@ -903,10 +881,15 @@ jobs:
             fi
             if [ -n "$BROWSER" ]; then
               why="this needs a browser test, and the attempt I had for one read a stylesheet as text again. A person will look; ${BT}repro:again${BT} tries once more"
+              gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label could-not-reproduce >/dev/null
             else
-              why="this needs a browser test, and this repository declares no way to run one (repro.ways). A person will look"
+              # No way can reproduce it here (#376): said with its label, not
+              # left as bug:unconfirmed.
+              why="this needs a browser test, and this repository declares no way to run one (${BT}repro.ways${BT} in its .github/review-policy.yml or its kind's pack), so it is labelled ${BT}repro:no-way${BT}. A person will look"
+              gh label create repro:no-way --repo "$GITHUB_REPOSITORY" --color D4C5F9 --description "No way this repository declares can reproduce this bug; the comment says why" --force >/dev/null 2>&1 || true
+              gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label repro:no-way >/dev/null
+              gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label bug:unconfirmed >/dev/null 2>&1 || true
             fi
-            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label could-not-reproduce >/dev/null
             gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'The test I wrote read a stylesheet as text, which proves nothing about how a page looks, so it was discarded: %s.\n\n%s' "$why" "$sign")" >/dev/null
             echo "CSS read as text; no further attempt."; exit 0
           fi

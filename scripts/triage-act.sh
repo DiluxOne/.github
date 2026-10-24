@@ -11,7 +11,8 @@
 # locked and the author asked to report it privately, as before.
 #
 # A defect gets the layer it shows in as a label too, `layer:<logic|browser|
-# cli|api>` (#352), which the reproduction reads; one already there stays.
+# cli|api|workflow>` (#352; `workflow`, a CI workflow's wiring, #376), which
+# the reproduction reads; one already there stays.
 #
 # Environment: VERDICT (JSON: category, layer, exists_in_pro, duplicate_of), REPLY
 # and SUMMARY (the public text; an empty reply posts a plain one), PRIVATE
@@ -71,7 +72,8 @@ act() {
   local layer
   layer=$(jq -r '.layer // ""' <<<"$VERDICT")
   case "$category:$layer" in
-    bug_unconfirmed:logic | bug_unconfirmed:browser | bug_unconfirmed:cli | bug_unconfirmed:api | needs_info:logic | needs_info:browser | needs_info:cli | needs_info:api)
+    bug_unconfirmed:logic | bug_unconfirmed:browser | bug_unconfirmed:cli | bug_unconfirmed:api | bug_unconfirmed:workflow | \
+    needs_info:logic | needs_info:browser | needs_info:cli | needs_info:api | needs_info:workflow)
       if ! gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name' 2>/dev/null | grep -q '^layer:'; then
         gh label create "layer:$layer" --repo "$GITHUB_REPOSITORY" --color C5DEF5 --description "Where the defect shows: the reproduction uses the way the repository declares for it" --force >/dev/null 2>&1 || true
         gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "layer:$layer" >/dev/null 2>&1 || echo "::warning::Could not label #$NUMBER layer:$layer."
@@ -224,6 +226,7 @@ if [ "${1:-}" = "--test" ]; then
   # #352: the layer the defect shows in, as a label the reproduction reads.
   VERDICT='{"category":"bug_unconfirmed","layer":"browser"}' REPLY=x SUMMARY=s t "#352 a browser bug gets layer:browser" "issue edit 7 --repo o/r --add-label layer:browser"
   VERDICT='{"category":"bug_unconfirmed","layer":"logic"}' REPLY=x SUMMARY=s t "#352 a logic bug gets layer:logic" "issue edit 7 --repo o/r --add-label layer:logic"
+  VERDICT='{"category":"bug_unconfirmed","layer":"workflow"}' REPLY=x SUMMARY=s t "#376 a bug in a workflow's wiring gets layer:workflow" "issue edit 7 --repo o/r --add-label layer:workflow"
   : > "$log"; if ( VERDICT='{"category":"enhancement","layer":"browser"}' REPLY=x SUMMARY=s NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m act >/dev/null 2>&1; grep -q "add-label layer:" "$log" ); then echo "FAIL #352 a request gets no layer"; fail=1; else echo "ok   #352 a request gets no layer"; fi
   : > "$log"; if ( VERDICT='{"category":"bug_unconfirmed","layer":"screen"}' REPLY=x SUMMARY=s NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m act >/dev/null 2>&1; grep -q "add-label layer:" "$log" ); then echo "FAIL #352 an unknown layer is no label"; fail=1; else echo "ok   #352 an unknown layer is no label"; fi
   : > "$log"; if ( HAS_LAYER=1 VERDICT='{"category":"bug_unconfirmed","layer":"logic"}' REPLY=x SUMMARY=s NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m act >/dev/null 2>&1; grep -q "add-label layer:logic" "$log" ); then echo "FAIL #352 a layer a person set stays"; fail=1; else echo "ok   #352 a layer a person set stays"; fi

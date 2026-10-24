@@ -43,9 +43,10 @@ name: Issue triage
 # reply says so (#84): no reproduction starts, no `fix` can close it, and it
 # waits for a person like any request (scripts/triage-act.sh). A Type a
 # maintainer set is never changed (#341). A defect also gets the layer it
-# shows in, `layer:logic`, `layer:browser`, `layer:cli` or `layer:api`
-# (#352), knowing nothing of the repository's tools: the reproduction uses
-# the way the repository declares for that layer (scripts/repro-ways.py).
+# shows in, `layer:logic`, `layer:browser`, `layer:cli`, `layer:api` or
+# `layer:workflow` (a CI workflow's wiring, #376) (#352), knowing nothing
+# of the repository's tools: the reproduction uses the way the repository
+# declares for that layer (scripts/repro-ways.py).
 #
 # A repository whose paid add-on keeps its roadmap in a private repository
 # names it in its policy (`paid-roadmap:` in .github/review-policy.yml). The
@@ -284,8 +285,8 @@ jobs:
         continue-on-error: true
         timeout-minutes: 8
         env:
-          DX_FULL_SCHEMA: '{"type":"object","additionalProperties":false,"required":["category","reply","summary","language"],"properties":{"language":{"type":"string","enum":["en","es","pt","other"]},"category":{"type":"string","enum":["bug_unconfirmed","needs_info","by_design","pro_feature","planned","enhancement","question","duplicate","security"]},"layer":{"type":"string","enum":["logic","browser","cli","api"]},"exists_in_pro":{"type":"boolean"},"duplicate_of":{"type":"integer"},"missing":{"type":"array","items":{"type":"string","maxLength":120}},"reply":{"type":"string","maxLength":2500},"summary":{"type":"string","maxLength":300}}}'
-          DX_PAID_SCHEMA: '{"type":"object","additionalProperties":false,"required":["category","language"],"properties":{"language":{"type":"string","enum":["en","es","pt","other"]},"category":{"type":"string","enum":["bug_unconfirmed","needs_info","by_design","pro_feature","planned","enhancement","question","duplicate","security"]},"layer":{"type":"string","enum":["logic","browser","cli","api"]},"exists_in_pro":{"type":"boolean"},"duplicate_of":{"type":"integer"}}}'
+          DX_FULL_SCHEMA: '{"type":"object","additionalProperties":false,"required":["category","reply","summary","language"],"properties":{"language":{"type":"string","enum":["en","es","pt","other"]},"category":{"type":"string","enum":["bug_unconfirmed","needs_info","by_design","pro_feature","planned","enhancement","question","duplicate","security"]},"layer":{"type":"string","enum":["logic","browser","cli","api","workflow"]},"exists_in_pro":{"type":"boolean"},"duplicate_of":{"type":"integer"},"missing":{"type":"array","items":{"type":"string","maxLength":120}},"reply":{"type":"string","maxLength":2500},"summary":{"type":"string","maxLength":300}}}'
+          DX_PAID_SCHEMA: '{"type":"object","additionalProperties":false,"required":["category","language"],"properties":{"language":{"type":"string","enum":["en","es","pt","other"]},"category":{"type":"string","enum":["bug_unconfirmed","needs_info","by_design","pro_feature","planned","enhancement","question","duplicate","security"]},"layer":{"type":"string","enum":["logic","browser","cli","api","workflow"]},"exists_in_pro":{"type":"boolean"},"duplicate_of":{"type":"integer"}}}'
         uses: anthropics/claude-code-action@aa8a7738e48bf30a40ee499ce818bef081c5ab5e # v1.0.257
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -325,9 +326,11 @@ jobs:
             For bug_unconfirmed and needs_info, say in `layer` where the defect shows, whatever the
             repository is built with (#352): `browser` when it is what a page looks like or does in
             a browser (layout, CSS, a theme's colours, light or dark, front-end script), `cli` when
-            it is a command's output, `api` when it is an HTTP API's response, `logic` otherwise
-            (what the code computes, stores or decides). The reproduction uses the way the
-            repository declares for that layer.
+            it is a command's output, `api` when it is an HTTP API's response, `workflow` when it is
+            how a CI workflow file is wired (a trigger it lacks, a step in the wrong order, a
+            condition, an input or an argument a step passes or misses: a file under
+            .github/workflows/ the report names, #376), `logic` otherwise (what the code computes,
+            stores or decides). The reproduction uses the way the repository declares for that layer.
 
             Write the reply in the language the issue's title and body are written in (English
             for an English issue, Spanish for a Spanish one; when unsure, English): short, warm,
@@ -366,7 +369,7 @@ jobs:
           set -euo pipefail
           # Only values from the schema's enums, a boolean and a small issue
           # number leave this job; anything else is dropped.
-          verdict=$(jq -c 'select(.category | IN("bug_unconfirmed","needs_info","by_design","pro_feature","planned","enhancement","question","duplicate","security")) | {category, layer: (if (.layer // "") | IN("logic","browser","cli","api") then .layer else null end), exists_in_pro: (.exists_in_pro == true), duplicate_of: (if (.duplicate_of | type) == "number" and .duplicate_of > 0 and .duplicate_of < 1000000 then (.duplicate_of | floor) else null end)}' <<<"${OUT:-null}" 2>/dev/null || true)
+          verdict=$(jq -c 'select(.category | IN("bug_unconfirmed","needs_info","by_design","pro_feature","planned","enhancement","question","duplicate","security")) | {category, layer: (if (.layer // "") | IN("logic","browser","cli","api","workflow") then .layer else null end), exists_in_pro: (.exists_in_pro == true), duplicate_of: (if (.duplicate_of | type) == "number" and .duplicate_of > 0 and .duplicate_of < 1000000 then (.duplicate_of | floor) else null end)}' <<<"${OUT:-null}" 2>/dev/null || true)
           language=$(jq -r '.language // "en"' <<<"${OUT:-null}" 2>/dev/null || echo en)
           case "$language" in en|es|pt|other) ;; *) language=en ;; esac
           cost=""; if [ -n "$EXECUTION_FILE" ] && [ -f "$EXECUTION_FILE" ]; then cost=$(jq -r '[.[] | select(.type == "result")] | last | .total_cost_usd // empty' "$EXECUTION_FILE" 2>/dev/null || true); fi
