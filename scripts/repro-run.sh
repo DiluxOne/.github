@@ -23,7 +23,9 @@
 #      (WP_BASE_URL, WP_NETWORK_URL, WP_ENV_PORT, WP_ENV_TESTS_PORT) only
 #      when they are set, so the repository's configuration keeps its own
 #      defaults otherwise.
-# The command's last lines are kept in DIR/output-tail.txt (untrusted text).
+# The command's last lines are kept in DIR/output-tail.txt (untrusted text),
+# and the way's JUnit report in DIR/junit.xml, for a job that runs nothing of
+# the repository's to read the verdict again (G7, auto-merge.yml, #397).
 #
 #   repro-run.sh run SRC DIR   SPEC (the way, JSON from repro-ways.py
 #                              resolve), TEST (where the test goes), THEME
@@ -169,6 +171,7 @@ run() {
     # What the report names the test by: the way's `case`, else its file.
     case=$(jq -r '.case // empty' <<<"$spec"); [ -n "$case" ] || case=$(basename "$test")
     v=$(python3 "$HERE/repro-ways.py" verdict "$junit" "$case" "$(jq -r '.assertion // empty' <<<"$spec")")
+    cp -- "$junit" "$dir/junit.xml" 2>/dev/null || true
     if [ "$v" = environment ]; then
       limit "The repository's own test setup failed around the test (its setup or teardown project, before or after it): the environment, not the test or the report."
     else
@@ -217,6 +220,7 @@ self_test() {
   t "#377 a report that names the test by the way's case (Go's TestIssue1) reproduces" reproduced "$(jq -nc --arg x "$gofail" '{run: ("printf %s " + ($x|@sh) + " > build/j.xml; exit 1"), junit: "build/j.xml", case: "TestIssue1", assertion: "_test\\.go:[0-9]+: ", minutes: 1}')"
   t "#377 without the case, the failure is no test of its own: no verdict (limit)" limit "$(jq -nc --arg x "$gofail" '{run: ("printf %s " + ($x|@sh) + " > build/j.xml; exit 1"), junit: "build/j.xml", minutes: 1}')"
   t "a passing test passes" passed "$(jq -nc --arg x "$pass" '{run: ("printf %s " + ($x|@sh) + " > build/j.xml"), junit: "build/j.xml", minutes: 1}')"
+  if grep -q 'classname="issue-1.spec.ts"' "$d/out/junit.xml" 2>/dev/null; then echo "ok   #397 the JUnit report is kept in DIR, for G7 to read again"; else echo "FAIL #397 the JUnit report is kept in DIR"; fail=1; fi
   t "C8 a setup that fails is no verdict (limit)" limit '{"setup":["exit 3"],"run":"true","junit":"build/j.xml","minutes":1}'
   t "C8 a run past the way's minutes is no verdict (limit)" limit '{"run":"sleep 5","junit":"build/j.xml","minutes":0}'
   t "C8 a setup past the way's minutes is no verdict (limit)" limit '{"setup":["sleep 5"],"run":"true","junit":"build/j.xml","minutes":0}'

@@ -88,7 +88,15 @@ def test_c2_the_decision_waits_for_it_and_reads_its_verdict_for_its_issue():
     assert decide["if"].startswith("!cancelled() && ")
     ap = step(decide["steps"], "autopilot")
     assert ap["env"]["REPRO_RUN"] == "${{ needs.repro.outputs.outcome }}"
-    assert '[ "$REPRO_RUN_ISSUE" != "$issue" ] || REPRO_OUTCOME=$REPRO_RUN' in ap["run"]
+    assert '[ "$REPRO_RUN_ISSUE" = "$issue" ] && [ "$REPRO_RUN" = passed ]' in ap["run"]
+    # The verdict is read again from the report, in the job that runs nothing of the repository's.
+    assert 'repro-ways.py" verdict "$RUNNER_TEMP/repro-junit/junit.xml"' in ap["run"]
+    names = [s.get("uses", "") for s in decide["steps"]]
+    assert any(n.startswith("actions/download-artifact@") for n in names)
+    assert names.index(next(n for n in names if n.startswith("actions/download-artifact@"))) < [s.get("id") for s in decide["steps"]].index("autopilot")
+    up = [s for s in wf["jobs"]["repro"]["steps"] if str(s.get("uses", "")).startswith("actions/upload-artifact@")]
+    assert up and up[0]["with"]["path"] == "${{ runner.temp }}/repro/junit.xml"
+    assert decide["steps"][[s.get("uses", "") for s in decide["steps"]].index(next(n for n in names if n.startswith("actions/download-artifact@")))]["with"]["name"] == up[0]["with"]["name"]
 
 
 def test_c4_the_decision_measures_what_a_reproduced_fix_widens():
