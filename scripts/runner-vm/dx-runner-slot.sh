@@ -171,6 +171,7 @@ self_test() {
   check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: got [$2], want [$3]"; fail=1; fi; }
   check "slot 1 ports" "$(slot_ports 1)" "9020 9021"
   check "slot 4 ports" "$(slot_ports 4)" "9080 9081"
+  check "#379: slot 12, the last of 12, keeps its own pair" "$(slot_ports 12)" "9240 9241"
   check "runner name" "$(runner_name 2 a1b2c3)" "diluxone-chile-2-a1b2c3"
   check "jit payload" "$(jit_payload diluxone-chile-1-x 1)" \
     '{"name":"diluxone-chile-1-x","runner_group_id":3,"labels":["self-hosted","linux","x64","diluxone"],"work_folder":"/data/runners-dx/d1/_work"}'
