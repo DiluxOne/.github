@@ -56,7 +56,7 @@ name: WordPress plugin tests (slow)
 # The calling repository provides `.wp-env.json`, `phpunit-integration.xml`,
 # the npm dependencies (`@wordpress/env`, `@playwright/test`) and Playwright
 # configs that write their results where `results` says; wp-env mounts the
-# checkout under the repository's name. A suite's command runs with Node 20
+# checkout under the repository's name. A suite's command runs with Node 24
 # and, when the repository has a composer.json, the tools' PHP and Composer, on
 # GitHub's runners and on the organisation's alike (#140).
 #
@@ -307,7 +307,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: env.GO == 'true'
         with:
-          node-version: '20'
+          node-version: '24'
       - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         if: env.GO == 'true'
         with:
@@ -430,7 +430,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: env.GO == 'true'
         with:
-          node-version: '20'
+          node-version: '24'
       # A suite's command may rely on PHP and Composer, as it can on GitHub's
       # runners: the organisation's runner image carries neither by design
       # (#140), so they are set up here when the repository has a
