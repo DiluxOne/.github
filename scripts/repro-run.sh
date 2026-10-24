@@ -27,6 +27,8 @@
 # The command's last lines are kept in DIR/output-tail.txt (untrusted text),
 # and the way's JUnit report in DIR/junit.xml, for a job that runs nothing of
 # the repository's to read the verdict again (G7, auto-merge.yml, #397).
+# Cleaning up after the verdict never fails it: what the run leaves that the
+# runner's user cannot remove is a warning, never a failure (#421).
 #
 #   repro-run.sh run SRC DIR   SPEC (the way, JSON from repro-ways.py
 #                              resolve), TEST (where the test goes), THEME
@@ -54,6 +56,22 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 say() {
   echo "outcome=$1"
   if [ -n "${GITHUB_OUTPUT:-}" ]; then echo "outcome=$1" >> "$GITHUB_OUTPUT"; fi
+}
+
+# Removes PATH best-effort, so cleanup never decides the outcome (#421): a
+# folder the run made read-only is made writable again, and what dxrepro or a
+# container owns goes with sudo when the runner has it without a password.
+discard() {
+  local p
+  for p in "$@"; do
+    [ -e "$p" ] || [ -L "$p" ] || continue
+    rm -rf -- "$p" 2>/dev/null && continue
+    chmod -R u+rwX -- "$p" 2>/dev/null || true
+    rm -rf -- "$p" 2>/dev/null && continue
+    if command -v sudo >/dev/null 2>&1 && sudo -n rm -rf -- "$p" 2>/dev/null; then continue; fi
+    echo "::warning::Could not remove $p after the verdict; left in place." >&2
+  done
+  return 0
 }
 
 # The dxrepro user: no sudo, the checkout and the browsers readable (every
@@ -221,8 +239,8 @@ run_ref() {
   # Playwright configuration from them): left out by git archive (#409).
   if [ -d "$work/.dx-central" ] && [ ! -e "$tree/.dx-central" ]; then cp -a "$work/.dx-central" "$tree/.dx-central"; fi
   (cd "$tree" && TEST=$path run "$tmp" "$dir") || rc=$?
-  rm -rf "$tmp" "$tree"
-  [ "$keep" = yes ] || rm -rf "$dir"
+  discard "$tmp" "$tree"
+  [ "$keep" = yes ] || discard "$dir"
   return "$rc"
 }
 
@@ -275,6 +293,11 @@ self_test() {
   mkdir -p .dx-central && printf 'org\n' > .dx-central/conf && printf '/.dx-central/\n' >> .git/info/exclude
   got=$(DX_REPRO_UNCONFINED=1 SPEC=$(jq -c '.setup += ["test -f .dx-central/conf"]' <<<"$spec_ref") GITHUB_OUTPUT='' run_ref HEAD tests/repro/issue-1.spec.ts 2>/dev/null | grep '^outcome=' | tail -1)
   if [ "$got" = "outcome=passed" ]; then echo "ok   #409 run-ref's tree has the working tree's .dx-central/, which git archive leaves out"; else echo "FAIL #409 run-ref's tree lacks .dx-central/ ($got)"; fail=1; fi
+  # #421: a file the runner's user cannot remove fails neither the verdict
+  # nor the step (a process of its own: set -e does not hold under ||).
+  local rc=0
+  got=$(DX_REPRO_UNCONFINED=1 SPEC=$(jq -c --arg x "$pass" '.setup = [] | .run = ("mkdir -p build/locked && touch build/locked/f && chmod 555 build/locked && printf %s " + ($x|@sh) + " > build/j.xml")' <<<"$spec_ref") GITHUB_OUTPUT='' bash "$HERE/repro-run.sh" run-ref HEAD tests/repro/issue-1.spec.ts 2>/dev/null | grep '^outcome=' | tail -1; exit "${PIPESTATUS[0]}") || rc=$?
+  if [ "$got" = "outcome=passed" ] && [ "$rc" -eq 0 ]; then echo "ok   #421 run-ref ends passed with exit 0 when its tree holds a file it cannot remove"; else echo "FAIL #421 run-ref's cleanup failed the verdict ($got, exit $rc)"; fail=1; fi
   if (DX_REPRO_UNCONFINED=1 SPEC=$spec_ref run_ref HEAD tests/repro/other.spec.ts >/dev/null 2>&1); then echo "FAIL #397 run-ref refuses a test that is not the way's"; fail=1; else echo "ok   #397 run-ref refuses a test that is not the way's"; fi
   if (DX_REPRO_UNCONFINED=1 SPEC= REPRO_SPEC= run_ref HEAD tests/repro/issue-1.spec.ts >/dev/null 2>&1); then echo "FAIL #397 run-ref refuses to run with no way"; fail=1; else echo "ok   #397 run-ref refuses to run with no way"; fi
   if (DX_REPRO_UNCONFINED=1 SPEC=$spec_ref run_ref HEAD ../x >/dev/null 2>&1); then echo "FAIL #397 run-ref refuses a path outside the tree"; fail=1; else echo "ok   #397 run-ref refuses a path outside the tree"; fi
