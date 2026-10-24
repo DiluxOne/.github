@@ -27,7 +27,8 @@ What widens:
   policy/review-policy.default.yml, .github/review-policy.yml
     a `high-risk` path removed; a `low-risk-eligible` or `docs-paths` path
     or a `trusted-authors` login added; `auto-merge` switched on; a larger
-    `max-changed-lines-untrusted`; the issue gate changed
+    `max-changed-lines-untrusted`; the issue gate changed; any other key
+    changed (a release's bump, the reviewer, the ways: what it cannot rank)
   .github/workflows/*.y*ml, workflow-templates/*.y*ml
     a token permission raised in any job (its own, or the workflow's it
     falls back on; none at all is every permission), a new job or workflow
@@ -172,6 +173,12 @@ def review_widens(base, head, where):
         out.append(f"{where}: max-changed-lines-untrusted raised")
     if head.get("issue-gate") != base.get("issue-gate"):
         out.append(f"{where}: the issue gate changed")
+    # Every other key, whatever it means (a release's bump, the reviewer, the
+    # ways, what is allowed on its own): a change is read as widening.
+    known = {"high-risk", "low-risk-eligible", "docs-paths", "trusted-authors", "auto-merge", "max-changed-lines-untrusted", "issue-gate"}
+    for key in sorted((set(head) | set(base)) - known, key=str):
+        if head.get(key) != base.get(key):
+            out.append(f"{where}: {key} changed")
     return out
 
 
@@ -349,6 +356,8 @@ def self_test():
        ["r: low-risk-eligible scripts/** added", "r: trusted-authors b added"])
     ok("the review policy: auto-merge on widens", review_widens(rp, {**rp, "auto-merge": True}, "r"), ["r: auto-merge switched on"])
     ok("the review policy: a high-risk path added does not", review_widens(rp, {**rp, "high-risk": [".github/**", "x"]}, "r"), [])
+    ok("the review policy: any other key changed widens (fails closed)",
+       review_widens({**rp, "release": {"minor": "confirm"}}, {**rp, "release": {"minor": "auto"}, "auto-allowed": True}, "r"), ["r: auto-allowed changed", "r: release changed"])
     wf = {"on": {"pull_request": None}, "permissions": {"contents": "read"},
           "jobs": {"a": {"runs-on": "x", "steps": []}, "b": {"permissions": {"contents": "read", "issues": "write"}, "steps": [{"env": {"T": "${{ secrets.X }}"}}]}}}
     ok("a workflow as it is widens nothing", workflow_widens(wf, copy.deepcopy(wf), "w"), [])

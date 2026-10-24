@@ -79,6 +79,8 @@ def test_c2_g7_runs_another_ways_test_again_with_no_secret():
     way = step(job["steps"], "way")["run"]
     # The sealed test only: one that changed is never run.
     assert "outcome=changed" in way and way.index("sha256sum") < way.index("spec=")
+    # Only the sealed PRD's setup runs.
+    assert "receipts.py verify-prd" in way and way.index("verify-prd") < way.index("spec=")
 
 
 def test_c2_the_decision_waits_for_it_and_reads_its_verdict_for_its_issue():

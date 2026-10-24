@@ -185,14 +185,14 @@ run() {
 # The test at PATH as committed at REF, run against REF's own tree, never
 # the working tree (#397).
 run_ref() {
-  local ref=$1 path=$2 dir=${3:-} tmp tree rc=0 work=$PWD
+  local ref=$1 path=$2 dir=${3:-} tmp tree rc=0 work=$PWD keep=yes
   case "$path" in /* | *..* | "") echo "::error::Not a test path: $path" >&2; return 2 ;; esac
   export SPEC=${SPEC:-${REPRO_SPEC:-}} THEME=${THEME:-${REPRO_THEME:-}}
   [ -n "$SPEC" ] || { echo "::error::No way to run it: SPEC (or REPRO_SPEC) is empty." >&2; return 2; }
   if [ "$(jq -r '.test // empty' <<<"$SPEC")" != "$path" ]; then echo "::error::$path is not the way's test." >&2; return 2; fi
   tmp=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/repro-test.XXXXXX")
   tree=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/repro-tree.XXXXXX")
-  [ -n "$dir" ] || dir="$tree.out"
+  [ -n "$dir" ] || { dir="$tree.out"; keep=no; }
   git show "$ref:$path" > "$tmp"
   git archive --format=tar "$ref" | tar -x -C "$tree"
   # Out of the tree until the way's setup is done, as in the reproduction.
@@ -200,6 +200,7 @@ run_ref() {
   if [ -d "$work/vendor" ] && [ ! -e "$tree/vendor" ]; then cp -a "$work/vendor" "$tree/vendor"; fi
   (cd "$tree" && TEST=$path run "$tmp" "$dir") || rc=$?
   rm -rf "$tmp" "$tree"
+  [ "$keep" = yes ] || rm -rf "$dir"
   return "$rc"
 }
 
