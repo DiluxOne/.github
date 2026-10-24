@@ -73,12 +73,9 @@ def test_c2_g7_runs_another_ways_test_again_with_no_secret():
     run = step(job["steps"], "run")
     assert run["run"].startswith("bash .dx-central/scripts/repro-run.sh run-ref HEAD ")
     assert run["if"] == "steps.way.outputs.spec != ''"
-    # The repository's tools run before the organisation's scripts are fetched,
-    # so nothing the repository runs can touch them (as issue-repro.yml's run job).
-    names = [s.get("run") or s.get("uses", "") + str(s.get("with", {}).get("repository", "")) for s in job["steps"]]
-    composer = next(i for i, n in enumerate(names) if n.startswith("composer install"))
-    central = next(i for i, n in enumerate(names) if n.endswith("DiluxOne/.github"))
-    assert composer < central
+    # Nothing of the repository's own runs in it but the way's setup, inside
+    # repro-run.sh: no install step of its own before the verdict.
+    assert not any("composer" in (s.get("run") or "") or "setup-php" in str(s.get("uses", "")) for s in job["steps"])
     way = step(job["steps"], "way")["run"]
     # The sealed test only: one that changed is never run.
     assert "outcome=changed" in way and way.index("sha256sum") < way.index("spec=")

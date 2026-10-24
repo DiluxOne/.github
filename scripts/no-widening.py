@@ -7,7 +7,12 @@ policy/autonomy.yml) with a person. One exception: a reproduced bug's fix
 (the `bugfix-reproduced` lane, `constitution-merge`) may merge on its own in
 those paths, and only when it widens nothing. This says so, from git alone,
 comparing the change's base (the merge base) with its head; never from the
-review's words. Anything it cannot tell counts as widening.
+review's words. Anything it cannot tell counts as widening, and so
+does any other change to a protected path: a script, a rule, a review
+profile, a workflow's steps are code and words whose meaning no check can
+compare, so a person reads them (fails closed). Only the policies below are
+data it reads whole; a reproduced bug's fix elsewhere in the constitution
+is still accepted and worked by the autopilot, and a person merges it.
 
 What widens:
   policy/autonomy.yml, .github/autonomy.yml
@@ -30,17 +35,19 @@ What widens:
     workflow's own `env`) that passes or reads a secret it did not, all of
     them through toJSON(secrets) included, a new `pull_request_target` or
     `workflow_run` trigger
-  the code and the words that apply the gates (GATES below: the scripts
-    that read the policy and decide, accept, seal or merge; the rules and
-    review profiles; org.yml; any other file under policy/)
-    any change: a change there can widen autonomy without moving any of the
-    points above, and no check can read what code means, so a person does
+  any other protected path (`constitution` of the policy in force:
+    ORG_AUTONOMY, default policy/autonomy.yml next to this script, made
+    stricter by REPO_AUTONOMY, the repository's .github/autonomy.yml), a
+    workflow's steps included
+    any change: code can widen autonomy without moving any of the points
+    above, and no check can read what code means
 
   no-widening.py check BASE HEAD   in a clone that has both commits: one
                                    line per widening, exit 1; nothing, exit
                                    0; exit 2 when it could not tell
   no-widening.py --test            self-test
 """
+import fnmatch
 import importlib.util
 import json
 import os
@@ -67,19 +74,6 @@ REVIEW = ("policy/review-policy.default.yml", ".github/review-policy.yml")
 WORKFLOW = re.compile(r"^(\.github/workflows|workflow-templates)/[^/]+\.ya?ml$")
 # Every scope GitHub's token has: what a job with no permissions at all may get.
 ALL = "*"
-# The code and the words that apply the gates: what they mean is not data
-# this can compare, so any change to them is a person's to read (fails
-# closed). A reproduced bug elsewhere in a protected path (a script that
-# does not decide autonomy, a kind's pack, a workflow's steps) still merges
-# when it widens nothing above.
-GATES = ("scripts/autonomy.py", "scripts/autopilot.py", "scripts/no-widening.py", "scripts/policy.py", "scripts/surface.py",
-         "scripts/receipts.py", "scripts/repro-lane.py", "scripts/revert.py", "scripts/issue-gate.sh", "scripts/conventions.sh",
-         "scripts/issue-schema.py", "scripts/agent-keys.py", "scripts/runner-route.py", "scripts/needs-chain.py",
-         "scripts/release-issue.py", "scripts/security-patch.py", "scripts/review-brief.sh", "scripts/org.py",
-         "org.yml", "rules/*", "review-profiles/*", "kinds/*/surface.yml", "kinds/*/rules.yml", "kinds/*/review-profile.md",
-         ".github/CODEOWNERS", "AGENTS.md", "CLAUDE.md", "docs/model.md")
-
-
 def level(value):
     return LEVELS.index(value) if value in LEVELS else len(LEVELS)
 
@@ -283,20 +277,29 @@ def at(ref, path):
     return autonomy.parse_text(run.stdout)
 
 
-def check(base, head):
+def protected_paths():
+    """The constitution in force: the organisation's, with the repository's own."""
+    org = autonomy.load(os.environ.get("ORG_AUTONOMY") or os.path.join(HERE, "..", "policy", "autonomy.yml"))
+    repo = autonomy.load(os.environ.get("REPO_AUTONOMY") or "")
+    return autonomy.merge(org, repo if isinstance(repo, dict) else {}).get("constitution") or []
+
+
+def check(base, head, protected=None):
+    protected = protected_paths() if protected is None else protected
     fork = git("merge-base", base, head).strip()
     changed = [p for p in git("diff", "--name-only", "--no-renames", fork, head).splitlines() if p]
     out = []
-    import fnmatch
     for path in changed:
-        if any(fnmatch.fnmatch(path, g) for g in GATES) or (path.startswith("policy/") and path not in AUTONOMY + REVIEW):
-            out.append(f"{path}: the code or the words that apply the gates; a person reads what it changes")
-        elif path in AUTONOMY:
+        if path in AUTONOMY:
             out += autonomy_widens(at(fork, path), at(head, path), path)
-        elif path in REVIEW:
+            continue
+        if path in REVIEW:
             out += review_widens(at(fork, path), at(head, path), path)
-        elif WORKFLOW.match(path):
+            continue
+        if WORKFLOW.match(path):
             out += workflow_widens(at(fork, path), at(head, path), path)
+        if any(fnmatch.fnmatch(path, p) for p in protected):
+            out.append(f"{path}: a protected path that is code or words, which no check can read; a person reads what it changes")
     return out
 
 
@@ -406,27 +409,32 @@ def self_test():
         cwd = os.getcwd()
         os.chdir(d)
         try:
-            ok("check: a fix that widens nothing", check(base, fix), [])
-            os.makedirs(os.path.join(d, "scripts"))
-            for gate in ("scripts/autonomy.py", "rules/x.md", "policy/other.yml"):
-                os.makedirs(os.path.dirname(os.path.join(d, gate)), exist_ok=True)
-                write(gate, "changed\n")
-            write("scripts/repro-ways.py", "fixed\n")
+            ok("check: a fix that widens nothing", check(base, fix, []), [])
+            prot = ["policy/**", ".github/**", "scripts/**", "kinds/**", "rules/**", "org.yml"]
+            ok("check: a fix in the policy it reads whole, widening nothing", check(base, fix, prot), [])
+            for path in ("scripts/repro-run.sh", "kinds/x/pack.yml", "rules/x.md", "policy/other.yml"):
+                os.makedirs(os.path.dirname(os.path.join(d, path)), exist_ok=True)
+                write(path, "changed\n")
+            write("src.txt", "fixed\n")
             g("add", "-A")
-            g("commit", "-qm", "gates")
-            ok("check: any change to the code or the words that apply the gates is a person's; another script's is not",
-               check(base, g("rev-parse", "HEAD")), [f"{p}: the code or the words that apply the gates; a person reads what it changes" for p in ("policy/other.yml", "rules/x.md", "scripts/autonomy.py")])
+            g("commit", "-qm", "code")
+            ok("check: any other protected path is code or words, a person's; a path outside the constitution is not",
+               check(base, g("rev-parse", "HEAD"), prot), [f"{p}: a protected path that is code or words, which no check can read; a person reads what it changes"
+                                                         for p in ("kinds/x/pack.yml", "policy/other.yml", "rules/x.md", "scripts/repro-run.sh")])
             g("reset", "-q", "--hard", fix)
             write(".github/workflows/w.yml", "on: [push]\npermissions: {contents: write}\njobs:\n  j: {runs-on: x, steps: []}\n")
             g("commit", "-qam", "widen")
-            ok("check: a fix that raises a workflow's permission", check(base, g("rev-parse", "HEAD")),
+            ok("check: a fix that raises a workflow's permission", check(base, g("rev-parse", "HEAD"), []),
                [".github/workflows/w.yml: the workflow's permissions raised (contents)", ".github/workflows/w.yml: job j gets contents it did not have"])
+            ok("check: a workflow is code too: its steps are a person's when it is protected", check(base, g("rev-parse", "HEAD"), [".github/**"])[-1],
+               ".github/workflows/w.yml: a protected path that is code or words, which no check can read; a person reads what it changes")
             # main moves on (a lane removed there): measured from the merge
             # base, the branch does not read as adding it back.
             g("checkout", "-q", "main")
             write("policy/autonomy.yml", "autopilot: true\nlanes: {}\n")
             g("commit", "-qam", "main narrows")
-            ok("check: from the merge base, main's own change is not the branch's", check(g("rev-parse", "HEAD"), fix), [])
+            ok("check: from the merge base, main's own change is not the branch's", check(g("rev-parse", "HEAD"), fix, []), [])
+            ok("check: the constitution in force is the policy's", "scripts/**" in protected_paths(), True)
         finally:
             os.chdir(cwd)
     if not failed:

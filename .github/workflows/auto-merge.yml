@@ -173,20 +173,10 @@ jobs:
           echo "issue=$issues" >> "$GITHUB_OUTPUT"
           gh issue view "$issues" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/body.md"
           if grep -q '^Reproduction way: ' "$RUNNER_TEMP/body.md"; then echo "way=yes" >> "$GITHUB_OUTPUT"; fi
-      # The repository's dev tools, as the reproduction's run job installs
-      # them (issue-repro.yml), and as this pull request's own checks run
-      # its tools at the head: before the organisation's scripts are
-      # fetched, so nothing the repository runs can touch them, and before
-      # the test is anywhere near (it is not in the tree run-ref builds
-      # until the way's setup is done).
-      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
-        if: steps.issue.outputs.way == 'yes' && hashFiles('composer.json') != ''
-        with:
-          php-version: '8.5'
-          coverage: none
-          tools: composer:v2
-      - run: composer install --no-interaction --prefer-dist --no-progress
-        if: steps.issue.outputs.way == 'yes' && hashFiles('composer.json') != ''
+      # Nothing of the repository's runs in this job but the way's own
+      # setup, from the sealed PRD (the commands the reproduction ran,
+      # written in the base's configuration), as the pull request's own
+      # checks run its tools, and then the test, confined.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.issue.outputs.issue != ''
         with:

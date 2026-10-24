@@ -977,7 +977,7 @@ def protected_rule(ev, number):
     return ("A reproduced bug may be fixed wherever it is, the paths that govern autonomy (policy/, scripts/, kinds/, .github/) "
             "included, but the fix must never widen a permission, a lane or a limit: no lane added or opened up, no `merge` or "
             "`ceiling` raised, no protected path or label removed, no workflow permission or secret granted (G7 checks it, "
-            "scripts/no-widening.py, and leaves any widening to a person). If the change needs anything outside the PRD's scope, "
+            "scripts/no-widening.py, and leaves any widening, and any fix to code there, to a person to merge). If the change needs anything outside the PRD's scope, "
             f"a file under .github/workflows/ (the autopilot cannot push one), or widening any of those, {stop}")
 
 

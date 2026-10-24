@@ -59,8 +59,10 @@ Rules for any coding agent working in `DiluxOne/.github`.
   review read as rules: docs/agents.md, docs/architecture.md,
   docs/testing-and-quality.md, docs/model.md), which can merge on its own like a docs change
   anywhere (.github/review-policy.yml), and a reproduced bug's fix (the
-  `bugfix-reproduced` lane, #397) that widens no permission, lane or limit,
-  which `scripts/no-widening.py` checks from git before G7 merges it.
+  `bugfix-reproduced` lane, #397) to the policies alone (policy/autonomy.yml,
+  the review policies) that widens no permission, lane or limit, which
+  `scripts/no-widening.py` checks from git before G7 merges it; a fix to
+  code here is still a person's to merge.
 - Workflows are reusable (`on: workflow_call`) unless they are specific to this
   repository. Name them after what they do; add a stack suffix (`-wp`) only
   when the steps are stack-specific.
