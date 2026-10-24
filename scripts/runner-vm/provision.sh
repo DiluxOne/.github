@@ -25,8 +25,9 @@ DX_LIB=${DX_LIB:-/usr/local/lib/dx-runner}
 # Three slots per two cores unless DX_SLOTS says otherwise (#138, #379): with
 # one per core the 8 slots kept the data disk at its IOPS cap while CPU
 # stayed at 20 to 28% and most memory was free, so a job waits on the disk
-# more than on a core; 12 slots on the VM's 8 cores and 32 GB, each port
-# pair (9000 + 20 x slot) still free of any other.
+# more than on a core (about 29 of 31 GB of memory free with 8 busy, AI
+# Studio's runners included). 12 slots on the VM's 8 cores, each port pair
+# (9000 + 20 x slot) still free of any other.
 slot_count() { # [DX_SLOTS] [cores]
   local want=${1:-} cores=${2:-$(nproc)}
   if [[ "$want" =~ ^[1-9][0-9]*$ ]]; then echo "$want"; else echo $(( (cores * 3 + 1) / 2 )); fi
