@@ -2,11 +2,21 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [6.8.2](https://github.com/DiluxOne/.github/releases/tag/v6.8.2) · 2026-10-24
+
+### Fixes
+
+- **autopilot:** an accepted decision's sub-issues start the autopilot ([#417](https://github.com/DiluxOne/.github/pull/417))
+
 ## [6.8.1](https://github.com/DiluxOne/.github/releases/tag/v6.8.1) · 2026-10-24
 
 ### Fixes
 
 - **repro:** run-ref brings .dx-central and frees the network ([#410](https://github.com/DiluxOne/.github/pull/410))
+
+### Maintenance
+
+- **release:** v6.8.1, the lane verifies a browser fix ([#414](https://github.com/DiluxOne/.github/pull/414))
 
 ## [6.8.0](https://github.com/DiluxOne/.github/releases/tag/v6.8.0) · 2026-10-24
 
