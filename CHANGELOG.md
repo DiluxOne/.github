@@ -2,7 +2,21 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
-## [6.6.0](https://github.com/DiluxOne/.github/releases/tag/v6.6.0) · 2026-10-24
+## [6.7.0](https://github.com/DiluxOne/.github/releases/tag/v6.7.0) · 2026-10-24
+
+### Features
+
+- **repro:** every repository declares how its bugs are reproduced ([#388](https://github.com/DiluxOne/.github/pull/388))
+
+### Fixes
+
+- **repro:** the reproduction reads the issue in a private repository ([#395](https://github.com/DiluxOne/.github/pull/395))
+
+### Maintenance
+
+- **repos:** the new plugin diluxone-events-wordpress joins ([#391](https://github.com/DiluxOne/.github/pull/391))
+
+## [6.6.0](https://github.com/DiluxOne/.github/releases/tag/v6.6.0) · 2026-10-23
 
 ### Features
 
@@ -11,6 +25,14 @@ Every version of the engine (the workflows, scripts, policy and kinds other repo
 ### Performance
 
 - **runner-vm:** three slots per two cores, the disk on Premium P15 ([#381](https://github.com/DiluxOne/.github/pull/381))
+
+### CI
+
+- **tests-wp:** plugin tests run on Node 24, so wp-env 12 can start ([#389](https://github.com/DiluxOne/.github/pull/389))
+
+### Maintenance
+
+- **release:** v6.6.0, the engine's own bugs reproduced with a test ([#386](https://github.com/DiluxOne/.github/pull/386))
 
 ## [6.5.0](https://github.com/DiluxOne/.github/releases/tag/v6.5.0) · 2026-10-23
 
