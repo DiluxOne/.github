@@ -13,7 +13,8 @@
 #      only this machine (loopback and Docker's own networks); the site's
 #      containers reach nothing outside either (DOCKER-USER). The runner's
 #      own user could sudo its way around all of that, so it never runs the
-#      test;
+#      test. Once the test and its teardown are done, those rules come out
+#      again for what the job runs next (#409);
 #   3. the verdict is the way's JUnit report (scripts/repro-ways.py verdict):
 #      outcome=reproduced|passed|broken, or `limit` when setup failed, the
 #      repository's own test setup (or its teardown, when the test reached
@@ -36,7 +37,8 @@
 #                              the test taken out until setup is done), with
 #                              the working tree's vendor/ when REF has none
 #                              (installed by the caller, as the run job of
-#                              issue-repro.yml does); SPEC or REPRO_SPEC,
+#                              issue-repro.yml does) and its .dx-central/
+#                              (#409); SPEC or REPRO_SPEC,
 #                              THEME or REPRO_THEME. The bugfix-reproduced
 #                              lane (#397): the autopilot against its fix,
 #                              and gate G7 at the pull request's head
@@ -75,6 +77,22 @@ isolate() {
   if sudo iptables -L DOCKER-USER -n >/dev/null 2>&1; then
     sudo iptables -I DOCKER-USER 1 -i br-+ ! -d 172.16.0.0/12 -j REJECT
     sudo iptables -I DOCKER-USER 1 -i docker0 ! -d 172.16.0.0/12 -j REJECT
+  fi
+}
+
+# The same rules taken out once the test is done, so that whatever the job
+# runs next reaches the network again (#409).
+release() {
+  local uid
+  uid=$(id -u dxrepro)
+  sudo iptables -D OUTPUT -m owner --uid-owner "$uid" -o lo -j ACCEPT || true
+  sudo iptables -D OUTPUT -m owner --uid-owner "$uid" -d 172.16.0.0/12 -j ACCEPT || true
+  sudo iptables -D OUTPUT -m owner --uid-owner "$uid" -j REJECT || true
+  sudo ip6tables -D OUTPUT -m owner --uid-owner "$uid" -o lo -j ACCEPT 2>/dev/null || true
+  sudo ip6tables -D OUTPUT -m owner --uid-owner "$uid" -j REJECT 2>/dev/null || true
+  if sudo iptables -L DOCKER-USER -n >/dev/null 2>&1; then
+    sudo iptables -D DOCKER-USER -i docker0 ! -d 172.16.0.0/12 -j REJECT || true
+    sudo iptables -D DOCKER-USER -i br-+ ! -d 172.16.0.0/12 -j REJECT || true
   fi
 }
 
@@ -180,6 +198,7 @@ run() {
   fi
   cmd=$(jq -r '.teardown // empty' <<<"$spec")
   [ -z "$cmd" ] || timeout 120 bash -c "$cmd" >/dev/null 2>&1 || true
+  [ "${DX_REPRO_UNCONFINED:-}" = 1 ] || release
 }
 
 # The test at PATH as committed at REF, run against REF's own tree, never
@@ -198,6 +217,9 @@ run_ref() {
   # Out of the tree until the way's setup is done, as in the reproduction.
   rm -f "$tree/$path"
   if [ -d "$work/vendor" ] && [ ! -e "$tree/vendor" ]; then cp -a "$work/vendor" "$tree/vendor"; fi
+  # The organisation's files a way's setup reads (the browser way copies its
+  # Playwright configuration from them): left out by git archive (#409).
+  if [ -d "$work/.dx-central" ] && [ ! -e "$tree/.dx-central" ]; then cp -a "$work/.dx-central" "$tree/.dx-central"; fi
   (cd "$tree" && TEST=$path run "$tmp" "$dir") || rc=$?
   rm -rf "$tmp" "$tree"
   [ "$keep" = yes ] || rm -rf "$dir"
@@ -250,9 +272,17 @@ self_test() {
   if [ "$got" = "outcome=passed" ]; then echo "ok   #397 run-ref runs the committed test against REF's tree, out of it during setup, no .git"; else echo "FAIL #397 run-ref ($got)"; fail=1; fi
   got=$(DX_REPRO_UNCONFINED=1 SPEC=$(jq -c '.run = ("grep -qx uncommitted src/code.txt; exit 1")' <<<"$spec_ref") GITHUB_OUTPUT='' run_ref HEAD tests/repro/issue-1.spec.ts 2>/dev/null | grep '^outcome=' | tail -1)
   if [ "$got" = "outcome=broken" ]; then echo "ok   #397 run-ref never sees the working tree's uncommitted change"; else echo "FAIL #397 run-ref saw the working tree ($got)"; fail=1; fi
+  mkdir -p .dx-central && printf 'org\n' > .dx-central/conf && printf '/.dx-central/\n' >> .git/info/exclude
+  got=$(DX_REPRO_UNCONFINED=1 SPEC=$(jq -c '.setup += ["test -f .dx-central/conf"]' <<<"$spec_ref") GITHUB_OUTPUT='' run_ref HEAD tests/repro/issue-1.spec.ts 2>/dev/null | grep '^outcome=' | tail -1)
+  if [ "$got" = "outcome=passed" ]; then echo "ok   #409 run-ref's tree has the working tree's .dx-central/, which git archive leaves out"; else echo "FAIL #409 run-ref's tree lacks .dx-central/ ($got)"; fail=1; fi
   if (DX_REPRO_UNCONFINED=1 SPEC=$spec_ref run_ref HEAD tests/repro/other.spec.ts >/dev/null 2>&1); then echo "FAIL #397 run-ref refuses a test that is not the way's"; fail=1; else echo "ok   #397 run-ref refuses a test that is not the way's"; fi
   if (DX_REPRO_UNCONFINED=1 SPEC= REPRO_SPEC= run_ref HEAD tests/repro/issue-1.spec.ts >/dev/null 2>&1); then echo "FAIL #397 run-ref refuses to run with no way"; fail=1; else echo "ok   #397 run-ref refuses to run with no way"; fi
   if (DX_REPRO_UNCONFINED=1 SPEC=$spec_ref run_ref HEAD ../x >/dev/null 2>&1); then echo "FAIL #397 run-ref refuses a path outside the tree"; fail=1; else echo "ok   #397 run-ref refuses a path outside the tree"; fi
+  # #409: every rule isolate adds, release takes out.
+  local added removed
+  added=$(sed -n '/^isolate() {/,/^}/p' "$HERE/repro-run.sh" | grep -o 'tables -I [A-Z-]* 1 .* -j [A-Z]*' | sed 's/ -I \([A-Z-]*\) 1 / \1 /' | sort)
+  removed=$(sed -n '/^release() {/,/^}/p' "$HERE/repro-run.sh" | grep -o 'tables -D [A-Z-]* .* -j [A-Z]*' | sed 's/ -D / /' | sort)
+  if [ -n "$added" ] && [ "$added" = "$removed" ]; then echo "ok   #409 release takes out every rule isolate adds"; else echo "FAIL #409 release does not take out every rule isolate adds"; fail=1; fi
   cd "$d"
   if (DX_REPRO_UNCONFINED=1 SPEC='{}' TEST=../x run "$d/src.ts" "$d/out" >/dev/null 2>&1); then echo "FAIL a path outside the checkout is refused"; fail=1; else echo "ok   a path outside the checkout is refused"; fi
   if (RUNNER_ENVIRONMENT=self-hosted DX_REPRO_UNCONFINED=1 SPEC='{}' TEST=a/b run "$d/src.ts" "$d/out" >/dev/null 2>&1); then echo "FAIL a self-hosted runner is refused"; fail=1; else echo "ok   a self-hosted runner is refused"; fi
