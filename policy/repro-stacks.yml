@@ -78,6 +78,10 @@ stacks:
         - DOTNET_CLI_HOME=$PWD/build/dx-dotnet NUGET_PACKAGES=$PWD/build/dx-nuget dotnet restore {match} -p:ArtifactsPath=$PWD/build/dx-artifacts
       run: DOTNET_CLI_HOME=$PWD/build/dx-dotnet DOTNET_NOLOGO=1 NUGET_PACKAGES=$PWD/build/dx-nuget dotnet test {match} --no-restore -p:ArtifactsPath=$PWD/build/dx-artifacts --filter "FullyQualifiedName~Issue{n}Tests" --logger "junit;LogFilePath=$PWD/build/repro.xml"
       junit: build/repro.xml
+      # The logger names a test by its class, never its file.
+      case: Issue{n}Tests
+      # xUnit and MSTest say Assert., NUnit Expected:.
+      assertion: 'Assert\.|Expected:'
       minutes: 15
       list: ["**/*Tests.cs"]
       example: "**/*Tests.cs"
@@ -101,6 +105,11 @@ stacks:
         - GOBIN=$PWD/build/dx-go/bin GOMODCACHE=$PWD/build/dx-go/mod go install gotest.tools/gotestsum@v1.13.0
       run: GOTOOLCHAIN=local GOPROXY=off GOMODCACHE=$PWD/build/dx-go/mod GOCACHE=$PWD/build/dx-go/cache build/dx-go/bin/gotestsum --junitfile build/repro.xml -- ./repro/ -run 'TestIssue{n}$'
       junit: build/repro.xml
+      # gotestsum names a test by its function and package, never its file.
+      case: TestIssue{n}
+      # t.Errorf and t.Fatalf say where, `file_test.go:9: `; a panic's
+      # trace says `file_test.go:9 +0x…`, and is no assertion.
+      assertion: '_test\.go:\d+: '
       minutes: 10
       list: ["**/*_test.go"]
       example: "**/*_test.go"

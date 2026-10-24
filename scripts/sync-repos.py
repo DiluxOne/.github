@@ -1426,13 +1426,14 @@ def drift(repo, conf, labels, block, current=0):
             proposal = f"; detection proposes {', '.join(seen)}" if seen else "; detection recognises no kind"
         except RuntimeError as exc:
             proposal = f"; detection failed ({str(exc)[:120]})"
-    text = policy_text_of(full, default)
+    text = ""
     if entry is None:
         found.append(f"is not in repos.yml `repos:`: add it with its kinds, paths and roles (an empty list leaves it unclassified){proposal}")
     else:
         if not entry.get("kinds") and seen:
             found.append(f"is unclassified in repos.yml{proposal}")
         kinds = [k.get("kind") for k in entry.get("kinds") or []]
+        text = policy_text_of(full, default)
         own = policy_kind(text)
         if own and own not in kinds:
             found.append(f"its .github/review-policy.yml says `kind: {own}`, but repos.yml gives it {', '.join(kinds) or 'no kind'}")
@@ -1449,7 +1450,8 @@ def drift(repo, conf, labels, block, current=0):
         except RuntimeError as exc:  # what it proposes is a help, not the finding
             print(f"::warning::{full}: no stack proposal ({str(exc)[:120]})", file=sys.stderr)
             return None
-    gap = repro_gap(conf, repo["name"], policy, propose)
+    # One repos.yml does not list is said above; its way, once it is.
+    gap = repro_gap(conf, repo["name"], policy, propose) if entry is not None else None
     if gap:
         found.append(gap)
     if current:

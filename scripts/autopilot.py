@@ -210,7 +210,9 @@ def bug_gate(issue_type, lane, declared, proposal, repo):
     repository that declares no way to write one cannot hand its bugs to the
     autopilot. `declared`: the ways it declares; `proposal`: what its stack
     proposes (detect.stack_way), or None. Pure."""
-    if (issue_type or "").strip().lower() != "bug" or lane == REPRO or declared:
+    # Only a bug a person accepted: a lane's own issue (a reproduced bug, a
+    # failing CI run) is the lane's to work, by its own rules.
+    if (issue_type or "").strip().lower() != "bug" or lane != LANE or declared:
         return ""
     where = (f"`repro:` in {org.CENTRAL}'s repos.yml (under `{repo.split('/', 1)[-1]}:`), "
              "or `repro.ways` in this repository's .github/review-policy.yml")
@@ -234,7 +236,7 @@ def bug_refusal(repo, lane, issue_type, policy_path):
     """bug_gate for REPO on GitHub: its ways, from repos.yml here and its
     policy at POLICY_PATH, and, when it declares none, what its stack
     proposes (read from GitHub; a help, never the gate)."""
-    if (issue_type or "").strip().lower() != "bug" or lane == REPRO:
+    if (issue_type or "").strip().lower() != "bug" or lane != LANE:
         return ""
     policy = (schema.read_yaml(policy_path) if policy_path and os.path.exists(policy_path) and os.path.getsize(policy_path) else None) or {}
     declared = declared_ways(repo, policy if isinstance(policy, dict) else {})
@@ -1288,7 +1290,8 @@ Clamp the value in Sum::add.
           (bug_refusal("o/r", LANE, "Feature", ""), bug_refusal("o/r", REPRO, "Bug", "")), ("", ""))
     check("#377 C4 with no stack recognised, it says to declare one by hand", "declare one by hand" in bug_gate("Bug", LANE, [], None, "DiluxOne/api"), True)
     check("#377 C4 a bug in a repository that declares a way starts", bug_gate("Bug", LANE, ["unit"], None, "DiluxOne/x"), "")
-    check("#377 C4 a feature, or a reproduced bug's own lane, is not held by it", (bug_gate("Feature", LANE, [], None, "o/r"), bug_gate("Bug", REPRO, [], None, "o/r")), ("", ""))
+    check("#377 C4 a feature, or a lane's own bug (reproduced, a failing CI run), is not held by it",
+          (bug_gate("Feature", LANE, [], None, "o/r"), bug_gate("Bug", REPRO, [], None, "o/r"), bug_gate("Bug", "ci-weekly", [], None, "o/r")), ("", "", ""))
     with tempfile.TemporaryDirectory() as root:
         os.makedirs(os.path.join(root, "kinds", "wordpress-plugin"))
         shutil.copy(os.path.join(HERE, "..", "kinds", "wordpress-plugin", "pack.yml"), os.path.join(root, "kinds", "wordpress-plugin"))

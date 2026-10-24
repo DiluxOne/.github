@@ -161,8 +161,8 @@ def stack_way(paths, read, rules=None, reads=50):
     def holds(path, text):
         if not text:
             return True
-        if budget[0] <= 0:
-            return False
+        if budget[0] <= 0:  # never "no stack" for what was not read
+            raise RuntimeError(f"more than {reads} files to read to recognise its stack")
         budget[0] -= 1
         return text in (read(path) or "")
     for stack, s in rules.items():
@@ -191,8 +191,10 @@ def tree(full, ref="main", run=run_gh):
 def remote_way(full, ref="main", run=run_gh):
     """stack_way of a repository on GitHub."""
     def read(path):
-        rc, text, _ = run("api", f"repos/{full}/contents/{path}?ref={ref}", "-H", "Accept: application/vnd.github.raw")
-        return text[:65536] if rc == 0 else ""
+        rc, text, err = run("api", f"repos/{full}/contents/{path}?ref={ref}", "-H", "Accept: application/vnd.github.raw")
+        if rc != 0:  # a file it cannot read is no file without the text
+            raise RuntimeError(f"could not read {path}: {err.strip()[:120]}")
+        return text[:65536]
     return stack_way(tree(full, ref, run), read)
 
 
@@ -443,6 +445,16 @@ def self_test():
         check("remote_policy: one that cannot be read is no empty policy", False, True)
     except RuntimeError:
         check("remote_policy: one that cannot be read is no empty policy", True, True)
+    try:
+        remote_way("Acme/x", "main", lambda *a: (0, listing, "") if "git/trees" in a[1] else (1, "", "HTTP 502"))
+        check("remote_way: a file it cannot read is an error, never a repository with no stack", False, True)
+    except RuntimeError:
+        check("remote_way: a file it cannot read is an error, never a repository with no stack", True, True)
+    try:
+        stack_way({f"p{i}/x.csproj" for i in range(3)}, lambda p: "", reads=2)
+        check("stack_way: more files to read than it may is an error, never no stack", False, True)
+    except RuntimeError:
+        check("stack_way: more files to read than it may is an error, never no stack", True, True)
     check("remote_way: an empty repository proposes nothing", remote_way("Acme/x", "main", lambda *a: (1, "", "HTTP 409: Git Repository is empty.")), None)
     try:
         remote_way("Acme/x", "main", lambda *a: (1, "", "HTTP 404: Not Found"))

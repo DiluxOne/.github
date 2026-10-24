@@ -32,6 +32,13 @@ A way is one entry of `repro.ways`:
   run       the command that runs the test ({test}); scripts/repro-run.sh
             runs it with no environment and no network but the machine's own
   junit     the JUnit report `run` writes, which gives the verdict
+  case      what that report names the test by (`{n}`), when no test case
+            carries the test's file name (Go's TestIssue{n}, a .NET class
+            Issue{n}Tests); the test's file name by default
+  assertion a regular expression a failure's text matches when it is an
+            assertion's and not the test breaking, for a framework whose
+            words the built-in one does not know (Go's `file_test.go:9:`,
+            .NET's `Assert.`); an exception's failure is never one
   teardown  a command after the verdict, best effort
   minutes   the most setup and run may take together
   context   files the writer reads whole; list: globs it sees by name;
@@ -49,7 +56,7 @@ runs (`{paths: [globs], tests: [paths]}`), instead of the whole suite.
   repro-ways.py brief     the way's part of the writer's brief (markdown)
   repro-ways.py lint FILE exit 1, saying why, when FILE reads a stylesheet
                           as text: never a reproduction of how a page looks
-  repro-ways.py verdict JUNIT NAME
+  repro-ways.py verdict JUNIT NAME [ASSERTION]
                           reproduced|passed|broken|environment from a JUnit
                           report, for the test file NAME
   repro-ways.py affected  the tests a pull request runs, from the changed
@@ -81,7 +88,7 @@ import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LAYERS = ("logic", "browser", "cli", "api", "workflow")
-KEYS = {"layer", "noun", "test", "needs", "sandbox", "setup", "theme", "run", "junit", "teardown",
+KEYS = {"layer", "noun", "test", "needs", "sandbox", "setup", "theme", "run", "junit", "case", "assertion", "teardown",
         "minutes", "context", "list", "example", "guide"}
 SANDBOXES = ("php-unit",)
 # How the comments say each layer is reproduced.
@@ -150,6 +157,11 @@ def problems(conf):
             out.append(f"repro.ways.{name}.test: a relative path with {{n}}")
         if way.get("sandbox") is not None and way.get("sandbox") not in SANDBOXES:
             out.append(f"repro.ways.{name}.sandbox: one of {', '.join(SANDBOXES)}")
+        if way.get("assertion") is not None:
+            try:
+                re.compile(str(way["assertion"]))
+            except re.error:
+                out.append(f"repro.ways.{name}.assertion: a regular expression")
         if way.get("sandbox") is None and not (way.get("run") and way.get("junit")):
             out.append(f"repro.ways.{name}: a command way needs `run` and `junit`")
     return out
@@ -234,7 +246,10 @@ def propose(root):
                 return fh.read(65536)
         except OSError:
             return ""
-    found = detect.stack_way(tree_of(root), text)
+    try:
+        found = detect.stack_way(tree_of(root), text)
+    except RuntimeError:  # too many files to read: no proposal, never a wrong one
+        return None
     if not found or problems({"ways": {found[1]: found[2]}}):
         return None
     return found
@@ -323,7 +338,7 @@ def resolve(root, central, layer, number):
                                     f"(`repro: {{ways: {{{name}: false}}}}`) and declare another"),
         # The command way whole, as JSON, for scripts/repro-run.sh.
         "spec": json.dumps({k: (fill(v, number, central, kind, test) if isinstance(v, str) else [fill(x, number, central, kind, test) for x in v] if isinstance(v, list) else v)
-                            for k, v in way.items() if k in ("setup", "theme", "run", "junit", "teardown", "minutes", "test")}, separators=(",", ":")),
+                            for k, v in way.items() if k in ("setup", "theme", "run", "junit", "case", "assertion", "teardown", "minutes", "test")}, separators=(",", ":")),
     })
     return out
 
@@ -377,7 +392,12 @@ def lint(path):
     return f"it reads a stylesheet as text ({m.group(0)[:60]}): how a page looks is reproduced in a browser" if m else ""
 
 
-def verdict(junit, name):
+# What a failure that is an assertion's says, in the frameworks the packs
+# use; a way's `assertion` replaces it.
+ASSERTION = r"\bexpect\(|AssertionError|toBe|toEqual|toHave|assert|DID NOT RAISE"
+
+
+def verdict(junit, name, assertion=None):
     """reproduced when a test of NAME failed an assertion; passed when every
     test of NAME ran and passed; environment when the repository's setup
     beside it failed (the site, not the test, whatever became of the test),
@@ -395,11 +415,11 @@ def verdict(junit, name):
     after = [c for c in others if "teardown" in " ".join(filter(None, (c.get("classname"), c.get("name"), c.get("file")))).lower()]
     if len(after) < len(others):
         return "environment"
-    own = mine_verdict(mine)
+    own = mine_verdict(mine, assertion)
     return "environment" if after and own == "broken" else own
 
 
-def mine_verdict(mine):
+def mine_verdict(mine, assertion=None):
     if not mine:
         return "broken"
     failed = False
@@ -416,7 +436,7 @@ def mine_verdict(mine):
             if raised and raised.group(1) not in ("AssertionError", "Error", "AssertionFailedError", "ExpectationFailedException"):
                 return "broken"
             # pytest.raises that saw nothing raised is an assertion too.
-            if not re.search(r"\bexpect\(|AssertionError|toBe|toEqual|toHave|assert|DID NOT RAISE", text):
+            if not re.search(assertion or ASSERTION, text):
                 return "broken"
             # An element the test never found says its selector is wrong as
             # often as that the bug is there: no verdict. Only Playwright's
@@ -724,6 +744,38 @@ def self_test():
               (propose(d), "no stack of policy/repro-stacks.yml" in missing(d, central), "`junit`" in missing(d, central)), (None, True, True))
         repo("", ["node_modules/x/pytest.ini"])
         check("#377 what a repository installs is not its stack", propose(d), None)
+        # Every stack's way reaches a verdict on the report its tools write
+        # (issue 7): a failed assertion reproduces, an exception does not.
+        reports = {
+            "php-phpunit": ('<testsuites><testsuite name="Issue7Test" file="/w/tests/Repro/Issue7Test.php"><testcase name="test_sum" class="Issue7Test" classname="Issue7Test" file="/w/tests/Repro/Issue7Test.php" line="9"><failure type="PHPUnit\\Framework\\ExpectationFailedException">Issue7Test::test_sum\nFailed asserting that 1 is identical to 2.</failure></testcase></testsuite></testsuites>',
+                            '<testsuites><testsuite><testcase name="test_sum" classname="Issue7Test" file="/w/tests/Repro/Issue7Test.php"><error type="Error">Error: Call to undefined function sum()</error></testcase></testsuite></testsuites>'),
+            "python-pytest": ('<testsuites><testsuite name="pytest"><testcase classname="tests.repro.test_issue_7" name="test_sum" file="tests/repro/test_issue_7.py" line="3"><failure message="assert 1 == 2">def test_sum():\n&gt;       assert sum([1]) == 2\nE       assert 1 == 2</failure></testcase></testsuite></testsuites>',
+                              '<testsuites><testsuite><testcase classname="tests.repro.test_issue_7" name="test_sum" file="tests/repro/test_issue_7.py"><failure message="ImportError: cannot import name \'x\'">E   ImportError</failure></testcase></testsuite></testsuites>'),
+            "dotnet-test": ('<testsuites><testsuite name="Api.Tests.dll"><testcase classname="Api.Tests.Repro.Issue7Tests" name="Api.Tests.Repro.Issue7Tests.Sum_is_two" time="0.01"><failure type="failure" message="Assert.Equal() Failure: Values differ&#10;Expected: 2&#10;Actual:   1">at Api.Tests.Repro.Issue7Tests.Sum_is_two()</failure></testcase></testsuite></testsuites>',
+                            '<testsuites><testsuite><testcase classname="Api.Tests.Repro.Issue7Tests" name="Sum_is_two"><failure type="failure" message="System.NullReferenceException : Object reference not set to an instance of an object.">at Api.Sum()</failure></testcase></testsuite></testsuites>'),
+            "go-test": ('<testsuites><testsuite name="example.com/api/repro" tests="1" failures="1"><testcase classname="example.com/api/repro" name="TestIssue7" time="0.00"><failure message="Failed" type="">=== RUN   TestIssue7\n    issue7_test.go:12: Sum() = 1, want 2\n--- FAIL: TestIssue7 (0.00s)\n</failure></testcase></testsuite></testsuites>',
+                        '<testsuites><testsuite><testcase classname="example.com/api/repro" name="TestIssue7"><failure message="Failed" type="">panic: runtime error: index out of range [recovered]\n\t/w/repro/issue7_test.go:12 +0x1d\n</failure></testcase></testsuite></testsuites>'),
+            "node-vitest": ('<testsuites><testsuite name="tests/repro/issue-7.test.ts"><testcase classname="tests/repro/issue-7.test.ts" name="sum &gt; is two" time="0.002"><failure message="expected 1 to be 2 // Object.is equality" type="AssertionError">AssertionError: expected 1 to be 2</failure></testcase></testsuite></testsuites>',
+                            '<testsuites><testsuite><testcase classname="tests/repro/issue-7.test.ts" name="sum"><failure message="sum is not a function" type="TypeError">TypeError: sum is not a function</failure></testcase></testsuite></testsuites>'),
+            "node-jest": ('<testsuites><testsuite name="sum"><testcase classname="sum is two" name="sum is two" file="tests/repro/issue-7.test.js"><failure>Error: expect(received).toBe(expected)\n\nExpected: 2\nReceived: 1</failure></testcase></testsuite></testsuites>',
+                          '<testsuites><testsuite><testcase classname="sum" name="sum" file="tests/repro/issue-7.test.js"><failure>TypeError: sum is not a function</failure></testcase></testsuite></testsuites>'),
+        }
+        detect = _load("detect", "detect.py")
+        stacks = detect.stacks()
+        check("#377 every stack has its reports here", sorted(reports), sorted(stacks))
+        got = {}
+        for stack, (asserted, broke) in reports.items():
+            way = detect.filled(stacks[stack]["way"], "a/b.x")
+            name = fill(way.get("case") or os.path.basename(way["test"]), 7, central, "")
+            out = []
+            for xml in (asserted, broke):
+                with open(os.path.join(d, "r.xml"), "w") as fh:
+                    fh.write(xml)
+                out.append(verdict(os.path.join(d, "r.xml"), name, way.get("assertion")))
+            got[stack] = tuple(out)
+        check("#377 every stack's report: a failed assertion reproduces, an exception is no verdict", got, {s: ("reproduced", "broken") for s in reports})
+        check("#377 an assertion that is not a regular expression is said", problems({"ways": {"go": {"layer": "logic", "test": "t/{n}", "run": "x", "junit": "j", "assertion": "("}}}),
+              ["repro.ways.go.assertion: a regular expression"])
         os.symlink("/etc/hostname", os.path.join(d, "pytest.ini"))
         check("#377 a symbolic link is never read nor matched", propose(d), None)
     print(f"{'all tests passed' if not failed else f'{failed} failed'}")
@@ -753,8 +805,8 @@ def main():
             print(why)
             return 1
         return 0
-    if len(args) == 3 and args[0] == "verdict":
-        print(verdict(args[1], args[2]))
+    if len(args) in (3, 4) and args[0] == "verdict":
+        print(verdict(args[1], args[2], args[3] if len(args) == 4 and args[3] else None))
         return 0
     if args == ["propose"]:
         found = propose(root)

@@ -87,7 +87,7 @@ confined() {
 }
 
 run() {
-  local src=$1 dir=$2 spec=${SPEC:?} test=${TEST:?} theme=${THEME:-} minutes deadline left rc=0 cmd junit v
+  local src=$1 dir=$2 spec=${SPEC:?} test=${TEST:?} theme=${THEME:-} minutes deadline left rc=0 cmd junit v case
   mkdir -p "$dir"
   : > "$dir/output-tail.txt"
   if [ "${RUNNER_ENVIRONMENT:-}" = self-hosted ]; then
@@ -153,7 +153,9 @@ run() {
   if [ "$rc" -eq 124 ]; then
     limit "The test took longer than the way's $minutes minutes, setup included."
   else
-    v=$(python3 "$HERE/repro-ways.py" verdict "$junit" "$(basename "$test")")
+    # What the report names the test by: the way's `case`, else its file.
+    case=$(jq -r '.case // empty' <<<"$spec"); [ -n "$case" ] || case=$(basename "$test")
+    v=$(python3 "$HERE/repro-ways.py" verdict "$junit" "$case" "$(jq -r '.assertion // empty' <<<"$spec")")
     if [ "$v" = environment ]; then
       limit "The repository's own test setup failed around the test (its setup or teardown project, before or after it): the environment, not the test or the report."
     else
@@ -177,6 +179,9 @@ self_test() {
   pass='<testsuites><testsuite><testcase name="x" classname="issue-1.spec.ts"/></testsuite></testsuites>'
   fails='<testsuites><testsuite><testcase name="x" classname="issue-1.spec.ts"><failure message="expect(a).toBe(b)"/></testcase></testsuite></testsuites>'
   t "C1 a failing assertion reproduces" reproduced "$(jq -nc --arg x "$fails" '{run: ("printf %s " + ($x|@sh) + " > build/j.xml; exit 1"), junit: "build/j.xml", minutes: 1}')"
+  gofail='<testsuites><testsuite><testcase name="TestIssue1" classname="example.com/m/repro"><failure message="Failed">issue1_test.go:9: got 1, want 2</failure></testcase></testsuite></testsuites>'
+  t "#377 a report that names the test by the way's case (Go's TestIssue1) reproduces" reproduced "$(jq -nc --arg x "$gofail" '{run: ("printf %s " + ($x|@sh) + " > build/j.xml; exit 1"), junit: "build/j.xml", case: "TestIssue1", assertion: "_test\\.go:[0-9]+: ", minutes: 1}')"
+  t "#377 without the case, the failure is no test of its own: no verdict (limit)" limit "$(jq -nc --arg x "$gofail" '{run: ("printf %s " + ($x|@sh) + " > build/j.xml; exit 1"), junit: "build/j.xml", minutes: 1}')"
   t "a passing test passes" passed "$(jq -nc --arg x "$pass" '{run: ("printf %s " + ($x|@sh) + " > build/j.xml"), junit: "build/j.xml", minutes: 1}')"
   t "C8 a setup that fails is no verdict (limit)" limit '{"setup":["exit 3"],"run":"true","junit":"build/j.xml","minutes":1}'
   t "C8 a run past the way's minutes is no verdict (limit)" limit '{"run":"sleep 5","junit":"build/j.xml","minutes":0}'
