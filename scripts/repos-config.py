@@ -97,7 +97,10 @@ def problems(conf, kinds, systems):
         if not isinstance(entry, dict) or set(entry) - {"ways", "affected"} or not isinstance(entry.get("ways"), dict) or not entry["ways"]:
             out.append(f"repro.{name}: {{ways: {{name: way}}}}, and `affected` if any, or false (none, by design)")
             continue
-        out += [f"repro.{name}: {p.removeprefix('repro.')}" for p in repro_ways().problems({"ways": entry["ways"]})]
+        off = [w for w, way in entry["ways"].items() if not isinstance(way, dict)]
+        out += [f"repro.{name}: ways.{w}: a way's keys (to switch one off, a repository's own policy says false)" for w in off]
+        ways = {w: way for w, way in entry["ways"].items() if isinstance(way, dict)}
+        out += [f"repro.{name}: {p.removeprefix('repro.')}" for p in repro_ways().problems({"ways": ways})]
     return out
 
 
@@ -149,6 +152,8 @@ def self_test():
     check("#377 a way that is wrong says why", problems(dict(good, repro={"b": {"ways": {"pytest": dict(way, layer="screen")}}}), kinds, systems),
           ["repro.b: ways.pytest.layer: one of " + ", ".join(repro_ways().LAYERS) + ", or a list of them"])
     check("#377 an entry that is no `repro:`", problems(dict(good, repro={"b": {"pytest": way}}), kinds, systems), ["repro.b: {ways: {name: way}}, and `affected` if any, or false (none, by design)"])
+    check("#377 a way that is not a mapping is said, never a crash", problems(dict(good, repro={"b": {"ways": {"unit": False}}}), kinds, systems),
+          ["repro.b: ways.unit: a way's keys (to switch one off, a repository's own policy says false)"])
     check("#377 false: a repository with no way, by design", problems(dict(good, repro={"b": False}), kinds, systems), [])
     check("kind: a single-kind repository's", kind_of(good, "a"), "wordpress-plugin")
     check("kind: none for an unclassified one, a monorepo or an unknown name", (kind_of(good, "b"), kind_of(mono, "m"), kind_of(good, "zz")), (None, None, None))

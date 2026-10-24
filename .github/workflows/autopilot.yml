@@ -258,9 +258,11 @@ jobs:
           gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/body.md"
           gh api "repos/$GITHUB_REPOSITORY/contents/.github/autonomy.yml" --jq .content 2>/dev/null | base64 -d > "$RUNNER_TEMP/repo-autonomy.yml" || : > "$RUNNER_TEMP/repo-autonomy.yml"
           # Its review policy, for whether it declares a way to reproduce a
-          # bug (#377): none is an empty one; one that cannot be read stops
-          # here rather than tell the issue it declares none.
-          if ! gh api "repos/$GITHUB_REPOSITORY/contents/.github/review-policy.yml" -H "Accept: application/vnd.github.raw" > "$RUNNER_TEMP/repo-policy.yml" 2> "$RUNNER_TEMP/repo-policy.err"; then
+          # bug (#377), read on a start only: none is an empty one; one
+          # that cannot be read stops here rather than tell the issue it
+          # declares none.
+          : > "$RUNNER_TEMP/repo-policy.yml"
+          if [ "$MODE" = start ] && ! gh api "repos/$GITHUB_REPOSITORY/contents/.github/review-policy.yml" -H "Accept: application/vnd.github.raw" > "$RUNNER_TEMP/repo-policy.yml" 2> "$RUNNER_TEMP/repo-policy.err"; then
             grep -q "HTTP 404" "$RUNNER_TEMP/repo-policy.err" || { echo "::error::Could not read .github/review-policy.yml: $(head -c 200 "$RUNNER_TEMP/repo-policy.err")"; exit 1; }
             : > "$RUNNER_TEMP/repo-policy.yml"
           fi
