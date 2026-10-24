@@ -1908,14 +1908,14 @@ def dependabot_test(check, conf, labels, block):
         def __init__(self, stdout="", returncode=0, stderr=""):
             self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
     weekly = plugin.replace("interval: daily", "interval: weekly")
-    state = {"dependabot": weekly, "fixes": True}
+    state = {"dependabot": weekly, "fixes": True, "policy": "kind: wordpress-plugin\n"}
     calls, written = [], {}
 
     def fake(*args, check=True, input_text=None):
         joined = " ".join(args)
         calls.append(args)
         if joined.startswith("api repos/o/r/contents/.github/review-policy.yml"):
-            return Out("kind: wordpress-plugin\n")
+            return Out(state["policy"]) if state["policy"] else Out("", 1, "HTTP 404")
         if joined.startswith("api repos/o/r/contents/?ref="):
             return Out(json.dumps([{"name": "package.json"}, {"name": "plugin.php"}, {"name": "readme.txt"}]))
         if joined.startswith("api repos/o/r/contents/plugin.php"):
@@ -1984,6 +1984,13 @@ def dependabot_test(check, conf, labels, block):
         lines_u = drift(repo, conf, [], block)
         check("#191: an unclassified one whose review policy names a kind, and that looks like one, is reported",
               (any("is unclassified in repos.yml; detection proposes wordpress-plugin" in l for l in lines_u), any("says `kind: wordpress-plugin`, but repos.yml gives it no kind" in l for l in lines_u)), (True, True))
+        check("#377 C3: drift() does not list one whose review policy's kind brings its pack's ways",
+              not any("declares no way to reproduce a bug" in l for l in lines_u), lines_u)
+        state["policy"] = ""
+        lines_n = drift(repo, conf, [], block)
+        state["policy"] = "kind: wordpress-plugin\n"
+        check("#377 C3: drift() lists a repository that declares no way (no kind, no repro:), and says what to declare",
+              any("declares no way to reproduce a bug" in l for l in lines_n), lines_n)
     finally:
         globals()["gh"], ORG, globals()["listed"] = saved_gh, saved_org, saved_listed
     check("C3 (#178): a missing one is", any(f"`{DEPENDABOT}` is missing" in l for l in missing), missing)
