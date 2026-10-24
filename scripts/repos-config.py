@@ -9,8 +9,11 @@ checks it, and the rest of repos.yml against it:
   - one repository's kinds never cover the same paths (a monorepo splits
     them), and a kind covers at least one path;
   - every repository another section names (projects, design-system,
-    dependabot, no-workflows) is listed in `repos:`, and a design system
-    named exists in design-systems/ (or is `local`);
+    dependabot, repro, no-workflows) is listed in `repos:`, and a design
+    system named exists in design-systems/ (or is `local`);
+  - each repository's `repro:` (#377) is a `repro:` as its
+    .github/review-policy.yml takes it, every way to the schema of
+    scripts/repro-ways.py;
   - no section of repos.yml is unknown.
 
   repos-config.py check          repos.yml here (exit 1, with the reasons)
@@ -22,8 +25,8 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
 ROLES = ("front", "back", "data", "infra", "docs")
-SECTIONS = {"no-workflows", "exclude", "repos", "projects", "design-system", "settings", "security", "files", "dependabot", "callers"}
-NAMED = ("projects", "design-system", "dependabot")
+SECTIONS = {"no-workflows", "exclude", "repos", "projects", "design-system", "settings", "security", "files", "dependabot", "callers", "repro"}
+NAMED = ("projects", "design-system", "dependabot", "repro")
 
 
 def load(path):
@@ -88,7 +91,20 @@ def problems(conf, kinds, systems):
     for name, system in (conf.get("design-system") or {}).items():
         if system != "local" and system not in systems:
             out.append(f"design-system.{name}: {system!r} is not in design-systems/ (nor local)")
+    for name, entry in (conf.get("repro") or {}).items():
+        if not isinstance(entry, dict) or set(entry) - {"ways", "affected"} or not isinstance(entry.get("ways"), dict) or not entry["ways"]:
+            out.append(f"repro.{name}: {{ways: {{name: way}}}}, and `affected` if any")
+            continue
+        out += [f"repro.{name}: {p.removeprefix('repro.')}" for p in repro_ways().problems({"ways": entry["ways"]})]
     return out
+
+
+def repro_ways():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("repro_ways", os.path.join(HERE, "repro-ways.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def kind_of(conf, name):
@@ -125,6 +141,12 @@ def self_test():
     check("a section naming a repository repos: lacks", problems(dict(good, projects={"z": 3}), kinds, systems), ["projects.z: not a repository of `repos:`"])
     check("a design system that does not exist", problems(dict(good, **{"design-system": {"a": "material"}}), kinds, systems), ["design-system.a: 'material' is not in design-systems/ (nor local)"])
     check("an unknown section", problems(dict(good, owners={}), kinds, systems), ["owners: not a section of repos.yml"])
+    way = {"layer": "logic", "test": "tests/repro/test_issue_{n}.py", "run": "pytest {test}", "junit": "build/repro.xml"}
+    check("#377 a repository's way to reproduce a bug", problems(dict(good, repro={"b": {"ways": {"pytest": way}}}), kinds, systems), [])
+    check("#377 a way of a repository repos: lacks", problems(dict(good, repro={"z": {"ways": {"pytest": way}}}), kinds, systems), ["repro.z: not a repository of `repos:`"])
+    check("#377 a way that is wrong says why", problems(dict(good, repro={"b": {"ways": {"pytest": dict(way, layer="screen")}}}), kinds, systems),
+          ["repro.b: ways.pytest.layer: one of " + ", ".join(repro_ways().LAYERS) + ", or a list of them"])
+    check("#377 an entry that is no `repro:`", problems(dict(good, repro={"b": {"pytest": way}}), kinds, systems), ["repro.b: {ways: {name: way}}, and `affected` if any"])
     check("kind: a single-kind repository's", kind_of(good, "a"), "wordpress-plugin")
     check("kind: none for an unclassified one, a monorepo or an unknown name", (kind_of(good, "b"), kind_of(mono, "m"), kind_of(good, "zz")), (None, None, None))
     check("overlap: '**' overlaps everything; siblings do not", (overlap("**", "a/**"), overlap("api/**", "web/**"), overlap("api/**", "api/v2/*")), (True, False, True))

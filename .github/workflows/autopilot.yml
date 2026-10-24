@@ -15,7 +15,10 @@ name: Autopilot
 #                   issue starts nothing. It starts only if the autopilot is on
 #                   (policy/autonomy.yml, the repository's own
 #                   .github/autonomy.yml, DX_AUTOPILOT) and the issue is
-#                   ready (G1). First the agent writes the Spec, which this
+#                   ready (G1); a Bug, only in a repository that declares
+#                   a way to reproduce one (#377, scripts/autopilot.py
+#                   may-start), or the issue says which way to declare.
+#                   First the agent writes the Spec, which this
 #                   workflow appends to the issue (G3, sealed on the
 #                   receipts branch). Then it opens the draft pull request,
 #                   labelled `autopilot`: the Spec as a checklist, one box per
@@ -254,6 +257,7 @@ jobs:
           echo "issue=$ISSUE" >> "$GITHUB_OUTPUT"
           gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/body.md"
           gh api "repos/$GITHUB_REPOSITORY/contents/.github/autonomy.yml" --jq .content 2>/dev/null | base64 -d > "$RUNNER_TEMP/repo-autonomy.yml" || : > "$RUNNER_TEMP/repo-autonomy.yml"
+          gh api "repos/$GITHUB_REPOSITORY/contents/.github/review-policy.yml" --jq .content 2>/dev/null | base64 -d > "$RUNNER_TEMP/repo-policy.yml" || : > "$RUNNER_TEMP/repo-policy.yml"
           echo "go=true" >> "$GITHUB_OUTPUT"
       - name: May it start
         id: may
@@ -278,8 +282,22 @@ jobs:
           fi
           export LANE
           echo "lane=$LANE" >> "$GITHUB_OUTPUT"
-          if ! why=$(python3 .dx-central/scripts/autopilot.py may-start); then
+          # A bug only in a repository that declares a way to reproduce
+          # one (#377): may-start exits 2 and the issue says which way to
+          # declare. Only on a start: a run that continues one has started.
+          ISSUE_TYPE=""
+          if [ "$MODE" = start ]; then
+            ISSUE_TYPE=$(gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE" --jq '.type.name // ""')
+          fi
+          rc=0
+          why=$(ISSUE_TYPE="$ISSUE_TYPE" REPO_POLICY="$RUNNER_TEMP/repo-policy.yml" python3 .dx-central/scripts/autopilot.py may-start) || rc=$?
+          if [ "$rc" -ne 0 ]; then
             echo "The autopilot does not start: $why"
+            if [ "$rc" -eq 2 ]; then
+              gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$why
+
+          <sub>🤖 Autopilot</sub>" >/dev/null || true
+            fi
             echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
           # A reproduced bug: the test that failed, its SHA-256 and the

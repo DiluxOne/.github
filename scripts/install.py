@@ -9,7 +9,11 @@ in every run. This writes that configuration:
 
   org.yml             who the organisation is and its App
   repos.yml           every repository and its kinds, from detection
-                      (scripts/detect.py, each pack's `detect`)
+                      (scripts/detect.py, each pack's `detect`), and, in
+                      `repro:`, the way to reproduce a bug its stack
+                      proposes for each one that declares none (#377:
+                      policy/repro-stacks.yml); one no stack is recognised
+                      in is said, to be declared by hand
   .github/workflows/org-pull-request.yml
                       the pull request pipeline its ruleset requires of every
                       repository, calling the engine's workflows
@@ -84,6 +88,7 @@ def _module(name, file):
 
 
 detect = _module("detect", "detect.py")
+repro_ways = _module("repro_ways", "repro-ways.py")
 
 
 def run_gh(*args):
@@ -165,9 +170,36 @@ def repos_yml(lines):
             "repos:\n" + "".join(l + "\n" for l in sorted(lines, key=lambda l: l.strip().lower())))
 
 
-def plan(owner, app, app_id, target, repos, found_of, engine=ENGINE):
+REPRO_HEAD = ("\n# How a repository reproduces a bug when neither its kind's pack nor its\n"
+              "# own .github/review-policy.yml says (#377): its `repro:` as that file\n"
+              "# takes it (scripts/repro-ways.py), proposed by the installer from its\n"
+              "# stack (policy/repro-stacks.yml). Correct it; the repository's own\n"
+              "# policy goes over it.\nrepro:\n")
+
+
+def with_repro(text, proposals):
+    """repos.yml with a `repro:` entry for each (name, way's name, way),
+    in its section (written at the end when there is none)."""
+    block = "".join(f"  {name}:\n    ways:\n" + detect.way_yaml(wname, way, 6) for name, wname, way in proposals)
+    lines = text.split("\n")
+    if "repro:" in lines:
+        i = lines.index("repro:") + 1
+        return "\n".join(lines[:i]) + "\n" + block + "\n".join(lines[i:])
+    return text.rstrip("\n") + "\n" + REPRO_HEAD + block
+
+
+def declares(conf, name, own, engine=ENGINE):
+    """The ways a repository declares (scripts/repro-ways.py declares): its
+    kind's pack, repos.yml `repro:` and its own policy (`own`)."""
+    return repro_ways.declares(conf, name, own or {}, os.path.join(engine, "kinds"))
+
+
+def plan(owner, app, app_id, target, repos, found_of, engine=ENGINE, policy_of=None, way_of=None):
     """Writes the configuration into `target` and returns what it did, one
-    line each: "kept PATH", "wrote PATH" or "added NAME to repos.yml"."""
+    line each: "kept PATH", "wrote PATH", "added NAME to repos.yml",
+    "proposed …" or "lacks a way: …". `policy_of(name)` is a repository's
+    own .github/review-policy.yml, `way_of(name)` what its stack proposes
+    (detect.stack_way); without them no way is proposed."""
     import yaml
     did = []
     rules = detect.packs()
@@ -216,6 +248,8 @@ def plan(owner, app, app_id, target, repos, found_of, engine=ENGINE):
         yaml.safe_load(open(path, encoding="utf-8"))
         did.append(f"wrote repos.yml ({len(lines)} repositories)")
     did += unread
+    if policy_of and way_of:
+        did += propose_ways(path, [n for n in sorted(repos) if n not in excluded], policy_of, way_of, engine)
     with open(os.path.join(engine, ".github", "workflows", "org-pull-request.yml"), encoding="utf-8") as fh:
         pipeline = fh.read()
     write(os.path.join(".github", "workflows", "org-pull-request.yml"), render(pipeline, owner))
@@ -227,9 +261,37 @@ def plan(owner, app, app_id, target, repos, found_of, engine=ENGINE):
     return did
 
 
+def propose_ways(path, names, policy_of, way_of, engine=ENGINE):
+    """For each repository that declares no way to reproduce a bug, the way
+    its stack proposes, added to repos.yml `repro:`; what it did, one line
+    each. One that cannot be read is said, never taken for one with none."""
+    conf = detect.load(path)
+    did, proposals = [], []
+    for name in names:
+        try:
+            if declares(conf, name, policy_of(name), engine):
+                continue
+            found = way_of(name)
+        except Exception as exc:  # noqa: BLE001  any failure to read it, said and not fatal
+            did.append(f"lacks a way? {name} could not be read ({str(exc)[:80]})")
+            continue
+        if found:
+            proposals.append((name, found[1], found[2]))
+            did.append(f"proposed the {found[1]} way ({found[0]}) for {name} in repos.yml `repro:`")
+        else:
+            did.append(f"lacks a way: {name} declares none to reproduce a bug, and no stack of policy/repro-stacks.yml is recognised in it: declare one by hand")
+    if proposals:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(with_repro(text, proposals))
+    return did
+
+
 def material(did):
-    """What installing again changed: anything but a kept file."""
-    return [d for d in did if not d.startswith("kept ")]
+    """What installing again changed: anything but a kept file, or what it
+    only says (a repository it proposes no way for)."""
+    return [d for d in did if not d.startswith(("kept ", "lacks a way"))]
 
 
 def steps(owner, app):
@@ -287,6 +349,44 @@ def self_test():
         found["new-one"] = []
         more = plan("Acme", "acme-bot", 7, t, {"plugin-a": "main", "site": "main", "new-one": "main"}, lambda n: found[n])
         check("a new repository is added, the rest kept", material(more), ["added new-one to repos.yml"])
+
+    # #377: every repository that declares no way to reproduce a bug gets
+    # the one its stack proposes, in repos.yml `repro:`.
+    files = {"api-py": {"pyproject.toml": "[project]\nname = 'api'\n\n[tool.pytest.ini_options]\ntestpaths = ['tests']\n"},
+             "svc-net": {"Svc.sln": "", "src/Svc/Svc.csproj": "<Project/>", "tests/Svc.Tests/Svc.Tests.csproj": "<PackageReference Include=\"Microsoft.NET.Test.Sdk\" />"},
+             "plugin-a": {"composer.json": "phpunit"}, "own": {"pyproject.toml": "pytest"}, "site": {"index.html": ""}}
+    kinds_of = {"plugin-a": ["wordpress-plugin"]}
+    own = {"own": {"repro": {"ways": {"cli": {"layer": ["logic", "cli"], "test": "t/{n}.sh", "run": "bash {test}", "junit": "build/j.xml"}}}}}
+    way_of = lambda n: detect.stack_way(set(files[n]), lambda p: files[n].get(p, ""))  # noqa: E731
+    with tempfile.TemporaryDirectory() as t:
+        names = {n: "main" for n in files}
+        did = plan("Acme", "acme-bot", 7, t, names, lambda n: kinds_of.get(n, []), policy_of=lambda n: own.get(n, {}), way_of=way_of)
+        conf = yaml.safe_load(open(os.path.join(t, "repos.yml")))
+        py = conf["repro"]["api-py"]["ways"]["pytest"]
+        check("C1 a pytest repository with no way: its pull request adds a Python way that writes a JUnit report",
+              (py["test"], "--junitxml=build/repro.xml" in py["run"], py["junit"]), ("tests/repro/test_issue_{n}.py", True, "build/repro.xml"))
+        net = conf["repro"]["svc-net"]["ways"]["dotnet-test"]
+        check("C2 a .NET test project: a dotnet test way with a JUnit logger",
+              ("dotnet test tests/Svc.Tests/Svc.Tests.csproj" in net["run"], '--logger "junit;' in net["run"], net["test"]),
+              (True, True, "tests/Svc.Tests/Repro/Issue{n}Tests.cs"))
+        check("a repository whose pack or own policy declares a way gets none proposed", sorted(conf["repro"]), ["api-py", "svc-net"])
+        check("one no stack is recognised in is said, by name", [d.split(":")[0] for d in did if d.startswith("lacks a way")], ["lacks a way"])
+        check("what it proposes is said, by repository", sorted(d.split(" for ")[1].split(" ")[0] for d in did if d.startswith("proposed ")), ["api-py", "svc-net"])
+        check("repos.yml with its ways is to the schema",
+              rc.problems(rc.load(os.path.join(t, "repos.yml")), rc.dirs(os.path.join(ENGINE, "kinds")), rc.dirs(os.path.join(ENGINE, "design-systems"))), [])
+        again = plan("Acme", "acme-bot", 7, t, names, lambda n: kinds_of.get(n, []), policy_of=lambda n: own.get(n, {}), way_of=way_of)
+        check("installing again proposes nothing more: the ways are declared now", material(again), [])
+        files["new-py"] = {"pytest.ini": "[pytest]"}
+        more = plan("Acme", "acme-bot", 7, t, dict(names, **{"new-py": "main"}), lambda n: kinds_of.get(n, []), policy_of=lambda n: own.get(n, {}), way_of=way_of)
+        check("a new repository's way joins the others in `repro:`", (material(more), sorted(yaml.safe_load(open(os.path.join(t, "repos.yml")))["repro"])),
+              (["added new-py to repos.yml", "proposed the pytest way (python-pytest) for new-py in repos.yml `repro:`"], ["api-py", "new-py", "svc-net"]))
+
+        def unreadable_policy(n):
+            raise RuntimeError("HTTP 502")
+        files["late"] = {"go.mod": "module x"}
+        said = plan("Acme", "acme-bot", 7, t, {"late": "main"}, lambda n: [], policy_of=unreadable_policy, way_of=way_of)
+        check("a repository whose policy cannot be read is said, never given a way it may not need",
+              ([d for d in said if d.startswith("lacks a way? late")] != [], "late" in (yaml.safe_load(open(os.path.join(t, "repos.yml"))).get("repro") or {})), (True, False))
 
     def unreadable(name):
         raise RuntimeError("HTTP 403: rate limit")
@@ -386,6 +486,8 @@ def main(argv):
     a = ap.parse_args(argv)
     repos = repositories(a.org)
     found_of = lambda name: detect.remote(f"{a.org}/{name}", repos[name])  # noqa: E731
+    policy_of = lambda name: detect.remote_policy(f"{a.org}/{name}", repos[name])  # noqa: E731
+    way_of = lambda name: detect.remote_way(f"{a.org}/{name}", repos[name])  # noqa: E731
     if a.mode in ("plan", "diff"):
         if not a.dir:
             ap.error("--dir is required for plan and diff")
@@ -395,7 +497,7 @@ def main(argv):
             shutil.copytree(a.dir, tmp, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git"))
             target = tmp
         try:
-            did = plan(a.org, a.app, a.app_id, target, repos, found_of)
+            did = plan(a.org, a.app, a.app_id, target, repos, found_of, policy_of=policy_of, way_of=way_of)
         finally:
             if a.mode == "diff":
                 shutil.rmtree(target, ignore_errors=True)
@@ -403,12 +505,12 @@ def main(argv):
         if a.mode == "diff":
             print("\nWhat installing again would change: " + ("nothing." if not material(did) else ", ".join(material(did))))
         return 0
-    rc, out = apply(a.org, a.app, a.app_id, repos, found_of)
+    rc, out = apply(a.org, a.app, a.app_id, repos, found_of, policy_of=policy_of, way_of=way_of)
     print(out)
     return rc
 
 
-def apply(owner, app, app_id, repos, found_of, run=run_gh, clone_url=None):
+def apply(owner, app, app_id, repos, found_of, run=run_gh, clone_url=None, policy_of=None, way_of=None):
     """The one pull request in OWNER/.github: (exit code, what it says).
     `run` calls gh and `clone_url` is where to clone from (the self-test's
     stand-ins). The install branch is built on only while its pull request
@@ -437,7 +539,7 @@ def apply(owner, app, app_id, repos, found_of, run=run_gh, clone_url=None):
             g("checkout", "-q", "-B", BRANCH, "FETCH_HEAD")
         else:
             g("checkout", "-q", "-B", BRANCH)
-        did = plan(owner, app, app_id, work, repos, found_of)
+        did = plan(owner, app, app_id, work, repos, found_of, policy_of=policy_of, way_of=way_of)
         said.append("\n".join(did))
         if not material(did):
             said.append(f"Nothing to change: {open_pr} already holds it." if open_pr else "Nothing to change: the configuration is installed.")
@@ -454,7 +556,7 @@ def apply(owner, app, app_id, repos, found_of, run=run_gh, clone_url=None):
     else:
         body = ("## What changes\n\n" + "\n".join(f"- {d}" for d in material(did)) +
                 f"\n\n## Why\n\nThe configuration of the engine in {org.CENTRAL} for {owner}: the engine is called by tag and reads this repository's "
-                "configuration over its own defaults. Correct the kinds detection proposed in repos.yml before merging.\n\n" + steps(owner, app))
+                "configuration over its own defaults. Correct the kinds detection proposed in repos.yml, and the ways to reproduce a bug in its `repro:`, before merging.\n\n" + steps(owner, app))
         rc, out, err = run("pr", "create", "--repo", full, "--head", BRANCH, "--title", "chore: install the engine's configuration", "--body", body)
         said.append(out.strip() or err.strip())
     said.append("\n" + steps(owner, app))

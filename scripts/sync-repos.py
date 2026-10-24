@@ -55,10 +55,13 @@ archived and not excluded in repos.yml:
   all       labels, settings, files and own-checks, in that order.
   check     changes nothing: lists, as Markdown, what differs in each
             repository, its callers and its Dependabot configuration
-            included (the daily drift check posts it as an issue), and a
+            included (the daily drift check posts it as an issue), a
             repository whose `design-system` in
             repos.yml names no system of design-systems/, or is `local` with
-            no docs/design-system/README.md.
+            no docs/design-system/README.md, and every repository that
+            declares no way to reproduce a bug (#377: its kind's pack,
+            repos.yml `repro:` or its own .github/review-policy.yml), with
+            the way its stack proposes (policy/repro-stacks.yml).
 
   sync-repos.py <labels|settings|files|dependabot|own-checks|callers|all> [--repo NAME ...] [--dry-run]
   sync-repos.py check [--repo NAME ...] [--report FILE]
@@ -1067,12 +1070,39 @@ def repo_kind(full, default):
     return policy_kind_of(full, default)
 
 
-def policy_kind_of(full, default):
-    """The kind the repository's .github/review-policy.yml names, or None."""
+def policy_text_of(full, default):
+    """The repository's .github/review-policy.yml, or "" when it has none."""
     out = gh("api", f"repos/{full}/contents/.github/review-policy.yml?ref={default}", "-H", "Accept: application/vnd.github.raw", check=False)
     if out.returncode != 0 and "404" not in out.stderr:
         raise RuntimeError(f"could not read its review policy: {out.stderr.strip()[:200]}")
-    return policy_kind(out.stdout) if out.returncode == 0 else None
+    return out.stdout if out.returncode == 0 else ""
+
+
+def policy_kind_of(full, default):
+    """The kind the repository's .github/review-policy.yml names, or None."""
+    return policy_kind(policy_text_of(full, default))
+
+
+def _script(name, file):
+    spec = importlib.util.spec_from_file_location(name, os.path.join(CENTRAL, "scripts", file))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def repro_gap(conf, name, own, propose):
+    """#377: what the audit says of a repository that declares no way to
+    reproduce a bug (its kind's pack, repos.yml `repro:`, its own policy
+    `own`, as scripts/repro-ways.py declares merges them), with what its
+    stack proposes (`propose()`, detect.stack_way); None when it declares
+    one."""
+    if _script("repro_ways", "repro-ways.py").declares(conf, name, own or {}, os.path.join(CENTRAL, "kinds")):
+        return None
+    found = propose()
+    how = (f"its stack ({found[0]}) proposes the `{found[1]}` way, which `install.py plan` adds to repos.yml `repro:`" if found
+           else "no stack of policy/repro-stacks.yml is recognised in it: declare one by hand")
+    return ("declares no way to reproduce a bug (repos.yml `repro:`, or `repro.ways` in its .github/review-policy.yml): "
+            f"its bugs stay unconfirmed and the autopilot does not start on them; {how}")
 
 
 def own_checks_spec(full, default, texts):
@@ -1394,15 +1424,32 @@ def drift(repo, conf, labels, block, current=0):
             proposal = f"; detection proposes {', '.join(seen)}" if seen else "; detection recognises no kind"
         except RuntimeError as exc:
             proposal = f"; detection failed ({str(exc)[:120]})"
+    text = policy_text_of(full, default)
     if entry is None:
         found.append(f"is not in repos.yml `repos:`: add it with its kinds, paths and roles (an empty list leaves it unclassified){proposal}")
     else:
         if not entry.get("kinds") and seen:
             found.append(f"is unclassified in repos.yml{proposal}")
         kinds = [k.get("kind") for k in entry.get("kinds") or []]
-        own = policy_kind_of(full, default)
+        own = policy_kind(text)
         if own and own not in kinds:
             found.append(f"its .github/review-policy.yml says `kind: {own}`, but repos.yml gives it {', '.join(kinds) or 'no kind'}")
+    # #377: how its bugs are reproduced, said when it declares nothing.
+    policy = parse_yaml(text) if text else {}
+    policy = policy if isinstance(policy, dict) else {}
+
+    def propose():
+        def run(*args):
+            out = gh(*args, check=False)
+            return out.returncode, out.stdout, out.stderr
+        try:
+            return _script("detect", "detect.py").remote_way(full, default, run)
+        except RuntimeError as exc:  # what it proposes is a help, not the finding
+            print(f"::warning::{full}: no stack proposal ({str(exc)[:120]})", file=sys.stderr)
+            return None
+    gap = repro_gap(conf, repo["name"], policy, propose)
+    if gap:
+        found.append(gap)
     if current:
         files = workflow_files(full)
         texts = list(files.values())
@@ -1936,6 +1983,16 @@ def dependabot_test(check, conf, labels, block):
     finally:
         globals()["gh"], ORG, globals()["listed"] = saved_gh, saved_org, saved_listed
     check("C3 (#178): a missing one is", any(f"`{DEPENDABOT}` is missing" in l for l in missing), missing)
+    check("#377: a plugin, whose pack declares its ways, is not said to lack one", not any("no way to reproduce" in l for l in lines), lines)
+    # #377 C3: the audit lists every repository that declares no way.
+    way = {"layer": "logic", "test": "tests/repro/test_issue_{n}.py", "run": "pytest {test}", "junit": "build/repro.xml"}
+    org_conf = {"repos": {"plugin": {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"]}]}}, "repro": {"api": {"ways": {"pytest": way}}}}
+    trees = {"api": None, "plugin": None, "own": None, "py": ("python-pytest", "pytest", way), "site": None}
+    owns = {"own": {"repro": {"ways": {"pytest": way}}}}
+    gaps = {n: repro_gap(org_conf, n, owns.get(n, {}), lambda n=n: trees[n]) for n in trees}
+    check("#377 C3: the audit lists every repository with no way, and only those", sorted(n for n, g in gaps.items() if g) == ["py", "site"], gaps)
+    check("#377 C3: with the way its stack proposes, or that none is recognised",
+          ("proposes the `pytest` way" in gaps["py"], "declare one by hand" in gaps["site"]), (gaps["py"], gaps["site"]))
     check("drift: Dependabot security updates off are reported, on are not",
           any("security updates are off" in l for l in in_step) and not any("security updates" in l for l in lines), (lines, in_step))
     prs = [a for a in calls if a[:2] == ("pr", "create")]

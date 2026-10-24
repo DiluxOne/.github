@@ -4,7 +4,8 @@ name: Issue reproduction
 # the test runs, and the outcome is reported. Which test is the repository's
 # to say (#352, scripts/repro-ways.py): the triage labels the layer the bug
 # shows in (`layer:logic|browser|cli|api|workflow`, logic when none), and
-# the repository's kind (kinds/<kind>/pack.yml, `repro:`) and its own
+# the repository's kind (kinds/<kind>/pack.yml, `repro:`), the
+# organisation's repos.yml `repro:` for it (#377) and its own
 # .github/review-policy.yml declare a way for each layer: a PHP unit test
 # under tests/Unit/Repro/ (`unit`, WordPress plugins), a Playwright test on
 # wp-env under tests/e2e/repro/ (`browser`, WordPress plugins), or any
@@ -12,9 +13,11 @@ name: Issue reproduction
 # of a script, or one that reads a workflow's file, #376). No stack is
 # assumed: a layer with no way declared, or a way whose `needs` are missing,
 # builds nothing, before any model runs: `bug:unconfirmed` becomes
-# `repro:no-way`, and the comment says why and how to declare a way. Once
-# it decided to run, a step of its own that fails leaves a comment with the
-# run and `needs-human`, never silence (#393). The rest of this header names the unit way's files; another way's are its own.
+# `repro:no-way`, and the comment says why and how to declare a way, with
+# the way the repository's stack proposes (policy/repro-stacks.yml, #377).
+# Once it decided to run, a step of its own that fails leaves a comment with
+# the run and `needs-human`, never silence (#393). The rest of this header
+# names the unit way's files; another way's are its own.
 # It starts in two ways (scripts/repro-trigger.sh decides which):
 #   trigger `triage`  the triage classified the report as a bug
 #                     (`bug:unconfirmed`), on the event that opened it;
@@ -315,7 +318,9 @@ jobs:
       # its way's `needs` are missing. Said before any model runs, and never
       # left hanging: `bug:unconfirmed` becomes `repro:no-way`, and the
       # comment says why and how to declare a way (scripts/repro-ways.py,
-      # `why`). `repro:again` tries again once one is declared.
+      # `why`), with the way the repository's stack proposes when one is
+      # recognised (`proposed`, #377). `repro:again` tries again once one
+      # is declared.
       - name: dilux-bot token (the issue's comment)
         id: say
         if: steps.start.outputs.go == 'yes' && steps.way.outputs.ready != 'yes'
@@ -333,6 +338,7 @@ jobs:
           NUMBER: ${{ github.event.issue.number }}
           LAYER: ${{ steps.way.outputs.layer }}
           WHY: ${{ steps.way.outputs.why }}
+          PROPOSED: ${{ steps.way.outputs.proposed }}
           BT: '`'
         run: |
           set -euo pipefail
@@ -340,7 +346,10 @@ jobs:
           gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label repro:no-way >/dev/null
           # One label per call: gh refuses the whole edit when one is missing (#267).
           gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label bug:unconfirmed >/dev/null 2>&1 || true
-          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'No reproduction can run for this %s bug: %s.\n\nNo test was written, so the report is labelled %s instead of waiting as %s. A person will look at it, and %s tries again once a way is declared.\n\n<sub>🤖 Issue reproduction</sub>' "$LAYER" "$WHY" "${BT}repro:no-way${BT}" "${BT}bug:unconfirmed${BT}" "${BT}repro:again${BT}")" >/dev/null
+          # The way its stack proposes, when one is recognised (#377).
+          proposed=""
+          if [ -n "$PROPOSED" ]; then proposed=$(printf '\n\n%syaml\n%s%s' "$BT$BT$BT" "$PROPOSED" "$BT$BT$BT"); fi
+          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'No reproduction can run for this %s bug: %s.%s\n\nNo test was written, so the report is labelled %s instead of waiting as %s. A person will look at it, and %s tries again once a way is declared.\n\n<sub>🤖 Issue reproduction</sub>' "$LAYER" "$WHY" "$proposed" "${BT}repro:no-way${BT}" "${BT}bug:unconfirmed${BT}" "${BT}repro:again${BT}")" >/dev/null
           echo "::notice::No way reproduces this $LAYER bug: $WHY"
 
       - name: Daily cap

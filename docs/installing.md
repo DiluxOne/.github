@@ -20,7 +20,7 @@ It reads the organisation's repositories and what each one is (detection, each p
 | File | What |
 | --- | --- |
 | `org.yml` | The organisation and its App. |
-| `repos.yml` | Every repository and its kinds, from detection: correct what it got wrong before merging. |
+| `repos.yml` | Every repository and its kinds, from detection: correct what it got wrong before merging. In `repro:`, for each repository that declares no way to reproduce a bug (neither its kind's pack nor its own `.github/review-policy.yml`), the way its stack proposes ([`policy/repro-stacks.yml`](../policy/repro-stacks.yml): PHPUnit, pytest, `dotnet test`, Go, Vitest or Jest, each writing the JUnit report the verdict reads, #377); one no stack is recognised in is named in the output, to declare by hand. |
 | `.github/workflows/org-pull-request.yml` | The pull request pipeline every repository runs (conventions, review, auto-merge), calling the engine; each `secrets: inherit` written out as the secrets the called workflow asks for, since `inherit` does not cross organisations (one to a workflow that declares none stays: see the limits below). |
 | `workflow-templates/` | The callers a repository adds from *Actions, New workflow*. |
 
