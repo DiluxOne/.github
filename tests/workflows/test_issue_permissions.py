@@ -47,6 +47,8 @@ def test_a_broken_reproduction_says_so_on_the_issue():
     broke = next(s for s in steps if s.get("name") == "The reproduction broke")
     assert broke["if"] == "failure() && steps.cap.outputs.run == 'true'"
     assert "--add-label needs-human" in broke["run"] and "gh issue comment" in broke["run"]
+    run = broke["run"]
+    assert run.index("gh label create needs-human") < run.index("--add-label needs-human"), "the label exists before it is added"
     assert steps[-1] is broke, "it must be the job's last step, so any step before it that fails reaches it"
     token = next(s for s in steps if s.get("id") == "broke")
     assert token["if"] == broke["if"] and token["with"]["permission-issues"] == "write"
