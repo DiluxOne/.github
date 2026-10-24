@@ -2,7 +2,7 @@ name: Issue accepted
 
 # Reusable. When a person adds `accepted` to an issue: the issue lands on its
 # product's public Project (repos.yml, `projects:`, in this repository) with
-# Status Accepted, and the failed jobs of the organisation's pull request
+# Status Accepted once the G1 check below lets the label stay (#372), and the failed jobs of the organisation's pull request
 # pipeline re-run on every open pull request that closes it. When an accepted
 # issue closes as completed (by hand, or by the merge that closes it), its
 # Status becomes Done; one closed as not planned is left where it is. The
@@ -164,6 +164,10 @@ jobs:
     name: Issue ready (G1)
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 5
+    # Whether the acceptance stands, for the Project (#372): read by the
+    # `project` job, which sets Accepted only when it is true.
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
     # When a person accepts it: is the issue's PRD complete, as the issue
     # schema says (policy/issue-schema.yml, gate G1), with no comment after
     # its last edit left without a maintainer's answer (#287)? One comment,
@@ -707,9 +711,15 @@ jobs:
     # The Projects go through the bot's own token; DiluxOne/.github is public,
     # so its checkout needs nothing from the workflow's.
     permissions: {}
+    # After the G1 check (#372): an acceptance it takes back (the issue is
+    # `incomplete`) never shows as Accepted on the Project. A release issue
+    # (#82) is not checked by it, and its acceptance stands. always(): the
+    # check is skipped on a close, which still sets Done.
+    needs: ready
     if: >-
-      github.event_name == 'issues' && (
-        (github.event.action == 'labeled' && github.event.label.name == inputs.label && github.event.sender.type != 'Bot') ||
+      always() && github.event_name == 'issues' && (
+        (github.event.action == 'labeled' && github.event.label.name == inputs.label && github.event.sender.type != 'Bot' &&
+          (needs.ready.outputs.ready == 'true' || contains(github.event.issue.labels.*.name, 'lane:release'))) ||
         (github.event.action == 'closed' && github.event.issue.state_reason != 'not_planned' && contains(github.event.issue.labels.*.name, inputs.label)))
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
