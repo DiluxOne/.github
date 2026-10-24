@@ -201,6 +201,14 @@ run() {
   [ "${DX_REPRO_UNCONFINED:-}" = 1 ] || release
 }
 
+# Remove what a run left: the confined user and the site's containers write
+# files of their own in it, which only sudo removes; whatever still stays is
+# said and never changes the verdict (#421).
+discard() {
+  rm -rf -- "$@" 2>/dev/null || sudo -n rm -rf -- "$@" 2>/dev/null \
+    || echo "::warning::Could not remove all of $* after the run." >&2
+}
+
 # The test at PATH as committed at REF, run against REF's own tree, never
 # the working tree (#397).
 run_ref() {
@@ -221,8 +229,8 @@ run_ref() {
   # Playwright configuration from them): left out by git archive (#409).
   if [ -d "$work/.dx-central" ] && [ ! -e "$tree/.dx-central" ]; then cp -a "$work/.dx-central" "$tree/.dx-central"; fi
   (cd "$tree" && TEST=$path run "$tmp" "$dir") || rc=$?
-  rm -rf "$tmp" "$tree"
-  [ "$keep" = yes ] || rm -rf "$dir"
+  discard "$tmp" "$tree"
+  [ "$keep" = yes ] || discard "$dir"
   return "$rc"
 }
 
@@ -272,6 +280,11 @@ self_test() {
   if [ "$got" = "outcome=passed" ]; then echo "ok   #397 run-ref runs the committed test against REF's tree, out of it during setup, no .git"; else echo "FAIL #397 run-ref ($got)"; fail=1; fi
   got=$(DX_REPRO_UNCONFINED=1 SPEC=$(jq -c '.run = ("grep -qx uncommitted src/code.txt; exit 1")' <<<"$spec_ref") GITHUB_OUTPUT='' run_ref HEAD tests/repro/issue-1.spec.ts 2>/dev/null | grep '^outcome=' | tail -1)
   if [ "$got" = "outcome=broken" ]; then echo "ok   #397 run-ref never sees the working tree's uncommitted change"; else echo "FAIL #397 run-ref saw the working tree ($got)"; fail=1; fi
+  # #421: a file the runner's user cannot remove stays in the tree, and the
+  # run still ends with its verdict and exit 0.
+  got=$(DX_REPRO_UNCONFINED=1 SPEC=$(jq -c '.run = "mkdir -p build/locked && : > build/locked/f && chmod 500 build/locked && " + .run' <<<"$spec_ref") GITHUB_OUTPUT='' bash "$HERE/repro-run.sh" run-ref HEAD tests/repro/issue-1.spec.ts 2>/dev/null; echo "rc=$?")
+  if grep -qx 'outcome=passed' <<<"$got" && grep -qx 'rc=0' <<<"$got"; then echo "ok   #421 a file left that cannot be removed changes neither the verdict nor the exit"; else echo "FAIL #421 the cleanup changed the outcome ($(tr '\n' ' ' <<<"$got"))"; fail=1; fi
+  find "${TMPDIR:-/tmp}" -maxdepth 3 -path '*repro-tree.*/build/locked' -exec chmod 700 {} + 2>/dev/null || true
   mkdir -p .dx-central && printf 'org\n' > .dx-central/conf && printf '/.dx-central/\n' >> .git/info/exclude
   got=$(DX_REPRO_UNCONFINED=1 SPEC=$(jq -c '.setup += ["test -f .dx-central/conf"]' <<<"$spec_ref") GITHUB_OUTPUT='' run_ref HEAD tests/repro/issue-1.spec.ts 2>/dev/null | grep '^outcome=' | tail -1)
   if [ "$got" = "outcome=passed" ]; then echo "ok   #409 run-ref's tree has the working tree's .dx-central/, which git archive leaves out"; else echo "FAIL #409 run-ref's tree lacks .dx-central/ ($got)"; fail=1; fi
