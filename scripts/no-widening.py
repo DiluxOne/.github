@@ -284,19 +284,36 @@ def at(ref, path):
     return autonomy.parse_text(run.stdout)
 
 
+def org_policy():
+    return autonomy.load(os.environ.get("ORG_AUTONOMY") or os.path.join(HERE, "..", "policy", "autonomy.yml"))
+
+
 def protected_paths():
     """The constitution in force: the organisation's, with the repository's own."""
-    org = autonomy.load(os.environ.get("ORG_AUTONOMY") or os.path.join(HERE, "..", "policy", "autonomy.yml"))
     repo = autonomy.load(os.environ.get("REPO_AUTONOMY") or "")
-    return autonomy.merge(org, repo if isinstance(repo, dict) else {}).get("constitution") or []
+    return autonomy.merge(org_policy(), repo if isinstance(repo, dict) else {}).get("constitution") or []
+
+
+def repo_autonomy_widens(org, base, head, where):
+    """A repository's own .github/autonomy.yml only narrows the
+    organisation's: what counts is the policy in force with it, before and
+    after. Taking a narrowing out (a lane it switched off, a cap it lowered,
+    the whole file) widens."""
+    as_repo = lambda data: data if isinstance(data, dict) else {}
+    return autonomy_widens(autonomy.merge(org, as_repo(base)), autonomy.merge(org, as_repo(head)), where)
 
 
 def check(base, head, protected=None):
     protected = protected_paths() if protected is None else protected
     fork = git("merge-base", base, head).strip()
-    changed = [p for p in git("diff", "--name-only", "--no-renames", fork, head).splitlines() if p]
+    # NUL-separated: a path git would quote (a tab, a quote, a non-ASCII
+    # letter) is matched as it is.
+    changed = [p for p in git("diff", "-z", "--name-only", "--no-renames", fork, head).split("\0") if p]
     out = []
     for path in changed:
+        if path == ".github/autonomy.yml":
+            out += repo_autonomy_widens(org_policy(), at(fork, path), at(head, path), path)
+            continue
         if path in AUTONOMY:
             out += autonomy_widens(at(fork, path), at(head, path), path)
             continue
@@ -444,6 +461,28 @@ def self_test():
             g("commit", "-qam", "main narrows")
             ok("check: from the merge base, main's own change is not the branch's", check(g("rev-parse", "HEAD"), fix, []), [])
             ok("check: the constitution in force is the policy's", "scripts/**" in protected_paths(), True)
+            # A path git quotes is matched as it is.
+            g("checkout", "-q", "fix")
+            os.makedirs(os.path.join(d, "scripts"), exist_ok=True)
+            write("scripts/año\t\".py", "x\n")
+            g("add", "-A")
+            g("commit", "-qm", "quoted")
+            ok("check: a protected path git would quote is still a protected path",
+               "scripts/año\t\".py: a protected path that is code or words, which no check can read; a person reads what it changes" in check(base, g("rev-parse", "HEAD"), ["scripts/**"]), True)
+            # A repository's own file: taking a narrowing out widens.
+            os.makedirs(os.path.join(d, ".github"), exist_ok=True)
+            write(".github/autonomy.yml", "lanes:\n  platform: {enabled: false}\n")
+            g("add", "-A")
+            g("commit", "-qm", "narrow")
+            narrowed = g("rev-parse", "HEAD")
+            write(".github/autonomy.yml", "lanes: {}\n")
+            g("commit", "-qam", "unnarrow")
+            ok("check: a repository taking a lane's switch-off out of its own file widens", check(narrowed, g("rev-parse", "HEAD"), []),
+               [".github/autonomy.yml: lanes.platform switched on"])
+            g("rm", "-q", ".github/autonomy.yml")
+            g("commit", "-qm", "gone")
+            ok("check: a repository deleting its own file widens", check(narrowed, g("rev-parse", "HEAD"), []),
+               [".github/autonomy.yml: lanes.platform switched on"])
         finally:
             os.chdir(cwd)
     if not failed:
