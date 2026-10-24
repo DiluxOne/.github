@@ -66,3 +66,5 @@ jobs:
       contents: read
       issues: write
     uses: DiluxOne/.github/.github/workflows/weekly-failure.yml@v6
+    secrets:
+      DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}

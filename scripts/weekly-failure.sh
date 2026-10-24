@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# The weekly full run failed (weekly-failure.yml): record it on the one open
+# `ci:weekly` issue, or open that issue, with the Type Bug (#375). The pull
+# request that fixes the failure is a `fix`, and the conventions gate wants a
+# `fix` to close a Bug, so an issue without the Type would stop its fix until
+# a person set it by hand.
+#
+#   weekly-failure.sh          records the failure
+#   weekly-failure.sh --test   self-test against a stand-in for gh
+#
+# With no open `ci:weekly` issue it opens one with the Type Bug; when GitHub
+# refuses the issue with a Type (the repository has no Bug type), it opens it
+# without one, so the failure is never lost. With one open, it comments the
+# run on it and sets the Type Bug only when it has none: a Type a person set
+# stays. GitHub drops a Type a token without push access sends, without an
+# error, so the Type is read back from GitHub's answer and a Type that did
+# not stick is a warning, never a failed run: the record matters more than
+# its Type.
+#
+# Environment: GITHUB_REPOSITORY (owner/name), GH_TOKEN (issues: write; to
+# set a Type, dilux-bot's), RUN_URL (the failed run), SHA (the commit it ran).
+set -euo pipefail
+
+LABEL=ci:weekly
+TITLE="The weekly full run failed"
+NOTE="Nothing merged caused this: the run tests the code of \`main\` as it was already tested, against today's WordPress, PHP and tools. Read the run, fix what drifted in a pull request, and close this issue when a scheduled run is green again."
+
+# Set issue $1's Type to Bug and say whether GitHub kept it.
+set_bug() {
+  local got
+  got=$(gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/$1" -f type=Bug --jq '.type.name // ""' 2>&1) || got=""
+  if [ "$got" = Bug ]; then echo "#$1: Type Bug."
+  else echo "::warning::#$1: GitHub did not set the Type Bug (no Bug type in the repository, or a token without push access: pass DILUX_BOT_PRIVATE_KEY); set it by hand so its fix passes the conventions gate."; fi
+}
+
+record() {
+  local body open type answer number
+  gh label create "$LABEL" --repo "$GITHUB_REPOSITORY" --color B60205 --description "The weekly full run failed" --force >/dev/null
+  body="The scheduled run of the full pipeline failed on $(date -u +%F) at \`${SHA:0:7}\`: $RUN_URL"
+  open=$(gh issue list --repo "$GITHUB_REPOSITORY" --label "$LABEL" --state open --json number --jq '.[0].number // empty')
+  if [ -n "$open" ]; then
+    gh issue comment "$open" --repo "$GITHUB_REPOSITORY" --body "$body" >/dev/null
+    echo "Added to #$open."
+    if ! type=$(gh api "repos/$GITHUB_REPOSITORY/issues/$open" --jq '.type.name // ""' 2>/dev/null); then
+      echo "::warning::#$open: could not read its Type; left as it is."; return 0
+    fi
+    if [ -n "$type" ]; then echo "#$open: keeps its Type $type."; else set_bug "$open"; fi
+    return 0
+  fi
+  body=$(printf '%s\n\n%s' "$body" "$NOTE")
+  if answer=$(gh api -X POST "repos/$GITHUB_REPOSITORY/issues" -f title="$TITLE" -f body="$body" -f "labels[]=$LABEL" -f type=Bug --jq '"\(.number) \(.type.name // "")"' 2>/dev/null); then
+    number=${answer%% *}
+    echo "Opened #$number."
+    if [ "${answer#* }" = Bug ]; then echo "#$number: Type Bug."; else set_bug "$number"; fi
+  else
+    echo "::warning::GitHub refused the issue with the Type Bug; opening it without one."
+    gh issue create --repo "$GITHUB_REPOSITORY" --label "$LABEL" --title "$TITLE" --body "$body"
+  fi
+}
+
+if [ "${1:-}" = "--test" ]; then
+  fail=0
+  export GITHUB_REPOSITORY=DiluxOne/example RUN_URL=https://github.com/DiluxOne/example/actions/runs/42 SHA=0123456789abcdef
+  is() { if [ "$2" = "$3" ]; then echo "ok   $1"; else printf 'FAIL %s\n  want: %s\n  got:  %s\n' "$1" "$3" "$2"; fail=1; fi; }
+  has() { if grep -qF -- "$3" <<<"$2"; then echo "ok   $1"; else printf 'FAIL %s\n  want a line with: %s\n  got:\n%s\n' "$1" "$3" "$2"; fail=1; fi; }
+  hasnt() { if grep -qF -- "$3" <<<"$2"; then printf 'FAIL %s\n  did not want: %s\n  got:\n%s\n' "$1" "$3" "$2"; fail=1; else echo "ok   $1"; fi; }
+  # A stand-in for gh: logs each call on one line and answers from the
+  # variables below. OPEN: the open ci:weekly issue's number (empty: none).
+  # TYPE: its Type. CREATE: the Type GitHub keeps on create ("refuse": a 422).
+  # PATCH: the Type GitHub keeps on a PATCH.
+  log=$(mktemp)
+  gh() {
+    echo "$*" >> "$log"
+    case "$1 $2 $3" in
+      "issue list "*) echo "${OPEN:-}" ;;
+      "api -X POST") [ "${CREATE:-}" = refuse ] && return 1; echo "7 ${CREATE:-}" ;;
+      "api -X PATCH") echo "${PATCH:-}" ;;
+      "api repos/"*) echo "${TYPE:-}" ;;
+      "issue create "*) echo "https://github.com/$GITHUB_REPOSITORY/issues/7" ;;
+    esac
+  }
+  run() { : > "$log"; out=$(record 2>&1); calls=$(cat "$log"); }
+
+  OPEN="" CREATE=Bug run
+  has "C1: no open issue, so it is opened with the Type Bug" "$calls" "api -X POST repos/$GITHUB_REPOSITORY/issues -f title=$TITLE"
+  has "C1: with the Type Bug" "$calls" "-f type=Bug"
+  has "C1: and the ci:weekly label" "$calls" "-f labels[]=ci:weekly"
+  has "C1: the body links the run" "$calls" "at \`0123456\`: $RUN_URL"
+  hasnt "C1: a Type kept on create needs no PATCH" "$calls" "-X PATCH"
+  is "C1: says what it did" "$out" "$(printf 'Opened #7.\n#7: Type Bug.')"
+
+  OPEN="" CREATE="" PATCH="" run
+  has "a Type dropped on create is set again" "$calls" "api -X PATCH repos/$GITHUB_REPOSITORY/issues/7 -f type=Bug"
+  has "and one that does not stick is a warning" "$out" "::warning::#7: GitHub did not set the Type Bug"
+
+  OPEN="" CREATE=refuse run
+  has "a refused Type still opens the issue, without one" "$calls" "issue create --repo $GITHUB_REPOSITORY --label ci:weekly --title $TITLE"
+  has "and says so" "$out" "::warning::GitHub refused the issue with the Type Bug"
+
+  OPEN=12 TYPE="" PATCH=Bug run
+  has "C2: an open issue gets the run as a comment" "$calls" "issue comment 12 --repo $GITHUB_REPOSITORY --body"
+  has "C2: and, with no Type, the Type Bug" "$calls" "api -X PATCH repos/$GITHUB_REPOSITORY/issues/12 -f type=Bug"
+  hasnt "C2: and no new issue" "$calls" "-X POST"
+  is "C2: says what it did" "$out" "$(printf 'Added to #12.\n#12: Type Bug.')"
+
+  OPEN=12 TYPE=Task run
+  has "C3: an open issue with a Type gets the comment" "$calls" "issue comment 12"
+  hasnt "C3: and keeps its Type" "$calls" "-X PATCH"
+  has "C3: and says so" "$out" "#12: keeps its Type Task."
+
+  unset -f gh; rm -f "$log"
+  [ "$fail" -eq 0 ] && echo "all tests passed"
+  exit "$fail"
+fi
+
+case "${1:-}" in
+  "") record ;;
+  *) echo "usage: weekly-failure.sh [--test]" >&2; exit 2 ;;
+esac

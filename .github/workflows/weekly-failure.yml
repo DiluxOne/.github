@@ -5,9 +5,34 @@ name: Weekly failure
 # is already open, so a suite that breaks on a Monday is recorded where the
 # work is and nobody has to read the Actions tab. The label `ci:weekly` marks
 # the issue; closing it ends the thread and the next failure opens a new one.
+# The issue has the Type Bug (#375), set too on an open one that has none, so
+# the `fix` that closes it passes the conventions gate with nobody setting it
+# by hand; a Type a person set stays. GitHub drops, without an error, a Type
+# sent by a token without push access, so the issue is written with
+# dilux-bot's token when the caller passes the bot's key; without it, the
+# caller's token still records the failure and a Type that did not stick is a
+# warning. The logic is scripts/weekly-failure.sh, with its self-test.
+#
+#   weekly-failure:
+#     needs: [checks, tests]
+#     if: ${{ !cancelled() && github.event_name == 'schedule' && contains(needs.*.result, 'failure') }}
+#     permissions:
+#       contents: read
+#       issues: write
+#     uses: DiluxOne/.github/.github/workflows/weekly-failure.yml@v6
+#     secrets:
+#       DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
 
 on:
   workflow_call:
+    inputs:
+      central-ref:
+        description: The ref of DiluxOne/.github whose script runs. Empty (the default) means the very commit this workflow runs from, job.workflow_sha (#287).
+        type: string
+        default: ''
+    secrets:
+      DILUX_BOT_PRIVATE_KEY:
+        required: false
 
 permissions: {}
 
@@ -19,20 +44,33 @@ jobs:
     permissions:
       contents: read
       issues: write
+    env:
+      HAS_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY != '' }}
     steps:
-      - env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          SHA: ${{ github.sha }}
+      - name: The script
+        env:
+          REF: ${{ inputs.central-ref || job.workflow_sha }}
         run: |
           set -euo pipefail
-          gh label create ci:weekly --repo "$GITHUB_REPOSITORY" --color B60205 --description "The weekly full run failed" --force >/dev/null
-          body="The scheduled run of the full pipeline failed on $(date -u +%F) at \`${SHA:0:7}\`: $RUN_URL"
-          open=$(gh issue list --repo "$GITHUB_REPOSITORY" --label ci:weekly --state open --json number --jq '.[0].number // empty')
-          if [ -n "$open" ]; then
-            gh issue comment "$open" --repo "$GITHUB_REPOSITORY" --body "$body"
-            echo "Added to #$open."
-          else
-            note="Nothing merged caused this: the run tests the code of \`main\` as it was already tested, against today's WordPress, PHP and tools. Read the run, fix what drifted in a pull request, and close this issue when a scheduled run is green again."
-            gh issue create --repo "$GITHUB_REPOSITORY" --label ci:weekly --title "The weekly full run failed" --body "$(printf '%s\n\n%s' "$body" "$note")"
-          fi
+          mkdir -p .dx-central/scripts
+          curl -fsSL --retry 3 "https://raw.githubusercontent.com/DiluxOne/.github/$REF/scripts/weekly-failure.sh" -o .dx-central/scripts/weekly-failure.sh
+
+      # The bot's token sets the Type; failing to mint it leaves the caller's,
+      # which still records the failure.
+      - name: dilux-bot token
+        id: bot
+        if: env.HAS_KEY == 'true'
+        continue-on-error: true
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-issues: write
+
+      - name: Record the failure
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token || github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+        run: bash .dx-central/scripts/weekly-failure.sh
