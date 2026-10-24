@@ -61,7 +61,8 @@ archived and not excluded in repos.yml:
             no docs/design-system/README.md, and every repository that
             declares no way to reproduce a bug (#377: its kind's pack,
             repos.yml `repro:` or its own .github/review-policy.yml), with
-            the way its stack proposes (policy/repro-stacks.yml).
+            the way its stack proposes (policy/repro-stacks.yml); not one
+            repos.yml says has none by design (`repro: {NAME: false}`).
 
   sync-repos.py <labels|settings|files|dependabot|own-checks|callers|all> [--repo NAME ...] [--dry-run]
   sync-repos.py check [--repo NAME ...] [--report FILE]
@@ -1096,7 +1097,8 @@ def repro_gap(conf, name, own, propose):
     `own`, as scripts/repro-ways.py declares merges them), with what its
     stack proposes (`propose()`, detect.stack_way); None when it declares
     one."""
-    if _script("repro_ways", "repro-ways.py").declares(conf, name, own or {}, os.path.join(CENTRAL, "kinds")):
+    ways = _script("repro_ways", "repro-ways.py")
+    if ways.by_design(conf, name) or ways.declares(conf, name, own or {}, os.path.join(CENTRAL, "kinds")):
         return None
     found = propose()
     how = (f"its stack ({found[0]}) proposes the `{found[1]}` way, which `install.py plan` adds to repos.yml `repro:`" if found
@@ -1986,8 +1988,8 @@ def dependabot_test(check, conf, labels, block):
     check("#377: a plugin, whose pack declares its ways, is not said to lack one", not any("no way to reproduce" in l for l in lines), lines)
     # #377 C3: the audit lists every repository that declares no way.
     way = {"layer": "logic", "test": "tests/repro/test_issue_{n}.py", "run": "pytest {test}", "junit": "build/repro.xml"}
-    org_conf = {"repos": {"plugin": {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"]}]}}, "repro": {"api": {"ways": {"pytest": way}}}}
-    trees = {"api": None, "plugin": None, "own": None, "py": ("python-pytest", "pytest", way), "site": None}
+    org_conf = {"repos": {"plugin": {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"]}]}}, "repro": {"api": {"ways": {"pytest": way}}, "scratch": False}}
+    trees = {"api": None, "plugin": None, "own": None, "py": ("python-pytest", "pytest", way), "site": None, "scratch": None}
     owns = {"own": {"repro": {"ways": {"pytest": way}}}}
     gaps = {n: repro_gap(org_conf, n, owns.get(n, {}), lambda n=n: trees[n]) for n in trees}
     check("#377 C3: the audit lists every repository with no way, and only those", sorted(n for n, g in gaps.items() if g) == ["py", "site"], gaps)

@@ -13,7 +13,7 @@ checks it, and the rest of repos.yml against it:
     system named exists in design-systems/ (or is `local`);
   - each repository's `repro:` (#377) is a `repro:` as its
     .github/review-policy.yml takes it, every way to the schema of
-    scripts/repro-ways.py;
+    scripts/repro-ways.py, or `false` (no way, by design);
   - no section of repos.yml is unknown.
 
   repos-config.py check          repos.yml here (exit 1, with the reasons)
@@ -92,8 +92,10 @@ def problems(conf, kinds, systems):
         if system != "local" and system not in systems:
             out.append(f"design-system.{name}: {system!r} is not in design-systems/ (nor local)")
     for name, entry in (conf.get("repro") or {}).items():
+        if entry is False:  # no way, by design
+            continue
         if not isinstance(entry, dict) or set(entry) - {"ways", "affected"} or not isinstance(entry.get("ways"), dict) or not entry["ways"]:
-            out.append(f"repro.{name}: {{ways: {{name: way}}}}, and `affected` if any")
+            out.append(f"repro.{name}: {{ways: {{name: way}}}}, and `affected` if any, or false (none, by design)")
             continue
         out += [f"repro.{name}: {p.removeprefix('repro.')}" for p in repro_ways().problems({"ways": entry["ways"]})]
     return out
@@ -146,7 +148,8 @@ def self_test():
     check("#377 a way of a repository repos: lacks", problems(dict(good, repro={"z": {"ways": {"pytest": way}}}), kinds, systems), ["repro.z: not a repository of `repos:`"])
     check("#377 a way that is wrong says why", problems(dict(good, repro={"b": {"ways": {"pytest": dict(way, layer="screen")}}}), kinds, systems),
           ["repro.b: ways.pytest.layer: one of " + ", ".join(repro_ways().LAYERS) + ", or a list of them"])
-    check("#377 an entry that is no `repro:`", problems(dict(good, repro={"b": {"pytest": way}}), kinds, systems), ["repro.b: {ways: {name: way}}, and `affected` if any"])
+    check("#377 an entry that is no `repro:`", problems(dict(good, repro={"b": {"pytest": way}}), kinds, systems), ["repro.b: {ways: {name: way}}, and `affected` if any, or false (none, by design)"])
+    check("#377 false: a repository with no way, by design", problems(dict(good, repro={"b": False}), kinds, systems), [])
     check("kind: a single-kind repository's", kind_of(good, "a"), "wordpress-plugin")
     check("kind: none for an unclassified one, a monorepo or an unknown name", (kind_of(good, "b"), kind_of(mono, "m"), kind_of(good, "zz")), (None, None, None))
     check("overlap: '**' overlaps everything; siblings do not", (overlap("**", "a/**"), overlap("api/**", "web/**"), overlap("api/**", "api/v2/*")), (True, False, True))

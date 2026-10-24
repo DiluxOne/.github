@@ -6,11 +6,12 @@
 #
 # The first stack that matches wins, in the order written. `detect` holds when
 # any one of its entries does: `path`, a pattern over the repository's files
-# (** spans folders, * stays inside one), and `contains`, a text the first
+# (** spans folders, * stays inside one: one without ** is at the root), and `contains`, a text the first
 # file it matches that holds it (a test project among several). `way` is a
 # way of scripts/repro-ways.py (`repro.ways`, with its keys, held to its
 # check); `{match}` is the file that matched and `{match-dir}` its folder,
-# filled in when it is proposed. Every way writes a JUnit report, which gives
+# filled in when it is proposed (quoted for the shell in setup, theme, run
+# and teardown). Every way writes a JUnit report, which gives
 # the verdict, and runs with no network and no environment
 # (scripts/repro-run.sh): what it needs is installed by `setup` under build/,
 # the one folder the test may write.

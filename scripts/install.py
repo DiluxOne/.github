@@ -269,7 +269,7 @@ def propose_ways(path, names, policy_of, way_of, engine=ENGINE):
     did, proposals = [], []
     for name in names:
         try:
-            if declares(conf, name, policy_of(name), engine):
+            if repro_ways.by_design(conf, name) or declares(conf, name, policy_of(name), engine):
                 continue
             found = way_of(name)
         except Exception as exc:  # noqa: BLE001  any failure to read it, said and not fatal
@@ -380,6 +380,13 @@ def self_test():
         more = plan("Acme", "acme-bot", 7, t, dict(names, **{"new-py": "main"}), lambda n: kinds_of.get(n, []), policy_of=lambda n: own.get(n, {}), way_of=way_of)
         check("a new repository's way joins the others in `repro:`", (material(more), sorted(yaml.safe_load(open(os.path.join(t, "repos.yml")))["repro"])),
               (["added new-py to repos.yml", "proposed the pytest way (python-pytest) for new-py in repos.yml `repro:`"], ["api-py", "new-py", "svc-net"]))
+
+        files["scratch"] = {"go.mod": "module x"}
+        text = open(os.path.join(t, "repos.yml")).read()
+        open(os.path.join(t, "repos.yml"), "w").write(text.replace("\nrepro:\n", "\nrepro:\n  scratch: false\n"))
+        none = plan("Acme", "acme-bot", 7, t, dict(names, scratch="main"), lambda n: kinds_of.get(n, []), policy_of=lambda n: own.get(n, {}), way_of=way_of)
+        check("a repository repos.yml says has no way by design gets none proposed", (material(none), yaml.safe_load(open(os.path.join(t, "repos.yml")))["repro"]["scratch"]),
+              (["added scratch to repos.yml"], False))
 
         def unreadable_policy(n):
             raise RuntimeError("HTTP 502")

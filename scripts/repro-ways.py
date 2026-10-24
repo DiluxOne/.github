@@ -170,9 +170,16 @@ def pack_of(kinds_dir, conf, name, policy):
 
 def org_repro(conf, name):
     """The organisation's repos.yml `repro:` for repository NAME (#377), {}
-    when it holds none."""
+    when it holds none or `false`."""
     entry = (conf.get("repro") or {}).get(name) if isinstance(conf.get("repro"), dict) else None
     return entry if isinstance(entry, dict) else {}
+
+
+def by_design(conf, name):
+    """repos.yml `repro: {NAME: false}`: the repository has no way by
+    design (a disposable one, one with no code of its own); its bugs are
+    still not handed to the autopilot, but the audit does not list it."""
+    return isinstance(conf.get("repro"), dict) and conf["repro"].get(name) is False
 
 
 def declares(conf, name, policy, kinds_dir):
@@ -678,6 +685,8 @@ def self_test():
         check("#377 declares: repos.yml's way, the pack's (by repos.yml's kind, else the policy's), none for one that says nothing",
               (declares(org_conf, "api", {}, kinds_dir), declares(org_conf, "plugin", {}, kinds_dir), declares(org_conf, "site", {}, kinds_dir),
                declares(org_conf, "site", {"kind": "wordpress-plugin"}, kinds_dir)), (["pytest"], ["unit"], [], ["unit"]))
+        check("#377 `false` in repos.yml: no way, by design", (by_design({"repro": {"x": False}}, "x"), by_design(org_conf, "api"),
+                                                               declares({"repro": {"x": False}}, "x", {}, kinds_dir)), (True, False, []))
         check("#377 a way only for the browser is no way for a logic bug",
               declares({}, "x", {"repro": {"ways": {"e2e": {"layer": "browser", "test": "e/{n}", "run": "x", "junit": "j"}}}}, kinds_dir), [])
         with tempfile.TemporaryDirectory() as c:

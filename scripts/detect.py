@@ -22,7 +22,8 @@ repos.yml does not list, what detection proposes for it.
 
 A stack is not a kind: a repository of any kind, or of none, is written in
 a language whose tests run one way. policy/repro-stacks.yml says how to
-recognise each (its files, anywhere in the tree) and the way to reproduce a
+recognise each (its files: a pattern with ** anywhere in the tree, any
+other at the root) and the way to reproduce a
 bug it proposes (scripts/repro-ways.py), for a repository that declares
 none: the installer adds it to repos.yml `repro:`, and the organisation's
 audit (scripts/sync-repos.py check) and the autopilot name it.
@@ -127,18 +128,26 @@ def glob(path, pattern):
     return re.fullmatch(rx, path) is not None
 
 
+# The keys of a way that are shell commands, where a path goes quoted.
+COMMANDS = ("setup", "theme", "run", "teardown")
+
+
 def filled(way, match):
     """A stack's way for the file that matched: {match} that file,
-    {match-dir} its folder (nothing, at the root)."""
+    {match-dir} its folder (nothing, at the root); quoted for the shell in
+    a command."""
+    import shlex
     folder = os.path.dirname(match)
 
-    def fill(value):
+    def fill(value, quote):
         if isinstance(value, list):
-            return [fill(v) for v in value]
+            return [fill(v, quote) for v in value]
         if not isinstance(value, str):
             return value
-        return value.replace("{match-dir}/", folder + "/" if folder else "").replace("{match-dir}", folder or ".").replace("{match}", match)
-    return {k: fill(v) for k, v in way.items()}
+        m = shlex.quote(match) if quote else match
+        d = shlex.quote(folder or ".") if quote else folder or "."
+        return value.replace("{match-dir}/", folder + "/" if folder else "").replace("{match-dir}", d).replace("{match}", m)
+    return {k: fill(v, k in COMMANDS) for k, v in way.items()}
 
 
 def stack_way(paths, read, rules=None, reads=50):
@@ -165,10 +174,11 @@ def stack_way(paths, read, rules=None, reads=50):
 
 
 def tree(full, ref="main", run=run_gh):
-    """Every file of a repository on GitHub, at REF."""
+    """Every file of a repository on GitHub, at REF. A tree GitHub
+    truncates (more than 100,000 entries) is read as far as it lists."""
     rc, out, err = run("api", f"repos/{full}/git/trees/{ref}?recursive=1")
     if rc != 0:
-        if "409" in err or "404" in err:  # empty: no files
+        if "409" in err:  # empty: no files
             return []
         raise RuntimeError(f"could not list its files: {err.strip()[:200]}")
     return [e["path"] for e in (json.loads(out or "{}").get("tree") or []) if e.get("type") == "blob"]
@@ -393,6 +403,10 @@ def self_test():
           ("dotnet-test", "tests/Api.Tests/Api.Tests.csproj", True, "build/repro.xml"))
     check("C2 its test goes into the test project, its logger is installed in setup",
           (net[2]["test"], any("JunitXml.TestLogger" in c for c in net[2]["setup"])), ("tests/Api.Tests/Repro/Issue{n}Tests.cs", True))
+    spaced = found({"tests/My Tests/My.Tests.csproj": "Microsoft.NET.Test.Sdk"})[2]
+    check("a path with a space goes quoted into the commands, as is into the test and needs",
+          ("dotnet test 'tests/My Tests/My.Tests.csproj'" in spaced["run"], spaced["test"], spaced["needs"]),
+          (True, "tests/My Tests/Repro/Issue{n}Tests.cs", ["tests/My Tests/My.Tests.csproj"]))
     check("C2 a project that is not a test project proposes nothing", found({"src/Api/Api.csproj": '<Project Sdk="Microsoft.NET.Sdk"/>'}), None)
     check("C2 a test project at the root: its test under Repro/",
           found({"Lib.Tests.csproj": "Microsoft.NET.Test.Sdk"})[2]["test"], "Repro/Issue{n}Tests.cs")
@@ -426,6 +440,11 @@ def self_test():
     except RuntimeError:
         check("remote_policy: one that cannot be read is no empty policy", True, True)
     check("remote_way: an empty repository proposes nothing", remote_way("Acme/x", "main", lambda *a: (1, "", "HTTP 409: Git Repository is empty.")), None)
+    try:
+        remote_way("Acme/x", "main", lambda *a: (1, "", "HTTP 404: Not Found"))
+        check("remote_way: a tree it cannot read is an error, never a repository with no stack", False, True)
+    except RuntimeError:
+        check("remote_way: a tree it cannot read is an error, never a repository with no stack", True, True)
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
