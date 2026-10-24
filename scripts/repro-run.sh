@@ -85,14 +85,14 @@ isolate() {
 release() {
   local uid
   uid=$(id -u dxrepro)
-  sudo iptables -D OUTPUT -m owner --uid-owner "$uid" -o lo -j ACCEPT || true
-  sudo iptables -D OUTPUT -m owner --uid-owner "$uid" -d 172.16.0.0/12 -j ACCEPT || true
-  sudo iptables -D OUTPUT -m owner --uid-owner "$uid" -j REJECT || true
-  sudo ip6tables -D OUTPUT -m owner --uid-owner "$uid" -o lo -j ACCEPT 2>/dev/null || true
-  sudo ip6tables -D OUTPUT -m owner --uid-owner "$uid" -j REJECT 2>/dev/null || true
+  while sudo iptables -D OUTPUT -m owner --uid-owner "$uid" -o lo -j ACCEPT 2>/dev/null; do :; done
+  while sudo iptables -D OUTPUT -m owner --uid-owner "$uid" -d 172.16.0.0/12 -j ACCEPT 2>/dev/null; do :; done
+  while sudo iptables -D OUTPUT -m owner --uid-owner "$uid" -j REJECT 2>/dev/null; do :; done
+  while sudo ip6tables -D OUTPUT -m owner --uid-owner "$uid" -o lo -j ACCEPT 2>/dev/null; do :; done
+  while sudo ip6tables -D OUTPUT -m owner --uid-owner "$uid" -j REJECT 2>/dev/null; do :; done
   if sudo iptables -L DOCKER-USER -n >/dev/null 2>&1; then
-    sudo iptables -D DOCKER-USER -i docker0 ! -d 172.16.0.0/12 -j REJECT || true
-    sudo iptables -D DOCKER-USER -i br-+ ! -d 172.16.0.0/12 -j REJECT || true
+    while sudo iptables -D DOCKER-USER -i docker0 ! -d 172.16.0.0/12 -j REJECT 2>/dev/null; do :; done
+    while sudo iptables -D DOCKER-USER -i br-+ ! -d 172.16.0.0/12 -j REJECT 2>/dev/null; do :; done
   fi
 }
 
