@@ -28,7 +28,7 @@ NOTE="Nothing merged caused this: the run tests the code of \`main\` as it was a
 # Set issue $1's Type to Bug and say whether GitHub kept it.
 set_bug() {
   local got
-  got=$(gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/$1" -f type=Bug --jq '.type.name // ""' 2>&1) || got=""
+  got=$(gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/$1" -f type=Bug --jq '.type.name // ""' 2>/dev/null) || got=""
   if [ "$got" = Bug ]; then echo "#$1: Type Bug."
   else echo "::warning::#$1: GitHub did not set the Type Bug (no Bug type in the repository, or a token without push access: pass DILUX_BOT_PRIVATE_KEY); set it by hand so its fix passes the conventions gate."; fi
 }
@@ -107,6 +107,7 @@ if [ "${1:-}" = "--test" ]; then
   OPEN="" CREATE=refuse run
   has "a refused Type still opens the issue, without one" "$calls" "issue create --repo $GITHUB_REPOSITORY --label ci:weekly --title $TITLE"
   has "and says so" "$out" "::warning::GitHub refused the issue with the Type Bug"
+  is "and the run passes" "$status" 0
 
   OPEN="" CREATE=down run
   hasnt "any other failure opens no second issue" "$calls" "issue create"
