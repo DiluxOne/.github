@@ -28,6 +28,7 @@ repos:
   diluxone-comments-pro-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
   diluxone-comments-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
   diluxone-commerce-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
+  diluxone-events-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
   diluxone-help-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
   diluxone-mail-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
   diluxone-multisite-user-sync-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
