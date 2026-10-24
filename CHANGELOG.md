@@ -2,6 +2,12 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [6.8.0](https://github.com/DiluxOne/.github/releases/tag/v6.8.0) · 2026-10-24
+
+### Features
+
+- **repro:** every reproduced bug goes to the lane, whatever its way ([#399](https://github.com/DiluxOne/.github/pull/399))
+
 ## [6.7.0](https://github.com/DiluxOne/.github/releases/tag/v6.7.0) · 2026-10-24
 
 ### Features
@@ -14,6 +20,7 @@ Every version of the engine (the workflows, scripts, policy and kinds other repo
 
 ### Maintenance
 
+- **release:** v6.7.0, bugs reproduced in every repository ([#398](https://github.com/DiluxOne/.github/pull/398))
 - **repos:** the new plugin diluxone-events-wordpress joins ([#391](https://github.com/DiluxOne/.github/pull/391))
 
 ## [6.6.0](https://github.com/DiluxOne/.github/releases/tag/v6.6.0) · 2026-10-23
