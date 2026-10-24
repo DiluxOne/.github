@@ -114,6 +114,7 @@ flowchart TB
 | Point an AI agent at a repository | [docs/agents.md](docs/agents.md) |
 | Follow a pull request through every step | [docs/pull-requests.md](docs/pull-requests.md) |
 | Bring a new repository in | [docs/adopting.md](docs/adopting.md) |
+| Run the engine in another organisation | [docs/installing.md](docs/installing.md) |
 | Move a repository to a newer major | [docs/migrating.md](docs/migrating.md) |
 | Look up a workflow, a script, a secret | [docs/workflows.md](docs/workflows.md) |
 | Understand the model: types of work, gates, what merges on its own | [docs/model.md](docs/model.md) |
