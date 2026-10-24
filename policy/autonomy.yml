@@ -14,7 +14,16 @@
 # Autonomy cannot widen itself. Every path here is also high risk in the
 # review policy (this repository's or the default), so the auto-merge
 # decision never merges them; scripts/autonomy.py's self-test fails if one is
-# not. One narrow exception, the `org-sync` lane below: in a repository
+# not, or if any lane could merge a change that widens autonomy. Two narrow
+# exceptions. A reported bug the reproduction confirmed (the
+# `bugfix-reproduced` lane, `constitution-merge`, #397) is accepted by
+# policy wherever it is, and its fix merges on its own in these paths only
+# when it widens no permission, lane or limit: no lane added or opened up,
+# no `merge` or `ceiling` raised, no protected path or person-merges label
+# removed, no workflow `permissions:` or secret granted, which
+# scripts/no-widening.py checks from git (base against head), never the
+# review alone; anything it widens, or cannot tell, a person merges. And
+# the `org-sync` lane below: in a repository
 # other than this one, it merges the files scripts/sync-repos.py keeps in
 # step (callers under .github/workflows/, .github/CODEOWNERS, the dx:org
 # block of AGENTS.md) only when they are what a commit a person already
@@ -142,8 +151,18 @@ lanes:
   # the reporter: its PRD is fixed text and the reproduction's facts
   # (scripts/repro-lane.py), with the failing test as the specification. The
   # autopilot keeps that test, untrusted code, out of its working tree and
-  # runs it only in the sandbox (scripts/repro-sandbox.sh); G7 merges only a
-  # pull request that carries it with the SHA-256 the PRD sealed (#84).
+  # runs it only in the sandbox, the way it was written (a unit test in
+  # scripts/repro-sandbox.sh, any other way through scripts/repro-run.sh,
+  # #397); G7 merges only a pull request that carries it with the SHA-256
+  # the PRD sealed (#84), and for another way's test only once it passed
+  # there again, at the head.
+  # constitution-merge (#397): the one exception to the golden rule. A fix
+  # in a protected path merges on its own within these caps, and only when
+  # it widens no permission, lane or limit (scripts/no-widening.py, from git
+  # alone: base against head); otherwise a person merges it. `high`
+  # because the review's floor for every protected path is high whatever
+  # the change: the check, not the rating, is what holds it. Only this lane
+  # may have it (scripts/autonomy.py), and a repository cannot set it.
   bugfix-reproduced:
     description: A reported bug that the reproduction confirmed with a failing test.
     accept: policy
@@ -153,6 +172,7 @@ lanes:
     repositories: ["*"]
     evidence: The failing test the reproduction wrote, named in the PRD with its SHA-256; the fix makes it pass in the sandbox, unchanged.
     merge: {max-risk: medium, max-complexity: medium}
+    constitution-merge: {max-risk: high, max-complexity: medium}
 
   # Trust that remains (stated, not hidden): the autopilot acts with
   # dilux-bot's token, the same App that writes the receipts branch, so a

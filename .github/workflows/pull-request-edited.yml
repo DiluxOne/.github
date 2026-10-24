@@ -50,6 +50,11 @@ jobs:
   auto-merge:
     needs: review
     if: always() && needs.review.result != 'skipped'
+    # Its `repro` job reads the lane issue a reproduced bug's fix closes (#397).
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
     uses: ./.github/workflows/auto-merge.yml
     with:
       risk: ${{ needs.review.outputs.risk }}

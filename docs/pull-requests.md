@@ -108,7 +108,10 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    A pull request the autopilot opened (#83, label `autopilot`)
    merges by policy when gate G7 passes ([`scripts/autopilot.py`](../scripts/autopilot.py)
    `decide`): the issue is not Critical, no protected path of
-   [`policy/autonomy.yml`](../policy/autonomy.yml) changes, it adds no
+   [`policy/autonomy.yml`](../policy/autonomy.yml) changes (but in the
+   `bugfix-reproduced` lane, within its `constitution-merge`, when the
+   change widens no permission, lane or limit:
+   [`scripts/no-widening.py`](../scripts/no-widening.py), #397), it adds no
    public surface of its kind (`surface.yml`) unless its issue is a Feature
    (escalation, #193; what cannot be told, in a repository `repos.yml` does
    not list or with several kinds, counts as surface; an unclassified

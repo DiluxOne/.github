@@ -34,12 +34,15 @@ name: Issue reproduction
 #                      opens an issue of its own for the fix, whose PRD is
 #                      fixed text and the reproduction's facts
 #                      (scripts/repro-lane.py: the test, its SHA-256, this
-#                      run), never the report's words; the lane accepts it
+#                      run, and, for a test of any way but the unit one,
+#                      the way it runs in, #397), never the report's words,
+#                      whatever the test's way; the lane accepts it
 #                      as GitHub's history shows it (scripts/autonomy.py
 #                      lane-accept), it is labelled `accepted-by:policy`
 #                      and sealed, and the `autopilot` job works it
 #                      (autopilot.yml): the fix must make that test pass,
-#                      as written, through every gate. When the lane is
+#                      as written and run the way it was written, through
+#                      every gate. When the lane is
 #                      not open, a draft pull request with the failing test
 #                      waits for a person, as before. While a lane issue for
 #                      the report is open, another attempt changes nothing.
@@ -105,9 +108,10 @@ name: Issue reproduction
 #           code (hooks off).
 #   autopilot  only for the lane's accepted issue: autopilot.yml, which
 #           keeps the test out of its working tree and runs it only in the
-#           sandbox (its header says how). Only a unit way's reproduction is
-#           handed to the lane; another way's waits for a person in its
-#           draft pull request.
+#           sandbox (its header says how): a unit test in
+#           scripts/repro-sandbox.sh, any other way's through
+#           scripts/repro-run.sh with the way the PRD carries (#397). Every
+#           way's reproduction is handed to the lane when it is open here.
 # Claude may write only in its way's folder (tests/Unit/Repro/ for the unit
 # way); anything else is discarded.
 # The draft pull request then runs the repository's own checks, the test
@@ -809,9 +813,10 @@ jobs:
       # draft pull request with the test waits for a person, as before.
       - name: May the lane take it
         id: open
-        # The lane's autopilot runs the reproduction test in the unit sandbox
-        # (scripts/repro-sandbox.sh); another way's test waits for a person.
-        if: needs.run.outputs.outcome == 'reproduced' && needs.write.outputs.sandbox == 'php-unit'
+        # Whatever the test's way (#397): the lane's autopilot and G7 run a
+        # unit test in scripts/repro-sandbox.sh, any other way's through
+        # scripts/repro-run.sh, with the way the PRD carries.
+        if: needs.run.outputs.outcome == 'reproduced'
         env:
           DX_AUTOPILOT: ${{ vars.DX_AUTOPILOT }}
           REPO_AUTONOMY: .github/autonomy.yml
@@ -1058,7 +1063,9 @@ jobs:
       # The bugfix-reproduced lane (#84, policy/autonomy.yml). dilux-bot opens
       # an issue of its own for the fix, whose PRD is fixed text and the
       # reproduction's facts (scripts/repro-lane.py: the test, its SHA-256,
-      # its branch, this run), never the report's words: the failing test is
+      # its branch, this run, and for any way but the unit one the way it
+      # runs in, its name, setup, command and report and the theme the
+      # report named, #397), never the report's words: the failing test is
       # its specification. The lane accepts it only as GitHub's history
       # shows it (scripts/autonomy.py lane-accept: opened and labelled by
       # dilux-bot, from this run of issue-repro.yml), never on the label
@@ -1078,6 +1085,13 @@ jobs:
           DX_AUTOPILOT: ${{ vars.DX_AUTOPILOT }}
           REPO_AUTONOMY: .github/autonomy.yml
           RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+          # Another way's test (#397): the way it ran in, sealed in the PRD so
+          # the autopilot and G7 run it the same way. Empty for a unit test,
+          # whose PRD stays as it was.
+          WAY: ${{ needs.write.outputs.sandbox != 'php-unit' && needs.write.outputs.way || '' }}
+          SPEC: ${{ needs.write.outputs.sandbox != 'php-unit' && needs.write.outputs.spec || '' }}
+          NOUN: ${{ needs.write.outputs.sandbox != 'php-unit' && needs.write.outputs.noun || '' }}
+          THEME: ${{ needs.write.outputs.sandbox != 'php-unit' && needs.write.outputs.theme || '' }}
           BT: '`'
         run: |
           set -euo pipefail

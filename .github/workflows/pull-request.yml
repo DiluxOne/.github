@@ -110,6 +110,7 @@ jobs:
       - run: python3 scripts/repro-lane.py --test
       - run: python3 scripts/repro-ways.py --test
       - run: bash scripts/repro-run.sh --test
+      - run: python3 scripts/no-widening.py --test
       # The tests under tests/ (#376): the reproduction ways' examples, the
       # reproductions kept as regression tests, and the workflows' wiring,
       # with the pytest the ways install (.github/review-policy.yml).
@@ -222,6 +223,11 @@ jobs:
   auto-merge:
     needs: review
     if: always() && needs.review.result != 'skipped'
+    # Its `repro` job reads the lane issue a reproduced bug's fix closes (#397).
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
     uses: ./.github/workflows/auto-merge.yml
     with:
       risk: ${{ needs.review.outputs.risk }}

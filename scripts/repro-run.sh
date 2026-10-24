@@ -27,6 +27,19 @@
 #
 #   repro-run.sh run SRC DIR   SPEC (the way, JSON from repro-ways.py
 #                              resolve), TEST (where the test goes), THEME
+#   repro-run.sh run-ref REF PATH [DIR]
+#                              the test at PATH as committed at REF, run the
+#                              same way against a clean copy of REF's tree
+#                              (git archive: no uncommitted change, no .git,
+#                              the test taken out until setup is done), with
+#                              the working tree's vendor/ when REF has none
+#                              (installed by the caller, as the run job of
+#                              issue-repro.yml does); SPEC or REPRO_SPEC,
+#                              THEME or REPRO_THEME. The bugfix-reproduced
+#                              lane (#397): the autopilot against its fix,
+#                              and gate G7 at the pull request's head
+#                              (auto-merge.yml), as repro-sandbox.sh run-ref
+#                              does for a unit test
 #   repro-run.sh --test        self-test (no network change, no Docker)
 #
 # It refuses a self-hosted runner, as scripts/repro-sandbox.sh does.
@@ -166,6 +179,27 @@ run() {
   [ -z "$cmd" ] || timeout 120 bash -c "$cmd" >/dev/null 2>&1 || true
 }
 
+# The test at PATH as committed at REF, run against REF's own tree, never
+# the working tree (#397).
+run_ref() {
+  local ref=$1 path=$2 dir=${3:-} tmp tree rc=0 work=$PWD
+  case "$path" in /* | *..* | "") echo "::error::Not a test path: $path" >&2; return 2 ;; esac
+  export SPEC=${SPEC:-${REPRO_SPEC:-}} THEME=${THEME:-${REPRO_THEME:-}}
+  [ -n "$SPEC" ] || { echo "::error::No way to run it: SPEC (or REPRO_SPEC) is empty." >&2; return 2; }
+  if [ "$(jq -r '.test // empty' <<<"$SPEC")" != "$path" ]; then echo "::error::$path is not the way's test." >&2; return 2; fi
+  tmp=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/repro-test.XXXXXX")
+  tree=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/repro-tree.XXXXXX")
+  [ -n "$dir" ] || dir="$tree.out"
+  git show "$ref:$path" > "$tmp"
+  git archive --format=tar "$ref" | tar -x -C "$tree"
+  # Out of the tree until the way's setup is done, as in the reproduction.
+  rm -f "$tree/$path"
+  if [ -d "$work/vendor" ] && [ ! -e "$tree/vendor" ]; then cp -a "$work/vendor" "$tree/vendor"; fi
+  (cd "$tree" && TEST=$path run "$tmp" "$dir") || rc=$?
+  rm -rf "$tmp" "$tree"
+  return "$rc"
+}
+
 self_test() {
   local d fail=0 got
   d=$(mktemp -d)
@@ -200,6 +234,21 @@ self_test() {
   t "the command sees none of the runner's variables" passed "$(jq -nc --arg x "$pass" '{run: ("[ -z \"${GH_TOKEN:-}\" ] && printf %s " + ($x|@sh) + " > build/j.xml"), junit: "build/j.xml", minutes: 1}')"
   THEME='x; rm -rf /' t "a theme that is not a slug is not installed" passed "$(jq -nc --arg x "$pass" '{theme: "exit 7", run: ("printf %s " + ($x|@sh) + " > build/j.xml"), junit: "build/j.xml", minutes: 1}')"
   THEME=astra t "a theme that cannot be installed is no verdict" limit "$(jq -nc --arg x "$pass" '{theme: "exit 7", run: ("printf %s " + ($x|@sh) + " > build/j.xml"), junit: "build/j.xml", minutes: 1}')"
+  # #397 run-ref: the test as committed at REF, against REF's own tree.
+  local repo="$d/repo" spec_ref
+  mkdir -p "$repo/src" "$repo/tests/repro" && cd "$repo"
+  git init -q . && printf 'committed\n' > src/code.txt && printf 'x\n' > tests/repro/issue-1.spec.ts
+  git add -A && git -c commit.gpgsign=false -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@t commit -qm "test: base"
+  printf 'uncommitted\n' > src/code.txt
+  spec_ref=$(jq -nc --arg x "$pass" '{setup: ["test ! -e tests/repro/issue-1.spec.ts && test ! -e .git"], run: ("grep -qx committed src/code.txt && test -f tests/repro/issue-1.spec.ts && printf %s " + ($x|@sh) + " > build/j.xml"), junit: "build/j.xml", minutes: 1, test: "tests/repro/issue-1.spec.ts"}')
+  got=$(DX_REPRO_UNCONFINED=1 REPRO_SPEC=$spec_ref GITHUB_OUTPUT='' run_ref HEAD tests/repro/issue-1.spec.ts 2>/dev/null | grep '^outcome=' | tail -1)
+  if [ "$got" = "outcome=passed" ]; then echo "ok   #397 run-ref runs the committed test against REF's tree, out of it during setup, no .git"; else echo "FAIL #397 run-ref ($got)"; fail=1; fi
+  got=$(DX_REPRO_UNCONFINED=1 SPEC=$(jq -c '.run = ("grep -qx uncommitted src/code.txt; exit 1")' <<<"$spec_ref") GITHUB_OUTPUT='' run_ref HEAD tests/repro/issue-1.spec.ts 2>/dev/null | grep '^outcome=' | tail -1)
+  if [ "$got" = "outcome=broken" ]; then echo "ok   #397 run-ref never sees the working tree's uncommitted change"; else echo "FAIL #397 run-ref saw the working tree ($got)"; fail=1; fi
+  if (DX_REPRO_UNCONFINED=1 SPEC=$spec_ref run_ref HEAD tests/repro/other.spec.ts >/dev/null 2>&1); then echo "FAIL #397 run-ref refuses a test that is not the way's"; fail=1; else echo "ok   #397 run-ref refuses a test that is not the way's"; fi
+  if (DX_REPRO_UNCONFINED=1 SPEC= REPRO_SPEC= run_ref HEAD tests/repro/issue-1.spec.ts >/dev/null 2>&1); then echo "FAIL #397 run-ref refuses to run with no way"; fail=1; else echo "ok   #397 run-ref refuses to run with no way"; fi
+  if (DX_REPRO_UNCONFINED=1 SPEC=$spec_ref run_ref HEAD ../x >/dev/null 2>&1); then echo "FAIL #397 run-ref refuses a path outside the tree"; fail=1; else echo "ok   #397 run-ref refuses a path outside the tree"; fi
+  cd "$d"
   if (DX_REPRO_UNCONFINED=1 SPEC='{}' TEST=../x run "$d/src.ts" "$d/out" >/dev/null 2>&1); then echo "FAIL a path outside the checkout is refused"; fail=1; else echo "ok   a path outside the checkout is refused"; fi
   if (RUNNER_ENVIRONMENT=self-hosted DX_REPRO_UNCONFINED=1 SPEC='{}' TEST=a/b run "$d/src.ts" "$d/out" >/dev/null 2>&1); then echo "FAIL a self-hosted runner is refused"; fail=1; else echo "ok   a self-hosted runner is refused"; fi
   cd / && rm -rf "$d"
@@ -208,6 +257,7 @@ self_test() {
 
 case "${1:-}" in
   run) shift; run "$@" ;;
+  run-ref) shift; run_ref "$@" ;;
   --test) GH_TOKEN=secret self_test ;;
-  *) echo "usage: repro-run.sh run SRC DIR | --test" >&2; exit 2 ;;
+  *) echo "usage: repro-run.sh run SRC DIR | run-ref REF PATH [DIR] | --test" >&2; exit 2 ;;
 esac
