@@ -36,7 +36,10 @@
 #                              the test taken out until setup is done), with
 #                              the working tree's vendor/ when REF has none
 #                              (installed by the caller, as the run job of
-#                              issue-repro.yml does); SPEC or REPRO_SPEC,
+#                              issue-repro.yml does) and its .dx-central/
+#                              when REF has none (the central checkout a
+#                              way's setup may read, without its .git,
+#                              #409); SPEC or REPRO_SPEC,
 #                              THEME or REPRO_THEME. The bugfix-reproduced
 #                              lane (#397): the autopilot against its fix,
 #                              and gate G7 at the pull request's head
@@ -198,6 +201,11 @@ run_ref() {
   # Out of the tree until the way's setup is done, as in the reproduction.
   rm -f "$tree/$path"
   if [ -d "$work/vendor" ] && [ ! -e "$tree/vendor" ]; then cp -a "$work/vendor" "$tree/vendor"; fi
+  # The central checkout, kept out of git in the lane, which a way's setup
+  # may read (#409); no git metadata goes in with it.
+  if [ -d "$work/.dx-central" ] && [ ! -e "$tree/.dx-central" ]; then
+    tar -C "$work" --exclude=.git -cf - .dx-central | tar -x -C "$tree"
+  fi
   (cd "$tree" && TEST=$path run "$tmp" "$dir") || rc=$?
   rm -rf "$tmp" "$tree"
   [ "$keep" = yes ] || rm -rf "$dir"
@@ -250,6 +258,10 @@ self_test() {
   if [ "$got" = "outcome=passed" ]; then echo "ok   #397 run-ref runs the committed test against REF's tree, out of it during setup, no .git"; else echo "FAIL #397 run-ref ($got)"; fail=1; fi
   got=$(DX_REPRO_UNCONFINED=1 SPEC=$(jq -c '.run = ("grep -qx uncommitted src/code.txt; exit 1")' <<<"$spec_ref") GITHUB_OUTPUT='' run_ref HEAD tests/repro/issue-1.spec.ts 2>/dev/null | grep '^outcome=' | tail -1)
   if [ "$got" = "outcome=broken" ]; then echo "ok   #397 run-ref never sees the working tree's uncommitted change"; else echo "FAIL #397 run-ref saw the working tree ($got)"; fail=1; fi
+  mkdir -p .dx-central/.git && printf 'config\n' > .dx-central/x.config.ts && printf '.dx-central/\n' >> .git/info/exclude
+  got=$(DX_REPRO_UNCONFINED=1 SPEC=$(jq -c '.setup = ["cp .dx-central/x.config.ts x.config.ts && test ! -e .dx-central/.git"]' <<<"$spec_ref") GITHUB_OUTPUT='' run_ref HEAD tests/repro/issue-1.spec.ts 2>/dev/null | grep '^outcome=' | tail -1)
+  if [ "$got" = "outcome=passed" ]; then echo "ok   #409 run-ref gives a setup the working tree's .dx-central, without its .git"; else echo "FAIL #409 run-ref gives a setup the working tree's .dx-central ($got)"; fail=1; fi
+  rm -rf .dx-central
   if (DX_REPRO_UNCONFINED=1 SPEC=$spec_ref run_ref HEAD tests/repro/other.spec.ts >/dev/null 2>&1); then echo "FAIL #397 run-ref refuses a test that is not the way's"; fail=1; else echo "ok   #397 run-ref refuses a test that is not the way's"; fi
   if (DX_REPRO_UNCONFINED=1 SPEC= REPRO_SPEC= run_ref HEAD tests/repro/issue-1.spec.ts >/dev/null 2>&1); then echo "FAIL #397 run-ref refuses to run with no way"; fail=1; else echo "ok   #397 run-ref refuses to run with no way"; fi
   if (DX_REPRO_UNCONFINED=1 SPEC=$spec_ref run_ref HEAD ../x >/dev/null 2>&1); then echo "FAIL #397 run-ref refuses a path outside the tree"; fail=1; else echo "ok   #397 run-ref refuses a path outside the tree"; fi
