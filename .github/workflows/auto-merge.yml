@@ -144,7 +144,7 @@ jobs:
   # network but the machine's. A unit test's lane issue runs nothing here.
   repro:
     name: The reproduction test, again (no secrets)
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')
     # The lane's branch, by dilux-bot: the route always gives GitHub's runner.
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 45
@@ -154,25 +154,15 @@ jobs:
       pull-requests: read # the issue the pull request closes
     outputs:
       outcome: ${{ steps.run.outputs.outcome || steps.way.outputs.outcome }}
-      issue: ${{ steps.way.outputs.issue }}
+      issue: ${{ steps.issue.outputs.issue }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: DiluxOne/.github
-          ref: ${{ inputs.central-ref || job.workflow_sha }}
-          path: .dx-central
-          persist-credentials: false
-      - name: The organisation's configuration (#197)
-        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
-      # The way, from the PRD of the one issue it closes (scripts/repro-lane.py
-      # evidence). G7 checks that PRD against its seal and the test's
-      # SHA-256 at the head itself; this job only runs the test.
-      - name: The way the test was written
-        id: way
+      # The one issue it closes, and whether its PRD names a way at all.
+      - name: The issue it closes
+        id: issue
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
@@ -182,6 +172,39 @@ jobs:
           if [ "$(wc -w <<<"$issues")" -ne 1 ]; then echo "It closes ${issues:-no issue}, not exactly one: G7 leaves it to a person."; exit 0; fi
           echo "issue=$issues" >> "$GITHUB_OUTPUT"
           gh issue view "$issues" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/body.md"
+          if grep -q '^Reproduction way: ' "$RUNNER_TEMP/body.md"; then echo "way=yes" >> "$GITHUB_OUTPUT"; fi
+      # The repository's dev tools, as the reproduction's run job installs
+      # them (issue-repro.yml), and as this pull request's own checks run
+      # its tools at the head: before the organisation's scripts are
+      # fetched, so nothing the repository runs can touch them, and before
+      # the test is anywhere near (it is not in the tree run-ref builds
+      # until the way's setup is done).
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        if: steps.issue.outputs.way == 'yes' && hashFiles('composer.json') != ''
+        with:
+          php-version: '8.5'
+          coverage: none
+          tools: composer:v2
+      - run: composer install --no-interaction --prefer-dist --no-progress
+        if: steps.issue.outputs.way == 'yes' && hashFiles('composer.json') != ''
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.issue.outputs.issue != ''
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
+          path: .dx-central
+          persist-credentials: false
+      - name: The organisation's configuration (#197)
+        if: steps.issue.outputs.issue != ''
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+      # The way, from the PRD of the one issue it closes (scripts/repro-lane.py
+      # evidence). G7 checks that PRD against its seal and the test's
+      # SHA-256 at the head itself; this job only runs the test.
+      - name: The way the test was written
+        id: way
+        if: steps.issue.outputs.issue != ''
+        run: |
+          set -euo pipefail
           if ! ev=$(BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/repro-lane.py evidence); then
             echo "outcome=no-evidence" >> "$GITHUB_OUTPUT"; echo "The PRD names no reproduction test."; exit 0
           fi
@@ -190,16 +213,6 @@ jobs:
             echo "outcome=changed" >> "$GITHUB_OUTPUT"; echo "The test at the head is not the sealed one: not run."; exit 0
           fi
           { echo "test=$(jq -r .test <<<"$ev")"; echo "spec=$(jq -c .spec <<<"$ev")"; echo "theme=$(jq -r '.theme // empty' <<<"$ev")"; } >> "$GITHUB_OUTPUT"
-      # The repository's dev tools before the test is anywhere near, as the
-      # reproduction's run job installs them (issue-repro.yml).
-      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
-        if: steps.way.outputs.spec != '' && hashFiles('composer.json') != ''
-        with:
-          php-version: '8.5'
-          coverage: none
-          tools: composer:v2
-      - run: composer install --no-interaction --prefer-dist --no-progress
-        if: steps.way.outputs.spec != '' && hashFiles('composer.json') != ''
       - name: Run it the way it was written
         id: run
         if: steps.way.outputs.spec != ''

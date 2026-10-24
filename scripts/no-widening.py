@@ -26,9 +26,15 @@ What widens:
   .github/workflows/*.y*ml, workflow-templates/*.y*ml
     a token permission raised in any job (its own, or the workflow's it
     falls back on; none at all is every permission), a new job or workflow
-    with a permission its file did not grant before, a job that passes or
-    reads a secret it did not, a new `pull_request_target` or
+    with a permission its file did not grant before, a job (or the
+    workflow's own `env`) that passes or reads a secret it did not, all of
+    them through toJSON(secrets) included, a new `pull_request_target` or
     `workflow_run` trigger
+  the code and the words that apply the gates (GATES below: the scripts
+    that read the policy and decide, accept, seal or merge; the rules and
+    review profiles; org.yml; any other file under policy/)
+    any change: a change there can widen autonomy without moving any of the
+    points above, and no check can read what code means, so a person does
 
   no-widening.py check BASE HEAD   in a clone that has both commits: one
                                    line per widening, exit 1; nothing, exit
@@ -61,6 +67,17 @@ REVIEW = ("policy/review-policy.default.yml", ".github/review-policy.yml")
 WORKFLOW = re.compile(r"^(\.github/workflows|workflow-templates)/[^/]+\.ya?ml$")
 # Every scope GitHub's token has: what a job with no permissions at all may get.
 ALL = "*"
+# The code and the words that apply the gates: what they mean is not data
+# this can compare, so any change to them is a person's to read (fails
+# closed). A reproduced bug elsewhere in a protected path (a script that
+# does not decide autonomy, a kind's pack, a workflow's steps) still merges
+# when it widens nothing above.
+GATES = ("scripts/autonomy.py", "scripts/autopilot.py", "scripts/no-widening.py", "scripts/policy.py", "scripts/surface.py",
+         "scripts/receipts.py", "scripts/repro-lane.py", "scripts/revert.py", "scripts/issue-gate.sh", "scripts/conventions.sh",
+         "scripts/issue-schema.py", "scripts/agent-keys.py", "scripts/runner-route.py", "scripts/needs-chain.py",
+         "scripts/release-issue.py", "scripts/security-patch.py", "scripts/review-brief.sh", "scripts/org.py",
+         "org.yml", "rules/*", "review-profiles/*", "kinds/*/surface.yml", "kinds/*/rules.yml", "kinds/*/review-profile.md",
+         ".github/CODEOWNERS", "AGENTS.md", "CLAUDE.md", "docs/model.md")
 
 
 def level(value):
@@ -190,7 +207,9 @@ def above(head, base):
 
 def secrets_of(job):
     text = json.dumps(job, sort_keys=True)
-    names = set(re.findall(r"secrets\.([A-Za-z_][A-Za-z0-9_]*)", text))
+    names = set(re.findall(r"secrets\s*(?:\.\s*|\[\s*\\?['\"])([A-Za-z_][A-Za-z0-9_]*)", text))
+    if re.search(r"toJSON\s*\(\s*secrets\s*\)", text, re.I):
+        names.add("(every secret)")
     passed = job.get("secrets") if isinstance(job, dict) else None
     if passed == "inherit":
         names.add("(inherit)")
@@ -226,6 +245,9 @@ def workflow_widens(base, head, where):
     file_grant = perms(bwf) if old is not None else {}
     if old is not None and "permissions" in head and above(perms(hwf), perms(bwf)):
         out.append(f"{where}: the workflow's permissions raised ({', '.join(above(perms(hwf), perms(bwf)))})")
+    new_env = sorted(secrets_of({"env": head.get("env")}) - (secrets_of({"env": old.get("env")}) if old else set()))
+    if new_env:
+        out.append(f"{where}: the workflow's env reads {', '.join(new_env)}")
     bjobs = (old.get("jobs") or {}) if old else {}
     for name, job in (head.get("jobs") or {}).items():
         job = job if isinstance(job, dict) else {}
@@ -265,8 +287,11 @@ def check(base, head):
     fork = git("merge-base", base, head).strip()
     changed = [p for p in git("diff", "--name-only", "--no-renames", fork, head).splitlines() if p]
     out = []
+    import fnmatch
     for path in changed:
-        if path in AUTONOMY:
+        if any(fnmatch.fnmatch(path, g) for g in GATES) or (path.startswith("policy/") and path not in AUTONOMY + REVIEW):
+            out.append(f"{path}: the code or the words that apply the gates; a person reads what it changes")
+        elif path in AUTONOMY:
             out += autonomy_widens(at(fork, path), at(head, path), path)
         elif path in REVIEW:
             out += review_widens(at(fork, path), at(head, path), path)
@@ -350,6 +375,13 @@ def self_test():
     ok("a pull_request_target trigger widens", workflow_widens(wf, trig, "w"), ["w: a new pull_request_target trigger"])
     ok("a removed workflow widens nothing", workflow_widens(wf, None, "w"), [])
     ok("PyYAML's `on: true` key is read as the triggers", triggers({True: {"push": None}}), {"push"})
+    for how, step_run in (("secrets['Y']", "echo ${{ secrets['Y'] }}"), ("toJSON(secrets)", "echo '${{ toJSON(secrets) }}'")):
+        sec = copy.deepcopy(wf)
+        sec["jobs"]["a"]["steps"] = [{"run": step_run}]
+        ok(f"a job that starts reading {how} widens", bool(workflow_widens(wf, sec, "w")), True)
+    sec = copy.deepcopy(wf)
+    sec["env"] = {"T": "${{ secrets.Z }}"}
+    ok("the workflow's env reading a secret widens", "w: the workflow's env reads Z" in workflow_widens(wf, sec, "w"), True)
 
     # check() on a real repository: the merge base against the head.
     import tempfile
@@ -375,6 +407,16 @@ def self_test():
         os.chdir(d)
         try:
             ok("check: a fix that widens nothing", check(base, fix), [])
+            os.makedirs(os.path.join(d, "scripts"))
+            for gate in ("scripts/autonomy.py", "rules/x.md", "policy/other.yml"):
+                os.makedirs(os.path.dirname(os.path.join(d, gate)), exist_ok=True)
+                write(gate, "changed\n")
+            write("scripts/repro-ways.py", "fixed\n")
+            g("add", "-A")
+            g("commit", "-qm", "gates")
+            ok("check: any change to the code or the words that apply the gates is a person's; another script's is not",
+               check(base, g("rev-parse", "HEAD")), [f"{p}: the code or the words that apply the gates; a person reads what it changes" for p in ("policy/other.yml", "rules/x.md", "scripts/autonomy.py")])
+            g("reset", "-q", "--hard", fix)
             write(".github/workflows/w.yml", "on: [push]\npermissions: {contents: write}\njobs:\n  j: {runs-on: x, steps: []}\n")
             g("commit", "-qam", "widen")
             ok("check: a fix that raises a workflow's permission", check(base, g("rev-parse", "HEAD")),

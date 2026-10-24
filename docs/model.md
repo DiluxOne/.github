@@ -75,7 +75,7 @@ A change moves only if it passes each gate in order. The deterministic gates alw
 | --- | --- | --- |
 | G1 Issue ready | Problem, scope, out of scope, verifiable criteria, the tests that prove them, criticality; checked when the issue opens and on every edit (`awaiting-acceptance` or `incomplete`) | It cannot be accepted; the issue says what is missing |
 | G2 Acceptance | `accepted` from a person, or a lane of the policy | Nothing starts |
-| G3 Plan | Files, approach and tests before code; in scope, no protected path | It asks the maintainer, with the action and its URL |
+| G3 Plan | Files, approach and tests before code; in scope, no protected path (a reproduced bug's may touch one, never widening it) | It asks the maintainer, with the action and its URL |
 | G4 The kind's checks | Conventions, lint, static analysis, tests | The agent fixes and pushes again (a round) |
 | G5 Clean review | No open blocker or major | The agent fixes; after 3 rounds, a person |
 | G6 Meets the issue | Every criterion with its evidence, nothing out of scope | Back to the loop; a scope problem goes to a person |
@@ -96,7 +96,7 @@ Limits that always cut: rounds per pull request (3), runs per issue (5), what on
 
 The review sets the risk, and a pull request cannot lower it: the high-risk paths are in the organisation's policy and in each repository's.
 
-**The golden rule:** autonomy cannot widen itself. The autonomy policy and the rules always need a person to accept and merge them, with one exception: a bug the reproduction confirmed in them is accepted and fixed like any other reproduced bug, and its fix merges on its own only when it widens no permission, lane or limit (no lane added or opened up, no merge cap or ceiling raised, no protected path removed, no workflow permission or secret granted). Code checks that, comparing the change's base with its head, not the review; a fix that widens anything, or that the check cannot read, waits for a person.
+**The golden rule:** autonomy cannot widen itself. The autonomy policy and the rules always need a person to accept and merge them, with one exception: a bug the reproduction confirmed in them is accepted and fixed like any other reproduced bug, and its fix merges on its own only when it widens no permission, lane or limit (no lane added or opened up, no merge cap or ceiling raised, no protected path removed, no workflow permission or secret granted). Code checks that, comparing the change's base with its head, not the review; a fix that widens anything, or that the check cannot read, waits for a person, and so does any change to the code and the words that apply the gates themselves (the scripts that decide, accept, seal or merge, the rules, the review profiles), whose meaning no check can compare.
 
 ## The autonomy policy and its lanes
 

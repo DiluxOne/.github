@@ -22,7 +22,10 @@
 # no `merge` or `ceiling` raised, no protected path or person-merges label
 # removed, no workflow `permissions:` or secret granted, which
 # scripts/no-widening.py checks from git (base against head), never the
-# review alone; anything it widens, or cannot tell, a person merges. And
+# review alone; anything it widens, or cannot tell, a person merges, and
+# so is any change to the code and the words that apply the gates (the
+# scripts that decide, accept, seal or merge, rules/, the review profiles,
+# org.yml: no-widening.py's GATES). And
 # the `org-sync` lane below: in a repository
 # other than this one, it merges the files scripts/sync-repos.py keeps in
 # step (callers under .github/workflows/, .github/CODEOWNERS, the dx:org
