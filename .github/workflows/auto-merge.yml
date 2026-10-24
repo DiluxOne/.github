@@ -224,6 +224,7 @@ jobs:
           path: ${{ runner.temp }}/repro/junit.xml
           retention-days: 3
           if-no-files-found: ignore
+          overwrite: true # a re-run of this job on the same head
 
   decide:
     name: Auto-merge decision
