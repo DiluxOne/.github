@@ -48,13 +48,17 @@ record() {
     return 0
   fi
   body=$(printf '%s\n\n%s' "$body" "$NOTE")
-  if answer=$(gh api -X POST "repos/$GITHUB_REPOSITORY/issues" -f title="$TITLE" -f body="$body" -f "labels[]=$LABEL" -f type=Bug --jq '"\(.number) \(.type.name // "")"' 2>/dev/null); then
+  if answer=$(gh api -X POST "repos/$GITHUB_REPOSITORY/issues" -f title="$TITLE" -f body="$body" -f "labels[]=$LABEL" -f type=Bug --jq '"\(.number) \(.type.name // "")"' 2>&1); then
     number=${answer%% *}
     echo "Opened #$number."
     if [ "${answer#* }" = Bug ]; then echo "#$number: Type Bug."; else set_bug "$number"; fi
-  else
-    echo "::warning::GitHub refused the issue with the Type Bug; opening it without one."
+  elif grep -q 'HTTP 422' <<<"$answer"; then
+    # Only a refusal (the repository has no Bug type) is retried without the
+    # Type: any other failure may have opened the issue already.
+    echo "::warning::GitHub refused the issue with the Type Bug ($(head -c 200 <<<"$answer")); opening it without one."
     gh issue create --repo "$GITHUB_REPOSITORY" --label "$LABEL" --title "$TITLE" --body "$body"
+  else
+    echo "::error::Could not open the issue: $(head -c 300 <<<"$answer")"; return 1
   fi
 }
 
@@ -66,20 +70,21 @@ if [ "${1:-}" = "--test" ]; then
   hasnt() { if grep -qF -- "$3" <<<"$2"; then printf 'FAIL %s\n  did not want: %s\n  got:\n%s\n' "$1" "$3" "$2"; fail=1; else echo "ok   $1"; fi; }
   # A stand-in for gh: logs each call on one line and answers from the
   # variables below. OPEN: the open ci:weekly issue's number (empty: none).
-  # TYPE: its Type. CREATE: the Type GitHub keeps on create ("refuse": a 422).
+  # TYPE: its Type ("unreadable": the read fails). CREATE: the Type GitHub
+  # keeps on create ("refuse": a 422, "down": a 502).
   # PATCH: the Type GitHub keeps on a PATCH.
   log=$(mktemp)
   gh() {
     echo "$*" >> "$log"
     case "$1 $2 $3" in
       "issue list "*) echo "${OPEN:-}" ;;
-      "api -X POST") [ "${CREATE:-}" = refuse ] && return 1; echo "7 ${CREATE:-}" ;;
+      "api -X POST") case "${CREATE:-}" in refuse) echo "HTTP 422: Validation Failed"; return 1 ;; down) echo "HTTP 502: Bad Gateway"; return 1 ;; esac; echo "7 ${CREATE:-}" ;;
       "api -X PATCH") echo "${PATCH:-}" ;;
-      "api repos/"*) echo "${TYPE:-}" ;;
+      "api repos/"*) [ "${TYPE:-}" = unreadable ] && return 1; echo "${TYPE:-}" ;;
       "issue create "*) echo "https://github.com/$GITHUB_REPOSITORY/issues/7" ;;
     esac
   }
-  run() { : > "$log"; out=$(record 2>&1); calls=$(cat "$log"); }
+  run() { : > "$log"; out=$(record 2>&1) || true; calls=$(cat "$log"); }
 
   OPEN="" CREATE=Bug run
   has "C1: no open issue, so it is opened with the Type Bug" "$calls" "api -X POST repos/$GITHUB_REPOSITORY/issues -f title=$TITLE"
@@ -97,6 +102,10 @@ if [ "${1:-}" = "--test" ]; then
   has "a refused Type still opens the issue, without one" "$calls" "issue create --repo $GITHUB_REPOSITORY --label ci:weekly --title $TITLE"
   has "and says so" "$out" "::warning::GitHub refused the issue with the Type Bug"
 
+  OPEN="" CREATE=down run
+  hasnt "any other failure opens no second issue" "$calls" "issue create"
+  has "and is an error" "$out" "::error::Could not open the issue: HTTP 502"
+
   OPEN=12 TYPE="" PATCH=Bug run
   has "C2: an open issue gets the run as a comment" "$calls" "issue comment 12 --repo $GITHUB_REPOSITORY --body"
   has "C2: and, with no Type, the Type Bug" "$calls" "api -X PATCH repos/$GITHUB_REPOSITORY/issues/12 -f type=Bug"
@@ -107,6 +116,11 @@ if [ "${1:-}" = "--test" ]; then
   has "C3: an open issue with a Type gets the comment" "$calls" "issue comment 12"
   hasnt "C3: and keeps its Type" "$calls" "-X PATCH"
   has "C3: and says so" "$out" "#12: keeps its Type Task."
+
+  OPEN=12 TYPE=unreadable run
+  has "a Type it cannot read still gets the comment" "$calls" "issue comment 12"
+  hasnt "and is left as it is" "$calls" "-X PATCH"
+  has "with a warning" "$out" "::warning::#12: could not read its Type"
 
   unset -f gh; rm -f "$log"
   [ "$fail" -eq 0 ] && echo "all tests passed"
