@@ -88,6 +88,11 @@ jobs:
   auto-merge:
     needs: review
     if: always() && github.repository != 'DiluxOne/.github' && needs.review.result != 'skipped'
+    # Its `repro` job reads the lane issue a reproduced bug's fix closes (#397).
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
     uses: DiluxOne/.github/.github/workflows/auto-merge.yml@v6
     with:
       risk: ${{ needs.review.outputs.risk }}

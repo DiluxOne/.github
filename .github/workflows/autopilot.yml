@@ -89,11 +89,20 @@ name: Autopilot
 # working tree (a sparse checkout keeps it in the commits only, and the
 # repository's own tests cannot pick it up); the draft's branch starts at the
 # reproduction's commit, the test checked against the SHA-256 the PRD
-# sealed; the agent runs it only in the sandbox (scripts/repro-sandbox.sh:
-# no network, no environment, no secret), always against a clean copy of a
-# commit, never the working tree, and `finish ready` refuses until it passes
-# there. The job that marks it ready checks the test at the pushed head is
-# the sealed one; the pull request's own checks run it with the suite.
+# sealed; the agent runs it only in the sandbox, always against a clean copy
+# of a commit, never the working tree, and `finish ready` refuses until it
+# passes there: a unit test in scripts/repro-sandbox.sh (no network, no
+# environment, no secret), any other way's (#397) the way it was written,
+# through scripts/repro-run.sh with the way the sealed PRD carries
+# (REPRO_SPEC, REPRO_THEME: its setup before the test is in the tree, then
+# the test alone as a user of its own, with no environment and no network
+# but the machine's). The job that marks it ready checks the test at the
+# pushed head is the sealed one; the pull request's own checks run a unit
+# test with the suite, and G7 (auto-merge.yml) runs another way's again at
+# the head. A reproduced bug may be fixed in the paths that govern autonomy
+# too (#397): the agent is told never to widen a permission, a lane or a
+# limit, and G7 leaves any fix that does to a person
+# (scripts/no-widening.py).
 
 on:
   workflow_call:
@@ -190,6 +199,8 @@ jobs:
       repro-test: ${{ steps.may.outputs.repro-test }}
       repro-sha: ${{ steps.may.outputs.repro-sha }}
       repro-branch: ${{ steps.may.outputs.repro-branch }}
+      repro-spec: ${{ steps.may.outputs.repro-spec }}
+      repro-theme: ${{ steps.may.outputs.repro-theme }}
       started: ${{ steps.when.outputs.started }}
       head: ${{ steps.when.outputs.head }}
       default: ${{ steps.when.outputs.default }}
@@ -309,10 +320,13 @@ jobs:
             echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
           # A reproduced bug: the test that failed, its SHA-256 and the
-          # branch that holds it, from the sealed PRD (scripts/repro-lane.py).
+          # branch that holds it, from the sealed PRD (scripts/repro-lane.py);
+          # for a test of any way but the unit one, the way it runs in and
+          # the theme the report named (#397), empty for a unit test.
           if [ "$LANE" = bugfix-reproduced ]; then
             ev=$(python3 .dx-central/scripts/repro-lane.py evidence)
-            { echo "repro-test=$(jq -r .test <<<"$ev")"; echo "repro-sha=$(jq -r .sha256 <<<"$ev")"; echo "repro-branch=$(jq -r .branch <<<"$ev")"; } >> "$GITHUB_OUTPUT"
+            { echo "repro-test=$(jq -r .test <<<"$ev")"; echo "repro-sha=$(jq -r .sha256 <<<"$ev")"; echo "repro-branch=$(jq -r .branch <<<"$ev")"
+              echo "repro-spec=$(jq -c '.spec // empty' <<<"$ev")"; echo "repro-theme=$(jq -r '.theme // empty' <<<"$ev")"; } >> "$GITHUB_OUTPUT"
           fi
           # Every mode works only from the PRD that was accepted: its seal
           # (written by issue-accepted.yml, which runs alongside on a
@@ -526,6 +540,9 @@ jobs:
         env:
           DX_IO: ${{ github.workspace }}/.dx-io
           NUMBER: ${{ needs.prep.outputs.issue }}
+          # Another way's test (#397): how scripts/repro-run.sh runs it.
+          REPRO_SPEC: ${{ needs.prep.outputs.repro-spec }}
+          REPRO_THEME: ${{ needs.prep.outputs.repro-theme }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
@@ -803,6 +820,9 @@ jobs:
           BRANCH: ${{ needs.draft.outputs.branch || needs.prep.outputs.branch }}
           REPRO_TEST: ${{ needs.prep.outputs.repro-test }}
           REPRO_SHA: ${{ needs.prep.outputs.repro-sha }}
+          # Another way's test (#397): how scripts/repro-run.sh runs it.
+          REPRO_SPEC: ${{ needs.prep.outputs.repro-spec }}
+          REPRO_THEME: ${{ needs.prep.outputs.repro-theme }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}

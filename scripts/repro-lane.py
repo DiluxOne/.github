@@ -8,16 +8,25 @@ and the reproduction's facts, never from the report's words, so nothing an
 outsider wrote reaches the autopilot as its specification. The failing test
 is the specification. The PRD names it, its SHA-256 and the branch that holds
 it; the autopilot keeps it out of its working tree and runs it only in the
-sandbox (scripts/repro-sandbox.sh), and gate G7 merges only a pull request
-that carries it byte for byte.
+sandbox, and gate G7 merges only a pull request that carries it byte for
+byte. A unit test runs in scripts/repro-sandbox.sh. A test of any other way
+(#397: a browser test, a pytest, any command that writes a JUnit report,
+scripts/repro-ways.py) runs the way it was written, through
+scripts/repro-run.sh: the PRD carries that way too (its name, its setup,
+command and report, the theme the report named), sealed with the rest, so
+the autopilot and G7 run the test exactly as the reproduction did.
 
   repro-lane.py prd        the lane issue's title and body (JSON), from
                            REPORT (the report's number), RUN_URL (the
                            reproduction's run), SHA256 (the test's), BASE
-                           (the commit it failed on)
+                           (the commit it failed on); for a test of a way
+                           that is a command, WAY (its name), SPEC (the way,
+                           JSON from repro-ways.py resolve), NOUN (what its
+                           test is called) and THEME (a slug, or empty)
   repro-lane.py evidence   the reproduction named in BODY's PRD (JSON:
-                           report, test, sha256, branch); exit 1 when it
-                           names none
+                           report, test, sha256, branch; and, for a way that
+                           is a command, way, spec and theme); exit 1 when
+                           it names none
   repro-lane.py --test     self-test
 
 Environment: BODY (a file holding the issue's body) for evidence.
@@ -48,6 +57,44 @@ EVIDENCE = re.compile(r"^Reproduction test: `(tests/Unit/Repro/Issue([1-9][0-9]{
                       r"SHA-256 `([0-9a-f]{64})`, on the branch `(test/repro-issue-([1-9][0-9]{0,6}))`")
 
 
+# A way that is a command (#397): the line after the evidence that says how
+# its test runs, the way's JSON on one line. Only the keys scripts/repro-run.sh
+# reads; no backtick, so the line cannot be cut short.
+WAY_LINE = re.compile(r"^Reproduction way: `([a-z][a-z0-9-]{0,39})`(?:, with the theme `([a-z0-9][a-z0-9-]{0,59})`)?, "
+                      r"run by scripts/repro-run\.sh as `(\{[^`]*\})`\.$")
+COMMAND_EVIDENCE = re.compile(r"^Reproduction test: `([A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*)`, "
+                              r"SHA-256 `([0-9a-f]{64})`, on the branch `(test/repro-issue-([1-9][0-9]{0,6}))`\.$")
+SPEC_KEYS = {"setup", "theme", "run", "junit", "teardown", "minutes", "test", "case", "assertion"}
+
+
+def way_spec(spec, report):
+    """The way's JSON, checked: a command way scripts/repro-run.sh can run
+    (`run`, `junit`, its `test` carrying the report's number), only the keys
+    it reads, nothing that would end the PRD's line. ValueError otherwise."""
+    if isinstance(spec, str):
+        try:
+            spec = json.loads(spec)
+        except ValueError:
+            raise ValueError("the way is not JSON")
+    if not isinstance(spec, dict):
+        raise ValueError("the way is not an object")
+    unknown = set(spec) - SPEC_KEYS
+    if unknown:
+        raise ValueError(f"the way has keys scripts/repro-run.sh does not read: {sorted(unknown)}")
+    for key in ("run", "junit", "test"):
+        if not isinstance(spec.get(key), str) or not spec[key].strip():
+            raise ValueError(f"the way has no `{key}`")
+    test = spec["test"]
+    if not re.fullmatch(r"[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*", test) or ".." in test.split("/") or test.startswith(".github/"):
+        raise ValueError(f"not a reproduction test's path: {test!r}")
+    if not re.search(rf"(^|[^0-9]){report}([^0-9]|$)", test):
+        raise ValueError(f"the test {test!r} does not carry the report's number")
+    line = json.dumps(spec, separators=(",", ":"), sort_keys=True)
+    if "`" in line:
+        raise ValueError("the way's JSON holds a backtick")
+    return spec
+
+
 def test_path(report):
     return f"tests/Unit/Repro/Issue{report}Test.php"
 
@@ -56,9 +103,12 @@ def branch(report):
     return f"test/repro-issue-{report}"
 
 
-def prd(report, run_url, sha256, base):
+def prd(report, run_url, sha256, base, way="", spec=None, noun="", theme=""):
     """The lane issue: a title and a body that passes G1. Every value is
-    checked: a number, a run URL, two hashes; nothing else goes in."""
+    checked: a number, a run URL, two hashes; for a way that is a command
+    (#397), its name, its JSON (way_spec), what its test is called and a
+    theme's slug; nothing else goes in. Without a way, a unit test's PRD,
+    exactly as it was before #397."""
     if not re.fullmatch(r"[1-9][0-9]{0,6}", str(report)):
         raise ValueError(f"not an issue number: {report!r}")
     if not re.fullmatch(r"https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/actions/runs/\d+", run_url or ""):
@@ -67,15 +117,33 @@ def prd(report, run_url, sha256, base):
         raise ValueError("not a SHA-256")
     if not re.fullmatch(r"[0-9a-f]{40}", base or ""):
         raise ValueError("not a commit")
-    test = test_path(report)
+    if spec:
+        spec = way_spec(spec, report)
+        if not re.fullmatch(r"[a-z][a-z0-9-]{0,39}", way or ""):
+            raise ValueError(f"not a way's name: {way!r}")
+        if theme and not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,59}", theme):
+            raise ValueError(f"not a theme's slug: {theme!r}")
+        noun = noun if re.fullmatch(r"[A-Za-z][A-Za-z -]{0,39}", noun or "") else "test"
+        test = spec["test"]
+        themed = f", with the theme `{theme}`" if theme else ""
+        what = f"a {noun} written from the report"
+        how = (f"Reproduction way: `{way}`{themed}, run by scripts/repro-run.sh as "
+               f"`{json.dumps(spec, separators=(',', ':'), sort_keys=True)}`.\n\n")
+        where = ("it runs only the way it was written, in the reproduction's sandbox (scripts/repro-run.sh: the way's setup "
+                 "before the test is in the tree, then the test alone as a user of its own, with no environment, no secrets "
+                 "and no network but the machine's), never in the autopilot's working tree")
+    else:
+        test = test_path(report)
+        what, how = "a unit test written from the report", ""
+        where = "it runs only in the reproduction's sandbox (no network, no environment, no secrets), never in the autopilot's working tree"
     body = f"""<!-- dx-lane: {LANE} run: {run_url} -->
 ### Problem
 
-The report in #{report} describes a defect, and the reproduction confirmed it: a unit test written from the report fails on the default branch at `{base}` ({run_url}).
+The report in #{report} describes a defect, and the reproduction confirmed it: {what} fails on the default branch at `{base}` ({run_url}).
 
 Reproduction test: `{test}`, SHA-256 `{sha256}`, on the branch `{branch(report)}`.
 
-The test is the specification: it asserts what the report expected. It was written from an outsider's text, so it runs only in the reproduction's sandbox (no network, no environment, no secrets), never in the autopilot's working tree.
+{how}The test is the specification: it asserts what the report expected. It was written from an outsider's text, so {where}.
 
 ### Scope
 
@@ -101,14 +169,32 @@ Normal
 
 
 def evidence(body):
-    """{report, test, sha256, branch} from the PRD's Problem, or None. Read
-    from the PRD only (the part a seal covers), never from the report."""
+    """{report, test, sha256, branch} from the PRD's Problem, or None; and,
+    for a way that is a command (#397), its way, spec and theme. Read from
+    the PRD only (the part a seal covers), never from the report."""
     problem = dict(schema.parse(body)[0]).get("Problem", "")
-    for line in problem.split("\n"):
-        m = EVIDENCE.match(line.strip())
+    lines = [line.strip() for line in problem.split("\n")]
+    for line in lines:
+        m = EVIDENCE.match(line)
         if m and m.group(2) == m.group(5):
             return {"report": int(m.group(2)), "test": m.group(1), "sha256": m.group(3), "branch": m.group(4)}
-    return None
+    # A command way's test (#397): its path is the way's own, so it counts
+    # only with exactly one way's line, whose `test` it is, and the branch
+    # of the same report.
+    ways = [m for m in (WAY_LINE.match(line) for line in lines) if m]
+    tests = [m for m in (COMMAND_EVIDENCE.match(line) for line in lines) if m]
+    if len(ways) != 1 or len(tests) != 1:
+        return None
+    m, w = tests[0], ways[0]
+    report = int(m.group(4))
+    try:
+        spec = way_spec(w.group(3), report)
+    except ValueError:
+        return None
+    if spec["test"] != m.group(1):
+        return None
+    return {"report": report, "test": m.group(1), "sha256": m.group(2), "branch": m.group(3),
+            "way": w.group(1), "spec": spec, "theme": w.group(2) or ""}
 
 
 def self_test():
@@ -137,6 +223,35 @@ def self_test():
     check("no evidence when the test and the branch disagree", evidence(p["body"].replace("test/repro-issue-12", "test/repro-issue-13")), None)
     check("no evidence outside the Problem", evidence("### Scope\n\n" + "Reproduction test: `tests/Unit/Repro/Issue12Test.php`, SHA-256 `" + sha + "`, on the branch `test/repro-issue-12`."), None)
     check("no evidence for a path outside tests/Unit/Repro", evidence(p["body"].replace("tests/Unit/Repro/Issue12Test.php", "src/Issue12Test.php")), None)
+    # #397: a test of another way, with the way it runs in.
+    spec = {"setup": ["npm ci"], "run": "npx playwright test {test}", "junit": "build/j.xml", "minutes": 20, "test": "tests/e2e/repro/issue-12.spec.ts"}
+    w = prd(12, run, sha, base, "browser", spec, "browser test", "astra")
+    wr = schema.check(w["body"])
+    check("#397 C1 another way's PRD passes G1, with the one criterion", (wr["ok"], wr["criteria"]), (True, ["C1"]))
+    check("#397 C1 its evidence reads back the test, the way and the theme",
+          evidence(w["body"]), {"report": 12, "test": "tests/e2e/repro/issue-12.spec.ts", "sha256": sha, "branch": "test/repro-issue-12", "way": "browser", "spec": spec, "theme": "astra"})
+    check("#397 C1 the way is in the sealed part (a seal covers how the test runs)", '"run":"npx playwright test {test}"' in schema.part_text(w["body"], "prd"), True)
+    check("#397 C1 it says what its test is, never a unit test", ("a browser test written from the report" in w["body"], "unit test" in w["body"]), (True, False))
+    check("#397 C3 a unit test's PRD carries no way, and its evidence is what it was", ("Reproduction way:" in p["body"], sorted(evidence(p["body"])), "repro-sandbox" in p["body"]), (False, ["branch", "report", "sha256", "test"], False))
+    check("#397 the way's test must be the evidence's", evidence(w["body"].replace("`tests/e2e/repro/issue-12.spec.ts`, SHA", "`tests/e2e/repro/issue-13.spec.ts`, SHA")), None)
+    check("#397 no evidence for a way's test without the way's line", evidence(w["body"].replace("Reproduction way:", "Way:")), None)
+    check("#397 no evidence with two ways' lines", evidence(w["body"].replace("### Scope", w["body"].split("\n\n")[3] + "\n\n### Scope")), None)
+    for bad, args in (("a way with no run", ("browser", {**spec, "run": ""})), ("a way with keys repro-run.sh does not read", ("browser", {**spec, "env": "x"})),
+                      ("a test outside the tree", ("browser", {**spec, "test": "../issue-12.spec.ts"})), ("a test under .github", ("browser", {**spec, "test": ".github/workflows/issue-12.yml"})),
+                      ("a test of another report", ("browser", {**spec, "test": "tests/e2e/repro/issue-123.spec.ts"})),
+                      ("a backtick that would cut the line", ("browser", {**spec, "run": "echo `id` {test}"})), ("a way's name that is not one", ("Browser!", spec))):
+        try:
+            prd(12, run, sha, base, *args)
+            got = "accepted"
+        except ValueError:
+            got = "refused"
+        check(f"#397 refuses {bad}", got, "refused")
+    try:
+        prd(12, run, sha, base, "browser", spec, "browser test", "x; rm -rf /")
+        got = "accepted"
+    except ValueError:
+        got = "refused"
+    check("#397 refuses a theme that is not a slug", got, "refused")
     autonomy = _load("autonomy", "autonomy.py")
     pol = autonomy.merge(autonomy.load(os.path.join(HERE, "..", "policy", "autonomy.yml")), {})
     opened = {"author": {"login": "dilux-bot"}, "body": p["body"], "labels": {"nodes": [{"name": "lane:" + LANE}]},
@@ -189,7 +304,8 @@ def main(argv):
         return self_test()
     if argv[:1] == ["prd"]:
         try:
-            print(json.dumps(prd(os.environ.get("REPORT", ""), os.environ.get("RUN_URL", ""), os.environ.get("SHA256", ""), os.environ.get("BASE", ""))))
+            print(json.dumps(prd(os.environ.get("REPORT", ""), os.environ.get("RUN_URL", ""), os.environ.get("SHA256", ""), os.environ.get("BASE", ""),
+                                 os.environ.get("WAY", ""), os.environ.get("SPEC", "") or None, os.environ.get("NOUN", ""), os.environ.get("THEME", ""))))
         except ValueError as err:
             print(err, file=sys.stderr)
             return 1
