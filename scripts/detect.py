@@ -175,13 +175,17 @@ def stack_way(paths, read, rules=None, reads=50):
 
 def tree(full, ref="main", run=run_gh):
     """Every file of a repository on GitHub, at REF. A tree GitHub
-    truncates (more than 100,000 entries) is read as far as it lists."""
+    truncates (more than 100,000 entries) is an error: a stack's file past
+    the cut would read as no stack."""
     rc, out, err = run("api", f"repos/{full}/git/trees/{ref}?recursive=1")
     if rc != 0:
         if "409" in err:  # empty: no files
             return []
         raise RuntimeError(f"could not list its files: {err.strip()[:200]}")
-    return [e["path"] for e in (json.loads(out or "{}").get("tree") or []) if e.get("type") == "blob"]
+    data = json.loads(out or "{}")
+    if data.get("truncated"):
+        raise RuntimeError("its tree is too large for GitHub to list whole")
+    return [e["path"] for e in (data.get("tree") or []) if e.get("type") == "blob"]
 
 
 def remote_way(full, ref="main", run=run_gh):
@@ -445,6 +449,11 @@ def self_test():
         check("remote_way: a tree it cannot read is an error, never a repository with no stack", False, True)
     except RuntimeError:
         check("remote_way: a tree it cannot read is an error, never a repository with no stack", True, True)
+    try:
+        remote_way("Acme/x", "main", lambda *a: (0, json.dumps({"tree": [{"path": "README.md", "type": "blob"}], "truncated": True}), ""))
+        check("remote_way: a tree GitHub truncated is an error, never a repository with no stack", False, True)
+    except RuntimeError:
+        check("remote_way: a tree GitHub truncated is an error, never a repository with no stack", True, True)
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
