@@ -776,18 +776,23 @@ jobs:
   # dilux-bot (a run that ran out of turns or time), resumes its draft pull
   # request (#109). Here because this caller inherits the secrets. Never on
   # a release issue (#82, `lane:release`): its acceptance opens the release
-  # pull request instead (issue-accepted.yml).
+  # pull request instead (issue-accepted.yml). An issue dilux-bot opens with
+  # no label starts it too: an accepted decision's sub-issue
+  # (scripts/decision.py, #415), which nobody labels; autopilot.yml asks
+  # GitHub whether a lane accepts it and starts nothing otherwise. A
+  # reproduced bug's lane issue is left to issue-repro.yml, which starts it.
   autopilot:
     if: >-
-      github.event_name == 'issues' && github.event.action == 'labeled' && !contains(github.event.issue.labels.*.name, 'lane:release') && (
-        (github.event.label.name == 'accepted' && github.event.sender.type != 'Bot') ||
-        (github.event.label.name == 'autopilot:continue' && (github.event.sender.type != 'Bot' || github.event.sender.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]'))))
+      github.event_name == 'issues' && !contains(github.event.issue.labels.*.name, 'lane:release') && (
+        (github.event.action == 'labeled' && github.event.label.name == 'accepted' && github.event.sender.type != 'Bot') ||
+        (github.event.action == 'labeled' && github.event.label.name == 'autopilot:continue' && (github.event.sender.type != 'Bot' || github.event.sender.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]'))) ||
+        (github.event.action == 'opened' && github.event.sender.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && toJSON(github.event.issue.labels) == '[]' && !startsWith(github.event.issue.title, 'The bug reproduced from ')))
     # The agent's jobs read the repository with the job's own token (#287).
     permissions:
       contents: read
     uses: DiluxOne/.github/.github/workflows/autopilot.yml@v6
     with:
-      mode: ${{ github.event.label.name == 'accepted' && 'start' || 'continue' }}
+      mode: ${{ github.event.label.name == 'autopilot:continue' && 'continue' || 'start' }}
       issue: ${{ format('{0}', github.event.issue.number) }}
       central-ref: ${{ inputs.central-ref }}
     secrets: inherit
