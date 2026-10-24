@@ -6,7 +6,8 @@ name: Autopilot
 # round, until the review is clean or the rounds run out (#109).
 #
 #   mode: start     called from issue-triage.yml when a person adds
-#                   `accepted`, and from issue-repro.yml when the
+#                   `accepted` or dilux-bot opens an accepted decision's
+#                   sub-issue (#415), and from issue-repro.yml when the
 #                   `bugfix-reproduced` lane accepted the issue it opened
 #                   for a reproduced bug (#84). Who accepted it is read
 #                   from GitHub (scripts/autopilot.py lane): a lane's own
@@ -295,7 +296,11 @@ jobs:
           # Who accepted it, read from GitHub's history (never from a label
           # alone): a lane's own issue that lane accepts is worked under the
           # lane, with its caps; one a person accepted, under human-issue.
-          if ! LANE=$(NUMBER="$ISSUE" python3 .dx-central/scripts/autopilot.py lane); then
+          # A decision's sub-issue starts when it opens, and decision.py links
+          # it to its parent a moment later (#415): a start that finds no lane
+          # asks once more.
+          if ! LANE=$(NUMBER="$ISSUE" python3 .dx-central/scripts/autopilot.py lane) \
+            && { [ "$MODE" != start ] || ! { sleep 20; LANE=$(NUMBER="$ISSUE" python3 .dx-central/scripts/autopilot.py lane); }; }; then
             echo "The autopilot does not start: $LANE"
             echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
