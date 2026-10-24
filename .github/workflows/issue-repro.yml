@@ -12,8 +12,9 @@ name: Issue reproduction
 # of a script, or one that reads a workflow's file, #376). No stack is
 # assumed: a layer with no way declared, or a way whose `needs` are missing,
 # builds nothing, before any model runs: `bug:unconfirmed` becomes
-# `repro:no-way`, and the comment says why and how to declare a way. The
-# rest of this header names the unit way's files; another way's are its own.
+# `repro:no-way`, and the comment says why and how to declare a way. Once
+# it decided to run, a step of its own that fails leaves a comment with the
+# run and `needs-human`, never silence (#393). The rest of this header names the unit way's files; another way's are its own.
 # It starts in two ways (scripts/repro-trigger.sh decides which):
 #   trigger `triage`  the triage classified the report as a bug
 #                     (`bug:unconfirmed`), on the event that opened it;
@@ -604,6 +605,9 @@ jobs:
           set -euo pipefail
           gh label create needs-human --repo "$GITHUB_REPOSITORY" --color D93F0B --description "The autopilot handed this over to a person" >/dev/null 2>&1 || true
           gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label needs-human >/dev/null
+          # The label that started it goes, so adding repro:again later is
+          # a new event; one label per call (#267).
+          for l in repro:run repro:again repro:retry repro:unblocked; do gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$l" >/dev/null 2>&1 || true; done
           gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '<!-- dx-repro-broke -->\nThe reproduction broke before it could write a test: a step of its own failed (%s), not the report. It stays %s, and a person takes it from here (%s); %s tries again once it is fixed.\n\n<sub>🤖 Issue reproduction</sub>' "$RUN_URL" "${BT}bug:unconfirmed${BT}" "${BT}needs-human${BT}" "${BT}repro:again${BT}")" >/dev/null
 
   run:
