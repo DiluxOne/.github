@@ -487,6 +487,18 @@ A class on <html> and a cookie.
         tpl = yaml.safe_load(open(os.path.join(ROOT, "workflow-templates", "issues.yml"), encoding="utf-8"))
         on = tpl.get("on", tpl.get(True))
         check_("#353 wiring: the issues template starts it on opened and edited", sorted(set(["opened", "edited"]) & set(on["issues"]["types"])), ["edited", "opened"])
+        # #372: the Project shows Accepted only an acceptance G1 lets stand.
+        proj = wf["jobs"]["project"]
+        pcond = " ".join(proj["if"].split())
+        labeled, closed = pcond.split("(github.event.action == 'closed'", 1)
+        check_("#372 C1/C2 wiring: the Project waits for G1 and sets Accepted only when it says ready",
+               (proj.get("needs"), job.get("outputs", {}).get("ready"), pcond.startswith("always() &&"),
+                "needs.ready.outputs.ready == 'true'" in labeled),
+               ("ready", "${{ steps.check.outputs.ready }}", True, True))
+        check_("#372 wiring: a release issue, which G1 skips, and a close still reach the Project",
+               ("contains(github.event.issue.labels.*.name, 'lane:release')" in labeled,
+                "needs.ready" not in closed),
+               (True, True))
         labels = {l["name"] for l in yaml.safe_load(open(os.path.join(ROOT, "labels.yml"), encoding="utf-8"))}
         check_("#353: labels.yml holds both labels", {"awaiting-acceptance", "incomplete"} <= labels, True)
     except ImportError:
