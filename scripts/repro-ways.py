@@ -298,7 +298,8 @@ def mine_verdict(mine):
             raised = re.match(r"\s*(?:[A-Za-z_]\w*\.)*([A-Za-z_]\w*(?:Error|Exception))\b", f.get("message") or "")
             if raised and raised.group(1) not in ("AssertionError", "Error", "AssertionFailedError", "ExpectationFailedException"):
                 return "broken"
-            if not re.search(r"\bexpect\(|AssertionError|toBe|toEqual|toHave|assert", text):
+            # pytest.raises that saw nothing raised is an assertion too.
+            if not re.search(r"\bexpect\(|AssertionError|toBe|toEqual|toHave|assert|DID NOT RAISE", text):
                 return "broken"
             # An element the test never found says its selector is wrong as
             # often as that the bug is there: no verdict. Only Playwright's
@@ -523,6 +524,8 @@ def self_test():
               pytest_report(f'<failure message="TypeError: unsupported operand type(s)">{trace}</failure>'), "broken")
         check("#376 a dotted exception is no verdict either", pytest_report('<failure message="json.decoder.JSONDecodeError: Expecting value">assert x</failure>'), "broken")
         check("#376 an AssertionError with a message reproduces", pytest_report('<failure message="AssertionError: the bot has a cap">assert</failure>'), "reproduced")
+        check("#376 a pytest.raises that saw nothing raised reproduces",
+              pytest_report('<failure message="Failed: DID NOT RAISE &lt;class \'ValueError\'&gt;">E   Failed: DID NOT RAISE</failure>'), "reproduced")
         check("#376 a passing pytest test passes", pytest_report(""), "passed")
         check("#376 a test file that does not import is no verdict",
               junit_any('<testsuites><testsuite><testcase classname="" name="tests.repro.test_issue_7" file="tests/repro/test_issue_7.py"><error message="collection failure"/></testcase></testsuite></testsuites>', "test_issue_7.py"), "broken")

@@ -33,5 +33,5 @@ def test_a_junit_report_with_a_failed_assertion_is_a_reproduction(tmp_path):
     report.write_text('<testsuites><testsuite><testcase name="x" classname="issue-1.spec.ts">'
                       '<failure message="Error: expect(received).toBe(expected)"/></testcase></testsuite></testsuites>')
     out = subprocess.run([sys.executable, str(ROOT / "scripts" / "repro-ways.py"), "verdict", str(report), "issue-1.spec.ts"],
-                         capture_output=True, text=True, check=True, cwd=ROOT)
-    assert out.stdout.strip() == "reproduced"
+                         capture_output=True, text=True, cwd=ROOT)
+    assert (out.returncode, out.stdout.strip()) == (0, "reproduced")

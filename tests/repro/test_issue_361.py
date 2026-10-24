@@ -19,7 +19,8 @@ def issue_gate(tmp_path, **env):
     clean = {k: v for k, v in os.environ.items() if not k.startswith(("PR_", "HEAD_", "DX_", "POLICY_"))}
     clean.update({"POLICY_MODE": "issue-gate", "DEFAULT_POLICY": str(ROOT / "policy" / "review-policy.default.yml"),
                   "REPO_POLICY": str(repo), "GITHUB_OUTPUT": str(out), "CHANGED_FILES": "scripts/a.py"}, **env)
-    subprocess.run([sys.executable, str(ROOT / "scripts" / "policy.py")], env=clean, cwd=ROOT, check=True, capture_output=True, text=True)
+    run = subprocess.run([sys.executable, str(ROOT / "scripts" / "policy.py")], env=clean, cwd=ROOT, capture_output=True, text=True)
+    assert run.returncode == 0, run.stdout + run.stderr
     return dict(line.split("=", 1) for line in out.read_text().splitlines() if "=" in line)
 
 
