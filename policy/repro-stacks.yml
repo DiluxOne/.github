@@ -1,0 +1,162 @@
+# The stacks the installer and the organisation's audit recognise, to propose
+# a way to reproduce a bug (#377) to a repository that declares none: neither
+# its kind's pack, nor repos.yml `repro:`, nor its own
+# .github/review-policy.yml. Read by scripts/detect.py; nothing about a stack
+# is written in a script.
+#
+# The first stack that matches wins, in the order written. `detect` holds when
+# any one of its entries does: `path`, a pattern over the repository's files
+# (** spans folders, * stays inside one: one without ** is at the root), and `contains`, a text the first
+# file it matches that holds it (a test project among several). `way` is a
+# way of scripts/repro-ways.py (`repro.ways`, with its keys, held to its
+# check); `{match}` is the file that matched and `{match-dir}` its folder,
+# filled in when it is proposed (quoted for the shell in setup, theme, run
+# and teardown). Every way writes a JUnit report, which gives
+# the verdict, and runs with no network and no environment
+# (scripts/repro-run.sh): what it needs is installed by `setup` under build/,
+# the one folder the test may write.
+stacks:
+  php-phpunit:
+    detect:
+      - {path: composer.json, contains: phpunit}
+    name: phpunit
+    way:
+      layer: [logic, cli, api]
+      noun: PHPUnit test
+      test: tests/Repro/Issue{n}Test.php
+      needs: ["{match}"]
+      setup:
+        - composer install --no-interaction --no-progress --prefer-dist
+      run: vendor/bin/phpunit --do-not-cache-result --log-junit build/repro.xml {test}
+      junit: build/repro.xml
+      minutes: 10
+      list: ["tests/**/*Test.php"]
+      example: "tests/**/*Test.php"
+      guide: |
+        A PHPUnit test, one class named after the file, that calls the code the report names and
+        asserts what the reporter expected, so it FAILS while the bug is there. No network, no
+        secrets, nothing outside the repository.
+
+  python-pytest:
+    detect:
+      - {path: pytest.ini}
+      - {path: pyproject.toml, contains: pytest}
+      - {path: setup.cfg, contains: "tool:pytest"}
+      - {path: tox.ini, contains: pytest}
+    name: pytest
+    way:
+      layer: [logic, cli, api]
+      noun: Python test
+      test: tests/repro/test_issue_{n}.py
+      needs: ["{match}"]
+      setup:
+        - python3 -m pip install --quiet --target build/dx-py pytest==9.1.1
+        - if [ -f requirements.txt ]; then python3 -m pip install --quiet --target build/dx-py -r requirements.txt; fi
+        - if grep -qs '^\[build-system\]' pyproject.toml; then python3 -m pip install --quiet --target build/dx-py .; fi
+      # xunit1 writes each test's file, which the verdict reads.
+      run: PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=build/dx-py:src:. python3 -m pytest -p no:cacheprovider -o junit_family=xunit1 --junitxml=build/repro.xml {test}
+      junit: build/repro.xml
+      minutes: 10
+      list: ["tests/**/*.py"]
+      example: "tests/**/test_*.py"
+      guide: |
+        A pytest test, one or two functions named after the expectation, that imports the code the
+        report names and asserts what the reporter expected, so it FAILS while the bug is there. No
+        network, no secrets, nothing outside the repository.
+
+  dotnet-test:
+    detect:
+      - {path: "**/*.csproj", contains: Microsoft.NET.Test.Sdk}
+    name: dotnet-test
+    way:
+      layer: [logic, cli, api]
+      noun: .NET test
+      test: "{match-dir}/Repro/Issue{n}Tests.cs"
+      needs: ["{match}"]
+      setup:
+        - DOTNET_CLI_HOME=$PWD/build/dx-dotnet NUGET_PACKAGES=$PWD/build/dx-nuget dotnet add {match} package JunitXml.TestLogger --version 8.0.0 --no-restore
+        - DOTNET_CLI_HOME=$PWD/build/dx-dotnet NUGET_PACKAGES=$PWD/build/dx-nuget dotnet restore {match} -p:ArtifactsPath=$PWD/build/dx-artifacts
+      run: DOTNET_CLI_HOME=$PWD/build/dx-dotnet DOTNET_NOLOGO=1 NUGET_PACKAGES=$PWD/build/dx-nuget dotnet test {match} --no-restore -p:ArtifactsPath=$PWD/build/dx-artifacts --filter "FullyQualifiedName~Issue{n}Tests" --logger "junit;LogFilePath=$PWD/build/repro.xml"
+      junit: build/repro.xml
+      # The logger names a test by its class, never its file.
+      case: Issue{n}Tests
+      # xUnit and MSTest say Assert., NUnit Expected:.
+      assertion: 'Assert\.|Expected:'
+      minutes: 15
+      list: ["**/*Tests.cs"]
+      example: "**/*Tests.cs"
+      guide: |
+        A test of the test project's framework (xUnit, NUnit or MSTest, as the example uses), one
+        class `Issue{n}Tests` in the project's namespace, that calls the code the report names and
+        asserts what the reporter expected, so it FAILS while the bug is there. No network, no
+        secrets, nothing outside the repository.
+
+  go-test:
+    detect:
+      - {path: go.mod}
+    name: go-test
+    way:
+      layer: [logic, cli, api]
+      noun: Go test
+      test: repro/issue{n}_test.go
+      needs: ["{match}"]
+      setup:
+        - GOMODCACHE=$PWD/build/dx-go/mod go mod download
+        - GOBIN=$PWD/build/dx-go/bin GOMODCACHE=$PWD/build/dx-go/mod go install gotest.tools/gotestsum@v1.13.0
+      run: GOTOOLCHAIN=local GOPROXY=off GOMODCACHE=$PWD/build/dx-go/mod GOCACHE=$PWD/build/dx-go/cache build/dx-go/bin/gotestsum --junitfile build/repro.xml -- ./repro/ -run 'TestIssue{n}$'
+      junit: build/repro.xml
+      # gotestsum names a test by its function and package, never its file.
+      case: TestIssue{n}
+      # t.Errorf and t.Fatalf say where, `file_test.go:9: `; a panic's
+      # trace says `file_test.go:9 +0x…`, and is no assertion.
+      assertion: '_test\.go:\d+: '
+      minutes: 10
+      list: ["**/*_test.go"]
+      example: "**/*_test.go"
+      guide: |
+        A Go test in package `repro`, one function `TestIssue{n}`, that imports the module's packages
+        the report names and asserts what the reporter expected, so it FAILS while the bug is there.
+        No network, no secrets, nothing outside the repository.
+
+  node-vitest:
+    detect:
+      - {path: package.json, contains: '"vitest"'}
+    name: vitest
+    way:
+      layer: [logic, cli, api]
+      noun: Vitest test
+      test: tests/repro/issue-{n}.test.ts
+      needs: ["{match}"]
+      setup:
+        - npm ci --no-audit --no-fund
+      run: npx vitest run {test} --reporter=junit --outputFile=build/repro.xml
+      junit: build/repro.xml
+      minutes: 10
+      list: ["**/*.test.*"]
+      example: "**/*.test.*"
+      guide: |
+        A Vitest test, one describe named after the expectation, that imports the code the report
+        names and asserts what the reporter expected, so it FAILS while the bug is there. No
+        network, no secrets, nothing outside the repository.
+
+  node-jest:
+    detect:
+      - {path: package.json, contains: '"jest"'}
+    name: jest
+    way:
+      layer: [logic, cli, api]
+      noun: Jest test
+      test: tests/repro/issue-{n}.test.js
+      needs: ["{match}"]
+      setup:
+        - npm ci --no-audit --no-fund
+        - npm install --no-save --no-audit --no-fund jest-junit@17.0.0
+      run: JEST_JUNIT_OUTPUT_FILE=build/repro.xml JEST_JUNIT_ADD_FILE_ATTRIBUTE=true npx jest --ci --no-cache --reporters=default --reporters=jest-junit {test}
+      junit: build/repro.xml
+      minutes: 10
+      list: ["**/*.test.*"]
+      example: "**/*.test.*"
+      guide: |
+        A Jest test, one describe named after the expectation, that requires the code the report
+        names and asserts what the reporter expected, so it FAILS while the bug is there. No
+        network, no secrets, nothing outside the repository.

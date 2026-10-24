@@ -165,3 +165,13 @@ callers:
     pull-request-comments.yml: [profile]
     plugin-checks-wp.yml: [slug, version-constant]
     release-wp.yml: [slug, version-constant, dry-run]
+
+# How a repository reproduces a bug when neither its kind's pack nor its own
+# .github/review-policy.yml says (#377): its `repro:` as that file takes it
+# (scripts/repro-ways.py), read between the two, so the repository's own
+# wins; the installer proposes one from its stack (policy/repro-stacks.yml).
+# `false` is none by design: the daily drift check does not list it, and the
+# autopilot still does not take its bugs.
+repro:
+  diluxone-wp-test: false   # a disposable environment, no code of its own
+  security: false           # private: only the runs of security-fix.yml

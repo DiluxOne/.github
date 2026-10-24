@@ -20,7 +20,7 @@ name: Repositories in step
 # Dependabot's security updates among its settings, agents-block.md,
 # .github/dependabot.yml against its kind's template, the workflow callers
 # against workflow-templates/, the kind's "own checks" ruleset, the rulesets
-# the organisation's cover),
+# the organisation's cover, and a way to reproduce a bug, #377),
 # through scripts/sync-repos.py check, and changes nothing.
 # One issue here, "Repositories out of step", lists what differs: opened or
 # updated when something does, closed when nothing does.

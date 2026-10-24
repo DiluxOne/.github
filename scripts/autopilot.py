@@ -6,7 +6,13 @@
                              (autonomy.py), else `human-issue` when a person
                              accepted it; prints the lane, or why none, exit 1
   autopilot.py may-start     whether the autopilot may start on an issue now
-                             (LANE); prints why; exit 0 when it may
+                             (LANE); prints why; exit 0 when it may. A bug
+                             (ISSUE_TYPE) only in a repository that declares
+                             a way to reproduce one (#377: its kind's pack,
+                             repos.yml `repro:`, or REPO_POLICY, its
+                             .github/review-policy.yml): exit 2 when it
+                             declares none, printing the issue's comment,
+                             which says which way to declare
   autopilot.py prompt spec   the agent's first task on a new issue: the Spec
   autopilot.py prompt work   the agent's task on its draft pull request: the
                              unticked criteria, one commit each (a new issue,
@@ -100,6 +106,7 @@ import datetime
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -118,6 +125,8 @@ def _load(name, file):
 autonomy = _load("autonomy", "autonomy.py")
 schema = _load("issue_schema", "issue-schema.py")
 repro = _load("repro_lane", "repro-lane.py")
+repro_ways = _load("repro_ways", "repro-ways.py")
+detect = _load("detect", "detect.py")
 
 LEVELS = ["none", "low", "medium", "high"]
 # A path that is a test: code under tests/, test/, spec/ or __tests__/ (not
@@ -172,7 +181,10 @@ def which_lane(policy, issue, run, repository, autopilot_var):
     return None, f"no person accepted it, and no lane does ({why})"
 
 
-def may_start(policy, body, autopilot_var, lane=LANE):
+def may_start(policy, body, autopilot_var, lane=LANE, no_way=""):
+    """(whether the autopilot may start, why). `no_way`: bug_gate's comment
+    for a bug in a repository with no way to reproduce one (#377), which
+    refuses it once the rest passes."""
     if (autopilot_var or "").strip().lower() == "off":
         return False, "the organisation's DX_AUTOPILOT is off"
     if not policy.get("autopilot", False):
@@ -187,7 +199,55 @@ def may_start(policy, body, autopilot_var, lane=LANE):
         return False, "the issue is not ready (G1): " + "; ".join(result["errors"])
     if lane == REPRO and not repro.evidence(body):
         return False, f"the {REPRO} lane's issue names no reproduction test in its PRD"
+    if no_way:
+        return False, no_way
     return True, f"ready: G1 passes and the autopilot is on (lane {lane})"
+
+
+def bug_gate(issue_type, lane, declared, proposal, repo):
+    """#377: the comment that says why the autopilot does not start on a
+    bug, or "" when it may. A bug is fixed only once a test proves it, so a
+    repository that declares no way to write one cannot hand its bugs to the
+    autopilot. `declared`: the ways it declares; `proposal`: what its stack
+    proposes (detect.stack_way), or None. Pure."""
+    # Only a bug a person accepted: a lane's own issue (a reproduced bug, a
+    # failing CI run) is the lane's to work, by its own rules.
+    if (issue_type or "").strip().lower() != "bug" or lane != LANE or declared:
+        return ""
+    where = (f"`repro:` in {org.CENTRAL}'s repos.yml (under `{repo.split('/', 1)[-1]}:`), "
+             "or `repro.ways` in this repository's .github/review-policy.yml")
+    if proposal:
+        how = (f"Its stack ({proposal[0]}) proposes this one; correct it where it is wrong:\n\n```yaml\nrepro:\n  ways:\n"
+               + detect.way_yaml(proposal[1], proposal[2], 4) + "```")
+    else:
+        how = "No stack the engine knows (policy/repro-stacks.yml) is recognised in it: declare one by hand, with the keys of scripts/repro-ways.py."
+    return (f"The autopilot does not start on this bug: {repo} declares no way to reproduce a bug, and a bug is fixed only once a "
+            f"failing test proves it. Declare one in {where}, then accept the issue again (remove and add `accepted`).\n\n{how}")
+
+
+def declared_ways(repo, policy, root=os.path.join(HERE, "..")):
+    """The ways that reproduce a bug in REPO (repro-ways.py declares): its
+    kind's pack, the organisation's repos.yml `repro:`, and its policy."""
+    conf = schema.read_yaml(os.path.join(root, "repos.yml")) or {}
+    return repro_ways.declares(conf, repo.split("/", 1)[-1], policy, os.path.join(root, "kinds"))
+
+
+def bug_refusal(repo, lane, issue_type, policy_path):
+    """bug_gate for REPO on GitHub: its ways, from repos.yml here and its
+    policy at POLICY_PATH, and, when it declares none, what its stack
+    proposes (read from GitHub; a help, never the gate)."""
+    if (issue_type or "").strip().lower() != "bug" or lane != LANE:
+        return ""
+    policy = (schema.read_yaml(policy_path) if policy_path and os.path.exists(policy_path) and os.path.getsize(policy_path) else None) or {}
+    declared = declared_ways(repo, policy if isinstance(policy, dict) else {})
+    proposal = None
+    if not declared:
+        try:
+            default = gh("api", f"repos/{repo}", "--jq", ".default_branch").strip() or "main"
+            proposal = detect.remote_way(repo, default)
+        except (RuntimeError, OSError) as err:
+            print(f"::warning::No stack proposal: {str(err)[:200]}", file=sys.stderr)
+    return bug_gate(issue_type, lane, declared, proposal, repo)
 
 
 def criteria_evidence(body, head_files, changed=None):
@@ -1217,6 +1277,29 @@ Clamp the value in Sum::add.
     check("#84 lane: DX_AUTOPILOT off, the lane accepts nothing", which_lane(pol, lane_issue, run42, "DiluxOne/x", "off")[0], None)
     check("#84 lane: a lane's issue a person also accepted, when the lane refuses, is the person's", which_lane(pol, gql(["lane:bugfix-reproduced", "accepted"], [("lane:bugfix-reproduced", "Bot", "dilux-bot"), ("accepted", "User", "soydiloreto")]), None, "DiluxOne/x", "")[0], LANE)
     check("#84 may start: a lane issue with its evidence", may_start(pol, lane_prd, "", REPRO)[0], True)
+    # #377 C4: a bug in a repository with no way: the autopilot does not
+    # start, and the issue says which way to declare.
+    py = ("python-pytest", "pytest", {"layer": "logic", "test": "tests/repro/test_issue_{n}.py", "run": "pytest {test}", "junit": "build/repro.xml"})
+    said = bug_gate("Bug", LANE, [], py, "DiluxOne/api")
+    check("#377 C4 a bug in a repository with no way: the autopilot does not start, and says which way to declare",
+          (bool(said), "declares no way to reproduce a bug" in said, "pytest:" in said, "test: tests/repro/test_issue_{n}.py" in said, "repos.yml (under `api:`)" in said), (True, True, True, True, True))
+    check("#377 C4 may_start refuses an accepted bug in a repository with no way, its reason naming the way to declare",
+          (may_start(pol, prd, "", LANE, said)[0], "pytest:" in may_start(pol, prd, "", LANE, said)[1]), (False, True))
+    check("#377 C4 an issue that is not ready says so first", may_start(pol, "### Problem\n\nx\n", "", LANE, said)[1].startswith("the issue is not ready"), True)
+    check("#377 C4 bug_refusal: nothing for a feature or the reproduced lane, without reading anything",
+          (bug_refusal("o/r", LANE, "Feature", ""), bug_refusal("o/r", REPRO, "Bug", "")), ("", ""))
+    check("#377 C4 with no stack recognised, it says to declare one by hand", "declare one by hand" in bug_gate("Bug", LANE, [], None, "DiluxOne/api"), True)
+    check("#377 C4 a bug in a repository that declares a way starts", bug_gate("Bug", LANE, ["unit"], None, "DiluxOne/x"), "")
+    check("#377 C4 a feature, or a lane's own bug (reproduced, a failing CI run), is not held by it",
+          (bug_gate("Feature", LANE, [], None, "o/r"), bug_gate("Bug", REPRO, [], None, "o/r"), bug_gate("Bug", "ci-weekly", [], None, "o/r")), ("", "", ""))
+    with tempfile.TemporaryDirectory() as root:
+        os.makedirs(os.path.join(root, "kinds", "wordpress-plugin"))
+        shutil.copy(os.path.join(HERE, "..", "kinds", "wordpress-plugin", "pack.yml"), os.path.join(root, "kinds", "wordpress-plugin"))
+        open(os.path.join(root, "repos.yml"), "w").write("repos:\n  plugin: {kinds: [{kind: wordpress-plugin, paths: ['**'], roles: [back]}]}\n  api: {kinds: []}\n  site: {kinds: []}\n"
+                                                      "repro:\n  api:\n    ways:\n      pytest: {layer: logic, test: 'tests/repro/test_issue_{n}.py', run: 'pytest {test}', junit: build/repro.xml}\n")
+        check("#377 C4 the ways declared: the pack's, repos.yml's, the repository's own; none for one that says nothing",
+              ([bool(declared_ways(f"o/{n}", {}, root)) for n in ("plugin", "api", "site")], bool(declared_ways("o/site", {"kind": "wordpress-plugin"}, root))),
+              ([True, True, False], True))
     check("#84 may start: not under the lane without a reproduction test in the PRD", may_start(pol, prd, "", REPRO)[0], False)
     check("#84 may start: not when the repository switches the lane off", may_start(autonomy.merge(org, {"lanes": {REPRO: {"enabled": False}}}), lane_prd, "", REPRO)[0], False)
     check("#84 may start: not with DX_AUTOPILOT off", may_start(pol, lane_prd, "off", REPRO)[0], False)
@@ -2106,9 +2189,10 @@ def main(argv):
             print(f"#{number}: lane {name}, {why}", file=sys.stderr)
         return 0 if name else 1
     if argv[:1] == ["may-start"]:
-        ok, why = may_start(pol, body, var, lane_name)
+        no_way = bug_refusal(repo, lane_name, os.environ.get("ISSUE_TYPE"), os.environ.get("REPO_POLICY", ""))
+        ok, why = may_start(pol, body, var, lane_name, no_way)
         print(why)
-        return 0 if ok else 1
+        return 0 if ok else 2 if no_way and why == no_way else 1
     if argv[:2] == ["prompt", "spec"]:
         print(prompt_spec(repo, number, schema.part_text(body, "prd"), ev, os.environ.get("ISSUE_TYPE", ""), mode_of(pol)))
         return 0

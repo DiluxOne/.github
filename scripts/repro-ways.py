@@ -11,7 +11,12 @@ kind's pack gives the default (kinds/<kind>/pack.yml, `repro:`), and its own
 (`repro: {ways: {name: false}}`). Nothing about a tool is written here or in
 the workflows: a repository whose kind and policy declare no way for a layer
 has none, whatever its stack, and `resolve` says why and how to declare one
-(`why`) instead of guessing a stack (#376).
+(`why`) instead of guessing a stack (#376). The organisation's repos.yml
+may hold a repository's `repro:` too (#377: `repro:`, under its name), read
+between its pack's and its own policy's, so the repository still wins; the
+installer proposes one there, from the repository's stack, for a
+repository that declares none (policy/repro-stacks.yml, the stacks every
+kind shares, recognised by scripts/detect.py).
 
 A way is one entry of `repro.ways`:
   layer     the layer it reproduces, or a list of them; for a layer two
@@ -27,6 +32,13 @@ A way is one entry of `repro.ways`:
   run       the command that runs the test ({test}); scripts/repro-run.sh
             runs it with no environment and no network but the machine's own
   junit     the JUnit report `run` writes, which gives the verdict
+  case      what that report names the test by (`{n}`), when no test case
+            carries the test's file name (Go's TestIssue{n}, a .NET class
+            Issue{n}Tests); the test's file name by default
+  assertion a regular expression a failure's text matches when it is an
+            assertion's and not the test breaking, for a framework whose
+            words the built-in one does not know (Go's `file_test.go:9:`,
+            .NET's `Assert.`); an exception's failure is never one
   teardown  a command after the verdict, best effort
   minutes   the most setup and run may take together
   context   files the writer reads whole; list: globs it sees by name;
@@ -44,16 +56,25 @@ runs (`{paths: [globs], tests: [paths]}`), instead of the whole suite.
   repro-ways.py brief     the way's part of the writer's brief (markdown)
   repro-ways.py lint FILE exit 1, saying why, when FILE reads a stylesheet
                           as text: never a reproduction of how a page looks
-  repro-ways.py verdict JUNIT NAME
+  repro-ways.py verdict JUNIT NAME [ASSERTION]
                           reproduced|passed|broken|environment from a JUnit
                           report, for the test file NAME
   repro-ways.py affected  the tests a pull request runs, from the changed
                           paths on stdin: JSON {"targeted", "tests", "repro"}
+  repro-ways.py propose   the stack recognised in the repository at DIR and
+                          the way it proposes (#377), as `repro:` takes it;
+                          exit 1 when no stack is recognised
+  repro-ways.py missing   exit 1, saying which way to declare (the one its
+                          stack proposes, or the keys to write), when the
+                          repository at DIR declares no way for `logic`:
+                          neither its kind's pack, nor the organisation's
+                          repos.yml, nor its own policy
   repro-ways.py --test    self-test
 
 Environment: DIR, LAYER, NUMBER, CENTRAL (the organisation's checkout, for
-`{kind}`: its kinds/<kind>/ folder), REPO_POLICY (default
-DIR/.github/review-policy.yml).
+`{kind}`: its kinds/<kind>/ folder, and its repos.yml), REPO_POLICY (default
+DIR/.github/review-policy.yml), REPO (default GITHUB_REPOSITORY: its name in
+repos.yml).
 """
 import fnmatch
 import importlib.util
@@ -67,7 +88,7 @@ import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LAYERS = ("logic", "browser", "cli", "api", "workflow")
-KEYS = {"layer", "noun", "test", "needs", "sandbox", "setup", "theme", "run", "junit", "teardown",
+KEYS = {"layer", "noun", "test", "needs", "sandbox", "setup", "theme", "run", "junit", "case", "assertion", "teardown",
         "minutes", "context", "list", "example", "guide"}
 SANDBOXES = ("php-unit",)
 # How the comments say each layer is reproduced.
@@ -93,10 +114,14 @@ def read(path):
     return data if isinstance(data, dict) else {}
 
 
-def merged(pack, repo):
+def merged(pack, repo, org=None):
     """The pack's `repro:` with the repository's over it: a way named in both
     is the pack's with the repository's keys over it; `false` switches a way
-    off; `affected` is the pack's entries and then the repository's."""
+    off; `affected` is the pack's entries and then the repository's. `org`,
+    the organisation's repos.yml `repro:` for the repository (#377), goes
+    between the two, the same way."""
+    if org:
+        pack = {"repro": merged(pack, {"repro": org})}
     base = pack.get("repro") if isinstance(pack.get("repro"), dict) else {}
     mine = repo.get("repro") if isinstance(repo.get("repro"), dict) else {}
     ways = {}
@@ -132,18 +157,120 @@ def problems(conf):
             out.append(f"repro.ways.{name}.test: a relative path with {{n}}")
         if way.get("sandbox") is not None and way.get("sandbox") not in SANDBOXES:
             out.append(f"repro.ways.{name}.sandbox: one of {', '.join(SANDBOXES)}")
+        if way.get("assertion") is not None:
+            try:
+                re.compile(str(way["assertion"]))
+            except re.error:
+                out.append(f"repro.ways.{name}.assertion: a regular expression")
         if way.get("sandbox") is None and not (way.get("run") and way.get("junit")):
             out.append(f"repro.ways.{name}: a command way needs `run` and `junit`")
     return out
 
 
-def config(root, central):
+def pack_of(kinds_dir, conf, name, policy):
+    """(kind, its pack) for a repository: the first of its kinds in repos.yml
+    (`conf`) with a pack in KINDS_DIR, else the kind its own policy names;
+    ("", {}) when none has one."""
+    entry = (conf.get("repos") or {}).get(name) if isinstance(conf.get("repos"), dict) else None
+    kinds = [k.get("kind") for k in ((entry or {}).get("kinds") or []) if isinstance(k, dict)] or [policy.get("kind")]
+    for kind in kinds:
+        kind = str(kind or "").strip()
+        if re.fullmatch(r"[a-z0-9-]+", kind) and os.path.isfile(os.path.join(kinds_dir, kind, "pack.yml")):
+            return kind, read(os.path.join(kinds_dir, kind, "pack.yml"))
+    return "", {}
+
+
+def org_repro(conf, name):
+    """The organisation's repos.yml `repro:` for repository NAME (#377), {}
+    when it holds none or `false`."""
+    entry = (conf.get("repro") or {}).get(name) if isinstance(conf.get("repro"), dict) else None
+    return entry if isinstance(entry, dict) else {}
+
+
+def by_design(conf, name):
+    """repos.yml `repro: {NAME: false}`: the repository has no way by
+    design (a disposable one, one with no code of its own); its bugs are
+    still not handed to the autopilot, but the audit does not list it."""
+    return isinstance(conf.get("repro"), dict) and conf["repro"].get(name) is False
+
+
+def declares(conf, name, policy, kinds_dir):
+    """The ways that reproduce a `logic` bug in repository NAME: its kind's
+    pack, the organisation's repos.yml (`conf`) and its own policy, merged.
+    Empty is a repository with no way (#377)."""
+    _, pack = pack_of(kinds_dir, conf, name, policy)
+    return [n for n, w in merged(pack, policy, org_repro(conf, name))["ways"].items() if "logic" in layers(w)]
+
+
+def repo_name():
+    return (os.environ.get("REPO") or os.environ.get("GITHUB_REPOSITORY") or "").split("/")[-1]
+
+
+def config(root, central, name=None):
     repo = read(os.environ.get("REPO_POLICY") or os.path.join(root, ".github", "review-policy.yml"))
-    kind = str(repo.get("kind") or "").strip()
-    pack = {}
-    if re.fullmatch(r"[a-z0-9-]+", kind):
-        pack = read(os.path.join(central, "kinds", kind, "pack.yml"))
-    return kind, merged(pack, repo)
+    conf = read(os.path.join(central, "repos.yml"))
+    name = repo_name() if name is None else name
+    kind, pack = pack_of(os.path.join(central, "kinds"), conf, name, repo)
+    return kind, merged(pack, repo, org_repro(conf, name))
+
+
+# What a stack is recognised by is never under these: what a repository
+# installs, builds or keeps of git.
+SKIP_DIRS = {".git", "node_modules", "vendor", "build", "bin", "obj"}
+
+
+def tree_of(root, limit=20000):
+    """The repository's files at ROOT, relative, at most LIMIT; never a
+    symbolic link, nor what it installs or builds."""
+    out = []
+    for base, dirs, files in os.walk(root):
+        dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS and not os.path.islink(os.path.join(base, d)))
+        rel = os.path.relpath(base, root)
+        for f in sorted(files):
+            if not os.path.islink(os.path.join(base, f)):
+                out.append(f if rel == "." else f"{rel}/{f}")
+            if len(out) >= limit:
+                return out
+    return out
+
+
+def propose(root):
+    """(stack, the way's name, the way) the repository at ROOT's stack
+    proposes (policy/repro-stacks.yml, through scripts/detect.py), checked
+    by problems() so it is always a valid way; None when none is."""
+    detect = _load("detect", "detect.py")
+
+    def text(path):
+        try:
+            with open(os.path.join(root, path), encoding="utf-8", errors="replace") as fh:
+                return fh.read(65536)
+        except OSError:
+            return ""
+    try:
+        found = detect.stack_way(tree_of(root), text)
+    except RuntimeError:  # too many files to read: no proposal, never a wrong one
+        return None
+    if not found or problems({"ways": {found[1]: found[2]}}):
+        return None
+    return found
+
+
+def way_yaml(found):
+    """A proposal as the `repro:` block that declares it."""
+    detect = _load("detect", "detect.py")
+    return "repro:\n  ways:\n" + detect.way_yaml(found[1], found[2], 4)
+
+
+def missing(root, central, name=None):
+    """"" when the repository at ROOT declares a way for `logic`; otherwise
+    what to declare, with the way its stack proposes (#377)."""
+    _, conf = config(root, central, name)
+    if any("logic" in layers(w) for w in conf["ways"].values()):
+        return ""
+    found = propose(root)
+    how = (f"its stack ({found[0]}) proposes this one, to correct where it is wrong:\n\n```yaml\n{way_yaml(found)}```" if found
+           else f"no stack of policy/repro-stacks.yml is recognised in it; {HOW}")
+    return f"this repository declares no way to reproduce a bug; {how}"
 
 
 def layers(way):
@@ -181,7 +308,7 @@ def resolve(root, central, layer, number):
     kind, conf = config(root, central)
     bad = problems(conf)
     name, way = pick(conf, layer)
-    out = {"layer": layer, "way": "", "ready": "no", "problems": "; ".join(bad), "why": ""}
+    out = {"layer": layer, "way": "", "ready": "no", "problems": "; ".join(bad), "why": "", "proposed": ""}
     if bad:
         out["why"] = f"its reproduction settings are not valid ({out['problems']}); to fix them, {HOW}"
         return out
@@ -190,6 +317,11 @@ def resolve(root, central, layer, number):
         out["why"] = (f"this repository declares no way to reproduce a {layer} bug {WHERE[layer]} (its ways cover "
                       f"{', '.join(covered)}); to add one, {HOW}" if covered else
                       f"this repository declares no way to reproduce a bug; to reproduce one {WHERE[layer]}, {HOW}")
+        # What its stack proposes, when it covers the layer (#377).
+        found = propose(root)
+        if found and layer in layers(found[2]):
+            out["why"] += f"; its stack ({found[0]}) proposes the `{found[1]}` way below, in repos.yml `repro:` or its own policy"
+            out["proposed"] = way_yaml(found)
         return out
     test = fill(way["test"], number, central, kind)
     is_ready = ready(root, way.get("needs"))
@@ -206,7 +338,7 @@ def resolve(root, central, layer, number):
                                     f"(`repro: {{ways: {{{name}: false}}}}`) and declare another"),
         # The command way whole, as JSON, for scripts/repro-run.sh.
         "spec": json.dumps({k: (fill(v, number, central, kind, test) if isinstance(v, str) else [fill(x, number, central, kind, test) for x in v] if isinstance(v, list) else v)
-                            for k, v in way.items() if k in ("setup", "theme", "run", "junit", "teardown", "minutes", "test")}, separators=(",", ":")),
+                            for k, v in way.items() if k in ("setup", "theme", "run", "junit", "case", "assertion", "teardown", "minutes", "test")}, separators=(",", ":")),
     })
     return out
 
@@ -260,7 +392,12 @@ def lint(path):
     return f"it reads a stylesheet as text ({m.group(0)[:60]}): how a page looks is reproduced in a browser" if m else ""
 
 
-def verdict(junit, name):
+# What a failure that is an assertion's says, in the frameworks the packs
+# use; a way's `assertion` replaces it.
+ASSERTION = r"\bexpect\(|AssertionError|toBe|toEqual|toHave|assert|DID NOT RAISE"
+
+
+def verdict(junit, name, assertion=None):
     """reproduced when a test of NAME failed an assertion; passed when every
     test of NAME ran and passed; environment when the repository's setup
     beside it failed (the site, not the test, whatever became of the test),
@@ -278,11 +415,11 @@ def verdict(junit, name):
     after = [c for c in others if "teardown" in " ".join(filter(None, (c.get("classname"), c.get("name"), c.get("file")))).lower()]
     if len(after) < len(others):
         return "environment"
-    own = mine_verdict(mine)
+    own = mine_verdict(mine, assertion)
     return "environment" if after and own == "broken" else own
 
 
-def mine_verdict(mine):
+def mine_verdict(mine, assertion=None):
     if not mine:
         return "broken"
     failed = False
@@ -299,7 +436,7 @@ def mine_verdict(mine):
             if raised and raised.group(1) not in ("AssertionError", "Error", "AssertionFailedError", "ExpectationFailedException"):
                 return "broken"
             # pytest.raises that saw nothing raised is an assertion too.
-            if not re.search(r"\bexpect\(|AssertionError|toBe|toEqual|toHave|assert|DID NOT RAISE", text):
+            if not re.search(assertion or ASSERTION, text):
                 return "broken"
             # An element the test never found says its selector is wrong as
             # often as that the bug is there: no verdict. Only Playwright's
@@ -368,6 +505,8 @@ def self_test():
         print(f"{'ok  ' if ok else 'FAIL'} {name}" + ("" if ok else f": got {got!r}, want {want!r}"))
 
     central = os.path.dirname(HERE)
+    # The repository it runs in is none of repos.yml's, whatever the runner says.
+    os.environ["REPO"] = "Acme/none-such"
     with tempfile.TemporaryDirectory() as d:
         def repo(policy, files=()):
             for entry in os.listdir(d):
@@ -506,9 +645,9 @@ def self_test():
                      "  - waiting for locator('.diluxone-users-account--guest a.diluxone-users-button')\n")
         check("#366 C1 an assertion on an element that exists reproduces, whatever its call log says",
               junit(report("Error: expect(locator).toHaveCSS(expected) failed", underline)), "reproduced")
-        missing = "Locator: .nope\nExpected: visible\nReceived: &lt;element(s) not found&gt;\nCall log:\n  - waiting for locator('.nope')\n"
+        not_found = "Locator: .nope\nExpected: visible\nReceived: &lt;element(s) not found&gt;\nCall log:\n  - waiting for locator('.nope')\n"
         check("#366 C2 an element the test never found is no verdict (a wrong selector)",
-              junit(report("Error: expect(locator).toBeVisible() failed", missing)), "broken")
+              junit(report("Error: expect(locator).toBeVisible() failed", not_found)), "broken")
         check("C8 an element the test never found is no verdict (a wrong selector)",
               junit('<testsuites><testsuite><testcase name="x" classname="issue-69.spec.ts"><failure message="Error: expect(locator).toBeVisible() failed. Locator: .nope Expected: visible Received: &lt;element(s) not found&gt;"/></testcase></testsuite></testsuites>'), "broken")
         check("C8 no report is no verdict", verdict(os.path.join(d, "none.xml"), "issue-69.spec.ts"), "broken")
@@ -550,6 +689,95 @@ def self_test():
               affected(docs, ["assets/css/front.css", "tests/e2e/specs/layout.spec.ts"], d)["targeted"], True)
         check("C5 a repository that maps nothing runs the whole suite", affected(merged({}, {}), ["assets/a.css"], d)["targeted"], False)
         check("** spans folders, * does not", (glob_match("assets/css/a.css", "assets/**/*.css"), glob_match("assets/a.css", "assets/**/*.css"), glob_match("assets/css/a.css", "assets/*.css")), (True, True, False))
+
+        # #377: the organisation's repos.yml between the pack and the
+        # repository, and the way a repository's stack proposes.
+        unit = {"layer": "logic", "test": "tests/repro/test_issue_{n}.py", "run": "pytest {test}", "junit": "build/repro.xml"}
+        both = merged({"repro": {"ways": {"a": {"layer": "logic", "test": "p/{n}", "run": "p", "junit": "p.xml"}}}},
+                      {"repro": {"ways": {"a": {"run": "mine"}}}}, {"ways": {"a": {"run": "org", "junit": "org.xml"}, "b": unit}})
+        check("#377 org's ways go over the pack's, the repository's over both, its own first",
+              (list(both["ways"]), both["ways"]["a"]["run"], both["ways"]["a"]["junit"]), (["a", "b"], "mine", "org.xml"))
+        check("#377 a way the organisation declares, the repository may switch off",
+              list(merged({}, {"repro": {"ways": {"b": False}}}, {"ways": {"b": unit}})["ways"]), [])
+        org_conf = {"repos": {"api": {"kinds": []}, "plugin": {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"]}]}},
+                    "repro": {"api": {"ways": {"pytest": unit}}}}
+        kinds_dir = os.path.join(central, "kinds")
+        check("#377 declares: repos.yml's way, the pack's (by repos.yml's kind, else the policy's), none for one that says nothing",
+              (declares(org_conf, "api", {}, kinds_dir), declares(org_conf, "plugin", {}, kinds_dir), declares(org_conf, "site", {}, kinds_dir),
+               declares(org_conf, "site", {"kind": "wordpress-plugin"}, kinds_dir)), (["pytest"], ["unit"], [], ["unit"]))
+        check("#377 `false` in repos.yml: no way, by design", (by_design({"repro": {"x": False}}, "x"), by_design(org_conf, "api"),
+                                                               declares({"repro": {"x": False}}, "x", {}, kinds_dir)), (True, False, []))
+        check("#377 a way only for the browser is no way for a logic bug",
+              declares({}, "x", {"repro": {"ways": {"e2e": {"layer": "browser", "test": "e/{n}", "run": "x", "junit": "j"}}}}, kinds_dir), [])
+        with tempfile.TemporaryDirectory() as c:
+            os.makedirs(os.path.join(c, "kinds"))
+            with open(os.path.join(c, "repos.yml"), "w") as fh:
+                fh.write("repos:\n  api: {kinds: []}\nrepro:\n  api:\n    ways:\n      pytest: {layer: logic, test: 'tests/repro/test_issue_{n}.py', run: 'pytest {test}', junit: build/repro.xml}\n")
+            repo("", [])
+            r = resolve(d, c, "logic", 7)
+            check("#377 the organisation's way of another repository is not this one's", r["way"], "")
+            os.environ["REPO"] = "Acme/api"
+            try:
+                r = resolve(d, c, "logic", 7)
+                check("#377 resolve reads the organisation's repos.yml for the repository it runs in", (r["way"], r["test"]), ("pytest", "tests/repro/test_issue_7.py"))
+                check("#377 missing: nothing for a repository the organisation declares a way for", missing(d, c), "")
+            finally:
+                os.environ["REPO"] = "Acme/none-such"
+        # C2: a .NET test project proposes `dotnet test` with a JUnit logger.
+        repo("", ["src/Api/Api.csproj", "Api.sln"])
+        os.makedirs(os.path.join(d, "tests", "Api.Tests"))
+        with open(os.path.join(d, "tests", "Api.Tests", "Api.Tests.csproj"), "w") as fh:
+            fh.write('<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Microsoft.NET.Test.Sdk" /></ItemGroup></Project>')
+        found = propose(d)
+        check("C2 a *.csproj test project proposes a dotnet test way with a JUnit logger",
+              (found[0], "dotnet test tests/Api.Tests/Api.Tests.csproj" in found[2]["run"], '--logger "junit;LogFilePath=' in found[2]["run"], found[2]["junit"]),
+              ("dotnet-test", True, True, "build/repro.xml"))
+        check("C2 the proposal is a valid way", problems({"ways": {found[1]: found[2]}}), [])
+        r = resolve(d, central, "logic", 9)
+        check("#377 a repository with no way: why names the proposed way, and proposed is its repro: block",
+              ("proposes the `dotnet-test` way" in r["why"], r["proposed"].startswith("repro:\n  ways:\n    dotnet-test:\n")), (True, True))
+        check("#377 a browser bug gets no proposal of a logic way", resolve(d, central, "browser", 9)["proposed"], "")
+        said = missing(d, central)
+        check("#377 missing: says it declares none, with the way to declare", ("declares no way" in said, "dotnet-test:" in said), (True, True))
+        repo("", ["README.md"])
+        check("#377 no stack recognised: no proposal, and missing gives the keys to write",
+              (propose(d), "no stack of policy/repro-stacks.yml" in missing(d, central), "`junit`" in missing(d, central)), (None, True, True))
+        repo("", ["node_modules/x/pytest.ini"])
+        check("#377 what a repository installs is not its stack", propose(d), None)
+        # Every stack's way reaches a verdict on the report its tools write
+        # (issue 7): a failed assertion reproduces, an exception does not.
+        reports = {
+            "php-phpunit": ('<testsuites><testsuite name="Issue7Test" file="/w/tests/Repro/Issue7Test.php"><testcase name="test_sum" class="Issue7Test" classname="Issue7Test" file="/w/tests/Repro/Issue7Test.php" line="9"><failure type="PHPUnit\\Framework\\ExpectationFailedException">Issue7Test::test_sum\nFailed asserting that 1 is identical to 2.</failure></testcase></testsuite></testsuites>',
+                            '<testsuites><testsuite><testcase name="test_sum" classname="Issue7Test" file="/w/tests/Repro/Issue7Test.php"><error type="Error">Error: Call to undefined function sum()</error></testcase></testsuite></testsuites>'),
+            "python-pytest": ('<testsuites><testsuite name="pytest"><testcase classname="tests.repro.test_issue_7" name="test_sum" file="tests/repro/test_issue_7.py" line="3"><failure message="assert 1 == 2">def test_sum():\n&gt;       assert sum([1]) == 2\nE       assert 1 == 2</failure></testcase></testsuite></testsuites>',
+                              '<testsuites><testsuite><testcase classname="tests.repro.test_issue_7" name="test_sum" file="tests/repro/test_issue_7.py"><failure message="ImportError: cannot import name \'x\'">E   ImportError</failure></testcase></testsuite></testsuites>'),
+            "dotnet-test": ('<testsuites><testsuite name="Api.Tests.dll"><testcase classname="Api.Tests.Repro.Issue7Tests" name="Api.Tests.Repro.Issue7Tests.Sum_is_two" time="0.01"><failure type="failure" message="Assert.Equal() Failure: Values differ&#10;Expected: 2&#10;Actual:   1">at Api.Tests.Repro.Issue7Tests.Sum_is_two()</failure></testcase></testsuite></testsuites>',
+                            '<testsuites><testsuite><testcase classname="Api.Tests.Repro.Issue7Tests" name="Sum_is_two"><failure type="failure" message="System.NullReferenceException : Object reference not set to an instance of an object.">at Api.Sum()</failure></testcase></testsuite></testsuites>'),
+            "go-test": ('<testsuites><testsuite name="example.com/api/repro" tests="1" failures="1"><testcase classname="example.com/api/repro" name="TestIssue7" time="0.00"><failure message="Failed" type="">=== RUN   TestIssue7\n    issue7_test.go:12: Sum() = 1, want 2\n--- FAIL: TestIssue7 (0.00s)\n</failure></testcase></testsuite></testsuites>',
+                        '<testsuites><testsuite><testcase classname="example.com/api/repro" name="TestIssue7"><failure message="Failed" type="">panic: runtime error: index out of range [recovered]\n\t/w/repro/issue7_test.go:12 +0x1d\n</failure></testcase></testsuite></testsuites>'),
+            "node-vitest": ('<testsuites><testsuite name="tests/repro/issue-7.test.ts"><testcase classname="tests/repro/issue-7.test.ts" name="sum &gt; is two" time="0.002"><failure message="expected 1 to be 2 // Object.is equality" type="AssertionError">AssertionError: expected 1 to be 2</failure></testcase></testsuite></testsuites>',
+                            '<testsuites><testsuite><testcase classname="tests/repro/issue-7.test.ts" name="sum"><failure message="sum is not a function" type="TypeError">TypeError: sum is not a function</failure></testcase></testsuite></testsuites>'),
+            "node-jest": ('<testsuites><testsuite name="sum"><testcase classname="sum is two" name="sum is two" file="tests/repro/issue-7.test.js"><failure>Error: expect(received).toBe(expected)\n\nExpected: 2\nReceived: 1</failure></testcase></testsuite></testsuites>',
+                          '<testsuites><testsuite><testcase classname="sum" name="sum" file="tests/repro/issue-7.test.js"><failure>TypeError: sum is not a function</failure></testcase></testsuite></testsuites>'),
+        }
+        detect = _load("detect", "detect.py")
+        stacks = detect.stacks()
+        check("#377 every stack has its reports here", sorted(reports), sorted(stacks))
+        got = {}
+        for stack, (asserted, broke) in reports.items():
+            way = detect.filled(stacks[stack]["way"], "a/b.x")
+            name = fill(way.get("case") or os.path.basename(way["test"]), 7, central, "")
+            out = []
+            for xml in (asserted, broke):
+                with open(os.path.join(d, "r.xml"), "w") as fh:
+                    fh.write(xml)
+                out.append(verdict(os.path.join(d, "r.xml"), name, way.get("assertion")))
+            got[stack] = tuple(out)
+        check("#377 every stack's report: a failed assertion reproduces, an exception is no verdict", got, {s: ("reproduced", "broken") for s in reports})
+        check("#377 an assertion that is not a regular expression is said", problems({"ways": {"go": {"layer": "logic", "test": "t/{n}", "run": "x", "junit": "j", "assertion": "("}}}),
+              ["repro.ways.go.assertion: a regular expression"])
+        os.symlink("/etc/hostname", os.path.join(d, "pytest.ini"))
+        check("#377 a symbolic link is never read nor matched", propose(d), None)
     print(f"{'all tests passed' if not failed else f'{failed} failed'}")
     return 1 if failed else 0
 
@@ -577,9 +805,20 @@ def main():
             print(why)
             return 1
         return 0
-    if len(args) == 3 and args[0] == "verdict":
-        print(verdict(args[1], args[2]))
+    if len(args) in (3, 4) and args[0] == "verdict":
+        print(verdict(args[1], args[2], args[3] if len(args) == 4 and args[3] else None))
         return 0
+    if args == ["propose"]:
+        found = propose(root)
+        if not found:
+            print("no stack of policy/repro-stacks.yml is recognised here")
+            return 1
+        print(f"# {found[0]}\n{way_yaml(found)}", end="")
+        return 0
+    if args == ["missing"]:
+        why = missing(root, central)
+        print(why or "this repository declares a way to reproduce a bug")
+        return 1 if why else 0
     if args == ["affected"]:
         _, conf = config(root, central)
         paths = [line.strip() for line in sys.stdin if line.strip()]
