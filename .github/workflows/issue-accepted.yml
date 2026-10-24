@@ -2,8 +2,9 @@ name: Issue accepted
 
 # Reusable. When a person adds `accepted` to an issue: the issue lands on its
 # product's public Project (repos.yml, `projects:`, in this repository) with
-# Status Accepted once the G1 check below lets the label stay (#372), and the failed jobs of the organisation's pull request
-# pipeline re-run on every open pull request that closes it. When an accepted
+# Status Accepted once the G1 check below lets the label stay (#372), and
+# the failed jobs of the organisation's pull request pipeline re-run on
+# every open pull request that closes it. When an accepted
 # issue closes as completed (by hand, or by the merge that closes it), its
 # Status becomes Done; one closed as not planned is left where it is. The
 # Project needs the bot's key; without it only the re-run happens. That pipeline is required from the organisation and GitHub does
