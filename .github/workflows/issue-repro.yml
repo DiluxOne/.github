@@ -209,9 +209,12 @@ jobs:
     concurrency:
       group: issue-repro-${{ github.repository }}-${{ github.event.issue.number }}
       cancel-in-progress: false
+    # issues: read, as the Brief reads the issue with github.token: in a
+    # private repository nothing else lets it see the issue (#393).
     permissions:
       contents: read
       actions: read
+      issues: read
     outputs:
       run: ${{ steps.cap.outputs.run }}
       wrote: ${{ steps.collect.outputs.wrote }}
@@ -576,6 +579,31 @@ jobs:
           name: repro-test-${{ github.event.issue.number }}
           path: ${{ runner.temp }}/handover/test
           retention-days: 3
+
+      # Once the reproduction decided to run, a step of its own that fails
+      # says so on the issue, with the run: report needs this job to
+      # succeed, so nothing else would (#393).
+      - name: dilux-bot token (the broken run's comment)
+        id: broke
+        if: failure() && steps.cap.outputs.run == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-issues: write
+
+      - name: The reproduction broke
+        if: failure() && steps.cap.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ steps.broke.outputs.token }}
+          NUMBER: ${{ github.event.issue.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BT: '`'
+        run: |
+          set -euo pipefail
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label needs-human >/dev/null 2>&1 || true
+          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '<!-- dx-repro-broke -->\nThe reproduction broke before it could write a test: a step of its own failed (%s), not the report. It stays %s, and a person takes it from here (%s); %s tries again once it is fixed.\n\n<sub>🤖 Issue reproduction</sub>' "$RUN_URL" "${BT}bug:unconfirmed${BT}" "${BT}needs-human${BT}" "${BT}repro:again${BT}")" >/dev/null
 
   run:
     name: Run the test (no secrets)
