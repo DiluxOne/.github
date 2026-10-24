@@ -111,7 +111,8 @@ def autonomy_widens(base, head, where):
             say(f"{key}: {', '.join(map(str, gone))} removed")
     modes = {"guided": 0, "full": 1}
     hm, bm = head.get("autopilot-mode") or {}, base.get("autopilot-mode") or {}
-    for key in ("default", "ceiling"):
+    # `mode`: the one in force once a repository's own file chose it (merge()).
+    for key in ("default", "ceiling", "mode"):
         h, b = (hm or {}).get(key), (bm or {}).get(key, "guided")
         if h is not None and modes.get(h, 2) > modes.get(b, 0):
             say(f"autopilot-mode.{key} raised to {h}")
@@ -479,6 +480,11 @@ def self_test():
             g("commit", "-qam", "unnarrow")
             ok("check: a repository taking a lane's switch-off out of its own file widens", check(narrowed, g("rev-parse", "HEAD"), []),
                [".github/autonomy.yml: lanes.platform switched on"])
+            full = copy.deepcopy(org)
+            full["autopilot-mode"] = {"default": "guided", "ceiling": "full"}
+            ok("check: a repository choosing full in its own file widens",
+               repo_autonomy_widens(full, {}, {"autopilot-mode": "full"}, "r"), ["r: autopilot-mode.mode raised to full"])
+            ok("check: a repository choosing guided does not", repo_autonomy_widens(full, {"autopilot-mode": "full"}, {"autopilot-mode": "guided"}, "r"), [])
             g("rm", "-q", ".github/autonomy.yml")
             g("commit", "-qm", "gone")
             ok("check: a repository deleting its own file widens", check(narrowed, g("rev-parse", "HEAD"), []),
