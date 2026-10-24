@@ -100,6 +100,7 @@ flowchart TB
 | 📜 | [`policy/`](policy/) | The default review policy every repository adds to |
 | 🤖 | [`review-profiles/`](review-profiles/) | What the Claude review looks for |
 | 🛠️ | [`scripts/`](scripts/) | The logic behind the workflows, each script with its own `--test`; [`scripts/runner-vm/`](scripts/runner-vm/) keeps the organisation's VM in its described state |
+| 🧪 | [`tests/`](tests/) | pytest tests: the reproduction's examples (`tests/examples/`), the bugs it reproduced, kept (`tests/repro/`), and the workflows' wiring (`tests/workflows/`) |
 | 🏃 | [`runner/`](runner/) | The image every job on the organisation's VM runs in, `ghcr.io/diluxone/runner` |
 | 📋 | [`workflow-templates/`](workflow-templates/) | Ready-made callers for a new repository |
 | 🎨 | [`design-systems/`](design-systems/) | What a screen looks like: tokens, components and the rules a review checks (today, `wordpress-admin`); each project names its own in `repos.yml` |

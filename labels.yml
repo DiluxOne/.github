@@ -48,12 +48,20 @@
 - {name: security, color: "B60205", description: "A vulnerability report; a person merges its fix"}
 - {name: enhancement, color: "A2EEEF", description: "New feature or request"}
 - {name: duplicate, color: "CFD3D7", description: "An open issue already covers it"}
+# Where a defect shows (#352, #376): the reproduction uses the way the
+# repository declares for it (scripts/repro-ways.py).
+- {name: "layer:logic", color: "C5DEF5", description: "Where the defect shows: the reproduction uses the way the repository declares for it"}
+- {name: "layer:browser", color: "C5DEF5", description: "Where the defect shows: the reproduction uses the way the repository declares for it"}
+- {name: "layer:cli", color: "C5DEF5", description: "Where the defect shows: the reproduction uses the way the repository declares for it"}
+- {name: "layer:api", color: "C5DEF5", description: "Where the defect shows: the reproduction uses the way the repository declares for it"}
+- {name: "layer:workflow", color: "C5DEF5", description: "Where the defect shows: the reproduction uses the way the repository declares for it"}
 
 # The reproduction (issue-repro.yml).
 - {name: "repro:run", color: "FBCA04", description: "A maintainer asks for a reproduction attempt"}
 - {name: "repro:again", color: "FBCA04", description: "Ask for another reproduction attempt"}
 - {name: "bug:confirmed", color: "B60205", description: "Reproduced by a failing test"}
 - {name: could-not-reproduce, color: "FBCA04", description: "The reproduction attempt found nothing"}
+- {name: "repro:no-way", color: "D4C5F9", description: "No way this repository declares can reproduce this bug; the comment says why"}
 
 # The review, on pull requests (claude-review.yml).
 - {name: "risk:low", color: "0E8A16", description: "Set by the Claude review"}

@@ -118,7 +118,9 @@ autopilot:
 # scripts/repro-ways.py, which says what each key means). A repository
 # changes a way, adds one or switches one off in its .github/review-policy.yml
 # (`repro: {ways: {browser: false}}`), and maps its paths to the tests a pull
-# request that touches them runs (`repro: {affected: [...]}`).
+# request that touches them runs (`repro: {affected: [...]}`). Nothing
+# falls back to these ways: a repository of no kind, or of another, has only
+# the ways it declares (#376).
 repro:
   ways:
     unit:
