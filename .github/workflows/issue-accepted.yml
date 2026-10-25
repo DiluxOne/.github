@@ -183,12 +183,13 @@ jobs:
     # that is not accepted yet, the same check labels it
     # `awaiting-acceptance` or `incomplete` and says what is missing; it
     # never touches `accepted` then. A bot's issue (a lane's) is left alone,
-    # and so is a report the reproduction confirmed (#427): its lane fixes it
-    # with no acceptance, and the reproduction took the labels off.
+    # and so is a report the reproduction confirmed and handed to its lane
+    # (#427): `bug:confirmed` with both labels taken off. With the lane
+    # closed, the labels stay and the report still waits for a maintainer.
     if: >-
       github.event_name == 'issues' && github.event.sender.type != 'Bot' && !contains(github.event.issue.labels.*.name, 'lane:release') && (
         (github.event.action == 'labeled' && github.event.label.name == inputs.label) ||
-        ((github.event.action == 'opened' || github.event.action == 'edited') && github.event.issue.user.type != 'Bot' && !contains(github.event.issue.labels.*.name, inputs.label) && !contains(github.event.issue.labels.*.name, 'bug:confirmed')))
+        ((github.event.action == 'opened' || github.event.action == 'edited') && github.event.issue.user.type != 'Bot' && !contains(github.event.issue.labels.*.name, inputs.label) && !(contains(github.event.issue.labels.*.name, 'bug:confirmed') && !contains(github.event.issue.labels.*.name, 'awaiting-acceptance') && !contains(github.event.issue.labels.*.name, 'incomplete'))))
     # One check at a time per issue: a later edit waits for the earlier run
     # rather than racing it on the labels and the comment.
     concurrency:
