@@ -31,7 +31,7 @@ flowchart LR
     C -- "every box ticked<br/>checks pass" --> D["✅ Ready for review<br/>conventions + accepted-issue gate<br/>checks of its kind"]
     D --> F["🤖 Claude review<br/>risk · complexity · type"]
     F -- "blocks (3 rounds)" --> C
-    F --> L["Merges on its own when<br/>not Critical · no protected path<br/>review clean · within the lane<br/>a test per criterion · every check green"]
+    F --> L["Merges on its own when<br/>not Critical · no protected path,<br/>but a reproduced bug's fix that widens nothing<br/>review clean · within the lane<br/>a test per criterion · every check green"]
     L --> G{"All of them?"}
     G -- "yes" --> H["⚡ Auto-merge<br/>+ receipt"]
     G -- "any no" --> I["👤 A person merges"]
@@ -97,14 +97,14 @@ flowchart TB
 | --- | --- | --- |
 | ⚙️ | [`.github/workflows/`](.github/workflows/) | The reusable workflows and the organisation's required pull request pipeline |
 | 🧩 | [`kinds/`](kinds/) | One pack per kind of project (today, `wordpress-plugin`): its rules, review profile and settings |
-| 📜 | [`policy/`](policy/) | The default review policy every repository adds to |
+| 📜 | [`policy/`](policy/) | The default review policy every repository adds to, and what every kind shares: the autonomy policy, the issue schema, the stacks a way to reproduce a bug is proposed from (`repro-stacks.yml`) |
 | 🤖 | [`review-profiles/`](review-profiles/) | What the Claude review looks for |
 | 🛠️ | [`scripts/`](scripts/) | The logic behind the workflows, each script with its own `--test`; [`scripts/runner-vm/`](scripts/runner-vm/) keeps the organisation's VM in its described state |
 | 🧪 | [`tests/`](tests/) | pytest tests: the reproduction's examples (`tests/examples/`), the bugs it reproduced, kept (`tests/repro/`), and the workflows' wiring (`tests/workflows/`) |
 | 🏃 | [`runner/`](runner/) | The image every job on the organisation's VM runs in, `ghcr.io/diluxone/runner` |
 | 📋 | [`workflow-templates/`](workflow-templates/) | Ready-made callers for a new repository |
 | 🎨 | [`design-systems/`](design-systems/) | What a screen looks like: tokens, components and the rules a review checks (today, `wordpress-admin`); each project names its own in `repos.yml` |
-| 🏷️ | [`labels.yml`](labels.yml) · [`repos.yml`](repos.yml) | Labels, settings, Projects, design systems and what each repository adds to its Dependabot template (`kinds/<kind>/dependabot.yml`, `policy/dependabot.default.yml`), kept in step by `scripts/sync-repos.py` |
+| 🏷️ | [`labels.yml`](labels.yml) · [`repos.yml`](repos.yml) | Labels, settings, Projects, design systems, the way a repository reproduces a bug when its pack and its policy declare none (`repro:`) and what each repository adds to its Dependabot template (`kinds/<kind>/dependabot.yml`, `policy/dependabot.default.yml`), kept in step by `scripts/sync-repos.py` |
 | 🖼️ | [`profile/`](profile/) | The organisation's public page on GitHub |
 
 ## Read more

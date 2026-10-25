@@ -6,7 +6,8 @@ name: Autopilot
 # round, until the review is clean or the rounds run out (#109).
 #
 #   mode: start     called from issue-triage.yml when a person adds
-#                   `accepted`, and from issue-repro.yml when the
+#                   `accepted` or dilux-bot opens an accepted decision's
+#                   sub-issue (#415), and from issue-repro.yml when the
 #                   `bugfix-reproduced` lane accepted the issue it opened
 #                   for a reproduced bug (#84). Who accepted it is read
 #                   from GitHub (scripts/autopilot.py lane): a lane's own
@@ -15,7 +16,10 @@ name: Autopilot
 #                   issue starts nothing. It starts only if the autopilot is on
 #                   (policy/autonomy.yml, the repository's own
 #                   .github/autonomy.yml, DX_AUTOPILOT) and the issue is
-#                   ready (G1). First the agent writes the Spec, which this
+#                   ready (G1); a Bug, only in a repository that declares
+#                   a way to reproduce one (#377, scripts/autopilot.py
+#                   may-start), or the issue says which way to declare.
+#                   First the agent writes the Spec, which this
 #                   workflow appends to the issue (G3, sealed on the
 #                   receipts branch). Then it opens the draft pull request,
 #                   labelled `autopilot`: the Spec as a checklist, one box per
@@ -86,11 +90,20 @@ name: Autopilot
 # working tree (a sparse checkout keeps it in the commits only, and the
 # repository's own tests cannot pick it up); the draft's branch starts at the
 # reproduction's commit, the test checked against the SHA-256 the PRD
-# sealed; the agent runs it only in the sandbox (scripts/repro-sandbox.sh:
-# no network, no environment, no secret), always against a clean copy of a
-# commit, never the working tree, and `finish ready` refuses until it passes
-# there. The job that marks it ready checks the test at the pushed head is
-# the sealed one; the pull request's own checks run it with the suite.
+# sealed; the agent runs it only in the sandbox, always against a clean copy
+# of a commit, never the working tree, and `finish ready` refuses until it
+# passes there: a unit test in scripts/repro-sandbox.sh (no network, no
+# environment, no secret), any other way's (#397) the way it was written,
+# through scripts/repro-run.sh with the way the sealed PRD carries
+# (REPRO_SPEC, REPRO_THEME: its setup before the test is in the tree, then
+# the test alone as a user of its own, with no environment and no network
+# but the machine's). The job that marks it ready checks the test at the
+# pushed head is the sealed one; the pull request's own checks run a unit
+# test with the suite, and G7 (auto-merge.yml) runs another way's again at
+# the head. A reproduced bug may be fixed in the paths that govern autonomy
+# too (#397): the agent is told never to widen a permission, a lane or a
+# limit, and G7 leaves any fix that does to a person
+# (scripts/no-widening.py).
 
 on:
   workflow_call:
@@ -187,6 +200,8 @@ jobs:
       repro-test: ${{ steps.may.outputs.repro-test }}
       repro-sha: ${{ steps.may.outputs.repro-sha }}
       repro-branch: ${{ steps.may.outputs.repro-branch }}
+      repro-spec: ${{ steps.may.outputs.repro-spec }}
+      repro-theme: ${{ steps.may.outputs.repro-theme }}
       started: ${{ steps.when.outputs.started }}
       head: ${{ steps.when.outputs.head }}
       default: ${{ steps.when.outputs.default }}
@@ -254,6 +269,15 @@ jobs:
           echo "issue=$ISSUE" >> "$GITHUB_OUTPUT"
           gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/body.md"
           gh api "repos/$GITHUB_REPOSITORY/contents/.github/autonomy.yml" --jq .content 2>/dev/null | base64 -d > "$RUNNER_TEMP/repo-autonomy.yml" || : > "$RUNNER_TEMP/repo-autonomy.yml"
+          # Its review policy, for whether it declares a way to reproduce a
+          # bug (#377), read on a start only: none is an empty one; one
+          # that cannot be read stops here rather than tell the issue it
+          # declares none.
+          : > "$RUNNER_TEMP/repo-policy.yml"
+          if [ "$MODE" = start ] && ! gh api "repos/$GITHUB_REPOSITORY/contents/.github/review-policy.yml" -H "Accept: application/vnd.github.raw" > "$RUNNER_TEMP/repo-policy.yml" 2> "$RUNNER_TEMP/repo-policy.err"; then
+            grep -q "HTTP 404" "$RUNNER_TEMP/repo-policy.err" || { echo "::error::Could not read .github/review-policy.yml: $(head -c 200 "$RUNNER_TEMP/repo-policy.err")"; exit 1; }
+            : > "$RUNNER_TEMP/repo-policy.yml"
+          fi
           echo "go=true" >> "$GITHUB_OUTPUT"
       - name: May it start
         id: may
@@ -272,21 +296,42 @@ jobs:
           # Who accepted it, read from GitHub's history (never from a label
           # alone): a lane's own issue that lane accepts is worked under the
           # lane, with its caps; one a person accepted, under human-issue.
-          if ! LANE=$(NUMBER="$ISSUE" python3 .dx-central/scripts/autopilot.py lane); then
+          # A decision's sub-issue starts when it opens, and decision.py links
+          # it to its parent a moment later (#415): a start that finds no lane
+          # asks once more.
+          if ! LANE=$(NUMBER="$ISSUE" python3 .dx-central/scripts/autopilot.py lane) \
+            && { [ "$MODE" != start ] || ! { sleep 20; LANE=$(NUMBER="$ISSUE" python3 .dx-central/scripts/autopilot.py lane); }; }; then
             echo "The autopilot does not start: $LANE"
             echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
           export LANE
           echo "lane=$LANE" >> "$GITHUB_OUTPUT"
-          if ! why=$(python3 .dx-central/scripts/autopilot.py may-start); then
+          # A bug only in a repository that declares a way to reproduce
+          # one (#377): may-start exits 2 and the issue says which way to
+          # declare. Only on a start: a run that continues one has started.
+          ISSUE_TYPE=""
+          if [ "$MODE" = start ]; then
+            ISSUE_TYPE=$(gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE" --jq '.type.name // ""')
+          fi
+          rc=0
+          why=$(ISSUE_TYPE="$ISSUE_TYPE" REPO_POLICY="$RUNNER_TEMP/repo-policy.yml" python3 .dx-central/scripts/autopilot.py may-start) || rc=$?
+          if [ "$rc" -ne 0 ]; then
             echo "The autopilot does not start: $why"
+            if [ "$rc" -eq 2 ]; then
+              gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$why
+
+          <sub>🤖 Autopilot</sub>" >/dev/null || true
+            fi
             echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
           # A reproduced bug: the test that failed, its SHA-256 and the
-          # branch that holds it, from the sealed PRD (scripts/repro-lane.py).
+          # branch that holds it, from the sealed PRD (scripts/repro-lane.py);
+          # for a test of any way but the unit one, the way it runs in and
+          # the theme the report named (#397), empty for a unit test.
           if [ "$LANE" = bugfix-reproduced ]; then
             ev=$(python3 .dx-central/scripts/repro-lane.py evidence)
-            { echo "repro-test=$(jq -r .test <<<"$ev")"; echo "repro-sha=$(jq -r .sha256 <<<"$ev")"; echo "repro-branch=$(jq -r .branch <<<"$ev")"; } >> "$GITHUB_OUTPUT"
+            { echo "repro-test=$(jq -r .test <<<"$ev")"; echo "repro-sha=$(jq -r .sha256 <<<"$ev")"; echo "repro-branch=$(jq -r .branch <<<"$ev")"
+              echo "repro-spec=$(jq -c '.spec // empty' <<<"$ev")"; echo "repro-theme=$(jq -r '.theme // empty' <<<"$ev")"; } >> "$GITHUB_OUTPUT"
           fi
           # Every mode works only from the PRD that was accepted: its seal
           # (written by issue-accepted.yml, which runs alongside on a
@@ -500,6 +545,9 @@ jobs:
         env:
           DX_IO: ${{ github.workspace }}/.dx-io
           NUMBER: ${{ needs.prep.outputs.issue }}
+          # Another way's test (#397): how scripts/repro-run.sh runs it.
+          REPRO_SPEC: ${{ needs.prep.outputs.repro-spec }}
+          REPRO_THEME: ${{ needs.prep.outputs.repro-theme }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
@@ -777,6 +825,9 @@ jobs:
           BRANCH: ${{ needs.draft.outputs.branch || needs.prep.outputs.branch }}
           REPRO_TEST: ${{ needs.prep.outputs.repro-test }}
           REPRO_SHA: ${{ needs.prep.outputs.repro-sha }}
+          # Another way's test (#397): how scripts/repro-run.sh runs it.
+          REPRO_SPEC: ${{ needs.prep.outputs.repro-spec }}
+          REPRO_THEME: ${{ needs.prep.outputs.repro-theme }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}

@@ -31,8 +31,8 @@ Five types are enough; everything else (refactor, docs, performance, hotfix, mig
 ## Bugs, from report to fix
 
 1. **Triage.** Anyone opens an issue. The triage classifies it: bug, product request, question, duplicate or security; a bug, with the layer it shows in (logic, browser, a command's output, an API, a CI workflow's wiring).
-2. **Reproduction.** An agent writes a failing test the way the repository declares for that layer (a unit test, a browser test, a command's output), and only that test runs, in a sandbox with no network and no secrets. If it cannot reproduce it, it says what it tried and what it is missing; a layer the repository has no way for is not reproduced, and says so with a label of its own (`repro:no-way`) and how to declare one: no stack is assumed.
-3. **Acceptance by policy.** A bug reproduced by a unit test has its fix accepted by a lane of the policy, without a word of the original report: the test is the specification. One reproduced another way waits for a person.
+2. **Reproduction.** An agent writes a failing test the way the repository declares for that layer (a unit test, a browser test, a command's output), and only that test runs, in a sandbox with no network and no secrets. If it cannot reproduce it, it says what it tried and what it is missing; a layer the repository has no way for is not reproduced, and says so with a label of its own (`repro:no-way`) and how to declare one: no stack is assumed. Every repository declares a way (#377): its kind's pack, the organisation's `repos.yml` or its own policy; the installer proposes one from its stack, the daily drift check lists every repository with none, and the autopilot does not start on a bug in one with none: the issue says which way to declare.
+3. **Acceptance by policy.** A reproduced bug has its fix accepted by a lane of the policy, without a word of the original report, whatever the way its test was written in (a unit test, a browser test, a command's output): the test is the specification, and the way it runs in is sealed with it, so the autopilot and the merge gate run it exactly as the reproduction did. A bug in the rules that govern autonomy goes to the same lane.
 4. **Fix.** The autopilot makes the test pass, adds the test of what must not change, and passes every gate.
 5. **Merge.** Up to medium risk it merges on its own, into Unreleased (or into production, for a continuous kind).
 6. **Publish.** A maintainer decides when, by accepting a release issue.
@@ -75,11 +75,11 @@ A change moves only if it passes each gate in order. The deterministic gates alw
 | --- | --- | --- |
 | G1 Issue ready | Problem, scope, out of scope, verifiable criteria, the tests that prove them, criticality; checked when the issue opens and on every edit (`awaiting-acceptance` or `incomplete`) | It cannot be accepted; the issue says what is missing |
 | G2 Acceptance | `accepted` from a person, or a lane of the policy | Nothing starts |
-| G3 Plan | Files, approach and tests before code; in scope, no protected path | It asks the maintainer, with the action and its URL |
+| G3 Plan | Files, approach and tests before code; in scope, no protected path (a reproduced bug's may touch one, never widening it) | It asks the maintainer, with the action and its URL |
 | G4 The kind's checks | Conventions, lint, static analysis, tests | The agent fixes and pushes again (a round) |
 | G5 Clean review | No open blocker or major | The agent fixes; after 3 rounds, a person |
 | G6 Meets the issue | Every criterion with its evidence, nothing out of scope | Back to the loop; a scope problem goes to a person |
-| G7 Merge | G1 to G6 green, not Critical, not labelled `security`, no protected path, within budget | A person merges, with the reason and the URL |
+| G7 Merge | G1 to G6 green, not Critical, not labelled `security`, no protected path (but a reproduced bug's fix that widens nothing), within budget; a reproduced bug's test passes again, run the way it was written | A person merges, with the reason and the URL |
 | G8 Healthy main | The default branch's CI green after the merge | An automatic revert pull request and an issue |
 
 Limits that always cut: rounds per pull request (3), runs per issue (5), what one agent's run may cost (`budgets-usd`), how many strangers' reports are reproduced a day and by one author, the agent's jobs in parallel, and an organisation switch (`DX_AUTOPILOT=off`) that stops everything autonomous without touching code, a planned release's approval by policy included.
@@ -96,7 +96,7 @@ Limits that always cut: rounds per pull request (3), runs per issue (5), what on
 
 The review sets the risk, and a pull request cannot lower it: the high-risk paths are in the organisation's policy and in each repository's.
 
-**The golden rule:** autonomy cannot widen itself. The autonomy policy and the rules always need a person to accept and merge them.
+**The golden rule:** autonomy cannot widen itself. The autonomy policy and the rules always need a person to accept and merge them, with one exception: a bug the reproduction confirmed in them is accepted and fixed like any other reproduced bug, and its fix merges on its own only when it widens no permission, lane or limit (no lane added or opened up, no merge cap or ceiling raised, no protected path removed, no workflow permission or secret granted). Code checks that, comparing the change's base with its head, not the review; a fix that widens anything, or that the check cannot read, waits for a person. Only the policies are data the check reads whole; a fix to the code or the words that apply them (a script, a rule, a workflow's steps) is accepted and made by the autopilot all the same, and a person merges it, since no check can compare what code means.
 
 ## The autonomy policy and its lanes
 

@@ -13,7 +13,8 @@
 #      only this machine (loopback and Docker's own networks); the site's
 #      containers reach nothing outside either (DOCKER-USER). The runner's
 #      own user could sudo its way around all of that, so it never runs the
-#      test;
+#      test. Once the test and its teardown are done, those rules come out
+#      again for what the job runs next (#409);
 #   3. the verdict is the way's JUnit report (scripts/repro-ways.py verdict):
 #      outcome=reproduced|passed|broken, or `limit` when setup failed, the
 #      repository's own test setup (or its teardown, when the test reached
@@ -23,10 +24,26 @@
 #      (WP_BASE_URL, WP_NETWORK_URL, WP_ENV_PORT, WP_ENV_TESTS_PORT) only
 #      when they are set, so the repository's configuration keeps its own
 #      defaults otherwise.
-# The command's last lines are kept in DIR/output-tail.txt (untrusted text).
+# The command's last lines are kept in DIR/output-tail.txt (untrusted text),
+# and the way's JUnit report in DIR/junit.xml, for a job that runs nothing of
+# the repository's to read the verdict again (G7, auto-merge.yml, #397).
 #
 #   repro-run.sh run SRC DIR   SPEC (the way, JSON from repro-ways.py
 #                              resolve), TEST (where the test goes), THEME
+#   repro-run.sh run-ref REF PATH [DIR]
+#                              the test at PATH as committed at REF, run the
+#                              same way against a clean copy of REF's tree
+#                              (git archive: no uncommitted change, no .git,
+#                              the test taken out until setup is done), with
+#                              the working tree's vendor/ when REF has none
+#                              (installed by the caller, as the run job of
+#                              issue-repro.yml does) and its .dx-central/
+#                              (#409); SPEC or REPRO_SPEC,
+#                              THEME or REPRO_THEME. The bugfix-reproduced
+#                              lane (#397): the autopilot against its fix,
+#                              and gate G7 at the pull request's head
+#                              (auto-merge.yml), as repro-sandbox.sh run-ref
+#                              does for a unit test
 #   repro-run.sh --test        self-test (no network change, no Docker)
 #
 # It refuses a self-hosted runner, as scripts/repro-sandbox.sh does.
@@ -63,6 +80,22 @@ isolate() {
   fi
 }
 
+# The same rules taken out once the test is done, so that whatever the job
+# runs next reaches the network again (#409).
+release() {
+  local uid
+  uid=$(id -u dxrepro)
+  while sudo iptables -D OUTPUT -m owner --uid-owner "$uid" -o lo -j ACCEPT 2>/dev/null; do :; done
+  while sudo iptables -D OUTPUT -m owner --uid-owner "$uid" -d 172.16.0.0/12 -j ACCEPT 2>/dev/null; do :; done
+  while sudo iptables -D OUTPUT -m owner --uid-owner "$uid" -j REJECT 2>/dev/null; do :; done
+  while sudo ip6tables -D OUTPUT -m owner --uid-owner "$uid" -o lo -j ACCEPT 2>/dev/null; do :; done
+  while sudo ip6tables -D OUTPUT -m owner --uid-owner "$uid" -j REJECT 2>/dev/null; do :; done
+  if sudo iptables -L DOCKER-USER -n >/dev/null 2>&1; then
+    while sudo iptables -D DOCKER-USER -i docker0 ! -d 172.16.0.0/12 -j REJECT 2>/dev/null; do :; done
+    while sudo iptables -D DOCKER-USER -i br-+ ! -d 172.16.0.0/12 -j REJECT 2>/dev/null; do :; done
+  fi
+}
+
 # What a test may see of this environment: the site's addresses, and only
 # when they are set. An empty WP_BASE_URL is not unset to a configuration
 # that reads `process.env.WP_BASE_URL ?? 'http://localhost:8892'`: it would
@@ -87,7 +120,7 @@ confined() {
 }
 
 run() {
-  local src=$1 dir=$2 spec=${SPEC:?} test=${TEST:?} theme=${THEME:-} minutes deadline left rc=0 cmd junit v
+  local src=$1 dir=$2 spec=${SPEC:?} test=${TEST:?} theme=${THEME:-} minutes deadline left rc=0 cmd junit v case
   mkdir -p "$dir"
   : > "$dir/output-tail.txt"
   if [ "${RUNNER_ENVIRONMENT:-}" = self-hosted ]; then
@@ -153,7 +186,10 @@ run() {
   if [ "$rc" -eq 124 ]; then
     limit "The test took longer than the way's $minutes minutes, setup included."
   else
-    v=$(python3 "$HERE/repro-ways.py" verdict "$junit" "$(basename "$test")")
+    # What the report names the test by: the way's `case`, else its file.
+    case=$(jq -r '.case // empty' <<<"$spec"); [ -n "$case" ] || case=$(basename "$test")
+    v=$(python3 "$HERE/repro-ways.py" verdict "$junit" "$case" "$(jq -r '.assertion // empty' <<<"$spec")")
+    cp -- "$junit" "$dir/junit.xml" 2>/dev/null || true
     if [ "$v" = environment ]; then
       limit "The repository's own test setup failed around the test (its setup or teardown project, before or after it): the environment, not the test or the report."
     else
@@ -162,6 +198,40 @@ run() {
   fi
   cmd=$(jq -r '.teardown // empty' <<<"$spec")
   [ -z "$cmd" ] || timeout 120 bash -c "$cmd" >/dev/null 2>&1 || true
+  [ "${DX_REPRO_UNCONFINED:-}" = 1 ] || release
+}
+
+# Remove what a run left: the confined user and the site's containers write
+# files of their own in it, which only sudo removes; whatever still stays is
+# said and never changes the verdict (#421).
+discard() {
+  rm -rf -- "$@" 2>/dev/null || sudo -n rm -rf -- "$@" 2>/dev/null \
+    || echo "::warning::Could not remove all of $* after the run." >&2
+}
+
+# The test at PATH as committed at REF, run against REF's own tree, never
+# the working tree (#397).
+run_ref() {
+  local ref=$1 path=$2 dir=${3:-} tmp tree rc=0 work=$PWD keep=yes
+  case "$path" in /* | *..* | "") echo "::error::Not a test path: $path" >&2; return 2 ;; esac
+  export SPEC=${SPEC:-${REPRO_SPEC:-}} THEME=${THEME:-${REPRO_THEME:-}}
+  [ -n "$SPEC" ] || { echo "::error::No way to run it: SPEC (or REPRO_SPEC) is empty." >&2; return 2; }
+  if [ "$(jq -r '.test // empty' <<<"$SPEC")" != "$path" ]; then echo "::error::$path is not the way's test." >&2; return 2; fi
+  tmp=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/repro-test.XXXXXX")
+  tree=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/repro-tree.XXXXXX")
+  [ -n "$dir" ] || { dir="$tree.out"; keep=no; }
+  git show "$ref:$path" > "$tmp"
+  git archive --format=tar "$ref" | tar -x -C "$tree"
+  # Out of the tree until the way's setup is done, as in the reproduction.
+  rm -f "$tree/$path"
+  if [ -d "$work/vendor" ] && [ ! -e "$tree/vendor" ]; then cp -a "$work/vendor" "$tree/vendor"; fi
+  # The organisation's files a way's setup reads (the browser way copies its
+  # Playwright configuration from them): left out by git archive (#409).
+  if [ -d "$work/.dx-central" ] && [ ! -e "$tree/.dx-central" ]; then cp -a "$work/.dx-central" "$tree/.dx-central"; fi
+  (cd "$tree" && TEST=$path run "$tmp" "$dir") || rc=$?
+  discard "$tmp" "$tree"
+  [ "$keep" = yes ] || discard "$dir"
+  return "$rc"
 }
 
 self_test() {
@@ -177,7 +247,11 @@ self_test() {
   pass='<testsuites><testsuite><testcase name="x" classname="issue-1.spec.ts"/></testsuite></testsuites>'
   fails='<testsuites><testsuite><testcase name="x" classname="issue-1.spec.ts"><failure message="expect(a).toBe(b)"/></testcase></testsuite></testsuites>'
   t "C1 a failing assertion reproduces" reproduced "$(jq -nc --arg x "$fails" '{run: ("printf %s " + ($x|@sh) + " > build/j.xml; exit 1"), junit: "build/j.xml", minutes: 1}')"
+  gofail='<testsuites><testsuite><testcase name="TestIssue1" classname="example.com/m/repro"><failure message="Failed">issue1_test.go:9: got 1, want 2</failure></testcase></testsuite></testsuites>'
+  t "#377 a report that names the test by the way's case (Go's TestIssue1) reproduces" reproduced "$(jq -nc --arg x "$gofail" '{run: ("printf %s " + ($x|@sh) + " > build/j.xml; exit 1"), junit: "build/j.xml", case: "TestIssue1", assertion: "_test\\.go:[0-9]+: ", minutes: 1}')"
+  t "#377 without the case, the failure is no test of its own: no verdict (limit)" limit "$(jq -nc --arg x "$gofail" '{run: ("printf %s " + ($x|@sh) + " > build/j.xml; exit 1"), junit: "build/j.xml", minutes: 1}')"
   t "a passing test passes" passed "$(jq -nc --arg x "$pass" '{run: ("printf %s " + ($x|@sh) + " > build/j.xml"), junit: "build/j.xml", minutes: 1}')"
+  if grep -q 'classname="issue-1.spec.ts"' "$d/out/junit.xml" 2>/dev/null; then echo "ok   #397 the JUnit report is kept in DIR, for G7 to read again"; else echo "FAIL #397 the JUnit report is kept in DIR"; fail=1; fi
   t "C8 a setup that fails is no verdict (limit)" limit '{"setup":["exit 3"],"run":"true","junit":"build/j.xml","minutes":1}'
   t "C8 a run past the way's minutes is no verdict (limit)" limit '{"run":"sleep 5","junit":"build/j.xml","minutes":0}'
   t "C8 a setup past the way's minutes is no verdict (limit)" limit '{"setup":["sleep 5"],"run":"true","junit":"build/j.xml","minutes":0}'
@@ -195,6 +269,34 @@ self_test() {
   t "the command sees none of the runner's variables" passed "$(jq -nc --arg x "$pass" '{run: ("[ -z \"${GH_TOKEN:-}\" ] && printf %s " + ($x|@sh) + " > build/j.xml"), junit: "build/j.xml", minutes: 1}')"
   THEME='x; rm -rf /' t "a theme that is not a slug is not installed" passed "$(jq -nc --arg x "$pass" '{theme: "exit 7", run: ("printf %s " + ($x|@sh) + " > build/j.xml"), junit: "build/j.xml", minutes: 1}')"
   THEME=astra t "a theme that cannot be installed is no verdict" limit "$(jq -nc --arg x "$pass" '{theme: "exit 7", run: ("printf %s " + ($x|@sh) + " > build/j.xml"), junit: "build/j.xml", minutes: 1}')"
+  # #397 run-ref: the test as committed at REF, against REF's own tree.
+  local repo="$d/repo" spec_ref
+  mkdir -p "$repo/src" "$repo/tests/repro" && cd "$repo"
+  git init -q . && printf 'committed\n' > src/code.txt && printf 'x\n' > tests/repro/issue-1.spec.ts
+  git add -A && git -c commit.gpgsign=false -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@t commit -qm "test: base"
+  printf 'uncommitted\n' > src/code.txt
+  spec_ref=$(jq -nc --arg x "$pass" '{setup: ["test ! -e tests/repro/issue-1.spec.ts && test ! -e .git"], run: ("grep -qx committed src/code.txt && test -f tests/repro/issue-1.spec.ts && printf %s " + ($x|@sh) + " > build/j.xml"), junit: "build/j.xml", minutes: 1, test: "tests/repro/issue-1.spec.ts"}')
+  got=$(DX_REPRO_UNCONFINED=1 REPRO_SPEC=$spec_ref GITHUB_OUTPUT='' run_ref HEAD tests/repro/issue-1.spec.ts 2>/dev/null | grep '^outcome=' | tail -1)
+  if [ "$got" = "outcome=passed" ]; then echo "ok   #397 run-ref runs the committed test against REF's tree, out of it during setup, no .git"; else echo "FAIL #397 run-ref ($got)"; fail=1; fi
+  got=$(DX_REPRO_UNCONFINED=1 SPEC=$(jq -c '.run = ("grep -qx uncommitted src/code.txt; exit 1")' <<<"$spec_ref") GITHUB_OUTPUT='' run_ref HEAD tests/repro/issue-1.spec.ts 2>/dev/null | grep '^outcome=' | tail -1)
+  if [ "$got" = "outcome=broken" ]; then echo "ok   #397 run-ref never sees the working tree's uncommitted change"; else echo "FAIL #397 run-ref saw the working tree ($got)"; fail=1; fi
+  # #421: a file the runner's user cannot remove stays in the tree, and the
+  # run still ends with its verdict and exit 0.
+  got=$(DX_REPRO_UNCONFINED=1 SPEC=$(jq -c '.run = "mkdir -p build/locked && : > build/locked/f && chmod 500 build/locked && " + .run' <<<"$spec_ref") GITHUB_OUTPUT='' bash "$HERE/repro-run.sh" run-ref HEAD tests/repro/issue-1.spec.ts 2>/dev/null; echo "rc=$?")
+  if grep -qx 'outcome=passed' <<<"$got" && grep -qx 'rc=0' <<<"$got"; then echo "ok   #421 a file left that cannot be removed changes neither the verdict nor the exit"; else echo "FAIL #421 the cleanup changed the outcome ($(tr '\n' ' ' <<<"$got"))"; fail=1; fi
+  find "${TMPDIR:-/tmp}" -maxdepth 3 -path '*repro-tree.*/build/locked' -exec chmod 700 {} + 2>/dev/null || true
+  mkdir -p .dx-central && printf 'org\n' > .dx-central/conf && printf '/.dx-central/\n' >> .git/info/exclude
+  got=$(DX_REPRO_UNCONFINED=1 SPEC=$(jq -c '.setup += ["test -f .dx-central/conf"]' <<<"$spec_ref") GITHUB_OUTPUT='' run_ref HEAD tests/repro/issue-1.spec.ts 2>/dev/null | grep '^outcome=' | tail -1)
+  if [ "$got" = "outcome=passed" ]; then echo "ok   #409 run-ref's tree has the working tree's .dx-central/, which git archive leaves out"; else echo "FAIL #409 run-ref's tree lacks .dx-central/ ($got)"; fail=1; fi
+  if (DX_REPRO_UNCONFINED=1 SPEC=$spec_ref run_ref HEAD tests/repro/other.spec.ts >/dev/null 2>&1); then echo "FAIL #397 run-ref refuses a test that is not the way's"; fail=1; else echo "ok   #397 run-ref refuses a test that is not the way's"; fi
+  if (DX_REPRO_UNCONFINED=1 SPEC= REPRO_SPEC= run_ref HEAD tests/repro/issue-1.spec.ts >/dev/null 2>&1); then echo "FAIL #397 run-ref refuses to run with no way"; fail=1; else echo "ok   #397 run-ref refuses to run with no way"; fi
+  if (DX_REPRO_UNCONFINED=1 SPEC=$spec_ref run_ref HEAD ../x >/dev/null 2>&1); then echo "FAIL #397 run-ref refuses a path outside the tree"; fail=1; else echo "ok   #397 run-ref refuses a path outside the tree"; fi
+  # #409: every rule isolate adds, release takes out.
+  local added removed
+  added=$(sed -n '/^isolate() {/,/^}/p' "$HERE/repro-run.sh" | grep -o 'tables -I [A-Z-]* 1 .* -j [A-Z]*' | sed 's/ -I \([A-Z-]*\) 1 / \1 /' | sort)
+  removed=$(sed -n '/^release() {/,/^}/p' "$HERE/repro-run.sh" | grep -o 'tables -D [A-Z-]* .* -j [A-Z]*' | sed 's/ -D / /' | sort)
+  if [ -n "$added" ] && [ "$added" = "$removed" ]; then echo "ok   #409 release takes out every rule isolate adds"; else echo "FAIL #409 release does not take out every rule isolate adds"; fail=1; fi
+  cd "$d"
   if (DX_REPRO_UNCONFINED=1 SPEC='{}' TEST=../x run "$d/src.ts" "$d/out" >/dev/null 2>&1); then echo "FAIL a path outside the checkout is refused"; fail=1; else echo "ok   a path outside the checkout is refused"; fi
   if (RUNNER_ENVIRONMENT=self-hosted DX_REPRO_UNCONFINED=1 SPEC='{}' TEST=a/b run "$d/src.ts" "$d/out" >/dev/null 2>&1); then echo "FAIL a self-hosted runner is refused"; fail=1; else echo "ok   a self-hosted runner is refused"; fi
   cd / && rm -rf "$d"
@@ -203,6 +305,7 @@ self_test() {
 
 case "${1:-}" in
   run) shift; run "$@" ;;
+  run-ref) shift; run_ref "$@" ;;
   --test) GH_TOKEN=secret self_test ;;
-  *) echo "usage: repro-run.sh run SRC DIR | --test" >&2; exit 2 ;;
+  *) echo "usage: repro-run.sh run SRC DIR | run-ref REF PATH [DIR] | --test" >&2; exit 2 ;;
 esac

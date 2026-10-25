@@ -209,7 +209,10 @@ def merge(org, repo):
 TOP_KEYS = {"autopilot", "autopilot-rounds", "autopilot-runs", "autopilot-mode", "budgets-usd", "constitution", "person-merges", "planned-release", "security-patch", "lanes"}
 BUDGETS = ("autopilot-spec", "autopilot-work", "autopilot-fix", "security-fix")
 MODES = ("guided", "full")
-LANE_KEYS = {"description", "accept", "type", "origin", "repositories", "evidence", "merge", "ceiling", "enabled"}
+LANE_KEYS = {"description", "accept", "type", "origin", "repositories", "evidence", "merge", "ceiling", "constitution-merge", "enabled"}
+# The one lane whose fix may merge in a protected path, and only when it
+# widens nothing (#397, constitution_merge()).
+CONSTITUTION_LANE = "bugfix-reproduced"
 
 
 def problems(policy):
@@ -271,7 +274,9 @@ def problems(policy):
             out.append(f"lanes.{name}.repositories: a list of names, or [\"*\"]")
         if lane.get("accept") == "policy" and not isinstance(lane.get("origin"), dict):
             out.append(f"lanes.{name}.origin: a lane that accepts by policy names who opens its issues")
-        for part in ("merge", "ceiling"):
+        if "constitution-merge" in lane and name != CONSTITUTION_LANE:
+            out.append(f"lanes.{name}.constitution-merge: only the {CONSTITUTION_LANE} lane may merge in a protected path")
+        for part in ("merge", "ceiling", "constitution-merge"):
             if part not in lane:
                 if part == "merge":
                     out.append(f"lanes.{name}.merge: max-risk and max-complexity")
@@ -296,6 +301,25 @@ def problems(policy):
         if release.get("merge") != {"max-risk": "none", "max-complexity": "none"} or "ceiling" in release:
             out.append("lanes.release: never merges on its own, and has no ceiling")
     return out
+
+
+def constitution_merge(policy, lane_name, protected, widening):
+    """(may it merge, the caps or why not) for a pull request of LANE_NAME
+    that touches the protected paths PROTECTED (the golden rule, #397).
+    Nothing protected: the lane's own `merge`. Otherwise only a lane with
+    `constitution-merge`, and only when WIDENING (scripts/no-widening.py's
+    lines, ["unknown"] when it could not tell) is empty: a change that widens
+    a permission, a lane or a limit is always a person's. Pure."""
+    lane = (policy.get("lanes") or {}).get(lane_name) or {}
+    if not protected:
+        return True, lane.get("merge") or {}
+    shown = ", ".join(protected[:3])
+    caps = lane.get("constitution-merge") if lane_name == CONSTITUTION_LANE else None
+    if not caps:
+        return False, f"it touches rules that govern autonomy ({shown}): a person merges it"
+    if widening:
+        return False, f"it touches rules that govern autonomy ({shown}) and widens them ({'; '.join(widening)[:300]}): a person merges it"
+    return True, caps
 
 
 def last_label_event(issue, label):
@@ -1217,6 +1241,28 @@ def self_test():
     check("#189: DX_AUTOPILOT off stops it", acc(child(), "off")[0], False)
     check("#189: a repository switches it off", lane_accepts(merge(org, {"lanes": {"delegated": {"enabled": False}}}), child(), None, "DiluxOne/x", "")[0], False)
     check("a release is never accepted by policy", org["lanes"]["release"]["accept"], "human")
+
+    # The golden rule (#397): no lane merges a change that widens autonomy.
+    # Every lane of the policy, given a protected path that widens it (or
+    # one it could not tell), leaves it to a person; only the reproduced
+    # bug's lane merges a protected path at all, and only widening nothing.
+    for name in org.get("lanes") or {}:
+        for widening in (["lanes.x added"], ["unknown"]):
+            check(f"golden rule: lane {name} never merges a protected path that widens autonomy ({widening[0]})",
+                  constitution_merge(org, name, ["policy/autonomy.yml"], widening)[0], False)
+        check(f"golden rule: lane {name} merges a protected path only if it is {CONSTITUTION_LANE}",
+              constitution_merge(org, name, ["scripts/x.py"], [])[0], name == CONSTITUTION_LANE)
+    check("golden rule: the reproduced bug's fix in a protected path, widening nothing, within its constitution-merge caps",
+          constitution_merge(org, CONSTITUTION_LANE, ["scripts/x.py"], []), (True, org["lanes"][CONSTITUTION_LANE]["constitution-merge"]))
+    check("golden rule: nothing protected, the lane's own merge caps", constitution_merge(org, CONSTITUTION_LANE, [], []), (True, org["lanes"][CONSTITUTION_LANE]["merge"]))
+    check("golden rule: no other lane may have constitution-merge",
+          problems({**org, "lanes": {**org["lanes"], "human-issue": {**org["lanes"]["human-issue"], "constitution-merge": {"max-risk": "high", "max-complexity": "high"}}}}),
+          ["lanes.human-issue.constitution-merge: only the bugfix-reproduced lane may merge in a protected path"])
+    check("golden rule: a repository cannot set constitution-merge",
+          merge(org, {"lanes": {CONSTITUTION_LANE: {"constitution-merge": {"max-risk": "high", "max-complexity": "high"}}}})["lanes"][CONSTITUTION_LANE]["constitution-merge"],
+          org["lanes"][CONSTITUTION_LANE]["constitution-merge"])
+    check("golden rule: a repository cannot give constitution-merge to another lane",
+          "constitution-merge" in merge(org, {"lanes": {"human-issue": {"constitution-merge": {"max-risk": "high", "max-complexity": "high"}}}})["lanes"]["human-issue"], False)
 
     # The golden rule: every protected path is high risk, so it never merges on its own.
     default = load(os.path.join(HERE, "..", "policy", "review-policy.default.yml"))
