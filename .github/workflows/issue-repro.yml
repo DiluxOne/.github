@@ -30,7 +30,8 @@ name: Issue reproduction
 #                      the branch test/repro-issue-<n>, and a comment on the
 #                      issue. Then, when the `bugfix-reproduced` lane is open
 #                      here (policy/autonomy.yml, the repository's
-#                      .github/autonomy.yml, DX_AUTOPILOT; #84): dilux-bot
+#                      .github/autonomy.yml, DX_AUTOPILOT; #84), the report
+#                      loses `awaiting-acceptance` and `incomplete` (#427) and dilux-bot
 #                      opens an issue of its own for the fix, whose PRD is
 #                      fixed text and the reproduction's facts
 #                      (scripts/repro-lane.py: the test, its SHA-256, this
@@ -1043,6 +1044,10 @@ jobs:
             python3 .dx-central/scripts/api-commit.py push "$branch" --onto HEAD~1 --force
             gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label bug:confirmed --remove-label bug:unconfirmed >/dev/null
             if [ "$LANE_OPEN" = yes ]; then
+              # Its lane fixes it with no acceptance (#397), so the report
+              # stops reading as waiting for one (#427). With the lane
+              # closed here, it still waits for a maintainer.
+              for l in awaiting-acceptance incomplete; do gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$l" >/dev/null 2>&1 || true; done
               # The next step hands it to the lane and says so on the report.
               printf 'Reproduced. I wrote a %s from this report and it fails on %s, so the bug is confirmed: %s\n\n%s%s' "$noun" "$code_main" "$code_test" "$SUMMARY" "$on_current" > "$RUNNER_TEMP/reproduced.md"
               { echo "handoff=true"; echo "branch=$branch"; } >> "$GITHUB_OUTPUT"
