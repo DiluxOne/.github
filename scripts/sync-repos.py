@@ -2255,8 +2255,10 @@ def self_test():
         # #432: the body G1 reads is a PRD, the lane's or not.
         schema_check = schema_checker()
         check("#432 C1: a lane's issue passes G1", schema_check(body), body)
-        for problem, files in (("Dependabot.", {DEPENDABOT: "version: 2\n"}), ("Shared files.", wanted), ("Callers.", {".github/workflows/issues.yml": "on: issues\n"})):
-            check(f"#432 C1: {problem} passes G1 without the lane", schema_check(prd(problem, files)), prd(problem, files))
+        for problem, files in (("Dependabot.", {DEPENDABOT: "version: 2\n"}), ("Shared files.", wanted), ("The organisation's workflow templates (workflow-templates/issues.yml in DiluxOne/.github) have jobs that .github/workflows/issues.yml here lack. "
+                               "It also moves every call of the shared workflows from @v5 to @v6, the repository's own jobs too (docs/migrating.md).",
+                               {".github/workflows/issues.yml": "on: issues\n", ".github/workflows/pull-request-comments.yml": "on: issue_comment\n"})):
+            check(f"#432 C1: {problem[:40]} passes G1 without the lane", schema_check(prd(problem, files)), prd(problem, files))
         order = [i for i, c in enumerate(calls) if c[:2] == ("issue", "create") or "type=Task" in c or "lane:org-sync" in c]
         check("org-sync: created, then its Type, then the lane's label", len(order) == 3 and "lane:org-sync" in calls[order[2]], calls)
         calls.clear()
