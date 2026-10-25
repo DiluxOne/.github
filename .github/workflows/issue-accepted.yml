@@ -17,7 +17,8 @@ name: Issue accepted
 # when a person opens an issue and every time a person edits one not
 # accepted yet, it labels it `awaiting-acceptance` (complete, it waits for a
 # maintainer) or `incomplete` (one comment, kept up to date, says exactly
-# what is missing). Accepting it removes `awaiting-acceptance`; accepting an
+# what is missing); not a bug the reproduction confirmed, which a lane fixes
+# with no acceptance (#427). Accepting it removes `awaiting-acceptance`; accepting an
 # `incomplete` one takes the label off with a comment that mentions who
 # added it and says what is missing. A maintainer's answer to an open
 # comment is read on the next edit or acceptance, not on its own. The
@@ -181,11 +182,13 @@ jobs:
     # Before the decision (#353): when a person opens an issue, or edits one
     # that is not accepted yet, the same check labels it
     # `awaiting-acceptance` or `incomplete` and says what is missing; it
-    # never touches `accepted` then. A bot's issue (a lane's) is left alone.
+    # never touches `accepted` then. A bot's issue (a lane's) is left alone,
+    # and so is a report the reproduction confirmed (#427): its lane fixes it
+    # with no acceptance, and the reproduction took the labels off.
     if: >-
       github.event_name == 'issues' && github.event.sender.type != 'Bot' && !contains(github.event.issue.labels.*.name, 'lane:release') && (
         (github.event.action == 'labeled' && github.event.label.name == inputs.label) ||
-        ((github.event.action == 'opened' || github.event.action == 'edited') && github.event.issue.user.type != 'Bot' && !contains(github.event.issue.labels.*.name, inputs.label)))
+        ((github.event.action == 'opened' || github.event.action == 'edited') && github.event.issue.user.type != 'Bot' && !contains(github.event.issue.labels.*.name, inputs.label) && !contains(github.event.issue.labels.*.name, 'bug:confirmed')))
     # One check at a time per issue: a later edit waits for the earlier run
     # rather than racing it on the labels and the comment.
     concurrency:

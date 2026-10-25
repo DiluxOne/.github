@@ -26,7 +26,8 @@ name: Issue reproduction
 # A label a bot adds starts nothing, and so does one added by someone with
 # less than write access (checked live, not from the event).
 #
-#   the test fails  -> the bug is real: label `bug:confirmed`, the test on
+#   the test fails  -> the bug is real: label `bug:confirmed` (and off with
+#                      `awaiting-acceptance`, #427), the test on
 #                      the branch test/repro-issue-<n>, and a comment on the
 #                      issue. Then, when the `bugfix-reproduced` lane is open
 #                      here (policy/autonomy.yml, the repository's
@@ -1042,6 +1043,9 @@ jobs:
             # Through the API, so GitHub signs the commit (#190).
             python3 .dx-central/scripts/api-commit.py push "$branch" --onto HEAD~1 --force
             gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label bug:confirmed --remove-label bug:unconfirmed >/dev/null
+            # A confirmed bug waits for no acceptance (#397): its lane fixes it,
+            # so the report stops reading as waiting for one (#427).
+            for l in awaiting-acceptance incomplete; do gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$l" >/dev/null 2>&1 || true; done
             if [ "$LANE_OPEN" = yes ]; then
               # The next step hands it to the lane and says so on the report.
               printf 'Reproduced. I wrote a %s from this report and it fails on %s, so the bug is confirmed: %s\n\n%s%s' "$noun" "$code_main" "$code_test" "$SUMMARY" "$on_current" > "$RUNNER_TEMP/reproduced.md"
