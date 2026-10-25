@@ -2,11 +2,25 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [6.8.4](https://github.com/DiluxOne/.github/releases/tag/v6.8.4) · 2026-10-25
+
+### Fixes
+
+- **repro:** a confirmed bug stops waiting for an acceptance ([#429](https://github.com/DiluxOne/.github/pull/429))
+
+### Build and dependencies
+
+- **deps:** Bump fast-uri from 3.1.8 to 3.1.9 in /scripts/stylelint ([#363](https://github.com/DiluxOne/.github/pull/363))
+
 ## [6.8.3](https://github.com/DiluxOne/.github/releases/tag/v6.8.3) · 2026-10-24
 
 ### Fixes
 
 - **repro:** run-ref's cleanup never fails a verdict ([#422](https://github.com/DiluxOne/.github/pull/422))
+
+### Maintenance
+
+- **release:** v6.8.3, run-ref's cleanup never fails a verdict ([#426](https://github.com/DiluxOne/.github/pull/426))
 
 ## [6.8.2](https://github.com/DiluxOne/.github/releases/tag/v6.8.2) · 2026-10-24
 
