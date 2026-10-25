@@ -29,9 +29,9 @@ name: Issue reproduction
 #   the test fails  -> the bug is real: label `bug:confirmed`, the test on
 #                      the branch test/repro-issue-<n>, and a comment on the
 #                      issue. Then, when the `bugfix-reproduced` lane is open
-#                      (the report loses `awaiting-acceptance`, #427)
 #                      here (policy/autonomy.yml, the repository's
-#                      .github/autonomy.yml, DX_AUTOPILOT; #84): dilux-bot
+#                      .github/autonomy.yml, DX_AUTOPILOT; #84), the report
+#                      loses `awaiting-acceptance` and `incomplete` (#427) and dilux-bot
 #                      opens an issue of its own for the fix, whose PRD is
 #                      fixed text and the reproduction's facts
 #                      (scripts/repro-lane.py: the test, its SHA-256, this
