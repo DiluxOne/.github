@@ -62,6 +62,7 @@ projects:
   diluxone-mail-wordpress: 10
   diluxone-events-wordpress: 12
   diluxone-website: 11
+  diluxone-fm: 13
   .github: 9
   diluxone-wp-test: 9
 
