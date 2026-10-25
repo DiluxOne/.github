@@ -13,7 +13,8 @@ archived and not excluded in repos.yml:
   files     repos.yml `files` (CODEOWNERS) and the opening block of
             AGENTS.md (agents-block.md, between its dx:org markers). These
             never go straight to main: for a repository whose files differ,
-            it opens an issue (Type Task) and a pull request that closes it.
+            it opens an issue (Type Task, its body a PRD that passes G1,
+            #432) and a pull request that closes it.
             When this checkout is a commit merged into main, with nothing the
             sync reads changed locally, the issue carries the run's marker
             and `lane:org-sync`, and the autonomy policy accepts it (and may
@@ -216,18 +217,16 @@ def sync_files(repo, conf, block, dry, part="files"):
         print(f"  would open an issue and a pull request for: {changed}")
         return
     if part == "dependabot":
-        body = ("The organisation keeps each repository's Dependabot configuration in step with the template of its kind, "
-                f"because GitHub reads it only from the repository: {DEPENDABOT} differs here from it. This brings it in step.\n\n"
-                "🤖 AI-generated · scripts/sync-repos.py")
+        body = prd("The organisation keeps each repository's Dependabot configuration in step with the template of its kind, "
+                   f"because GitHub reads it only from the repository: {DEPENDABOT} differs here from it.", wanted)
         pr_body = (f"## 📝 What changes\n\n{DEPENDABOT} as DiluxOne/.github keeps it for a repository of this kind.\n\n"
                    "## 💡 Why\n\nGitHub reads it only from the repository, so the organisation keeps it in step from one place.")
         open_change(repo, default, wanted, "Keep the organisation's Dependabot configuration in step", body,
                     "chore/{}-org-dependabot", "chore: keep the organisation's Dependabot configuration in step", pr_body,
                     "chore: keep {} in step with the organisation")
         return
-    body = ("The organisation keeps some files the same in every repository, because GitHub reads them only from "
-            f"the repository: {changed} differ here from DiluxOne/.github (repos.yml, agents-block.md). "
-            "This brings them in step.\n\n🤖 AI-generated · scripts/sync-repos.py")
+    body = prd("The organisation keeps some files the same in every repository, because GitHub reads them only from "
+               f"the repository: {changed} differ here from DiluxOne/.github (repos.yml, agents-block.md).", wanted)
     pr_body = (f"## 📝 What changes\n\n{changed} as DiluxOne/.github keeps them for every repository.\n\n"
                "## 💡 Why\n\nGitHub reads these only from the repository, so the organisation keeps them in step from one place.")
     open_change(repo, default, wanted, "Keep the organisation's shared files in step", body,
@@ -295,11 +294,36 @@ def lane_paths(mode):
     return ((((policy.get("lanes") or {}).get(LANE) or {}).get("origin") or {}).get("runs") or {}).get(mode, {}).get("paths") or []
 
 
+# The issue's closing line: the AI line G1 reads (#432), which names the
+# writer and its maker and nothing else, so no "/" in it.
+AI_LINE = "🤖 AI-generated · sync-repos.py (DiluxOne)"
+
+
+def prd(problem, wanted):
+    """An issue body that is a PRD (policy/issue-schema.yml), so one that
+    waits for a person passes G1 and can be accepted as written (#432): the
+    problem, the files it writes as its scope, and one criterion."""
+    scope = "\n".join(f"- `{path}`, as DiluxOne/.github keeps it for this repository." for path in wanted)
+    return (f"### Problem\n\n{problem}\n\n### Scope\n\n{scope}\n\n### Out of scope\n\n- Any other file.\n\n"
+            "### Acceptance criteria\n\n- C1: Given the pull request merged, when `scripts/sync-repos.py` in DiluxOne/.github "
+            "runs again for this repository, then it finds these files in step.\n\n"
+            f"### Criticality\n\nNormal\n\n{AI_LINE}")
+
+
+def schema_checker():
+    """G1's check (scripts/issue-schema.py), for the self-test: body -> ok."""
+    spec = importlib.util.spec_from_file_location("issue_schema", os.path.join(os.path.dirname(os.path.abspath(__file__)), "issue-schema.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return lambda body: mod.check(body)["ok"]
+
+
 def with_lane(body, text, marker):
-    """The issue's body with the lane's paragraph and the marker (which
-    renders as nothing) before its closing line: the AI line stays last."""
-    head, _, last = body.rstrip("\n").rpartition("\n\n")
-    return f"{head}\n\n{text}\n\n{marker}\n\n{last}" if head else f"{text}\n\n{marker}\n\n{body}"
+    """The issue's body with the run's marker first (it renders as nothing,
+    and it is the only text G1 allows before the first section) and the
+    lane's paragraph closing its Problem: the AI line stays last."""
+    head, sep, rest = body.partition("\n\n### Scope")
+    return f"{marker}\n{head}\n\n{text}{sep}{rest}" if sep else f"{marker}\n{text}\n\n{body}"
 
 
 def by_git(env=None):
@@ -506,10 +530,9 @@ def sync_callers(repo, conf, dry):
     to = f"@v{current}"
     move = (f" It also moves every call of the shared workflows from {', '.join('@v' + str(v) for v in old)} to {to}, the repository's own jobs too: "
             f"that major asks a repository for nothing but its callers (docs/migrating.md)." if old else "")
-    body = (f"The organisation's workflow templates ({templates_named} in DiluxOne/.github) have jobs or settings "
-            f"that {changed} here lack. This brings each caller in step, job by job, keeping the values that are "
-            f"this repository's (its support URL, slug, version constant, profile) and its own jobs and inputs.{move}"
-            "\n\n🤖 AI-generated · scripts/sync-repos.py")
+    body = prd(f"The organisation's workflow templates ({templates_named} in DiluxOne/.github) have jobs or settings "
+               f"that {changed} here lack. Each caller is brought in step job by job, keeping the values that are "
+               f"this repository's (its support URL, slug, version constant, profile) and its own jobs and inputs.{move}", wanted)
     pr_body = (f"## 📝 What changes\n\n{changed} as {templates_named} has them, with this repository's own values and jobs kept.{move}\n\n"
                "## 💡 Why\n\nA job a template gains reaches every repository only through its callers; the daily drift check "
                "(DiluxOne/.github, scripts/sync-repos.py check) found these out of step.")
@@ -2221,14 +2244,19 @@ def self_test():
     try:
         ORG, ORG_COMMIT = "o", (sha, None)
         globals()["gh"] = recorder()
-        ai = "🤖 AI-generated · scripts/sync-repos.py"
-        open_change({"name": "r"}, "main", wanted, "T", f"Body.\n\n{ai}", "chore/{}-org-shared-files", "chore: t", "## What", "chore: {}", mode="files")
+        open_change({"name": "r"}, "main", wanted, "T", prd("Body.", wanted), "chore/{}-org-shared-files", "chore: t", "## What", "chore: {}", mode="files")
         create = next(c for c in calls if c[:2] == ("issue", "create"))
         body = create[create.index("--body") + 1]
         m = autonomy.SYNC_MARKER.search(body)
         check("org-sync: the issue names the commit and carries the run's marker",
               bool(m) and m.group(3) == sha and m.group(4) == autonomy.fingerprint("o/r", "files", sha, wanted) and f"/commit/{sha}" in body, body)
-        check("org-sync: the AI line stays last", body.startswith("Body.") and body.endswith(ai), body)
+        check("org-sync: the marker first, the lane's paragraph in the Problem, the AI line last",
+              body.startswith("<!-- dx-lane:") and "/commit/" in body.split("### Scope")[0] and body.endswith(AI_LINE), body)
+        # #432: the body G1 reads is a PRD, the lane's or not.
+        schema_check = schema_checker()
+        check("#432 C1: a lane's issue passes G1", schema_check(body), body)
+        for problem, files in (("Dependabot.", {DEPENDABOT: "version: 2\n"}), ("Shared files.", wanted), ("Callers.", {".github/workflows/issues.yml": "on: issues\n"})):
+            check(f"#432 C1: {problem} passes G1 without the lane", schema_check(prd(problem, files)), prd(problem, files))
         order = [i for i, c in enumerate(calls) if c[:2] == ("issue", "create") or "type=Task" in c or "lane:org-sync" in c]
         check("org-sync: created, then its Type, then the lane's label", len(order) == 3 and "lane:org-sync" in calls[order[2]], calls)
         calls.clear()
