@@ -2,7 +2,13 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
-## [6.8.4](https://github.com/DiluxOne/.github/releases/tag/v6.8.4) · 2026-10-25
+## [6.8.5](https://github.com/DiluxOne/.github/releases/tag/v6.8.5) · 2026-10-25
+
+### Fixes
+
+- **sync:** the issues sync-repos.py opens are PRDs that pass G1 ([#435](https://github.com/DiluxOne/.github/pull/435))
+
+## [6.8.4](https://github.com/DiluxOne/.github/releases/tag/v6.8.4) · 2026-10-24
 
 ### Fixes
 
@@ -11,6 +17,10 @@ Every version of the engine (the workflows, scripts, policy and kinds other repo
 ### Build and dependencies
 
 - **deps:** Bump fast-uri from 3.1.8 to 3.1.9 in /scripts/stylelint ([#363](https://github.com/DiluxOne/.github/pull/363))
+
+### Maintenance
+
+- **release:** v6.8.4, a confirmed bug stops waiting for an acceptance ([#431](https://github.com/DiluxOne/.github/pull/431))
 
 ## [6.8.3](https://github.com/DiluxOne/.github/releases/tag/v6.8.3) · 2026-10-24
 
