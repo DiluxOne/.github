@@ -79,7 +79,14 @@ archived and not excluded in repos.yml:
             the way its stack proposes (policy/repro-stacks.yml); not one
             repos.yml says has none by design (`repro: {NAME: false}`).
 
-  sync-repos.py <labels|settings|files|dependabot|own-checks|merge-queue|callers|all> [--repo NAME ...] [--dry-run]
+  i18n      a WordPress plugin's translations in the form that merges
+            (#452, scripts/plugin-i18n.sh): languages/*.pot and *.po with
+            no source references and sorted, no committed .mo (removed, and
+            languages/*.mo in .gitignore); its own issue and pull request,
+            which a person accepts. Needs gettext (msgcat) where it runs.
+            Not in `all`.
+
+  sync-repos.py <labels|settings|files|dependabot|own-checks|merge-queue|callers|i18n|all> [--repo NAME ...] [--dry-run]
   sync-repos.py check [--repo NAME ...] [--report FILE]
   sync-repos.py --test
 
@@ -372,10 +379,14 @@ def git_branch(full, default, branch, wanted, message_form, git=run_git, workdir
             git("checkout", "-q", "-B", branch, cwd=work)
         for path, content in wanted.items():
             target = os.path.join(work, path)
-            os.makedirs(os.path.dirname(target) or work, exist_ok=True)
-            with open(target, "w", encoding="utf-8") as fh:
-                fh.write(content)
-            git("add", "--", path, cwd=work)
+            if content is None:
+                # A file the change removes (#452: a committed .mo).
+                git("rm", "-q", "--ignore-unmatch", "--", path, cwd=work)
+            else:
+                os.makedirs(os.path.dirname(target) or work, exist_ok=True)
+                with open(target, "w", encoding="utf-8") as fh:
+                    fh.write(content)
+                git("add", "--", path, cwd=work)
             # Already so on a branch an earlier run left: nothing to commit.
             if git("status", "--porcelain", "--", path, cwd=work).strip():
                 git("commit", "-q", "-S", "-m", message_form.format(path), cwd=work)
@@ -439,11 +450,90 @@ def api_branch(full, default, branch, wanted, message_form):
         gh("api", "-X", "POST", f"repos/{full}/git/refs", "-f", f"ref=refs/heads/{branch}", "-f", f"sha={base}")
     for path, content in wanted.items():
         current = gh("api", f"repos/{full}/contents/{path}?ref={branch}", "--jq", ".sha", check=False)
+        if content is None:
+            # A file the change removes (#452), when it is still there.
+            if current.returncode == 0 and current.stdout.strip():
+                gh("api", "-X", "DELETE", f"repos/{full}/contents/{path}", "--input", "-",
+                   input_text=json.dumps({"message": message_form.format(path), "branch": branch, "sha": current.stdout.strip()}))
+            continue
         payload = {"message": message_form.format(path), "branch": branch,
                    "content": base64.b64encode(content.encode()).decode()}
         if current.returncode == 0 and current.stdout.strip():
             payload["sha"] = current.stdout.strip()
         gh("api", "-X", "PUT", f"repos/{full}/contents/{path}", "--input", "-", input_text=json.dumps(payload))
+
+
+I18N_IGNORE = "languages/*.mo"
+
+
+def i18n_form(text):
+    """A .pot or .po in the form that merges (#452), as
+    scripts/plugin-i18n.sh writes it: the form lives there alone."""
+    out = subprocess.run(["bash", os.path.join(HERE, "plugin-i18n.sh"), "form"],
+                         input=text, capture_output=True, text=True)
+    if out.returncode != 0:
+        raise RuntimeError(f"plugin-i18n.sh form: {out.stderr.strip()[:200]}")
+    return out.stdout
+
+
+def i18n_wanted(catalogues, mos, gitignore, form=i18n_form):
+    """What a plugin's languages/ needs to merge (#452): {path: content} for
+    each .pot/.po not in form (`catalogues`: {path: text}), None for each
+    committed .mo (removed), and .gitignore with languages/*.mo. Pure."""
+    wanted = {path: form(text) for path, text in sorted(catalogues.items()) if form(text) != text}
+    wanted.update({path: None for path in sorted(mos)})
+    lines = (gitignore or "").splitlines()
+    if I18N_IGNORE not in (line.strip() for line in lines):
+        wanted[".gitignore"] = "\n".join([*lines, I18N_IGNORE]).lstrip("\n") + "\n"
+    return wanted
+
+
+def sync_i18n(repo, dry):
+    """A WordPress plugin's translations in the form that merges (#452), in
+    one issue and pull request of their own, which a person accepts."""
+    full = f"{ORG}/{repo['name']}"
+    default = (repo.get("defaultBranchRef") or {}).get("name") or "main"
+    if repo_kind(full, default) != "wordpress-plugin":
+        print("  not a WordPress plugin: no translations to bring in step")
+        return
+    open_prs = json.loads(gh("pr", "list", "--repo", full, "--state", "open", "--limit", "500", "--json", "headRefName").stdout)
+    if any(p["headRefName"].endswith("-org-i18n") for p in open_prs):
+        print("  a pull request for the translations is already open; skipped")
+        return
+
+    def raw(path):
+        out = gh("api", f"repos/{full}/contents/{path}?ref={default}", "-H", "Accept: application/vnd.github.raw", check=False)
+        if out.returncode == 0:
+            return out.stdout
+        if "404" in out.stderr or "Not Found" in out.stderr:
+            return None
+        raise RuntimeError(f"could not read {path}: {out.stderr.strip()[:200]}")
+
+    listing = gh("api", f"repos/{full}/contents/languages?ref={default}", "--jq", ".[] | select(.type == \"file\") | .name", check=False)
+    if listing.returncode != 0 and "404" not in listing.stderr and "Not Found" not in listing.stderr:
+        # A rate limit or a server error is not an empty languages/.
+        raise RuntimeError(f"could not list languages/: {listing.stderr.strip()[:200]}")
+    names = listing.stdout.split() if listing.returncode == 0 else []
+    catalogues = {f"languages/{n}": raw(f"languages/{n}") or "" for n in names if n.endswith((".po", ".pot"))}
+    mos = [f"languages/{n}" for n in names if n.endswith(".mo")]
+    wanted = i18n_wanted(catalogues, mos, raw(".gitignore"))
+    if not wanted:
+        print("  translations in step")
+        return
+    changed = ", ".join(wanted)
+    if dry:
+        print(f"  would open an issue and a pull request for: {changed}")
+        return
+    body = prd("A plugin's pull requests conflict on its translations: every one regenerates the whole languages/*.pot and *.po, "
+               "whose source references move with any code, and the binary .mo. In the form that merges (DiluxOne/.github#452) "
+               "they carry no references, are sorted by message, and no .mo is committed: it is built when the plugin is packaged.", wanted)
+    pr_body = (f"## 📝 What changes\n\n{changed}: the catalogues with no source references and sorted by message, the committed "
+               ".mo removed, and languages/*.mo in .gitignore (scripts/plugin-i18n.sh normalise; the release and the suites compile "
+               "the .mo).\n\n## 💡 Why\n\nTwo pull requests that add strings then change different lines, and none conflicts on a "
+               "binary (DiluxOne/.github#452).")
+    open_change(repo, default, wanted, "Keep the translations in the form that merges", body,
+                "chore/{}-org-i18n", "chore: keep the translations in the form that merges", pr_body,
+                "chore: {} in the form that merges")
 
 
 def sync_callers(repo, conf, dry):
@@ -2432,6 +2522,38 @@ def self_test():
     finally:
         globals()["gh"], ORG, ORG_COMMIT = saved_gh, saved_org, saved_commit
 
+    # #452: what a plugin's languages/ needs to merge.
+    upper = lambda text: text.upper()  # noqa: E731  a stand-in form
+    got = i18n_wanted({"languages/a.pot": "X", "languages/es.po": "y"}, ["languages/es.mo"], "vendor/\n", form=upper)
+    check("#452 i18n: a catalogue out of form, a .mo to remove, .gitignore gains languages/*.mo",
+          got == {"languages/es.po": "Y", "languages/es.mo": None, ".gitignore": "vendor/\nlanguages/*.mo\n"}, got)
+    check("#452 i18n: in form, nothing committed, ignored: in step",
+          i18n_wanted({"languages/a.pot": "X"}, [], "languages/*.mo\n", form=upper) == {}, "")
+    check("#452 i18n: no .gitignore yet", i18n_wanted({}, [], None, form=upper) == {".gitignore": "languages/*.mo\n"}, "")
+    import shutil
+    if shutil.which("msgcat"):
+        po = 'msgid ""\nmsgstr ""\n"Content-Type: text/plain; charset=UTF-8\\n"\n\n#: z.php:1\nmsgid "Zeta"\nmsgstr "Z"\n\n#: a.php:2\nmsgid "Alpha"\nmsgstr "A"\n'
+        formed = i18n_form(po)
+        check("#452 i18n: msgcat drops the references and sorts", "#:" not in formed and formed.index("Alpha") < formed.index("Zeta"), formed)
+        check("#452 i18n: the form is stable", i18n_form(formed) == formed, "")
+        dated = po.replace('msgstr ""\n', 'msgstr ""\n"PO-Revision-Date: 2026-10-26 11:30+0000\\n"\n"X-Generator: Poedit 3.4\\n"\n', 1)
+        formed = i18n_form(dated)
+        check("#452 i18n: the migration pins the header's dates and drops X-Generator, as plugin-i18n.sh check wants",
+              ("2026-10-26" in formed, "X-Generator" in formed, "PO-Revision-Date: 1970-01-01" in formed), (False, False, True))
+    else:
+        print("skip #452 msgcat (no gettext here)")
+    git_calls = []
+
+    def fake_git(*args, cwd=None):
+        git_calls.append(args)
+        return ""
+    import tempfile
+    with tempfile.TemporaryDirectory() as work:
+        git_branch("o/r", "main", "b", {"languages/es.mo": None, ".gitignore": "x\n"}, "chore: {}", git=fake_git, workdir=work)
+    check("#452 git_branch: None removes the file, content writes it",
+          ("rm", "-q", "--ignore-unmatch", "--", "languages/es.mo") in git_calls and ("add", "--", ".gitignore") in git_calls
+          and not any(c[:2] == ("add", "--") and c[-1] == "languages/es.mo" for c in git_calls), git_calls)
+
     # #187: which parts each command runs; `dependabot` alone writes the
     # Dependabot file, and `all` never does.
     ran = []
@@ -2523,7 +2645,7 @@ def self_test():
 def main(argv):
     if argv == ["--test"]:
         return self_test()
-    if not argv or argv[0] not in ("labels", "settings", "files", "dependabot", "own-checks", "merge-queue", "callers", "all", "check"):
+    if not argv or argv[0] not in ("labels", "settings", "files", "dependabot", "own-checks", "merge-queue", "callers", "i18n", "all", "check"):
         print(__doc__)
         return 64
     what, rest = argv[0], argv[1:]
@@ -2575,6 +2697,8 @@ def main(argv):
                 sync_merge_queue(repo, conf, dry)
             if what == "callers":
                 sync_callers(repo, conf, dry)
+            if what == "i18n":
+                sync_i18n(repo, dry)
         except (RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
             failures += 1
             print(f"  failed: {exc}")

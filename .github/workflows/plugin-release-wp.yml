@@ -14,8 +14,10 @@ name: WordPress plugin release
 # summary shows the version, the bump and the pull requests that justify
 # it), then the `release` job checks that the three version markers
 # already say X.Y.Z (the release pull request, the one that removed the
-# `Unreleased.` line, set them: scripts/release-markers.sh prepare), builds
-# the plugin's zip (the checkout minus .distignore), then creates the tag
+# `Unreleased.` line and wrote the changelog fragments in, set them:
+# scripts/release-markers.sh prepare), builds the plugin's zip (the checkout
+# minus .distignore, with the .mo compiled from every languages/*.po, which
+# a plugin never commits: scripts/plugin-i18n.sh, #452), then creates the tag
 # and the GitHub release in one call with the release App's token, with the
 # changelog, what was merged, grouped by type, and the zip. The release ends
 # there (#287): where the plugin is published next is another workflow's,
@@ -462,6 +464,9 @@ jobs:
           build=${GITHUB_SHA:0:7}
           echo "build=$build" >> "$GITHUB_OUTPUT"
           bash .dx-central/scripts/stamp-version.sh . "$DEV" "$MAIN" "$CONSTANT" "$build"
+          # The .mo are built, never committed (#452): compiled into the tree it packs.
+          command -v msgfmt >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq gettext; }
+          bash .dx-central/scripts/plugin-i18n.sh compile .
           # The central's checkout leaves before the tree is packed: nothing
           # that is not the plugin may end up in the build.
           rm -rf .dx-central
@@ -701,6 +706,15 @@ jobs:
             printf '\n## What was merged since %s\n%s' "$prev" "$groups" >> "$RUNNER_TEMP/notes.md"
           fi
           cat "$RUNNER_TEMP/notes.md"
+
+      - name: The compiled translations
+        # A plugin's .mo are built, never committed (#452,
+        # scripts/plugin-i18n.sh): compiled into the tree the zip packs.
+        if: steps.still.outputs.go == 'true'
+        run: |
+          set -euo pipefail
+          command -v msgfmt >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq gettext; }
+          bash .dx-central/scripts/plugin-i18n.sh compile .
 
       - name: Only the plugin ships
         if: steps.still.outputs.go == 'true'

@@ -5,7 +5,8 @@ name: WordPress plugin tests (slow)
 # status check. Separate from plugin-checks-wp.yml so they run alongside the
 # review instead of in front of it. A suite a repository does not have is
 # turned off with its input; its job then shows as skipped (a skipped job
-# counts as passing for a required check).
+# counts as passing for a required check). Every languages/*.po is compiled
+# to its .mo before the site starts: a plugin never commits them (#452).
 #
 # What runs (scripts/test-targets.py turns the inputs into the jobs):
 #
@@ -360,6 +361,15 @@ jobs:
           [ "$DOWNLOAD" = success ] || { echo "::error::The required plugins' artifact could not be downloaded: gone (it lasts 7 days, and a re-run of the failed jobs alone reuses the first attempt's) or a download error. Re-run all jobs."; exit 1; }
           bash .dx-central/scripts/required-plugins.sh mount "$RUNNER_TEMP/required-plugins"
           echo "slugs=$(bash .dx-central/scripts/required-plugins.sh slugs)" >> "$GITHUB_OUTPUT"
+      # A plugin's .mo are built, never committed (#452,
+      # scripts/plugin-i18n.sh): compiled here, before the site mounts the
+      # checkout, so the suites see the plugin in every language it ships.
+      - name: The compiled translations
+        if: env.GO == 'true' && hashFiles('languages/*.po') != ''
+        run: |
+          set -euo pipefail
+          command -v msgfmt >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq gettext; }
+          for po in languages/*.po; do msgfmt --check -o "${po%.po}.mo" "$po"; done
       - run: npx wp-env start
         if: env.GO == 'true'
       - name: The required plugins, active (single site)
@@ -498,6 +508,15 @@ jobs:
           [ "$DOWNLOAD" = success ] || { echo "::error::The required plugins' artifact could not be downloaded: gone (it lasts 7 days, and a re-run of the failed jobs alone reuses the first attempt's) or a download error. Re-run all jobs."; exit 1; }
           bash .dx-central/scripts/required-plugins.sh mount "$RUNNER_TEMP/required-plugins"
           echo "slugs=$(bash .dx-central/scripts/required-plugins.sh slugs)" >> "$GITHUB_OUTPUT"
+      # A plugin's .mo are built, never committed (#452,
+      # scripts/plugin-i18n.sh): compiled here, before the site mounts the
+      # checkout, so the suites see the plugin in every language it ships.
+      - name: The compiled translations
+        if: env.GO == 'true' && hashFiles('languages/*.po') != ''
+        run: |
+          set -euo pipefail
+          command -v msgfmt >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq gettext; }
+          for po in languages/*.po; do msgfmt --check -o "${po%.po}.mo" "$po"; done
       - run: npx wp-env start
         if: env.GO == 'true'
       - name: Activate the plugin (single site)

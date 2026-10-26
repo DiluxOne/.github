@@ -112,7 +112,8 @@ settings:
 # names (#341, scripts/autopilot.py): one instruction per line, for its
 # work prompt.
 autopilot:
-  - "readme.txt's `== Changelog ==`: one line for this change, as the lines already there are written, under the newest entry when that entry is held (its first line is `Unreleased.`); otherwise a new entry at the top, headed `= Unreleased =` with `Unreleased.` as its first line and then the change's line (scripts/release-markers.sh releases it). None for a change no user sees (tests, tooling, CI)."
+  - "The changelog: this change's line in a file of its own, `changelog.d/<the issue's number>.md`, one bullet (`* …`) as readme.txt's changelog lines are written; never in readme.txt itself, which the release writes (scripts/changelog-fragments.sh, #452). None for a change no user sees (tests, tooling, CI)."
+  - "Translations: `languages/*.pot` and `*.po` with no source references, sorted by message and no header a tool rewrites on every run (scripts/plugin-i18n.sh normalise), every new string translated in every `.po`; never a `.mo`, which is built when the plugin is packaged (#452)."
 
 # How a bug is reproduced, by the layer the triage says it lives in (#352,
 # scripts/repro-ways.py, which says what each key means). A repository
