@@ -10,8 +10,11 @@
 # (none of the runner's variables, its tokens among them), the checkout in
 # the current directory mounted read-only, the test mounted read-only as
 # tests/Unit/Repro/<name> (the one file in that folder), nothing writable
-# but a scratch /tmp, no capabilities, 1 GB and 256 processes at most, five
-# minutes alone and seven with the rest of tests/Unit (the run job has 15). The checkout's vendor/ must be installed already (by the caller,
+# but a scratch /tmp and an empty build/ (#443: build/ is the one folder a
+# test may write, as scripts/repro-run.sh gives every other way), no
+# capabilities, 1 GB and 256 processes at most, five minutes alone and
+# seven with the rest of tests/Unit (the run job has 15). The checkout's
+# vendor/ must be installed already (by the caller,
 # with the repository's own Composer scripts, before the test is anywhere
 # near). It refuses to run on a self-hosted runner: such code runs on
 # GitHub's fresh runners only (autopilot.yml sends a reproduced bug's work
@@ -96,18 +99,18 @@ run() {
   cp "$file" "$scratch/test/$name"
   chmod -R a+rX "$scratch"
   out="$scratch/phpunit.txt"
-  # The mount point, so Docker never has to create one inside the
-  # read-only checkout. An empty folder: git does not see it.
-  mkdir -p tests/Unit/Repro
+  # The mount points, so Docker never has to create one inside the
+  # read-only checkout. Empty folders: git does not see them.
+  mkdir -p tests/Unit/Repro build
   # The checkout's .git is hidden behind an empty folder: where a checkout
   # kept its token (the autopilot's), the test never sees it.
   local hide=()
   if [ -d .git ]; then hide=(--tmpfs /app/.git:ro); fi
   docker pull --quiet "php:${php}-cli" >/dev/null
   set +e
-  docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
-    --user "$(id -u):$(id -g)" --memory 1g --pids-limit 256 \
-    -v "$PWD:/app:ro" "${hide[@]}" "${tools[@]}" -v "$scratch/test:/app/tests/Unit/Repro:ro" -w /app "php:${php}-cli" \
+  local box
+  mapfile -t box < <(box_flags "$scratch")
+  docker run "${box[@]}" "${hide[@]}" "${tools[@]}" -w /app "php:${php}-cli" \
     timeout 300 php vendor/bin/phpunit --no-coverage --do-not-cache-result "tests/Unit/Repro/$name" > "$out" 2>&1
   rc=$?
   set -e
@@ -116,9 +119,7 @@ run() {
   v=$(verdict "$rc" "$out")
   if [ "$v" != broken ] && [ -d tests/Unit ]; then
     set +e
-    docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
-      --user "$(id -u):$(id -g)" --memory 1g --pids-limit 256 \
-      -v "$PWD:/app:ro" "${hide[@]}" "${tools[@]}" -v "$scratch/test:/app/tests/Unit/Repro:ro" -w /app "php:${php}-cli" \
+    docker run "${box[@]}" "${hide[@]}" "${tools[@]}" -w /app "php:${php}-cli" \
       timeout 420 php vendor/bin/phpunit --no-coverage --do-not-cache-result tests/Unit > "$suite" 2>&1
     src=$?
     set -e
@@ -159,6 +160,15 @@ run_ref() {
   return "$rc"
 }
 
+# The container both runs of the test go in, one flag a line: no network,
+# a read-only root and checkout, the test read-only in its folder, and
+# nothing writable but /tmp and an empty build/ (#443).
+box_flags() {
+  printf '%s\n' --rm --network none --read-only --tmpfs /tmp --tmpfs /app/build:mode=1777 \
+    --cap-drop ALL --security-opt no-new-privileges --user "$(id -u):$(id -g)" --memory 1g --pids-limit 256 \
+    -v "$PWD:/app:ro" -v "$1/test:/app/tests/Unit/Repro:ro"
+}
+
 self_test() {
   local fail=0 dir got
   dir=$(mktemp -d)
@@ -192,6 +202,21 @@ self_test() {
   case_suite "a green suite with skipped tests is a pass" passed 0 $'....S\n\nOK, but incomplete, skipped, or risky tests!\nTests: 90, Assertions: 200, Skipped: 1.'
   case_suite "PHPUnit 10's OK with issues is a pass" passed 0 $'....\n\nOK, but there were issues!\nTests: 90, Assertions: 200, Deprecations: 1.'
   case_suite "a green suite is a pass" passed 0 $'....\n\nOK (90 tests, 200 assertions)'
+  # #443: a test may write under build/, in a folder of its own, and nowhere else.
+  got=$(box_flags /s | tr '\n' ' ')
+  case "$got" in *"--read-only --tmpfs /tmp --tmpfs /app/build:mode=1777 "*"-v $PWD:/app:ro -v /s/test:/app/tests/Unit/Repro:ro "*) echo "ok   the sandbox gives the test an empty, writable build/ and keeps the checkout read-only" ;; *) echo "FAIL the sandbox's flags: $got"; fail=1 ;; esac
+  # The same, in a container, where Docker runs (#443): build/ takes a file,
+  # the checkout does not, and the host's build/ stays empty.
+  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 && docker image inspect "php:${PHP_VERSION:-8.5}-cli" >/dev/null 2>&1; then
+    local box_dir box
+    box_dir=$(mktemp -d); mkdir -p "$box_dir/build" "$box_dir/tests/Unit/Repro" "$box_dir/s/test"
+    mapfile -t box < <(cd "$box_dir" && box_flags "$box_dir/s")
+    got=$(cd "$box_dir" && docker run "${box[@]}" -w /app "php:${PHP_VERSION:-8.5}-cli" php -r 'echo (mkdir("build/unit-sync", 0777, true) && file_put_contents("build/unit-sync/x", "1")) ? "build" : "-", @file_put_contents("src.txt", "1") ? " src" : " -";' 2>/dev/null)
+    if [ "$got|$(ls -A "$box_dir/build")" = "build -|" ]; then echo "ok   in a container: build/ takes a file, the checkout does not, the host's build/ stays empty"; else echo "FAIL in a container: got '$got' and build/ '$(ls -A "$box_dir/build")'"; fail=1; fi
+    rm -rf "$box_dir"
+  else
+    echo "skip the container case (no Docker or no php image here)"
+  fi
   # The guards that keep the file where it belongs.
   if (run_ref HEAD "src/evil.php" >/dev/null 2>&1); then echo "FAIL run-ref refuses a path outside tests/Unit/Repro"; fail=1; else echo "ok   run-ref refuses a path outside tests/Unit/Repro"; fi
   if (run "$dir/out" "../x.php" >/dev/null 2>&1); then echo "FAIL run refuses a name with a path in it"; fail=1; else echo "ok   run refuses a name with a path in it"; fi
