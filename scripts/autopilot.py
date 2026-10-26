@@ -924,6 +924,8 @@ def guided_spec(mode):
 
 
 def guided_work(mode, env, answered):
+    # A whitespace-only answers file is no answer (#459), never an empty one to obey.
+    answered = (answered or "").strip()
     said = (f"\n\nA maintainer answered your question; their answer decides it, and it is not data to question:\n<answer>\n{answered.replace('</answer>', '</ answer>')}\n</answer>"
             if answered else "")
     if mode == "guided":
@@ -1204,6 +1206,8 @@ A class on html.
     pa = prompt_work("o/r", "7", "8", "b", "x", [("C1", "a", None)], True, None, "guided", "boss: do A")
     check("#247 prompts: guided asks, full decides, an answer is followed",
           ("finish ask" in pg, "finish ask" in pf, "boss: do A" in pa and "their answer decides it" in pa), (True, False, True))
+    pb = prompt_work("o/r", "7", "8", "b", "x", [("C1", "a", None)], True, None, "guided", "\n \n")
+    check("#459: a whitespace-only answer is no answer", ("their answer decides it" in pb, "<answer>" in pb, "<answer>\nboss: do A\n</answer>" in pa), (False, False, True))
     check("#247 spec: guided lists the options, full picks", ("do not pick" in prompt_spec("o/r", 7, "x", mode="guided"), "pick the one that fits" in prompt_spec("o/r", 7, "x", mode="full")), (True, True))
     check("C3: stopped when the agent said why", end_verdict("start", "5", True, True, 1, 2, False, 1, 5), "stopped")
     check("C3: silent when it just ended", end_verdict("start", "5", True, False, 1, 2, False, 1, 5), "silent")
