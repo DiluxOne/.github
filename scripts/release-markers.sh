@@ -24,11 +24,14 @@
 #
 #   release-markers.sh prepare <dir> <version> <main-file> [<constant>]
 #
-# Turns a tree into its release pull request: removes the `Unreleased.` line
+# Turns a tree into its release pull request: writes the changelog
+# fragments (changelog.d/<n>.md, #452, scripts/changelog-fragments.sh) into
+# the newest entry when it is held, or into a new `= Unreleased =` entry at
+# the top when it is not, and removes them; removes the `Unreleased.` line
 # of the newest changelog entry, then stamps the three markers and a
 # `= Unreleased =` heading to <version> (scripts/stamp-version.sh). Refuses a
-# readme that is not held (nothing to release) and fails when the result is
-# not ready.
+# readme that is not held (nothing to release: no hold and no fragment), a
+# fragment that is not bullets, and fails when the result is not ready.
 #
 #   release-markers.sh --test
 #
@@ -93,7 +96,27 @@ prepare() {
   [ -f "$dir/readme.txt" ] || { echo "::error::$dir/readme.txt does not exist." >&2; return 1; }
   sed -i 's/\r$//' "$dir/readme.txt"
   bash "$here/release-ready.sh" "$dir/readme.txt" >/dev/null || rc=$?
-  [ "$rc" -eq 1 ] || { echo "::error file=readme.txt::The newest changelog entry does not start with 'Unreleased.': there is no held version to release." >&2; return 1; }
+  [ "$rc" -eq 1 ] || { echo "::error file=readme.txt::The newest changelog entry does not start with 'Unreleased.' and no changelog fragment waits: there is no held version to release." >&2; return 1; }
+  if bash "$here/changelog-fragments.sh" any "$dir"; then
+    bash "$here/changelog-fragments.sh" check "$dir" >/dev/null || return 1
+    grep -qx '== Changelog ==' "$dir/readme.txt" || { echo "::error file=readme.txt::No '== Changelog ==' section to write the changelog fragments into; they are kept." >&2; return 1; }
+    bash "$here/changelog-fragments.sh" collect "$dir" > "$dir/.dx-fragments"
+    # Under the hold of the newest entry, so they lead it once the hold
+    # goes; or, with no held entry, as a new one at the top.
+    awk -v lines="$dir/.dx-fragments" '
+      function put() { while ((getline l < lines) > 0) print l; done = 1 }
+      /^== Changelog ==$/ { c = 1; print; next }
+      c && !done && !h && /^= .* =$/ { h = 1; heading = $0; next }
+      h && !done && NF {
+        if ($0 ~ /^Unreleased\.?$/) { print heading; print; put(); next }
+        print "= Unreleased ="; print "Unreleased."; put(); print ""; print heading; print; done = 1; next
+      }
+      { print }
+      END { if (c && !done) { if (h) print heading; print "= Unreleased ="; print "Unreleased."; put() } }
+    ' "$dir/readme.txt" > "$dir/readme.txt.tmp" && mv "$dir/readme.txt.tmp" "$dir/readme.txt"
+    rm -f "$dir/.dx-fragments"
+    find "$dir/changelog.d" -maxdepth 1 -type f -name '*.md' -delete
+  fi
   # The first non-blank line of the newest entry is the hold: it goes, and
   # only it (a bullet that reads "Unreleased." further down stays).
   awk '
@@ -105,7 +128,7 @@ prepare() {
   bash "$here/stamp-version.sh" "$dir" "$version" "$main" "$constant"
   rc=0; bash "$here/release-ready.sh" "$dir/readme.txt" >/dev/null || rc=$?
   [ "$rc" -eq 0 ] || { echo "::error file=readme.txt::The readme is still not ready after removing the hold." >&2; return 1; }
-  echo "Prepared $version: the hold removed, the markers stamped."
+  echo "Prepared $version: the fragments written in, the hold removed, the markers stamped."
 }
 
 if [ "${1:-}" = "--test" ]; then
@@ -159,6 +182,24 @@ if [ "${1:-}" = "--test" ]; then
   fails "prepare: refuses a readme that is not held"     prepare "$t/p" 2.1.0 my-plugin.php MY_VERSION
   tree 2.0.0 2.1.0 "Unreleased."; sed -i 's/$/\r/' "$t/p/readme.txt"
   ok    "prepare: CRLF readme"                           prepare "$t/p" 2.1.0 my-plugin.php MY_VERSION
+
+  # #452: the fragments, written in by the release and gone.
+  tree 2.0.0 2.1.0 "Unreleased."; mkdir -p "$t/p/changelog.d"
+  printf '* Second.\n' > "$t/p/changelog.d/12.md"; printf '* First.\n' > "$t/p/changelog.d/9.md"; printf '* Third.\n' > "$t/p/changelog.d/30.md"
+  ok    "#452 prepare: a held entry and three fragments"  prepare "$t/p" 2.1.0 my-plugin.php MY_VERSION
+  got=$(awk '/^= 2.1.0 =$/ { h = 1; next } h && /^= / { exit } h && NF { print }' "$t/p/readme.txt" | tr '\n' '|')
+  if [ "$got" = "* First.|* Second.|* Third.|* A bullet.|" ]; then echo "ok   #452 prepare: their lines lead the version's, by number"; else echo "FAIL #452 prepare: the entry reads $got"; fail=1; fi
+  ok    "#452 prepare: changelog.d is empty"              bash -c "! find '$t/p/changelog.d' -type f -name '*.md' | grep -q ."
+  ok    "#452 prepare: the result passes the check"       c 2.0.0 2.1.0 true
+  tree 2.0.0 2.0.0 "* Shipped."; mkdir -p "$t/p/changelog.d"; printf '* New.\n' > "$t/p/changelog.d/40.md"
+  ok    "#452 prepare: no held entry, a fragment"         prepare "$t/p" 2.1.0 my-plugin.php MY_VERSION
+  got=$(awk '/^== Changelog ==$/ { c = 1; next } c && NF { print }' "$t/p/readme.txt" | head -3 | tr '\n' '|')
+  if [ "$got" = "= 2.1.0 =|* New.|= 2.0.0 =|" ]; then echo "ok   #452 prepare: a new entry at the top"; else echo "FAIL #452 prepare: the changelog starts $got"; fail=1; fi
+  tree 2.0.0 2.1.0 "Unreleased."; mkdir -p "$t/p/changelog.d"; printf 'not a bullet\n' > "$t/p/changelog.d/41.md"
+  fails "#452 prepare: refuses a fragment that is not bullets" prepare "$t/p" 2.1.0 my-plugin.php MY_VERSION
+  tree 2.0.0 2.1.0 "Unreleased."; mkdir -p "$t/p/changelog.d"; rm -f "$t/p/changelog.d/"*.md; printf '* Kept.\n' > "$t/p/changelog.d/42.md"; sed -i 's/^== Changelog ==$/== Notes ==/' "$t/p/readme.txt"
+  fails "#452 prepare: no changelog section to write them into" prepare "$t/p" 2.1.0 my-plugin.php MY_VERSION
+  ok    "#452 prepare: and the fragment is kept"         test -f "$t/p/changelog.d/42.md"
 
   [ "$fail" -eq 0 ] && echo "all tests passed"
   exit "$fail"
