@@ -10,8 +10,9 @@
 # (none of the runner's variables, its tokens among them), the checkout in
 # the current directory mounted read-only, the test mounted read-only as
 # tests/Unit/Repro/<name> (the one file in that folder), nothing writable
-# but a scratch /tmp, no capabilities, 1 GB and 256 processes at most, five
-# minutes alone and seven with the rest of tests/Unit (the run job has 15). The checkout's vendor/ must be installed already (by the caller,
+# but a scratch /tmp and an empty build/ (in memory, gone with the
+# container: a test or phpunit.xml that writes there, #443), no
+# capabilities, 1 GB and 256 processes at most, five minutes alone and seven with the rest of tests/Unit (the run job has 15). The checkout's vendor/ must be installed already (by the caller,
 # with the repository's own Composer scripts, before the test is anywhere
 # near). It refuses to run on a self-hosted runner: such code runs on
 # GitHub's fresh runners only (autopilot.yml sends a reproduced bug's work
@@ -96,16 +97,16 @@ run() {
   cp "$file" "$scratch/test/$name"
   chmod -R a+rX "$scratch"
   out="$scratch/phpunit.txt"
-  # The mount point, so Docker never has to create one inside the
+  # The mount points, so Docker never has to create one inside the
   # read-only checkout. An empty folder: git does not see it.
-  mkdir -p tests/Unit/Repro
+  mkdir -p tests/Unit/Repro build
   # The checkout's .git is hidden behind an empty folder: where a checkout
   # kept its token (the autopilot's), the test never sees it.
   local hide=()
   if [ -d .git ]; then hide=(--tmpfs /app/.git:ro); fi
   docker pull --quiet "php:${php}-cli" >/dev/null
   set +e
-  docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
+  docker run --rm --network none --read-only --tmpfs /tmp --tmpfs /app/build --cap-drop ALL --security-opt no-new-privileges \
     --user "$(id -u):$(id -g)" --memory 1g --pids-limit 256 \
     -v "$PWD:/app:ro" "${hide[@]}" "${tools[@]}" -v "$scratch/test:/app/tests/Unit/Repro:ro" -w /app "php:${php}-cli" \
     timeout 300 php vendor/bin/phpunit --no-coverage --do-not-cache-result "tests/Unit/Repro/$name" > "$out" 2>&1
@@ -116,7 +117,7 @@ run() {
   v=$(verdict "$rc" "$out")
   if [ "$v" != broken ] && [ -d tests/Unit ]; then
     set +e
-    docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
+    docker run --rm --network none --read-only --tmpfs /tmp --tmpfs /app/build --cap-drop ALL --security-opt no-new-privileges \
       --user "$(id -u):$(id -g)" --memory 1g --pids-limit 256 \
       -v "$PWD:/app:ro" "${hide[@]}" "${tools[@]}" -v "$scratch/test:/app/tests/Unit/Repro:ro" -w /app "php:${php}-cli" \
       timeout 420 php vendor/bin/phpunit --no-coverage --do-not-cache-result tests/Unit > "$suite" 2>&1
@@ -196,6 +197,14 @@ self_test() {
   if (run_ref HEAD "src/evil.php" >/dev/null 2>&1); then echo "FAIL run-ref refuses a path outside tests/Unit/Repro"; fail=1; else echo "ok   run-ref refuses a path outside tests/Unit/Repro"; fi
   if (run "$dir/out" "../x.php" >/dev/null 2>&1); then echo "FAIL run refuses a name with a path in it"; fail=1; else echo "ok   run refuses a name with a path in it"; fi
   if (RUNNER_ENVIRONMENT=self-hosted run "$dir/out" "Issue1Test.php" >/dev/null 2>&1); then echo "FAIL run refuses a self-hosted runner"; fail=1; else echo "ok   run refuses a self-hosted runner"; fi
+  # Both runs get a writable, empty build/ that never reaches the checkout (#443).
+  local co="$dir/co" bin="$dir/bin"
+  mkdir -p "$co/vendor/bin" "$co/tests/Unit" "$bin" && : > "$co/vendor/bin/phpunit"
+  printf '#!/usr/bin/env bash\nif [ "$1" = run ]; then echo CALL >> "%s"; printf "%%s\\n" "$@" >> "%s"; echo "OK (1 test, 1 assertion)"; fi\nexit 0\n' "$dir/docker.log" "$dir/docker.log" > "$bin/docker"
+  chmod +x "$bin/docker" && : > "$dir/docker.log"
+  (cd "$co" && PATH="$bin:$PATH" RUNNER_TEMP="$dir" run "$dir/out" Issue1Test.php) >/dev/null 2>&1 || true
+  got="$(grep -c '^CALL$' "$dir/docker.log")|$(grep -c '^/app/build$' "$dir/docker.log")|$(ls -A "$co/build" 2>/dev/null | wc -l)|$([ -d "$co/build" ] && echo dir)"
+  if [ "$got" = "2|2|0|dir" ]; then echo "ok   both runs get a writable, empty build/"; else echo "FAIL build/ in the sandbox: got $got"; fail=1; fi
   # A verdict "at REF" is about REF's tree, not the working tree (PR #166).
   local repo="$dir/repo" copy="$dir/copy"
   mkdir -p "$repo/src" && printf 'committed\n' > "$repo/src/fix.php"
