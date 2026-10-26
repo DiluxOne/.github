@@ -7,9 +7,12 @@
 # `= Unreleased =`) and the first non-blank line under it, before the next
 # heading. Prints "<heading>\t<first line>" and exits 0 when the entry is
 # ready, 1 when that first line is `Unreleased.` (or `Unreleased`): the hold
-# that keeps the release job from creating a deployment. Exits 2 when the
-# readme has no changelog entry at all, which the release job treats as
-# ready (its own changelog step then refuses the missing entry).
+# that keeps the release job from creating a deployment. A changelog fragment
+# beside the readme (changelog.d/<n>.md, #452) holds it too: a change is
+# waiting for the release pull request to write it in. Exits 2 when the
+# readme has no changelog entry at all and no fragment waits, which the
+# release job treats as ready (its own changelog step then refuses the
+# missing entry).
 #
 #   release-ready.sh --test
 #
@@ -29,23 +32,33 @@ first_entry() {
   ' "$1"
 }
 
+# Whether a changelog fragment waits beside the readme (#452).
+fragments() {
+  find "$(dirname "$1")/changelog.d" -maxdepth 1 -type f -name '*.md' 2>/dev/null | grep -q .
+}
+
 ready() {
   local line
   line=$(first_entry "$1")
-  [ -n "$line" ] || return 2
+  if [ -z "$line" ]; then
+    fragments "$1" || return 2
+    printf '= Unreleased =\t\n'
+    return 1
+  fi
   printf '%s\n' "$line"
   case "${line#*	}" in
     Unreleased.|Unreleased) return 1 ;;
   esac
-  return 0
+  ! fragments "$1"
 }
 
 test_case() {
-  local name=$1 expected=$2 body=$3 tmp rc
-  tmp=$(mktemp)
+  local name=$1 expected=$2 body=$3 fragment=${4:-} dir tmp rc
+  dir=$(mktemp -d); tmp=$dir/readme.txt
   printf '%s\n' "$body" > "$tmp"
+  if [ -n "$fragment" ]; then mkdir -p "$dir/changelog.d" && printf '%s\n' "$fragment" > "$dir/changelog.d/7.md"; fi
   rc=0; ready "$tmp" >/dev/null || rc=$?
-  rm -f "$tmp"
+  rm -rf "$dir"
   if [ "$rc" -eq "$expected" ]; then echo "ok   $name"; else echo "FAIL $name: exit $rc, expected $expected"; return 1; fi
 }
 
@@ -61,6 +74,9 @@ if [ "${1:-}" = "--test" ]; then
   test_case "no entry"                                2 $'== Description ==\nNothing here.' || fail=1
   test_case "no changelog section"                    2 $'= 2.0.0 =\nUnreleased.' || fail=1
   test_case "held: CRLF line endings"                 1 $'== Changelog ==\r\n\r\n= 2.0.0 =\r\nUnreleased.\r\n' || fail=1
+  test_case "#452 held: a fragment waits, the readme is written" 1 $'== Changelog ==\n\n= 2.0.0 =\n* Done.' '* Fixed.' || fail=1
+  test_case "#452 held: a fragment waits, no entry yet" 1 $'== Description ==\nNothing here.' '* Fixed.' || fail=1
+  test_case "#452 ready: no fragment, the readme written" 0 $'== Changelog ==\n\n= 2.0.0 =\n* Fixed.' || fail=1
   [ "$fail" -eq 0 ] && echo "all tests passed"
   exit "$fail"
 fi

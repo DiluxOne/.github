@@ -90,11 +90,20 @@ Most of it is the organisation's already: a new repository gets the pull request
    Then the readme: the newest entry under `== Changelog ==` is headed
    `= X.Y.Z =` (or `= Unreleased =`) and its first line is `Unreleased.`
    while the version is not ready. Every pull request that changes what a
-   user sees adds its bullet under that line. The release decision is an
+   user sees adds its line in a file of its own, `changelog.d/<issue>.md`
+   (one bullet each, [`scripts/changelog-fragments.sh`](../scripts/changelog-fragments.sh),
+   #452), never in `readme.txt`, so two pull requests never edit the same
+   lines; while a fragment waits the version is held too. Its translations
+   merge the same way: `languages/*.pot` and `*.po` carry no source
+   references and are sorted by message, and no `.mo` is committed (it is
+   built when the plugin is packaged and before its suites start,
+   [`scripts/plugin-i18n.sh`](../scripts/plugin-i18n.sh)); `sync-repos.py
+   i18n --repo <name>` moves a plugin there in one pull request. The release decision is an
    issue: "Release X.Y.Z", opened with the Release form (label
    `lane:release`, which `sync-repos.py labels` creates) and accepted by a
    person. Accepting it opens the release pull request, which removes the
-   line and sets the three version markers to that version
+   line, writes the fragments into the version's entry and removes them,
+   and sets the three version markers to that version
    (`scripts/release-markers.sh prepare`); when it merges, the release
    workflow checks the acceptance (`scripts/release-issue.py verify`, with
    the `issues: read` the template grants) and publishes. Between releases
