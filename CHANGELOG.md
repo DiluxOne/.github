@@ -2,7 +2,13 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
-## [6.8.6](https://github.com/DiluxOne/.github/releases/tag/v6.8.6) · 2026-10-26
+## [6.9.0](https://github.com/DiluxOne/.github/releases/tag/v6.9.0) · 2026-10-26
+
+### Features
+
+- **merge-queue:** a merge queue where GitHub gives one, with two levels of tests ([#453](https://github.com/DiluxOne/.github/pull/453))
+
+## [6.8.6](https://github.com/DiluxOne/.github/releases/tag/v6.8.6) · 2026-10-25
 
 ### Fixes
 
@@ -10,6 +16,7 @@ Every version of the engine (the workflows, scripts, policy and kinds other repo
 
 ### Maintenance
 
+- **release:** v6.8.6, the php-unit sandbox gives a test an empty build/ ([#450](https://github.com/DiluxOne/.github/pull/450))
 - **repos:** add diluxone-fm to repos.yml ([#440](https://github.com/DiluxOne/.github/pull/440))
 
 ## [6.8.5](https://github.com/DiluxOne/.github/releases/tag/v6.8.5) · 2026-10-25
