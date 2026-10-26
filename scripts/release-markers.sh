@@ -99,6 +99,7 @@ prepare() {
   [ "$rc" -eq 1 ] || { echo "::error file=readme.txt::The newest changelog entry does not start with 'Unreleased.' and no changelog fragment waits: there is no held version to release." >&2; return 1; }
   if bash "$here/changelog-fragments.sh" any "$dir"; then
     bash "$here/changelog-fragments.sh" check "$dir" >/dev/null || return 1
+    grep -qx '== Changelog ==' "$dir/readme.txt" || { echo "::error file=readme.txt::No '== Changelog ==' section to write the changelog fragments into; they are kept." >&2; return 1; }
     bash "$here/changelog-fragments.sh" collect "$dir" > "$dir/.dx-fragments"
     # Under the hold of the newest entry, so they lead it once the hold
     # goes; or, with no held entry, as a new one at the top.
@@ -196,6 +197,9 @@ if [ "${1:-}" = "--test" ]; then
   if [ "$got" = "= 2.1.0 =|* New.|= 2.0.0 =|" ]; then echo "ok   #452 prepare: a new entry at the top"; else echo "FAIL #452 prepare: the changelog starts $got"; fail=1; fi
   tree 2.0.0 2.1.0 "Unreleased."; mkdir -p "$t/p/changelog.d"; printf 'not a bullet\n' > "$t/p/changelog.d/41.md"
   fails "#452 prepare: refuses a fragment that is not bullets" prepare "$t/p" 2.1.0 my-plugin.php MY_VERSION
+  tree 2.0.0 2.1.0 "Unreleased."; mkdir -p "$t/p/changelog.d"; rm -f "$t/p/changelog.d/"*.md; printf '* Kept.\n' > "$t/p/changelog.d/42.md"; sed -i 's/^== Changelog ==$/== Notes ==/' "$t/p/readme.txt"
+  fails "#452 prepare: no changelog section to write them into" prepare "$t/p" 2.1.0 my-plugin.php MY_VERSION
+  ok    "#452 prepare: and the fragment is kept"         test -f "$t/p/changelog.d/42.md"
 
   [ "$fail" -eq 0 ] && echo "all tests passed"
   exit "$fail"

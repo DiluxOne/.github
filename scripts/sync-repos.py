@@ -510,6 +510,9 @@ def sync_i18n(repo, dry):
         raise RuntimeError(f"could not read {path}: {out.stderr.strip()[:200]}")
 
     listing = gh("api", f"repos/{full}/contents/languages?ref={default}", "--jq", ".[] | select(.type == \"file\") | .name", check=False)
+    if listing.returncode != 0 and "404" not in listing.stderr and "Not Found" not in listing.stderr:
+        # A rate limit or a server error is not an empty languages/.
+        raise RuntimeError(f"could not list languages/: {listing.stderr.strip()[:200]}")
     names = listing.stdout.split() if listing.returncode == 0 else []
     catalogues = {f"languages/{n}": raw(f"languages/{n}") or "" for n in names if n.endswith((".po", ".pot"))}
     mos = [f"languages/{n}" for n in names if n.endswith(".mo")]

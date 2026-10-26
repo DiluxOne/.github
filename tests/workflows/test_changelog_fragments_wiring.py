@@ -21,9 +21,10 @@ def test_the_readme_job_holds_the_fragments_against_the_base():
     step = next(s for s in readme if s.get("name") == "Changelog fragments")
     run = step["run"]
     assert "changelog-fragments.sh check ." in run
-    assert "changelog-fragments.sh hand-edit" in run
-    # Only the pull request that removes fragments (the release) writes them in.
-    assert "grep -q '^D'" in run and run.index("grep -q '^D'") < run.index("hand-edit")
+    # The decision (only the release writes readme.txt's changelog) is the
+    # script's, tested there: the workflow hands it the diff against the base.
+    assert "git diff --name-status --no-renames HEAD^1 HEAD -- changelog.d" in run
+    assert "changelog-fragments.sh pull-request" in run
 
 
 def test_the_translations_job_holds_the_form_that_merges():

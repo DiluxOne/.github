@@ -17,6 +17,11 @@
 #       their lines, by number, for the release
 #   changelog-fragments.sh any <dir>
 #       exit 0 when there is at least one, 1 when there is none
+#   changelog-fragments.sh pull-request <base-readme> <head-dir>
+#       the check of a pull request, its `git diff --name-status` against
+#       its base on stdin: the release (it removes fragments and leaves none)
+#       may write readme.txt's changelog; any other pull request gets
+#       `hand-edit`
 #   changelog-fragments.sh hand-edit <base-readme> <head-readme>
 #       exit 1 when the head's changelog has a line the base's lacks or
 #       lacks one it has, beside headings, blank lines and the
@@ -57,7 +62,8 @@ collect() {
   local f
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    sed -e 's/\r$//' -e '/^[[:space:]]*$/d' "$1/changelog.d/$f"
+    # One line each, whether or not the file ends in a newline.
+    awk '{ sub(/\r$/, "") } NF' "$1/changelog.d/$f"
   done < <(files "$1")
 }
 
@@ -78,6 +84,16 @@ hand_edit() {
     return 1
   fi
   echo "readme.txt's changelog unchanged by hand."
+}
+
+pull_request() { # <base-readme> <head-dir>, the name-status on stdin
+  # Read whole first: the writer of the pipe never meets a closed end.
+  local diff; diff=$(cat)
+  if grep -qE '^D[[:space:]]+changelog\.d/[0-9]+\.md$' <<<"$diff" && ! any "$2"; then
+    echo "This pull request removes the changelog fragments and leaves none: the release, which writes them into readme.txt."
+    return 0
+  fi
+  hand_edit "$1" "$2/readme.txt"
 }
 
 if [ "${1:-}" = "--test" ]; then
@@ -104,6 +120,9 @@ if [ "${1:-}" = "--test" ]; then
   fails "an empty fragment"                        check "$t/p"
   rm "$t/p/changelog.d/14.md"; printf '* CRLF.\r\n' > "$t/p/changelog.d/15.md"
   ok    "CRLF bullets"                             check "$t/p"
+  rm -f "$t/p/changelog.d/"*.md; printf '* No newline' > "$t/p/changelog.d/1.md"; printf '* Next.\n' > "$t/p/changelog.d/2.md"
+  got=$(collect "$t/p" | tr '\n' '|')
+  if [ "$got" = "* No newline|* Next.|" ]; then echo "ok   collect: a file with no final newline stays its own line"; else echo "FAIL collect: $got"; fail=1; fi
   printf '== Changelog ==\n\n= 2.0.0 =\nUnreleased.\n\n* Old.\n\n= 1.0.0 =\n* First.\n\n== Upgrade Notice ==\nx\n' > "$t/base.txt"
   cp "$t/base.txt" "$t/head.txt"
   ok    "hand-edit: same changelog"                hand_edit "$t/base.txt" "$t/head.txt"
@@ -115,6 +134,17 @@ if [ "${1:-}" = "--test" ]; then
   ok    "hand-edit: a heading renamed"             hand_edit "$t/base.txt" "$t/head.txt"
   sed 's/^x$/y/' "$t/base.txt" > "$t/head.txt"
   ok    "hand-edit: another section changed"       hand_edit "$t/base.txt" "$t/head.txt"
+  mkdir -p "$t/h/changelog.d"
+  sed 's/^\* Old\.$/* Old.\n* Written by the release./' "$t/base.txt" > "$t/h/readme.txt"
+  pr() { printf '%s\n' "$1" | pull_request "$t/base.txt" "$t/h"; }
+  ok    "pull-request: the release removes every fragment and writes them in" pr $'D\tchangelog.d/9.md\nM\treadme.txt'
+  printf '* Left.\n' > "$t/h/changelog.d/10.md"
+  fails "pull-request: removing one fragment and leaving another is no release" pr $'D\tchangelog.d/9.md\nM\treadme.txt'
+  rm "$t/h/changelog.d/10.md"
+  fails "pull-request: no fragment removed, the changelog edited by hand" pr $'M\treadme.txt'
+  fails "pull-request: a file that is not a fragment removed is no release" pr $'D\tchangelog.d/notes.txt\nM\treadme.txt'
+  cp "$t/base.txt" "$t/h/readme.txt"
+  ok    "pull-request: an ordinary one with a fragment"  pr $'A\tchangelog.d/11.md'
   [ "$fail" -eq 0 ] && echo "all tests passed"
   exit "$fail"
 fi
@@ -123,6 +153,7 @@ case "${1:-}" in
   check)     shift; [ $# -eq 1 ] || { echo "usage: changelog-fragments.sh check <dir>" >&2; exit 64; }; check "$1" ;;
   collect)   shift; [ $# -eq 1 ] || { echo "usage: changelog-fragments.sh collect <dir>" >&2; exit 64; }; collect "$1" ;;
   any)       shift; [ $# -eq 1 ] || { echo "usage: changelog-fragments.sh any <dir>" >&2; exit 64; }; any "$1" ;;
+  pull-request) shift; [ $# -eq 2 ] || { echo "usage: changelog-fragments.sh pull-request <base-readme> <head-dir> < name-status" >&2; exit 64; }; pull_request "$1" "$2" ;;
   hand-edit) shift; [ $# -eq 2 ] || { echo "usage: changelog-fragments.sh hand-edit <base-readme> <head-readme>" >&2; exit 64; }; hand_edit "$1" "$2" ;;
-  *) echo "usage: changelog-fragments.sh check|collect|any|hand-edit … | --test" >&2; exit 64 ;;
+  *) echo "usage: changelog-fragments.sh check|collect|any|pull-request|hand-edit … | --test" >&2; exit 64 ;;
 esac
