@@ -19,7 +19,7 @@ jobs:
       contents: read
       pull-requests: write
       issues: write
-    uses: DiluxOne/.github/.github/workflows/review-reply.yml@v6
+    uses: DiluxOne/.github/.github/workflows/review-reply.yml@v7
     with:
       profile: general # the default; the `kind:` in .github/review-policy.yml adds that kind's profile, so a WordPress plugin needs no plugin-wp here
     secrets: inherit

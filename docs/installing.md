@@ -1,6 +1,6 @@
 # Installing the engine in another organisation
 
-The engine is DiluxOne's; the configuration is the organisation's ([phase 12](plans/autonomy.md#phase-12--setup-for-other-organisations), #197). Another organisation never copies the workflows, scripts or gates: its callers name them by tag (`uses: DiluxOne/.github/.github/workflows/<name>.yml@v6`), and every run lays the organisation's own `.github` repository over the engine's defaults ([`scripts/config-overlay.sh`](../scripts/config-overlay.sh)). An improvement to the engine reaches it when the major tag moves; a breaking one comes in a new major, with its migration notes ([versioning](versioning.md)).
+The engine is DiluxOne's; the configuration is the organisation's ([phase 12](plans/autonomy.md#phase-12--setup-for-other-organisations), #197). Another organisation never copies the workflows, scripts or gates: its callers name them by tag (`uses: DiluxOne/.github/.github/workflows/<name>.yml@v7`), and every run lays the organisation's own `.github` repository over the engine's defaults ([`scripts/config-overlay.sh`](../scripts/config-overlay.sh)). An improvement to the engine reaches it when the major tag moves; a breaking one comes in a new major, with its migration notes ([versioning](versioning.md)).
 
 ## What the organisation needs first
 

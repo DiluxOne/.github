@@ -89,7 +89,7 @@ flowchart TB
 - **Secrets never meet a fork's code.** Actions are pinned to a commit and every token asks for the least it needs.
 - **Every job starts clean.** Public repositories run on GitHub's runners; private ones on the organisation's VM, each job in a disposable container of an image rebuilt and smoke-tested every day ([`runner/`](runner/)).
 - **Every pending step names its action and its URL.** Agents tell a maintainer exactly what to accept, approve or merge, with the link; an outside contributor is never asked for a maintainer's step.
-- **Versions are tags.** Repositories call `@v6`. A breaking change ships as `v7`, and older majors stay where they are.
+- **Versions are tags.** Repositories call `@v7`. A breaking change ships as `v8`, and older majors stay where they are.
 
 ## What's inside
 

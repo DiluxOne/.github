@@ -4,6 +4,14 @@ What a repository changes to move from one major of the shared workflows to the 
 
 A major whose migration is nothing but the callers is named in `repos.yml` (`callers: migrates-from`): `python3 scripts/sync-repos.py callers` then moves each repository on its own, in one issue and pull request of the org-sync lane, every call of the shared workflows at the new major (its own jobs' too) and its callers in step with the templates (#320). Any other major is migrated by hand, as below.
 
+## Migrating a repository from `v6` to `v7`
+
+`v7` keeps two pull requests of a WordPress plugin from conflicting on its changelog and its translations (#452). A change's changelog lines are a file of its own, `changelog.d/<issue>.md`, which the release writes into `readme.txt` (`scripts/changelog-fragments.sh`); on a pull request, `readme.txt`'s changelog no longer changes by hand. With `translations-complete`, `languages/*.pot` and `*.po` are held to the form that merges (no source references, sorted, the header's dates fixed) and no `.mo` is committed: the checks, the suites and the release compile them (`scripts/plugin-i18n.sh`). A repository that is not a WordPress plugin changes nothing but its callers.
+
+1. A plugin with catalogues first takes `python3 scripts/sync-repos.py i18n --repo NAME`: one issue and pull request that write them in that form, remove any committed `.mo` and list `languages/*.mo` in `.gitignore`. It merges at `v6`, which does not check the form.
+2. Then `python3 scripts/sync-repos.py callers` moves each repository on its own (`repos.yml`, `callers: migrates-from`): every call at `@v7`, its own jobs' too.
+3. A pull request still open that edits `readme.txt`'s changelog moves its lines to `changelog.d/<issue>.md` once its repository is at `v7`.
+
 ## Migrating a repository from `v5` to `v6`
 
 `v6` ends a plugin's release at its GitHub release (the tag, the notes and the zip), and sends that release to wordpress.org in a job of its own, `publish` (`plugin-publish-wp.yml`), which runs when the release is published and only for one `dilux-release` made (#287). It asks a repository for nothing but its callers, so `python3 scripts/sync-repos.py callers` moves each one on its own (`repos.yml`, `callers: migrates-from`, #320): every call of the shared workflows at `@v6`, its own jobs' too, and `release.yml` with the `publish` job of `workflow-templates/release-wp.yml`. The private security repository's callers (`nightly-review.yml`, `security-fix.yml`, `security-patch.yml`) pass `DILUX_SECURITY_PRIVATE_KEY`, and `security-fix.yml` also runs on a maintainer's comment (#313).

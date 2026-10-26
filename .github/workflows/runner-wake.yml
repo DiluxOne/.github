@@ -20,7 +20,7 @@ name: Wake the organisation's VM
 #   jobs:
 #     wake-vm:
 #       permissions: {}
-#       uses: DiluxOne/.github/.github/workflows/runner-wake.yml@v6
+#       uses: DiluxOne/.github/.github/workflows/runner-wake.yml@v7
 #       secrets:
 #         DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
 

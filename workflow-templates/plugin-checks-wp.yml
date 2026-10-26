@@ -36,7 +36,7 @@ jobs:
       contents: read
       pull-requests: read # the push to main looks up the pull request it came from
       checks: read # and the checks of its head
-    uses: DiluxOne/.github/.github/workflows/plugin-checks-wp.yml@v6
+    uses: DiluxOne/.github/.github/workflows/plugin-checks-wp.yml@v7
     with:
       slug: my-plugin
       version-constant: MY_PLUGIN_VERSION
@@ -52,7 +52,7 @@ jobs:
       contents: read
       pull-requests: read
       checks: read
-    uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v6
+    uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v7
     # One check per target and suite. Left out: integration on a network,
     # and `npx playwright test` on a single site.
     # with:
@@ -71,6 +71,6 @@ jobs:
     permissions:
       contents: read
       issues: write
-    uses: DiluxOne/.github/.github/workflows/weekly-failure.yml@v6
+    uses: DiluxOne/.github/.github/workflows/weekly-failure.yml@v7
     secrets:
       DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}

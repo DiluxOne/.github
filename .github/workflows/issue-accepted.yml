@@ -68,7 +68,7 @@ name: Issue accepted
 #   jobs:
 #     accepted:
 #       permissions: { actions: write, issues: read, pull-requests: read }
-#       uses: DiluxOne/.github/.github/workflows/issue-accepted.yml@v6
+#       uses: DiluxOne/.github/.github/workflows/issue-accepted.yml@v7
 #       secrets:
 #         DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}   # for the Project
 
