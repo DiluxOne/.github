@@ -216,6 +216,7 @@ self_test() {
   # broken (#443). A stand-in docker logs its arguments.
   local co="$dir/co" fake="$dir/fakebin" runs
   mkdir -p "$co/vendor/bin" "$co/tests/Unit" "$fake" && : > "$co/vendor/bin/phpunit"
+  # shellcheck disable=SC2016 # the stand-in's own "$1" and "$*"
   printf '#!/usr/bin/env bash\n[ "$1" = run ] && printf "%%s\\n" "$*" >> "%s"\nexit 0\n' "$dir/docker.log" > "$fake/docker"
   chmod +x "$fake/docker"
   (cd "$co" && PATH="$fake:$PATH" run "$dir/out" Issue1Test.php) >/dev/null 2>&1 || true
