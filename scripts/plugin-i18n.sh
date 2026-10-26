@@ -9,6 +9,9 @@
 # compiled `*.mo` are never committed (a binary always conflicts): they are
 # built when the plugin is packaged and before its suites start.
 #
+#   plugin-i18n.sh form
+#       a .pot or .po on stdin, in that form on stdout (scripts/sync-repos.py
+#       migrates a plugin with it, so the form is written once)
 #   plugin-i18n.sh normalise <dir>
 #       rewrite <dir>/languages/*.pot and *.po in that form (msgcat), in place
 #   plugin-i18n.sh check <dir>
@@ -28,7 +31,7 @@ self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}
 
 STILL="1970-01-01 00:00+0000"
 
-form() { # <file>: the file in the merging form, on stdout
+form() { # <file> (- for stdin): the file in the merging form, on stdout
   msgcat --no-location --sort-output --no-wrap "$1" | sed -E \
     -e "s/^\"(POT-Creation-Date|PO-Revision-Date): .*\\\\n\"\$/\"\\1: $STILL\\\\n\"/" \
     -e '/^"X-Generator: .*\\n"$/d'
@@ -117,6 +120,7 @@ if [ "${1:-}" = "--test" ]; then
   ok    "the dates are the fixed one"                 grep -q "^\"PO-Revision-Date: $STILL" "$t/q/languages/my-es_ES.po"
   ok    "no X-Generator is left"                      bash -c "! grep -q '^\"X-Generator' '$t/q/languages/my-es_ES.po'"
   ok    "and that merge is in form"                   check "$t/q"
+  ok    "form on stdin is the file's form"            bash -c "diff <(bash '$self' form < '$t/q/languages/my-es_ES.po') '$t/q/languages/my-es_ES.po'"
   ok    "and the merge is still in form"              check "$t/p"
   ok    "compile writes the .mo"                      compile "$t/p"
   ok    "the .mo is there"                            test -s "$t/p/languages/my-es_ES.mo"
@@ -127,8 +131,9 @@ if [ "${1:-}" = "--test" ]; then
 fi
 
 case "${1:-}" in
+  form)      shift; [ $# -eq 0 ] || { echo "usage: plugin-i18n.sh form < file" >&2; exit 64; }; form - ;;
   normalise) shift; [ $# -eq 1 ] || { echo "usage: plugin-i18n.sh normalise <dir>" >&2; exit 64; }; normalise "$1" ;;
   check)     shift; [ $# -eq 1 ] || { echo "usage: plugin-i18n.sh check <dir>" >&2; exit 64; }; check "$1" ;;
   compile)   shift; [ $# -eq 1 ] || { echo "usage: plugin-i18n.sh compile <dir>" >&2; exit 64; }; compile "$1" ;;
-  *) echo "usage: plugin-i18n.sh normalise|check|compile <dir> | --test" >&2; exit 64 ;;
+  *) echo "usage: plugin-i18n.sh form | normalise|check|compile <dir> | --test" >&2; exit 64 ;;
 esac

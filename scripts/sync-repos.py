@@ -467,12 +467,12 @@ I18N_IGNORE = "languages/*.mo"
 
 
 def i18n_form(text):
-    """A .pot or .po in the form that merges (#452): msgcat with no source
-    references, sorted by message, unwrapped (scripts/plugin-i18n.sh)."""
-    out = subprocess.run(["msgcat", "--no-location", "--sort-output", "--no-wrap", "-"],
+    """A .pot or .po in the form that merges (#452), as
+    scripts/plugin-i18n.sh writes it: the form lives there alone."""
+    out = subprocess.run(["bash", os.path.join(HERE, "plugin-i18n.sh"), "form"],
                          input=text, capture_output=True, text=True)
     if out.returncode != 0:
-        raise RuntimeError(f"msgcat: {out.stderr.strip()[:200]}")
+        raise RuntimeError(f"plugin-i18n.sh form: {out.stderr.strip()[:200]}")
     return out.stdout
 
 
@@ -2536,6 +2536,10 @@ def self_test():
         formed = i18n_form(po)
         check("#452 i18n: msgcat drops the references and sorts", "#:" not in formed and formed.index("Alpha") < formed.index("Zeta"), formed)
         check("#452 i18n: the form is stable", i18n_form(formed) == formed, "")
+        dated = po.replace('msgstr ""\n', 'msgstr ""\n"PO-Revision-Date: 2026-10-26 11:30+0000\\n"\n"X-Generator: Poedit 3.4\\n"\n', 1)
+        formed = i18n_form(dated)
+        check("#452 i18n: the migration pins the header's dates and drops X-Generator, as plugin-i18n.sh check wants",
+              ("2026-10-26" in formed, "X-Generator" in formed, "PO-Revision-Date: 1970-01-01" in formed), (False, False, True))
     else:
         print("skip #452 msgcat (no gettext here)")
     git_calls = []
