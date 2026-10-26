@@ -1195,8 +1195,8 @@ A class on html.
         os.remove(os.path.join(kd, ".github", "review-policy.yml"))
         none = kind_notes(kd)
     pn = prompt_work("o/r", "7", "8", "b", "x", [("C1", "a", None)], False, None, "full", "", wp)
-    check("#341 a wordpress-plugin change carries its changelog line; no kind, or a bad one, nothing",
-          (wp[0], any("== Changelog ==" in n for n in wp[1]), "readme.txt's `== Changelog ==`" in pn, "a `wordpress-plugin` repository also carries" in pn,
+    check("#341 #452 a wordpress-plugin change carries its changelog fragment; no kind, or a bad one, nothing",
+          (wp[0], any("changelog.d/" in n for n in wp[1]), "`changelog.d/<the issue's number>.md`" in pn, "a `wordpress-plugin` repository also carries" in pn,
            bad[1], none[1], "also carries" in prompt_work("o/r", "7", "8", "b", "x", [("C1", "a", None)], False)),
           ("wordpress-plugin", True, True, True, [], [], False))
     pg = prompt_work("o/r", "7", "8", "b", "x", [("C1", "a", None)], False, None, "guided", "")
