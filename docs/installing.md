@@ -32,6 +32,11 @@ Then, what no pull request can do (the installer prints it with each URL):
 2. Organisation variables: `DILUX_BOT_CLIENT_ID` (its App's client ID), and `DX_BOT_LOGIN`, `DX_BOT_APP` and `DX_BOT_ID` (its App's login, slug and bot user id), so the workflows recognise its App where they would recognise dilux-bot ([workflows](workflows.md#organisation-secrets-and-variables)).
 3. An organisation ruleset requiring `<Org>/.github/.github/workflows/org-pull-request.yml` on every repository's default branch.
 
+## Optional: private runners and the merge queue
+
+- **Private runners.** Not required. Without the organisation variable `DX_RUNNER_HEAVY` every job runs on GitHub's runners: free in a public repository, from the plan's minutes in a private one. To run a private repository's jobs on runners of its own, register them in a runner group with the label the variable names and set `DX_RUNNER_HEAVY` to their labels as JSON (DiluxOne's: `["self-hosted","linux","x64","diluxone"]`, [workflows](workflows.md#organisation-secrets-and-variables)), visible to the private repositories only. The reproduction, the release and the autopilot's work on a reproduced bug always stay on GitHub's runners.
+- **The merge queue** (#451). `org.yml` `merge-queue: auto | on | off` (auto when unset) and a repository's exception in `repos.yml` `merge-queue`; `scripts/sync-repos.py merge-queue` applies it. `auto` turns it on wherever GitHub gives one: every public repository of an organisation, and a private one only on GitHub Enterprise Cloud (GitHub refuses the rule in a private repository on Team or Free); the others are left ready (`DX_MERGE_QUEUE=off`) for the day it is allowed. Where it is on, a pull request runs the fast checks, the queue's group runs the slow suites, and the bot queues instead of merging.
+
 ## Known limits
 
 - **Environment secrets across organisations.** A release that publishes with its environment's secrets (a WordPress plugin's `wordpress-org`: the SVN credentials and the release App's key) receives them only through `secrets: inherit`, which GitHub honours within one organisation. Its callers keep `inherit`, so from another organisation those secrets may not arrive: until the engine declares them, publishing a plugin to wordpress.org from another organisation is not supported.
