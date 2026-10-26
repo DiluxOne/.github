@@ -10,8 +10,11 @@
 # (none of the runner's variables, its tokens among them), the checkout in
 # the current directory mounted read-only, the test mounted read-only as
 # tests/Unit/Repro/<name> (the one file in that folder), nothing writable
-# but a scratch /tmp, no capabilities, 1 GB and 256 processes at most, five
-# minutes alone and seven with the rest of tests/Unit (the run job has 15). The checkout's vendor/ must be installed already (by the caller,
+# but a scratch /tmp and an empty build/ (both discarded with the container),
+# no capabilities, 1 GB and 256 processes at most, five minutes alone and
+# seven with the rest of tests/Unit (the run job has 15; the suite runs
+# whatever the test alone says, its verdict compared only with one that is
+# not broken). The checkout's vendor/ must be installed already (by the caller,
 # with the repository's own Composer scripts, before the test is anywhere
 # near). It refuses to run on a self-hosted runner: such code runs on
 # GitHub's fresh runners only (autopilot.yml sends a reproduced bug's work
@@ -99,6 +102,9 @@ run() {
   # The mount point, so Docker never has to create one inside the
   # read-only checkout. An empty folder: git does not see it.
   mkdir -p tests/Unit/Repro
+  # The same for build/, where PHPUnit or a test may write: an empty tmpfs
+  # in the container (#443), so nothing written there reaches the checkout.
+  mkdir -p build
   # The checkout's .git is hidden behind an empty folder: where a checkout
   # kept its token (the autopilot's), the test never sees it.
   local hide=()
@@ -107,22 +113,22 @@ run() {
   set +e
   docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
     --user "$(id -u):$(id -g)" --memory 1g --pids-limit 256 \
-    -v "$PWD:/app:ro" "${hide[@]}" "${tools[@]}" -v "$scratch/test:/app/tests/Unit/Repro:ro" -w /app "php:${php}-cli" \
+    -v "$PWD:/app:ro" --tmpfs /app/build "${hide[@]}" "${tools[@]}" -v "$scratch/test:/app/tests/Unit/Repro:ro" -w /app "php:${php}-cli" \
     timeout 300 php vendor/bin/phpunit --no-coverage --do-not-cache-result "tests/Unit/Repro/$name" > "$out" 2>&1
   rc=$?
   set -e
   if [ "$rc" -ge 125 ] && [ "$rc" -le 127 ]; then echo "::warning::The container did not run the test (exit $rc)."; fi
   local v suite="$scratch/suite.txt" src
   v=$(verdict "$rc" "$out")
-  if [ "$v" != broken ] && [ -d tests/Unit ]; then
+  if [ -d tests/Unit ]; then
     set +e
     docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
       --user "$(id -u):$(id -g)" --memory 1g --pids-limit 256 \
-      -v "$PWD:/app:ro" "${hide[@]}" "${tools[@]}" -v "$scratch/test:/app/tests/Unit/Repro:ro" -w /app "php:${php}-cli" \
+      -v "$PWD:/app:ro" --tmpfs /app/build "${hide[@]}" "${tools[@]}" -v "$scratch/test:/app/tests/Unit/Repro:ro" -w /app "php:${php}-cli" \
       timeout 420 php vendor/bin/phpunit --no-coverage --do-not-cache-result tests/Unit > "$suite" 2>&1
     src=$?
     set -e
-    if [ "$(suite_verdict "$src" "$suite" "${name%.php}")" != "$v" ]; then
+    if [ "$v" != broken ] && [ "$(suite_verdict "$src" "$suite" "${name%.php}")" != "$v" ]; then
       echo "::warning::Alone the test says $v; with the rest of the unit suite it does not (exit $src): it breaks other tests, so it proves nothing."
       { echo "Alone: $v. With the rest of tests/Unit:"; tail -22 "$suite"; } > "$out"
       v=broken
@@ -205,6 +211,16 @@ self_test() {
   got="$(cat "$copy/src/fix.php" 2>/dev/null || true)|$([ ! -e "$copy/src/stray.php" ] || echo stray)|$([ ! -e "$copy/.git" ] || echo git)"
   if [ "$got" = "committed||" ]; then echo "ok   run-ref runs against REF's tree: no uncommitted change, no stray file, no .git"; else echo "FAIL run-ref's tree: got $got"; fail=1; fi
   if [ "$( (cd "$copy" && REPRO_VENDOR="$dir/none" run "$dir/out" Issue1Test.php) 2>/dev/null | tail -1)" = "outcome=broken" ]; then echo "ok   run-ref without the working tree's dev tools is no verdict"; else echo "FAIL run-ref without dev tools"; fail=1; fi
+  # Both runs get a writable, empty build/ over the read-only checkout, its
+  # mount point made outside the container, even when the test alone is
+  # broken (#443). A stand-in docker logs its arguments.
+  local co="$dir/co" fake="$dir/fakebin" runs
+  mkdir -p "$co/vendor/bin" "$co/tests/Unit" "$fake" && : > "$co/vendor/bin/phpunit"
+  printf '#!/usr/bin/env bash\n[ "$1" = run ] && printf "%%s\\n" "$*" >> "%s"\nexit 0\n' "$dir/docker.log" > "$fake/docker"
+  chmod +x "$fake/docker"
+  (cd "$co" && PATH="$fake:$PATH" run "$dir/out" Issue1Test.php) >/dev/null 2>&1 || true
+  runs=$(grep -c . "$dir/docker.log" 2>/dev/null || true)
+  if [ "$runs" = 2 ] && [ "$(grep -c -- '--tmpfs /app/build ' "$dir/docker.log")" = 2 ] && [ -d "$co/build" ]; then echo "ok   both runs get a writable, empty build/ over the read-only checkout"; else echo "FAIL build/ in the sandbox: $runs runs"; fail=1; fi
   rm -rf "$dir"
   [ "$fail" -eq 0 ] && echo "all tests passed"
   return "$fail"
