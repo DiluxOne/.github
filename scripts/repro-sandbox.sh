@@ -10,9 +10,11 @@
 # (none of the runner's variables, its tokens among them), the checkout in
 # the current directory mounted read-only, the test mounted read-only as
 # tests/Unit/Repro/<name> (the one file in that folder), nothing writable
-# but a scratch /tmp and an empty build/ (#443: the one folder a test may
-# write, as in the command ways), no capabilities, 1 GB and 256 processes at most, five
-# minutes alone and seven with the rest of tests/Unit (the run job has 15). The checkout's vendor/ must be installed already (by the caller,
+# but a scratch /tmp and an empty build/ (#443: build/ is the one folder a
+# test may write, as scripts/repro-run.sh gives every other way), no
+# capabilities, 1 GB and 256 processes at most, five minutes alone and
+# seven with the rest of tests/Unit (the run job has 15). The checkout's
+# vendor/ must be installed already (by the caller,
 # with the repository's own Composer scripts, before the test is anywhere
 # near). It refuses to run on a self-hosted runner: such code runs on
 # GitHub's fresh runners only (autopilot.yml sends a reproduced bug's work
@@ -203,6 +205,18 @@ self_test() {
   # #443: a test may write under build/, in a folder of its own, and nowhere else.
   got=$(box_flags /s | tr '\n' ' ')
   case "$got" in *"--read-only --tmpfs /tmp --tmpfs /app/build:mode=1777 "*"-v $PWD:/app:ro -v /s/test:/app/tests/Unit/Repro:ro "*) echo "ok   the sandbox gives the test an empty, writable build/ and keeps the checkout read-only" ;; *) echo "FAIL the sandbox's flags: $got"; fail=1 ;; esac
+  # The same, in a container, where Docker runs (#443): build/ takes a file,
+  # the checkout does not, and the host's build/ stays empty.
+  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 && docker image inspect "php:${PHP_VERSION:-8.5}-cli" >/dev/null 2>&1; then
+    local box_dir box
+    box_dir=$(mktemp -d); mkdir -p "$box_dir/build" "$box_dir/tests/Unit/Repro" "$box_dir/s/test"
+    mapfile -t box < <(cd "$box_dir" && box_flags "$box_dir/s")
+    got=$(cd "$box_dir" && docker run "${box[@]}" -w /app "php:${PHP_VERSION:-8.5}-cli" php -r 'echo (mkdir("build/unit-sync", 0777, true) && file_put_contents("build/unit-sync/x", "1")) ? "build" : "-", @file_put_contents("src.txt", "1") ? " src" : " -";' 2>/dev/null)
+    if [ "$got|$(ls -A "$box_dir/build")" = "build -|" ]; then echo "ok   in a container: build/ takes a file, the checkout does not, the host's build/ stays empty"; else echo "FAIL in a container: got '$got' and build/ '$(ls -A "$box_dir/build")'"; fail=1; fi
+    rm -rf "$box_dir"
+  else
+    echo "skip the container case (no Docker or no php image here)"
+  fi
   # The guards that keep the file where it belongs.
   if (run_ref HEAD "src/evil.php" >/dev/null 2>&1); then echo "FAIL run-ref refuses a path outside tests/Unit/Repro"; fail=1; else echo "ok   run-ref refuses a path outside tests/Unit/Repro"; fi
   if (run "$dir/out" "../x.php" >/dev/null 2>&1); then echo "FAIL run refuses a name with a path in it"; fail=1; else echo "ok   run refuses a name with a path in it"; fi

@@ -676,7 +676,8 @@ jobs:
         # scripts/repro-sandbox.sh: a container with no network, no
         # environment (none of the runner's variables, its runtime token
         # among them), the checkout and the test mounted read-only and
-        # nothing writable but a scratch /tmp; only PHPUnit's own verdict
+        # nothing writable but a scratch /tmp and an empty build/ (#443);
+        # only PHPUnit's own verdict
         # counts. The autopilot runs the same test there, against its fix.
         run: |
           bash .dx-central/scripts/repro-sandbox.sh run "$RUNNER_TEMP/handover/test" "Issue${NUMBER}Test.php" "$RUNNER_TEMP/handover"
