@@ -2,8 +2,10 @@
 # A plugin's translations in a form two pull requests merge (#452).
 #
 # `languages/*.pot` and `*.po` are written with no source references (the
-# `#: file.php:123` lines, which move with any code) and sorted by message,
-# so a pull request that adds strings changes only their lines; the
+# `#: file.php:123` lines, which move with any code), sorted by message and
+# with no header a tool rewrites on every run (POT-Creation-Date and
+# PO-Revision-Date hold one fixed date, X-Generator goes), so a pull request
+# that adds strings changes only their lines; the
 # compiled `*.mo` are never committed (a binary always conflicts): they are
 # built when the plugin is packaged and before its suites start.
 #
@@ -24,8 +26,12 @@ set -euo pipefail
 
 self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")
 
+STILL="1970-01-01 00:00+0000"
+
 form() { # <file>: the file in the merging form, on stdout
-  msgcat --no-location --sort-output --no-wrap "$1"
+  msgcat --no-location --sort-output --no-wrap "$1" | sed -E \
+    -e "s/^\"(POT-Creation-Date|PO-Revision-Date): .*\\\\n\"\$/\"\\1: $STILL\\\\n\"/" \
+    -e '/^"X-Generator: .*\\n"$/d'
 }
 
 catalogues() { # <dir>
@@ -48,7 +54,7 @@ check() {
     [ -n "$f" ] || continue
     n=$((n + 1))
     if ! diff -q <(form "$f") "$f" >/dev/null 2>&1; then
-      echo "::error file=${f#"$dir"/}::Not in the form that merges (#452): no source references (#: lines) and sorted by message. Run scripts/plugin-i18n.sh normalise from a checkout of DiluxOne/.github, or msgcat --no-location --sort-output --no-wrap." >&2
+      echo "::error file=${f#"$dir"/}::Not in the form that merges (#452): no source references (#: lines), sorted by message, the header's dates fixed and no X-Generator. Run scripts/plugin-i18n.sh normalise from a checkout of DiluxOne/.github." >&2
       fail=1
     fi
   done < <(catalogues "$dir")
@@ -98,6 +104,19 @@ if [ "${1:-}" = "--test" ]; then
   (cd "$t/p" && g checkout -qb one && printf '\nmsgid "Banana"\nmsgstr "Banana"\n' >> languages/my-es_ES.po && bash "$self" normalise . && g commit -qam one) >/dev/null 2>&1
   (cd "$t/p" && g checkout -q base && g checkout -qb two && printf '\nmsgid "Zulu"\nmsgstr "Zulú"\n' >> languages/my-es_ES.po && bash "$self" normalise . && g commit -qam two) >/dev/null 2>&1
   if (cd "$t/p" && g merge -q --no-edit one) >/dev/null 2>&1; then echo "ok   two pull requests adding strings merge with no conflict"; else echo "FAIL two pull requests adding strings conflict"; fail=1; fi
+  # A tool rewrites the header's dates (and its own name) on every run: two
+  # pull requests that regenerate the catalogue on different days still merge.
+  mkdir -p "$t/q/languages"
+  hpo() { # <date> <generator> <msgid> <msgstr>
+    printf 'msgid ""\nmsgstr ""\n"POT-Creation-Date: %s\\n"\n"PO-Revision-Date: %s\\n"\n"X-Generator: %s\\n"\n"Content-Type: text/plain; charset=UTF-8\\n"\n\nmsgid "Apple"\nmsgstr "Manzana"\n\nmsgid "%s"\nmsgstr "%s"\n' "$1" "$1" "$2" "$3" "$4" > languages/my-es_ES.po
+  }
+  (cd "$t/q" && hpo "2026-10-01 09:00+0000" "Poedit 3.3" "Mango" "Mango" && bash "$self" normalise . && g init -q -b base . && g add -A && g commit -qm base) >/dev/null 2>&1
+  (cd "$t/q" && g checkout -qb three && hpo "2026-10-25 10:00+0000" "Poedit 3.4" "Banana" "Banana" && printf '\nmsgid "Mango"\nmsgstr "Mango"\n' >> languages/my-es_ES.po && bash "$self" normalise . && g commit -qam three) >/dev/null 2>&1
+  (cd "$t/q" && g checkout -q base && g checkout -qb four && hpo "2026-10-26 11:30+0000" "Loco" "Zulu" "Zulú" && printf '\nmsgid "Mango"\nmsgstr "Mango"\n' >> languages/my-es_ES.po && bash "$self" normalise . && g commit -qam four) >/dev/null 2>&1
+  if (cd "$t/q" && g merge -q --no-edit three) >/dev/null 2>&1; then echo "ok   regenerated on different days, they still merge"; else echo "FAIL the header's dates conflict"; fail=1; fi
+  ok    "the dates are the fixed one"                 grep -q "^\"PO-Revision-Date: $STILL" "$t/q/languages/my-es_ES.po"
+  ok    "no X-Generator is left"                      bash -c "! grep -q '^\"X-Generator' '$t/q/languages/my-es_ES.po'"
+  ok    "and that merge is in form"                   check "$t/q"
   ok    "and the merge is still in form"              check "$t/p"
   ok    "compile writes the .mo"                      compile "$t/p"
   ok    "the .mo is there"                            test -s "$t/p/languages/my-es_ES.mo"
