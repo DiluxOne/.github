@@ -2,8 +2,9 @@ name: Plugin checks
 
 # The checks of a WordPress plugin, from the shared workflows in
 # DiluxOne/.github: the fast quality gates and the slow wp-env suites, on
-# every pull request, on a push to the default branch, once a week and by
-# hand. The conventions, the accepted-issue gate, the Claude review and the
+# every pull request (where the repository has a merge queue, the slow
+# suites run in the queue's group instead, #451), on a push to the default
+# branch, once a week and by hand. The conventions, the accepted-issue gate, the Claude review and the
 # auto-merge decision are the organisation's (org-pull-request.yml, required
 # by its ruleset): nothing of them here. Fill in slug and version-constant,
 # and declare the kind in .github/review-policy.yml (`kind: wordpress-plugin`).
@@ -13,6 +14,11 @@ name: Plugin checks
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  # A merge queue's group (#451): the checks it requires run on it too, and
+  # where the repository has a queue the slow suites run here, not on the
+  # pull request.
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [$default-branch]
   # Once a week, and by hand, everything runs whatever changed: the suites

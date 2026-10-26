@@ -25,8 +25,8 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
 ROLES = ("front", "back", "data", "infra", "docs")
-SECTIONS = {"no-workflows", "exclude", "repos", "projects", "design-system", "settings", "security", "files", "dependabot", "callers", "repro"}
-NAMED = ("projects", "design-system", "dependabot", "repro")
+SECTIONS = {"no-workflows", "exclude", "repos", "projects", "design-system", "settings", "security", "files", "dependabot", "callers", "repro", "merge-queue"}
+NAMED = ("projects", "design-system", "dependabot", "repro", "merge-queue")
 
 
 def load(path):
@@ -91,6 +91,9 @@ def problems(conf, kinds, systems):
     for name, system in (conf.get("design-system") or {}).items():
         if system != "local" and system not in systems:
             out.append(f"design-system.{name}: {system!r} is not in design-systems/ (nor local)")
+    for name, mode in (conf.get("merge-queue") or {}).items():
+        if mode not in ("auto", "on", "off", True, False):
+            out.append(f"merge-queue.{name}: {mode!r} is not auto, on or off")
     for name, entry in (conf.get("repro") or {}).items():
         if entry is False:  # no way, by design
             continue
@@ -146,6 +149,7 @@ def self_test():
     check("a section naming a repository repos: lacks", problems(dict(good, projects={"z": 3}), kinds, systems), ["projects.z: not a repository of `repos:`"])
     check("a design system that does not exist", problems(dict(good, **{"design-system": {"a": "material"}}), kinds, systems), ["design-system.a: 'material' is not in design-systems/ (nor local)"])
     check("an unknown section", problems(dict(good, owners={}), kinds, systems), ["owners: not a section of repos.yml"])
+    check("#451 a repository's merge queue: auto, on or off", problems(dict(good, **{"merge-queue": {"a": "off", "b": "sometimes"}}), kinds, systems), ["merge-queue.b: 'sometimes' is not auto, on or off"])
     way = {"layer": "logic", "test": "tests/repro/test_issue_{n}.py", "run": "pytest {test}", "junit": "build/repro.xml"}
     check("#377 a repository's way to reproduce a bug", problems(dict(good, repro={"b": {"ways": {"pytest": way}}}), kinds, systems), [])
     check("#377 a way of a repository repos: lacks", problems(dict(good, repro={"z": {"ways": {"pytest": way}}}), kinds, systems), ["repro.z: not a repository of `repos:`"])

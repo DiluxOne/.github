@@ -35,13 +35,19 @@ name: Pull request (organisation)
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, edited]
+  # In a repository with a merge queue (#451), the group the queue builds
+  # runs this workflow too, which its ruleset requires there as well: the
+  # pull request's jobs (its conventions, its review, its merge) were done
+  # on the pull request, so only `queue` runs, and the queue waits for it.
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
 
 jobs:
   conventions:
-    if: github.repository != 'DiluxOne/.github'
+    if: github.event_name == 'pull_request' && github.repository != 'DiluxOne/.github'
     permissions:
       contents: read
       pull-requests: read # the pull request's timeline, for the base-branch check on `edited`
@@ -52,7 +58,7 @@ jobs:
   # The issues it closes go to its author, when a member of the
   # organisation (#73); on open, reopen, ready and a changed description.
   assignee:
-    if: github.repository != 'DiluxOne/.github'
+    if: github.event_name == 'pull_request' && github.repository != 'DiluxOne/.github'
     permissions: {}
     uses: DiluxOne/.github/.github/workflows/pull-request-assignee.yml@v6
     secrets:
@@ -73,7 +79,7 @@ jobs:
 
   review:
     needs: [conventions]
-    if: github.repository != 'DiluxOne/.github'
+    if: github.event_name == 'pull_request' && github.repository != 'DiluxOne/.github'
     permissions:
       contents: read
       pull-requests: write
@@ -87,7 +93,7 @@ jobs:
 
   auto-merge:
     needs: review
-    if: always() && github.repository != 'DiluxOne/.github' && needs.review.result != 'skipped'
+    if: always() && github.event_name == 'pull_request' && github.repository != 'DiluxOne/.github' && needs.review.result != 'skipped'
     # Its `repro` job reads the lane issue a reproduced bug's fix closes (#397).
     permissions:
       contents: read
@@ -112,7 +118,7 @@ jobs:
     # Only dilux-bot's own pull requests, and only for a new commit (an edit
     # of the description keeps the review's verdict and must not spend a
     # round).
-    if: always() && github.repository != 'DiluxOne/.github' && needs.review.outputs.blocking == 'true' && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == 'dilux-bot[bot]' && github.event.action != 'edited'
+    if: always() && github.event_name == 'pull_request' && github.repository != 'DiluxOne/.github' && needs.review.outputs.blocking == 'true' && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == 'dilux-bot[bot]' && github.event.action != 'edited'
     # The agent's jobs read the repository with the job's own token (#287).
     permissions:
       contents: read
@@ -121,3 +127,17 @@ jobs:
       mode: fix
       pr: ${{ format('{0}', github.event.pull_request.number) }}
     secrets: inherit
+
+  # The merge queue's group (#451): what this pipeline decides was decided
+  # on each pull request in it, so the group only has to see this workflow
+  # pass. Nothing is checked out and no secret is read.
+  queue:
+    if: github.event_name == 'merge_group' && github.repository != 'DiluxOne/.github'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: The pull requests in the group passed this pipeline
+        env:
+          HEAD_REF: ${{ github.event.merge_group.head_ref }}
+        run: |
+          echo "Merge group $HEAD_REF: conventions, review and the merge decision ran on each pull request."
