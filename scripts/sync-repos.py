@@ -53,7 +53,21 @@ archived and not excluded in repos.yml:
             moves every call to the current major in the same pull request
             (#320). Not in
             `all`: a template change is a pull request in every repository.
-  all       labels, settings, files and own-checks, in that order.
+  merge-queue  the merge queue (#451), from org.yml `merge-queue` (auto, on
+            or off; auto when unset) and a repository's exception in
+            repos.yml `merge-queue`: where it is on, a ruleset of the
+            repository's own named "merge queue" requires it on the default
+            branch, and the repository variable DX_MERGE_QUEUE is `on`, which
+            the shared workflows read (the slow suites run in the queue's
+            group, not on the pull request; the bot queues instead of merging).
+            `auto` turns it on where GitHub allows it: a public repository, or
+            a private one on GitHub Enterprise Cloud. Off, or not allowed, the
+            ruleset is deleted and DX_MERGE_QUEUE is `off`: the repository is
+            ready for the day it is allowed. It is turned on only once every
+            workflow that calls a shared one on pull requests also runs on
+            `merge_group` (`callers` brings them in step), or the queue would
+            wait for checks that never run.
+  all       labels, settings, files, own-checks and merge-queue, in that order.
   check     changes nothing: lists, as Markdown, what differs in each
             repository, its callers and its Dependabot configuration
             included (the daily drift check posts it as an issue), a
@@ -65,7 +79,7 @@ archived and not excluded in repos.yml:
             the way its stack proposes (policy/repro-stacks.yml); not one
             repos.yml says has none by design (`repro: {NAME: false}`).
 
-  sync-repos.py <labels|settings|files|dependabot|own-checks|callers|all> [--repo NAME ...] [--dry-run]
+  sync-repos.py <labels|settings|files|dependabot|own-checks|merge-queue|callers|all> [--repo NAME ...] [--dry-run]
   sync-repos.py check [--repo NAME ...] [--report FILE]
   sync-repos.py --test
 
@@ -1283,6 +1297,133 @@ def sync_own_checks(repo, dry):
             print(f"  deleted the ruleset \"{rname}\" (the organisation's and \"{OWN}\" cover it)")
 
 
+# The merge queue (#451): on where GitHub allows it and the organisation
+# wants it, through a ruleset of the repository's own (an organisation
+# ruleset cannot hold the rule) and the variable the shared workflows read.
+
+QUEUE = "merge queue"
+QUEUE_RULE = {"type": "merge_queue", "parameters": {
+    "check_response_timeout_minutes": 60, "grouping_strategy": "ALLGREEN", "max_entries_to_build": 3,
+    "max_entries_to_merge": 3, "merge_method": "SQUASH", "min_entries_to_merge": 1,
+    "min_entries_to_merge_wait_minutes": 0}}
+
+
+def queue_mode(name, conf, org_conf):
+    """auto, on or off for a repository: its repos.yml exception, else
+    org.yml's, else auto."""
+    mode = (conf.get("merge-queue") or {}).get(name)
+    mode = org_conf.get("merge-queue") if mode is None else mode
+    # A bare on or off reads as YAML's true or false.
+    mode = {True: "on", False: "off", None: "auto"}.get(mode, mode) if isinstance(mode, (bool, type(None))) else str(mode)
+    if mode not in ("auto", "on", "off"):
+        raise ValueError(f"merge-queue `{mode}` for {name}: auto, on or off")
+    return mode
+
+
+def queue_allowed(visibility, plan):
+    """Whether GitHub gives a repository a merge queue: any public one of an
+    organisation, and a private one only on Enterprise Cloud (a private
+    repository on Team gets `Invalid rule 'merge_queue'`, #451). None when
+    the plan could not be read and the repository is private: unknown."""
+    if str(visibility).upper() == "PUBLIC":
+        return True
+    return None if plan is None else "enterprise" in str(plan).lower()
+
+
+def queue_callers_ready(files):
+    """The workflows that call a shared workflow (or one of the repository's
+    own reusable ones) on pull requests but not on `merge_group`: the queue
+    would wait for their checks forever."""
+    late = []
+    for path, text in sorted(files.items()):
+        try:
+            on = (yaml_text(text) or {}).get("on", (yaml_text(text) or {}).get(True)) or {}
+        except Exception:  # noqa: BLE001 - an unreadable workflow is not ready
+            late.append(path)
+            continue
+        events = set(on) if isinstance(on, (dict, list)) else {on}
+        if (SHARED_PREFIX in text or LOCAL_PREFIX in text) and "pull_request" in events and "merge_group" not in events:
+            late.append(path)
+    return late
+
+
+def yaml_text(text):
+    import yaml
+    return yaml.safe_load(text)
+
+
+ORG_PLAN = None
+
+
+def org_plan():
+    global ORG_PLAN
+    if ORG_PLAN is None:
+        out = gh("api", f"orgs/{ORG}", "--jq", ".plan.name // \"\"", check=False)
+        # Unread (an API error, or no admin to see it) is not "no plan".
+        ORG_PLAN = out.stdout.strip() if out.returncode == 0 and out.stdout.strip() else False
+    return ORG_PLAN or None
+
+
+def sync_merge_queue(repo, conf, dry):
+    """Turns the merge queue on or off for one repository (see `merge-queue`
+    above): its ruleset and DX_MERGE_QUEUE."""
+    full = f"{ORG}/{repo['name']}"
+    mode = queue_mode(repo["name"], conf, sys.modules["org"].load())
+    allowed = queue_allowed(repo.get("visibility"), org_plan())
+    if allowed is None and mode != "off":
+        # A transient error must not turn a working queue off: nothing changes.
+        print("  the organisation's plan could not be read: the merge queue is left as it is")
+        return
+    if mode == "on" and not allowed:
+        raise ValueError(f"merge-queue is `on` but GitHub gives a {str(repo.get('visibility')).lower()} repository on this plan ({org_plan() or 'unknown'}) no merge queue")
+    want = mode == "on" or (mode == "auto" and allowed)
+    late = queue_callers_ready(workflow_files(full)) if want else []
+    if late:
+        print(f"  the merge queue waits: {', '.join(late)} run on pull requests but not on merge_group (`sync-repos.py callers` brings them in step)")
+        want = False
+    mine = [r for r in rulesets(full) if r.get("name") == QUEUE]
+    value = "on" if want else "off"
+    # The variable is never `on` without the queue: when turning it on the
+    # ruleset comes first, when turning it off the variable does, so a write
+    # that fails half way leaves pull requests running the slow suites.
+    if not want:
+        set_queue_variable(full, value, dry)
+    if want and not mine:
+        body = {"name": QUEUE, "target": "branch", "enforcement": "active", "bypass_actors": [],
+                "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}}, "rules": [QUEUE_RULE]}
+        if dry:
+            print(f"  would create \"{QUEUE}\"")
+        else:
+            gh("api", "-X", "POST", f"repos/{full}/rulesets", "--input", "-", input_text=json.dumps(body))
+            print(f"  \"{QUEUE}\" created")
+    if not want:
+        for r in mine:
+            if dry:
+                print(f"  would delete \"{QUEUE}\" ({mode}{', not allowed here' if not allowed else ''})")
+            else:
+                gh("api", "-X", "DELETE", f"repos/{full}/rulesets/{r['id']}")
+                print(f"  deleted \"{QUEUE}\"")
+    if want:
+        set_queue_variable(full, value, dry)
+
+
+def set_queue_variable(full, value, dry):
+    """DX_MERGE_QUEUE, the shared workflows' answer to "does this repository
+    have a merge queue" (#451)."""
+    have = gh("api", f"repos/{full}/actions/variables/DX_MERGE_QUEUE", "--jq", ".value", check=False)
+    if have.returncode != 0 or have.stdout.strip() != value:
+        if dry:
+            print(f"  would set DX_MERGE_QUEUE={value}")
+        elif have.returncode == 0:
+            gh("api", "-X", "PATCH", f"repos/{full}/actions/variables/DX_MERGE_QUEUE", "-f", f"value={value}")
+            print(f"  DX_MERGE_QUEUE={value}")
+        else:
+            gh("api", "-X", "POST", f"repos/{full}/actions/variables", "-f", "name=DX_MERGE_QUEUE", "-f", f"value={value}")
+            print(f"  DX_MERGE_QUEUE={value}")
+    else:
+        print(f"  DX_MERGE_QUEUE={value}, in step")
+
+
 def design_systems():
     """The organisation's design systems: each directory of design-systems/
     with its tokens.json."""
@@ -2294,7 +2435,7 @@ def self_test():
     # #187: which parts each command runs; `dependabot` alone writes the
     # Dependabot file, and `all` never does.
     ran = []
-    names = ("repositories", "sync_labels", "sync_settings", "sync_files", "sync_own_checks", "sync_callers")
+    names = ("repositories", "sync_labels", "sync_settings", "sync_files", "sync_own_checks", "sync_merge_queue", "sync_callers")
     saved = {n: globals()[n] for n in names}
     globals().update({
         "repositories": lambda only, exclude: [{"name": "r"}],
@@ -2302,6 +2443,7 @@ def self_test():
         "sync_settings": lambda *a, **k: ran.append("settings"),
         "sync_files": lambda *a, part="files", **k: ran.append(part),
         "sync_own_checks": lambda *a, **k: ran.append("own-checks"),
+        "sync_merge_queue": lambda *a, **k: ran.append("merge-queue"),
         "sync_callers": lambda *a, **k: ran.append("callers"),
     })
     try:
@@ -2315,7 +2457,62 @@ def self_test():
             runs[command] = list(ran)
     finally:
         globals().update(saved)
-    check("#187: `all` runs labels, settings, the shared files and own checks, not the Dependabot file", runs["all"] == ["labels", "settings", "files", "own-checks"], runs["all"])
+    check("#187: `all` runs labels, settings, the shared files, own checks and the merge queue, not the Dependabot file", runs["all"] == ["labels", "settings", "files", "own-checks", "merge-queue"], runs["all"])
+    # #451: where the merge queue goes, and when it waits.
+    check("#451: a repository's exception wins over org.yml", queue_mode("a", {"merge-queue": {"a": "off"}}, {"merge-queue": "on"}), "off")
+    check("#451: a bare on or off (YAML's true or false) is on or off", (queue_mode("a", {"merge-queue": {"a": False}}, {}), queue_mode("a", {}, {"merge-queue": True})), ("off", "on"))
+    check("#451: org.yml's value, else auto", (queue_mode("a", {}, {"merge-queue": "on"}), queue_mode("a", {}, {})), ("on", "auto"))
+    try:
+        queue_mode("a", {"merge-queue": {"a": "maybe"}}, {})
+        check("#451: a value that is not auto, on or off is refused", False, True)
+    except ValueError:
+        check("#451: a value that is not auto, on or off is refused", True, True)
+    check("#451: GitHub gives a queue to a public repository on any plan, a private one only on Enterprise Cloud",
+          (queue_allowed("PUBLIC", "team"), queue_allowed("PRIVATE", "team"), queue_allowed("PRIVATE", "enterprise"), queue_allowed("private", "free")), (True, False, True, False))
+    ready = {"a.yml": "on:\n  pull_request:\n  merge_group:\njobs:\n  x:\n    uses: DiluxOne/.github/.github/workflows/plugin-checks-wp.yml@v6\n",
+             "b.yml": "on: [pull_request]\njobs:\n  x:\n    uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v6\n",
+             "c.yml": "on:\n  push:\njobs:\n  x:\n    uses: DiluxOne/.github/.github/workflows/plugin-checks-wp.yml@v6\n",
+             "d.yml": "on:\n  pull_request:\njobs:\n  x:\n    runs-on: ubuntu-latest\n    steps: [{run: 'true'}]\n",
+             "e.yml": "on:\n  pull_request:\njobs:\n  x:\n    uses: ./.github/workflows/conventions.yml\n"}
+    check("#451: an unread plan is unknown for a private repository, never a public one", (queue_allowed("PRIVATE", None), queue_allowed("PUBLIC", None)), (None, True))
+    # #451: the order of the writes, so a failure half way never leaves
+    # DX_MERGE_QUEUE on without the queue.
+    def queue_run(want_rs, has_rs, plan="team", vis="PUBLIC", mode="auto"):
+        calls = []
+        def fake(*args, check=True, input_text=None):
+            calls.append(" ".join(args))
+            if "rulesets?includes_parents" in " ".join(args):
+                return Out(json.dumps([[{"id": 9, "source_type": "Repository"}]] if has_rs else [[]]))
+            if args[:2] == ("api", "repos/o/r/rulesets/9"):
+                return Out(json.dumps({"id": 9, "name": QUEUE}))
+            if "actions/variables/DX_MERGE_QUEUE" in " ".join(args) and "-X" not in args:
+                return Out("", 1, "HTTP 404")
+            if "contents/.github/workflows" in " ".join(args):
+                return Out("", 1, "HTTP 404")
+            return Out("{}")
+        org_mod = sys.modules["org"]
+        saved = (globals()["gh"], ORG, ORG_PLAN, org_mod.load)
+        try:
+            globals().update(gh=fake, ORG="o", ORG_PLAN=plan)
+            org_mod.load = lambda *a, **k: {"merge-queue": mode}
+            import contextlib
+            import io
+            with contextlib.redirect_stdout(io.StringIO()):
+                sync_merge_queue({"name": "r", "visibility": vis}, {}, False)
+        finally:
+            globals()["gh"], org_mod.load = saved[0], saved[3]
+            globals().update(ORG=saved[1], ORG_PLAN=saved[2])
+        writes = [c for c in calls if "-X" in c]
+        return writes
+    on = queue_run(True, False)
+    check("#451 on: the ruleset first, then DX_MERGE_QUEUE=on",
+          len(on) == 2 and "repos/o/r/rulesets" in on[0] and "value=on" in on[1], on)
+    off = queue_run(False, True, vis="PRIVATE")
+    check("#451 off: DX_MERGE_QUEUE=off first, then the ruleset is deleted",
+          len(off) == 2 and "value=off" in off[0] and "DELETE" in off[1], off)
+    unread = queue_run(False, True, plan=False, vis="PRIVATE")
+    check("#451 an unread plan on a private repository changes nothing", unread == [], unread)
+    check("#451: the queue waits for a caller that runs on pull requests but not on merge_group, and only for that one", queue_callers_ready(ready), ["b.yml", "e.yml"])
     check("#187: `files` runs the shared files alone", runs["files"] == ["files"], runs["files"])
     check("#187: `dependabot` runs the Dependabot file alone", runs["dependabot"] == ["dependabot"], runs["dependabot"])
     if not failed:
@@ -2326,7 +2523,7 @@ def self_test():
 def main(argv):
     if argv == ["--test"]:
         return self_test()
-    if not argv or argv[0] not in ("labels", "settings", "files", "dependabot", "own-checks", "callers", "all", "check"):
+    if not argv or argv[0] not in ("labels", "settings", "files", "dependabot", "own-checks", "merge-queue", "callers", "all", "check"):
         print(__doc__)
         return 64
     what, rest = argv[0], argv[1:]
@@ -2374,6 +2571,8 @@ def main(argv):
                 sync_files(repo, conf, block, dry, part="dependabot")
             if what in ("own-checks", "all"):
                 sync_own_checks(repo, dry)
+            if what in ("merge-queue", "all"):
+                sync_merge_queue(repo, conf, dry)
             if what == "callers":
                 sync_callers(repo, conf, dry)
         except (RuntimeError, ValueError, subprocess.CalledProcessError) as exc:

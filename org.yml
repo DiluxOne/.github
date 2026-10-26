@@ -13,3 +13,9 @@ bot:
 # advisories' fixes, the patches, the nightly review, and where a
 # vulnerability posted in a public issue is moved, out of sight.
 security: DiluxOne/security
+# The merge queue (#451, scripts/sync-repos.py merge-queue): `auto` turns it
+# on wherever GitHub gives one (every public repository; a private one only
+# on GitHub Enterprise Cloud) and leaves the others ready for the day it
+# does; `on` requires it and fails where it cannot be; `off` never. A
+# repository's exception is repos.yml `merge-queue`.
+merge-queue: auto
