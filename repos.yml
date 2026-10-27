@@ -187,7 +187,8 @@ merge-queue:
 # A repository with no `make pre-pr` by design (#479, scripts/pre-pr.py):
 # `false`, and the daily drift check does not list it, nor does the
 # conventions check fail its pull requests once org.yml `pre-pr` is
-# `required`. Every other repository has one.
+# `required`. Every other repository is to have one; until it does, the
+# daily drift check lists it.
 pre-pr:
   diluxone-wp-test: false   # a disposable environment, no code of its own
   security: false           # private: only the runs of security-fix.yml
