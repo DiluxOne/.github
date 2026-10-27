@@ -1325,10 +1325,62 @@ A class on html.
                 refused = bool(pre_pr_refusal(True, read_mark(io3), git_out("rev-parse", "HEAD")))
                 open("Makefile", "a").write("# dirty\n")
                 dirty = run_pre_pr(io3)
+                g3("checkout", "-q", "--", "Makefile")
         finally:
             os.chdir(cwd3)
     check("#482 C1: check runs make pre-pr at HEAD and keeps its verdict; a later commit or a failure refuses finish ready; uncommitted work is refused",
           (passed, ok_then, stale, broke != 0, refused, dirty), (0, "", True, True, True, 1))
+    # The same refusal through the helper the agent runs: `finish ready`
+    # with every box ticked and a "How I tested it" file, in a repository
+    # with a `pre-pr` target.
+    with _tf3.TemporaryDirectory() as io4:
+        rd = os.path.join(io4, "repo")
+        os.makedirs(rd)
+        g4 = lambda *a: subprocess.run(["git", "-C", rd] + list(a), capture_output=True, text=True, env=dict(os.environ, GIT_CONFIG_GLOBAL="/dev/null"))
+        g4("init", "-q"); g4("config", "user.email", "t@t"); g4("config", "user.name", "t"); g4("config", "commit.gpgsign", "false")
+        with open(os.path.join(rd, "Makefile"), "w", encoding="utf-8") as fh:
+            fh.write("pre-pr:\n\t@test ! -f broken\n")
+        g4("add", "Makefile"); g4("commit", "-q", "-m", "chore: base")
+        with open(os.path.join(io4, "pr.md"), "w", encoding="utf-8") as fh:
+            fh.write(f"{CHECKLIST_START}\n- [x] **C1** a\n{CHECKLIST_END}\n")
+        tested = os.path.join(io4, "tested.md")
+        with open(tested, "w", encoding="utf-8") as fh:
+            fh.write("Ran make pre-pr.\n")
+        box4 = os.path.join(io4, OUTBOX)
+        cwd4 = os.getcwd()
+        saved = os.environ.pop("REPRO_TEST", None)
+        os.chdir(rd)
+
+        def ready_now():
+            # (exit code, whether a `ready` intent was left), the outbox
+            # emptied after each try.
+            with _cl3.redirect_stdout(_io3.StringIO()), _cl3.redirect_stderr(_io3.StringIO()):
+                rc = agent_helper(["finish", "ready", tested], io4)
+            left = any(i["kind"] == "ready" for i in read_outbox(box4)[0])
+            if os.path.exists(box4):
+                os.remove(box4)
+            return rc, left
+        try:
+            missing = ready_now()
+            with _cl3.redirect_stdout(_io3.StringIO()):
+                run_pre_pr(io4)
+            g4("commit", "-q", "--allow-empty", "-m", "fix: later")
+            stale4 = ready_now()
+            open("broken", "w").close()
+            g4("add", "broken"); g4("commit", "-q", "-m", "fix: break it")
+            with _cl3.redirect_stdout(_io3.StringIO()):
+                run_pre_pr(io4)
+            failed4 = ready_now()
+            g4("rm", "-q", "broken"); g4("commit", "-q", "-m", "fix: mend it")
+            with _cl3.redirect_stdout(_io3.StringIO()):
+                run_pre_pr(io4)
+            passed4 = ready_now()
+        finally:
+            os.chdir(cwd4)
+            if saved is not None:
+                os.environ["REPRO_TEST"] = saved
+    check("#482 C1: finish ready, through the agent's helper, refuses with no ready intent when make pre-pr never ran, ran at another head or failed, and is ready when it passed at HEAD",
+          (missing, stale4, failed4, passed4), ((1, False), (1, False), (1, False), (0, True)))
     check("#482: the Spec is where questions are asked",
           (ASK_NOW in prompt_spec("o/r", "7", "x"), ASK_NOW in prompt_spec("o/r", "7", "x", mode="guided"),
            "The Spec was the moment for questions" in guided_work("guided", "E=1", "")), (True, True, True))
