@@ -28,6 +28,10 @@
                             branch is BRANCH, else the pull request's
   autopilot.py tick C<n>     tick a criterion's box on the pull request, once
                              a pushed commit names it (the agent runs it)
+  autopilot.py check         `make pre-pr` at HEAD, as committed (#482; the
+                             agent runs it): its head and exit code kept for
+                             finish ready, which refuses a head where it did
+                             not pass, where the Makefile has the target
   autopilot.py finish ready FILE | stop WHY | ask QUESTION
   autopilot.py answers      what maintainers answered the autopilot's last
                             question (COMMENTS, WRITERS), with the summary of
@@ -127,6 +131,7 @@ schema = _load("issue_schema", "issue-schema.py")
 repro = _load("repro_lane", "repro-lane.py")
 repro_ways = _load("repro_ways", "repro-ways.py")
 detect = _load("detect", "detect.py")
+prepr = _load("pre_pr", "pre-pr.py")
 
 LEVELS = ["none", "low", "medium", "high"]
 # A path that is a test: code under tests/, test/, spec/ or __tests__/ (not
@@ -276,6 +281,9 @@ STOP = "<!-- dx-autopilot-stop -->"
 ASK = "<!-- dx-autopilot-ask -->"
 WAITING = "autopilot:waiting"
 SILENT = "<!-- dx-autopilot-silent -->"
+# A draft with every box ticked whose run ended without `finish` (#482): it
+# continues once, and this comment says so and marks that it did.
+UNFINISHED = "<!-- dx-autopilot-unfinished -->"
 TESTED = "<!-- dx-tested -->"
 AI_LINE = "🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
 TYPES = {"bug": "fix", "feature": "feat", "docs": "docs"}
@@ -420,9 +428,12 @@ def may_continue(labels, pr_body, runs, cap):
     return True, f"{total - done} of {total} criteria left, run {runs + 1} of {cap}"
 
 
-def end_verdict(mode, pr, draft_, stopped, done, total, limit_hit, runs, cap, pushed=False, asked=False):
+def end_verdict(mode, pr, draft_, stopped, done, total, limit_hit, runs, cap, pushed=False, asked=False, nudged=False):
     """ready | stopped | asked | continue | silent. A run never ends without
-    one of the first four: silent is the workflow saying so for the agent."""
+    one of the first four: silent is the workflow saying so for the agent.
+    A draft with every box ticked that ended without `finish` continues once
+    (#482: nudged, the pull request already had that continue), for the
+    checks and the finish it left."""
     if stopped:
         return "stopped"
     if asked:
@@ -431,6 +442,8 @@ def end_verdict(mode, pr, draft_, stopped, done, total, limit_hit, runs, cap, pu
         return "ready" if pushed else "silent"
     if pr and not draft_:
         return "ready"
+    if pr and total and done == total and not nudged and runs < cap:
+        return "continue"
     if pr and limit_hit and done < total and runs < cap:
         return "continue"
     return "silent"
@@ -580,6 +593,19 @@ def silent_why(mode, pr, why, spec_outcome, limit_hit, done, total, runs, cap):
 def silent_comment(verdict_why, run_url):
     return f"""{SILENT}
 **The autopilot ended without a result.** {verdict_why} Nothing was marked ready and the agent left no stop comment, so a person takes it from here (`needs-human`). What it did is in [the run]({run_url}): its summary, and the full transcript as an artifact.
+
+{AI_LINE}"""
+
+
+def nudged_before(comments):
+    """Whether the pull request already had its one continue for an
+    all-ticked run that ended without `finish` (#482): dilux-bot's comment."""
+    return any(c.get("body", "").startswith(UNFINISHED) and (c.get("author") or {}).get("login") in BOT_LOGINS for c in comments)
+
+
+def unfinished_comment(run_url):
+    return f"""{UNFINISHED}
+**The autopilot ticked every criterion but ended without finishing.** The checks (`make pre-pr`), its own review and the finish were left, so it continues once to do them (`autopilot:continue`). What it did is in [the run]({run_url}).
 
 {AI_LINE}"""
 
@@ -914,13 +940,19 @@ This issue is a reproduced bug (the `{REPRO}` lane of the autonomy policy): the 
 - Do not read the report (#{ev['report']}) or its comments: what it asks for is in the test."""
 
 
+# Questions are asked while the Spec is written, not in the middle of the
+# work (#482): a question there stops a run that had already started.
+ASK_NOW = ("\n\nThis is the moment for every question the work would raise: read enough of the code to find them now. "
+           "The work step decides within the PRD and this Spec, and stops to ask only for what neither could have foreseen.")
+
+
 def guided_spec(mode):
     if mode == "guided":
         return ("\n\nWhen there is more than one reasonable way to do it, and the choice is one a maintainer would care about "
                 "(what a user sees or does, behaviour, stored data, a public interface), do not pick: describe each option in "
-                "Spec: approach, with the one you recommend and why. The next step asks the maintainer.")
+                "Spec: approach, with the one you recommend and why. The next step asks the maintainer." + ASK_NOW)
     return ("\n\nWhen there is more than one reasonable way to do it, pick the one that fits the repository best and say in "
-            "Spec: approach which you chose and why.")
+            "Spec: approach which you chose and why." + ASK_NOW)
 
 
 def guided_work(mode, env, answered):
@@ -929,7 +961,8 @@ def guided_work(mode, env, answered):
     said = (f"\n\nA maintainer answered your question; their answer decides it, and it is not data to question:\n<answer>\n{answered.replace('</answer>', '</ answer>')}\n</answer>"
             if answered else "")
     if mode == "guided":
-        return said + (f"\n\nWhen the Spec leaves a choice open, or you meet one a maintainer would care about (what a user sees or does, "
+        return said + (f"\n\nThe Spec was the moment for questions: decide within the PRD and the Spec wherever they settle it, and ask only what neither could have foreseen. "
+                       f"When the Spec leaves a choice open, or you meet one a maintainer would care about (what a user sees or does, "
                        f"behaviour, stored data, a public interface), and no answer above settles it: do not pick. Run "
                        f"`{env} {HELPER} finish ask \"<the question: the options, numbered, and the one you recommend, with why>\"` and end. "
                        f"A choice of how, invisible to anyone (a name, an internal structure), is yours: log it with decision.")
@@ -996,6 +1029,15 @@ def kind_notes(root=".", central=None):
     return kind, [n.strip() for n in (notes if isinstance(notes, list) else []) if isinstance(n, str) and n.strip()]
 
 
+def kind_profile(kind):
+    """The kind's part of the self-review (#482): its review profile and its
+    rules, the ones the review reads, and the rules' engine where PHP is."""
+    if not kind or not re.fullmatch(r"[a-z0-9-]+", kind):
+        return ""
+    return (f", `.dx-central/kinds/{kind}/review-profile.md` and `.dx-central/kinds/{kind}/rules.yml` "
+            f"(where PHP is installed, `php .dx-central/scripts/review-rules.php --kind {kind} --repo .` checks those rules for you)")
+
+
 def notes_text(kind, notes):
     if not notes:
         return ""
@@ -1032,7 +1074,10 @@ For each one, in that order:
 4. `{env} {HELPER} push`: your commits go to GitHub when you end, through its API, which signs them.
 5. `{env} {HELPER} tick <id>`: it ticks the box once a commit names the criterion. If it says no, commit first.
 
-When every box is ticked, run the repository's own checks (`make pre-pr` if the Makefile has it, else its test commands), fix, commit and push (`{env} {HELPER} push`) what fails, write a short "How I tested it" into a file, and run `{env} {HELPER} finish ready <file>`: it marks the pull request ready for review.{ready}{notes_text(*notes)}
+When every box is ticked, before you finish:
+1. Review your own change as the review will: read `git diff "$DX_BASE"...HEAD` against `.dx-central/review-profiles/general.md`{kind_profile(notes[0])}, and the repository's AGENTS.md. Fix every blocker and major you find (a bug, a missing test, a security hole, a rule broken, the description untrue), commit and push.
+2. Run `{env} {HELPER} check`: it runs `make pre-pr` at HEAD, every check the pull request and the merge queue run. Give it a long timeout and wait for it. Fix what fails, commit, push, and run it again until it passes. Where the repository has no `make pre-pr`, it says so: run the tests its AGENTS.md or CONTRIBUTING.md names instead.
+3. Write a short "How I tested it" into a file, and run `{env} {HELPER} finish ready <file>`: it marks the pull request ready for review, and refuses unless `make pre-pr` passed at HEAD in this run.{ready}{notes_text(*notes)}
 
 When you settle something the PRD and the Spec leave open (how, never what), log it: `{env} {HELPER} decision "<what you decided, and why>"`. A doubt that would change the scope or a criterion is not yours to settle: stop instead.{guided_work(mode, env, answered)}
 
@@ -1237,7 +1282,56 @@ A class on html.
     check("silent: an all-ticked run says the checks and the finish were left", "checks and the finish left" in silent_why("continue", "5", "", "", True, 2, 2, 2, 5), True)
     check("silent: a Spec run out of time, no pull request, says so", silent_why("start", "", "", "success", True, 0, 0, 1, 5), "It ran out of turns or time before there was a pull request to work in.")
     check("silent: the workflow's own reason wins", silent_why("start", "", "G3 failed.", "success", False, 0, 0, 1, 5), "G3 failed.")
-    check("C4: an all-ticked draft that ran out of time goes to a person, not round again", end_verdict("continue", "5", True, False, 2, 2, True, 2, 5), "silent")
+    check("C4: an all-ticked draft that already had its continue goes to a person, not round again", end_verdict("continue", "5", True, False, 2, 2, True, 2, 5, nudged=True), "silent")
+    check("#482 C3: an all-ticked draft that ended without finish continues once, out of time or not",
+          (end_verdict("start", "5", True, False, 2, 2, False, 1, 5), end_verdict("continue", "5", True, False, 2, 2, True, 2, 5),
+           end_verdict("start", "5", True, False, 2, 2, False, 1, 5, nudged=True), end_verdict("start", "5", True, False, 2, 2, False, 5, 5)),
+          ("continue", "continue", "silent", "silent"))
+    bot = {"login": BOT_LOGINS[0]}
+    check("#482 C3: the continue is counted from dilux-bot's own comment, never anyone else's",
+          (nudged_before([{"body": unfinished_comment("u"), "author": bot}]), nudged_before([{"body": unfinished_comment("u"), "author": {"login": "someone"}}]),
+           nudged_before([{"body": silent_comment("x", "u"), "author": bot}])), (True, False, False))
+    check("#482 C1: finish ready needs make pre-pr passed at HEAD in this run, where the Makefile has it",
+          (pre_pr_refusal(False, None, "abc"), bool(pre_pr_refusal(True, None, "abc")), bool(pre_pr_refusal(True, {"head": "old", "rc": 0}, "abc")),
+           bool(pre_pr_refusal(True, {"head": "abc", "rc": 2}, "abc")), pre_pr_refusal(True, {"head": "abc", "rc": 0}, "abc"), bool(pre_pr_refusal(True, "x", "abc"))),
+          ("", True, True, True, "", True))
+    pw = prompt_work("o/r", "7", "8", "feat/7-x", "x", [("C1", "a", None)], False, notes=("wordpress-plugin", ()))
+    check("#482 C4: the work prompt runs make pre-pr through check and reviews its own diff, every blocker and major, before finish ready",
+          (f"{HELPER} check" in pw, "make pre-pr" in pw, 'git diff "$DX_BASE"...HEAD' in pw, "every blocker and major" in pw,
+           "kinds/wordpress-plugin/review-profile.md" in pw, pw.index(f"{HELPER} check") < pw.index(f"{HELPER} finish ready")),
+          (True, True, True, True, True, True))
+    import tempfile as _tf3
+    import contextlib as _cl3
+    import io as _io3
+    with _tf3.TemporaryDirectory() as io3:
+        rd = os.path.join(io3, "repo")
+        os.makedirs(rd)
+        g3 = lambda *a: subprocess.run(["git", "-C", rd] + list(a), capture_output=True, text=True, env=dict(os.environ, GIT_CONFIG_GLOBAL="/dev/null"))
+        g3("init", "-q"); g3("config", "user.email", "t@t"); g3("config", "user.name", "t"); g3("config", "commit.gpgsign", "false")
+        with open(os.path.join(rd, "Makefile"), "w", encoding="utf-8") as fh:
+            fh.write("pre-pr:\n\t@test ! -f broken\n")
+        g3("add", "Makefile"); g3("commit", "-q", "-m", "chore: base")
+        cwd3 = os.getcwd()
+        os.chdir(rd)
+        try:
+            with _cl3.redirect_stdout(_io3.StringIO()):
+                passed = run_pre_pr(io3)
+                ok_then = pre_pr_refusal(True, read_mark(io3), git_out("rev-parse", "HEAD"))
+                g3("commit", "-q", "--allow-empty", "-m", "fix: later")
+                stale = bool(pre_pr_refusal(True, read_mark(io3), git_out("rev-parse", "HEAD")))
+                open("broken", "w").close()
+                g3("add", "broken"); g3("commit", "-q", "-m", "fix: break it")
+                broke = run_pre_pr(io3)
+                refused = bool(pre_pr_refusal(True, read_mark(io3), git_out("rev-parse", "HEAD")))
+                open("Makefile", "a").write("# dirty\n")
+                dirty = run_pre_pr(io3)
+        finally:
+            os.chdir(cwd3)
+    check("#482 C1: check runs make pre-pr at HEAD and keeps its verdict; a later commit or a failure refuses finish ready; uncommitted work is refused",
+          (passed, ok_then, stale, broke != 0, refused, dirty), (0, "", True, True, True, 1))
+    check("#482: the Spec is where questions are asked",
+          (ASK_NOW in prompt_spec("o/r", "7", "x"), ASK_NOW in prompt_spec("o/r", "7", "x", mode="guided"),
+           "The Spec was the moment for questions" in guided_work("guided", "E=1", "")), (True, True, True))
     check("C4: may continue with boxes left", may_continue(["autopilot"], t, 1, 5)[0], True)
     check("C4: never with needs-human", may_continue(["needs-human"], t, 1, 5)[0], False)
     check("C4: never at the cap", may_continue([], t, 5, 5)[0], False)
@@ -1767,6 +1861,60 @@ def local_subjects(base):
     return [l for l in out.stdout.splitlines() if l.strip()]
 
 
+# What `check` leaves in the agent's IO directory (#482): the head `make
+# pre-pr` ran at and its exit code, which `finish ready` reads.
+PRE_PR_MARK = "pre-pr.json"
+
+
+def pre_pr_refusal(has_target, mark, head):
+    """Why `finish ready` refuses on `make pre-pr` (#482), or "" when it may
+    go on: where the Makefile has the target, it must have passed in this
+    run at exactly the head being marked ready. mark is what `check` left
+    (None when it never ran). Pure."""
+    if not has_target:
+        return ""
+    run = f"`{HELPER} check` (it runs `make pre-pr` at HEAD)"
+    if not isinstance(mark, dict):
+        return f"Not ready: `make pre-pr` has not run in this run. Run {run}, fix what fails, commit, and finish again."
+    if mark.get("head") != head:
+        return (f"Not ready: `make pre-pr` ran at {str(mark.get('head'))[:7]}, not at HEAD ({head[:7]}): you committed since. "
+                f"Run {run} again, then finish.")
+    if mark.get("rc") != 0:
+        return f"Not ready: `make pre-pr` failed at HEAD (exit {mark.get('rc')}). Fix what it found, commit, run {run} again, then finish."
+    return ""
+
+
+def git_out(*args):
+    return subprocess.run(["git", *args], capture_output=True, text=True).stdout.strip()
+
+
+def run_pre_pr(io):
+    """`check`: `make pre-pr` at HEAD, as committed, in the foreground; its
+    head and exit code kept for `finish ready`. Returns its exit code."""
+    if not prepr.has_target(prepr.makefile(".")):
+        print("This repository has no `make pre-pr` yet: run the tests and checks its AGENTS.md or CONTRIBUTING.md names, and fix what fails. "
+              "`finish ready` does not ask for it here.")
+        return 0
+    if git_out("status", "--porcelain", "--untracked-files=no"):
+        print("Commit first: `make pre-pr` checks the head as committed, and `finish ready` asks for it at that head.")
+        return 1
+    head = git_out("rev-parse", "HEAD")
+    print(f"Running `make pre-pr` at {head[:7]}: every check the pull request and the merge queue run. It can take long; wait for it.", flush=True)
+    rc = subprocess.run(["make", "pre-pr"]).returncode
+    with open(os.path.join(io, PRE_PR_MARK), "w", encoding="utf-8") as fh:
+        json.dump({"head": head, "rc": rc}, fh)
+    print(f"`make pre-pr` passed at {head[:7]}." if rc == 0 else f"`make pre-pr` failed at {head[:7]} (exit {rc}): fix what it found, commit, and run check again.")
+    return rc
+
+
+def read_mark(io):
+    try:
+        with open(os.path.join(io, PRE_PR_MARK), encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
 def agent_helper(argv, io):
     """A helper command as the agent runs it, in its job with no key: what
     can be checked here is checked, as feedback, and the intent is left in
@@ -1777,6 +1925,8 @@ def agent_helper(argv, io):
     if cmd == ["push"]:
         print("Kept: your commits go to GitHub, signed through its API, when you end. Go on (never `git push`: you have no credentials).")
         return 0
+    if cmd == ["check"]:
+        return run_pre_pr(io)
     if cmd == ["decision"]:
         text = " ".join(argv[1:]).strip()
         if not text:
@@ -1831,6 +1981,10 @@ def agent_helper(argv, io):
             if not text.strip():
                 print("Not ready: write how you tested it into a file and pass it: finish ready <file>.")
                 return 1
+            why = pre_pr_refusal(prepr.has_target(prepr.makefile(".")), read_mark(io), git_out("rev-parse", "HEAD"))
+            if why:
+                print(why)
+                return 1
             test, sha = os.environ.get("REPRO_TEST", ""), os.environ.get("REPRO_SHA", "")
             if test:
                 # The test as committed at HEAD must be the sealed one, and
@@ -1865,7 +2019,7 @@ def agent_helper(argv, io):
     return 64
 
 
-AGENT_COMMANDS = ("push", "decision", "tick", "reply", "spec", "finish")
+AGENT_COMMANDS = ("push", "check", "decision", "tick", "reply", "spec", "finish")
 
 
 def reply_target(comment, pr, author):
@@ -2182,7 +2336,8 @@ def main(argv):
             draft_ = info["isDraft"]
             done, total = progress(info["body"])
             pushed = bool(os.environ.get("HEAD_BEFORE")) and info["headRefOid"] != os.environ.get("HEAD_BEFORE")
-        v = end_verdict(mode, pr, draft_, stopped, done, total, limit, runs, cap, pushed, asked)
+        nudged = bool(pr) and nudged_before(comments)
+        v = end_verdict(mode, pr, draft_, stopped, done, total, limit, runs, cap, pushed, asked, nudged)
         print(v)
 
         def said():
@@ -2193,6 +2348,8 @@ def main(argv):
                     fh.write(f"verdict={v}\n")
 
         if v == "continue":
+            if total and done == total:
+                gh("pr", "comment", str(pr), "--repo", repo, "--body", unfinished_comment(run_url))
             subprocess.run(["gh", "label", "create", "autopilot:continue", "--repo", repo, "--color", "1D76DB", "--force",
                             "--description", "On an issue: the autopilot continues its draft pull request"], capture_output=True)
             gh("issue", "edit", str(number), "--repo", repo, "--add-label", "autopilot:continue")
