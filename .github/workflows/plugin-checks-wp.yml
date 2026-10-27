@@ -8,8 +8,10 @@ name: WordPress plugin checks (fast)
 # back and Plugin Check misses: kinds/wordpress-plugin/rules.yml, run by
 # scripts/review-rules.php), the CSS a pull request changes against the
 # design system repos.yml gives the repository (stylelint, from the system's
-# rules.yml: scripts/design-lint.py), readme/version alignment, and the
-# version markers against what was released (scripts/release-markers.sh). Opt-in:
+# rules.yml: scripts/design-lint.py), readme/version alignment, the
+# changelog fragments (changelog.d/<issue>.md, never readme.txt's changelog
+# by hand: scripts/changelog-fragments.sh, #452), and the version markers
+# against what was released (scripts/release-markers.sh). Opt-in:
 # the shipped translations complete, CodeQL, and a required plugin that
 # wordpress.org does not have yet, from the organisation (Plugin Check
 # needs it active). Each job is its own status check.
@@ -50,7 +52,7 @@ name: WordPress plugin checks (fast)
 #
 #   jobs:
 #     checks:
-#       uses: DiluxOne/.github/.github/workflows/plugin-checks-wp.yml@v6
+#       uses: DiluxOne/.github/.github/workflows/plugin-checks-wp.yml@v7
 #       with:
 #         slug: diluxone-offload
 #         version-constant: DILUXONE_OFFLOAD_VERSION   # optional
@@ -62,7 +64,7 @@ name: WordPress plugin checks (fast)
 #       secrets:
 #         DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}   # with requires-plugins-from
 #     tests:
-#       uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v6
+#       uses: DiluxOne/.github/.github/workflows/plugin-tests-wp.yml@v7
 #       with:                                    # optional: the suites mount it too
 #         requires-plugins-from: diluxone-users=DiluxOne/diluxone-users-wordpress@main
 #       secrets:
@@ -723,7 +725,9 @@ jobs:
           ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
-          sparse-checkout: scripts/stage-plugin.sh
+          sparse-checkout: |
+            scripts/stage-plugin.sh
+            scripts/plugin-i18n.sh
           sparse-checkout-cone-mode: false
       - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
@@ -743,6 +747,11 @@ jobs:
           wp --version
       - name: gettext
         run: sudo apt-get update -qq && sudo apt-get install -y -qq gettext
+      - name: In the form that merges
+        # No source references, sorted by message, no .mo committed (#452,
+        # scripts/plugin-i18n.sh): two pull requests that add strings then
+        # change different lines.
+        run: bash .dx-central/scripts/plugin-i18n.sh check .
       - name: Every shipped locale complete
         env:
           SLUG: ${{ inputs.slug }}
@@ -768,7 +777,7 @@ jobs:
             now=$(msgfmt --statistics -o /dev/null "$merged" 2>&1)
             printf '%-40s %s | against the code: %s\n' "$po" "$own" "$now"
             case "$own $now" in
-              *untranslated*|*fuzzy*) echo "::error file=$po::Incomplete: $now (update it from the code, translate, compile the .mo)."; fail=1 ;;
+              *untranslated*|*fuzzy*) echo "::error file=$po::Incomplete: $now (update it from the code and translate it; the .mo is built when the plugin is packaged)."; fail=1 ;;
             esac
           done
           [ "$fail" -eq 0 ] && echo "Every shipped locale is complete."
@@ -821,6 +830,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # The pull request's merge commit and its base: the changelog's
+          # fragments are read against the base (#452).
+          fetch-depth: 2
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -854,6 +866,24 @@ jobs:
           fi
           grep -qE "^=\s*${stable}\s*=" readme.txt || { echo "::error file=readme.txt::No '= ${stable} =' changelog entry."; exit 1; }
           echo "readme.txt OK: Stable tag $stable, Version $version."
+      - name: Changelog fragments
+        # A change's changelog lines are its own file, changelog.d/<issue>.md
+        # (#452, scripts/changelog-fragments.sh), so two pull requests never
+        # edit the same lines of readme.txt. Each fragment holds bullets; on a
+        # pull request, readme.txt's changelog does not change by hand, except
+        # in the one that removes fragments (the release, which writes them in).
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          bash .dx-central/scripts/changelog-fragments.sh check .
+          [ "$EVENT" = pull_request ] || exit 0
+          if ! git rev-parse --verify -q HEAD^1 >/dev/null; then
+            echo "::notice::The checkout has no parent, so readme.txt's changelog is not compared with the base's."; exit 0
+          fi
+          git show HEAD^1:readme.txt > "$RUNNER_TEMP/base-readme.txt" 2>/dev/null || : > "$RUNNER_TEMP/base-readme.txt"
+          git diff --name-status --no-renames HEAD^1 HEAD -- changelog.d \
+            | bash .dx-central/scripts/changelog-fragments.sh pull-request "$RUNNER_TEMP/base-readme.txt" .
       - name: The markers name the released version
         # The three markers say the last version released, or, in the pull
         # request that releases the next one (it removes the `Unreleased.`

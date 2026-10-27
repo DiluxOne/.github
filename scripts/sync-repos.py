@@ -79,7 +79,14 @@ archived and not excluded in repos.yml:
             the way its stack proposes (policy/repro-stacks.yml); not one
             repos.yml says has none by design (`repro: {NAME: false}`).
 
-  sync-repos.py <labels|settings|files|dependabot|own-checks|merge-queue|callers|all> [--repo NAME ...] [--dry-run]
+  i18n      a WordPress plugin's translations in the form that merges
+            (#452, scripts/plugin-i18n.sh): languages/*.pot and *.po with
+            no source references and sorted, no committed .mo (removed, and
+            languages/*.mo in .gitignore); its own issue and pull request,
+            which a person accepts. Needs gettext (msgcat) where it runs.
+            Not in `all`.
+
+  sync-repos.py <labels|settings|files|dependabot|own-checks|merge-queue|callers|i18n|all> [--repo NAME ...] [--dry-run]
   sync-repos.py check [--repo NAME ...] [--report FILE]
   sync-repos.py --test
 
@@ -372,10 +379,14 @@ def git_branch(full, default, branch, wanted, message_form, git=run_git, workdir
             git("checkout", "-q", "-B", branch, cwd=work)
         for path, content in wanted.items():
             target = os.path.join(work, path)
-            os.makedirs(os.path.dirname(target) or work, exist_ok=True)
-            with open(target, "w", encoding="utf-8") as fh:
-                fh.write(content)
-            git("add", "--", path, cwd=work)
+            if content is None:
+                # A file the change removes (#452: a committed .mo).
+                git("rm", "-q", "--ignore-unmatch", "--", path, cwd=work)
+            else:
+                os.makedirs(os.path.dirname(target) or work, exist_ok=True)
+                with open(target, "w", encoding="utf-8") as fh:
+                    fh.write(content)
+                git("add", "--", path, cwd=work)
             # Already so on a branch an earlier run left: nothing to commit.
             if git("status", "--porcelain", "--", path, cwd=work).strip():
                 git("commit", "-q", "-S", "-m", message_form.format(path), cwd=work)
@@ -439,11 +450,90 @@ def api_branch(full, default, branch, wanted, message_form):
         gh("api", "-X", "POST", f"repos/{full}/git/refs", "-f", f"ref=refs/heads/{branch}", "-f", f"sha={base}")
     for path, content in wanted.items():
         current = gh("api", f"repos/{full}/contents/{path}?ref={branch}", "--jq", ".sha", check=False)
+        if content is None:
+            # A file the change removes (#452), when it is still there.
+            if current.returncode == 0 and current.stdout.strip():
+                gh("api", "-X", "DELETE", f"repos/{full}/contents/{path}", "--input", "-",
+                   input_text=json.dumps({"message": message_form.format(path), "branch": branch, "sha": current.stdout.strip()}))
+            continue
         payload = {"message": message_form.format(path), "branch": branch,
                    "content": base64.b64encode(content.encode()).decode()}
         if current.returncode == 0 and current.stdout.strip():
             payload["sha"] = current.stdout.strip()
         gh("api", "-X", "PUT", f"repos/{full}/contents/{path}", "--input", "-", input_text=json.dumps(payload))
+
+
+I18N_IGNORE = "languages/*.mo"
+
+
+def i18n_form(text):
+    """A .pot or .po in the form that merges (#452), as
+    scripts/plugin-i18n.sh writes it: the form lives there alone."""
+    out = subprocess.run(["bash", os.path.join(HERE, "plugin-i18n.sh"), "form"],
+                         input=text, capture_output=True, text=True)
+    if out.returncode != 0:
+        raise RuntimeError(f"plugin-i18n.sh form: {out.stderr.strip()[:200]}")
+    return out.stdout
+
+
+def i18n_wanted(catalogues, mos, gitignore, form=i18n_form):
+    """What a plugin's languages/ needs to merge (#452): {path: content} for
+    each .pot/.po not in form (`catalogues`: {path: text}), None for each
+    committed .mo (removed), and .gitignore with languages/*.mo. Pure."""
+    wanted = {path: form(text) for path, text in sorted(catalogues.items()) if form(text) != text}
+    wanted.update({path: None for path in sorted(mos)})
+    lines = (gitignore or "").splitlines()
+    if I18N_IGNORE not in (line.strip() for line in lines):
+        wanted[".gitignore"] = "\n".join([*lines, I18N_IGNORE]).lstrip("\n") + "\n"
+    return wanted
+
+
+def sync_i18n(repo, dry):
+    """A WordPress plugin's translations in the form that merges (#452), in
+    one issue and pull request of their own, which a person accepts."""
+    full = f"{ORG}/{repo['name']}"
+    default = (repo.get("defaultBranchRef") or {}).get("name") or "main"
+    if repo_kind(full, default) != "wordpress-plugin":
+        print("  not a WordPress plugin: no translations to bring in step")
+        return
+    open_prs = json.loads(gh("pr", "list", "--repo", full, "--state", "open", "--limit", "500", "--json", "headRefName").stdout)
+    if any(p["headRefName"].endswith("-org-i18n") for p in open_prs):
+        print("  a pull request for the translations is already open; skipped")
+        return
+
+    def raw(path):
+        out = gh("api", f"repos/{full}/contents/{path}?ref={default}", "-H", "Accept: application/vnd.github.raw", check=False)
+        if out.returncode == 0:
+            return out.stdout
+        if "404" in out.stderr or "Not Found" in out.stderr:
+            return None
+        raise RuntimeError(f"could not read {path}: {out.stderr.strip()[:200]}")
+
+    listing = gh("api", f"repos/{full}/contents/languages?ref={default}", "--jq", ".[] | select(.type == \"file\") | .name", check=False)
+    if listing.returncode != 0 and "404" not in listing.stderr and "Not Found" not in listing.stderr:
+        # A rate limit or a server error is not an empty languages/.
+        raise RuntimeError(f"could not list languages/: {listing.stderr.strip()[:200]}")
+    names = listing.stdout.split() if listing.returncode == 0 else []
+    catalogues = {f"languages/{n}": raw(f"languages/{n}") or "" for n in names if n.endswith((".po", ".pot"))}
+    mos = [f"languages/{n}" for n in names if n.endswith(".mo")]
+    wanted = i18n_wanted(catalogues, mos, raw(".gitignore"))
+    if not wanted:
+        print("  translations in step")
+        return
+    changed = ", ".join(wanted)
+    if dry:
+        print(f"  would open an issue and a pull request for: {changed}")
+        return
+    body = prd("A plugin's pull requests conflict on its translations: every one regenerates the whole languages/*.pot and *.po, "
+               "whose source references move with any code, and the binary .mo. In the form that merges (DiluxOne/.github#452) "
+               "they carry no references, are sorted by message, and no .mo is committed: it is built when the plugin is packaged.", wanted)
+    pr_body = (f"## 📝 What changes\n\n{changed}: the catalogues with no source references and sorted by message, the committed "
+               ".mo removed, and languages/*.mo in .gitignore (scripts/plugin-i18n.sh normalise; the release and the suites compile "
+               "the .mo).\n\n## 💡 Why\n\nTwo pull requests that add strings then change different lines, and none conflicts on a "
+               "binary (DiluxOne/.github#452).")
+    open_change(repo, default, wanted, "Keep the translations in the form that merges", body,
+                "chore/{}-org-i18n", "chore: keep the translations in the form that merges", pr_body,
+                "chore: {} in the form that merges")
 
 
 def sync_callers(repo, conf, dry):
@@ -1783,7 +1873,7 @@ def triggers_test(check):
     rel = tpl.replace("$default-branch, 'security/[0-9]+.[0-9]+.[0-9]+'", "main")
     got = [f for n, p, f in callers_drift({".github/workflows/release.yml": rel}, conf) if n == "release-wp.yml"]
     check("#324 drift: a caller lacking a trigger of its template is reported", bool(got) and any("security/" in x for x in got[0]), got)
-    both = rel.rstrip("\n") + "\n\n  auth:\n    uses: DiluxOne/.github/.github/workflows/svn-auth-check.yml@v6\n"
+    both = rel.rstrip("\n") + "\n\n  auth:\n    uses: DiluxOne/.github/.github/workflows/svn-auth-check.yml@v7\n"
     got2 = [f for n, p, f in callers_drift({".github/workflows/all.yml": both}, conf) if any("trigger" in x or "lacks `" in x for x in f)]
     check("#324 drift: a file that is the caller of two templates is held to neither's triggers", got2 == [], got2)
 
@@ -1841,16 +1931,16 @@ def callers_test(check, conf):
     named = same.replace(f"    with:\n      support-url: https://diluxone.com/support/{note}    secrets: inherit",
                          f"    with:\n      support-url: https://diluxone.com/support/{note}    secrets:\n      DILUX_BOT_PRIVATE_KEY: ${{{{ secrets.DILUX_BOT_PRIVATE_KEY }}}}")
     named = named.replace("      trigger: triage", "      trigger: label").replace("      actions: write\n", "      actions: read\n")
-    named = named.replace("uses: DiluxOne/.github/.github/workflows/issue-accepted.yml@v6", "uses: DiluxOne/.github/.github/workflows/issue-accepted.yml@v5")
+    named = named.replace("uses: DiluxOne/.github/.github/workflows/issue-accepted.yml@v7", "uses: DiluxOne/.github/.github/workflows/issue-accepted.yml@v6")
     got = callers_drift({**c2, ".github/workflows/issues.yml": named}, conf)
     text = "\n".join(got[0][2]) if got else ""
     check("callers: secrets by name where the template inherits, an input, permissions and a major that differ",
           all(s in text for s in ("job `triage` passes its secrets by name", "job `repro-triaged` passes `trigger: label`, not `triage`",
-                                  "job `accepted` has other permissions", "job `accepted` calls `DiluxOne/.github/.github/workflows/issue-accepted.yml@v5`")), got)
+                                  "job `accepted` has other permissions", "job `accepted` calls `DiluxOne/.github/.github/workflows/issue-accepted.yml@v6`")), got)
     weekly = checks.replace("needs: [checks, tests, coverage]", "needs: [checks]")
     got = callers_drift({**c2, ".github/workflows/plugin-checks.yml": weekly}, conf)
     check("callers: a `needs` without one of the template's jobs differs", got and "job `weekly-failure` needs `checks`, not `checks, tests`" in got[0][2], got)
-    local = comments.replace("DiluxOne/.github/.github/workflows/review-reply.yml@v6", "./.github/workflows/review-reply.yml")
+    local = comments.replace("DiluxOne/.github/.github/workflows/review-reply.yml@v7", "./.github/workflows/review-reply.yml")
     check("callers: in DiluxOne/.github a local call is the same workflow",
           callers_drift({**c2, ".github/workflows/pull-request-comments.yml": local}, conf, central=True) == [], "")
     check("callers: DiluxOne/.github's own lines say by hand, not `callers` (which skips it)",
@@ -1961,10 +2051,10 @@ def callers_test(check, conf):
     # #320: a repository at a major whose migration is only the callers
     # moves to the current one in the same issue and pull request.
     files.clear()
-    mine_job = "\n  mine:\n    uses: DiluxOne/.github/.github/workflows/svn-auth-check.yml@v5\n"
+    mine_job = "\n  mine:\n    uses: DiluxOne/.github/.github/workflows/svn-auth-check.yml@v6\n"
     files[".github/workflows/issues.yml"] = old.rstrip("\n") + "\n" + mine_job
-    files[".github/workflows/pull-request-comments.yml"] = comments.replace("@v6", "@v5")
-    current_tag = "refs/tags/v6"
+    files[".github/workflows/pull-request-comments.yml"] = comments.replace("@v7", "@v6")
+    current_tag = "refs/tags/v7"
 
     def at_major(cfg):
         global ORG
@@ -1982,18 +2072,18 @@ def callers_test(check, conf):
         return out.getvalue()
     saved_major = globals()["current_major"]
     plain = {**conf, "callers": {k: v for k, v in (conf.get("callers") or {}).items() if k != "migrates-from"}}
-    said = at_major({**plain, "callers": {**plain["callers"], "migrates-from": [5]}})
+    said = at_major({**plain, "callers": {**plain["callers"], "migrates-from": [6]}})
     moved = {p: t for p, (b, t) in written.items()}
     prs = [a for a in calls if a[:2] == ("pr", "create")]
     title = prs[0][prs[0].index("--title") + 1] if len(prs) == 1 else ""
-    got = (sorted(moved), any("@v5" in t for t in moved.values()), "svn-auth-check.yml@v6" in moved.get(".github/workflows/issues.yml", ""),
-           "  repro-triaged:" in moved.get(".github/workflows/issues.yml", ""), "@v6" in title)
+    got = (sorted(moved), any("@v6" in t for t in moved.values()), "svn-auth-check.yml@v7" in moved.get(".github/workflows/issues.yml", ""),
+           "  repro-triaged:" in moved.get(".github/workflows/issues.yml", ""), "@v7" in title)
     check("#320 migrates-from: one pull request moves every call to the current major, the repository's own jobs too, and brings the callers in step",
           got == ([".github/workflows/issues.yml", ".github/workflows/pull-request-comments.yml"], False, True, True, True), (got, said))
     saved_rewrite = globals()["rewrite_caller"]
     globals()["rewrite_caller"] = lambda *a: (None, ["support-url"])
     try:
-        said = at_major({**plain, "callers": {**plain["callers"], "migrates-from": [5]}})
+        said = at_major({**plain, "callers": {**plain["callers"], "migrates-from": [6]}})
     finally:
         globals()["rewrite_caller"] = saved_rewrite
     opened = [a for a in calls if a[:2] in (("issue", "create"), ("pr", "create"))]
@@ -2397,7 +2487,7 @@ def self_test():
         schema_check = schema_checker()
         check("#432 C1: a lane's issue passes G1", schema_check(body), body)
         for problem, files in (("Dependabot.", {DEPENDABOT: "version: 2\n"}), ("Shared files.", wanted), ("The organisation's workflow templates (workflow-templates/issues.yml in DiluxOne/.github) have jobs that .github/workflows/issues.yml here lack. "
-                               "It also moves every call of the shared workflows from @v5 to @v6, the repository's own jobs too (docs/migrating.md).",
+                               "It also moves every call of the shared workflows from @v6 to @v7, the repository's own jobs too (docs/migrating.md).",
                                {".github/workflows/issues.yml": "on: issues\n", ".github/workflows/pull-request-comments.yml": "on: issue_comment\n"})):
             check(f"#432 C1: {problem[:40]} passes G1 without the lane", schema_check(prd(problem, files)), prd(problem, files))
         order = [i for i, c in enumerate(calls) if c[:2] == ("issue", "create") or "type=Task" in c or "lane:org-sync" in c]
@@ -2431,6 +2521,38 @@ def self_test():
         check("org-sync: a checkout not merged into main marks nothing", "dx-lane" not in create[create.index("--body") + 1] and not any("lane:org-sync" in c for c in calls), calls)
     finally:
         globals()["gh"], ORG, ORG_COMMIT = saved_gh, saved_org, saved_commit
+
+    # #452: what a plugin's languages/ needs to merge.
+    upper = lambda text: text.upper()  # noqa: E731  a stand-in form
+    got = i18n_wanted({"languages/a.pot": "X", "languages/es.po": "y"}, ["languages/es.mo"], "vendor/\n", form=upper)
+    check("#452 i18n: a catalogue out of form, a .mo to remove, .gitignore gains languages/*.mo",
+          got == {"languages/es.po": "Y", "languages/es.mo": None, ".gitignore": "vendor/\nlanguages/*.mo\n"}, got)
+    check("#452 i18n: in form, nothing committed, ignored: in step",
+          i18n_wanted({"languages/a.pot": "X"}, [], "languages/*.mo\n", form=upper) == {}, "")
+    check("#452 i18n: no .gitignore yet", i18n_wanted({}, [], None, form=upper) == {".gitignore": "languages/*.mo\n"}, "")
+    import shutil
+    if shutil.which("msgcat"):
+        po = 'msgid ""\nmsgstr ""\n"Content-Type: text/plain; charset=UTF-8\\n"\n\n#: z.php:1\nmsgid "Zeta"\nmsgstr "Z"\n\n#: a.php:2\nmsgid "Alpha"\nmsgstr "A"\n'
+        formed = i18n_form(po)
+        check("#452 i18n: msgcat drops the references and sorts", "#:" not in formed and formed.index("Alpha") < formed.index("Zeta"), formed)
+        check("#452 i18n: the form is stable", i18n_form(formed) == formed, "")
+        dated = po.replace('msgstr ""\n', 'msgstr ""\n"PO-Revision-Date: 2026-10-26 11:30+0000\\n"\n"X-Generator: Poedit 3.4\\n"\n', 1)
+        formed = i18n_form(dated)
+        check("#452 i18n: the migration pins the header's dates and drops X-Generator, as plugin-i18n.sh check wants",
+              ("2026-10-26" in formed, "X-Generator" in formed, "PO-Revision-Date: 1970-01-01" in formed), (False, False, True))
+    else:
+        print("skip #452 msgcat (no gettext here)")
+    git_calls = []
+
+    def fake_git(*args, cwd=None):
+        git_calls.append(args)
+        return ""
+    import tempfile
+    with tempfile.TemporaryDirectory() as work:
+        git_branch("o/r", "main", "b", {"languages/es.mo": None, ".gitignore": "x\n"}, "chore: {}", git=fake_git, workdir=work)
+    check("#452 git_branch: None removes the file, content writes it",
+          ("rm", "-q", "--ignore-unmatch", "--", "languages/es.mo") in git_calls and ("add", "--", ".gitignore") in git_calls
+          and not any(c[:2] == ("add", "--") and c[-1] == "languages/es.mo" for c in git_calls), git_calls)
 
     # #187: which parts each command runs; `dependabot` alone writes the
     # Dependabot file, and `all` never does.
@@ -2523,7 +2645,7 @@ def self_test():
 def main(argv):
     if argv == ["--test"]:
         return self_test()
-    if not argv or argv[0] not in ("labels", "settings", "files", "dependabot", "own-checks", "merge-queue", "callers", "all", "check"):
+    if not argv or argv[0] not in ("labels", "settings", "files", "dependabot", "own-checks", "merge-queue", "callers", "i18n", "all", "check"):
         print(__doc__)
         return 64
     what, rest = argv[0], argv[1:]
@@ -2575,6 +2697,8 @@ def main(argv):
                 sync_merge_queue(repo, conf, dry)
             if what == "callers":
                 sync_callers(repo, conf, dry)
+            if what == "i18n":
+                sync_i18n(repo, dry)
         except (RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
             failures += 1
             print(f"  failed: {exc}")

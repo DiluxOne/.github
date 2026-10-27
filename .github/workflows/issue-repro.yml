@@ -136,13 +136,13 @@ name: Issue reproduction
 #   jobs:
 #     repro:
 #       permissions: { actions: read, contents: write, issues: write, pull-requests: write }
-#       uses: DiluxOne/.github/.github/workflows/issue-repro.yml@v6
+#       uses: DiluxOne/.github/.github/workflows/issue-repro.yml@v7
 #       secrets: inherit
 #     repro-triaged:
 #       needs: triage
 #       if: needs.triage.outputs.bug == 'true'
 #       permissions: { actions: read, contents: write, issues: write, pull-requests: write }
-#       uses: DiluxOne/.github/.github/workflows/issue-repro.yml@v6
+#       uses: DiluxOne/.github/.github/workflows/issue-repro.yml@v7
 #       with:
 #         trigger: triage
 #         triage-bug: ${{ needs.triage.outputs.bug }}
@@ -453,7 +453,7 @@ jobs:
         if: steps.cap.outputs.run == 'true' && steps.way.outputs.sandbox == 'php-unit'
         continue-on-error: true
         timeout-minutes: 15
-        uses: anthropics/claude-code-action@aa8a7738e48bf30a40ee499ce818bef081c5ab5e # v1.0.257
+        uses: anthropics/claude-code-action@16f9f71ab9c490faf367f94dd294897edc25be33 # v1.0.261
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
@@ -506,7 +506,7 @@ jobs:
         if: steps.cap.outputs.run == 'true' && steps.way.outputs.sandbox != 'php-unit'
         continue-on-error: true
         timeout-minutes: 15
-        uses: anthropics/claude-code-action@aa8a7738e48bf30a40ee499ce818bef081c5ab5e # v1.0.257
+        uses: anthropics/claude-code-action@16f9f71ab9c490faf367f94dd294897edc25be33 # v1.0.261
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
@@ -744,7 +744,7 @@ jobs:
       - name: Diagnose
         id: diag
         continue-on-error: true
-        uses: anthropics/claude-code-action@aa8a7738e48bf30a40ee499ce818bef081c5ab5e # v1.0.257
+        uses: anthropics/claude-code-action@16f9f71ab9c490faf367f94dd294897edc25be33 # v1.0.261
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
@@ -1164,7 +1164,7 @@ jobs:
     # The agent's jobs read the repository with the job's own token (#287).
     permissions:
       contents: read
-    uses: DiluxOne/.github/.github/workflows/autopilot.yml@v6
+    uses: DiluxOne/.github/.github/workflows/autopilot.yml@v7
     with:
       mode: start
       issue: ${{ needs.report.outputs.lane-issue }}

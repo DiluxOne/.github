@@ -2,11 +2,36 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [7.0.1](https://github.com/DiluxOne/.github/releases/tag/v7.0.1) · 2026-10-27
+
+### CI
+
+- **deps:** Bump the github-actions group across 1 directory with 2 updates ([#457](https://github.com/DiluxOne/.github/pull/457))
+
+### Maintenance
+
+- **versions:** the organisation calls the shared workflows at v7 ([#466](https://github.com/DiluxOne/.github/pull/466))
+
+## [7.0.0](https://github.com/DiluxOne/.github/releases/tag/v7.0.0) · 2026-10-26
+
+### Breaking changes
+
+- **plugin:** changelog fragments and translations that merge ([#454](https://github.com/DiluxOne/.github/pull/454))
+
+### Maintenance
+
+- **release:** v7.0.0, plugin changelogs and translations that merge ([#464](https://github.com/DiluxOne/.github/pull/464))
+- **repos:** give DiluxOne FM its Project ([#442](https://github.com/DiluxOne/.github/pull/442))
+
 ## [6.9.0](https://github.com/DiluxOne/.github/releases/tag/v6.9.0) · 2026-10-26
 
 ### Features
 
 - **merge-queue:** a merge queue where GitHub gives one, with two levels of tests ([#453](https://github.com/DiluxOne/.github/pull/453))
+
+### Maintenance
+
+- **release:** v6.9.0, a merge queue where GitHub gives one ([#456](https://github.com/DiluxOne/.github/pull/456))
 
 ## [6.8.6](https://github.com/DiluxOne/.github/releases/tag/v6.8.6) · 2026-10-25
 

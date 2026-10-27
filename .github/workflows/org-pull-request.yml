@@ -53,14 +53,14 @@ jobs:
       pull-requests: read # the pull request's timeline, for the base-branch check on `edited`
       issues: read # the issues it closes, for the accepted-issue gate
       actions: read # the run that opened a lane's issue (policy/autonomy.yml)
-    uses: DiluxOne/.github/.github/workflows/conventions.yml@v6
+    uses: DiluxOne/.github/.github/workflows/conventions.yml@v7
 
   # The issues it closes go to its author, when a member of the
   # organisation (#73); on open, reopen, ready and a changed description.
   assignee:
     if: github.event_name == 'pull_request' && github.repository != 'DiluxOne/.github'
     permissions: {}
-    uses: DiluxOne/.github/.github/workflows/pull-request-assignee.yml@v6
+    uses: DiluxOne/.github/.github/workflows/pull-request-assignee.yml@v7
     secrets:
       DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
 
@@ -73,7 +73,7 @@ jobs:
   wake-vm:
     if: github.repository != 'DiluxOne/.github' && github.event.action != 'edited'
     permissions: {}
-    uses: DiluxOne/.github/.github/workflows/runner-wake.yml@v6
+    uses: DiluxOne/.github/.github/workflows/runner-wake.yml@v7
     secrets:
       DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
 
@@ -84,7 +84,7 @@ jobs:
       contents: read
       pull-requests: write
       issues: write
-    uses: DiluxOne/.github/.github/workflows/claude-review.yml@v6
+    uses: DiluxOne/.github/.github/workflows/claude-review.yml@v7
     with:
       # The repository's kind (kind: in .github/review-policy.yml) adds its
       # own profile to the general one.
@@ -99,7 +99,7 @@ jobs:
       contents: read
       issues: read
       pull-requests: read
-    uses: DiluxOne/.github/.github/workflows/auto-merge.yml@v6
+    uses: DiluxOne/.github/.github/workflows/auto-merge.yml@v7
     with:
       risk: ${{ needs.review.outputs.risk }}
       complexity: ${{ needs.review.outputs.complexity }}
@@ -122,7 +122,7 @@ jobs:
     # The agent's jobs read the repository with the job's own token (#287).
     permissions:
       contents: read
-    uses: DiluxOne/.github/.github/workflows/autopilot.yml@v6
+    uses: DiluxOne/.github/.github/workflows/autopilot.yml@v7
     with:
       mode: fix
       pr: ${{ format('{0}', github.event.pull_request.number) }}

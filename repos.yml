@@ -160,7 +160,7 @@ dependabot:
 # the shared workflows, its own jobs' too (#320). Any other older major is
 # migrated by hand first.
 callers:
-  migrates-from: [5]
+  migrates-from: [5, 6]
   every-repository: [issues.yml, pull-request-comments.yml]
   repository-owned:
     issues.yml: [support-url]
