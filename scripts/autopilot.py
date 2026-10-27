@@ -2348,11 +2348,13 @@ def main(argv):
                     fh.write(f"verdict={v}\n")
 
         if v == "continue":
-            if total and done == total:
-                gh("pr", "comment", str(pr), "--repo", repo, "--body", unfinished_comment(run_url))
             subprocess.run(["gh", "label", "create", "autopilot:continue", "--repo", repo, "--color", "1D76DB", "--force",
                             "--description", "On an issue: the autopilot continues its draft pull request"], capture_output=True)
             gh("issue", "edit", str(number), "--repo", repo, "--add-label", "autopilot:continue")
+            # Once the continue is on its way: a comment that counts it
+            # never stands for one that did not start.
+            if total and done == total:
+                gh("pr", "comment", str(pr), "--repo", repo, "--body", unfinished_comment(run_url))
             said()
         elif v == "silent":
             why = silent_why(mode, pr, os.environ.get("WHY", ""), os.environ.get("SPEC_OUTCOME", ""), limit, done, total, runs, cap)
