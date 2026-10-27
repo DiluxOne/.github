@@ -21,7 +21,10 @@ name: Conventions
 # settings, REST routes, AJAX endpoints, admin pages, post types,
 # taxonomies, hooks, shortcodes, blocks), read from
 # the diff by scripts/surface.py, which runs nothing of the pull request, so
-# it holds on a fork's too, with no secret (#144).
+# it holds on a fork's too, with no secret (#144); and, where org.yml
+# `pre-pr` is `required`, that the repository's Makefile has a `pre-pr`
+# target, the one check before a pull request (#479, scripts/pre-pr.py;
+# repos.yml `pre-pr` names one that has none by design).
 # The checks themselves are scripts/conventions.sh,
 # which scripts/local-review.sh runs before a pull request is opened. Plus a docs check whenever the caller runs (pull requests and
 # pushes to main): relative Markdown links resolve, and no retired product
@@ -147,6 +150,17 @@ jobs:
           DEFAULT_POLICY=.dx-central/policy/review-policy.default.yml REPO_POLICY="$RUNNER_TEMP/repo-policy.yml" \
             POLICY_MODE=issue-gate python3 .dx-central/scripts/policy.py
 
+      # #479: whether this repository must have a `make pre-pr`, from
+      # org.yml `pre-pr` and repos.yml (the organisation's, never the pull
+      # request's): `required`, `optional` or `exempt`.
+      - name: Whether the repository must have a make pre-pr
+        id: pre-pr
+        env:
+          REPO: ${{ github.event.repository.name }}
+        run: |
+          mode=$(python3 .dx-central/scripts/pre-pr.py required "$REPO")
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+
       - name: An accepted issue
         env:
           GH_TOKEN: ${{ github.token }}
@@ -209,6 +223,10 @@ jobs:
           # request that is not a feat, from anyone else, adds none).
           KIND: ${{ steps.gate.outputs.kind }}
           TRUSTED: ${{ steps.gate.outputs.trusted }}
+          # `required` fails a repository whose Makefile has no `pre-pr`
+          # (#479); org.yml `pre-pr` keeps it `optional` until every
+          # repository has one.
+          PRE_PR: ${{ steps.pre-pr.outputs.mode }}
         run: bash .dx-central/scripts/conventions.sh
 
   docs:

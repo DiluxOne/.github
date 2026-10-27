@@ -21,7 +21,10 @@
 # over, as the policy found; MAX_LINES is then empty, and the log says why),
 # KIND (the repository's kind, as the policy found; empty for none) and
 # TRUSTED (false for an author who is not trusted: only then is the surface,
-# below, checked; empty or true skips it).
+# below, checked; empty or true skips it) and PRE_PR (`required` where the
+# repository must have a `make pre-pr`, the one check before a pull request:
+# scripts/pre-pr.py required, from org.yml `pre-pr` and repos.yml; anything
+# else checks nothing, #479).
 #
 # `conventions.sh --head-facts REPO PR SHA DIR` writes, for the gate that
 # decides a take-over (#130), what GitHub says about a pull request: the
@@ -225,6 +228,11 @@ check() {
       [ -n "$(section "$h")" ] || error "The description's \"$h\" section is empty."
     done
   fi
+  # #479: `make pre-pr`, the one check before a pull request, where the
+  # organisation requires it.
+  if [ "${PRE_PR:-}" = required ] && ! python3 "$here/pre-pr.py" has . >/dev/null 2>&1; then
+    error "This repository's Makefile has no \`pre-pr\` target: \`make pre-pr\` is the one check before a pull request (DiluxOne/.github#479, kinds/README.md \`pre-pr\`), every check the pull request and the merge queue run. Add it in a pull request of its own; a repository that has none by design is listed in DiluxOne/.github repos.yml \`pre-pr\`."
+  fi
   if [ "$fail" -ne 0 ]; then
     echo "See CONTRIBUTING.md: \"Branch names\", \"Commit messages and PR titles\", \"Writing the pull request\" and \"Saying that AI was involved\"."
     return 1
@@ -313,6 +321,26 @@ if [ "${1:-}" = "--test" ]; then
     BRANCH=docs/x TITLE="docs: notes" BODY=$good BASE=$(git rev-parse HEAD~1) HEAD_REF=$(git rev-parse HEAD) check >/dev/null 2>&1
   ); then echo "FAIL fails: docs that rename code into Markdown (want 1, got 0)"; fail=1; else echo "ok   fails: docs that rename code into Markdown"; fi
   rm -rf "$dir"
+  # #479: a repository the organisation requires a `make pre-pr` of; $3 the
+  # Makefile's text ("" for none), $4 PRE_PR.
+  pre_pr_case() { # name want makefile mode
+    local dir got
+    dir=$(mktemp -d)
+    (
+      cd "$dir" && git init -q && git config user.email t@t && git config user.name t && git config commit.gpgsign false
+      if [ -n "$3" ]; then printf '%b' "$3" > Makefile && git add Makefile; fi
+      git commit -q --allow-empty -m "chore: base" && git checkout -q -b fix/a-thing
+      git commit -q --allow-empty -m "fix(sync): a thing"
+      PRE_PR=$4 BRANCH=fix/a-thing TITLE="fix(sync): a thing" BODY=$good BASE=$(git rev-parse HEAD~1) HEAD_REF=$(git rev-parse HEAD) check >/dev/null 2>&1
+    ) && got=0 || got=1
+    rm -rf "$dir"
+    if [ "$got" = "$2" ]; then echo "ok   $1"; else echo "FAIL $1 (want $2, got $got)"; return 1; fi
+  }
+  pre_pr_case "#479: required, a Makefile with pre-pr passes"     0 'check:\n\ttrue\npre-pr: check\n' required || fail=1
+  pre_pr_case "#479: required, a Makefile with no pre-pr fails"   1 'check:\n\ttrue\n' required || fail=1
+  pre_pr_case "#479: required, no Makefile fails"                 1 '' required || fail=1
+  pre_pr_case "#479: optional (the switch off), none still passes" 0 '' optional || fail=1
+  pre_pr_case "#479: exempt by design, none passes"               0 '' exempt || fail=1
   # #144: no new functionality behind a type that is not feat, from an
   # author who is not trusted. The base holds includes/a.php; the branch
   # writes $5 to $6 (a path) and is checked as $3 (title), with $4 TRUSTED

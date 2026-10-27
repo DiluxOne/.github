@@ -9,7 +9,11 @@
 #                       check the issue is accepted, create the branch
 #                       <type>/<number>-<slug> and the pull request's
 #                       description (.git/dx/pr.md, closing the issue)
-#   dx check            the local review on this branch, with that description
+#   dx check            `make pre-pr` (#479: every check the pull request and
+#                       the merge queue run; where the Makefile has none it
+#                       says so, and fails once org.yml `pre-pr` requires
+#                       one), then the local review on this branch, with
+#                       that description
 #   dx pr [--title T]   open the pull request upstream (only when the person
 #                       you work for says so)
 #   dx --test           self-test
@@ -105,10 +109,30 @@ EOF
   echo "Commit with \"$type(<scope>): <subject>\" (72 characters or fewer), then: dx check"
 }
 
+# `make pre-pr`, the one check before a pull request (#479,
+# scripts/pre-pr.py), in the current directory; $1 is pre-pr.py required's
+# mode. Fails on its failure. Where the Makefile has no such target it
+# names the contract: it fails where the organisation requires one
+# (org.yml `pre-pr: required`) and goes on to the review otherwise, as the
+# conventions check does; a repository that has none by design (exempt)
+# runs nothing.
+run_pre_pr() {
+  [ "$1" = exempt ] && return 0
+  if ! python3 "$here/pre-pr.py" has .; then
+    [ "$1" = required ] && return 1
+    echo "dx: going on without it until the organisation requires it (org.yml \`pre-pr\`)." >&2
+    return 0
+  fi
+  make pre-pr || { echo "dx: \`make pre-pr\` failed: fix what it found, then run dx check again." >&2; return 1; }
+}
+
 cmd_check() {
-  local body
+  local body name mode
   body="$(git rev-parse --git-dir)/dx/pr.md"
   [ -f "$body" ] || die "no $body: start with dx start <issue number>."
+  name=$(upstream); name=${name#*/}
+  mode=$(python3 "$here/pre-pr.py" required "$name") || die "could not read whether $name must have a \`make pre-pr\` (org.yml and repos.yml \`pre-pr\`)."
+  run_pre_pr "$mode" || exit 1
   bash "$here/local-review.sh" --body-file "$body" "$@"
 }
 
@@ -136,6 +160,18 @@ if [ "${1:-}" = "--test" ]; then
   t "a slug is lower case and dashed" "$(slug 'Adopt the shared v4 workflows!')" adopt-the-shared-v4-workflows
   t "a slug is short"                 "$(slug 'A very long title that goes on and on about many many things')" a-very-long-title-that-goes-on-and-on-ab
   t "a slug has no edge dashes"       "$(slug '  -- Fix: the thing --')" fix-the-thing
+  # #479: dx check runs `make pre-pr` first, in a scratch repository.
+  scratch=$(mktemp -d); trap 'rm -rf "$scratch"' EXIT
+  pre_pr_in() { (cd "$scratch" && run_pre_pr "$1" >/dev/null 2>&1 && echo pass || echo fail); }
+  t "pre-pr: no Makefile fails where required"  "$(pre_pr_in required)" fail
+  t "pre-pr: no Makefile goes on while optional" "$(pre_pr_in optional)" pass
+  printf 'check:\n\ttrue\n' > "$scratch/Makefile"
+  t "pre-pr: a Makefile with no target fails where required" "$(pre_pr_in required)" fail
+  t "pre-pr: one that has none by design passes" "$(pre_pr_in exempt)" pass
+  printf 'pre-pr:\n\ttrue\n' > "$scratch/Makefile"
+  t "pre-pr: a target that passes passes"       "$(pre_pr_in required)" pass
+  printf 'pre-pr:\n\tfalse\n' > "$scratch/Makefile"
+  t "pre-pr: a target that fails fails"         "$(pre_pr_in required)" fail
   [ "$fail" -eq 0 ] && echo "all tests passed"
   exit "$fail"
 fi

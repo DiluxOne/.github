@@ -18,6 +18,21 @@ workflows:
   - plugin-release-wp.yml
   - plugin-publish-wp.yml
 
+# What a repository of this kind's `make pre-pr` runs (#479,
+# scripts/pre-pr.py): every check its pull request and its merge queue run,
+# one after the other, stopping at the first failure, starting and stopping
+# the wp-env sites it needs. `dx check` runs it before the local review, and
+# so does the autopilot before it marks a pull request ready.
+pre-pr:
+  - lint (PHPCS, and the stylesheets and scripts the plugin has)
+  - static analysis (PHPStan and Psalm)
+  - unit tests, on the tools' PHP and on the oldest the plugin supports
+  - translations (the catalogues in the form that merges, compiled)
+  - Plugin Check
+  - integration tests, on a single site and on a network when the plugin declares one
+  - every E2E suite the plugin declares
+  - the review rules (scripts/review-rules.php with this pack's rules.yml)
+
 # What a repository of this kind requires of its own jobs, beside the
 # organisation's pipeline: a repository ruleset named "own checks"
 # (docs/migrating.md). A repository needs one when a workflow of its calls

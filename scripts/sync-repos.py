@@ -78,6 +78,10 @@ archived and not excluded in repos.yml:
             repos.yml `repro:` or its own .github/review-policy.yml), with
             the way its stack proposes (policy/repro-stacks.yml); not one
             repos.yml says has none by design (`repro: {NAME: false}`).
+            And every repository whose default branch's Makefile has no
+            `pre-pr` target, the one check before a pull request (#479,
+            scripts/pre-pr.py); not one repos.yml says has none by design
+            (`pre-pr: {NAME: false}`).
 
   i18n      a WordPress plugin's translations in the form that merges
             (#452, scripts/plugin-i18n.sh): languages/*.pot and *.po with
@@ -1234,6 +1238,32 @@ def repro_gap(conf, name, own, propose):
             f"its bugs stay unconfirmed and the autopilot does not start on them; {how}")
 
 
+def pre_pr_gap(conf, name, makefile):
+    """#479: what the audit says of a repository whose Makefile (`makefile`,
+    its text, None for none) has no `pre-pr` target; None when it has one or
+    repos.yml says it has none by design (`pre-pr: {NAME: false}`)."""
+    pre_pr = _script("pre_pr", "pre-pr.py")
+    if ((conf.get("pre-pr") or {}).get(name) is False) or pre_pr.has_target(makefile):
+        return None
+    where = "its Makefile has no `pre-pr` target" if makefile is not None else "it has no Makefile"
+    return (f"{where}: `make pre-pr` is the one check before a pull request (#479), every check its pull request and its "
+            "merge queue run, as its kind's pack (`pre-pr`) or its .github/review-policy.yml says; "
+            "or repos.yml `pre-pr` says it has none by design")
+
+
+def makefile_of(full, default):
+    """The text of a repository's Makefile on its default branch, as make
+    picks it (GNUmakefile, makefile, Makefile), or None."""
+    names = root_names(full, default)
+    for name in _script("pre_pr", "pre-pr.py").MAKEFILES:
+        if name in names:
+            out = gh("api", f"repos/{full}/contents/{name}?ref={default}", "-H", "Accept: application/vnd.github.raw", check=False)
+            if out.returncode != 0:
+                raise RuntimeError(f"could not read its {name}: {out.stderr.strip()[:200]}")
+            return out.stdout
+    return None
+
+
 def own_checks_spec(full, default, texts):
     """The pack's `own-checks` when the repository needs the ruleset: its kind
     (kind: in its .github/review-policy.yml) asks for one and a workflow of
@@ -1708,6 +1738,11 @@ def drift(repo, conf, labels, block, current=0):
     gap = repro_gap(conf, repo["name"], policy, propose) if entry is not None else None
     if gap:
         found.append(gap)
+    # #479: the one check before a pull request, `make pre-pr`.
+    if entry is not None and (conf.get("pre-pr") or {}).get(repo["name"]) is not False:
+        gap = pre_pr_gap(conf, repo["name"], makefile_of(full, default))
+        if gap:
+            found.append(gap)
     if current:
         files = workflow_files(full)
         texts = list(files.values())
@@ -2171,7 +2206,10 @@ def dependabot_test(check, conf, labels, block):
         if joined.startswith("api repos/o/r/contents/.github/review-policy.yml"):
             return Out(state["policy"]) if state["policy"] else Out("", 1, "HTTP 404")
         if joined.startswith("api repos/o/r/contents/?ref="):
-            return Out(json.dumps([{"name": "package.json"}, {"name": "plugin.php"}, {"name": "readme.txt"}]))
+            root = [{"name": "package.json"}, {"name": "plugin.php"}, {"name": "readme.txt"}]
+            return Out(json.dumps(root + ([{"name": "Makefile"}] if state.get("makefile") is not None else [])))
+        if joined.startswith("api repos/o/r/contents/Makefile?ref=main"):
+            return Out(state["makefile"]) if state.get("makefile") is not None else Out("", 1, "HTTP 404")
         if joined.startswith("api repos/o/r/contents/plugin.php"):
             return Out("<?php\n/**\n * Plugin Name: R\n */\n")
         if joined.startswith(f"api repos/o/r/contents/{DEPENDABOT}?ref=main"):
@@ -2245,6 +2283,18 @@ def dependabot_test(check, conf, labels, block):
         state["policy"] = "kind: wordpress-plugin\n"
         check("#377 C3: drift() lists a repository that declares no way (no kind, no repro:), and says what to declare",
               any("declares no way to reproduce a bug" in l for l in lines_n), lines_n)
+        # #479 C1: the one check before a pull request.
+        globals()["listed"] = lambda name: {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"]}]}
+        pre_pr_lines = {}
+        for label, makefile in (("none", None), ("without", "check:\n\tphpunit\n"), ("with", ".PHONY: pre-pr\npre-pr: check\n")):
+            state["makefile"] = makefile
+            pre_pr_lines[label] = [l for l in drift(repo, conf, [], block) if "pre-pr" in l]
+        state["makefile"] = None
+        exempt = [l for l in drift(repo, dict(conf, **{"pre-pr": {"r": False}}), [], block) if "pre-pr" in l]
+        check("#479 C1: drift() lists a repository with no Makefile, and one whose Makefile has no pre-pr target",
+              (any("it has no Makefile" in l for l in pre_pr_lines["none"]), any("its Makefile has no `pre-pr` target" in l for l in pre_pr_lines["without"])), (True, True))
+        check("#479 C1: one with a pre-pr target is not listed, nor one repos.yml says has none by design",
+              (pre_pr_lines["with"], exempt), ([], []))
     finally:
         globals()["gh"], ORG, globals()["listed"] = saved_gh, saved_org, saved_listed
     check("C3 (#178): a missing one is", any(f"`{DEPENDABOT}` is missing" in l for l in missing), missing)

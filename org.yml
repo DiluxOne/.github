@@ -19,3 +19,10 @@ security: DiluxOne/security
 # does; `on` requires it and fails where it cannot be; `off` never. A
 # repository's exception is repos.yml `merge-queue`.
 merge-queue: auto
+# `make pre-pr`, the one check before a pull request in every repository
+# (#479, scripts/pre-pr.py): `optional` lists a repository without one in
+# the daily drift check; `required` also fails its pull requests in the
+# conventions check. It turns `required` only once every repository has one,
+# so no open pull request is stopped by the release that brings the check.
+# A repository that has none by design is repos.yml `pre-pr`.
+pre-pr: optional

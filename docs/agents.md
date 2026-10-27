@@ -40,7 +40,7 @@ CI holds you to it: a `feat` or `!` pull request must close a Feature, a `fix` a
 
 ## 4. Check it
 
-Fill in What changes and Why in `.git/dx/pr.md`, then `dx check`. It runs what CI will: the conventions, the description, and the Claude review on your own account. Fix every blocker and major it lists (a pre-existing one, in code you did not touch, is listed but never stops you), commit, and run it again until it says "Ready for a pull request".
+Fill in What changes and Why in `.git/dx/pr.md`, then `dx check`. It runs what CI will: first the repository's `make pre-pr`, every check its pull request and its merge queue run, one after the other (#479: every repository has one, whatever its stack; what it covers is its kind's pack, `kinds/<kind>/pack.yml` `pre-pr`, or its own `.github/review-policy.yml` `pre-pr` when it has no kind; in a repository without one it says so, and fails once org.yml `pre-pr` is `required`), then the conventions, the description, and the Claude review on your own account. Fix every blocker and major it lists (a pre-existing one, in code you did not touch, is listed but never stops you), commit, and run it again until it says "Ready for a pull request".
 
 ## 5. The pull request
 

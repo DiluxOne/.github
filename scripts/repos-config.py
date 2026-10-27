@@ -9,8 +9,11 @@ checks it, and the rest of repos.yml against it:
   - one repository's kinds never cover the same paths (a monorepo splits
     them), and a kind covers at least one path;
   - every repository another section names (projects, design-system,
-    dependabot, repro, no-workflows) is listed in `repos:`, and a design
-    system named exists in design-systems/ (or is `local`);
+    dependabot, repro, merge-queue, pre-pr, no-workflows) is listed in
+    `repos:`, and a design system named exists in design-systems/ (or is
+    `local`);
+  - a repository's `pre-pr:` (#479) is `false`: it has no `make pre-pr`
+    by design;
   - each repository's `repro:` (#377) is a `repro:` as its
     .github/review-policy.yml takes it, every way to the schema of
     scripts/repro-ways.py, or `false` (no way, by design);
@@ -25,8 +28,8 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
 ROLES = ("front", "back", "data", "infra", "docs")
-SECTIONS = {"no-workflows", "exclude", "repos", "projects", "design-system", "settings", "security", "files", "dependabot", "callers", "repro", "merge-queue"}
-NAMED = ("projects", "design-system", "dependabot", "repro", "merge-queue")
+SECTIONS = {"no-workflows", "exclude", "repos", "projects", "design-system", "settings", "security", "files", "dependabot", "callers", "repro", "merge-queue", "pre-pr"}
+NAMED = ("projects", "design-system", "dependabot", "repro", "merge-queue", "pre-pr")
 
 
 def load(path):
@@ -94,6 +97,9 @@ def problems(conf, kinds, systems):
     for name, mode in (conf.get("merge-queue") or {}).items():
         if mode not in ("auto", "on", "off", True, False):
             out.append(f"merge-queue.{name}: {mode!r} is not auto, on or off")
+    for name, entry in (conf.get("pre-pr") or {}).items():
+        if entry is not False:
+            out.append(f"pre-pr.{name}: {entry!r} is not false (a repository that has none by design)")
     for name, entry in (conf.get("repro") or {}).items():
         if entry is False:  # no way, by design
             continue
@@ -150,6 +156,8 @@ def self_test():
     check("a design system that does not exist", problems(dict(good, **{"design-system": {"a": "material"}}), kinds, systems), ["design-system.a: 'material' is not in design-systems/ (nor local)"])
     check("an unknown section", problems(dict(good, owners={}), kinds, systems), ["owners: not a section of repos.yml"])
     check("#451 a repository's merge queue: auto, on or off", problems(dict(good, **{"merge-queue": {"a": "off", "b": "sometimes"}}), kinds, systems), ["merge-queue.b: 'sometimes' is not auto, on or off"])
+    check("#479 a repository's pre-pr exception is false, and nothing else", problems(dict(good, **{"pre-pr": {"a": False, "b": True}}), kinds, systems), ["pre-pr.b: True is not false (a repository that has none by design)"])
+    check("#479 a pre-pr exception of a repository repos: lacks", problems(dict(good, **{"pre-pr": {"z": False}}), kinds, systems), ["pre-pr.z: not a repository of `repos:`"])
     way = {"layer": "logic", "test": "tests/repro/test_issue_{n}.py", "run": "pytest {test}", "junit": "build/repro.xml"}
     check("#377 a repository's way to reproduce a bug", problems(dict(good, repro={"b": {"ways": {"pytest": way}}}), kinds, systems), [])
     check("#377 a way of a repository repos: lacks", problems(dict(good, repro={"z": {"ways": {"pytest": way}}}), kinds, systems), ["repro.z: not a repository of `repos:`"])
