@@ -83,6 +83,18 @@ Most of it is the organisation's already: a new repository gets the pull request
    and the daily drift check lists every repository that declares none.
    Until it does, its bugs stay unconfirmed and the autopilot does not start
    on one: the issue says which way to declare.
+
+   **Its one check before a pull request** (#479): a `pre-pr` target in its
+   Makefile, whatever its stack, that runs every check its pull request and
+   its merge queue run, one after the other, stopping at the first failure,
+   and starts and stops what it needs (a plugin's wp-env sites) instead of
+   relying on anything started before it. What it must cover is its kind's
+   pack (`kinds/<kind>/pack.yml` `pre-pr`); a repository of no kind lists
+   what its own covers in its `.github/review-policy.yml` (`pre-pr:`, one
+   item per line). `dx check` and the autopilot run it before a pull
+   request, [`scripts/pre-pr.py`](../scripts/pre-pr.py) says whether it is
+   there, and the daily drift check lists a repository without one (unless
+   `repos.yml` `pre-pr` says it has none by design).
 3. **What it is, then labels, settings and shared files.** First add it to `repos.yml` `repos:` with its kinds, the paths each covers and their roles (`scripts/repos-config.py check` holds it; the daily drift check reports a repository missing there); its kind there wins over the one its review policy names. Then `python3 scripts/sync-repos.py all --repo <name>` from a checkout of this repository: the labels, the merge and security settings (Dependabot's security updates among them), `.github/CODEOWNERS`, and the opening block of `AGENTS.md` (a pull request with its issue); then `python3 scripts/sync-repos.py dependabot --repo <name>` for `.github/dependabot.yml` (a pull request of its own). `all` also turns its merge queue on where GitHub gives one (org.yml `merge-queue`, #451): a public repository, once its callers run on `merge_group`. The `main` and tag rulesets are the organisation's; a plugin that publishes adds its environment `wordpress-org` (deployment policy: tag `*.*.*` plus `main` and the branches `security/*`, where dilux-bot alone pushes a security patch, #247; the SVN credentials and the release App's key as environment secrets; no required reviewer is needed, since a person accepting the release issue is the approval) and installs the `dilux-release` App.
 
    The organisation's side, done by an administrator of the organisation (a maintainer, or the session working in this repository): add the repository to the `include` list of the three organisation rulesets (`org: main`, `org: release tag creation`, `org: release tags`), which name their repositories one by one; for a private repository, also to the organisation variable `DX_RUNNER_HEAVY` and to the runner group `private-repos-vm`, so its jobs run on the organisation's VM and spend no minutes; and give it a Project in `repos.yml` (`projects:`) and, when it has screens, its design system (`design-system:`, [`design-systems/`](../design-systems/)). A repository that versions third-party code with Markdown of its own (a site's `wp-content/plugins/` and `themes/`) lists those paths in a `.lycheeignore` at its root, lychee's own file, so the docs check does not follow their links.
