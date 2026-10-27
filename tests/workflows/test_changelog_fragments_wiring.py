@@ -45,4 +45,16 @@ def test_every_tree_that_ships_or_runs_the_plugin_compiles_its_mo():
     tests = (WF / "plugin-tests-wp.yml").read_text(encoding="utf-8")
     # Both suites (integration and end to end), before the site starts.
     assert tests.count("- name: The compiled translations") == 2
+    # Inline: the organisation's scripts are checked out there only when the
+    # plugin requires others.
     assert tests.count('msgfmt --check -o "${po%.po}.mo" "$po"') == 2
+
+
+def test_the_unit_tests_run_with_the_compiled_mo():
+    # #473: a unit test that reads a .mo finds it, as the suites do.
+    unit = steps("plugin-checks-wp.yml", "unit")
+    names = [s.get("name") or s.get("run") for s in unit]
+    assert names.index("The organisation's scripts, out of the tree") < names.index("The compiled translations") < names.index("composer test:unit")
+    step = next(s for s in unit if s.get("name") == "The compiled translations")
+    assert step["if"] == "hashFiles('languages/*.po') != ''"
+    assert 'bash "$RUNNER_TEMP/dx-central/scripts/plugin-i18n.sh" compile .' in step["run"]
