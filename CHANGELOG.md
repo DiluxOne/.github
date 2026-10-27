@@ -2,7 +2,18 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
-## [7.0.1](https://github.com/DiluxOne/.github/releases/tag/v7.0.1) · 2026-10-27
+## [7.0.2](https://github.com/DiluxOne/.github/releases/tag/v7.0.2) · 2026-10-27
+
+### Fixes
+
+- **plugin-checks:** unit tests run with the compiled translations ([#474](https://github.com/DiluxOne/.github/pull/474))
+- the bug reproduced from #459 ([#462](https://github.com/DiluxOne/.github/pull/462))
+
+### CI
+
+- **deps:** Bump anthropics/claude-code-action from 1.0.261 to 1.0.262 ([#470](https://github.com/DiluxOne/.github/pull/470))
+
+## [7.0.1](https://github.com/DiluxOne/.github/releases/tag/v7.0.1) · 2026-10-26
 
 ### CI
 
@@ -10,6 +21,7 @@ Every version of the engine (the workflows, scripts, policy and kinds other repo
 
 ### Maintenance
 
+- **release:** v7.0.1, the organisation calls the shared workflows at v7 ([#469](https://github.com/DiluxOne/.github/pull/469))
 - **versions:** the organisation calls the shared workflows at v7 ([#466](https://github.com/DiluxOne/.github/pull/466))
 
 ## [7.0.0](https://github.com/DiluxOne/.github/releases/tag/v7.0.0) · 2026-10-26
