@@ -34,7 +34,20 @@ name: Autopilot
 #                   and finishes), up to `autopilot-runs` runs per issue (5).
 #                   A person who took it back removes `needs-human` first.
 #                   The agent runs every command in the foreground: the run
-#                   ends when it stops, and nothing wakes it.
+#                   ends when it stops, and nothing wakes it, so its steps
+#                   have no Monitor and no background runs (#482,
+#                   CLAUDE_CODE_DISABLE_BACKGROUND_TASKS), and a command may
+#                   run as long as the step. A draft with every box ticked
+#                   whose run ended without finishing continues once (a
+#                   comment says so), then goes to a person.
+#
+# Before `finish ready` (#482) the agent reviews its own diff against the
+# review's profiles and the kind's rules, fixing every blocker and major,
+# and runs `autopilot.py check`, which runs `make pre-pr` at HEAD (every
+# check the pull request and the merge queue run, #479): `finish ready`
+# refuses a head where it did not pass in this run, where the Makefile has
+# the target. The questions it needs answered are asked while it writes the
+# Spec.
 #   mode: fix       called from org-pull-request.yml when the review of an
 #                   `autopilot` pull request blocks: one round of fixes,
 #                   pushed to its branch, which runs the pipeline again. After
@@ -548,6 +561,8 @@ jobs:
           # Another way's test (#397): how scripts/repro-run.sh runs it.
           REPRO_SPEC: ${{ needs.prep.outputs.repro-spec }}
           REPRO_THEME: ${{ needs.prep.outputs.repro-theme }}
+          # Nothing runs in the background (#482), as in the work.
+          CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1"
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
@@ -563,6 +578,7 @@ jobs:
             --max-turns 60
             --max-budget-usd ${{ needs.prep.outputs.budget-spec || '3' }}
             --allowedTools "Bash,Read,Write,Glob,Grep"
+            --disallowedTools "Monitor"
 
       - name: What the agent left
         if: always()
@@ -828,6 +844,13 @@ jobs:
           # Another way's test (#397): how scripts/repro-run.sh runs it.
           REPRO_SPEC: ${{ needs.prep.outputs.repro-spec }}
           REPRO_THEME: ${{ needs.prep.outputs.repro-theme }}
+          # Nothing runs in the background (#482): a run ends when the agent
+          # stops, and nothing tells it a background task finished (FM
+          # #227 left its suite running and never finished). And a command
+          # may run as long as the step does: `make pre-pr` runs whole.
+          CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1"
+          BASH_MAX_TIMEOUT_MS: "4500000"
+          BASH_DEFAULT_TIMEOUT_MS: "600000"
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
@@ -843,6 +866,7 @@ jobs:
             --max-turns 150
             --max-budget-usd ${{ needs.prep.outputs.budget-work || (inputs.mode == 'fix' && '10' || '20') }}
             --allowedTools "Bash,Read,Edit,MultiEdit,Write,Glob,Grep"
+            --disallowedTools "Monitor"
 
       - name: What the agent left
         if: always()
