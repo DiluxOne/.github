@@ -541,7 +541,7 @@ jobs:
       - name: Claude writes the Spec
         id: spec
         timeout-minutes: 20
-        uses: anthropics/claude-code-action@16f9f71ab9c490faf367f94dd294897edc25be33 # v1.0.261
+        uses: anthropics/claude-code-action@925afb53776cf1a2b738c6bdbed37b4d4000ef13 # v1.0.262
         env:
           DX_IO: ${{ github.workspace }}/.dx-io
           NUMBER: ${{ needs.prep.outputs.issue }}
@@ -816,7 +816,7 @@ jobs:
         id: work
         # Under the job's timeout: what it committed still goes on.
         timeout-minutes: 75
-        uses: anthropics/claude-code-action@16f9f71ab9c490faf367f94dd294897edc25be33 # v1.0.261
+        uses: anthropics/claude-code-action@925afb53776cf1a2b738c6bdbed37b4d4000ef13 # v1.0.262
         env:
           DX_IO: ${{ github.workspace }}/.dx-io
           DX_BASE: ${{ steps.task.outputs.base }}
