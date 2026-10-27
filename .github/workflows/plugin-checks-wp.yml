@@ -266,6 +266,15 @@ jobs:
           ANALYSIS_ONLY: ${{ needs.php.outputs.analysis-only }}
         run: python3 "$RUNNER_TEMP/dx-central/scripts/php-versions.py" unit-deps
       - run: composer update --no-interaction --prefer-dist --no-progress
+      # A plugin's .mo are built, never committed (#452,
+      # scripts/plugin-i18n.sh): compiled here too, so a unit test that
+      # reads one finds it, as the suites and the release do (#473).
+      - name: The compiled translations
+        if: hashFiles('languages/*.po') != ''
+        run: |
+          set -euo pipefail
+          command -v msgfmt >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq gettext; }
+          bash "$RUNNER_TEMP/dx-central/scripts/plugin-i18n.sh" compile .
       - run: composer test:unit
 
   static:
