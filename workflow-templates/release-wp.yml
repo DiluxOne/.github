@@ -32,7 +32,7 @@ name: Release
 # (verified: passed by name, SVN_USERNAME arrived empty), which passes every
 # repository and organisation secret too. That is why
 # this workflow runs only on main, X.Y.Z tags and security/X.Y.Z branches. It calls the shared
-# workflow at `v6`, like every other workflow here: `v6` is a protected ref
+# workflow at `v7`, like every other workflow here: `v7` is a protected ref
 # of DiluxOne/.github that only an administrator moves, so nothing pinned
 # is needed, and nothing is pinned in any repository (DiluxOne/.github#136).
 
@@ -62,8 +62,8 @@ permissions:
 jobs:
   release:
     if: github.event_name == 'push'
-    # At `v6`, never a pinned commit: see the header.
-    uses: DiluxOne/.github/.github/workflows/plugin-release-wp.yml@v6
+    # At `v7`, never a pinned commit: see the header.
+    uses: DiluxOne/.github/.github/workflows/plugin-release-wp.yml@v7
     with:
       slug: my-plugin
       version-constant: MY_PLUGIN_VERSION
@@ -72,7 +72,7 @@ jobs:
 
   publish:
     if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-    uses: DiluxOne/.github/.github/workflows/plugin-publish-wp.yml@v6
+    uses: DiluxOne/.github/.github/workflows/plugin-publish-wp.yml@v7
     with:
       slug: my-plugin
       tag: ${{ inputs.tag || '' }}

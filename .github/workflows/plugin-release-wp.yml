@@ -119,7 +119,7 @@ name: WordPress plugin release
 # organisation ruleset "org: security branches"). Through it the release
 # job also gets dilux-bot's key (DILUX_BOT_PRIVATE_KEY, an organisation
 # secret), with which it reads the open `security` issues (#341) instead of
-# asking the caller for an issues permission. It calls this workflow at `v6`, like every other: a
+# asking the caller for an issues permission. It calls this workflow at `v7`, like every other: a
 # protected ref only an administrator moves, so nothing is pinned (#136).
 #
 #   on:
@@ -135,7 +135,7 @@ name: WordPress plugin release
 #   jobs:
 #     release:
 #       if: github.event_name == 'push'
-#       uses: DiluxOne/.github/.github/workflows/plugin-release-wp.yml@v6
+#       uses: DiluxOne/.github/.github/workflows/plugin-release-wp.yml@v7
 #       with:
 #         slug: diluxone-offload
 #         version-constant: DILUXONE_OFFLOAD_VERSION   # optional

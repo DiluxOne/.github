@@ -192,7 +192,7 @@ def self_test():
     tpl = open(os.path.join(HERE, "..", "workflow-templates", "release-wp.yml"), encoding="utf-8").read()
     check("wiring: the release caller runs on security/X.Y.Z", "'security/[0-9]+.[0-9]+.[0-9]+'" in tpl, True)
     check("wiring (#287): the release caller publishes on a published release, and the release job only on a push",
-          ("types: [published]" in tpl, "plugin-publish-wp.yml@v6" in tpl, "if: github.event_name == 'push'" in tpl), (True, True, True))
+          ("types: [published]" in tpl, len(set(re.findall(r"plugin-(?:release|publish)-wp\.yml@(v[0-9]+)\b", tpl))) == 1 and "plugin-publish-wp.yml@v" in tpl, "if: github.event_name == 'push'" in tpl), (True, True, True))
     # Exit codes (#247): 1 is a no, an answer; 2 is a failure to tell, retried.
     real = {k: globals()[k] for k in ("releases", "fetch_stable")}
     import contextlib
