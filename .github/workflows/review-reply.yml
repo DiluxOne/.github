@@ -157,8 +157,18 @@ jobs:
           ISSUE: ${{ needs.answer.outputs.issue }}
         run: |
           set -euo pipefail
-          pr=$(gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json closedByPullRequestsReferences --jq '[.closedByPullRequestsReferences[].number] | last // empty')
-          [ -n "$pr" ] || exit 0
+          # The pull request that asked holds the autopilot's question marker
+          # (`dx-autopilot-ask`, autopilot.py ASK), opening a comment of
+          # dilux-bot's own: anyone else's comment, or a quote of the marker,
+          # picks nothing. Another pull request that closes the same issue
+          # never gets the summary (#487). With several askers, the latest
+          # question wins.
+          pr=""; asked=""
+          for n in $(gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json closedByPullRequestsReferences --jq '.closedByPullRequestsReferences[].number'); do
+            at=$(gh api "repos/$GITHUB_REPOSITORY/issues/$n/comments" --paginate --jq '.[] | select(.user.login == env.DX_BOT_LOGIN and (.body | startswith("<!-- dx-autopilot-ask -->"))) | .created_at' | sort | tail -n 1)
+            if [ -n "$at" ] && [[ "$at" > "$asked" ]]; then pr=$n; asked=$at; fi
+          done
+          [ -n "$pr" ] || { echo "No pull request closing #$ISSUE holds the autopilot's question: nothing to summarise."; exit 0; }
           { gh pr view "$pr" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments'; gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments'; } \
             | jq -s 'add | map({body, createdAt, url, author: {login: .author.login}})' > "$RUNNER_TEMP/comments.json"
           : > "$RUNNER_TEMP/writers.txt"
