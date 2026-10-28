@@ -926,7 +926,7 @@ jobs:
           # work, so the agent's commits there may change a workflow, which
           # GitHub pushes only with this permission. Elsewhere it is empty,
           # so not asked for. A person merges every such change.
-          permission-workflows: ${{ github.event.repository.name == '.github' && 'write' || '' }}
+          permission-workflows: ${{ github.repository == format('{0}/.github', github.repository_owner) && 'write' || '' }}
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -976,7 +976,7 @@ jobs:
           PR: ${{ needs.draft.outputs.pr || needs.prep.outputs.pr }}
           BRANCH: ${{ needs.draft.outputs.branch || needs.prep.outputs.branch }}
           REPO_AUTONOMY: ${{ runner.temp }}/repo-autonomy.yml
-          ENGINE: ${{ github.event.repository.name == '.github' }}
+          ENGINE: ${{ github.repository == format('{0}/.github', github.repository_owner) }}
         run: |
           set -euo pipefail
           git config user.name "$DX_BOT_LOGIN"

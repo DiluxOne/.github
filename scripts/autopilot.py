@@ -1017,8 +1017,9 @@ def protected_rule(ev, number, repo=""):
     stop = f"still write the Spec, then run `NUMBER={number} {HELPER} finish stop \"<why, in one or two sentences>\"` and end."
     if engine_repo(repo):
         return ("This is the organisation's own repository: its engine (.github/workflows/, scripts/, policy/, kinds/) is what "
-                "its issues change, so change it wherever the PRD needs, and a person merges the pull request. If the change "
-                f"needs anything outside the PRD's scope, {stop}")
+                "its issues change, so change it wherever the PRD needs, and a person merges the pull request. Say in the "
+                "pull request every permission, secret, lane or limit the change widens, so that person reads it before "
+                f"merging. If the change needs anything outside the PRD's scope, {stop}")
     if not ev:
         return f"If the change needs anything outside the PRD's scope, or a path under .github/, policy/, scripts/ or kinds/, {stop}"
     return ("A reproduced bug may be fixed wherever it is, the paths that govern autonomy (policy/, scripts/, kinds/, .github/) "
