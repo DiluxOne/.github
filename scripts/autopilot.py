@@ -1747,6 +1747,20 @@ Clamp the value in Sum::add.
               pushed.index("autopilot.py push") < pushed.index("pulls/$PR/commits") < pushed.index("autopilot.py apply"), True)
         check("#287: the agent's commits go only onto the branch's head, never with a workflow, then its intents",
               ("merge-base --is-ancestor" in pushed, ".github/workflows/" in pushed, "| grep -q" in pushed, pushed.index("autopilot.py push") < pushed.index("autopilot.py apply")), (True, True, False, True))
+        # #498: the guard runs as written; a workflow change is pushed only
+        # in the organisation's own repository, and only there is the
+        # workflows permission asked for.
+        guard = re.search(r"if grep -q '\^\\\.github/workflows/'.*?\n\s*fi", pushed, re.S).group(0)
+        def guarded(engine, changed):
+            r = subprocess.run(["bash", "-c", guard], env={"PATH": os.environ.get("PATH", ""), "ENGINE": engine, "changed": changed}, capture_output=True, text=True)
+            return r.returncode
+        check("#498 a workflow change is refused outside the organisation's repository, pushed in it, and other files pass",
+              (guarded("false", ".github/workflows/x.yml\nREADME.md"), guarded("true", ".github/workflows/x.yml"), guarded("false", "scripts/x.py")), (1, 0, 0))
+        applied = next(st for st in steps("apply") if st.get("id") == "applied")
+        token = next(st for st in steps("apply") if st.get("id") == "bot")["with"]
+        here = "github.repository == format('{0}/.github', github.repository_owner)"
+        check("#498 ENGINE and the workflows permission name only the organisation's repository, empty elsewhere",
+              (here in str(applied["env"].get("ENGINE", "")), str(token.get("permission-workflows", "")).replace(" ", "") == ("${{" + here + "&&'write'||''}}").replace(" ", "")), (True, True))
         spec_apply = next(st for st in steps("draft") if st.get("name") == "The agent's Spec")["run"]
         check("#287: before a draft exists, only the Spec or a stop applies", "apply .dx-out/outbox.jsonl spec,stop" in spec_apply, True)
         end, last, fresh = sid("apply", "end"), sid("apply", "last-resort"), sid("apply", "bot-end")
