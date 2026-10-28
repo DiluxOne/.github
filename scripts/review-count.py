@@ -11,6 +11,11 @@ author's, and it never blocks.
   review-count.py line     findings (a JSON list) on stdin: the line
   review-count.py serious  findings on stdin: how many blockers and majors
                            the pull request introduced
+  review-count.py blocking the review's verdict (a JSON object with
+                           `blocking` and `findings`) on stdin: true when
+                           the pull request introduced a blocker or major,
+                           whatever the model said; the model's `blocking`
+                           only when the findings cannot be counted
   review-count.py --test   self-test
 """
 import json
@@ -25,6 +30,18 @@ def mine(findings):
 
 def serious(findings):
     return sum(1 for f in mine(findings) if f.get("severity") in ("blocker", "major"))
+
+
+def blocking(verdict):
+    # The findings decide (#506): a blocker or major the pull request
+    # introduced blocks even when the model said it does not, and
+    # pre-existing findings and minors never block (#234). Findings that
+    # cannot be counted keep the model's verdict, and a verdict that is not
+    # a boolean then blocks.
+    findings = verdict.get("findings")
+    if isinstance(findings, list):
+        return serious(findings) > 0
+    return verdict.get("blocking") is not False
 
 
 def line(findings):
@@ -56,10 +73,18 @@ def self_test():
     check("only pre-existing: nothing to fix", line([f("major", True)]), "**Nothing to fix.** · 1 pre-existing, not this pull request's")
     check("serious: the pull request's own blockers and majors", serious([f("blocker"), f("major", True), f("minor"), f("major")]), 2)
     check("not a finding is skipped", (line(["x", None]), serious(["x"])), ("**Nothing to fix.**", 0))
+    v = lambda b, fs: {"blocking": b, "findings": fs}
+    check("blocking: a major the model called non-blocking blocks", blocking(v(False, [f("major")])), True)
+    check("blocking: only pre-existing or minor findings do not", blocking(v(True, [f("blocker", True), f("minor")])), False)
+    check("blocking: no findings do not", blocking(v(True, [])), False)
+    check("blocking: uncountable findings keep the model's verdict", (blocking(v(True, None)), blocking(v(False, "x")), blocking({"findings": {}})), (True, False, True))
     import subprocess as _sp
     import os as _os
     cli = lambda text: _sp.run([sys.executable, _os.path.abspath(__file__), "serious"], input=text, capture_output=True, text=True)
     check("cli: a cut or empty input is an error, never zero", (cli('[{"severity":"bl').returncode, cli("").returncode, cli("{}").returncode, cli('[{"severity":"major"}]').stdout.strip()), (1, 1, 1, "1"))
+    bcli = lambda text: _sp.run([sys.executable, _os.path.abspath(__file__), "blocking"], input=text, capture_output=True, text=True)
+    check("cli blocking: not an object is an error", (bcli("[]").returncode, bcli("").returncode, bcli('{"blocking":fal').returncode), (1, 1, 1))
+    check("cli blocking: prints true or false", (bcli('{"blocking":false,"findings":[{"severity":"major"}]}').stdout.strip(), bcli('{"blocking":true,"findings":[]}').stdout.strip()), ("true", "false"))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
@@ -78,6 +103,16 @@ def main(argv):
             print("review-count.py: the findings are not a JSON list", file=sys.stderr)
             return 1
         print(line(findings) if argv == ["line"] else serious(findings))
+        return 0
+    if argv == ["blocking"]:
+        try:
+            verdict = json.loads(sys.stdin.read())
+        except ValueError:
+            verdict = None
+        if not isinstance(verdict, dict):
+            print("review-count.py: the verdict is not a JSON object", file=sys.stderr)
+            return 1
+        print("true" if blocking(verdict) else "false")
         return 0
     print(__doc__, file=sys.stderr)
     return 64
