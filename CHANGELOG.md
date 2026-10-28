@@ -2,7 +2,21 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
-## [7.1.0](https://github.com/DiluxOne/.github/releases/tag/v7.1.0) · 2026-10-28
+## [7.2.0](https://github.com/DiluxOne/.github/releases/tag/v7.2.0) · 2026-10-28
+
+### Features
+
+- **autopilot:** change the engine in the organisation repository ([#500](https://github.com/DiluxOne/.github/pull/500))
+
+### Fixes
+
+- **review-reply:** summarise others only on the pull request that asked ([#492](https://github.com/DiluxOne/.github/pull/492))
+
+### Documentation
+
+- **agents:** the autopilot writes the code; a claim to write it yourself ([#494](https://github.com/DiluxOne/.github/pull/494))
+
+## [7.1.0](https://github.com/DiluxOne/.github/releases/tag/v7.1.0) · 2026-10-27
 
 ### Features
 
@@ -11,6 +25,10 @@ Every version of the engine (the workflows, scripts, policy and kinds other repo
 ### CI
 
 - **pre-pr:** one make pre-pr in every repository, whatever its stack ([#481](https://github.com/DiluxOne/.github/pull/481))
+
+### Maintenance
+
+- **release:** v7.1.0, one make pre-pr and an autopilot that checks first ([#485](https://github.com/DiluxOne/.github/pull/485))
 
 ## [7.0.2](https://github.com/DiluxOne/.github/releases/tag/v7.0.2) · 2026-10-27
 
