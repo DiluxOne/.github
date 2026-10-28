@@ -23,7 +23,7 @@ When the maintainer accepts an issue in a repository where the autopilot is on, 
 
 **The autopilot does, in GitHub Actions.** Once an issue is accepted, the autopilot writes the change in GitHub Actions and opens its pull request. Nobody writes it on their own machine: not the maintainer, not the maintainer's agents, not someone working from a fork or a clone. This is the same rule for everyone.
 
-**The one exception is a claim.** Someone who wants to write their own solution comments `/claim` on the issue first; the autopilot then steps aside, and the steps below (a branch, `make pre-pr`, a pull request) are theirs. A claim that brings no code is released (DiluxOne/.github#488). Without a claim, an agent does not edit code locally: it opens or improves the issue, answers the autopilot's questions on its pull request, accepts or merges where the person it works for may, and, when the autopilot stops, gives it a hint and adds `autopilot:continue`. It never finishes the autopilot's pull request by hand.
+**The one exception is a claim.** Someone who wants to write their own solution claims the issue first. Until the `/claim` command ships (DiluxOne/.github#488), that means asking on the issue to take it and waiting until a maintainer assigns it to you; the steps below (a branch, `make pre-pr`, a pull request) are then yours. Without a claim, an agent does not edit code locally: it opens or improves the issue, answers the autopilot's questions on its pull request, accepts or merges where the person it works for may, and, when the autopilot stops, gives it a hint and adds `autopilot:continue`. It never finishes the autopilot's pull request by hand.
 
 The sections from here on are for the person who claimed the issue.
 
