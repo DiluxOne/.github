@@ -58,7 +58,8 @@ runs (`{paths: [globs], tests: [paths]}`), instead of the whole suite.
                           as text: never a reproduction of how a page looks
   repro-ways.py verdict JUNIT NAME [ASSERTION]
                           reproduced|passed|broken|environment from a JUnit
-                          report, for the test file NAME
+                          report, for the test file NAME (every case, when
+                          no case names it nor any file: node:test's, #501)
   repro-ways.py affected  the tests a pull request runs, from the changed
                           paths on stdin: JSON {"targeted", "tests", "repro"}
   repro-ways.py propose   the stack recognised in the repository at DIR and
