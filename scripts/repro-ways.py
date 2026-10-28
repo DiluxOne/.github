@@ -396,6 +396,10 @@ def lint(path):
 # use; a way's `assertion` replaces it.
 ASSERTION = r"\bexpect\(|AssertionError|toBe|toEqual|toHave|assert|DID NOT RAISE"
 
+# A classname that names a source file (Playwright's, Vitest's): a path, or
+# a file's extension.
+SOURCE_FILE = re.compile(r"/|\.(?:[cm]?[jt]sx?|py|php|go|rb|java|cs|rs|kt)$")
+
 
 def verdict(junit, name, assertion=None):
     """reproduced when a test of NAME failed an assertion; passed when every
@@ -411,6 +415,11 @@ def verdict(junit, name, assertion=None):
         return "broken"
     cases = list(root.iter("testcase"))
     mine = [c for c in cases if name in " ".join(filter(None, (c.get("classname"), c.get("name"), c.get("file"))))]
+    # node:test's junit reporter names no file: the title is `name` and
+    # classname is "test" (#501). A report that attributes no case to any
+    # file is the test's alone, as the reproduction runs it alone.
+    if not mine and not any(c.get("file") or SOURCE_FILE.search(c.get("classname") or "") for c in cases):
+        mine = cases
     others = [c for c in cases if c not in mine and (c.find("failure") is not None or c.find("error") is not None)]
     after = [c for c in others if "teardown" in " ".join(filter(None, (c.get("classname"), c.get("name"), c.get("file")))).lower()]
     if len(after) < len(others):
@@ -651,6 +660,18 @@ def self_test():
         check("C8 an element the test never found is no verdict (a wrong selector)",
               junit('<testsuites><testsuite><testcase name="x" classname="issue-69.spec.ts"><failure message="Error: expect(locator).toBeVisible() failed. Locator: .nope Expected: visible Received: &lt;element(s) not found&gt;"/></testcase></testsuite></testsuites>'), "broken")
         check("C8 no report is no verdict", verdict(os.path.join(d, "none.xml"), "issue-69.spec.ts"), "broken")
+        # node:test's junit reporter: the title as name, classname="test",
+        # no `file` (#501).
+        def node_test(inner):
+            return junit_any('<testsuites name="test"><testsuite name="test">'
+                             f'<testcase name="the player keeps its volume" classname="test">{inner}</testcase></testsuite></testsuites>', "issue-239.test.mts")
+        check("#501 a node:test assert that fails reproduces, with no file named",
+              node_test('<failure type="testCodeFailure" message="Expected values to be strictly equal:">AssertionError [ERR_ASSERTION]: Expected values</failure>'), "reproduced")
+        check("#501 a node:test report that passes passes", node_test(""), "passed")
+        check("#501 a node:test TypeError is no verdict",
+              node_test('<failure type="testCodeFailure" message="TypeError: x is not a function">TypeError: x is not a function</failure>'), "broken")
+        check("#501 a report naming another file and none of the test's stays no verdict",
+              junit('<testsuites><testsuite><testcase name="x" classname="other.spec.ts"/></testsuite></testsuites>'), "broken")
         # pytest's report (#376, junit_family=xunit1, so `file` names the test).
         def pytest_report(*cases):
             p = os.path.join(d, "p.xml")
