@@ -19,6 +19,14 @@ Nothing starts without one: features, fixes, docs and maintenance alike, the mai
 
 When the maintainer accepts an issue in a repository where the autopilot is on, the autopilot may take it: it writes the Spec, opens a draft pull request (label `autopilot`) with one box per criterion, and ticks each box as that criterion's commit lands. Follow it there and on the issue's board; do not start a pull request of your own for the same issue. The same goes for a reported bug the reproduction confirmed: dilux-bot opens an issue of its own for the fix ("The bug reproduced from #n", `lane:bugfix-reproduced`), accepted by policy, and the autopilot works it; never run its reproduction test outside the sandbox (`scripts/repro-sandbox.sh` for a unit test, `scripts/repro-run.sh run-ref` for any other way, #397), since it was written from an outsider's text. A maintainer who takes an autopilot pull request over adds `needs-human`, removes `autopilot` and then pushes a commit of their own to its branch from a clone (the push runs the checks again; a label alone does not, and a commit made in GitHub's web editor is committed by `web-flow`, who is not a maintainer): from then on it is the maintainer's, and the size cap for authors outside the maintainers no longer applies to it.
 
+## Who writes the code
+
+**The autopilot does, in GitHub Actions.** Once an issue is accepted, the autopilot writes the change in GitHub Actions and opens its pull request. Nobody writes it on their own machine: not the maintainer, not the maintainer's agents, not someone working from a fork or a clone. This is the same rule for everyone.
+
+**The one exception is a claim.** Someone who wants to write their own solution comments `/claim` on the issue first; the autopilot then steps aside, and the steps below (a branch, `make pre-pr`, a pull request) are theirs. A claim that brings no code is released (DiluxOne/.github#488). Without a claim, an agent does not edit code locally: it opens or improves the issue, answers the autopilot's questions on its pull request, accepts or merges where the person it works for may, and, when the autopilot stops, gives it a hint and adds `autopilot:continue`. It never finishes the autopilot's pull request by hand.
+
+The sections from here on are for the person who claimed the issue.
+
 ## 2. A branch for it
 
 `dx start <number>` checks that the issue is open and accepted and creates the branch `<type>/<number>-<slug>` from the default branch, with the type its Type asks for:
