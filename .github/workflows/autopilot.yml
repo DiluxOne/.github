@@ -67,7 +67,8 @@ name: Autopilot
 # agent reads (the Spec, the pull request's body, the review's own words,
 # never anyone else's), open the draft, push the agent's commits through
 # the API so GitHub signs them (onto the branch's head, never over it,
-# never touching .github/workflows), and apply each intent through the same
+# never touching .github/workflows except in the organisation's own
+# repository, #498, where a person merges them), and apply each intent through the same
 # checks a person's run uses. What the helpers check in the agent's job is
 # only feedback to the agent.
 #
@@ -921,6 +922,11 @@ jobs:
           permission-pull-requests: write
           permission-checks: read
           permission-actions: read
+          # The organisation's own repository (#498): its engine is the
+          # work, so the agent's commits there may change a workflow, which
+          # GitHub pushes only with this permission. Elsewhere it is empty,
+          # so not asked for. A person merges every such change.
+          permission-workflows: ${{ github.repository == format('{0}/.github', github.repository_owner) && 'write' || '' }}
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -959,8 +965,8 @@ jobs:
           path: .dx-out-spec
 
       # The agent's commits, onto the branch as GitHub has it (never over
-      # it), and never a workflow: pushed through the API, so GitHub signs
-      # them. Then each intent, through the checks a person's run uses.
+      # it), and never a workflow outside the organisation's own repository
+      # (#498): pushed through the API, so GitHub signs them. Then each intent, through the checks a person's run uses.
       - name: The agent's commits and intents
         id: applied
         if: needs.work.result != 'skipped'
@@ -970,6 +976,7 @@ jobs:
           PR: ${{ needs.draft.outputs.pr || needs.prep.outputs.pr }}
           BRANCH: ${{ needs.draft.outputs.branch || needs.prep.outputs.branch }}
           REPO_AUTONOMY: ${{ runner.temp }}/repo-autonomy.yml
+          ENGINE: ${{ github.repository == format('{0}/.github', github.repository_owner) }}
         run: |
           set -euo pipefail
           git config user.name "$DX_BOT_LOGIN"
@@ -983,7 +990,7 @@ jobs:
             # Read whole, then searched: a pipe into grep -q could end early
             # and, under pipefail, read as no match.
             changed=$(git diff --name-only "origin/$BRANCH" "$new")
-            if grep -q '^\.github/workflows/' <<<"$changed"; then
+            if grep -q '^\.github/workflows/' <<<"$changed" && [ "$ENGINE" != true ]; then
               echo "::error::The agent's commits change .github/workflows: nothing is pushed."; exit 1
             fi
             git checkout -q -B "$BRANCH" "$new"
