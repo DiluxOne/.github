@@ -2,6 +2,16 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [7.1.0](https://github.com/DiluxOne/.github/releases/tag/v7.1.0) · 2026-10-28
+
+### Features
+
+- **autopilot:** check and review before ready, nothing in the background ([#483](https://github.com/DiluxOne/.github/pull/483))
+
+### CI
+
+- **pre-pr:** one make pre-pr in every repository, whatever its stack ([#481](https://github.com/DiluxOne/.github/pull/481))
+
 ## [7.0.2](https://github.com/DiluxOne/.github/releases/tag/v7.0.2) · 2026-10-27
 
 ### Fixes
@@ -12,6 +22,10 @@ Every version of the engine (the workflows, scripts, policy and kinds other repo
 ### CI
 
 - **deps:** Bump anthropics/claude-code-action from 1.0.261 to 1.0.262 ([#470](https://github.com/DiluxOne/.github/pull/470))
+
+### Maintenance
+
+- **release:** v7.0.2, unit tests run with the compiled translations ([#477](https://github.com/DiluxOne/.github/pull/477))
 
 ## [7.0.1](https://github.com/DiluxOne/.github/releases/tag/v7.0.1) · 2026-10-26
 
