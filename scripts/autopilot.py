@@ -1766,6 +1766,17 @@ Clamp the value in Sum::add.
         end, last, fresh = sid("apply", "end"), sid("apply", "last-resort"), sid("apply", "bot-end")
         check("C1 (#126): a fresh token after the work, however it ended, before the end rule, and the last resort after it",
               (fresh < end < last, "always()" in str(steps("apply")[fresh].get("if", "")), "verdict" in str(steps("apply")[last].get("if", ""))), (True, True, True))
+        # #504: the fix round runs here from this repository's own pipeline,
+        # with the condition every other repository's has, but the
+        # repository: each runs it once.
+        pipeline = lambda name: yaml.safe_load(open(os.path.join(HERE, "..", ".github", "workflows", name), encoding="utf-8"))["jobs"]["autopilot-fix"]
+        here_fix, org_fix = pipeline("pull-request.yml"), pipeline("org-pull-request.yml")
+        cond = lambda job: " ".join(str(job.get("if", "")).split())
+        mine, theirs = "github.repository == 'DiluxOne/.github'", "github.repository != 'DiluxOne/.github'"
+        check("#504 C1: this repository's autopilot-fix runs the round here, after its review, with the organisation's condition but the repository",
+              (here_fix.get("uses"), here_fix.get("needs"), (here_fix.get("with") or {}).get("mode"), (here_fix.get("with") or {}).get("central-ref"),
+               here_fix.get("permissions"), here_fix.get("secrets"), mine in cond(here_fix), cond(here_fix) == cond(org_fix).replace(theirs, mine)),
+              ("./.github/workflows/autopilot.yml", "review", "fix", "main", {"contents": "read"}, "inherit", True, True))
     if not failed:
         print("all tests passed")
     return failed
