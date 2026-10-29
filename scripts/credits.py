@@ -27,6 +27,8 @@ comment on the issue), as the description's Credits block lists them.
                                block and the branch commits' human
                                co-authors (gh, GH_TOKEN; exit 1, loudly,
                                when GitHub cannot be read: the merge waits)
+  credits.py trailers REPO PR [MERGER]
+                               only those trailers, one per line
   credits.py --test            self-test
 
 The Credits block sits in the description's "🙌 Credits" section, between
@@ -232,22 +234,29 @@ def compose(entries, users, messages, excluded=(), author=""):
     kept. Pure."""
     skip = {x.lower() for x in excluded if x} | ({author.lower()} if author else set())
     seen_logins, seen_mails = set(), set()
-    out = {kind: [] for kind in KINDS.values()}
-    rank = list(KINDS)
-    for e in sorted(entries, key=lambda e: rank.index(e["kind"])):
-        user = users.get(e["login"].lower())
-        if user is None:
-            raise KeyError(f"@{e['login']} was not read from GitHub")
-        login = user.get("login") or e["login"]
-        if login.lower() in skip or is_bot(login, user) or login.lower() in seen_logins:
-            continue
-        name = _clean_name(user.get("name")) or login
-        if model_maker(name, ""):
-            continue
-        mail = f"{user['id']}+{login}@users.noreply.github.com"
-        seen_logins.add(login.lower())
-        seen_mails.add(mail.lower())
-        out[KINDS[e["kind"]]].append(f"{KINDS[e['kind']]}: {name} <{mail}>")
+    out = []
+
+    def from_block(kinds):
+        for e in entries:
+            if e["kind"] not in kinds:
+                continue
+            user = users.get(e["login"].lower())
+            if user is None:
+                raise KeyError(f"@{e['login']} was not read from GitHub")
+            login = user.get("login") or e["login"]
+            if login.lower() in skip or is_bot(login, user) or login.lower() in seen_logins:
+                continue
+            name = _clean_name(user.get("name")) or login
+            if model_maker(name, ""):
+                continue
+            mail = f"{user['id']}+{login}@users.noreply.github.com"
+            seen_logins.add(login.lower())
+            seen_mails.add(mail.lower())
+            out.append(f"{KINDS[e['kind']]}: {name} <{mail}>")
+
+    # Co-authors first, the block's then the commits', then the lesser
+    # credits of whoever is not one already.
+    from_block(("co-author",))
     for line in "\n".join(messages).replace("\r", "").split("\n"):
         m = TRAILER_RE.match(line)
         if not m or not m["email"]:
@@ -261,8 +270,10 @@ def compose(entries, users, messages, excluded=(), author=""):
         seen_mails.add(mail.lower())
         if login:
             seen_logins.add(login.lower())
-        out["Co-authored-by"].append(f"Co-authored-by: {_clean_name(name) or login or mail} <{mail}>")
-    return [line for kind in KINDS.values() for line in out[kind]]
+        out.append(f"Co-authored-by: {_clean_name(name) or login or mail} <{mail}>")
+    from_block(("suggested",))
+    from_block(("reported",))
+    return out
 
 
 def squash_body(description, trailers):
@@ -280,8 +291,9 @@ def gh(*args):
     return out.stdout
 
 
-def body_of(repo, pr, merger=""):
-    """The squash's body for a pull request, read from GitHub."""
+def body_of(repo, pr, merger="", trailers_only=False):
+    """The squash's body for a pull request, read from GitHub (or only its
+    trailers)."""
     data = json.loads(gh("api", f"repos/{repo}/pulls/{pr}"))
     messages = gh("api", f"repos/{repo}/pulls/{pr}/commits", "--paginate", "--jq", ".[].commit.message").split("\n")
     excluded = {merger, os.environ.get("DX_BOT_LOGIN", "")}
@@ -297,7 +309,7 @@ def body_of(repo, pr, merger=""):
             continue
         users[e["login"].lower()] = json.loads(gh("api", f"users/{e['login']}", "--jq", "{login, id, name, type}"))
     trailers = compose(entries, users, messages, excluded, (data.get("user") or {}).get("login", ""))
-    return squash_body(data.get("body") or "", trailers)
+    return "".join(t + "\n" for t in trailers) if trailers_only else squash_body(data.get("body") or "", trailers)
 
 
 def self_test():
@@ -359,6 +371,48 @@ def self_test():
           squash_body("A.\r\n", ["Co-authored-by: X <1+x@users.noreply.github.com>"]),
           "A.\n\n---------\n\nCo-authored-by: X <1+x@users.noreply.github.com>")
     check("C3: no trailers, the description alone", squash_body("A.\n", []), "A.")
+    # C4: two commenters whose proposals the change used, one of them also a
+    # commit's co-author under another casing: one line each.
+    two = [{"login": "cy", "kind": "co-author", "note": "https://github.com/o/r/issues/7#issuecomment-1"},
+           {"login": "dee", "kind": "co-author", "note": "https://github.com/o/r/issues/7#issuecomment-2"}]
+    commits = ["feat: x (C1)\n\nCo-authored-by: CY <56+CY@users.noreply.github.com>", "fix: y\n\nco-authored-by: Dee <78+dee@USERS.noreply.github.com>\nCo-authored-by: Eve <eve@example.org>",
+               "fix: z\n\nCo-authored-by: Eve <EVE@example.org>"]
+    check("C4: two commenters, each once, and a commit's other person once",
+          compose(two, users, commits),
+          ["Co-authored-by: Cy <56+cy@users.noreply.github.com>", "Co-authored-by: Dee <78+dee@users.noreply.github.com>", "Co-authored-by: Eve <eve@example.org>"])
+    check("C4: a co-author is not also suggested or reported",
+          compose([{"login": "cy", "kind": "reported"}, {"login": "CY", "kind": "co-author"}, {"login": "dee", "kind": "suggested"}], users, ["Co-authored-by: Dee <78+dee@users.noreply.github.com>"]),
+          ["Co-authored-by: Cy <56+cy@users.noreply.github.com>", "Co-authored-by: Dee <78+dee@users.noreply.github.com>"])
+    # C4: what the merge passes to --body, read from GitHub (gh faked).
+    pr_body = "## 📝 What changes\n\nx\n\n" + set_block("", two + [{"login": "boss", "kind": "co-author"}, {"login": "dependabot[bot]", "kind": "co-author"}])
+    calls = []
+
+    def fake_gh(*args):
+        calls.append(args)
+        if args[:2] == ("api", "repos/o/r/pulls/9"):
+            return json.dumps({"body": pr_body, "user": {"login": "dilux-bot[bot]"}})
+        if args[:2] == ("api", "repos/o/r/pulls/9/commits"):
+            return "\n".join(commits) + "\nfix: w\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nCo-authored-by: boss <1+boss@users.noreply.github.com>\n"
+        if args[:2] == ("pr", "view"):
+            return "7\n"
+        if args[:2] == ("api", "repos/o/r/issues/7/timeline"):
+            return "boss\n"
+        if args[0] == "api" and args[1].startswith("users/"):
+            return json.dumps(users[args[1].split("/", 1)[1].lower()])
+        raise RuntimeError(f"unexpected gh {args}")
+    global gh
+    real_gh, gh = gh, fake_gh
+    try:
+        got = body_of("o/r", "9", "merger")
+        only = body_of("o/r", "9", "", True)
+    finally:
+        gh = real_gh
+    check("C4: the squash body: the description, then each person once, no model, no bot, not the maintainer who accepted",
+          got.split("---------\n\n", 1)[1].split("\n"),
+          ["Co-authored-by: Cy <56+cy@users.noreply.github.com>", "Co-authored-by: Dee <78+dee@users.noreply.github.com>", "Co-authored-by: Eve <eve@example.org>"])
+    check("C4: the description is kept verbatim before the separator", got.startswith(pr_body.rstrip("\n") + "\n\n---------\n\n"), True)
+    check("C4: trailers alone", only, "Co-authored-by: Cy <56+cy@users.noreply.github.com>\nCo-authored-by: Dee <78+dee@users.noreply.github.com>\nCo-authored-by: Eve <eve@example.org>\n")
+    check("C4: neither the bot nor the excluded maintainer is looked up", [a[1] for a in calls if a[0] == "api" and a[1].startswith("users/")].count("users/boss"), 0)
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
@@ -390,9 +444,9 @@ def main(argv):
             fh.write(body)
         print("\n".join(said))
         return 0
-    if argv[:1] == ["body"] and len(argv) in (3, 4):
+    if argv[:1] in (["body"], ["trailers"]) and len(argv) in (3, 4):
         try:
-            sys.stdout.write(body_of(argv[1], argv[2], argv[3] if len(argv) == 4 else ""))
+            sys.stdout.write(body_of(argv[1], argv[2], argv[3] if len(argv) == 4 else "", argv[0] == "trailers"))
         except (RuntimeError, KeyError, ValueError) as err:
             print(f"::error::The credits could not be read from GitHub ({err}); nothing merges until they can.", file=sys.stderr)
             return 1
