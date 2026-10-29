@@ -523,7 +523,11 @@ def policy():
 
 
 def held_claims(repo, login):
-    return max(search_count(f"org:{org_of(repo)}", "is:issue", "is:open", f"label:{CLAIMED}", f"assignee:{login}"), 0)
+    """The person's open claims in the organisation: as assignee, or named by
+    dilux-bot's claim comment where they could not be assigned (someone
+    outside the repository); the larger of the two counts."""
+    where = (f"org:{org_of(repo)}", "is:issue", "is:open", f"label:{CLAIMED}")
+    return max(search_count(*where, f"assignee:{login}"), search_count(*where, f'"Claimed by @{login}"', "in:comments"))
 
 
 def merged_any(repo, login):
@@ -984,6 +988,15 @@ def self_test():
     listed = daily_list("o/r", [(7, "ana", "a pull request stopped its clock")], [(41, "ana")], [])
     check("C7 the daily list names it as waiting on the maintainer",
           "**Waiting on a maintainer's review** (its author's clock does not run)\n\n- #41 by @ana" in listed, True)
+    # C9: one open claim at a time with no merged pull request in the
+    # organisation, three with one.
+    check("C9 the limits: one for a newcomer, three for a contributor", (claim_limit(False, cfg), claim_limit(True, cfg)), (1, 3))
+    ok, why = may_claim("ana", accepted, 1, False, "", cfg)
+    check("C9 no merged pull request and one open claim: a second is refused, saying why",
+          (ok, "@ana holds 1 open claim" in why and "at most 1 at a time" in why), (False, True))
+    check("C9 with a merged pull request: a second and a third, not a fourth",
+          [may_claim("ana", accepted, n, True, "", cfg)[0] for n in (1, 2, 3)], [True, True, False])
+    check("C9 a repository's tighter limit holds", may_claim("ana", accepted, 1, True, "", config({"claims": {"contributor-claims": 1}}))[0], False)
     if not failed:
         print("all tests passed")
     return failed
