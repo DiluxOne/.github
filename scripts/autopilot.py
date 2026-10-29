@@ -1835,6 +1835,11 @@ Clamp the value in Sum::add.
                    "github.event.pull_request.user.login == 'dilux-bot[bot]'", "github.event.action != 'edited'"]
         check("#504 C2: no round here for another author's pull request, one without the label, a review that does not block, or an edit",
               ([c for c in clauses if c not in cond(here_fix)], [c for c in clauses if c not in cond(org_fix)], " || " in cond(here_fix)), ([], [], False))
+        check("#504 C3: every other repository's round is as it was, and never runs here",
+              (theirs in cond(org_fix), mine in cond(org_fix), org_fix.get("needs"), bool(re.fullmatch(r"DiluxOne/\.github/\.github/workflows/autopilot\.yml@v\d+", str(org_fix.get("uses")))),
+               org_fix.get("with"), org_fix.get("permissions"), org_fix.get("secrets"),
+               cond(org_fix) == "always() && " + " && ".join([clauses[0], theirs] + clauses[1:])),
+              (True, False, "review", True, {"mode": "fix", "pr": "${{ format('{0}', github.event.pull_request.number) }}"}, {"contents": "read"}, "inherit", True))
     if not failed:
         print("all tests passed")
     return failed
