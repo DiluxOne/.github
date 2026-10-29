@@ -65,7 +65,12 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    a read-only token. When the issue is accepted after the pull request
    opened, `issue-accepted.yml` re-runs the failed check on its own (GitHub
    does not start the organisation's required workflow on an edit of the
-   description); otherwise push, or re-run the job.
+   description); otherwise push, or re-run the job. A claimed bug the
+   reproduction confirmed (#488) needs no acceptance while it is claimed:
+   the claimant's own pull request passes the gate only with the failing
+   test the bot handed them, unchanged (its SHA-256), and the tests make it
+   pass. Once the claim ends, that test no longer stands in for an
+   acceptance.
 1. **Checks.** The conventions (branch name, title, every commit, the
    description's required sections, no "Generated with" footer, relative doc
    links, a `docs` title that changes only documentation (the

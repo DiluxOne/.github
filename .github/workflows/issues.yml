@@ -10,13 +10,21 @@ name: Issues
 # (awaiting-acceptance or incomplete, #353), and, when a person accepts
 # one, the Platform Project (#9, repos.yml), its assignee (#73), the gate
 # re-run on its pull requests, the PRD's seal, and the autopilot
-# (issue-triage.yml calls it). Most of this repository is a protected path
+# (issue-triage.yml calls it); the claims (#488, issue-claim.yml): `/claim`
+# and the other commands in comments, the form's checkbox, a person's pull
+# request, and the daily reminders and releases. Most of this repository is a protected path
 # of policy/autonomy.yml, and an autopilot pull request that touches one is
 # never merged by policy.
 
 on:
   issues:
     types: [opened, edited, labeled, closed]
+  # Claims (#488): the commands in comments, and a person's pull request
+  # (metadata only; its code is never checked out).
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, reopened, synchronize, closed]
   schedule:
     - cron: '0 13 * * *'
 
@@ -25,6 +33,7 @@ permissions:
 
 jobs:
   triage:
+    if: github.event_name == 'issues' || github.event_name == 'schedule'
     permissions:
       contents: read
       issues: write
@@ -34,6 +43,7 @@ jobs:
     secrets: inherit
 
   repro:
+    if: github.event_name == 'issues'
     permissions:
       actions: read
       contents: write
@@ -44,7 +54,7 @@ jobs:
 
   repro-triaged:
     needs: triage
-    if: needs.triage.outputs.bug == 'true'
+    if: github.event_name == 'issues' && needs.triage.outputs.bug == 'true'
     permissions:
       actions: read
       contents: write
@@ -57,6 +67,7 @@ jobs:
     secrets: inherit
 
   accepted:
+    if: github.event_name == 'issues'
     permissions:
       actions: write
       issues: read
@@ -68,3 +79,15 @@ jobs:
       workflow: Pull request
     secrets:
       DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+
+  # A person claims an issue (#488): `/claim`, the form's checkbox, and the
+  # daily reminders and releases; every release starts the autopilot. The
+  # only job that runs on issue_comment and pull_request_target. It inherits
+  # the secrets (dilux-bot's key, and the Claude token for the autopilot it
+  # starts) and never checks out a pull request's code: on
+  # pull_request_target it reads the pull request's metadata only.
+  claim:
+    permissions:
+      contents: read
+    uses: DiluxOne/.github/.github/workflows/issue-claim.yml@v7
+    secrets: inherit

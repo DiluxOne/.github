@@ -78,6 +78,17 @@ name: Autopilot
 # checks a person's run uses. What the helpers check in the agent's job is
 # only feedback to the agent.
 #
+# A person holds the issue (#488, scripts/autopilot.py holder): it is
+# `claimed`, kept as a `good first issue`, assigned to a person (not the one
+# who accepted it, #73), or closed by a person's open pull request (GitHub's
+# link) opened before the autopilot's. Then `prep` does not start it, `draft`
+# opens nothing and `apply` pushes nothing; an unread answer stops it too,
+# and the run says so (verdict `held`). Started by issue-claim.yml after a
+# maintainer's `/adopt`, the draft's branch starts at the adopted head they
+# read, and every commit pushed carries `Co-authored-by` for its author.
+# When it hands a pull request to a person at its cap, the issue says anyone
+# may `/claim` it.
+#
 # A run never ends in silence (scripts/autopilot.py end): the pull request is
 # ready for review, or the agent said where it stopped and why (a comment and
 # `needs-human`), or, in `guided` mode (policy/autonomy.yml, autopilot-mode,
@@ -205,7 +216,9 @@ jobs:
 
   # Whether it may run, and what the agent reads: with the key, no agent.
   prep:
-    name: Autopilot (${{ inputs.mode }}) · may it run
+    # The issue in its name: scripts/claim.py finds the autopilot's run in
+    # progress for an issue by it (#488).
+    name: "Autopilot (${{ inputs.mode }}) · may it run · #${{ inputs.issue || inputs.pr }}"
     runs-on: ubuntu-latest # fresh: it holds the key beside an agent's work (#287)
     timeout-minutes: 15
     permissions: {}
@@ -330,9 +343,27 @@ jobs:
           PR: ${{ steps.what.outputs.pr }}
           ROUND: ${{ steps.what.outputs.round }}
           RUNS: ${{ steps.what.outputs.runs }}
+          # At its cap the autopilot hands the issue to people (#488).
+          OPEN_TO_CLAIM: "The autopilot reached its cap on this issue, and its pull request waits for a person: anyone may `/claim` this issue to finish it with their own code (CONTRIBUTING.md). It is on the daily list of claims until someone does.\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
         run: |
           set -euo pipefail
           export BODY="$RUNNER_TEMP/body.md" REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml"
+          # A person holds it (#488): claimed, kept as a good first issue,
+          # assigned to a person, or closed by a person's pull request
+          # opened before the autopilot's (GitHub's link). The autopilot
+          # steps aside. A read that fails stops it too, and says so: it
+          # never starts on an issue it could not check.
+          rc=0
+          held=$(NUMBER="$ISSUE" python3 .dx-central/scripts/autopilot.py holder) || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "The autopilot does not start: $held"
+            if [ "$rc" -eq 2 ]; then
+              gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "The autopilot did not run: $held, so it could not tell whether a person holds this issue. A maintainer accepts it again (remove and add \`accepted\`) to try once more.
+
+          🤖 AI-generated · Claude Opus 5.5 (Anthropic)" >/dev/null || true
+            fi
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
           # Who accepted it, read from GitHub's history (never from a label
           # alone): a lane's own issue that lane accepts is worked under the
           # lane, with its caps; one a person accepted, under human-issue.
@@ -418,6 +449,7 @@ jobs:
 
           🤖 AI-generated · Claude Opus 5.5 (Anthropic)" >/dev/null
               [[ "$why" != *"cap is"* ]] || gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label needs-human >/dev/null
+              [[ "$why" != *"cap is"* ]] || gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "${OPEN_TO_CLAIM:-}" >/dev/null || true
               echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
             fi
           fi
@@ -428,6 +460,7 @@ jobs:
               gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "The autopilot spent its $max rounds and the review still blocks: a person takes it from here. The review's open threads say what is left.
 
           🤖 AI-generated · Claude Opus 5.5 (Anthropic)" >/dev/null
+              [ -z "${ISSUE:-}" ] || [ -z "${OPEN_TO_CLAIM:-}" ] || gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "${OPEN_TO_CLAIM:-}" >/dev/null || true
               echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
             fi
           fi
@@ -647,6 +680,7 @@ jobs:
       pr: ${{ steps.draft.outputs.pr }}
       branch: ${{ steps.draft.outputs.branch }}
       why: ${{ steps.draft.outputs.why }}
+      held: ${{ steps.draft.outputs.held }}
     steps:
       - name: dilux-bot token
         id: bot
@@ -721,6 +755,11 @@ jobs:
           gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/body.md"
           stopped=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json comments --jq '[.comments[] | select((.body | startswith("<!-- dx-autopilot-stop -->")) and (.author.login | test("^(app/)?" + env.DX_BOT_APP + "(\\[bot\\])?$")) and .createdAt >= env.STARTED)] | length')
           if [ "$stopped" != 0 ]; then echo "The agent stopped after the Spec; it said why on the issue."; exit 0; fi
+          # A person took the issue while the Spec was written (#488): the
+          # draft is not opened. A read that fails stops it too.
+          rc=0
+          held=$(python3 .dx-central/scripts/autopilot.py holder) || rc=$?
+          if [ "$rc" -ne 0 ]; then echo "The autopilot steps aside: $held"; echo "held=$held" >> "$GITHUB_OUTPUT"; exit 0; fi
           # G3 by the issue's Type: a Feature's Spec has its phases (#193).
           # A Type that cannot be read opens nothing.
           if ! type=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" --jq '.type.name // ""'); then
@@ -753,6 +792,19 @@ jobs:
             fi
             git checkout -q -b "$branch" FETCH_HEAD
             onto=FETCH_HEAD
+          elif adopt=$(python3 .dx-central/scripts/autopilot.py adopted) && [ -n "$adopt" ]; then
+            # A pull request a maintainer adopted (#488, `/adopt`): the branch
+            # starts at the head they read, which scripts/claim.py copied to
+            # the adopted branch; never a later commit. Its author is a
+            # co-author of every commit (autopilot.py push).
+            sha=$(jq -r .sha <<<"$adopt"); from=$(jq -r .branch <<<"$adopt")
+            git fetch -q origin "$from"
+            if [ "$(git rev-parse FETCH_HEAD)" != "$sha" ]; then
+              echo "why=The adopted branch $from is not at the commit the maintainer read; the draft pull request is not opened." >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            git checkout -q -b "$branch" "$sha"
+            git commit -q --allow-empty -m "chore(autopilot): start on #$NUMBER" -m "From #$(jq -r .pr <<<"$adopt"), adopted at ${sha:0:12}: the draft pull request opens before any code." -m "$(jq -r .trailer <<<"$adopt")"
+            onto=$sha
           else
             onto=$(git rev-parse HEAD)
             git checkout -q -b "$branch"
@@ -1010,6 +1062,13 @@ jobs:
           set -euo pipefail
           git config user.name "$DX_BOT_LOGIN"
           git config user.email "$DX_BOT_ID+$DX_BOT_LOGIN@users.noreply.github.com"
+          # A person took the issue while the agent worked (#488): claimed,
+          # assigned, or closed by their pull request opened before the
+          # autopilot's. Nothing is pushed and no intent applied; a read
+          # that fails stops it too.
+          rc=0
+          held=$(python3 .dx-central/scripts/autopilot.py holder) || rc=$?
+          if [ "$rc" -ne 0 ]; then echo "The autopilot steps aside: $held"; echo "held=$held" >> "$GITHUB_OUTPUT"; exit 0; fi
           if [ -f .dx-out/work.bundle ]; then
             git fetch -q .dx-out/work.bundle HEAD
             new=$(git rev-parse FETCH_HEAD)
@@ -1067,6 +1126,7 @@ jobs:
           WORK_OUTCOME: ${{ needs.work.outputs.outcome || needs.work.result }}
           SPEC_OUTCOME: ${{ needs.spec.outputs.outcome || needs.spec.result }}
           WHY: ${{ needs.draft.outputs.why }}
+          HELD: ${{ needs.draft.outputs.held || steps.applied.outputs.held }}
           WORK_LOG: .dx-out/transcript/2-work.json
           RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
           REPO_AUTONOMY: ${{ runner.temp }}/repo-autonomy.yml

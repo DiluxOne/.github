@@ -76,6 +76,10 @@ def schema():
     return read_yaml(os.environ.get("ISSUE_SCHEMA") or os.path.join(ROOT, "policy", "issue-schema.yml"))
 
 
+# The heading of the forms' claim checkbox (policy/issue-schema.yml `claim`).
+CLAIM_HEADING = "Who works on it"
+
+
 def parse(body):
     """(sections, stray): sections as [heading, text] in order; stray lines
     outside any section (before the first heading) that are not markers."""
@@ -94,6 +98,9 @@ def parse(body):
             sections[-1][1].append(line)
         elif line.strip() and not MARKER.match(line):
             stray.append(line)
+    # The form's claim checkbox (#488) is no section of anything: dropped,
+    # wherever it is, before the rest is read.
+    sections = [s for s in sections if s[0] != CLAIM_HEADING]
     # The AI line counts only where it closes something: the issue's last
     # line, or the PRD's when the Spec was appended after it (the section
     # right before the first "Spec:" one). Anywhere else it is text like any
@@ -281,8 +288,16 @@ def form(sch=None):
             item = {"type": "dropdown", "id": s["id"], "attributes": {"label": s["heading"], "description": s["description"], "options": s["values"], "default": 0},
                     "validations": {"required": True}}
         body.append(item)
+    body.append(claim_box(sch))
     doc = {"name": "🧰 Maintenance task", "description": "For maintainers. A refactor, a test, a dependency, CI or tooling, with no change a user would notice.", "type": "Task", "body": body}
     return dump(doc)
+
+
+def claim_box(sch=None):
+    """The checkbox every issue form ends with (#488): the person claims it."""
+    c = (sch or schema())["claim"]
+    return {"type": "checkboxes", "id": c["id"], "attributes": {"label": c["heading"], "description": c["description"],
+                                                                 "options": [{"label": c["label"], "required": False}]}}
 
 
 def dump(doc):
@@ -419,6 +434,10 @@ A class on <html> and a cookie.
     check_("hash: line endings do not change it", h(good), h(good.replace("\n", "\r\n")))
     check_("hash: trailing spaces do not change it", h(good), h(good.replace("dark mode.", "dark mode.   ")))
     check_("hash: the report does not change it", h(good), h("### What happened?\n\nIt broke.\n\n" + good))
+    box = "\n\n### Who works on it\n\n- [X] I want to work on this myself\n"
+    check_("C2 (#488): the form's claim checkbox passes G1, after the PRD or before it", (check(good + box)["ok"], check(box + "\n" + good)["ok"]), (True, True))
+    check_("C2 (#488): the claim checkbox is never part of the PRD's hash", h(good + box), h(good))
+    check_("C2 (#488): the claim heading is the schema's", CLAIM_HEADING, schema()["claim"]["heading"])
     check_("hash: the Spec does not change the PRD's", h(good), h(spec))
     check_("hash: a word changes it", h(good) == h(good.replace("dark mode", "light mode")), False)
     check_("hash: the Spec's own", bool(part_text(spec, "spec")), True)

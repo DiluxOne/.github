@@ -9,7 +9,9 @@ archived and not excluded in repos.yml:
   labels    labels.yml: creates each label or brings its colour and
             description in line; never deletes one.
   settings  repos.yml `settings` and `security` (Dependabot's alerts and
-            security updates among them), through the API.
+            security updates among them, and, on a public repository, every
+            outside contributor's workflow runs approved by a maintainer,
+            #488), through the API.
   files     repos.yml `files` (CODEOWNERS) and the opening block of
             AGENTS.md (agents-block.md, between its dx:org markers). These
             never go straight to main: for a repository whose files differ,
@@ -174,6 +176,19 @@ def sync_labels(repo, labels, dry):
     print(f"  {len(labels)} labels in step")
 
 
+# Who of the outside contributors needs a maintainer's approval before their
+# pull request's workflows run (#488): every one, on a public repository.
+FORK_APPROVAL = "all_external_contributors"
+
+
+def fork_approval_drift(public, security, policy):
+    """The drift line for the fork pull request approval, or None. `policy`:
+    GitHub's approval_policy, None when it could not be read (not drift)."""
+    if not public or security.get("fork_pr_approval") not in (True, "public-only") or policy is None or policy == FORK_APPROVAL:
+        return None
+    return f"outside contributors' workflow runs need approval `{policy}`, not `{FORK_APPROVAL}` (`sync-repos.py settings`)"
+
+
 def sync_settings(repo, conf, dry):
     full = f"{ORG}/{repo['name']}"
     settings = conf.get("settings") or {}
@@ -195,6 +210,8 @@ def sync_settings(repo, conf, dry):
     if public and security.get("secret_scanning") in (True, "public-only"):
         body = {"security_and_analysis": {"secret_scanning": {"status": "enabled"}, "secret_scanning_push_protection": {"status": "enabled"}}}
         gh("api", "-X", "PATCH", f"repos/{full}", "--input", "-", input_text=json.dumps(body))
+    if public and security.get("fork_pr_approval") in (True, "public-only"):
+        gh("api", "-X", "PUT", f"repos/{full}/actions/permissions/fork-pr-contributor-approval", "-f", f"approval_policy={FORK_APPROVAL}")
     print("  settings in step")
 
 
@@ -1805,6 +1822,10 @@ def drift(repo, conf, labels, block, current=0):
         found.append(f"`{DEPENDABOT}` is missing (its template: `{template}`; `sync-repos.py dependabot`)")
     elif out.stdout != dependabot:
         found.append(f"`{DEPENDABOT}` differs from its template, `{template}` (`sync-repos.py dependabot`)")
+    out = gh("api", f"repos/{full}/actions/permissions/fork-pr-contributor-approval", "--jq", ".approval_policy", check=False)
+    line = fork_approval_drift(repo.get("visibility") == "PUBLIC", conf.get("security") or {}, out.stdout.strip() if out.returncode == 0 else None)
+    if line:
+        found.append(line)
     if (conf.get("security") or {}).get("automated_security_fixes"):
         out = gh("api", f"repos/{full}/automated-security-fixes", check=False)
         # Said only when GitHub answers that they are off.
@@ -2359,6 +2380,10 @@ def self_test():
     check("labels.yml: every label has a name, a colour and no repeat", all(re.fullmatch(r"[0-9A-F]{6}", str(l["color"])) for l in labels) and len(names) == len(set(names)), names)
     check("labels.yml: accepted is there", "accepted" in names)
     conf = load_yaml(os.path.join(CENTRAL, "repos.yml"))
+    check("#488: outside contributors' runs need approval on a public repository, and the drift says when not",
+          (conf["security"].get("fork_pr_approval"), fork_approval_drift(True, conf["security"], "first_time_contributors") is not None,
+           fork_approval_drift(True, conf["security"], FORK_APPROVAL), fork_approval_drift(False, conf["security"], "first_time_contributors"), fork_approval_drift(True, conf["security"], None)),
+          ("public-only", True, None, None, None))
     check("repos.yml: settings, security and files", isinstance(conf.get("settings"), dict) and isinstance(conf.get("security"), dict) and ".github/CODEOWNERS" in (conf.get("files") or {}), conf)
     projects = conf.get("projects") or {}
     check("repos.yml: every Project is a positive number, every repository a name", projects and all(isinstance(n, int) and n > 0 for n in projects.values()) and all(re.fullmatch(r"[A-Za-z0-9._-]+", r) for r in projects), projects)

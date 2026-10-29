@@ -52,6 +52,22 @@ autopilot-runs: 5
 # The most one agent's run may cost, in US dollars (#287): Claude stops
 # there (--max-budget-usd), and the run is handed to a person, never
 # continued. A repository may lower each one, never raise it.
+# A person's claim on an issue (#488, scripts/claim.py, issue-claim.yml):
+# days without a pull request or a push before a reminder and a release, the
+# most a claim lasts without one, the days a person's stalled pull request
+# waits on its author before a reminder and its closing, the open claims a
+# person holds (with no merged pull request in the organisation, and with
+# one), and the open pull requests of a person without write access. A
+# repository only lowers them.
+claims:
+  remind-days: 7
+  release-days: 10
+  cap-days: 30
+  pr-remind-days: 7
+  pr-close-days: 14
+  newcomer-claims: 1
+  contributor-claims: 3
+  open-prs: 2
 budgets-usd:
   autopilot-spec: 3
   autopilot-work: 20

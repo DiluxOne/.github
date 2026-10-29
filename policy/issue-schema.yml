@@ -101,6 +101,16 @@ report:
   - What do you do today instead?
   - What and why
 
+# A person who will work the issue with their own code says so in the form
+# (#488): one checkbox, in every form, that claims the issue
+# (scripts/claim.py). It is not a PRD section: the check ignores it wherever
+# it is, and it is never part of what is sealed.
+claim:
+  id: claim
+  heading: Who works on it
+  label: I want to work on this myself
+  description: Tick it to claim the issue (as `/claim` does). Your claim is recorded now; its clock starts when a maintainer accepts the issue, and the autopilot does not start on it while you hold it. See CONTRIBUTING.md.
+
 # The release issue (#82): publishing a version is a person's decision, and
 # accepting this issue is it. It is not a PRD: its title is the version,
 # exactly "Release X.Y.Z", and its label is the release lane's
