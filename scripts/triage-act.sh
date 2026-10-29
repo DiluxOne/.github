@@ -59,9 +59,12 @@ act() {
   # reproduction carries it in; it waits for a person's acceptance like any
   # request. Any other Type someone set is never changed, and neither is one
   # a maintainer set (#341): only a reporter's (the form's) or a bot's Bug.
-  # A Bug a maintainer set is kept and labelled as a bug to reproduce
-  # (#496), never as the request the classifier read: the labels and the
-  # layer follow the Type it keeps, the record still says what was read.
+  # A Bug a maintainer set is kept and labelled bug:unconfirmed (#496),
+  # never as the request the classifier read: the labels and the layer
+  # follow the Type it keeps, the record still says what was read. Only the
+  # label changes: the triage's `bug` output (repro-trigger.sh bug) still
+  # reads the category, so no reproduction starts on its own; the reply
+  # says a maintainer starts it with repro:run.
   case $category in
     bug_unconfirmed|needs_info) kind=Bug;;
     # In a private repository the issue is the report (#194): a Bug.
@@ -69,9 +72,9 @@ act() {
     pro_feature|planned|enhancement) kind=Feature;;
     *) kind="";;
   esac
-  local have retyped="" effective=$category
+  local have retyped="" kept="" effective=$category
   have=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" --jq '.type.name // ""' 2>/dev/null || true)
-  if [ "$have" = Bug ] && [ "$kind" = Feature ] && set_by_maintainer; then kind=""; effective=bug_unconfirmed; fi
+  if [ "$have" = Bug ] && [ "$kind" = Feature ] && set_by_maintainer; then kind=""; kept=yes; effective=bug_unconfirmed; fi
   case $effective in
     bug_unconfirmed) label="bug:unconfirmed";;
     needs_info) label="needs-info";;
@@ -107,6 +110,9 @@ act() {
   fi
   reply=${REPLY:-}
   [ -n "${reply//[[:space:]]/}" ] || reply="Thanks! A maintainer will take a look."
+  if [ -n "$kept" ]; then
+    reply="$reply"$'\n\n'"A maintainer set this issue's Type to Bug, so it stays a Bug, labelled bug:unconfirmed. Its reproduction does not start on its own: a maintainer starts it with the repro:run label."
+  fi
   if [ -n "$retyped" ]; then
     reply="$reply"$'\n\n'"This reads as a request for something new rather than a defect, so its Type is now Feature: a maintainer decides whether to accept it."
   fi
@@ -216,6 +222,9 @@ if [ "${1:-}" = "--test" ]; then
   done
   HAS_TYPE=Bug TYPE_BY=boss PERM=write VERDICT='{"category":"enhancement","layer":"cli"}' REPLY=x SUMMARY=s t "#496 and gets the layer the verdict names" "issue edit 7 --repo o/r --add-label layer:cli"
   HAS_TYPE=Bug TYPE_BY=boss PERM=write VERDICT='{"category":"enhancement"}' REPLY=x SUMMARY=s t "#496 the record still says what the classifier read" '"category":"enhancement"'
+  HAS_TYPE=Bug TYPE_BY=boss PERM=write VERDICT='{"category":"planned"}' REPLY=x SUMMARY=s t "#496 the reply says the Bug is kept and repro:run starts its reproduction" "it stays a Bug, labelled bug:unconfirmed. Its reproduction does not start on its own: a maintainer starts it with the repro:run label."
+  : > "$log"; ( VERDICT='{"category":"enhancement"}' REPLY=x SUMMARY=s HAS_TYPE=Bug TYPE_BY=alice PERM=read NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m act >/dev/null 2>&1 ) || true
+  if grep -q "starts it with the repro:run label" "$log"; then echo "FAIL #496 a retyped Bug's reply does not mention repro:run"; fail=1; else echo "ok   #496 a retyped Bug's reply does not mention repro:run"; fi
   HAS_TYPE=Bug TYPE_BY=alice PERM=read VERDICT='{"category":"enhancement"}' REPLY=x SUMMARY=s t "#496 a reporter's Bug is still labelled enhancement" "issue edit 7 --repo o/r --add-label enhancement"
   for fails in GQL_FAILS PERM_FAILS; do
     : > "$log"; ( export "$fails=1"; VERDICT='{"category":"enhancement"}' REPLY=x SUMMARY=s HAS_TYPE=Bug TYPE_BY=boss NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m act >/dev/null 2>&1 ) || true
