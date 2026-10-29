@@ -2,6 +2,22 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [7.3.0](https://github.com/DiluxOne/.github/releases/tag/v7.3.0) · 2026-10-29
+
+### Features
+
+- fix: the autopilot answers a review in the organisation's reposi… ([#514](https://github.com/DiluxOne/.github/pull/514))
+
+### Fixes
+
+- the bug reproduced from #496 ([#499](https://github.com/DiluxOne/.github/pull/499))
+- the bug reproduced from #501 ([#503](https://github.com/DiluxOne/.github/pull/503))
+- the bug reproduced from #506 ([#512](https://github.com/DiluxOne/.github/pull/512))
+
+### Maintenance
+
+- five fix rounds per autopilot pull request instead of three ([#513](https://github.com/DiluxOne/.github/pull/513))
+
 ## [7.2.0](https://github.com/DiluxOne/.github/releases/tag/v7.2.0) · 2026-10-28
 
 ### Features
@@ -15,6 +31,10 @@ Every version of the engine (the workflows, scripts, policy and kinds other repo
 ### Documentation
 
 - **agents:** the autopilot writes the code; a claim to write it yourself ([#494](https://github.com/DiluxOne/.github/pull/494))
+
+### Maintenance
+
+- **release:** v7.2.0, the autopilot changes the engine here ([#508](https://github.com/DiluxOne/.github/pull/508))
 
 ## [7.1.0](https://github.com/DiluxOne/.github/releases/tag/v7.1.0) · 2026-10-27
 
