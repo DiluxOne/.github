@@ -59,3 +59,49 @@ def test_the_hand_squash_passes_the_credits_body():
     assert "merger=$(gh api user --jq .login)" in text
     assert 'gh pr merge "$pr" --repo "$repo" --squash --delete-branch --body "$body"' in text
     assert "co-authored-by" not in text.lower().replace("co-authors", "")
+
+
+def test_coauthor_runs_only_for_a_maintainer_and_comments_the_change():
+    """C5: `/coauthor @login` and `/uncoauthor @login` on a pull request edit
+    its Credits block, only for someone with the maintain or admin role (the
+    repository's answer, never author_association), with the central script
+    and none of the pull request's code, and the bot says what changed."""
+    wf = workflow("review-reply.yml")
+    job = wf["jobs"]["credits"]
+    cond = " ".join(job["if"].split())
+    assert "github.event_name == 'issue_comment'" in cond and "github.event.issue.pull_request" in cond
+    assert "startsWith(github.event.comment.body, '/coauthor')" in cond and "startsWith(github.event.comment.body, '/uncoauthor')" in cond
+    who = next(s for s in job["steps"] if s.get("id") == "who")
+    assert "collaborators/$LOGIN/permission" in who["run"]
+    assert "admin|maintain) echo \"ok=true\"" in who["run"] and "write)" not in who["run"]
+    assert "author_association" not in str(job)
+    checkouts = [s for s in job["steps"] if "actions/checkout" in s.get("uses", "")]
+    assert [c["with"]["repository"] for c in checkouts] == ["DiluxOne/.github"]
+    edit = next(s for s in job["steps"] if s.get("name") == "Correct the Credits block")
+    assert edit["if"] == "steps.who.outputs.ok == 'true'"
+    assert edit["env"]["COMMENT"] == "${{ github.event.comment.body }}" and "${{" not in edit["run"]
+    assert 'python3 .dx-central/scripts/credits.py command "$LOGIN"' in edit["run"]
+    assert 'gh api -X PATCH "repos/$GITHUB_REPOSITORY/pulls/$PR" -F body=@"$RUNNER_TEMP/new.md"' in edit["run"]
+    assert 'gh pr comment "$PR"' in edit["run"]
+    # No new permission: the token only writes pull requests.
+    bot = next(s for s in job["steps"] if s.get("id") == "bot")
+    assert {k: v for k, v in bot["with"].items() if k.startswith("permission-")} == {"permission-pull-requests": "write"}
+
+
+def test_a_credits_command_wakes_neither_the_reply_nor_the_autopilot():
+    wf = workflow("review-reply.yml")
+    for name in ("answer", "reply"):
+        cond = " ".join(wf["jobs"][name]["if"].split())
+        assert "!startsWith(github.event.comment.body, '/coauthor')" in cond, name
+        assert "!startsWith(github.event.comment.body, '/uncoauthor')" in cond, name
+
+
+def test_the_command_writes_the_block_and_says_what_changed(tmp_path):
+    import os
+    import subprocess
+    out = tmp_path / "new.md"
+    body = "## 📝 What changes\n\nx\n\n## 🧪 How I tested it\n\ny\n"
+    run = subprocess.run(["python3", str(ROOT / "scripts/credits.py"), "command", "boss", str(out)], input=body, capture_output=True, text=True,
+                         env=dict(os.environ, COMMENT="/coauthor @ana\n/uncoauthor @zed"), check=True)
+    assert run.stdout.splitlines() == ["- @ana is a co-author now.", "- @zed was not in the Credits block."]
+    assert "<!-- dx-credits -->\n- @ana: co-author (/coauthor by @boss)\n<!-- /dx-credits -->" in out.read_text(encoding="utf-8")

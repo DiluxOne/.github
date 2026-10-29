@@ -15,6 +15,14 @@ name: Claude review reply
 # question (#287): someone who is not a maintainer is not an answer, and
 # their comments are summarised for the maintainers by a model with no tools.
 #
+# A maintainer's `/coauthor @login` or `/uncoauthor @login` on a pull request
+# (#491) corrects its Credits block, which the merge turns into the commit's
+# `Co-authored-by` trailers (scripts/credits.py): only someone with the
+# maintain or admin role on the repository (asked of the repository, never
+# author_association), with no model and none of the pull request's code, a
+# fork's included; the bot comments what changed, so who added whom stays on
+# record. Such a comment wakes neither the reply nor the autopilot.
+#
 #   on:
 #     issue_comment:
 #       types: [created]
@@ -71,7 +79,9 @@ jobs:
   answer:
     name: The autopilot's answer
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
-    if: github.event_name == 'issue_comment' && github.event.action == 'created' && github.event.sender.type == 'User'
+    if: >-
+      github.event_name == 'issue_comment' && github.event.action == 'created' && github.event.sender.type == 'User' &&
+      !startsWith(github.event.comment.body, '/coauthor') && !startsWith(github.event.comment.body, '/uncoauthor')
     timeout-minutes: 5
     outputs:
       others: ${{ steps.back.outputs.others }}
@@ -226,6 +236,70 @@ jobs:
             gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@"$RUNNER_TEMP/others.md" >/dev/null
           fi
 
+  # Who is credited (#491): a maintainer's `/coauthor @login` or
+  # `/uncoauthor @login` edits the pull request's Credits block. Editing the
+  # description runs auto-merge again, which writes the body anew.
+  credits:
+    name: Credits (/coauthor, /uncoauthor)
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    if: >-
+      github.event_name == 'issue_comment' && github.event.action == 'created' && github.event.issue.pull_request &&
+      github.event.comment.user.type != 'Bot' &&
+      (startsWith(github.event.comment.body, '/coauthor') || startsWith(github.event.comment.body, '/uncoauthor'))
+    timeout-minutes: 5
+    steps:
+      - name: dilux-bot token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-pull-requests: write
+
+      - name: The commenter maintains this repository
+        id: who
+        # The repository's answer, never author_association: write is not
+        # enough to say who wrote the change.
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          LOGIN: ${{ github.event.comment.user.login }}
+        run: |
+          set -euo pipefail
+          role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$LOGIN/permission" --jq .role_name 2>/dev/null || echo none)
+          case "$role" in
+            admin|maintain) echo "ok=true" >> "$GITHUB_OUTPUT"; echo "$LOGIN may correct the credits ($role)." ;;
+            *) echo "ok=false" >> "$GITHUB_OUTPUT"; echo "::notice::$LOGIN has $role permission on this repository; only a maintainer corrects the credits." ;;
+          esac
+
+      - name: Checkout the credits script
+        if: steps.who.outputs.ok == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
+          path: .dx-central
+          persist-credentials: false
+
+      - name: Correct the Credits block
+        if: steps.who.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          PR: ${{ github.event.issue.number }}
+          LOGIN: ${{ github.event.comment.user.login }}
+          COMMENT: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq '.body // ""' > "$RUNNER_TEMP/body.md"
+          said=$(python3 .dx-central/scripts/credits.py command "$LOGIN" "$RUNNER_TEMP/new.md" < "$RUNNER_TEMP/body.md")
+          [ -n "$said" ] || { echo "No /coauthor or /uncoauthor line to apply."; exit 0; }
+          if ! cmp -s <(tr -d '\r' < "$RUNNER_TEMP/body.md") "$RUNNER_TEMP/new.md"; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/pulls/$PR" -F body=@"$RUNNER_TEMP/new.md" >/dev/null
+          fi
+          printf 'Credits, as @%s asked:\n\n%s\n\nThe merge writes the Credits block as the commit'"'"'s trailers (CONTRIBUTING.md, "Who signs what").\n' \
+            "$LOGIN" "$said" > "$RUNNER_TEMP/said.md"
+          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/said.md" >/dev/null
+          echo "$said"
 
   reply:
     name: Claude reply
@@ -235,6 +309,7 @@ jobs:
       contains(github.event.comment.body, format('@{0}', vars.DX_BOT_APP || 'dilux-bot')) &&
       github.event.comment.user.type != 'Bot' &&
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
+      !startsWith(github.event.comment.body, '/coauthor') && !startsWith(github.event.comment.body, '/uncoauthor') &&
       (github.event_name == 'pull_request_review_comment' || github.event.issue.pull_request)
     steps:
       - name: dilux-bot token

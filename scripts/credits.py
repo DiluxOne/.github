@@ -383,6 +383,24 @@ def self_test():
     check("C4: a co-author is not also suggested or reported",
           compose([{"login": "cy", "kind": "reported"}, {"login": "CY", "kind": "co-author"}, {"login": "dee", "kind": "suggested"}], users, ["Co-authored-by: Dee <78+dee@users.noreply.github.com>"]),
           ["Co-authored-by: Cy <56+cy@users.noreply.github.com>", "Co-authored-by: Dee <78+dee@users.noreply.github.com>"])
+    # C5: a maintainer's /coauthor and /uncoauthor.
+    base = set_block(desc, [{"login": "ana", "kind": "reported", "note": "https://github.com/o/r/issues/7"}])
+    added, said = command(base, "/coauthor @bob", "boss")
+    check("C5: /coauthor @x adds them as a co-author, and says so",
+          (read_block(added), said), ([{"login": "ana", "kind": "reported", "note": "https://github.com/o/r/issues/7"},
+                                       {"login": "bob", "kind": "co-author", "note": "/coauthor by @boss"}], ["@bob is a co-author now."]))
+    again, said2 = command(added, "/coauthor @BOB", "boss")
+    check("C5: idempotent: a co-author already changes nothing", (again, said2), (added, ["@BOB is already a co-author."]))
+    check("C5: /coauthor of someone credited otherwise makes them a co-author",
+          [e["kind"] for e in read_block(command(base, "/coauthor @ana", "boss")[0])], ["co-author"])
+    removed, said3 = command(added, "/uncoauthor @bob", "boss")
+    check("C5: /uncoauthor @x removes them", (read_block(removed), said3), (read_block(base), ["@bob is no longer credited."]))
+    check("C5: /uncoauthor of someone absent changes nothing", command(base, "/uncoauthor @zed", "boss"), (base, ["@zed was not in the Credits block."]))
+    check("C5: several people, several lines", [e["login"] for e in read_block(command(base, "/coauthor @bob @cy\n/uncoauthor @ana", "boss")[0])], ["bob", "cy"])
+    check("C5: unknown text is ignored", [command(base, t, "boss") for t in ("thanks /coauthor @bob", "/coauthor bob", "/coauthors @bob", "/coauthor @bob; rm -rf /", "")],
+          [(base, [])] * 5)
+    check("C5: a description with no block gets one", read_block(command(desc, "/coauthor @bob", "boss")[0]),
+          [{"login": "bob", "kind": "co-author", "note": "/coauthor by @boss"}])
     # C4: what the merge passes to --body, read from GitHub (gh faked).
     pr_body = "## 📝 What changes\n\nx\n\n" + set_block("", two + [{"login": "boss", "kind": "co-author"}, {"login": "dependabot[bot]", "kind": "co-author"}])
     calls = []
@@ -442,7 +460,7 @@ def main(argv):
         body, said = command(sys.stdin.read(), os.environ.get("COMMENT", ""), argv[1])
         with open(argv[2], "w", encoding="utf-8") as fh:
             fh.write(body)
-        print("\n".join(said))
+        print("\n".join(f"- {line}" for line in said))
         return 0
     if argv[:1] in (["body"], ["trailers"]) and len(argv) in (3, 4):
         try:
