@@ -898,6 +898,16 @@ def self_test():
           read_marker([{"id": 6, "user": {"login": "mallory"}, "body": marker(MARK, {**state, "login": "mallory"})}], MARK), (None, None))
     check("C1 a claimed issue is refused to another, with who holds it",
           may_claim("bob", {**accepted, "labels": ["accepted", CLAIMED], "claim": state}, 0, True, "", cfg)[0], False)
+    # C2: claimed in the form before acceptance; the clock starts at `accepted`.
+    form = "### What happened?\n\nIt broke.\n\n### Who works on it\n\n- [X] I want to work on this myself\n"
+    check("C2 the form's checkbox claims it, ticked only", (form_claim(form), form_claim(form.replace("[X]", "[ ]")), form_claim("I want to work on this myself")), (True, False, False))
+    acts, before = plan_claim("ana", "", t0, {**accepted, "labels": [], "accepted": False}, cfg)
+    check("C2 a claim before acceptance is recorded with no clock, and says when it starts",
+          (before["clock"], "Its clock starts when the issue is accepted" in acts[2][1], daily_claim(before, at(40), [], False, None, cfg)), (None, True, "pending"))
+    started = start_clock(before, at(3))
+    check("C2 the clock starts at the `accepted` event, and the dates run from it",
+          (started["clock"], started["start"], [day(d) for d in deadlines(started, cfg)]), (iso(at(3)), iso(at(3)), ["2026-11-11", "2026-11-14"]))
+    check("C2 a second `accepted` does not restart a running clock", start_clock(started, at(5))["clock"], iso(at(3)))
     if not failed:
         print("all tests passed")
     return failed

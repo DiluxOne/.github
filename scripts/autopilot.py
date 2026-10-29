@@ -1910,6 +1910,11 @@ Clamp the value in Sum::add.
     # #488: a person's claim holds the issue; the autopilot does not start.
     check("C1 held_by: `claimed` holds it; an accepted issue nobody holds does not",
           (held_by({"labels": ["accepted", "claimed"]}, []), held_by({"labels": ["accepted"]}, [])), ("a person claimed it (`claimed`)", ""))
+    check("C2 held_by: a claim made in the form holds it once accepted; the maintainer #73 assigned on acceptance does not",
+          (held_by({"labels": ["accepted", "claimed"], "assignees": ["ana", "soydiloreto"], "accepted_by": "soydiloreto"}, []),
+           held_by({"labels": ["accepted"], "assignees": ["soydiloreto"], "accepted_by": "soydiloreto"}, []),
+           held_by({"labels": ["accepted"], "assignees": ["bob"], "accepted_by": "soydiloreto"}, [])),
+          ("a person claimed it (`claimed`)", "", "it is assigned to @bob"))
     if not failed:
         print("all tests passed")
     return failed

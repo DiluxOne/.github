@@ -36,3 +36,11 @@ body:
     attributes:
       label: Logs or screenshots
       description: Anything that shows the problem. Remove keys, passwords and personal data first.
+  - type: checkboxes
+    id: claim
+    attributes:
+      label: Who works on it
+      description: Tick it to claim the issue (as `/claim` does). Your claim is recorded now; its clock starts when a maintainer accepts the issue, and the autopilot does not start on it while you hold it. See CONTRIBUTING.md.
+      options:
+        - label: I want to work on this myself
+          required: false
