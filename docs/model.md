@@ -77,12 +77,12 @@ A change moves only if it passes each gate in order. The deterministic gates alw
 | G2 Acceptance | `accepted` from a person, or a lane of the policy | Nothing starts |
 | G3 Plan | Files, approach and tests before code; in scope, no protected path (a reproduced bug's may touch one, never widening it) | It asks the maintainer, with the action and its URL |
 | G4 The kind's checks | Conventions, lint, static analysis, tests | The agent fixes and pushes again (a round) |
-| G5 Clean review | No open blocker or major | The agent fixes; after 3 rounds, a person |
+| G5 Clean review | No open blocker or major | The agent fixes; after 5 rounds, a person |
 | G6 Meets the issue | Every criterion with its evidence, nothing out of scope | Back to the loop; a scope problem goes to a person |
 | G7 Merge | G1 to G6 green, not Critical, not labelled `security`, no protected path (but a reproduced bug's fix that widens nothing), within budget; a reproduced bug's test passes again, run the way it was written | A person merges, with the reason and the URL |
 | G8 Healthy main | The default branch's CI green after the merge | An automatic revert pull request and an issue |
 
-Limits that always cut: rounds per pull request (3), runs per issue (5), what one agent's run may cost (`budgets-usd`), how many strangers' reports are reproduced a day and by one author, the agent's jobs in parallel, and an organisation switch (`DX_AUTOPILOT=off`) that stops everything autonomous without touching code, a planned release's approval by policy included.
+Limits that always cut: rounds per pull request (5), runs per issue (5), what one agent's run may cost (`budgets-usd`), how many strangers' reports are reproduced a day and by one author, the agent's jobs in parallel, and an organisation switch (`DX_AUTOPILOT=off`) that stops everything autonomous without touching code, a planned release's approval by policy included.
 
 ## What merges on its own
 

@@ -51,7 +51,7 @@ name: Autopilot
 #   mode: fix       called from org-pull-request.yml when the review of an
 #                   `autopilot` pull request blocks: one round of fixes,
 #                   pushed to its branch, which runs the pipeline again. After
-#                   `autopilot-rounds` rounds (3) it hands the pull request to
+#                   `autopilot-rounds` rounds (5) it hands the pull request to
 #                   a person (`needs-human`, with a summary).
 #
 # The agent holds no key (#287). A shell in a job that holds a secret can

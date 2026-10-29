@@ -61,7 +61,7 @@ For the team of the central repository (`.github`). Each phase is a sub-issue of
 
 ### Phase 3 · The policy base
 
-- **Today:** these already exist: the lanes in `policy/autonomy.yml`, the gate that accepts a lane's label after `autonomy.py` verifies it (and rejects any other bot's), the `accepted-by:policy` and `merged-by:policy` labels, the weekly issue #118 "Decided by policy", `autopilot-rounds: 3` and the `DX_AUTOPILOT` switch. What is below is missing.
+- **Today:** these already exist: the lanes in `policy/autonomy.yml`, the gate that accepts a lane's label after `autonomy.py` verifies it (and rejects any other bot's), the `accepted-by:policy` and `merged-by:policy` labels, the weekly issue #118 "Decided by policy", `autopilot-rounds: 5` and the `DX_AUTOPILOT` switch. What is below is missing.
 - **Delivers:**
   - A schema for `policy/autonomy.yml`, with a default risk (medium) and a ceiling (high), majors on auto, security fixes with a 4-hour veto (dropped in phase 9: a person merges every security fix), a budget per issue, 2 jobs in parallel and 30 minutes per spike.
   - `.github/policy.yml` in each repository, with a check that does not let it pass the organisation's ceiling.
@@ -131,7 +131,7 @@ For the team of the central repository (`.github`). Each phase is a sub-issue of
   - G1 "Issue ready", with a single schema (`policy/issue-schema.yml`) and a rubric.
   - Escalation by the kind's risk list, applied to the autopilot and to G7 too.
   - The feature phases: impact, threats (curated by a second AI, or by a maintainer when Critical) and architecture.
-  - The review loop capped at 3 rounds; G6 run by an agent that did not write the code; auto-merge at G7.
+  - The review loop capped at 5 rounds; G6 run by an agent that did not write the code; auto-merge at G7.
   - Disambiguation: `[Doubt]` marks, rounds of 5 questions, a decision log and a PRD amendment that is sealed again.
   - The spike in the triage.
   - The layers of "Malicious text in issues", in all five types.
@@ -423,14 +423,14 @@ A change moves only if it passes each gate in order; each gate is a GitHub check
 | G2 Acceptance | `accepted` added by a person, or a lane of the policy that allows it | Deterministic | Board: who accepted, or which rule, with a link to the policy's commit | Nothing starts |
 | G3 Plan | Files to touch, approach and tests, before writing code; that it stays in scope and touches no protected path (autonomy policy and rules) | Agent + a deterministic path check | A "Plan" comment in the issue | It stops and asks the maintainer in the issue, with the action and its URL |
 | G4 The kind's checks | Conventions, issue gate, lint, static analysis, tests, Plugin Check… | Deterministic | The pull request's checks | The agent fixes it and pushes again (counts as a round) |
-| G5 Clean review | No open blocker or major | AI | Review comment + threads | Loop: the agent fixes and re-reviews; capped at 3 rounds, then `needs-human` with a summary |
+| G5 Clean review | No open blocker or major | AI | Review comment + threads | Loop: the agent fixes and re-reviews; capped at 5 rounds, then `needs-human` with a summary |
 | G6 Meets the issue | Every acceptance criterion with its evidence (the test that proves it), and nothing out of scope | AI + a verifiable table | A "Criteria" comment in the pull request | Back to the loop; if it is scope, `needs-human` |
 | G7 Merge | G1 to G6 green, issue not `critical`, no protected paths, within budget | Deterministic | Board: "merged by policy X" | Left for a person to merge, with the reason and the URL |
 | G8 Healthy main | `main`'s CI green after the merge | Deterministic | Board + the weekly issue | Automatic revert pull request (`platform` lane) + an issue |
 
 **The issue's board** is a single comment the bot keeps up to date: one row per gate, with ✓ or ✗, when, who or which rule, and the link. It is the first thing to look at to know where a change is and why.
 
-**Limits that always cut:** rounds per pull request (3), cost per issue (the policy's `budget-usd`), the agent's jobs in parallel (2), time per round, and a general switch `DX_AUTOPILOT=off` in the organisation that stops everything autonomous without touching code.
+**Limits that always cut:** rounds per pull request (5), cost per issue (the policy's `budget-usd`), the agent's jobs in parallel (2), time per round, and a general switch `DX_AUTOPILOT=off` in the organisation that stops everything autonomous without touching code.
 
 ## Autonomy policy and lanes
 
