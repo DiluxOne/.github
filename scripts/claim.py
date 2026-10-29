@@ -31,7 +31,8 @@ dilux-bot's key and none of the repository's code).
 
 Both event and daily write `start=<JSON list of issues>` to GITHUB_OUTPUT:
 the issues the workflow starts the autopilot on (a released claim, a stalled
-pull request closed, an adopted one), so every release path ends in a start.
+pull request closed, an adopted one, the lane's issue of a claimed bug
+released), so no release leaves an issue held by nobody.
 
 The limits (days, claims per person, open pull requests) are data in
 policy/autonomy.yml `claims:`, which a repository's .github/autonomy.yml
@@ -352,17 +353,18 @@ def plan_release(state, why, issue_number, start=True):
     return acts
 
 
-def plan_end(issue, why, start=True):
+def plan_end(issue, why, start=True, lane=True):
     """Every way a claim ends (`/unclaim`, the daily release, a stalled pull
-    request closed, `/adopt`) goes through here, so none forgets a claimed
+    request closed; `/adopt` in plan_adopt_issue, which takes the lane's
+    issue for the adoption) goes through here, so none forgets a claimed
     bug: one the reproduction confirmed goes to the `bugfix-reproduced` lane
     with the same test, and its test's marker is struck out so the gate no
-    longer reads it; anything else is released, the autopilot started on it
-    when `start`."""
+    longer reads it (the lane opened by the caller when not `lane`);
+    anything else is released, the autopilot started on it when `start`."""
     state, n = issue["claim"], issue["number"]
     if not issue.get("test"):
         return plan_release(state, why, n, start)
-    return plan_release(state, why, n, start=False) + [("lane", issue["test"]), ("retire-test", issue.get("test_id"))]
+    return plan_release(state, why, n, start=False) + ([("lane", issue["test"])] if lane else []) + [("retire-test", issue.get("test_id"))]
 
 
 def plan_yield(login, maintainer, prs, runs, when, issue, cfg):
@@ -407,7 +409,26 @@ def plan_adopt(pr, maintainer, issue_number, when):
             f"`{rec['branch']}`, and every commit it pushes there carries `Co-authored-by` for @{pr['author']}.\n\n{marker(ADOPT_MARK, rec)}\n\n{SIGN}")
     return [("branch", rec["branch"], rec["sha"]), ("comment", note),
             ("close-pr", pr["number"], f"Adopted by @{maintainer}: the autopilot continues it from {pr['head'][:12]} in #{issue_number}'s pull request, with you as co-author. Thank you, @{pr['author']}.\n\n{SIGN}"),
-            ("release-if-claimed", pr["author"]), ("start", issue_number)], rec
+            ("start", issue_number)], rec
+
+
+def plan_adopt_issue(pr, maintainer, issue, when):
+    """`/adopt` on the issue as it stands: its claim, if any, ends first
+    (without a start of its own), then the adoption. A claimed bug the
+    reproduction confirmed has no PRD sealed by a person, so the autopilot
+    cannot start on the report: its claim and its test's marker end, and the
+    adoption goes to the `bugfix-reproduced` lane's issue, opened with the
+    same test (`lane-adopt`), which is the one issue started, from the
+    adopted branch. Returns (actions, the adoption record, or None when it
+    is made on the lane's issue once it exists)."""
+    why = f"@{maintainer} adopted #{pr['number']}"
+    if not issue.get("claim"):
+        return plan_adopt(pr, maintainer, issue["number"], when)
+    ended = plan_end(issue, why, start=False, lane=False)
+    if issue.get("test"):
+        return ended + [("lane-adopt", issue["test"], pr, maintainer)], None
+    acts, rec = plan_adopt(pr, maintainer, issue["number"], when)
+    return ended + acts, rec
 
 
 def pr_limit(author, others, cfg):
@@ -555,6 +576,12 @@ def apply_plan(repo, number, actions, state_id=None):
             lane = lane_open(repo, number, act[1])
             if lane:
                 start.append(lane)
+        elif kind == "lane-adopt":
+            # A claimed bug adopted: the lane's issue, then the adoption made
+            # there, so its start (the only one) is from the adopted branch.
+            lane = lane_open(repo, number, act[1])
+            if lane:
+                start += apply_plan(repo, lane, plan_adopt(act[2], act[3], int(lane), now())[0])
         elif kind == "retire-test":
             # The test's comment stays, without its marker: the gate reads a
             # claimed bug's test only while the claim holds.
@@ -652,19 +679,10 @@ def on_comment(repo, event, cfg, when):
             return []
         author = pr["author"]["login"]
         uid = gh("api", f"users/{author}", "--jq", ".id", check=False).strip()
-        acts, rec = plan_adopt({"number": number, "author": author, "author_id": int(uid) if uid.isdigit() else None, "head": head}, login, issues[0], when)
         issue = read_issue(repo, issues[0])
-        out = []
-        for act in acts:
-            if act[0] == "comment":
-                apply_plan(repo, issues[0], [act])
-            elif act[0] == "release-if-claimed":
-                if issue.get("claim"):
-                    state_id, _ = read_marker(issue["comments"], MARK)
-                    out += apply_plan(repo, issues[0], plan_end(issue, f"@{login} adopted #{number}", start=False), state_id)
-            else:
-                out += apply_plan(repo, issues[0], [act])
-        return out
+        state_id, _ = read_marker(issue["comments"], MARK)
+        acts, _ = plan_adopt_issue({"number": number, "author": author, "author_id": int(uid) if uid.isdigit() else None, "head": head}, login, issue, when)
+        return apply_plan(repo, issues[0], acts, state_id)
     if is_pr:
         return []
     issue = read_issue(repo, number)
@@ -1025,7 +1043,19 @@ def self_test():
     unclaim = plan_end({"number": 7, "claim": state, "test": {"test": "t", "sha256": "a" * 64}, "test_id": 55}, "`/unclaim` by @ana")
     check("C8 `/unclaim` of a claimed bug: released, the lane opened with its test, the test's marker struck out, the autopilot not started on the report",
           (unclaim[-2:], any(a[0] == "start" for a in unclaim)), ([("lane", {"test": "t", "sha256": "a" * 64}), ("retire-test", 55)], False))
-    check("C8 ... and `/adopt`'s release (start=False) does the same", plan_end({"number": 7, "claim": state, "test": {"test": "t", "sha256": "a" * 64}, "test_id": 55}, "adopted", start=False), unclaim[:3] + [("comment", unclaim[3][1].replace("`/unclaim` by @ana", "adopted"))] + unclaim[-2:])
+    # /adopt of a claimed bug: no start on the unsealed report and no second
+    # lane run; the adoption is made on the lane's issue, its only start.
+    bug = {"number": 7, "claim": state, "test": {"test": "t", "sha256": "a" * 64}, "test_id": 55}
+    pr41 = {"number": 41, "author": "ana", "author_id": 77, "head": "d" * 40}
+    adopt_bug, rec_bug = plan_adopt_issue(pr41, "soy", bug, at(9))
+    lane_acts = plan_adopt(pr41, "soy", 90, at(9))[0]
+    check("C8 `/adopt` of a claimed bug ends its claim and test marker, starts nothing on the report, and adopts on the lane's issue",
+          ([a[0] for a in adopt_bug], rec_bug, adopt_bug[-1][2:], [a for a in lane_acts if a[0] == "start"], [a[1] for a in lane_acts if a[0] == "branch"]),
+          (["unlabel", "unassign", "state", "comment", "retire-test", "lane-adopt"], None, (pr41, "soy"), [("start", 90)], ["feat/90-adopted-41"]))
+    plain, _ = plan_adopt_issue(pr41, "soy", {"number": 7, "claim": state}, at(9))
+    check("C10 `/adopt` of a claimed issue without a test releases it without a start of its own, then starts it once, from the adopted branch",
+          ([a[0] for a in plain].count("start"), plain[-1], [a[0] for a in plain][:3]), (1, ("start", 7), ["unlabel", "unassign", "state"]))
+    check("C10 `/adopt` of an unclaimed issue is the adoption alone", plan_adopt_issue(pr41, "soy", {"number": 7}, at(9))[0], plan_adopt(pr41, "soy", 7, at(9))[0])
     given = repro_text("ana", {"test": "t", "sha256": "a" * 64, "branch": "b"}, cfg, state)
     gone = retire_test(given, "2026-11-11T00:00:00Z")
     check("C8 a struck-out test is read no more, and says why",
