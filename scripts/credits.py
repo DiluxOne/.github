@@ -427,6 +427,14 @@ def self_test():
     check("C6: the author of the pull request is its author, not a co-author",
           compose([{"login": "ana", "kind": "co-author"}], users, ["Co-authored-by: Ana <12+ana@users.noreply.github.com>"], author="ana"), [])
     check("C6: the bot test", [is_bot(x) for x in ("dilux-bot[bot]", "Dependabot", "any[bot]", "dilux-bot", "ana")], [True, True, True, True, False])
+    # C8's reference (#491): what DiluxOne/dilux-agentic-workflow's
+    # check_commits.py must say, in its own sub-issue, as this script does.
+    ddw = "feat(x): y\n\nAI-assisted: Claude Opus 5.5\nAssisted-by: Claude Opus 5.5 (Anthropic)\nCo-authored-by: Ana <12+ana@users.noreply.github.com>\n"
+    check("C8 (reference): Assisted-by beside AI-assisted and a person's Co-authored-by pass", models(ddw), [])
+    check("C8 (reference): AI-full beside Assisted-by passes", models("feat: y\n\nAI-full: Codex\nAssisted-by: Codex (OpenAI)\n"), [])
+    check("C8 (reference): a Co-authored-by that names a model fails",
+          [m[1] for m in models(ddw + "Co-authored-by: Claude <noreply@anthropic.com>\nCo-authored-by: Gemini <gemini@google.com>\n")],
+          ["Assisted-by: Claude (Anthropic)", "Assisted-by: Gemini (Google)"])
     # C4: what the merge passes to --body, read from GitHub (gh faked).
     pr_body = "## 📝 What changes\n\nx\n\n" + set_block("", two + [{"login": "boss", "kind": "co-author"}, {"login": "dependabot[bot]", "kind": "co-author"}])
     calls = []
