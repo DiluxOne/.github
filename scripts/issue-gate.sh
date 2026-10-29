@@ -170,11 +170,21 @@ claim_test() {
 # when the head is in it, else through the API; ISSUE_GATE_FILES (a
 # directory) stands in for the head in the self-test.
 head_sha256() {
+  local blob
+  blob=$(mktemp)
   if [ -n "${ISSUE_GATE_FILES:-}" ]; then
-    sha256sum "$ISSUE_GATE_FILES/$1" 2>/dev/null | cut -c1-64; return 0
+    cp "$ISSUE_GATE_FILES/$1" "$blob" 2>/dev/null || { rm -f "$blob"; return 0; }
+  elif ! git cat-file blob "$2:$1" > "$blob" 2>/dev/null \
+    && ! gh api "repos/$GITHUB_REPOSITORY/contents/$1?ref=$2" -H "Accept: application/vnd.github.raw" > "$blob" 2>/dev/null; then
+    rm -f "$blob"; return 0
   fi
-  { git cat-file blob "$2:$1" 2>/dev/null \
-    || gh api "repos/$GITHUB_REPOSITORY/contents/$1?ref=$2" -H "Accept: application/vnd.github.raw" 2>/dev/null; } | sha256sum | cut -c1-64
+  sha256_of "$blob"
+  rm -f "$blob"
+}
+
+# A file's SHA-256, with GNU's tool or the one a stock macOS has.
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -c1-64; else shasum -a 256 "$1" | cut -c1-64; fi
 }
 
 check() {
@@ -369,7 +379,7 @@ if [ "${1:-}" = "--test" ]; then
   # handed, sealed by dilux-bot on the issue, unchanged at the head.
   files=$(mktemp -d); mkdir -p "$files/tests/Unit/Repro"
   printf 'failing test\n' > "$files/tests/Unit/Repro/Issue12Test.php"
-  sum=$(sha256sum "$files/tests/Unit/Repro/Issue12Test.php" | cut -c1-64)
+  sum=$(sha256_of "$files/tests/Unit/Repro/Issue12Test.php")
   claimed() {
     issue 12 "$repo" OPEN "bug:confirmed,claimed" "" Bug \
       | jq --arg who "${1:-dilux-bot[bot]}" --arg m "<!-- dx-claim-test {\"sha256\": \"$sum\", \"test\": \"tests/Unit/Repro/Issue12Test.php\"} -->" '.comments = {nodes: [{author: {login: $who}, body: ("The bug is yours.\n\n" + $m)}]}'
