@@ -132,7 +132,7 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    failed before; the autopilot ran it only in the sandbox, where it must
    pass before the pull request is ready, and the pull request's own checks
    run it too); it is labelled `merged-by:policy`. While the review blocks,
-   the autopilot fixes and pushes, up to three rounds, then hands it to a
+   the autopilot fixes and pushes, up to five rounds, then hands it to a
    person (`needs-human`). A sync run's pull request (lane `org-sync`)
    merges by policy too ([`scripts/autonomy.py`](../scripts/autonomy.py)
    `lane-merge`) when the lane accepts its issue and every file it changes
