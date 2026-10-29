@@ -30,7 +30,7 @@ flowchart LR
     C -- "stuck: says why" --> I
     C -- "every box ticked<br/>checks pass" --> D["✅ Ready for review<br/>conventions + accepted-issue gate<br/>checks of its kind"]
     D --> F["🤖 Claude review<br/>risk · complexity · type"]
-    F -- "blocks (3 rounds)" --> C
+    F -- "blocks (5 rounds)" --> C
     F --> L["Merges on its own when<br/>not Critical · no protected path,<br/>but a reproduced bug's fix that widens nothing<br/>review clean · within the lane<br/>a test per criterion · every check green"]
     L --> G{"All of them?"}
     G -- "yes" --> H["⚡ Auto-merge<br/>+ receipt"]
