@@ -64,6 +64,13 @@
                              the run's readable account (Markdown) from the
                              agent's execution log
   autopilot.py board         refresh the issue's board (receipts.py board)
+  autopilot.py holder        whether a person holds the issue (#488): it is
+                             `claimed`, kept as a `good first issue`,
+                             assigned to a person (not the one #73 assigned
+                             on acceptance), or closed by a person's open
+                             pull request (GitHub's link) opened before the
+                             autopilot started (STARTED, or its own pull
+                             request); exit 1 with why, 2 when unread
   autopilot.py scrub FILE    redact tokens and keys in a transcript, in place
   autopilot.py decide        whether a pull request the autopilot opened may
                              merge on its own (gate G7); prints why; exit 0
@@ -212,6 +219,66 @@ def may_start(policy, body, autopilot_var, lane=LANE, no_way=""):
     if no_way:
         return False, no_way
     return True, f"ready: G1 passes and the autopilot is on (lane {lane})"
+
+
+# What makes an issue a person's (#488): the autopilot does not start on it,
+# and stops before it opens its draft or pushes.
+CLAIMED, FIRST_ISSUE = "claimed", "good first issue"
+HOLDER_QUERY = """query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) {
+      labels(first: 50) { nodes { name } }
+      assignees(first: 20) { nodes { login } }
+      timelineItems(itemTypes: [LABELED_EVENT], last: 50) { nodes { ... on LabeledEvent { label { name } actor { login } } } }
+      closedByPullRequestsReferences(first: 20, includeClosedPrs: false) {
+        nodes { number state createdAt author { __typename login } labels(first: 30) { nodes { name } } }
+      }
+    }
+  }
+}"""
+
+
+def held_by(issue, prs, started=""):
+    """Why a person holds the issue, or "" (#488). Pure. `issue`: labels,
+    assignees, accepted_by (who added `accepted` last: #73 assigns them,
+    and that assignment alone holds nothing, choice 1a); `prs`: the open
+    pull requests that close it by GitHub's link (closedByPullRequestsReferences,
+    never a text search), each number, author, author_type, labels and
+    created. `started`: when the autopilot started on it; a person's pull
+    request opened after that does not stop it (both stay open, the
+    maintainer picks at review)."""
+    labels = issue.get("labels") or []
+    if CLAIMED in labels:
+        return f"a person claimed it (`{CLAIMED}`)"
+    if FIRST_ISSUE in labels:
+        return f"it is kept for a newcomer (`{FIRST_ISSUE}`)"
+    people = [a for a in issue.get("assignees") or [] if a not in BOT_LOGINS and not a.endswith("[bot]") and a != issue.get("accepted_by")]
+    if people:
+        return f"it is assigned to @{people[0]}"
+    for p in prs or []:
+        author = p.get("author") or ""
+        if (p.get("state", "OPEN") == "OPEN" and p.get("author_type") == "User" and author not in BOT_LOGINS
+                and "autopilot" not in (p.get("labels") or []) and (not started or (p.get("created") or "") < started)):
+            return f"#{p['number']} by @{author} closes it"
+    return ""
+
+
+def read_holder(repo, number):
+    """(issue, prs, started) for held_by, read from GitHub. started: when the
+    autopilot's own open pull request for it was opened, else STARTED."""
+    owner, name = repo.split("/", 1)
+    data = json.loads(gh("api", "graphql", "-f", f"query={HOLDER_QUERY}", "-F", f"owner={owner}", "-F", f"name={name}", "-F", f"number={number}"))
+    if data.get("errors"):
+        raise RuntimeError(json.dumps(data["errors"])[:300])
+    i = data["data"]["repository"]["issue"]
+    acc = [e for e in i["timelineItems"]["nodes"] if (e.get("label") or {}).get("name") == "accepted"]
+    issue = {"labels": [l["name"] for l in i["labels"]["nodes"]], "assignees": [a["login"] for a in i["assignees"]["nodes"]],
+             "accepted_by": ((acc[-1].get("actor") or {}).get("login") or "") if acc else ""}
+    prs = [{"number": p["number"], "state": p["state"], "created": p["createdAt"], "author": (p.get("author") or {}).get("login") or "",
+            "author_type": (p.get("author") or {}).get("__typename") or "", "labels": [l["name"] for l in p["labels"]["nodes"]]}
+           for p in i["closedByPullRequestsReferences"]["nodes"]]
+    ours = sorted(p["created"] for p in prs if p["state"] == "OPEN" and "autopilot" in p["labels"] and p["author_type"] == "Bot")
+    return issue, prs, (ours[0] if ours else os.environ.get("STARTED", ""))
 
 
 def bug_gate(issue_type, lane, declared, proposal, repo):
@@ -1840,6 +1907,9 @@ Clamp the value in Sum::add.
                org_fix.get("with"), org_fix.get("permissions"), org_fix.get("secrets"),
                cond(org_fix) == "always() && " + " && ".join([clauses[0], theirs] + clauses[1:])),
               (True, False, "review", True, {"mode": "fix", "pr": "${{ format('{0}', github.event.pull_request.number) }}"}, {"contents": "read"}, "inherit", True))
+    # #488: a person's claim holds the issue; the autopilot does not start.
+    check("C1 held_by: `claimed` holds it; an accepted issue nobody holds does not",
+          (held_by({"labels": ["accepted", "claimed"]}, []), held_by({"labels": ["accepted"]}, [])), ("a person claimed it (`claimed`)", ""))
     if not failed:
         print("all tests passed")
     return failed
@@ -2480,6 +2550,17 @@ def main(argv):
     if argv[:1] == ["board"]:
         refresh_board(repo, number)
         return 0
+    if argv[:1] == ["holder"]:
+        # Whether a person holds the issue (#488): exit 0 when nobody does,
+        # 1 when one does (why on stdout), 2 when it could not be read, which
+        # the workflow takes as held: it fails closed.
+        try:
+            why = held_by(*read_holder(repo, number))
+        except (RuntimeError, OSError, ValueError, KeyError, TypeError) as err:
+            print(f"who holds #{number} could not be read ({str(err)[:200]})")
+            return 2
+        print(why or "nobody holds it")
+        return 1 if why else 0
     if argv[:1] == ["continue-as"]:
         # IS_DRAFT (true or false), HEAD (the pull request's head), RECORD
         # (a file holding the review's last record, or null).

@@ -1,0 +1,188 @@
+name: Issue claims
+
+# Reusable. A person claims an issue (#488), and the autopilot steps aside
+# for them, with no path where an accepted issue is held by nobody. Called
+# from issues.yml (workflow-templates/issues.yml), job for job.
+#
+#   issue_comment   `/claim` claims the issue: the `claimed` label, the person
+#                   assigned (or named) and dilux-bot's comment with the
+#                   dates, which carries the claim's state in a hidden
+#                   `dx-claim` marker the bot edits as it moves. Refused,
+#                   with why, once the autopilot started (its open pull
+#                   request, or its run in progress), or beyond the claims a
+#                   person may hold (one with no merged pull request in the
+#                   organisation, three with one). `/unclaim` (the claimant,
+#                   or a maintainer naming them) releases it, and the
+#                   autopilot starts. `/yield @login` (a maintainer) cancels
+#                   the autopilot's run, closes its draft and claims the issue
+#                   for the person. The claimant's "still on it" extends the
+#                   claim once. `/adopt [sha]` (a maintainer, on a person's
+#                   pull request) copies the head they read, never a later
+#                   commit, to a branch of the repository, closes the pull
+#                   request with thanks and starts the autopilot from it; its
+#                   commits there carry `Co-authored-by` for the author.
+#                   A maintainer is read from GitHub (write access), never
+#                   from author_association alone.
+#   issues          the form's checkbox ("I want to work on this myself")
+#                   claims it when it opens, before acceptance: the claim's
+#                   clock starts when it is accepted.
+#   pull_request_target
+#                   metadata only, never the pull request's code: a person's
+#                   pull request stops its claim's clock while it waits on a
+#                   maintainer, and its pushes reset it; a third open pull
+#                   request in the organisation by a person without write
+#                   access is closed at once, linking the others; one opened
+#                   while the autopilot works the issue is linked to the
+#                   autopilot's in one comment, and both stay open.
+#   schedule        the daily run: a reminder at 7 days without a pull
+#                   request or a push to a linked branch, released at 10,
+#                   never past 30 from its start (`claim:long` exempts it); a
+#                   person's pull request with changes requested or failing
+#                   checks and no push by its author, reminded at 7 days and
+#                   closed with thanks at 14 (one that waits on a review is
+#                   listed as waiting on the maintainer, its author's clock
+#                   stopped); and the daily list, one comment per repository
+#                   on the organisation's open `run:claims` issue.
+#
+# Every release ends in the autopilot's start (the `autopilot` job): a
+# released claim, a stalled pull request closed, an adopted one. A claimed
+# bug the reproduction confirmed was handed its failing test instead of the
+# lane (issue-repro.yml); released, it goes to the `bugfix-reproduced` lane
+# with that same test.
+#
+# The days and limits are data: policy/autonomy.yml `claims:`, which a
+# repository's .github/autonomy.yml only tightens. The jobs that hold
+# dilux-bot's key run none of the repository's code, only DiluxOne/.github's
+# scripts at the central ref (scripts/claim.py), on GitHub's fresh runners;
+# comment bodies, logins and branch names reach them through the event's
+# file, never through an expression in a script.
+
+on:
+  workflow_call:
+    inputs:
+      central-ref:
+        type: string
+        default: ''
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: false
+      ANTHROPIC_API_KEY:
+        required: false
+      DILUX_BOT_PRIVATE_KEY:
+        required: false
+
+permissions: {}
+
+env:
+  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
+  DX_BOT_APP: ${{ vars.DX_BOT_APP || 'dilux-bot' }}
+  DX_BOT_ID: ${{ vars.DX_BOT_ID || '333187390' }}
+
+jobs:
+  claim:
+    name: Claims · the event
+    if: >-
+      github.event_name == 'issues' || github.event_name == 'pull_request_target' ||
+      (github.event_name == 'issue_comment' && github.event.comment.user.type != 'Bot')
+    runs-on: ubuntu-latest # fresh: it holds the key
+    timeout-minutes: 10
+    permissions: {}
+    # One at a time per issue or pull request: a flood of comments queues.
+    concurrency:
+      group: claim-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
+      cancel-in-progress: false
+    outputs:
+      start: ${{ steps.claim.outputs.start || '[]' }}
+    steps:
+      - name: dilux-bot token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write # the adopted commit's branch
+          permission-issues: write
+          permission-pull-requests: write
+          permission-actions: write # `/yield` cancels the autopilot's run
+
+      - name: The organisation's scripts and policy
+        env:
+          REF: ${{ inputs.central-ref || job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          git clone -q --depth 1 --branch "$REF" https://github.com/DiluxOne/.github .dx-central 2>/dev/null \
+            || { git clone -q https://github.com/DiluxOne/.github .dx-central && git -C .dx-central checkout -q "$REF"; }
+          test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+
+      - name: The claim
+        id: claim
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/contents/.github/autonomy.yml" --jq .content 2>/dev/null | base64 -d > "$RUNNER_TEMP/repo-autonomy.yml" || : > "$RUNNER_TEMP/repo-autonomy.yml"
+          REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml" python3 .dx-central/scripts/claim.py event
+
+  daily:
+    name: Claims · the daily run
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest # fresh: it holds the key
+    timeout-minutes: 30
+    permissions: {}
+    outputs:
+      start: ${{ steps.daily.outputs.start || '[]' }}
+    steps:
+      - name: dilux-bot token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          # The daily list is on the organisation's .github.
+          repositories: ${{ github.event.repository.name == '.github' && '.github' || format('{0},.github', github.event.repository.name) }}
+          permission-contents: write # the seal of a released bug's lane issue
+          permission-issues: write
+          permission-pull-requests: write
+          permission-actions: read # the reproduction's run, which the lane checks
+
+      - name: The organisation's scripts and policy
+        env:
+          REF: ${{ inputs.central-ref || job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          git clone -q --depth 1 --branch "$REF" https://github.com/DiluxOne/.github .dx-central 2>/dev/null \
+            || { git clone -q https://github.com/DiluxOne/.github .dx-central && git -C .dx-central checkout -q "$REF"; }
+          test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+
+      - name: Reminders, releases, stalled pull requests and the daily list
+        id: daily
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          DX_AUTOPILOT: ${{ vars.DX_AUTOPILOT }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/contents/.github/autonomy.yml" --jq .content 2>/dev/null | base64 -d > "$RUNNER_TEMP/repo-autonomy.yml" || : > "$RUNNER_TEMP/repo-autonomy.yml"
+          POLICY_REF=$(git -C .dx-central rev-parse --short=12 HEAD)
+          export POLICY_REF
+          REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml" python3 .dx-central/scripts/claim.py daily
+
+  # Every release ends here: the autopilot starts on what nobody holds now,
+  # so no accepted issue is left without someone working it. autopilot.yml
+  # decides again whether it may (accepted, ready, nobody holding it).
+  autopilot:
+    needs: [claim, daily]
+    if: always() && (needs.claim.outputs.start || needs.daily.outputs.start || '[]') != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        issue: ${{ fromJSON(needs.claim.outputs.start || needs.daily.outputs.start || '[]') }}
+    # The agent's jobs read the repository with the job's own token (#287).
+    permissions:
+      contents: read
+    uses: DiluxOne/.github/.github/workflows/autopilot.yml@v7
+    with:
+      mode: start
+      issue: ${{ matrix.issue }}
+      central-ref: ${{ inputs.central-ref }}
+    secrets: inherit

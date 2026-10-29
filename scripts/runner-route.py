@@ -74,7 +74,10 @@ GITHUB_ONLY = ("plugin-release-wp.yml", "plugin-publish-wp.yml", "svn-auth-check
                # It holds an embargoed fix and pushes it out (#247): a fresh runner.
                "security-patch.yml",
                # What it finds can be a vulnerability (#234): a fresh runner.
-               "nightly-review.yml")
+               "nightly-review.yml",
+               # It holds dilux-bot's key on a fork's pull request
+               # (pull_request_target, #488): a fresh runner.
+               "issue-claim.yml")
 
 # A job that holds a key beside an agent's work, in a workflow that is
 # otherwise shared (autopilot.yml's prep, draft and apply, #287): a fresh

@@ -30,6 +30,12 @@
 # closed when the run needed no one, open with needs:maintainer when it did.
 - {name: "run:runner-image", color: "C5DEF5", description: "A build of the runner image (runner-image.yml)"}
 - {name: "run:autonomy-digest", color: "C5DEF5", description: "A week's decisions by policy (autonomy-digest.yml)"}
+- {name: "run:claims", color: "C5DEF5", description: "The daily list of claims (issue-claim.yml), one comment per repository"}
+
+# A person claims an issue (#488, issue-claim.yml): the autopilot steps aside.
+- {name: claimed, color: "5319E7", description: "A person claimed it: the autopilot steps aside"}
+- {name: "claim:long", color: "5319E7", description: "A long task: the claim is not released for want of a pull request"}
+- {name: "good first issue", color: "7057FF", description: "Kept for a newcomer to /claim: the autopilot does not start on it"}
 
 # Gate G8 (revert-on-red.yml): a merge that turned the default branch red.
 - {name: revert, color: "B60205", description: "Opened by dilux-bot to revert a merge that turned the default branch red"}

@@ -205,7 +205,9 @@ jobs:
 
   # Whether it may run, and what the agent reads: with the key, no agent.
   prep:
-    name: Autopilot (${{ inputs.mode }}) · may it run
+    # The issue in its name: scripts/claim.py finds the autopilot's run in
+    # progress for an issue by it (#488).
+    name: Autopilot (${{ inputs.mode }}) · may it run · #${{ inputs.issue || inputs.pr }}
     runs-on: ubuntu-latest # fresh: it holds the key beside an agent's work (#287)
     timeout-minutes: 15
     permissions: {}
@@ -333,6 +335,22 @@ jobs:
         run: |
           set -euo pipefail
           export BODY="$RUNNER_TEMP/body.md" REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml"
+          # A person holds it (#488): claimed, kept as a good first issue,
+          # assigned to a person, or closed by a person's pull request
+          # opened before the autopilot's (GitHub's link). The autopilot
+          # steps aside. A read that fails stops it too, and says so: it
+          # never starts on an issue it could not check.
+          rc=0
+          held=$(NUMBER="$ISSUE" python3 .dx-central/scripts/autopilot.py holder) || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "The autopilot does not start: $held"
+            if [ "$rc" -eq 2 ]; then
+              gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "The autopilot did not run: $held, so it could not tell whether a person holds this issue. A maintainer accepts it again (remove and add \`accepted\`) to try once more.
+
+          🤖 AI-generated · Claude Opus 5.5 (Anthropic)" >/dev/null || true
+            fi
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
           # Who accepted it, read from GitHub's history (never from a label
           # alone): a lane's own issue that lane accepts is worked under the
           # lane, with its caps; one a person accepted, under human-issue.

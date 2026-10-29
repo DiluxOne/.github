@@ -4,11 +4,20 @@ name: Issues
 # triage classifies it when it opens (from docs/roadmap.md and the docs) and
 # the reproduction job tries to write a failing unit test for a report the
 # triage calls a bug (repro-triaged), and a maintainer can start one by hand
-# with the label repro:run.
+# with the label repro:run. A person claims an issue to work it with their
+# own code (`/claim`, or the form's checkbox, #488): the autopilot steps
+# aside, and the daily run reminds, releases and hands it back to the
+# autopilot, so no accepted issue is left held by nobody.
 
 on:
   issues:
     types: [opened, edited, labeled, closed]
+  # Claims (#488): the commands in comments, and a person's pull request
+  # (metadata only; its code is never checked out).
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, reopened, synchronize, closed]
   schedule:
     - cron: '0 13 * * *'
 
@@ -17,6 +26,7 @@ permissions:
 
 jobs:
   triage:
+    if: github.event_name == 'issues' || github.event_name == 'schedule'
     permissions:
       contents: read
       issues: write
@@ -26,6 +36,7 @@ jobs:
     secrets: inherit
 
   repro:
+    if: github.event_name == 'issues'
     permissions:
       actions: read
       contents: write
@@ -36,7 +47,7 @@ jobs:
 
   repro-triaged:
     needs: triage
-    if: needs.triage.outputs.bug == 'true'
+    if: github.event_name == 'issues' && needs.triage.outputs.bug == 'true'
     permissions:
       actions: read
       contents: write
@@ -56,6 +67,7 @@ jobs:
   # X.Y.Z", the Release form) opens its release pull request. When it
   # closes: Done.
   accepted:
+    if: github.event_name == 'issues'
     permissions:
       actions: write
       issues: read
@@ -63,3 +75,11 @@ jobs:
     uses: DiluxOne/.github/.github/workflows/issue-accepted.yml@v7
     secrets:
       DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+
+  # A person claims an issue (#488): `/claim`, the form's checkbox, and the
+  # daily reminders and releases; every release starts the autopilot.
+  claim:
+    permissions:
+      contents: read
+    uses: DiluxOne/.github/.github/workflows/issue-claim.yml@v7
+    secrets: inherit
