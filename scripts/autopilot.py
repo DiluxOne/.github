@@ -81,6 +81,10 @@
                              the agent's outbox, applied with the key: each
                              intent through the command a person's run uses
                              (KINDS: only those, comma-separated)
+  autopilot.py continue-as   what a continue runs (#504): `fix` on a ready
+                             pull request whose review blocks at its head
+                             (IS_DRAFT, HEAD, RECORD: a file holding the
+                             review's last record), else `continue`
   autopilot.py --test        self-test
 
 With DX_IO set (the agent's job, which holds no key, #287), push, decision,
@@ -132,6 +136,7 @@ repro = _load("repro_lane", "repro-lane.py")
 repro_ways = _load("repro_ways", "repro-ways.py")
 detect = _load("detect", "detect.py")
 prepr = _load("pre_pr", "pre-pr.py")
+review_count = _load("review_count", "review-count.py")
 
 LEVELS = ["none", "low", "medium", "high"]
 # A path that is a test: code under tests/, test/, spec/ or __tests__/ (not
@@ -426,6 +431,17 @@ def may_continue(labels, pr_body, runs, cap):
     if done == total:
         return True, f"every criterion is done; the checks and the finish are left, run {runs + 1} of {cap}"
     return True, f"{total - done} of {total} criteria left, run {runs + 1} of {cap}"
+
+
+def continue_as(is_draft, record, head):
+    """What a continue runs (#504): `fix`, one round of fixes, on a pull
+    request already ready whose review blocks at its head (the review's
+    record, the dx-review-record JSON, its verdict counted as the review
+    counts it, #506); `continue` otherwise: a draft, a review that does not
+    block, one of an older head, or none."""
+    if is_draft or not isinstance(record, dict) or not head or record.get("sha") != head:
+        return "continue"
+    return "fix" if review_count.blocking(record) else "continue"
 
 
 def end_verdict(mode, pr, draft_, stopped, done, total, limit_hit, runs, cap, pushed=False, asked=False, nudged=False):
@@ -1419,6 +1435,12 @@ A class on html.
            "The Spec was the moment for questions" in guided_work("guided", "E=1", "")), (True, True, True))
     check("C4: may continue with boxes left", may_continue(["autopilot"], t, 1, 5)[0], True)
     check("C4: never with needs-human", may_continue(["needs-human"], t, 1, 5)[0], False)
+    blk = lambda sha, sev="major", **k: {"sha": sha, "blocking": True, "findings": [{"severity": sev, "file": "a", "title": "t", **k}]}
+    check("#504 C4: a continue runs a fix round only on a ready pull request whose review blocks at its head",
+          (continue_as(False, blk("h"), "h"), continue_as(True, blk("h"), "h"), continue_as(False, blk("h", "minor"), "h"), continue_as(False, blk("h", pre_existing=True), "h"),
+           continue_as(False, blk("old"), "h"), continue_as(False, None, "h"), continue_as(False, "x", "h"), continue_as(False, {"sha": "h", "blocking": False}, "h"),
+           continue_as(False, {"sha": "h", "blocking": True, "findings": []}, "h"), continue_as(False, blk(""), "")),
+          ("fix", "continue", "continue", "continue", "continue", "continue", "continue", "continue", "continue", "continue"))
     check("C4: never at the cap", may_continue([], t, 5, 5)[0], False)
     full = tick(t, "C2", ["fix: keep it (C2)"])
     check("C2 (#112): a draft with every box ticked continues, for the checks and the finish", may_continue([], full, 1, 5)[0], True)
@@ -1766,6 +1788,58 @@ Clamp the value in Sum::add.
         end, last, fresh = sid("apply", "end"), sid("apply", "last-resort"), sid("apply", "bot-end")
         check("C1 (#126): a fresh token after the work, however it ended, before the end rule, and the last resort after it",
               (fresh < end < last, "always()" in str(steps("apply")[fresh].get("if", "")), "verdict" in str(steps("apply")[last].get("if", ""))), (True, True, True))
+        # #504: a continue on a ready pull request whose review blocks runs
+        # a fix round. What prep decides is read by the steps that decide the
+        # work; the count stays the mode it was called with (a run).
+        env_of = lambda job, key: str(next(st for st in steps(job) if st.get("id") == key or st.get("name") == key).get("env", {}).get("MODE", ""))
+        claude = next(st for st in steps("work") if st.get("id") == "work")["with"]["claude_args"]
+        end_env = steps("apply")[end]["env"]
+        check("#504 C4: the task, the budget and the end read the mode prep runs; the count, the mode it was called with",
+              (wf["jobs"]["prep"]["outputs"].get("mode"), env_of("prep", "The agent's task"), env_of("prep", "when"), "needs.prep.outputs.mode == 'fix'" in claude,
+               end_env.get("MODE"), "needs.prep.outputs.mode == 'fix'" in str(end_env.get("HEAD_BEFORE")), env_of("prep", "Count the round or the run"),
+               steps("prep")[sid("prep", "may")]["env"].get("AS"), "AS=\"$AS\"" in steps("prep")[sid("prep", "may")]["run"]),
+              ("${{ steps.what.outputs.mode || inputs.mode }}", "${{ steps.what.outputs.mode }}", "${{ steps.what.outputs.mode }}", True,
+               "${{ needs.prep.outputs.mode }}", True, "${{ inputs.mode }}", "${{ steps.what.outputs.mode }}", True))
+        # The step's own lines, with a gh that answers as GitHub would.
+        what = steps("prep")[sid("prep", "what")]["run"]
+        decide_as = what[what.index("\nas=$MODE"):what.index('echo "mode=$as"')] + 'echo "$as"\n'
+        def ran_as(mode, draft_, comments, head="h1"):
+            with tempfile.TemporaryDirectory() as d:
+                with open(os.path.join(d, "gh"), "w", encoding="utf-8") as fh:
+                    fh.write("#!/bin/sh\ncase \"$1\" in pr) printf '%s\\n' \"$PR_STATE\" ;; api) printf '%s' \"$COMMENTS\" ;; esac\n")
+                os.chmod(os.path.join(d, "gh"), 0o755)
+                os.makedirs(os.path.join(d, ".dx-central"))
+                os.symlink(os.path.join(HERE), os.path.join(d, ".dx-central", "scripts"))
+                r = subprocess.run(["bash", "-c", "set -euo pipefail\n" + decide_as], cwd=d, capture_output=True, text=True,
+                                   env={"PATH": d + os.pathsep + os.environ.get("PATH", ""), "MODE": mode, "PR": "8", "GITHUB_REPOSITORY": "o/r", "RUNNER_TEMP": d,
+                                        "DX_BOT_LOGIN": BOT, "PR_STATE": f"{str(draft_).lower()} {head}", "COMMENTS": json.dumps(comments)})
+                return r.stdout.strip().splitlines()[-1] if r.returncode == 0 and r.stdout.strip() else f"failed: {r.stderr.strip()[-200:]}"
+        rec = lambda sha, sev, who=BOT: {"user": {"login": who}, "body": f"{REVIEW_MARK}\n### Claude review\n<!-- dx-review-record {json.dumps({'sha': sha, 'blocking': True, 'findings': [{'severity': sev, 'file': 'a', 'title': 't'}]})} -->"}
+        check("#504 C4: a continue on a ready pull request blocked at its head runs a fix round; a draft, no block, an older head, a stranger's record or none does not",
+              (ran_as("continue", False, [rec("h0", "major"), rec("h1", "major")]), ran_as("continue", True, [rec("h1", "major")]), ran_as("continue", False, [rec("h1", "minor")]),
+               ran_as("continue", False, [rec("h1", "major"), rec("h2", "minor")], head="h2"), ran_as("continue", False, [rec("h0", "major")]),
+               ran_as("continue", False, [rec("h1", "major", "stranger")]), ran_as("continue", False, []), ran_as("fix", False, []), ran_as("start", False, [])),
+              ("fix", "continue", "continue", "continue", "continue", "continue", "continue", "fix", "start"))
+        # #504: the fix round runs here from this repository's own pipeline,
+        # with the condition every other repository's has, but the
+        # repository: each runs it once.
+        pipeline = lambda name: yaml.safe_load(open(os.path.join(HERE, "..", ".github", "workflows", name), encoding="utf-8"))["jobs"]["autopilot-fix"]
+        here_fix, org_fix = pipeline("pull-request.yml"), pipeline("org-pull-request.yml")
+        cond = lambda job: " ".join(str(job.get("if", "")).split())
+        mine, theirs = "github.repository == 'DiluxOne/.github'", "github.repository != 'DiluxOne/.github'"
+        check("#504 C1: this repository's autopilot-fix runs the round here, after its review, with the organisation's condition but the repository",
+              (here_fix.get("uses"), here_fix.get("needs"), (here_fix.get("with") or {}).get("mode"), (here_fix.get("with") or {}).get("central-ref"),
+               here_fix.get("permissions"), here_fix.get("secrets"), mine in cond(here_fix), cond(here_fix) == cond(org_fix).replace(theirs, mine)),
+              ("./.github/workflows/autopilot.yml", "review", "fix", "main", {"contents": "read"}, "inherit", True, True))
+        clauses = ["github.event_name == 'pull_request'", "needs.review.outputs.blocking == 'true'", "contains(github.event.pull_request.labels.*.name, 'autopilot')",
+                   "github.event.pull_request.user.login == 'dilux-bot[bot]'", "github.event.action != 'edited'"]
+        check("#504 C2: no round here for another author's pull request, one without the label, a review that does not block, or an edit",
+              ([c for c in clauses if c not in cond(here_fix)], [c for c in clauses if c not in cond(org_fix)], " || " in cond(here_fix)), ([], [], False))
+        check("#504 C3: every other repository's round is as it was, and never runs here",
+              (theirs in cond(org_fix), mine in cond(org_fix), org_fix.get("needs"), bool(re.fullmatch(r"DiluxOne/\.github/\.github/workflows/autopilot\.yml@v\d+", str(org_fix.get("uses")))),
+               org_fix.get("with"), org_fix.get("permissions"), org_fix.get("secrets"),
+               cond(org_fix) == "always() && " + " && ".join([clauses[0], theirs] + clauses[1:])),
+              (True, False, "review", True, {"mode": "fix", "pr": "${{ format('{0}', github.event.pull_request.number) }}"}, {"contents": "read"}, "inherit", True))
     if not failed:
         print("all tests passed")
     return failed
@@ -2406,12 +2480,23 @@ def main(argv):
     if argv[:1] == ["board"]:
         refresh_board(repo, number)
         return 0
+    if argv[:1] == ["continue-as"]:
+        # IS_DRAFT (true or false), HEAD (the pull request's head), RECORD
+        # (a file holding the review's last record, or null).
+        try:
+            record = json.loads(open(os.environ.get("RECORD", ""), encoding="utf-8").read() or "null")
+        except (OSError, ValueError):
+            record = None
+        print(continue_as(os.environ.get("IS_DRAFT", "true") != "false", record, os.environ.get("HEAD", "")))
+        return 0
     pol = autonomy.policy_in_force()
     cap = int(pol.get("autopilot-runs", 5))
     runs = int(os.environ.get("RUNS", "0") or 0)
     if argv[:1] == ["may-continue"]:
         info = pr_json(repo, pr, "body,labels,isDraft,state")
-        if info.get("state") != "OPEN" or not info.get("isDraft"):
+        # A continue that runs a fix round (#504, AS=fix) is on a pull
+        # request already ready.
+        if info.get("state") != "OPEN" or not (info.get("isDraft") or os.environ.get("AS") == "fix"):
             print(f"#{pr} is not an open draft")
             return 1
         ok, why = may_continue([l["name"] for l in info["labels"]], info["body"], runs, cap)
