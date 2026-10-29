@@ -997,6 +997,12 @@ def self_test():
     check("C9 with a merged pull request: a second and a third, not a fourth",
           [may_claim("ana", accepted, n, True, "", cfg)[0] for n in (1, 2, 3)], [True, True, False])
     check("C9 a repository's tighter limit holds", may_claim("ana", accepted, 1, True, "", config({"claims": {"contributor-claims": 1}}))[0], False)
+    # Choice 3a: a person without write access keeps at most two pull
+    # requests open across the organisation; a third is closed at once.
+    others = ["https://github.com/o/a/pull/1", "https://github.com/o/b/pull/2"]
+    close, why = pr_limit("ana", others, cfg)
+    check("3a a third open pull request is closed, linking the other two", (close, all(u in why for u in others)), (True, True))
+    check("3a a second is not", pr_limit("ana", others[:1], cfg), (False, ""))
     if not failed:
         print("all tests passed")
     return failed

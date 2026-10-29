@@ -105,6 +105,11 @@ security:
   automated_security_fixes: true
   private_vulnerability_reporting: public-only
   secret_scanning: public-only
+  # Every outside contributor's workflow runs wait for a maintainer's
+  # approval, not only a first-timer's (#488): GitHub's
+  # fork-pr-contributor-approval, `all_external_contributors`, on public
+  # repositories.
+  fork_pr_approval: public-only
 
 # Files every repository carries because GitHub reads them only from the
 # repository. They reach it as a pull request that closes an issue the
