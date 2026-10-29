@@ -41,3 +41,11 @@ body:
     attributes:
       label: Proposed solution
       description: Optional. How you would solve it. If the change uses it, you are credited as its co-author.
+  - type: checkboxes
+    id: claim
+    attributes:
+      label: Who works on it
+      description: Tick it to claim the issue (as `/claim` does). Your claim is recorded now; its clock starts when a maintainer accepts the issue, and the autopilot does not start on it while you hold it. See CONTRIBUTING.md.
+      options:
+        - label: I want to work on this myself
+          required: false

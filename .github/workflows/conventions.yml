@@ -6,7 +6,9 @@ name: Conventions
 # description whose required sections are filled in (it becomes the commit
 # body) and that carries no "Generated with" footer (AI is disclosed with
 # the one sober line instead), and that it closes an issue a maintainer
-# accepted (scripts/issue-gate.sh; the organisation's policy, `issue-gate`);
+# accepted (scripts/issue-gate.sh; the organisation's policy, `issue-gate`;
+# a claimed bug the reproduction confirmed instead carries the failing test
+# dilux-bot handed the person, unchanged, #488);
 # that a docs pull request changes only documentation; and that one from an
 # author who is not trusted stays under `max-changed-lines-untrusted` (a
 # pull request the autopilot opened and a maintainer took over, by adding
@@ -186,6 +188,8 @@ jobs:
           # branch, stricter only); DX_AUTOPILOT=off stops every lane.
           DX_AUTOPILOT: ${{ vars.DX_AUTOPILOT }}
           BASE: ${{ github.event.pull_request.base.sha }}
+          # A claimed bug's test is read only from the App's own comment (#488).
+          DX_BOT_APP: ${{ vars.DX_BOT_APP || 'dilux-bot' }}
         run: |
           git show "$BASE:.github/autonomy.yml" > "$RUNNER_TEMP/repo-autonomy.yml" 2>/dev/null || : > "$RUNNER_TEMP/repo-autonomy.yml"
           REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml" bash .dx-central/scripts/issue-gate.sh

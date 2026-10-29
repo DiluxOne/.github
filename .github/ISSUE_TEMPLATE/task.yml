@@ -64,3 +64,11 @@ body:
     description: 'Only for a decision that several repositories carry out: which ones, one rule per line, all of them true. `all`; `kind: <kind>`; `visibility: public` or `private`; `has: <file at the repository''s root>`; `name: <repository>, <repository>`. Each gets a sub-issue of this one, accepted with it.'
   validations:
     required: false
+- type: checkboxes
+  id: claim
+  attributes:
+    label: Who works on it
+    description: Tick it to claim the issue (as `/claim` does). Your claim is recorded now; its clock starts when a maintainer accepts the issue, and the autopilot does not start on it while you hold it. See CONTRIBUTING.md.
+    options:
+    - label: I want to work on this myself
+      required: false

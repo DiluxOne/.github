@@ -12,9 +12,10 @@ step-by-step flow with its commands is in
    yourself. The pull request says `Closes #<number>`; CI fails it otherwise.
    **The code is written in GitHub Actions, by the autopilot.** Nobody
    writes it on their own machine (not the maintainer, not their agents,
-   not someone from a fork) unless they first claim the issue: until `/claim`
-   ships (DiluxOne/.github#488), ask on the issue to take it and wait
-   until a maintainer assigns it to you. Without a claim, never edit code locally: open
+   not someone from a fork) unless they first claim the issue: comment
+   `/claim` on it (or tick "I want to work on this myself" in its form),
+   and the autopilot steps aside; a claim with no pull request is released
+   after 10 days. Without a claim, never edit code locally: open
    or improve the issue, answer the autopilot's questions on its pull
    request, and let it work; when it stops, give it a hint and add
    `autopilot:continue`, never finish its pull request by hand.

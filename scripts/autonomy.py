@@ -201,13 +201,24 @@ def merge(org, repo):
             warn(f"budgets-usd.{key}: a repository can only lower it; kept {budgets[key]}.")
     if budgets:
         out["budgets-usd"] = budgets
+    # A claim's days and limits (#488): a repository only lowers them.
+    mine = repo.get("claims") if isinstance(repo.get("claims"), dict) else {}
+    claims = dict(org.get("claims") or {})
+    for key, value in mine.items():
+        if key in claims and isinstance(value, int) and not isinstance(value, bool) and 0 < value < claims[key]:
+            claims[key] = value
+        elif key in claims and value != claims[key]:
+            warn(f"claims.{key}: a repository can only lower it; kept {claims[key]}.")
+    if claims:
+        out["claims"] = claims
     for name, lane in out["lanes"].items():
         lane.setdefault("enabled", True)
     return out
 
 
-TOP_KEYS = {"autopilot", "autopilot-rounds", "autopilot-runs", "autopilot-mode", "budgets-usd", "constitution", "person-merges", "planned-release", "security-patch", "lanes"}
+TOP_KEYS = {"claims", "autopilot", "autopilot-rounds", "autopilot-runs", "autopilot-mode", "budgets-usd", "constitution", "person-merges", "planned-release", "security-patch", "lanes"}
 BUDGETS = ("autopilot-spec", "autopilot-work", "autopilot-fix", "security-fix")
+CLAIMS = ("remind-days", "release-days", "cap-days", "pr-remind-days", "pr-close-days", "newcomer-claims", "contributor-claims", "open-prs")
 MODES = ("guided", "full")
 LANE_KEYS = {"description", "accept", "type", "origin", "repositories", "evidence", "merge", "ceiling", "constitution-merge", "enabled"}
 # The one lane whose fix may merge in a protected path, and only when it
@@ -227,6 +238,9 @@ def problems(policy):
     b = policy.get("budgets-usd", {})
     if not isinstance(b, dict) or set(b) - set(BUDGETS) or not all(isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v <= 200 for v in b.values()):
         out.append(f"budgets-usd: {', '.join(BUDGETS)}, each a number of dollars above 0 and at most 200")
+    c = policy.get("claims", {})
+    if not isinstance(c, dict) or set(c) - set(CLAIMS) or not all(isinstance(v, int) and not isinstance(v, bool) and 0 < v <= 365 for v in c.values()):
+        out.append(f"claims: {', '.join(CLAIMS)}, each a whole number from 1 to 365")
     for key in ("autopilot-rounds", "autopilot-runs"):
         if key in policy and not (isinstance(policy[key], int) and not isinstance(policy[key], bool) and policy[key] > 0):
             out.append(f"{key}: a whole number above 0")
@@ -1135,6 +1149,9 @@ def self_test():
         fetched = next((l for l in fh if "for f in scripts/autonomy.py" in l), "")
     local = sorted(set(re.findall(r"^import (\w+)", open(__file__, encoding="utf-8").read(), re.M)) & {f[:-3] for f in os.listdir(HERE) if f.endswith(".py")})
     check("#191: the lane job fetches what autonomy.py imports from here, and org.yml", (all(f"scripts/{m}.py" in fetched for m in local), "org.yml" in fetched), (True, True))
+    check("#488 claims: a repository lowers a limit, never raises it",
+          [merge(org, {"claims": {"release-days": 5}})["claims"]["release-days"], merge(org, {"claims": {"release-days": 50}})["claims"]["release-days"]], [5, 10])
+    check("#488 claims: an unknown key or a day count that is not a number", [problems({**org, "claims": {"x": 1}}) != [], problems({**org, "claims": {"remind-days": "7"}}) != []], [True, True])
     check("the organisation's policy has the seven lanes", sorted(org.get("lanes", {})), ["bugfix-reproduced", "delegated", "human-issue", "org-sync", "platform", "release", "security-carry"])
     # The security-carry lane (#287).
     pol_c = merge(org, {})

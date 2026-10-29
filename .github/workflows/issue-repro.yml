@@ -28,7 +28,10 @@ name: Issue reproduction
 #
 #   the test fails  -> the bug is real: label `bug:confirmed`, the test on
 #                      the branch test/repro-issue-<n>, and a comment on the
-#                      issue. Then, when the `bugfix-reproduced` lane is open
+#                      issue. A claimed bug (#488) goes to the person who
+#                      claimed it instead: its test sealed on the report,
+#                      the branch named, the claim's clock started, no lane
+#                      issue until the claim is released. Then, when the `bugfix-reproduced` lane is open
 #                      here (policy/autonomy.yml, the repository's
 #                      .github/autonomy.yml, DX_AUTOPILOT; #84), the report
 #                      loses `awaiting-acceptance` and `incomplete` (#427) and dilux-bot
@@ -1044,6 +1047,14 @@ jobs:
             # Through the API, so GitHub signs the commit (#190).
             python3 .dx-central/scripts/api-commit.py push "$branch" --onto HEAD~1 --force
             gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label bug:confirmed --remove-label bug:unconfirmed >/dev/null
+            # A claimed bug (#488): the person fixes it, with this test.
+            # No lane issue and no draft: the next step seals the test on
+            # the report, starts the claim's clock and names the branch. If
+            # the claim is released, the lane takes it with the same test.
+            if [ "$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | index("claimed") != null')" = true ]; then
+              { echo "claimed=true"; echo "branch=$branch"; echo "test=$test"; } >> "$GITHUB_OUTPUT"
+              echo "Reproduced; the person who claimed it fixes it."; exit 0
+            fi
             if [ "$LANE_OPEN" = yes ]; then
               # Its lane fixes it with no acceptance (#397), so the report
               # stops reading as waiting for one (#427). With the lane
@@ -1065,6 +1076,29 @@ jobs:
             gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'I could not reproduce this. I wrote a %s from the report (%s, on the branch %s) and it passes on %s: %s%s\n\nWhat would help: %s\n\nIf you add that here, a maintainer can ask for another attempt (the %s label).\n\n%s' "$noun" "$code_test" "${BT}${branch}${BT}" "$code_main" "$SUMMARY" "$since" "$needs" "$code_again" "$sign")" >/dev/null
             echo "Not reproduced."
           fi
+
+      # A claimed bug the reproduction confirmed (#488): its failing test is
+      # sealed on the report (dx-claim-test: the test, its SHA-256, its
+      # branch, and the lane's facts for a release), the claim's clock
+      # starts, and the person is told the branch. The gate
+      # (scripts/issue-gate.sh) merges their pull request only with that
+      # test unchanged. The autopilot does not start.
+      - name: A claimed bug's test, to the person
+        if: steps.report.outputs.claimed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          NUMBER: ${{ github.event.issue.number }}
+          TEST: ${{ steps.report.outputs.test }}
+          BRANCH: ${{ steps.report.outputs.branch }}
+          SHA256: ${{ needs.write.outputs.sha256 }}
+          BASE: ${{ github.sha }}
+          REPO_AUTONOMY: .github/autonomy.yml
+          RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+          WAY: ${{ needs.write.outputs.sandbox != 'php-unit' && needs.write.outputs.way || '' }}
+          SPEC: ${{ needs.write.outputs.sandbox != 'php-unit' && needs.write.outputs.spec || '' }}
+          NOUN: ${{ needs.write.outputs.sandbox != 'php-unit' && needs.write.outputs.noun || '' }}
+          THEME: ${{ needs.write.outputs.sandbox != 'php-unit' && needs.write.outputs.theme || '' }}
+        run: python3 .dx-central/scripts/claim.py repro
 
       # The bugfix-reproduced lane (#84, policy/autonomy.yml). dilux-bot opens
       # an issue of its own for the fix, whose PRD is fixed text and the

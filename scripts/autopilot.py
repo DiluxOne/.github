@@ -64,6 +64,18 @@
                              the run's readable account (Markdown) from the
                              agent's execution log
   autopilot.py board         refresh the issue's board (receipts.py board)
+  autopilot.py adopted       the pull request a maintainer adopted for the
+                             issue (#488, `/adopt`), from dilux-bot's
+                             record on it (JSON, with its Co-authored-by
+                             trailer), or nothing; push then adds that
+                             trailer to every commit it pushes
+  autopilot.py holder        whether a person holds the issue (#488): it is
+                             `claimed`, kept as a `good first issue`,
+                             assigned to a person (not the one #73 assigned
+                             on acceptance), or closed by a person's open
+                             pull request (GitHub's link) opened before the
+                             autopilot started (STARTED, or its own pull
+                             request); exit 1 with why, 2 when unread
   autopilot.py scrub FILE    redact tokens and keys in a transcript, in place
   autopilot.py decide        whether a pull request the autopilot opened may
                              merge on its own (gate G7); prints why; exit 0
@@ -220,6 +232,126 @@ def may_start(policy, body, autopilot_var, lane=LANE, no_way=""):
     if no_way:
         return False, no_way
     return True, f"ready: G1 passes and the autopilot is on (lane {lane})"
+
+
+# What makes an issue a person's (#488): the autopilot does not start on it,
+# and stops before it opens its draft or pushes.
+CLAIMED, FIRST_ISSUE = "claimed", "good first issue"
+HOLDER_QUERY = """query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) {
+      labels(first: 50) { nodes { name } }
+      assignees(first: 20) { nodes { login } }
+      timelineItems(itemTypes: [LABELED_EVENT], last: 50) { nodes { ... on LabeledEvent { label { name } actor { login } } } }
+      closedByPullRequestsReferences(first: 20, includeClosedPrs: false) {
+        nodes { number state createdAt author { __typename login } labels(first: 30) { nodes { name } } }
+      }
+    }
+  }
+}"""
+
+
+def held_by(issue, prs, started=""):
+    """Why a person holds the issue, or "" (#488). Pure. `issue`: labels,
+    assignees, accepted_by (who added `accepted` last: #73 assigns them,
+    and that assignment alone holds nothing, choice 1a); `prs`: the open
+    pull requests that close it by GitHub's link (closedByPullRequestsReferences,
+    never a text search), each number, author, author_type, labels and
+    created. `started`: when the autopilot started on it; a person's pull
+    request opened after that does not stop it (both stay open, the
+    maintainer picks at review)."""
+    labels = issue.get("labels") or []
+    if CLAIMED in labels:
+        return f"a person claimed it (`{CLAIMED}`)"
+    if FIRST_ISSUE in labels:
+        return f"it is kept for a newcomer (`{FIRST_ISSUE}`)"
+    people = [a for a in issue.get("assignees") or [] if a not in BOT_LOGINS and not a.endswith("[bot]") and a != issue.get("accepted_by")]
+    if people:
+        return f"it is assigned to @{people[0]}"
+    for p in prs or []:
+        author = p.get("author") or ""
+        if (p.get("state", "OPEN") == "OPEN" and p.get("author_type") == "User" and author not in BOT_LOGINS
+                and "autopilot" not in (p.get("labels") or []) and (not started or (p.get("created") or "") < started)):
+            return f"#{p['number']} by @{author} closes it"
+    return ""
+
+
+ADOPT_MARK = "dx-adopt"
+
+
+def adopted_record(comments):
+    """The adoption recorded on the issue (#488, scripts/claim.py `/adopt`):
+    the last dx-adopt marker in a comment dilux-bot wrote (the pull request,
+    its author and id, the head the maintainer read, its branch), or None.
+    A marker in anyone else's comment is never read."""
+    found = None
+    for c in comments or []:
+        who = ((c.get("user") or c.get("author") or {}).get("login")) or ""
+        m = re.search(r"<!-- " + ADOPT_MARK + r" (\{.*?\}) -->", c.get("body") or "")
+        if m and who in BOT_LOGINS:
+            try:
+                found = json.loads(m.group(1))
+            except ValueError:
+                continue
+    return found
+
+
+def co_author(rec):
+    """The Co-authored-by trailer for an adopted pull request's author."""
+    who = rec["author"]
+    mail = f"{rec['author_id']}+{who}@users.noreply.github.com" if rec.get("author_id") else f"{who}@users.noreply.github.com"
+    return f"Co-authored-by: {who} <{mail}>"
+
+
+def with_trailer(message, trailer):
+    """The commit message with the trailer, once: in its trailer block when it
+    ends with one, else in a paragraph of its own."""
+    text = message.rstrip("\n")
+    if trailer.lower() in text.lower():
+        return text + "\n"
+    last = text.rsplit("\n\n", 1)[-1]
+    block = bool(last) and "\n\n" in text and all(re.match(r"^[A-Za-z-]+: ", l) for l in last.splitlines())
+    return text + ("\n" if block else "\n\n") + trailer + "\n"
+
+
+def add_trailer(base, trailer, cwd=None):
+    """Makes the commits base..HEAD again with the trailer in each message
+    (same trees, authors and order), and moves HEAD to the last; returns how
+    many it rewrote."""
+    run = lambda *a, **k: subprocess.run(["git", *a], capture_output=True, text=True, check=True, cwd=cwd, **k).stdout.strip()
+    revs = [r for r in run("rev-list", "--reverse", f"{base}..HEAD").split() if r]
+    parent = run("rev-parse", base)
+    for c in revs:
+        name, mail, date = run("log", "-1", "--format=%an%x00%ae%x00%aI", c).split("\x00")
+        env = dict(os.environ, GIT_AUTHOR_NAME=name, GIT_AUTHOR_EMAIL=mail, GIT_AUTHOR_DATE=date)
+        parent = run("commit-tree", f"{c}^{{tree}}", "-p", parent, "-m", with_trailer(run("log", "-1", "--format=%B", c), trailer), env=env)
+    if revs:
+        run("reset", "-q", "--hard", parent)
+    return len(revs)
+
+
+def held_comment(why):
+    """The run's word when a person took the issue mid-run (#488)."""
+    return (f"The autopilot steps aside: {why}. It pushed nothing more and opens nothing; the issue is the person's. "
+            "If they release it, the autopilot starts again.\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)")
+
+
+def read_holder(repo, number):
+    """(issue, prs, started) for held_by, read from GitHub. started: when the
+    autopilot's own open pull request for it was opened, else STARTED."""
+    owner, name = repo.split("/", 1)
+    data = json.loads(gh("api", "graphql", "-f", f"query={HOLDER_QUERY}", "-F", f"owner={owner}", "-F", f"name={name}", "-F", f"number={number}"))
+    if data.get("errors"):
+        raise RuntimeError(json.dumps(data["errors"])[:300])
+    i = data["data"]["repository"]["issue"]
+    acc = [e for e in i["timelineItems"]["nodes"] if (e.get("label") or {}).get("name") == "accepted"]
+    issue = {"labels": [l["name"] for l in i["labels"]["nodes"]], "assignees": [a["login"] for a in i["assignees"]["nodes"]],
+             "accepted_by": ((acc[-1].get("actor") or {}).get("login") or "") if acc else ""}
+    prs = [{"number": p["number"], "state": p["state"], "created": p["createdAt"], "author": (p.get("author") or {}).get("login") or "",
+            "author_type": (p.get("author") or {}).get("__typename") or "", "labels": [l["name"] for l in p["labels"]["nodes"]]}
+           for p in i["closedByPullRequestsReferences"]["nodes"]]
+    ours = sorted(p["created"] for p in prs if p["state"] == "OPEN" and "autopilot" in p["labels"] and p["author_type"] == "Bot")
+    return issue, prs, (ours[0] if ours else os.environ.get("STARTED", ""))
 
 
 def bug_gate(issue_type, lane, declared, proposal, repo):
@@ -1926,6 +2058,57 @@ Clamp the value in Sum::add.
                org_fix.get("with"), org_fix.get("permissions"), org_fix.get("secrets"),
                cond(org_fix) == "always() && " + " && ".join([clauses[0], theirs] + clauses[1:])),
               (True, False, "review", True, {"mode": "fix", "pr": "${{ format('{0}', github.event.pull_request.number) }}"}, {"contents": "read"}, "inherit", True))
+    # #488: a person's claim holds the issue; the autopilot does not start.
+    check("C1 held_by: `claimed` holds it; an accepted issue nobody holds does not",
+          (held_by({"labels": ["accepted", "claimed"]}, []), held_by({"labels": ["accepted"]}, [])), ("a person claimed it (`claimed`)", ""))
+    check("C2 held_by: a claim made in the form holds it once accepted; the maintainer #73 assigned on acceptance does not",
+          (held_by({"labels": ["accepted", "claimed"], "assignees": ["ana", "soydiloreto"], "accepted_by": "soydiloreto"}, []),
+           held_by({"labels": ["accepted"], "assignees": ["soydiloreto"], "accepted_by": "soydiloreto"}, []),
+           held_by({"labels": ["accepted"], "assignees": ["bob"], "accepted_by": "soydiloreto"}, [])),
+          ("a person claimed it (`claimed`)", "", "it is assigned to @bob"))
+    # C6: a person's open pull request that closes the issue (GitHub's link)
+    # holds it; one that only mentions the number is not in that link, and
+    # one opened after the autopilot started does not stop it.
+    theirs = {"number": 40, "state": "OPEN", "created": "2026-11-01T10:00:00Z", "author": "ana", "author_type": "User", "labels": []}
+    check("C6 held_by: a person's pull request that closes it, by GitHub's link",
+          held_by({"labels": ["accepted"]}, [theirs]), "#40 by @ana closes it")
+    check("C6 held_by: the autopilot's own, a bot's, or a closed one does not",
+          [held_by({"labels": ["accepted"]}, [p]) for p in ({**theirs, "labels": ["autopilot"]}, {**theirs, "author": BOT_LOGINS[1], "author_type": "Bot"}, {**theirs, "state": "CLOSED"})], ["", "", ""])
+    check("C6 held_by: one opened after the autopilot started does not stop its pushes; one before does",
+          (held_by({"labels": ["accepted"]}, [theirs], "2026-11-01T09:00:00Z"), held_by({"labels": ["accepted"]}, [theirs], "2026-11-01T11:00:00Z")), ("", "#40 by @ana closes it"))
+    check("C6 holder reads GitHub's closing link, never a text search of the pull requests",
+          ("closedByPullRequestsReferences(first: 20, includeClosedPrs: false)" in HOLDER_QUERY, "search" in HOLDER_QUERY), (True, False))
+    check("C6 the run that steps aside says so", held_comment("a person claimed it (`claimed`)").startswith("The autopilot steps aside: a person claimed it"), True)
+    # C10: an adopted pull request's author is a co-author of every commit
+    # the autopilot pushes from it.
+    rec = {"pr": 41, "author": "ana", "author_id": 77, "sha": "c" * 40, "branch": "feat/7-adopted-41", "by": "soydiloreto"}
+    mark = f"<!-- {ADOPT_MARK} {json.dumps(rec)} -->"
+    check("C10 the adoption is read only from dilux-bot's record",
+          (adopted_record([{"user": {"login": BOT_LOGINS[1]}, "body": "Adopted.\n\n" + mark}]), adopted_record([{"user": {"login": "mallory"}, "body": mark}])), (rec, None))
+    check("C10 the trailer names the author by their GitHub address", co_author(rec), "Co-authored-by: ana <77+ana@users.noreply.github.com>")
+    check("C10 added once, in the trailer block or a paragraph of its own",
+          [with_trailer("fix: a\n\nBody.", co_author(rec)), with_trailer("fix: a\n\nBody.\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n", co_author(rec)),
+           with_trailer("fix: a\n\n" + co_author(rec) + "\n", co_author(rec))],
+          ["fix: a\n\nBody.\n\n" + co_author(rec) + "\n", "fix: a\n\nBody.\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n" + co_author(rec) + "\n",
+           "fix: a\n\n" + co_author(rec) + "\n"])
+    with tempfile.TemporaryDirectory() as d:
+        g = lambda *a: subprocess.run(["git", "-c", "user.name=bot", "-c", "user.email=bot@x", *a], cwd=d, capture_output=True, text=True, check=True).stdout.strip()
+        g("init", "-q", "-b", "feat/7-x")
+        g("config", "user.name", "bot")
+        g("config", "user.email", "bot@x")
+        g("commit", "-q", "--allow-empty", "-m", "the adopted head")
+        base = g("rev-parse", "HEAD")
+        for i in (1, 2):
+            with open(os.path.join(d, f"f{i}"), "w") as fh:
+                fh.write(str(i))
+            g("add", f"f{i}")
+            g("commit", "-q", "-m", f"feat: part {i} (C{i})")
+        trees = g("log", "--format=%T", f"{base}..HEAD")
+        n = add_trailer(base, co_author(rec), cwd=d)
+        msgs = g("log", "--format=%B%x00", f"{base}..HEAD").split("\x00")
+        check("C10 commits on an adopted branch carry Co-authored-by for the author, same trees, same order",
+              (n, [m.strip().splitlines()[0] for m in msgs if m.strip()], all(co_author(rec) in m for m in msgs if m.strip()), g("log", "--format=%T", f"{base}..HEAD") == trees),
+              (2, ["feat: part 2 (C2)", "feat: part 1 (C1)"], True, True))
     if not failed:
         print("all tests passed")
     return failed
@@ -1936,6 +2119,12 @@ def gh(*args, input_text=None):
     if out.returncode != 0:
         raise RuntimeError(out.stderr.strip()[:300])
     return out.stdout
+
+
+def issue_comments(repo, number):
+    """The issue's comments, every page, as the REST API gives them."""
+    pages = json.loads(gh("api", f"repos/{repo}/issues/{number}/comments", "--paginate", "--slurp") or "[]")
+    return [c for page in pages for c in page]
 
 
 def pr_json(repo, pr, fields):
@@ -2516,6 +2705,13 @@ def main(argv):
         # The agent's commits, made again through the API so GitHub signs
         # them (#190); the local branch then points at GitHub's commits.
         branch = os.environ.get("BRANCH") or pr_json(repo, pr, "headRefName")["headRefName"]
+        # An adopted pull request (#488): every commit pushed carries
+        # Co-authored-by for its author, read from the issue's record.
+        if number:
+            rec = adopted_record(issue_comments(repo, number))
+            if rec:
+                n = add_trailer(f"origin/{branch}", co_author(rec))
+                print(f"{n} commit(s) carry {co_author(rec)} (adopted #{rec['pr']}).")
         out = subprocess.run([sys.executable, os.path.join(HERE, "api-commit.py"), "push", branch], capture_output=True, text=True)
         print((out.stdout + out.stderr).strip())
         return out.returncode
@@ -2651,6 +2847,23 @@ def main(argv):
     if argv[:1] == ["board"]:
         refresh_board(repo, number)
         return 0
+    if argv[:1] == ["adopted"]:
+        # The adoption recorded on the issue (#488), as JSON, or nothing.
+        rec = adopted_record(issue_comments(repo, number))
+        if rec:
+            print(json.dumps({**rec, "trailer": co_author(rec)}))
+        return 0
+    if argv[:1] == ["holder"]:
+        # Whether a person holds the issue (#488): exit 0 when nobody does,
+        # 1 when one does (why on stdout), 2 when it could not be read, which
+        # the workflow takes as held: it fails closed.
+        try:
+            why = held_by(*read_holder(repo, number))
+        except (RuntimeError, OSError, ValueError, KeyError, TypeError) as err:
+            print(f"who holds #{number} could not be read ({str(err)[:200]})")
+            return 2
+        print(why or "nobody holds it")
+        return 1 if why else 0
     if argv[:1] == ["continue-as"]:
         # IS_DRAFT (true or false), HEAD (the pull request's head), RECORD
         # (a file holding the review's last record, or null).
@@ -2675,6 +2888,16 @@ def main(argv):
         return 0 if ok else 1
     if argv[:1] == ["end"]:
         mode = os.environ.get("MODE", "start")
+        if os.environ.get("HELD"):
+            # A person took the issue mid-run (#488): the run stepped aside
+            # before it wrote, and says so where it works.
+            target = ("pr", pr) if pr else ("issue", number)
+            gh(target[0], "comment", str(target[1]), "--repo", repo, "--body", held_comment(os.environ["HELD"]))
+            if os.environ.get("GITHUB_OUTPUT"):
+                with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+                    fh.write("verdict=held\n")
+            print("held")
+            return 0
         started = os.environ.get("STARTED", "")
         run_url = os.environ.get("RUN_URL", "")
         events_ = read_events(os.environ.get("WORK_LOG", ""))
