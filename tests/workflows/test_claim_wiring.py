@@ -57,3 +57,18 @@ def test_the_jobs_with_the_key_never_check_out_a_pull_request():
         for st in steps(wf, job):
             assert "actions/checkout" not in str(st.get("uses", "")), job
             assert "github.event.comment.body" not in str(st.get("run", "")) and "github.event.pull_request.head" not in str(st.get("run", "")), job
+
+
+def test_yield_is_a_maintainers_and_may_cancel_the_autopilots_run():
+    wf = workflow("issue-claim.yml")
+    token = next(s for s in steps(wf, "claim") if s.get("id") == "bot")["with"]
+    assert token["permission-actions"] == "write", "/yield cancels the autopilot's run"
+    assert "github.event.comment.user.type != 'Bot'" in wf["jobs"]["claim"]["if"]
+    src = (ROOT / "scripts/claim.py").read_text(encoding="utf-8")
+    # The maintainer is read from GitHub, never from author_association.
+    assert 'f"repos/{repo}/collaborators/{login}/permission"' in src and ".author_association" not in src
+    assert 'perm = permission(repo, login) if name in ("yield", "adopt", "unclaim")' in src and "ok, why = may_act(name, login, perm, who)" in src
+    # The autopilot's run is found by its prep job, named for the issue.
+    prep = workflow("autopilot.yml")["jobs"]["prep"]["name"]
+    assert prep.endswith("· may it run · #${{ inputs.issue || inputs.pr }}")
+    assert r'may it run · #" + str(number)' in src

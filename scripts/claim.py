@@ -165,6 +165,17 @@ def read_marker(comments, name):
 
 # --- who may claim ------------------------------------------------------------
 
+def may_act(name, login, perm, target=""):
+    """(ok, why) for a command only some may give: `/yield` and `/adopt` a
+    maintainer (write access or more, read from GitHub: `perm`), `/unclaim
+    @x` the claimant themselves or a maintainer."""
+    if name in ("yield", "adopt") and perm not in WRITERS:
+        return False, f"@{login}, only a maintainer (write access, read from GitHub) gives `/{name}`"
+    if name == "unclaim" and target and target != login and perm not in WRITERS:
+        return False, f"@{login}, only @{target} or a maintainer releases this claim"
+    return True, ""
+
+
 def claim_limit(merged, cfg):
     """How many open claims a person may hold: one with no merged pull
     request in the organisation, three with one."""
@@ -545,12 +556,14 @@ def on_comment(repo, event, cfg, when):
     number = iss["number"]
     is_pr = bool(iss.get("pull_request"))
     say = lambda text: gh("issue", "comment", str(number), "--repo", repo, "--body", f"{text}\n\n{SIGN}")
-    maintainer = permission(repo, login) in WRITERS
+    perm = permission(repo, login) if name in ("yield", "adopt", "unclaim") else "none"
+    ok, why = may_act(name, login, perm, who)
+    if not ok:
+        if name != "adopt" or is_pr:
+            say(why + ".")
+        return []
     if name == "adopt":
         if not is_pr:
-            return []
-        if not maintainer:
-            say(f"@{login}, only a maintainer (write access, read from GitHub) adopts a pull request.")
             return []
         pr = gh_json("pr", "view", str(number), "--repo", repo, "--json", "number,author,headRefOid,closingIssuesReferences,state")
         issues = [i["number"] for i in pr.get("closingIssuesReferences") or []]
@@ -594,14 +607,8 @@ def on_comment(repo, event, cfg, when):
         if not current or current.get("login") != target:
             say(f"@{login}, @{target} holds no claim on this issue.")
             return []
-        if target != login and not maintainer:
-            say(f"@{login}, only @{target} or a maintainer releases this claim.")
-            return []
         return apply_plan(repo, number, plan_release(current, f"`/unclaim` by @{login} on {iso(when)}", number), state_id)
     if name == "yield":
-        if not maintainer:
-            say(f"@{login}, only a maintainer (write access, read from GitHub) hands an issue over with `/yield`.")
-            return []
         if issue.get("claim"):
             say(f"@{login}, @{issue['claim']['login']} holds the claim already; `/unclaim @{issue['claim']['login']}` first.")
             return []
@@ -934,6 +941,27 @@ def self_test():
     check("C4 pushes every week never take it past 30 days from the clock's start",
           [daily_claim(state, at(n), [], False, iso(at(24)), cfg) for n in (29, 30)], ["none", "release"])
     check("C4 nor does an extension late in the claim", daily_claim(extend(pushed(state, iso(at(22))), at(28), cfg)[0], at(30), [], False, None, cfg), "release")
+    # C5: the first one wins. `/claim` once the autopilot started is refused
+    # with why; a maintainer's `/yield @login` cancels its run, closes its
+    # draft and claims the issue for the person.
+    ap_pr = {"number": 30, "state": "OPEN", "labels": ["autopilot"], "author": org.BOT}
+    person_pr = {"number": 31, "state": "OPEN", "labels": [], "author": "bob"}
+    run = "https://github.com/o/r/actions/runs/9"
+    check("C5 the autopilot started: its open pull request, or its run in progress",
+          (autopilot_started([ap_pr], []), autopilot_started([], [run]), autopilot_started([person_pr, {**ap_pr, "state": "CLOSED"}], [])),
+          ("the autopilot is already on it in #30", f"the autopilot is already on it ({run})", ""))
+    ok, why = may_claim("ana", accepted, 0, True, autopilot_started([ap_pr], []), cfg)
+    check("C5 `/claim` is refused, saying why and how a maintainer hands it over",
+          (ok, why.startswith("the autopilot is already on it in #30. The first one wins"), "`/yield @ana`" in why), (False, True, True))
+    acts, yielded = plan_yield("ana", "soydiloreto", [ap_pr, person_pr], ["9"], t0, accepted, cfg)
+    check("C5 `/yield` plans: cancel the run, close the autopilot's draft (not a person's), then claim it for the person",
+          [a[:2] for a in acts], [("cancel", "9"), ("close-pr", 30), ("label", CLAIMED), ("assign", "ana"), ("state", acts[4][1]), ("comment", acts[5][1])])
+    check("C5 ... the claim names who handed it over, and its clock runs from now",
+          ("handed over by @soydiloreto" in acts[5][1], yielded["clock"], "/yield" in acts[1][2]), (True, iso(t0), True))
+    check("C5 only a maintainer gives `/yield` or `/adopt`; `/unclaim @x` the claimant or a maintainer",
+          [may_act("yield", "bob", "read", "ana")[0], may_act("yield", "soy", "admin", "ana")[0], may_act("adopt", "bob", "triage")[0],
+           may_act("unclaim", "bob", "read", "ana")[0], may_act("unclaim", "ana", "none", "ana")[0], may_act("unclaim", "ana", "none")[0], may_act("unclaim", "soy", "write", "ana")[0]],
+          [False, True, False, False, True, True, True])
     if not failed:
         print("all tests passed")
     return failed
