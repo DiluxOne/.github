@@ -24,7 +24,14 @@
 # Environment: REQUIRED (true|false), LABEL, TITLE (the pull request's
 # Conventional Commit title), AUTHOR_TYPE (User|Bot),
 # GITHUB_REPOSITORY (owner/name), PR (the pull request's number), GH_TOKEN
-# (issues: read and pull-requests: read). ISSUE_GATE_JSON, a file holding the
+# (issues: read and pull-requests: read), DX_BOT_APP (the App, dilux-bot by
+# default).
+#
+# A claimed bug the reproduction confirmed (#488) needs no acceptance: the
+# person's pull request closes it when it carries the failing test dilux-bot
+# handed them (its path and SHA-256 sealed in the App's dx-claim-test comment
+# on the issue) unchanged at its head; the pipeline's tests make it pass. A
+# changed or missing test fails the gate whatever else it closes. ISSUE_GATE_JSON, a file holding the
 # GraphQL answer, replaces the call (the self-test uses it).
 #
 #   issue-gate.sh          check (exit 1 when no accepted issue is closed)
@@ -52,6 +59,7 @@ QUERY='query($owner: String!, $name: String!, $number: Int!) {
           repository { nameWithOwner }
           labels(first: 50) { nodes { name } }
           issueType { name }
+          comments(last: 100) { nodes { author { login } body } }
           timelineItems(itemTypes: [LABELED_EVENT, UNLABELED_EVENT, PARENT_ISSUE_ADDED_EVENT], last: 100) {
             nodes {
               __typename
@@ -146,6 +154,29 @@ lane_verdict() {
   return "$rc"
 }
 
+# A claimed bug the reproduction confirmed (#488): the test it was handed,
+# from the last dx-claim-test marker in a comment dilux-bot wrote on issue $2
+# of the answer in $1 (JSON: test, sha256), or nothing. A marker in anyone
+# else's comment is never read.
+claim_test() {
+  # shellcheck disable=SC2016 # jq variables, not shell ones.
+  jq -c --argjson n "$2" --arg app "${DX_BOT_APP:-dilux-bot}" '
+    [.data.repository.pullRequest.closingIssuesReferences.nodes[] | select(.number == $n) | .comments.nodes[]?
+     | select((.author.login // "") | test("^(app/)?" + $app + "(\\[bot\\])?$"))
+     | (.body | capture("<!-- dx-claim-test (?<j>\\{.*?\\}) -->")?) | .j | fromjson? | select(.test and .sha256)] | last // empty' "$1"
+}
+
+# The SHA-256 of file $1 at the pull request's head ($2): from the checkout
+# when the head is in it, else through the API; ISSUE_GATE_FILES (a
+# directory) stands in for the head in the self-test.
+head_sha256() {
+  if [ -n "${ISSUE_GATE_FILES:-}" ]; then
+    sha256sum "$ISSUE_GATE_FILES/$1" 2>/dev/null | cut -c1-64; return 0
+  fi
+  { git cat-file blob "$2:$1" 2>/dev/null \
+    || gh api "repos/$GITHUB_REPOSITORY/contents/$1?ref=$2" -H "Accept: application/vnd.github.raw" 2>/dev/null; } | sha256sum | cut -c1-64
+}
+
 check() {
   REQUIRED=${REQUIRED:-true}
   LABEL=${LABEL:-accepted}
@@ -177,8 +208,29 @@ check() {
     return 1
   fi
   lines=$(verdicts "$answer")
+  local head ct test want got broken=0
+  head=$(jq -r '.data.repository.pullRequest.headRefOid // ""' "$answer")
   while read -r n v; do
     [ -z "$n" ] && continue
+    # A claimed bug the reproduction confirmed (#488): the person's pull
+    # request carries the failing test it was handed, unchanged (its
+    # SHA-256, as G7 checks the autopilot's), and the pipeline's tests make
+    # it pass. That, not an acceptance, is what lets it close the report.
+    ct=""
+    case "$v" in ok|no-label|bot-label|wrong-type) ct=$(claim_test "$answer" "$n") ;; esac
+    if [ -n "$ct" ]; then
+      test=$(jq -r .test <<<"$ct"); want=$(jq -r .sha256 <<<"$ct")
+      got=$(head_sha256 "$test" "$head")
+      if [ "$got" != "$want" ]; then
+        echo "#$n is a claimed bug: its reproduction test $test must be in this pull request unchanged (SHA-256 $want), and it is not (${got:-missing}). Start from the branch the bot named on the issue, and keep the test as it is."
+        broken=1
+      elif type_fits "$answer" "$n"; then
+        echo "#$n is a claimed bug the reproduction confirmed, and this pull request carries its test $test unchanged; the tests make it pass."; ok=1
+      else
+        echo "#$n is a claimed bug, but its Type is not $(needed_types | jq -r '.[0]'), the kind this pull request's title says."
+      fi
+      continue
+    fi
     case "$v" in
       ok)
         # Its PRD must still be the one sealed when it was accepted (#81):
@@ -209,6 +261,10 @@ check() {
       wrong-type) echo "#$n's Type is not $(needed_types | jq -r '.[0]'), the kind this pull request's title says; it needs an issue of its own kind (or a maintainer changes the issue's Type)." ;;
     esac
   done <<< "$lines"
+  if [ "$broken" -eq 1 ]; then
+    echo "::error::A claimed bug's reproduction test is changed or missing: the pull request merges only with it unchanged and passing (#488)."
+    return 1
+  fi
   if [ "$ok" -eq 1 ]; then
     echo "Accepted issue: OK."
     return 0
@@ -309,6 +365,23 @@ if [ "${1:-}" = "--test" ]; then
   mkdir -p "$sealdir/issues/13"; echo '{not json' > "$sealdir/issues/13/prd-x.json"
   body_with "$prd" | jq '.number = 13' | answer | RECEIPTS_FIXTURE=$sealdir T="chore: a thing" case_ "fails: a seal that cannot be read (fails closed)" 1 || fail=1
   rm -rf "$sealdir"
+  # A claimed bug the reproduction confirmed (#488, C8): the test it was
+  # handed, sealed by dilux-bot on the issue, unchanged at the head.
+  files=$(mktemp -d); mkdir -p "$files/tests/Unit/Repro"
+  printf 'failing test\n' > "$files/tests/Unit/Repro/Issue12Test.php"
+  sum=$(sha256sum "$files/tests/Unit/Repro/Issue12Test.php" | cut -c1-64)
+  claimed() {
+    issue 12 "$repo" OPEN "bug:confirmed,claimed" "" Bug \
+      | jq --arg who "${1:-dilux-bot[bot]}" --arg m "<!-- dx-claim-test {\"sha256\": \"$sum\", \"test\": \"tests/Unit/Repro/Issue12Test.php\"} -->" '.comments = {nodes: [{author: {login: $who}, body: ("The bug is yours.\n\n" + $m)}]}'
+  }
+  claimed | answer | ISSUE_GATE_FILES=$files T="fix(x): a thing" case_ "C8 passes: a claimed bug's pull request with its test unchanged" 0 || fail=1
+  printf 'made to pass\n' > "$files/tests/Unit/Repro/Issue12Test.php"
+  claimed | answer | ISSUE_GATE_FILES=$files T="fix(x): a thing" case_ "C8 fails: a changed test's SHA-256" 1 || fail=1
+  { claimed; issue 3 "$repo" OPEN accepted LabeledEvent:accepted:User Bug; } | answer | ISSUE_GATE_FILES=$files T="fix(x): a thing" case_ "C8 fails: a changed test, even beside another accepted issue" 1 || fail=1
+  rm -f "$files/tests/Unit/Repro/Issue12Test.php"
+  claimed | answer | ISSUE_GATE_FILES=$files T="fix(x): a thing" case_ "C8 fails: the test left out" 1 || fail=1
+  claimed mallory | answer | ISSUE_GATE_FILES=$files T="fix(x): a thing" case_ "C8 fails: a marker in a person's comment is not the bot's (no acceptance either)" 1 || fail=1
+  rm -rf "$files"
   echo '{}' | WHO=Bot case_ "passes: a bot's pull request" 0 || fail=1
   echo '{}' | REQ=false case_ "passes: the gate is off" 0 || fail=1
   [ "$fail" -eq 0 ] && echo "all tests passed"
