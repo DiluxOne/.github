@@ -141,6 +141,19 @@ def form_claim(body):
     return bool(re.search(r"^\s*[-*]\s*\[[xX]\]\s*" + re.escape(CHECKBOX), body or "", re.M))
 
 
+def form_ticked(action, author, sender, body, before=None):
+    """Whether this event is the issue's author claiming it in its form: on
+    opening, the box ticked; on an edit, ticked by the author in that very
+    edit. An edit by anyone else (the autopilot appending its Spec to a
+    body whose box was ticked long ago) claims nothing, so a released claim
+    never comes back by itself."""
+    if not form_claim(body):
+        return False
+    if action == "opened":
+        return True
+    return action == "edited" and sender == author and before is not None and not form_claim(before)
+
+
 def marker(name, obj):
     return f"<!-- {name} {json.dumps(obj, sort_keys=True)} -->"
 
@@ -309,7 +322,7 @@ def state_text(state, cfg):
     """The claim's comment: who, since when, and the dates, with its marker."""
     remind, release = deadlines(state, cfg)
     if not remind:
-        dates = "Its clock starts when the issue is accepted (or, for a bug, reproduced): a reminder at 7 days without a pull request or a push, released at 10."
+        dates = f"Its clock starts when the issue is accepted (or, for a bug, reproduced): a reminder at {cfg['remind-days']} days without a pull request or a push, released at {cfg['release-days']}."
     else:
         dates = (f"Reminder on {day(remind)} and released on {day(release)} without a pull request or a push to a linked branch. "
                  "A push resets the clock; one comment saying \"still on it\" extends it once; never more than "
@@ -349,10 +362,10 @@ def plan_yield(login, maintainer, prs, runs, when, issue, cfg):
     return acts + claim_acts, state
 
 
-def plan_pr_close(pr, issue_numbers):
+def plan_pr_close(pr, issue_numbers, close_days=DEFAULTS["pr-close-days"]):
     """A stalled person's pull request closed with thanks, and the autopilot
     started on what it closed (C7)."""
-    text = (f"Thank you, @{pr['author']}. This pull request has waited on its author for 14 days, so it is closed for now: "
+    text = (f"Thank you, @{pr['author']}. This pull request has waited on its author for {close_days} days, so it is closed for now: "
             "reopen it when you come back, or ask a maintainer to `/adopt` it. The autopilot starts on the issue so it is not left waiting.\n\n" + SIGN)
     return [("close-pr", pr["number"], text)] + [("start", n) for n in issue_numbers]
 
@@ -636,7 +649,9 @@ def on_issue(repo, event, cfg, when):
     number = iss["number"]
     if action in ("opened", "edited"):
         author = (iss.get("user") or {}).get("login") or ""
-        if is_bot(author) or not form_claim(iss.get("body")):
+        sender = (event.get("sender") or {}).get("login") or ""
+        before = ((event.get("changes") or {}).get("body") or {}).get("from")
+        if is_bot(author) or not form_ticked(action, author, sender, iss.get("body"), before):
             return []
         issue = read_issue(repo, number)
         if issue.get("claim"):
@@ -702,52 +717,20 @@ PRS_QUERY = """query($q: String!) {
 def daily(repo, cfg, when):
     start, claims, waiting, given_up = [], [], [], []
     numbers = gh("issue", "list", "--repo", repo, "--state", "open", "--label", CLAIMED, "--limit", "200", "--json", "number", "--jq", ".[].number").split()
+    failed = []
     for n in numbers:
-        issue = read_issue(repo, n)
-        state_id, state = read_marker(issue["comments"], MARK)
-        if not state:
-            continue
-        has_pr = any(p["state"] == "OPEN" and p["author"] == state["login"] for p in issue["prs"])
-        what = daily_claim(state, when, issue["labels"], has_pr, issue.get("last_push"), cfg)
-        _, release = deadlines(pushed(state, issue["last_push"]) if issue.get("last_push") else state, cfg)
-        if what == "remind":
-            new = {**(pushed(state, issue["last_push"]) if issue.get("last_push") else state)}
-            new["reminded"] = new["clock"]
-            apply_plan(repo, n, [("state", state_text(new, cfg)), ("comment", f"@{state['login']}, a reminder: this claim is released on {day(release)} without a pull request or a push to a linked branch. Comment \"still on it\" to extend it once, or `/unclaim` it.\n\n{SIGN}")], state_id)
-        elif what == "release":
-            start += release_claim(repo, issue, state, state_id, f"no pull request or push by {day(release)}")
-            continue
-        claims.append((n, state["login"], {"pending": "its clock waits for acceptance", "waiting": "a pull request stopped its clock"}.get(what, f"released on {day(release)}" if release else "")))
+        try:
+            start += daily_issue(repo, n, cfg, when, claims)
+        except (RuntimeError, OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as err:
+            print(f"::warning::#{n}: {str(err)[:300]}")
+            failed.append(n)
     data = gh_json("api", "graphql", "-f", f"query={PRS_QUERY}", "-F", f"q=repo:{repo} is:pr is:open")
     for pr in ((data or {}).get("data") or {}).get("search", {}).get("nodes") or []:
-        author = (pr.get("author") or {}).get("login") or ""
-        if not pr or (pr.get("author") or {}).get("__typename") != "User" or is_bot(author):
-            continue
-        issues = [i["number"] for i in pr["closingIssuesReferences"]["nodes"]]
-        if not issues:
-            continue
-        commit = ((pr["commits"]["nodes"] or [{}])[0]).get("commit") or {}
-        by_author = any(((a.get("user") or {}).get("login")) == author for a in (commit.get("authors") or {}).get("nodes") or [])
-        reviews = [r["submittedAt"] for r in pr["latestReviews"]["nodes"] if r["state"] == "CHANGES_REQUESTED"]
-        info = {"author": author, "number": pr["number"], "review": pr.get("reviewDecision") or "", "created": pr["createdAt"],
-                "checks": (commit.get("statusCheckRollup") or {}).get("state") or "", "pushed": commit.get("committedDate") if by_author else None,
-                "reviewed": max(reviews) if reviews else None}
-        since = max(t for t in (info["pushed"], info["reviewed"], info["created"]) if t)
-        reminded = any(marker(PR_REMIND_MARK, {"since": since}) in (c.get("body") or "") and is_bot(((c.get("author") or {}).get("login")) or "")
-                       for c in pr["comments"]["nodes"])
-        what = daily_pr(info, when, reminded, cfg)
-        if what == "waiting":
-            waiting.append((pr["number"], author))
-        elif what == "remind":
-            gh("pr", "comment", str(pr["number"]), "--repo", repo, "--body",
-               f"@{author}, a reminder: this pull request waits on you (changes requested or failing checks). With no push from you it is closed, with thanks, 7 days from now; reopen it when you come back.\n\n{marker(PR_REMIND_MARK, {'since': since})}\n\n{SIGN}")
-        elif what == "close":
-            start += apply_plan(repo, issues[0], plan_pr_close(info, issues))
-            for n in issues:
-                issue = read_issue(repo, n)
-                if issue.get("claim") and issue["claim"]["login"] == author:
-                    state_id, _ = read_marker(issue["comments"], MARK)
-                    apply_plan(repo, n, plan_release(issue["claim"], f"its pull request #{pr['number']} was closed after 14 days without a push", n, start=False), state_id)
+        try:
+            start += daily_pull(repo, pr, cfg, when, waiting)
+        except (RuntimeError, OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as err:
+            print(f"::warning::#{(pr or {}).get('number')}: {str(err)[:300]}")
+            failed.append((pr or {}).get("number"))
     for n in gh("issue", "list", "--repo", repo, "--state", "open", "--label", FIRST, "--json", "number,labels", "--jq",
                 f'.[] | select([.labels[].name] | index("{CLAIMED}") == null) | .number').split():
         given_up.append((n, "kept for a newcomer (`good first issue`)"))
@@ -755,6 +738,61 @@ def daily(repo, cfg, when):
                    "--jq", ".[].closingIssuesReferences[].number").split():
         given_up.append((line, "the autopilot reached its cap"))
     write_list(repo, daily_list(repo, claims, waiting, given_up))
+    return start, failed
+
+
+def daily_issue(repo, n, cfg, when, claims):
+    """One claim's daily step; returns the issues to start the autopilot on."""
+    start = []
+    issue = read_issue(repo, n)
+    state_id, state = read_marker(issue["comments"], MARK)
+    if not state:
+        return []
+    has_pr = any(p["state"] == "OPEN" and p["author"] == state["login"] for p in issue["prs"])
+    what = daily_claim(state, when, issue["labels"], has_pr, issue.get("last_push"), cfg)
+    _, release = deadlines(pushed(state, issue["last_push"]) if issue.get("last_push") else state, cfg)
+    if what == "remind":
+        new = {**(pushed(state, issue["last_push"]) if issue.get("last_push") else state)}
+        new["reminded"] = new["clock"]
+        apply_plan(repo, n, [("state", state_text(new, cfg)), ("comment", f"@{state['login']}, a reminder: this claim is released on {day(release)} without a pull request or a push to a linked branch. Comment \"still on it\" to extend it once, or `/unclaim` it.\n\n{SIGN}")], state_id)
+    elif what == "release":
+        return release_claim(repo, issue, state, state_id, f"no pull request or push by {day(release)}")
+    claims.append((n, state["login"], {"pending": "its clock waits for acceptance", "waiting": "a pull request stopped its clock"}.get(what, f"released on {day(release)}" if release else "")))
+    return start
+
+
+def daily_pull(repo, pr, cfg, when, waiting):
+    """One person's pull request's daily step; returns the issues to start
+    the autopilot on."""
+    start = []
+    author = (pr.get("author") or {}).get("login") or ""
+    if not pr or (pr.get("author") or {}).get("__typename") != "User" or is_bot(author):
+        return []
+    issues = [i["number"] for i in pr["closingIssuesReferences"]["nodes"]]
+    if not issues:
+        return []
+    commit = ((pr["commits"]["nodes"] or [{}])[0]).get("commit") or {}
+    by_author = any(((a.get("user") or {}).get("login")) == author for a in (commit.get("authors") or {}).get("nodes") or [])
+    reviews = [r["submittedAt"] for r in pr["latestReviews"]["nodes"] if r["state"] == "CHANGES_REQUESTED"]
+    info = {"author": author, "number": pr["number"], "review": pr.get("reviewDecision") or "", "created": pr["createdAt"],
+            "checks": (commit.get("statusCheckRollup") or {}).get("state") or "", "pushed": commit.get("committedDate") if by_author else None,
+            "reviewed": max(reviews) if reviews else None}
+    since = max(t for t in (info["pushed"], info["reviewed"], info["created"]) if t)
+    reminded = any(marker(PR_REMIND_MARK, {"since": since}) in (c.get("body") or "") and is_bot(((c.get("author") or {}).get("login")) or "")
+                   for c in pr["comments"]["nodes"])
+    what = daily_pr(info, when, reminded, cfg)
+    if what == "waiting":
+        waiting.append((pr["number"], author))
+    elif what == "remind":
+        gh("pr", "comment", str(pr["number"]), "--repo", repo, "--body",
+           f"@{author}, a reminder: this pull request waits on you (changes requested or failing checks). With no push from you it is closed, with thanks, {cfg['pr-close-days'] - cfg['pr-remind-days']} days from now; reopen it when you come back.\n\n{marker(PR_REMIND_MARK, {'since': since})}\n\n{SIGN}")
+    elif what == "close":
+        start += apply_plan(repo, issues[0], plan_pr_close(info, issues, cfg["pr-close-days"]))
+        for n in issues:
+            issue = read_issue(repo, n)
+            if issue.get("claim") and issue["claim"]["login"] == author:
+                state_id, _ = read_marker(issue["comments"], MARK)
+                apply_plan(repo, n, plan_release(issue["claim"], f"its pull request #{pr['number']} was closed after {cfg['pr-close-days']} days without a push", n, start=False), state_id)
     return start
 
 
@@ -849,7 +887,7 @@ def main(argv):
     cfg, when = policy(), now()
     if argv[:1] == ["repro"]:
         return repro(repo, cfg, when)
-    start = []
+    start, failed = [], []
     if argv[:1] == ["event"]:
         with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as fh:
             event = json.load(fh)
@@ -861,7 +899,9 @@ def main(argv):
         elif name == "pull_request_target":
             start = on_pull_request(repo, event, cfg, when)
     elif argv[:1] == ["daily"]:
-        start = daily(repo, cfg, when)
+        # One that fails is said and the rest go on; what was released still
+        # starts, and the run then fails, so it is seen.
+        start, failed = daily(repo, cfg, when)
     else:
         print(__doc__, file=sys.stderr)
         return 64
@@ -870,6 +910,9 @@ def main(argv):
     if os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
             fh.write(f"start={json.dumps(start)}\n")
+    if argv[:1] == ["daily"] and failed:
+        print(f"::error::The daily run could not finish {len(failed)} of them: {', '.join(f'#{n}' for n in failed)}.")
+        return 1
     return 0
 
 
@@ -919,6 +962,10 @@ def self_test():
     check("C2 the clock starts at the `accepted` event, and the dates run from it",
           (started["clock"], started["start"], [day(d) for d in deadlines(started, cfg)]), (iso(at(3)), iso(at(3)), ["2026-11-11", "2026-11-14"]))
     check("C2 a second `accepted` does not restart a running clock", start_clock(started, at(5))["clock"], iso(at(3)))
+    check("C2 the form claims on opening, or when its author ticks it in an edit; never on someone else's edit of a ticked body",
+          [form_ticked("opened", "ana", "ana", form), form_ticked("edited", "ana", "ana", form, form.replace("[X]", "[ ]")),
+           form_ticked("edited", "ana", org.BOT, form, form.replace("[X]", "[ ]")), form_ticked("edited", "ana", "ana", form, form),
+           form_ticked("edited", "ana", "ana", form, None)], [True, True, False, False, False])
     # C3: day 7 reminds, day 10 releases and starts the autopilot; a push to
     # a linked branch resets the clock.
     check("C3 days 6, 7 and 10 without a pull request or a push",

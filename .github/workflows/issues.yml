@@ -81,7 +81,11 @@ jobs:
       DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
 
   # A person claims an issue (#488): `/claim`, the form's checkbox, and the
-  # daily reminders and releases; every release starts the autopilot.
+  # daily reminders and releases; every release starts the autopilot. The
+  # only job that runs on issue_comment and pull_request_target. It inherits
+  # the secrets (dilux-bot's key, and the Claude token for the autopilot it
+  # starts) and never checks out a pull request's code: on
+  # pull_request_target it reads the pull request's metadata only.
   claim:
     permissions:
       contents: read

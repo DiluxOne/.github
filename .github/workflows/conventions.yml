@@ -6,7 +6,9 @@ name: Conventions
 # description whose required sections are filled in (it becomes the commit
 # body) and that carries no "Generated with" footer (AI is disclosed with
 # the one sober line instead), and that it closes an issue a maintainer
-# accepted (scripts/issue-gate.sh; the organisation's policy, `issue-gate`);
+# accepted (scripts/issue-gate.sh; the organisation's policy, `issue-gate`;
+# a claimed bug the reproduction confirmed instead carries the failing test
+# dilux-bot handed the person, unchanged, #488);
 # that a docs pull request changes only documentation; and that one from an
 # author who is not trusted stays under `max-changed-lines-untrusted` (a
 # pull request the autopilot opened and a maintainer took over, by adding

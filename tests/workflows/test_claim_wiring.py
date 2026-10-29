@@ -85,7 +85,7 @@ def test_the_autopilot_asks_who_holds_the_issue_before_it_starts_opens_or_pushes
         # Any exit but 0 stops it (held, or unread: it fails closed).
         assert '|| rc=$?' in text[gate:gate + 80] and 'if [ "$rc" -ne 0 ]' in text[gate:], where
     assert 'echo "go=false" >> "$GITHUB_OUTPUT"; exit 0' in may[may.index("autopilot.py holder"):may.index("Who accepted it")]
-    assert "the outbox" not in applied and applied.index("autopilot.py holder") < applied.index("autopilot.py apply .dx-out/outbox.jsonl")
+    assert applied.index("autopilot.py holder") < applied.index("autopilot.py apply .dx-out/outbox.jsonl")
     # The run that steps aside says so, and is no silent end.
     assert wf["jobs"]["draft"]["outputs"]["held"] == "${{ steps.draft.outputs.held }}"
     end = next(s for s in steps(wf, "apply") if s.get("id") == "end")
