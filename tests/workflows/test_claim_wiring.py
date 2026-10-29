@@ -90,3 +90,25 @@ def test_the_autopilot_asks_who_holds_the_issue_before_it_starts_opens_or_pushes
     assert wf["jobs"]["draft"]["outputs"]["held"] == "${{ steps.draft.outputs.held }}"
     end = next(s for s in steps(wf, "apply") if s.get("id") == "end")
     assert end["env"]["HELD"] == "${{ needs.draft.outputs.held || steps.applied.outputs.held }}"
+
+
+def test_adopt_records_the_head_the_maintainer_read_and_the_draft_starts_there():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("claim", ROOT / "scripts/claim.py")
+    c = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(c)
+    head = "d" * 40
+    acts, rec = c.plan_adopt({"number": 41, "author": "ana", "author_id": 77, "head": head}, "soydiloreto", 7, c.ts("2026-11-01T00:00:00Z"))
+    assert rec["sha"] == head and rec["pr"] == 41 and rec["author"] == "ana"
+    assert ("branch", rec["branch"], head) in acts, "only the commit read is copied"
+    note = next(a[1] for a in acts if a[0] == "comment")
+    spec = importlib.util.spec_from_file_location("autopilot", ROOT / "scripts/autopilot.py")
+    ap = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ap)
+    assert ap.adopted_record([{"user": {"login": ap.BOT_LOGINS[1]}, "body": note}]) == rec, "what claim.py records is what the autopilot reads"
+    assert acts[-1] == ("start", 7)
+    draft = run_of(workflow("autopilot.yml"), "draft", "draft")
+    adopted = draft[draft.index("autopilot.py adopted"):draft.index("api-commit.py push")]
+    assert '[ "$(git rev-parse FETCH_HEAD)" != "$sha" ]' in adopted and 'git checkout -q -b "$branch" "$sha"' in adopted and "onto=$sha" in adopted
+    # Its commits are pushed by autopilot.py push, which adds the trailer.
+    assert "python3 .dx-central/scripts/autopilot.py push" in run_of(workflow("autopilot.yml"), "apply", "applied")

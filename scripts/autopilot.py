@@ -64,6 +64,11 @@
                              the run's readable account (Markdown) from the
                              agent's execution log
   autopilot.py board         refresh the issue's board (receipts.py board)
+  autopilot.py adopted       the pull request a maintainer adopted for the
+                             issue (#488, `/adopt`), from dilux-bot's
+                             record on it (JSON, with its Co-authored-by
+                             trailer), or nothing; push then adds that
+                             trailer to every commit it pushes
   autopilot.py holder        whether a person holds the issue (#488): it is
                              `claimed`, kept as a `good first issue`,
                              assigned to a person (not the one #73 assigned
@@ -261,6 +266,60 @@ def held_by(issue, prs, started=""):
                 and "autopilot" not in (p.get("labels") or []) and (not started or (p.get("created") or "") < started)):
             return f"#{p['number']} by @{author} closes it"
     return ""
+
+
+ADOPT_MARK = "dx-adopt"
+
+
+def adopted_record(comments):
+    """The adoption recorded on the issue (#488, scripts/claim.py `/adopt`):
+    the last dx-adopt marker in a comment dilux-bot wrote (the pull request,
+    its author and id, the head the maintainer read, its branch), or None.
+    A marker in anyone else's comment is never read."""
+    found = None
+    for c in comments or []:
+        who = ((c.get("user") or c.get("author") or {}).get("login")) or ""
+        m = re.search(r"<!-- " + ADOPT_MARK + r" (\{.*?\}) -->", c.get("body") or "")
+        if m and who in BOT_LOGINS:
+            try:
+                found = json.loads(m.group(1))
+            except ValueError:
+                continue
+    return found
+
+
+def co_author(rec):
+    """The Co-authored-by trailer for an adopted pull request's author."""
+    who = rec["author"]
+    mail = f"{rec['author_id']}+{who}@users.noreply.github.com" if rec.get("author_id") else f"{who}@users.noreply.github.com"
+    return f"Co-authored-by: {who} <{mail}>"
+
+
+def with_trailer(message, trailer):
+    """The commit message with the trailer, once: in its trailer block when it
+    ends with one, else in a paragraph of its own."""
+    text = message.rstrip("\n")
+    if trailer.lower() in text.lower():
+        return text + "\n"
+    last = text.rsplit("\n\n", 1)[-1]
+    block = bool(last) and "\n\n" in text and all(re.match(r"^[A-Za-z-]+: ", l) for l in last.splitlines())
+    return text + ("\n" if block else "\n\n") + trailer + "\n"
+
+
+def add_trailer(base, trailer, cwd=None):
+    """Makes the commits base..HEAD again with the trailer in each message
+    (same trees, authors and order), and moves HEAD to the last; returns how
+    many it rewrote."""
+    run = lambda *a, **k: subprocess.run(["git", *a], capture_output=True, text=True, check=True, cwd=cwd, **k).stdout.strip()
+    revs = [r for r in run("rev-list", "--reverse", f"{base}..HEAD").split() if r]
+    parent = run("rev-parse", base)
+    for c in revs:
+        name, mail, date = run("log", "-1", "--format=%an%x00%ae%x00%aI", c).split("\x00")
+        env = dict(os.environ, GIT_AUTHOR_NAME=name, GIT_AUTHOR_EMAIL=mail, GIT_AUTHOR_DATE=date)
+        parent = run("commit-tree", f"{c}^{{tree}}", "-p", parent, "-m", with_trailer(run("log", "-1", "--format=%B", c), trailer), env=env)
+    if revs:
+        run("reset", "-q", "--hard", parent)
+    return len(revs)
 
 
 def held_comment(why):
@@ -1934,6 +1993,36 @@ Clamp the value in Sum::add.
     check("C6 holder reads GitHub's closing link, never a text search of the pull requests",
           ("closedByPullRequestsReferences(first: 20, includeClosedPrs: false)" in HOLDER_QUERY, "search" in HOLDER_QUERY), (True, False))
     check("C6 the run that steps aside says so", held_comment("a person claimed it (`claimed`)").startswith("The autopilot steps aside: a person claimed it"), True)
+    # C10: an adopted pull request's author is a co-author of every commit
+    # the autopilot pushes from it.
+    rec = {"pr": 41, "author": "ana", "author_id": 77, "sha": "c" * 40, "branch": "feat/7-adopted-41", "by": "soydiloreto"}
+    mark = f"<!-- {ADOPT_MARK} {json.dumps(rec)} -->"
+    check("C10 the adoption is read only from dilux-bot's record",
+          (adopted_record([{"user": {"login": BOT_LOGINS[1]}, "body": "Adopted.\n\n" + mark}]), adopted_record([{"user": {"login": "mallory"}, "body": mark}])), (rec, None))
+    check("C10 the trailer names the author by their GitHub address", co_author(rec), "Co-authored-by: ana <77+ana@users.noreply.github.com>")
+    check("C10 added once, in the trailer block or a paragraph of its own",
+          [with_trailer("fix: a\n\nBody.", co_author(rec)), with_trailer("fix: a\n\nBody.\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n", co_author(rec)),
+           with_trailer("fix: a\n\n" + co_author(rec) + "\n", co_author(rec))],
+          ["fix: a\n\nBody.\n\n" + co_author(rec) + "\n", "fix: a\n\nBody.\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n" + co_author(rec) + "\n",
+           "fix: a\n\n" + co_author(rec) + "\n"])
+    with tempfile.TemporaryDirectory() as d:
+        g = lambda *a: subprocess.run(["git", "-c", "user.name=bot", "-c", "user.email=bot@x", *a], cwd=d, capture_output=True, text=True, check=True).stdout.strip()
+        g("init", "-q", "-b", "feat/7-x")
+        g("config", "user.name", "bot")
+        g("config", "user.email", "bot@x")
+        g("commit", "-q", "--allow-empty", "-m", "the adopted head")
+        base = g("rev-parse", "HEAD")
+        for i in (1, 2):
+            with open(os.path.join(d, f"f{i}"), "w") as fh:
+                fh.write(str(i))
+            g("add", f"f{i}")
+            g("commit", "-q", "-m", f"feat: part {i} (C{i})")
+        trees = g("log", "--format=%T", f"{base}..HEAD")
+        n = add_trailer(base, co_author(rec), cwd=d)
+        msgs = g("log", "--format=%B%x00", f"{base}..HEAD").split("\x00")
+        check("C10 commits on an adopted branch carry Co-authored-by for the author, same trees, same order",
+              (n, [m.strip().splitlines()[0] for m in msgs if m.strip()], all(co_author(rec) in m for m in msgs if m.strip()), g("log", "--format=%T", f"{base}..HEAD") == trees),
+              (2, ["feat: part 2 (C2)", "feat: part 1 (C1)"], True, True))
     if not failed:
         print("all tests passed")
     return failed
@@ -1944,6 +2033,12 @@ def gh(*args, input_text=None):
     if out.returncode != 0:
         raise RuntimeError(out.stderr.strip()[:300])
     return out.stdout
+
+
+def issue_comments(repo, number):
+    """The issue's comments, every page, as the REST API gives them."""
+    pages = json.loads(gh("api", f"repos/{repo}/issues/{number}/comments", "--paginate", "--slurp") or "[]")
+    return [c for page in pages for c in page]
 
 
 def pr_json(repo, pr, fields):
@@ -2454,6 +2549,13 @@ def main(argv):
         # The agent's commits, made again through the API so GitHub signs
         # them (#190); the local branch then points at GitHub's commits.
         branch = os.environ.get("BRANCH") or pr_json(repo, pr, "headRefName")["headRefName"]
+        # An adopted pull request (#488): every commit pushed carries
+        # Co-authored-by for its author, read from the issue's record.
+        if number:
+            rec = adopted_record(issue_comments(repo, number))
+            if rec:
+                n = add_trailer(f"origin/{branch}", co_author(rec))
+                print(f"{n} commit(s) carry {co_author(rec)} (adopted #{rec['pr']}).")
         out = subprocess.run([sys.executable, os.path.join(HERE, "api-commit.py"), "push", branch], capture_output=True, text=True)
         print((out.stdout + out.stderr).strip())
         return out.returncode
@@ -2573,6 +2675,12 @@ def main(argv):
         return 0
     if argv[:1] == ["board"]:
         refresh_board(repo, number)
+        return 0
+    if argv[:1] == ["adopted"]:
+        # The adoption recorded on the issue (#488), as JSON, or nothing.
+        rec = adopted_record(issue_comments(repo, number))
+        if rec:
+            print(json.dumps({**rec, "trailer": co_author(rec)}))
         return 0
     if argv[:1] == ["holder"]:
         # Whether a person holds the issue (#488): exit 0 when nobody does,

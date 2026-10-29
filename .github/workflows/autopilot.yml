@@ -78,6 +78,17 @@ name: Autopilot
 # checks a person's run uses. What the helpers check in the agent's job is
 # only feedback to the agent.
 #
+# A person holds the issue (#488, scripts/autopilot.py holder): it is
+# `claimed`, kept as a `good first issue`, assigned to a person (not the one
+# who accepted it, #73), or closed by a person's open pull request (GitHub's
+# link) opened before the autopilot's. Then `prep` does not start it, `draft`
+# opens nothing and `apply` pushes nothing; an unread answer stops it too,
+# and the run says so (verdict `held`). Started by issue-claim.yml after a
+# maintainer's `/adopt`, the draft's branch starts at the adopted head they
+# read, and every commit pushed carries `Co-authored-by` for its author.
+# When it hands a pull request to a person at its cap, the issue says anyone
+# may `/claim` it.
+#
 # A run never ends in silence (scripts/autopilot.py end): the pull request is
 # ready for review, or the agent said where it stopped and why (a comment and
 # `needs-human`), or, in `guided` mode (policy/autonomy.yml, autopilot-mode,
@@ -332,6 +343,8 @@ jobs:
           PR: ${{ steps.what.outputs.pr }}
           ROUND: ${{ steps.what.outputs.round }}
           RUNS: ${{ steps.what.outputs.runs }}
+          # At its cap the autopilot hands the issue to people (#488).
+          OPEN_TO_CLAIM: "The autopilot reached its cap on this issue, and its pull request waits for a person: anyone may `/claim` this issue to finish it with their own code (CONTRIBUTING.md). It is on the daily list of claims until someone does.\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
         run: |
           set -euo pipefail
           export BODY="$RUNNER_TEMP/body.md" REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml"
@@ -436,6 +449,7 @@ jobs:
 
           🤖 AI-generated · Claude Opus 5.5 (Anthropic)" >/dev/null
               [[ "$why" != *"cap is"* ]] || gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label needs-human >/dev/null
+              [[ "$why" != *"cap is"* ]] || gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$OPEN_TO_CLAIM" >/dev/null || true
               echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
             fi
           fi
@@ -446,6 +460,7 @@ jobs:
               gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "The autopilot spent its $max rounds and the review still blocks: a person takes it from here. The review's open threads say what is left.
 
           🤖 AI-generated · Claude Opus 5.5 (Anthropic)" >/dev/null
+              [ -z "$ISSUE" ] || gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$OPEN_TO_CLAIM" >/dev/null || true
               echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
             fi
           fi
@@ -777,6 +792,19 @@ jobs:
             fi
             git checkout -q -b "$branch" FETCH_HEAD
             onto=FETCH_HEAD
+          elif adopt=$(python3 .dx-central/scripts/autopilot.py adopted) && [ -n "$adopt" ]; then
+            # A pull request a maintainer adopted (#488, `/adopt`): the branch
+            # starts at the head they read, which scripts/claim.py copied to
+            # the adopted branch; never a later commit. Its author is a
+            # co-author of every commit (autopilot.py push).
+            sha=$(jq -r .sha <<<"$adopt"); from=$(jq -r .branch <<<"$adopt")
+            git fetch -q origin "$from"
+            if [ "$(git rev-parse FETCH_HEAD)" != "$sha" ]; then
+              echo "why=The adopted branch $from is not at the commit the maintainer read; the draft pull request is not opened." >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            git checkout -q -b "$branch" "$sha"
+            git commit -q --allow-empty -m "chore(autopilot): start on #$NUMBER" -m "From #$(jq -r .pr <<<"$adopt"), adopted at ${sha:0:12}: the draft pull request opens before any code." -m "$(jq -r .trailer <<<"$adopt")"
+            onto=$sha
           else
             onto=$(git rev-parse HEAD)
             git checkout -q -b "$branch"
