@@ -207,7 +207,7 @@ jobs:
   prep:
     # The issue in its name: scripts/claim.py finds the autopilot's run in
     # progress for an issue by it (#488).
-    name: Autopilot (${{ inputs.mode }}) · may it run · #${{ inputs.issue || inputs.pr }}
+    name: "Autopilot (${{ inputs.mode }}) · may it run · #${{ inputs.issue || inputs.pr }}"
     runs-on: ubuntu-latest # fresh: it holds the key beside an agent's work (#287)
     timeout-minutes: 15
     permissions: {}
