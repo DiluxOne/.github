@@ -100,6 +100,9 @@ report:
   - What would you like to happen?
   - What do you do today instead?
   - What and why
+  # Every form's optional proposal (#491): whoever wrote the one the change
+  # used is credited as a co-author (scripts/credits.py).
+  - Proposed solution
 
 # The release issue (#82): publishing a version is a person's decision, and
 # accepting this issue is it. It is not a PRD: its title is the version,

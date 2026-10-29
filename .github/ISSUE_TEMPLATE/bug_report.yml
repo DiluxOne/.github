@@ -36,3 +36,8 @@ body:
     attributes:
       label: Logs or screenshots
       description: Anything that shows the problem. Remove keys, passwords and personal data first.
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: Proposed solution
+      description: Optional. How you would solve it. If the change uses it, you are credited as its co-author.

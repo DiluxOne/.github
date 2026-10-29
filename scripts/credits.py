@@ -10,9 +10,43 @@ comment on the issue), as the description's Credits block lists them.
                                messages, a description) that name a model,
                                one per line with the `Assisted-by:` line to
                                use instead; exit 1 when there is one
+  credits.py block             the Credits block of the description on
+                               stdin, one `login kind` per line; exit 1 when
+                               the description has none
+  credits.py write FILE        the description on stdin with its Credits
+                               block set to FILE's entries (`- @login: kind
+                               (link)`); exit 1 when FILE has a line that is
+                               not one
+  credits.py command BY OUT    the description on stdin with the comment in
+                               COMMENT applied (`/coauthor @login`,
+                               `/uncoauthor @login`, BY the maintainer),
+                               written to OUT; what changed on stdout
+  credits.py body REPO PR [MERGER]
+                               the squash's body: the description, then
+                               under `---------` the trailers of the Credits
+                               block and the branch commits' human
+                               co-authors (gh, GH_TOKEN; exit 1, loudly,
+                               when GitHub cannot be read: the merge waits)
   credits.py --test            self-test
+
+The Credits block sits in the description's "🙌 Credits" section, between
+its markers, one person per line:
+
+  <!-- dx-credits -->
+  - @login: co-author (https://github.com/o/r/issues/1#issuecomment-2)
+  <!-- /dx-credits -->
+
+`co-author` writes `Co-authored-by`, `suggested` `Suggested-by` and
+`reported` `Reported-by`, each with GitHub's noreply address of the account
+(`<id>+<login>@users.noreply.github.com`, read from the API, never a
+private e-mail). Never a co-author: a model, dilux-bot, Dependabot, any
+`[bot]` or Bot account, the maintainer who accepted the issue it closes and
+the one who merges it.
 """
+import json
+import os
 import re
+import subprocess
 import sys
 
 # The makers whose models sign as co-authors, and how to tell them: an
@@ -71,6 +105,201 @@ def models(text):
     return found
 
 
+HEAD = "## 🙌 Credits"
+START = "<!-- dx-credits -->"
+END = "<!-- /dx-credits -->"
+KINDS = {"co-author": "Co-authored-by", "suggested": "Suggested-by", "reported": "Reported-by"}
+# The most lines a block is read for: a huge one is cut, not a denial.
+MAX_ENTRIES = 50
+LOGIN = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?"
+ENTRY_RE = re.compile(rf"^\s*[-*]\s*@(?P<login>{LOGIN}):\s*(?P<kind>co-author|suggested|reported)\b\s*(?:\((?P<note>[^()\n]{{0,300}})\))?\s*$", re.I)
+COMMAND_RE = re.compile(rf"^\s*/(?P<cmd>coauthor|uncoauthor)(?P<who>(?:\s+@{LOGIN})+)\s*$", re.I)
+NOREPLY_RE = re.compile(r"^(?:\d+\+)?(?P<login>[^@+]+)@users\.noreply\.github\.com$", re.I)
+# The organisation's own bots by login, whatever the API says of them.
+BOTS = {"dilux-bot", "dependabot", "github-actions", "renovate"}
+
+
+def entry_line(e):
+    return f"- @{e['login']}: {e['kind']}" + (f" ({e['note']})" if e.get("note") else "")
+
+
+def has_block(body):
+    """Whether the description holds the Credits markers, in order."""
+    body = body or ""
+    return START in body and END in body.split(START, 1)[1]
+
+
+def parse_entries(text):
+    """[{login, kind, note}] from the lines of text that are entries, at
+    most MAX_ENTRIES, one per login (case-insensitively: the strongest kind
+    wins); the rest are ignored."""
+    out = {}
+    rank = list(KINDS)
+    for line in (text or "").replace("\r", "").split("\n")[:MAX_ENTRIES * 4]:
+        m = ENTRY_RE.match(line)
+        if not m:
+            continue
+        e = {"login": m["login"], "kind": m["kind"].lower(), "note": (m["note"] or "").strip()}
+        key = e["login"].lower()
+        if key not in out and len(out) >= MAX_ENTRIES:
+            continue
+        if key not in out or rank.index(e["kind"]) < rank.index(out[key]["kind"]):
+            out[key] = e
+    return list(out.values())
+
+
+def read_block(body):
+    """The Credits block's entries, [] when there is none."""
+    if not has_block(body):
+        return []
+    return parse_entries(body.split(START, 1)[1].split(END, 1)[0])
+
+
+def set_block(body, entries):
+    """The description with its Credits block holding entries; a
+    description with none gets the section, before "How I tested it", else
+    before the AI line, else at the end."""
+    inner = "".join(entry_line(e) + "\n" for e in entries)
+    block = f"{START}\n{inner}{END}"
+    body = (body or "").replace("\r", "")
+    if has_block(body):
+        before, rest = body.split(START, 1)
+        return before + block + rest.split(END, 1)[1]
+    section = f"{HEAD}\n\n{block}\n\n"
+    for anchor in ("## 🧪 How I tested it", "🤖 AI-"):
+        at = body.find("\n" + anchor)
+        if at >= 0:
+            return body[:at + 1] + section + body[at + 1:]
+    return body.rstrip("\n") + ("\n\n" if body.strip() else "") + section.rstrip("\n") + "\n"
+
+
+def command(body, comment, by):
+    """(the description, [what changed]) with the comment's `/coauthor
+    @login` and `/uncoauthor @login` lines applied; any other text is
+    ignored, and a command that changes nothing says so."""
+    entries = read_block(body)
+    changed, said = False, []
+    for line in (comment or "").replace("\r", "").split("\n"):
+        m = COMMAND_RE.match(line)
+        if not m:
+            continue
+        for login in re.findall(rf"@({LOGIN})", m["who"]):
+            have = next((e for e in entries if e["login"].lower() == login.lower()), None)
+            if m["cmd"].lower() == "coauthor":
+                if have and have["kind"] == "co-author":
+                    said.append(f"@{login} is already a co-author.")
+                    continue
+                if have:
+                    have.update(kind="co-author", note=f"/coauthor by @{by}")
+                else:
+                    if len(entries) >= MAX_ENTRIES:
+                        said.append(f"@{login} is not added: the block holds {MAX_ENTRIES} people already.")
+                        continue
+                    entries.append({"login": login, "kind": "co-author", "note": f"/coauthor by @{by}"})
+                said.append(f"@{login} is a co-author now.")
+            else:
+                if not have:
+                    said.append(f"@{login} was not in the Credits block.")
+                    continue
+                entries.remove(have)
+                said.append(f"@{login} is no longer credited.")
+            changed = True
+    if not changed:
+        return body, said
+    return set_block(body, entries), said
+
+
+def _noreply_login(email):
+    m = NOREPLY_RE.match((email or "").strip())
+    return m["login"] if m else ""
+
+
+def is_bot(login, user=None):
+    low = (login or "").lower()
+    return low.endswith("[bot]") or low in BOTS or ((user or {}).get("type") == "Bot")
+
+
+def _clean_name(name):
+    return " ".join(re.sub(r"[<>\x00-\x1f]", "", name or "").split())
+
+
+def compose(entries, users, messages, excluded=(), author=""):
+    """The squash's trailers: the block's people as their kind, resolved in
+    users ({login lower: the API's user}), then the commits' human
+    `Co-authored-by` lines, never a model, a bot, an excluded login (the
+    maintainer who accepted, the one who merges) or the author, each person
+    once (by account or address, case-insensitively), the strongest kind
+    kept. Pure."""
+    skip = {x.lower() for x in excluded if x} | ({author.lower()} if author else set())
+    seen_logins, seen_mails = set(), set()
+    out = {kind: [] for kind in KINDS.values()}
+    rank = list(KINDS)
+    for e in sorted(entries, key=lambda e: rank.index(e["kind"])):
+        user = users.get(e["login"].lower())
+        if user is None:
+            raise KeyError(f"@{e['login']} was not read from GitHub")
+        login = user.get("login") or e["login"]
+        if login.lower() in skip or is_bot(login, user) or login.lower() in seen_logins:
+            continue
+        name = _clean_name(user.get("name")) or login
+        if model_maker(name, ""):
+            continue
+        mail = f"{user['id']}+{login}@users.noreply.github.com"
+        seen_logins.add(login.lower())
+        seen_mails.add(mail.lower())
+        out[KINDS[e["kind"]]].append(f"{KINDS[e['kind']]}: {name} <{mail}>")
+    for line in "\n".join(messages).replace("\r", "").split("\n"):
+        m = TRAILER_RE.match(line)
+        if not m or not m["email"]:
+            continue
+        name, mail = m["name"].strip(), m["email"].strip()
+        login = _noreply_login(mail)
+        if model_maker(name, mail) or "[bot]" in (name + mail).lower() or is_bot(login):
+            continue
+        if (login and (login.lower() in skip or login.lower() in seen_logins)) or mail.lower() in seen_mails:
+            continue
+        seen_mails.add(mail.lower())
+        if login:
+            seen_logins.add(login.lower())
+        out["Co-authored-by"].append(f"Co-authored-by: {_clean_name(name) or login or mail} <{mail}>")
+    return [line for kind in KINDS.values() for line in out[kind]]
+
+
+def squash_body(description, trailers):
+    """The description, then the trailers under GitHub's own separator."""
+    body = (description or "").replace("\r", "").rstrip("\n")
+    if trailers:
+        body += ("\n\n" if body else "") + "---------\n\n" + "\n".join(trailers)
+    return body
+
+
+def gh(*args):
+    out = subprocess.run(["gh", *args], capture_output=True, text=True)
+    if out.returncode != 0:
+        raise RuntimeError(f"gh {' '.join(args[:2])}: {out.stderr.strip()[:300]}")
+    return out.stdout
+
+
+def body_of(repo, pr, merger=""):
+    """The squash's body for a pull request, read from GitHub."""
+    data = json.loads(gh("api", f"repos/{repo}/pulls/{pr}"))
+    messages = gh("api", f"repos/{repo}/pulls/{pr}/commits", "--paginate", "--jq", ".[].commit.message").split("\n")
+    excluded = {merger, os.environ.get("DX_BOT_LOGIN", "")}
+    issues = gh("pr", "view", str(pr), "--repo", repo, "--json", "closingIssuesReferences", "--jq", ".closingIssuesReferences[].number").split()
+    for n in issues:
+        jq = '.[] | select(.event == "labeled" and .label.name == "accepted") | .actor.login'
+        excluded |= set(gh("api", f"repos/{repo}/issues/{n}/timeline", "--paginate", "--jq", jq).split())
+    entries = read_block(data.get("body") or "")
+    users = {}
+    for e in entries:
+        if e["login"].lower() in {x.lower() for x in excluded if x} or is_bot(e["login"]):
+            users[e["login"].lower()] = {"login": e["login"], "id": 0, "type": "Bot"}
+            continue
+        users[e["login"].lower()] = json.loads(gh("api", f"users/{e['login']}", "--jq", "{login, id, name, type}"))
+    trailers = compose(entries, users, messages, excluded, (data.get("user") or {}).get("login", ""))
+    return squash_body(data.get("body") or "", trailers)
+
+
 def self_test():
     failed = 0
 
@@ -94,6 +323,42 @@ def self_test():
     check("C2: a person who shares a model's first name", models("Co-authored-by: Claude Dupont <claude@example.org>"), [])
     check("C2: a person's noreply address", models("Co-authored-by: Gem <9+gemini-fan@users.noreply.github.com>"), [])
     check("C2: the words, not a trailer", models("We asked Claude <noreply@anthropic.com> about it."), [])
+    # The Credits block (C3).
+    desc = "## 📝 What changes\n\nx\n\n## 🧪 How I tested it\n\ny\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
+    check("C3: a description with no block has none", (has_block(desc), read_block(desc)), (False, []))
+    one = set_block(desc, [{"login": "ana", "kind": "co-author", "note": "https://github.com/o/r/issues/1"}])
+    check("C3: set_block adds the section before How I tested it",
+          one.split("## 🧪")[0].endswith(f"{HEAD}\n\n{START}\n- @ana: co-author (https://github.com/o/r/issues/1)\n{END}\n\n"), True)
+    check("C3: and reads back", read_block(one), [{"login": "ana", "kind": "co-author", "note": "https://github.com/o/r/issues/1"}])
+    check("C3: set again replaces it, once", (set_block(one, []).count(START), read_block(set_block(one, []))), (1, []))
+    check("C3: an empty block is still a block", has_block(set_block(desc, [])), True)
+    check("C3: malformed lines are ignored, the strongest kind kept",
+          parse_entries("- @ana: reported\n- @ANA: co-author\n- @bob: author\n- bob: suggested\nrm -rf /\n- @c: suggested (x)"),
+          [{"login": "ANA", "kind": "co-author", "note": ""}, {"login": "c", "kind": "suggested", "note": "x"}])
+    check("C3: a huge block is cut", len(parse_entries("".join(f"- @u{i}: reported\n" for i in range(500)))), MAX_ENTRIES)
+    users = {"ana": {"login": "ana", "id": 12, "name": "Ana Pérez", "type": "User"},
+             "bob": {"login": "bob", "id": 34, "name": None, "type": "User"},
+             "cy": {"login": "cy", "id": 56, "name": "Cy", "type": "User"},
+             "dee": {"login": "dee", "id": 78, "name": "Dee", "type": "User"}}
+    claude = "fix: x\n\nCo-Authored-By: Claude <noreply@anthropic.com>"
+    check("C3: the issue's author in the block is a co-author by the noreply address, no model",
+          compose([{"login": "ana", "kind": "co-author"}], users, [claude]),
+          ["Co-authored-by: Ana Pérez <12+ana@users.noreply.github.com>"])
+    check("C3: the name falls back to the login", compose([{"login": "bob", "kind": "co-author"}], users, []),
+          ["Co-authored-by: bob <34+bob@users.noreply.github.com>"])
+    check("C3: suggested and reported, after the co-authors",
+          compose([{"login": "cy", "kind": "reported"}, {"login": "bob", "kind": "suggested"}, {"login": "ana", "kind": "co-author"}], users, []),
+          ["Co-authored-by: Ana Pérez <12+ana@users.noreply.github.com>", "Suggested-by: bob <34+bob@users.noreply.github.com>",
+           "Reported-by: Cy <56+cy@users.noreply.github.com>"])
+    try:
+        compose([{"login": "zed", "kind": "co-author"}], users, [])
+        check("C3: a person GitHub did not return fails, never dropped", "no error", "KeyError")
+    except KeyError:
+        check("C3: a person GitHub did not return fails, never dropped", "KeyError", "KeyError")
+    check("C3: the squash body: the description, the separator, the trailers",
+          squash_body("A.\r\n", ["Co-authored-by: X <1+x@users.noreply.github.com>"]),
+          "A.\n\n---------\n\nCo-authored-by: X <1+x@users.noreply.github.com>")
+    check("C3: no trailers, the description alone", squash_body("A.\n", []), "A.")
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
@@ -106,6 +371,32 @@ def main(argv):
         for trailer, use in found:
             print(f"{trailer}\t{use}")
         return 1 if found else 0
+    if argv == ["block"]:
+        body = sys.stdin.read()
+        for e in read_block(body):
+            print(f"{e['login']} {e['kind']}")
+        return 0 if has_block(body) else 1
+    if argv[:1] == ["write"] and len(argv) == 2:
+        text = open(argv[1], encoding="utf-8").read()
+        bad = [l for l in text.replace("\r", "").split("\n") if l.strip() and not ENTRY_RE.match(l)]
+        if bad:
+            print(f"Not an entry (- @login: co-author|suggested|reported (link)): {bad[0][:200]}", file=sys.stderr)
+            return 1
+        sys.stdout.write(set_block(sys.stdin.read(), parse_entries(text)))
+        return 0
+    if argv[:1] == ["command"] and len(argv) == 3:
+        body, said = command(sys.stdin.read(), os.environ.get("COMMENT", ""), argv[1])
+        with open(argv[2], "w", encoding="utf-8") as fh:
+            fh.write(body)
+        print("\n".join(said))
+        return 0
+    if argv[:1] == ["body"] and len(argv) in (3, 4):
+        try:
+            sys.stdout.write(body_of(argv[1], argv[2], argv[3] if len(argv) == 4 else ""))
+        except (RuntimeError, KeyError, ValueError) as err:
+            print(f"::error::The credits could not be read from GitHub ({err}); nothing merges until they can.", file=sys.stderr)
+            return 1
+        return 0
     print(__doc__, file=sys.stderr)
     return 64
 
