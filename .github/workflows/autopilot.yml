@@ -39,7 +39,11 @@ name: Autopilot
 #                   CLAUDE_CODE_DISABLE_BACKGROUND_TASKS), and a command may
 #                   run as long as the step. A draft with every box ticked
 #                   whose run ended without finishing continues once (a
-#                   comment says so), then goes to a person.
+#                   comment says so), then goes to a person. On a pull
+#                   request already ready whose review blocks at its head
+#                   (#504, scripts/autopilot.py continue-as), the continue
+#                   runs one fix round instead, counted as a run: the
+#                   rounds cap does not refuse it, the runs cap does.
 #
 # Before `finish ready` (#482) the agent reviews its own diff against the
 # review's profiles and the kind's rules, fixing every blocker and major,
@@ -48,10 +52,12 @@ name: Autopilot
 # refuses a head where it did not pass in this run, where the Makefile has
 # the target. The questions it needs answered are asked while it writes the
 # Spec.
-#   mode: fix       called from org-pull-request.yml when the review of an
+#   mode: fix       called from org-pull-request.yml, and in the
+#                   organisation's own repository from its
+#                   pull-request.yml (#504), when the review of an
 #                   `autopilot` pull request blocks: one round of fixes,
 #                   pushed to its branch, which runs the pipeline again. After
-#                   `autopilot-rounds` rounds (3) it hands the pull request to
+#                   `autopilot-rounds` rounds (5) it hands the pull request to
 #                   a person (`needs-human`, with a summary).
 #
 # The agent holds no key (#287). A shell in a job that holds a secret can
@@ -205,6 +211,9 @@ jobs:
     permissions: {}
     outputs:
       go: ${{ steps.may.outputs.go || 'false' }}
+      # What it runs (#504): the mode it was called with, but `fix` for a
+      # continue on a ready pull request whose review blocks.
+      mode: ${{ steps.what.outputs.mode || inputs.mode }}
       issue: ${{ steps.what.outputs.issue }}
       pr: ${{ steps.what.outputs.pr }}
       branch: ${{ steps.what.outputs.branch }}
@@ -279,6 +288,22 @@ jobs:
           else
             echo "runs=1" >> "$GITHUB_OUTPUT"
           fi
+          # A continue on a pull request already ready whose review blocks
+          # at its head runs one fix round (#504): the review's last record,
+          # read the way claude-review.yml reads it, from dilux-bot's own
+          # summary comment only.
+          as=$MODE
+          if [ "$MODE" = continue ]; then
+            state=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json isDraft,headRefOid --jq '"\(.isDraft) \(.headRefOid)"')
+            # Unread, it is no record: the continue runs as it always did.
+            # shellcheck disable=SC2016 # jq variable, not a shell one.
+            { gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
+              | jq -r --arg bot "$DX_BOT_LOGIN" '.[] | select(.user.login == $bot and (.body | startswith("<!-- dx-review -->"))) | .body' \
+              | { grep -oP '<!-- dx-review-record \K.*(?= -->)' || true; } | tail -1; } > "$RUNNER_TEMP/record.json" || echo null > "$RUNNER_TEMP/record.json"
+            as=$(IS_DRAFT="${state%% *}" HEAD="${state#* }" RECORD="$RUNNER_TEMP/record.json" python3 .dx-central/scripts/autopilot.py continue-as)
+            [ "$as" != fix ] || echo "#$PR is ready and its review blocks at its head: this continue runs one fix round."
+          fi
+          echo "mode=$as" >> "$GITHUB_OUTPUT"
           [ -n "$ISSUE" ] || { echo "No issue to work on."; exit 1; }
           echo "issue=$ISSUE" >> "$GITHUB_OUTPUT"
           gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/body.md"
@@ -300,6 +325,7 @@ jobs:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           DX_AUTOPILOT: ${{ vars.DX_AUTOPILOT }}
           MODE: ${{ inputs.mode }}
+          AS: ${{ steps.what.outputs.mode }}
           ISSUE: ${{ steps.what.outputs.issue }}
           PR: ${{ steps.what.outputs.pr }}
           ROUND: ${{ steps.what.outputs.round }}
@@ -384,7 +410,9 @@ jobs:
           fi
           if [ "$MODE" = continue ]; then
             # may-continue counts the runs before this one.
-            if ! why=$(RUNS=$((RUNS - 1)) python3 .dx-central/scripts/autopilot.py may-continue); then
+            # A continue's fix round (#504) counts as a run, against the
+            # runs cap, never against the rounds cap: the label asked for it.
+            if ! why=$(AS="$AS" RUNS=$((RUNS - 1)) python3 .dx-central/scripts/autopilot.py may-continue); then
               echo "No continue: $why"
               [[ "$why" != *"cap is"* ]] || gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "The autopilot does not continue: $why. A person takes it from here.
 
@@ -409,7 +437,7 @@ jobs:
         if: steps.may.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
-          MODE: ${{ inputs.mode }}
+          MODE: ${{ steps.what.outputs.mode }}
           PR: ${{ steps.what.outputs.pr }}
         run: |
           set -euo pipefail
@@ -425,7 +453,8 @@ jobs:
           if [ -n "$PR" ]; then echo "head=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid)" >> "$GITHUB_OUTPUT"; fi
 
       # Counted before the agent runs: a round or run that fails or times out
-      # after pushing still counts, so the caps hold.
+      # after pushing still counts, so the caps hold. By the mode it was
+      # called with: a continue's fix round (#504) is a run.
       - name: Count the round or the run
         if: steps.may.outputs.go == 'true' && inputs.mode != 'start'
         env:
@@ -445,7 +474,7 @@ jobs:
         if: steps.may.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
-          MODE: ${{ inputs.mode }}
+          MODE: ${{ steps.what.outputs.mode }}
           NUMBER: ${{ steps.what.outputs.issue }}
           PR: ${{ steps.what.outputs.pr }}
           BRANCH: ${{ steps.what.outputs.branch }}
@@ -865,7 +894,7 @@ jobs:
           claude_args: |
             --model claude-opus-5-5
             --max-turns 150
-            --max-budget-usd ${{ needs.prep.outputs.budget-work || (inputs.mode == 'fix' && '10' || '20') }}
+            --max-budget-usd ${{ needs.prep.outputs.budget-work || (needs.prep.outputs.mode == 'fix' && '10' || '20') }}
             --allowedTools "Bash,Read,Edit,MultiEdit,Write,Glob,Grep"
             --disallowedTools "Monitor"
 
@@ -1029,12 +1058,12 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ steps.bot-end.outputs.token }}
-          MODE: ${{ inputs.mode }}
+          MODE: ${{ needs.prep.outputs.mode }}
           NUMBER: ${{ needs.prep.outputs.issue }}
           PR: ${{ needs.draft.outputs.pr || needs.prep.outputs.pr }}
           RUNS: ${{ needs.prep.outputs.runs }}
           STARTED: ${{ needs.prep.outputs.started }}
-          HEAD_BEFORE: ${{ inputs.mode == 'fix' && needs.prep.outputs.head || '' }}
+          HEAD_BEFORE: ${{ needs.prep.outputs.mode == 'fix' && needs.prep.outputs.head || '' }}
           WORK_OUTCOME: ${{ needs.work.outputs.outcome || needs.work.result }}
           SPEC_OUTCOME: ${{ needs.spec.outputs.outcome || needs.spec.result }}
           WHY: ${{ needs.draft.outputs.why }}

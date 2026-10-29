@@ -5,7 +5,9 @@ name: Pull request
 # called from this commit (./.github/workflows/...), but the review profiles,
 # the policy and the brief script are read from main, so a pull request cannot
 # rewrite the rules that review it. The conventions script comes from the pull
-# request itself: it can change conventions.yml anyway.
+# request itself: it can change conventions.yml anyway. An autopilot pull
+# request whose review blocks gets its fix round here (autopilot-fix, #504),
+# as org-pull-request.yml gives it everywhere else.
 
 on:
   # An edit of the title or description is handled by pull-request-edited.yml.
@@ -242,4 +244,26 @@ jobs:
       blocking: ${{ needs.review.outputs.blocking }}
       description-ok: ${{ needs.review.outputs.description-ok }}
       enabled: ${{ needs.review.outputs.auto-merge }}
+    secrets: inherit
+
+  # An autopilot pull request here whose review blocks: one round of fixes
+  # (#504), as org-pull-request.yml runs it in every other repository, with
+  # the same condition but the repository (that one excludes this one, so
+  # the round never runs twice; scripts/autopilot.py --test keeps the two
+  # the same). Only dilux-bot's own branch matches, never a fork's. The
+  # scripts are read from main, like the review's.
+  autopilot-fix:
+    needs: review
+    # Only dilux-bot's own pull requests, and only for a new commit (an edit
+    # of the description keeps the review's verdict and must not spend a
+    # round).
+    if: always() && github.event_name == 'pull_request' && github.repository == 'DiluxOne/.github' && needs.review.outputs.blocking == 'true' && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == 'dilux-bot[bot]' && github.event.action != 'edited'
+    # The agent's jobs read the repository with the job's own token (#287).
+    permissions:
+      contents: read
+    uses: ./.github/workflows/autopilot.yml
+    with:
+      mode: fix
+      pr: ${{ format('{0}', github.event.pull_request.number) }}
+      central-ref: main
     secrets: inherit
