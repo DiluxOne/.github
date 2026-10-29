@@ -65,13 +65,14 @@ name: Autopilot
 # agent runs in jobs of its own (`spec`, `work`) that hold only the Claude
 # subscription and the job's own token, which can only read this
 # repository. It commits locally and leaves what it would do on GitHub (a
-# decision, a ticked box, ready, a question, a stop, a reply to a review
-# thread, the Spec) as intents in its outbox, through the same helper
+# decision, a ticked box, the credits, ready, a question, a stop, a reply to
+# a review thread, the Spec) as intents in its outbox, through the same helper
 # commands (scripts/autopilot.py). The jobs that hold dilux-bot's key
 # (`prep`, `draft`, `apply`) run no agent and none of the repository's code,
 # on GitHub's fresh runners: they decide whether it may run, write what the
 # agent reads (the Spec, the pull request's body, the review's own words,
-# never anyone else's), open the draft, push the agent's commits through
+# never anyone else's; who opened the issue and who commented, as logins
+# and links, for the credits, #491), open the draft, push the agent's commits through
 # the API so GitHub signs them (onto the branch's head, never over it,
 # never touching .github/workflows except in the organisation's own
 # repository, #498, where a person merges them), and apply each intent through the same

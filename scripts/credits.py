@@ -13,10 +13,6 @@ comment on the issue), as the description's Credits block lists them.
   credits.py block             the Credits block of the description on
                                stdin, one `login kind` per line; exit 1 when
                                the description has none
-  credits.py write FILE        the description on stdin with its Credits
-                               block set to FILE's entries (`- @login: kind
-                               (link)`); exit 1 when FILE has a line that is
-                               not one
   credits.py command BY OUT    the description on stdin with the comment in
                                COMMENT applied (`/coauthor @login`,
                                `/uncoauthor @login`, BY the maintainer),
@@ -482,14 +478,6 @@ def main(argv):
         for e in read_block(body):
             print(f"{e['login']} {e['kind']}")
         return 0 if has_block(body) else 1
-    if argv[:1] == ["write"] and len(argv) == 2:
-        text = open(argv[1], encoding="utf-8").read()
-        bad = [l for l in text.replace("\r", "").split("\n") if l.strip() and not ENTRY_RE.match(l)]
-        if bad:
-            print(f"Not an entry (- @login: co-author|suggested|reported (link)): {bad[0][:200]}", file=sys.stderr)
-            return 1
-        sys.stdout.write(set_block(sys.stdin.read(), parse_entries(text)))
-        return 0
     if argv[:1] == ["command"] and len(argv) == 3:
         body, said = command(sys.stdin.read(), os.environ.get("COMMENT", ""), argv[1])
         with open(argv[2], "w", encoding="utf-8") as fh:
