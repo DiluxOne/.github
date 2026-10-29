@@ -908,6 +908,20 @@ def self_test():
     check("C2 the clock starts at the `accepted` event, and the dates run from it",
           (started["clock"], started["start"], [day(d) for d in deadlines(started, cfg)]), (iso(at(3)), iso(at(3)), ["2026-11-11", "2026-11-14"]))
     check("C2 a second `accepted` does not restart a running clock", start_clock(started, at(5))["clock"], iso(at(3)))
+    # C3: day 7 reminds, day 10 releases and starts the autopilot; a push to
+    # a linked branch resets the clock.
+    check("C3 days 6, 7 and 10 without a pull request or a push",
+          [daily_claim(state, at(n), [], False, None, cfg) for n in (6, 7, 10)], ["none", "remind", "release"])
+    check("C3 reminded once per clock", daily_claim({**state, "reminded": state["clock"]}, at(8), [], False, None, cfg), "none")
+    rel = plan_release(state, "no pull request or push by 2026-11-11", 7)
+    check("C3 the release takes the label off, unassigns, says why, and starts the autopilot",
+          ([a[0] for a in rel], rel[-1], "@ana" in rel[3][1] and "The autopilot starts on it now" in rel[3][1]),
+          (["unlabel", "unassign", "state", "comment", "start"], ("start", 7), True))
+    check("C3 a push to a linked branch on day 6 resets the clock: day 10 is not the release, day 16 is",
+          [daily_claim(state, at(n), [], False, iso(at(6)), cfg) for n in (10, 13, 16)], ["none", "remind", "release"])
+    check("C3 a push older than the clock changes nothing", pushed(state, iso(t0 - days(2))), state)
+    check("C3 a pull request stops the clock; `claim:long` exempts it",
+          (daily_claim(state, at(20), [], True, None, cfg), daily_claim(state, at(20), [LONG], False, None, cfg)), ("waiting", "none"))
     if not failed:
         print("all tests passed")
     return failed
