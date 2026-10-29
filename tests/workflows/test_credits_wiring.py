@@ -105,3 +105,48 @@ def test_the_command_writes_the_block_and_says_what_changed(tmp_path):
                          env=dict(os.environ, COMMENT="/coauthor @ana\n/uncoauthor @zed"), check=True)
     assert run.stdout.splitlines() == ["- @ana is a co-author now.", "- @zed was not in the Credits block."]
     assert "<!-- dx-credits -->\n- @ana: co-author (/coauthor by @boss)\n<!-- /dx-credits -->" in out.read_text(encoding="utf-8")
+
+
+def test_every_repository_reads_the_same_who_signs_what():
+    """C7: the organisation's AGENTS.md block, which `sync-repos.py files`
+    writes into every repository, carries the rule, and this repository's
+    AGENTS.md holds it as that sync writes it."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("sync_repos", ROOT / "scripts/sync-repos.py")
+    sync = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sync)
+    block = (ROOT / "agents-block.md").read_text(encoding="utf-8")
+    rule = " ".join(block.split("**Who signs what.**", 1)[1].split("<!-- dx:org:end -->", 1)[0].split())
+    for said in ("A model is never a co-author", "`Assisted-by: <model> (<maker>)`", "`Assisted-by: Claude Opus 5.5 (Anthropic)`",
+                 "Co-authored-by: Name <id+login@users.noreply.github.com>", "never a private e-mail", "`Suggested-by:`", "`Reported-by:`",
+                 "Never a co-author: the maintainer who accepts or merges, dilux-bot, Dependabot, any bot, a model", "`/coauthor @login`"):
+        assert said in rule, said
+    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    assert sync.with_block(agents, block) == agents
+    assert block.rstrip("\n") in agents
+
+
+def test_the_texts_no_longer_ask_for_a_model_as_co_author():
+    for path in ("CONTRIBUTING.md", "docs/agents.md", "agents-block.md", "scripts/autopilot.py"):
+        text = (ROOT / path).read_text(encoding="utf-8")
+        assert "Co-Authored-By:` is fine" not in text and "`Co-Authored-By:` trailer is fine" not in text, path
+    prompts = (ROOT / "scripts/autopilot.py").read_text(encoding="utf-8")
+    assert 'ending with "Co-Authored-By: Claude' not in prompts and '"Co-Authored-By: Claude <noreply@anthropic.com>")' not in prompts
+    contributing = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+    assert "### Who signs what" in contributing and "Co-authored-by: Ana Pérez <1234+ana@users.noreply.github.com>" in contributing
+    template = (ROOT / "pull_request_template.md").read_text(encoding="utf-8")
+    assert "## 🙌 Credits" in template and "<!-- dx-credits -->\n<!-- /dx-credits -->" in template
+    assert "Credits block" in (ROOT / "review-profiles/general.md").read_text(encoding="utf-8")
+
+
+def test_the_attribution_switch_comes_from_the_organisation_and_starts_at_warn():
+    """C1's switch: the conventions check reads org.yml `attribution`
+    through org.py, never the pull request's, and it starts at warn."""
+    all_steps = steps("conventions.yml", "conventions")
+    names = [s.get("name") for s in all_steps]
+    mode = next(s for s in all_steps if s.get("id") == "attribution")
+    assert 'mode=$(python3 .dx-central/scripts/org.py attribution)' in mode["run"]
+    check = next(s for s in all_steps if s.get("name") == "Check branch, title and commits")
+    assert check["env"]["ATTRIBUTION"] == "${{ steps.attribution.outputs.mode }}"
+    assert names.index("Checkout the conventions script") < names.index(mode["name"]) < names.index(check["name"])
+    assert yaml.safe_load((ROOT / "org.yml").read_text(encoding="utf-8"))["attribution"] == "warn"

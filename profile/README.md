@@ -29,7 +29,7 @@ updates and support.
 
 ### Working with us
 
-Issues and pull requests are welcome: see the [contributing guide](https://github.com/DiluxOne/.github/blob/main/CONTRIBUTING.md).
+Issues and pull requests are welcome: see the [contributing guide](https://github.com/DiluxOne/.github/blob/main/CONTRIBUTING.md). Propose a solution in your issue and, if the change uses it, you are credited as its co-author ([who signs what](https://github.com/DiluxOne/.github/blob/main/CONTRIBUTING.md#who-signs-what)).
 Security reports go through private vulnerability reporting: see the [security policy](https://github.com/DiluxOne/.github/blob/main/SECURITY.md).
 
 [diluxone.com](https://diluxone.com) · hola@diluxone.com

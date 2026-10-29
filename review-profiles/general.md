@@ -96,6 +96,22 @@ no behaviour change left unsaid, no number or path that is wrong. A mismatch
 is not a block, but a pull request whose text misdescribes its diff is never
 merged on its own; say in one line what the description gets wrong.
 
+## Credits
+
+Who signs what (CONTRIBUTING.md, "Who signs what"; #491): when the
+description has a Credits block (`## 🙌 Credits`, between its `dx-credits`
+markers), check it against the issue it closes and the issue's comments,
+as far as the brief shows them: the issue's author is a `co-author` when
+the change uses their "Proposed solution", `reported` when it uses no
+proposal of theirs; a commenter whose proposal the change uses is a
+`co-author` (`suggested` when used in part). Someone missing or listed for
+nothing they proposed, and a maintainer who accepted or merges, a bot or a
+model listed at all, is a minor finding in the summary, with the line to
+change; never a block (a maintainer corrects it with `/coauthor @login` or
+`/uncoauthor @login`). A `Co-authored-by` that names a model, in a commit
+or the description, is a minor finding too, with the `Assisted-by:` line
+to use instead.
+
 ## Blocking
 
 Set `blocking` to true only for a problem that must not reach `main`:
