@@ -147,7 +147,7 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    does not block and its description is true, within the lane's caps; a
    job that changes its permissions or the secrets it passes, a new one
    too, is high risk and waits for a person. Any other pull request: a human, with [`scripts/squash-merge.sh`](../scripts/squash-merge.sh)
-   `<owner/repo> <number>` (description verbatim, co-authors kept), or
+   `<owner/repo> <number>` (description verbatim, then the credits' trailers: the Credits block's people and the commits' human co-authors, never a model or a bot, `scripts/credits.py`), or
    GitHub's auto-merge when the floor is low, the verdict is low risk and low
    complexity, nothing blocks, the author is trusted and the policy says
    `auto-merge: true`.
@@ -193,6 +193,12 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
 
 Mention `@dilux-bot` in a review thread or in the conversation and Claude
 answers there; it resolves its own thread when the point is settled.
+
+The description's Credits block names who proposed what the change uses
+(CONTRIBUTING.md, "Who signs what"); the merge writes them as the commit's
+`Co-authored-by`, `Suggested-by` and `Reported-by` trailers. A maintainer
+corrects it with `/coauthor @login` or `/uncoauthor @login` in the
+conversation; the bot edits the block and says what changed.
 
 Nothing runs twice for one change. An edit of the title or the description
 re-runs only the conventions, the review (free on a commit it already

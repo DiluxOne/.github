@@ -52,7 +52,7 @@ A single network blip marked files as failed even when the next attempt would su
 Retrying once inside the same batch fixes the common case without hiding a real outage: a second failure is still reported.
 ```
 
-A `Co-Authored-By:` trailer is fine when a person or a tool contributed substantially. Session links (`Claude-Session:`) are rejected by CI.
+Credit people with trailers, never a tool (see "Who signs what" below). Session links (`Claude-Session:`) are rejected by CI.
 
 Titles stay plain Conventional Commits, without emoji: tools read the type, and Dependabot writes them too. Emoji belong in the description's section headings and in the release notes, which group changes by type on their own (✨ features, 🐛 fixes, 📝 docs…).
 
@@ -62,6 +62,7 @@ The description becomes the commit body on `main`, so it is part of the project'
 
 - **📝 What changes:** one or two sentences, in plain words. Required.
 - **💡 Why:** the problem it solves, and the accepted issue it closes (`Closes #123`). Required; CI fails a pull request that closes no accepted issue.
+- **🙌 Credits:** who proposed what the change uses, one `- @login: co-author|suggested|reported (<link>)` per line (see "Who signs what").
 - **🧪 How I tested it:** what you ran and what you checked.
 - **📸 Screenshots:** before and after, for anything visible.
 - Short paragraphs, no walls of text, no copy of the diff. Friendly and direct.
@@ -92,7 +93,7 @@ Pull requests from branches of the repository (not drafts, not forks) are review
 - After 5 automatic reviews the next push keeps the last verdict and a human merges: add the `review:full` label, then push or re-run the review, to ask for another full pass.
 - It merges on its own only when the change touches only low-risk paths, the review rated it low risk and low complexity without blocking, the description matches the code (nothing claimed the diff does not do, no behaviour change left unsaid), the author is a trusted maintainer (or Dependabot), every required check is green and the policy has auto-merge on. Anything else, a maintainer merges.
 
-A maintainer merging by hand runs `scripts/squash-merge.sh <owner/repo> <number>` from a checkout of [DiluxOne/.github](https://github.com/DiluxOne/.github): it commits the description as written plus the branch's `Co-authored-by` trailers, because GitHub's own squash message hard-wraps at 72 columns. Auto-merge does the same.
+A maintainer merging by hand runs `scripts/squash-merge.sh <owner/repo> <number>` from a checkout of [DiluxOne/.github](https://github.com/DiluxOne/.github): it commits the description as written plus the credits' trailers (the Credits block's people and the branch's human `Co-authored-by`, never a model, a bot or a maintainer who accepted or merges; [`scripts/credits.py`](scripts/credits.py)), because GitHub's own squash message hard-wraps at 72 columns. Auto-merge does the same, for the merge queue too.
 
 Every conversation must be resolved before a pull request merges, the review's included. Fix the code and push: the next review resolves its own threads that the push fixed. Or answer in the thread mentioning `@dilux-bot`: Claude replies there and resolves its thread when you show it is not a problem. A maintainer can also resolve a thread by hand, with a reply that says why.
 
@@ -139,6 +140,36 @@ When AI took part, say so in one sober line at the end of the pull request descr
 - Several models: `🤖 AI-generated · Claude Opus 5.5, Claude Sonnet 5.5 (Anthropic)`.
 - The same line closes any issue or pull request comment an agent writes for someone.
 - No product advertising: CI rejects a description that says "Generated with Claude Code" or similar.
+
+### Who signs what
+
+A model is never a co-author: the field is moving away from it (the Linux kernel and LLVM ask for `Assisted-by:` and never let a tool sign), and a model cannot be an author. People are, and the credit in the history is what brings contributors back. The rule is the same in every repository (the organisation's block of each `AGENTS.md`):
+
+- A commit written with a model's help ends with `Assisted-by: <model> (<maker>)`, e.g. `Assisted-by: Claude Opus 5.5 (Anthropic)`. A `Co-authored-by` that names a model (`Co-Authored-By: Claude <noreply@anthropic.com>`, Copilot, Gemini, ChatGPT, Codex…) is refused by the conventions check, which names the `Assisted-by:` line to use (a warning while org.yml `attribution` is `warn`, a failure once it is `required`). Claude Code adds its own trailer unless its settings say `"includeCoAuthoredBy": false`.
+- A person is a co-author, `Co-authored-by: Name <id+login@users.noreply.github.com>`, when they wrote commits of the pull request, opened the issue whose "Proposed solution" it uses, proposed in a comment on the issue what it uses, or claimed the issue and wrote code for it. `Suggested-by:` credits an idea used in part, `Reported-by:` a report without a proposal that was used. The address is always GitHub's noreply form, built from the account's id, never a private e-mail.
+- Never a co-author: the maintainer who accepts or merges, dilux-bot, Dependabot, any bot, a model.
+
+The pull request lists the people in its description's Credits block, which the autopilot fills in and anyone else writes by hand; a maintainer corrects it with `/coauthor @login` and `/uncoauthor @login` on the pull request, and the bot says what changed. The merge writes the trailers at the end of the commit on `main`:
+
+```text
+## 🙌 Credits
+
+<!-- dx-credits -->
+- @ana: co-author (https://github.com/DiluxOne/example/issues/12)
+- @bob: suggested (https://github.com/DiluxOne/example/issues/12#issuecomment-345)
+<!-- /dx-credits -->
+```
+
+becomes, under the description:
+
+```text
+---------
+
+Co-authored-by: Ana Pérez <1234+ana@users.noreply.github.com>
+Suggested-by: bob <5678+bob@users.noreply.github.com>
+```
+
+Every issue form has an optional "Proposed solution": fill it in, and if the change uses it, you are credited as its co-author.
 
 The Claude review's comments carry the same kind of line (`🤖 AI review · <model> (Anthropic)`, with the model id as the API names it), written by the workflow. Release notes are built by a script from the merged titles, so they carry no line.
 

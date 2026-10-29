@@ -100,6 +100,9 @@ report:
   - What would you like to happen?
   - What do you do today instead?
   - What and why
+  # Every form's optional proposal (#491): whoever wrote the one the change
+  # used is credited as a co-author (scripts/credits.py).
+  - Proposed solution
 
 # A person who will work the issue with their own code says so in the form
 # (#488): one checkbox, in every form, that claims the issue

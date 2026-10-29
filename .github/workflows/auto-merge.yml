@@ -6,7 +6,13 @@ name: Auto-merge
 # review conversation is resolved: this workflow never merges directly.
 #
 # It also sets the commit body to the PR description verbatim (GitHub's own
-# squash message hard-wraps it at 72 columns). The body is taken when
+# squash message hard-wraps it at 72 columns), followed by the credits'
+# trailers (scripts/credits.py body, #491): the description's Credits block
+# as `Co-authored-by` / `Suggested-by` / `Reported-by` by GitHub's noreply
+# address, and the branch commits' human co-authors, never a model, a bot,
+# the maintainer who accepted the issue or the one who merges. Every path
+# that enables auto-merge passes that body, so the merge queue squashes
+# with it too. The body is taken when
 # auto-merge is enabled, so org-pull-request.yml runs this on `edited` too, or a later
 # edit of the description would not reach main.
 #
@@ -418,7 +424,7 @@ jobs:
             | jq -c --arg head "$HEAD" 'select(.sha == $head)' > "$RUNNER_TEMP/review-record.json" 2>/dev/null || : > "$RUNNER_TEMP/review-record.json"
           export CRITERIA_VERDICT="$RUNNER_TEMP/review-record.json"
           if why=$(python3 "$RUNNER_TEMP/central/scripts/autopilot.py" decide); then
-            body=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq .body | tr -d '\r')
+            body=$(python3 "$RUNNER_TEMP/central/scripts/credits.py" body "$GITHUB_REPOSITORY" "$PR")
             # Tied to the head decided on: a later push merges nothing until it is decided again.
             gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --auto ${METHOD:+"$METHOD"} --match-head-commit "$HEAD" --body "$body"
             gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label merged-by:policy >/dev/null
@@ -489,7 +495,7 @@ jobs:
           fi
           why=${why:-the G8 decision could not be made}
           if [ "$ok" = true ]; then
-            body=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq .body | tr -d '\r')
+            body=$(python3 "$RUNNER_TEMP/central/scripts/credits.py" body "$GITHUB_REPOSITORY" "$PR")
             gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --auto ${METHOD:+"$METHOD"} --match-head-commit "$HEAD_SHA" --body "$body"
             gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label merged-by:policy >/dev/null
             echo "Auto-merge enabled by policy: $why."
@@ -613,7 +619,7 @@ jobs:
           made=$(git write-tree)
           want=$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$HEAD_SHA" --jq .tree.sha)
           [ "$made" = "$want" ] || person "its tree is not what the release command makes of the base ($made, not $want)"
-          body=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq .body | tr -d '\r')
+          body=$(python3 "$RUNNER_TEMP/central/scripts/credits.py" body "$GITHUB_REPOSITORY" "$PR")
           # Tied to the head proved: a later push merges nothing until it is proved again.
           gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --auto ${METHOD:+"$METHOD"} --match-head-commit "$HEAD_SHA" --body "$body"
           gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label merged-by:policy >/dev/null
@@ -670,7 +676,7 @@ jobs:
           gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --disable-auto >/dev/null 2>&1 || true
           gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label merged-by:policy >/dev/null 2>&1 || true
           if [ "$rc" = 0 ]; then
-            body=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq .body | tr -d '\r')
+            body=$(python3 "$RUNNER_TEMP/central/scripts/credits.py" body "$GITHUB_REPOSITORY" "$PR")
             # Tied to the head decided on: a later push merges nothing until it is decided again.
             gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --auto ${METHOD:+"$METHOD"} --match-head-commit "$HEAD_SHA" --body "$body"
             gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label merged-by:policy >/dev/null
@@ -687,6 +693,7 @@ jobs:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CENTRAL_REF: ${{ inputs.central-ref || job.workflow_sha }}
           SWITCH: ${{ inputs.enabled }}
           RISK: ${{ inputs.risk }}
           COMPLEXITY: ${{ inputs.complexity }}
@@ -708,18 +715,15 @@ jobs:
           if [ -z "$why" ]; then
             # The description goes in verbatim: GitHub's own squash message
             # hard-wraps it at 72 columns. Disabling first refreshes it after
-            # an edit (every edit re-runs this job).
-            # Descriptions edited in the web UI come back with CRLF endings.
-            body=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq .body | tr -d '\r')
-            # Keep the branch commits' co-authors, as GitHub's own message does.
-            # Same as scripts/squash-merge.sh, which maintainers use by hand.
-            messages=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/commits" --paginate --jq '.[].commit.message')
-            coauthors=$(printf '%s\n' "$messages" | tr -d '\r' | grep -iE '^co-authored-by:' | awk '!seen[tolower($0)]++' || true)
-            if [ -n "$coauthors" ]; then
-              if [ -n "$body" ]; then body+=$'\n\n'; fi
-              body+=$'---------\n\n'"$coauthors"
-            fi
+            # an edit (every edit re-runs this job, a /coauthor too).
             gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --disable-auto >/dev/null 2>&1 || true
+            # Then the credits' trailers (#491): the Credits block's people
+            # and the branch commits' human co-authors, never a model, a bot
+            # or the maintainer; a read that fails fails here, merging
+            # nothing. Same as scripts/squash-merge.sh, which maintainers
+            # use by hand.
+            test -f "$RUNNER_TEMP/central/scripts/credits.py" || { git init -q "$RUNNER_TEMP/central" && git -C "$RUNNER_TEMP/central" fetch -q --depth 1 https://github.com/DiluxOne/.github "$CENTRAL_REF" && git -C "$RUNNER_TEMP/central" checkout -q FETCH_HEAD && { test ! -f "$RUNNER_TEMP/central"/scripts/config-overlay.sh || bash "$RUNNER_TEMP/central"/scripts/config-overlay.sh "$RUNNER_TEMP/central"; }; }
+            body=$(python3 "$RUNNER_TEMP/central/scripts/credits.py" body "$GITHUB_REPOSITORY" "$PR")
             gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --auto ${METHOD:+"$METHOD"} --match-head-commit "$HEAD_SHA" --body "$body"
             echo "Auto-merge enabled: GitHub merges once every required check is green."
           else

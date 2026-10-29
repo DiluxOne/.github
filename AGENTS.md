@@ -58,6 +58,22 @@ step-by-step flow with its commands is in
    and [no credentials in the front end](https://github.com/DiluxOne/.github/blob/main/rules/front-no-credentials.md).
    The model they belong to (types of work, gates, what merges on its own)
    is [DiluxOne/.github, `docs/model.md`](https://github.com/DiluxOne/.github/blob/main/docs/model.md).
+10. **Who signs what.** A model is never a co-author: a commit written
+   with its help carries `Assisted-by: <model> (<maker>)`, e.g.
+   `Assisted-by: Claude Opus 5.5 (Anthropic)`, never a `Co-authored-by`
+   that names a model (the conventions check refuses it). A person is a
+   co-author, `Co-authored-by: Name <id+login@users.noreply.github.com>`
+   (GitHub's noreply address, never a private e-mail), when they wrote
+   commits of the pull request, opened the issue whose "Proposed
+   solution" it used, proposed in a comment on the issue what it used,
+   or claimed the issue and wrote code for it; `Suggested-by:` when their
+   idea was used in part, `Reported-by:` when they reported it without a
+   proposal that was used. Never a co-author: the maintainer who accepts
+   or merges, dilux-bot, Dependabot, any bot, a model. List the people in
+   the pull request's Credits block (`## 🙌 Credits`, one
+   `- @login: co-author|suggested|reported (<link>)` per line); the merge
+   writes their trailers, and a maintainer corrects the list with
+   `/coauthor @login` and `/uncoauthor @login`.
 <!-- dx:org:end -->
 
 Rules for any coding agent working in `DiluxOne/.github`.

@@ -26,7 +26,10 @@ name: Conventions
 # it holds on a fork's too, with no secret (#144); and, where org.yml
 # `pre-pr` is `required`, that the repository's Makefile has a `pre-pr`
 # target, the one check before a pull request (#479, scripts/pre-pr.py;
-# repos.yml `pre-pr` names one that has none by design).
+# repos.yml `pre-pr` names one that has none by design); and that no commit,
+# nor the description, names a model as a `Co-authored-by` (a model is named
+# in `Assisted-by:`, #491, scripts/credits.py): a warning while org.yml
+# `attribution` is `warn`, a failure once it is `required`.
 # The checks themselves are scripts/conventions.sh,
 # which scripts/local-review.sh runs before a pull request is opened. Plus a docs check whenever the caller runs (pull requests and
 # pushes to main): relative Markdown links resolve, and no retired product
@@ -163,6 +166,15 @@ jobs:
           mode=$(python3 .dx-central/scripts/pre-pr.py required "$REPO")
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
 
+      # #491: what a model named as a co-author does, from org.yml
+      # `attribution` (the organisation's, never the pull request's):
+      # `warn` or `required`.
+      - name: Whether a model as co-author fails
+        id: attribution
+        run: |
+          mode=$(python3 .dx-central/scripts/org.py attribution)
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+
       - name: An accepted issue
         env:
           GH_TOKEN: ${{ github.token }}
@@ -231,6 +243,10 @@ jobs:
           # (#479); org.yml `pre-pr` keeps it `optional` until every
           # repository has one.
           PRE_PR: ${{ steps.pre-pr.outputs.mode }}
+          # `required` fails a `Co-authored-by` that names a model (#491);
+          # org.yml `attribution` keeps it `warn` until the repositories
+          # are in step.
+          ATTRIBUTION: ${{ steps.attribution.outputs.mode }}
         run: bash .dx-central/scripts/conventions.sh
 
   docs:

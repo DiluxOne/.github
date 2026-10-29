@@ -7,6 +7,12 @@
 <!-- The problem it solves, and the accepted issue it closes: "Closes #<number>". -->
 
 
+## 🙌 Credits
+
+<!-- Who proposed what this change uses, one per line: - @login: co-author|suggested|reported (<link to the issue or comment>). The merge writes their trailers; never a model, a bot or the maintainer. -->
+<!-- dx-credits -->
+<!-- /dx-credits -->
+
 ## 🧪 How I tested it
 
 

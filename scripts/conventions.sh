@@ -24,7 +24,10 @@
 # below, checked; empty or true skips it) and PRE_PR (`required` where the
 # repository must have a `make pre-pr`, the one check before a pull request:
 # scripts/pre-pr.py required, from org.yml `pre-pr` and repos.yml; anything
-# else checks nothing, #479).
+# else checks nothing, #479) and ATTRIBUTION (`required` refuses a
+# `Co-authored-by` that names a model, in a commit or the description, with
+# the `Assisted-by:` line to use instead; `warn` or empty only warns: org.yml
+# `attribution`, scripts/credits.py, #491).
 #
 # `conventions.sh --head-facts REPO PR SHA DIR` writes, for the gate that
 # decides a take-over (#130), what GitHub says about a pull request: the
@@ -214,6 +217,14 @@ check() {
       error "Commit ${sha:0:7} carries a Claude-Session trailer; session links stay out of the history."
     fi
   done < <(git rev-list --no-merges "${BASE}..${HEAD_REF}")
+  # #491: a model is never a co-author; it is named in `Assisted-by:`.
+  # Warned until org.yml `attribution` turns `required`.
+  models=$( { git log --no-merges --format=%B "${BASE}..${HEAD_REF}"; printf '%s\n' "$BODY"; } | python3 "$here/credits.py" models || true)
+  while IFS=$'\t' read -r trailer use; do
+    [ -z "$trailer" ] && continue
+    msg="\"$trailer\" names a model as a co-author; a model is never one: write \"$use\" instead (CONTRIBUTING.md, \"Who signs what\")."
+    if [ "${ATTRIBUTION:-}" = required ]; then error "$msg"; else echo "::warning::$msg"; fi
+  done <<<"$models"
   # The description becomes the commit body on main: its required
   # sections must say something. Bots (Dependabot) write their own.
   section() { printf '%s\n' "$BODY" | awk -v h="$1" 'index($0, h) && /^## / { on = 1; next } /^## / { on = 0 } on' | sed 's/<!--.*-->//g' | tr -d '[:space:]'; }
@@ -320,6 +331,42 @@ if [ "${1:-}" = "--test" ]; then
     git mv includes/a.php notes.md && git commit -q -m "docs: notes"
     BRANCH=docs/x TITLE="docs: notes" BODY=$good BASE=$(git rev-parse HEAD~1) HEAD_REF=$(git rev-parse HEAD) check >/dev/null 2>&1
   ); then echo "FAIL fails: docs that rename code into Markdown (want 1, got 0)"; fail=1; else echo "ok   fails: docs that rename code into Markdown"; fi
+  rm -rf "$dir"
+  # #491: a model named as a co-author; $3 the commit's message, $4
+  # ATTRIBUTION; the output must say each of the rest.
+  attribution_case() { # name want message mode expect...
+    local name=$1 want=$2 message=$3 mode=$4 dir got out
+    shift 4
+    dir=$(mktemp -d)
+    out=$(
+      cd "$dir" && git init -q && git config user.email t@t && git config user.name t && git config commit.gpgsign false
+      git commit -q --allow-empty -m "chore: base" && git checkout -q -b fix/a-thing
+      git commit -q --allow-empty -m "$message"
+      ATTRIBUTION=$mode BRANCH=fix/a-thing TITLE="fix(sync): a thing" BODY=$good BASE=$(git rev-parse HEAD~1) HEAD_REF=$(git rev-parse HEAD) check 2>&1
+    ) && got=0 || got=1
+    rm -rf "$dir"
+    for e in "$@"; do
+      if ! grep -qF -- "$e" <<<"$out"; then echo "FAIL $name (the output does not say \"$e\")"; return 1; fi
+    done
+    if [ "$got" = "$want" ]; then echo "ok   $name"; else echo "FAIL $name (want $want, got $got)"; return 1; fi
+  }
+  claude=$'fix(sync): a thing\n\nCo-Authored-By: Claude <noreply@anthropic.com>'
+  attribution_case "C1: required, a model as co-author fails" 1 "$claude" required \
+    "::error::" "Co-Authored-By: Claude <noreply@anthropic.com>" "Assisted-by: Claude (Anthropic)" || fail=1
+  attribution_case "C1: warn, a model as co-author passes with a warning" 0 "$claude" warn \
+    "::warning::" "Co-Authored-By: Claude <noreply@anthropic.com>" "Assisted-by: Claude (Anthropic)" || fail=1
+  attribution_case "C1: unset is warn" 0 "$claude" "" "::warning::" || fail=1
+  person=$'fix(sync): a thing\n\nAssisted-by: Claude Opus 5.5 (Anthropic)\nCo-authored-by: Ana Perez <12+ana@users.noreply.github.com>'
+  attribution_case "C2: required, a person and Assisted-by pass" 0 "$person" required "Conventions OK." || fail=1
+  attribution_case "C2: warn, a person and Assisted-by pass" 0 "$person" warn "Conventions OK." || fail=1
+  dir=$(mktemp -d)
+  if out=$(
+    cd "$dir" && git init -q && git config user.email t@t && git config user.name t && git config commit.gpgsign false
+    git commit -q --allow-empty -m "chore: base" && git checkout -q -b fix/a-thing && git commit -q --allow-empty -m "fix(sync): a thing"
+    ATTRIBUTION=required BRANCH=fix/a-thing TITLE="fix(sync): a thing" BODY="$good"$'\n\nCo-authored-by: Codex <x@openai.com>' BASE=$(git rev-parse HEAD~1) HEAD_REF=$(git rev-parse HEAD) check 2>&1
+  ); then echo "FAIL C1: required, a model as co-author in the description fails (want 1, got 0)"; fail=1
+  elif grep -qF "Assisted-by: Codex (OpenAI)" <<<"$out"; then echo "ok   C1: required, a model as co-author in the description fails"
+  else echo "FAIL C1: required, a model in the description: no Assisted-by line"; fail=1; fi
   rm -rf "$dir"
   # #479: a repository the organisation requires a `make pre-pr` of; $3 the
   # Makefile's text ("" for none), $4 PRE_PR.

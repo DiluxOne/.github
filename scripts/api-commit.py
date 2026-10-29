@@ -161,7 +161,7 @@ def self_test():
         base = git("rev-parse", "HEAD", cwd=work).strip()
         git("checkout", "-q", "-b", "feat/1-x", cwd=work)
         commit("feat: one (C1)", {"a.txt": "a2\n", "new.sh": "#!/bin/sh\n"}, mode=0o755)
-        commit("feat: two (C2)\n\nA body.\n\nCo-Authored-By: Claude <noreply@anthropic.com>", remove=["dir/b.txt"])
+        commit("feat: two (C2)\n\nA body.\n\nAssisted-by: Claude Opus 5.5 (Anthropic)", remove=["dir/b.txt"])
         commit("chore: empty")
 
         # GitHub, played by the bare repository: blobs, trees and commits are
@@ -211,7 +211,7 @@ def self_test():
         check("push: GitHub's branch ends at the same tree", git("rev-parse", f"{head}^{{tree}}", cwd=origin).strip(), local_tree)
         check("push: one commit each, in order, with their messages",
               git("log", "--format=%s", f"{base}..{head}", cwd=origin).split("\n")[:3], ["chore: empty", "feat: two (C2)", "feat: one (C1)"])
-        check("push: a body and its trailer are kept", "Co-Authored-By: Claude" in git("log", "-1", "--format=%B", f"{head}~1", cwd=origin), True)
+        check("push: a body and its trailer are kept", "Assisted-by: Claude Opus 5.5 (Anthropic)" in git("log", "-1", "--format=%B", f"{head}~1", cwd=origin), True)
         check("push: the executable bit is kept", "100755" in git("ls-tree", head, "new.sh", cwd=origin), True)
         check("push: a removed file is gone", git("ls-tree", "-r", "--name-only", head, cwd=origin).split(), ["a.txt", "new.sh"])
         check("push: the local branch points at GitHub's commit", git("rev-parse", "HEAD", cwd=work).strip(), head)
