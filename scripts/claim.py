@@ -962,6 +962,28 @@ def self_test():
           [may_act("yield", "bob", "read", "ana")[0], may_act("yield", "soy", "admin", "ana")[0], may_act("adopt", "bob", "triage")[0],
            may_act("unclaim", "bob", "read", "ana")[0], may_act("unclaim", "ana", "none", "ana")[0], may_act("unclaim", "ana", "none")[0], may_act("unclaim", "soy", "write", "ana")[0]],
           [False, True, False, False, True, True, True])
+    # C7: a person's pull request with changes requested (or failing checks)
+    # and no push by its author: reminded at 7 days, closed with thanks at
+    # 14 and the autopilot started; one that waits on a maintainer's review
+    # stops its author's clock and is listed as waiting on the maintainer.
+    stalled = {"number": 41, "author": "ana", "review": "CHANGES_REQUESTED", "checks": "SUCCESS", "created": iso(t0 - days(3)),
+               "pushed": iso(t0 - days(1)), "reviewed": iso(t0)}
+    check("C7 changes requested: days 6, 7, 13 (reminded) and 14 with no push by its author",
+          [daily_pr(stalled, at(6), False, cfg), daily_pr(stalled, at(7), False, cfg), daily_pr(stalled, at(13), True, cfg), daily_pr(stalled, at(14), True, cfg)],
+          ["none", "remind", "none", "close"])
+    check("C7 a push by its author restarts its days", daily_pr({**stalled, "pushed": iso(at(10))}, at(14), True, cfg), "none")
+    check("C7 failing checks count as waiting on its author", daily_pr({**stalled, "review": "", "checks": "FAILURE", "reviewed": None}, at(14), True, cfg), "close")
+    closing = plan_pr_close(stalled, [7])
+    check("C7 closed with thanks (\"reopen it when you come back\"), and the autopilot started on the issue",
+          ([a[0] for a in closing], closing[-1], "Thank you, @ana" in closing[0][2] and "reopen it when you come back" in closing[0][2]),
+          (["close-pr", "start"], ("start", 7), True))
+    review = {**stalled, "review": "REVIEW_REQUIRED", "reviewed": None, "pushed": iso(t0 - days(60))}
+    check("C7 one that waits on a maintainer's review is never closed for it, however long",
+          [daily_pr(review, at(n), False, cfg) for n in (14, 90)], ["waiting", "waiting"])
+    check("C7 ... and its claim's clock does not run", daily_claim(state, at(90), [], True, None, cfg), "waiting")
+    listed = daily_list("o/r", [(7, "ana", "a pull request stopped its clock")], [(41, "ana")], [])
+    check("C7 the daily list names it as waiting on the maintainer",
+          "**Waiting on a maintainer's review** (its author's clock does not run)\n\n- #41 by @ana" in listed, True)
     if not failed:
         print("all tests passed")
     return failed
