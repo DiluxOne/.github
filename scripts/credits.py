@@ -263,7 +263,9 @@ def compose(entries, users, messages, excluded=(), author=""):
             continue
         name, mail = m["name"].strip(), m["email"].strip()
         login = _noreply_login(mail)
-        if model_maker(name, mail) or "[bot]" in (name + mail).lower() or is_bot(login):
+        # A bot by its account, its "[bot]" or a name that says it is one.
+        words = name.lower().replace("-", " ").split()
+        if model_maker(name, mail) or "[bot]" in (name + mail).lower() or is_bot(login) or words[-1:] == ["bot"] or name.lower() in BOTS:
             continue
         if (login and (login.lower() in skip or login.lower() in seen_logins)) or mail.lower() in seen_mails:
             continue
@@ -401,6 +403,30 @@ def self_test():
           [(base, [])] * 5)
     check("C5: a description with no block gets one", read_block(command(desc, "/coauthor @bob", "boss")[0]),
           [{"login": "bob", "kind": "co-author", "note": "/coauthor by @boss"}])
+    # C6: never a co-author: the maintainer, dilux-bot, Dependabot, any
+    # bot, a model, whether in the block or the commits.
+    never = {"boss": {"login": "boss", "id": 1, "name": "The Boss", "type": "User"},
+             "dilux-bot[bot]": {"login": "dilux-bot[bot]", "id": 2, "name": None, "type": "Bot"},
+             "dependabot[bot]": {"login": "dependabot[bot]", "id": 3, "name": None, "type": "Bot"},
+             "renovate[bot]": {"login": "renovate[bot]", "id": 4, "name": None, "type": "Bot"},
+             "copilot": {"login": "Copilot", "id": 5, "name": "Copilot", "type": "Bot"},
+             "helper": {"login": "helper", "id": 6, "name": "A helper", "type": "Bot"},
+             "claude": {"login": "claude", "id": 7, "name": "Claude", "type": "User"},
+             "dilux-bot": {"login": "dilux-bot", "id": 8, "name": None, "type": "User"},
+             "merger": {"login": "merger", "id": 9, "name": "M", "type": "User"}}
+    block = [{"login": k, "kind": "co-author"} for k in never] + [{"login": "boss", "kind": "suggested"}, {"login": "merger", "kind": "reported"}]
+    msgs = ["fix: x\n\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>\n"
+            "Co-authored-by: dilux-bot[bot] <333187390+dilux-bot[bot]@users.noreply.github.com>\n"
+            "Co-authored-by: The Boss <1+boss@users.noreply.github.com>\n"
+            "Co-authored-by: M <9+MERGER@users.noreply.github.com>\n"
+            "Co-Authored-By: Claude <noreply@anthropic.com>\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>\n"
+            "Co-authored-by: Copilot <175728472+Copilot@users.noreply.github.com>\nCo-authored-by: GPT-5 <x@openai.com>\n"
+            "Co-authored-by: Renovate Bot <bot@renovateapp.com>\nCo-authored-by: x <12+renovate[bot]@users.noreply.github.com>"]
+    check("C6: the maintainer who accepted, the one who merges, dilux-bot, Dependabot, any bot and a model are never credited",
+          compose(block, never, msgs, excluded={"boss", "merger"}), [])
+    check("C6: the author of the pull request is its author, not a co-author",
+          compose([{"login": "ana", "kind": "co-author"}], users, ["Co-authored-by: Ana <12+ana@users.noreply.github.com>"], author="ana"), [])
+    check("C6: the bot test", [is_bot(x) for x in ("dilux-bot[bot]", "Dependabot", "any[bot]", "dilux-bot", "ana")], [True, True, True, True, False])
     # C4: what the merge passes to --body, read from GitHub (gh faked).
     pr_body = "## 📝 What changes\n\nx\n\n" + set_block("", two + [{"login": "boss", "kind": "co-author"}, {"login": "dependabot[bot]", "kind": "co-author"}])
     calls = []
