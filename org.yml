@@ -26,3 +26,10 @@ merge-queue: auto
 # so no open pull request is stopped by the release that brings the check.
 # A repository that has none by design is repos.yml `pre-pr`.
 pre-pr: optional
+# Who signs what (#491, scripts/credits.py): a model is never a co-author.
+# `warn` lets a pull request whose commits or description name one as a
+# `Co-authored-by` pass with a warning; `required` fails it in the
+# conventions check, with the `Assisted-by:` line to use. It turns
+# `required` once the repositories are in step, so no open pull request is
+# stopped by the release that brings the check.
+attribution: warn

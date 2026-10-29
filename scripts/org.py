@@ -6,7 +6,9 @@
   APP          its App's slug; BOT the App's login as GitHub shows a commit
                or a comment ("<slug>[bot]"); BOT_ID its user id
 
-  org.py --test   self-test
+  org.py attribution   `warn` or `required`: what the conventions check
+                       does with a model named as a co-author (#491)
+  org.py --test        self-test
 """
 import os
 import sys
@@ -40,6 +42,15 @@ CENTRAL = _conf["central"]
 APP, BOT, BOT_ID = app(_conf, os.environ)
 # The private repository security work happens in (#287); "" when none.
 SECURITY = str(_conf.get("security") or "")
+
+
+def attribution(conf):
+    """org.yml `attribution` (#491): `required` refuses a model named as a
+    co-author, `warn` (the default) only warns."""
+    mode = conf.get("attribution") or "warn"
+    if mode not in ("warn", "required"):
+        raise ValueError(f"org.yml `attribution` is `{mode}`: warn or required")
+    return mode
 
 
 def hardwired_bot(root=os.path.join(HERE, "..", ".github", "workflows")):
@@ -90,10 +101,21 @@ def self_test():
     conf = {"bot": {"app": "dilux-bot", "id": 1}}
     check("#197: the App from org.yml when no variable is set", app(conf, {}), ("dilux-bot", "dilux-bot[bot]", 1))
     check("#197: the calling organisation's variables win", app(conf, {"DX_BOT_APP": "acme-bot", "DX_BOT_LOGIN": "acme-bot[bot]", "DX_BOT_ID": "7"}), ("acme-bot", "acme-bot[bot]", 7))
+    check("#491: attribution defaults to warn", attribution({}), "warn")
+    check("#491: attribution required", attribution({"attribution": "required"}), "required")
+    try:
+        attribution({"attribution": "off"})
+        check("#491: an unknown attribution fails", "no error", "ValueError")
+    except ValueError:
+        check("#491: an unknown attribution fails", "ValueError", "ValueError")
+    check("#491: org.yml starts at warn", attribution(_conf), "warn")
     check("#197: the shared workflows name the App only as the caller's variables' fallback", hardwired_bot(), [])
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["attribution"]:
+        print(attribution(_conf))
+        sys.exit(0)
     sys.exit(self_test() if sys.argv[1:] == ["--test"] else 64)
