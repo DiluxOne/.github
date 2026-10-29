@@ -356,6 +356,9 @@ if [ "${1:-}" = "--test" ]; then
   attribution_case "C1: warn, a model as co-author passes with a warning" 0 "$claude" warn \
     "::warning::" "Co-Authored-By: Claude <noreply@anthropic.com>" "Assisted-by: Claude (Anthropic)" || fail=1
   attribution_case "C1: unset is warn" 0 "$claude" "" "::warning::" || fail=1
+  person=$'fix(sync): a thing\n\nAssisted-by: Claude Opus 5.5 (Anthropic)\nCo-authored-by: Ana Perez <12+ana@users.noreply.github.com>'
+  attribution_case "C2: required, a person and Assisted-by pass" 0 "$person" required "Conventions OK." || fail=1
+  attribution_case "C2: warn, a person and Assisted-by pass" 0 "$person" warn "Conventions OK." || fail=1
   dir=$(mktemp -d)
   if out=$(
     cd "$dir" && git init -q && git config user.email t@t && git config user.name t && git config commit.gpgsign false

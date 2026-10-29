@@ -88,6 +88,12 @@ def self_test():
     check("C1: Copilot's noreply account", [m[1] for m in models("Co-authored-by: Copilot <175728472+Copilot@users.noreply.github.com>")], ["Assisted-by: Copilot (GitHub)"])
     check("C1: the known makers' names", [bool(models(f"Co-authored-by: {n} <x@y.z>")) for n in ("Gemini", "ChatGPT", "Codex", "Cursor Agent", "GitHub Copilot", "GPT-5")], [True] * 6)
     check("C1: CRLF endings", len(models("Co-authored-by: Claude <noreply@anthropic.com>\r\n")), 1)
+    # C2: a person is a co-author, and Assisted-by is the line to use.
+    check("C2: a person and Assisted-by pass",
+          models("feat: x\n\nAssisted-by: Claude Opus 5.5 (Anthropic)\nCo-authored-by: Ana Pérez <12+ana@users.noreply.github.com>\n"), [])
+    check("C2: a person who shares a model's first name", models("Co-authored-by: Claude Dupont <claude@example.org>"), [])
+    check("C2: a person's noreply address", models("Co-authored-by: Gem <9+gemini-fan@users.noreply.github.com>"), [])
+    check("C2: the words, not a trailer", models("We asked Claude <noreply@anthropic.com> about it."), [])
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
