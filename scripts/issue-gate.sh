@@ -28,7 +28,8 @@
 # default).
 #
 # A claimed bug the reproduction confirmed (#488) needs no acceptance: the
-# person's pull request closes it when it carries the failing test dilux-bot
+# claimant's own pull request, while the issue is still `claimed` by them
+# (dilux-bot's dx-claim marker names the author), closes it when it carries the failing test dilux-bot
 # handed them (its path and SHA-256 sealed in the App's dx-claim-test comment
 # on the issue) unchanged at its head; the pipeline's tests make it pass. A
 # changed or missing test fails the gate whatever else it closes. ISSUE_GATE_JSON, a file holding the
@@ -156,14 +157,20 @@ lane_verdict() {
 
 # A claimed bug the reproduction confirmed (#488): the test it was handed,
 # from the last dx-claim-test marker in a comment dilux-bot wrote on issue $2
-# of the answer in $1 (JSON: test, sha256), or nothing. A marker in anyone
-# else's comment is never read.
+# of the answer in $1 (JSON: test, sha256), or nothing. Only while the claim
+# holds and is the pull request's author's: the issue still carries
+# `claimed`, and dilux-bot's dx-claim marker (which a release strikes out)
+# names the author. A marker in anyone else's comment is never read.
 claim_test() {
   # shellcheck disable=SC2016 # jq variables, not shell ones.
   jq -c --argjson n "$2" --arg app "${DX_BOT_APP:-dilux-bot}" '
-    [.data.repository.pullRequest.closingIssuesReferences.nodes[] | select(.number == $n) | .comments.nodes[]?
-     | select((.author.login // "") | test("^(app/)?" + $app + "(\\[bot\\])?$"))
-     | (.body | capture("<!-- dx-claim-test (?<j>\\{.*?\\}) -->")?) | .j | fromjson? | select(.test and .sha256)] | last // empty' "$1"
+    .data.repository.pullRequest as $pr
+    | [$pr.closingIssuesReferences.nodes[] | select(.number == $n)] | first // empty
+    | select(any(.labels.nodes[]?; .name == "claimed"))
+    | [.comments.nodes[]? | select((.author.login // "") | test("^(app/)?" + $app + "(\\[bot\\])?$")) | .body // ""] as $bot
+    | select(([$bot[] | capture("<!-- dx-claim (?<j>\\{.*?\\}) -->")? | .j | fromjson? | .login] | last) as $who
+             | $who != null and $who == ($pr.author.login // ""))
+    | [$bot[] | capture("<!-- dx-claim-test (?<j>\\{.*?\\}) -->")? | .j | fromjson? | select(.test and .sha256)] | last // empty' "$1"
 }
 
 # The SHA-256 of file $1 at the pull request's head ($2): from the checkout
@@ -380,17 +387,27 @@ if [ "${1:-}" = "--test" ]; then
   files=$(mktemp -d); mkdir -p "$files/tests/Unit/Repro"
   printf 'failing test\n' > "$files/tests/Unit/Repro/Issue12Test.php"
   sum=$(sha256_of "$files/tests/Unit/Repro/Issue12Test.php")
+  # claimed [who wrote the test marker] [labels] [the claim's comment]
+  held='**Claimed by @ana** <!-- dx-claim {"login": "ana"} -->'
   claimed() {
-    issue 12 "$repo" OPEN "bug:confirmed,claimed" "" Bug \
-      | jq --arg who "${1:-dilux-bot[bot]}" --arg m "<!-- dx-claim-test {\"sha256\": \"$sum\", \"test\": \"tests/Unit/Repro/Issue12Test.php\"} -->" '.comments = {nodes: [{author: {login: $who}, body: ("The bug is yours.\n\n" + $m)}]}'
+    issue 12 "$repo" OPEN "${2:-bug:confirmed,claimed}" "" Bug \
+      | jq --arg who "${1:-dilux-bot[bot]}" --arg m "<!-- dx-claim-test {\"sha256\": \"$sum\", \"test\": \"tests/Unit/Repro/Issue12Test.php\"} -->" \
+           --arg state "${3-$held}" \
+           '.comments = {nodes: [{author: {login: "dilux-bot[bot]"}, body: $state}, {author: {login: $who}, body: ("The bug is yours.\n\n" + $m)}]}'
   }
-  claimed | answer | ISSUE_GATE_FILES=$files T="fix(x): a thing" case_ "C8 passes: a claimed bug's pull request with its test unchanged" 0 || fail=1
+  # The answer, with the pull request's author (ana, the claimant, by default).
+  by() { answer | jq --arg a "${1:-ana}" '.data.repository.pullRequest.author = {login: $a}'; }
+  claimed | by | ISSUE_GATE_FILES=$files T="fix(x): a thing" case_ "C8 passes: the claimant's pull request with its test unchanged" 0 || fail=1
+  claimed | by bob | ISSUE_GATE_FILES=$files T="fix(x): a thing" case_ "C8 fails: the test unchanged in someone else's pull request (not the claimant)" 1 || fail=1
+  claimed dilux-bot[bot] bug:confirmed "~~Claimed~~: released on 2026-11-11." | by | ISSUE_GATE_FILES=$files T="fix(x): a thing" case_ "C8 fails: a released claim (no \`claimed\`, its marker struck out)" 1 || fail=1
+  claimed dilux-bot[bot] bug:confirmed | by | ISSUE_GATE_FILES=$files T="fix(x): a thing" case_ "C8 fails: the \`claimed\` label taken off" 1 || fail=1
+  claimed | jq '.comments.nodes[0].author.login = "ana"' | by | ISSUE_GATE_FILES=$files T="fix(x): a thing" case_ "C8 fails: a claim's marker a person wrote is not the bot's" 1 || fail=1
   printf 'made to pass\n' > "$files/tests/Unit/Repro/Issue12Test.php"
-  claimed | answer | ISSUE_GATE_FILES=$files T="fix(x): a thing" case_ "C8 fails: a changed test's SHA-256" 1 || fail=1
-  { claimed; issue 3 "$repo" OPEN accepted LabeledEvent:accepted:User Bug; } | answer | ISSUE_GATE_FILES=$files T="fix(x): a thing" case_ "C8 fails: a changed test, even beside another accepted issue" 1 || fail=1
+  claimed | by | ISSUE_GATE_FILES=$files T="fix(x): a thing" case_ "C8 fails: a changed test's SHA-256" 1 || fail=1
+  { claimed; issue 3 "$repo" OPEN accepted LabeledEvent:accepted:User Bug; } | by | ISSUE_GATE_FILES=$files T="fix(x): a thing" case_ "C8 fails: a changed test, even beside another accepted issue" 1 || fail=1
   rm -f "$files/tests/Unit/Repro/Issue12Test.php"
-  claimed | answer | ISSUE_GATE_FILES=$files T="fix(x): a thing" case_ "C8 fails: the test left out" 1 || fail=1
-  claimed mallory | answer | ISSUE_GATE_FILES=$files T="fix(x): a thing" case_ "C8 fails: a marker in a person's comment is not the bot's (no acceptance either)" 1 || fail=1
+  claimed | by | ISSUE_GATE_FILES=$files T="fix(x): a thing" case_ "C8 fails: the test left out" 1 || fail=1
+  claimed mallory | by | ISSUE_GATE_FILES=$files T="fix(x): a thing" case_ "C8 fails: a marker in a person's comment is not the bot's (no acceptance either)" 1 || fail=1
   rm -rf "$files"
   echo '{}' | WHO=Bot case_ "passes: a bot's pull request" 0 || fail=1
   echo '{}' | REQ=false case_ "passes: the gate is off" 0 || fail=1

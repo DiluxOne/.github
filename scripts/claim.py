@@ -352,6 +352,19 @@ def plan_release(state, why, issue_number, start=True):
     return acts
 
 
+def plan_end(issue, why, start=True):
+    """Every way a claim ends (`/unclaim`, the daily release, a stalled pull
+    request closed, `/adopt`) goes through here, so none forgets a claimed
+    bug: one the reproduction confirmed goes to the `bugfix-reproduced` lane
+    with the same test, and its test's marker is struck out so the gate no
+    longer reads it; anything else is released, the autopilot started on it
+    when `start`."""
+    state, n = issue["claim"], issue["number"]
+    if not issue.get("test"):
+        return plan_release(state, why, n, start)
+    return plan_release(state, why, n, start=False) + [("lane", issue["test"]), ("retire-test", issue.get("test_id"))]
+
+
 def plan_yield(login, maintainer, prs, runs, when, issue, cfg):
     """A maintainer's `/yield @login` (C5): the autopilot's run cancelled,
     its draft closed with a comment, the issue claimed for the person."""
@@ -362,12 +375,20 @@ def plan_yield(login, maintainer, prs, runs, when, issue, cfg):
     return acts + claim_acts, state
 
 
-def plan_pr_close(pr, issue_numbers, close_days=DEFAULTS["pr-close-days"]):
+def plan_pr_close(pr, issues, close_days=DEFAULTS["pr-close-days"]):
     """A stalled person's pull request closed with thanks, and the autopilot
-    started on what it closed (C7)."""
+    started on what it closed (C7): [(issue number, its actions)]. An issue
+    its author claimed ends its claim through plan_end (a claimed bug to its
+    lane)."""
     text = (f"Thank you, @{pr['author']}. This pull request has waited on its author for {close_days} days, so it is closed for now: "
             "reopen it when you come back, or ask a maintainer to `/adopt` it. The autopilot starts on the issue so it is not left waiting.\n\n" + SIGN)
-    return [("close-pr", pr["number"], text)] + [("start", n) for n in issue_numbers]
+    out = [(issues[0]["number"], [("close-pr", pr["number"], text)])]
+    for i in issues:
+        if (i.get("claim") or {}).get("login") == pr["author"]:
+            out.append((i["number"], plan_end(i, f"its pull request #{pr['number']} was closed after {close_days} days without a push")))
+        else:
+            out.append((i["number"], [("start", i["number"])]))
+    return out
 
 
 def adopt_branch(issue, pr):
@@ -440,21 +461,26 @@ ISSUE_QUERY = """query($owner: String!, $name: String!, $number: Int!) {
 }"""
 
 
+def issue_comments(repo, number):
+    comments = gh_json("api", f"repos/{repo}/issues/{number}/comments", "--paginate", "--slurp") or []
+    return [c for page in comments for c in page] if comments and isinstance(comments[0], list) else comments
+
+
 def read_issue(repo, number):
     owner, name = repo.split("/", 1)
     data = gh_json("api", "graphql", "-f", f"query={ISSUE_QUERY}", "-F", f"owner={owner}", "-F", f"name={name}", "-F", f"number={number}")
     if (data or {}).get("errors"):
         raise RuntimeError(f"the issue could not be read: {json.dumps(data['errors'])[:300]}")
     i = data["data"]["repository"]["issue"]
-    comments = gh_json("api", f"repos/{repo}/issues/{number}/comments", "--paginate", "--slurp") or []
-    comments = [c for page in comments for c in page] if comments and isinstance(comments[0], list) else comments
+    comments = issue_comments(repo, number)
     prs = [{"number": p["number"], "state": p["state"], "created": p["createdAt"], "review": p.get("reviewDecision") or "",
             "author": (p.get("author") or {}).get("login") or "", "author_type": (p.get("author") or {}).get("__typename") or "",
             "labels": [l["name"] for l in p["labels"]["nodes"]]} for p in i["closedByPullRequestsReferences"]["nodes"]]
     pushes = [((b.get("ref") or {}).get("target") or {}).get("committedDate") for b in i["linkedBranches"]["nodes"]]
     labels = [l["name"] for l in i["labels"]["nodes"]]
     _, state = read_marker(comments, MARK)
-    return {"number": i["number"], "state": i["state"], "title": i["title"], "body": i.get("body") or "", "labels": labels,
+    test_id, test = read_marker(comments, TEST_MARK)
+    return {"test": test, "test_id": test_id, "number": i["number"], "state": i["state"], "title": i["title"], "body": i.get("body") or "", "labels": labels,
             "type": (i.get("issueType") or {}).get("name") or "", "assignees": [a["login"] for a in i["assignees"]["nodes"]],
             "prs": prs, "comments": comments, "claim": state if CLAIMED in labels else None, "last_push": max([p for p in pushes if p] or [""]),
             "accepted": "accepted" in labels or "bug:confirmed" in labels}
@@ -525,6 +551,17 @@ def apply_plan(repo, number, actions, state_id=None):
             gh("api", "-X", "POST", f"repos/{repo}/git/refs", "-f", f"ref=refs/heads/{act[1]}", "-f", f"sha={act[2]}")
         elif kind == "start":
             start.append(act[1])
+        elif kind == "lane":
+            lane = lane_open(repo, number, act[1])
+            if lane:
+                start.append(lane)
+        elif kind == "retire-test":
+            # The test's comment stays, without its marker: the gate reads a
+            # claimed bug's test only while the claim holds.
+            if act[1]:
+                body = gh("api", f"repos/{repo}/issues/comments/{act[1]}", "--jq", ".body")
+                gh("api", "-X", "PATCH", f"repos/{repo}/issues/comments/{act[1]}", "-f",
+                   "body=" + retire_test(body, iso(now())))
     return start
 
 
@@ -537,10 +574,29 @@ def policy():
 
 def held_claims(repo, login):
     """The person's open claims in the organisation: as assignee, or named by
-    dilux-bot's claim comment where they could not be assigned (someone
-    outside the repository); the larger of the two counts."""
+    dilux-bot's claim marker where they could not be assigned (someone
+    outside the repository). The text search only finds the candidates;
+    each is counted from what only dilux-bot writes (claims_of), so nobody's
+    comment adds a claim to someone else."""
     where = (f"org:{org_of(repo)}", "is:issue", "is:open", f"label:{CLAIMED}")
-    return max(search_count(*where, f"assignee:{login}"), search_count(*where, f'"Claimed by @{login}"', "in:comments"))
+    found = {}
+    for query in (f"assignee:{login}", f'"Claimed by @{login}" in:comments'):
+        out = gh("api", "-X", "GET", "search/issues", "-f", "q=" + " ".join(where + (query,)), "-f", "per_page=100", "--jq",
+                 '.items[] | {repo: (.repository_url | sub(".*/repos/"; "")), number, assignees: [.assignees[]?.login]} | tojson')
+        for line in out.splitlines():
+            item = json.loads(line)
+            found[(item["repo"], item["number"])] = item
+    issues = []
+    for (r, n), item in sorted(found.items()):
+        comments = [] if login in item["assignees"] else issue_comments(r, n)
+        issues.append({"assignees": item["assignees"], "comments": comments})
+    return claims_of(login, issues)
+
+
+def claims_of(login, issues):
+    """How many of the issues `login` holds: assigned to them, or named by
+    dilux-bot's claim marker; a person's comment naming them never counts."""
+    return sum(1 for i in issues if login in i["assignees"] or (read_marker(i["comments"], MARK)[1] or {}).get("login") == login)
 
 
 def merged_any(repo, login):
@@ -605,7 +661,7 @@ def on_comment(repo, event, cfg, when):
             elif act[0] == "release-if-claimed":
                 if issue.get("claim"):
                     state_id, _ = read_marker(issue["comments"], MARK)
-                    apply_plan(repo, issues[0], plan_release(issue["claim"], f"@{login} adopted #{number}", issues[0], start=False), state_id)
+                    out += apply_plan(repo, issues[0], plan_end(issue, f"@{login} adopted #{number}", start=False), state_id)
             else:
                 out += apply_plan(repo, issues[0], [act])
         return out
@@ -624,7 +680,7 @@ def on_comment(repo, event, cfg, when):
         if not current or current.get("login") != target:
             say(f"@{login}, @{target} holds no claim on this issue.")
             return []
-        return apply_plan(repo, number, plan_release(current, f"`/unclaim` by @{login} on {iso(when)}", number), state_id)
+        return apply_plan(repo, number, plan_end(issue, f"`/unclaim` by @{login} on {iso(when)}"), state_id)
     if name == "yield":
         if issue.get("claim"):
             say(f"@{login}, @{issue['claim']['login']} holds the claim already; `/unclaim @{issue['claim']['login']}` first.")
@@ -756,7 +812,7 @@ def daily_issue(repo, n, cfg, when, claims):
         new["reminded"] = new["clock"]
         apply_plan(repo, n, [("state", state_text(new, cfg)), ("comment", f"@{state['login']}, a reminder: this claim is released on {day(release)} without a pull request or a push to a linked branch. Comment \"still on it\" to extend it once, or `/unclaim` it.\n\n{SIGN}")], state_id)
     elif what == "release":
-        return release_claim(repo, issue, state, state_id, f"no pull request or push by {day(release)}")
+        return apply_plan(repo, n, plan_end({**issue, "claim": state}, f"no pull request or push by {day(release)}"), state_id)
     claims.append((n, state["login"], {"pending": "its clock waits for acceptance", "waiting": "a pull request stopped its clock"}.get(what, f"released on {day(release)}" if release else "")))
     return start
 
@@ -787,26 +843,16 @@ def daily_pull(repo, pr, cfg, when, waiting):
         gh("pr", "comment", str(pr["number"]), "--repo", repo, "--body",
            f"@{author}, a reminder: this pull request waits on you (changes requested or failing checks). With no push from you it is closed, with thanks, {cfg['pr-close-days'] - cfg['pr-remind-days']} days from now; reopen it when you come back.\n\n{marker(PR_REMIND_MARK, {'since': since})}\n\n{SIGN}")
     elif what == "close":
-        start += apply_plan(repo, issues[0], plan_pr_close(info, issues, cfg["pr-close-days"]))
-        for n in issues:
-            issue = read_issue(repo, n)
-            if issue.get("claim") and issue["claim"]["login"] == author:
-                state_id, _ = read_marker(issue["comments"], MARK)
-                apply_plan(repo, n, plan_release(issue["claim"], f"its pull request #{pr['number']} was closed after {cfg['pr-close-days']} days without a push", n, start=False), state_id)
+        read = {n: read_issue(repo, n) for n in issues}
+        for n, acts in plan_pr_close(info, list(read.values()), cfg["pr-close-days"]):
+            start += apply_plan(repo, n, acts, read_marker(read[n]["comments"], MARK)[0])
     return start
 
 
-def release_claim(repo, issue, state, state_id, why):
-    """A claim released by the daily run: a claimed bug the reproduction
-    confirmed goes to its lane with the same test; anything else to the
-    autopilot on the issue itself."""
-    n = issue["number"]
-    _, test = read_marker(issue["comments"], TEST_MARK)
-    if not test:
-        return apply_plan(repo, n, plan_release(state, why, n), state_id)
-    apply_plan(repo, n, plan_release(state, why, n, start=False), state_id)
-    lane = lane_open(repo, n, test)
-    return [lane] if lane else []
+def retire_test(body, when):
+    """A claimed bug's test comment once its claim ends: the text kept, its
+    marker gone, so the gate no longer reads it."""
+    return re.sub(r"<!-- " + re.escape(TEST_MARK) + r" \{.*?\} -->", f"~~Its claim~~ ended on {when}: the test is no longer the claimant's.", body or "")
 
 
 def lane_open(repo, number, test):
@@ -975,6 +1021,20 @@ def self_test():
     check("C3 the release takes the label off, unassigns, says why, and starts the autopilot",
           ([a[0] for a in rel], rel[-1], "@ana" in rel[3][1] and "The autopilot starts on it now" in rel[3][1]),
           (["unlabel", "unassign", "state", "comment", "start"], ("start", 7), True))
+    check("C3 every claim ends through plan_end: without a test, the release as it was", plan_end({"number": 7, "claim": state}, "why"), plan_release(state, "why", 7))
+    unclaim = plan_end({"number": 7, "claim": state, "test": {"test": "t", "sha256": "a" * 64}, "test_id": 55}, "`/unclaim` by @ana")
+    check("C8 `/unclaim` of a claimed bug: released, the lane opened with its test, the test's marker struck out, the autopilot not started on the report",
+          (unclaim[-2:], any(a[0] == "start" for a in unclaim)), ([("lane", {"test": "t", "sha256": "a" * 64}), ("retire-test", 55)], False))
+    check("C8 ... and `/adopt`'s release (start=False) does the same", plan_end({"number": 7, "claim": state, "test": {"test": "t", "sha256": "a" * 64}, "test_id": 55}, "adopted", start=False), unclaim[:3] + [("comment", unclaim[3][1].replace("`/unclaim` by @ana", "adopted"))] + unclaim[-2:])
+    given = repro_text("ana", {"test": "t", "sha256": "a" * 64, "branch": "b"}, cfg, state)
+    gone = retire_test(given, "2026-11-11T00:00:00Z")
+    check("C8 a struck-out test is read no more, and says why",
+          (read_marker([{"id": 55, "user": bot, "body": given}], TEST_MARK)[0], read_marker([{"id": 55, "user": bot, "body": gone}], TEST_MARK), "~~Its claim~~ ended" in gone),
+          (55, (None, None), True))
+    src = open(os.path.abspath(__file__), encoding="utf-8").read().split("\ndef self_test")[0]
+    check("C8 no release bypasses plan_end (plan_release is called from it alone)",
+          [ln.strip()[:40] for ln in src.splitlines() if "plan_release(" in ln and not ln.lstrip().startswith("def ")],
+          ["return plan_release(state, why, n, start", "return plan_release(state, why, n, start"])
     check("C3 a push to a linked branch on day 6 resets the clock: day 10 is not the release, day 16 is",
           [daily_claim(state, at(n), [], False, iso(at(6)), cfg) for n in (10, 13, 16)], ["none", "remind", "release"])
     check("C3 a push older than the clock changes nothing", pushed(state, iso(t0 - days(2))), state)
@@ -1024,10 +1084,18 @@ def self_test():
           ["none", "remind", "none", "close"])
     check("C7 a push by its author restarts its days", daily_pr({**stalled, "pushed": iso(at(10))}, at(14), True, cfg), "none")
     check("C7 failing checks count as waiting on its author", daily_pr({**stalled, "review": "", "checks": "FAILURE", "reviewed": None}, at(14), True, cfg), "close")
-    closing = plan_pr_close(stalled, [7])
+    closing = plan_pr_close(stalled, [{"number": 7, "claim": None}])
     check("C7 closed with thanks (\"reopen it when you come back\"), and the autopilot started on the issue",
-          ([a[0] for a in closing], closing[-1], "Thank you, @ana" in closing[0][2] and "reopen it when you come back" in closing[0][2]),
-          (["close-pr", "start"], ("start", 7), True))
+          ([(n, [a[0] for a in acts]) for n, acts in closing], closing[-1][1], "Thank you, @ana" in closing[0][1][0][2] and "reopen it when you come back" in closing[0][1][0][2]),
+          ([(7, ["close-pr"]), (7, ["start"])], [("start", 7)], True))
+    sealed = {"test": "tests/Unit/Repro/Issue7Test.php", "sha256": "a" * 64, "branch": "test/repro-issue-7"}
+    bug = {"number": 7, "claim": state, "test": sealed, "test_id": 55}
+    closing = plan_pr_close(stalled, [bug, {"number": 8, "claim": None}])
+    check("C7/C8 the stalled close of a claimed bug's pull request sends it to its lane with the same test, never the autopilot on the report",
+          [(n, [a[0] for a in acts]) for n, acts in closing],
+          [(7, ["close-pr"]), (7, ["unlabel", "unassign", "state", "comment", "lane", "retire-test"]), (8, ["start"])])
+    check("C7 ... and a claim of someone else's on the issue is left as it is",
+          [(n, [a[0] for a in acts]) for n, acts in plan_pr_close({**stalled, "author": "bob"}, [bug])], [(7, ["close-pr"]), (7, ["start"])])
     review = {**stalled, "review": "REVIEW_REQUIRED", "reviewed": None, "pushed": iso(t0 - days(60))}
     check("C7 one that waits on a maintainer's review is never closed for it, however long",
           [daily_pr(review, at(n), False, cfg) for n in (14, 90)], ["waiting", "waiting"])
@@ -1037,6 +1105,11 @@ def self_test():
           "**Waiting on a maintainer's review** (its author's clock does not run)\n\n- #41 by @ana" in listed, True)
     # C9: one open claim at a time with no merged pull request in the
     # organisation, three with one.
+    forged = {"assignees": [], "comments": [{"id": 9, "user": {"login": "mallory"}, "body": "**Claimed by @ana** " + marker(MARK, {**state, "login": "ana"})}]}
+    real = {"assignees": [], "comments": [{"id": 5, "user": bot, "body": state_text(state, cfg)}]}
+    check("C9 a claim is counted from dilux-bot's marker or the assignee, never from a person's comment naming someone",
+          (claims_of("ana", [forged]), claims_of("ana", [real]), claims_of("ana", [{"assignees": ["ana"], "comments": []}, forged, real]), claims_of("bob", [real])),
+          (0, 1, 2, 0))
     check("C9 the limits: one for a newcomer, three for a contributor", (claim_limit(False, cfg), claim_limit(True, cfg)), (1, 3))
     ok, why = may_claim("ana", accepted, 1, False, "", cfg)
     check("C9 no merged pull request and one open claim: a second is refused, saying why",
