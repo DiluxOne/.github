@@ -72,3 +72,21 @@ def test_yield_is_a_maintainers_and_may_cancel_the_autopilots_run():
     prep = workflow("autopilot.yml")["jobs"]["prep"]["name"]
     assert prep.endswith("· may it run · #${{ inputs.issue || inputs.pr }}")
     assert r'may it run · #" + str(number)' in src
+
+
+def test_the_autopilot_asks_who_holds_the_issue_before_it_starts_opens_or_pushes():
+    wf = workflow("autopilot.yml")
+    may = run_of(wf, "prep", "may")
+    draft = run_of(wf, "draft", "draft")
+    applied = run_of(wf, "apply", "applied")
+    for where, text, before in (("prep", may, "autopilot.py may-start"), ("draft", draft, "api-commit.py push"), ("apply", applied, "autopilot.py push")):
+        gate = text.index("autopilot.py holder")
+        assert gate < text.index(before), f"{where}: the gate comes before {before}"
+        # Any exit but 0 stops it (held, or unread: it fails closed).
+        assert '|| rc=$?' in text[gate:gate + 80] and 'if [ "$rc" -ne 0 ]' in text[gate:], where
+    assert 'echo "go=false" >> "$GITHUB_OUTPUT"; exit 0' in may[may.index("autopilot.py holder"):may.index("Who accepted it")]
+    assert "the outbox" not in applied and applied.index("autopilot.py holder") < applied.index("autopilot.py apply .dx-out/outbox.jsonl")
+    # The run that steps aside says so, and is no silent end.
+    assert wf["jobs"]["draft"]["outputs"]["held"] == "${{ steps.draft.outputs.held }}"
+    end = next(s for s in steps(wf, "apply") if s.get("id") == "end")
+    assert end["env"]["HELD"] == "${{ needs.draft.outputs.held || steps.applied.outputs.held }}"

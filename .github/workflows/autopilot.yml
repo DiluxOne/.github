@@ -665,6 +665,7 @@ jobs:
       pr: ${{ steps.draft.outputs.pr }}
       branch: ${{ steps.draft.outputs.branch }}
       why: ${{ steps.draft.outputs.why }}
+      held: ${{ steps.draft.outputs.held }}
     steps:
       - name: dilux-bot token
         id: bot
@@ -739,6 +740,11 @@ jobs:
           gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/body.md"
           stopped=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json comments --jq '[.comments[] | select((.body | startswith("<!-- dx-autopilot-stop -->")) and (.author.login | test("^(app/)?" + env.DX_BOT_APP + "(\\[bot\\])?$")) and .createdAt >= env.STARTED)] | length')
           if [ "$stopped" != 0 ]; then echo "The agent stopped after the Spec; it said why on the issue."; exit 0; fi
+          # A person took the issue while the Spec was written (#488): the
+          # draft is not opened. A read that fails stops it too.
+          rc=0
+          held=$(python3 .dx-central/scripts/autopilot.py holder) || rc=$?
+          if [ "$rc" -ne 0 ]; then echo "The autopilot steps aside: $held"; echo "held=$held" >> "$GITHUB_OUTPUT"; exit 0; fi
           # G3 by the issue's Type: a Feature's Spec has its phases (#193).
           # A Type that cannot be read opens nothing.
           if ! type=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" --jq '.type.name // ""'); then
@@ -1028,6 +1034,13 @@ jobs:
           set -euo pipefail
           git config user.name "$DX_BOT_LOGIN"
           git config user.email "$DX_BOT_ID+$DX_BOT_LOGIN@users.noreply.github.com"
+          # A person took the issue while the agent worked (#488): claimed,
+          # assigned, or closed by their pull request opened before the
+          # autopilot's. Nothing is pushed and no intent applied; a read
+          # that fails stops it too.
+          rc=0
+          held=$(python3 .dx-central/scripts/autopilot.py holder) || rc=$?
+          if [ "$rc" -ne 0 ]; then echo "The autopilot steps aside: $held"; echo "held=$held" >> "$GITHUB_OUTPUT"; exit 0; fi
           if [ -f .dx-out/work.bundle ]; then
             git fetch -q .dx-out/work.bundle HEAD
             new=$(git rev-parse FETCH_HEAD)
@@ -1085,6 +1098,7 @@ jobs:
           WORK_OUTCOME: ${{ needs.work.outputs.outcome || needs.work.result }}
           SPEC_OUTCOME: ${{ needs.spec.outputs.outcome || needs.spec.result }}
           WHY: ${{ needs.draft.outputs.why }}
+          HELD: ${{ needs.draft.outputs.held || steps.applied.outputs.held }}
           WORK_LOG: .dx-out/transcript/2-work.json
           RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
           REPO_AUTONOMY: ${{ runner.temp }}/repo-autonomy.yml

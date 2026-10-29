@@ -263,6 +263,12 @@ def held_by(issue, prs, started=""):
     return ""
 
 
+def held_comment(why):
+    """The run's word when a person took the issue mid-run (#488)."""
+    return (f"The autopilot steps aside: {why}. It pushed nothing more and opens nothing; the issue is the person's. "
+            "If they release it, the autopilot starts again.\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)")
+
+
 def read_holder(repo, number):
     """(issue, prs, started) for held_by, read from GitHub. started: when the
     autopilot's own open pull request for it was opened, else STARTED."""
@@ -1915,6 +1921,19 @@ Clamp the value in Sum::add.
            held_by({"labels": ["accepted"], "assignees": ["soydiloreto"], "accepted_by": "soydiloreto"}, []),
            held_by({"labels": ["accepted"], "assignees": ["bob"], "accepted_by": "soydiloreto"}, [])),
           ("a person claimed it (`claimed`)", "", "it is assigned to @bob"))
+    # C6: a person's open pull request that closes the issue (GitHub's link)
+    # holds it; one that only mentions the number is not in that link, and
+    # one opened after the autopilot started does not stop it.
+    theirs = {"number": 40, "state": "OPEN", "created": "2026-11-01T10:00:00Z", "author": "ana", "author_type": "User", "labels": []}
+    check("C6 held_by: a person's pull request that closes it, by GitHub's link",
+          held_by({"labels": ["accepted"]}, [theirs]), "#40 by @ana closes it")
+    check("C6 held_by: the autopilot's own, a bot's, or a closed one does not",
+          [held_by({"labels": ["accepted"]}, [p]) for p in ({**theirs, "labels": ["autopilot"]}, {**theirs, "author": BOT_LOGINS[1], "author_type": "Bot"}, {**theirs, "state": "CLOSED"})], ["", "", ""])
+    check("C6 held_by: one opened after the autopilot started does not stop its pushes; one before does",
+          (held_by({"labels": ["accepted"]}, [theirs], "2026-11-01T09:00:00Z"), held_by({"labels": ["accepted"]}, [theirs], "2026-11-01T11:00:00Z")), ("", "#40 by @ana closes it"))
+    check("C6 holder reads GitHub's closing link, never a text search of the pull requests",
+          ("closedByPullRequestsReferences(first: 20, includeClosedPrs: false)" in HOLDER_QUERY, "search" in HOLDER_QUERY), (True, False))
+    check("C6 the run that steps aside says so", held_comment("a person claimed it (`claimed`)").startswith("The autopilot steps aside: a person claimed it"), True)
     if not failed:
         print("all tests passed")
     return failed
@@ -2590,6 +2609,16 @@ def main(argv):
         return 0 if ok else 1
     if argv[:1] == ["end"]:
         mode = os.environ.get("MODE", "start")
+        if os.environ.get("HELD"):
+            # A person took the issue mid-run (#488): the run stepped aside
+            # before it wrote, and says so where it works.
+            target = ("pr", pr) if pr else ("issue", number)
+            gh(target[0], "comment", str(target[1]), "--repo", repo, "--body", held_comment(os.environ["HELD"]))
+            if os.environ.get("GITHUB_OUTPUT"):
+                with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+                    fh.write("verdict=held\n")
+            print("held")
+            return 0
         started = os.environ.get("STARTED", "")
         run_url = os.environ.get("RUN_URL", "")
         events_ = read_events(os.environ.get("WORK_LOG", ""))
