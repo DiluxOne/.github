@@ -112,3 +112,10 @@ def test_adopt_records_the_head_the_maintainer_read_and_the_draft_starts_there()
     assert '[ "$(git rev-parse FETCH_HEAD)" != "$sha" ]' in adopted and 'git checkout -q -b "$branch" "$sha"' in adopted and "onto=$sha" in adopted
     # Its commits are pushed by autopilot.py push, which adds the trailer.
     assert "python3 .dx-central/scripts/autopilot.py push" in run_of(workflow("autopilot.yml"), "apply", "applied")
+
+
+def test_at_its_cap_the_autopilot_says_anyone_may_claim_the_issue():
+    may = next(s for s in steps(workflow("autopilot.yml"), "prep") if s.get("id") == "may")
+    assert "anyone may `/claim` this issue" in may["env"]["OPEN_TO_CLAIM"]
+    # Both caps: the runs (a continue) and the review rounds (a fix).
+    assert may["run"].count('--body "${OPEN_TO_CLAIM:-}"') == 2

@@ -449,7 +449,7 @@ jobs:
 
           🤖 AI-generated · Claude Opus 5.5 (Anthropic)" >/dev/null
               [[ "$why" != *"cap is"* ]] || gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label needs-human >/dev/null
-              [[ "$why" != *"cap is"* ]] || gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$OPEN_TO_CLAIM" >/dev/null || true
+              [[ "$why" != *"cap is"* ]] || gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "${OPEN_TO_CLAIM:-}" >/dev/null || true
               echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
             fi
           fi
@@ -460,7 +460,7 @@ jobs:
               gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "The autopilot spent its $max rounds and the review still blocks: a person takes it from here. The review's open threads say what is left.
 
           🤖 AI-generated · Claude Opus 5.5 (Anthropic)" >/dev/null
-              [ -z "$ISSUE" ] || gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$OPEN_TO_CLAIM" >/dev/null || true
+              [ -z "${ISSUE:-}" ] || [ -z "${OPEN_TO_CLAIM:-}" ] || gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "${OPEN_TO_CLAIM:-}" >/dev/null || true
               echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
             fi
           fi
