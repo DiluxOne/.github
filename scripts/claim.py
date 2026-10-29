@@ -922,6 +922,18 @@ def self_test():
     check("C3 a push older than the clock changes nothing", pushed(state, iso(t0 - days(2))), state)
     check("C3 a pull request stops the clock; `claim:long` exempts it",
           (daily_claim(state, at(20), [], True, None, cfg), daily_claim(state, at(20), [LONG], False, None, cfg)), ("waiting", "none"))
+    # C4: one "still on it" extends it; a second is refused and the claim
+    # keeps the first one's deadline (choice 4a); 30 days from the clock's
+    # start release it whatever happened since.
+    check("C4 \"still on it\" is the extension, anywhere in the comment", parse("Sorry, still on it, back Monday"), ("extend", ""))
+    once, ok, why = extend(state, at(9), cfg)
+    check("C4 the first extension restarts the clock once", (ok, once["clock"], once["extended"], day(deadlines(once, cfg)[1])), (True, iso(at(9)), True, "2026-11-20"))
+    twice, ok2, why2 = extend(once, at(15), cfg)
+    check("C4 a second is refused, and the first one's deadline stands",
+          (ok2, twice, "released on 2026-11-20" in why2, daily_claim(twice, at(19), [], False, None, cfg)), (False, once, True, "release"))
+    check("C4 pushes every week never take it past 30 days from the clock's start",
+          [daily_claim(state, at(n), [], False, iso(at(24)), cfg) for n in (29, 30)], ["none", "release"])
+    check("C4 nor does an extension late in the claim", daily_claim(extend(pushed(state, iso(at(22))), at(28), cfg)[0], at(30), [], False, None, cfg), "release")
     if not failed:
         print("all tests passed")
     return failed
