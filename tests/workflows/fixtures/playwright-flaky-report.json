@@ -1,0 +1,39 @@
+{
+  "config": {"rootDir": "/work/plugin/tests/e2e", "version": "1.56.0"},
+  "suites": [
+    {
+      "title": "login.spec.ts",
+      "file": "login.spec.ts",
+      "line": 0,
+      "specs": [
+        {
+          "title": "a member logs in",
+          "file": "login.spec.ts",
+          "line": 14,
+          "ok": true,
+          "tests": [
+            {
+              "projectName": "chromium",
+              "expectedStatus": "passed",
+              "status": "flaky",
+              "results": [
+                {"retry": 0, "status": "failed", "error": {"message": "Timed out 5000ms waiting for expect(locator).toBeVisible()"}},
+                {"retry": 1, "status": "passed"}
+              ]
+            }
+          ]
+        },
+        {
+          "title": "a member logs out",
+          "file": "login.spec.ts",
+          "line": 31,
+          "ok": true,
+          "tests": [
+            {"projectName": "chromium", "expectedStatus": "passed", "status": "expected", "results": [{"retry": 0, "status": "passed"}]}
+          ]
+        }
+      ]
+    }
+  ],
+  "stats": {"expected": 1, "unexpected": 0, "flaky": 1, "skipped": 0}
+}

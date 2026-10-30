@@ -4,7 +4,9 @@
 #
 #   e2e-run.sh run     RUN (the suite's command), TARGETED (the plan JSON, or
 #                      empty), SITE (single or network), CENTRAL (the
-#                      organisation's checkout), LEVEL (empty, or `pr`)
+#                      organisation's checkout), LEVEL (empty, or `pr`),
+#                      FLAKY_REPORT (where Playwright's JSON report goes, or
+#                      empty)
 #   e2e-run.sh --test  self-test, with a stand-in for npx
 #
 # Targeted: the mapped tests through the suite's own command, when that
@@ -20,7 +22,30 @@
 # plan is targeted or not (a path nothing maps is the queue's to cover), and
 # nothing when there are none; a suite whose command is not Playwright's
 # own still runs whole.
+#
+# FLAKY_REPORT (#479): a command that is Playwright's own runs with one retry
+# and the JSON reporter beside the list one, its report at FLAKY_REPORT: a
+# test that fails and then passes on its retry is `flaky`, which does not
+# fail the run, and scripts/flaky.py reports it with its spec and line. Any
+# other command runs as it is: its retries and reporters are its own.
 set -euo pipefail
+
+# Whether a suite's command is Playwright's own, alone: flags may follow it.
+playwright_own() {
+  [[ "$1" =~ ^[[:space:]]*(([A-Z_][A-Z0-9_]*=[^[:space:]]*[[:space:]]+)*)npx[[:space:]]+playwright[[:space:]]+test([[:space:]]|$) ]] && [[ "$1" != *[\;\&\|\`\$\(\)\<\>]* ]] && [[ "$1" != *$'\n'* ]]
+}
+
+# The suite's command, $1, with the flags after it ($2...), and one retry
+# with the JSON report where FLAKY_REPORT says, when it is Playwright's own.
+suite() {
+  local run=$1; shift
+  if [ -n "${FLAKY_REPORT:-}" ] && playwright_own "$run"; then
+    mkdir -p "$(dirname "$FLAKY_REPORT")"
+    PLAYWRIGHT_JSON_OUTPUT_NAME=$FLAKY_REPORT bash -c "$run $* --retries=1 --reporter=list,json"
+  else
+    bash -c "$run${*:+ $*}"
+  fi
+}
 
 run() {
   local run=${RUN:?} plan=${TARGETED:-} site=${SITE:-single} central=${CENTRAL:-.dx-central} level=${LEVEL:-}
@@ -30,18 +55,18 @@ run() {
     mapfile -t repro < <(jq -r '(.repro // [])[]' <<<"${plan:-{\}}" 2>/dev/null || true)
     echo "Pull request level (#479): ${tests[*]:-no mapped or smoke tests}; ${repro[*]:-no reproduction tests}. The merge queue runs every suite."
   elif [ -z "$plan" ] || [ "$(jq -r '.targeted // false' <<<"$plan" 2>/dev/null)" != true ]; then
-    bash -c "$run"; return
+    suite "$run"; return
   else
     mapfile -t tests < <(jq -r '.tests[]' <<<"$plan")
     mapfile -t repro < <(jq -r '.repro[]' <<<"$plan")
     echo "Targeted (#352): ${tests[*]:-no mapped tests}; ${repro[*]:-no reproduction tests}."
   fi
   if [ "${#tests[@]}" -gt 0 ]; then
-    if [[ "$run" =~ ^[[:space:]]*(([A-Z_][A-Z0-9_]*=[^[:space:]]*[[:space:]]+)*)npx[[:space:]]+playwright[[:space:]]+test([[:space:]]|$) ]] && [[ "$run" != *[\;\&\|\`\$\(\)\<\>]* ]] && [[ "$run" != *$'\n'* ]]; then
-      bash -c "$run --pass-with-no-tests $(printf '%q ' "${tests[@]}")"
+    if playwright_own "$run"; then
+      suite "$run" --pass-with-no-tests "$(printf '%q ' "${tests[@]}")"
     else
       echo "The suite's command is not Playwright's own, so it runs whole: $run"
-      bash -c "$run"
+      suite "$run"
     fi
   fi
   if [ "${#repro[@]}" -gt 0 ] && [ "$site" = single ]; then
@@ -82,6 +107,14 @@ self_test() {
   RUN="npx playwright test" TARGETED='{"targeted":false,"tests":[],"repro":[],"smoke":[]}' LEVEL=pr t "C3 nothing mapped and no smoke set runs nothing, never the whole suite" EMPTY
   RUN="npx playwright test" TARGETED='' LEVEL=pr t "C3 no plan at the pull request level runs nothing" EMPTY
   RUN="npx playwright test" TARGETED=$pr_plan t "C3 without the level, an untargeted plan still runs the whole suite (the queue's group, a push)" "^npx playwright test$" "pass-with-no-tests"
+  # #479 C4: one retry and the JSON report, for Playwright's own command.
+  printf '#!/bin/sh\necho "npx $* json=$PLAYWRIGHT_JSON_OUTPUT_NAME" >> %s\n' "$log" > "$d/bin/npx"
+  RUN="npx playwright test" TARGETED='' FLAKY_REPORT=build/dx-e2e.json t "C4 a whole run retries once, the JSON report beside the list one" \
+    "^npx playwright test --retries=1 --reporter=list,json json=build/dx-e2e.json$"
+  RUN="npx playwright test" TARGETED=$plan SITE=network FLAKY_REPORT=build/dx-e2e.json t "C4 a targeted run too, after its filters" \
+    "pass-with-no-tests tests/e2e/specs/layout.spec.ts +--retries=1 --reporter=list,json json=build/dx-e2e.json"
+  RUN="npm run test:e2e" TARGETED='' FLAKY_REPORT=build/dx-e2e.json t "C4 another command keeps its own retries and reporters" "^npm run test:e2e$" "retries"
+  RUN="npx playwright test" TARGETED='' t "C4 without FLAKY_REPORT, nothing is added" "^npx playwright test json=$" "retries"
   rm -rf "$d"
   if [ "$fail" -eq 0 ]; then echo "all tests passed"; else return 1; fi
 }

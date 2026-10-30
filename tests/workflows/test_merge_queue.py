@@ -51,9 +51,9 @@ def test_a_queues_pull_request_runs_the_mapped_specs_and_the_smoke_set():
     assert plan["if"] == "github.event_name == 'pull_request'"
     assert wf["jobs"]["changes"]["outputs"]["quick"] == "${{ steps.targeted.outputs.quick }}"
     run = step("e2e", "Run the suite")["run"]
-    assert '[ "$LEVEL" = pr ]' in run and "e2e-run.sh run" in run
+    assert "CENTRAL=.dx-central bash .dx-central/scripts/e2e-run.sh run" in run
     central = [s for s in e2e["steps"] if (s.get("with") or {}).get("repository") == "DiluxOne/.github"]
-    assert central and "env.LEVEL == 'pr'" in central[0]["if"]
+    assert central and central[0]["if"] == "env.GO == 'true'"
 
 
 def quick(plan):
