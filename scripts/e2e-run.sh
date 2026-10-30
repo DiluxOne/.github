@@ -4,7 +4,7 @@
 #
 #   e2e-run.sh run     RUN (the suite's command), TARGETED (the plan JSON, or
 #                      empty), SITE (single or network), CENTRAL (the
-#                      organisation's checkout)
+#                      organisation's checkout), LEVEL (empty, or `pr`)
 #   e2e-run.sh --test  self-test, with a stand-in for npx
 #
 # Targeted: the mapped tests through the suite's own command, when that
@@ -13,17 +13,29 @@
 # none), alone: any other command (an npm script, a wrapper, a list of
 # commands) runs whole, as the filters could land on the wrong part. The reproduction tests run on the single site, in
 # chromium, through the kind's playwright.dx-repro.config.ts.
+#
+# LEVEL=pr (#479): a pull request in a repository with a merge queue, whose
+# group runs every suite whole. It runs the mapped tests and the smoke set
+# (the plan's `smoke`, repro.smoke) and the reproduction tests, whether the
+# plan is targeted or not (a path nothing maps is the queue's to cover), and
+# nothing when there are none; a suite whose command is not Playwright's
+# own still runs whole.
 set -euo pipefail
 
 run() {
-  local run=${RUN:?} plan=${TARGETED:-} site=${SITE:-single} central=${CENTRAL:-.dx-central}
+  local run=${RUN:?} plan=${TARGETED:-} site=${SITE:-single} central=${CENTRAL:-.dx-central} level=${LEVEL:-}
   local tests=() repro=()
-  if [ -z "$plan" ] || [ "$(jq -r '.targeted // false' <<<"$plan" 2>/dev/null)" != true ]; then
+  if [ "$level" = pr ]; then
+    mapfile -t tests < <(jq -r '((.tests // []) + (.smoke // [])) | unique[]' <<<"${plan:-{\}}" 2>/dev/null || true)
+    mapfile -t repro < <(jq -r '(.repro // [])[]' <<<"${plan:-{\}}" 2>/dev/null || true)
+    echo "Pull request level (#479): ${tests[*]:-no mapped or smoke tests}; ${repro[*]:-no reproduction tests}. The merge queue runs every suite."
+  elif [ -z "$plan" ] || [ "$(jq -r '.targeted // false' <<<"$plan" 2>/dev/null)" != true ]; then
     bash -c "$run"; return
+  else
+    mapfile -t tests < <(jq -r '.tests[]' <<<"$plan")
+    mapfile -t repro < <(jq -r '.repro[]' <<<"$plan")
+    echo "Targeted (#352): ${tests[*]:-no mapped tests}; ${repro[*]:-no reproduction tests}."
   fi
-  mapfile -t tests < <(jq -r '.tests[]' <<<"$plan")
-  mapfile -t repro < <(jq -r '.repro[]' <<<"$plan")
-  echo "Targeted (#352): ${tests[*]:-no mapped tests}; ${repro[*]:-no reproduction tests}."
   if [ "${#tests[@]}" -gt 0 ]; then
     if [[ "$run" =~ ^[[:space:]]*(([A-Z_][A-Z0-9_]*=[^[:space:]]*[[:space:]]+)*)npx[[:space:]]+playwright[[:space:]]+test([[:space:]]|$) ]] && [[ "$run" != *[\;\&\|\`\$\(\)\<\>]* ]] && [[ "$run" != *$'\n'* ]]; then
       bash -c "$run --pass-with-no-tests $(printf '%q ' "${tests[@]}")"
@@ -51,7 +63,7 @@ self_test() {
     local name=$1 want=$2 nowant=${3:-}
     : > "$log"
     (cd "$d" && PATH="$d/bin:$PATH" CENTRAL="$d/central" run >/dev/null 2>&1) || true
-    if grep -qE -- "$want" "$log" && { [ -z "$nowant" ] || ! grep -qE -- "$nowant" "$log"; }; then echo "ok   $name"; else echo "FAIL $name"; cat "$log"; fail=1; fi
+    if { [ "$want" = EMPTY ] && [ ! -s "$log" ]; } || { grep -qE -- "$want" "$log" && { [ -z "$nowant" ] || ! grep -qE -- "$nowant" "$log"; }; }; then echo "ok   $name"; else echo "FAIL $name"; cat "$log"; fail=1; fi
   }
   plan='{"targeted":true,"tests":["tests/e2e/specs/layout.spec.ts"],"repro":["tests/e2e/repro/issue-69.spec.ts"]}'
   RUN="npx playwright test" TARGETED="" t "no plan runs the whole suite" "^npx playwright test$"
@@ -63,6 +75,13 @@ self_test() {
   RUN="npm run test:e2e" TARGETED=$plan SITE=single t "an npm script runs whole, its arguments untouched" "^npm run test:e2e$" "npm run test:e2e --pass"
   RUN=$'npx playwright test\nnpm run report' TARGETED=$plan SITE=single t "a command on several lines runs whole" "^npx playwright test$" "pass-with-no-tests"
   RUN="npx playwright test && npm run report" TARGETED=$plan SITE=single t "a compound command runs whole, the flags on no part of it" "^npx playwright test$" "pass-with-no-tests"
+  # #479 C3: a pull request where the queue runs every suite.
+  local pr_plan='{"targeted":false,"tests":["tests/e2e/specs/layout.spec.ts"],"repro":[],"smoke":["tests/e2e/specs/smoke.spec.ts","tests/e2e/specs/layout.spec.ts"]}'
+  RUN="npx playwright test" TARGETED=$pr_plan LEVEL=pr t "C3 a queue's pull request runs the mapped specs and the smoke set, each once, even untargeted" \
+    "playwright test --pass-with-no-tests tests/e2e/specs/layout.spec.ts tests/e2e/specs/smoke.spec.ts" "^npx playwright test$"
+  RUN="npx playwright test" TARGETED='{"targeted":false,"tests":[],"repro":[],"smoke":[]}' LEVEL=pr t "C3 nothing mapped and no smoke set runs nothing, never the whole suite" EMPTY
+  RUN="npx playwright test" TARGETED='' LEVEL=pr t "C3 no plan at the pull request level runs nothing" EMPTY
+  RUN="npx playwright test" TARGETED=$pr_plan t "C3 without the level, an untargeted plan still runs the whole suite (the queue's group, a push)" "^npx playwright test$" "pass-with-no-tests"
   rm -rf "$d"
   if [ "$fail" -eq 0 ]; then echo "all tests passed"; else return 1; fi
 }

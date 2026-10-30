@@ -223,6 +223,11 @@ repro:
   affected:
     - paths: [readme.txt, "*.md", "docs/**", "languages/**", ".wordpress-org/**"]
       tests: []
+  # Where the repository has a merge queue, whose group runs every suite
+  # whole, a pull request runs the mapped tests and these (#479,
+  # scripts/e2e-run.sh LEVEL=pr): a few specs that prove the plugin still
+  # loads, the repository's own (`smoke: [tests/e2e/specs/smoke.spec.ts]`).
+  smoke: []
 
 release:
   publishes-to: wordpress.org

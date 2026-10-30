@@ -46,6 +46,9 @@ A way is one entry of `repro.ways`:
   guide     what the writer must do and avoid, for this way
 `repro.affected` maps paths to the tests a pull request that touches them
 runs (`{paths: [globs], tests: [paths]}`), instead of the whole suite.
+`repro.smoke` (#479) lists the few specs a pull request runs beside the
+mapped ones where the merge queue runs every suite (scripts/e2e-run.sh,
+LEVEL=pr): the pack's, then the repository's.
 
   repro-ways.py resolve   the way for LAYER (default logic) in the repository
                           at DIR (default .): key=value lines (also to
@@ -61,7 +64,8 @@ runs (`{paths: [globs], tests: [paths]}`), instead of the whole suite.
                           report, for the test file NAME (every case, when
                           no case names it nor any file: node:test's, #501)
   repro-ways.py affected  the tests a pull request runs, from the changed
-                          paths on stdin: JSON {"targeted", "tests", "repro"}
+                          paths on stdin: JSON {"targeted", "tests", "repro",
+                          "smoke"}
   repro-ways.py propose   the stack recognised in the repository at DIR and
                           the way it proposes (#377), as `repro:` takes it;
                           exit 1 when no stack is recognised
@@ -139,7 +143,14 @@ def merged(pack, repo, org=None):
     own = [n for n in (mine.get("ways") or {}) if n in ways]
     ways = {**{n: ways[n] for n in own}, **{n: w for n, w in ways.items() if n not in own}}
     affected = [a for a in (base.get("affected") or []) + (mine.get("affected") or []) if isinstance(a, dict)]
-    return {"ways": ways, "affected": affected}
+    # #479: the smoke set, the few specs a pull request runs beside the
+    # mapped ones where the merge queue runs every suite: the pack's, then
+    # the repository's, each once.
+    smoke = []
+    for t in (base.get("smoke") or []) + (mine.get("smoke") or []):
+        if isinstance(t, str) and t and t not in smoke:
+            smoke.append(t)
+    return {"ways": ways, "affected": affected, "smoke": smoke}
 
 
 def problems(conf):
@@ -710,6 +721,10 @@ def self_test():
         check("C5 a change to a mapped test itself keeps it targeted",
               affected(docs, ["assets/css/front.css", "tests/e2e/specs/layout.spec.ts"], d)["targeted"], True)
         check("C5 a repository that maps nothing runs the whole suite", affected(merged({}, {}), ["assets/a.css"], d)["targeted"], False)
+        check("#479 C3 the smoke set is the pack's, then the repository's, each once, never a non-string",
+              merged({"repro": {"smoke": ["tests/e2e/specs/smoke.spec.ts"]}}, {"repro": {"smoke": ["tests/e2e/specs/smoke.spec.ts", "tests/e2e/specs/login.spec.ts", 3]}})["smoke"],
+              ["tests/e2e/specs/smoke.spec.ts", "tests/e2e/specs/login.spec.ts"])
+        check("#479 C3 none said is none", merged({}, {})["smoke"], [])
         check("** spans folders, * does not", (glob_match("assets/css/a.css", "assets/**/*.css"), glob_match("assets/a.css", "assets/**/*.css"), glob_match("assets/css/a.css", "assets/*.css")), (True, True, False))
 
         # #377: the organisation's repos.yml between the pack and the
@@ -844,7 +859,7 @@ def main():
     if args == ["affected"]:
         _, conf = config(root, central)
         paths = [line.strip() for line in sys.stdin if line.strip()]
-        print(json.dumps(affected(conf, paths, root)))
+        print(json.dumps(dict(affected(conf, paths, root), smoke=conf.get("smoke") or [])))
         return 0
     print(__doc__, file=sys.stderr)
     return 2
