@@ -2,6 +2,13 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [7.4.0](https://github.com/DiluxOne/.github/releases/tag/v7.4.0) · 2026-10-30
+
+### Features
+
+- a model assists, people co-author: one credit rule everywhe… ([#519](https://github.com/DiluxOne/.github/pull/519))
+- a person claims an issue, and the autopilot steps aside ([#520](https://github.com/DiluxOne/.github/pull/520))
+
 ## [7.3.0](https://github.com/DiluxOne/.github/releases/tag/v7.3.0) · 2026-10-29
 
 ### Features
@@ -16,6 +23,7 @@ Every version of the engine (the workflows, scripts, policy and kinds other repo
 
 ### Maintenance
 
+- **release:** v7.3.0, fix rounds that reach every blocked pull request ([#517](https://github.com/DiluxOne/.github/pull/517))
 - five fix rounds per autopilot pull request instead of three ([#513](https://github.com/DiluxOne/.github/pull/513))
 
 ## [7.2.0](https://github.com/DiluxOne/.github/releases/tag/v7.2.0) · 2026-10-28
