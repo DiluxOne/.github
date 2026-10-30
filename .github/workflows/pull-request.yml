@@ -229,6 +229,8 @@ jobs:
       central-ref: main
     secrets: inherit
 
+  # Its scripts and policy are read from main, like the review's (#524): a
+  # pull request's own copy decides whether others merge only once merged.
   auto-merge:
     needs: review
     if: always() && needs.review.result != 'skipped'
@@ -239,6 +241,7 @@ jobs:
       pull-requests: read
     uses: ./.github/workflows/auto-merge.yml
     with:
+      central-ref: main
       risk: ${{ needs.review.outputs.risk }}
       complexity: ${{ needs.review.outputs.complexity }}
       floor: ${{ needs.review.outputs.floor }}
