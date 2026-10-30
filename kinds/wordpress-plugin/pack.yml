@@ -30,8 +30,42 @@ pre-pr:
   - translations (the catalogues in the form that merges, compiled)
   - Plugin Check
   - integration tests, on a single site and on a network when the plugin declares one
-  - every E2E suite the plugin declares
+  - the E2E specs the change touches (repro.affected, scripts/e2e-run.sh), every suite when it touches a path nothing maps
   - the review rules (scripts/review-rules.php with this pack's rules.yml)
+
+# How it runs them (`pre-pr-make`) is what runs on a workstation: Plugin
+# Check, the unit tests on the oldest PHP and the network suites stay the
+# pull request's and the queue's. `scripts/sync-repos.py pre-pr` writes these lines into
+# the repository's dx.mk, the `pre-pr` target its Makefile includes (#479,
+# scripts/pre-pr.py render). `run` is bash, one command a line, from the
+# checkout, stopping at the first failure; `finally` runs after it either
+# way (the sites it started). The composer scripts are the ones
+# plugin-checks-wp.yml calls. The E2E specs are those repro.affected maps for
+# the branch's changes against origin/main (scripts/e2e-run.sh), every suite
+# when it touches a path nothing maps; DX_CENTRAL is the organisation's
+# checkout (`dx check` sets it; the autopilot's is .dx-central, the
+# default). The lines run as one script, so a variable set on one is there on
+# the next. A repository adds its own steps as prerequisites in its Makefile
+# (`pre-pr: my-check`), never in dx.mk.
+pre-pr-make:
+  run:
+    - central=${DX_CENTRAL:-.dx-central}
+    - test -f "$central/scripts/e2e-run.sh" || { echo "pre-pr: DX_CENTRAL ($central) is not a checkout of DiluxOne/.github" >&2; exit 1; }
+    - composer install --no-interaction --prefer-dist --no-progress
+    - composer lint
+    - composer stan
+    - composer psalm:taint
+    - composer test:unit
+    - if [ -d languages ]; then bash "$central/scripts/plugin-i18n.sh" check languages; fi
+    - npm ci --no-audit --no-fund
+    - npx wp-env start
+    - npx wp-env run tests-cli sh -c "cd wp-content/plugins/${PWD##*/} && php vendor/bin/phpunit -c phpunit-integration.xml"
+    - plan=$(git diff --name-only origin/main...HEAD | DIR=. REPO_POLICY=.github/review-policy.yml python3 "$central/scripts/repro-ways.py" affected 2>/dev/null) || plan='{"targeted":false}'
+    - TARGETED=$plan RUN="npx playwright test" SITE=single CENTRAL=$central bash "$central/scripts/e2e-run.sh" run
+    - tree=$(STAGE_ROOT=$(mktemp -d) bash "$central/scripts/stage-plugin.sh" "${PWD##*/}")
+    - php "$central/scripts/review-rules.php" --kind wordpress-plugin --repo . --tree "$tree"
+  finally:
+    - npx wp-env stop
 
 # What a repository of this kind requires of its own jobs, beside the
 # organisation's pipeline: a repository ruleset named "own checks"
@@ -189,6 +223,11 @@ repro:
   affected:
     - paths: [readme.txt, "*.md", "docs/**", "languages/**", ".wordpress-org/**"]
       tests: []
+  # Where the repository has a merge queue, whose group runs every suite
+  # whole, a pull request runs the mapped tests and these (#479,
+  # scripts/e2e-run.sh LEVEL=pr): a few specs that prove the plugin still
+  # loads, the repository's own (`smoke: [tests/e2e/specs/smoke.spec.ts]`).
+  smoke: []
 
 release:
   publishes-to: wordpress.org

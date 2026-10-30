@@ -126,6 +126,9 @@ jobs:
           python3 -m pip install --quiet --disable-pip-version-check --target "$RUNNER_TEMP/dx-pytest" pytest==9.1.1 PyYAML==6.0.3
           PYTHONPATH="$RUNNER_TEMP/dx-pytest" PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider --rootdir=. -q tests
       - run: bash scripts/e2e-run.sh --test
+      - run: python3 scripts/flaky.py --test
+      - run: python3 scripts/waiting.py --test
+      - run: python3 scripts/flow-numbers.py --test
       - run: bash scripts/triage-brief.sh --test
       - run: python3 scripts/sync-repos.py --test
       - run: bash scripts/dx.sh --test

@@ -123,7 +123,9 @@ run_pre_pr() {
     echo "dx: going on without it until the organisation requires it (org.yml \`pre-pr\`)." >&2
     return 0
   fi
-  make pre-pr || { echo "dx: \`make pre-pr\` failed: fix what it found, then run dx check again." >&2; return 1; }
+  # DX_CENTRAL: this checkout, where the pack's dx.mk finds the
+  # organisation's scripts (kinds/<kind>/pack.yml `pre-pr-make`).
+  DX_CENTRAL="$(cd "$here/.." && pwd)" make pre-pr || { echo "dx: \`make pre-pr\` failed: fix what it found, then run dx check again." >&2; return 1; }
 }
 
 cmd_check() {

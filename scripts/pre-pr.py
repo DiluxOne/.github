@@ -26,6 +26,9 @@ What it must cover is data: a kind's pack says it (kinds/<kind>/pack.yml
                                none by design)
   pre-pr.py check NAME [DIR]   for the conventions check: exit 1 when NAME
                                must have one (`required`) and DIR has none
+  pre-pr.py render KIND        the dx.mk of a repository of KIND, from its
+                               pack's `pre-pr-make` (nothing, exit 1, when
+                               the pack has none)
   pre-pr.py --test             self-test
 """
 import os
@@ -45,6 +48,89 @@ CONTRACT = ("`make pre-pr` is the one check before a pull request (DiluxOne/.git
             "every check the pull request and the merge queue run, one after the other, starting what it needs")
 
 
+# The managed fragment (#479): `sync-repos.py pre-pr` writes it from the
+# pack and the repository's Makefile includes it, so the organisation owns
+# `pre-pr` and the repository's own targets stay its own.
+FRAGMENT = "dx.mk"
+INCLUDE = f"include {FRAGMENT}"
+INCLUDE_RE = re.compile(r"^-?include[ \t]+(?:\S+[ \t]+)*dx\.mk[ \t]*$", re.M)
+
+
+def render(make):
+    """The dx.mk text for a pack's `pre-pr-make` ({run: [...], finally:
+    [...]}), or None when it has no `run`. The lines run as one bash script,
+    stopping at the first failure; `finally` after it either way, keeping
+    the exit code of `run`. Make expands `$`, so each one is doubled; the
+    script travels in an exported variable, never on the command line."""
+    make = make if isinstance(make, dict) else {}
+    run = [str(x) for x in make.get("run") or []]
+    if not run:
+        return None
+    after = [str(x) for x in make.get("finally") or []]
+    body = []
+    if after:
+        body += ["dx_finally() {", "  rc=$?"] + [f"  {line} || true" for line in after] + ["  exit $rc", "}", "trap dx_finally EXIT"]
+    body += run
+    esc = [line.replace("$", "$$") for line in body]
+    return ("# Managed by DiluxOne/.github (scripts/sync-repos.py pre-pr, #479), from its kind's pack\n"
+            "# (kinds/<kind>/pack.yml `pre-pr-make`): do not edit it here, it is rewritten.\n"
+            "# `make pre-pr` is the one check before a pull request. This repository's\n"
+            "# Makefile includes it, and adds its own checks as prerequisites:\n"
+            "#   pre-pr: my-check\n"
+            ".PHONY: pre-pr\n"
+            "define DX_PRE_PR\n" + "\n".join(esc) + "\nendef\n"
+            "export DX_PRE_PR\n"
+            "pre-pr:\n"
+            "\t@bash -euo pipefail -c \"$$DX_PRE_PR\"\n")
+
+
+def render_kind(kind):
+    """render() for a kind's pack; None for no kind, no pack or no steps."""
+    if not kind or not os.path.isfile(policy.pack_path(str(kind))):
+        return None
+    return render(policy.load_yaml(policy.pack_path(str(kind))).get("pre-pr-make"))
+
+
+def with_include(text):
+    """A Makefile's text (None for none) that includes dx.mk: unchanged when
+    it does, the include last otherwise: make's default goal is the first
+    target it reads, included files counted, so a bare `make` keeps running
+    the repository's own first target, not dx.mk's `pre-pr`."""
+    if text and INCLUDE_RE.search(text):
+        return text
+    if not text:
+        return INCLUDE + "\n"
+    return text + ("" if text.endswith("\n") else "\n") + "\n" + INCLUDE + "\n"
+
+
+def own_recipe(text):
+    """Whether a Makefile's own `pre-pr` rule has a recipe (a tab line after
+    it, or one after `;`): including dx.mk then would give make two recipes,
+    the repository's winning, so it waits until that one is a prerequisite."""
+    if not text or INCLUDE_RE.search(text):
+        return False
+    for m in TARGET_RE.finditer(text):
+        rest = text[m.end():].split("\n", 2)
+        if ";" in rest[0].split("#", 1)[0] or (len(rest) > 1 and rest[1].startswith("\t")):
+            return True
+    return False
+
+
+def wanted(kind, have_fragment, have_makefile, name="Makefile"):
+    """The files a repository of KIND needs for its `make pre-pr`, {path:
+    text}, given its dx.mk and its Makefile (text, None for none; `name` the
+    one make picks). Empty for a kind with no `pre-pr-make`, or one in step."""
+    fragment = render_kind(kind)
+    if fragment is None:
+        return {}
+    out = {}
+    if have_fragment != fragment:
+        out[FRAGMENT] = fragment
+    if with_include(have_makefile) != have_makefile and not own_recipe(have_makefile):
+        out[name] = with_include(have_makefile)
+    return out
+
+
 def makefile(directory):
     """The text of DIR's Makefile, as make picks it, or None."""
     for name in MAKEFILES:
@@ -56,8 +142,9 @@ def makefile(directory):
 
 
 def has_target(text):
-    """Whether a Makefile's text has a `pre-pr` rule."""
-    return bool(text) and bool(TARGET_RE.search(text))
+    """Whether a Makefile's text has a `pre-pr` rule, its own or the one of
+    the dx.mk it includes (whether that one is in step is the drift check's)."""
+    return bool(text) and bool(TARGET_RE.search(text) or INCLUDE_RE.search(text))
 
 
 def covers(directory):
@@ -101,6 +188,7 @@ def self_test():
     check("a variable is not", (has_target("pre-pr := x\n"), has_target("pre-pr ?= x\n"), has_target("pre-pr = x\n")), (False, False, False))
     check("another target is not", (has_target("pre-pr-lite:\n"), has_target("check:\n\t$(MAKE) pre-pr\n"), has_target("# pre-pr: soon\n")), (False, False, False))
     check("no Makefile is none", has_target(None), False)
+    check("C1 a Makefile that includes dx.mk has the organisation's", (has_target("include dx.mk\n"), has_target("-include dx.mk\n"), has_target("include other.mk\n")), (True, True, False))
     check("an exception by design is exempt", required("a", {"pre-pr": "required"}, {"pre-pr": {"a": False}}), "exempt")
     check("org.yml decides the others", (required("b", {"pre-pr": "required"}, {"pre-pr": {"a": False}}), required("b", {"pre-pr": "optional"}, {})), ("required", "optional"))
     check("unset is optional", required("b", {}, {}), "optional")
@@ -128,6 +216,51 @@ def self_test():
         with open(os.path.join(d, ".github", "review-policy.yml"), "w") as fh:
             fh.write("kind: wordpress-plugin\npre-pr: [ignored]\n")
         check("a kind's repository covers its pack's list", covers(d), items)
+    # #479 C1: the pack's steps, written into dx.mk, are what `make pre-pr` runs.
+    import subprocess
+    import shutil
+    frag = render_kind("wordpress-plugin")
+    check("C1 the wordpress-plugin pack renders a dx.mk with a pre-pr target", has_target(frag), True)
+    for step in ("composer lint", "composer stan", "composer test:unit", "phpunit-integration.xml", "e2e-run.sh", "repro-ways.py\" affected", "review-rules.php"):
+        check(f"C1 its pre-pr runs {step}", step.replace("$", "$$") in (frag or ""), True)
+    check("C1 a kind with no pack, or no kind, gets none", (render_kind("no-such-kind"), render_kind(None), render({})), (None, None, None))
+    check("C1 a Makefile without the include gets it last, its own rules kept", (with_include("check:\n\ttrue\n"), with_include("check:\n\ttrue")), ("check:\n\ttrue\n\ninclude dx.mk\n",) * 2)
+    check("C1 one that includes it is unchanged, as is -include", (with_include("x:\ninclude dx.mk\n"), with_include("-include dx.mk\n")), ("x:\ninclude dx.mk\n", "-include dx.mk\n"))
+    check("C1 no Makefile gets one that includes it", with_include(None), "include dx.mk\n")
+    check("C1 a repository of the kind gets dx.mk and the include", sorted(wanted("wordpress-plugin", None, None)), ["Makefile", "dx.mk"])
+    check("C1 one in step needs nothing", wanted("wordpress-plugin", frag, "include dx.mk\n"), {})
+    check("C1 a Makefile with its own pre-pr recipe gets dx.mk, not the include (two recipes)",
+          (own_recipe("pre-pr:\n\tnpm test\n"), own_recipe("pre-pr: ; npm test\n"), own_recipe("pre-pr: lint test\nlint:\n\tx\n"), sorted(wanted("wordpress-plugin", None, "pre-pr:\n\tnpm test\n"))),
+          (True, True, False, ["dx.mk"]))
+    check("C1 a repository of no kind gets nothing", (wanted(None, None, None), wanted("no-such-kind", None, None)), ({}, {}))
+    if shutil.which("make") and shutil.which("bash"):
+        with tempfile.TemporaryDirectory() as d:
+            mk = render({"run": ["x=${PWD##*/}", "echo \"run $x\" >> log", "test ! -f broken"], "finally": ["echo finally >> log"]})
+            with open(os.path.join(d, FRAGMENT), "w") as fh:
+                fh.write(mk)
+            with open(os.path.join(d, "Makefile"), "w") as fh:
+                fh.write(with_include("own:\n\t@echo own >> log\npre-pr: own\n"))
+            ok = subprocess.run(["make", "-s", "pre-pr"], cwd=d, capture_output=True, text=True)
+            log = open(os.path.join(d, "log")).read().split("\n")
+            check("C1 make pre-pr runs the repository's own prerequisite, the steps as one script (variables kept, $ intact), then finally",
+                  (ok.returncode, log[:3]), (0, ["own", "run " + os.path.basename(d), "finally"]))
+            open(os.path.join(d, "broken"), "w").close()
+            os.remove(os.path.join(d, "log"))
+            bad = subprocess.run(["make", "-s", "pre-pr"], cwd=d, capture_output=True, text=True)
+            check("C1 a failing step fails make pre-pr, and finally still runs", (bad.returncode != 0, "finally" in open(os.path.join(d, "log")).read()), (True, True))
+        # The include must not take the default goal: a bare `make` runs the repository's first target, not pre-pr.
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, FRAGMENT), "w") as fh:
+                fh.write(render({"run": ["echo pre-pr >> log"]}))
+            with open(os.path.join(d, "Makefile"), "w") as fh:
+                fh.write(with_include(".PHONY: all\nall:\n\t@echo all >> log\npre-pr: all\n"))
+            bare = subprocess.run(["make", "-s"], cwd=d, capture_output=True, text=True)
+            check("C1 a bare make still runs the repository's first target, not dx.mk's pre-pr",
+                  (bare.returncode, open(os.path.join(d, "log")).read()), (0, "all\n"))
+            os.remove(os.path.join(d, "log"))
+            named = subprocess.run(["make", "-s", "pre-pr"], cwd=d, capture_output=True, text=True)
+            check("C1 with the include last, make pre-pr still runs the repository's prerequisite first",
+                  (named.returncode, open(os.path.join(d, "log")).read()), (0, "all\npre-pr\n"))
     print("all tests passed" if not fails else f"{len(fails)} failed")
     return 1 if fails else 0
 
@@ -155,6 +288,13 @@ def main(argv):
         print(f"::error::{argv[1]} has no `pre-pr` target in its Makefile. {CONTRACT}. "
               "A repository that has none by design is listed in DiluxOne/.github repos.yml `pre-pr`.")
         return 1
+    if argv[:1] == ["render"] and len(argv) == 2:
+        text = render_kind(argv[1])
+        if text is None:
+            print(f"The {argv[1]} kind's pack has no `pre-pr-make`.", file=sys.stderr)
+            return 1
+        sys.stdout.write(text)
+        return 0
     print(__doc__, file=sys.stderr)
     return 64
 

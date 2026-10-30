@@ -31,6 +31,15 @@ archived and not excluded in repos.yml:
             issue and pull request, as `files` opens them, which a person
             accepts: no lane covers this file, so it is kept apart and never
             takes the lane away from the shared files. Not in `all`.
+  pre-pr    `make pre-pr`, the one check before a pull request (#479): a
+            repository whose kind's pack has `pre-pr-make` gets dx.mk,
+            written from it (scripts/pre-pr.py render), and its Makefile
+            includes it (one is created where it has none; a Makefile whose
+            own `pre-pr` has a recipe keeps it, and the pull request says to
+            make it a prerequisite). Its own issue and pull request, as
+            `files` opens them, which a person accepts. A repository of no
+            kind, or of a kind with no `pre-pr-make`, gets nothing. Not in
+            `all`.
   own-checks  a repository whose kind asks for it (kinds/<kind>/pack.yml,
             `own-checks`) gets a ruleset named "own checks" requiring its own
             jobs' checks, from its last merged pull request; one that exists
@@ -83,7 +92,8 @@ archived and not excluded in repos.yml:
             And every repository whose default branch's Makefile has no
             `pre-pr` target, the one check before a pull request (#479,
             scripts/pre-pr.py); not one repos.yml says has none by design
-            (`pre-pr: {NAME: false}`).
+            (`pre-pr: {NAME: false}`), and every one whose dx.mk differs
+            from its pack's (`sync-repos.py pre-pr`).
 
   i18n      a WordPress plugin's translations in the form that merges
             (#452, scripts/plugin-i18n.sh): languages/*.pot and *.po with
@@ -92,7 +102,7 @@ archived and not excluded in repos.yml:
             which a person accepts. Needs gettext (msgcat) where it runs.
             Not in `all`.
 
-  sync-repos.py <labels|settings|files|dependabot|own-checks|merge-queue|callers|i18n|all> [--repo NAME ...] [--dry-run]
+  sync-repos.py <labels|settings|files|dependabot|pre-pr|own-checks|merge-queue|callers|i18n|all> [--repo NAME ...] [--dry-run]
   sync-repos.py check [--repo NAME ...] [--report FILE]
   sync-repos.py --test
 
@@ -220,10 +230,11 @@ def sync_files(repo, conf, block, dry, part="files"):
     the Dependabot file (part "dependabot"), each in its own issue and pull
     request."""
     full = f"{ORG}/{repo['name']}"
-    suffix = "-org-shared-files" if part == "files" else "-org-dependabot"
+    suffix = {"files": "-org-shared-files", "dependabot": "-org-dependabot", "pre-pr": "-org-pre-pr"}[part]
+    what = {"files": "shared files", "dependabot": "Dependabot file", "pre-pr": "make pre-pr"}[part]
     open_prs = json.loads(gh("pr", "list", "--repo", full, "--state", "open", "--limit", "500", "--json", "headRefName").stdout)
     if any(p["headRefName"].endswith(suffix) for p in open_prs):
-        print(f"  a pull request for the {'shared files' if part == 'files' else 'Dependabot file'} is already open; skipped")
+        print(f"  a pull request for the {what} is already open; skipped")
         return
     default = (repo.get("defaultBranchRef") or {}).get("name") or "main"
 
@@ -238,7 +249,15 @@ def sync_files(repo, conf, block, dry, part="files"):
         raise RuntimeError(f"could not read {path}: {out.stderr.strip()[:200]}")
 
     wanted = {}
-    if part == "dependabot":
+    conflict = False
+    if part == "pre-pr":
+        pre_pr = _script("pre_pr", "pre-pr.py")
+        names = root_names(full, default)
+        name = next((n for n in pre_pr.MAKEFILES if n in names), "Makefile")
+        have = read(name) if name in names else None
+        wanted = pre_pr.wanted(repo_kind(full, default), read(pre_pr.FRAGMENT), have, name)
+        conflict = pre_pr.own_recipe(have)
+    elif part == "dependabot":
         _, dependabot = dependabot_wanted(repo, conf, default)
         if read(DEPENDABOT) != dependabot:
             wanted[DEPENDABOT] = dependabot
@@ -252,11 +271,24 @@ def sync_files(repo, conf, block, dry, part="files"):
         elif with_block(agents, block) != agents:
             wanted["AGENTS.md"] = with_block(agents, block)
     if not wanted:
-        print(f"  {'files' if part == 'files' else 'Dependabot file'} in step")
+        print(f"  {'files' if part == 'files' else what} in step")
         return
     changed = ", ".join(wanted)
     if dry:
         print(f"  would open an issue and a pull request for: {changed}")
+        return
+    if part == "pre-pr":
+        own = (" Its Makefile has a `pre-pr` recipe of its own, so it does not include dx.mk yet: make that recipe a target "
+               "of its own and name it as a prerequisite (`pre-pr: my-check`), then add `include dx.mk` at the end.") if conflict else ""
+        body = prd("`make pre-pr` is the one check before a pull request in every repository (DiluxOne/.github#479): the "
+                   "organisation writes it from the pack of the repository's kind (`pre-pr-make`) into dx.mk, which its "
+                   f"Makefile includes, so the person, the agents and the autopilot run the same checks. {changed} differ here.{own}", wanted)
+        pr_body = (f"## 📝 What changes\n\n{changed} as DiluxOne/.github keeps them for a repository of this kind: dx.mk is the "
+                   f"`pre-pr` target, from the kind's pack; the Makefile includes it.{own}\n\n"
+                   "## 💡 Why\n\n`make pre-pr` runs, before a pull request, the checks its pull request and its merge queue run (DiluxOne/.github#479).")
+        open_change(repo, default, wanted, "Keep the organisation's make pre-pr in step", body,
+                    "chore/{}-org-pre-pr", "chore: keep the organisation's make pre-pr in step", pr_body,
+                    "chore: keep {} in step with the organisation")
         return
     if part == "dependabot":
         body = prd("The organisation keeps each repository's Dependabot configuration in step with the template of its kind, "
@@ -1757,9 +1789,18 @@ def drift(repo, conf, labels, block, current=0):
         found.append(gap)
     # #479: the one check before a pull request, `make pre-pr`.
     if entry is not None and (conf.get("pre-pr") or {}).get(repo["name"]) is not False:
-        gap = pre_pr_gap(conf, repo["name"], makefile_of(full, default))
+        have_makefile = makefile_of(full, default)
+        gap = pre_pr_gap(conf, repo["name"], have_makefile)
         if gap:
             found.append(gap)
+        pre_pr = _script("pre_pr", "pre-pr.py")
+        fragment = pre_pr.render_kind(repo_kind(full, default))
+        if fragment is not None:
+            out = gh("api", f"repos/{full}/contents/{pre_pr.FRAGMENT}?ref={default}", "-H", "Accept: application/vnd.github.raw", check=False)
+            if out.returncode != 0 and "404" not in out.stderr:
+                raise RuntimeError(f"could not read {pre_pr.FRAGMENT}: {out.stderr.strip()[:200]}")
+            if out.returncode != 0 or out.stdout != fragment:
+                found.append(f"`{pre_pr.FRAGMENT}` {'is missing' if out.returncode != 0 else 'differs'}: it is its kind's `pre-pr-make`, the `make pre-pr` its Makefile includes (`sync-repos.py pre-pr`)")
     if current:
         files = workflow_files(full)
         texts = list(files.values())
@@ -2316,6 +2357,31 @@ def dependabot_test(check, conf, labels, block):
               (any("it has no Makefile" in l for l in pre_pr_lines["none"]), any("its Makefile has no `pre-pr` target" in l for l in pre_pr_lines["without"])), (True, True))
         check("#479 C1: one with a pre-pr target is not listed, nor one repos.yml says has none by design",
               (pre_pr_lines["with"], exempt), ([], []))
+        check("#479 C1: drift() lists a plugin whose dx.mk is missing, the pack's `make pre-pr`",
+              any("`dx.mk` is missing" in l for l in pre_pr_lines["with"]), pre_pr_lines["with"])
+        # #479 C1: `sync-repos.py pre-pr` writes the pack's `make pre-pr`.
+        pre_pr_mod = _script("pre_pr", "pre-pr.py")
+        fragment = pre_pr_mod.render_kind("wordpress-plugin")
+        wrote, seen_calls, seen_written = {}, len(calls), dict(written)
+        for label, makefile in (("none", None), ("own", "check:\n\tphpunit\n"), ("recipe", "pre-pr:\n\tnpm test\n"), ("no kind", None)):
+            if label == "no kind":
+                globals()["listed"] = lambda name: {"kinds": []}
+                state["policy"] = ""
+            state["makefile"] = makefile
+            written.clear()
+            with contextlib.redirect_stdout(io.StringIO()):
+                sync_files(repo, conf, block, False, part="pre-pr")
+            wrote[label] = {k: v[1] for k, v in written.items()}
+        state["makefile"], state["policy"] = None, "kind: wordpress-plugin\n"
+        written.clear()
+        written.update(seen_written)
+        del calls[seen_calls:]
+        got = (wrote["none"].get("dx.mk") == fragment, wrote["none"].get("Makefile"), pre_pr_mod.has_target(wrote["none"].get("dx.mk")))
+        check("#479 C1: a plugin with no Makefile gets dx.mk, the pack's pre-pr, and a Makefile that includes it", got == (True, "include dx.mk\n", True), got)
+        check("#479 C1: one with a Makefile keeps its own rules, the include last (its default goal kept)",
+              wrote["own"].get("Makefile") == "check:\n\tphpunit\n\ninclude dx.mk\n", wrote["own"].get("Makefile"))
+        check("#479 C1: one whose own pre-pr has a recipe gets dx.mk, its Makefile left as it is", sorted(wrote["recipe"]) == ["dx.mk"], wrote["recipe"])
+        check("#479 C1: a repository of no kind gets nothing", wrote["no kind"] == {}, wrote["no kind"])
     finally:
         globals()["gh"], ORG, globals()["listed"] = saved_gh, saved_org, saved_listed
     check("C3 (#178): a missing one is", any(f"`{DEPENDABOT}` is missing" in l for l in missing), missing)
@@ -2647,7 +2713,7 @@ def self_test():
         import contextlib
         import io
         runs = {}
-        for command in ("all", "files", "dependabot"):
+        for command in ("all", "files", "dependabot", "pre-pr"):
             ran.clear()
             with contextlib.redirect_stdout(io.StringIO()):
                 main([command, "--dry-run"])
@@ -2712,6 +2778,7 @@ def self_test():
     check("#451: the queue waits for a caller that runs on pull requests but not on merge_group, and only for that one", queue_callers_ready(ready), ["b.yml", "e.yml"])
     check("#187: `files` runs the shared files alone", runs["files"] == ["files"], runs["files"])
     check("#187: `dependabot` runs the Dependabot file alone", runs["dependabot"] == ["dependabot"], runs["dependabot"])
+    check("#479 C1: `pre-pr` runs the make pre-pr files alone, and `all` does not", runs["pre-pr"] == ["pre-pr"] and "pre-pr" not in runs["all"], runs)
     if not failed:
         print("all tests passed")
     return 1 if failed else 0
@@ -2720,7 +2787,7 @@ def self_test():
 def main(argv):
     if argv == ["--test"]:
         return self_test()
-    if not argv or argv[0] not in ("labels", "settings", "files", "dependabot", "own-checks", "merge-queue", "callers", "i18n", "all", "check"):
+    if not argv or argv[0] not in ("labels", "settings", "files", "dependabot", "pre-pr", "own-checks", "merge-queue", "callers", "i18n", "all", "check"):
         print(__doc__)
         return 64
     what, rest = argv[0], argv[1:]
@@ -2766,6 +2833,8 @@ def main(argv):
                 sync_files(repo, conf, block, dry)
             if what == "dependabot":
                 sync_files(repo, conf, block, dry, part="dependabot")
+            if what == "pre-pr":
+                sync_files(repo, conf, block, dry, part="pre-pr")
             if what in ("own-checks", "all"):
                 sync_own_checks(repo, dry)
             if what in ("merge-queue", "all"):

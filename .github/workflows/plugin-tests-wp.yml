@@ -42,6 +42,20 @@ name: WordPress plugin tests (slow)
 # (scripts/e2e-run.sh). A change that touches a path nothing maps, a push to
 # main and the weekly run get every suite whole.
 #
+# Where the repository has a merge queue (DX_MERGE_QUEUE on, #451), the two
+# levels (#479): a pull request runs, in each E2E suite, the specs its change
+# touches (repro.affected), its reproduction tests and the smoke set
+# (`repro.smoke`, the pack's and the repository's), whether every path it
+# touches is mapped or not, and no suite when there are none; its
+# integration suites wait for the queue. The queue's group runs every suite
+# whole.
+#
+# A suite whose command is Playwright's own runs with one retry (#479,
+# scripts/e2e-run.sh): a test that fails and then passes on its retry is
+# flaky, which does not fail the job, so it never drops a pull request from
+# the queue; scripts/flaky.py reports it as a warning on its spec's line and
+# in the job's summary.
+#
 # The PHP is the pack's (kinds/wordpress-plugin/pack.yml, `settings.php.tools`,
 # #85): the sites run on it (WP_ENV_PHP_VERSION, over the `phpVersion` of
 # the repository's `.wp-env.json`, which stays what a person runs locally),
@@ -149,6 +163,7 @@ jobs:
       e2e: ${{ steps.plan.outputs.e2e }}
       php: ${{ fromJSON(steps.kind.outputs.settings || '{}').php.tools }}
       targeted: ${{ steps.targeted.outputs.plan }}
+      quick: ${{ steps.targeted.outputs.quick }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -180,6 +195,10 @@ jobs:
       # mapped, runs the whole suite as before. The map is the base branch's
       # (HEAD^1 of the merge commit), as scripts/changes.sh reads the policy:
       # a pull request cannot narrow its own required run.
+      # Where the repository has a merge queue (#479), a pull request runs
+      # only the mapped tests, its reproduction tests and the smoke set
+      # (`repro.smoke`), and the queue's group runs every suite whole:
+      # `quick` says whether there is any of them to run.
       - name: The tests this pull request runs
         id: targeted
         if: github.event_name == 'pull_request'
@@ -189,6 +208,8 @@ jobs:
           git show HEAD^1:.github/review-policy.yml > "$RUNNER_TEMP/base-policy.yml" 2>/dev/null || : > "$RUNNER_TEMP/base-policy.yml"
           plan=$(git diff --name-only HEAD^1 HEAD 2>/dev/null | DIR=. REPO_POLICY="$RUNNER_TEMP/base-policy.yml" python3 .dx-central/scripts/repro-ways.py affected 2>/dev/null) || plan='{"targeted":false}'
           echo "plan=$plan" >> "$GITHUB_OUTPUT"
+          quick=$(jq -r 'if (((.tests // []) + (.smoke // []) + (.repro // [])) | length) > 0 then "true" else "false" end' <<<"$plan" 2>/dev/null) || quick=false
+          echo "quick=$quick" >> "$GITHUB_OUTPUT"
           echo "$plan"
       - id: changes
         env:
@@ -423,8 +444,12 @@ jobs:
         # no check a ruleset requires, so the pull request stays blocked).
         suite: ${{ fromJSON(needs.changes.outputs.e2e || '[{"check":"No test plan (What changed failed)","enabled":false,"timeout":5,"noplan":true}]') }}
     env:
-      # Two levels (#451), as for the integration suite.
-      GO: ${{ matrix.suite.enabled && needs.changes.outputs.code != 'false' && !(github.event_name == 'pull_request' && vars.DX_MERGE_QUEUE == 'on') }}
+      # Two levels (#451, #479): where the repository has a merge queue, a
+      # pull request runs the specs its change touches (repro.affected), its
+      # reproduction tests and the smoke set (repro.smoke), nothing when
+      # there are none; the queue's group runs every suite whole.
+      GO: ${{ matrix.suite.enabled && needs.changes.outputs.code != 'false' && !(github.event_name == 'pull_request' && vars.DX_MERGE_QUEUE == 'on' && needs.changes.outputs.quick != 'true') }}
+      LEVEL: ${{ github.event_name == 'pull_request' && vars.DX_MERGE_QUEUE == 'on' && 'pr' || '' }}
       # The site's PHP, the pack's, over the repository's .wp-env.json.
       WP_ENV_PHP_VERSION: ${{ needs.changes.outputs.php }}
     steps:
@@ -480,14 +505,14 @@ jobs:
         run: |
           [ "$RESULT" = success ] || { echo "::error::The required plugins ($(printf '%s' "$REQUIRES" | tr '\n' ' ')) could not be fetched (the Required plugins job: $RESULT; its log names the repository). The suite does not run without them."; exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: (inputs.requires-plugins-from != '' || fromJSON(needs.changes.outputs.targeted || '{}').targeted) && env.GO == 'true'
+        if: env.GO == 'true'
         with:
           repository: DiluxOne/.github
           ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
       - name: The organisation's configuration (#197)
-        if: (inputs.requires-plugins-from != '' || fromJSON(needs.changes.outputs.targeted || '{}').targeted) && env.GO == 'true'
+        if: env.GO == 'true'
         run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         id: required-download
@@ -573,6 +598,9 @@ jobs:
         if: env.GO == 'true'
         env:
           CI: 'true'
+          # #479: Playwright's own command retries once, its JSON report
+          # here; a test that passes on its retry is flaky, and passes.
+          FLAKY_REPORT: build/dx-e2e-report.json
           RUN: ${{ matrix.suite.run }}
           TARGETED: ${{ needs.changes.outputs.targeted }}
           SITE: ${{ matrix.suite.site }}
@@ -581,17 +609,26 @@ jobs:
         # the addresses every suite reads come from them: WP_BASE_URL, the
         # development site, and WP_NETWORK_URL, the tests site. Elsewhere
         # neither port is set and each repository keeps its own defaults.
-        # A targeted pull request (#352) runs only what it touches
-        # (scripts/e2e-run.sh says how); anything else runs the suite whole.
+        # scripts/e2e-run.sh runs every suite (an older central without it:
+        # the command as it is). A targeted pull request (#352) runs only
+        # what it touches, and one where the queue runs every suite (LEVEL
+        # pr, #479) the mapped tests and the smoke set; anything else runs
+        # the suite whole, with one retry where the command is Playwright's.
         run: |
           [ -z "${WP_ENV_PORT:-}" ] || export WP_BASE_URL="http://localhost:$WP_ENV_PORT"
           [ -z "${WP_ENV_TESTS_PORT:-}" ] || export WP_NETWORK_URL="http://localhost:$WP_ENV_TESTS_PORT"
           mkdir -p build
-          if [ -f .dx-central/scripts/e2e-run.sh ] && [ "$(jq -r '.targeted // false' <<<"${TARGETED:-null}" 2>/dev/null)" = true ]; then
+          if [ -f .dx-central/scripts/e2e-run.sh ]; then
             CENTRAL=.dx-central bash .dx-central/scripts/e2e-run.sh run
           else
             bash -c "$RUN"
           fi
+      # #479: each test that failed and then passed on its retry, a warning
+      # on its spec's line and in the summary, for the repository to fix;
+      # the weekly numbers count them (scripts/flow-numbers.py).
+      - name: The flaky tests
+        if: always() && env.GO == 'true' && hashFiles('build/dx-e2e-report.json') != ''
+        run: test ! -f .dx-central/scripts/flaky.py || python3 .dx-central/scripts/flaky.py annotate build/dx-e2e-report.json
       - if: failure() && env.GO == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

@@ -1,0 +1,64 @@
+name: What waits
+
+# Not reusable. Every day, and by hand (#479): every open pull request of the
+# organisation older than a day, what blocks it (needs-human, the
+# autopilot's question, an acceptance, a failed check, an unresolved thread,
+# a draft, the checks, a person's merge) and on whom it waits, in one issue
+# of this repository, labelled `run:waiting` and pinned, whose body is
+# rewritten every run (scripts/waiting.py): the place the maintainer reads,
+# instead of a comment on each pull request. The issue is public, so a
+# private repository's pull requests are counted, never named. A search that
+# fails fails the run and leaves the last body as it was.
+
+on:
+  schedule:
+    - cron: '17 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: waiting-digest
+
+jobs:
+  digest:
+    name: What waits
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: dilux-bot token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-issues: write
+          permission-pull-requests: read
+          permission-checks: read # the heads' checks, for a failed one
+          permission-metadata: read
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Keep the issue up to date
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          python3 scripts/waiting.py > "$RUNNER_TEMP/waiting.md"
+          gh label create "run:waiting" --repo "$GITHUB_REPOSITORY" --color C5DEF5 --force \
+            --description "What waits, every day (waiting-digest.yml): one pinned issue, its body rewritten" >/dev/null
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label "run:waiting" --limit 1 --json number --jq '.[0].number // empty')
+          if [ -z "$number" ]; then
+            url=$(gh issue create --repo "$GITHUB_REPOSITORY" --title "What waits" --label "run:waiting" --body-file "$RUNNER_TEMP/waiting.md")
+            number=${url##*/}
+            gh issue pin "$number" --repo "$GITHUB_REPOSITORY" || echo "::warning::#$number could not be pinned; pin it by hand."
+          else
+            gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/waiting.md" >/dev/null
+          fi
+          echo "What waits: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/issues/$number"
+          cat "$RUNNER_TEMP/waiting.md" >> "$GITHUB_STEP_SUMMARY"

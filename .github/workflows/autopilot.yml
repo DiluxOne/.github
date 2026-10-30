@@ -31,7 +31,9 @@ name: Autopilot
 #                   a run ran out of turns or time with criteria left): the
 #                   agent resumes from the branch and the unticked boxes (or,
 #                   every box ticked and still a draft, only runs the checks
-#                   and finishes), up to `autopilot-runs` runs per issue (5).
+#                   and finishes), up to `autopilot-runs` runs per issue (5);
+#                   a run an answer to its question started, or whose
+#                   runner was lost, is free and does not count (#479).
 #                   A person who took it back removes `needs-human` first.
 #                   The agent runs every command in the foreground: the run
 #                   ends when it stops, and nothing wakes it, so its steps
@@ -45,7 +47,9 @@ name: Autopilot
 #                   runs one fix round instead, counted as a run: the
 #                   rounds cap does not refuse it, the runs cap does.
 #
-# Before `finish ready` (#482) the agent reviews its own diff against the
+# Before `finish ready` (#482) the agent runs the local review's checks on
+# its own diff (scripts/local-review.sh --no-claude: the conventions, the
+# risk floor, the review's brief, #479) and reviews it against the
 # review's profiles and the kind's rules, fixing every blocker and major,
 # and runs `autopilot.py check`, which runs `make pre-pr` at HEAD (every
 # check the pull request and the merge queue run, #479): `finish ready`
@@ -59,6 +63,11 @@ name: Autopilot
 #                   pushed to its branch, which runs the pipeline again. After
 #                   `autopilot-rounds` rounds (5) it hands the pull request to
 #                   a person (`needs-human`, with a summary).
+#                   Called on `dequeued` (#479, org-pull-request.yml's
+#                   autopilot-queue), for a pull request the merge queue
+#                   dropped: one round, within the same cap, only when a
+#                   check failed in its last merge group, from the failed
+#                   jobs' log (`autopilot.py queue-failed`, .dx-io/queue.md).
 #
 # The agent holds no key (#287). A shell in a job that holds a secret can
 # read it out of the runner's memory, whatever the token's scope, so the
@@ -297,7 +306,8 @@ jobs:
             branch=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json headRefName --jq .headRefName)
             labels=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | join(",")')
             last() { tr ',' '\n' <<<"$labels" | sed -n "s/^autopilot:$1-\([0-9]*\)\$/\1/p" | sort -n | tail -1; }
-            round=$(( $(last round) + 1 )); runs=$(( $(last run) + 1 ))
+            # The next run follows every run, counted or free (#479).
+            round=$(( $(last round) + 1 )); runs=$(LABELS="$labels" python3 .dx-central/scripts/autopilot.py next-run)
             { echo "pr=$PR"; echo "branch=$branch"; echo "round=$round"; echo "runs=$runs"; } >> "$GITHUB_OUTPUT"
           else
             echo "runs=1" >> "$GITHUB_OUTPUT"
@@ -344,6 +354,12 @@ jobs:
           PR: ${{ steps.what.outputs.pr }}
           ROUND: ${{ steps.what.outputs.round }}
           RUNS: ${{ steps.what.outputs.runs }}
+          # #479: a fix round called on `dequeued` (org-pull-request.yml's
+          # autopilot-queue; a reusable workflow sees its caller's event) is
+          # for a pull request the merge queue dropped. Read from the event,
+          # not an input, so the caller on main never names an input the
+          # released major lacks.
+          QUEUE: ${{ github.event_name == 'pull_request' && github.event.action == 'dequeued' }}
           # At its cap the autopilot hands the issue to people (#488).
           OPEN_TO_CLAIM: "The autopilot reached its cap on this issue, and its pull request waits for a person: anyone may `/claim` this issue to finish it with their own code (CONTRIBUTING.md). It is on the daily list of claims until someone does.\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
         run: |
@@ -441,10 +457,11 @@ jobs:
             fi
           fi
           if [ "$MODE" = continue ]; then
-            # may-continue counts the runs before this one.
+            # may-continue counts the runs before this one, from the pull
+            # request's run-N labels (a free run never counts, #479).
             # A continue's fix round (#504) counts as a run, against the
             # runs cap, never against the rounds cap: the label asked for it.
-            if ! why=$(AS="$AS" RUNS=$((RUNS - 1)) python3 .dx-central/scripts/autopilot.py may-continue); then
+            if ! why=$(AS="$AS" python3 .dx-central/scripts/autopilot.py may-continue); then
               echo "No continue: $why"
               [[ "$why" != *"cap is"* ]] || gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "The autopilot does not continue: $why. A person takes it from here.
 
@@ -463,6 +480,15 @@ jobs:
           🤖 AI-generated · Claude Opus 5.5 (Anthropic)" >/dev/null
               [ -z "${ISSUE:-}" ] || [ -z "${OPEN_TO_CLAIM:-}" ] || gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "${OPEN_TO_CLAIM:-}" >/dev/null || true
               echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            # #479: a round for a pull request the merge queue dropped runs
+            # only when a check failed in its last merge group (not for a
+            # conflict, nor for a person who took it out), within the cap
+            # above.
+            if [ "${QUEUE:-}" = true ]; then
+              rc=0; why=$(python3 .dx-central/scripts/autopilot.py queue-failed) || rc=$?
+              if [ "$rc" != 0 ]; then echo "No queue fix: $why"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+              echo "The merge queue dropped #$PR: $why"
             fi
           fi
           echo "go=true" >> "$GITHUB_OUTPUT"
@@ -488,17 +514,32 @@ jobs:
 
       # Counted before the agent runs: a round or run that fails or times out
       # after pushing still counts, so the caps hold. By the mode it was
-      # called with: a continue's fix round (#504) is a run.
+      # called with: a continue's fix round (#504) is a run. A continue that
+      # a maintainer's answer to the autopilot's own question started
+      # (review-reply.yml adds autopilot:answered beside the continue) is
+      # free: labelled autopilot:free-N, it does not count (#479). The end
+      # rule frees a run whose runner was lost.
       - name: Count the round or the run
         if: steps.may.outputs.go == 'true' && inputs.mode != 'start'
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           MODE: ${{ inputs.mode }}
+          ISSUE: ${{ steps.what.outputs.issue }}
           PR: ${{ steps.what.outputs.pr }}
           ROUND: ${{ steps.what.outputs.round }}
           RUNS: ${{ steps.what.outputs.runs }}
         run: |
-          if [ "$MODE" = fix ]; then l="autopilot:round-$ROUND"; d="The autopilot's review rounds on this pull request"; else l="autopilot:run-$RUNS"; d="The autopilot's runs on this pull request"; fi
+          set -euo pipefail
+          answered=false
+          if [ "$MODE" = continue ] && [ -n "$ISSUE" ]; then
+            answered=$(gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | index("autopilot:answered") != null')
+            [ "$answered" != true ] || gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label "autopilot:answered" >/dev/null
+          fi
+          if [ "$MODE" = fix ]; then l="autopilot:round-$ROUND"; d="The autopilot's review rounds on this pull request"
+          else
+            l=$(N="$RUNS" ANSWERED="$answered" python3 .dx-central/scripts/autopilot.py run-label)
+            d="The autopilot's runs on this pull request"; [ "$answered" != true ] || d="The autopilot's runs on this pull request that do not count towards its cap"
+          fi
           gh label create "$l" --repo "$GITHUB_REPOSITORY" --color C5DEF5 --description "$d" 2>/dev/null || true
           gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label "$l" >/dev/null
 
@@ -514,6 +555,9 @@ jobs:
           BRANCH: ${{ steps.what.outputs.branch }}
           ROUND: ${{ steps.what.outputs.round }}
           LANE: ${{ steps.may.outputs.lane }}
+          # #479: a round for a pull request the queue dropped reads the
+          # failed jobs' log instead of the review.
+          QUEUE: ${{ github.event_name == 'pull_request' && github.event.action == 'dequeued' }}
           RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
         run: |
           set -euo pipefail
@@ -1125,6 +1169,10 @@ jobs:
           STARTED: ${{ needs.prep.outputs.started }}
           HEAD_BEFORE: ${{ needs.prep.outputs.mode == 'fix' && needs.prep.outputs.head || '' }}
           WORK_OUTCOME: ${{ needs.work.outputs.outcome || needs.work.result }}
+          # #479: a work job that failed without its agent's outcome lost its
+          # runner, and the run does not count.
+          WORK_RESULT: ${{ needs.work.result }}
+          AGENT_OUTCOME: ${{ needs.work.outputs.outcome }}
           SPEC_OUTCOME: ${{ needs.spec.outputs.outcome || needs.spec.result }}
           WHY: ${{ needs.draft.outputs.why }}
           HELD: ${{ needs.draft.outputs.held || steps.applied.outputs.held }}

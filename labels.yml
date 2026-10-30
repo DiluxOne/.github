@@ -23,6 +23,7 @@
 - {name: "merged-by:policy", color: "0E8A16", description: "Merged by the autonomy policy, not by a person"}
 - {name: autopilot, color: "1D76DB", description: "Opened by the autopilot from an accepted issue"}
 - {name: "autopilot:continue", color: "1D76DB", description: "On an issue: the autopilot continues its draft pull request"}
+- {name: "autopilot:answered", color: "1D76DB", description: "On an issue: a maintainer answered the autopilot's question; the run it starts does not count"}
 - {name: needs-human, color: "D93F0B", description: "The autopilot handed this over to a person"}
 - {name: "needs:maintainer", color: "D93F0B", description: "Waits on a maintainer's decision"}
 
@@ -31,6 +32,8 @@
 - {name: "run:runner-image", color: "C5DEF5", description: "A build of the runner image (runner-image.yml)"}
 - {name: "run:autonomy-digest", color: "C5DEF5", description: "A week's decisions by policy (autonomy-digest.yml)"}
 - {name: "run:claims", color: "C5DEF5", description: "The daily list of claims (issue-claim.yml), one comment per repository"}
+- {name: "run:waiting", color: "C5DEF5", description: "What waits, every day (waiting-digest.yml): one pinned issue, its body rewritten"}
+- {name: "run:flow-numbers", color: "C5DEF5", description: "The week's numbers (flow-numbers.yml): one pinned issue, its body rewritten"}
 
 # A person claims an issue (#488, issue-claim.yml): the autopilot steps aside.
 - {name: claimed, color: "5319E7", description: "A person claimed it: the autopilot steps aside"}
