@@ -32,6 +32,7 @@
 - {name: "run:runner-image", color: "C5DEF5", description: "A build of the runner image (runner-image.yml)"}
 - {name: "run:autonomy-digest", color: "C5DEF5", description: "A week's decisions by policy (autonomy-digest.yml)"}
 - {name: "run:claims", color: "C5DEF5", description: "The daily list of claims (issue-claim.yml), one comment per repository"}
+- {name: "run:waiting", color: "C5DEF5", description: "What waits, every day (waiting-digest.yml): one pinned issue, its body rewritten"}
 
 # A person claims an issue (#488, issue-claim.yml): the autopilot steps aside.
 - {name: claimed, color: "5319E7", description: "A person claimed it: the autopilot steps aside"}
