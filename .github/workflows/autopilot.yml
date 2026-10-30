@@ -45,7 +45,9 @@ name: Autopilot
 #                   runs one fix round instead, counted as a run: the
 #                   rounds cap does not refuse it, the runs cap does.
 #
-# Before `finish ready` (#482) the agent reviews its own diff against the
+# Before `finish ready` (#482) the agent runs the local review's checks on
+# its own diff (scripts/local-review.sh --no-claude: the conventions, the
+# risk floor, the review's brief, #479) and reviews it against the
 # review's profiles and the kind's rules, fixing every blocker and major,
 # and runs `autopilot.py check`, which runs `make pre-pr` at HEAD (every
 # check the pull request and the merge queue run, #479): `finish ready`

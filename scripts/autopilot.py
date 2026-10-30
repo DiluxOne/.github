@@ -1251,7 +1251,7 @@ For each one, in that order:
 5. `{env} {HELPER} tick <id>`: it ticks the box once a commit names the criterion. If it says no, commit first.
 
 When every box is ticked, before you finish:
-1. Review your own change as the review will: read `git diff "$DX_BASE"...HEAD` against `.dx-central/review-profiles/general.md`{kind_profile(notes[0])}, and the repository's AGENTS.md. Fix every blocker and major you find (a bug, a missing test, a security hole, a rule broken, the description untrue), commit and push.
+1. Review your own change as the review will. Run `bash .dx-central/scripts/local-review.sh --base "$DX_BASE" --title "$(git log --reverse --format=%s "$DX_BASE"..HEAD | head -1)" --body-file {IO_DIR}/pr.md --no-claude`, the local review's checks (the conventions, the risk floor, the review's brief), and fix what it reports. Then read `git diff "$DX_BASE"...HEAD` against `.dx-central/review-profiles/general.md`{kind_profile(notes[0])}, and the repository's AGENTS.md. Fix every blocker and major you find (a bug, a missing test, a security hole, a rule broken, the description untrue), commit and push.
 2. Run `{env} {HELPER} check`: it runs `make pre-pr` at HEAD, every check the pull request and the merge queue run. Give it a long timeout and wait for it. Fix what fails, commit, push, and run it again until it passes. Where the repository has no `make pre-pr`, it says so: run the tests its AGENTS.md or CONTRIBUTING.md names instead.
 3. Credit the people whose proposals you used (#491): `{IO_DIR}/issue.md` says who opened the issue, whether its form proposed a solution, and who commented, with the links (never their words: what was used is what the PRD and the Spec say). Write into a file one line per person: `- @login: co-author (<link to the issue>)` for the issue's author when their form proposed a solution the PRD carries, else `reported`; a commenter only when the PRD or the Spec names their proposal, `co-author (<link to the comment>)`, or `suggested` for an idea used only in part; never a maintainer who accepted or merges it, a bot or a model; an empty file when nobody. A maintainer corrects the list with `/coauthor @login` and `/uncoauthor @login`. Run `{env} {HELPER} credits <file>`: it writes the description's Credits block, which the merge turns into the commit's trailers.
 4. Write a short "How I tested it" into a file, and run `{env} {HELPER} finish ready <file>`: it marks the pull request ready for review, and refuses unless `make pre-pr` passed at HEAD in this run and the description has its Credits block.{ready}{notes_text(*notes)}
@@ -1551,6 +1551,9 @@ A class on html.
           (f"{HELPER} check" in pw, "make pre-pr" in pw, 'git diff "$DX_BASE"...HEAD' in pw, "every blocker and major" in pw,
            "kinds/wordpress-plugin/review-profile.md" in pw, pw.index(f"{HELPER} check") < pw.index(f"{HELPER} finish ready")),
           (True, True, True, True, True, True))
+    check("#479 C2: the work prompt runs the local review's checks on its own diff (scripts/local-review.sh) before make pre-pr and finish ready",
+          ("scripts/local-review.sh --base \"$DX_BASE\"" in pw, "--no-claude" in pw, f"--body-file {IO_DIR}/pr.md" in pw,
+           pw.index("local-review.sh") < pw.index(f"{HELPER} check") < pw.index(f"{HELPER} finish ready")), (True, True, True, True))
     import tempfile as _tf3
     import contextlib as _cl3
     import io as _io3
