@@ -260,9 +260,14 @@ def self_test():
             steps = code.split("\n      - ")[1:]
             # The suite's own run reads the engine only for a targeted pull
             # request (#352), when the checkout is there for that too.
-            ours = [s for s in steps if ("required-plugins" in s or ".dx-central" in s) and not s.startswith("name: Run the suite")]
-            ifs = [[line for line in s.split("\n") if line.strip().startswith("if:")] for s in ours]
+            ours = [s for s in steps if ("required-plugins" in s or ".dx-central" in s) and not s.startswith(("name: Run the suite", "name: The flaky tests"))]
+            # #479: every E2E run reads the engine (scripts/e2e-run.sh, the
+            # retry and the flaky tests), so there its checkout and its
+            # configuration run with the suite; the rest stays guarded.
+            engine = [s for s in ours if name == "e2e" and ("repository: DiluxOne/.github" in s or "config-overlay.sh" in s)]
+            ifs = [[line for line in s.split("\n") if line.strip().startswith("if:")] for s in ours if s not in engine]
             ok = ok and len(ours) == 5 and all(i and guard in i[0] for i in ifs)
+            ok = ok and all("if: env.GO == 'true'" in s for s in engine) and len(engine) == (2 if name == "e2e" else 0)
     except (ValueError, IndexError):
         ok = False
     print(("ok   " if ok else "FAIL ") + "C2 (#148): every required-plugins step of the suites, and its job, runs only with requires-plugins-from")
