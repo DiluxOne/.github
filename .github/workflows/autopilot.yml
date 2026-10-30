@@ -63,6 +63,11 @@ name: Autopilot
 #                   pushed to its branch, which runs the pipeline again. After
 #                   `autopilot-rounds` rounds (5) it hands the pull request to
 #                   a person (`needs-human`, with a summary).
+#                   Called on `dequeued` (#479, org-pull-request.yml's
+#                   autopilot-queue), for a pull request the merge queue
+#                   dropped: one round, within the same cap, only when a
+#                   check failed in its last merge group, from the failed
+#                   jobs' log (`autopilot.py queue-failed`, .dx-io/queue.md).
 #
 # The agent holds no key (#287). A shell in a job that holds a secret can
 # read it out of the runner's memory, whatever the token's scope, so the
@@ -349,6 +354,12 @@ jobs:
           PR: ${{ steps.what.outputs.pr }}
           ROUND: ${{ steps.what.outputs.round }}
           RUNS: ${{ steps.what.outputs.runs }}
+          # #479: a fix round called on `dequeued` (org-pull-request.yml's
+          # autopilot-queue; a reusable workflow sees its caller's event) is
+          # for a pull request the merge queue dropped. Read from the event,
+          # not an input, so the caller on main never names an input the
+          # released major lacks.
+          QUEUE: ${{ github.event_name == 'pull_request' && github.event.action == 'dequeued' }}
           # At its cap the autopilot hands the issue to people (#488).
           OPEN_TO_CLAIM: "The autopilot reached its cap on this issue, and its pull request waits for a person: anyone may `/claim` this issue to finish it with their own code (CONTRIBUTING.md). It is on the daily list of claims until someone does.\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
         run: |
@@ -470,6 +481,15 @@ jobs:
               [ -z "${ISSUE:-}" ] || [ -z "${OPEN_TO_CLAIM:-}" ] || gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "${OPEN_TO_CLAIM:-}" >/dev/null || true
               echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
             fi
+            # #479: a round for a pull request the merge queue dropped runs
+            # only when a check failed in its last merge group (not for a
+            # conflict, nor for a person who took it out), within the cap
+            # above.
+            if [ "${QUEUE:-}" = true ]; then
+              rc=0; why=$(python3 .dx-central/scripts/autopilot.py queue-failed) || rc=$?
+              if [ "$rc" != 0 ]; then echo "No queue fix: $why"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+              echo "The merge queue dropped #$PR: $why"
+            fi
           fi
           echo "go=true" >> "$GITHUB_OUTPUT"
       - name: When it starts
@@ -535,6 +555,9 @@ jobs:
           BRANCH: ${{ steps.what.outputs.branch }}
           ROUND: ${{ steps.what.outputs.round }}
           LANE: ${{ steps.may.outputs.lane }}
+          # #479: a round for a pull request the queue dropped reads the
+          # failed jobs' log instead of the review.
+          QUEUE: ${{ github.event_name == 'pull_request' && github.event.action == 'dequeued' }}
           RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
         run: |
           set -euo pipefail
