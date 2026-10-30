@@ -456,10 +456,11 @@ def run_label(n, answered):
 
 
 def runner_lost(work_result, agent_outcome):
-    """Whether the work job ended without its agent's step saying how (#479):
-    its runner lost or killed, the run cancelled, or a step before the agent
-    failing; the agent's own failure or timeout has an outcome. Pure."""
-    return work_result in ("failure", "cancelled") and not agent_outcome
+    """Whether the work job failed without its agent's step saying how
+    (#479): its runner lost or killed, or a step before the agent failing;
+    the agent's own failure or timeout has an outcome. A cancelled run is a
+    person's doing, never continued on its own. Pure."""
+    return work_result == "failure" and not agent_outcome
 SILENT = "<!-- dx-autopilot-silent -->"
 # A draft with every box ticked whose run ended without `finish` (#482): it
 # continues once, and this comment says so and marks that it did.
@@ -1642,7 +1643,7 @@ A class on html.
     check("#479 C5: a run an answer to the autopilot's question started is free", (run_label(4, True), run_label(4, False)), ("autopilot:free-4", "autopilot:run-4"))
     check("#479 C5: a work job that ended without its agent's outcome lost its runner; the agent's own failure did not",
           (runner_lost("failure", ""), runner_lost("cancelled", ""), runner_lost("failure", "failure"), runner_lost("success", "success"), runner_lost("skipped", "")),
-          (True, True, False, False, False))
+          (True, False, False, False, False))
     check("#479 C5: may-continue counts the run-N labels only, so free runs never reach the cap",
           may_continue(["autopilot:run-1", "autopilot:free-2", "autopilot:free-3", "autopilot:free-4", "autopilot:free-5"], "<!-- dx-checklist -->\n- [ ] **C1** x\n<!-- /dx-checklist -->\n", run_numbers(["autopilot:run-1", "autopilot:free-2", "autopilot:free-3", "autopilot:free-4", "autopilot:free-5"])[1], 5)[0], True)
     check("#479 C5: a draft whose runner was lost continues, uncounted, within the cap; never past it, nor a fix round",

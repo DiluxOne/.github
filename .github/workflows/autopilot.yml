@@ -1169,7 +1169,7 @@ jobs:
           STARTED: ${{ needs.prep.outputs.started }}
           HEAD_BEFORE: ${{ needs.prep.outputs.mode == 'fix' && needs.prep.outputs.head || '' }}
           WORK_OUTCOME: ${{ needs.work.outputs.outcome || needs.work.result }}
-          # #479: a work job that ended without its agent's outcome lost its
+          # #479: a work job that failed without its agent's outcome lost its
           # runner, and the run does not count.
           WORK_RESULT: ${{ needs.work.result }}
           AGENT_OUTCOME: ${{ needs.work.outputs.outcome }}
