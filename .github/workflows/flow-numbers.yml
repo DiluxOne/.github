@@ -1,0 +1,66 @@
+name: The week's numbers
+
+# Not reusable. Every Monday, and by hand (#479): how the flow spent its time
+# over the last seven days, from the same data as #479, in one issue of this
+# repository, labelled `run:flow-numbers` and pinned, whose body is
+# rewritten every run (scripts/flow-numbers.py): the lead time from the
+# issue to the merge (median and average, the autopilot's and the others'
+# apart), the merge queue's failure rate and the time its runs took, the
+# autopilot's runs per merged pull request and the flaky tests its E2E jobs
+# reported (scripts/flaky.py). The issue is public: a private repository is
+# in the numbers, its flaky tests counted, never named. A read that fails
+# fails the run and leaves the last body as it was.
+
+on:
+  schedule:
+    - cron: '53 8 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flow-numbers
+
+jobs:
+  numbers:
+    name: The week's numbers
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: dilux-bot token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-issues: write
+          permission-pull-requests: read
+          permission-actions: read # the merge groups' runs and jobs
+          permission-checks: read # their flaky-test warnings
+          permission-metadata: read
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Keep the issue up to date
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          python3 scripts/flow-numbers.py > "$RUNNER_TEMP/numbers.md"
+          gh label create "run:flow-numbers" --repo "$GITHUB_REPOSITORY" --color C5DEF5 --force \
+            --description "The week's numbers (flow-numbers.yml): one pinned issue, its body rewritten" >/dev/null
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label "run:flow-numbers" --limit 1 --json number --jq '.[0].number // empty')
+          if [ -z "$number" ]; then
+            url=$(gh issue create --repo "$GITHUB_REPOSITORY" --title "The week's numbers" --label "run:flow-numbers" --body-file "$RUNNER_TEMP/numbers.md")
+            number=${url##*/}
+            gh issue pin "$number" --repo "$GITHUB_REPOSITORY" || echo "::warning::#$number could not be pinned; pin it by hand."
+          else
+            gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/numbers.md" >/dev/null
+          fi
+          echo "The week's numbers: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/issues/$number"
+          cat "$RUNNER_TEMP/numbers.md" >> "$GITHUB_STEP_SUMMARY"

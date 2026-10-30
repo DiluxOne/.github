@@ -1,0 +1,24 @@
+{
+ "now": "2026-10-27T00:00:00Z",
+ "prs": [
+  {"repo": "diluxone-users-wordpress", "private": false, "number": 180, "mergedAt": "2026-10-21T10:00:00Z", "issueCreatedAt": "2026-10-21T02:00:00Z", "autopilot": true, "runs": 6},
+  {"repo": "diluxone-users-wordpress", "private": false, "number": 189, "mergedAt": "2026-10-23T12:00:00Z", "issueCreatedAt": "2026-10-22T10:00:00Z", "autopilot": true, "runs": 8},
+  {"repo": "diluxone-fm", "private": true, "number": 230, "mergedAt": "2026-10-24T05:00:00Z", "issueCreatedAt": "2026-10-24T01:00:00Z", "autopilot": true, "runs": 1},
+  {"repo": "diluxone-website", "private": false, "number": 31, "mergedAt": "2026-10-22T10:30:00Z", "issueCreatedAt": "2026-10-22T10:00:00Z", "autopilot": false, "runs": 0},
+  {"repo": "diluxone-website", "private": false, "number": 32, "mergedAt": "2026-10-22T12:30:00Z", "issueCreatedAt": "2026-10-22T11:00:00Z", "autopilot": false, "runs": 0},
+  {"repo": "diluxone-website", "private": false, "number": 33, "mergedAt": "2026-10-23T12:30:00Z", "issueCreatedAt": null, "autopilot": false, "runs": 0}
+ ],
+ "queue": [
+  {"repo": "diluxone-users-wordpress", "conclusion": "failure", "started": "2026-10-21T10:00:00Z", "updated": "2026-10-21T10:41:00Z"},
+  {"repo": "diluxone-users-wordpress", "conclusion": "success", "started": "2026-10-21T11:00:00Z", "updated": "2026-10-21T11:40:00Z"},
+  {"repo": "diluxone-users-wordpress", "conclusion": "timed_out", "started": "2026-10-22T11:00:00Z", "updated": "2026-10-22T12:00:00Z"},
+  {"repo": "diluxone-users-wordpress", "conclusion": "success", "started": "2026-10-23T11:00:00Z", "updated": "2026-10-23T11:20:00Z"},
+  {"repo": "diluxone-users-wordpress", "conclusion": "cancelled", "started": "2026-10-23T12:00:00Z", "updated": "2026-10-23T12:01:00Z"}
+ ],
+ "flaky": [
+  {"repo": "diluxone-users-wordpress", "private": false, "spec": "tests/e2e/login.spec.ts", "line": 14},
+  {"repo": "diluxone-users-wordpress", "private": false, "spec": "tests/e2e/login.spec.ts", "line": 14},
+  {"repo": "diluxone-users-wordpress", "private": false, "spec": "tests/e2e/media.spec.ts", "line": 3},
+  {"repo": "secret", "private": true, "spec": "x.spec.ts", "line": 1}
+ ]
+}
