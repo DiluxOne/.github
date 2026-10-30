@@ -425,6 +425,41 @@ STOP = "<!-- dx-autopilot-stop -->"
 # answer, labelled autopilot:waiting, and goes on once one comes.
 ASK = "<!-- dx-autopilot-ask -->"
 WAITING = "autopilot:waiting"
+# What counts towards `autopilot-runs` (#479): each run is labelled on its
+# pull request, autopilot:run-N when it counts and autopilot:free-N when it
+# was not the autopilot's fault: started by a maintainer's answer to its own
+# question (review-reply.yml adds autopilot:answered beside the continue),
+# or ended because its runner was lost. N numbers every run; only run-N
+# labels count.
+RUN_PREFIX = "autopilot:run-"
+FREE_PREFIX = "autopilot:free-"
+ANSWERED = "autopilot:answered"
+
+
+def run_numbers(labels):
+    """(the next run's number, the runs that count) from a pull request's
+    labels. Pure."""
+    def nums(prefix):
+        return [int(m.group(1)) for l in labels if (m := re.fullmatch(re.escape(prefix) + r"([0-9]+)", str(l)))]
+    counted, free = nums(RUN_PREFIX), nums(FREE_PREFIX)
+    return max(counted + free, default=0) + 1, len(counted)
+
+
+def free_runs(labels):
+    return sum(1 for l in labels if re.fullmatch(re.escape(FREE_PREFIX) + r"[0-9]+", str(l)))
+
+
+def run_label(n, answered):
+    """The label of run N: free when an answer to the autopilot's question
+    started it."""
+    return f"{FREE_PREFIX}{n}" if answered else f"{RUN_PREFIX}{n}"
+
+
+def runner_lost(work_result, agent_outcome):
+    """Whether the work job ended without its agent's step saying how (#479):
+    its runner lost or killed, the run cancelled, or a step before the agent
+    failing; the agent's own failure or timeout has an outcome. Pure."""
+    return work_result in ("failure", "cancelled") and not agent_outcome
 SILENT = "<!-- dx-autopilot-silent -->"
 # A draft with every box ticked whose run ended without `finish` (#482): it
 # continues once, and this comment says so and marks that it did.
@@ -591,16 +626,20 @@ def continue_as(is_draft, record, head):
     return "fix" if review_count.blocking(record) else "continue"
 
 
-def end_verdict(mode, pr, draft_, stopped, done, total, limit_hit, runs, cap, pushed=False, asked=False, nudged=False):
+def end_verdict(mode, pr, draft_, stopped, done, total, limit_hit, runs, cap, pushed=False, asked=False, nudged=False, lost=False, frees=0):
     """ready | stopped | asked | continue | silent. A run never ends without
     one of the first four: silent is the workflow saying so for the agent.
     A draft with every box ticked that ended without `finish` continues once
     (#482: nudged, the pull request already had that continue), for the
-    checks and the finish it left."""
+    checks and the finish it left. A draft whose runner was lost (#479,
+    `lost`) continues, uncounted, while its free runs (`frees`, this one
+    included) stay within the cap too."""
     if stopped:
         return "stopped"
     if asked:
         return "asked"
+    if lost and mode != "fix" and pr and draft_ and frees <= cap and runs < cap:
+        return "continue"
     if mode == "fix":
         return "ready" if pushed else "silent"
     if pr and not draft_:
@@ -1542,6 +1581,21 @@ A class on html.
     check("#482 C3: the continue is counted from dilux-bot's own comment, never anyone else's",
           (nudged_before([{"body": unfinished_comment("u"), "author": bot}]), nudged_before([{"body": unfinished_comment("u"), "author": {"login": "someone"}}]),
            nudged_before([{"body": silent_comment("x", "u"), "author": bot}])), (True, False, False))
+    # #479 C5: what counts towards the cap.
+    check("#479 C5: the next run follows every run, counted or free; only run-N labels count",
+          (run_numbers(["autopilot", "autopilot:run-1", "autopilot:free-2", "autopilot:run-3"]), run_numbers([]), run_numbers(["autopilot:run-x", "autopilot:round-4"])),
+          ((4, 2), (1, 0), (1, 0)))
+    check("#479 C5: a run an answer to the autopilot's question started is free", (run_label(4, True), run_label(4, False)), ("autopilot:free-4", "autopilot:run-4"))
+    check("#479 C5: a work job that ended without its agent's outcome lost its runner; the agent's own failure did not",
+          (runner_lost("failure", ""), runner_lost("cancelled", ""), runner_lost("failure", "failure"), runner_lost("success", "success"), runner_lost("skipped", "")),
+          (True, True, False, False, False))
+    check("#479 C5: may-continue counts the run-N labels only, so free runs never reach the cap",
+          may_continue(["autopilot:run-1", "autopilot:free-2", "autopilot:free-3", "autopilot:free-4", "autopilot:free-5"], "<!-- dx-checklist -->\n- [ ] **C1** x\n<!-- /dx-checklist -->\n", run_numbers(["autopilot:run-1", "autopilot:free-2", "autopilot:free-3", "autopilot:free-4", "autopilot:free-5"])[1], 5)[0], True)
+    check("#479 C5: a draft whose runner was lost continues, uncounted, within the cap; never past it, nor a fix round",
+          (end_verdict("continue", "8", True, False, 1, 3, False, 2, 5, lost=True, frees=1), end_verdict("continue", "8", True, False, 1, 3, False, 5, 5, lost=True, frees=1),
+           end_verdict("continue", "8", True, False, 1, 3, False, 2, 5, lost=True, frees=6), end_verdict("fix", "8", False, False, 1, 3, False, 2, 5, lost=True, frees=1),
+           end_verdict("continue", "8", True, True, 1, 3, False, 2, 5, lost=True, frees=1)),
+          ("continue", "silent", "silent", "silent", "stopped"))
     check("#482 C1: finish ready needs make pre-pr passed at HEAD in this run, where the Makefile has it",
           (pre_pr_refusal(False, None, "abc"), bool(pre_pr_refusal(True, None, "abc")), bool(pre_pr_refusal(True, {"head": "old", "rc": 0}, "abc")),
            bool(pre_pr_refusal(True, {"head": "abc", "rc": 2}, "abc")), pre_pr_refusal(True, {"head": "abc", "rc": 0}, "abc"), bool(pre_pr_refusal(True, "x", "abc"))),
@@ -2867,6 +2921,16 @@ def main(argv):
             return 2
         print(why or "nobody holds it")
         return 1 if why else 0
+    if argv[:1] == ["next-run"]:
+        # LABELS: the pull request's labels, comma-separated (#479): the
+        # next run's number, after every run, counted or free.
+        print(run_numbers([l for l in os.environ.get("LABELS", "").split(",") if l])[0])
+        return 0
+    if argv[:1] == ["run-label"]:
+        # N, the run's number; ANSWERED, true when an answer to the
+        # autopilot's question started it (#479): the label it carries.
+        print(run_label(int(os.environ.get("N", "1") or 1), os.environ.get("ANSWERED") == "true"))
+        return 0
     if argv[:1] == ["continue-as"]:
         # IS_DRAFT (true or false), HEAD (the pull request's head), RECORD
         # (a file holding the review's last record, or null).
@@ -2886,7 +2950,9 @@ def main(argv):
         if info.get("state") != "OPEN" or not (info.get("isDraft") or os.environ.get("AS") == "fix"):
             print(f"#{pr} is not an open draft")
             return 1
-        ok, why = may_continue([l["name"] for l in info["labels"]], info["body"], runs, cap)
+        names = [l["name"] for l in info["labels"]]
+        # The runs that count (#479): the run-N labels, never the free ones.
+        ok, why = may_continue(names, info["body"], run_numbers(names)[1], cap)
         print(why)
         return 0 if ok else 1
     if argv[:1] == ["end"]:
@@ -2912,13 +2978,27 @@ def main(argv):
         stopped = stopped_since(comments, started)
         asked = asked_since(comments, started)
         draft_, done, total, pushed = True, 0, 0, False
+        lost, frees = False, 0
         if pr:
-            info = pr_json(repo, pr, "body,isDraft,headRefOid")
+            info = pr_json(repo, pr, "body,isDraft,headRefOid,labels")
             draft_ = info["isDraft"]
             done, total = progress(info["body"])
             pushed = bool(os.environ.get("HEAD_BEFORE")) and info["headRefOid"] != os.environ.get("HEAD_BEFORE")
+            names = [l["name"] for l in info.get("labels") or []]
+            # #479: a run whose runner was lost does not count: its label
+            # becomes a free one.
+            lost = mode != "fix" and not stopped and not asked and runner_lost(os.environ.get("WORK_RESULT", ""), os.environ.get("AGENT_OUTCOME", ""))
+            if lost and f"{RUN_PREFIX}{runs}" in names:
+                subprocess.run(["gh", "label", "create", f"{FREE_PREFIX}{runs}", "--repo", repo, "--color", "C5DEF5", "--force",
+                                "--description", "The autopilot's runs on this pull request that do not count towards its cap"], capture_output=True)
+                gh("pr", "edit", str(pr), "--repo", repo, "--remove-label", f"{RUN_PREFIX}{runs}", "--add-label", f"{FREE_PREFIX}{runs}")
+                names = [n for n in names if n != f"{RUN_PREFIX}{runs}"] + [f"{FREE_PREFIX}{runs}"]
+            if any(n.startswith((RUN_PREFIX, FREE_PREFIX)) for n in names):
+                runs, frees = run_numbers(names)[1], free_runs(names)
         nudged = bool(pr) and nudged_before(comments)
-        v = end_verdict(mode, pr, draft_, stopped, done, total, limit, runs, cap, pushed, asked, nudged)
+        v = end_verdict(mode, pr, draft_, stopped, done, total, limit, runs, cap, pushed, asked, nudged, lost, frees)
+        if lost:
+            print("Its runner was lost: the run does not count towards the cap (#479).")
         print(v)
 
         def said():
