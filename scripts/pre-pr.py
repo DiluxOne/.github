@@ -93,10 +93,14 @@ def render_kind(kind):
 
 def with_include(text):
     """A Makefile's text (None for none) that includes dx.mk: unchanged when
-    it does, the include first otherwise, so its own rules come after."""
+    it does, the include last otherwise: make's default goal is the first
+    target it reads, included files counted, so a bare `make` keeps running
+    the repository's own first target, not dx.mk's `pre-pr`."""
     if text and INCLUDE_RE.search(text):
         return text
-    return INCLUDE + "\n" + (("\n" + text) if text else "")
+    if not text:
+        return INCLUDE + "\n"
+    return text + ("" if text.endswith("\n") else "\n") + "\n" + INCLUDE + "\n"
 
 
 def own_recipe(text):
@@ -220,7 +224,7 @@ def self_test():
     for step in ("composer lint", "composer stan", "composer test:unit", "phpunit-integration.xml", "e2e-run.sh", "repro-ways.py\" affected", "review-rules.php"):
         check(f"C1 its pre-pr runs {step}", step.replace("$", "$$") in (frag or ""), True)
     check("C1 a kind with no pack, or no kind, gets none", (render_kind("no-such-kind"), render_kind(None), render({})), (None, None, None))
-    check("C1 a Makefile without the include gets it first, its own rules kept", with_include("check:\n\ttrue\n"), "include dx.mk\n\ncheck:\n\ttrue\n")
+    check("C1 a Makefile without the include gets it last, its own rules kept", (with_include("check:\n\ttrue\n"), with_include("check:\n\ttrue")), ("check:\n\ttrue\n\ninclude dx.mk\n",) * 2)
     check("C1 one that includes it is unchanged, as is -include", (with_include("x:\ninclude dx.mk\n"), with_include("-include dx.mk\n")), ("x:\ninclude dx.mk\n", "-include dx.mk\n"))
     check("C1 no Makefile gets one that includes it", with_include(None), "include dx.mk\n")
     check("C1 a repository of the kind gets dx.mk and the include", sorted(wanted("wordpress-plugin", None, None)), ["Makefile", "dx.mk"])
@@ -244,6 +248,19 @@ def self_test():
             os.remove(os.path.join(d, "log"))
             bad = subprocess.run(["make", "-s", "pre-pr"], cwd=d, capture_output=True, text=True)
             check("C1 a failing step fails make pre-pr, and finally still runs", (bad.returncode != 0, "finally" in open(os.path.join(d, "log")).read()), (True, True))
+        # The include must not take the default goal: a bare `make` runs the repository's first target, not pre-pr.
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, FRAGMENT), "w") as fh:
+                fh.write(render({"run": ["echo pre-pr >> log"]}))
+            with open(os.path.join(d, "Makefile"), "w") as fh:
+                fh.write(with_include(".PHONY: all\nall:\n\t@echo all >> log\npre-pr: all\n"))
+            bare = subprocess.run(["make", "-s"], cwd=d, capture_output=True, text=True)
+            check("C1 a bare make still runs the repository's first target, not dx.mk's pre-pr",
+                  (bare.returncode, open(os.path.join(d, "log")).read()), (0, "all\n"))
+            os.remove(os.path.join(d, "log"))
+            named = subprocess.run(["make", "-s", "pre-pr"], cwd=d, capture_output=True, text=True)
+            check("C1 with the include last, make pre-pr still runs the repository's prerequisite first",
+                  (named.returncode, open(os.path.join(d, "log")).read()), (0, "all\npre-pr\n"))
     print("all tests passed" if not fails else f"{len(fails)} failed")
     return 1 if fails else 0
 

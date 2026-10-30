@@ -386,7 +386,7 @@ if [ "${1:-}" = "--test" ]; then
   pre_pr_case "#479: required, a Makefile with pre-pr passes"     0 'check:\n\ttrue\npre-pr: check\n' required || fail=1
   pre_pr_case "#479: required, a Makefile with no pre-pr fails"   1 'check:\n\ttrue\n' required || fail=1
   pre_pr_case "#479: required, no Makefile fails"                 1 '' required || fail=1
-  pre_pr_case "#479 C1: required, one that includes the pack's dx.mk passes" 0 'include dx.mk\n\ncheck:\n\ttrue\n' required || fail=1
+  pre_pr_case "#479 C1: required, one that includes the pack's dx.mk passes" 0 'check:\n\ttrue\n\ninclude dx.mk\n' required || fail=1
   pre_pr_case "#479: optional (the switch off), none still passes" 0 '' optional || fail=1
   pre_pr_case "#479: exempt by design, none passes"               0 '' exempt || fail=1
   # #144: no new functionality behind a type that is not feat, from an

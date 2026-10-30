@@ -279,7 +279,7 @@ def sync_files(repo, conf, block, dry, part="files"):
         return
     if part == "pre-pr":
         own = (" Its Makefile has a `pre-pr` recipe of its own, so it does not include dx.mk yet: make that recipe a target "
-               "of its own and name it as a prerequisite (`pre-pr: my-check`), then add `include dx.mk` first.") if conflict else ""
+               "of its own and name it as a prerequisite (`pre-pr: my-check`), then add `include dx.mk` at the end.") if conflict else ""
         body = prd("`make pre-pr` is the one check before a pull request in every repository (DiluxOne/.github#479): the "
                    "organisation writes it from the pack of the repository's kind (`pre-pr-make`) into dx.mk, which its "
                    f"Makefile includes, so the person, the agents and the autopilot run the same checks. {changed} differ here.{own}", wanted)
@@ -2378,8 +2378,8 @@ def dependabot_test(check, conf, labels, block):
         del calls[seen_calls:]
         got = (wrote["none"].get("dx.mk") == fragment, wrote["none"].get("Makefile"), pre_pr_mod.has_target(wrote["none"].get("dx.mk")))
         check("#479 C1: a plugin with no Makefile gets dx.mk, the pack's pre-pr, and a Makefile that includes it", got == (True, "include dx.mk\n", True), got)
-        check("#479 C1: one with a Makefile keeps its own rules, the include first",
-              wrote["own"].get("Makefile") == "include dx.mk\n\ncheck:\n\tphpunit\n", wrote["own"].get("Makefile"))
+        check("#479 C1: one with a Makefile keeps its own rules, the include last (its default goal kept)",
+              wrote["own"].get("Makefile") == "check:\n\tphpunit\n\ninclude dx.mk\n", wrote["own"].get("Makefile"))
         check("#479 C1: one whose own pre-pr has a recipe gets dx.mk, its Makefile left as it is", sorted(wrote["recipe"]) == ["dx.mk"], wrote["recipe"])
         check("#479 C1: a repository of no kind gets nothing", wrote["no kind"] == {}, wrote["no kind"])
     finally:
