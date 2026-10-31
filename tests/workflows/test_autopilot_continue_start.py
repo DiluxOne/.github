@@ -22,7 +22,7 @@ def step(job, key):
     return next(s for s in JOBS[job]["steps"] if s.get("id") == key or s.get("name") == key)
 
 
-def what(tmp_path, body, open_pr=None):
+def what(tmp_path, body, open_pr=None, state="OPEN"):
     """The step's outputs and the gh calls it made, for an issue (#7) whose
     closing pull request, when given, is an open `autopilot` one."""
     bin_dir = tmp_path / "bin"
@@ -36,6 +36,7 @@ def what(tmp_path, body, open_pr=None):
         'case "$*" in\n'
         f"  *closedByPullRequestsReferences*) echo '{open_pr or ''}' ;;\n"
         "  *state,labels*) echo true ;;\n"
+        f"  *'--json state '*) echo {state} ;;\n"
         "  *'--json author'*) echo dilux-bot ;;\n"
         "  *headRefName*) echo feat/7-x ;;\n"
         "  *'--json labels'*) echo autopilot,autopilot:run-1 ;;\n"
@@ -79,6 +80,12 @@ def test_c1_a_continue_with_no_pull_request_starts(tmp_path, body, spec):
     assert "--remove-label autopilot:answered" in calls
     # The start reads the repository's way to reproduce a bug (#377).
     assert "review-policy.yml" in calls
+
+
+def test_c1_a_closed_issue_starts_nothing(tmp_path):
+    out, calls = what(tmp_path, PRD, state="CLOSED")
+    assert out == {"go": "false"}
+    assert "autopilot:answered" not in calls
 
 
 def test_c1_the_jobs_key_on_the_mode_prep_decided():

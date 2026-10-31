@@ -35,8 +35,8 @@ name: Autopilot
 #                   a run an answer to its question started, or whose
 #                   runner was lost, is free and does not count (#479).
 #                   A person who took it back removes `needs-human` first.
-#                   With no open `autopilot` pull request closing the issue
-#                   (#535), the continue starts the issue's next phase
+#                   With no open `autopilot` pull request closing an open
+#                   issue (#535), the continue starts the issue's next phase
 #                   instead, as `mode: start` does, through its gates: the
 #                   agent writes the Spec, or, with one already on the
 #                   issue, the draft opens from it (G3, sealed). It counts
@@ -312,6 +312,10 @@ jobs:
               # starts the issue's next phase, as the first run does,
               # through the start's own gates. A start counts no run, so an
               # answer's label must not linger and make a later continue free.
+              # A closed issue is done (or dropped): nothing to start.
+              if [ "$(gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json state --jq .state)" != OPEN ]; then
+                echo "#$ISSUE is closed and no pull request of the autopilot's closes it: nothing to continue."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+              fi
               echo "No open autopilot pull request closes #$ISSUE: this continue starts it."
               gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label "autopilot:answered" >/dev/null 2>&1 || true
               MODE=start; started_by_continue=true
