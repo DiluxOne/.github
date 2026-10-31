@@ -318,14 +318,16 @@ def with_trailer(message, trailer):
 def add_trailer(base, trailer, cwd=None):
     """Makes the commits base..HEAD again with the trailer in each message
     (same trees, authors and order), and moves HEAD to the last; returns how
-    many it rewrote."""
+    many it rewrote. A merge of the default branch (#550) keeps its other
+    parent: main's commits are not rewritten."""
     run = lambda *a, **k: subprocess.run(["git", *a], capture_output=True, text=True, check=True, cwd=cwd, **k).stdout.strip()
-    revs = [r for r in run("rev-list", "--reverse", f"{base}..HEAD").split() if r]
+    revs = [r for r in run("rev-list", "--reverse", "--first-parent", f"{base}..HEAD").split() if r]
     parent = run("rev-parse", base)
     for c in revs:
         name, mail, date = run("log", "-1", "--format=%an%x00%ae%x00%aI", c).split("\x00")
         env = dict(os.environ, GIT_AUTHOR_NAME=name, GIT_AUTHOR_EMAIL=mail, GIT_AUTHOR_DATE=date)
-        parent = run("commit-tree", f"{c}^{{tree}}", "-p", parent, "-m", with_trailer(run("log", "-1", "--format=%B", c), trailer), env=env)
+        others = [a for p in run("rev-list", "--parents", "-n", "1", c).split()[2:] for a in ("-p", p)]
+        parent = run("commit-tree", f"{c}^{{tree}}", "-p", parent, *others, "-m", with_trailer(run("log", "-1", "--format=%B", c), trailer), env=env)
     if revs:
         run("reset", "-q", "--hard", parent)
     return len(revs)
@@ -2231,6 +2233,20 @@ Clamp the value in Sum::add.
         check("C10 commits on an adopted branch carry Co-authored-by for the author, same trees, same order",
               (n, [m.strip().splitlines()[0] for m in msgs if m.strip()], all(co_author(rec) in m for m in msgs if m.strip()), g("log", "--format=%T", f"{base}..HEAD") == trees),
               (2, ["feat: part 2 (C2)", "feat: part 1 (C1)"], True, True))
+        # main merged in (#550): the merge is rewritten, main's commit is not.
+        g("checkout", "-q", "-b", "main", base)
+        with open(os.path.join(d, "m"), "w") as fh:
+            fh.write("m")
+        g("add", "m")
+        g("commit", "-q", "-m", "chore: on main")
+        on_main = g("rev-parse", "HEAD")
+        g("checkout", "-q", "feat/7-x")
+        g("merge", "-q", "--no-edit", "main")
+        head = g("rev-parse", "HEAD")
+        n = add_trailer(f"{head}~1", co_author(rec), cwd=d)
+        check("C10 a merge of main keeps main's commit as its other parent, untouched",
+              (n, g("rev-list", "--parents", "-n", "1", "HEAD").split()[2:], co_author(rec) in g("log", "-1", "--format=%B", on_main), g("rev-parse", "HEAD^{tree}") == g("rev-parse", f"{head}^{{tree}}")),
+              (1, [on_main], False, True))
     if not failed:
         print("all tests passed")
     return failed
