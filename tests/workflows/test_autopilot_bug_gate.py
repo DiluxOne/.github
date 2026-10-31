@@ -30,7 +30,7 @@ def run(tmp_path, mode, rc):
     out = tmp_path / "out"
     out.write_text("")
     env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", RUNNER_TEMP=str(tmp_path), GITHUB_OUTPUT=str(out),
-               GITHUB_REPOSITORY="o/r", MODE=mode, ISSUE="7", PR="", ROUND="1", RUNS="1", STUB_RC=str(rc))
+               GITHUB_REPOSITORY="o/r", MODE=mode, AS=mode, ISSUE="7", PR="", ROUND="1", RUNS="1", STUB_RC=str(rc))
     done = subprocess.run(["bash", "-c", may_start_script()], env=env, capture_output=True, text=True, timeout=60)
     assert done.returncode == 0, done.stderr
     return log.read_text(), out.read_text()

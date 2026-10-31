@@ -31,4 +31,4 @@ def test_a_start_that_finds_no_lane_asks_once_more():
     text = (ROOT / ".github/workflows/autopilot.yml").read_text(encoding="utf-8")
     step = text[text.index("A decision's sub-issue starts when it opens"):]
     step = step[:step.index('echo "go=false"')]
-    assert step.count("autopilot.py lane") == 2 and '"$MODE" != start' in step and "sleep" in step
+    assert step.count("autopilot.py lane") == 2 and '"$AS" != start' in step and "sleep" in step

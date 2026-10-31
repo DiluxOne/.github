@@ -774,7 +774,8 @@ jobs:
   # request, if the autopilot is on and the issue is ready (autopilot.yml
   # decides both). `autopilot:continue` on the issue, from a person or from
   # dilux-bot (a run that ran out of turns or time), resumes its draft pull
-  # request (#109). Here because this caller inherits the secrets. Never on
+  # request (#109), or starts the issue's next phase when no pull request
+  # of the autopilot's is open (#535). Here because this caller inherits the secrets. Never on
   # a release issue (#82, `lane:release`): its acceptance opens the release
   # pull request instead (issue-accepted.yml). An issue dilux-bot opens with
   # no label starts it too: an accepted decision's sub-issue

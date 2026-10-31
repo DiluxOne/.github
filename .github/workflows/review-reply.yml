@@ -123,7 +123,7 @@ jobs:
               { echo "others=true"; echo "issue=$issue"; } >> "$GITHUB_OUTPUT"
               exit 0 ;;
           esac
-          gh label create "autopilot:continue" --repo "$GITHUB_REPOSITORY" --color 1D76DB --force --description "On an issue: the autopilot continues its draft pull request" >/dev/null 2>&1 || true
+          gh label create "autopilot:continue" --repo "$GITHUB_REPOSITORY" --color 1D76DB --force --description "On an issue: the autopilot continues its draft pull request, or starts it" >/dev/null 2>&1 || true
           # The run the answer starts does not count towards the autopilot's
           # cap (#479): autopilot.yml labels it free.
           gh label create "autopilot:answered" --repo "$GITHUB_REPOSITORY" --color 1D76DB --force --description "On an issue: a maintainer answered the autopilot's question; the run it starts does not count" >/dev/null 2>&1 || true

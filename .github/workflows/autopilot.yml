@@ -35,6 +35,12 @@ name: Autopilot
 #                   a run an answer to its question started, or whose
 #                   runner was lost, is free and does not count (#479).
 #                   A person who took it back removes `needs-human` first.
+#                   With no open `autopilot` pull request closing an open
+#                   issue (#535), the continue starts the issue's next phase
+#                   instead, as `mode: start` does, through its gates: the
+#                   agent writes the Spec, or, with one already on the
+#                   issue, the draft opens from it (G3, sealed). It counts
+#                   no run, and takes `autopilot:answered` off the issue.
 #                   The agent runs every command in the foreground: the run
 #                   ends when it stops, and nothing wakes it, so its steps
 #                   have no Monitor and no background runs (#482,
@@ -236,12 +242,16 @@ jobs:
       go: ${{ steps.may.outputs.go || 'false' }}
       # What it runs (#504): the mode it was called with, but `fix` for a
       # continue on a ready pull request whose review blocks.
+      # A continue with no open autopilot pull request is a start (#535).
       mode: ${{ steps.what.outputs.mode || inputs.mode }}
       issue: ${{ steps.what.outputs.issue }}
       pr: ${{ steps.what.outputs.pr }}
       branch: ${{ steps.what.outputs.branch }}
       round: ${{ steps.what.outputs.round }}
       runs: ${{ steps.what.outputs.runs }}
+      # A continue that became a start on an issue whose Spec is already on
+      # it (#535): `present`, and the Spec is not written again.
+      spec: ${{ steps.what.outputs.spec }}
       lane: ${{ steps.may.outputs.lane }}
       repro-test: ${{ steps.may.outputs.repro-test }}
       repro-sha: ${{ steps.may.outputs.repro-sha }}
@@ -297,7 +307,19 @@ jobs:
             for n in $refs; do
               if gh pr view "$n" --repo "$GITHUB_REPOSITORY" --json state,labels --jq '.state == "OPEN" and ([.labels[].name] | index("autopilot") != null)' | grep -qx true; then PR=$n; fi
             done
-            [ -n "$PR" ] || { echo "No pull request closes #$ISSUE: nothing to continue."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; }
+            if [ -z "$PR" ]; then
+              # No autopilot pull request to resume (#535): the continue
+              # starts the issue's next phase, as the first run does,
+              # through the start's own gates. A start counts no run, so an
+              # answer's label must not linger and make a later continue free.
+              # A closed issue is done (or dropped): nothing to start.
+              if [ "$(gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json state --jq .state)" != OPEN ]; then
+                echo "#$ISSUE is closed and no pull request of the autopilot's closes it: nothing to continue."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+              fi
+              echo "No open autopilot pull request closes #$ISSUE: this continue starts it."
+              gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label "autopilot:answered" >/dev/null 2>&1 || true
+              MODE=start; started_by_continue=true
+            fi
           fi
           if [ "$MODE" != start ]; then
             author=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json author --jq .author.login)
@@ -331,6 +353,14 @@ jobs:
           [ -n "$ISSUE" ] || { echo "No issue to work on."; exit 1; }
           echo "issue=$ISSUE" >> "$GITHUB_OUTPUT"
           gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/body.md"
+          # A continue that starts an issue whose Spec is already on it (a
+          # first run that stopped or asked after writing it, #535): the
+          # Spec is not written again, the draft opens from it (G3, sealed).
+          # Read as scripts/autopilot.py's spec_of reads it.
+          if [ "${started_by_continue:-}" = true ] && grep -q '^### Spec: ' "$RUNNER_TEMP/body.md"; then
+            echo "#$ISSUE already has its Spec: the draft opens from it."
+            echo "spec=present" >> "$GITHUB_OUTPUT"
+          fi
           gh api "repos/$GITHUB_REPOSITORY/contents/.github/autonomy.yml" --jq .content 2>/dev/null | base64 -d > "$RUNNER_TEMP/repo-autonomy.yml" || : > "$RUNNER_TEMP/repo-autonomy.yml"
           # Its review policy, for whether it declares a way to reproduce a
           # bug (#377), read on a start only: none is an empty one; one
@@ -388,7 +418,7 @@ jobs:
           # it to its parent a moment later (#415): a start that finds no lane
           # asks once more.
           if ! LANE=$(NUMBER="$ISSUE" python3 .dx-central/scripts/autopilot.py lane) \
-            && { [ "$MODE" != start ] || ! { sleep 20; LANE=$(NUMBER="$ISSUE" python3 .dx-central/scripts/autopilot.py lane); }; }; then
+            && { [ "$AS" != start ] || ! { sleep 20; LANE=$(NUMBER="$ISSUE" python3 .dx-central/scripts/autopilot.py lane); }; }; then
             echo "The autopilot does not start: $LANE"
             echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
@@ -396,9 +426,10 @@ jobs:
           echo "lane=$LANE" >> "$GITHUB_OUTPUT"
           # A bug only in a repository that declares a way to reproduce
           # one (#377): may-start exits 2 and the issue says which way to
-          # declare. Only on a start: a run that continues one has started.
+          # declare. Only on a start (a continue that starts one too, #535):
+          # a run that continues one has started.
           ISSUE_TYPE=""
-          if [ "$MODE" = start ]; then
+          if [ "$AS" = start ]; then
             ISSUE_TYPE=$(gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE" --jq '.type.name // ""')
           fi
           rc=0
@@ -444,7 +475,7 @@ jobs:
           🤖 AI-generated · Claude Opus 5.5 (Anthropic)" >/dev/null || true
             echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          if [ "$MODE" = start ]; then
+          if [ "$AS" = start ]; then
             open_prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --search "linked:issue $ISSUE" --json number --jq 'length')
             if [ "$open_prs" != 0 ]; then
               echo "A pull request already closes #$ISSUE: nothing to start (\`autopilot:continue\` resumes the autopilot's)."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
@@ -456,7 +487,7 @@ jobs:
               echo "#$PR is a person's now (needs-human): the autopilot stays out."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
             fi
           fi
-          if [ "$MODE" = continue ]; then
+          if [ "$MODE" = continue ] && [ "$AS" != start ]; then
             # may-continue counts the runs before this one, from the pull
             # request's run-N labels (a free run never counts, #479).
             # A continue's fix round (#504) counts as a run, against the
@@ -520,7 +551,7 @@ jobs:
       # free: labelled autopilot:free-N, it does not count (#479). The end
       # rule frees a run whose runner was lost.
       - name: Count the round or the run
-        if: steps.may.outputs.go == 'true' && inputs.mode != 'start'
+        if: steps.may.outputs.go == 'true' && steps.what.outputs.mode != 'start'
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           MODE: ${{ inputs.mode }}
@@ -594,7 +625,7 @@ jobs:
         if: steps.may.outputs.go == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: autopilot-in-${{ inputs.mode == 'start' && 'spec' || 'work' }}
+          name: autopilot-in-${{ steps.what.outputs.mode == 'start' && 'spec' || 'work' }}
           path: .dx-io
           include-hidden-files: true
           overwrite: true
@@ -604,7 +635,7 @@ jobs:
   spec:
     name: Autopilot · the Spec
     needs: [where, prep]
-    if: ${{ !cancelled() && needs.prep.outputs.go == 'true' && inputs.mode == 'start' }}
+    if: ${{ !cancelled() && needs.prep.outputs.go == 'true' && needs.prep.outputs.mode == 'start' && needs.prep.outputs.spec != 'present' }}
     runs-on: ${{ (vars.DX_RUNNER_HEAVY != '' && needs.where.outputs.github-hosted == 'false') && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 30
     permissions:
@@ -717,7 +748,7 @@ jobs:
   draft:
     name: Autopilot · the draft
     needs: [prep, spec]
-    if: ${{ !cancelled() && needs.prep.outputs.go == 'true' && inputs.mode == 'start' }}
+    if: ${{ !cancelled() && needs.prep.outputs.go == 'true' && needs.prep.outputs.mode == 'start' }}
     runs-on: ubuntu-latest # fresh: it holds the key beside an agent's work (#287)
     timeout-minutes: 15
     permissions: {}
@@ -783,7 +814,8 @@ jobs:
 
       - name: The Spec (G3), sealed, and the draft pull request
         id: draft
-        if: needs.spec.outputs.outcome == 'success'
+        # The Spec the agent wrote, or the one already on the issue (#535).
+        if: needs.spec.outputs.outcome == 'success' || (needs.prep.outputs.spec == 'present' && needs.spec.result == 'skipped')
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           NUMBER: ${{ needs.prep.outputs.issue }}
@@ -896,7 +928,7 @@ jobs:
   work:
     name: Autopilot (${{ inputs.mode }}) · the work
     needs: [where, prep, draft]
-    if: ${{ !cancelled() && needs.prep.outputs.go == 'true' && (inputs.mode != 'start' || needs.draft.outputs.pr != '') }}
+    if: ${{ !cancelled() && needs.prep.outputs.go == 'true' && (needs.prep.outputs.mode != 'start' || needs.draft.outputs.pr != '') }}
     runs-on: ${{ (vars.DX_RUNNER_HEAVY != '' && needs.where.outputs.github-hosted == 'false') && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 90
     permissions:
@@ -1084,7 +1116,7 @@ jobs:
           path: .dx-out
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        if: inputs.mode == 'start'
+        if: needs.prep.outputs.mode == 'start'
         continue-on-error: true
         with:
           name: autopilot-out-spec
@@ -1173,7 +1205,9 @@ jobs:
           # runner, and the run does not count.
           WORK_RESULT: ${{ needs.work.result }}
           AGENT_OUTCOME: ${{ needs.work.outputs.outcome }}
-          SPEC_OUTCOME: ${{ needs.spec.outputs.outcome || needs.spec.result }}
+          # A Spec already on the issue is not written again (#535): no
+          # outcome to report.
+          SPEC_OUTCOME: ${{ needs.prep.outputs.spec != 'present' && (needs.spec.outputs.outcome || needs.spec.result) || '' }}
           WHY: ${{ needs.draft.outputs.why }}
           HELD: ${{ needs.draft.outputs.held || steps.applied.outputs.held }}
           WORK_LOG: .dx-out/transcript/2-work.json
