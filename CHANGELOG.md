@@ -2,12 +2,30 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
-## [7.4.0](https://github.com/DiluxOne/.github/releases/tag/v7.4.0) · 2026-10-30
+## [7.5.0](https://github.com/DiluxOne/.github/releases/tag/v7.5.0) · 2026-10-31
+
+### Features
+
+- ci: test before the pull request, a faster queue, an unstuck aut… ([#527](https://github.com/DiluxOne/.github/pull/527))
+
+### Fixes
+
+- the bug reproduced from #524 ([#526](https://github.com/DiluxOne/.github/pull/526))
+
+### CI
+
+- **deps:** Bump anthropics/claude-code-action from 1.0.262 to 1.0.263 ([#522](https://github.com/DiluxOne/.github/pull/522))
+
+## [7.4.0](https://github.com/DiluxOne/.github/releases/tag/v7.4.0) · 2026-10-29
 
 ### Features
 
 - a model assists, people co-author: one credit rule everywhe… ([#519](https://github.com/DiluxOne/.github/pull/519))
 - a person claims an issue, and the autopilot steps aside ([#520](https://github.com/DiluxOne/.github/pull/520))
+
+### Maintenance
+
+- **release:** v7.4.0, people claim issues and co-author credit ([#523](https://github.com/DiluxOne/.github/pull/523))
 
 ## [7.3.0](https://github.com/DiluxOne/.github/releases/tag/v7.3.0) · 2026-10-29
 
