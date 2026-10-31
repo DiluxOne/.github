@@ -25,7 +25,7 @@ flowchart LR
     Q -- "yes" --> V["Fix issue opened by the bot<br/>accepted by policy (PRD sealed)<br/>the test is the spec"]
     V --> S
     S --> C["📋 Draft pull request, in the open<br/>a box per criterion<br/>one commit each, ticked as it lands"]
-    C -- "out of turns or time" --> K["🔁 autopilot:continue<br/>resumes the draft"]
+    C -- "out of turns or time" --> K["🔁 autopilot:continue<br/>resumes the draft,<br/>or starts it"]
     K --> C
     C -- "stuck: says why" --> I
     C -- "every box ticked<br/>checks pass" --> D["✅ Ready for review<br/>conventions + accepted-issue gate<br/>checks of its kind"]
