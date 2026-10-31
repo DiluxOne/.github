@@ -37,6 +37,7 @@ jobs:
     permissions:
       contents: read
       issues: write
+      pull-requests: read # the autopilot it starts runs make pre-pr (#538)
     uses: DiluxOne/.github/.github/workflows/issue-triage.yml@v7
     with:
       support-url: https://github.com/DiluxOne/.github/blob/main/SUPPORT.md
@@ -89,5 +90,6 @@ jobs:
   claim:
     permissions:
       contents: read
+      pull-requests: read # the autopilot it starts runs make pre-pr (#538)
     uses: DiluxOne/.github/.github/workflows/issue-claim.yml@v7
     secrets: inherit

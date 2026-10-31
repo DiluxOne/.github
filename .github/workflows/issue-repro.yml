@@ -1195,9 +1195,11 @@ jobs:
     # `report` runs after the optional `diagnose`; without a status function
     # this job would be skipped with it (#257, scripts/needs-chain.py).
     if: "!cancelled() && needs.report.result == 'success' && needs.report.outputs.lane-issue != ''"
-    # The agent's jobs read the repository with the job's own token (#287).
+    # The agent's jobs read the repository with the job's own token (#287),
+    # and its pull requests: make pre-pr lists the closed ones (#538).
     permissions:
       contents: read
+      pull-requests: read
     uses: DiluxOne/.github/.github/workflows/autopilot.yml@v7
     with:
       mode: start
