@@ -2,7 +2,21 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
-## [7.5.0](https://github.com/DiluxOne/.github/releases/tag/v7.5.0) · 2026-10-31
+## [7.6.0](https://github.com/DiluxOne/.github/releases/tag/v7.6.0) · 2026-10-31
+
+### Features
+
+- autopilot:continue starts the next phase when no pull request is… ([#536](https://github.com/DiluxOne/.github/pull/536))
+
+### Fixes
+
+- the bug reproduced from #540 ([#542](https://github.com/DiluxOne/.github/pull/542))
+
+### CI
+
+- **deps:** Bump anthropics/claude-code-action from 1.0.263 to 1.0.264 ([#530](https://github.com/DiluxOne/.github/pull/530))
+
+## [7.5.0](https://github.com/DiluxOne/.github/releases/tag/v7.5.0) · 2026-10-30
 
 ### Features
 
@@ -15,6 +29,10 @@ Every version of the engine (the workflows, scripts, policy and kinds other repo
 ### CI
 
 - **deps:** Bump anthropics/claude-code-action from 1.0.262 to 1.0.263 ([#522](https://github.com/DiluxOne/.github/pull/522))
+
+### Maintenance
+
+- **release:** v7.5.0, test before the pull request and a faster queue ([#533](https://github.com/DiluxOne/.github/pull/533))
 
 ## [7.4.0](https://github.com/DiluxOne/.github/releases/tag/v7.4.0) · 2026-10-29
 
