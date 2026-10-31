@@ -32,9 +32,11 @@ repos:
   diluxone-fm: {kinds: []}
   diluxone-help-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
   diluxone-mail-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
+  diluxone-mermaid: {kinds: []}
   diluxone-multisite-user-sync-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
   diluxone-offload-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
   diluxone-platform: {kinds: []}
+  diluxone-plugins: {kinds: []}
   diluxone-slider-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
   diluxone-support-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
   diluxone-users-pro-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
