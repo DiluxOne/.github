@@ -114,3 +114,29 @@ def test_c1_may_it_start_runs_the_starts_gates_on_what_prep_decided():
     assert 'if [ "$AS" = start ]; then\n  open_prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --search "linked:issue $ISSUE"' in run
     # A continue's own cap is not asked of a start.
     assert 'if [ "$MODE" = continue ] && [ "$AS" != start ]; then' in run
+
+
+# --- C2: an open autopilot pull request: the continue resumes it ---------
+
+@pytest.mark.parametrize("body", [PRD + SPEC, PRD])
+def test_c2_a_continue_with_an_open_pull_request_resumes_it(tmp_path, body):
+    out, calls = what(tmp_path, body, open_pr="9")
+    assert out["go"] == "true"
+    assert out["mode"] == "continue"
+    assert out["pr"] == "9"
+    assert out["branch"] == "feat/7-x"
+    assert out["runs"] == "2"
+    assert "spec" not in out
+    # The answer's label stays for the Count step, which frees the run (#479).
+    assert "autopilot:answered" not in calls
+    assert "review-policy.yml" not in calls
+
+
+def test_c2_a_continue_keeps_its_own_path():
+    # Counted as a run by the mode it was called with (#504), its cap
+    # asked, and the work run on its pull request with no Spec nor draft.
+    count = step("prep", "Count the round or the run")
+    assert count["env"]["MODE"] == "${{ inputs.mode }}"
+    assert 'AS="$AS" python3 .dx-central/scripts/autopilot.py may-continue' in step("prep", "may")["run"]
+    assert "needs.prep.outputs.mode != 'start' || needs.draft.outputs.pr != ''" in JOBS["work"]["if"]
+    assert step("prep", "Hand it to the agent")["with"]["name"].endswith("&& 'spec' || 'work' }}")
