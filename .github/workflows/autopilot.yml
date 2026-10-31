@@ -607,9 +607,11 @@ jobs:
             exit 0
           fi
           AUTOPILOT_RUN="$RUN_URL" python3 .dx-central/scripts/autopilot.py board
-          # What maintainers answered its last question (#247, guided mode):
-          # the comments after it, on the pull request and the issue, by
-          # people with write access to the repository, checked now.
+          # What maintainers answered its last question (#247, guided mode),
+          # or the hint they gave after a stop, a silent or an unfinished
+          # run (#540): the comments after the last of those, or all of them
+          # when there is none, on the pull request and the issue, by people
+          # with write access to the repository, checked now.
           gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "autopilot:waiting" >/dev/null 2>&1 || true
           { gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments'; gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments'; } \
             | jq -s 'add | map({body, createdAt, author: {login: .author.login}})' > "$RUNNER_TEMP/comments.json"
