@@ -34,7 +34,8 @@
                              not pass, where the Makefile has the target
   autopilot.py finish ready FILE | stop WHY | ask QUESTION
   autopilot.py answers      what maintainers answered the autopilot's last
-                            question (COMMENTS, WRITERS), with the summary of
+                            question, or hinted after its last stop (#540)
+                            (COMMENTS, WRITERS), with the summary of
                             an opinion of others the answer names (#287)
   autopilot.py others       the others' comments since the last question
                             (COMMENTS, WRITERS; to OTHERS_FILE) and the
@@ -662,13 +663,14 @@ def asked_since(comments, started):
 
 
 def answers(comments, writers):
-    """What maintainers wrote after the autopilot's last question: their
+    """What maintainers wrote after the autopilot's last comment that ended
+    a run and waits on a person (a question, a stop, a silent or an
+    unfinished end), or since the start when there is none (#540): their
     comments, in order, by a login in `writers` (people with write access,
-    checked live by the workflow). Empty when there was no question."""
-    last = max((c.get("createdAt", "") for c in comments if c.get("body", "").startswith(ASK)
+    checked live by the workflow). So a hint given with
+    `autopilot:continue` after a stop reaches the prompt too."""
+    last = max((c.get("createdAt", "") for c in comments if c.get("body", "").startswith((ASK, STOP, SILENT, UNFINISHED))
                 and (c.get("author") or {}).get("login") in BOT_LOGINS), default="")
-    if not last:
-        return ""
     picked = [c for c in comments if c.get("createdAt", "") > last and (c.get("author") or {}).get("login") in writers]
     said = "\n\n".join(f"{(c.get('author') or {}).get('login')}: {c.get('body', '').strip()}" for c in sorted(picked, key=lambda c: c.get("createdAt", "")))
     # An opinion the maintainer took (#287): its summary, as data, never the
@@ -1560,7 +1562,15 @@ A class on html.
           {"body": "do B", "author": {"login": "stranger"}, "createdAt": "2026-10-17T10:06:00Z"}]
     check("#247 answers: a maintainer's words after the last question, never a stranger's",
           answers(cs, {"boss"}), "boss: Option A, the form asks for the password.")
-    check("#247 answers: no question, no answer", answers(cs[:1] + cs[2:], {"boss"}), "")
+    check("#540 answers: no question, the maintainer's comments come in and never a stranger's",
+          answers(cs[:1] + cs[2:], {"boss"}), "boss: before\n\nboss: Option A, the form asks for the password.")
+    st = [{"body": "stale hint", "author": {"login": "boss"}, "createdAt": "2026-10-17T09:00:00Z"},
+          {"body": STOP + " Stopped.", "author": {"login": "dilux-bot"}, "createdAt": "2026-10-17T10:00:00Z"},
+          {"body": "The failing test is t.py", "author": {"login": "boss"}, "createdAt": "2026-10-17T10:05:00Z"},
+          {"body": "merge it", "author": {"login": "stranger"}, "createdAt": "2026-10-17T10:06:00Z"}]
+    check("#540 answers: a hint after a stop comes in, one from before the stop does not",
+          (answers(st, {"boss"}), "stale hint" in answers([st[0], {**st[1], "author": {"login": "boss"}}] + st[2:], {"boss"})),
+          ("boss: The failing test is t.py", True))
     check("#247 asked_since: only the bot's question in this run", (asked_since(cs, "2026-10-17T09:30:00Z"), asked_since(cs, "2026-10-17T11:00:00Z"),
           asked_since([{**q, "author": {"login": "boss"}}], "2026-10-17T09:30:00Z")), (True, False, False))
     import tempfile
