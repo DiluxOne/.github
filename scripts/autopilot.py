@@ -3600,7 +3600,7 @@ def main(argv):
         # Spec; prints the number of the open autopilot pull request whose
         # diff already touches the core the Spec touches, or nothing.
         body = open(os.environ["BODY"], encoding="utf-8").read() if os.environ.get("BODY") and os.path.exists(os.environ["BODY"]) else ""
-        core = org.core(org.load())
+        core = org.core_of(org.load(), repo)
         if not core:
             return 0
         listed = json.loads(gh("pr", "list", "--repo", repo, "--state", "open", "--label", "autopilot", "--json", "number,files,author", "--limit", "100") or "[]")

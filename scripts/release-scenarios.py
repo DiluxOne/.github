@@ -11,17 +11,21 @@ transition of the autopilot's state machine (scripts/autopilot.py:
 MERGE_HOWS of `merge-main`, and what `sweep_step` returns), has a scenario
 that covers it. A scenario: `id`, `covers` (pairs `<workflow>:<event>`,
 transitions `next_step:<action>`, `next_step:wait:<for>`,
-`next_step:merge-main:<how>`, `sweep_step:<what>`), `opens` (an `issue` or
-a `pull` with its `title`, `body` (a name of `bodies:` or the text),
-`labels`, and `fork: true` for one from a fork), `steps` (each one of
+`next_step:merge-main:<how>`, `sweep_step:<what>`), `before` (issues it
+opens first and keeps open until it ends, each `{issue: {...}}`), `opens`
+(an `issue` or a `pull` with its `title`, `body` (a name of `bodies:` or the
+text), `labels`, and `fork: true` for one from a fork; a pull's `{issue}` in
+its body is the number of the issue it opens first, its `issue:` or a
+complete feature), `steps` (each one of
 `comment`, `label`, `unlabel`, `edit`, `push`, `dispatch`, `wait`) and
 `expect` (`labels`, `absent`, `comments` (markers), `pull` (`closes`,
 `branch`, `title`, patterns), `check` (name: conclusion), `merged`,
 `waiting`).
 
   release-scenarios.py coverage [ROOT]
-        fails naming every pair and transition with no scenario, and every
-        scenario that covers what is neither
+        fails naming every pair and transition with no scenario, every
+        scenario that covers what is neither, and every scenario whose
+        `expect` cannot hold against its own setup (`preconditions`)
   release-scenarios.py run --repo OWNER/NAME [--ref v7-next] [--only ID ...]
                            [--out FILE] [--minutes N]
         plays them in the test repository with the test identity's token
@@ -134,6 +138,31 @@ def coverage(scenarios, wanted):
     return out
 
 
+CORE_LABEL, CORE_MARK = "autopilot:core-wait", "<!-- dx-autopilot-core -->"
+
+
+def preconditions(scenarios, bodies, pack):
+    """Every scenario whose `expect` its own setup can never make hold
+    (#563): a pull's `closes` with no `{issue}` in its body (a fixed number
+    is another object's), and a wait on the core with no open issue before
+    it or a test repository whose fixed change touches no core. Pure."""
+    import fnmatch
+    out = []
+    for s in scenarios:
+        sid, expect, opens = s.get("id") or "?", s.get("expect") or {}, s.get("opens") or {}
+        if "pull" in opens and (expect.get("pull") or {}).get("closes"):
+            if "{issue}" not in body_of(opens["pull"].get("body"), bodies):
+                out.append(f"scenario {sid}: expects its pull request to close an issue, but its body names no `{{issue}}` it opens")
+        if CORE_LABEL in (expect.get("labels") or []) or CORE_MARK in (expect.get("comments") or []):
+            first = [b.get("issue") or {} for b in s.get("before") or []]
+            if not any("accepted" in (i.get("labels") or []) for i in first):
+                out.append(f"scenario {sid}: expects a wait on the core, but opens no accepted issue before it whose pull request stays open")
+            fixed = str((pack.get("fixed-change") or {}).get("file") or "").replace("{n}", "1").replace("{id}", "c1")
+            if not any(fnmatch.fnmatchcase(fixed, g) for g in pack.get("core") or []):
+                out.append(f"scenario {sid}: expects a wait on the core, but the test repository's fixed change ({fixed or 'none'}) touches no core of its pack")
+    return out
+
+
 # Playing them.
 
 def body_of(value, bodies):
@@ -158,8 +187,11 @@ def holds(expect, seen):
     pull = seen.get("pull") or {}
     for key, pattern in (expect.get("pull") or {}).items():
         if key == "closes":
-            if f"Closes #{seen.get('number')}" not in (pull.get("body") or ""):
-                out.append(f"the pull request does not say Closes #{seen.get('number')}")
+            # The issue it should close: the one a pull scenario opened for
+            # it, else the scenario's own issue.
+            want = seen.get("closes") or seen.get("number")
+            if not re.search(rf"Closes #{re.escape(str(want))}\b", pull.get("body") or ""):
+                out.append(f"the pull request does not say Closes #{want}")
         elif not re.search(str(pattern), str(pull.get(key) or "")):
             out.append(f"the pull request's {key} is not {pattern}")
     for name, conclusion in (expect.get("check") or {}).items():
@@ -188,18 +220,30 @@ def gh(*args, input=None):
     return out.stdout
 
 
+def open_issue(repo, spec, bodies, default, run=gh):
+    url = run("issue", "create", "--repo", repo, "--title", spec.get("title", default), "--body-file", "-",
+              *sum((["--label", l] for l in spec.get("labels") or []), []), input=body_of(spec.get("body"), bodies)).strip()
+    return url.rstrip("/").rsplit("/", 1)[-1]
+
+
 def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20):
-    """One scenario in `repo`: opens what it opens, takes its steps, polls
-    until its `expect` holds or `minutes` pass, then cleans up. Returns
-    {id, ok, why, run}."""
-    opens, made = s.get("opens") or {}, []
+    """One scenario in `repo`: opens what it opens (its `before` first),
+    takes its steps, polls until its `expect` holds or `minutes` pass, then
+    cleans up. Returns {id, ok, why, run}."""
+    opens, made, closes = s.get("opens") or {}, [], None
     what = "pr" if "pull" in opens else "issue"
     spec = opens.get("pull") or opens.get("issue") or {}
     try:
+        for first in s.get("before") or []:
+            made.append(("issue", open_issue(repo, first.get("issue") or {}, bodies, f"{s['id']}: before", run)))
         if what == "issue":
-            url = run("issue", "create", "--repo", repo, "--title", spec.get("title", s["id"]), "--body-file", "-",
-                      *sum((["--label", l] for l in spec.get("labels") or []), []), input=body_of(spec.get("body"), bodies)).strip()
+            url = open_issue(repo, spec, bodies, s["id"], run)
         else:
+            text = body_of(spec.get("body"), bodies)
+            if "{issue}" in text:
+                closes = open_issue(repo, spec.get("issue") or {"title": spec.get("title", s["id"]), "body": "complete-feature"}, bodies, s["id"], run)
+                made.append(("issue", closes))
+                text = text.replace("{issue}", closes)
             branch, target = f"scenario/{s['id']}", repo
             if spec.get("fork"):
                 # From the test identity's fork, which runs with no secrets.
@@ -210,7 +254,7 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20):
                 "-f", f"branch={branch}", "-f", f"content={__import__('base64').b64encode(s['id'].encode()).decode()}")
             head = f"{target.split('/', 1)[0]}:{branch}" if target != repo else branch
             url = run("pr", "create", "--repo", repo, "--head", head, "--title", spec.get("title", f"test: {s['id']}"),
-                      "--body-file", "-", input=body_of(spec.get("body"), bodies)).strip()
+                      "--body-file", "-", input=text).strip()
         number = url.rstrip("/").rsplit("/", 1)[-1]
         made.append((what, number))
         for step in s.get("steps") or []:
@@ -231,6 +275,8 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20):
         deadline, why = minutes * 60, ["not played"]
         while True:
             seen = observe(repo, what, number, run)
+            if closes:
+                seen["closes"] = closes
             why = holds(s.get("expect") or {}, seen)
             if not why or deadline <= 0:
                 break
@@ -312,6 +358,12 @@ def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20, cent
     return [play(s, repo, ref, bodies, run, sleep, minutes) for s in conf.get("scenarios") or [] if not only or s["id"] in only]
 
 
+def test_pack(root=ROOT):
+    sys.path.insert(0, os.path.join(root, "scripts"))
+    import org
+    return org.test_pack(root=root)
+
+
 def self_test():
     failed = 0
 
@@ -346,6 +398,19 @@ def self_test():
         check("C2: a scenario covering what nothing wires is named", coverage(some, wanted), ["scenario s1: covers gone.yml:push, which no caller wires and no transition is"])
     real = load_yaml(os.path.join(ROOT, SCENARIOS))
     check("C2: every pair and transition of the engine has its scenario", coverage(real.get("scenarios") or [], pairs() | transitions()), [])
+    check("#563: every scenario's expect can hold against its own setup", preconditions(real.get("scenarios") or [], real.get("bodies") or {}, test_pack()), [])
+    pack = {"fixed-change": {"file": "scenarios/{n}-{id}.md"}, "core": ["scenarios/*"]}
+    pr_fixed = {"id": "p", "opens": {"pull": {"body": "pull"}}, "expect": {"pull": {"closes": True}}}
+    core_alone = {"id": "c", "opens": {"issue": {"labels": ["accepted"]}}, "expect": {"labels": [CORE_LABEL]}}
+    check("preconditions: a pull request that closes a fixed number never holds; one that closes the issue it opens does",
+          (preconditions([pr_fixed], {"pull": "Closes #1"}, pack), preconditions([pr_fixed], {"pull": "Closes #{issue}"}, pack)),
+          (["scenario p: expects its pull request to close an issue, but its body names no `{issue}` it opens"], []))
+    check("preconditions: a wait on the core needs an accepted issue before it, and a fixed change on the core",
+          (len(preconditions([core_alone], {}, pack)), len(preconditions([dict(core_alone, before=[{"issue": {"labels": ["accepted"]}}])], {}, dict(pack, core=["scripts/*"]))),
+           preconditions([dict(core_alone, before=[{"issue": {"labels": ["accepted"]}}])], {}, pack)), (1, 1, []))
+    check("holds: a pull scenario's closes is the issue it opened, never its own number",
+          (holds({"pull": {"closes": True}}, {"number": "12", "closes": "11", "pull": {"body": "Closes #11"}}),
+           holds({"pull": {"closes": True}}, {"number": "12", "closes": "1", "pull": {"body": "Closes #11"}})), ([], ["the pull request does not say Closes #1"]))
     covered = {c for s in real.get("scenarios") or [] for c in s.get("covers") or []}
     check("#585: a caller that does not grant what the engine asks has its scenario", any(s["id"] == "caller-permission-585" for s in real["scenarios"]), True)
     check("the pairs are read from the real callers", {"issue-triage.yml:issues", "claude-review.yml:pull_request", "autopilot.yml:pull_request"} <= covered, True)
@@ -368,6 +433,25 @@ def self_test():
     res = run_all(scen, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=1, central="O/.github")
     check("run: a scenario whose expect holds passes, one whose does not fails, named", [(r["id"], r["ok"], r["why"]) for r in res], [("a", True, []), ("b", False, ["no label accepted"])])
     check("run: its issues are closed and locked after it", sum(1 for c in calls if c[:2] in (("issue", "close"), ("issue", "lock"))), 4)
+    pcalls_ = []
+
+    def prfake(*args, input=None):
+        pcalls_.append((args, input))
+        if args[:2] == ("issue", "create"):
+            return "https://github.com/o/t/issues/11\n"
+        if args[:2] == ("pr", "create"):
+            return "https://github.com/o/t/pull/12\n"
+        if args[:2] == ("pr", "view"):
+            return json.dumps({"body": [i for a, i in pcalls_ if a[:2] == ("pr", "create")][0]})
+        if args[-1:] == (".sha",):
+            return "s\n"
+        return "[]"
+    got = play({"id": "p", "opens": {"pull": {"title": "feat: x", "body": "pull"}}, "expect": {"pull": {"closes": True}}}, "o/t", "v7-next", {"pull": "Closes #{issue}", "complete-feature": "f"}, prfake, lambda s: None, 1)
+    check("run: a pull scenario opens the issue its pull request closes, and passes on it", (got["ok"], [a[:2] for a, _ in pcalls_][:1], ("issue", "close", "11", "--repo", "o/t") in [a for a, _ in pcalls_]), (True, [("issue", "create")], True))
+    first = []
+    play({"id": "c", "before": [{"issue": {"title": "first", "labels": ["accepted"]}}], "opens": {"issue": {"title": "second"}}, "expect": {}},
+         "o/t", "v7-next", {}, lambda *a, input=None: first.append(a) or ("https://github.com/o/t/issues/9\n" if a[:2] == ("issue", "create") else "{}" if a[:2] == ("issue", "view") else "[]"), lambda s: None, 1)
+    check("run: `before` opens its issue first and closes it only after", ([a[5] for a in first if a[:2] == ("issue", "create")], first.index(("issue", "close", "9", "--repo", "o/t")) > 2), (["first", "second"], True))
     import base64
     caller = "jobs:\n  t:\n    uses: O/.github/.github/workflows/issue-triage.yml@abc123 # v7\n"
     check("at_ref: a pinned call moves to the ref tried", at_ref(caller, "O/.github", "v7-next"), "jobs:\n  t:\n    uses: O/.github/.github/workflows/issue-triage.yml@v7-next\n")
@@ -392,7 +476,7 @@ def main(argv):
     if argv[:1] == ["coverage"] and len(argv) <= 2:
         root = argv[1] if len(argv) == 2 else ROOT
         conf = load_yaml(os.path.join(root, SCENARIOS))
-        out = coverage(conf.get("scenarios") or [], pairs(root) | transitions(root))
+        out = coverage(conf.get("scenarios") or [], pairs(root) | transitions(root)) + preconditions(conf.get("scenarios") or [], conf.get("bodies") or {}, test_pack(root))
         for line in out:
             print(line)
         if not out:

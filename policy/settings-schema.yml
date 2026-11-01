@@ -534,6 +534,13 @@ files:
       read-by: [scripts/org.py]
       issue: "#563"
       says: The canned change the autopilot commits in the test repository.
+    - key: core
+      org: any
+      repo: never
+      limit: "engine-test only: globs in place of org.yml `core`, so its fixed change touches a core"
+      read-by: [scripts/org.py, scripts/autopilot.py]
+      issue: "#563"
+      says: The test repository's own core.
     - key: cleanup
       org: any
       repo: never

@@ -35,6 +35,13 @@ autopilot: fixed-change
 fixed-change:
   file: "scenarios/{n}-{id}.md"
 
+# Its own core (org.yml `core` names the engine's paths, which no change
+# here touches): every fixed change writes under scenarios/, so the scenario
+# of one change to the core at a time (`core-one-at-a-time`) waits here
+# (scripts/org.py core_of).
+core:
+  - "scenarios/*"
+
 # After each run of the scenarios, its issues are closed and locked, its pull
 # requests closed and their branches deleted (scripts/release-scenarios.py
 # cleanup).

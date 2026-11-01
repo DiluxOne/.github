@@ -131,20 +131,33 @@ def test_pack(conf=None, root=os.path.join(HERE, "..")):
     """What sets the test repository apart (#563), from its pack
     kinds/engine-test/pack.yml: `identity` (`secret`, and `login` with
     `{org}` the organisation's login lowercased), `autopilot`
-    (`fixed-change`: no model), `fixed-change`, `cleanup` and `publishes`."""
+    (`fixed-change`: no model), `fixed-change`, `core` (its own core globs,
+    in place of org.yml's: the engine's paths are never in it), `cleanup`
+    and `publishes`."""
     conf = _conf if conf is None else conf
     path = os.path.join(root, "kinds", TEST_KIND, "pack.yml")
     pack = (load(path) if os.path.exists(path) else {}) or {}
     identity = dict(pack.get("identity") or {})
     identity["login"] = str(identity.get("login") or "").replace("{org}", str(conf.get("org") or "").lower())
     return {"identity": identity, "autopilot": pack.get("autopilot"), "fixed-change": pack.get("fixed-change") or {},
-            "cleanup": pack.get("cleanup"), "publishes": pack.get("publishes")}
+            "core": [str(g) for g in (pack.get("core") or [])], "cleanup": pack.get("cleanup"), "publishes": pack.get("publishes")}
 
 
 def core(conf):
     """org.yml `core` (#563, #568): the engine's core files, globs from the
     repository's root; none, no core (the autopilot never waits on it)."""
     return [str(g) for g in (conf.get("core") or [])]
+
+
+def core_of(conf, repo, pack=None):
+    """The core globs of `repo` (OWNER/NAME): the test repository's are its
+    pack's `core` (#563: so the scenario of one change to the core at a time
+    can wait there), every other repository's org.yml's."""
+    if str(repo).split("/")[-1] == test_repo(conf):
+        own = (test_pack(conf) if pack is None else pack).get("core") or []
+        if own:
+            return list(own)
+    return core(conf)
 
 
 def hardwired_bot(root=os.path.join(HERE, "..", ".github", "workflows")):
@@ -223,6 +236,9 @@ def self_test():
     check("#563: the test repository calls no model, is cleaned up and publishes nothing", (pack["autopilot"], pack["cleanup"], pack["publishes"]), ("fixed-change", "after-run", "never"))
     check("#563: no core is none", core({}), [])
     check("#563: org.yml names the engine's core", "scripts/autopilot.py" in core(_conf), True)
+    check("#563: the test repository's core is its pack's, so its fixed change touches it",
+          (core_of({"org": "Acme", "core": ["scripts/autopilot.py"]}, "Acme/acme-test", {"core": ["scenarios/*"]}), test_pack({"org": "Acme"})["core"] != []), (["scenarios/*"], True))
+    check("#563: any other repository's core is org.yml's", core_of({"org": "Acme", "core": ["scripts/autopilot.py"]}, "Acme/app", {"core": ["scenarios/*"]}), ["scripts/autopilot.py"])
     check("#568: {catalog} is the kind's catalog", publishes_to("{catalog}", "k", {"k": "acme-plugins"}), "acme-plugins")
     check("#568: no catalog for the kind publishes nowhere", publishes_to("{catalog}", "k", {}), "")
     check("#568: a place with no placeholder stays", publishes_to("wordpress.org", "k", {}), "wordpress.org")

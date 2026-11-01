@@ -8,7 +8,8 @@ in the test repository; a breaking change waits on a person.
   release-lane.py plan --repo R
         what is releasable since the last vX.Y.Z (scripts/next-version.py,
         from the labels of what merged) and whether a commit since says `!`:
-        JSON {release, version, previous, major, breaking, why}; exit 0
+        JSON {release, version, previous, major, breaking, why, sha}, `sha`
+        the commit planned, the only one the lane may release; exit 0
   release-lane.py candidate --central OWNER/.github
         in a checkout of main: the `release-candidate` commit, main with
         the reusable workflows' inner calls of the engine at `@vN` moved to
@@ -21,17 +22,22 @@ in the test repository; a breaking change waits on a person.
         a bug naming the scenario and its run) or `issue` (a `!`: the
         release issue for a person, nothing tagged); JSON
   release-lane.py act --plan F --results F --repo R [--run URL]
-        does what `decide` says. A release: the release pull request
-        (CHANGELOG.md from scripts/changelog.py build), merged, `vX.Y.Z`
-        tagged at its merge commit, `vN` moved to it (lightweight: `git tag
-        -f` and a force push of that ref alone), its GitHub Release
-        published; JSON {moved_at, version, previous} on stdout
+        does what `decide` says. A release, only while main is still the
+        plan's `sha` (else `none`): the release pull request (CHANGELOG.md
+        from scripts/changelog.py build), merged, `vX.Y.Z` tagged at its
+        merge commit when its parent is that `sha`, `vN` moved to it
+        (lightweight: `git tag -f` and a force push of that ref alone), its
+        GitHub Release published or, when engine-release.yml made it first,
+        edited; JSON {moved_at, version, previous[, error]} on stdout, and
+        exit 1 when `vN` moved but the Release failed (the watch still runs)
   release-lane.py watch --repo R --version V --previous P --since ISO
                         [--minutes 30] [--every 120] [--org O] [--property P]
         for `--minutes` after `vN` moved, every `--every` seconds: the runs
         of every adopted repository (org.yml `adopted-property`) since the
         move that ended in `startup_failure` or failed in one of the
-        engine's own jobs; on the first, `vN` back at P, a bug with the
+        engine's own steps of an engine job (ENGINE_STEPS, never the
+        product's lint or tests inside it), read with GH_READ_TOKEN; on the
+        first, `vN` back at P, a bug with the
         run's link, and the release says so
   release-lane.py --test
 
@@ -54,8 +60,8 @@ CANDIDATE = "release-candidate"
 MARK = "<!-- dx-release-lane -->"
 
 
-def sh(*argv, input=None):
-    out = subprocess.run(list(argv), capture_output=True, text=True, input=input)
+def sh(*argv, input=None, env=None):
+    out = subprocess.run(list(argv), capture_output=True, text=True, input=input, env=env)
     if out.returncode:
         raise RuntimeError(f"{' '.join(argv[:3])}: {(out.stderr or out.stdout).strip()}")
     return out.stdout
@@ -138,12 +144,23 @@ def decide(p, results):
 
 
 def release(p, repo, run=sh, sleep=time.sleep, minutes=60, root="."):
-    """The release pull request, merged, the tag, the move and the Release.
-    Returns {moved_at, version, previous}."""
-    version, major = p["version"], p["major"]
+    """The release pull request, merged, the tag, the move and the Release,
+    of the commit the scenarios tried (the plan's `sha`) and nothing else:
+    main past it releases nothing (the next green run plans it again), and
+    a release pull request merged on a main that moved meanwhile is tagged
+    nowhere. Returns {moved_at, version, previous}, with `error` when the
+    Release could not be published after `vN` moved (the watch still runs);
+    or {do: none, why} when main moved."""
+    version, major, planned = p["version"], p["major"], p.get("sha") or ""
+    if not planned:
+        raise RuntimeError("the plan names no commit: nothing is released that the scenarios did not try")
+    run("git", "-C", root, "fetch", "-q", "origin", "main")
+    head = run("git", "-C", root, "rev-parse", "origin/main").strip()
+    if head != planned:
+        return {"do": "none", "why": f"main moved past {planned[:12]}, the commit the scenarios tried: its own green run plans it again"}
     branch = f"chore/release-{version}"
-    run("git", "-C", root, "checkout", "-B", branch, "origin/main")
-    log = run("python3", os.path.join(HERE, "changelog.py"), "build", "--next", version, "--head", "origin/main")
+    run("git", "-C", root, "checkout", "-B", branch, planned)
+    log = run("python3", os.path.join(HERE, "changelog.py"), "build", "--next", version, "--head", planned)
     with open(os.path.join(root, "CHANGELOG.md"), "w", encoding="utf-8") as fh:
         fh.write(log)
     run("git", "-C", root, "commit", "-qam", f"chore: release {version}")
@@ -163,12 +180,36 @@ def release(p, repo, run=sh, sleep=time.sleep, minutes=60, root="."):
         sleep(30)
         waited += 30
     run("git", "-C", root, "fetch", "-q", "origin", sha)
+    parent = run("git", "-C", root, "rev-parse", f"{sha}^").strip()
+    if parent != planned:
+        raise RuntimeError(f"the release pull request #{number} merged onto {parent[:12]}, not {planned[:12]}, the commit the scenarios tried: nothing tagged, {major} did not move")
     run("git", "-C", root, "tag", version, sha)
     run("git", "-C", root, "push", "origin", f"refs/tags/{version}")
     move(major, sha, run, root)
-    notes = run("python3", os.path.join(HERE, "changelog.py"), "notes", version)
-    run("gh", "release", "create", version, "--repo", repo, "--title", version, "--notes", notes, "--verify-tag", "--latest")
-    return {"moved_at": now(), "version": version, "previous": p["previous"]}
+    out = {"moved_at": now(), "version": version, "previous": p["previous"]}
+    # From here `vN` moved: whatever fails, the watch must still run.
+    try:
+        notes = run("python3", os.path.join(HERE, "changelog.py"), "notes", version)
+        publish(version, notes, repo, run)
+    except RuntimeError as err:
+        out["error"] = f"{major} moved to {version}, but its Release could not be published: {err}"
+    return out
+
+
+def publish(version, notes, repo, run=sh):
+    """The GitHub Release of `version`: engine-release.yml also makes it on
+    the tag's push, so the one that exists is edited, and a create that
+    lost the race edits the one the workflow made."""
+    edit = ("gh", "release", "edit", version, "--repo", repo, "--title", version, "--notes", notes, "--latest")
+    try:
+        run("gh", "release", "view", version, "--repo", repo, "--json", "tagName")
+    except RuntimeError:
+        try:
+            run("gh", "release", "create", version, "--repo", repo, "--title", version, "--notes", notes, "--verify-tag", "--latest")
+            return
+        except RuntimeError:
+            pass
+    run(*edit)
 
 
 def move(major, target, run=sh, root="."):
@@ -205,17 +246,26 @@ def release_issue(version, why, lane_run=""):
 
 # The watch.
 
+# The steps of an engine job that are the engine's own, not the product's:
+# the runner resolving the engine's actions, and the engine's checkouts of
+# its scripts and configuration. A product's lint, test or review that fails
+# inside an engine job is the product's, and moves nothing back.
+ENGINE_STEPS = ("Set up job", "The organisation's configuration (#197)", "The organisation's scripts and policy", "The scripts")
+
+
 def engine_failure(run_, central):
     """Whether a run, as `gh api repos/R/actions/runs/ID` gives it with its
-    failed jobs' names (`failed_jobs`), failed on the engine: it never
-    started, or it failed in a job of a workflow of the engine (one of its
-    `referenced_workflows`, whose jobs are named `<caller> / <job>`). Pure."""
+    failed jobs (`failed_jobs`: {name, steps}, the names of the steps that
+    failed), failed on the engine: it never started, or a job of a workflow
+    of the engine (one of its `referenced_workflows`, whose jobs are named
+    `<caller> / <job>`) failed in one of ENGINE_STEPS. Pure."""
     if run_.get("conclusion") == "startup_failure":
         return True
     if run_.get("conclusion") != "failure":
         return False
     engine = any(str(w.get("path", "")).startswith(f"{central}/.github/workflows/") for w in run_.get("referenced_workflows") or [])
-    return engine and any(" / " in str(j) for j in run_.get("failed_jobs") or [])
+    return engine and any(isinstance(j, dict) and " / " in str(j.get("name", "")) and any(st in ENGINE_STEPS for st in j.get("steps") or [])
+                          for j in run_.get("failed_jobs") or [])
 
 
 def first_failure(runs, central, since, minutes=30):
@@ -242,7 +292,7 @@ def runs_since(full, since, run=sh):
     out = []
     for r in listed:
         if r.get("conclusion") == "failure":
-            jobs = json.loads(run("gh", "api", f"repos/{full}/actions/runs/{r['id']}/jobs", "--jq", "[.jobs[] | select(.conclusion == \"failure\") | .name]") or "[]")
+            jobs = json.loads(run("gh", "api", f"repos/{full}/actions/runs/{r['id']}/jobs", "--jq", "[.jobs[] | select(.conclusion == \"failure\") | {name, steps: [.steps[]? | select(.conclusion == \"failure\") | .name]}]") or "[]")
             r = dict(r, failed_jobs=jobs)
         out.append(r)
     return out
@@ -260,11 +310,14 @@ def rollback(p, failure, repo, run=sh, root="."):
         f"> {major} moved back to {p['previous']}: this release failed in a repository ({link}).\n\n{body}")
 
 
-def watch(p, repo, central, org_name, prop, since, run=sh, sleep=time.sleep, minutes=30, every=120, root="."):
-    """Returns the failed run it rolled back on, or None."""
+def watch(p, repo, central, org_name, prop, since, run=sh, sleep=time.sleep, minutes=30, every=120, root=".", read=None):
+    """Returns the failed run it rolled back on, or None. `read` reads every
+    repository's runs (a read-only token for the installation); `run`
+    writes, in this repository alone (its tags, issues and Release)."""
+    read = read or run
     waited = 0
     while True:
-        runs = [r for full in adopted(org_name, prop, run) for r in runs_since(full, since, run)]
+        runs = [r for full in adopted(org_name, prop, read) for r in runs_since(full, since, read)]
         bad = first_failure(runs, central, since, minutes)
         if bad:
             rollback(p, bad, repo, run, root)
@@ -273,6 +326,32 @@ def watch(p, repo, central, org_name, prop, since, run=sh, sleep=time.sleep, min
             return None
         sleep(every)
         waited += every
+
+
+def _raises(fn):
+    try:
+        fn()
+    except RuntimeError as err:
+        return err
+    return None
+
+
+def check_workflow(check, path=os.path.join(ROOT, ".github", "workflows", "release-lane.yml")):
+    """What the self-test cannot see in a fake: the tokens release-lane.yml
+    mints, and that the watch runs once `vN` moved even when `act` failed."""
+    import yaml
+    jobs = (yaml.safe_load(open(path, encoding="utf-8")) or {}).get("jobs") or {}
+
+    def tokens(job):
+        return [st.get("with") or {} for st in jobs.get(job, {}).get("steps") or [] if "create-github-app-token" in str(st.get("uses"))]
+    cand = tokens("candidate")
+    check("workflow: the candidate's token may push the workflow files it rewrites", [t.get("permission-workflows") for t in cand], ["write"])
+    watch_tokens = tokens("watch")
+    writes = [t for t in watch_tokens if any(v == "write" for k, v in t.items() if k.startswith("permission-"))]
+    check("workflow: the watch's write token is this repository's alone", bool(writes) and all(t.get("repositories") for t in writes), True)
+    wide = [t for t in watch_tokens if not t.get("repositories")]
+    check("workflow: the watch's installation-wide token only reads", bool(wide) and all(v in ("read",) for t in wide for k, v in t.items() if k.startswith("permission-")), True)
+    check("workflow: the watch runs once v7 moved, even when act failed after", "always()" in str(jobs.get("watch", {}).get("if")), True)
 
 
 class Fake:
@@ -304,7 +383,7 @@ def self_test():
         failed |= got != want
 
     nxt = {"last": "7.10.0", "next": "7.10.1", "bump": "patch", "pending": True}
-    p = plan(nxt, ["fix(autopilot): a stuck draft goes on (#600)"])
+    p = dict(plan(nxt, ["fix(autopilot): a stuck draft goes on (#600)"]), sha="p1")
     check("plan: a fix since the last release is a patch, not breaking", (p["release"], p["version"], p["previous"], p["major"], p["breaking"]), (True, "v7.10.1", "v7.10.0", "v7", False))
     check("plan: nothing pending, nothing released", plan(dict(nxt, pending=False, bump="none"), [])["release"], False)
     check("plan: a `!` is breaking", plan(dict(nxt, bump="minor", next="7.11.0"), ["feat!: a required input"])["breaking"], True)
@@ -322,11 +401,18 @@ def self_test():
     # C4: a fix, main green, every scenario passing.
     import tempfile
     with tempfile.TemporaryDirectory() as root:
-        fake = Fake({"gh pr create": "https://github.com/O/.github/pull/700\n",
-                     "gh pr view": json.dumps({"mergedAt": "2026-11-02T10:00:00Z", "mergeCommit": {"oid": "abc123"}, "state": "MERGED"}),
-                     "changelog.py build": "# Changelog\n", "changelog.py notes": "notes\n"})
+        def missing(argv):
+            raise RuntimeError("release not found")
+
+        def merged(parent="p1", main="p1", **more):
+            return Fake({"rev-parse origin/main": main + "\n", "rev-parse abc123^": parent + "\n",
+                         "gh pr create": "https://github.com/O/.github/pull/700\n",
+                         "gh pr view": json.dumps({"mergedAt": "2026-11-02T10:00:00Z", "mergeCommit": {"oid": "abc123"}, "state": "MERGED"}),
+                         "changelog.py build": "# Changelog\n", "changelog.py notes": "notes\n", **more})
+        fake = merged(**{"gh release view": missing})
         d = act(p, passed, "O/.github", run=fake, sleep=lambda s: None, root=root)
         check("C4: all pass → release", d["do"], "release")
+        check("C4: the release is built from the commit the scenarios tried", (fake.has("git", "-C", root, "checkout", "-B", "chore/release-v7.10.1", "p1"), bool([c for c in fake.named("changelog.py") if "build" in c and c[-1] == "p1"])), (True, True))
         check("C4: the release pull request is merged", fake.has("gh", "pr", "merge", "700"), True)
         check("C4: vX.Y.Z is tagged at its merge commit, lightweight", (fake.has("git", "-C", root, "tag", "v7.10.1", "abc123"), fake.has("git", "-C", root, "push", "origin", "refs/tags/v7.10.1")), (True, True))
         tags = [c for c in fake.calls if c[3:4] == ("tag",)]
@@ -334,7 +420,34 @@ def self_test():
         check("C4: v7 points at it, a force push of that ref alone", (fake.has("git", "-C", root, "tag", "-f", "v7", "abc123^{commit}"), fake.has("git", "-C", root, "push", "-f", "origin", "refs/tags/v7")), (True, True))
         check("C4: its GitHub Release is published", fake.has("gh", "release", "create", "v7.10.1"), True)
         check("C4: no person's step: no release issue", fake.has("gh", "issue", "create"), False)
-        check("C4: what the watch needs", (d["version"], d["previous"]), ("v7.10.1", "v7.10.0"))
+        check("C4: what the watch needs", (d["version"], d["previous"], "error" in d), ("v7.10.1", "v7.10.0", False))
+        # Main moved past the commit the scenarios tried.
+        fake = merged(main="p2")
+        d = act(p, passed, "O/.github", run=fake, sleep=lambda s: None, root=root)
+        check("main moved since the plan: nothing released, the next green run plans it", (d["do"], fake.has("gh", "pr"), [c for c in fake.calls if c[3:4] == ("tag",)]), ("none", False, []))
+        fake = merged(parent="p2")
+        try:
+            act(p, passed, "O/.github", run=fake, sleep=lambda s: None, root=root)
+            raised = False
+        except RuntimeError as err:
+            raised = "nothing tagged" in str(err)
+        check("main moved while the release pull request waited: an error, nothing tagged, v7 not moved", (raised, [c for c in fake.calls if c[3:4] == ("tag",)]), (True, []))
+        fake = Fake()
+        check("a plan with no commit releases nothing", ("no commit" in str(_raises(lambda: release(dict(p, sha=""), "O/.github", run=fake, root=root))), fake.calls), (True, []))
+        # engine-release.yml made the Release first.
+
+        def created_first(argv):
+            raise RuntimeError("a release with the same tag name already exists")
+        fake = merged(**{"gh release view": missing, "gh release create": created_first})
+        d = act(p, passed, "O/.github", run=fake, sleep=lambda s: None, root=root)
+        check("the Release made by engine-release.yml first is edited, not an error", (fake.has("gh", "release", "edit", "v7.10.1"), "error" in d), (True, False))
+        fake = merged()
+        act(p, passed, "O/.github", run=fake, sleep=lambda s: None, root=root)
+        check("a Release that exists already is edited, never created twice", (fake.has("gh", "release", "edit", "v7.10.1"), fake.has("gh", "release", "create")), (True, False))
+        fake = merged(**{"gh release": missing})
+        d = act(p, passed, "O/.github", run=fake, sleep=lambda s: None, root=root)
+        check("the Release fails after v7 moved: still a release, with its error and what the watch needs",
+              (d["do"], bool(d.get("error")), bool(d.get("moved_at")), fake.has("git", "-C", root, "push", "-f", "origin", "refs/tags/v7")), ("release", True, True, True))
         # C5: one scenario fails.
         fake = Fake()
         failing = passed[:1] + [{"id": "spec-to-draft", "ok": False, "why": ["no label autopilot"], "run": "https://github.com/o/t/actions/runs/9"}]
@@ -359,15 +472,26 @@ def self_test():
                 {"id": 3, "created_at": "2026-11-02T10:45:00Z", "conclusion": "startup_failure", "html_url": "late"}]
         check("C6: the first engine failure within 30 minutes", first_failure(runs, central, since)["id"], 2)
         check("C6: one after 30 minutes is not the release's", first_failure(runs[2:], central, since), None)
-        own = {"conclusion": "failure", "referenced_workflows": [{"path": "O/.github/.github/workflows/issue-triage.yml@v7"}], "failed_jobs": ["triage / classify"]}
-        check("C6: a failure in a job of the engine's workflow is the engine's", engine_failure(own, central), True)
-        check("C6: a failure in the repository's own job is not", engine_failure(dict(own, failed_jobs=["build"]), central), False)
+        own = {"conclusion": "failure", "referenced_workflows": [{"path": "O/.github/.github/workflows/issue-triage.yml@v7"}],
+               "failed_jobs": [{"name": "triage / classify", "steps": ["The organisation's configuration (#197)"]}]}
+        check("C6: an engine job failing in one of the engine's own steps is the engine's", engine_failure(own, central), True)
+        check("C6: a failure in the repository's own job is not", engine_failure(dict(own, failed_jobs=[{"name": "build", "steps": ["Set up job"]}]), central), False)
+        check("C6: the product's test failing inside an engine job is the product's, never a rollback",
+              engine_failure(dict(own, failed_jobs=[{"name": "checks / tests", "steps": ["PHPUnit"]}]), central), False)
+        quiet = Fake({"properties/values": json.dumps([{"repository_full_name": "O/a", "properties": [{"property_name": "dx-adopted", "value": "true"}]}]),
+                      "repos/O/a/actions/runs?": json.dumps([dict(own, id=5, created_at="2026-11-02T10:05:00Z", failed_jobs=None)]),
+                      "runs/5/jobs": json.dumps([{"name": "checks / tests", "steps": ["PHPUnit"]}])})
+        check("C6: a red test in an adopted repository moves nothing back",
+              (watch(dict(p, version="v7.10.1", previous="v7.10.0"), "O/.github", central, "O", "dx-adopted", "2026-11-02T10:00:00Z", run=Fake(), read=quiet, sleep=lambda s: None, every=1800, root=root)), None)
         props = json.dumps([{"repository_full_name": "O/a", "properties": [{"property_name": "dx-adopted", "value": "true"}]},
                             {"repository_full_name": "O/b", "properties": [{"property_name": "dx-adopted", "value": "false"}]}])
-        fake = Fake({"properties/values": props, "repos/O/a/actions/runs?": json.dumps(runs[:2]), "gh release view": json.dumps({"body": "notes"})})
+        reader = Fake({"properties/values": props, "repos/O/a/actions/runs?": json.dumps(runs[:2])})
+        fake = Fake({"gh release view": json.dumps({"body": "notes"})})
         moved_p = dict(p, version="v7.10.1", previous="v7.10.0")
-        bad = watch(moved_p, "O/.github", central, "O", "dx-adopted", since, run=fake, sleep=lambda s: None, root=root)
-        check("C6: the watch reads only the adopted repositories", (bool(fake.named("repos/O/a/")), bool(fake.named("repos/O/b/"))), (True, False))
+        bad = watch(moved_p, "O/.github", central, "O", "dx-adopted", since, run=fake, sleep=lambda s: None, root=root, read=reader)
+        check("C6: the watch reads only the adopted repositories", (bool(reader.named("repos/O/a/")), bool(reader.named("repos/O/b/"))), (True, False))
+        check("C6: the other repositories are only read, with the read token; every write is this repository's",
+              (all(c[:2] == ("gh", "api") and "-X" not in c for c in reader.calls), all("repos/O/a" not in " ".join(c) for c in fake.calls)), (True, True))
         check("C6: v7 points at the previous release again", (fake.has("git", "-C", root, "tag", "-f", "v7", "v7.10.0^{commit}"), fake.has("git", "-C", root, "push", "-f", "origin", "refs/tags/v7")), (True, True))
         made = [c for c in fake.calls if c[:3] == ("gh", "issue", "create")]
         check("C6: a bug with the run's link", bool(made) and "https://github.com/O/a/actions/runs/2" in " ".join(made[0]), True)
@@ -375,6 +499,7 @@ def self_test():
         check("C6: the release says so", bool(edit) and "moved back to v7.10.0" in " ".join(edit[0]) and bad["id"] == 2, True)
         fake = Fake({"properties/values": props, "repos/O/a/actions/runs?": json.dumps(runs[:1])})
         check("C6: a quiet half hour moves nothing", (watch(moved_p, "O/.github", central, "O", "dx-adopted", since, run=fake, sleep=lambda s: None, every=600, root=root), fake.has("git")), (None, False))
+    check_workflow(check)
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
@@ -414,7 +539,7 @@ def main(argv):
     if a.mode == "plan":
         nxt = json.loads(sh("python3", os.path.join(HERE, "next-version.py"), "--repo", a.repo, "--tag-prefix", "v", "--json"))
         subjects = sh("git", "log", "--format=%s", f"v{nxt['last']}..HEAD").splitlines()
-        print(json.dumps(plan(nxt, subjects)))
+        print(json.dumps(dict(plan(nxt, subjects), sha=sh("git", "rev-parse", "HEAD").strip())))
         return 0
     if a.mode == "candidate":
         print(candidate(central, load(a.plan)["major"] if a.plan else "v7"))
@@ -423,13 +548,22 @@ def main(argv):
         print(json.dumps(decide(load(a.plan), results_of(a.results))))
         return 0
     if a.mode == "act":
-        print(json.dumps(act(load(a.plan), results_of(a.results), a.repo, lane_run=a.run)))
-        return 0
+        d = act(load(a.plan), results_of(a.results), a.repo, lane_run=a.run)
+        print(json.dumps(d))
+        if d.get("error"):
+            print(f"::error::{d['error']}", file=sys.stderr)
+        return 1 if d.get("error") else 0
     if a.mode == "watch":
         conf = org.load()
         p = {"version": a.version, "previous": a.previous, "major": f"v{a.version.lstrip('v').split('.')[0]}"}
+        # GH_READ_TOKEN reads every repository's runs; GH_TOKEN writes here.
+        token = os.environ.get("GH_READ_TOKEN") or os.environ.get("GH_TOKEN", "")
+        read_env = dict(os.environ, GH_TOKEN=token)
+
+        def read(*argv, input=None):
+            return sh(*argv, input=input, env=read_env)
         bad = watch(p, a.repo, central, a.org or org.ORG, a.property or str(conf.get("adopted-property") or "dx-adopted"), a.since,
-                    minutes=a.minutes, every=a.every)
+                    minutes=a.minutes, every=a.every, read=read)
         print(json.dumps({"rolled_back": bool(bad), "run": (bad or {}).get("html_url", "")}))
         return 0
     return 64

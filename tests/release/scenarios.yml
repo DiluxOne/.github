@@ -102,10 +102,11 @@ bodies:
     ### Version
 
     Next.
+  # `{issue}`: the issue the scenario opens for its pull request first.
   pull: |
     A change of the scenarios.
 
-    Closes #1
+    Closes #{issue}
 
 scenarios:
   # Issues, before acceptance.
@@ -135,10 +136,14 @@ scenarios:
     opens: {issue: {title: "feat: a greeting, drafted", body: complete-feature}}
     steps: [{label: accepted}]
     expect: {pull: {closes: true, branch: "^feat/[0-9]+-", title: "^feat(\\(.+\\))?: "}, comments: ["<!-- dx-prd-seal -->"]}
+  # The first issue's draft (its fixed change under scenarios/, the test
+  # repository's core: kinds/engine-test/pack.yml `core`) stays open while
+  # the second is accepted, so the second waits for it.
   - id: core-one-at-a-time
     covers: [next_step:wait:core]
-    opens: {issue: {title: "feat: a greeting on the core, twice", body: complete-feature, labels: [accepted]}}
-    steps: [{wait: 120}, {label: accepted}]
+    before: [{issue: {title: "feat: a greeting on the core, first", body: complete-feature, labels: [accepted]}}]
+    opens: {issue: {title: "feat: a greeting on the core, second", body: complete-feature}}
+    steps: [{wait: 300}, {label: accepted}]
     expect: {comments: ["<!-- dx-autopilot-core -->"], labels: [autopilot:core-wait]}
   - id: prd-edited-after-acceptance
     covers: [next_step:wait:answer]
@@ -158,7 +163,7 @@ scenarios:
     expect: {absent: [claim:long]}
   - id: claim-pull-request
     covers: [issue-claim.yml:pull_request_target]
-    opens: {pull: {title: "feat: a greeting by hand", body: pull}}
+    opens: {pull: {title: "feat: a greeting by hand", body: pull, issue: {title: "feat: a greeting, claimed for a hand", body: complete-feature, labels: [accepted]}}}
     expect: {pull: {closes: true}}
 
   # Bugs.
