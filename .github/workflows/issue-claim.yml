@@ -180,11 +180,9 @@ jobs:
       fail-fast: false
       matrix:
         issue: ${{ fromJSON(needs.claim.outputs.start || needs.daily.outputs.start || '[]') }}
-    # The agent's jobs read the repository, and its pull requests for
-    # next-version.py in `make pre-pr`, with the job's own token (#287, #537).
+    # The agent's jobs read the repository with the job's own token (#287).
     permissions:
       contents: read
-      pull-requests: read
     uses: DiluxOne/.github/.github/workflows/autopilot.yml@v7
     with:
       mode: start

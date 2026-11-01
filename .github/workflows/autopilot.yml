@@ -614,6 +614,8 @@ jobs:
           # with main merges it first.
           CONFLICTS: ${{ steps.what.outputs.conflicts }}
           DEFAULT: ${{ github.event.repository.default_branch }}
+          # The default branch as GitHub says it, whatever the event (#585).
+          BASE: ${{ steps.when.outputs.default }}
           # #479: a round for a pull request the queue dropped reads the
           # failed jobs' log instead of the review.
           QUEUE: ${{ github.event_name == 'pull_request' && github.event.action == 'dequeued' }}
@@ -630,6 +632,9 @@ jobs:
             exit 0
           fi
           python3 .dx-central/scripts/autopilot.py inputs "$MODE"
+          # The pull requests' numbers and labels, for next-version.py in
+          # `make pre-pr`: the work job's token does not read them (#585).
+          python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$BASE" --save-pulls "$DX_IO/pulls.json"
           if [ "$MODE" = fix ]; then
             CONFLICTS="${CONFLICTS:-false}" python3 .dx-central/scripts/autopilot.py prompt fix > "$DX_IO/prompt.md"
             exit 0
@@ -941,6 +946,7 @@ jobs:
           PR: ${{ steps.draft.outputs.pr }}
           BRANCH: ${{ steps.draft.outputs.branch }}
           LANE: ${{ needs.prep.outputs.lane }}
+          DEFAULT: ${{ needs.prep.outputs.default }}
           REPO_AUTONOMY: ${{ runner.temp }}/repo-autonomy.yml
         run: |
           set -euo pipefail
@@ -948,6 +954,9 @@ jobs:
           export BODY="$RUNNER_TEMP/body.md" DX_IO="$GITHUB_WORKSPACE/.dx-io"
           mkdir -p "$DX_IO"
           python3 .dx-central/scripts/autopilot.py inputs start
+          # The pull requests' numbers and labels, for next-version.py in
+          # `make pre-pr`: the work job's token does not read them (#585).
+          python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$DEFAULT" --save-pulls "$DX_IO/pulls.json"
           python3 .dx-central/scripts/autopilot.py prompt work > "$DX_IO/prompt.md"
 
       - name: Hand it to the agent
@@ -967,11 +976,11 @@ jobs:
     if: ${{ !cancelled() && needs.prep.outputs.go == 'true' && (needs.prep.outputs.mode != 'start' || needs.draft.outputs.pr != '') }}
     runs-on: ${{ (vars.DX_RUNNER_HEAVY != '' && needs.where.outputs.github-hosted == 'false') && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 90
-    # It reads the repository, and the closed pull requests next-version.py
-    # lists in `make pre-pr` (#537); it writes nothing.
+    # It reads the repository and writes nothing; the pull requests
+    # next-version.py lists in `make pre-pr` come from prep or draft, in
+    # .dx-io/pulls.json (#585), so no caller grants more than it reads.
     permissions:
       contents: read
-      pull-requests: read
     outputs:
       outcome: ${{ steps.work.outcome }}
     steps:
@@ -1044,6 +1053,9 @@ jobs:
         env:
           DX_IO: ${{ github.workspace }}/.dx-io
           DX_BASE: ${{ steps.task.outputs.base }}
+          # The pull requests prep or draft saved: next-version.py reads them
+          # there in `make pre-pr`, since this job's token does not (#585).
+          DX_PULLS: ${{ github.workspace }}/.dx-io/pulls.json
           NUMBER: ${{ needs.prep.outputs.issue }}
           PR: ${{ needs.draft.outputs.pr || needs.prep.outputs.pr }}
           BRANCH: ${{ needs.draft.outputs.branch || needs.prep.outputs.branch }}

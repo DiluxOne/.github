@@ -2128,10 +2128,16 @@ Clamp the value in Sum::add.
         text = lambda job: json.dumps(jobs[job])
         agents = [j for j in jobs if "claude-code-action" in text(j)]
         keyed = [j for j in jobs if "DILUX_BOT_PRIVATE_KEY" in text(j)]
-        check("#287, #537: the agent's jobs hold no key and read with the job's own token (the work, its pull requests too, for next-version.py)",
+        check("#287: the agent's jobs hold no key and read with the job's own token", 
               (sorted(agents), [j for j in agents if j in keyed], [jobs[j].get("permissions") for j in agents],
                all("github.token" in st.get("with", {}).get("github_token", "") for j in agents for st in jobs[j]["steps"] if "claude-code-action" in str(st.get("uses", "")))),
-              (["spec", "work"], [], [{"contents": "read"}, {"contents": "read", "pull-requests": "read"}], True))
+              (["spec", "work"], [], [{"contents": "read"}, {"contents": "read"}], True))
+        saves = lambda job, name: next(st for st in jobs[job]["steps"] if st.get("name") == name)["run"]
+        agent_env = next(st for st in jobs["work"]["steps"] if "claude-code-action" in str(st.get("uses", "")))["env"]
+        check("#585: the keyed jobs save the pull requests next-version.py lists into what the work reads, where its `make pre-pr` finds them",
+              ['--save-pulls "$DX_IO/pulls.json"' in saves("prep", "The agent's task"), '--save-pulls "$DX_IO/pulls.json"' in saves("draft", "The work's task"),
+               agent_env.get("DX_PULLS")],
+              [True, True, "${{ github.workspace }}/.dx-io/pulls.json"])
         check("#287: the jobs with the key run no agent, on GitHub's fresh runners",
               (sorted(keyed), {jobs[j]["runs-on"] for j in keyed if j != "where"}), (["apply", "draft", "prep", "where"], {"ubuntu-latest"}))
         steps = lambda job: jobs[job]["steps"]
@@ -2219,7 +2225,7 @@ Clamp the value in Sum::add.
         check("#504 C1: this repository's autopilot-fix runs the round here, after its review, with the organisation's condition but the repository",
               (here_fix.get("uses"), here_fix.get("needs"), (here_fix.get("with") or {}).get("mode"), (here_fix.get("with") or {}).get("central-ref"),
                here_fix.get("permissions"), here_fix.get("secrets"), mine in cond(here_fix), cond(here_fix) == cond(org_fix).replace(theirs, mine)),
-              ("./.github/workflows/autopilot.yml", "review", "fix", "main", {"contents": "read", "pull-requests": "read"}, "inherit", True, True))
+              ("./.github/workflows/autopilot.yml", "review", "fix", "main", {"contents": "read"}, "inherit", True, True))
         clauses = ["github.event_name == 'pull_request'", "needs.review.outputs.blocking == 'true'", "contains(github.event.pull_request.labels.*.name, 'autopilot')",
                    "github.event.pull_request.user.login == 'dilux-bot[bot]'", "github.event.action != 'edited'"]
         check("#504 C2: no round here for another author's pull request, one without the label, a review that does not block, or an edit",
@@ -2228,7 +2234,7 @@ Clamp the value in Sum::add.
               (theirs in cond(org_fix), mine in cond(org_fix), org_fix.get("needs"), bool(re.fullmatch(r"DiluxOne/\.github/\.github/workflows/autopilot\.yml@v\d+", str(org_fix.get("uses")))),
                org_fix.get("with"), org_fix.get("permissions"), org_fix.get("secrets"),
                cond(org_fix) == "always() && " + " && ".join([clauses[0], theirs] + clauses[1:])),
-              (True, False, "review", True, {"mode": "fix", "pr": "${{ format('{0}', github.event.pull_request.number) }}"}, {"contents": "read", "pull-requests": "read"}, "inherit", True))
+              (True, False, "review", True, {"mode": "fix", "pr": "${{ format('{0}', github.event.pull_request.number) }}"}, {"contents": "read"}, "inherit", True))
     # #488: a person's claim holds the issue; the autopilot does not start.
     check("C1 held_by: `claimed` holds it; an accepted issue nobody holds does not",
           (held_by({"labels": ["accepted", "claimed"]}, []), held_by({"labels": ["accepted"]}, [])), ("a person claimed it (`claimed`)", ""))
