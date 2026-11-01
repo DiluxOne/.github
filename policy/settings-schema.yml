@@ -119,6 +119,23 @@ files:
       read-by: [scripts/org.py]
       issue: "#491"
       says: What the conventions check does with a model named as a co-author.
+    - key: test-repo
+      identity: true
+      default: "`<org lowercased>-test`"
+      org: any
+      repo: never
+      limit: a repository of the organisation of kind `engine-test`, and no product
+      read-by: [scripts/org.py]
+      issue: "#563"
+      says: The test repository, where the release lane plays every scenario before `v7` moves.
+    - key: core
+      default: []
+      org: any
+      repo: never
+      limit: globs of the engine's files
+      read-by: [scripts/org.py]
+      issue: "#563, #568"
+      says: The engine's core files; while an open autopilot pull request touches one, no other issue whose Spec touches one starts.
     - key: adopted-property
       org: any
       repo: never
@@ -499,10 +516,52 @@ files:
     - key: autopilot
       org: any
       repo: never
-      limit: instructions added to the autopilot's work prompt
+      limit: "instructions added to the autopilot's work prompt; engine-test's is `fixed-change`, a change that calls no model"
       read-by: [scripts/autopilot.py]
       issue: "#341"
       says: What the autopilot adds to every change of the kind.
+    - key: identity
+      org: any
+      repo: never
+      limit: "engine-test only: the test identity, `secret` its token's secret and `login` (`{org}` the organisation's login, lowercased), which may accept in a repository of the kind and nowhere else"
+      read-by: [scripts/org.py, scripts/deciders.py, scripts/sync-repos.py]
+      issue: "#563"
+      says: The test identity of the engine's test repository.
+    - key: fixed-change
+      org: any
+      repo: never
+      limit: "engine-test only: the file the autopilot writes per criterion instead of calling a model"
+      read-by: [scripts/org.py, scripts/autopilot.py]
+      issue: "#563"
+      says: The canned change the autopilot commits in the test repository.
+    - key: core
+      org: any
+      repo: never
+      limit: "engine-test only: globs in place of org.yml `core`, so its fixed change touches a core"
+      read-by: [scripts/org.py, scripts/autopilot.py]
+      issue: "#563"
+      says: The test repository's own core.
+    - key: callers
+      org: any
+      repo: never
+      limit: "engine-test only: names of workflow-templates/ files"
+      read-by: [scripts/org.py, scripts/install.py, scripts/release-scenarios.py]
+      issue: "#563"
+      says: The shipped callers the test repository has, which the release scenarios play.
+    - key: cleanup
+      org: any
+      repo: never
+      limit: "engine-test only: `after-run`"
+      read-by: [scripts/org.py]
+      issue: "#563"
+      says: What is closed and deleted in the test repository after each run of the scenarios.
+    - key: publishes
+      org: any
+      repo: never
+      limit: "engine-test only: `never`"
+      read-by: [scripts/org.py, scripts/sync-repos.py]
+      issue: "#563"
+      says: Whether anything is published from a repository of the kind.
     - key: repro
       org: any
       repo: any

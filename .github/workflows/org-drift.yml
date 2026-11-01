@@ -24,7 +24,9 @@ name: Repositories in step
 # against workflow-templates/, the kind's "own checks" ruleset, the rulesets
 # the organisation's cover, and a way to reproduce a bug, #377; the custom
 # property the organisation's rulesets cover, the code security
-# configuration, the Project, #562),
+# configuration, the Project, #562; the test repository, never also a
+# product nor a catalog, and the test identity, with more than read nowhere
+# else, #563),
 # through scripts/sync-repos.py check, and changes nothing.
 # One issue here, "Repositories out of step", lists what differs: opened or
 # updated when something does, closed when nothing does.

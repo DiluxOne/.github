@@ -280,6 +280,9 @@ jobs:
       default: ${{ steps.when.outputs.default }}
       budget-spec: ${{ steps.when.outputs.budget-spec }}
       budget-work: ${{ steps.when.outputs.budget-work }}
+      # The test repository's fixed change (#563, kinds/engine-test/pack.yml
+      # `autopilot: fixed-change`): `true`, and no model is called.
+      fixed: ${{ steps.task.outputs.fixed }}
     steps:
       - name: App token
         id: bot
@@ -616,7 +619,9 @@ jobs:
       # called with: a continue's fix round (#504) is a run. A continue that
       # a maintainer's answer to the autopilot's own question started
       # (review-reply.yml adds autopilot:answered beside the continue) is
-      # free: labelled autopilot:free-N, it does not count (#479). The end
+      # free: labelled autopilot:free-N, it does not count (#479); so is one
+      # that only catches up with another merge (autopilot-sweep.yml adds
+      # autopilot:catchup beside its continue on a conflict, #563). The end
       # rule frees a run whose runner was lost.
       - name: Count the round or the run
         if: steps.may.outputs.go == 'true' && steps.what.outputs.mode != 'start'
@@ -629,15 +634,19 @@ jobs:
           RUNS: ${{ steps.what.outputs.runs }}
         run: |
           set -euo pipefail
-          answered=false
+          answered=false; catchup=false
           if [ "$MODE" = continue ] && [ -n "$ISSUE" ]; then
             answered=$(gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | index("autopilot:answered") != null')
             [ "$answered" != true ] || gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label "autopilot:answered" >/dev/null
+            # A run that only catches up with another merge (#563: the
+            # sweep's continue on a conflict) is free too.
+            catchup=$(gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | index("autopilot:catchup") != null')
+            [ "$catchup" != true ] || gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label "autopilot:catchup" >/dev/null
           fi
           if [ "$MODE" = fix ]; then l="autopilot:round-$ROUND"; d="The autopilot's review rounds on this pull request"
           else
-            l=$(N="$RUNS" ANSWERED="$answered" python3 .dx-central/scripts/autopilot.py run-label)
-            d="The autopilot's runs on this pull request"; [ "$answered" != true ] || d="The autopilot's runs on this pull request that do not count towards its cap"
+            l=$(N="$RUNS" ANSWERED="$answered" CATCHUP="$catchup" python3 .dx-central/scripts/autopilot.py run-label)
+            d="The autopilot's runs on this pull request"; [ "$answered" != true ] && [ "$catchup" != true ] || d="The autopilot's runs on this pull request that do not count towards its cap"
           fi
           gh label create "$l" --repo "$GITHUB_REPOSITORY" --color C5DEF5 --description "$d" 2>/dev/null || true
           gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label "$l" >/dev/null
@@ -645,6 +654,7 @@ jobs:
       # What the agent reads, written here: its task, the Spec, the pull
       # request's body and, for a fix round, the review's own words.
       - name: The agent's task
+        id: task
         if: steps.may.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
@@ -668,6 +678,14 @@ jobs:
           set -euo pipefail
           export BODY="$RUNNER_TEMP/body.md" REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml" DX_IO="$GITHUB_WORKSPACE/.dx-io"
           mkdir -p "$DX_IO"
+          # The test repository (#563): its Spec is the fixed change's,
+          # queued here as the agent would have, and the work writes it.
+          fixed=$(python3 .dx-central/scripts/autopilot.py fixed)
+          if [ -n "$fixed" ]; then
+            echo "fixed=true" >> "$GITHUB_OUTPUT"
+            echo "The test repository: the fixed change ($fixed), no model."
+            [ "$MODE" != start ] || python3 .dx-central/scripts/autopilot.py fixed spec
+          fi
           if [ "$MODE" = start ]; then
             # A Feature's Spec carries its phases too (#193).
             ISSUE_TYPE=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" --jq '.type.name // ""' || true)  # G3 checks it again, failing closed
@@ -727,7 +745,8 @@ jobs:
     permissions:
       contents: read
     outputs:
-      outcome: ${{ steps.spec.outcome }}
+      # The fixed change's Spec was queued by prep (#563): no model ran.
+      outcome: ${{ needs.prep.outputs.fixed == 'true' && 'success' || steps.spec.outcome }}
     steps:
       # The working tree, with the job's token, which only reads; nothing
       # keeps it. A reproduced bug's test was written from an outsider's
@@ -778,6 +797,7 @@ jobs:
 
       - name: Claude writes the Spec
         id: spec
+        if: needs.prep.outputs.fixed != 'true'
         timeout-minutes: 20
         uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1.0.264
         env:
@@ -843,6 +863,7 @@ jobs:
       branch: ${{ steps.draft.outputs.branch }}
       why: ${{ steps.draft.outputs.why }}
       held: ${{ steps.draft.outputs.held }}
+      core: ${{ steps.draft.outputs.core }}
     steps:
       - name: App token
         id: bot
@@ -933,6 +954,15 @@ jobs:
             echo "::warning::The Spec does not pass G3: $(jq -c .errors "$RUNNER_TEMP/g3.json")"
             echo "why=The Spec on the issue does not pass G3: $(jq -r '.errors | join("; ")' "$RUNNER_TEMP/g3.json" | head -c 300)" >> "$GITHUB_OUTPUT"; exit 0
           fi
+          # One change to the engine's core at a time (#563, org.yml `core`):
+          # while an open autopilot pull request already touches a core file
+          # the Spec touches too, no draft opens; the end rule says so once
+          # and autopilot-sweep.yml starts it again once that one merges or
+          # closes. A list that cannot be read opens nothing either.
+          if ! core=$(BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/autopilot.py core-wait); then
+            echo "why=The open autopilot pull requests could not be read, so the core could not be checked; the draft pull request is not opened." >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -n "$core" ]; then echo "The autopilot waits for #$core, which already changes the core."; echo "core=$core" >> "$GITHUB_OUTPUT"; exit 0; fi
           BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/receipts.py seal-spec
           title=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json title --jq .title)
           # No checklist, no draft: the end rule then stops the run with a
@@ -1035,7 +1065,7 @@ jobs:
     permissions:
       contents: read
     outputs:
-      outcome: ${{ steps.work.outcome }}
+      outcome: ${{ needs.prep.outputs.fixed == 'true' && steps.fixed.outcome || steps.work.outcome }}
     steps:
       # The working tree, with the job's token, which only reads; nothing
       # keeps it. A reproduced bug's test was written from an outsider's
@@ -1102,8 +1132,22 @@ jobs:
           eof="DX_$(openssl rand -hex 16)"
           { echo "prompt<<$eof"; cat .dx-io/prompt.md; echo "$eof"; } >> "$GITHUB_OUTPUT"
 
+      # The test repository's fixed change (#563): each unticked criterion's
+      # file, committed and ticked, then ready, through the agent's own
+      # helpers, with no model.
+      - name: The fixed change
+        id: fixed
+        if: needs.prep.outputs.fixed == 'true'
+        env:
+          DX_IO: ${{ github.workspace }}/.dx-io
+          DX_BASE: ${{ steps.task.outputs.base }}
+          NUMBER: ${{ needs.prep.outputs.issue }}
+          MODE: ${{ needs.prep.outputs.mode }}
+        run: python3 .dx-central/scripts/autopilot.py fixed work
+
       - name: Claude works
         id: work
+        if: needs.prep.outputs.fixed != 'true'
         # Under the job's timeout: what it committed still goes on.
         timeout-minutes: 75
         uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1.0.264
@@ -1333,6 +1377,8 @@ jobs:
           # A job that failed is reported as itself (#561), not as silence.
           FAILED: ${{ needs.spec.result == 'failure' && 'spec' || needs.draft.result == 'failure' && 'draft' || (needs.work.result == 'failure' && needs.work.outputs.outcome != '') && 'work' || '' }}
           HELD: ${{ needs.draft.outputs.held || steps.applied.outputs.held }}
+          # #563: it waits for another pull request on the core.
+          CORE: ${{ needs.draft.outputs.core }}
           WORK_LOG: .dx-out/transcript/2-work.json
           RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
           REPO_AUTONOMY: ${{ runner.temp }}/repo-autonomy.yml

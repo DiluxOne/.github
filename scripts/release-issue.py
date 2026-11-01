@@ -76,6 +76,17 @@ def version_of(title):
     return m.group(1) if m else None
 
 
+def engine_issue(version, why, lane_run=""):
+    """The release issue the engine's release lane opens for a person when
+    what it would release is breaking (#563, scripts/release-lane.py): the
+    Release form's title and label, so accepting it is the person's
+    decision, as for any release."""
+    run = f"\n\nThe lane's run: {lane_run}" if lane_run else ""
+    return {"title": f"Release {version}", "labels": [LANE_LABEL],
+            "body": f"Every release scenario passed in the test repository, and v{version} is breaking ({why}): "
+                    f"it reaches the repositories only once a person accepts this issue and releases it.{run}\n"}
+
+
 # --- plan: the release pull request ---------------------------------------
 
 def kind_of(root):
@@ -468,6 +479,8 @@ def self_test():
     p = plan("Release 1.2.0", "7", nxt, "wordpress-plugin", release, inputs, ".dx-central")
     check("plan: the pull request for an accepted version", (p["ok"], p["branch"], p["title"]), (True, "chore/7-release-1-2-0", "chore(release): 1.2.0"))
     check("plan: the kind's command, filled, the main file from the slug", p["argv"], ["bash", ".dx-central/scripts/release-markers.sh", "prepare", ".", "1.2.0", "my-plugin.php", "MY_PLUGIN_VERSION"])
+    eng = engine_issue("8.0.0", "feat!: x")
+    check("#563: the engine's breaking release issue is the Release form's", (version_of(eng["title"]), eng["labels"]), ("8.0.0", [LANE_LABEL]))
     check("plan: the body closes the issue and says where it goes", ("Closes #7." in p["body"], "wordpress.org" in p["body"], p["body"].endswith(AI_LINE)), (True, True, True))
     check("plan: the title is a Conventional Commit of 72 characters or fewer", len(p["title"]) <= 72 and p["title"].startswith("chore(release): "), True)
     p = plan("Release 1.2.0", "7", nxt, "wordpress-plugin", release, {"slug": "s", "main-file": "plugin.php", "version-constant": ""}, "c")

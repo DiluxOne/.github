@@ -35,10 +35,20 @@ installing again loses nothing.
       branch chore/install-engine, and open that single pull request; then
       print the organisation's own steps (its App's key, its variables, the
       ruleset), which no pull request can do
+  install.py test-repo --org ORG
+      the organisation's test repository (#563; also the last step of
+      apply): created when missing (org.yml `test-repo`, `<org>-test`;
+      private when the organisation's plan gives rulesets to private
+      repositories, else public), its callers written at `@v7` (at the
+      engine's commit, pinned, for another organisation), adopted
+      (`sync-repos.py adopt`), the test identity given write there, and
+      every release scenario played there once, with the table of results
   install.py --test   self-test
 
 Environment: GH_TOKEN, as the organisation's administrator (repositories:
-read, and for apply contents and pull requests: write on ORG/.github).
+read, and for apply contents and pull requests: write on ORG/.github; for
+the test repository, administration: write); DX_TEST_TOKEN, the test
+identity's token, which plays the scenarios (GH_TOKEN when it is unset).
 """
 import argparse
 import importlib.util
@@ -284,6 +294,72 @@ def propose_ways(path, names, policy_of, way_of, engine=ENGINE):
     return did
 
 
+# The callers the test repository has (#563): its pack's `callers`,
+# kinds/engine-test/pack.yml, which the scenarios play.
+TEST_CALLERS = tuple(org.test_pack({"org": org.ORG})["callers"])
+
+
+def run_cmd(argv, env=None):
+    out = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
+    return out.returncode, out.stdout, out.stderr
+
+
+def engine_ref(owner):
+    """The ref a caller of `owner` names the engine at: `v7` for the
+    engine's own organisation, else the engine's commit, pinned."""
+    if owner == org.ORG:
+        return "v7"
+    return subprocess.run(["git", "-C", ENGINE, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def at_ref(text, ref):
+    """A caller's calls of the engine at `ref` (a SHA keeps its version in a
+    comment). Pure."""
+    note = "" if re.fullmatch(r"v\d+(-next)?", ref) else " # v7"
+    return re.sub(r"^(\s+uses: " + re.escape(org.CENTRAL) + r"/\.github/workflows/[\w.-]+\.yml)@v7[ \t]*$", rf"\1@{ref}{note}", text, flags=re.M)
+
+
+def test_repository(owner, run=run_gh, cmd=run_cmd, ref=None):
+    """The test repository (#563): (exit code, what it says, its table of
+    results last)."""
+    import base64
+    conf = org._conf if owner == org.ORG else {"org": owner}
+    name, login = org.test_repo(conf), org.test_pack(conf)["identity"].get("login", "")
+    full, ref, said = f"{owner}/{name}", ref or engine_ref(owner), []
+    rc, _, _ = run("repo", "view", full, "--json", "name")
+    if rc != 0:
+        rc, plan_name, _ = run("api", f"orgs/{owner}", "--jq", ".plan.name")
+        private = rc == 0 and plan_name.strip() not in ("", "free")
+        rc, _, err = run("repo", "create", full, "--private" if private else "--public", "--add-readme",
+                         "--description", "The engine's test repository: the release scenarios run here")
+        if rc != 0:
+            return 1, f"Could not create {full}: {err.strip()[:200]}"
+        said.append(f"created {full} ({'private' if private else 'public'})")
+    for caller in TEST_CALLERS:
+        with open(os.path.join(ENGINE, "workflow-templates", caller), encoding="utf-8") as fh:
+            text = at_ref(render(fh.read(), owner), ref)
+        path = f"repos/{full}/contents/.github/workflows/{caller}"
+        rc, sha, _ = run("api", path, "--jq", ".sha")
+        rc, _, err = run("api", "-X", "PUT", path, "-f", f"message=ci: the engine's {caller} at {ref}",
+                         "-f", f"content={base64.b64encode(text.encode()).decode()}", *(["-f", f"sha={sha.strip()}"] if rc == 0 and sha.strip() else []))
+        if rc != 0:
+            return 1, "\n".join(said + [f"Could not write {caller} in {full}: {err.strip()[:200]}"])
+        said.append(f"wrote .github/workflows/{caller} at {ref}")
+    rc, out, err = cmd(["python3", os.path.join(HERE, "sync-repos.py"), "adopt", "--repo", name])
+    if rc != 0:
+        return 1, "\n".join(said + [f"Could not adopt {full}: {(err or out).strip()[-300:]}"])
+    said.append(f"adopted {full}")
+    if login:
+        rc, _, err = run("api", "-X", "PUT", f"repos/{full}/collaborators/{login}", "-f", "permission=push")
+        if rc != 0:
+            return 1, "\n".join(said + [f"Could not give {login} write on {full}: {err.strip()[:200]}"])
+        said.append(f"gave the test identity {login} write on {full}, and nowhere else")
+    env = dict(os.environ, **({"GH_TOKEN": os.environ["DX_TEST_TOKEN"]} if os.environ.get("DX_TEST_TOKEN") else {}))
+    rc, out, err = cmd(["python3", os.path.join(HERE, "release-scenarios.py"), "run", "--repo", full, "--ref", ref], env=env)
+    said.append(f"\nEvery release scenario, played once in {full} at {ref}:\n\n{out.strip() or err.strip()[-300:]}")
+    return (0 if rc == 0 else 1), "\n".join(said)
+
+
 def material(did):
     """What installing again changed: anything but a kept file, or what it
     only says (a repository it proposes no way for)."""
@@ -300,6 +376,7 @@ def steps(owner, app):
 2. Organisation secrets: DILUX_BOT_PRIVATE_KEY (the App's private key), CLAUDE_CODE_OAUTH_TOKEN (`claude setup-token`) or ANTHROPIC_API_KEY. https://github.com/organizations/{owner}/settings/secrets/actions
 3. Organisation variables: DILUX_BOT_CLIENT_ID (the App's client ID), DX_BOT_LOGIN ({app}[bot]), DX_BOT_APP ({app}), DX_BOT_ID (the App's bot user id: gh api users/{app}%5Bbot%5D --jq .id). https://github.com/organizations/{owner}/settings/variables/actions
 4. An organisation ruleset on every repository's default branch that requires the workflow {owner}/.github/.github/workflows/org-pull-request.yml (GitHub Team; on Free, each repository adds a copy of it as .github/workflows/pull-request.yml). https://github.com/organizations/{owner}/settings/rules
+5. The test identity (#563): a machine user, {org.test_pack({"org": owner})["identity"].get("login", "")}, whose fine-grained token (write on the test repository only) is the secret {org.test_pack({"org": owner})["identity"].get("secret", "DX_TEST_TOKEN")} of the `release` environment of {owner}/.github, which only main may use; then `install.py test-repo --org {owner}` plays every release scenario once more. https://github.com/{owner}/.github/settings/environments
 """
 
 
@@ -469,6 +546,39 @@ def self_test():
             os.environ.clear()
             os.environ.update(old)
 
+    # C9 (#563): the test repository, created, adopted, granted, and every
+    # scenario played once there, with its table.
+    tcalls, tcmds = [], []
+
+    def tgh(*a):
+        tcalls.append(a)
+        if a[:2] == ("repo", "view"):
+            return 1, "", "not found"
+        if a[:2] == ("api", "orgs/Acme"):
+            return 0, "team\n", ""
+        if a[0] == "api" and len(a) > 2 and a[2] == "--jq":
+            return 1, "", "404"
+        return 0, "", ""
+
+    def tcmd(argv, env=None):
+        tcmds.append(argv)
+        if "release-scenarios.py" in argv[1]:
+            return 0, "| Scenario | Result | Run |\n| --- | --- | --- |\n| `issue-complete` | pass | https://github.com/Acme/acme-test/actions/runs/1 |\n", ""
+        return 0, "", ""
+    rc, out = test_repository("Acme", run=tgh, cmd=tcmd, ref="0123abcd")
+    check("C9: the test repository is created, private on a plan that allows it", ("repo", "create", "Acme/acme-test", "--private") == tcalls[2][:4], True)
+    written = [a for a in tcalls if a[:3] == ("api", "-X", "PUT") and "/contents/.github/workflows/" in a[3]]
+    import base64 as b64
+    issues_caller = b64.b64decode(next(x for x in written[0] if x.startswith("content=")).split("=", 1)[1]).decode()
+    check("C9: its callers are written, the engine pinned at its commit for another organisation",
+          (len(written), f"issue-triage.yml@0123abcd # v7" in issues_caller, "@v7\n" in issues_caller), (2, True, False))
+    check("C9: it is adopted", any(c[2:5] == ["adopt", "--repo", "acme-test"] for c in tcmds), True)
+    check("C9: the test identity gets write there", ("api", "-X", "PUT", "repos/Acme/acme-test/collaborators/acme-test-bot", "-f", "permission=push") in tcalls, True)
+    check("C9: every scenario runs there once", sum(1 for c in tcmds if "release-scenarios.py" in c[1] and c[2:6] == ["run", "--repo", "Acme/acme-test", "--ref"]), 1)
+    check("C9: and the result table is shown", (rc, "| `issue-complete` | pass |" in out, out.index("created") < out.index("adopted") < out.index("gave") < out.index("Every release scenario")), (0, True, True))
+    check("C9: apply ends with the test repository", apply("Acme", "acme-bot", 7, {}, lambda n: [], run=lambda *a: (1, "", "no") if a[:2] == ("repo", "view") else (1, "", "no"), test_repo=lambda: (0, "TABLE"))[0], 1)
+    check("at_ref: v7 stays a tag, a SHA keeps the version", (at_ref("    uses: " + org.CENTRAL + "/.github/workflows/x.yml@v7\n", "v7"), at_ref("    uses: " + org.CENTRAL + "/.github/workflows/x.yml@v7\n", "abc")),
+          ("    uses: " + org.CENTRAL + "/.github/workflows/x.yml@v7\n", "    uses: " + org.CENTRAL + "/.github/workflows/x.yml@abc # v7\n"))
     check("the steps name each URL of the organisation", all(f"/organizations/Acme/settings/{p}" in steps("Acme", "acme-bot") for p in ("apps/new", "secrets/actions", "variables/actions", "rules")), True)
     from urllib.parse import parse_qs, urlparse
     q = {k: v[0] for k, v in parse_qs(urlparse(app_url("Acme")).query).items()}
@@ -482,12 +592,18 @@ def main(argv):
     if argv == ["--test"]:
         return self_test()
     ap = argparse.ArgumentParser(prog="install.py")
-    ap.add_argument("mode", choices=["plan", "diff", "apply"])
+    ap.add_argument("mode", choices=["plan", "diff", "apply", "test-repo"])
     ap.add_argument("--org", required=True)
-    ap.add_argument("--app", required=True)
-    ap.add_argument("--app-id", required=True, type=int)
+    ap.add_argument("--app")
+    ap.add_argument("--app-id", type=int)
     ap.add_argument("--dir")
     a = ap.parse_args(argv)
+    if a.mode == "test-repo":
+        rc, out = test_repository(a.org)
+        print(out)
+        return rc
+    if not a.app or a.app_id is None:
+        ap.error("--app and --app-id are required for plan, diff and apply")
     repos = repositories(a.org)
     found_of = lambda name: detect.remote(f"{a.org}/{name}", repos[name])  # noqa: E731
     policy_of = lambda name: detect.remote_policy(f"{a.org}/{name}", repos[name])  # noqa: E731
@@ -509,12 +625,12 @@ def main(argv):
         if a.mode == "diff":
             print("\nWhat installing again would change: " + ("nothing." if not material(did) else ", ".join(material(did))))
         return 0
-    rc, out = apply(a.org, a.app, a.app_id, repos, found_of, policy_of=policy_of, way_of=way_of)
+    rc, out = apply(a.org, a.app, a.app_id, repos, found_of, policy_of=policy_of, way_of=way_of, test_repo=lambda: test_repository(a.org))
     print(out)
     return rc
 
 
-def apply(owner, app, app_id, repos, found_of, run=run_gh, clone_url=None, policy_of=None, way_of=None):
+def apply(owner, app, app_id, repos, found_of, run=run_gh, clone_url=None, policy_of=None, way_of=None, test_repo=None):
     """The one pull request in OWNER/.github: (exit code, what it says).
     `run` calls gh and `clone_url` is where to clone from (the self-test's
     stand-ins). The install branch is built on only while its pull request
@@ -564,6 +680,12 @@ def apply(owner, app, app_id, repos, found_of, run=run_gh, clone_url=None, polic
         rc, out, err = run("pr", "create", "--repo", full, "--head", BRANCH, "--title", "chore: install the engine's configuration", "--body", body)
         said.append(out.strip() or err.strip())
     said.append("\n" + steps(owner, app))
+    if test_repo and rc == 0:
+        # Last: the organisation sees that its installation works before
+        # its first real issue (#563).
+        trc, tout = test_repo()
+        said.append(tout)
+        rc = trc
     return (0 if rc == 0 else 1), "\n".join(said)
 
 

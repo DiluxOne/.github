@@ -600,7 +600,9 @@ def settings_tests():
         if not os.path.isfile(pack_path(kind)):
             continue
         pack = load_yaml(pack_path(kind))
-        check(f"pack {kind}: names its battery, adapters and rules", isinstance(pack.get("workflows"), list) and pack.get("workflows") and isinstance(pack.get("adapters"), list) and os.path.isfile(os.path.join(CENTRAL, "kinds", kind, "rules.yml")), pack)
+        # A kind that is no product (engine-test, #563: `publishes: never`)
+        # has no battery of its own.
+        check(f"pack {kind}: names its battery, adapters and rules", isinstance(pack.get("workflows"), list) and (pack.get("workflows") or pack.get("publishes") == "never") and isinstance(pack.get("adapters"), list) and os.path.isfile(os.path.join(CENTRAL, "kinds", kind, "rules.yml")), pack)
         for wf in pack.get("workflows") or []:
             check(f"pack {kind}: its workflow {wf} exists", os.path.isfile(os.path.join(CENTRAL, ".github", "workflows", wf)))
         check(f"pack {kind}: its review profile exists", os.path.isfile(os.path.join(CENTRAL, "kinds", kind, "review-profile.md")))

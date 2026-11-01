@@ -101,6 +101,8 @@ Pull requests from **forks** are not reviewed automatically: the review runs wit
 
 ## How a change becomes a version
 
+The engine itself (this repository, `vX.Y.Z` and the moving `v7`) releases itself: once `main` is green, the release lane plays every release scenario in the organisation's test repository and, when all pass, tags the version and moves `v7`, with no person's step; a breaking change waits on a person's release issue ([docs/versioning.md](docs/versioning.md#how-a-version-is-made), #563). What follows is the products'.
+
 Every DiluxOne repository numbers its versions `X.Y.Z`, always three numbers, no suffix, by what a change means to the people who use it:
 
 | Part | When | Who decides |

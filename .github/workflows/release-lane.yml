@@ -1,0 +1,260 @@
+name: Release lane
+
+# Not reusable: this repository's own (#563). Once the pull request pipeline
+# is green on main, a fix reaches every repository with no person's step:
+# scripts/release-lane.py plans what is releasable since the last vX.Y.Z,
+# points the lightweight `v7-next` tag at a release candidate (main with the
+# reusable workflows' inner calls at `@v7-next`, checked to differ in nothing
+# else), plays every scenario of tests/release/scenarios.yml in the test
+# repository (org.yml `test-repo`, whose callers call `@v7-next`) with the
+# test identity's token, and only when all pass, and main is still the commit
+# they tried, merges the release pull request, tags vX.Y.Z at its merge
+# commit, moves `v7` (lightweight) and publishes the Release (or edits it
+# when engine-release.yml, on the tag's push, made it first). The candidate's
+# token has `workflows`: its commit rewrites workflow files. A scenario that fails: nothing is tagged, `v7` stays, and a
+# bug names the scenario and its run. A breaking change (`!`): the scenarios
+# run, then the release issue opens for a person. After `v7` moves, the
+# watch reads every adopted repository's runs for 30 minutes (a read-only
+# token; its write token is this repository's alone) and, on the first that
+# never started or failed in one of the engine's own steps, moves `v7`
+# back to the previous release, opens a bug with the run's link and says so
+# on the release (docs/versioning.md).
+#
+# It runs on main's own code, never a fork's: workflow_run of a push to main,
+# or a maintainer's dispatch. The jobs that push tags and hold the test
+# identity's token (DX_TEST_TOKEN) run in the `release` environment, which
+# only main may use.
+
+on:
+  workflow_run:
+    workflows: [Pull request]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-lane
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Plan
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read # the labels of what merged (next-version.py)
+    outputs:
+      plan: ${{ steps.plan.outputs.plan }}
+      release: ${{ steps.plan.outputs.release }}
+      sha: ${{ steps.plan.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: What is releasable
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          # Main moved on since the green run: the next green run plans it.
+          if [ -n "$HEAD_SHA" ] && [ "$(git rev-parse HEAD)" != "$HEAD_SHA" ]; then
+            echo "main is past the green run's commit; its own run plans it"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          plan=$(python3 scripts/release-lane.py plan --repo "$GITHUB_REPOSITORY")
+          echo "$plan"
+          { echo "plan=$plan"; echo "release=$(jq -r .release <<<"$plan")"; echo "sha=$(git rev-parse HEAD)"; } >> "$GITHUB_OUTPUT"
+
+  candidate:
+    name: Candidate at v7-next
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - name: App token (contents and workflows, this repository)
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          # The candidate commit rewrites .github/workflows/*.yml (the inner
+          # calls at @v7-next): GitHub refuses that push without it.
+          permission-workflows: write
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          fetch-depth: 0
+          token: ${{ steps.app.outputs.token }}
+
+      - name: The release candidate, and v7-next at it
+        env:
+          PLAN: ${{ needs.plan.outputs.plan }}
+          DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN }}
+          DX_BOT_ID: ${{ vars.DX_BOT_ID }}
+        run: |
+          set -euo pipefail
+          git config user.name "$DX_BOT_LOGIN"
+          git config user.email "$DX_BOT_ID+$DX_BOT_LOGIN@users.noreply.github.com"
+          printf '%s' "$PLAN" > "$RUNNER_TEMP/plan.json"
+          python3 scripts/release-lane.py candidate --plan "$RUNNER_TEMP/plan.json"
+
+  scenarios:
+    name: Scenarios in the test repository
+    needs: [plan, candidate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+
+      - name: Play every scenario at v7-next
+        env:
+          GH_TOKEN: ${{ secrets.DX_TEST_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -uo pipefail
+          test_repo=$(python3 scripts/org.py test-repo)
+          python3 scripts/release-scenarios.py run --repo "$OWNER/$test_repo" --ref v7-next --out "$RUNNER_TEMP/results.md"
+          cat "$RUNNER_TEMP/results.md" >> "$GITHUB_STEP_SUMMARY"
+          # The decision is the next job's: a failed scenario is a bug, not a red lane.
+          exit 0
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scenarios
+          path: ${{ runner.temp }}/results.md
+          if-no-files-found: error
+
+  act:
+    name: Release, bug or issue
+    needs: [plan, scenarios]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: release
+    permissions:
+      contents: read
+    outputs:
+      do: ${{ steps.act.outputs.do }}
+      version: ${{ steps.act.outputs.version }}
+      previous: ${{ steps.act.outputs.previous }}
+      moved_at: ${{ steps.act.outputs.moved_at }}
+    steps:
+      - name: App token (contents, pull requests and issues, this repository)
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write # the release pull request, the tags, the Release
+          permission-pull-requests: write
+          permission-issues: write
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.app.outputs.token }}
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: scenarios
+          path: ${{ runner.temp }}/scenarios
+
+      - name: What the scenarios say
+        id: act
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PLAN: ${{ needs.plan.outputs.plan }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN }}
+          DX_BOT_ID: ${{ vars.DX_BOT_ID }}
+        run: |
+          set -euo pipefail
+          git config user.name "$DX_BOT_LOGIN"
+          git config user.email "$DX_BOT_ID+$DX_BOT_LOGIN@users.noreply.github.com"
+          printf '%s' "$PLAN" > "$RUNNER_TEMP/plan.json"
+          # Exit 1 with its JSON when v7 moved but the Release failed: the
+          # outputs are written first, so the watch still runs.
+          status=0
+          out=$(python3 scripts/release-lane.py act --plan "$RUNNER_TEMP/plan.json" --results "$RUNNER_TEMP/scenarios/results.md" --repo "$GITHUB_REPOSITORY" --run "$RUN_URL") || status=$?
+          echo "$out"
+          if [ -n "$out" ]; then
+            for key in "do" version previous moved_at; do echo "$key=$(jq -r --arg k "$key" '.[$k] // ""' <<<"$out")" >> "$GITHUB_OUTPUT"; done
+          fi
+          exit "$status"
+
+  watch:
+    name: Watch the repositories for 30 minutes
+    needs: act
+    # always(): v7 moved even when act failed after it (its Release).
+    if: always() && needs.act.outputs.do == 'release' && needs.act.outputs.moved_at != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - name: App token (every repository's runs, read only)
+        id: read
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-actions: read
+          permission-metadata: read
+          permission-organization-custom-properties: read
+
+      - name: App token (this repository's tags, issues and release)
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write # moving v7 back, and the release's notes
+          permission-issues: write
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.app.outputs.token }}
+
+      - name: Watch, and move v7 back on the first engine failure
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          GH_READ_TOKEN: ${{ steps.read.outputs.token }}
+          VERSION: ${{ needs.act.outputs.version }}
+          PREVIOUS: ${{ needs.act.outputs.previous }}
+          SINCE: ${{ needs.act.outputs.moved_at }}
+        run: python3 scripts/release-lane.py watch --repo "$GITHUB_REPOSITORY" --version "$VERSION" --previous "$PREVIOUS" --since "$SINCE" --minutes 30 --every 120

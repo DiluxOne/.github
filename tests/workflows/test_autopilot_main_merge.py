@@ -43,7 +43,8 @@ def test_a_merge_into_main_sweeps_the_autopilot_pull_requests_with_no_persons_la
     # in conflict, which the run's fix round merges and resolves.
     assert "python3 scripts/autopilot.py sweep" in run
     assert 'gh api -X PUT "repos/$repo/pulls/$n/update-branch"' in run
-    assert 'gh issue edit "$issue" --repo "$repo" --add-label "autopilot:continue"' in run
+    # #563 C12: the run it starts only catches up with another merge: free.
+    assert 'gh issue edit "$issue" --repo "$repo" --add-label "autopilot:catchup" --add-label "autopilot:continue"' in run
     assert "mergeStateStatus" in run and "UNKNOWN" in run
 
 
@@ -68,3 +69,13 @@ def test_the_workflows_guard_reads_only_the_agents_own_commits():
     run = next(s for s in JOBS["apply"]["steps"] if s.get("id") == "applied")["run"]
     assert 'git log --first-parent --no-merges --no-renames --format= --name-only "origin/$BRANCH..$new"' in run
     assert 'git diff --name-only "origin/$BRANCH" "$new"' not in run
+
+
+def test_a_catch_up_run_is_counted_free():
+    """#563 C12: the run the sweep's continue starts is labelled
+    autopilot:free-N, from the issue's autopilot:catchup, which it takes off."""
+    wf = yaml.safe_load((ROOT / ".github/workflows/autopilot.yml").read_text(encoding="utf-8"))
+    count = next(s for job in wf["jobs"].values() for s in job.get("steps", []) if s.get("name") == "Count the round or the run")
+    assert 'index("autopilot:catchup") != null' in count["run"]
+    assert '--remove-label "autopilot:catchup"' in count["run"]
+    assert 'CATCHUP="$catchup" python3 .dx-central/scripts/autopilot.py run-label' in count["run"]

@@ -59,6 +59,27 @@ attribution: warn
 # keeps its action's floor (write; maintain for the credits) and an admin
 # always decides. A repository's exception is repos.yml `who-decides`.
 who-decides: codeowners
+# The organisation's test repository (#563, scripts/org.py test-repo), of
+# kind `engine-test` (kinds/engine-test/): the release lane plays every
+# scenario of tests/release/scenarios.yml there, at `v7-next`, before `v7`
+# moves. Absent, `<org lowercased>-test`.
+test-repo: diluxone-test
+# The engine's core (#563, #568, scripts/org.py core), globs: while an open
+# autopilot pull request touches one of these files, the autopilot starts no
+# other issue whose Spec touches one, and says on it which pull request it
+# waits for (scripts/autopilot.py next_step, wait `core`).
+core:
+  - scripts/autopilot.py
+  - scripts/sync-repos.py
+  - scripts/deciders.py
+  - scripts/settings.py
+  - scripts/org.py
+  - .github/workflows/autopilot.yml
+  - .github/workflows/autopilot-sweep.yml
+  - .github/workflows/issues.yml
+  - .github/workflows/issue-triage.yml
+  - .github/workflows/org-pull-request.yml
+  - policy/settings-schema.yml
 # The custom property of the organisation that says a repository is adopted
 # (#562, scripts/sync-repos.py rulesets): `true` on every repository
 # repos.yml lists, written by the sync, and the organisation's rulesets

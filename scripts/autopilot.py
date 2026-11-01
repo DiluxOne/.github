@@ -18,6 +18,13 @@
                              unticked criteria, one commit each (a new issue,
                              or a run that continues one)
   autopilot.py prompt fix    the agent's task for a review that blocked
+  autopilot.py fixed [spec|work]
+                             the test repository's fixed change (#563, its
+                             pack's `autopilot: fixed-change`): its file's
+                             pattern, or nothing where a model is called;
+                             `spec` queues its Spec, `work` writes, commits
+                             and ticks each criterion's file, then finishes
+                             ready, in DX_IO's outbox, with no model
   autopilot.py draft         the draft pull request's title and body, from the
                              issue (JSON: branch, title, body); fails, with why
                              on stderr, when no criterion can be read
@@ -443,6 +450,10 @@ WAITING = "autopilot:waiting"
 RUN_PREFIX = "autopilot:run-"
 FREE_PREFIX = "autopilot:free-"
 ANSWERED = "autopilot:answered"
+# On an issue (#563): the run the sweep's continue starts only catches up
+# with what another merge did (main conflicts with a ready pull request), so
+# it is free, as an answered one is.
+CATCHUP = "autopilot:catchup"
 
 
 def run_numbers(labels):
@@ -458,10 +469,11 @@ def free_runs(labels):
     return sum(1 for l in labels if re.fullmatch(re.escape(FREE_PREFIX) + r"[0-9]+", str(l)))
 
 
-def run_label(n, answered):
+def run_label(n, answered, catchup=False):
     """The label of run N: free when an answer to the autopilot's question
-    started it."""
-    return f"{FREE_PREFIX}{n}" if answered else f"{RUN_PREFIX}{n}"
+    started it, or when it only catches up with another merge (#563: the
+    sweep's continue on a conflict main's move caused)."""
+    return f"{FREE_PREFIX}{n}" if answered or catchup else f"{RUN_PREFIX}{n}"
 
 
 def runner_lost(work_result, agent_outcome):
@@ -765,6 +777,111 @@ def end_verdict(mode, pr, draft_, stopped, done, total, limit_hit, runs, cap, pu
 # always a `wait` on one of these, never a label someone must add.
 BOT_ACTIONS = ("spec", "draft", "work", "merge-main", "finish", "fix", "queue")
 PERSON_DECISIONS = ("accept", "answer", "merge", "claim")
+# The waits on no person, but on the bot's own work elsewhere (#563):
+# `core`, another open autopilot pull request already changing the engine's
+# core (org.yml `core`), which this issue's Spec touches too.
+BOT_WAITS = ("core",)
+# On an issue that waits for `core` (#563): autopilot-sweep.yml starts it
+# again (`autopilot:continue`) once that pull request merges or closes; its
+# comment, once, carries CORE_MARK.
+CORE_WAIT = "autopilot:core-wait"
+CORE_MARK = "<!-- dx-autopilot-core -->"
+
+
+def core_busy(spec_files, core, others, mine=0):
+    """The open autopilot pull request an issue waits for (#563): when the
+    Spec's files touch the core (globs), the lowest-numbered other one
+    (`others`: [{number, files}]) whose diff touches it; 0 when none. Pure."""
+    import fnmatch
+
+    def touches(files):
+        return any(fnmatch.fnmatchcase(str(f), g) for f in files or [] for g in core or [])
+    if not core or not touches(spec_files):
+        return 0
+    for other in sorted(others or [], key=lambda o: int(o.get("number") or 0)):
+        if int(other.get("number") or 0) != int(mine or 0) and touches(other.get("files")):
+            return int(other["number"])
+    return 0
+
+
+def core_comment(number):
+    """What the issue says while it waits for `core` (#563)."""
+    return (f"{CORE_MARK}\nThe autopilot waits for #{number}: that open autopilot pull request already changes the engine's core "
+            f"(org.yml `core`), which this issue's Spec touches too, and two changes to the core at once keep putting each other in conflict. "
+            f"It starts this one on its own once #{number} merges or closes.\n\n{AI_LINE}")
+# The test repository's fixed change (#563, kinds/engine-test/pack.yml
+# `autopilot: fixed-change`): there no model is called. The Spec names one
+# file per criterion (the pack's `fixed-change.file`), and the work writes
+# each, commits it and ticks its box, so the release scenarios try the flow,
+# never a model.
+
+def fixed_file(conf, repo, pack=None):
+    """The pack's `fixed-change.file` when `repo` (OWNER/NAME) is the test
+    repository and its pack says `autopilot: fixed-change`; else ""."""
+    if not repo or str(repo).split("/")[-1] != org.test_repo(conf):
+        return ""
+    pack = org.test_pack(conf) if pack is None else pack
+    if pack.get("autopilot") != "fixed-change":
+        return ""
+    return str((pack.get("fixed-change") or {}).get("file") or "")
+
+
+def fixed_path(pattern, number, cid):
+    """The fixed change's file for a criterion: `{n}` the issue's number,
+    `{id}` the criterion's, lowercased. Pure."""
+    return pattern.replace("{n}", str(number)).replace("{id}", cid.lower())
+
+
+def fixed_spec(pattern, number, ids):
+    """The Spec of the fixed change, with a Feature's phases, so G3 passes
+    whatever the issue's Type. Pure."""
+    files = [fixed_path(pattern, number, cid) for cid in ids]
+    return ("### Spec: approach\n\nThe test repository's fixed change (kinds/engine-test/pack.yml): one file per criterion, written with no model.\n\n"
+            "### Spec: files\n\n" + "".join(f"- `{f}`\n" for f in files) +
+            "\n### Spec: tests\n\n" + "".join(f"- {cid} → {f}\n" for cid, f in zip(ids, files)) +
+            "\n### Spec: impact\n\nOnly the files above, in the test repository, which publishes nothing.\n\n"
+            "### Spec: threats\n\n- None: the change reads no input and uses no permission beyond the autopilot's own.\n\n"
+            "### Spec: architecture\n\nUnder the fixed change's directory, as every scenario's.\n")
+
+
+def fixed_work(io, pattern, number, mode):
+    """The work of the fixed change, in the work job's tree, through the
+    agent's own helpers (the outbox): each unticked criterion's file
+    written, committed and ticked, then the run finished ready. A review
+    round has no fixed answer: it stops. Returns the exit code."""
+    if mode == "fix":
+        return agent_helper(["finish", "stop", "The test repository's fixed change does not answer a review: a person reads it."], io)
+    pr_file = os.path.join(io, "pr.md")
+    pr_body = open(pr_file, encoding="utf-8").read() if os.path.exists(pr_file) else ""
+    for cid, ticked in boxes(pr_body).items():
+        if ticked:
+            continue
+        path = fixed_path(pattern, number, cid)
+        if os.path.dirname(path):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(f"# {cid}\n\nThe fixed change of #{number} for {cid}.\n")
+        for args in (["add", "--", path], ["commit", "-q", "-m", f"test(scenarios): {cid} of #{number}, the fixed change"]):
+            if subprocess.run(["git", *args], capture_output=True, text=True).returncode:
+                return agent_helper(["finish", "stop", f"The fixed change could not commit {path}."], io)
+        if agent_helper(["tick", cid], io):
+            return 1
+    notes = os.path.join(io, "fixed-tested.md")
+    with open(notes, "w", encoding="utf-8") as fh:
+        fh.write("The test repository's fixed change: each criterion's file written and committed, with no model.\n")
+    with open(os.path.join(io, "fixed-credits.md"), "w", encoding="utf-8") as fh:
+        fh.write("none\n")
+    if agent_helper(["credits", os.path.join(io, "fixed-credits.md")], io):
+        return 1
+    if prepr.has_target(prepr.makefile(".")):
+        run_pre_pr(io)
+    return agent_helper(["finish", "ready", notes], io)
+
+
+# How `merge-main` merges main in (#561), and what sweep_step returns: the
+# release scenarios (tests/release/scenarios.yml) cover each of these.
+MERGE_HOWS = ("conflicted", "clean")
+SWEEP_STEPS = ("update", "continue")
 
 
 def next_step(state):
@@ -806,6 +923,9 @@ def next_step(state):
         if state.get("prs"):
             return none("a pull request that is not the autopilot's already closes it")
         if state.get("spec"):
+            busy = core_busy(state.get("spec_files"), state.get("core"), state.get("others"))
+            if busy:
+                return wait("core", f"#{busy}", f"#{busy}, an open autopilot pull request, already changes the core this Spec touches: it starts once #{busy} merges or closes")
             return {"action": "draft", "as": "start", "why": "the Spec is on the issue: the draft opens from it"}
         return {"action": "spec", "as": "start", "why": "accepted and ready: the agent writes the Spec"}
     if not pr.get("author_is_bot", True):
@@ -855,7 +975,7 @@ def next_step(state):
 def sweep_step(pr, issue_labels=(), runs=0, cap=5):
     """What a merge into main does for one open autopilot pull request
     (#561 C2, autopilot-sweep.yml): `update` (the bot merges main into one
-    that is ready and only behind, GitHub's update-branch), `continue` (one
+    that is only behind, ready or a draft (#563), GitHub's update-branch), `continue` (one
     that is ready and conflicts: dilux-bot adds `autopilot:continue` to its
     issue, and the run next-step starts merges main and resolves the
     conflict) or "" (nothing: a draft's own run merges main first, and a
@@ -867,6 +987,11 @@ def sweep_step(pr, issue_labels=(), runs=0, cap=5):
     if "autopilot" not in labels or author not in BOT_LOGINS:
         return "", "not an autopilot pull request"
     if pr.get("isDraft", True):
+        # Only behind, with no conflicting hunk (#563 C13): GitHub's
+        # update-branch merges main in, a step with no model, and no run is
+        # spent on it. One in conflict: its own run merges main first.
+        if str(pr.get("mergeStateStatus") or "").upper() == "BEHIND" and "needs-human" not in labels:
+            return "update", "a draft only behind main: the bot merges main into it, with no model and no run"
         return "", "a draft: its own run merges main first"
     if "autopilot:continue" in issue_labels:
         return "", "a continue is already asked for"
@@ -2151,6 +2276,64 @@ A class on html.
           "| Held | 🙋 @ana holds it with #40, which closes it: the autopilot does not start |" in board9, True)
     check("#561 C9: an autopilot pull request's own row replaces it once the autopilot works it",
           "| Held |" in _load("receipts_board", "receipts.py").board_text(561, True, None, None, {"pr": 9, "url": "u", "draft": True}, [], "x"), False)
+    # C11 (#563): one change to the core at a time.
+    core = ["scripts/autopilot.py", ".github/workflows/*.yml"]
+    busy = {"spec": True, "core": core, "spec_files": ["scripts/autopilot.py", "docs/x.md"], "others": [{"number": 12, "files": ["README.md"]}, {"number": 7, "files": [".github/workflows/issues.yml"]}]}
+    step = ns(**busy)
+    check("C11: a Spec on the core, with an open autopilot pull request on it, waits for `core` naming that pull request",
+          (step["action"], step["for"], step["who"], "#7" in step["why"]), ("wait", "core", "#7", True))
+    check("C11: once it merged or closed, the draft opens", nsa(**dict(busy, others=[{"number": 12, "files": ["README.md"]}])), ("draft", "start"))
+    check("C11: a Spec off the core never waits", nsa(**dict(busy, spec_files=["docs/x.md"])), ("draft", "start"))
+    check("C11: before its Spec, the Spec is written", nsa(**dict(busy, spec=False)), ("spec", "start"))
+    check("C11: its own pull request is not another", core_busy(["scripts/autopilot.py"], core, [{"number": 7, "files": ["scripts/autopilot.py"]}], mine=7), 0)
+    check("C11: the comment names the pull request it waits for, once (its marker)", (core_comment(7).startswith(CORE_MARK), "#7 merges or closes" in core_comment(7)), (True, True))
+    # #563: the test repository's fixed change, no model.
+    tpack = {"autopilot": "fixed-change", "fixed-change": {"file": "scenarios/{n}-{id}.md"}, "core": ["scenarios/*"]}
+    check("#563: the test repository's autopilot has a fixed change; any other repository's calls a model",
+          (fixed_file({"org": "Acme"}, "Acme/acme-test", tpack), fixed_file({"org": "Acme"}, "Acme/plugin", tpack),
+           fixed_file({"org": "Acme"}, "Acme/acme-test", dict(tpack, autopilot="model"))), ("scenarios/{n}-{id}.md", "", ""))
+    check("#563: the real pack's fixed change", fixed_file({"org": "Acme"}, "Acme/acme-test"), "scenarios/{n}-{id}.md")
+    fspec = fixed_spec("scenarios/{n}-{id}.md", 12, ["C1", "C2"])
+    import deciders as _dec563
+    check("#563: the fixed Spec names each criterion's file, on the test repository's core, and the agent's helper takes it",
+          (_dec563.spec_files(fspec), spec_problem(fspec), core_busy(_dec563.spec_files(fspec), tpack["core"], [{"number": 7, "files": ["scenarios/11-c1.md"]}])),
+          (["scenarios/12-c1.md", "scenarios/12-c2.md"], "", 7))
+    prd563 = ("### Problem\n\nNo greeting.\n\n### Scope\n\n- A greeting.\n\n### Out of scope\n\n- Else.\n\n### Acceptance criteria\n\n"
+              "- C1: Given it, when read, then it greets.\n\n### Criticality\n\nNormal\n\n" + fspec)
+    g3 = subprocess.run([sys.executable, os.path.join(HERE, "issue-schema.py"), "check", "--stage", "spec", "--type", "Feature"], input=prd563, capture_output=True, text=True)
+    check("#563: the fixed Spec passes G3 for a Feature", (g3.returncode, g3.stdout if g3.returncode else ""), (0, ""))
+    check("#563: the checklist reads the fixed Spec's tests", criteria(prd563)[0][2], "scenarios/12-c1.md")
+    import tempfile as _tf563, contextlib as _cl563, io as _io563
+    with _tf563.TemporaryDirectory() as tree, _tf563.TemporaryDirectory() as io563:
+        here563, io_env = os.getcwd(), os.environ.pop(IO_ENV, None)
+        try:
+            os.chdir(tree)
+            for args in (["init", "-q", "-b", "main"], ["config", "user.name", "t"], ["config", "user.email", "t@x"], ["commit", "-q", "--allow-empty", "-m", "init"]):
+                subprocess.run(["git", *args], check=True, capture_output=True)
+            base563 = git_out("rev-parse", "HEAD")
+            os.environ["DX_BASE"] = base563
+            open(os.path.join(io563, "pr.md"), "w").write(CHECKLIST_START + "\n- [ ] **C1** a\n- [x] **C2** b\n- [ ] **C3** c\n" + CHECKLIST_END + "\n" + credits.START + "\n" + credits.END + "\n")
+            with _cl563.redirect_stdout(_io563.StringIO()):
+                rc = fixed_work(io563, "scenarios/{n}-{id}.md", 12, "work")
+            intents = read_outbox(os.path.join(io563, OUTBOX))[0]
+            check("#563: the fixed work writes and commits each unticked criterion's file, with no model",
+                  (rc, sorted(os.listdir("scenarios")), local_subjects(base563)),
+                  (0, ["12-c1.md", "12-c3.md"], ["test(scenarios): C3 of #12, the fixed change", "test(scenarios): C1 of #12, the fixed change"]))
+            check("#563: then ticks them and finishes ready, through the agent's own intents",
+                  [i["kind"] + (":" + i["id"] if i["kind"] == "tick" else "") for i in intents], ["tick:C1", "tick:C3", "credits", "ready"])
+            open(os.path.join(io563, OUTBOX), "w").close()
+            with _cl563.redirect_stdout(_io563.StringIO()):
+                fixed_work(io563, "scenarios/{n}-{id}.md", 12, "fix")
+            check("#563: a review round on the fixed change stops for a person", [i["kind"] for i in read_outbox(os.path.join(io563, OUTBOX))[0]], ["stop"])
+        finally:
+            os.chdir(here563)
+            os.environ.pop("DX_BASE", None)
+            if io_env is not None:
+                os.environ[IO_ENV] = io_env
+    before = ["autopilot", "autopilot:run-1", "autopilot:run-2"]
+    after = before + [run_label(run_numbers(before)[0], False, catchup=True)]
+    check("C12: a catch-up run is labelled autopilot:free-N", after[-1], "autopilot:free-3")
+    check("C12: and the count against the cap does not change", (run_numbers(before)[1], run_numbers(after)[1], run_numbers(after)[0]), (2, 2, 4))
     check("#561 C1: next-step says its step in one line", step_comment(ns(lane="")).startswith("Next step: wait for accept, on a maintainer: "), True)
     # #561 C2: a merge into main brings each ready autopilot pull request
     # back in step on its own, with no label a person adds.
@@ -2163,6 +2346,11 @@ A class on html.
            sweep_step({"number": 9, "isDraft": False, "mergeStateStatus": "DIRTY", "labels": [{"name": "autopilot"}], "author": {"login": BOT_LOGINS[1]}}, ["autopilot:continue"])[0],
            sweep_step({"number": 9, "isDraft": False, "mergeStateStatus": "DIRTY", "labels": [{"name": "autopilot"}, {"name": "needs-human"}], "author": {"login": BOT_LOGINS[1]}})[0]),
           ("", "", "", ""))
+    check("C13: a draft only behind main is updated by the bot, with no model",
+          (swp(mergeStateStatus="BEHIND", isDraft=True), swp(mergeStateStatus="BLOCKED", isDraft=True), swp(mergeStateStatus="BEHIND", isDraft=True, labels=[{"name": "autopilot"}, {"name": "needs-human"}])),
+          ("update", "", ""))
+    drafted = ["autopilot", "autopilot:run-1"]
+    check("C13: and no run is counted: the sweep labels none", run_numbers(drafted), (2, 1))
     check("#561 C2: a work run whose branch conflicts with main merges it before any criterion",
           ("before any criterion" in conflict_note(True, "trunk", work=True), "git merge origin/trunk" in conflict_note(True, "trunk", work=True),
            conflict_note(False, "trunk", work=True)), (True, True, ""))
@@ -3264,6 +3452,30 @@ def main(argv):
         with open(argv[1], "w", encoding="utf-8") as fh:
             fh.write(scrub(text))
         return 0
+    if argv[:1] == ["fixed"]:
+        # The test repository's fixed change (#563): `fixed` prints its
+        # file's pattern, or nothing where the autopilot calls a model;
+        # `fixed spec` queues its Spec (BODY, the issue's body), `fixed work`
+        # does its work (MODE), both in DX_IO's outbox.
+        pattern = fixed_file(org.load(), repo)
+        if argv[1:] == []:
+            print(pattern)
+            return 0
+        if not pattern:
+            print(f"{repo} has no fixed change: its autopilot calls a model.", file=sys.stderr)
+            return 1
+        io = os.environ[IO_ENV]
+        os.makedirs(io, exist_ok=True)
+        if argv[1:] == ["spec"]:
+            body = open(os.environ["BODY"], encoding="utf-8").read() if os.environ.get("BODY") else ""
+            ids = [cid for cid, _, _ in criteria(body)]
+            if not ids:
+                return agent_helper(["finish", "stop", "The PRD has no criterion the fixed change can write."], io)
+            queue(io, {"kind": "spec", "text": fixed_spec(pattern, number, ids)})
+            return 0
+        if argv[1:] == ["work"]:
+            return fixed_work(io, pattern, number, os.environ.get("MODE", ""))
+        return 64
     if os.environ.get(IO_ENV) and argv[:1] and argv[0] in AGENT_COMMANDS:
         return agent_helper(argv, os.environ[IO_ENV])
     if argv[:1] == ["apply"]:
@@ -3487,7 +3699,9 @@ def main(argv):
     if argv[:1] == ["run-label"]:
         # N, the run's number; ANSWERED, true when an answer to the
         # autopilot's question started it (#479): the label it carries.
-        print(run_label(int(os.environ.get("N", "1") or 1), os.environ.get("ANSWERED") == "true"))
+        # CATCHUP, true when the sweep's continue on a conflict started it
+        # (#563).
+        print(run_label(int(os.environ.get("N", "1") or 1), os.environ.get("ANSWERED") == "true", os.environ.get("CATCHUP") == "true"))
         return 0
     if argv[:1] == ["next-step"]:
         # The state on stdin (JSON, read from the API by the workflow), the
@@ -3523,6 +3737,21 @@ def main(argv):
         if os.environ.get(IO_ENV) and os.path.exists(copy):
             with open(copy, "w", encoding="utf-8") as fh:
                 fh.write(new)
+        return 0
+    if argv[:1] == ["core-wait"]:
+        # Before the draft opens (#563): BODY, the issue's body with its
+        # Spec; prints the number of the open autopilot pull request whose
+        # diff already touches the core the Spec touches, or nothing.
+        body = open(os.environ["BODY"], encoding="utf-8").read() if os.environ.get("BODY") and os.path.exists(os.environ["BODY"]) else ""
+        core = org.core_of(org.load(), repo)
+        if not core:
+            return 0
+        listed = json.loads(gh("pr", "list", "--repo", repo, "--state", "open", "--label", "autopilot", "--json", "number,files,author", "--limit", "100") or "[]")
+        others = [{"number": p["number"], "files": [f.get("path") for f in p.get("files") or []]} for p in listed
+                  if ((p.get("author") or {}).get("login") or "") in BOT_LOGINS + (f"app/{org.APP}",)]
+        import deciders  # the Spec's files, read as who-decides reads them
+        busy = core_busy(deciders.spec_files(body), core, others, int(pr or 0))
+        print(busy or "")
         return 0
     if argv[:1] == ["sweep"]:
         # One open autopilot pull request after a merge into main (#561 C2):
@@ -3568,6 +3797,20 @@ def main(argv):
         return 0 if ok else 1
     if argv[:1] == ["end"]:
         mode = os.environ.get("MODE", "start")
+        if os.environ.get("CORE"):
+            # It waits for another pull request on the core (#563): said
+            # once on the issue, which autopilot-sweep.yml starts again.
+            n = os.environ["CORE"].lstrip("#")
+            said = json.loads(gh("issue", "view", str(number), "--repo", repo, "--json", "comments") or "{}").get("comments") or []
+            if not any(c.get("body", "").startswith(CORE_MARK) and f"#{n}:" in c.get("body", "") for c in said):
+                gh("issue", "comment", str(number), "--repo", repo, "--body", core_comment(n))
+            gh("label", "create", CORE_WAIT, "--repo", repo, "--color", "C5DEF5", "--force", "--description", "On an issue: the autopilot waits for another pull request on the engine's core")
+            gh("issue", "edit", str(number), "--repo", repo, "--add-label", CORE_WAIT)
+            if os.environ.get("GITHUB_OUTPUT"):
+                with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+                    fh.write("verdict=core\n")
+            print(f"waits for #{n}")
+            return 0
         if os.environ.get("HELD"):
             # A person took the issue mid-run (#488): the run stepped aside
             # before it wrote, and says so where it works.

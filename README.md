@@ -94,7 +94,7 @@ flowchart TB
 - **Every job starts clean.** Public repositories run on GitHub's runners; private ones on the organisation's VM, each job in a disposable container of an image rebuilt and smoke-tested every day ([`runner/`](runner/)).
 - **What waits is listed, every day.** One pinned issue here lists each open pull request older than a day, what blocks it and on whom it waits; another, every week, the lead time, the merge queue's failures, the autopilot's runs and the flaky tests found ([docs](docs/workflows.md)).
 - **Every pending step names its action and its URL.** Agents tell a maintainer exactly what to accept, approve or merge, with the link; an outside contributor is never asked for a maintainer's step.
-- **Versions are tags.** Repositories call `@v7`. A breaking change ships as `v8`, and older majors stay where they are.
+- **Versions are tags.** Repositories call `@v7`. The engine releases itself: once `main` is green and every release scenario passes in the organisation's test repository, `v7` moves, and it moves back if a repository's runs fail on it within 30 minutes ([docs/versioning.md](docs/versioning.md)). A breaking change ships as `v8`, released by a person, and older majors stay where they are.
 
 ## What's inside
 

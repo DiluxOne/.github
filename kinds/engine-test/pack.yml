@@ -1,0 +1,61 @@
+# The engine-test kind (#563): the organisation's test repository, org.yml
+# `test-repo` (scripts/org.py test-repo), where the release lane plays every
+# scenario of tests/release/scenarios.yml at `v7-next` before `v7` moves
+# (scripts/release-scenarios.py run). It is no product: nothing is published
+# from it, and the daily drift check fails when a repository of this kind is
+# also of a product kind or listed in org.yml `catalogs` (scripts/
+# sync-repos.py check). What each key means: kinds/README.md.
+
+name: The engine's test repository
+
+aliases: []
+
+# No battery of its own: no product's checks, releases or publishing run
+# here.
+workflows: []
+
+# The shipped callers (workflow-templates/) the test repository has, which
+# scripts/install.py writes there (at `v7-next` while the lane tries a
+# candidate), beside org-pull-request.yml, the organisation's required
+# workflow. A scenario plays only what these wire (scripts/release-scenarios.py
+# coverage); every other caller is held to the engine statically
+# (scripts/caller-contract.py check).
+callers:
+  - issues.yml
+  - pull-request-comments.yml
+
+# No checks of its own to run, so no engines.
+adapters: []
+
+# The test identity (#563, the Spec's option A): a machine user, an outside
+# collaborator with write on the test repository only, whose fine-grained
+# token is the secret `secret` of the `release` environment of the
+# organisation's `.github`. It may accept issues in a repository of this
+# kind and nowhere else: scripts/deciders.py counts it only here, and the
+# daily drift check fails when it has more than read anywhere else. `{org}`
+# is the organisation's login, lowercased.
+identity:
+  secret: DX_TEST_TOKEN
+  login: "{org}-test-bot"
+
+# The autopilot in a fixed change that calls no model: for each criterion,
+# one file (`file`, `{n}` the issue's number, `{id}` the criterion's) and
+# one ticked box, so the scenarios try the flow, never the model.
+autopilot: fixed-change
+fixed-change:
+  file: "scenarios/{n}-{id}.md"
+
+# Its own core (org.yml `core` names the engine's paths, which no change
+# here touches): every fixed change writes under scenarios/, so the scenario
+# of one change to the core at a time (`core-one-at-a-time`) waits here
+# (scripts/org.py core_of).
+core:
+  - "scenarios/*"
+
+# After each run of the scenarios, its issues are closed and locked, its pull
+# requests closed and their branches deleted (scripts/release-scenarios.py
+# cleanup).
+cleanup: after-run
+
+# Nothing is ever published from it: no release, no catalog.
+publishes: never

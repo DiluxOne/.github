@@ -245,6 +245,25 @@ def decide(value, action, login, role, codeowners=None, files=(), acceptor=""):
 
 # --- reading GitHub ----------------------------------------------------------
 
+# The test repository's kind (#563, org.py TEST_KIND).
+TEST_KIND = "engine-test"
+
+
+def test_identity_refused(login, identity, kinds):
+    """#563: the test identity decides only in a repository of kind
+    `engine-test` (kinds: the repository's, from repos.yml): elsewhere,
+    why it may not; "" when it is another login or that repository. Pure."""
+    if not identity or (login or "").lower() != identity.lower() or TEST_KIND in (kinds or []):
+        return ""
+    return f"@{login} is the test identity: it decides only in the test repository (kind `{TEST_KIND}`)."
+
+
+def kinds_of(repo):
+    conf = load_yaml(os.environ.get("DX_REPOS_YML") or os.path.join(ROOT, "repos.yml"))
+    entry = ((conf.get("repos") or {}).get(repo.split("/", 1)[-1]) or {})
+    return [k.get("kind") for k in entry.get("kinds") or [] if isinstance(k, dict)]
+
+
 def _gh(*args):
     out = subprocess.run(["gh", *args], capture_output=True, text=True)
     if out.returncode != 0:
@@ -374,6 +393,9 @@ def self_test():
     fix = os.path.join(HERE, "fixtures", "deciders")
     owners = open(os.path.join(fix, "CODEOWNERS"), encoding="utf-8").read()
     rules = parse_codeowners(owners)
+    check("C8 (#563): the test identity decides nowhere but in the test repository",
+          (bool(test_identity_refused("Acme-Test-Bot", "acme-test-bot", ["wordpress-plugin"])), test_identity_refused("acme-test-bot", "acme-test-bot", ["engine-test"]),
+           test_identity_refused("ana", "acme-test-bot", [])), (True, "", ""))
     check("codeowners: the last rule that matches wins", owners_of(rules, "scripts/deciders.py"), ["@scripter"])
     check("codeowners: the catch-all owns the rest", owners_of(rules, "README.md"), ["@boss"])
     check("codeowners: a directory rule covers what is under it", owners_of(rules, "docs/a/b.md"), ["@writer"])
@@ -558,7 +580,14 @@ def main(argv):
         live = Live(repo, os.environ.get("NUMBER", ""), os.environ.get("PR", ""))
         try:
             codeowners, files, acceptor = context(live, value)
+            sys.path.insert(0, HERE)
+            import org
+            identity, kinds = org.test_pack()["identity"].get("login", ""), kinds_of(repo)
             if argv[0] == "may" and len(argv) == 3:
+                refused = test_identity_refused(argv[2], identity, kinds)
+                if refused:
+                    print(refused)
+                    return 1
                 d = decide(value, action, argv[2], live.role(argv[2]), codeowners, files, acceptor)
                 print(d["why"])
                 return 0 if d["ok"] else 1
@@ -567,7 +596,7 @@ def main(argv):
                 return 0
             if argv[0] == "list" and len(argv) == 2:
                 for login in sorted({l.strip() for l in sys.stdin if l.strip()}):
-                    if decide(value, action, login, live.role(login), codeowners, files, acceptor)["ok"]:
+                    if not test_identity_refused(login, identity, kinds) and decide(value, action, login, live.role(login), codeowners, files, acceptor)["ok"]:
                         print(login)
                 return 0
         except (RuntimeError, OSError, ValueError, KeyError) as err:

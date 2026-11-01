@@ -1,9 +1,12 @@
 name: Issues
 
 # This repository's own issues, through the same shared workflows every
-# DiluxOne repository calls (workflow-templates/issues.yml), at the moving
-# tag, job for job as the template (scripts/sync-repos.py check compares
-# them): the triage when an issue opens, the reproduction of a report the
+# DiluxOne repository calls (workflow-templates/issues.yml), job for job as
+# the template (scripts/sync-repos.py check compares them), but at `./`
+# (main), the ref every caller of this repository's own uses (#563,
+# scripts/caller-contract.py check): the caller and the engine are read
+# from the same commit, so a change to both never fails here between its
+# merge and the release (#589): the triage when an issue opens, the reproduction of a report the
 # triage calls a bug (or that a maintainer labels repro:run; with no unit
 # tests here it ends green and the report waits for a person), the issue
 # schema checked when a person opens or edits an issue not accepted yet
@@ -38,7 +41,7 @@ jobs:
     permissions:
       contents: read
       issues: write
-    uses: DiluxOne/.github/.github/workflows/issue-triage.yml@v7
+    uses: ./.github/workflows/issue-triage.yml
     with:
       support-url: https://github.com/DiluxOne/.github/blob/main/SUPPORT.md
     secrets: inherit
@@ -50,7 +53,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: DiluxOne/.github/.github/workflows/issue-repro.yml@v7
+    uses: ./.github/workflows/issue-repro.yml
     secrets: inherit
 
   repro-triaged:
@@ -61,7 +64,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: DiluxOne/.github/.github/workflows/issue-repro.yml@v7
+    uses: ./.github/workflows/issue-repro.yml
     with:
       trigger: triage
       triage-bug: ${{ needs.triage.outputs.bug }}
@@ -74,7 +77,7 @@ jobs:
       actions: write
       issues: read
       pull-requests: read
-    uses: DiluxOne/.github/.github/workflows/issue-accepted.yml@v7
+    uses: ./.github/workflows/issue-accepted.yml
     with:
       # Here the gate runs in this repository's own pipeline
       # (pull-request.yml); the organisation's skips this repository.
@@ -95,5 +98,5 @@ jobs:
   claim:
     permissions:
       contents: read
-    uses: DiluxOne/.github/.github/workflows/issue-claim.yml@v7
+    uses: ./.github/workflows/issue-claim.yml
     secrets: inherit

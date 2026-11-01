@@ -25,6 +25,8 @@
 - {name: autopilot, color: "1D76DB", description: "Opened by the autopilot from an accepted issue"}
 - {name: "autopilot:continue", color: "1D76DB", description: "On an issue: the autopilot continues its draft pull request, or starts it"}
 - {name: "autopilot:answered", color: "1D76DB", description: "On an issue: a maintainer answered the autopilot's question; the run it starts does not count"}
+- {name: "autopilot:catchup", color: "1D76DB", description: "On an issue: the run the continue starts only catches up with another merge; it does not count"}
+- {name: "autopilot:core-wait", color: "C5DEF5", description: "On an issue: the autopilot waits for another pull request on the engine's core"}
 - {name: needs-human, color: "D93F0B", description: "The autopilot handed this over to a person"}
 - {name: "needs:maintainer", color: "D93F0B", description: "Waits on a maintainer's decision"}
 

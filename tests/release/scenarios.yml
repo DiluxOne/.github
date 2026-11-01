@@ -1,0 +1,245 @@
+# The release scenarios (#563): what the release lane plays in the test
+# repository (org.yml `test-repo`, kind engine-test) at `v7-next` before `v7`
+# moves, and what the installer plays once (scripts/install.py apply).
+# scripts/release-scenarios.py reads this file: `coverage` (in the scripts
+# job) fails naming each pair of a reusable workflow and an event the test
+# repository's callers wire (its pack's `callers`, and org-pull-request.yml;
+# a `schedule` aside), and each transition of the autopilot's state machine,
+# that no scenario covers, and each scenario that dispatches a workflow the
+# test repository cannot run on demand; `run` plays them. Every other
+# shipped caller (the products' batteries, the nightly and security runs)
+# is held to the engine statically, by scripts/caller-contract.py check. The script's header says what each
+# key means. A bug that reached the repositories after a release adds its
+# scenario here in its fix (#585's is `caller-permission-585`).
+#
+# In the test repository the autopilot calls no model (its pack's
+# `autopilot: fixed-change`), the test identity may accept (its pack's
+# `identity`), and every issue and pull request a scenario opens is closed
+# after it (`cleanup: after-run`).
+
+# The bodies the scenarios open and edit with, by name.
+bodies:
+  complete-feature: |
+    ### Problem
+
+    The test repository has no greeting.
+
+    ### Scope
+
+    - A greeting file.
+
+    ### Out of scope
+
+    - Anything else.
+
+    ### Acceptance criteria
+
+    - C1: Given the repository, when it is read, then it has a greeting.
+
+    ### Criticality
+
+    Normal
+  edited-feature: |
+    ### Problem
+
+    The test repository has no greeting, nor a farewell.
+
+    ### Scope
+
+    - A greeting file and a farewell file.
+
+    ### Out of scope
+
+    - Anything else.
+
+    ### Acceptance criteria
+
+    - C1: Given the repository, when it is read, then it has a greeting.
+
+    ### Criticality
+
+    Normal
+  incomplete: |
+    Something should be better.
+  bug: |
+    ### What happened
+
+    `scenarios/greeting.md` says "helo".
+
+    ### What should happen
+
+    It says "hello".
+
+    ### How to reproduce
+
+    Read `scenarios/greeting.md`.
+
+    ### Criticality
+
+    Normal
+  bug-not-reproduced: |
+    ### What happened
+
+    Something failed once, nobody knows where.
+
+    ### What should happen
+
+    It does not fail.
+
+    ### How to reproduce
+
+    Unknown.
+
+    ### Criticality
+
+    Normal
+  decision: |
+    ### Decision
+
+    The greeting and the farewell are two sub-issues of this one.
+
+    ### Sub-issues
+
+    - A greeting file.
+    - A farewell file.
+  release: |
+    ### Version
+
+    Next.
+  # `{issue}`: the issue the scenario opens for its pull request first.
+  pull: |
+    A change of the scenarios.
+
+    Closes #{issue}
+
+scenarios:
+  # Issues, before acceptance.
+  - id: issue-complete
+    covers: [issue-triage.yml:issues, issue-accepted.yml:issues, issue-claim.yml:issues, issue-repro.yml:issues]
+    opens: {issue: {title: "feat: a greeting", body: complete-feature}}
+    expect: {labels: [awaiting-acceptance], absent: [incomplete, accepted]}
+  - id: issue-incomplete
+    covers: [issue-accepted.yml:issue_comment]
+    opens: {issue: {title: "something", body: incomplete}}
+    steps: [{comment: "It should greet who opens the repository."}]
+    expect: {labels: [incomplete], absent: [awaiting-acceptance]}
+  # Accepted, sealed, and the autopilot starting.
+  - id: accepted-spec
+    covers: [next_step:wait:accept, next_step:spec]
+    opens: {issue: {title: "feat: a greeting", body: complete-feature}}
+    steps: [{label: accepted}]
+    expect: {labels: [accepted, autopilot], comments: ["<!-- dx-prd-seal -->"]}
+  - id: spec-to-draft
+    covers: [next_step:draft, next_step:work, next_step:finish]
+    opens: {issue: {title: "feat: a greeting, drafted", body: complete-feature}}
+    steps: [{label: accepted}]
+    expect: {pull: {closes: true, branch: "^feat/[0-9]+-", title: "^feat(\\(.+\\))?: "}, comments: ["<!-- dx-prd-seal -->"]}
+  # The first issue's draft (its fixed change under scenarios/, the test
+  # repository's core: kinds/engine-test/pack.yml `core`) stays open while
+  # the second is accepted, so the second waits for it.
+  - id: core-one-at-a-time
+    covers: [next_step:wait:core]
+    before: [{issue: {title: "feat: a greeting on the core, first", body: complete-feature, labels: [accepted]}}]
+    opens: {issue: {title: "feat: a greeting on the core, second", body: complete-feature}}
+    steps: [{wait: 300}, {label: accepted}]
+    expect: {comments: ["<!-- dx-autopilot-core -->"], labels: [autopilot:core-wait]}
+  - id: prd-edited-after-acceptance
+    covers: [next_step:wait:answer]
+    opens: {issue: {title: "feat: a greeting, then edited", body: complete-feature}}
+    steps: [{label: accepted}, {wait: 60}, {edit: edited-feature}]
+    expect: {absent: [accepted], waiting: true}
+  - id: decision-sub-issues
+    covers: []
+    opens: {issue: {title: "Decision: a greeting and a farewell", body: decision, labels: [accepted]}}
+    expect: {labels: [accepted], comments: ["sub-issue"]}
+
+  # Claims.
+  - id: claim-and-release
+    covers: [issue-claim.yml:issue_comment, next_step:wait:claim]
+    opens: {issue: {title: "feat: a greeting, claimed", body: complete-feature, labels: [accepted]}}
+    steps: [{comment: "/claim"}, {wait: 60}, {comment: "/unclaim"}]
+    expect: {absent: [claim:long]}
+  - id: claim-pull-request
+    covers: [issue-claim.yml:pull_request_target]
+    opens: {pull: {title: "feat: a greeting by hand", body: pull, issue: {title: "feat: a greeting, claimed for a hand", body: complete-feature, labels: [accepted]}}}
+    expect: {pull: {closes: true}}
+
+  # Bugs.
+  - id: bug-reproduced
+    covers: [next_step:fix]
+    opens: {issue: {title: "fix: the greeting says helo", body: bug}}
+    expect: {labels: [bug:confirmed], pull: {closes: true, branch: "^fix/[0-9]+-", title: "^fix(\\(.+\\))?: "}}
+  - id: bug-not-reproduced
+    covers: []
+    opens: {issue: {title: "fix: something failed once", body: bug-not-reproduced}}
+    expect: {labels: [bug:unconfirmed], absent: [bug:confirmed]}
+
+  # The autopilot's questions, stops and hints.
+  - id: question-answered
+    covers: []
+    opens: {issue: {title: "feat: a greeting, asked", body: complete-feature, labels: [accepted]}}
+    steps: [{wait: 300}, {comment: "Option 1."}]
+    expect: {absent: [autopilot:waiting, autopilot:continue], pull: {closes: true}}
+  - id: stop-hint-continue
+    covers: []
+    opens: {issue: {title: "feat: a greeting, stopped", body: complete-feature, labels: [accepted]}}
+    steps: [{wait: 300}, {comment: "Hint: write it in scenarios/."}, {label: autopilot:continue}]
+    expect: {absent: [needs-human], pull: {closes: true}}
+
+  # The autopilot's pull request and main.
+  - id: draft-in-conflict
+    covers: [next_step:merge-main, next_step:merge-main:conflicted, sweep_step:continue]
+    opens: {issue: {title: "feat: a greeting, in conflict", body: complete-feature, labels: [accepted]}}
+    steps: [{wait: 300}, {push: conflict}]
+    expect: {pull: {closes: true}, absent: [needs-human]}
+  - id: ready-behind-main
+    covers: [next_step:merge-main:clean, sweep_step:update]
+    opens: {issue: {title: "feat: a greeting, behind", body: complete-feature, labels: [accepted]}}
+    steps: [{wait: 600}, {push: behind}]
+    expect: {pull: {closes: true}}
+
+  # The review, the required checks and the merge queue.
+  - id: review-changes-asked
+    covers: [conventions.yml:pull_request, claude-review.yml:pull_request, autopilot.yml:pull_request, pull-request-assignee.yml:pull_request, runner-wake.yml:pull_request]
+    opens: {pull: {title: "feat: a greeting with a secret", body: pull}}
+    steps: [{push: secret}]
+    expect: {check: {conventions: success}}
+  - id: review-replied
+    covers: [review-reply.yml:issue_comment, review-reply.yml:pull_request_review_comment]
+    opens: {pull: {title: "docs: a greeting", body: pull}}
+    steps: [{comment: "@dilux-bot why?"}]
+    expect: {comments: ["<!-- dx-review"]}
+  - id: fork-without-secrets
+    covers: []
+    opens: {pull: {title: "docs: a greeting from a fork", body: pull, fork: true}}
+    expect: {check: {conventions: success}, merged: false}
+  - id: merge-queue
+    covers: [runner-wake.yml:merge_group, next_step:queue]
+    opens: {pull: {title: "docs: a greeting, queued", body: pull}}
+    steps: [{label: risk:low}]
+    expect: {merged: true}
+  - id: low-risk-merges
+    covers: [auto-merge.yml:pull_request, next_step:wait:merge]
+    opens: {pull: {title: "docs: a greeting, low risk", body: pull}}
+    expect: {merged: true}
+  - id: high-risk-waits
+    covers: []
+    opens: {pull: {title: "ci: a greeting in a workflow", body: pull}}
+    expect: {merged: false, labels: [risk:high]}
+
+  # A release, the drift check and adopting.
+  - id: release-issue
+    covers: []
+    opens: {issue: {title: "Release 0.0.1", body: release, labels: [accepted]}}
+    expect: {pull: {title: "^chore: release"}}
+  - id: drift-and-adopt
+    covers: []
+    opens: {issue: {title: "chore: the drift check and adopting", body: complete-feature}}
+    expect: {labels: [awaiting-acceptance]}
+
+  # #585: a caller that does not grant a permission the engine asks for:
+  # every repository's Issues workflow failed at startup.
+  - id: caller-permission-585
+    covers: []
+    opens: {issue: {title: "feat: a greeting, with the adopted callers", body: complete-feature}}
+    expect: {labels: [awaiting-acceptance]}
