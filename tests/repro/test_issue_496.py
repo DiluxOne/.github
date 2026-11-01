@@ -1,5 +1,7 @@
 """#496: a Bug a maintainer typed, which the classifier calls `enhancement`, stays a Bug
 (#341) but the triage labels it `enhancement`; the reporter expected `bug:unconfirmed`.
+Since #564 the verdict is the board's state, not a label: `repro=unconfirmed` and
+`verdict=bug`, never `enhancement`.
 
 scripts/triage-act.sh runs here as a command, with a stand-in for `gh` first on PATH that
 records every call and answers as for an issue whose Type is Bug, set by a writer.
@@ -21,7 +23,7 @@ exit 0
 """
 
 
-def test_a_bug_a_maintainer_typed_that_the_classifier_calls_enhancement_is_labeled_bug_unconfirmed(tmp_path):
+def test_a_bug_a_maintainer_typed_that_the_classifier_calls_enhancement_is_recorded_as_a_bug_to_reproduce(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     gh = bindir / "gh"
@@ -40,12 +42,16 @@ def test_a_bug_a_maintainer_typed_that_the_classifier_calls_enhancement_is_label
         "GITHUB_REPOSITORY": "o/r",
         "MAINTAINER": "boss",
         "MODEL": "m",
+        "DX_BOT_APP": "dilux-bot",
+        "STATE_FIXTURE": str(tmp_path / "comments.json"),
     }
     subprocess.run(["bash", str(ROOT / "scripts" / "triage-act.sh")], env=env, cwd=tmp_path,
                    capture_output=True, text=True)
 
     calls = log.read_text().splitlines()
     edits = [c for c in calls if c.startswith("issue edit 7 ") and "--add-label" in c]
-    assert any("--add-label bug:unconfirmed" in c for c in edits), f"no bug:unconfirmed label in {edits}"
+    state = subprocess.run(["python3", str(ROOT / "scripts" / "receipts.py"), "state", "get"], env=env, cwd=tmp_path,
+                           capture_output=True, text=True).stdout
+    assert '"repro":"unconfirmed"' in state.replace(" ", "") and '"verdict":"bug"' in state.replace(" ", ""), f"not a bug to reproduce: {state}"
     assert not any("enhancement" in c for c in edits), f"a Bug it keeps is labeled enhancement: {edits}"
     assert not any("type=Feature" in c for c in calls), "the maintainer's Bug was retyped"

@@ -26,4 +26,6 @@ def test_a_report_the_reproduction_confirms_loses_awaiting_acceptance_when_hande
 def test_g1_leaves_a_bug_confirmed_report_alone_on_open_and_edit():
     job = workflow("issue-accepted.yml")["jobs"]["ready"]
     wiring = job["if"] + "\n".join(str(s.get("if", "")) + code(s) for s in job["steps"])
-    assert "bug:confirmed" in wiring
+    # Since #564 the reproduction's outcome is the board's state, `repro`
+    # confirmed, not the bug:confirmed label.
+    assert "receipts.py state get repro" in wiring and "confirmed" in wiring
