@@ -198,7 +198,7 @@ jobs:
           printf '%s' "$PLAN" > "$RUNNER_TEMP/plan.json"
           out=$(python3 scripts/release-lane.py act --plan "$RUNNER_TEMP/plan.json" --results "$RUNNER_TEMP/scenarios/results.md" --repo "$GITHUB_REPOSITORY" --run "$RUN_URL")
           echo "$out"
-          for key in do version previous moved_at; do echo "$key=$(jq -r --arg k "$key" '.[$k] // ""' <<<"$out")" >> "$GITHUB_OUTPUT"; done
+          for key in "do" version previous moved_at; do echo "$key=$(jq -r --arg k "$key" '.[$k] // ""' <<<"$out")" >> "$GITHUB_OUTPUT"; done
 
   watch:
     name: Watch the repositories for 30 minutes
