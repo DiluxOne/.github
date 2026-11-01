@@ -634,7 +634,9 @@ jobs:
           python3 .dx-central/scripts/autopilot.py inputs "$MODE"
           # The pull requests' numbers and labels, for next-version.py in
           # `make pre-pr`: the work job's token does not read them (#585).
-          python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$BASE" --save-pulls "$DX_IO/pulls.json"
+          # Most repositories' `make pre-pr` never asks, so a failure warns.
+          python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$BASE" --save-pulls "$DX_IO/pulls.json" \
+            || { rm -f "$DX_IO/pulls.json"; echo "::warning::The pull requests could not be saved for next-version.py: a make pre-pr that runs it will fail."; }
           if [ "$MODE" = fix ]; then
             CONFLICTS="${CONFLICTS:-false}" python3 .dx-central/scripts/autopilot.py prompt fix > "$DX_IO/prompt.md"
             exit 0
@@ -956,7 +958,9 @@ jobs:
           python3 .dx-central/scripts/autopilot.py inputs start
           # The pull requests' numbers and labels, for next-version.py in
           # `make pre-pr`: the work job's token does not read them (#585).
-          python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$DEFAULT" --save-pulls "$DX_IO/pulls.json"
+          # Most repositories' `make pre-pr` never asks, so a failure warns.
+          python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$DEFAULT" --save-pulls "$DX_IO/pulls.json" \
+            || { rm -f "$DX_IO/pulls.json"; echo "::warning::The pull requests could not be saved for next-version.py: a make pre-pr that runs it will fail."; }
           python3 .dx-central/scripts/autopilot.py prompt work > "$DX_IO/prompt.md"
 
       - name: Hand it to the agent
