@@ -614,8 +614,9 @@ jobs:
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::$REF is not a ref of DiluxOne/.github."; exit 1; }
           mkdir -p .dx-central/scripts .dx-central/policy
           base="https://raw.githubusercontent.com/DiluxOne/.github/$sha"
-          # autonomy.py reads the organisation from org.yml, through org.py (#191).
-          for f in scripts/autonomy.py scripts/org.py scripts/repos_conf.py org.yml policy/autonomy.yml; do curl -fsSL --retry 3 "$base/$f" -o ".dx-central/$f"; done
+          # autonomy.py reads the organisation from org.yml, through org.py (#191);
+          # the overlay merges with settings.py by the schema (#568).
+          for f in scripts/autonomy.py scripts/org.py scripts/repos_conf.py scripts/settings.py org.yml policy/autonomy.yml policy/settings-schema.yml; do curl -fsSL --retry 3 "$base/$f" -o ".dx-central/$f"; done
           # The organisation's configuration over those (#197); a ref from
           # before the overlay has none.
           code=$(curl -sSL --retry 3 -w '%{http_code}' "$base/scripts/config-overlay.sh" -o .dx-central/scripts/config-overlay.sh || echo 000)

@@ -1,0 +1,10 @@
+# Only what Acme changes (#568): a reproduced bug waits for a person's
+# `accepted`, and what a person's issue merges on its own is lowered, with
+# the most a repository may raise it to. Every other setting is the
+# engine's default.
+lanes:
+  bugfix-reproduced:
+    accept: human
+  human-issue:
+    merge: {max-risk: low}
+    ceiling: {max-risk: medium}

@@ -31,9 +31,11 @@ def load(path=os.path.join(HERE, "..", "org.yml")):
 def app(conf, env):
     """(slug, login, id) of the organisation's App: the calling
     organisation's DX_BOT_APP, DX_BOT_LOGIN and DX_BOT_ID, which every
-    shared workflow sets in its env (#197), else org.yml's."""
-    slug = env.get("DX_BOT_APP") or conf["bot"]["app"]
-    return slug, env.get("DX_BOT_LOGIN") or f"{slug}[bot]", int(env.get("DX_BOT_ID") or conf["bot"]["id"])
+    shared workflow sets in its env (#197), else org.yml's; none at all
+    names no App ("", "", 0), which nothing recognises."""
+    bot = conf.get("bot") or {}
+    slug = env.get("DX_BOT_APP") or str(bot.get("app") or "")
+    return slug, env.get("DX_BOT_LOGIN") or (f"{slug}[bot]" if slug else ""), int(env.get("DX_BOT_ID") or bot.get("id") or 0)
 
 
 _conf = load()
@@ -100,6 +102,7 @@ def self_test():
         os.unlink(fh.name)
     conf = {"bot": {"app": "dilux-bot", "id": 1}}
     check("#197: the App from org.yml when no variable is set", app(conf, {}), ("dilux-bot", "dilux-bot[bot]", 1))
+    check("#568: an org.yml without an App names none", app({}, {}), ("", "", 0))
     check("#197: the calling organisation's variables win", app(conf, {"DX_BOT_APP": "acme-bot", "DX_BOT_LOGIN": "acme-bot[bot]", "DX_BOT_ID": "7"}), ("acme-bot", "acme-bot[bot]", 7))
     check("#491: attribution defaults to warn", attribution({}), "warn")
     check("#491: attribution required", attribution({"attribution": "required"}), "required")

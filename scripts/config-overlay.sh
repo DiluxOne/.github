@@ -7,9 +7,12 @@
 # organisation, this lays that organisation's own `.github` repository over
 # those paths, so the scripts read its configuration and the engine's code.
 # A path the organisation does not have keeps the engine's default (a kind
-# it does not define, a policy file it leaves out); one it has replaces the
-# engine's whole. The engine's own organisation is its own configuration:
-# nothing is laid over.
+# it does not define, a policy file it leaves out); a YAML file it has
+# overrides only the keys it sets (#568, scripts/settings.py overlay, by the
+# rules of policy/settings-schema.yml), and repos.yml and any other file
+# replace the engine's whole. The merged autonomy policy must hold to its
+# schema (autonomy.py check), or the run stops. The engine's own
+# organisation is its own configuration: nothing is laid over.
 #
 #   config-overlay.sh [DIR]   DIR the engine's checkout (.dx-central)
 #   config-overlay.sh --test  self-test, against local repositories
@@ -26,6 +29,7 @@ set -euo pipefail
 # The configuration an organisation holds in its `.github`, nothing else:
 # the engine's scripts, workflows and gates are never replaced.
 PATHS=(org.yml repos.yml labels.yml policy kinds)
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 org_of() { sed -n "s/^org:[[:space:]]*[\"']\{0,1\}\([A-Za-z0-9-]*\).*/\1/p" "$1" | head -n 1; }
 
@@ -49,7 +53,7 @@ overlay() {
 # Clones the organisation's configuration into $4/config and lays it over
 # the engine's checkout $1 ($2 the organisation, $3 where to clone from).
 lay() {
-  local dir=$1 owner=$2 src=$3 tmp=$4 p theirs
+  local dir=$1 owner=$2 src=$3 tmp=$4 p f theirs out
   if ! git clone -q --depth 1 "$src" "$tmp/config" 2>/dev/null; then
     echo "::error::The engine reads $owner's configuration from $owner/.github, which could not be read without a token: create it, public, with the installer (docs/installing.md)."
     return 1
@@ -65,20 +69,66 @@ lay() {
       return 1
     fi
   done
+  # Merged into a copy first: a configuration that fails half-way leaves
+  # the engine's checkout as it was.
+  mkdir -p "$tmp/merged"
+  for p in "${PATHS[@]}"; do
+    [ -e "$dir/$p" ] || continue
+    cp -R "$dir/$p" "$tmp/merged/$p" || { echo "::error::The engine's $p could not be copied to lay $owner's over it."; return 1; }
+  done
   for p in "${PATHS[@]}"; do
     [ -e "$tmp/config/$p" ] || continue
     if [ -d "$tmp/config/$p" ]; then
-      # Each step checked: lay runs where errexit is off (a caller's ||),
-      # and a half-laid configuration must stop the run, not pass.
-      if ! { mkdir -p "$dir/$p" && cp -R "$tmp/config/$p/." "$dir/$p/"; }; then
+      if [ -e "$tmp/merged/$p" ] && [ ! -d "$tmp/merged/$p" ]; then
         echo "::error::$owner's $p could not be laid over the engine's."; return 1
       fi
+      while IFS= read -r -d '' f; do
+        lay_file "$tmp" "$p/${f#"$tmp/config/$p/"}" "$owner" || return 1
+      done < <(find "$tmp/config/$p" -type f -print0 | sort -z)
     else
-      cp "$tmp/config/$p" "$dir/$p" || { echo "::error::$owner's $p could not be laid over the engine's."; return 1; }
+      lay_file "$tmp" "$p" "$owner" || return 1
     fi
     echo "$owner's $p"
   done
+  # The merged policy is held to its schema before anything reads it: an
+  # organisation's file never drops an engine safeguard (#568).
+  if [ -f "$tmp/merged/policy/autonomy.yml" ] && [ -f "$HERE/autonomy.py" ] \
+      && ! out=$(ORG_AUTONOMY="$tmp/merged/policy/autonomy.yml" python3 "$HERE/autonomy.py" check 2>&1); then
+    echo "::error::$owner's policy/autonomy.yml, laid over the engine's, does not hold to its schema: $(tr '\n' ';' <<<"$out")"
+    return 1
+  fi
+  for p in "${PATHS[@]}"; do
+    [ -e "$tmp/config/$p" ] || continue
+    rm -rf "${dir:?}/$p" && cp -R "$tmp/merged/$p" "$dir/$p" \
+      || { echo "::error::$owner's $p could not be laid over the engine's."; return 1; }
+  done
   echo "Configuration: $owner/.github at $(git -C "$tmp/config" rev-parse --short=12 HEAD), over the engine's defaults."
+}
+
+# One file of the organisation's configuration ($2, its path in it) laid over
+# the merged copy in $1/merged: a YAML file the engine also has is merged
+# with it by the schema's rules (scripts/settings.py overlay), the
+# organisation's keys over the engine's; any other is copied as it is.
+# repos.yml is replaced whole: every repository in it is the organisation's.
+# The schema is the engine's alone, never laid over.
+lay_file() {
+  local tmp=$1 rel=$2 owner=$3 merged
+  if [ "$rel" = policy/settings-schema.yml ]; then
+    echo "::warning::$owner's $rel is ignored: the settings' schema is the engine's."
+    return 0
+  fi
+  mkdir -p "$(dirname "$tmp/merged/$rel")" || { echo "::error::$owner's $rel could not be laid over the engine's."; return 1; }
+  case "$rel" in
+    repos.yml) ;;
+    *.yml|*.yaml)
+      if [ -f "$tmp/merged/$rel" ]; then
+        merged=$(python3 "$HERE/settings.py" overlay "$tmp/merged/$rel" "$tmp/config/$rel" --as "$rel") \
+          || { echo "::error::$owner's $rel could not be merged with the engine's."; return 1; }
+        printf '%s\n' "$merged" > "$tmp/merged/$rel" || { echo "::error::$owner's $rel could not be laid over the engine's."; return 1; }
+        return 0
+      fi ;;
+  esac
+  cp "$tmp/config/$rel" "$tmp/merged/$rel" || { echo "::error::$owner's $rel could not be laid over the engine's."; return 1; }
 }
 
 self_test() {
@@ -94,7 +144,7 @@ self_test() {
     rm -rf "$t/e"; mkdir -p "$t/e/policy" "$t/e/kinds/wordpress-plugin" "$t/e/scripts"
     printf 'org: DiluxOne\ncentral: DiluxOne/.github\n' > "$t/e/org.yml"
     echo 'repos: {a: {}}' > "$t/e/repos.yml"
-    echo 'budgets-usd: {autopilot-work: 20}' > "$t/e/policy/autonomy.yml"
+    cp "$HERE/../policy/autonomy.yml" "$HERE/../policy/settings-schema.yml" "$t/e/policy/"
     echo 'default: 1' > "$t/e/policy/review-policy.default.yml"
     echo 'name: WP' > "$t/e/kinds/wordpress-plugin/pack.yml"
     echo 'engine' > "$t/e/scripts/x.sh"
@@ -120,11 +170,29 @@ self_test() {
   GITHUB_REPOSITORY_OWNER=Acme DX_CONFIG_SOURCE="$t/c" overlay "$t/e" >/dev/null
   ok "another organisation: its org.yml" "$(org_of "$t/e/org.yml")" Acme
   ok "another organisation: its repos.yml" "$(cat "$t/e/repos.yml")" 'repos: {b: {}}'
-  ok "another organisation: its policy file replaces the engine's" "$(cat "$t/e/policy/autonomy.yml")" 'budgets-usd: {autopilot-work: 5}'
+  ok "another organisation: its policy file overrides the keys it sets" "$(yq -r '."budgets-usd"."autopilot-work"' "$t/e/policy/autonomy.yml")" 5
+  ok "and keeps the engine's for every other" "$(yq -r '."budgets-usd"."autopilot-fix", .lanes."human-issue".accept' "$t/e/policy/autonomy.yml" | tr '\n' ' ')" '10 human '
+  ok "the merged policy holds to its schema" "$(ORG_AUTONOMY="$t/e/policy/autonomy.yml" python3 "$HERE/autonomy.py" check)" ""
   ok "a policy file it leaves out keeps the engine's" "$(cat "$t/e/policy/review-policy.default.yml")" 'default: 1'
   ok "its own kind is added" "$(cat "$t/e/kinds/web-app/pack.yml")" 'name: Web app'
   ok "the engine's kinds stay" "$(cat "$t/e/kinds/wordpress-plugin/pack.yml")" 'name: WP'
   ok "never the engine's scripts" "$(cat "$t/e/scripts/x.sh")" engine
+
+  engine; config Acme; printf 'lanes:\n  release: {merge: {max-risk: high, max-complexity: high}}\n' > "$t/c/policy/autonomy.yml"
+  git -C "$t/c" add -A && git -C "$t/c" -c user.name=t -c user.email=t@t commit -qm widen
+  if out=$(GITHUB_REPOSITORY_OWNER=Acme DX_CONFIG_SOURCE="$t/c" overlay "$t/e" 2>&1); then ok "a merged policy that drops a safeguard stops it" ran stopped; else ok "a merged policy that drops a safeguard stops it" stopped stopped; fi
+  ok "and says why" "$(grep -c "does not hold to its schema" <<<"$out")" 1
+  ok "and nothing was laid over" "$(cat "$t/e/repos.yml")" 'repos: {a: {}}'
+
+  engine; config Acme; echo 'files: {}' > "$t/c/policy/settings-schema.yml"
+  git -C "$t/c" add -A && git -C "$t/c" -c user.name=t -c user.email=t@t commit -qm schema
+  out=$(GITHUB_REPOSITORY_OWNER=Acme DX_CONFIG_SOURCE="$t/c" overlay "$t/e")
+  ok "the settings' schema is never laid over" "$(cmp -s "$t/e/policy/settings-schema.yml" "$HERE/../policy/settings-schema.yml" && echo same)" same
+  ok "and says so" "$(grep -c "the settings' schema is the engine's" <<<"$out")" 1
+
+  engine; config Acme; printf 'constitution: none\n' > "$t/c/policy/autonomy.yml"
+  git -C "$t/c" add -A && git -C "$t/c" -c user.name=t -c user.email=t@t commit -qm bad
+  if GITHUB_REPOSITORY_OWNER=Acme DX_CONFIG_SOURCE="$t/c" overlay "$t/e" >/dev/null 2>&1; then ok "a file that cannot be merged stops it" ran stopped; else ok "a file that cannot be merged stops it" stopped stopped; fi
 
   engine; config Other
   if GITHUB_REPOSITORY_OWNER=Acme DX_CONFIG_SOURCE="$t/c" overlay "$t/e" >/dev/null 2>&1; then ok "an org.yml of another organisation stops it" ran stopped; else ok "an org.yml of another organisation stops it" stopped stopped; fi
