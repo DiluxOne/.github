@@ -18,10 +18,11 @@ name: Adopt a repository
 #     those the push added, and those `sync-repos.py pending` reads from the
 #     organisation (listed, without the dx-adopted property), so a run
 #     GitHub drops while another waits in the group loses none. Labels,
-#     settings, the code security configuration, the custom property the
-#     organisation's rulesets cover, the shared files, the callers, `make
-#     pre-pr`, the Dependabot file (their pull requests the org-sync lane's),
-#     the own checks, the merge queue and its Project.
+#     settings, the code security configuration for its visibility (#603),
+#     the custom property the organisation's rulesets cover, the shared
+#     files, the callers, `make pre-pr`, the Dependabot file (their pull
+#     requests the org-sync lane's), the own checks, the merge queue and its
+#     Project.
 #
 # Specific to this repository, so not reusable. Nothing here runs on a
 # fork's code: an issue event and a push to main only, from this checkout.

@@ -345,18 +345,41 @@ def sync_security(repo, conf, dry):
     cid, name, scope = got
     if attached_configuration(full) == cid:
         print(f"  the code security configuration `{name}` is attached")
+    elif dry:
+        print(f"  would attach the code security configuration `{name}`")
+    else:
+        rid = json.loads(gh("api", f"repos/{full}").stdout)["id"]
+        out = gh("api", "-X", "POST", f"orgs/{ORG}/code-security/configurations/{cid}/attach", "--input", "-",
+                 input_text=json.dumps({"scope": "selected", "selected_repository_ids": [rid]}), check=False)
+        if out.returncode != 0:
+            held = " (held at the enterprise level: out of the sync's reach, the maintainer changes it once there)" if "422" in out.stderr else ""
+            raise RuntimeError(f"could not attach the code security configuration `{name}`{held}: {out.stderr.strip()[:200]}")
+        print(f"  the code security configuration `{name}` attached")
+    # The default for new repositories is its own state, not a side effect of
+    # an attach: an attached configuration may still be the default for every
+    # visibility from before #603.
+    if configuration_defaults().get(cid) == scope:
         return
     if dry:
-        print(f"  would attach the code security configuration `{name}`")
+        print(f"  would make `{name}` the default for new repositories ({scope})")
         return
-    rid = json.loads(gh("api", f"repos/{full}").stdout)["id"]
-    out = gh("api", "-X", "POST", f"orgs/{ORG}/code-security/configurations/{cid}/attach", "--input", "-",
-             input_text=json.dumps({"scope": "selected", "selected_repository_ids": [rid]}), check=False)
-    if out.returncode != 0:
-        held = " (held at the enterprise level: out of the sync's reach, the maintainer changes it once there)" if "422" in out.stderr else ""
-        raise RuntimeError(f"could not attach the code security configuration `{name}`{held}: {out.stderr.strip()[:200]}")
     gh("api", "-X", "PUT", f"orgs/{ORG}/code-security/configurations/{cid}/defaults", "-f", f"default_for_new_repos={scope}")
-    print(f"  the code security configuration `{name}` attached")
+    print(f"  `{name}` made the default for new repositories ({scope})")
+
+
+def configuration_defaults():
+    """{configuration id: the `default_for_new_repos` it is} of the
+    organisation's default code security configurations; empty when it
+    cannot be read, so the sync writes the default again."""
+    out = gh("api", f"orgs/{ORG}/code-security/configurations/defaults", check=False)
+    try:
+        rows = json.loads(out.stdout or "[]") if out.returncode == 0 else []
+    except ValueError:
+        rows = []
+    if not isinstance(rows, list):
+        return {}
+    return {(r.get("configuration") or {}).get("id"): r.get("default_for_new_repos")
+            for r in rows if isinstance(r, dict)}
 
 
 # The organisation's rulesets cover the repositories whose custom property
@@ -2338,13 +2361,24 @@ def org_drift(conf):
 
 def org_drift_security(conf):
     """The organisation's code security configurations repos.yml names that
-    it lacks, as lines: every name the mapping gives (#603)."""
-    found = []
-    try:
-        for visibility in ("PUBLIC", "PRIVATE"):
-            security_configuration(conf, visibility)
-    except ValueError as exc:
-        found.append(f"{exc}: secret scanning and push protection are the configuration's, which GitHub may hold at the enterprise level only (HTTP 422 on a repository), out of the sync's reach: the maintainer sets it once there")
+    it lacks, every name the mapping gives, and each named one that is not
+    the default for new repositories of its visibility, as lines (#603)."""
+    found, wanted = [], {}
+    for visibility in ("PUBLIC", "PRIVATE"):
+        try:
+            got = security_configuration(conf, visibility)
+        except ValueError as exc:
+            line = f"{exc}: secret scanning and push protection are the configuration's, which GitHub may hold at the enterprise level only (HTTP 422 on a repository), out of the sync's reach: the maintainer sets it once there"
+            if line not in found:
+                found.append(line)
+            continue
+        if got is not None:
+            wanted[got[0]] = got[1:]
+    if wanted:
+        defaults = configuration_defaults()
+        for cid, (name, scope) in wanted.items():
+            if defaults.get(cid) != scope:
+                found.append(f"the code security configuration `{name}` is the default for new repositories `{defaults.get(cid) or 'none'}`, not `{scope}` (`sync-repos.py security`)")
     return found
 
 
@@ -3203,7 +3237,7 @@ def security_visibility_test(check):
         def __init__(self, stdout="", returncode=0, stderr=""):
             self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
 
-    def run(mapping, visibility):
+    def run(mapping, visibility, attached=None, defaults=(), sync=True):
         calls = []
 
         def fake(*args, check=True, input_text=None):
@@ -3212,7 +3246,9 @@ def security_visibility_test(check):
             if joined == "api orgs/o/code-security/configurations?per_page=100":
                 return Out(json.dumps([{"id": 5, "name": "Pub"}, {"id": 6, "name": "Priv"}]))
             if joined == "api repos/o/r/code-security-configuration":
-                return Out("", 1, "HTTP 404 Not Found")
+                return Out(json.dumps({"configuration": {"id": attached}})) if attached else Out("", 1, "HTTP 404 Not Found")
+            if joined == "api orgs/o/code-security/configurations/defaults":
+                return Out(json.dumps([{"default_for_new_repos": scope, "configuration": {"id": cid}} for cid, scope in defaults]))
             if joined == "api repos/o/r":
                 return Out(json.dumps({"id": 99}))
             return Out("{}")
@@ -3222,7 +3258,8 @@ def security_visibility_test(check):
         try:
             globals().update(gh=fake, ORG="o", SECURITY_CONFIGS={}, listed=lambda n: {}, property_values=lambda names: {"r": "true"})
             with contextlib.redirect_stdout(io.StringIO()) as out:
-                sync_security(repo, conf, False)
+                if sync:
+                    sync_security(repo, conf, False)
             lines = adoption_drift(repo, conf)
             org_lines = org_drift_security(conf)
         finally:
@@ -3246,8 +3283,21 @@ def security_visibility_test(check):
     check("#603: one configuration named for both visibilities is the default for all", writes[-1:] == ["api -X PUT orgs/o/code-security/configurations/5/defaults -f default_for_new_repos=all"], writes)
     _, _, _, org_lines = run({"public": "Pub", "private": "Missing"}, "PUBLIC")
     check("#603: the organisation's drift names a mapped configuration it does not have", any("`Missing`" in l for l in org_lines), org_lines)
-    _, _, _, org_lines = run({"public": "Pub"}, "PUBLIC")
-    check("#603: and nothing when every mapped one exists", org_lines == [], org_lines)
+    _, _, _, org_lines = run({"public": "Pub"}, "PUBLIC", defaults=[(5, "public")])
+    check("#603: and nothing when every mapped one exists and is the default for its visibility", org_lines == [], org_lines)
+    # PR #605 review: an attached configuration still the default for every
+    # visibility (#562's `all`) is narrowed, and is drift until it is.
+    writes, said, lines, org_lines = run({"public": "Pub"}, "PUBLIC", attached=5, defaults=[(5, "all")])
+    check("#603: an attached configuration still the default for all is narrowed to public, with no attach",
+          writes == ["api -X PUT orgs/o/code-security/configurations/5/defaults -f default_for_new_repos=public"], writes)
+    check("#603: and the organisation's drift says its default is `all`, not `public`",
+          any("`Pub` is the default for new repositories `all`, not `public`" in l for l in org_lines), org_lines)
+    check("#603: an attached configuration is not repository drift", [l for l in lines if "security configuration" in l] == [], lines)
+    writes, _, _, _ = run({"public": "Pub"}, "PUBLIC", attached=5, defaults=[(5, "public")])
+    check("#603: an attached configuration that is already the default for its visibility gets no write", writes == [], writes)
+    _, _, _, org_lines = run({"public": "Missing", "private": "Gone"}, "PUBLIC", sync=False)
+    check("#603: the organisation's drift names every mapped configuration it does not have, not the first alone",
+          any("`Missing`" in l for l in org_lines) and any("`Gone`" in l for l in org_lines), org_lines)
 
 
 def adopt_test(check, conf, labels, block):
@@ -3271,7 +3321,7 @@ def adopt_test(check, conf, labels, block):
              "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}, "repository_name": {"include": ["old"], "exclude": []}},
              "rules": [{"type": "pull_request"}], "bypass_actors": []}
     moved = with_property_condition(named)
-    state = {"values": {"old": None, "new": None}, "attached": None, "org": ["old", "new"]}
+    state = {"values": {"old": None, "new": None}, "attached": None, "default": None, "org": ["old", "new"]}
     calls, opened = [], []
 
     def fake(*args, check=True, input_text=None):
@@ -3286,6 +3336,11 @@ def adopt_test(check, conf, labels, block):
         if joined == "api -X POST orgs/o/code-security/configurations/5/attach --input -":
             if json.loads(input_text) == {"scope": "selected", "selected_repository_ids": [99]}:
                 state["attached"] = 5
+            return Out("{}")
+        if joined == "api orgs/o/code-security/configurations/defaults":
+            return Out(json.dumps([{"default_for_new_repos": state["default"], "configuration": {"id": 5}}] if state["default"] else []))
+        if joined == "api -X PUT orgs/o/code-security/configurations/5/defaults -f default_for_new_repos=all":
+            state["default"] = "all"
             return Out("{}")
         if joined.startswith("api orgs/o/properties/schema/"):
             return Out("{}")
@@ -3320,6 +3375,7 @@ def adopt_test(check, conf, labels, block):
     want_calls = [
         "api orgs/o/code-security/configurations?per_page=100", "api repos/o/new/code-security-configuration", "api repos/o/new",
         "api -X POST orgs/o/code-security/configurations/5/attach --input -",
+        "api orgs/o/code-security/configurations/defaults",
         "api -X PUT orgs/o/code-security/configurations/5/defaults -f default_for_new_repos=all",
         f"api orgs/o/properties/schema/{ADOPTED}", "repo list o --no-archived --limit 1000 --json name",
         "api --paginate --slurp orgs/o/properties/values?per_page=100", "api -X PATCH orgs/o/properties/values --input -",
