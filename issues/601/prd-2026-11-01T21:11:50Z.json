@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 601,
+  "prd_sha256": "f2772cd4661c5cd8053c41103dd23bd24099787dfe084a56779e4dcd3dd0630f",
+  "prd": "### Problem\n\n#600 (the delegated lane no longer counts the bot's own edits as a person's, #598) is merged and not in a version. Until it is released, DiluxOne/dilux-agentic-workflow#60, the sub-issue that renames DDW to DAW and adopts DAW (#552), cannot start.\n\n### Scope\n\n- Rebuild CHANGELOG.md with v7.11.1 (`scripts/changelog.py build --next v7.11.1`); a patch: one fix (#600).\n- Before moving `v7`, check that no reusable workflow asks the adopted callers for a permission, input or secret they do not give (#600 changes no workflow's permissions, inputs or secrets); tag v7.11.1 on the merge commit, move v7 to it (lightweight), and watch the adopted repositories for runs that end in `startup_failure` for 30 minutes.\n\n### Out of scope\n\n- Anything not merged yet (#595, #567 go in later releases).\n\n### Acceptance criteria\n\n- C1: Given the release pull request merged, when v7.11.1 is tagged, then v7 points at it, its GitHub Release lists #600, and no adopted repository's run ends in `startup_failure` in the next 30 minutes.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-01T21:11:50Z",
+  "policy": "DiluxOne/.github@7f4b2f88357d"
+}
