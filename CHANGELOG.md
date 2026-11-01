@@ -2,12 +2,28 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [7.9.0](https://github.com/DiluxOne/.github/releases/tag/v7.9.0) · 2026-11-01
+
+### Features
+
+- feat: adopting a repository is data and one command ([#566](https://github.com/DiluxOne/.github/pull/566))
+
+### Fixes
+
+- the bug reproduced from #577 ([#580](https://github.com/DiluxOne/.github/pull/580))
+- the bug reproduced from #572 ([#574](https://github.com/DiluxOne/.github/pull/574))
+- the bug reproduced from #537 ([#548](https://github.com/DiluxOne/.github/pull/548))
+
 ## [7.8.0](https://github.com/DiluxOne/.github/releases/tag/v7.8.0) · 2026-11-01
 
 ### Fixes
 
 - the bug reproduced from #558 ([#565](https://github.com/DiluxOne/.github/pull/565))
 - the bug reproduced from #556 ([#559](https://github.com/DiluxOne/.github/pull/559))
+
+### Maintenance
+
+- release v7.8.0 ([#571](https://github.com/DiluxOne/.github/pull/571))
 
 ## [7.7.0](https://github.com/DiluxOne/.github/releases/tag/v7.7.0) · 2026-11-01
 
