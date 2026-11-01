@@ -1,0 +1,146 @@
+name: Adopt a repository
+
+# Adopting a repository of the organisation (#562), with a maintainer's
+# `accepted` as the only step. The daily drift check opens "Adopt
+# <repository>" (scripts/detect.py adopt-issues, label lane:adopt) for a
+# repository repos.yml lacks, with the entry detection proposes as a YAML
+# block; anyone may correct the block before it is accepted.
+#
+#   - When a person adds `accepted` to such an issue here, `propose` opens
+#     the pull request that adds that entry to repos.yml and nothing else
+#     (scripts/detect.py adopt-pr), after checking the issue as the `adopt`
+#     lane does (policy/autonomy.yml): a person with the admin or maintain
+#     role added `accepted` last, and its text was not edited after that.
+#     auto-merge.yml merges it by policy only when it is that entry alone
+#     (scripts/autonomy.py lane-merge).
+#   - When repos.yml changes on main, `adopt` runs `sync-repos.py adopt
+#     --repo NAME` for each repository it lists that is not adopted yet:
+#     those the push added, and those `sync-repos.py pending` reads from the
+#     organisation (listed, without the dx-adopted property), so a run
+#     GitHub drops while another waits in the group loses none. Labels,
+#     settings, the code security configuration, the custom property the
+#     organisation's rulesets cover, the shared files, the callers, `make
+#     pre-pr`, the Dependabot file (their pull requests the org-sync lane's),
+#     the own checks, the merge queue and its Project.
+#
+# Specific to this repository, so not reusable. Nothing here runs on a
+# fork's code: an issue event and a push to main only, from this checkout.
+# With DX_AUTOPILOT=off nothing runs: the maintainer adopts by hand.
+
+on:
+  issues:
+    types: [labeled]
+  push:
+    branches: [main]
+    paths: [repos.yml]
+
+permissions: {}
+
+# One group per Adopt issue, so no `accepted` waits behind another's and
+# is dropped; the adoptions one at a time, as they write the organisation's
+# rulesets and property. A pending adoption GitHub replaces is not lost:
+# the next one reads what is still not adopted from the organisation.
+concurrency:
+  group: org-adopt-${{ github.event_name == 'issues' && github.event.issue.number || 'main' }}
+  cancel-in-progress: false
+
+jobs:
+  propose:
+    name: The pull request adding the entry
+    if: >-
+      github.event_name == 'issues' && github.event.label.name == 'accepted' && github.event.sender.type != 'Bot' &&
+      contains(github.event.issue.labels.*.name, 'lane:adopt') && startsWith(github.event.issue.title, 'Adopt ') &&
+      vars.DX_AUTOPILOT != 'off'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: dilux-bot token (this repository)
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+          permission-metadata: read
+
+      - name: The pull request
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          NUMBER: ${{ github.event.issue.number }}
+        run: python3 scripts/detect.py adopt-pr "$NUMBER"
+
+  adopt:
+    name: Adopt what repos.yml now lists
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DX_AUTOPILOT != 'off'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      # The organisation's settings an adoption writes: its custom property
+      # and rulesets, the code security configuration, its Projects; and in
+      # the repository its settings, labels, variables, rulesets and the pull
+      # requests of the shared files, callers, pre-pr and Dependabot. Minted
+      # only here, on main, after a merge a person or the adopt lane made.
+      - name: dilux-bot token (adopting)
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-administration: write
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+          permission-workflows: write
+          permission-actions-variables: write
+          permission-metadata: read
+          permission-organization-administration: write
+          permission-organization-custom-properties: admin
+          permission-organization-projects: write
+
+      # What the push added, and what the organisation says is not adopted
+      # yet (nothing from it until the rulesets cover by the property, the
+      # first adoption's work): a dropped run's repository is here.
+      - name: The repositories to adopt
+        id: new
+        env:
+          BEFORE: ${{ github.event.before }}
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+        run: |
+          set -euo pipefail
+          git cat-file -e "$BEFORE^{commit}" 2>/dev/null || git fetch -q --depth 1 origin "$BEFORE"
+          git show "$BEFORE:repos.yml" > "$RUNNER_TEMP/before.yml"
+          added=$(yq -r '(.repos // {}) | keys | .[]' repos.yml | grep -vxF -f <(yq -r '(.repos // {}) | keys | .[]' "$RUNNER_TEMP/before.yml") || true)
+          pending=$(python3 scripts/sync-repos.py pending)
+          new=$(printf '%s\n%s\n' "$added" "$pending" | sed '/^$/d' | sort -u)
+          echo "names=$(tr '\n' ' ' <<<"$new")" >> "$GITHUB_OUTPUT"
+          echo "To adopt: ${new:-none}"
+
+      - name: Adopt
+        if: steps.new.outputs.names != ''
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          NAMES: ${{ steps.new.outputs.names }}
+        run: |
+          rc=0
+          for name in $NAMES; do
+            python3 scripts/sync-repos.py adopt --repo "$name" || rc=1
+          done
+          exit "$rc"

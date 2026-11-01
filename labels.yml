@@ -18,6 +18,7 @@
 - {name: "lane:platform", color: "1D76DB", description: "The organisation's own machinery, kept current by a weekly job"}
 - {name: "lane:bugfix-reproduced", color: "1D76DB", description: "A bug the reproduction confirmed with a failing test"}
 - {name: "lane:org-sync", color: "1D76DB", description: "Opened by scripts/sync-repos.py to bring this repository in line with DiluxOne/.github"}
+- {name: "lane:adopt", color: "1D76DB", description: "Adopt <repository>: a maintainer accepting it adds it to repos.yml and adopts it (org-adopt.yml)"}
 - {name: "lane:release", color: "1D76DB", description: "Release X.Y.Z: a person accepting it is the decision to publish"}
 - {name: "accepted-by:policy", color: "0E8A16", description: "Accepted by a lane of the autonomy policy, not by a person"}
 - {name: "merged-by:policy", color: "0E8A16", description: "Merged by the autonomy policy, not by a person"}

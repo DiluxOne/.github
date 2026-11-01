@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
 """The organisation's configuration, repos.yml, held to its schema (#191).
 
-`repos:` says what each repository is: its kinds of project, each a pack in
-kinds/, over the paths it covers, with the roles of those paths. This
-checks it, and the rest of repos.yml against it:
+`repos:` holds one entry per repository with everything the organisation
+says of it (#562, scripts/repos_conf.py): its kinds of project, each a pack
+in kinds/, over the paths it covers, with the roles of those paths, and its
+`project`, `design-system`, `repro`, `merge-queue`, `pre-pr`, `dependabot`
+and `callers`. This checks it, and the rest of repos.yml against it:
 
   - every kind has a pack in kinds/, every role is one of ROLES;
   - one repository's kinds never cover the same paths (a monorepo splits
     them), and a kind covers at least one path;
-  - every repository another section names (projects, design-system,
-    dependabot, repro, merge-queue, pre-pr, no-workflows) is listed in
-    `repos:`, and a design system named exists in design-systems/ (or is
-    `local`);
-  - a repository's `pre-pr:` (#479) is `false`: it has no `make pre-pr`
-    by design;
-  - each repository's `repro:` (#377) is a `repro:` as its
-    .github/review-policy.yml takes it, every way to the schema of
-    scripts/repro-ways.py, or `false` (no way, by design);
+  - an entry holds only those attributes: `project` a Project's number,
+    `design-system` one of design-systems/ (or `local`), `merge-queue`
+    auto, on or off, `pre-pr` `false` (no `make pre-pr` by design, #479),
+    `repro` (#377) a `repro:` as its .github/review-policy.yml takes it,
+    every way to the schema of scripts/repro-ways.py, or `false` (no way,
+    by design), `dependabot` a map of ecosystems, `callers` a map of its
+    callers' inputs to their values;
+  - the top-level maps keyed by repository that came before it (projects,
+    design-system, repro, merge-queue, pre-pr, dependabot) are refused;
+  - every repository `no-workflows` names is listed in `repos:`;
   - no section of repos.yml is unknown.
 
   repos-config.py check          repos.yml here (exit 1, with the reasons)
@@ -26,10 +29,16 @@ import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import repos_conf  # noqa: E402  the loader every reader goes through (#562)
 ROOT = os.path.join(HERE, "..")
 ROLES = ("front", "back", "data", "infra", "docs")
-SECTIONS = {"no-workflows", "exclude", "repos", "projects", "design-system", "settings", "security", "files", "dependabot", "callers", "repro", "merge-queue", "pre-pr"}
-NAMED = ("projects", "design-system", "dependabot", "repro", "merge-queue", "pre-pr")
+SECTIONS = {"no-workflows", "exclude", "repos", "settings", "security", "files", "callers"}
+# The top-level maps keyed by repository before #562: each is now an
+# attribute of the repository's entry.
+LEGACY = {"projects": "project", "design-system": "design-system", "dependabot": "dependabot", "repro": "repro",
+          "merge-queue": "merge-queue", "pre-pr": "pre-pr"}
+ATTRIBUTES = {"kinds", "project", "design-system", "repro", "merge-queue", "pre-pr", "dependabot", "callers"}
 
 
 def load(path):
@@ -56,14 +65,20 @@ def overlap(a, b):
 def problems(conf, kinds, systems):
     out = []
     for key in sorted(set(conf) - SECTIONS):
-        out.append(f"{key}: not a section of repos.yml")
+        if key in LEGACY:
+            out.append(f"{key}: a map keyed by repository is no longer read: each repository's `{LEGACY[key]}` is in its entry of `repos:` (#562)")
+        else:
+            out.append(f"{key}: not a section of repos.yml")
     repos = conf.get("repos")
     if not isinstance(repos, dict) or not repos:
         return out + ["repos: every repository of the organisation, with its kinds"]
     for name, entry in repos.items():
-        if not isinstance(entry, dict) or set(entry) - {"kinds"} or not isinstance(entry.get("kinds"), list):
+        if not isinstance(entry, dict) or not isinstance(entry.get("kinds"), list):
             out.append(f"repos.{name}: {{kinds: [...]}} (an empty list leaves it unclassified)")
             continue
+        for key in sorted(set(entry) - ATTRIBUTES):
+            out.append(f"repos.{name}.{key}: not an attribute of a repository ({', '.join(sorted(ATTRIBUTES))})")
+        out += attribute_problems(name, entry, systems)
         seen = []
         for i, k in enumerate(entry["kinds"]):
             where = f"repos.{name}.kinds[{i}]"
@@ -84,33 +99,40 @@ def problems(conf, kinds, systems):
                     if overlap(p, q):
                         out.append(f"{where}: {p!r} overlaps {q!r} of {other}; one path belongs to one kind")
             seen += [(k.get("kind"), p) for p in paths]
-    for section in NAMED:
-        for name in (conf.get(section) or {}):
-            if name not in repos:
-                out.append(f"{section}.{name}: not a repository of `repos:`")
     for name in conf.get("no-workflows") or []:
         if name not in repos:
             out.append(f"no-workflows: {name} is not a repository of `repos:`")
-    for name, system in (conf.get("design-system") or {}).items():
-        if system != "local" and system not in systems:
-            out.append(f"design-system.{name}: {system!r} is not in design-systems/ (nor local)")
-    for name, mode in (conf.get("merge-queue") or {}).items():
-        if mode not in ("auto", "on", "off", True, False):
-            out.append(f"merge-queue.{name}: {mode!r} is not auto, on or off")
-    for name, entry in (conf.get("pre-pr") or {}).items():
-        if entry is not False:
-            out.append(f"pre-pr.{name}: {entry!r} is not false (a repository that has none by design)")
-    for name, entry in (conf.get("repro") or {}).items():
-        if entry is False:  # no way, by design
-            continue
-        if not isinstance(entry, dict) or set(entry) - {"ways", "affected"} or not isinstance(entry.get("ways"), dict) or not entry["ways"]:
-            out.append(f"repro.{name}: {{ways: {{name: way}}}}, and `affected` if any, or false (none, by design)")
-            continue
-        off = [w for w, way in entry["ways"].items() if not isinstance(way, dict)]
-        out += [f"repro.{name}: ways.{w}: a way's keys (to switch one off, a repository's own policy says false)" for w in off]
-        ways = {w: way for w, way in entry["ways"].items() if isinstance(way, dict)}
-        out += [f"repro.{name}: {p.removeprefix('repro.')}" for p in repro_ways().problems({"ways": ways})]
+    defaults = (conf.get("callers") or {}).get("defaults") if isinstance(conf.get("callers"), dict) else None
+    if defaults is not None and (not isinstance(defaults, dict) or not all(isinstance(v, (str, bool, int)) for v in defaults.values())):
+        out.append("callers.defaults: a map of an input to its value")
     return out
+
+
+def attribute_problems(name, entry, systems):
+    """What is wrong with one entry's attributes beside its kinds."""
+    out, where = [], f"repos.{name}"
+    if "project" in entry and (not isinstance(entry["project"], int) or isinstance(entry["project"], bool) or entry["project"] <= 0):
+        out.append(f"{where}.project: {entry['project']!r} is not a Project's number")
+    system = entry.get("design-system")
+    if system is not None and system != "local" and system not in systems:
+        out.append(f"{where}.design-system: {system!r} is not in design-systems/ (nor local)")
+    if "merge-queue" in entry and entry["merge-queue"] not in ("auto", "on", "off", True, False):
+        out.append(f"{where}.merge-queue: {entry['merge-queue']!r} is not auto, on or off")
+    if "pre-pr" in entry and entry["pre-pr"] is not False:
+        out.append(f"{where}.pre-pr: {entry['pre-pr']!r} is not false (a repository that has none by design)")
+    if "dependabot" in entry and not isinstance(entry["dependabot"], dict):
+        out.append(f"{where}.dependabot: a map of ecosystem to what it adds")
+    if "callers" in entry and (not isinstance(entry["callers"], dict) or not all(isinstance(v, (str, bool, int)) for v in entry["callers"].values())):
+        out.append(f"{where}.callers: a map of an input to its value")
+    repro = entry.get("repro", False)
+    if repro is False:  # none set, or no way by design
+        return out
+    if not isinstance(repro, dict) or set(repro) - {"ways", "affected"} or not isinstance(repro.get("ways"), dict) or not repro["ways"]:
+        return out + [f"{where}.repro: {{ways: {{name: way}}}}, and `affected` if any, or false (none, by design)"]
+    off = [w for w, way in repro["ways"].items() if not isinstance(way, dict)]
+    out += [f"{where}.repro: ways.{w}: a way's keys (to switch one off, a repository's own policy says false)" for w in off]
+    ways = {w: way for w, way in repro["ways"].items() if isinstance(way, dict)}
+    return out + [f"{where}.repro: {p.removeprefix('repro.')}" for p in repro_ways().problems({"ways": ways})]
 
 
 def repro_ways():
@@ -141,7 +163,10 @@ def self_test():
 
     kinds, systems = {"wordpress-plugin", "web-api"}, {"wordpress-admin"}
     plugin = {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"], "roles": ["back", "front"]}]}
-    good = {"repos": {"a": plugin, "b": {"kinds": []}}, "projects": {"a": 1}, "design-system": {"a": "wordpress-admin", "b": "local"}}
+    good = {"repos": {"a": dict(plugin, project=1, **{"design-system": "wordpress-admin"}), "b": {"kinds": [], "design-system": "local"}}}
+
+    def with_b(**attrs):
+        return {"repos": {"a": good["repos"]["a"], "b": dict(good["repos"]["b"], **attrs)}}
     check("a configuration that holds", problems(good, kinds, systems), [])
     check("this repository's repos.yml holds", problems(load(os.path.join(ROOT, "repos.yml")), dirs(os.path.join(ROOT, "kinds")), dirs(os.path.join(ROOT, "design-systems"))), [])
     mono = {"repos": {"m": {"kinds": [{"kind": "web-api", "paths": ["api/**"], "roles": ["back"]},
@@ -152,25 +177,35 @@ def self_test():
     check("a kind with no pack", problems({"repos": {"a": {"kinds": [{"kind": "rails", "paths": ["**"]}]}}}, kinds, systems), ["repos.a.kinds[0]: kind 'rails' has no pack in kinds/"])
     check("an unknown role", problems({"repos": {"a": {"kinds": [{"kind": "web-api", "paths": ["**"], "roles": ["mobile"]}]}}}, kinds, systems), [f"repos.a.kinds[0]: roles are among {', '.join(ROLES)}"])
     check("a kind with no paths", len(problems({"repos": {"a": {"kinds": [{"kind": "web-api", "paths": []}]}}}, kinds, systems)), 1)
-    check("a section naming a repository repos: lacks", problems(dict(good, projects={"z": 3}), kinds, systems), ["projects.z: not a repository of `repos:`"])
-    check("a design system that does not exist", problems(dict(good, **{"design-system": {"a": "material"}}), kinds, systems), ["design-system.a: 'material' is not in design-systems/ (nor local)"])
+    check("#562 an attribute an entry does not hold", problems(with_b(owner="me"), kinds, systems),
+          [f"repos.b.owner: not an attribute of a repository ({', '.join(sorted(ATTRIBUTES))})"])
+    check("#562 every top-level map keyed by repository is refused, saying where it went",
+          [p.split(":")[0] for p in problems(dict(good, projects={"a": 1}, repro={"b": False}, **{"pre-pr": {}, "merge-queue": {}, "design-system": {}, "dependabot": {}}), kinds, systems)],
+          ["dependabot", "design-system", "merge-queue", "pre-pr", "projects", "repro"])
+    check("#562 a Project is a number", problems(with_b(project="two"), kinds, systems), ["repos.b.project: 'two' is not a Project's number"])
+    check("#562 the callers' values are a map of input to value, and so are the defaults",
+          (problems(with_b(callers={"slug": "b"}), kinds, systems), problems(with_b(callers=["slug"]), kinds, systems), problems(dict(good, callers={"defaults": {"dry-run": False}}), kinds, systems)),
+          ([], ["repos.b.callers: a map of an input to its value"], []))
+    check("a design system that does not exist", problems(with_b(**{"design-system": "material"}), kinds, systems), ["repos.b.design-system: 'material' is not in design-systems/ (nor local)"])
     check("an unknown section", problems(dict(good, owners={}), kinds, systems), ["owners: not a section of repos.yml"])
-    check("#451 a repository's merge queue: auto, on or off", problems(dict(good, **{"merge-queue": {"a": "off", "b": "sometimes"}}), kinds, systems), ["merge-queue.b: 'sometimes' is not auto, on or off"])
-    check("#479 a repository's pre-pr exception is false, and nothing else", problems(dict(good, **{"pre-pr": {"a": False, "b": True}}), kinds, systems), ["pre-pr.b: True is not false (a repository that has none by design)"])
-    check("#479 a pre-pr exception of a repository repos: lacks", problems(dict(good, **{"pre-pr": {"z": False}}), kinds, systems), ["pre-pr.z: not a repository of `repos:`"])
+    check("#451 a repository's merge queue: auto, on or off", (problems(with_b(**{"merge-queue": "off"}), kinds, systems), problems(with_b(**{"merge-queue": "sometimes"}), kinds, systems)),
+          ([], ["repos.b.merge-queue: 'sometimes' is not auto, on or off"]))
+    check("#479 a repository's pre-pr exception is false, and nothing else", (problems(with_b(**{"pre-pr": False}), kinds, systems), problems(with_b(**{"pre-pr": True}), kinds, systems)),
+          ([], ["repos.b.pre-pr: True is not false (a repository that has none by design)"]))
     way = {"layer": "logic", "test": "tests/repro/test_issue_{n}.py", "run": "pytest {test}", "junit": "build/repro.xml"}
-    check("#377 a repository's way to reproduce a bug", problems(dict(good, repro={"b": {"ways": {"pytest": way}}}), kinds, systems), [])
-    check("#377 a way of a repository repos: lacks", problems(dict(good, repro={"z": {"ways": {"pytest": way}}}), kinds, systems), ["repro.z: not a repository of `repos:`"])
-    check("#377 a way that is wrong says why", problems(dict(good, repro={"b": {"ways": {"pytest": dict(way, layer="screen")}}}), kinds, systems),
-          ["repro.b: ways.pytest.layer: one of " + ", ".join(repro_ways().LAYERS) + ", or a list of them"])
-    check("#377 an entry that is no `repro:`", problems(dict(good, repro={"b": {"pytest": way}}), kinds, systems), ["repro.b: {ways: {name: way}}, and `affected` if any, or false (none, by design)"])
-    check("#377 a way that is not a mapping is said, never a crash", problems(dict(good, repro={"b": {"ways": {"unit": False}}}), kinds, systems),
-          ["repro.b: ways.unit: a way's keys (to switch one off, a repository's own policy says false)"])
-    check("#377 false: a repository with no way, by design", problems(dict(good, repro={"b": False}), kinds, systems), [])
+    check("#377 a repository's way to reproduce a bug", problems(with_b(repro={"ways": {"pytest": way}}), kinds, systems), [])
+    check("#377 a way that is wrong says why", problems(with_b(repro={"ways": {"pytest": dict(way, layer="screen")}}), kinds, systems),
+          ["repos.b.repro: ways.pytest.layer: one of " + ", ".join(repro_ways().LAYERS) + ", or a list of them"])
+    check("#377 an entry that is no `repro:`", problems(with_b(repro={"pytest": way}), kinds, systems), ["repos.b.repro: {ways: {name: way}}, and `affected` if any, or false (none, by design)"])
+    check("#377 a way that is not a mapping is said, never a crash", problems(with_b(repro={"ways": {"unit": False}}), kinds, systems),
+          ["repos.b.repro: ways.unit: a way's keys (to switch one off, a repository's own policy says false)"])
+    check("#377 false: a repository with no way, by design", problems(with_b(repro=False), kinds, systems), [])
+    check("no-workflows names a repository of `repos:`", problems(dict(good, **{"no-workflows": ["z"]}), kinds, systems), ["no-workflows: z is not a repository of `repos:`"])
     check("kind: a single-kind repository's", kind_of(good, "a"), "wordpress-plugin")
     check("kind: none for an unclassified one, a monorepo or an unknown name", (kind_of(good, "b"), kind_of(mono, "m"), kind_of(good, "zz")), (None, None, None))
     check("overlap: '**' overlaps everything; siblings do not", (overlap("**", "a/**"), overlap("api/**", "web/**"), overlap("api/**", "api/v2/*")), (True, False, True))
     check("overlap: on a segment's boundary, not a string's", (overlap("src/foo", "src/foobar/**"), overlap("src/foo", "src/foo/**")), (False, True))
+    repos_conf.self_test(check)
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 

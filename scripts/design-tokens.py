@@ -45,6 +45,8 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import repos_conf  # noqa: E402  repos.yml's one entry per repository (#562)
 ROOT = os.path.join(HERE, "..")
 SYSTEMS = os.path.join(ROOT, "design-systems")
 PREFIX = "--dx-"
@@ -476,7 +478,7 @@ def brief(repo, repos_file, changed, root=".", limit=BRIEF_LIMIT):
     """The brief's section on the repository's design system, or "" when it
     declares none or the change touches none of its screens."""
     conf = read_yaml(repos_file) if os.path.isfile(repos_file) else {}
-    system = (conf.get("design-system") or {}).get(repo)
+    system = repos_conf.value(conf, repo, "design-system")
     if not system:
         return ""
     extends = None

@@ -92,6 +92,8 @@ import tempfile
 import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import repos_conf  # noqa: E402  repos.yml's one entry per repository (#562)
 LAYERS = ("logic", "browser", "cli", "api", "workflow")
 KEYS = {"layer", "noun", "test", "needs", "sandbox", "setup", "theme", "run", "junit", "case", "assertion", "teardown",
         "minutes", "context", "list", "example", "guide"}
@@ -195,7 +197,7 @@ def pack_of(kinds_dir, conf, name, policy):
 def org_repro(conf, name):
     """The organisation's repos.yml `repro:` for repository NAME (#377), {}
     when it holds none or `false`."""
-    entry = (conf.get("repro") or {}).get(name) if isinstance(conf.get("repro"), dict) else None
+    entry = repos_conf.value(conf, name, "repro")
     return entry if isinstance(entry, dict) else {}
 
 
@@ -203,7 +205,7 @@ def by_design(conf, name):
     """repos.yml `repro: {NAME: false}`: the repository has no way by
     design (a disposable one, one with no code of its own); its bugs are
     still not handed to the autopilot, but the audit does not list it."""
-    return isinstance(conf.get("repro"), dict) and conf["repro"].get(name) is False
+    return repos_conf.value(conf, name, "repro") is False
 
 
 def declares(conf, name, policy, kinds_dir):

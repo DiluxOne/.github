@@ -33,3 +33,28 @@ pre-pr: optional
 # `required` once the repositories are in step, so no open pull request is
 # stopped by the release that brings the check.
 attribution: warn
+# The custom property of the organisation that says a repository is adopted
+# (#562, scripts/sync-repos.py rulesets): `true` on every repository
+# repos.yml lists, written by the sync, and the organisation's rulesets
+# cover the repositories that have it instead of a list of names.
+adopted-property: dx-adopted
+# A repository's own commit rules that contradict the organisation's (#562,
+# scripts/sync-repos.py check): each pattern is matched against its
+# commit-msg hook (.githooks/, .husky/), its commitlint configuration, and
+# the lines of its AGENTS.md (the dx:org block aside) and CONTRIBUTING.md
+# that speak of commits or trailers; a line that says "never" or "not" of it
+# is no contradiction. The daily drift check lists each one found. `listed`
+# and `kept` are its fixtures: lines it must find, and lines it must not.
+conventions-contradictions:
+  - pattern: '(?i)\bAI-assisted:\s*(yes|true)\b'
+    says: "an `AI-assisted: yes` trailer, where the organisation's is `Assisted-by: <model> (<maker>)`"
+    listed: ["Every commit an agent helped with ends with `AI-assisted: yes`.", "grep -q '^AI-assisted: yes$' \"$1\" || exit 1"]
+    kept: ["End it with `Assisted-by: Claude Opus 5.5 (Anthropic)`.", "Never write `AI-assisted: yes`."]
+  - pattern: '(?i)\bCo-authored-by:\s*(Claude|ChatGPT|GPT-?\d|Copilot|Gemini|Codex)\b'
+    says: "a model named as a `Co-authored-by`, which the conventions check refuses (a model is `Assisted-by:`)"
+    listed: ["Add `Co-authored-by: Claude <noreply@anthropic.com>` to the commit."]
+    kept: ["Co-authored-by: Ana <1+ana@users.noreply.github.com>", "A model is never a `Co-authored-by: Claude`."]
+  - pattern: '(?i)\bGenerated with\b'
+    says: 'a "Generated with …" footer, where the organisation''s is the AI line (`🤖 AI-generated · <model> (<maker>)`)'
+    listed: ["End the commit body with 🤖 Generated with Claude Code."]
+    kept: ["Never \"Generated with …\".", "End it with `🤖 AI-generated · Claude Opus 5.5 (Anthropic)`."]
