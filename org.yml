@@ -33,3 +33,8 @@ pre-pr: optional
 # `required` once the repositories are in step, so no open pull request is
 # stopped by the release that brings the check.
 attribution: warn
+# The custom property of the organisation that says a repository is adopted
+# (#562, scripts/sync-repos.py rulesets): `true` on every repository
+# repos.yml lists, written by the sync, and the organisation's rulesets
+# cover the repositories that have it instead of a list of names.
+adopted-property: dx-adopted

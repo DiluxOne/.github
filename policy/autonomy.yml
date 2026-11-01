@@ -30,7 +30,8 @@
 # the `org-sync` lane below: in a repository
 # other than this one, it merges the files scripts/sync-repos.py keeps in
 # step (callers under .github/workflows/, .github/CODEOWNERS, the dx:org
-# block of AGENTS.md) only when they are what a commit a person already
+# block of AGENTS.md, dx.mk and its include, .github/dependabot.yml) only
+# when they are what a commit a person already
 # merged here holds, and never a change of permissions or secrets.
 #
 # The organisation variable DX_AUTOPILOT=off stops every autonomous action at
@@ -231,7 +232,8 @@ lanes:
     ceiling: {max-risk: high, max-complexity: high}
 
   # Mechanical sync pull requests (#155): the Task issue and the pull request
-  # scripts/sync-repos.py opens in a repository (`files`, `callers`) to bring
+  # scripts/sync-repos.py opens in a repository (`files`, `callers`,
+  # `pre-pr`, `dependabot`) to bring
   # it in line with a change a person already merged here. A maintainer runs
   # the script from their machine, so the issue is theirs and no workflow
   # run opened it: instead of `workflows`, the lane names who may run it
@@ -254,7 +256,10 @@ lanes:
   # holds: CODEOWNERS as repos.yml has it, AGENTS.md with only its dx:org
   # block replaced by agents-block.md, and each caller job it changes a
   # template's job (workflow-templates/), but the inputs that are the
-  # repository's, with nothing else in the file changed. A job that changes
+  # repository's, with nothing else in the file changed; dx.mk its kind's
+  # `pre-pr-make`, the Makefile its base with `include dx.mk` added, and
+  # .github/dependabot.yml its kind's template for the ecosystems at its
+  # head with what repos.yml adds (#562). A job that changes
   # its permissions or the secrets it passes, a new job among them, is high
   # risk: a person merges it. `max-risk: high` because the review's floor for
   # .github/** and AGENTS.md is high whatever the change; the checks above,
@@ -274,6 +279,16 @@ lanes:
         callers:
           branch: "ci/{issue}-org-workflow-callers"
           paths: [".github/workflows/*.yml", ".github/workflows/*.yaml"]
+        # `make pre-pr` and the Dependabot file (#562), as mechanical as the
+        # callers: dx.mk is its kind's pack's `pre-pr-make` at the commit,
+        # the Makefile only gains `include dx.mk`, and .github/dependabot.yml
+        # is its kind's template rendered for the ecosystems at its head.
+        pre-pr:
+          branch: "chore/{issue}-org-pre-pr"
+          paths: ["dx.mk", "Makefile"]
+        dependabot:
+          branch: "chore/{issue}-org-dependabot"
+          paths: [".github/dependabot.yml"]
     repositories: ["*"]
     evidence: The merged commit of DiluxOne/.github the issue names, and the run's fingerprint, which the pull request's files must give again.
     merge: {max-risk: high, max-complexity: low}

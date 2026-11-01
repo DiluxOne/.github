@@ -615,7 +615,7 @@ jobs:
           mkdir -p .dx-central/scripts .dx-central/policy
           base="https://raw.githubusercontent.com/DiluxOne/.github/$sha"
           # autonomy.py reads the organisation from org.yml, through org.py (#191).
-          for f in scripts/autonomy.py scripts/org.py org.yml policy/autonomy.yml; do curl -fsSL --retry 3 "$base/$f" -o ".dx-central/$f"; done
+          for f in scripts/autonomy.py scripts/org.py scripts/repos_conf.py org.yml policy/autonomy.yml; do curl -fsSL --retry 3 "$base/$f" -o ".dx-central/$f"; done
           # The organisation's configuration over those (#197); a ref from
           # before the overlay has none.
           code=$(curl -sSL --retry 3 -w '%{http_code}' "$base/scripts/config-overlay.sh" -o .dx-central/scripts/config-overlay.sh || echo 000)
@@ -744,7 +744,8 @@ jobs:
           HAS_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY != '' }}
         run: |
           if [ "$HAS_KEY" != true ]; then echo "No bot key passed: the Project is left alone."; exit 0; fi
-          n=$(yq -r ".projects[\"$REPO\"] // \"\"" .dx-central/repos.yml)
+          # Its entry's `project` (#562); an organisation's repos.yml of the older shape, its `projects`.
+          n=$(yq -r ".repos[\"$REPO\"].project // .projects[\"$REPO\"] // \"\"" .dx-central/repos.yml)
           [[ "$n" =~ ^[0-9]+$ ]] && echo "number=$n" >> "$GITHUB_OUTPUT" || echo "$REPO puts its issues on no Project (repos.yml)."
 
       # Projects belong to the organisation: a token for its Projects alone.

@@ -258,7 +258,9 @@ def with_entries(text, lines):
     for line in sorted(lines, key=name):
         # Before the first entry that sorts after it; the others stay as they are.
         i = start + 1
-        while i < len(out) and out[i].startswith("  ") and name(out[i]) < name(line):
+        # An entry written as a block (#562) goes on below its first line,
+        # and a comment line between entries is passed over.
+        while i < len(out) and out[i].startswith("  ") and (out[i].startswith("   ") or out[i].lstrip().startswith("#") or name(out[i]) < name(line)):
             i += 1
         out.insert(i, line)
     return "\n".join(out)

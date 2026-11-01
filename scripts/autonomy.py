@@ -74,6 +74,7 @@ import urllib.parse
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import org  # noqa: E402  the organisation, from org.yml (#191)
+import repos_conf  # noqa: E402  repos.yml's one entry per repository (#562)
 LEVELS = ["none", "low", "medium", "high"]
 CENTRAL = org.CENTRAL
 MARKER = re.compile(r"<!--\s*dx-lane:\s*([a-z0-9-]+)\s+run:\s*(https://github\.com/([^/\s]+)/([^/\s]+)/actions/runs/(\d+))\s*-->")
@@ -836,8 +837,16 @@ def sync_merge(policy, issue, repository, autopilot_var, sync, review):
         return False, f"repos.yml at {CENTRAL}@{org[:12]} or at main could not be read"
     # A run from a commit main has since moved past would roll back what
     # changed after it: what it writes from must be the same at main now.
+    short = repository.split("/")[-1]
+    kind = entry_kind(conf, short)
     if mode == "files":
         stale = conf.get("files") != conf_now.get("files") or facts.get("agents-block.md") != now.get("agents-block.md")
+    elif mode in ("pre-pr", "dependabot"):
+        # That run's sources: the kind's pack and templates, the default
+        # template and the repository's entry (#562).
+        stale = (kind != entry_kind(conf_now, short) or (facts.get("kinds") or {}).get(kind) != (now.get("kinds") or {}).get(kind)
+                 or facts.get("dependabot-default") != now.get("dependabot-default")
+                 or repos_conf.entry(conf, short) != repos_conf.entry(conf_now, short))
     else:
         stale = facts.get("templates") != now.get("templates") or conf.get("callers") != conf_now.get("callers")
     if stale:
@@ -862,9 +871,72 @@ def sync_merge(policy, issue, repository, autopilot_var, sync, review):
             problem, _ = caller_problem(path, base.get(path), head[path], templates, owned)
             if problem:
                 return False, problem
+        elif mode == "pre-pr":
+            problem = pre_pr_problem(path, base.get(path), head[path], ((facts.get("kinds") or {}).get(kind) or {}).get("pack.yml"))
+            if problem:
+                return False, problem
+        elif mode == "dependabot":
+            problem = dependabot_problem(path, head[path], facts, kind, repos_conf.value(conf, short, "dependabot") or {}, change.get("root"))
+            if problem:
+                return False, problem
         else:
             return False, f"no rule says what a {mode} run may write"
     return True, f"merges by policy: lane {name}, risk {review.get('risk')}, complexity {review.get('complexity')}, every file what {CENTRAL}@{org[:12]} holds"
+
+
+def entry_kind(conf, name):
+    """The kind repos.yml gives a repository with exactly one, else None."""
+    kinds = repos_conf.value(conf, name, "kinds") or []
+    return kinds[0].get("kind") if len(kinds) == 1 and isinstance(kinds[0], dict) else None
+
+
+def pre_pr_module():
+    spec = importlib.util.spec_from_file_location("pre_pr", os.path.join(HERE, "pre-pr.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def pre_pr_problem(path, base_text, head_text, pack_text):
+    """Why a file a pre-pr run's pull request writes is not what the run
+    writes (#562): dx.mk is the kind's `pre-pr-make` rendered, the Makefile
+    its base with `include dx.mk` added and nothing else; None when it is."""
+    pre_pr = pre_pr_module()
+    if path == pre_pr.FRAGMENT:
+        try:
+            pack = parse_text(pack_text) if pack_text is not None else None
+        except ValueError:
+            pack = None
+        want = pre_pr.render((pack or {}).get("pre-pr-make")) if isinstance(pack, dict) else None
+        if want is None:
+            return f"{path}: the repository's kind has no `pre-pr-make` at the commit named"
+        return None if head_text == want else f"{path} is not its kind's `pre-pr-make` at the commit named"
+    if path == "Makefile":
+        if pre_pr.own_recipe(base_text):
+            return "Makefile: its own `pre-pr` has a recipe, which a pre-pr run never includes dx.mk over"
+        return None if head_text == pre_pr.with_include(base_text) else "Makefile changes more than adding `include dx.mk`"
+    return f"no rule says what a pre-pr run may write in {path}"
+
+
+def dependabot_problem(path, head_text, facts, kind, extra, root):
+    """Why .github/dependabot.yml is not what a dependabot run writes (#562):
+    its kind's template (or the organisation's default) at the commit,
+    rendered for the ecosystems the head's root has and what repos.yml adds;
+    None when it is."""
+    if path != ".github/dependabot.yml":
+        return f"no rule says what a dependabot run may write in {path}"
+    if root is None:
+        return "the names at the root of its head could not be read"
+    default = facts.get("dependabot-default")
+    template = ((facts.get("kinds") or {}).get(kind) or {}).get("dependabot.yml") or default
+    if template is None or default is None:
+        return "the Dependabot templates at the commit named could not be read"
+    sync = sync_module()
+    try:
+        want = sync.render_dependabot(template, sync.dependabot_ecosystems(set(root), extra), extra, default)
+    except ValueError as exc:
+        return f"{path}: {exc}"
+    return None if head_text == want else f"{path} is not its kind's template at the commit named, for the ecosystems its head has"
 
 
 def sync_lane_of(policy, issue):
@@ -967,7 +1039,10 @@ def read_change(repository, pr):
             head[f["path"]] = raw(repository, f["path"], pr["headRefOid"])
         if f["status"] == "modified":
             base[f["path"]] = raw(repository, f["path"], pr["baseRefOid"])
-    return {"files": files, "head": head, "base": base}
+    # The names at its head's root: the ecosystems a dependabot run writes for.
+    listing = gh_bytes("api", f"repos/{repository}/contents/?ref={pr['headRefOid']}")
+    root = [e.get("name") for e in json.loads(listing)] if listing else None
+    return {"files": files, "head": head, "base": base, "root": root}
 
 
 def org_sources(ref):
@@ -979,6 +1054,13 @@ def org_sources(ref):
     out["templates"] = {n: raw(CENTRAL, f"workflow-templates/{n}", ref) for n in names if n.endswith((".yml", ".yaml"))}
     if listing is None or any(t is None for t in out["templates"].values()):
         out["repos.yml"] = None
+    # The pre-pr and dependabot runs' sources (#562): each kind's pack and
+    # Dependabot template, and the organisation's default template.
+    out["dependabot-default"] = raw(CENTRAL, "policy/dependabot.default.yml", ref)
+    kinds = gh_bytes("api", f"repos/{CENTRAL}/contents/kinds?ref={ref}")
+    out["kinds"] = {e["name"]: {"pack.yml": raw(CENTRAL, f"kinds/{e['name']}/pack.yml", ref),
+                                "dependabot.yml": raw(CENTRAL, f"kinds/{e['name']}/dependabot.yml", ref)}
+                    for e in (json.loads(kinds) if kinds else []) if e.get("type") == "dir"}
     return out
 
 
@@ -1549,6 +1631,66 @@ def self_test():
     check("a files run is not stale for a change of main elsewhere in repos.yml",
           merges(sync_case(main={"repos.yml": json.dumps({"files": {".github/CODEOWNERS": owners}, "projects": {"x": 1}})}))[0], True)
     check("the lane merges what the review rates high only because of its paths", (org["lanes"]["org-sync"]["merge"]["max-risk"], org["lanes"]["org-sync"]["merge"]["max-complexity"]), ("high", "low"))
+
+    # #562 C1: the pre-pr and dependabot runs, as mechanical as the callers:
+    # accepted and merged by policy, each file what the commit renders.
+    def central_text(path):
+        with open(os.path.join(HERE, "..", path), encoding="utf-8") as fh:
+            return fh.read()
+    pre_pr, sync = pre_pr_module(), sync_module()
+    pack = central_text("kinds/wordpress-plugin/pack.yml")
+    plugin_template, default_template = central_text("kinds/wordpress-plugin/dependabot.yml"), central_text("policy/dependabot.default.yml")
+    ignore = {"composer": {"ignore": [{"dependency-name": "php"}]}}
+    entry = {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"]}], "dependabot": ignore}
+    mech_conf = {"repos": {"diluxone-offload-wordpress": entry}}
+    mech_facts = dict(org_facts, **{"repos.yml": json.dumps(mech_conf), "dependabot-default": default_template,
+                                    "kinds": {"wordpress-plugin": {"pack.yml": pack, "dependabot.yml": plugin_template}}})
+    mech_facts["main"] = {k: mech_facts[k] for k in ("repos.yml", "agents-block.md", "templates", "dependabot-default", "kinds")}
+    makefile_base = "check:\n\tphpunit\n"
+    dx = pre_pr.render(parse_text(pack)["pre-pr-make"])
+    root = ["composer.json", "plugin.php", ".github"]
+    dependabot = sync.render_dependabot(plugin_template, sync.dependabot_ecosystems(set(root), ignore), ignore, default_template)
+
+    def mech_case(mode, files, base=None, main=None, root=root):
+        case = sync_case(mode, files=files, base=base or {})
+        facts = dict(mech_facts, main=dict(mech_facts["main"], **(main or {})))
+        case[1]["org"] = lambda _sha, _contents=False: facts
+        change = case[1]["change"]()
+        change["root"] = root
+        case[1]["change"] = lambda: change
+        return case
+    pre_files = {"dx.mk": dx, "Makefile": pre_pr.with_include(makefile_base)}
+    pre_base = {"Makefile": makefile_base}
+    check("#562 C1: the lane names a pre-pr and a dependabot run, each with its branch and paths",
+          (runs["pre-pr"], runs["dependabot"]), ({"branch": "chore/{issue}-org-pre-pr", "paths": ["dx.mk", "Makefile"]},
+                                                 {"branch": "chore/{issue}-org-dependabot", "paths": [".github/dependabot.yml"]}))
+    check("#562 C1: a pre-pr run's issue is accepted by policy, and its pull request passes the gate",
+          (sync_ok(mech_case("pre-pr", pre_files, pre_base), scope="issue"), sync_ok(mech_case("pre-pr", pre_files, pre_base))), (True, True))
+    check("#562 C1: a pre-pr run's pull request, green, merges by policy", merges(mech_case("pre-pr", pre_files, pre_base)), (True, merges(mech_case("pre-pr", pre_files, pre_base))[1]))
+    check("#562 C1: one for a repository with no Makefile yet merges by policy too",
+          merges(mech_case("pre-pr", {"dx.mk": dx, "Makefile": pre_pr.INCLUDE + "\n"}))[0], True)
+    check("#562 C1: a dependabot run's issue is accepted by policy, and its pull request merges by policy",
+          (sync_ok(mech_case("dependabot", {".github/dependabot.yml": dependabot}), scope="issue"),
+           merges(mech_case("dependabot", {".github/dependabot.yml": dependabot}))[0]), (True, True))
+    for name, files in (("a Makefile line changed beside the include", {"dx.mk": dx, "Makefile": pre_pr.with_include(makefile_base).replace("phpunit", "true")}),
+                        ("a dx.mk that is not the pack's", {"dx.mk": dx.replace("pre-pr:", "pre-pr: extra"), "Makefile": pre_pr.with_include(makefile_base)})):
+        ok, why = merges(mech_case("pre-pr", files, pre_base))
+        check(f"#562 C1: a pre-pr run with {name} does not merge on its own", (ok, bool(why)), (False, True))
+    check("#562 C1: a Makefile whose own pre-pr has a recipe is not a pre-pr run's to include",
+          merges(mech_case("pre-pr", {"dx.mk": dx, "Makefile": pre_pr.with_include("pre-pr:\n\tnpm test\n")}, {"Makefile": "pre-pr:\n\tnpm test\n"}))[0], False)
+    for name, text in (("a changed entry", dependabot.replace("interval: daily", "interval: weekly", 1)),
+                       ("an ecosystem its head does not have", sync.render_dependabot(plugin_template, sync.dependabot_ecosystems(set(root) | {"package.json"}, ignore), ignore, default_template)),
+                       ("the repository's ignore dropped", sync.render_dependabot(plugin_template, sync.dependabot_ecosystems(set(root), {}), {}, default_template))):
+        check(f"#562 C1: a dependabot run with {name} does not merge on its own", merges(mech_case("dependabot", {".github/dependabot.yml": text}))[0], False)
+    check("#562 C1: a dependabot run whose head's root could not be read does not merge on its own",
+          merges(mech_case("dependabot", {".github/dependabot.yml": dependabot}, root=None))[0], False)
+    check("#562 C1: a pre-pr run's file outside its paths fails the gate", sync_ok(mech_case("pre-pr", dict(pre_files, **{".github/dependabot.yml": dependabot}), pre_base)), False)
+    moved = dict(mech_facts["kinds"], **{"wordpress-plugin": {"pack.yml": pack + "\n# more\n", "dependabot.yml": plugin_template}})
+    check("#562 C1: a stale pre-pr or dependabot run (the pack, the default template or the entry moved on) does not merge on its own",
+          (merges(mech_case("pre-pr", pre_files, pre_base, main={"kinds": moved}))[0],
+           merges(mech_case("dependabot", {".github/dependabot.yml": dependabot}, main={"dependabot-default": default_template + "\n"}))[0],
+           merges(mech_case("dependabot", {".github/dependabot.yml": dependabot}, main={"repos.yml": json.dumps({"repos": {"diluxone-offload-wordpress": dict(entry, dependabot={})}})}))[0]),
+          (False, False, False))
 
     # #84: the lane a reproduction hands a bug to, asked before its issue exists.
     check("lane-open: bugfix-reproduced is open everywhere by default", lane_open(pol, "bugfix-reproduced", "DiluxOne/x", "")[0], True)

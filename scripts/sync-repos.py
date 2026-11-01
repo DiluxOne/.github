@@ -12,6 +12,19 @@ archived and not excluded in repos.yml:
             security updates among them, and, on a public repository, every
             outside contributor's workflow runs approved by a maintainer,
             #488), through the API.
+  security  the organisation's code security configuration repos.yml
+            `security: configuration` names (#562), attached to the
+            repository when it is not, and kept the default for new ones:
+            secret scanning and push protection are its, never a
+            per-repository setting.
+  rulesets  the organisation's custom property (org.yml `adopted-property`,
+            dx-adopted) set to true on every repository repos.yml lists
+            (#562); then, once, the org rulesets ("org: main", "org: release
+            tag creation", "org: release tags") moved from their list of
+            names to the repositories with the property, only after every
+            adopted one holds it.
+  project   the repository linked to its Project (its entry's `project`);
+            said when it has none.
   files     repos.yml `files` (CODEOWNERS) and the opening block of
             AGENTS.md (agents-block.md, between its dx:org markers). These
             never go straight to main: for a repository whose files differ,
@@ -29,15 +42,16 @@ archived and not excluded in repos.yml:
             (github-actions always; npm, composer, docker by their manifest at
             its root) and what repos.yml `dependabot` adds for it. Its own
             issue and pull request, as `files` opens them, which a person
-            accepts: no lane covers this file, so it is kept apart and never
-            takes the lane away from the shared files. Not in `all`.
+            accepts by policy as the org-sync lane's `dependabot` run (#562):
+            kept apart from the shared files, one pull request each. Not in
+            `all`.
   pre-pr    `make pre-pr`, the one check before a pull request (#479): a
             repository whose kind's pack has `pre-pr-make` gets dx.mk,
             written from it (scripts/pre-pr.py render), and its Makefile
             includes it (one is created where it has none; a Makefile whose
             own `pre-pr` has a recipe keeps it, and the pull request says to
             make it a prerequisite). Its own issue and pull request, as
-            `files` opens them, which a person accepts. A repository of no
+            `files` opens them, the org-sync lane's `pre-pr` run (#562). A repository of no
             kind, or of a kind with no `pre-pr-make`, gets nothing. Not in
             `all`.
   own-checks  a repository whose kind asks for it (kinds/<kind>/pack.yml,
@@ -83,6 +97,10 @@ archived and not excluded in repos.yml:
             `merge_group` (`callers` brings them in step), or the queue would
             wait for checks that never run.
   all       labels, settings, files, own-checks and merge-queue, in that order.
+  adopt     one repository repos.yml lists, brought in the flow with no step
+            by hand (#562): labels, settings, security, rulesets (its
+            property), files, callers, pre-pr, dependabot, own-checks,
+            merge-queue and project, in that order. Needs --repo.
   check     changes nothing: lists, as Markdown, what differs in each
             repository, its callers and its Dependabot configuration
             included (the daily drift check posts it as an issue), a
@@ -106,7 +124,8 @@ archived and not excluded in repos.yml:
             which a person accepts. Needs gettext (msgcat) where it runs.
             Not in `all`.
 
-  sync-repos.py <labels|settings|files|dependabot|pre-pr|own-checks|merge-queue|callers|i18n|all> [--repo NAME ...] [--dry-run]
+  sync-repos.py <labels|settings|security|rulesets|files|dependabot|pre-pr|own-checks|merge-queue|callers|project|i18n|all> [--repo NAME ...] [--dry-run]
+  sync-repos.py adopt --repo NAME [--dry-run]
   sync-repos.py check [--repo NAME ...] [--report FILE]
   sync-repos.py --test
 
@@ -123,6 +142,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import org  # noqa: E402  the organisation, from org.yml (#191)
+import repos_conf  # noqa: E402  repos.yml's one entry per repository (#562)
 ORG = os.environ.get("DX_ORG", org.ORG)
 CENTRAL = os.path.join(HERE, "..")
 START = "<!-- dx:org:start"
@@ -221,12 +241,189 @@ def sync_settings(repo, conf, dry):
         gh("api", "-X", "PUT", f"repos/{full}/automated-security-fixes")
     if public and security.get("private_vulnerability_reporting") in (True, "public-only"):
         gh("api", "-X", "PUT", f"repos/{full}/private-vulnerability-reporting")
-    if public and security.get("secret_scanning") in (True, "public-only"):
-        body = {"security_and_analysis": {"secret_scanning": {"status": "enabled"}, "secret_scanning_push_protection": {"status": "enabled"}}}
-        gh("api", "-X", "PATCH", f"repos/{full}", "--input", "-", input_text=json.dumps(body))
     if public and security.get("fork_pr_approval") in (True, "public-only"):
         gh("api", "-X", "PUT", f"repos/{full}/actions/permissions/fork-pr-contributor-approval", "-f", f"approval_policy={FORK_APPROVAL}")
     print("  settings in step")
+
+
+# Security through the organisation's code security configuration (#562):
+# secret scanning and push protection are the configuration's, attached to
+# each repository, never a per-repository PATCH (which the enterprise's
+# policy refuses with HTTP 422). What a configuration cannot hold stays in
+# sync_settings (Dependabot's alerts and fixes, private vulnerability
+# reporting, the fork approval).
+SECURITY_CONFIGS = {}
+
+
+def security_configuration(conf):
+    """(id, name) of repos.yml `security: configuration`, the organisation's
+    code security configuration of that name; ValueError when there is none."""
+    name = str((conf.get("security") or {}).get("configuration") or "")
+    if not name:
+        raise ValueError("repos.yml `security: configuration` names no code security configuration")
+    if name not in SECURITY_CONFIGS:
+        rows = json.loads(gh("api", f"orgs/{ORG}/code-security/configurations?per_page=100").stdout or "[]")
+        found = [r for r in rows if r.get("name") == name]
+        if not found:
+            raise ValueError(f"the organisation has no code security configuration named `{name}` "
+                             f"(it has: {', '.join(sorted(str(r.get('name')) for r in rows)) or 'none'})")
+        SECURITY_CONFIGS[name] = found[0]["id"]
+    return SECURITY_CONFIGS[name], name
+
+
+def attached_configuration(full):
+    """The id of the code security configuration attached to a repository,
+    None when it has none."""
+    out = gh("api", f"repos/{full}/code-security-configuration", check=False)
+    if out.returncode != 0:
+        if "404" in out.stderr or "Not Found" in out.stderr:
+            return None
+        raise RuntimeError(f"could not read its code security configuration: {out.stderr.strip()[:200]}")
+    return ((json.loads(out.stdout or "{}") or {}).get("configuration") or {}).get("id")
+
+
+def sync_security(repo, conf, dry):
+    """Attaches the organisation's code security configuration to the
+    repository when it is not, and keeps it the default for new ones."""
+    full = f"{ORG}/{repo['name']}"
+    cid, name = security_configuration(conf)
+    if attached_configuration(full) == cid:
+        print(f"  the code security configuration `{name}` is attached")
+        return
+    if dry:
+        print(f"  would attach the code security configuration `{name}`")
+        return
+    rid = json.loads(gh("api", f"repos/{full}").stdout)["id"]
+    out = gh("api", "-X", "POST", f"orgs/{ORG}/code-security/configurations/{cid}/attach", "--input", "-",
+             input_text=json.dumps({"scope": "selected", "selected_repository_ids": [rid]}), check=False)
+    if out.returncode != 0:
+        held = " (held at the enterprise level: out of the sync's reach, the maintainer changes it once there)" if "422" in out.stderr else ""
+        raise RuntimeError(f"could not attach the code security configuration `{name}`{held}: {out.stderr.strip()[:200]}")
+    gh("api", "-X", "PUT", f"orgs/{ORG}/code-security/configurations/{cid}/defaults", "-f", "default_for_new_repos=all")
+    print(f"  the code security configuration `{name}` attached")
+
+
+# The organisation's rulesets cover the repositories whose custom property
+# says they are adopted (#562), never a list of names that each adoption
+# has to extend by hand.
+ADOPTED = str(sys.modules["org"].load().get("adopted-property") or "dx-adopted")
+ORG_RULESET_NAMES = ("org: main", "org: release tag creation", "org: release tags")
+
+
+def property_condition():
+    return {"repository_property": {"include": [{"name": ADOPTED, "property_values": ["true"], "source": "custom"}], "exclude": []}}
+
+
+def by_property(ruleset):
+    """Whether an org ruleset covers the repositories by the property."""
+    cond = (ruleset.get("conditions") or {})
+    return any(p.get("name") == ADOPTED and p.get("property_values") == ["true"]
+               for p in ((cond.get("repository_property") or {}).get("include") or [])) and "repository_name" not in cond
+
+
+def with_property_condition(ruleset):
+    """The ruleset as the PUT takes it, its every field as the GET gave it
+    but its repositories, now those with the property."""
+    body = {k: v for k, v in ruleset.items() if k not in ("id", "source", "source_type", "node_id", "_links",
+                                                            "created_at", "updated_at", "current_user_can_bypass")}
+    cond = {k: v for k, v in (ruleset.get("conditions") or {}).items() if k not in ("repository_name", "repository_id")}
+    body["conditions"] = {**cond, **property_condition()}
+    return body
+
+
+def property_values(names):
+    """{repository: its value of the property}, for these names; None when
+    they could not be read."""
+    got = gh("api", "--paginate", "--slurp", f"orgs/{ORG}/properties/values?per_page=100", check=False)
+    if got.returncode != 0:
+        return None
+    rows = json.loads(got.stdout or "[]")
+    out = {}
+    for page in rows if rows and isinstance(rows[0], list) else [rows]:
+        for r in page:
+            if r.get("repository_name") in names:
+                out[r["repository_name"]] = next((str(p.get("value")) for p in r.get("properties") or [] if p.get("property_name") == ADOPTED), None)
+    return out
+
+
+def sync_rulesets(repos, every, dry):
+    """The property (a true_false custom property of the organisation) set to
+    true on these repositories; then, once, the org rulesets moved from their
+    list of names to the property, after every adopted repository (`every`)
+    holds it, so none drops out of them."""
+    if gh("api", f"orgs/{ORG}/properties/schema/{ADOPTED}", check=False).returncode != 0:
+        if dry:
+            print(f"  would create the custom property `{ADOPTED}`")
+        else:
+            gh("api", "-X", "PUT", f"orgs/{ORG}/properties/schema/{ADOPTED}", "--input", "-", input_text=json.dumps(
+                {"value_type": "true_false", "required": False, "description": "Adopted by DiluxOne/.github (repos.yml): the organisation's rulesets cover it."}))
+    global ORG_RULESETS
+    org_rs = [r for r in (org_rulesets() or []) if r.get("name") in ORG_RULESET_NAMES]
+    moving = [r for r in org_rs if not by_property(r)]
+    names = sorted({r["name"] for r in repos} | ({r["name"] for r in every} if moving else set()))
+    have = property_values(set(names)) if names else {}
+    if have is None:
+        raise RuntimeError(f"the values of {ADOPTED} could not be read")
+    unset = [n for n in names if have.get(n) != "true"]
+    if unset:
+        if dry:
+            print(f"  would set {ADOPTED}=true on {', '.join(unset)}")
+        else:
+            gh("api", "-X", "PATCH", f"orgs/{ORG}/properties/values", "--input", "-", input_text=json.dumps(
+                {"repository_names": unset, "properties": [{"property_name": ADOPTED, "value": "true"}]}))
+            have = property_values(set(names)) or {}
+            missing = [n for n in names if have.get(n) != "true"]
+            if missing:
+                raise RuntimeError(f"{ADOPTED} is not true on {', '.join(missing)} after writing it: the rulesets are left as they are")
+            print(f"  {ADOPTED}=true on {', '.join(unset)}")
+    for r in moving:
+        if dry:
+            print(f"  would make \"{r['name']}\" cover the repositories with {ADOPTED}=true instead of its list of names")
+            continue
+        gh("api", "-X", "PUT", f"orgs/{ORG}/rulesets/{r['id']}", "--input", "-", input_text=json.dumps(with_property_condition(r)))
+        print(f"  \"{r['name']}\" covers the repositories with {ADOPTED}=true")
+    if moving and not dry:
+        ORG_RULESETS = None
+
+
+def sync_project(repo, conf, dry):
+    """The repository linked to its Project (repos.yml `project`); said when
+    it has none."""
+    number = repos_conf.value(conf, repo["name"], "project")
+    if number is None:
+        print("  no Project: repos.yml gives it no `project`, so its accepted issues land on none")
+        return
+    if dry:
+        print(f"  would link it to the Project {number}")
+        return
+    out = gh("project", "link", str(number), "--owner", ORG, "--repo", f"{ORG}/{repo['name']}", check=False)
+    if out.returncode != 0 and "already" not in out.stderr.lower():
+        raise RuntimeError(f"could not link it to the Project {number}: {out.stderr.strip()[:200]}")
+    print(f"  linked to the Project {number}")
+
+
+# `adopt`: everything a repository repos.yml lists needs to be in the flow,
+# in this order (#562).
+ADOPT = ("labels", "settings", "security", "rulesets", "files", "callers", "pre-pr", "dependabot", "own-checks", "merge-queue", "project")
+
+
+def adopt(repo, conf, labels, block, every, dry):
+    """`sync-repos.py adopt --repo NAME`: one repository repos.yml lists,
+    brought in the flow with no step by hand."""
+    if listed(repo["name"]) is None:
+        raise ValueError(f"{repo['name']} is not in repos.yml `repos:`: add its entry first (the Adopt issue's pull request)")
+    for part in ADOPT:
+        {"labels": lambda: sync_labels(repo, labels, dry),
+         "settings": lambda: sync_settings(repo, conf, dry),
+         "security": lambda: sync_security(repo, conf, dry),
+         "rulesets": lambda: sync_rulesets([repo], every, dry),
+         "files": lambda: sync_files(repo, conf, block, dry),
+         "callers": lambda: sync_callers(repo, conf, dry),
+         "pre-pr": lambda: sync_files(repo, conf, block, dry, part="pre-pr"),
+         "dependabot": lambda: sync_files(repo, conf, block, dry, part="dependabot"),
+         "own-checks": lambda: sync_own_checks(repo, dry),
+         "merge-queue": lambda: sync_merge_queue(repo, conf, dry),
+         "project": lambda: sync_project(repo, conf, dry)}[part]()
 
 
 def sync_files(repo, conf, block, dry, part="files"):
@@ -292,7 +489,7 @@ def sync_files(repo, conf, block, dry, part="files"):
                    "## 💡 Why\n\n`make pre-pr` runs, before a pull request, the checks its pull request and its merge queue run (DiluxOne/.github#479).")
         open_change(repo, default, wanted, "Keep the organisation's make pre-pr in step", body,
                     "chore/{}-org-pre-pr", "chore: keep the organisation's make pre-pr in step", pr_body,
-                    "chore: keep {} in step with the organisation")
+                    "chore: keep {} in step with the organisation", mode="pre-pr")
         return
     if part == "dependabot":
         body = prd("The organisation keeps each repository's Dependabot configuration in step with the template of its kind, "
@@ -301,7 +498,7 @@ def sync_files(repo, conf, block, dry, part="files"):
                    "## 💡 Why\n\nGitHub reads it only from the repository, so the organisation keeps it in step from one place.")
         open_change(repo, default, wanted, "Keep the organisation's Dependabot configuration in step", body,
                     "chore/{}-org-dependabot", "chore: keep the organisation's Dependabot configuration in step", pr_body,
-                    "chore: keep {} in step with the organisation")
+                    "chore: keep {} in step with the organisation", mode="dependabot")
         return
     body = prd("The organisation keeps some files the same in every repository, because GitHub reads them only from "
                f"the repository: {changed} differ here from DiluxOne/.github (repos.yml, agents-block.md).", wanted)
@@ -1291,13 +1488,10 @@ def listed(name):
 
 def repo_kind(full, default):
     """The repository's kind: the one repos.yml `repos:` gives it (#191),
-    when it lists exactly one; else the one its .github/review-policy.yml
-    names, or None."""
-    entry = listed(full.split("/", 1)[1])
-    if entry is not None:
-        kinds = entry.get("kinds") or []
-        return kinds[0].get("kind") if len(kinds) == 1 else None
-    return policy_kind_of(full, default)
+    when it lists exactly one, or None. The kind is declared there only
+    (#562): its .github/review-policy.yml `kind` is not read."""
+    kinds = (listed(full.split("/", 1)[1]) or {}).get("kinds") or []
+    return kinds[0].get("kind") if len(kinds) == 1 else None
 
 
 def policy_text_of(full, default):
@@ -1341,7 +1535,7 @@ def pre_pr_gap(conf, name, makefile):
     its text, None for none) has no `pre-pr` target; None when it has one or
     repos.yml says it has none by design (`pre-pr: {NAME: false}`)."""
     pre_pr = _script("pre_pr", "pre-pr.py")
-    if ((conf.get("pre-pr") or {}).get(name) is False) or pre_pr.has_target(makefile):
+    if repos_conf.value(conf, name, "pre-pr") is False or pre_pr.has_target(makefile):
         return None
     where = "its Makefile has no `pre-pr` target" if makefile is not None else "it has no Makefile"
     return (f"{where}: `make pre-pr` is the one check before a pull request (#479), every check its pull request and its "
@@ -1398,11 +1592,17 @@ def required_checks(ruleset):
             for c in (r.get("parameters") or {}).get("required_status_checks") or []]
 
 
-def covers(org_rs, name):
-    """Whether an organisation ruleset applies to this repository."""
+def covers(org_rs, name, adopted=None):
+    """Whether an organisation ruleset applies to this repository. One that
+    covers the repositories by the property (#562) covers an adopted one:
+    `adopted`, else whether repos.yml lists it."""
+    if org_rs.get("enforcement") != "active":
+        return False
+    if by_property(org_rs):
+        return listed(name) is not None if adopted is None else adopted
     cond = ((org_rs.get("conditions") or {}).get("repository_name") or {})
     include, exclude = cond.get("include") or [], cond.get("exclude") or []
-    return org_rs.get("enforcement") == "active" and ("~ALL" in include or name in include) and name not in exclude
+    return ("~ALL" in include or name in include) and name not in exclude
 
 
 def same_rules(a, b):
@@ -1529,7 +1729,7 @@ QUEUE_RULE = {"type": "merge_queue", "parameters": {
 def queue_mode(name, conf, org_conf):
     """auto, on or off for a repository: its repos.yml exception, else
     org.yml's, else auto."""
-    mode = (conf.get("merge-queue") or {}).get(name)
+    mode = repos_conf.value(conf, name, "merge-queue")
     mode = org_conf.get("merge-queue") if mode is None else mode
     # A bare on or off reads as YAML's true or false.
     mode = {True: "on", False: "off", None: "auto"}.get(mode, mode) if isinstance(mode, (bool, type(None))) else str(mode)
@@ -1651,7 +1851,7 @@ def design_systems():
 
 def design_system_problems(conf, known):
     """What is wrong with repos.yml's `design-system`, as lines."""
-    mapping = conf.get("design-system") or {}
+    mapping = conf.get("design-system") if "design-system" in conf else repos_conf.names_with(conf, "design-system")
     if not isinstance(mapping, dict):
         return ["`design-system` is a map of repository to system"]
     found = []
@@ -1727,7 +1927,7 @@ def dependabot_ecosystems(root, extra):
     return {eco: dirs for eco, dirs in found.items() if dirs}
 
 
-def render_dependabot(template, ecosystems, extra):
+def render_dependabot(template, ecosystems, extra, default_text=None):
     """The template's text with only these ecosystems' entries, each with its
     directories and the repository's `ignore` (repos.yml) added. A kind's
     template may keep fewer ecosystems than the organisation's default
@@ -1735,8 +1935,10 @@ def render_dependabot(template, ecosystems, extra):
     the template does not keep is left out, unless repos.yml adds to it."""
     head, entries = dependabot_entries(template)
     kept = {e for e, _ in entries}
-    with open(os.path.join(CENTRAL, DEPENDABOT_DEFAULT), encoding="utf-8") as fh:
-        known = {e for e, _ in dependabot_entries(fh.read())[1]}
+    if default_text is None:  # the organisation's default here, unless the caller read it at a commit
+        with open(os.path.join(CENTRAL, DEPENDABOT_DEFAULT), encoding="utf-8") as fh:
+            default_text = fh.read()
+    known = {e for e, _ in dependabot_entries(default_text)[1]}
     unknown = sorted(e for e in set(ecosystems) - kept if e not in known or e in extra)
     if unknown:
         raise ValueError(f"the template has no entry for {', '.join(unknown)}")
@@ -1755,7 +1957,7 @@ def render_dependabot(template, ecosystems, extra):
 
 def dependabot_problems(conf):
     """What is wrong with repos.yml's `dependabot`, as lines."""
-    mapping = conf.get("dependabot") or {}
+    mapping = conf.get("dependabot") if "dependabot" in conf else repos_conf.names_with(conf, "dependabot")
     if not isinstance(mapping, dict):
         return ["`dependabot` is a map of repository to its ecosystems"]
     known = {e for e, _ in dependabot_entries(open(os.path.join(CENTRAL, DEPENDABOT_DEFAULT), encoding="utf-8").read())[1]}
@@ -1792,10 +1994,47 @@ def dependabot_wanted(repo, conf, default):
     """(template, text): the Dependabot configuration a repository should
     carry, and the template it comes from."""
     full = f"{ORG}/{repo['name']}"
-    extra = (conf.get("dependabot") or {}).get(repo["name"]) or {}
+    extra = repos_conf.value(conf, repo["name"], "dependabot") or {}
     template = dependabot_template(repo_kind(full, default))
     text = open(os.path.join(CENTRAL, template), encoding="utf-8").read()
     return template, render_dependabot(text, dependabot_ecosystems(root_names(full, default), extra), extra)
+
+
+def org_drift(conf):
+    """What differs in the organisation itself, as lines: an org ruleset
+    still naming its repositories, a code security configuration missing."""
+    found = []
+    for r in org_rulesets() or []:
+        if r.get("name") in ORG_RULESET_NAMES and not by_property(r):
+            found.append(f"the ruleset \"{r['name']}\" names its repositories instead of covering those with `{ADOPTED}=true` (`sync-repos.py rulesets`)")
+    try:
+        security_configuration(conf)
+    except ValueError as exc:
+        found.append(f"{exc}: secret scanning and push protection are the configuration's, which GitHub may hold at the enterprise level only (HTTP 422 on a repository), out of the sync's reach: the maintainer sets it once there")
+    return found
+
+
+def adoption_drift(repo, conf):
+    """#562: an adopted repository's property, code security configuration
+    and Project, as lines; nothing for one repos.yml does not list."""
+    full = f"{ORG}/{repo['name']}"
+    if listed(repo["name"]) is None:
+        return []
+    found = []
+    values = property_values({repo["name"]})
+    # A token that cannot read the values says nothing about them: not drift.
+    value = None if values is None else values.get(repo["name"])
+    if values is not None and value != "true":
+        found.append(f"its custom property `{ADOPTED}` is `{value or 'unset'}`, not `true`: the organisation's rulesets do not cover it (`sync-repos.py rulesets`)")
+    try:
+        cid, name = security_configuration(conf)
+        if attached_configuration(full) != cid:
+            found.append(f"the code security configuration `{name}` is not attached (`sync-repos.py security`)")
+    except ValueError:
+        pass  # said once, for the organisation
+    if repos_conf.value(conf, repo["name"], "project") is None:
+        found.append("repos.yml gives it no `project`: its accepted issues land on no Project")
+    return found
 
 
 def drift(repo, conf, labels, block, current=0):
@@ -1824,7 +2063,8 @@ def drift(repo, conf, labels, block, current=0):
         text = policy_text_of(full, default)
         own = policy_kind(text)
         if own and own not in kinds:
-            found.append(f"its .github/review-policy.yml says `kind: {own}`, but repos.yml gives it {', '.join(kinds) or 'no kind'}")
+            found.append(f"its .github/review-policy.yml says `kind: {own}`, but repos.yml gives it {', '.join(kinds) or 'no kind'}: "
+                         "the kind is declared in repos.yml only (#562), so the sync reads none from it; set it there and drop it here")
     # #377: how its bugs are reproduced, said when it declares nothing.
     policy = parse_yaml(text) if text else {}
     policy = policy if isinstance(policy, dict) else {}
@@ -1843,7 +2083,7 @@ def drift(repo, conf, labels, block, current=0):
     if gap:
         found.append(gap)
     # #479: the one check before a pull request, `make pre-pr`.
-    if entry is not None and (conf.get("pre-pr") or {}).get(repo["name"]) is not False:
+    if entry is not None and repos_conf.value(conf, repo["name"], "pre-pr") is not False:
         have_makefile = makefile_of(full, default)
         gap = pre_pr_gap(conf, repo["name"], have_makefile)
         if gap:
@@ -1936,7 +2176,7 @@ def drift(repo, conf, labels, block, current=0):
             found.append("`AGENTS.md` has a broken dx:org block")
     else:
         found.append("no `AGENTS.md`")
-    system = (conf.get("design-system") or {}).get(repo["name"])
+    system = repos_conf.value(conf, repo["name"], "design-system")
     if system == "local":
         out = gh("api", f"repos/{full}/contents/docs/design-system/README.md?ref={default}", "-H", "Accept: application/vnd.github.raw", check=False)
         if out.returncode != 0 and "404" not in out.stderr:
@@ -1945,6 +2185,7 @@ def drift(repo, conf, labels, block, current=0):
             found.append("its design system is `local` (repos.yml), but it has no `docs/design-system/README.md`")
     elif system is not None and system not in design_systems():
         found.append(f"its design system `{system}` (repos.yml) is not one of design-systems/")
+    found += adoption_drift(repo, conf)
     return found
 
 
@@ -2355,7 +2596,7 @@ def dependabot_test(check, conf, labels, block):
           [u["package-ecosystem"] for u in got["updates"]] == ["github-actions", "npm", "composer"], got)
     got = parse_yaml(render_dependabot(plugin, dependabot_ecosystems({"readme.txt"}, {}), {}))
     check("C1 (#178): a plugin with no manifest gets github-actions alone", [u["package-ecosystem"] for u in got["updates"]] == ["github-actions"], got)
-    extra = (conf.get("dependabot") or {}).get(".github") or {}
+    extra = repos_conf.value(conf, ".github", "dependabot") or {}
     default = open(os.path.join(CENTRAL, DEPENDABOT_DEFAULT), encoding="utf-8").read()
     mine = render_dependabot(default, dependabot_ecosystems({"README.md", "runner"}, extra), extra)
     got = parse_yaml(mine)
@@ -2426,9 +2667,13 @@ def dependabot_test(check, conf, labels, block):
     repo = {"name": "r", "defaultBranchRef": {"name": "main"}}
     want = render_dependabot(plugin, {"github-actions": ["/"], "npm": ["/"]}, {})
     globals()["gh"], ORG = fake, "o"
+    saved_listed = globals()["listed"]
     try:
         import contextlib
         import io
+        new = drift(repo, conf, [], block)
+        # The kind is repos.yml's only (#562): the plugin is listed there.
+        globals()["listed"] = lambda name: {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"]}]}
         lines = drift(repo, conf, [], block)
         state["dependabot"], state["fixes"] = want, False
         in_step = drift(repo, conf, [], block)
@@ -2440,13 +2685,12 @@ def dependabot_test(check, conf, labels, block):
             files_wrote = dict(written)
             sync_files(repo, conf, block, False, part="dependabot")
     finally:
-        globals()["gh"], ORG = saved_gh, saved_org
+        globals()["gh"], ORG, globals()["listed"] = saved_gh, saved_org, saved_listed
     check("C3 (#178): the drift check names a dependabot.yml that differs, and its template",
           any(f"`{DEPENDABOT}` differs from its template, `kinds/wordpress-plugin/dependabot.yml`" in l for l in lines), lines)
     check("C3 (#178): one in step is not reported", not any("dependabot.yml" in l for l in in_step), in_step)
     check("#191: a repository repos.yml does not list is reported as new, with what detection proposes",
-          any("is not in repos.yml `repos:`" in l and "detection proposes wordpress-plugin" in l for l in lines), lines)
-    saved_listed = globals()["listed"]
+          any("is not in repos.yml `repos:`" in l and "detection proposes wordpress-plugin" in l for l in new), new)
     globals()["gh"], ORG = fake, "o"
     try:
         globals()["listed"] = lambda name: {"kinds": [{"kind": "web-api", "paths": ["**"]}]}
@@ -2535,6 +2779,134 @@ def dependabot_test(check, conf, labels, block):
               got == [f"could not be checked: {exc}"], got)
 
 
+def adopt_test(check, conf, labels, block):
+    """#562, C1: `adopt --repo NAME` against a stand-in for gh: the property
+    written (and the rulesets moved to it once every adopted repository
+    holds it), the code security configuration attached, the org-sync pull
+    requests opened for the callers, pre-pr and dependabot, the Project
+    linked, and no other call."""
+    def eq(name, got, want):
+        check(name, got == want, got)
+
+    class Out:
+        def __init__(self, stdout="", returncode=0, stderr=""):
+            self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
+    entry = {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"], "roles": ["back", "front"]}], "project": 14}
+    cfg = {**conf, "repos": {**(conf.get("repos") or {}), "new": entry}}
+    repo = {"name": "new", "visibility": "PUBLIC", "defaultBranchRef": {"name": "main"}}
+    every = [repo, {"name": "old", "visibility": "PUBLIC", "defaultBranchRef": {"name": "main"}}]
+    named = {"id": 3, "name": "org: main", "target": "branch", "enforcement": "active", "source_type": "Organization",
+             "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}, "repository_name": {"include": ["old"], "exclude": []}},
+             "rules": [{"type": "pull_request"}], "bypass_actors": []}
+    moved = with_property_condition(named)
+    state = {"values": {"old": None, "new": None}, "attached": None}
+    calls, opened = [], []
+
+    def fake(*args, check=True, input_text=None):
+        joined = " ".join(args)
+        calls.append(joined)
+        if joined == "api orgs/o/code-security/configurations?per_page=100":
+            return Out(json.dumps([{"id": 5, "name": cfg["security"]["configuration"]}, {"id": 1, "name": "GitHub recommended"}]))
+        if joined == "api repos/o/new/code-security-configuration":
+            return Out(json.dumps({"configuration": {"id": state["attached"]}})) if state["attached"] else Out("", 1, "HTTP 404")
+        if joined == "api repos/o/new":
+            return Out(json.dumps({"id": 99}))
+        if joined == "api -X POST orgs/o/code-security/configurations/5/attach --input -":
+            if json.loads(input_text) == {"scope": "selected", "selected_repository_ids": [99]}:
+                state["attached"] = 5
+            return Out("{}")
+        if joined.startswith("api orgs/o/properties/schema/"):
+            return Out("{}")
+        if joined.startswith("api --paginate --slurp orgs/o/properties/values"):
+            return Out(json.dumps([[{"repository_name": n, "properties": [{"property_name": ADOPTED, "value": v}]} for n, v in state["values"].items()]]))
+        if joined == "api -X PATCH orgs/o/properties/values --input -":
+            body = json.loads(input_text)
+            for n in body["repository_names"]:
+                state["values"][n] = body["properties"][0]["value"]
+            return Out("")
+        return Out("{}")
+    ran = []
+    stubs = {"sync_labels": "labels", "sync_settings": "settings", "sync_own_checks": "own-checks", "sync_merge_queue": "merge-queue"}
+    saved = {n: globals()[n] for n in list(stubs) + ["gh", "listed", "open_change", "sync_callers", "sync_files", "ORG", "ORG_RULESETS", "org_commit"]}
+    real_files = globals()["sync_files"]
+    try:
+        for n, part in stubs.items():
+            globals()[n] = (lambda part: lambda *a, **k: ran.append(part))(part)
+        globals()["sync_callers"] = lambda r, c, dry: ran.append("callers") or opened.append("callers")
+        globals()["sync_files"] = lambda r, c, b, dry, part="files": ran.append(part) or opened.append(part)
+        globals().update(gh=fake, ORG="o", ORG_RULESETS=[named], listed=lambda n: cfg["repos"].get(n))
+        import contextlib
+        import io
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            adopt(repo, cfg, labels, block, every, False)
+    finally:
+        globals().update(saved)
+    eq("#562 C1: adopt runs every part, in order", ran, ["labels", "settings", "files", "callers", "pre-pr", "dependabot", "own-checks", "merge-queue"])
+    eq("#562 C1: it writes the property, on every adopted repository before the rulesets move to it", state["values"], {"old": "true", "new": "true"})
+    want_calls = [
+        "api orgs/o/code-security/configurations?per_page=100", "api repos/o/new/code-security-configuration", "api repos/o/new",
+        "api -X POST orgs/o/code-security/configurations/5/attach --input -",
+        "api -X PUT orgs/o/code-security/configurations/5/defaults -f default_for_new_repos=all",
+        f"api orgs/o/properties/schema/{ADOPTED}",
+        "api --paginate --slurp orgs/o/properties/values?per_page=100", "api -X PATCH orgs/o/properties/values --input -",
+        "api --paginate --slurp orgs/o/properties/values?per_page=100", "api -X PUT orgs/o/rulesets/3 --input -",
+        "project link 14 --owner o --repo o/new"]
+    eq("#562 C1: it attaches the configuration, writes the property, moves the ruleset and links the Project, with no other call", calls, want_calls)
+    eq("#562 C1: the ruleset keeps every field but its repositories, now those with the property",
+          (moved["rules"], moved["conditions"]["ref_name"], "repository_name" in moved["conditions"], moved["conditions"]["repository_property"]["include"][0]["name"], "id" in moved),
+          (named["rules"], named["conditions"]["ref_name"], False, ADOPTED, False))
+    eq("#562 C1: a ruleset covering by the property covers an adopted repository, and only one", (covers(moved, "x", True), covers(moved, "x", False)), (True, False))
+    # Again, in step: nothing is written.
+    calls.clear()
+    try:
+        globals().update(gh=fake, ORG="o", ORG_RULESETS=[dict(named, conditions=moved["conditions"])], listed=lambda n: cfg["repos"].get(n))
+        with contextlib.redirect_stdout(io.StringIO()):
+            sync_security(repo, cfg, False)
+            sync_rulesets([repo], every, False)
+    finally:
+        globals().update(saved)
+    eq("#562 C1: run again, in step, it only reads", [c for c in calls if " -X " in c], [])
+    # The pull requests it opens are the org-sync lane's runs.
+    modes = []
+    root = [{"name": "composer.json"}, {"name": "plugin.php"}]
+    current = max(int(v) for t in templates().values() for v in USES_RE.findall(t[0]))
+
+    def repo_gh(*args, check=True, input_text=None):
+        joined = " ".join(args)
+        if args[:2] == ("pr", "list"):
+            return Out("[]")
+        if joined.startswith("api repos/o/new/contents/?ref="):
+            return Out(json.dumps(root))
+        if joined.startswith("api repos/o/new/contents/.github/workflows"):
+            return Out("[]")
+        if "git/matching-refs/tags/v" in joined:
+            return Out(json.dumps([[{"ref": f"refs/tags/v{current}"}]]))
+        return Out("", 1, "HTTP 404")
+    try:
+        globals().update(gh=repo_gh, ORG="o", listed=lambda n: cfg["repos"].get(n),
+                         open_change=lambda *a, mode=None, **k: modes.append((mode, sorted(a[2]))))
+        with contextlib.redirect_stdout(io.StringIO()):
+            real_files(repo, cfg, block, False, part="pre-pr")
+            real_files(repo, cfg, block, False, part="dependabot")
+            saved["sync_callers"](repo, cfg, False)
+    finally:
+        globals().update(saved)
+    eq("#562 C1: the pre-pr, dependabot and callers pull requests are the org-sync lane's runs",
+          [m for m, _ in modes], ["pre-pr", "dependabot", "callers"])
+    check("#562 C1: each writes only the paths its run covers",
+          all(files and all(any(autonomy.path_matches(p, pat) for pat in lane_paths(m)) for p in files) for m, files in modes), modes)
+    check("#562 C1: one with no project is said, never left silent",
+          "no Project" in _said(lambda: sync_project({"name": "x"}, {"repos": {"x": {"kinds": []}}}, False)))
+
+
+def _said(fn):
+    import contextlib
+    import io
+    with contextlib.redirect_stdout(io.StringIO()) as out:
+        fn()
+    return out.getvalue()
+
+
 def ai_plugin_drift_test(check, conf, labels, block):
     """#552, C9: the daily drift check against a stand-in for gh lists
     nothing for the three repositories #552 adopts once they are in step:
@@ -2614,13 +2986,14 @@ def ai_plugin_drift_test(check, conf, labels, block):
                 return drift_or_reason(repo, cfg, labels, block, current)
         finally:
             globals()["gh"], ORG, ORG_RULESETS = saved_gh, saved_org, saved_rs
-    adopted = {**conf, "repro": {**(conf.get("repro") or {}), "dilux-agentic-workflow": {"ways": {"pytest": way}}, "diluxone-mermaid": {"ways": {"pytest": way}}}}
+    adopted = {**conf, "repro": {"dilux-agentic-workflow": {"ways": {"pytest": way}}, "diluxone-mermaid": {"ways": {"pytest": way}}},
+               "projects": {"dilux-agentic-workflow": 14, "diluxone-mermaid": 15, "diluxone-plugins-ai": 15}}
     for name in trees:
         got = lines_for(name, adopted)
         check(f"C9 (#552): the drift check lists nothing for {name}, in step", got == [], got)
     check("C9 (#552): repos.yml keeps the catalog's no way by design, and needs no pre-pr exception for it",
-          ((conf.get("repro") or {}).get("diluxone-plugins-ai"), "diluxone-plugins-ai" in (conf.get("pre-pr") or {})), (False, False))
-    got = lines_for("diluxone-mermaid", conf if "diluxone-mermaid" not in (conf.get("repro") or {}) else {**conf, "repro": {}})
+          (repos_conf.value(conf, "diluxone-plugins-ai", "repro"), "pre-pr" in repos_conf.entry(conf, "diluxone-plugins-ai")), (False, False))
+    got = lines_for("diluxone-mermaid", {**adopted, "repro": {}})
     check("C9 (#552): a plugin of the kind with no way in repos.yml `repro:` is listed (its pack declares none)",
           any("declares no way to reproduce a bug" in l for l in got), got)
     got = lines_for("dilux-agentic-workflow", adopted, drop=".github/workflows/issues.yml")
@@ -2665,7 +3038,7 @@ def self_test():
            fork_approval_drift(True, conf["security"], FORK_APPROVAL), fork_approval_drift(False, conf["security"], "first_time_contributors"), fork_approval_drift(True, conf["security"], None)),
           ("public-only", True, None, None, None))
     check("repos.yml: settings, security and files", isinstance(conf.get("settings"), dict) and isinstance(conf.get("security"), dict) and ".github/CODEOWNERS" in (conf.get("files") or {}), conf)
-    projects = conf.get("projects") or {}
+    projects = repos_conf.names_with(conf, "project")
     check("repos.yml: every Project is a positive number, every repository a name", projects and all(isinstance(n, int) and n > 0 for n in projects.values()) and all(re.fullmatch(r"[A-Za-z0-9._-]+", r) for r in projects), projects)
     known = design_systems()
     check("design systems: wordpress-admin is one", "wordpress-admin" in known, known)
@@ -2741,9 +3114,9 @@ def self_test():
     globals()["gh"] = lambda *a, check=True, input_text=None: type("O", (), {"stdout": "", "returncode": 1, "stderr": "HTTP 502"})()
     try:
         own_checks_spec("o/r", "main", ["uses: DiluxOne/.github/.github/workflows/plugin-checks-wp.yml@v5"])
-        check("own checks: a policy that cannot be read stops, rather than reads as no kind", False, "no error")
-    except RuntimeError:
-        check("own checks: a policy that cannot be read stops, rather than reads as no kind", True)
+        check("#562 own checks: the kind is repos.yml's, the review policy is never read for it", True)
+    except RuntimeError as exc:
+        check("#562 own checks: the kind is repos.yml's, the review policy is never read for it", False, str(exc))
     globals()["gh"] = lambda *a, check=True, input_text=None: type("O", (), {"stdout": "", "returncode": 1, "stderr": "HTTP 404"})()
     check("own checks: no policy, no ruleset", own_checks_spec("o/r", "main", ["uses: DiluxOne/.github/.github/workflows/plugin-checks-wp.yml@v5"]) is None)
     globals()["gh"] = saved_gh
@@ -2782,6 +3155,7 @@ def self_test():
     callers_test(check, conf)
     dependabot_test(check, conf, labels, block_file)
     ai_plugin_drift_test(check, conf, labels, block_file)
+    adopt_test(check, conf, labels, block_file)
     # The org-sync lane (#155): a run from a merged commit marks its issue,
     # and labels it only once its Type is Task; the lane reads it back.
     policy = load_yaml(os.path.join(CENTRAL, "policy", "autonomy.yml"))
@@ -3002,7 +3376,7 @@ def self_test():
 def main(argv):
     if argv == ["--test"]:
         return self_test()
-    if not argv or argv[0] not in ("labels", "settings", "files", "dependabot", "pre-pr", "own-checks", "merge-queue", "callers", "i18n", "all", "check"):
+    if not argv or argv[0] not in ("labels", "settings", "security", "rulesets", "files", "dependabot", "pre-pr", "own-checks", "merge-queue", "callers", "project", "i18n", "all", "adopt", "check"):
         print(__doc__)
         return 64
     what, rest = argv[0], argv[1:]
@@ -3017,6 +3391,21 @@ def main(argv):
     if missing:
         print(f"No such repository (or archived, or excluded): {', '.join(missing)}")
         return 1
+    if what == "adopt" and not only:
+        print("adopt: name the repository (--repo NAME)")
+        return 64
+    every = None
+    if what in ("adopt", "rulesets"):
+        # Every adopted repository: the rulesets move to the property only
+        # once each of them holds it.
+        every = [r for r in (repositories([], conf.get("exclude") or []) if only else repos) if listed(r["name"]) is not None]
+    if what == "rulesets":
+        try:
+            sync_rulesets([r for r in repos if listed(r["name"]) is not None], every, dry)
+        except (RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
+            print(f"  failed: {exc}")
+            return 1
+        return 0
     if what == "check":
         report = [f"# Repositories out of step with {ORG}/.github", "",
                   "What differs from `labels.yml`, `repos.yml`, `agents-block.md`, the Dependabot templates (`kinds/<kind>/dependabot.yml`, `policy/dependabot.default.yml`) and `workflow-templates/`. Labels and settings: `python3 scripts/sync-repos.py all`; files: the pull requests it opens; Dependabot: the pull requests `sync-repos.py dependabot` opens; workflow callers: `python3 scripts/sync-repos.py callers --repo NAME`, a pull request each.", ""]
@@ -3027,6 +3416,13 @@ def main(argv):
             if lines:
                 dirty += 1
                 report += [f"## {repo['name']}", ""] + [f"- {line}" for line in lines] + [""]
+        try:
+            whole = org_drift(conf)
+        except (RuntimeError, ValueError) as exc:
+            whole = [f"could not be checked: {str(exc)[:200]}"]
+        if whole:
+            dirty += 1
+            report += [f"## The organisation, {ORG}", ""] + [f"- {line}" for line in whole] + [""]
         if not dirty:
             report = [f"Every repository is in step with {ORG}/.github."]
         text = "\n".join(report) + "\n"
@@ -3040,10 +3436,17 @@ def main(argv):
     for repo in repos:
         print(f"{ORG}/{repo['name']}")
         try:
+            if what == "adopt":
+                adopt(repo, conf, labels, block, every, dry)
+                continue
             if what in ("labels", "all"):
                 sync_labels(repo, labels, dry)
             if what in ("settings", "all"):
                 sync_settings(repo, conf, dry)
+            if what == "security":
+                sync_security(repo, conf, dry)
+            if what == "project":
+                sync_project(repo, conf, dry)
             if what in ("files", "all"):
                 sync_files(repo, conf, block, dry)
             if what == "dependabot":

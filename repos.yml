@@ -13,78 +13,83 @@ no-workflows:
 exclude:
   - ards-web   # a client's site, moving to the maintainer's account (docs/plans/org-first.md)
 
-# Every repository of the organisation and what it is (#191): its kinds of
-# project (a pack in kinds/), each over the paths it covers, with the roles
-# of those paths (which the rules in rules/ that name a role will reach,
-# phase 6 of #184). A single-kind repository covers "**". A repository with
-# no kinds is unclassified (the autopilot leaving it alone comes with phase
-# 8). scripts/sync-repos.py reads the kind from here first.
-# scripts/repos-config.py check holds this to its schema:
-# known kinds, known roles, paths of one repository that never overlap.
-# Where a repository's .github/review-policy.yml names a kind too, this wins.
+# Every repository of the organisation, one entry each with all the
+# organisation says of it (#191, #562), read through scripts/repos_conf.py:
+#   kinds          its kinds of project (a pack in kinds/), each over the
+#                  paths it covers, with the roles of those paths (which the
+#                  rules in rules/ that name a role reach). A single-kind
+#                  repository covers "**"; one with no kinds is
+#                  unclassified. The kind is declared here only: a
+#                  repository's .github/review-policy.yml `kind` is not read,
+#                  and the drift check lists one that still names it.
+#   project        the public Project of the organisation its accepted issues
+#                  land on (github.com/orgs/DiluxOne/projects/<n>), one per
+#                  product, the free plugin and its Pro add-on together;
+#                  `sync-repos.py adopt` links it. None: no Project, and the
+#                  drift check says so.
+#   design-system  the design system its screens follow: one of
+#                  design-systems/ here, or `local` (its own
+#                  docs/design-system/, which may extend one of these;
+#                  design-systems/README.md). None: no design system.
+#   repro          how it reproduces a bug when neither its kind's pack nor
+#                  its own .github/review-policy.yml says (#377): a `repro:`
+#                  as that file takes it (scripts/repro-ways.py), the
+#                  repository's own winning; `false` is none by design (the
+#                  drift check does not list it, and the autopilot still
+#                  does not take its bugs).
+#   merge-queue    its exception to org.yml `merge-queue` (#451): `on`,
+#                  `off` or `auto`, quoted (YAML reads a bare on/off as
+#                  true/false).
+#   pre-pr         `false`: no `make pre-pr` by design (#479,
+#                  scripts/pre-pr.py), so the drift check does not list it
+#                  nor does the conventions check fail its pull requests once
+#                  org.yml `pre-pr` is `required`.
+#   dependabot     what its .github/dependabot.yml adds, per ecosystem (see
+#                  `dependabot` below).
+#   callers        the values of its callers' inputs (see `callers` below),
+#                  over `callers: defaults`.
+# scripts/repos-config.py check holds this to its schema: known kinds, known
+# roles, paths of one repository that never overlap, known attributes.
 repos:
-  .github: {kinds: []}   # the organisation's own: its rules are its review policy
+  .github:   # the organisation's own: its rules are its review policy
+    kinds: []
+    project: 9
+    merge-queue: "off"
+    dependabot:
+        docker:
+          # The runner image's base (runner/Dockerfile), pinned by digest. Only
+          # the digest of the Ubuntu release it is on moves by itself: a new
+          # Ubuntu release (24.04 to 26.04) is a decision of ours, taken when what
+          # the jobs install on it is published for it (above all what setup-php
+          # installs from: the ondrej/php PPA and php-builder's prebuilt builds,
+          # which the runner-image.yml smoke test sets PHP up from), and then made
+          # by hand in the Dockerfile (docs/maintaining.md).
+          directories: [/runner]
+          ignore:
+            - dependency-name: ubuntu
+              update-types: ["version-update:semver-major", "version-update:semver-minor"]
   dilux-agentic-workflow: {kinds: [{kind: ai-agent-plugin, paths: ["**"], roles: [front]}]}   # DAW (#552)
-  diluxone-comments-pro-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
-  diluxone-comments-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
-  diluxone-commerce-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
-  diluxone-events-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
-  diluxone-fm: {kinds: []}
-  diluxone-help-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
-  diluxone-mail-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
+  diluxone-comments-pro-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}], project: 4, design-system: wordpress-admin}
+  diluxone-comments-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}], project: 4, design-system: wordpress-admin}
+  diluxone-commerce-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}], project: 7, design-system: wordpress-admin}
+  diluxone-events-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}], project: 12, design-system: wordpress-admin}
+  diluxone-fm: {kinds: [], project: 13}
+  diluxone-help-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}], project: 5, design-system: wordpress-admin}
+  diluxone-mail-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}], project: 10, design-system: wordpress-admin}
   diluxone-mermaid: {kinds: [{kind: ai-agent-plugin, paths: ["**"], roles: [front]}]}
-  diluxone-multisite-user-sync-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
-  diluxone-offload-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
+  diluxone-multisite-user-sync-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}], project: 3, design-system: wordpress-admin}
+  diluxone-offload-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}], project: 1, design-system: wordpress-admin}
   diluxone-platform: {kinds: []}
-  diluxone-plugins-ai: {kinds: []}   # the catalog of the ai-agent-plugin kind (#552): its own pre-pr, agent-manifests.py catalog
-  diluxone-slider-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
-  diluxone-support-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
-  diluxone-users-pro-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
-  diluxone-users-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
-  diluxone-website: {kinds: []}
-  diluxone-wp-test: {kinds: []}
+  diluxone-plugins-ai: {kinds: [], repro: false}   # the catalog of the ai-agent-plugin kind (#552): its own pre-pr, agent-manifests.py catalog
+  diluxone-slider-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}], project: 8, design-system: wordpress-admin}
+  diluxone-support-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}], project: 6, design-system: wordpress-admin}
+  diluxone-users-pro-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}], project: 2, design-system: wordpress-admin}
+  diluxone-users-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}], project: 2, design-system: wordpress-admin}
+  diluxone-website: {kinds: [], project: 11}
+  diluxone-wp-test: {kinds: [], project: 9, repro: false, pre-pr: false}
   sandbox-wordpress-plugin: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}   # a toy plugin where the workflows are proved end to end (#287)
-  security: {kinds: []}   # private: only the runs of security-fix.yml (#194)
+  security: {kinds: [], repro: false, pre-pr: false}   # private: only the runs of security-fix.yml (#194)
 
-# Which public Project of the organisation each repository's accepted issues
-# land on (its number: github.com/orgs/DiluxOne/projects/<n>). One per
-# product, the free plugin and its Pro add-on together. A repository not
-# listed puts its issues on no Project.
-projects:
-  diluxone-offload-wordpress: 1
-  diluxone-users-wordpress: 2
-  diluxone-users-pro-wordpress: 2
-  diluxone-multisite-user-sync-wordpress: 3
-  diluxone-comments-wordpress: 4
-  diluxone-comments-pro-wordpress: 4
-  diluxone-help-wordpress: 5
-  diluxone-support-wordpress: 6
-  diluxone-commerce-wordpress: 7
-  diluxone-slider-wordpress: 8
-  diluxone-mail-wordpress: 10
-  diluxone-events-wordpress: 12
-  diluxone-website: 11
-  diluxone-fm: 13
-  .github: 9
-  diluxone-wp-test: 9
-
-# Which design system each repository's screens follow: one of
-# design-systems/ here, or `local` (its own docs/design-system/, which may
-# extend one of these; design-systems/README.md). A repository not listed
-# has none.
-design-system:
-  diluxone-offload-wordpress: wordpress-admin
-  diluxone-users-wordpress: wordpress-admin
-  diluxone-users-pro-wordpress: wordpress-admin
-  diluxone-multisite-user-sync-wordpress: wordpress-admin
-  diluxone-comments-wordpress: wordpress-admin
-  diluxone-comments-pro-wordpress: wordpress-admin
-  diluxone-help-wordpress: wordpress-admin
-  diluxone-support-wordpress: wordpress-admin
-  diluxone-commerce-wordpress: wordpress-admin
-  diluxone-events-wordpress: wordpress-admin
-  diluxone-slider-wordpress: wordpress-admin
-  diluxone-mail-wordpress: wordpress-admin
 
 # Merging: squash only, the pull request's title and description as the
 # commit, the branch deleted, auto-merge allowed (the policy decides when).
@@ -99,14 +104,19 @@ settings:
   has_issues: true
   has_wiki: false
 
-# Security: Dependabot alerts and security updates everywhere; private
-# vulnerability reporting, secret scanning and push protection where GitHub
-# offers them (public repositories on this plan).
+# Security. Secret scanning and push protection come from the
+# organisation's code security configuration named here, which
+# `sync-repos.py security` attaches to each repository and keeps the default
+# for new ones (#562): never a per-repository setting, which the
+# enterprise's policy refuses (HTTP 422). Beside it, what a configuration
+# does not hold: Dependabot alerts and security updates everywhere, and
+# private vulnerability reporting where GitHub offers it (public
+# repositories on this plan).
 security:
+  configuration: DiluxOne
   vulnerability_alerts: true
   automated_security_fixes: true
   private_vulnerability_reporting: public-only
-  secret_scanning: public-only
   # Every outside contributor's workflow runs wait for a maintainer's
   # approval, not only a first-timer's (#488): GitHub's
   # fork-pr-contributor-approval, `all_external_contributors`, on public
@@ -127,30 +137,16 @@ files:
 # Dependabot: every repository's .github/dependabot.yml is written from its
 # kind's template (kinds/<kind>/dependabot.yml; a repository without a kind,
 # or of a kind without one, gets policy/dependabot.default.yml) by
-# `sync-repos.py dependabot`, as a pull request of its own (no lane covers it,
-# so a person accepts its issue, unlike the files above), and the drift
-# check reports one that differs. It carries only the ecosystems the
-# repository has: github-actions always, npm with a package.json at its root,
-# composer with a composer.json, docker with a Dockerfile. What a repository
-# adds lives here and nowhere else, per ecosystem: `directories` (beside its
-# root's; they turn the ecosystem on) and `ignore` (Dependabot's own
-# entries). Nothing is ignored by default: every dependency is kept on its
-# latest version.
-dependabot:
-  .github:
-    docker:
-      # The runner image's base (runner/Dockerfile), pinned by digest. Only
-      # the digest of the Ubuntu release it is on moves by itself: a new
-      # Ubuntu release (24.04 to 26.04) is a decision of ours, taken when what
-      # the jobs install on it is published for it (above all what setup-php
-      # installs from: the ondrej/php PPA and php-builder's prebuilt builds,
-      # which the runner-image.yml smoke test sets PHP up from), and then made
-      # by hand in the Dockerfile (docs/maintaining.md).
-      directories: [/runner]
-      ignore:
-        - dependency-name: ubuntu
-          update-types: ["version-update:semver-major", "version-update:semver-minor"]
-
+# `sync-repos.py dependabot`, as a pull request of its own (the org-sync
+# lane's `dependabot` run, #562), and the drift check reports one that
+# differs. It carries only the ecosystems the repository has: github-actions
+# always, npm with a package.json at its root, composer with a
+# composer.json, docker with a Dockerfile. What a repository adds lives in
+# its entry's `dependabot` and nowhere else, per ecosystem: `directories`
+# (beside its root's; they turn the ecosystem on) and `ignore` (Dependabot's
+# own entries). Nothing is ignored by default: every dependency is kept on
+# its latest version.
+#
 # The workflow callers (workflow-templates/) every repository that calls the
 # shared workflows keeps job for job, trigger for trigger and permission for permission (#329), as its template: the drift check
 # compares them and `sync-repos.py callers` brings one in step, as a pull
@@ -161,6 +157,11 @@ dependabot:
 # their values are the repository's, never compared and always kept. An input
 # a repository passes that its template does not set (main-file,
 # requires-plugins-from), and a job of its own, are its own too.
+# `defaults` holds the organisation's value of each of those inputs, which a
+# caller is written with (#562), so none is left a template's placeholder
+# to fill by hand: a repository's entry's `callers` wins over it. `{slug}`
+# is the repository's name without its `-wordpress` ending, `{SLUG}` the
+# same in capitals with `_` for `-`.
 # `migrates-from` names the older majors whose migration asks a repository
 # for nothing but its callers (docs/migrating.md): `callers` moves one at
 # such a major to the current one in the same pull request, every call of
@@ -175,28 +176,9 @@ callers:
     plugin-checks-wp.yml: [slug, version-constant]
     release-wp.yml: [slug, version-constant, dry-run]
     release-ai.yml: [dry-run]
-
-# How a repository reproduces a bug when neither its kind's pack nor its own
-# .github/review-policy.yml says (#377): its `repro:` as that file takes it
-# (scripts/repro-ways.py), read between the two, so the repository's own
-# wins; the installer proposes one from its stack (policy/repro-stacks.yml).
-# `false` is none by design: the daily drift check does not list it, and the
-# autopilot still does not take its bugs.
-repro:
-  diluxone-wp-test: false   # a disposable environment, no code of its own
-  security: false           # private: only the runs of security-fix.yml
-  diluxone-plugins-ai: false   # a catalog: a bug in it belongs to the plugin it lists (#552)
-
-# A repository's exception to org.yml `merge-queue` (#451): `on`, `off` or
-# `auto` (scripts/sync-repos.py merge-queue), quoted: YAML reads a bare on/off as true/false.
-merge-queue:
-  .github: "off"                # its own pipeline (pull-request.yml) and its merges by a person; not yet on merge_group
-
-# A repository with no `make pre-pr` by design (#479, scripts/pre-pr.py):
-# `false`, and the daily drift check does not list it, nor does the
-# conventions check fail its pull requests once org.yml `pre-pr` is
-# `required`. Every other repository is to have one; until it does, the
-# daily drift check lists it.
-pre-pr:
-  diluxone-wp-test: false   # a disposable environment, no code of its own
-  security: false           # private: only the runs of security-fix.yml
+  defaults:
+    support-url: https://github.com/DiluxOne/.github/blob/main/SUPPORT.md
+    profile: general
+    dry-run: false
+    slug: "{slug}"
+    version-constant: "{SLUG}_VERSION"
