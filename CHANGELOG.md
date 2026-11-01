@@ -2,6 +2,12 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [7.11.1](https://github.com/DiluxOne/.github/releases/tag/v7.11.1) · 2026-11-01
+
+### Fixes
+
+- the bug reproduced from #598 ([#600](https://github.com/DiluxOne/.github/pull/600))
+
 ## [7.11.0](https://github.com/DiluxOne/.github/releases/tag/v7.11.0) · 2026-11-01
 
 ### Features
@@ -11,6 +17,10 @@ Every version of the engine (the workflows, scripts, policy and kinds other repo
 ### Fixes
 
 - the bug reproduced from #575 ([#578](https://github.com/DiluxOne/.github/pull/578))
+
+### Maintenance
+
+- release v7.11.0 ([#597](https://github.com/DiluxOne/.github/pull/597))
 
 ## [7.10.0](https://github.com/DiluxOne/.github/releases/tag/v7.10.0) · 2026-11-01
 
