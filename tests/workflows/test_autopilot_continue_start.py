@@ -118,7 +118,8 @@ def test_c1_may_it_start_runs_the_starts_gates_on_what_prep_decided():
     # The lane's retry, the Bug's Type, and no open pull request linked.
     assert '{ [ "$AS" != start ] || ! { sleep 20;' in run
     assert 'if [ "$AS" = start ]; then\n  ISSUE_TYPE=$(gh api' in run
-    assert 'if [ "$AS" = start ]; then\n  open_prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --search "linked:issue $ISSUE"' in run
+    assert '(#577).\n  open_prs=$(gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json closedByPullRequestsReferences --jq \'.closedByPullRequestsReferences | length\')' in run
+    assert "linked:issue" not in run
     # A continue's own cap is not asked of a start.
     assert 'if [ "$MODE" = continue ] && [ "$AS" != start ]; then' in run
 

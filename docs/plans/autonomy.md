@@ -82,7 +82,7 @@ For the team of the central repository (`.github`). Each phase is a sub-issue of
   - The sync on a schedule, not only the check.
   - Decisions that must hold over time become class 1, watched by the daily drift check.
 - **Done when:** an organisation decision is accepted once, and no repository needs an acceptance of its own.
-- **So far:** the `delegated` lane (#179): a sub-issue of an issue a person accepted is accepted by policy, while its parent stays open and accepted, if a member opened it and did not edit it after linking it.
+- **So far:** the `delegated` lane (#179): a sub-issue of an issue a person accepted is accepted by policy, while its parent stays open (or was closed as completed, #572) and accepted, if a member opened it and did not edit it after linking it.
 - **The sync on a schedule:** `org-drift.yml` runs every day and first brings the labels and the shared files in step as dilux-bot, through the org-sync lane, then checks what is left (#210).
 - **The decision issue:** an optional `Repositories` section in the PRD (`all`, `kind:`, `visibility:`, `has:`, `name:`); accepting the issue opens a sub-issue in each repository it selects (`scripts/decision.py`), and the daily run opens one for a repository that matches later. A decision whose rule must keep holding ("always PHP 7.4") still needs its own check in the kind's pack; the daily run only keeps every matching repository with its sub-issue.
 

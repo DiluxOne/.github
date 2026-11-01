@@ -106,7 +106,7 @@ The review sets the risk, and a pull request cannot lower it: the high-risk path
 
 Everything decided without a maintainer comes from one file, `policy/autonomy.yml`. A repository can restrict it freely, or widen it only up to the ceiling the organisation sets. Each lane is a named entry, and nothing is accepted on its own unless it fits one: it says who can originate it (which workflow, which author), how it is recognised (a `lane:<name>` label, or, for a sub-issue of an issue a person accepted, its parent), what evidence it demands, up to which risk it merges on its own and in which repositories.
 
-The gate ignores any label a bot adds, except a lane's label, and that only when the issue's history shows it was opened by the workflow and the author the lane names. A sub-issue needs no label: it is accepted while its parent stays open and accepted by a person, if a member of the organisation opened it and did not edit it after linking it.
+The gate ignores any label a bot adds, except a lane's label, and that only when the issue's history shows it was opened by the workflow and the author the lane names. A sub-issue needs no label: it is accepted while its parent stays open, or was closed as completed, and accepted by a person, if a member of the organisation opened it and did not edit it after linking it.
 
 ## Where each rule lives
 

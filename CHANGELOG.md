@@ -2,6 +2,13 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [7.8.0](https://github.com/DiluxOne/.github/releases/tag/v7.8.0) · 2026-11-01
+
+### Fixes
+
+- the bug reproduced from #558 ([#565](https://github.com/DiluxOne/.github/pull/565))
+- the bug reproduced from #556 ([#559](https://github.com/DiluxOne/.github/pull/559))
+
 ## [7.7.0](https://github.com/DiluxOne/.github/releases/tag/v7.7.0) · 2026-11-01
 
 ### Features
@@ -14,6 +21,7 @@ Every version of the engine (the workflows, scripts, policy and kinds other repo
 
 ### Maintenance
 
+- release v7.7.0 ([#555](https://github.com/DiluxOne/.github/pull/555))
 - **repos:** add diluxone-mermaid, diluxone-plugins to repos.yml ([#547](https://github.com/DiluxOne/.github/pull/547))
 
 ## [7.6.0](https://github.com/DiluxOne/.github/releases/tag/v7.6.0) · 2026-10-31

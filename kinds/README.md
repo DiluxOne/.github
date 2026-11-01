@@ -251,7 +251,7 @@ alone, since what a plugin bundles it pins on purpose (diluxone-mermaid
 tests three majors of mermaid side by side), so its repositories get their
 actions' updates only, and `repos.yml` cannot add to an ecosystem the kind
 does not keep. What
-a repository adds lives in [`repos.yml`](../repos.yml) (`dependabot`), per
+a repository adds lives in its entry of [`repos.yml`](../repos.yml) (`dependabot`), per
 ecosystem, and nothing else is kept: `directories` (beside its root's; they
 turn the ecosystem on) and `ignore` (Dependabot's own entries, written under
 the entry). The rule a template keeps, and `sync-repos.py --test` holds it
