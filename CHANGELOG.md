@@ -2,12 +2,26 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [7.11.0](https://github.com/DiluxOne/.github/releases/tag/v7.11.0) · 2026-11-01
+
+### Features
+
+- feat: the autopilot moves on its own, from one state machine ([#584](https://github.com/DiluxOne/.github/pull/584))
+
+### Fixes
+
+- the bug reproduced from #575 ([#578](https://github.com/DiluxOne/.github/pull/578))
+
 ## [7.10.0](https://github.com/DiluxOne/.github/releases/tag/v7.10.0) · 2026-11-01
 
 ### Features
 
 - feat: who decides is a setting, and an issue is shaped with its a… ([#589](https://github.com/DiluxOne/.github/pull/589))
 - feat: every criterion is a setting, at org and repository level ([#569](https://github.com/DiluxOne/.github/pull/569))
+
+### Maintenance
+
+- release v7.10.0 ([#594](https://github.com/DiluxOne/.github/pull/594))
 
 ## [7.9.1](https://github.com/DiluxOne/.github/releases/tag/v7.9.1) · 2026-11-01
 
