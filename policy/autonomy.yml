@@ -211,9 +211,10 @@ lanes:
   # one decision needs one acceptance, not one per repository. Recognised
   # by its parent, not by a label. Accepted when all of this holds, read
   # from GitHub (scripts/autonomy.py, delegated_accepts()):
-  #   - its parent is open, in this organisation, and carries `accepted`,
-  #     added last by a person (a bot's never counts), and still there:
-  #     a parent that loses it, or closes, takes the children's with it;
+  #   - its parent is open, or closed as completed (#572), in this
+  #     organisation, and carries `accepted`, added last by a person (a
+  #     bot's never counts), and still there: a parent that loses it, or
+  #     closes any other way, takes the children's with it;
   #   - the sub-issue was opened by a member of the organisation, or by the
   #     lane's App;
   #   - its text was not edited after it was linked to the parent.
