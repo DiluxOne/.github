@@ -524,10 +524,12 @@ jobs:
           # and nothing sealed it. The lane, read above, already checked that
           # a person accepted its parent and that its text was not edited
           # since it was linked: an unsealed one is sealed as it stands, here,
-          # and read again. Any other lane, or a changed one, is refused below.
+          # and read again. Any other lane, or a changed one, is refused below;
+          # so is one whose sealing failed, which then still reads unsealed.
           if [ "$v" = unsealed ] && [ "$LANE" = delegated ]; then
             POLICY_REF=$(git -C .dx-central rev-parse --short=12 HEAD)
-            NUMBER="$ISSUE" POLICY_REF="$POLICY_REF" ACCEPTED_BY="policy (lane delegated)" python3 .dx-central/scripts/receipts.py seal-prd >/dev/null
+            NUMBER="$ISSUE" POLICY_REF="$POLICY_REF" ACCEPTED_BY="policy (lane delegated)" python3 .dx-central/scripts/receipts.py seal-prd >/dev/null \
+              || echo "::warning::Sealing the PRD of #$ISSUE failed."
             v=$(NUMBER="$ISSUE" python3 .dx-central/scripts/receipts.py verify-prd --wait 12 || true)
           fi
           if [ "$v" != match ]; then
