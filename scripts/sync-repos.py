@@ -1944,25 +1944,40 @@ def required_contexts(name, mine, org):
     return {c for r in rules if r.get("target", "branch") == "branch" for c in required_checks(r)}
 
 
-def context_workflows(full):
-    """{check name: workflow path} from the runs of the repository's most
-    recent pull request's head: each check run's suite, its workflow run."""
-    pulls = json.loads(gh("pr", "list", "--repo", full, "--state", "all", "--limit", "1", "--json", "headRefOid").stdout or "[]")
-    if not pulls:
-        return {}
-    sha = pulls[0]["headRefOid"]
-    pages = json.loads(gh("api", "--paginate", "--slurp", f"repos/{full}/actions/runs?head_sha={sha}&per_page=100").stdout or "[]")
-    suites = {r.get("check_suite_id"): r.get("path") for page in pages for r in (page.get("workflow_runs") or [])}
-    pages = json.loads(gh("api", "--paginate", "--slurp", f"repos/{full}/commits/{sha}/check-runs?per_page=100").stdout or "[]")
-    return {c["name"]: suites.get((c.get("check_suite") or {}).get("id")) for page in pages for c in page.get("check_runs", [])
-            if suites.get((c.get("check_suite") or {}).get("id"))}
+def context_workflows(full, contexts=None, recent=5):
+    """{check name: workflow path} from the runs of the heads of the
+    repository's recent pull requests (up to `recent`, newest first, until
+    every one of `contexts` is found): each check run's suite, its workflow
+    run. One pull request alone may be a draft, closed before its checks
+    ran, from a fork, or skipped by a path filter."""
+    pulls = json.loads(gh("pr", "list", "--repo", full, "--state", "all", "--limit", str(recent), "--json", "headRefOid").stdout or "[]")
+    found = {}
+    for sha in dict.fromkeys(p["headRefOid"] for p in pulls if p.get("headRefOid")):
+        pages = json.loads(gh("api", "--paginate", "--slurp", f"repos/{full}/actions/runs?head_sha={sha}&per_page=100").stdout or "[]")
+        suites = {r.get("check_suite_id"): r.get("path") for page in pages for r in (page.get("workflow_runs") or [])}
+        pages = json.loads(gh("api", "--paginate", "--slurp", f"repos/{full}/commits/{sha}/check-runs?per_page=100").stdout or "[]")
+        for page in pages:
+            for c in page.get("check_runs", []):
+                path = suites.get((c.get("check_suite") or {}).get("id"))
+                if path:
+                    found.setdefault(c["name"], path)
+        if contexts and set(contexts) <= set(found):
+            break
+    return found
 
 
 def blockers_of(repo, files, mine=None):
     """queue_blockers() for a repository, read from GitHub."""
     full = f"{ORG}/{repo['name']}"
     contexts = required_contexts(repo["name"], rulesets(full) if mine is None else mine, org_rulesets() or [])
-    return queue_blockers(contexts, context_workflows(full) if contexts else {}, files)
+    return queue_blockers(contexts, context_workflows(full, contexts) if contexts else {}, files)
+
+
+def unknown_blocker(blocker):
+    """Whether a queue_blockers() entry is "could not tell" (no workflow
+    found for the context, or its workflow unread) rather than a workflow
+    that definitely does not run on merge_group."""
+    return blocker[2] != "does not run on merge_group"
 
 
 def yaml_text(text):
@@ -2005,13 +2020,18 @@ def sync_merge_queue(repo, conf, dry):
     want = mode == "on" or (mode == "auto" and allowed)
     own = rulesets(full)
     late = blockers_of(repo, workflow_files(full), own) if want else []
+    mine = [r for r in own if r.get("name") == QUEUE]
     if late:
         # Every check the rules require must report in the queue, or it
         # waits forever (#562): it stays off, and says why.
         for line in queue_lines(late):
             print(f"  {line}")
+        if mine and all(unknown_blocker(b) for b in late):
+            # Could not tell is not "does not run there": a queue that
+            # exists is left as it is, never switched off on a guess.
+            print(f"  \"{QUEUE}\" exists and nothing shows it cannot work: left as it is")
+            return
         want = False
-    mine = [r for r in own if r.get("name") == QUEUE]
     value = "on" if want else "off"
     # The variable is never `on` without the queue: when turning it on the
     # ruleset comes first, when turning it off the variable does, so a write
@@ -3733,7 +3753,7 @@ def self_test():
         "required_status_checks": [{"context": "checks / unit"}]}}]}
     tests_wf = "on:\n  pull_request:\njobs:\n  unit:\n    runs-on: ubuntu-latest\n    steps: [{run: 'true'}]\n"
 
-    def queue_run(want_rs, has_rs, plan="team", vis="PUBLIC", mode="auto", required=False, workflow=tests_wf, out=None):
+    def queue_run(want_rs, has_rs, plan="team", vis="PUBLIC", mode="auto", required=False, workflow=tests_wf, out=None, produced="checks / unit"):
         calls = []
         def fake(*args, check=True, input_text=None):
             joined = " ".join(args)
@@ -3755,7 +3775,7 @@ def self_test():
             if "actions/runs?head_sha=abc" in joined:
                 return Out(json.dumps([{"workflow_runs": [{"check_suite_id": 5, "path": ".github/workflows/tests.yml"}]}]))
             if "commits/abc/check-runs" in joined:
-                return Out(json.dumps([{"check_runs": [{"name": "checks / unit", "check_suite": {"id": 5}}]}]))
+                return Out(json.dumps([{"check_runs": [{"name": produced, "check_suite": {"id": 5}}]}]))
             if "orgs/o/rulesets" in joined:
                 return Out("[[]]")
             return Out("{}")
@@ -3798,6 +3818,16 @@ def self_test():
     ready_run = queue_run(True, False, required=True, workflow=tests_wf.replace("  pull_request:\n", "  pull_request:\n  merge_group:\n"))
     check("#562 C3: once its workflow runs on merge_group, the queue is turned on",
           len(ready_run) == 2 and "repos/o/r/rulesets" in ready_run[0] and "value=on" in ready_run[1], ready_run)
+    said = []
+    kept = queue_run(True, True, required=True, out=said, produced="something else")
+    check("#562: a required check no recent pull request maps to leaves an existing queue as it is",
+          (kept, "left as it is" in said[0]), ([], True))
+    fresh = queue_run(False, False, required=True, produced="something else")
+    check("#562: the same unknown keeps a queue that does not exist yet off",
+          fresh, ["api -X POST repos/o/r/actions/variables -f name=DX_MERGE_QUEUE -f value=off"])
+    late_known = queue_run(False, True, required=True)
+    check("#562: a required check whose workflow lacks merge_group still turns an existing queue off",
+          len(late_known) == 2 and "value=off" in late_known[0] and "DELETE" in late_known[1], late_known)
     check("#187: `files` runs the shared files alone", runs["files"] == ["files"], runs["files"])
     check("#187: `dependabot` runs the Dependabot file alone", runs["dependabot"] == ["dependabot"], runs["dependabot"])
     check("#479 C1: `pre-pr` runs the make pre-pr files alone, and `all` does not", runs["pre-pr"] == ["pre-pr"] and "pre-pr" not in runs["all"], runs)
