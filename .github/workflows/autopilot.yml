@@ -35,6 +35,10 @@ name: Autopilot
 #                   a run an answer to its question started, or whose
 #                   runner was lost, is free and does not count (#479).
 #                   A person who took it back removes `needs-human` first.
+#                   A maintainer's answer that drops or changes a
+#                   criterion (`drop C3`, `C3: <new text>`) is applied to
+#                   the checklist by the bot before the work (#561,
+#                   scripts/autopilot.py criteria-edit).
 #                   With no open `autopilot` pull request closing an open
 #                   issue (#535), the continue starts the issue's next phase
 #                   instead, as `mode: start` does, through its gates: the
@@ -676,6 +680,11 @@ jobs:
             case $role in admin|maintain|write) echo "$login" >> "$RUNNER_TEMP/writers.txt" ;; esac
           done
           COMMENTS="$RUNNER_TEMP/comments.json" WRITERS="$RUNNER_TEMP/writers.txt" python3 .dx-central/scripts/autopilot.py answers > "$RUNNER_TEMP/answers.md"
+          # An answer that drops or changes a criterion (`drop C3`,
+          # `C3: <new text>`) is applied to the checklist here, by the bot,
+          # and logged in the Decisions (#561): the work and the finish
+          # read the checklist as it is then.
+          ANSWERS="$RUNNER_TEMP/answers.md" python3 .dx-central/scripts/autopilot.py criteria-edit
           ANSWERS="$RUNNER_TEMP/answers.md" python3 .dx-central/scripts/autopilot.py prompt work > "$DX_IO/prompt.md"
 
       - name: Hand it to the agent

@@ -587,6 +587,79 @@ def boxes(pr_body):
     return {m.group(2): m.group(1).lower() == "x" for m in re.finditer(r"^- \[([ xX])\] \*\*(C\d+)\*\*", block, re.M)}
 
 
+# A maintainer's answer that drops or changes a criterion (#561 C3), one
+# per line: `drop C3` (or `remove C3`), `C3: <the new text>`.
+EDIT_DROP = re.compile(r"^\s*(?:drop|remove)\s+(C\d{1,3})\b", re.I)
+EDIT_CHANGE = re.compile(r"^\s*(C\d{1,3})\s*:\s*(\S.*?)\s*$")
+
+
+def criteria_edits(answer):
+    """[(id, new text or None to drop it)] from a maintainer's answer, in
+    order; `answers()` gives `login: comment`, so a line's own words are read
+    after the login on the comment's first line too. Pure."""
+    out = []
+    for line in (answer or "").split("\n"):
+        for text in (line, line.split(": ", 1)[1] if re.match(r"^[\w-]+(\[bot\])?: ", line) else ""):
+            m = EDIT_DROP.match(text)
+            if m:
+                out.append((m.group(1), None))
+                break
+            m = EDIT_CHANGE.match(text)
+            if m:
+                out.append((m.group(1), m.group(2)))
+                break
+    return out
+
+
+def apply_answer(pr_body, issue_body, edits):
+    """(pr_body, notes): the checklist with each edit applied (#561 C3): a
+    dropped criterion's box goes, with its Test line; a changed one gets the
+    new text and is unticked, its work to be done again. Only a box on the
+    checklist is edited, never the last one left, and an edit that changes
+    nothing is none, so an answer read again is applied once. The issue's
+    PRD stays the one sealed at its acceptance: the checklist and the
+    Decisions, one note per edit, are the record. Pure."""
+    if CHECKLIST_START not in pr_body or CHECKLIST_END not in pr_body:
+        return pr_body, []
+    head, rest = pr_body.split(CHECKLIST_START, 1)
+    block, tail = rest.split(CHECKLIST_END, 1)
+    rows = re.split(r"\n(?=- \[[ xX]\] \*\*C\d+\*\*)", block.strip("\n"))
+    known = {c[0] for c in criteria(issue_body or "")}
+    notes = []
+    for cid, text in edits:
+        at = next((i for i, r in enumerate(rows) if re.match(rf"- \[[ xX]\] \*\*{cid}\*\* ", r)), None)
+        if at is None or (known and cid not in known):
+            continue
+        row = rows[at]
+        if text is None:
+            if len(rows) == 1:
+                continue
+            del rows[at]
+            notes.append(f"{cid} is dropped, as a maintainer answered: its box leaves the checklist, and the finish no longer waits on it.")
+            continue
+        first, _, test = row.partition("  \n")
+        old = re.sub(rf"^- \[[ xX]\] \*\*{cid}\*\* ", "", first)
+        if old == text:
+            continue
+        rows[at] = f"- [ ] **{cid}** {text}" + (f"  \n{test}" if test else "")
+        notes.append(f"{cid} now reads, as a maintainer answered: {text}")
+    if not notes:
+        return pr_body, []
+    return f"{head}{CHECKLIST_START}\n" + "\n".join(rows) + f"\n{CHECKLIST_END}{tail}", notes
+
+
+def left_criteria(issue_body, pr_body):
+    """[(id, text, test)] still to do: the issue's criteria whose box is on
+    the checklist and unticked, in the checklist's words (a maintainer may
+    have changed one, #561 C3). A body with no checklist: every unticked
+    criterion of the issue. Pure."""
+    ticked = boxes(pr_body)
+    if CHECKLIST_START not in pr_body:
+        return [c for c in criteria(issue_body) if not ticked.get(c[0])]
+    words = {m.group(1): m.group(2).strip() for m in re.finditer(r"^- \[[ xX]\] \*\*(C\d+)\*\* (.*?)(?:  )?$", pr_body, re.M)}
+    return [(cid, words.get(cid) or text, test) for cid, text, test in criteria(issue_body) if cid in ticked and not ticked[cid]]
+
+
 def progress(pr_body):
     b = boxes(pr_body)
     return sum(b.values()), len(b)
@@ -2004,6 +2077,25 @@ A class on html.
     check("#561 C2: a work run whose branch conflicts with main merges it before any criterion",
           ("before any criterion" in conflict_note(True, "trunk", work=True), "git merge origin/trunk" in conflict_note(True, "trunk", work=True),
            conflict_note(False, "trunk", work=True)), (True, True, ""))
+    # #561 C3: a maintainer's answer that drops or changes a criterion.
+    three = "<!-- dx-checklist -->\n- [x] **C1** a  \n  Test: t1\n- [ ] **C2** b  \n  Test: t2\n- [ ] **C3** c\n<!-- /dx-checklist -->\n\n## 🧭 Decisions\n"
+    issue3 = "### Acceptance criteria\n\n- C1: a\n- C2: b\n- C3: c\n"
+    check("#561 C3: an answer's edits, one per line, after the login too",
+          criteria_edits("boss: drop C2\n\nboss: 1, as recommended\nC3: c, in red\nRemove C9 and more"), [("C2", None), ("C3", "c, in red"), ("C9", None)])
+    dropped, notes3 = apply_answer(three, issue3, [("C2", None)])
+    check("#561 C3: a dropped criterion leaves the checklist, its Test line with it, and the finish no longer waits on it",
+          (sorted(boxes(dropped)), "t2" in dropped, "t1" in dropped, progress(dropped), len(notes3)), (["C1", "C3"], False, True, (1, 2), 1))
+    check("#561 C3: once every box left is ticked, a draft goes to the finish",
+          next_step({**base, "pr": {**dpr, "body": tick(dropped, "C3", ["feat: c (C3)"])}})["action"], "finish")
+    changed, notes3 = apply_answer(tick(three, "C3", ["feat: c (C3)"]), issue3, [("C3", "c, in red")])
+    check("#561 C3: a changed criterion takes the new words and is unticked, its work to do again",
+          (boxes(changed)["C3"], "**C3** c, in red" in changed, [c[1] for c in left_criteria(issue3, changed)]), (False, True, ["b", "c, in red"]))
+    check("#561 C3: an edit read again, of a criterion not on the checklist, or of the last box, changes nothing",
+          (apply_answer(dropped, issue3, [("C2", None)])[1], apply_answer(three, issue3, [("C7", None), ("C3", "c")])[1],
+           apply_answer("<!-- dx-checklist -->\n- [ ] **C1** a\n<!-- /dx-checklist -->", "- C1: a\n", [("C1", None)])[1], apply_answer("no list", issue3, [("C1", None)])[1]),
+          ([], [], [], []))
+    check("#561 C3: the work's prompt lists only the criteria left on the checklist",
+          [c[0] for c in left_criteria(issue3, dropped)], ["C3"])
     check("C4: never at the cap", may_continue([], t, 5, 5)[0], False)
     full = tick(t, "C2", ["fix: keep it (C2)"])
     check("C2 (#112): a draft with every box ticked continues, for the checks and the finish", may_continue([], full, 1, 5)[0], True)
@@ -3284,6 +3376,29 @@ def main(argv):
         print(step_comment(step), file=sys.stderr)
         print(json.dumps(step))
         return 0
+    if argv[:1] == ["criteria-edit"]:
+        # With the key, in prep, before the work's prompt (#561 C3): a
+        # maintainer's answer (ANSWERS, what answers() kept: writers only)
+        # that drops or changes a criterion, applied to the pull request's
+        # checklist and logged in its Decisions; DX_IO's copy follows.
+        answer = open(os.environ["ANSWERS"], encoding="utf-8").read() if os.environ.get("ANSWERS") and os.path.exists(os.environ["ANSWERS"]) else ""
+        edits = criteria_edits(answer)
+        if not edits or not pr:
+            return 0
+        issue_body = open(os.environ["BODY"], encoding="utf-8").read() if os.environ.get("BODY") and os.path.exists(os.environ["BODY"]) else \
+            json.loads(gh("issue", "view", str(number), "--repo", repo, "--json", "body"))["body"] or ""
+        new, notes = apply_answer(pr_json(repo, pr, "body")["body"] or "", issue_body, edits)
+        if not notes:
+            return 0
+        for note in notes:
+            new = add_decision(new, note, datetime.date.today().isoformat()) or new
+            print(note)
+        set_body(repo, pr, new)
+        copy = os.path.join(os.environ.get(IO_ENV, ""), "pr.md")
+        if os.environ.get(IO_ENV) and os.path.exists(copy):
+            with open(copy, "w", encoding="utf-8") as fh:
+                fh.write(new)
+        return 0
     if argv[:1] == ["sweep"]:
         # One open autopilot pull request after a merge into main (#561 C2):
         # {pr: gh pr view's JSON, issue_labels: [...]} on stdin; prints
@@ -3482,7 +3597,7 @@ def main(argv):
     if argv[:2] == ["prompt", "work"]:
         info = pr_json(repo, pr, "body")
         ticked = boxes(info["body"])
-        left = [c for c in criteria(body) if not ticked.get(c[0])]
+        left = left_criteria(body, info["body"] or "")
         answered = open(os.environ["ANSWERS"], encoding="utf-8").read() if os.environ.get("ANSWERS") and os.path.exists(os.environ["ANSWERS"]) else ""
         print(prompt_work(repo, number, pr, os.environ["BRANCH"], schema.part_text(body, "prd"), left, any(ticked.values()), ev, mode_of(pol), answered, kind_notes()))
         return 0
