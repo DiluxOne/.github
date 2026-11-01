@@ -2,8 +2,10 @@
 """What kind of project a repository looks like (#191), and its stack (#377).
 
 Each pack says how to recognise its kind (kinds/<kind>/pack.yml, `detect`):
-files that must be at the repository's root, and a root file whose first
-lines match a pattern (a plugin's header). Detection only proposes: what a
+files that must be at the repository's root, a root file whose first lines
+match a pattern (a plugin's header), and `any-files`, paths from the root of
+which one at least must exist (a manifest in a folder: a plugin for coding
+agents, #552). Detection only proposes: what a
 repository is lives in repos.yml `repos:`, and a person merges that. The
 daily drift check (scripts/sync-repos.py check) says, for a repository
 repos.yml does not list, what detection proposes for it.
@@ -63,13 +65,18 @@ def packs():
     return out
 
 
-def matches(rule, names, head):
+def matches(rule, names, head, exists=None):
     """Whether a repository's root (its file names, and `head(name)`, the
-    first bytes of a file) meets a pack's `detect`."""
-    if not rule.get("files") and not rule.get("header"):
+    first bytes of a file) meets a pack's `detect`. `exists(path)` says
+    whether a path below the root is a file (only `any-files` asks)."""
+    if not rule.get("files") and not rule.get("header") and not rule.get("any-files"):
         return False  # a rule that checks nothing recognises nothing
     if not all(f in names for f in rule.get("files") or []):
         return False
+    if rule.get("any-files"):
+        exists = exists or (lambda path: path in names)
+        if not any(exists(f) for f in rule["any-files"]):
+            return False
     header = rule.get("header")
     if header:
         pattern = re.compile(header["pattern"])
@@ -77,10 +84,10 @@ def matches(rule, names, head):
     return True
 
 
-def kinds(names, head, rules=None):
+def kinds(names, head, rules=None, exists=None):
     """The kinds a repository's root looks like."""
     rules = packs() if rules is None else rules
-    return [k for k, rule in rules.items() if matches(rule, names, head)]
+    return [k for k, rule in rules.items() if matches(rule, names, head, exists)]
 
 
 def gh(*args):
@@ -109,7 +116,20 @@ def remote(full, default="main", run=run_gh):
     def head(name):
         rc, text, _ = run("api", f"repos/{full}/contents/{name}?ref={default}", "-H", "Accept: application/vnd.github.raw")
         return text[:HEAD_BYTES] if rc == 0 else ""
-    return kinds(names, head)
+
+    def exists(path):
+        if "/" not in path:
+            return path in names
+        rc, out, err = run("api", f"repos/{full}/contents/{path}?ref={default}")
+        if rc != 0:
+            if "404" in err:  # not there
+                return False
+            raise RuntimeError(f"could not read {path}: {err.strip()[:200]}")
+        try:
+            return json.loads(out or "{}").get("type") == "file"
+        except (ValueError, AttributeError):
+            return False
+    return kinds(names, head, exists=exists)
 
 
 STACKS = os.path.join(HERE, "..", "policy", "repro-stacks.yml")
@@ -365,6 +385,31 @@ def self_test():
           yaml.safe_load(added)["repos"]["m-plugin"], {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"], "roles": ["back", "front"]}]})
     check("propose: the rest of the file is untouched", added.endswith("\n\nprojects:\n  a-repo: 1\n") and added.startswith("# head\n"), True)
     check("a rule that checks nothing recognises nothing", matches({"roles": ["back"]}, {"a"}, lambda n: ""), False)
+    # A plugin for coding agents (#552): one manifest of tools.yml, in a folder or at the root.
+    check("the ai-agent-plugin pack says how to recognise one", "ai-agent-plugin" in rules, True)
+    at = lambda *paths: (lambda p: p in paths)  # noqa: E731
+    check("a plugin for coding agents: Claude Code's manifest in its folder",
+          kinds({"README.md"}, head({}), rules, at(".claude-plugin/plugin.json")), ["ai-agent-plugin"])
+    check("a plugin for coding agents: another tool's manifest only",
+          kinds({"README.md", "gemini-extension.json"}, head({}), rules), ["ai-agent-plugin"])
+    check("a catalog (a marketplace, no plugin manifest) is not one",
+          kinds({"README.md"}, head({}), rules, at(".claude-plugin/marketplace.json")), [])
+    def fake_api(*args):
+        if args[1].startswith("repos/o/p/contents/?"):
+            return 0, json.dumps([{"name": "README.md", "type": "file"}, {"name": ".claude-plugin", "type": "dir"}]), ""
+        if args[1].startswith("repos/o/p/contents/.claude-plugin/plugin.json"):
+            return 0, json.dumps({"type": "file"}), ""
+        return 1, "", "HTTP 404"
+    check("remote: a manifest in a folder is looked up, and recognised", remote("o/p", "main", fake_api), ["ai-agent-plugin"])
+    def broken_api(*args):
+        if args[1].startswith("repos/o/p/contents/?"):
+            return fake_api(*args)
+        return 1, "", "HTTP 502: Bad Gateway"
+    try:
+        remote("o/p", "main", broken_api)
+        check("remote: a failed read of a manifest is an error, not 'absent'", "absent", "error")
+    except RuntimeError:
+        check("remote: a failed read of a manifest is an error, not 'absent'", "error", "error")
     hand = "repos:\n  zeta: {kinds: []}\n  alpha: {kinds: []}\n"
     check("propose: hand-ordered lines stay where they are", with_entries(hand, ["  beta: {kinds: []}"]), "repos:\n  beta: {kinds: []}\n  zeta: {kinds: []}\n  alpha: {kinds: []}\n")
     calls = []

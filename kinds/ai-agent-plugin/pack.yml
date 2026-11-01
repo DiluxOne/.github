@@ -1,0 +1,104 @@
+# The ai-agent-plugin kind: a plugin for coding agents (Claude Code, Codex,
+# Copilot, Cursor, Gemini, OpenCode...), its hooks, skills, agents and
+# commands, published in the organisation's catalog, diluxone-plugins-ai
+# (#552). A repository opts in with `kind: ai-agent-plugin` in its
+# .github/review-policy.yml (repos.yml says it too). What each key means:
+# kinds/README.md. The tools, their manifests and how each installs:
+# tools.yml beside this file.
+
+name: Plugin for coding agents
+
+# No other name: the kind is new.
+aliases: []
+
+# The reusable workflows that make up this kind's battery, in
+# .github/workflows/. A repository's caller names them
+# (workflow-templates/plugin-checks-ai.yml); they read their rules and
+# settings from this pack.
+workflows:
+  - plugin-checks-ai.yml
+  - plugin-release-ai.yml
+  - plugin-publish-ai.yml
+
+# What a repository of this kind requires of its own jobs, beside the
+# organisation's pipeline: a repository ruleset named "own checks"
+# (scripts/sync-repos.py own-checks), from the check runs of its last merged
+# pull request whose job is one of `jobs` ("checks / Manifests of every
+# tool"). One that exists is never rewritten: a repository adds its own
+# suites to it by hand (DAW's verify, mutations and behavioral).
+own-checks:
+  callers-of: [plugin-checks-ai.yml]
+  jobs: [checks]
+  skip: []
+
+# What a repository of this kind's `make pre-pr` runs (#479,
+# scripts/pre-pr.py): every check its pull request and its merge queue run,
+# one after the other, stopping at the first failure. `dx check` runs it
+# before the local review, and so does the autopilot before it marks a pull
+# request ready.
+pre-pr:
+  - the repository's own suites, as its pull request and its merge queue run them (its Makefile's prerequisites of pre-pr; DAW's verify, mutations and behavioral)
+  - the manifests of every tool agree (scripts/agent-manifests.py check)
+  - the review rules (scripts/review-rules.php with this pack's rules.yml)
+
+# How it runs them: `scripts/sync-repos.py pre-pr` writes these lines into
+# the repository's dx.mk, the `pre-pr` target its Makefile includes (#479,
+# scripts/pre-pr.py render). `run` is bash, one command a line, from the
+# checkout, stopping at the first failure. The repository's own suites are
+# its own: it adds them as prerequisites in its Makefile, in the order its
+# CI runs them (`pre-pr: verify mutations behavioral`), never in dx.mk, so
+# make runs them first and stops at the first that fails. DX_CENTRAL is the
+# organisation's checkout (`dx check` sets it; the autopilot's is
+# .dx-central, the default).
+pre-pr-make:
+  run:
+    - central=${DX_CENTRAL:-.dx-central}
+    # Quoted: a plain scalar with ": " in it would be read as a map.
+    - 'test -f "$central/scripts/agent-manifests.py" || { echo "pre-pr: DX_CENTRAL ($central) is not a checkout of DiluxOne/.github" >&2; exit 1; }'
+    - python3 "$central/scripts/agent-manifests.py" check .
+    - php "$central/scripts/review-rules.php" --kind ai-agent-plugin --repo .
+
+# How detection recognises a repository of this kind (#191,
+# scripts/detect.py): one of `any-files`, the manifests of tools.yml, from
+# the repository's root. Detection only proposes: repos.yml says what a
+# repository is. A plugin runs on the machine of whoever installs it, a
+# client the user controls: the `front` role (rules/front-no-credentials.md).
+detect:
+  roles: [front]
+  any-files:
+    - .claude-plugin/plugin.json
+    - .codex-plugin/plugin.json
+    - .cursor-plugin/plugin.json
+    - gemini-extension.json
+
+# The engines this kind's checks run, and the language adapter of each.
+adapters:
+  - engine: scripts/review-rules.php
+    rules: rules.yml
+    languages: [text]
+  - engine: scripts/agent-manifests.py
+    rules: tools.yml
+    languages: [json]
+
+# No `settings`: nothing a repository can add to; the tools are tools.yml's.
+
+# What the autopilot adds to every change of this kind, beside what the Spec
+# names (#341, scripts/autopilot.py): one instruction per line, for its work
+# prompt.
+autopilot:
+  - "The changelog: this change's line in a file of its own, `changelog.d/<the issue's number>.md`, one bullet (`* …`); never in CHANGELOG.md itself, which the release writes. None for a change no user sees (tests, tooling, CI)."
+  - "The manifests: every tool's manifest the plugin ships (kinds/ai-agent-plugin/tools.yml: .claude-plugin/plugin.json, .codex-plugin/plugin.json, .cursor-plugin/plugin.json, plugin.json, gemini-extension.json) keeps the same name, version and description: a change to one (a version bumped, a description reworded) is made to every one of them in the same commit (scripts/agent-manifests.py check fails the pull request otherwise)."
+
+# How a version of this kind is released (#82; kinds/README.md). A person
+# accepts the issue "Release X.Y.Z"; the release pull request is then this
+# `prepare` command run on the default branch (every tool's manifest at the
+# version, the changelog fragments written into CHANGELOG.md), and once it
+# merges `workflow` makes the GitHub release, whose publishing runs
+# `publish`: a pull request on the catalog, diluxone-plugins-ai, that brings
+# the plugin's entries up to it. No `stable`: the catalog follows the
+# releases, so the last GitHub release is the one in production.
+release:
+  publishes-to: diluxone-plugins-ai
+  workflow: plugin-release-ai.yml
+  publish: plugin-publish-ai.yml
+  prepare: [python3, "{central}/scripts/agent-manifests.py", version, "{version}", .]

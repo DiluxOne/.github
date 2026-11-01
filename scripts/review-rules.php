@@ -32,6 +32,8 @@
  *   forbidden-config      a regular expression over configuration files
  *   suppression-allowlist every linter suppression of some checks is listed,
  *                         with a reason, in the repository's suppressions file
+ *   line                  a regular expression over each line of text files
+ *                         (the text adapter: hooks, manifests, skills)
  *
  * Rules files are YAML, read by the small parser below (no extension or
  * library is needed on a runner or a contributor's machine). It reads block
@@ -41,8 +43,10 @@
  * guessed at.
  *
  * Language adapters read the files (PHP, with PHP's own tokenizer, so a
- * string or a comment is never mistaken for code). A rule names its
- * `language`; the rules file sets the default. Adding a language is a class
+ * string or a comment is never mistaken for code; text, as lines, for what
+ * has no grammar here: shell, JSON, Markdown). A rule names its
+ * `language`; the rules file sets the default; each adapter reads only the
+ * rule types RR_LANGUAGE_TYPES gives it. Adding a language is a class
  * with the same methods as RR_Php_Adapter, registered in rr_adapter().
  *
  * @package DiluxOne
@@ -1247,11 +1251,48 @@ final class RR_Php_Adapter {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// The text adapter.
+// ---------------------------------------------------------------------------
+
+/**
+ * Files read as lines of text: shell, JSON, Markdown, TOML, YAML, scripts
+ * and files with no extension (a hook script often has none). What a coding
+ * agent's plugin ships is mostly these: its hooks, its manifests, the skills
+ * and commands that tell the agent what to run. There is no grammar here, so
+ * the one rule type that reads it, `line`, is a regular expression over each
+ * line, with an `unless` and the `files` it applies to.
+ */
+final class RR_Text_Adapter {
+	/** @var array<string, list<string>> path => lines */
+	public array $files = array();
+
+	/** @param array<string, string> $sources */
+	public function __construct( array $sources ) {
+		foreach ( $sources as $path => $source ) {
+			$this->files[ $path ] = preg_split( '/\r\n|\n|\r/', $source ) ?: array();
+		}
+	}
+
+	/** @return list<string> */
+	public static function extensions(): array {
+		return array( '', 'sh', 'bash', 'zsh', 'fish', 'ps1', 'json', 'jsonc', 'md', 'mdc', 'txt', 'toml', 'yml', 'yaml', 'js', 'mjs', 'cjs', 'ts', 'py' );
+	}
+}
+
+/** The rule types each language's adapter reads. */
+const RR_LANGUAGE_TYPES = array(
+	'php'  => array( 'comment', 'call-arg', 'hook-callback', 'forbidden-call', 'forbidden-config', 'suppression-allowlist' ),
+	'text' => array( 'line', 'forbidden-config' ),
+);
+
 /** The adapter for a language, over a set of files. */
-function rr_adapter( string $language, array $sources ): RR_Php_Adapter {
+function rr_adapter( string $language, array $sources ): RR_Php_Adapter|RR_Text_Adapter {
 	switch ( $language ) {
 		case 'php':
 			return new RR_Php_Adapter( $sources );
+		case 'text':
+			return new RR_Text_Adapter( $sources );
 	}
 
 	throw new InvalidArgumentException( "No adapter for the language \"$language\"." );
@@ -1262,6 +1303,8 @@ function rr_adapter_extensions( string $language ): array {
 	switch ( $language ) {
 		case 'php':
 			return RR_Php_Adapter::extensions();
+		case 'text':
+			return RR_Text_Adapter::extensions();
 	}
 
 	throw new InvalidArgumentException( "No adapter for the language \"$language\"." );
@@ -1273,7 +1316,7 @@ function rr_adapter_extensions( string $language ): array {
 
 final class RR_Rules_Error extends RuntimeException {}
 
-const RR_TYPES      = array( 'comment', 'call-arg', 'hook-callback', 'forbidden-call', 'forbidden-config', 'suppression-allowlist' );
+const RR_TYPES      = array( 'comment', 'call-arg', 'hook-callback', 'forbidden-call', 'forbidden-config', 'suppression-allowlist', 'line' );
 const RR_SEVERITIES = array( 'error', 'warning', 'notice' );
 const RR_FINGERPRINT_LINES    = 3;
 const RR_DEFAULT_SUPERGLOBALS = array( '$_GET', '$_POST', '$_REQUEST', '$_COOKIE', '$_FILES', '$_SERVER', '$_ENV' );
@@ -1347,6 +1390,14 @@ function rr_load_rules( string $path ): array {
 		$rule['language'] = (string) ( $rule['language'] ?? $language );
 		$rule['scope']    = (string) ( $rule['scope'] ?? ( 'forbidden-config' === $rule['type'] ? 'repo' : 'tree' ) );
 
+		if ( ! isset( RR_LANGUAGE_TYPES[ $rule['language'] ] ) ) {
+			throw new RR_Rules_Error( "$where ($id): no adapter reads the language \"{$rule['language']}\"; one of " . implode( ', ', array_keys( RR_LANGUAGE_TYPES ) ) . '.' );
+		}
+
+		if ( ! in_array( $rule['type'], RR_LANGUAGE_TYPES[ $rule['language'] ], true ) ) {
+			throw new RR_Rules_Error( "$where ($id): the {$rule['language']} adapter does not read {$rule['type']} rules; it reads " . implode( ', ', RR_LANGUAGE_TYPES[ $rule['language'] ] ) . '.' );
+		}
+
 		if ( ! in_array( $rule['scope'], array( 'tree', 'repo' ), true ) ) {
 			throw new RR_Rules_Error( "$where ($id): scope is tree or repo." );
 		}
@@ -1358,6 +1409,7 @@ function rr_load_rules( string $path ): array {
 			'forbidden-call'        => array( 'functions' ),
 			'forbidden-config'      => array( 'files', 'pattern' ),
 			'suppression-allowlist' => array( 'sniffs' ),
+			'line'                  => array( 'pattern' ),
 		);
 
 		foreach ( $need[ $rule['type'] ] as $key ) {
@@ -1489,6 +1541,9 @@ function rr_run( array $set, string $repo, string $tree, ?array $only = null ): 
 				case 'suppression-allowlist':
 					$found = rr_suppression_allowlist( $rule, $adapter, $repo );
 					break;
+				case 'line':
+					$found = rr_line( $rule, $adapter );
+					break;
 				default:
 					$found = array();
 			}
@@ -1522,6 +1577,37 @@ function rr_message( string $message, array $vars ): string {
 	}
 
 	return $message;
+}
+
+/**
+ * Lines of text that match `pattern` (and not `unless`), in the files that
+ * match `files` (globs; every file the adapter read when there is none).
+ *
+ * @return list<array{file: string, line: int, vars?: array<string, string>}>
+ */
+function rr_line( array $rule, RR_Text_Adapter $adapter ): array {
+	$out     = array();
+	$globs   = array_map( 'strval', (array) ( $rule['files'] ?? array() ) );
+	$pattern = rr_regex( (string) $rule['pattern'], (string) ( $rule['flags'] ?? '' ) );
+	$unless  = isset( $rule['unless'] ) ? rr_regex( (string) $rule['unless'], (string) ( $rule['flags'] ?? '' ) ) : null;
+
+	foreach ( $adapter->files as $path => $lines ) {
+		if ( array() !== $globs && ! rr_glob_any( $path, $globs ) ) {
+			continue;
+		}
+
+		foreach ( $lines as $n => $text ) {
+			if ( preg_match( $pattern, $text, $m ) && ( null === $unless || ! preg_match( $unless, $text ) ) ) {
+				$out[] = array(
+					'file' => $path,
+					'line' => $n + 1,
+					'vars' => array( 'match' => trim( $m[0] ) ),
+				);
+			}
+		}
+	}
+
+	return $out;
 }
 
 /** @return list<array{file: string, line: int, vars?: array<string, string>}> */
@@ -2352,6 +2438,10 @@ function rr_fixture_files( array $rule, $fixture ): array {
 		return $fixture;
 	}
 
+	if ( 'text' === $rule['language'] ) {
+		return array( 'hooks/fixture.sh' => (string) $fixture );
+	}
+
 	return array( ( 'repo' === $rule['scope'] && 'forbidden-config' === $rule['type'] ? 'phpcs.xml.dist' : 'fixture.php' ) => (string) $fixture );
 }
 
@@ -2601,6 +2691,10 @@ PHP;
 		'no source'        => "rules:\n  - id: a\n    type: comment\n    severity: error\n    message: m\n    pattern: x\n",
 		'a bad regex'      => "rules:\n  - id: a\n    type: comment\n    severity: error\n    message: m\n    source: s\n    pattern: '('\n    fixtures:\n      fail: [x]\n      pass: [y]\n",
 		'a bad writes'     => "rules:\n  - id: a\n    type: hook-callback\n    severity: error\n    message: m\n    source: s\n    hooks: ['admin_post_*']\n    require:\n      - calls: [check_admin_referer]\n        before-first: superglobal-read\n        when-no-read: pass\n        writes: ['(']\n    fixtures:\n      fail: [x]\n      pass: [y]\n",
+		'a language with no adapter' => "language: cobol\nrules:\n  - id: a\n    type: line\n    severity: error\n    message: m\n    source: s\n    pattern: x\n    fixtures:\n      fail: [x]\n      pass: [y]\n",
+		'a php type on text' => "language: text\nrules:\n  - id: a\n    type: comment\n    severity: error\n    message: m\n    source: s\n    pattern: x\n    fixtures:\n      fail: [x]\n      pass: [y]\n",
+		'a line rule on php' => "rules:\n  - id: a\n    type: line\n    severity: error\n    message: m\n    source: s\n    pattern: x\n    fixtures:\n      fail: [x]\n      pass: [y]\n",
+		'a line rule with no pattern' => "language: text\nrules:\n  - id: a\n    type: line\n    severity: error\n    message: m\n    source: s\n    fixtures:\n      fail: [x]\n      pass: [y]\n",
 	) as $name => $bad ) {
 		$dir = rr_scratch( array( 'rules.yml' => $bad ) );
 
@@ -2649,6 +2743,23 @@ PHP;
 	$out  = (string) ob_get_clean();
 	$check( 'cli: --tree is what the code rules read', 1 === $exit && false !== strpos( $out, '"b.php"' ), "exit $exit: $out" );
 	rr_rmdir( $dir );
+
+	// The text adapter: a line rule, its `files` and `unless`, a file with no extension.
+	$text = rr_scratch(
+		array(
+			'rules.yml'          => "language: text\nrules:\n  - id: no-sudo\n    type: line\n    severity: error\n    files: ['hooks/**', 'skills/**']\n    pattern: '\\bsudo\\s'\n    unless: '(?i)\\bnever\\b'\n    message: 'asks for {match}'\n    source: test\n    fixtures:\n      fail: ['sudo rm']\n      pass: ['rm']\n",
+			'hooks/run'          => "#!/bin/sh\necho hi\nsudo rm -rf x\n",
+			'skills/a/SKILL.md'  => "Never use sudo here.\n",
+			'README.md'          => "sudo make install\n",
+			'hooks/logo.png'     => "sudo ",
+		)
+	);
+	ob_start();
+	$exit = rr_main( array( 'review-rules.php', '--rules', $text . '/rules.yml', '--repo', $text, '--format', 'json' ) );
+	$out  = (string) ob_get_clean();
+	$got  = json_decode( $out, true );
+	$check( 'text: a line rule reads a file with no extension, at its line', 1 === $exit && is_array( $got ) && 1 === count( $got ) && 'hooks/run' === $got[0]['file'] && 3 === $got[0]['line'] && 'asks for sudo' === $got[0]['message'], "exit $exit: $out" );
+	rr_rmdir( $text );
 
 	// Every kind's rules, against their own fixtures.
 	$packs = glob( rr_central() . '/kinds/*/rules.yml' ) ?: array();

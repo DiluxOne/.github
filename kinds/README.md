@@ -13,6 +13,7 @@ kind: wordpress-plugin
 | Kind | Pack | For |
 | --- | --- | --- |
 | `wordpress-plugin` | [`wordpress-plugin/`](wordpress-plugin/) | a plugin published on wordpress.org |
+| `ai-agent-plugin` | [`ai-agent-plugin/`](ai-agent-plugin/) | a plugin for coding agents (Claude Code, Codex, Copilot, Cursor, Gemini, OpenCode), published in the organisation's catalog, `diluxone-plugins-ai` (#552) |
 
 ## What a pack holds
 
@@ -23,6 +24,7 @@ kinds/<kind>/
   review-profile.md   what the Claude review reads for this kind, on top of review-profiles/general.md
   surface.yml         its public surface, and its documentation paths (optional; "Public surface" below)
   dependabot.yml      the .github/dependabot.yml of its repositories (optional; "Dependabot" below)
+  tools.yml           ai-agent-plugin only: the coding agents, their manifests and how each installs ("The tools of a plugin for coding agents" below)
   *.md                anything a repository of this kind needs to know (wordpress-plugin/suppressions.md)
 ```
 
@@ -36,7 +38,7 @@ kinds/<kind>/
 | `pre-pr` | What the repository's `make pre-pr` must run (#479, [`scripts/pre-pr.py`](../scripts/pre-pr.py)), one item per line: every check its pull request and its merge queue run, one after the other, stopping at the first failure, starting and stopping what it needs (a plugin's wp-env sites) and relying on nothing started before it. `make pre-pr` is the one check before a pull request in every repository, whatever its stack: `dx check` runs it before the local review, and so does the autopilot before it marks a pull request ready. A repository of no kind lists what its own covers in its `.github/review-policy.yml` (`pre-pr:`). The daily drift check lists a repository whose Makefile has no `pre-pr` target, unless `repos.yml` says it has none by design (`pre-pr: {NAME: false}`); with org.yml `pre-pr: required`, the conventions check fails its pull requests. |
 | `pre-pr-make` | How the `make pre-pr` of the kind's repositories runs (#479, `scripts/pre-pr.py render`): `run`, bash lines from the checkout, run as one script that stops at the first failure, and `finally`, run after it either way (the wp-env sites it started). `scripts/sync-repos.py pre-pr` writes it into the repository's `dx.mk`, a managed file its Makefile includes (`include dx.mk`, last, so a bare `make` keeps running the repository's own first target), so the organisation owns `pre-pr` and the repository's own targets stay its own: it adds its own checks as prerequisites (`pre-pr: my-check`), never in `dx.mk`. A Makefile whose own `pre-pr` has a recipe is left as it is, and the pull request says to make it a prerequisite. `DX_CENTRAL` is the organisation's checkout (`dx check` sets it; the autopilot's `.dx-central` is the default). The daily drift check lists a repository whose `dx.mk` is missing or differs. A kind with none: its repositories write their own `pre-pr`. |
 | `own-checks` | What a repository of this kind requires of its own jobs in its **own checks** ruleset: `callers-of` (it needs one when it calls one of these workflows), `jobs` (the caller's job names whose checks are required), `skip` (check names left out). `scripts/sync-repos.py own-checks` creates it. |
-| `detect` | How detection recognises a repository of this kind (#191, `scripts/detect.py`): `files` that must be at its root, a `header` (a root file matching `glob` whose first lines match `pattern`), and the `roles` a proposal gives its paths. Detection only proposes: the daily run opens an issue and a pull request adding a new repository to `repos.yml`, and a person merges it. |
+| `detect` | How detection recognises a repository of this kind (#191, `scripts/detect.py`): `files` that must be at its root, a `header` (a root file matching `glob` whose first lines match `pattern`), `any-files` (paths from its root, in a folder or not, one of which must exist: ai-agent-plugin's manifests), and the `roles` a proposal gives its paths. Detection only proposes: the daily run opens an issue and a pull request adding a new repository to `repos.yml`, and a person merges it. |
 | `adapters` | The engines the kind's checks run and the language adapter each reads with. |
 | `settings` | What the workflows read from the pack, free-form per kind (for wordpress-plugin, `php`: `tools`, the PHP every tool runs on, `minimum`, the oldest every plugin supports, and `analysis-only`, the dev packages the unit tests leave out, read by [`scripts/php-versions.py`](../scripts/php-versions.py); `plugin-check`: `strict`, `categories`, `include-experimental`, `ignore-codes`). |
 | `autopilot` | What the autopilot adds to every change of this kind beside what the Spec names (#341), one instruction per line, read into its work prompt by [`scripts/autopilot.py`](../scripts/autopilot.py) for the kind the repository's `.github/review-policy.yml` declares. For wordpress-plugin, the change's changelog line in a file of its own, `changelog.d/<the issue's number>.md`, never in `readme.txt`, which the release writes (#452), and the translations in their normalised form (`languages/*.pot` and `*.po`, every new string translated, never a `.mo`). |
@@ -149,6 +151,7 @@ single-quoted YAML keeps backslashes as they are (`'\$_GET'`).
 | `forbidden-call` | a function call | `functions` | `{function}` |
 | `hook-callback` | the function a hook is registered with (`'fn'`, `'Class::m'`, `array( $this, 'm' )`, `[ __CLASS__, 'm' ]`, `[ self::class, 'm' ]`, a closure, an arrow function, `$this->m( ... )`), resolved anywhere in the tree | `hooks` (globs over the hook's name; a part built at runtime reads as `*`), `registrars` (default `add_action`, `add_filter`), `public-hooks` (a callback also registered on one of these is skipped), `top-level-only` (a registration inside a function body is conditional, and skipped), `superglobals`, `ignore-keys` (a superglobal read whose literal key matches is not a read), `require`: a list of `calls: [...]` with `before-first: superglobal-read` and `when-no-read: pass`, or `contains: regex` with a `label`; either with `unless-calls: [...]` | `{hook}`, `{callback}`, `{missing}` |
 | `forbidden-config` | configuration files in the repository (scope `repo`) | `files` (globs), `pattern` | `{match}` |
+| `line` | each line of a text file (language `text` only) | `pattern`; `unless` (a line that also matches it is fine); `files` (globs; every file the adapter reads when none) | `{match}` |
 | `suppression-allowlist` | every `phpcs:ignore` / `phpcs:disable` | `sniffs` (the checks whose suppression must be listed), `never` (checks that can never be listed), `file` (the list, default `.github/review-suppressions.yml`), `reason-pattern` with `reason-severity` and `reason-message` (a reason in the list that matches is reported), `stale-message` | `{sniff}`, `{fingerprint}`, `{entry}`, `{list}` |
 
 A callback the tree does not define (a function of another plugin, a method
@@ -242,7 +245,12 @@ A template is a whole Dependabot configuration with one entry under
 (github-actions, npm, composer, docker), each with the comments right above
 it and one `directories: ["/"]` line. A repository gets only the entries of
 the ecosystems it has: github-actions always, npm with a `package.json` at
-its root, composer with a `composer.json`, docker with a `Dockerfile`. What
+its root, composer with a `composer.json`, docker with a `Dockerfile`. A
+kind's template may keep fewer: ai-agent-plugin's keeps github-actions
+alone, since what a plugin bundles it pins on purpose (diluxone-mermaid
+tests three majors of mermaid side by side), so its repositories get their
+actions' updates only, and `repos.yml` cannot add to an ecosystem the kind
+does not keep. What
 a repository adds lives in [`repos.yml`](../repos.yml) (`dependabot`), per
 ecosystem, and nothing else is kept: `directories` (beside its root's; they
 turn the ecosystem on) and `ignore` (Dependabot's own entries, written under
@@ -268,8 +276,28 @@ installed) and fails if the two differ.
 A language adapter turns files into what the rule types ask for: comments,
 calls and their arguments, function bodies, hook registrations,
 suppressions. PHP's is `RR_Php_Adapter`, on PHP's own tokenizer, so a string
-or a comment is never read as code. Another language is a class with the
-same methods, registered in `rr_adapter()`; a rule names it with `language:`.
+or a comment is never read as code. `text` (`RR_Text_Adapter`, #552) reads
+what has no grammar here (shell, JSON, Markdown, TOML, YAML, scripts, files
+with no extension) as lines, for the `line` rule type and `forbidden-config`;
+the ai-agent-plugin kind's rules are written for it. Another language is a
+class registered in `rr_adapter()`, with the rule types it reads in
+`RR_LANGUAGE_TYPES` (a rules file that asks an adapter for another type does
+not load); a rule names it with `language:`.
+
+## The tools of a plugin for coding agents
+
+A plugin of the `ai-agent-plugin` kind is wired into several coding agents,
+each through a manifest of its own. [`ai-agent-plugin/tools.yml`](ai-agent-plugin/tools.yml)
+says, for each tool, the manifest's path from the plugin's root and the
+fields that hold its name, version and description, and how a person
+installs it: `catalog` (a catalog file in `diluxone-plugins-ai`, and the form
+of an entry that points to the plugin's own repository; or `shares`, another
+tool's catalog file that this tool reads too) or `instructions` (a command
+from the plugin's repository, for its README). Each entry's `source` is the
+documentation it was checked against; a tool whose documentation shows no
+catalog a person can add from a GitHub repository stays `instructions`.
+[`scripts/agent-manifests.py`](../scripts/agent-manifests.py) reads it and
+knows no tool by name, so a new tool is one entry there.
 
 ## Adding a kind
 

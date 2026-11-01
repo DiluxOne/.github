@@ -1,0 +1,8 @@
+{
+  "name": "Release, plugin for coding agents (DiluxOne)",
+  "description": "Create the GitHub release once a person accepts its release issue, and bring the plugin's entry in the diluxone-plugins-ai catalog up to it.",
+  "iconName": "octicon check",
+  "categories": [
+    "Deployment"
+  ]
+}
