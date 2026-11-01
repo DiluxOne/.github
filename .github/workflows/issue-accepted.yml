@@ -33,6 +33,11 @@ name: Issue accepted
 # comment. A lane's issue, accepted by policy and never labelled by a
 # person, stays unassigned.
 #
+# An accepted issue whose PRD is edited after its seal is no longer accepted
+# (#588, the `unseal` job): `accepted` comes off, `awaiting-acceptance` or
+# `incomplete` goes on, and one comment says what changed since the seal
+# (receipts.py sealed-prd, issue-schema.py diff) and who may accept it again.
+#
 # A release issue (#82, "Release X.Y.Z", label `lane:release`) is not a PRD:
 # its acceptance is the decision to publish that version. Instead of G1 and
 # the seal, the `release` job opens the release pull request: it checks that
@@ -383,6 +388,80 @@ jobs:
           id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '.[] | select(.user.type == "Bot" and (.user.login | startswith(env.DX_BOT_APP)) and (.body | startswith("<!-- dx-board -->"))) | .id' | tail -1)
           if [ -n "$id" ]; then gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$board" >/dev/null
           else gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$board" >/dev/null; fi
+
+  # An accepted issue edited after its seal (#588): its PRD is no longer the
+  # one accepted, so the acceptance does not stand. `accepted` comes off,
+  # `awaiting-acceptance` or `incomplete` goes on (the G1 check), and one
+  # comment says what changed since the seal, section by section, and who
+  # may accept it again. The autopilot stops as before, as the seal no
+  # longer matches. An edit that leaves the PRD as sealed (the Spec the
+  # autopilot appends, a report above it) changes nothing.
+  unseal:
+    name: Edited after its acceptance
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    if: >-
+      github.event_name == 'issues' && github.event.action == 'edited' &&
+      contains(github.event.issue.labels.*.name, inputs.label) && !contains(github.event.issue.labels.*.name, 'lane:release')
+    concurrency:
+      group: issue-g1-${{ github.repository }}-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    permissions: {}
+    steps:
+      - name: The scripts
+        env:
+          REF: ${{ inputs.central-ref || job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          git init -q .dx-central && git -C .dx-central fetch -q --depth 1 https://github.com/DiluxOne/.github "$REF" && git -C .dx-central checkout -q FETCH_HEAD
+          test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+      - name: App token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-issues: write
+          permission-contents: read # the seal, and CODEOWNERS
+          permission-pull-requests: read
+      - name: Take the acceptance off and say what changed
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          BODY_TEXT: ${{ github.event.issue.body }}
+          NUMBER: ${{ github.event.issue.number }}
+          LABEL: ${{ inputs.label }}
+          SENDER: ${{ github.event.sender.login }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$BODY_TEXT" > "$RUNNER_TEMP/body.md"
+          export BODY="$RUNNER_TEMP/body.md"
+          # Exit 2 is a seal that could not be read: never taken for a change.
+          rc=0; verdict=$(python3 .dx-central/scripts/receipts.py verify-prd) || rc=$?
+          if [ "$rc" -gt 1 ]; then echo "::error::The seal could not be read: $verdict"; exit 1; fi
+          [ "$verdict" = changed ] || { echo "The PRD is the one sealed ($verdict): the acceptance stands."; exit 0; }
+          ready=false; missing=""
+          if result=$(python3 .dx-central/scripts/issue-schema.py check < "$BODY"); then ready=true
+          else missing=$(jq -r '.errors[] | "- `" + gsub("`"; "\u0027") + "`"' <<<"$result"); fi
+          { read -r add; read -r remove; } < <(python3 .dx-central/scripts/issue-schema.py g1-labels unsealed "$ready" "$LABEL")
+          IFS=',' read -ra rm <<<"$remove"
+          for l in "${rm[@]}"; do
+            if [ "$l" = "$LABEL" ]; then gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$LABEL" >/dev/null
+            else gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$l" >/dev/null 2>&1 || true; fi
+          done
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "$add" >/dev/null
+          python3 .dx-central/scripts/receipts.py sealed-prd > "$RUNNER_TEMP/sealed.md" || : > "$RUNNER_TEMP/sealed.md"
+          changed=$(python3 .dx-central/scripts/issue-schema.py diff "$RUNNER_TEMP/sealed.md" < "$BODY")
+          who=$(python3 .dx-central/scripts/deciders.py who accepted) || who="those who-decides allows (org.yml, repos.yml)"
+          state=$([ "$ready" = true ] && echo '`awaiting-acceptance`' || echo '`incomplete`')
+          {
+            printf '**Acceptance withdrawn (G2):** @%s edited the PRD after it was accepted, so it is no longer the one sealed: `%s` was taken off and the issue is %s. The autopilot does not go on until it is accepted again.\n\n' "$SENDER" "$LABEL" "$state"
+            printf '**What changed since the seal:**\n\n%s\n\n' "$changed"
+            [ -z "$missing" ] || printf '**What is missing before it can be accepted (G1):**\n\n%s\n\n' "$missing"
+            printf 'Who may accept it again: %s.\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)\n' "$who"
+          } > "$RUNNER_TEMP/unseal.md"
+          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/unseal.md" >/dev/null
+          cat "$RUNNER_TEMP/unseal.md"
 
   receipt:
     name: The merge's receipt

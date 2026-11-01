@@ -29,6 +29,7 @@ widens it. An admin always decides: they can change the setting anyway.
                                  prints why, naming who may
   deciders.py list ACTION        the logins on stdin (one per line) that
                                  may, one per line
+  deciders.py who ACTION         who may, in words, for the bot's comment
   deciders.py --test             self-test
 
 Environment: GH_TOKEN; GITHUB_REPOSITORY (owner/name); NUMBER (the issue);
@@ -398,6 +399,7 @@ def self_test():
         check("C4 cli: acceptor: before any acceptance, any writer gives the first", cli(["may", "accepted", "dev"], dict(acc, acceptor=""), "who-decides: acceptor\n")[0], 0)
         check("C4 (choice 4a): the credits keep their floor of maintain, whatever the value",
               (cli(["may", "credits", "dev"], acc, "who-decides: writers\n")[0], decide("writers", "credits", "m", "maintain")["ok"]), (1, True))
+        check("C5 cli: who says who may accept again", cli(["who", "accepted"], dict(base, codeowners=None)), (0, "anyone with write access to the repository"))
         check("cli: an unknown value is an error (exit 2), never a yes", cli(["may", "answer", "dev"], base, "who-decides: everyone\n")[0], 2)
     # C3: only GitHub's "not found" is no CODEOWNERS; any other failure is
     # never read as none (which would open the decision to every writer).
@@ -442,7 +444,7 @@ def main(argv):
     if argv[:1] == ["setting"]:
         print(value)
         return 0
-    if len(argv) >= 2 and argv[0] in ("may", "list") and argv[1] in FLOORS:
+    if len(argv) >= 2 and argv[0] in ("may", "list", "who") and argv[1] in FLOORS:
         action = argv[1]
         live = Live(repo, os.environ.get("NUMBER", ""), os.environ.get("PR", ""))
         try:
@@ -451,6 +453,9 @@ def main(argv):
                 d = decide(value, action, argv[2], live.role(argv[2]), codeowners, files, acceptor)
                 print(d["why"])
                 return 0 if d["ok"] else 1
+            if argv[0] == "who" and len(argv) == 2:
+                print(decide(value, action, "", "none", codeowners, files, acceptor)["who"])
+                return 0
             if argv[0] == "list" and len(argv) == 2:
                 for login in sorted({l.strip() for l in sys.stdin if l.strip()}):
                     if decide(value, action, login, live.role(login), codeowners, files, acceptor)["ok"]:

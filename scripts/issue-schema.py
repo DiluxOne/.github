@@ -22,9 +22,13 @@
         exit 1 when any
   issue-schema.py g1-labels ACTION READY LABEL   the labels the G1 check
         adds and removes (#353), for the issue event ACTION (opened, edited,
-        labeled), READY (true or false) and LABEL (the one that accepts):
+        labeled, or unsealed: an accepted issue whose PRD no longer matches
+        its seal, #588), READY (true or false) and LABEL (the one that accepts):
         two lines, the labels to add, then the labels to remove, each
         comma-separated (empty when none)
+  issue-schema.py diff OLD                   what changed in the PRD from the
+        body in the file OLD (an empty file: not known) to the body on
+        stdin, section by section, as Markdown for the bot's comment (#588)
   issue-schema.py --test                     self-test
 
 Environment: ISSUE_SCHEMA, the schema (default: policy/issue-schema.yml next
@@ -273,7 +277,50 @@ def g1_labels(action, ready, label="accepted"):
         return ["incomplete"], [label, "awaiting-acceptance"]
     if action in ("opened", "edited"):
         return (["awaiting-acceptance"], ["incomplete"]) if ready else (["incomplete"], ["awaiting-acceptance"])
+    if action == "unsealed":
+        # Edited after its seal (#588): no longer accepted, whatever it is now.
+        return (["awaiting-acceptance"], [label, "incomplete"]) if ready else (["incomplete"], [label, "awaiting-acceptance"])
     return [], []
+
+
+FENCE = "~~~~~~~~"
+
+
+def inert(text):
+    """A person's text, safe inside the bot's fenced block: no fence of
+    its own can close it."""
+    return (text or "").replace("~~~", "~ ~ ~").replace("```", "` ` `")
+
+
+def prd_diff(old, new, sch=None, limit=6000):
+    """What changed in the PRD from OLD to NEW (#588), section by section:
+    Markdown, each changed section's lines in a fenced diff. OLD "" (the
+    sealed text is not known) lists the sections NEW has. Pure."""
+    import difflib
+    sch = sch or schema()
+    wanted = [s["heading"] for s in sch["prd"]]
+    now = {h: normalise(t) for h, t in parse(new)[0] if h in wanted}
+    if not (old or "").strip():
+        listed = ", ".join(h for h in wanted if h in now) or "none"
+        return f"The text that was sealed is not available (an older seal holds only its hash). The PRD's sections now: {listed}."
+    was = {h: normalise(t) for h, t in parse(old)[0] if h in wanted}
+    out = []
+    for h in wanted:
+        a, b = was.get(h), now.get(h)
+        if a == b:
+            continue
+        if a is None:
+            out.append(f"- **{h}**: added")
+        elif b is None:
+            out.append(f"- **{h}**: removed")
+        else:
+            out.append(f"- **{h}**: changed")
+        lines = list(difflib.unified_diff((a or "").split("\n"), (b or "").split("\n"), lineterm="", n=0))[2:]
+        lines = [l for l in lines if not l.startswith("@@")]
+        if lines:
+            out.append(f"\n{FENCE}diff\n" + inert("\n".join(lines)) + f"\n{FENCE}\n")
+    text = "\n".join(out) if out else "No section of the PRD changed in its words (only its layout)."
+    return text if len(text) <= limit else text[:limit].rsplit("\n", 1)[0] + f"\n{FENCE}\n\n…and more: compare the issue's edit history."
 
 
 PROPOSAL = {"type": "textarea", "id": "proposed-solution",
@@ -501,6 +548,19 @@ A class on <html> and a cookie.
     check_("#353 C4: accepting a complete issue removes awaiting-acceptance", g1_labels("labeled", True), ([], ["awaiting-acceptance", "incomplete"]))
     check_("#353 C5: accepting an incomplete issue takes the acceptance off", g1_labels("labeled", False, "accepted"), (["incomplete"], ["accepted", "awaiting-acceptance"]))
     check_("#353: opened or edited never touches the acceptance", any("accepted" in a + r for a, r in (g1_labels(x, y) for x in ("opened", "edited") for y in (True, False))), False)
+    check_("C5 (#588): an accepted issue edited after its seal loses the acceptance, and is awaiting-acceptance or incomplete",
+           (g1_labels("unsealed", True, "accepted"), g1_labels("unsealed", False, "accepted")),
+           ((["awaiting-acceptance"], ["accepted", "incomplete"]), (["incomplete"], ["accepted", "awaiting-acceptance"])))
+    edited = good.replace("turns dark.", "turns dark, slowly.").replace("### Out of scope\n\n- Per-page themes.\n\n", "")
+    d = prd_diff(good, edited)
+    check_("C5 (#588): diff names each changed section, with its lines",
+           ("**Acceptance criteria**: changed" in d, "-- C1: Given a visitor, when they press the toggle, then the page turns dark." in d,
+            "+- C1: Given a visitor, when they press the toggle, then the page turns dark, slowly." in d, "**Out of scope**: removed" in d, "**Problem**" in d), (True, True, True, True, False))
+    check_("C5 (#588): diff of the same PRD, or one whose sealed text is unknown",
+           (prd_diff(good, good + "\n"), prd_diff("", good).startswith("The text that was sealed is not available")), ("No section of the PRD changed in its words (only its layout).", True))
+    check_("C5 (#588): a person's fence cannot close the bot's", "~~~~~~~~\n" not in prd_diff(good, good.replace("Normal", "Normal\n~~~~~~~~\n@x")).split("diff\n", 1)[1].rsplit("~~~~~~~~", 1)[0], True)
+    dcli = subprocess.run([sys.executable, os.path.abspath(__file__), "diff", os.devnull], input=good, capture_output=True, text=True)
+    check_("C5 (#588): cli diff with no sealed text says so", (dcli.returncode, "not available" in dcli.stdout), (0, True))
     cli = subprocess.run([sys.executable, os.path.abspath(__file__), "g1-labels", "labeled", "false", "accepted"], capture_output=True, text=True)
     check_("#353 cli g1-labels: the labels to add, then to remove", cli.stdout, "incomplete\naccepted,awaiting-acceptance\n")
     try:
@@ -567,6 +627,10 @@ def main(argv):
         add, remove = g1_labels(argv[1], argv[2] == "true", argv[3])
         print(",".join(add))
         print(",".join(remove))
+        return 0
+    if argv[:1] == ["diff"] and len(argv) == 2:
+        old = open(argv[1], encoding="utf-8").read() if os.path.exists(argv[1]) else ""
+        print(prd_diff(old, sys.stdin.read()))
         return 0
     if argv[:1] == ["criteria"]:
         # The PRD's acceptance criteria, for the review that checks them (G6, #193).

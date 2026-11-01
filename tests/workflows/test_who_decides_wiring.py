@@ -50,3 +50,15 @@ def test_answers_and_others_ask_who_decides():
     assert "deciders.py list answer" in others
     who = next(s for s in rr["credits"]["steps"] if s.get("id") == "who")["run"]
     assert "deciders.py may credits" in who
+
+
+def test_an_accepted_issue_edited_after_its_seal_is_unsealed():
+    job = workflow("issue-accepted.yml")["jobs"]["unseal"]
+    cond = " ".join(job["if"].split())
+    assert "github.event.action == 'edited'" in cond and "contains(github.event.issue.labels.*.name, inputs.label)" in cond
+    run = job["steps"][-1]["run"]
+    order = ["receipts.py verify-prd", "g1-labels unsealed", '--remove-label "$LABEL"', "receipts.py sealed-prd", "issue-schema.py diff", "deciders.py who accepted", "gh issue comment"]
+    assert [run.index(s) for s in order] == sorted(run.index(s) for s in order)
+    # A seal that cannot be read is never taken for a change.
+    assert 'if [ "$rc" -gt 1 ]; then' in run and '[ "$verdict" = changed ] ||' in run
+    assert job["concurrency"]["group"] == workflow("issue-accepted.yml")["jobs"]["ready"]["concurrency"]["group"]
