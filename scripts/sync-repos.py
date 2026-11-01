@@ -121,7 +121,15 @@ archived and not excluded in repos.yml:
             `pre-pr` target, the one check before a pull request (#479,
             scripts/pre-pr.py); not one repos.yml says has none by design
             (`pre-pr: {NAME: false}`), and every one whose dx.mk differs
-            from its pack's (`sync-repos.py pre-pr`).
+            from its pack's (`sync-repos.py pre-pr`). And (#562) every
+            repository of the organisation repos.yml does not list, an
+            adopted one whose custom property, code security configuration
+            or Project is missing, a caller still holding a template's
+            placeholder, the checks its merge queue would wait for that do
+            not run on merge_group, and its own commit rules (commit-msg
+            hook, commitlint, AGENTS.md, CONTRIBUTING.md) that match org.yml
+            `conventions-contradictions`; for the organisation, a ruleset
+            still naming its repositories.
 
   i18n      a WordPress plugin's translations in the form that merges
             (#452, scripts/plugin-i18n.sh): languages/*.pot and *.po with
@@ -2146,6 +2154,60 @@ def dependabot_wanted(repo, conf, default):
     return template, render_dependabot(text, dependabot_ecosystems(root_names(full, default), extra), extra)
 
 
+# #562 C4: a repository's own commit rules that contradict the
+# organisation's (org.yml `conventions-contradictions`).
+CONVENTION_FILES = ("AGENTS.md", "CONTRIBUTING.md", "commitlint.config.js", "commitlint.config.cjs", "commitlint.config.mjs",
+                    "commitlint.config.ts", ".commitlintrc", ".commitlintrc.json", ".commitlintrc.yml", ".commitlintrc.yaml",
+                    ".commitlintrc.js", ".commitlintrc.cjs")
+HOOK_DIRS = (".githooks", ".husky")
+PROSE = ("AGENTS.md", "CONTRIBUTING.md")
+COMMIT_WORDS = re.compile(r"(?i)commit|trailer|co-author|assisted|generated|footer")
+NEGATION = re.compile(r"(?i)\b(never|not|no longer|instead of|don't|do not)\b")
+
+
+def contradictions(texts, rules):
+    """The drift lines of a repository's commit rules (`texts`, {path:
+    text}: its hooks, commitlint configuration, AGENTS.md, CONTRIBUTING.md)
+    that match a rule of org.yml `conventions-contradictions`: in the prose,
+    only the lines that speak of commits or trailers, the dx:org block aside;
+    a line that says "never" or "not" before it is no contradiction. Pure."""
+    out = []
+    for path, text in sorted(texts.items()):
+        if os.path.basename(path) == "AGENTS.md" and START in text and END in text and text.index(START) < text.index(END):
+            a, b = text.index(START), text.index(END) + len(END)
+            text = text[:a] + "\n" * text[a:b].count("\n") + text[b:]
+        for n, line in enumerate(text.splitlines(), 1):
+            if os.path.basename(path) in PROSE and not COMMIT_WORDS.search(line):
+                continue
+            for rule in rules:
+                m = re.search(str(rule.get("pattern") or "(?!)"), line)
+                if m and not NEGATION.search(line[:m.start()]):
+                    out.append(f"its `{path}` asks for {rule.get('says')} (line {n}): a commit rule that contradicts the organisation's (org.yml `conventions-contradictions`)")
+                    break
+    return out
+
+
+def conventions_texts(full, default):
+    """{path: text} of a repository's own commit rules on its default
+    branch: those of CONVENTION_FILES at its root and the commit-msg hooks
+    of HOOK_DIRS."""
+    names = root_names(full, default)
+
+    def read(path):
+        out = gh("api", f"repos/{full}/contents/{path}?ref={default}", "-H", "Accept: application/vnd.github.raw", check=False)
+        if out.returncode != 0 and "404" not in out.stderr:
+            raise RuntimeError(f"could not read {path}: {out.stderr.strip()[:200]}")
+        return out.stdout if out.returncode == 0 else None
+    paths = [n for n in CONVENTION_FILES if n in names]
+    for d in HOOK_DIRS:
+        if d in names:
+            listing = gh("api", f"repos/{full}/contents/{d}?ref={default}", check=False)
+            rows = json.loads(listing.stdout or "[]") if listing.returncode == 0 else []
+            paths += [r["path"] for r in rows if isinstance(r, dict) and "commit-msg" in str(r.get("name"))]
+    texts = {p: read(p) for p in paths}
+    return {p: t for p, t in texts.items() if t is not None}
+
+
 def org_drift(conf):
     """What differs in the organisation itself, as lines: an org ruleset
     still naming its repositories, a code security configuration missing."""
@@ -2340,6 +2402,8 @@ def drift(repo, conf, labels, block, current=0):
     elif system is not None and system not in design_systems():
         found.append(f"its design system `{system}` (repos.yml) is not one of design-systems/")
     found += adoption_drift(repo, conf)
+    if listed(repo["name"]) is not None:
+        found += contradictions(conventions_texts(full, default), sys.modules["org"].load().get("conventions-contradictions") or [])
     return found
 
 
@@ -3074,6 +3138,61 @@ def adopt_test(check, conf, labels, block):
           "no Project" in _said(lambda: sync_project({"name": "x"}, {"repos": {"x": {"kinds": []}}}, False)))
 
 
+def conventions_test(check, block):
+    """#562, C4: a repository whose own commit rules contradict the
+    organisation's is listed by the drift check; one in step is not."""
+    rules = sys.modules["org"].load().get("conventions-contradictions") or []
+    check("#562 C4: org.yml lists the contradictions, each with its fixtures",
+          len(rules) >= 3 and all(r.get("pattern") and r.get("says") and r.get("listed") and r.get("kept") for r in rules), rules)
+    for r in rules:
+        for line in r.get("listed") or []:
+            got = contradictions({".githooks/commit-msg": line + "\n"}, [r])
+            check(f"#562 C4: {r['pattern']} finds {line[:50]!r}", len(got) == 1, got)
+        for line in r.get("kept") or []:
+            got = contradictions({"AGENTS.md": line + "\n"}, rules)
+            check(f"#562 C4: nothing of org.yml finds {line[:50]!r}", got == [], got)
+
+    class Out:
+        def __init__(self, stdout="", returncode=0, stderr=""):
+            self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
+    agents_daw = with_block("# AGENTS.md\n\nEvery commit an agent wrote ends with the trailer `AI-assisted: yes`.\n", block)
+    agents_ok = with_block("# AGENTS.md\n\nA commit an agent helped with ends with `Assisted-by: <model> (<maker>)`.\n", block)
+    hook_daw = "#!/bin/sh\ngrep -q '^AI-assisted: yes$' \"$1\" || { echo 'add the AI-assisted: yes trailer'; exit 1; }\n"
+    hook_ok = "#!/bin/sh\ngrep -q '^Assisted-by: ' \"$1\" || true\n"
+    state = {}
+
+    def fake(*args, check=True, input_text=None):
+        joined = " ".join(args)
+        if joined.startswith("api repos/o/r/contents/?ref="):
+            return Out(json.dumps([{"name": n} for n in state]))
+        if joined.startswith("api repos/o/r/contents/.githooks?ref="):
+            return Out(json.dumps([{"name": "commit-msg", "path": ".githooks/commit-msg"}, {"name": "pre-push", "path": ".githooks/pre-push"}]))
+        for path, text in state.items():
+            if joined.startswith(f"api repos/o/r/contents/{path}?ref="):
+                return Out(text)
+        if joined.startswith("api repos/o/r/contents/.githooks/commit-msg?ref="):
+            return Out(state.get("hook", ""))
+        return Out("", 1, "HTTP 404")
+    global ORG
+    saved = (globals()["gh"], ORG)
+    try:
+        globals()["gh"], ORG = fake, "o"
+        found = {}
+        for label, files in (("hook", {".githooks": "", "hook": hook_daw, "AGENTS.md": agents_ok}), ("agents", {"AGENTS.md": agents_daw}),
+                             ("in step", {".githooks": "", "hook": hook_ok, "AGENTS.md": agents_ok})):
+            state.clear()
+            state.update(files)
+            found[label] = contradictions(conventions_texts("o/r", "main"), rules)
+    finally:
+        globals()["gh"], ORG = saved
+    check("#562 C4: a repository whose commit-msg hook asks for `AI-assisted: yes` is listed, naming the hook and its line",
+          [l.split(" asks for")[0] for l in found["hook"]] == ["its `.githooks/commit-msg`"] and "(line 2)" in found["hook"][0], found["hook"])
+    check("#562 C4: one whose AGENTS.md asks for it is listed, the organisation's block aside",
+          [l.split(" asks for")[0] for l in found["agents"]] == ["its `AGENTS.md`"], found["agents"])
+    check("#562 C4: one asking for `Assisted-by:` is not", found["in step"] == [], found["in step"])
+    check("#562 C4: the organisation's own block, which says what never to write, is no contradiction", contradictions({"AGENTS.md": with_block("# AGENTS.md\n", block)}, rules) == [], "")
+
+
 def _said(fn):
     import contextlib
     import io
@@ -3331,6 +3450,7 @@ def self_test():
     dependabot_test(check, conf, labels, block_file)
     ai_plugin_drift_test(check, conf, labels, block_file)
     adopt_test(check, conf, labels, block_file)
+    conventions_test(check, block_file)
     # The org-sync lane (#155): a run from a merged commit marks its issue,
     # and labels it only once its Type is Task; the lane reads it back.
     policy = load_yaml(os.path.join(CENTRAL, "policy", "autonomy.yml"))
