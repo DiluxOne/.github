@@ -988,11 +988,14 @@ def scrub(text):
     return SECRET.sub("[redacted]", text)
 
 
-def silent_why(mode, pr, why, spec_outcome, limit_hit, done, total, runs, cap):
+def silent_why(mode, pr, why, spec_outcome, limit_hit, done, total, runs, cap, failed=""):
     """Why a run ended without a result, in one sentence, from what the
-    workflow knows."""
+    workflow knows; a job that failed is named (#561), never left to read
+    as an agent that said nothing."""
     if why:
         return why
+    if failed:
+        return f"The {failed} job failed before the run could end on its own: its log, in the run, says why."
     if mode == "start" and not pr and spec_outcome not in ("", "success"):
         return f"Writing the Spec did not finish ({spec_outcome})."
     if limit_hit and pr and total and done == total:
@@ -1864,6 +1867,9 @@ A class on html.
     check("silent: an all-ticked run says the checks and the finish were left", "checks and the finish left" in silent_why("continue", "5", "", "", True, 2, 2, 2, 5), True)
     check("silent: a Spec run out of time, no pull request, says so", silent_why("start", "", "", "success", True, 0, 0, 1, 5), "It ran out of turns or time before there was a pull request to work in.")
     check("silent: the workflow's own reason wins", silent_why("start", "", "G3 failed.", "success", False, 0, 0, 1, 5), "G3 failed.")
+    check("#561 silent: a job that failed is named, never an agent that said nothing",
+          (silent_why("start", "", "", "success", False, 0, 0, 1, 5, "draft").startswith("The draft job failed"),
+           silent_why("start", "", "G3 failed.", "success", False, 0, 0, 1, 5, "draft")), (True, "G3 failed."))
     check("C4: an all-ticked draft that already had its continue goes to a person, not round again", end_verdict("continue", "5", True, False, 2, 2, True, 2, 5, nudged=True), "silent")
     check("#482 C3: an all-ticked draft that ended without finish continues once, out of time or not",
           (end_verdict("start", "5", True, False, 2, 2, False, 1, 5), end_verdict("continue", "5", True, False, 2, 2, True, 2, 5),
@@ -3526,8 +3532,9 @@ def main(argv):
                 gh("pr", "comment", str(pr), "--repo", repo, "--body", unfinished_comment(run_url))
             said()
         elif v == "silent":
-            why = silent_why(mode, pr, os.environ.get("WHY", ""), os.environ.get("SPEC_OUTCOME", ""), limit, done, total, runs, cap)
-            if mode == "fix" and not os.environ.get("WHY"):
+            why = silent_why(mode, pr, os.environ.get("WHY", ""), os.environ.get("SPEC_OUTCOME", ""), limit, done, total, runs, cap,
+                             os.environ.get("FAILED", ""))
+            if mode == "fix" and not os.environ.get("WHY") and not os.environ.get("FAILED"):
                 why = "The fix round pushed nothing and the agent did not say why."
             gh(target[0], "comment", str(target[1]), "--repo", repo, "--body", silent_comment(why, run_url))
             said()

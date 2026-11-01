@@ -1310,6 +1310,8 @@ jobs:
           # outcome to report.
           SPEC_OUTCOME: ${{ needs.prep.outputs.spec != 'present' && (needs.spec.outputs.outcome || needs.spec.result) || '' }}
           WHY: ${{ needs.draft.outputs.why }}
+          # A job that failed is reported as itself (#561), not as silence.
+          FAILED: ${{ needs.spec.result == 'failure' && 'spec' || needs.draft.result == 'failure' && 'draft' || (needs.work.result == 'failure' && needs.work.outputs.outcome != '') && 'work' || '' }}
           HELD: ${{ needs.draft.outputs.held || steps.applied.outputs.held }}
           WORK_LOG: .dx-out/transcript/2-work.json
           RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}

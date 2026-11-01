@@ -39,8 +39,10 @@ import datetime
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -244,9 +246,50 @@ def write(repo, path, obj, message):
             json.dump(obj, f, indent=2)
         return
     ensure_branch(repo)
+    put(repo, path, obj, message)
+
+
+# Two writers at once (two issues accepted together, #561): the second
+# write's commit meets a branch head that just moved, and GitHub answers
+# 409, or 422 on a stale head. Each try reads the head anew; a path that
+# already exists is never written again.
+WRITE_TRIES = 5
+
+
+def put(repo, path, obj, message, api=None, nap=None):
+    """Write one receipt on the branch, retrying when the branch moved under
+    it (HTTP 409, or 422 on a sha or a conflict) up to WRITE_TRIES times
+    with a short back-off; never an overwrite: without a sha the API
+    refuses a path that exists, and a 422 for a path that exists ends
+    there. api and nap are for the self-test."""
+    api = api or gh
+    nap = nap or time.sleep
     # Never an overwrite: without a sha, the API refuses a path that exists.
     payload = {"message": message, "branch": BRANCH, "content": base64.b64encode((json.dumps(obj, indent=2) + "\n").encode()).decode()}
-    gh("-X", "PUT", f"repos/{repo}/contents/{path}", "--input", "-", data=payload)
+    for n in range(1, WRITE_TRIES + 1):
+        try:
+            return api("-X", "PUT", f"repos/{repo}/contents/{path}", "--input", "-", data=payload)
+        except RuntimeError as e:
+            text = str(e)
+            moved = "409" in text or ("422" in text and re.search(r"(?i)\bsha\b|conflict", text))
+            if not moved or n == WRITE_TRIES:
+                raise
+            if "422" in text and exists(repo, path, api):
+                raise RuntimeError(f"{path} exists; a receipt is never overwritten") from e
+            nap(0.5 * 2 ** (n - 1))
+    return None
+
+
+def exists(repo, path, api=None):
+    """Whether path is on the receipts branch; a read that fails other
+    than 404 is raised."""
+    try:
+        (api or gh)(f"repos/{repo}/contents/{path}?ref={BRANCH}")
+        return True
+    except RuntimeError as e:
+        if "404" in str(e) or "Not Found" in str(e):
+            return False
+        raise
 
 
 def list_dir(repo, path):
@@ -387,6 +430,49 @@ Normal
         check("cli: a seal that cannot be read exits 2", r10.returncode, 2)
         del os.environ["RECEIPTS_FIXTURE"]
     # A job that runs this script reads the organisation's scripts whole:
+    # #561 C5: two writers at once, each answered 409 once by a branch that
+    # moved, then written; a path that exists is never written again.
+    branch_files, calls, naps5 = {}, [], []
+
+    def moving_api(*args, data=None):
+        url = next(a for a in args if a.startswith("repos/"))
+        path = url.split("/contents/", 1)[1].split("?", 1)[0]
+        calls.append((args[1] if args[0] == "-X" else "GET", path))
+        if args[:2] == ("-X", "PUT"):
+            if path in branch_files:
+                raise RuntimeError('gh: Invalid request. "sha" wasn\'t supplied. (HTTP 422)')
+            if sum(1 for c in calls if c == ("PUT", path)) == 1:
+                raise RuntimeError("gh: is at abc but expected def (HTTP 409)")
+            branch_files[path] = data["content"]
+            return {"content": {"path": path}}
+        if path in branch_files:
+            return {"path": path}
+        raise RuntimeError("gh: Not Found (HTTP 404)")
+
+    for n in (8, 9):
+        put("o/r", f"issues/{n}/prd-1.json", {"issue": n}, f"seal #{n}", api=moving_api, nap=naps5.append)
+    check("#561 C5: two seals written at the same moment both succeed, each after one 409", (sorted(branch_files), len(naps5)),
+          (["issues/8/prd-1.json", "issues/9/prd-1.json"], 2))
+    try:
+        put("o/r", "issues/8/prd-1.json", {"issue": 8, "x": 1}, "again", api=moving_api, nap=naps5.append)
+        again = "written"
+    except RuntimeError as e:
+        again = str(e)
+    check("#561 C5: a path that exists is never written again", ("never overwritten" in again, json.loads(base64.b64decode(branch_files["issues/8/prd-1.json"]))),
+          (True, {"issue": 8}))
+    always = lambda *a, data=None: (_ for _ in ()).throw(RuntimeError("gh: conflict (HTTP 409)"))
+    try:
+        put("o/r", "issues/10/prd-1.json", {}, "x", api=always, nap=lambda s: None)
+        capped = "written"
+    except RuntimeError as e:
+        capped = str(e)
+    check("#561 C5: a branch that keeps moving fails after the tries, said", "409" in capped, True)
+    try:
+        put("o/r", "issues/11/prd-1.json", {}, "x", api=lambda *a, data=None: (_ for _ in ()).throw(RuntimeError("gh: Bad credentials (HTTP 401)")), nap=lambda s: 1 / 0)
+        other = "written"
+    except RuntimeError as e:
+        other = str(e)
+    check("#561 C5: any other failure is not retried", "401" in other, True)
     # it loads autopilot.py for an autopilot pull request's board (#306).
     try:
         import yaml
