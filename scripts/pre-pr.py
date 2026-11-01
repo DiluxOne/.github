@@ -40,6 +40,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CENTRAL = os.path.join(HERE, "..")
 sys.path.insert(0, HERE)
 import policy  # noqa: E402  the YAML reader and the packs (scripts/policy.py)
+import repos_conf as entries  # noqa: E402  repos.yml's one entry per repository (#562)
 
 MAKEFILES = ("GNUmakefile", "makefile", "Makefile")
 # A rule naming `pre-pr` among its targets: `pre-pr:`, `pre-pr check:`,
@@ -162,7 +163,7 @@ def covers(directory):
 
 def required(name, org_conf, repos_conf):
     """`required`, `optional` or `exempt` for repository NAME."""
-    if ((repos_conf or {}).get("pre-pr") or {}).get(name) is False:
+    if entries.value(repos_conf or {}, name, "pre-pr") is False:
         return "exempt"
     mode = (org_conf or {}).get("pre-pr")
     mode = "optional" if mode in (None, "") else str(mode)

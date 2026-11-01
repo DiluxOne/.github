@@ -51,7 +51,11 @@ name: Autopilot
 #                   request already ready whose review blocks at its head
 #                   (#504, scripts/autopilot.py continue-as), the continue
 #                   runs one fix round instead, counted as a run: the
-#                   rounds cap does not refuse it, the runs cap does.
+#                   rounds cap does not refuse it, the runs cap does. So
+#                   does one on a ready pull request that conflicts with
+#                   main (#556, mergeStateStatus DIRTY), whatever its
+#                   review says: GitHub runs no checks on it, and the fix
+#                   round merges main into its branch first.
 #
 # Before `finish ready` (#482) the agent runs the local review's checks on
 # its own diff (scripts/local-review.sh --no-claude: the conventions, the
@@ -139,7 +143,7 @@ name: Autopilot
 # current main with the reproduction's commits cherry-picked on top (#549),
 # the test checked against the SHA-256 the PRD sealed; the work merges main
 # into a branch behind it before the agent starts, and api-commit.py pushes
-# that merge only when it is clean (#550); the agent runs it only in the sandbox, always against a clean copy
+# that merge only when it is clean (#550) or resolves only its conflicts (#556); the agent runs it only in the sandbox, always against a clean copy
 # of a commit, never the working tree, and `finish ready` refuses until it
 # passes there: a unit test in scripts/repro-sandbox.sh (no network, no
 # environment, no secret), any other way's (#397) the way it was written,
@@ -339,19 +343,34 @@ jobs:
           # A continue on a pull request already ready whose review blocks
           # at its head runs one fix round (#504): the review's last record,
           # read the way claude-review.yml reads it, from dilux-bot's own
-          # summary comment only.
-          as=$MODE
+          # summary comment only. So does one on a ready pull request that
+          # conflicts with main (#556): GitHub runs no checks on it, so it
+          # has no record at its head, and the fix round merges main first.
+          as=$MODE; conflicts=false
           if [ "$MODE" = continue ]; then
-            state=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json isDraft,headRefOid --jq '"\(.isDraft) \(.headRefOid)"')
+            # GitHub works out the merge state after a push or a move of
+            # main, UNKNOWN until then: read again for a few seconds; still
+            # unknown, it reads as no conflict.
+            for _ in 1 2 3 4 5; do
+              state=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json isDraft,headRefOid,mergeStateStatus --jq '"\(.isDraft) \(.headRefOid) \(.mergeStateStatus)"')
+              read -r is_draft head merge_state <<<"$state"
+              [ "$merge_state" = UNKNOWN ] || break
+              sleep 3
+            done
+            [ "$merge_state" != DIRTY ] || conflicts=true
             # Unread, it is no record: the continue runs as it always did.
             # shellcheck disable=SC2016 # jq variable, not a shell one.
             { gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
               | jq -r --arg bot "$DX_BOT_LOGIN" '.[] | select(.user.login == $bot and (.body | startswith("<!-- dx-review -->"))) | .body' \
               | { grep -oP '<!-- dx-review-record \K.*(?= -->)' || true; } | tail -1; } > "$RUNNER_TEMP/record.json" || echo null > "$RUNNER_TEMP/record.json"
-            as=$(IS_DRAFT="${state%% *}" HEAD="${state#* }" RECORD="$RUNNER_TEMP/record.json" python3 .dx-central/scripts/autopilot.py continue-as)
-            [ "$as" != fix ] || echo "#$PR is ready and its review blocks at its head: this continue runs one fix round."
+            as=$(IS_DRAFT="$is_draft" HEAD="$head" RECORD="$RUNNER_TEMP/record.json" CONFLICTS="$conflicts" python3 .dx-central/scripts/autopilot.py continue-as)
+            if [ "$as" = fix ] && [ "$conflicts" = true ]; then
+              echo "#$PR is ready and conflicts with main: this continue runs one fix round, which merges main first."
+            elif [ "$as" = fix ]; then
+              echo "#$PR is ready and its review blocks at its head: this continue runs one fix round."
+            fi
           fi
-          echo "mode=$as" >> "$GITHUB_OUTPUT"
+          { echo "mode=$as"; echo "conflicts=$conflicts"; } >> "$GITHUB_OUTPUT"
           [ -n "$ISSUE" ] || { echo "No issue to work on."; exit 1; }
           echo "issue=$ISSUE" >> "$GITHUB_OUTPUT"
           gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/body.md"
@@ -478,7 +497,10 @@ jobs:
             echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
           if [ "$AS" = start ]; then
-            open_prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --search "linked:issue $ISSUE" --json number --jq 'length')
+            # Only the open pull requests GitHub lists as closing the issue
+            # (closed ones are left out), never a text search, which matches
+            # any pull request linked to an issue that mentions the number (#577).
+            open_prs=$(gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json closedByPullRequestsReferences --jq '.closedByPullRequestsReferences | length')
             if [ "$open_prs" != 0 ]; then
               echo "A pull request already closes #$ISSUE: nothing to start (\`autopilot:continue\` resumes the autopilot's)."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
             fi
@@ -588,6 +610,10 @@ jobs:
           BRANCH: ${{ steps.what.outputs.branch }}
           ROUND: ${{ steps.what.outputs.round }}
           LANE: ${{ steps.may.outputs.lane }}
+          # #556: a continue's fix round on a pull request that conflicts
+          # with main merges it first.
+          CONFLICTS: ${{ steps.what.outputs.conflicts }}
+          DEFAULT: ${{ github.event.repository.default_branch }}
           # #479: a round for a pull request the queue dropped reads the
           # failed jobs' log instead of the review.
           QUEUE: ${{ github.event_name == 'pull_request' && github.event.action == 'dequeued' }}
@@ -605,7 +631,7 @@ jobs:
           fi
           python3 .dx-central/scripts/autopilot.py inputs "$MODE"
           if [ "$MODE" = fix ]; then
-            python3 .dx-central/scripts/autopilot.py prompt fix > "$DX_IO/prompt.md"
+            CONFLICTS="${CONFLICTS:-false}" python3 .dx-central/scripts/autopilot.py prompt fix > "$DX_IO/prompt.md"
             exit 0
           fi
           AUTOPILOT_RUN="$RUN_URL" python3 .dx-central/scripts/autopilot.py board
@@ -941,8 +967,11 @@ jobs:
     if: ${{ !cancelled() && needs.prep.outputs.go == 'true' && (needs.prep.outputs.mode != 'start' || needs.draft.outputs.pr != '') }}
     runs-on: ${{ (vars.DX_RUNNER_HEAVY != '' && needs.where.outputs.github-hosted == 'false') && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 90
+    # It reads the repository, and the closed pull requests next-version.py
+    # lists in `make pre-pr` (#537); it writes nothing.
     permissions:
       contents: read
+      pull-requests: read
     outputs:
       outcome: ${{ steps.work.outcome }}
     steps:
@@ -1174,8 +1203,9 @@ jobs:
             fi
             # Read whole, then searched: a pipe into grep -q could end early
             # and, under pipefail, read as no match. What the agent's own
-            # commits change: a merge of main brings only main's files
-            # (api-commit.py refuses any merge that is not clean, #550).
+            # commits change: a merge of main brings only main's files, and
+            # the conflicts it resolved (api-commit.py refuses any other
+            # merge, #550, and a workflow resolved outside the engine, #556).
             changed=$(git log --first-parent --no-merges --no-renames --format= --name-only "origin/$BRANCH..$new")
             if grep -q '^\.github/workflows/' <<<"$changed" && [ "$ENGINE" != true ]; then
               echo "::error::The agent's commits change .github/workflows: nothing is pushed."; exit 1

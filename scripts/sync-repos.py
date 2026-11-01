@@ -12,6 +12,25 @@ archived and not excluded in repos.yml:
             security updates among them, and, on a public repository, every
             outside contributor's workflow runs approved by a maintainer,
             #488), through the API.
+  security  the organisation's code security configuration repos.yml
+            `security: configuration` names (#562), attached to the
+            repository when it is not, and kept the default for new ones:
+            secret scanning and push protection are its, never a
+            per-repository setting.
+  rulesets  the organisation's custom property (org.yml `adopted-property`,
+            dx-adopted) set to true on every repository repos.yml lists
+            (#562); then, once, the org rulesets ("org: main", "org: release
+            tag creation", "org: release tags") moved from their list of
+            names to the repositories with the property, only after every
+            adopted one holds it, and never while that list covers a
+            repository repos.yml does not list or excludes (it names them).
+  pending   the repositories repos.yml lists that do not hold that
+            property yet, one per line (#562): what org-adopt.yml adopts,
+            read from the organisation rather than from a push, so a run
+            GitHub drops while it waits loses no adoption. Nothing until the
+            org rulesets cover the repositories by the property.
+  project   the repository linked to its Project (its entry's `project`);
+            said when it has none.
   files     repos.yml `files` (CODEOWNERS) and the opening block of
             AGENTS.md (agents-block.md, between its dx:org markers). These
             never go straight to main: for a repository whose files differ,
@@ -29,15 +48,16 @@ archived and not excluded in repos.yml:
             (github-actions always; npm, composer, docker by their manifest at
             its root) and what repos.yml `dependabot` adds for it. Its own
             issue and pull request, as `files` opens them, which a person
-            accepts: no lane covers this file, so it is kept apart and never
-            takes the lane away from the shared files. Not in `all`.
+            accepts by policy as the org-sync lane's `dependabot` run (#562):
+            kept apart from the shared files, one pull request each. Not in
+            `all`.
   pre-pr    `make pre-pr`, the one check before a pull request (#479): a
             repository whose kind's pack has `pre-pr-make` gets dx.mk,
             written from it (scripts/pre-pr.py render), and its Makefile
             includes it (one is created where it has none; a Makefile whose
             own `pre-pr` has a recipe keeps it, and the pull request says to
             make it a prerequisite). Its own issue and pull request, as
-            `files` opens them, which a person accepts. A repository of no
+            `files` opens them, the org-sync lane's `pre-pr` run (#562). A repository of no
             kind, or of a kind with no `pre-pr-make`, gets nothing. Not in
             `all`.
   own-checks  a repository whose kind asks for it (kinds/<kind>/pack.yml,
@@ -52,9 +72,11 @@ archived and not excluded in repos.yml:
             ones in `every-repository`, and any other whose shared workflows
             the repository calls. A caller it lacks of those, or of a template
             that calls its kind's battery (kinds/<kind>/pack.yml `workflows`),
-            is written whole from its template, its inputs to fill in left for
-            the pull request's reviewer: a repository being adopted, with no
-            caller yet, gets them all (#552). Each template job must be there with the
+            is written whole from its template, its inputs to fill in with
+            the values repos.yml gives (its entry's `callers`, else `callers:
+            defaults`, #562), so none is a placeholder: a repository being
+            adopted, with no caller yet, gets them all (#552), and a caller
+            still holding a template's placeholder gets the value. Each template job must be there with the
             same `uses:`, `needs` (its own jobs may join them), `if`,
             `permissions`, `secrets` handling and inputs, but the inputs the
             template says to fill in (`repository-owned`). Inputs and jobs of
@@ -79,10 +101,18 @@ archived and not excluded in repos.yml:
             a private one on GitHub Enterprise Cloud. Off, or not allowed, the
             ruleset is deleted and DX_MERGE_QUEUE is `off`: the repository is
             ready for the day it is allowed. It is turned on only once every
-            workflow that calls a shared one on pull requests also runs on
-            `merge_group` (`callers` brings them in step), or the queue would
-            wait for checks that never run.
+            check the repository's rules require (the organisation's rulesets
+            that cover it, and its own) comes from a workflow that runs on
+            `merge_group`, each check mapped to its workflow through the runs
+            of its latest pull request (#562): one that does not, or that no
+            workflow can be found for, keeps it off, and the drift check
+            names the check and the workflow; else the queue would wait for
+            checks that never run.
   all       labels, settings, files, own-checks and merge-queue, in that order.
+  adopt     one repository repos.yml lists, brought in the flow with no step
+            by hand (#562): labels, settings, security, rulesets (its
+            property), files, callers, pre-pr, dependabot, own-checks,
+            merge-queue and project, in that order. Needs --repo.
   check     changes nothing: lists, as Markdown, what differs in each
             repository, its callers and its Dependabot configuration
             included (the daily drift check posts it as an issue), a
@@ -97,7 +127,15 @@ archived and not excluded in repos.yml:
             `pre-pr` target, the one check before a pull request (#479,
             scripts/pre-pr.py); not one repos.yml says has none by design
             (`pre-pr: {NAME: false}`), and every one whose dx.mk differs
-            from its pack's (`sync-repos.py pre-pr`).
+            from its pack's (`sync-repos.py pre-pr`). And (#562) every
+            repository of the organisation repos.yml does not list, an
+            adopted one whose custom property, code security configuration
+            or Project is missing, a caller still holding a template's
+            placeholder, the checks its merge queue would wait for that do
+            not run on merge_group, and its own commit rules (commit-msg
+            hook, commitlint, AGENTS.md, CONTRIBUTING.md) that match org.yml
+            `conventions-contradictions`; for the organisation, a ruleset
+            still naming its repositories.
 
   i18n      a WordPress plugin's translations in the form that merges
             (#452, scripts/plugin-i18n.sh): languages/*.pot and *.po with
@@ -106,13 +144,16 @@ archived and not excluded in repos.yml:
             which a person accepts. Needs gettext (msgcat) where it runs.
             Not in `all`.
 
-  sync-repos.py <labels|settings|files|dependabot|pre-pr|own-checks|merge-queue|callers|i18n|all> [--repo NAME ...] [--dry-run]
+  sync-repos.py <labels|settings|security|rulesets|files|dependabot|pre-pr|own-checks|merge-queue|callers|project|i18n|all> [--repo NAME ...] [--dry-run]
+  sync-repos.py adopt --repo NAME [--dry-run]
+  sync-repos.py pending
   sync-repos.py check [--repo NAME ...] [--report FILE]
   sync-repos.py --test
 
 Run by a maintainer with `gh` signed in as an owner of the organisation.
 """
 import base64
+import fnmatch
 import importlib.util
 import json
 import os
@@ -123,6 +164,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import org  # noqa: E402  the organisation, from org.yml (#191)
+import repos_conf  # noqa: E402  repos.yml's one entry per repository (#562)
 ORG = os.environ.get("DX_ORG", org.ORG)
 CENTRAL = os.path.join(HERE, "..")
 START = "<!-- dx:org:start"
@@ -221,12 +263,239 @@ def sync_settings(repo, conf, dry):
         gh("api", "-X", "PUT", f"repos/{full}/automated-security-fixes")
     if public and security.get("private_vulnerability_reporting") in (True, "public-only"):
         gh("api", "-X", "PUT", f"repos/{full}/private-vulnerability-reporting")
-    if public and security.get("secret_scanning") in (True, "public-only"):
-        body = {"security_and_analysis": {"secret_scanning": {"status": "enabled"}, "secret_scanning_push_protection": {"status": "enabled"}}}
-        gh("api", "-X", "PATCH", f"repos/{full}", "--input", "-", input_text=json.dumps(body))
     if public and security.get("fork_pr_approval") in (True, "public-only"):
         gh("api", "-X", "PUT", f"repos/{full}/actions/permissions/fork-pr-contributor-approval", "-f", f"approval_policy={FORK_APPROVAL}")
     print("  settings in step")
+
+
+# Security through the organisation's code security configuration (#562):
+# secret scanning and push protection are the configuration's, attached to
+# each repository, never a per-repository PATCH (which the enterprise's
+# policy refuses with HTTP 422). What a configuration cannot hold stays in
+# sync_settings (Dependabot's alerts and fixes, private vulnerability
+# reporting, the fork approval).
+SECURITY_CONFIGS = {}
+
+
+def security_configuration(conf):
+    """(id, name) of repos.yml `security: configuration`, the organisation's
+    code security configuration of that name; ValueError when there is none."""
+    name = str((conf.get("security") or {}).get("configuration") or "")
+    if not name:
+        raise ValueError("repos.yml `security: configuration` names no code security configuration")
+    if name not in SECURITY_CONFIGS:
+        rows = json.loads(gh("api", f"orgs/{ORG}/code-security/configurations?per_page=100").stdout or "[]")
+        found = [r for r in rows if r.get("name") == name]
+        if not found:
+            raise ValueError(f"the organisation has no code security configuration named `{name}` "
+                             f"(it has: {', '.join(sorted(str(r.get('name')) for r in rows)) or 'none'})")
+        SECURITY_CONFIGS[name] = found[0]["id"]
+    return SECURITY_CONFIGS[name], name
+
+
+def attached_configuration(full):
+    """The id of the code security configuration attached to a repository,
+    None when it has none."""
+    out = gh("api", f"repos/{full}/code-security-configuration", check=False)
+    if out.returncode != 0:
+        if "404" in out.stderr or "Not Found" in out.stderr:
+            return None
+        raise RuntimeError(f"could not read its code security configuration: {out.stderr.strip()[:200]}")
+    return ((json.loads(out.stdout or "{}") or {}).get("configuration") or {}).get("id")
+
+
+def sync_security(repo, conf, dry):
+    """Attaches the organisation's code security configuration to the
+    repository when it is not, and keeps it the default for new ones."""
+    full = f"{ORG}/{repo['name']}"
+    cid, name = security_configuration(conf)
+    if attached_configuration(full) == cid:
+        print(f"  the code security configuration `{name}` is attached")
+        return
+    if dry:
+        print(f"  would attach the code security configuration `{name}`")
+        return
+    rid = json.loads(gh("api", f"repos/{full}").stdout)["id"]
+    out = gh("api", "-X", "POST", f"orgs/{ORG}/code-security/configurations/{cid}/attach", "--input", "-",
+             input_text=json.dumps({"scope": "selected", "selected_repository_ids": [rid]}), check=False)
+    if out.returncode != 0:
+        held = " (held at the enterprise level: out of the sync's reach, the maintainer changes it once there)" if "422" in out.stderr else ""
+        raise RuntimeError(f"could not attach the code security configuration `{name}`{held}: {out.stderr.strip()[:200]}")
+    gh("api", "-X", "PUT", f"orgs/{ORG}/code-security/configurations/{cid}/defaults", "-f", "default_for_new_repos=all")
+    print(f"  the code security configuration `{name}` attached")
+
+
+# The organisation's rulesets cover the repositories whose custom property
+# says they are adopted (#562), never a list of names that each adoption
+# has to extend by hand.
+ADOPTED = str(sys.modules["org"].load().get("adopted-property") or "dx-adopted")
+ORG_RULESET_NAMES = ("org: main", "org: release tag creation", "org: release tags")
+
+
+def property_condition():
+    return {"repository_property": {"include": [{"name": ADOPTED, "property_values": ["true"], "source": "custom"}], "exclude": []}}
+
+
+def by_property(ruleset):
+    """Whether an org ruleset covers the repositories by the property."""
+    cond = (ruleset.get("conditions") or {})
+    return any(p.get("name") == ADOPTED and p.get("property_values") == ["true"]
+               for p in ((cond.get("repository_property") or {}).get("include") or [])) and "repository_name" not in cond
+
+
+def with_property_condition(ruleset):
+    """The ruleset as the PUT takes it, its every field as the GET gave it
+    but its repositories, now those with the property."""
+    body = {k: v for k, v in ruleset.items() if k not in ("id", "source", "source_type", "node_id", "_links",
+                                                            "created_at", "updated_at", "current_user_can_bypass")}
+    cond = {k: v for k, v in (ruleset.get("conditions") or {}).items() if k not in ("repository_name", "repository_id")}
+    body["conditions"] = {**cond, **property_condition()}
+    return body
+
+
+def org_repo_names():
+    """The names of the organisation's repositories that are not archived,
+    forks and those repos.yml excludes included."""
+    rows = json.loads(gh("repo", "list", ORG, "--no-archived", "--limit", "1000", "--json", "name").stdout or "[]")
+    if len(rows) >= 1000:
+        raise RuntimeError("more than 1000 repositories: the list would be cut; raise the limit")
+    return {r["name"] for r in rows}
+
+
+def named_coverage(ruleset, names):
+    """Which of these repositories a ruleset's list of names covers: `~ALL`,
+    a name or an fnmatch pattern, less its exclusions."""
+    cond = (ruleset.get("conditions") or {}).get("repository_name") or {}
+
+    def hit(pats, n):
+        return any(p == "~ALL" or fnmatch.fnmatch(n.lower(), str(p).lower()) for p in pats or [])
+    return {n for n in names if hit(cond.get("include"), n) and not hit(cond.get("exclude"), n)}
+
+
+def would_drop(moving, every):
+    """{ruleset name: the repositories its list of names covers today that
+    would not hold the property once it moves}: those repos.yml does not
+    list or excludes (#562). An archived repository takes no push, and is
+    not counted."""
+    if not moving:
+        return {}
+    names, adopted = org_repo_names(), {r["name"] for r in every}
+    return {r["name"]: sorted(named_coverage(r, names) - adopted) for r in moving if named_coverage(r, names) - adopted}
+
+
+def property_values(names):
+    """{repository: its value of the property}, for these names; None when
+    they could not be read."""
+    got = gh("api", "--paginate", "--slurp", f"orgs/{ORG}/properties/values?per_page=100", check=False)
+    if got.returncode != 0:
+        return None
+    rows = json.loads(got.stdout or "[]")
+    out = {}
+    for page in rows if rows and isinstance(rows[0], list) else [rows]:
+        for r in page:
+            if r.get("repository_name") in names:
+                out[r["repository_name"]] = next((str(p.get("value")) for p in r.get("properties") or [] if p.get("property_name") == ADOPTED), None)
+    return out
+
+
+def sync_rulesets(repos, every, dry):
+    """The property (a true_false custom property of the organisation) set to
+    true on these repositories; then, once, the org rulesets moved from their
+    list of names to the property, after every adopted repository (`every`)
+    holds it, so none drops out of them."""
+    if gh("api", f"orgs/{ORG}/properties/schema/{ADOPTED}", check=False).returncode != 0:
+        if dry:
+            print(f"  would create the custom property `{ADOPTED}`")
+        else:
+            gh("api", "-X", "PUT", f"orgs/{ORG}/properties/schema/{ADOPTED}", "--input", "-", input_text=json.dumps(
+                {"value_type": "true_false", "required": False, "description": "Adopted by DiluxOne/.github (repos.yml): the organisation's rulesets cover it."}))
+    global ORG_RULESETS
+    org_rs = [r for r in (org_rulesets() or []) if r.get("name") in ORG_RULESET_NAMES]
+    moving = [r for r in org_rs if not by_property(r)]
+    dropped = would_drop(moving, every)
+    if dropped:
+        raise RuntimeError("moving the org rulesets to the property would leave out repositories they cover today, "
+                           "not listed in repos.yml or excluded there: "
+                           + "; ".join(f"\"{k}\": {', '.join(v)}" for k, v in sorted(dropped.items()))
+                           + ". List them in repos.yml (or take them out of the ruleset by hand) first: nothing was changed")
+    names = sorted({r["name"] for r in repos} | ({r["name"] for r in every} if moving else set()))
+    have = property_values(set(names)) if names else {}
+    if have is None:
+        raise RuntimeError(f"the values of {ADOPTED} could not be read")
+    unset = [n for n in names if have.get(n) != "true"]
+    if unset:
+        if dry:
+            print(f"  would set {ADOPTED}=true on {', '.join(unset)}")
+        else:
+            gh("api", "-X", "PATCH", f"orgs/{ORG}/properties/values", "--input", "-", input_text=json.dumps(
+                {"repository_names": unset, "properties": [{"property_name": ADOPTED, "value": "true"}]}))
+            have = property_values(set(names)) or {}
+            missing = [n for n in names if have.get(n) != "true"]
+            if missing:
+                raise RuntimeError(f"{ADOPTED} is not true on {', '.join(missing)} after writing it: the rulesets are left as they are")
+            print(f"  {ADOPTED}=true on {', '.join(unset)}")
+    for r in moving:
+        if dry:
+            print(f"  would make \"{r['name']}\" cover the repositories with {ADOPTED}=true instead of its list of names")
+            continue
+        gh("api", "-X", "PUT", f"orgs/{ORG}/rulesets/{r['id']}", "--input", "-", input_text=json.dumps(with_property_condition(r)))
+        print(f"  \"{r['name']}\" covers the repositories with {ADOPTED}=true")
+    if moving and not dry:
+        ORG_RULESETS = None
+
+
+def not_adopted(every):
+    """The names of `every` (the repositories repos.yml lists) whose property
+    is not true, sorted (#562); None while an org ruleset still covers a
+    list of names, as the property then says nothing yet."""
+    org_rs = [r for r in (org_rulesets() or []) if r.get("name") in ORG_RULESET_NAMES]
+    if not org_rs or not all(by_property(r) for r in org_rs):
+        return None
+    names = {r["name"] for r in every}
+    have = property_values(names) if names else {}
+    if have is None:
+        raise RuntimeError(f"the values of {ADOPTED} could not be read")
+    return sorted(n for n in names if have.get(n) != "true")
+
+
+def sync_project(repo, conf, dry):
+    """The repository linked to its Project (repos.yml `project`); said when
+    it has none."""
+    number = repos_conf.value(conf, repo["name"], "project")
+    if number is None:
+        print("  no Project: repos.yml gives it no `project`, so its accepted issues land on none")
+        return
+    if dry:
+        print(f"  would link it to the Project {number}")
+        return
+    out = gh("project", "link", str(number), "--owner", ORG, "--repo", f"{ORG}/{repo['name']}", check=False)
+    if out.returncode != 0 and "already" not in out.stderr.lower():
+        raise RuntimeError(f"could not link it to the Project {number}: {out.stderr.strip()[:200]}")
+    print(f"  linked to the Project {number}")
+
+
+# `adopt`: everything a repository repos.yml lists needs to be in the flow,
+# in this order (#562).
+ADOPT = ("labels", "settings", "security", "rulesets", "files", "callers", "pre-pr", "dependabot", "own-checks", "merge-queue", "project")
+
+
+def adopt(repo, conf, labels, block, every, dry):
+    """`sync-repos.py adopt --repo NAME`: one repository repos.yml lists,
+    brought in the flow with no step by hand."""
+    if listed(repo["name"]) is None:
+        raise ValueError(f"{repo['name']} is not in repos.yml `repos:`: add its entry first (the Adopt issue's pull request)")
+    for part in ADOPT:
+        {"labels": lambda: sync_labels(repo, labels, dry),
+         "settings": lambda: sync_settings(repo, conf, dry),
+         "security": lambda: sync_security(repo, conf, dry),
+         "rulesets": lambda: sync_rulesets([repo], every, dry),
+         "files": lambda: sync_files(repo, conf, block, dry),
+         "callers": lambda: sync_callers(repo, conf, dry),
+         "pre-pr": lambda: sync_files(repo, conf, block, dry, part="pre-pr"),
+         "dependabot": lambda: sync_files(repo, conf, block, dry, part="dependabot"),
+         "own-checks": lambda: sync_own_checks(repo, dry),
+         "merge-queue": lambda: sync_merge_queue(repo, conf, dry),
+         "project": lambda: sync_project(repo, conf, dry)}[part]()
 
 
 def sync_files(repo, conf, block, dry, part="files"):
@@ -292,7 +561,7 @@ def sync_files(repo, conf, block, dry, part="files"):
                    "## 💡 Why\n\n`make pre-pr` runs, before a pull request, the checks its pull request and its merge queue run (DiluxOne/.github#479).")
         open_change(repo, default, wanted, "Keep the organisation's make pre-pr in step", body,
                     "chore/{}-org-pre-pr", "chore: keep the organisation's make pre-pr in step", pr_body,
-                    "chore: keep {} in step with the organisation")
+                    "chore: keep {} in step with the organisation", mode="pre-pr")
         return
     if part == "dependabot":
         body = prd("The organisation keeps each repository's Dependabot configuration in step with the template of its kind, "
@@ -301,7 +570,7 @@ def sync_files(repo, conf, block, dry, part="files"):
                    "## 💡 Why\n\nGitHub reads it only from the repository, so the organisation keeps it in step from one place.")
         open_change(repo, default, wanted, "Keep the organisation's Dependabot configuration in step", body,
                     "chore/{}-org-dependabot", "chore: keep the organisation's Dependabot configuration in step", pr_body,
-                    "chore: keep {} in step with the organisation")
+                    "chore: keep {} in step with the organisation", mode="dependabot")
         return
     body = prd("The organisation keeps some files the same in every repository, because GitHub reads them only from "
                f"the repository: {changed} differ here from DiluxOne/.github (repos.yml, agents-block.md).", wanted)
@@ -610,7 +879,8 @@ def sync_callers(repo, conf, dry):
     branch = (repo.get("defaultBranchRef") or {}).get("name") or "main"
     # The callers it lacks, written whole from their templates (#552): those
     # every repository has, and those of its kind's battery.
-    added = new_callers(files, conf, repo_kind(full, branch), branch)
+    added = new_callers(files, conf, repo_kind(full, branch), branch, name=repo["name"])
+    values = repos_conf.caller_values(conf, repo["name"])
     if not any(CALLS_RE.search(t) for t in files.values()) and not added:
         print("  calls none of the shared workflows: nothing to compare (docs/adopting.md)")
         return
@@ -653,6 +923,9 @@ def sync_callers(repo, conf, dry):
             stuck.add(path)
             continue
         new = triggered if new is not None else new
+        # And the values a template's placeholder still stands for (#562).
+        if new is not None:
+            new = fill_inputs(new, set(owned.get(name) or []), values, placeholders(new, text, set(owned.get(name) or []), values))
         # And the permissions it grants that the caller lacks (#329).
         if new is not None and path not in shared:
             granted = with_permissions(new, text)
@@ -681,13 +954,24 @@ def sync_callers(repo, conf, dry):
     for path, text in moved.items():
         if text != files[path] and path not in wanted:
             wanted[path] = text
-    # The callers it lacked, whole; an input that is the repository's own is
-    # left at the template's value, for the pull request's reviewer to fill in.
+    # A caller in step but for a template's placeholder (#562): the value
+    # repos.yml gives it, its entry's or the organisation's default.
+    for tname, (ttext, data) in templates(major).items():
+        path = caller_for(dict(data, _name=tname), parsed_moved, False)
+        if path is None or path in stuck:
+            continue
+        have = wanted.get(path, moved[path])
+        left = placeholders(have, ttext, set(owned.get(tname) or []), values)
+        if set(left) & set(values):
+            wanted[path] = fill_inputs(have, set(owned.get(tname) or []), values, left)
+        for key in sorted(set(left) - set(values)):
+            notes.append(f"{path}: `{key}` is still the template's placeholder and repos.yml gives no value: set it in its entry's `callers`")
+    # The callers it lacked, whole, with the values repos.yml gives them.
     for path, text in added.items():
         wanted[path] = text
         name = os.path.basename(path)
-        for key in owned.get(name) or []:
-            notes.append(f"{path}: new, from workflow-templates/{name}; fill in `{key}` in its pull request")
+        for key in sorted(set(owned.get(name) or []) - set(values)):
+            notes.append(f"{path}: new, from workflow-templates/{name}; repos.yml gives no `{key}`: set it in its entry's `callers`")
     for note in notes:
         print(f"  {note}")
     if not wanted:
@@ -953,7 +1237,71 @@ def kind_battery(kind):
     return set(load_yaml(pack).get("workflows") or []) if os.path.isfile(pack) else set()
 
 
-def new_callers(files, conf, kind, default="main", major=None):
+def yaml_scalar(value):
+    """A value as a caller's input line writes it."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    text = str(value)
+    return text if re.fullmatch(r"[A-Za-z0-9_./-][A-Za-z0-9_./:+-]*", text) and text.lower() not in ("true", "false", "yes", "no", "on", "off", "null", "~") else json.dumps(text)
+
+
+def owned_lines(text, owned):
+    """{input: (line index, its value)} of the inputs in OWNED a caller's
+    `with:` blocks set, the last of each."""
+    lines, out, inside = text.splitlines(keepends=True), {}, False
+    for i, line in enumerate(lines):
+        if re.match(r"^    with:\s*(#.*)?$", line):
+            inside = True
+            continue
+        if inside and line.strip() and not line.startswith("      "):
+            inside = False
+        m = INPUT_RE.match(line) if inside else None
+        if m and m.group(1) in owned:
+            raw = line.split(":", 1)[1]
+            value = parse_yaml(f"v: {raw.strip()}" if raw.strip() else "v:") or {}
+            out[m.group(1)] = (i, value.get("v"))
+    return out
+
+
+def fill_inputs(text, owned, values, only=None):
+    """The caller's text with each input in OWNED that VALUES gives written
+    with that value, its comment dropped (it said to fill it in); with
+    `only`, those inputs alone."""
+    lines = text.splitlines(keepends=True)
+    for key, (i, _) in owned_lines(text, owned).items():
+        if key in values and (only is None or key in only):
+            lines[i] = f"      {key}: {yaml_scalar(values[key])}\n"
+    return "".join(lines)
+
+
+def placeholders(text, template_text, owned, values):
+    """{input: the template's placeholder} of the inputs in OWNED a caller
+    still holds at its template's value, where repos.yml gives another, or
+    none (#562): a value nobody filled in."""
+    theirs = {k: v for k, (_, v) in owned_lines(template_text, owned).items()}
+    out = {}
+    for key, (_, have) in owned_lines(text, owned).items():
+        if key in theirs and plain(have) == plain(theirs[key]) and (key not in values or plain(values[key]) != plain(have)):
+            out[key] = theirs[key]
+    return out
+
+
+def placeholder_lines(files, conf, name, central=False, major=None):
+    """The drift lines of the callers that hold a template's placeholder."""
+    owned, values = (conf.get("callers") or {}).get("repository-owned") or {}, repos_conf.caller_values(conf, name)
+    parsed = {p: (t, parse_yaml(t)) for p, t in files.items()}
+    out = []
+    for tname, (ttext, data) in templates(major).items():
+        path = caller_for(dict(data, _name=tname), parsed, central)
+        if path is None:
+            continue
+        for key, value in sorted(placeholders(files[path], ttext, set(owned.get(tname) or []), values).items()):
+            give = f"repos.yml gives `{yaml_scalar(values[key])}` (`sync-repos.py callers` writes it)" if key in values else "set it in its entry's `callers` in repos.yml"
+            out.append(f"`{path}` still holds `{key}: {yaml_scalar(value)}`, the template's placeholder: {give}")
+    return out
+
+
+def new_callers(files, conf, kind, default="main", major=None, name=None):
     """{path: text} of the callers a repository lacks, written whole from their
     templates (#552): those of `every-repository` (the triage and the
     autopilot start from issues.yml) and those that call a workflow of its
@@ -963,15 +1311,18 @@ def new_callers(files, conf, kind, default="main", major=None):
     this way. Pure but for reading the templates and the pack."""
     spec = conf.get("callers") or {}
     every, battery = set(spec.get("every-repository") or []), kind_battery(kind)
+    owned, values = spec.get("repository-owned") or {}, repos_conf.caller_values(conf, name or "")
     parsed = {p: (t, parse_yaml(t)) for p, t in files.items()}
     out = {}
-    for name, (text, data) in templates(major).items():
-        if name not in every and not (shared_calls(data) & battery):
+    for tname, (text, data) in templates(major).items():
+        if tname not in every and not (shared_calls(data) & battery):
             continue
-        path = f".github/workflows/{name}"
-        if path in files or caller_for(dict(data, _name=name), parsed) is not None:
+        path = f".github/workflows/{tname}"
+        if path in files or caller_for(dict(data, _name=tname), parsed) is not None:
             continue
-        out[path] = text.replace("$default-branch", default)
+        text = text.replace("$default-branch", default)
+        # Written with the repository's values (#562): never a placeholder.
+        out[path] = fill_inputs(text, set(owned.get(tname) or []), values) if name is not None else text
     return out
 
 
@@ -1291,13 +1642,10 @@ def listed(name):
 
 def repo_kind(full, default):
     """The repository's kind: the one repos.yml `repos:` gives it (#191),
-    when it lists exactly one; else the one its .github/review-policy.yml
-    names, or None."""
-    entry = listed(full.split("/", 1)[1])
-    if entry is not None:
-        kinds = entry.get("kinds") or []
-        return kinds[0].get("kind") if len(kinds) == 1 else None
-    return policy_kind_of(full, default)
+    when it lists exactly one, or None. The kind is declared there only
+    (#562): its .github/review-policy.yml `kind` is not read."""
+    kinds = (listed(full.split("/", 1)[1]) or {}).get("kinds") or []
+    return kinds[0].get("kind") if len(kinds) == 1 else None
 
 
 def policy_text_of(full, default):
@@ -1341,7 +1689,7 @@ def pre_pr_gap(conf, name, makefile):
     its text, None for none) has no `pre-pr` target; None when it has one or
     repos.yml says it has none by design (`pre-pr: {NAME: false}`)."""
     pre_pr = _script("pre_pr", "pre-pr.py")
-    if ((conf.get("pre-pr") or {}).get(name) is False) or pre_pr.has_target(makefile):
+    if repos_conf.value(conf, name, "pre-pr") is False or pre_pr.has_target(makefile):
         return None
     where = "its Makefile has no `pre-pr` target" if makefile is not None else "it has no Makefile"
     return (f"{where}: `make pre-pr` is the one check before a pull request (#479), every check its pull request and its "
@@ -1398,11 +1746,17 @@ def required_checks(ruleset):
             for c in (r.get("parameters") or {}).get("required_status_checks") or []]
 
 
-def covers(org_rs, name):
-    """Whether an organisation ruleset applies to this repository."""
+def covers(org_rs, name, adopted=None):
+    """Whether an organisation ruleset applies to this repository. One that
+    covers the repositories by the property (#562) covers an adopted one:
+    `adopted`, else whether repos.yml lists it."""
+    if org_rs.get("enforcement") != "active":
+        return False
+    if by_property(org_rs):
+        return listed(name) is not None if adopted is None else adopted
     cond = ((org_rs.get("conditions") or {}).get("repository_name") or {})
     include, exclude = cond.get("include") or [], cond.get("exclude") or []
-    return org_rs.get("enforcement") == "active" and ("~ALL" in include or name in include) and name not in exclude
+    return ("~ALL" in include or name in include) and name not in exclude
 
 
 def same_rules(a, b):
@@ -1529,7 +1883,7 @@ QUEUE_RULE = {"type": "merge_queue", "parameters": {
 def queue_mode(name, conf, org_conf):
     """auto, on or off for a repository: its repos.yml exception, else
     org.yml's, else auto."""
-    mode = (conf.get("merge-queue") or {}).get(name)
+    mode = repos_conf.value(conf, name, "merge-queue")
     mode = org_conf.get("merge-queue") if mode is None else mode
     # A bare on or off reads as YAML's true or false.
     mode = {True: "on", False: "off", None: "auto"}.get(mode, mode) if isinstance(mode, (bool, type(None))) else str(mode)
@@ -1548,21 +1902,82 @@ def queue_allowed(visibility, plan):
     return None if plan is None else "enterprise" in str(plan).lower()
 
 
-def queue_callers_ready(files):
-    """The workflows that call a shared workflow (or one of the repository's
-    own reusable ones) on pull requests but not on `merge_group`: the queue
-    would wait for their checks forever."""
-    late = []
-    for path, text in sorted(files.items()):
-        try:
-            on = (yaml_text(text) or {}).get("on", (yaml_text(text) or {}).get(True)) or {}
-        except Exception:  # noqa: BLE001 - an unreadable workflow is not ready
-            late.append(path)
-            continue
-        events = set(on) if isinstance(on, (dict, list)) else {on}
-        if (SHARED_PREFIX in text or LOCAL_PREFIX in text) and "pull_request" in events and "merge_group" not in events:
-            late.append(path)
-    return late
+def runs_on_merge_group(text):
+    """Whether a workflow's text runs on `merge_group`; None when it does
+    not parse."""
+    try:
+        data = yaml_text(text) or {}
+    except Exception:  # noqa: BLE001 - an unreadable workflow is not ready
+        return None
+    on = data.get("on", data.get(True)) if isinstance(data, dict) else None
+    events = set(on) if isinstance(on, (dict, list)) else {on}
+    return "merge_group" in events
+
+
+def queue_blockers(contexts, workflow_of, files):
+    """#562: [(context, workflow or None, why)] of the checks a repository's
+    rules require that would never report in the merge queue: the workflow
+    that produces a context (`workflow_of`, from a recent pull request's
+    runs) does not run on `merge_group`, or no workflow could be found for
+    it. Empty: every required check runs in the queue. Pure."""
+    out = []
+    for context in sorted(set(contexts)):
+        path = workflow_of.get(context)
+        if not path:
+            out.append((context, None, "no workflow of a recent pull request produces it"))
+        elif path not in files:
+            out.append((context, path, "its workflow could not be read"))
+        elif not runs_on_merge_group(files[path]):
+            out.append((context, path, "does not run on merge_group"))
+    return out
+
+
+def queue_lines(blockers):
+    """The drift check's lines for queue_blockers()."""
+    return [f"the merge queue waits: `{c}` from `{w}` {why}" if w else f"the merge queue waits: `{c}`: {why}" for c, w, why in blockers]
+
+
+def required_contexts(name, mine, org):
+    """The checks the rules on a repository's default branch require: the
+    organisation's rulesets that cover it and its own, the queue's aside."""
+    rules = [r for r in org if covers(r, name)] + [r for r in mine if r.get("name") != QUEUE]
+    return {c for r in rules if r.get("target", "branch") == "branch" for c in required_checks(r)}
+
+
+def context_workflows(full, contexts=None, recent=5):
+    """{check name: workflow path} from the runs of the heads of the
+    repository's recent pull requests (up to `recent`, newest first, until
+    every one of `contexts` is found): each check run's suite, its workflow
+    run. One pull request alone may be a draft, closed before its checks
+    ran, from a fork, or skipped by a path filter."""
+    pulls = json.loads(gh("pr", "list", "--repo", full, "--state", "all", "--limit", str(recent), "--json", "headRefOid").stdout or "[]")
+    found = {}
+    for sha in dict.fromkeys(p["headRefOid"] for p in pulls if p.get("headRefOid")):
+        pages = json.loads(gh("api", "--paginate", "--slurp", f"repos/{full}/actions/runs?head_sha={sha}&per_page=100").stdout or "[]")
+        suites = {r.get("check_suite_id"): r.get("path") for page in pages for r in (page.get("workflow_runs") or [])}
+        pages = json.loads(gh("api", "--paginate", "--slurp", f"repos/{full}/commits/{sha}/check-runs?per_page=100").stdout or "[]")
+        for page in pages:
+            for c in page.get("check_runs", []):
+                path = suites.get((c.get("check_suite") or {}).get("id"))
+                if path:
+                    found.setdefault(c["name"], path)
+        if contexts and set(contexts) <= set(found):
+            break
+    return found
+
+
+def blockers_of(repo, files, mine=None):
+    """queue_blockers() for a repository, read from GitHub."""
+    full = f"{ORG}/{repo['name']}"
+    contexts = required_contexts(repo["name"], rulesets(full) if mine is None else mine, org_rulesets() or [])
+    return queue_blockers(contexts, context_workflows(full, contexts) if contexts else {}, files)
+
+
+def unknown_blocker(blocker):
+    """Whether a queue_blockers() entry is "could not tell" (no workflow
+    found for the context, or its workflow unread) rather than a workflow
+    that definitely does not run on merge_group."""
+    return blocker[2] != "does not run on merge_group"
 
 
 def yaml_text(text):
@@ -1582,6 +1997,14 @@ def org_plan():
     return ORG_PLAN or None
 
 
+def queue_wanted(repo, conf):
+    """Whether the repository is to have a merge queue, by its mode and
+    what GitHub allows (sync_merge_queue's decision before its checks)."""
+    mode = queue_mode(repo["name"], conf, sys.modules["org"].load())
+    allowed = queue_allowed(repo.get("visibility"), org_plan())
+    return mode == "on" or (mode == "auto" and bool(allowed))
+
+
 def sync_merge_queue(repo, conf, dry):
     """Turns the merge queue on or off for one repository (see `merge-queue`
     above): its ruleset and DX_MERGE_QUEUE."""
@@ -1595,11 +2018,20 @@ def sync_merge_queue(repo, conf, dry):
     if mode == "on" and not allowed:
         raise ValueError(f"merge-queue is `on` but GitHub gives a {str(repo.get('visibility')).lower()} repository on this plan ({org_plan() or 'unknown'}) no merge queue")
     want = mode == "on" or (mode == "auto" and allowed)
-    late = queue_callers_ready(workflow_files(full)) if want else []
+    own = rulesets(full)
+    late = blockers_of(repo, workflow_files(full), own) if want else []
+    mine = [r for r in own if r.get("name") == QUEUE]
     if late:
-        print(f"  the merge queue waits: {', '.join(late)} run on pull requests but not on merge_group (`sync-repos.py callers` brings them in step)")
+        # Every check the rules require must report in the queue, or it
+        # waits forever (#562): it stays off, and says why.
+        for line in queue_lines(late):
+            print(f"  {line}")
+        if mine and all(unknown_blocker(b) for b in late):
+            # Could not tell is not "does not run there": a queue that
+            # exists is left as it is, never switched off on a guess.
+            print(f"  \"{QUEUE}\" exists and nothing shows it cannot work: left as it is")
+            return
         want = False
-    mine = [r for r in rulesets(full) if r.get("name") == QUEUE]
     value = "on" if want else "off"
     # The variable is never `on` without the queue: when turning it on the
     # ruleset comes first, when turning it off the variable does, so a write
@@ -1651,7 +2083,7 @@ def design_systems():
 
 def design_system_problems(conf, known):
     """What is wrong with repos.yml's `design-system`, as lines."""
-    mapping = conf.get("design-system") or {}
+    mapping = conf.get("design-system") if "design-system" in conf else repos_conf.names_with(conf, "design-system")
     if not isinstance(mapping, dict):
         return ["`design-system` is a map of repository to system"]
     found = []
@@ -1727,7 +2159,7 @@ def dependabot_ecosystems(root, extra):
     return {eco: dirs for eco, dirs in found.items() if dirs}
 
 
-def render_dependabot(template, ecosystems, extra):
+def render_dependabot(template, ecosystems, extra, default_text=None):
     """The template's text with only these ecosystems' entries, each with its
     directories and the repository's `ignore` (repos.yml) added. A kind's
     template may keep fewer ecosystems than the organisation's default
@@ -1735,8 +2167,10 @@ def render_dependabot(template, ecosystems, extra):
     the template does not keep is left out, unless repos.yml adds to it."""
     head, entries = dependabot_entries(template)
     kept = {e for e, _ in entries}
-    with open(os.path.join(CENTRAL, DEPENDABOT_DEFAULT), encoding="utf-8") as fh:
-        known = {e for e, _ in dependabot_entries(fh.read())[1]}
+    if default_text is None:  # the organisation's default here, unless the caller read it at a commit
+        with open(os.path.join(CENTRAL, DEPENDABOT_DEFAULT), encoding="utf-8") as fh:
+            default_text = fh.read()
+    known = {e for e, _ in dependabot_entries(default_text)[1]}
     unknown = sorted(e for e in set(ecosystems) - kept if e not in known or e in extra)
     if unknown:
         raise ValueError(f"the template has no entry for {', '.join(unknown)}")
@@ -1755,7 +2189,7 @@ def render_dependabot(template, ecosystems, extra):
 
 def dependabot_problems(conf):
     """What is wrong with repos.yml's `dependabot`, as lines."""
-    mapping = conf.get("dependabot") or {}
+    mapping = conf.get("dependabot") if "dependabot" in conf else repos_conf.names_with(conf, "dependabot")
     if not isinstance(mapping, dict):
         return ["`dependabot` is a map of repository to its ecosystems"]
     known = {e for e, _ in dependabot_entries(open(os.path.join(CENTRAL, DEPENDABOT_DEFAULT), encoding="utf-8").read())[1]}
@@ -1792,10 +2226,101 @@ def dependabot_wanted(repo, conf, default):
     """(template, text): the Dependabot configuration a repository should
     carry, and the template it comes from."""
     full = f"{ORG}/{repo['name']}"
-    extra = (conf.get("dependabot") or {}).get(repo["name"]) or {}
+    extra = repos_conf.value(conf, repo["name"], "dependabot") or {}
     template = dependabot_template(repo_kind(full, default))
     text = open(os.path.join(CENTRAL, template), encoding="utf-8").read()
     return template, render_dependabot(text, dependabot_ecosystems(root_names(full, default), extra), extra)
+
+
+# #562 C4: a repository's own commit rules that contradict the
+# organisation's (org.yml `conventions-contradictions`).
+CONVENTION_FILES = ("AGENTS.md", "CONTRIBUTING.md", "commitlint.config.js", "commitlint.config.cjs", "commitlint.config.mjs",
+                    "commitlint.config.ts", ".commitlintrc", ".commitlintrc.json", ".commitlintrc.yml", ".commitlintrc.yaml",
+                    ".commitlintrc.js", ".commitlintrc.cjs")
+HOOK_DIRS = (".githooks", ".husky")
+PROSE = ("AGENTS.md", "CONTRIBUTING.md")
+COMMIT_WORDS = re.compile(r"(?i)commit|trailer|co-author|assisted|generated|footer")
+NEGATION = re.compile(r"(?i)\b(never|not|no longer|instead of|don't|do not)\b")
+
+
+def contradictions(texts, rules):
+    """The drift lines of a repository's commit rules (`texts`, {path:
+    text}: its hooks, commitlint configuration, AGENTS.md, CONTRIBUTING.md)
+    that match a rule of org.yml `conventions-contradictions`: in the prose,
+    only the lines that speak of commits or trailers, the dx:org block aside;
+    a line that says "never" or "not" before it is no contradiction. Pure."""
+    out = []
+    for path, text in sorted(texts.items()):
+        if os.path.basename(path) == "AGENTS.md" and START in text and END in text and text.index(START) < text.index(END):
+            a, b = text.index(START), text.index(END) + len(END)
+            text = text[:a] + "\n" * text[a:b].count("\n") + text[b:]
+        for n, line in enumerate(text.splitlines(), 1):
+            if os.path.basename(path) in PROSE and not COMMIT_WORDS.search(line):
+                continue
+            for rule in rules:
+                m = re.search(str(rule.get("pattern") or "(?!)"), line)
+                if m and not NEGATION.search(line[:m.start()]):
+                    out.append(f"its `{path}` asks for {rule.get('says')} (line {n}): a commit rule that contradicts the organisation's (org.yml `conventions-contradictions`)")
+                    break
+    return out
+
+
+def conventions_texts(full, default):
+    """{path: text} of a repository's own commit rules on its default
+    branch: those of CONVENTION_FILES at its root and the commit-msg hooks
+    of HOOK_DIRS."""
+    names = root_names(full, default)
+
+    def read(path):
+        out = gh("api", f"repos/{full}/contents/{path}?ref={default}", "-H", "Accept: application/vnd.github.raw", check=False)
+        if out.returncode != 0 and "404" not in out.stderr:
+            raise RuntimeError(f"could not read {path}: {out.stderr.strip()[:200]}")
+        return out.stdout if out.returncode == 0 else None
+    paths = [n for n in CONVENTION_FILES if n in names]
+    for d in HOOK_DIRS:
+        if d in names:
+            listing = gh("api", f"repos/{full}/contents/{d}?ref={default}", check=False)
+            rows = json.loads(listing.stdout or "[]") if listing.returncode == 0 else []
+            paths += [r["path"] for r in rows if isinstance(r, dict) and "commit-msg" in str(r.get("name"))]
+    texts = {p: read(p) for p in paths}
+    return {p: t for p, t in texts.items() if t is not None}
+
+
+def org_drift(conf):
+    """What differs in the organisation itself, as lines: an org ruleset
+    still naming its repositories, a code security configuration missing."""
+    found = []
+    for r in org_rulesets() or []:
+        if r.get("name") in ORG_RULESET_NAMES and not by_property(r):
+            found.append(f"the ruleset \"{r['name']}\" names its repositories instead of covering those with `{ADOPTED}=true` (`sync-repos.py rulesets`)")
+    try:
+        security_configuration(conf)
+    except ValueError as exc:
+        found.append(f"{exc}: secret scanning and push protection are the configuration's, which GitHub may hold at the enterprise level only (HTTP 422 on a repository), out of the sync's reach: the maintainer sets it once there")
+    return found
+
+
+def adoption_drift(repo, conf):
+    """#562: an adopted repository's property, code security configuration
+    and Project, as lines; nothing for one repos.yml does not list."""
+    full = f"{ORG}/{repo['name']}"
+    if listed(repo["name"]) is None:
+        return []
+    found = []
+    values = property_values({repo["name"]})
+    # A token that cannot read the values says nothing about them: not drift.
+    value = None if values is None else values.get(repo["name"])
+    if values is not None and value != "true":
+        found.append(f"its custom property `{ADOPTED}` is `{value or 'unset'}`, not `true`: the organisation's rulesets do not cover it (`sync-repos.py rulesets`)")
+    try:
+        cid, name = security_configuration(conf)
+        if attached_configuration(full) != cid:
+            found.append(f"the code security configuration `{name}` is not attached (`sync-repos.py security`)")
+    except ValueError:
+        pass  # said once, for the organisation
+    if repos_conf.value(conf, repo["name"], "project") is None:
+        found.append("repos.yml gives it no `project`: its accepted issues land on no Project")
+    return found
 
 
 def drift(repo, conf, labels, block, current=0):
@@ -1824,7 +2349,8 @@ def drift(repo, conf, labels, block, current=0):
         text = policy_text_of(full, default)
         own = policy_kind(text)
         if own and own not in kinds:
-            found.append(f"its .github/review-policy.yml says `kind: {own}`, but repos.yml gives it {', '.join(kinds) or 'no kind'}")
+            found.append(f"its .github/review-policy.yml says `kind: {own}`, but repos.yml gives it {', '.join(kinds) or 'no kind'}: "
+                         "the kind is declared in repos.yml only (#562), so the sync reads none from it; set it there and drop it here")
     # #377: how its bugs are reproduced, said when it declares nothing.
     policy = parse_yaml(text) if text else {}
     policy = policy if isinstance(policy, dict) else {}
@@ -1843,7 +2369,7 @@ def drift(repo, conf, labels, block, current=0):
     if gap:
         found.append(gap)
     # #479: the one check before a pull request, `make pre-pr`.
-    if entry is not None and (conf.get("pre-pr") or {}).get(repo["name"]) is not False:
+    if entry is not None and repos_conf.value(conf, repo["name"], "pre-pr") is not False:
         have_makefile = makefile_of(full, default)
         gap = pre_pr_gap(conf, repo["name"], have_makefile)
         if gap:
@@ -1873,6 +2399,7 @@ def drift(repo, conf, labels, block, current=0):
             try:
                 central = repo["name"] == ".github"
                 found += caller_lines(callers_drift(files, conf, central, default=default or "main"), central)
+                found += placeholder_lines(files, conf, repo["name"], central)
             except ValueError as exc:  # a workflow that does not parse is reported, not skipped
                 found.append(f"its workflow callers could not be compared: {str(exc)[:200]}")
         for w, r in pinned_calls(texts):
@@ -1889,6 +2416,13 @@ def drift(repo, conf, labels, block, current=0):
             found.append(f"no \"{OWN}\" ruleset: nothing requires its own jobs' checks (`sync-repos.py own-checks`)")
         for _, rname in superseded(repo["name"], mine or [], org, pipeline_jobs()):
             found.append(f"the ruleset \"{rname}\" is covered by the organisation's (`sync-repos.py own-checks` deletes it)")
+        # #562 C3: a merge queue it is to have waits for every check its
+        # rules require to run on merge_group.
+        if mine is not None and queue_wanted(repo, conf):
+            try:
+                found += queue_lines(blockers_of(repo, files, mine))
+            except (RuntimeError, ValueError) as exc:
+                found.append(f"the checks its merge queue waits for could not be read: {str(exc)[:160]}")
     have = {l["name"]: l for l in json.loads(gh("label", "list", "--repo", full, "--limit", "1000", "--json", "name,color,description").stdout)}
     for label in labels:
         name = str(label["name"])
@@ -1936,7 +2470,7 @@ def drift(repo, conf, labels, block, current=0):
             found.append("`AGENTS.md` has a broken dx:org block")
     else:
         found.append("no `AGENTS.md`")
-    system = (conf.get("design-system") or {}).get(repo["name"])
+    system = repos_conf.value(conf, repo["name"], "design-system")
     if system == "local":
         out = gh("api", f"repos/{full}/contents/docs/design-system/README.md?ref={default}", "-H", "Accept: application/vnd.github.raw", check=False)
         if out.returncode != 0 and "404" not in out.stderr:
@@ -1945,6 +2479,9 @@ def drift(repo, conf, labels, block, current=0):
             found.append("its design system is `local` (repos.yml), but it has no `docs/design-system/README.md`")
     elif system is not None and system not in design_systems():
         found.append(f"its design system `{system}` (repos.yml) is not one of design-systems/")
+    found += adoption_drift(repo, conf)
+    if listed(repo["name"]) is not None:
+        found += contradictions(conventions_texts(full, default), sys.modules["org"].load().get("conventions-contradictions") or [])
     return found
 
 
@@ -2237,7 +2774,33 @@ def callers_test(check, conf):
           {".github/workflows/issues.yml", ".github/workflows/pull-request-comments.yml", ".github/workflows/plugin-checks-ai.yml"} <= set(written)
           and len([a for a in calls if a[:2] == ("pr", "create")]) == 1 and "uses: DiluxOne/.github/.github/workflows/issue-triage.yml@v" in written[".github/workflows/issues.yml"][1],
           (sorted(written), out.getvalue()))
-    check("C3 (#552): and says which input of its own to fill in", "fill in `support-url`" in out.getvalue(), out.getvalue())
+    check("#562 C2: and writes each input of its own with repos.yml's value, never the template's placeholder",
+          ("support-url: https://github.com/DiluxOne/.github/blob/main/SUPPORT.md\n" in written[".github/workflows/issues.yml"][1],
+           "example.com" in written[".github/workflows/issues.yml"][1], "fill in" in out.getvalue()), (True, False, False))
+    # #562 C2: the callers' values come from the entry or the defaults.
+    owned_all = (conf.get("callers") or {}).get("repository-owned") or {}
+    plugin_conf = {**conf, "repos": {**conf["repos"], "diluxone-new-wordpress": {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"]}], "callers": {"slug": "new-one"}}}}
+    fresh = new_callers({}, plugin_conf, "wordpress-plugin", "main", name="diluxone-new-wordpress")
+    left = {p: placeholders(t, templates()[os.path.basename(p)][0], set(owned_all.get(os.path.basename(p)) or []), repos_conf.caller_values(plugin_conf, "diluxone-new-wordpress"))
+            for p, t in fresh.items()}
+    check("#562 C2: every new caller of a plugin holds no template placeholder", {p: v for p, v in left.items() if v} == {}, left)
+    release = fresh.get(".github/workflows/release-wp.yml", "")
+    check("#562 C2: the entry's value wins over the default, and the default fills the rest",
+          ("slug: new-one\n" in release, "version-constant: DILUXONE_NEW_VERSION\n" in release, "dry-run: true\n" in release, "my-plugin" in release), (True, True, True, False))
+    # A release that rehearses is left rehearsing: nothing merged by policy makes it publish.
+    rehearsing = templates()["release-wp.yml"][0].replace("my-plugin", "new-one").replace("MY_PLUGIN_VERSION", "DILUXONE_NEW_VERSION")
+    check("#562 C2: a caller holding the template's `dry-run: true` is no placeholder, and is never rewritten to publish",
+          ("dry-run" in placeholders(rehearsing, templates()["release-wp.yml"][0], {"dry-run"}, repos_conf.caller_values(plugin_conf, "diluxone-new-wordpress")),
+           "dry-run: false" in fill_inputs(rehearsing, {"dry-run"}, repos_conf.caller_values(plugin_conf, "diluxone-new-wordpress"))), (False, False))
+    raw_issues = templates()["issues.yml"][0].replace("$default-branch", "main")
+    lines = placeholder_lines({".github/workflows/issues.yml": raw_issues}, conf, "diluxone-new-wordpress")
+    check("#562 C2: the drift check lists a caller that still holds a template placeholder, with the value repos.yml gives",
+          lines == ["`.github/workflows/issues.yml` still holds `support-url: https://example.com/support`, the template's placeholder: "
+                    "repos.yml gives `https://github.com/DiluxOne/.github/blob/main/SUPPORT.md` (`sync-repos.py callers` writes it)"], lines)
+    filled = fill_inputs(raw_issues, {"support-url"}, repos_conf.caller_values(conf, "x"))
+    check("#562 C2: and none once it holds the value, nor one holding the repository's own",
+          (placeholder_lines({".github/workflows/issues.yml": filled}, conf, "x"),
+           placeholder_lines({".github/workflows/issues.yml": raw_issues.replace("https://example.com/support", "https://mine.example")}, conf, "x")), ([], []))
     # Its labels: every label of labels.yml, those the triage, the acceptance
     # and the autopilot set among them.
     labels = load_yaml(os.path.join(CENTRAL, "labels.yml"))
@@ -2355,7 +2918,7 @@ def dependabot_test(check, conf, labels, block):
           [u["package-ecosystem"] for u in got["updates"]] == ["github-actions", "npm", "composer"], got)
     got = parse_yaml(render_dependabot(plugin, dependabot_ecosystems({"readme.txt"}, {}), {}))
     check("C1 (#178): a plugin with no manifest gets github-actions alone", [u["package-ecosystem"] for u in got["updates"]] == ["github-actions"], got)
-    extra = (conf.get("dependabot") or {}).get(".github") or {}
+    extra = repos_conf.value(conf, ".github", "dependabot") or {}
     default = open(os.path.join(CENTRAL, DEPENDABOT_DEFAULT), encoding="utf-8").read()
     mine = render_dependabot(default, dependabot_ecosystems({"README.md", "runner"}, extra), extra)
     got = parse_yaml(mine)
@@ -2426,9 +2989,13 @@ def dependabot_test(check, conf, labels, block):
     repo = {"name": "r", "defaultBranchRef": {"name": "main"}}
     want = render_dependabot(plugin, {"github-actions": ["/"], "npm": ["/"]}, {})
     globals()["gh"], ORG = fake, "o"
+    saved_listed = globals()["listed"]
     try:
         import contextlib
         import io
+        new = drift(repo, conf, [], block)
+        # The kind is repos.yml's only (#562): the plugin is listed there.
+        globals()["listed"] = lambda name: {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"]}]}
         lines = drift(repo, conf, [], block)
         state["dependabot"], state["fixes"] = want, False
         in_step = drift(repo, conf, [], block)
@@ -2440,13 +3007,12 @@ def dependabot_test(check, conf, labels, block):
             files_wrote = dict(written)
             sync_files(repo, conf, block, False, part="dependabot")
     finally:
-        globals()["gh"], ORG = saved_gh, saved_org
+        globals()["gh"], ORG, globals()["listed"] = saved_gh, saved_org, saved_listed
     check("C3 (#178): the drift check names a dependabot.yml that differs, and its template",
           any(f"`{DEPENDABOT}` differs from its template, `kinds/wordpress-plugin/dependabot.yml`" in l for l in lines), lines)
     check("C3 (#178): one in step is not reported", not any("dependabot.yml" in l for l in in_step), in_step)
     check("#191: a repository repos.yml does not list is reported as new, with what detection proposes",
-          any("is not in repos.yml `repos:`" in l and "detection proposes wordpress-plugin" in l for l in lines), lines)
-    saved_listed = globals()["listed"]
+          any("is not in repos.yml `repos:`" in l and "detection proposes wordpress-plugin" in l for l in new), new)
     globals()["gh"], ORG = fake, "o"
     try:
         globals()["listed"] = lambda name: {"kinds": [{"kind": "web-api", "paths": ["**"]}]}
@@ -2535,6 +3101,231 @@ def dependabot_test(check, conf, labels, block):
               got == [f"could not be checked: {exc}"], got)
 
 
+def adopt_test(check, conf, labels, block):
+    """#562, C1: `adopt --repo NAME` against a stand-in for gh: the property
+    written (and the rulesets moved to it once every adopted repository
+    holds it), the code security configuration attached, the org-sync pull
+    requests opened for the callers, pre-pr and dependabot, the Project
+    linked, and no other call."""
+    def eq(name, got, want):
+        check(name, got == want, got)
+
+    class Out:
+        def __init__(self, stdout="", returncode=0, stderr=""):
+            self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
+    entry = {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"], "roles": ["back", "front"]}], "project": 14}
+    cfg = {**conf, "repos": {**(conf.get("repos") or {}), "new": entry}}
+    repo = {"name": "new", "visibility": "PUBLIC", "defaultBranchRef": {"name": "main"}}
+    every = [repo, {"name": "old", "visibility": "PUBLIC", "defaultBranchRef": {"name": "main"}}]
+    named = {"id": 3, "name": "org: main", "target": "branch", "enforcement": "active", "source_type": "Organization",
+             "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}, "repository_name": {"include": ["old"], "exclude": []}},
+             "rules": [{"type": "pull_request"}], "bypass_actors": []}
+    moved = with_property_condition(named)
+    state = {"values": {"old": None, "new": None}, "attached": None, "org": ["old", "new"]}
+    calls, opened = [], []
+
+    def fake(*args, check=True, input_text=None):
+        joined = " ".join(args)
+        calls.append(joined)
+        if joined == "api orgs/o/code-security/configurations?per_page=100":
+            return Out(json.dumps([{"id": 5, "name": cfg["security"]["configuration"]}, {"id": 1, "name": "GitHub recommended"}]))
+        if joined == "api repos/o/new/code-security-configuration":
+            return Out(json.dumps({"configuration": {"id": state["attached"]}})) if state["attached"] else Out("", 1, "HTTP 404")
+        if joined == "api repos/o/new":
+            return Out(json.dumps({"id": 99}))
+        if joined == "api -X POST orgs/o/code-security/configurations/5/attach --input -":
+            if json.loads(input_text) == {"scope": "selected", "selected_repository_ids": [99]}:
+                state["attached"] = 5
+            return Out("{}")
+        if joined.startswith("api orgs/o/properties/schema/"):
+            return Out("{}")
+        if joined == "repo list o --no-archived --limit 1000 --json name":
+            return Out(json.dumps([{"name": n} for n in state["org"]]))
+        if joined.startswith("api --paginate --slurp orgs/o/properties/values"):
+            return Out(json.dumps([[{"repository_name": n, "properties": [{"property_name": ADOPTED, "value": v}]} for n, v in state["values"].items()]]))
+        if joined == "api -X PATCH orgs/o/properties/values --input -":
+            body = json.loads(input_text)
+            for n in body["repository_names"]:
+                state["values"][n] = body["properties"][0]["value"]
+            return Out("")
+        return Out("{}")
+    ran = []
+    stubs = {"sync_labels": "labels", "sync_settings": "settings", "sync_own_checks": "own-checks", "sync_merge_queue": "merge-queue"}
+    saved = {n: globals()[n] for n in list(stubs) + ["gh", "listed", "open_change", "sync_callers", "sync_files", "ORG", "ORG_RULESETS", "org_commit"]}
+    real_files = globals()["sync_files"]
+    try:
+        for n, part in stubs.items():
+            globals()[n] = (lambda part: lambda *a, **k: ran.append(part))(part)
+        globals()["sync_callers"] = lambda r, c, dry: ran.append("callers") or opened.append("callers")
+        globals()["sync_files"] = lambda r, c, b, dry, part="files": ran.append(part) or opened.append(part)
+        globals().update(gh=fake, ORG="o", ORG_RULESETS=[named], listed=lambda n: cfg["repos"].get(n))
+        import contextlib
+        import io
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            adopt(repo, cfg, labels, block, every, False)
+    finally:
+        globals().update(saved)
+    eq("#562 C1: adopt runs every part, in order", ran, ["labels", "settings", "files", "callers", "pre-pr", "dependabot", "own-checks", "merge-queue"])
+    eq("#562 C1: it writes the property, on every adopted repository before the rulesets move to it", state["values"], {"old": "true", "new": "true"})
+    want_calls = [
+        "api orgs/o/code-security/configurations?per_page=100", "api repos/o/new/code-security-configuration", "api repos/o/new",
+        "api -X POST orgs/o/code-security/configurations/5/attach --input -",
+        "api -X PUT orgs/o/code-security/configurations/5/defaults -f default_for_new_repos=all",
+        f"api orgs/o/properties/schema/{ADOPTED}", "repo list o --no-archived --limit 1000 --json name",
+        "api --paginate --slurp orgs/o/properties/values?per_page=100", "api -X PATCH orgs/o/properties/values --input -",
+        "api --paginate --slurp orgs/o/properties/values?per_page=100", "api -X PUT orgs/o/rulesets/3 --input -",
+        "project link 14 --owner o --repo o/new"]
+    eq("#562 C1: it attaches the configuration, writes the property, moves the ruleset and links the Project, with no other call", calls, want_calls)
+    eq("#562 C1: the ruleset keeps every field but its repositories, now those with the property",
+          (moved["rules"], moved["conditions"]["ref_name"], "repository_name" in moved["conditions"], moved["conditions"]["repository_property"]["include"][0]["name"], "id" in moved),
+          (named["rules"], named["conditions"]["ref_name"], False, ADOPTED, False))
+    eq("#562 C1: a ruleset covering by the property covers an adopted repository, and only one", (covers(moved, "x", True), covers(moved, "x", False)), (True, False))
+    # What org-adopt.yml adopts comes from the property, not from the push.
+    try:
+        globals().update(gh=fake, ORG="o", ORG_RULESETS=[named], listed=lambda n: cfg["repos"].get(n))
+        before_move = not_adopted(every)
+        globals()["ORG_RULESETS"] = [dict(named, conditions=moved["conditions"])]
+        state["values"] = {"old": "true", "new": None}
+        after_move = not_adopted(every)
+        state["values"] = {"old": "true", "new": "true"}
+        none_left = not_adopted(every)
+    finally:
+        globals().update(saved)
+    eq("#562 C5: `pending` names a listed repository without the property, nothing before the rulesets move, and none once all hold it",
+       (before_move, after_move, none_left), (None, ["new"], []))
+    # Again, in step: nothing is written.
+    calls.clear()
+    try:
+        globals().update(gh=fake, ORG="o", ORG_RULESETS=[dict(named, conditions=moved["conditions"])], listed=lambda n: cfg["repos"].get(n))
+        with contextlib.redirect_stdout(io.StringIO()):
+            sync_security(repo, cfg, False)
+            sync_rulesets([repo], every, False)
+    finally:
+        globals().update(saved)
+    eq("#562 C1: run again, in step, it only reads", [c for c in calls if " -X " in c], [])
+    # A ruleset whose list of names covers a repository repos.yml does not
+    # list (or excludes) is not moved: that repository would lose it.
+    for label, include, exclude, org_names, want in (
+            ("names an unlisted repository", ["old", "stray"], [], ["old", "new", "stray"], ["stray"]),
+            ("uses ~ALL over an unlisted repository", ["~ALL"], [], ["old", "new", "other"], ["other"]),
+            ("uses a pattern over an unlisted repository", ["o*"], [], ["old", "new", "other"], ["other"]),
+            ("uses ~ALL, the unlisted one excluded", ["~ALL"], ["other"], ["old", "new", "other"], []),
+            ("names a repository that no longer exists (or is archived)", ["old", "gone"], [], ["old", "new"], [])):
+        calls.clear()
+        state.update(values={"old": None, "new": None}, org=org_names)
+        wide = dict(named, conditions={**named["conditions"], "repository_name": {"include": include, "exclude": exclude}})
+        err = None
+        try:
+            globals().update(gh=fake, ORG="o", ORG_RULESETS=[wide], listed=lambda n: cfg["repos"].get(n))
+            with contextlib.redirect_stdout(io.StringIO()):
+                sync_rulesets([repo], every, False)
+        except RuntimeError as exc:
+            err = str(exc)
+        finally:
+            globals().update(saved)
+        writes = [c for c in calls if " -X " in c]
+        if want:
+            check(f"#562: a ruleset that {label} is not moved, and the error names {want}",
+                  err is not None and all(n in err for n in want) and not writes, (err, writes))
+        else:
+            check(f"#562: a ruleset that {label} is moved", err is None and "api -X PUT orgs/o/rulesets/3 --input -" in writes, (err, writes))
+    state["org"] = ["old", "new"]
+    # The pull requests it opens are the org-sync lane's runs.
+    modes = []
+    root = [{"name": "composer.json"}, {"name": "plugin.php"}]
+    current = max(int(v) for t in templates().values() for v in USES_RE.findall(t[0]))
+
+    def repo_gh(*args, check=True, input_text=None):
+        joined = " ".join(args)
+        if args[:2] == ("pr", "list"):
+            return Out("[]")
+        if joined.startswith("api repos/o/new/contents/?ref="):
+            return Out(json.dumps(root))
+        if joined.startswith("api repos/o/new/contents/.github/workflows"):
+            return Out("[]")
+        if "git/matching-refs/tags/v" in joined:
+            return Out(json.dumps([[{"ref": f"refs/tags/v{current}"}]]))
+        return Out("", 1, "HTTP 404")
+    try:
+        globals().update(gh=repo_gh, ORG="o", listed=lambda n: cfg["repos"].get(n),
+                         open_change=lambda *a, mode=None, **k: modes.append((mode, sorted(a[2]))))
+        with contextlib.redirect_stdout(io.StringIO()):
+            real_files(repo, cfg, block, False, part="pre-pr")
+            real_files(repo, cfg, block, False, part="dependabot")
+            saved["sync_callers"](repo, cfg, False)
+    finally:
+        globals().update(saved)
+    eq("#562 C1: the pre-pr, dependabot and callers pull requests are the org-sync lane's runs",
+          [m for m, _ in modes], ["pre-pr", "dependabot", "callers"])
+    check("#562 C1: each writes only the paths its run covers",
+          all(files and all(any(autonomy.path_matches(p, pat) for pat in lane_paths(m)) for p in files) for m, files in modes), modes)
+    check("#562 C1: one with no project is said, never left silent",
+          "no Project" in _said(lambda: sync_project({"name": "x"}, {"repos": {"x": {"kinds": []}}}, False)))
+
+
+def conventions_test(check, block):
+    """#562, C4: a repository whose own commit rules contradict the
+    organisation's is listed by the drift check; one in step is not."""
+    rules = sys.modules["org"].load().get("conventions-contradictions") or []
+    check("#562 C4: org.yml lists the contradictions, each with its fixtures",
+          len(rules) >= 3 and all(r.get("pattern") and r.get("says") and r.get("listed") and r.get("kept") for r in rules), rules)
+    for r in rules:
+        for line in r.get("listed") or []:
+            got = contradictions({".githooks/commit-msg": line + "\n"}, [r])
+            check(f"#562 C4: {r['pattern']} finds {line[:50]!r}", len(got) == 1, got)
+        for line in r.get("kept") or []:
+            got = contradictions({"AGENTS.md": line + "\n"}, rules)
+            check(f"#562 C4: nothing of org.yml finds {line[:50]!r}", got == [], got)
+
+    class Out:
+        def __init__(self, stdout="", returncode=0, stderr=""):
+            self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
+    agents_daw = with_block("# AGENTS.md\n\nEvery commit an agent wrote ends with the trailer `AI-assisted: yes`.\n", block)
+    agents_ok = with_block("# AGENTS.md\n\nA commit an agent helped with ends with `Assisted-by: <model> (<maker>)`.\n", block)
+    hook_daw = "#!/bin/sh\ngrep -q '^AI-assisted: yes$' \"$1\" || { echo 'add the AI-assisted: yes trailer'; exit 1; }\n"
+    hook_ok = "#!/bin/sh\ngrep -q '^Assisted-by: ' \"$1\" || true\n"
+    state = {}
+
+    def fake(*args, check=True, input_text=None):
+        joined = " ".join(args)
+        if joined.startswith("api repos/o/r/contents/?ref="):
+            return Out(json.dumps([{"name": n} for n in state]))
+        if joined.startswith("api repos/o/r/contents/.githooks?ref="):
+            return Out(json.dumps([{"name": "commit-msg", "path": ".githooks/commit-msg"}, {"name": "pre-push", "path": ".githooks/pre-push"}]))
+        for path, text in state.items():
+            if joined.startswith(f"api repos/o/r/contents/{path}?ref="):
+                return Out(text)
+        if joined.startswith("api repos/o/r/contents/.githooks/commit-msg?ref="):
+            return Out(state.get("hook", ""))
+        return Out("", 1, "HTTP 404")
+    global ORG
+    saved = (globals()["gh"], ORG)
+    try:
+        globals()["gh"], ORG = fake, "o"
+        found = {}
+        for label, files in (("hook", {".githooks": "", "hook": hook_daw, "AGENTS.md": agents_ok}), ("agents", {"AGENTS.md": agents_daw}),
+                             ("in step", {".githooks": "", "hook": hook_ok, "AGENTS.md": agents_ok})):
+            state.clear()
+            state.update(files)
+            found[label] = contradictions(conventions_texts("o/r", "main"), rules)
+    finally:
+        globals()["gh"], ORG = saved
+    check("#562 C4: a repository whose commit-msg hook asks for `AI-assisted: yes` is listed, naming the hook and its line",
+          [l.split(" asks for")[0] for l in found["hook"]] == ["its `.githooks/commit-msg`"] and "(line 2)" in found["hook"][0], found["hook"])
+    check("#562 C4: one whose AGENTS.md asks for it is listed, the organisation's block aside",
+          [l.split(" asks for")[0] for l in found["agents"]] == ["its `AGENTS.md`"], found["agents"])
+    check("#562 C4: one asking for `Assisted-by:` is not", found["in step"] == [], found["in step"])
+    check("#562 C4: the organisation's own block, which says what never to write, is no contradiction", contradictions({"AGENTS.md": with_block("# AGENTS.md\n", block)}, rules) == [], "")
+
+
+def _said(fn):
+    import contextlib
+    import io
+    with contextlib.redirect_stdout(io.StringIO()) as out:
+        fn()
+    return out.getvalue()
+
+
 def ai_plugin_drift_test(check, conf, labels, block):
     """#552, C9: the daily drift check against a stand-in for gh lists
     nothing for the three repositories #552 adopts once they are in step:
@@ -2601,7 +3392,7 @@ def ai_plugin_drift_test(check, conf, labels, block):
         global ORG, ORG_RULESETS
         tree = trees[name]
         repo = {"name": name, "defaultBranchRef": {"name": "main"}, "visibility": "PUBLIC"}
-        callers = {p: t for p, t in new_callers({}, cfg, tree["kind"], "main").items() if p != drop}
+        callers = {p: t for p, t in new_callers({}, cfg, tree["kind"], "main", name=name).items() if p != drop}
         state.update(name=name, files=callers, makefile=makefile if tree["kind"] else ".PHONY: pre-pr\npre-pr:\n\ttrue\n",
                      **{"dx.mk": pre_pr.render_kind(tree["kind"]) if dx else None})
         saved_gh, saved_org, saved_rs = globals()["gh"], ORG, ORG_RULESETS
@@ -2614,13 +3405,14 @@ def ai_plugin_drift_test(check, conf, labels, block):
                 return drift_or_reason(repo, cfg, labels, block, current)
         finally:
             globals()["gh"], ORG, ORG_RULESETS = saved_gh, saved_org, saved_rs
-    adopted = {**conf, "repro": {**(conf.get("repro") or {}), "dilux-agentic-workflow": {"ways": {"pytest": way}}, "diluxone-mermaid": {"ways": {"pytest": way}}}}
+    adopted = {**conf, "repro": {"dilux-agentic-workflow": {"ways": {"pytest": way}}, "diluxone-mermaid": {"ways": {"pytest": way}}},
+               "projects": {"dilux-agentic-workflow": 14, "diluxone-mermaid": 15, "diluxone-plugins-ai": 15}}
     for name in trees:
         got = lines_for(name, adopted)
         check(f"C9 (#552): the drift check lists nothing for {name}, in step", got == [], got)
     check("C9 (#552): repos.yml keeps the catalog's no way by design, and needs no pre-pr exception for it",
-          ((conf.get("repro") or {}).get("diluxone-plugins-ai"), "diluxone-plugins-ai" in (conf.get("pre-pr") or {})), (False, False))
-    got = lines_for("diluxone-mermaid", conf if "diluxone-mermaid" not in (conf.get("repro") or {}) else {**conf, "repro": {}})
+          (repos_conf.value(conf, "diluxone-plugins-ai", "repro"), "pre-pr" in repos_conf.entry(conf, "diluxone-plugins-ai")), (False, False))
+    got = lines_for("diluxone-mermaid", {**adopted, "repro": {}})
     check("C9 (#552): a plugin of the kind with no way in repos.yml `repro:` is listed (its pack declares none)",
           any("declares no way to reproduce a bug" in l for l in got), got)
     got = lines_for("dilux-agentic-workflow", adopted, drop=".github/workflows/issues.yml")
@@ -2665,7 +3457,7 @@ def self_test():
            fork_approval_drift(True, conf["security"], FORK_APPROVAL), fork_approval_drift(False, conf["security"], "first_time_contributors"), fork_approval_drift(True, conf["security"], None)),
           ("public-only", True, None, None, None))
     check("repos.yml: settings, security and files", isinstance(conf.get("settings"), dict) and isinstance(conf.get("security"), dict) and ".github/CODEOWNERS" in (conf.get("files") or {}), conf)
-    projects = conf.get("projects") or {}
+    projects = repos_conf.names_with(conf, "project")
     check("repos.yml: every Project is a positive number, every repository a name", projects and all(isinstance(n, int) and n > 0 for n in projects.values()) and all(re.fullmatch(r"[A-Za-z0-9._-]+", r) for r in projects), projects)
     known = design_systems()
     check("design systems: wordpress-admin is one", "wordpress-admin" in known, known)
@@ -2741,9 +3533,9 @@ def self_test():
     globals()["gh"] = lambda *a, check=True, input_text=None: type("O", (), {"stdout": "", "returncode": 1, "stderr": "HTTP 502"})()
     try:
         own_checks_spec("o/r", "main", ["uses: DiluxOne/.github/.github/workflows/plugin-checks-wp.yml@v5"])
-        check("own checks: a policy that cannot be read stops, rather than reads as no kind", False, "no error")
-    except RuntimeError:
-        check("own checks: a policy that cannot be read stops, rather than reads as no kind", True)
+        check("#562 own checks: the kind is repos.yml's, the review policy is never read for it", True)
+    except RuntimeError as exc:
+        check("#562 own checks: the kind is repos.yml's, the review policy is never read for it", False, str(exc))
     globals()["gh"] = lambda *a, check=True, input_text=None: type("O", (), {"stdout": "", "returncode": 1, "stderr": "HTTP 404"})()
     check("own checks: no policy, no ruleset", own_checks_spec("o/r", "main", ["uses: DiluxOne/.github/.github/workflows/plugin-checks-wp.yml@v5"]) is None)
     globals()["gh"] = saved_gh
@@ -2782,6 +3574,8 @@ def self_test():
     callers_test(check, conf)
     dependabot_test(check, conf, labels, block_file)
     ai_plugin_drift_test(check, conf, labels, block_file)
+    adopt_test(check, conf, labels, block_file)
+    conventions_test(check, block_file)
     # The org-sync lane (#155): a run from a merged commit marks its issue,
     # and labels it only once its Type is Task; the lane reads it back.
     policy = load_yaml(os.path.join(CENTRAL, "policy", "autonomy.yml"))
@@ -2955,31 +3749,51 @@ def self_test():
     check("#451: an unread plan is unknown for a private repository, never a public one", (queue_allowed("PRIVATE", None), queue_allowed("PUBLIC", None)), (None, True))
     # #451: the order of the writes, so a failure half way never leaves
     # DX_MERGE_QUEUE on without the queue.
-    def queue_run(want_rs, has_rs, plan="team", vis="PUBLIC", mode="auto"):
+    own_rs = {"id": 8, "name": OWN, "target": "branch", "rules": [{"type": "required_status_checks", "parameters": {
+        "required_status_checks": [{"context": "checks / unit"}]}}]}
+    tests_wf = "on:\n  pull_request:\njobs:\n  unit:\n    runs-on: ubuntu-latest\n    steps: [{run: 'true'}]\n"
+
+    def queue_run(want_rs, has_rs, plan="team", vis="PUBLIC", mode="auto", required=False, workflow=tests_wf, out=None, produced="checks / unit"):
         calls = []
         def fake(*args, check=True, input_text=None):
-            calls.append(" ".join(args))
-            if "rulesets?includes_parents" in " ".join(args):
-                return Out(json.dumps([[{"id": 9, "source_type": "Repository"}]] if has_rs else [[]]))
+            joined = " ".join(args)
+            calls.append(joined)
+            if "rulesets?includes_parents" in joined:
+                return Out(json.dumps([([{"id": 9, "source_type": "Repository"}] if has_rs else []) + ([{"id": 8, "source_type": "Repository"}] if required else [])]))
             if args[:2] == ("api", "repos/o/r/rulesets/9"):
                 return Out(json.dumps({"id": 9, "name": QUEUE}))
-            if "actions/variables/DX_MERGE_QUEUE" in " ".join(args) and "-X" not in args:
+            if args[:2] == ("api", "repos/o/r/rulesets/8"):
+                return Out(json.dumps(own_rs))
+            if "actions/variables/DX_MERGE_QUEUE" in joined and "-X" not in args:
                 return Out("", 1, "HTTP 404")
-            if "contents/.github/workflows" in " ".join(args):
-                return Out("", 1, "HTTP 404")
+            if joined == "api repos/o/r/contents/.github/workflows":
+                return Out(json.dumps([{"name": "tests.yml", "path": ".github/workflows/tests.yml"}]) if required else "", 0 if required else 1, "" if required else "HTTP 404")
+            if joined.startswith("api repos/o/r/contents/.github/workflows/tests.yml"):
+                return Out(workflow)
+            if args[:2] == ("pr", "list"):
+                return Out(json.dumps([{"headRefOid": "abc"}]))
+            if "actions/runs?head_sha=abc" in joined:
+                return Out(json.dumps([{"workflow_runs": [{"check_suite_id": 5, "path": ".github/workflows/tests.yml"}]}]))
+            if "commits/abc/check-runs" in joined:
+                return Out(json.dumps([{"check_runs": [{"name": produced, "check_suite": {"id": 5}}]}]))
+            if "orgs/o/rulesets" in joined:
+                return Out("[[]]")
             return Out("{}")
         org_mod = sys.modules["org"]
-        saved = (globals()["gh"], ORG, ORG_PLAN, org_mod.load)
+        saved = (globals()["gh"], ORG, ORG_PLAN, org_mod.load, ORG_RULESETS)
         try:
-            globals().update(gh=fake, ORG="o", ORG_PLAN=plan)
+            globals().update(gh=fake, ORG="o", ORG_PLAN=plan, ORG_RULESETS=None)
             org_mod.load = lambda *a, **k: {"merge-queue": mode}
             import contextlib
             import io
-            with contextlib.redirect_stdout(io.StringIO()):
+            with contextlib.redirect_stdout(io.StringIO()) as said:
                 sync_merge_queue({"name": "r", "visibility": vis}, {}, False)
+                if out is not None:
+                    out.append(said.getvalue())
+                    out.append(queue_lines(blockers_of({"name": "r"}, workflow_files("o/r"))))
         finally:
             globals()["gh"], org_mod.load = saved[0], saved[3]
-            globals().update(ORG=saved[1], ORG_PLAN=saved[2])
+            globals().update(ORG=saved[1], ORG_PLAN=saved[2], ORG_RULESETS=saved[4])
         writes = [c for c in calls if "-X" in c]
         return writes
     on = queue_run(True, False)
@@ -2990,7 +3804,30 @@ def self_test():
           len(off) == 2 and "value=off" in off[0] and "DELETE" in off[1], off)
     unread = queue_run(False, True, plan=False, vis="PRIVATE")
     check("#451 an unread plan on a private repository changes nothing", unread == [], unread)
-    check("#451: the queue waits for a caller that runs on pull requests but not on merge_group, and only for that one", queue_callers_ready(ready), ["b.yml", "e.yml"])
+    # #562 C3: every check the rules require must run on merge_group.
+    got = queue_blockers({"pipeline / checks", "tests", "orphan"}, {"pipeline / checks": "a.yml", "tests": "b.yml", "gone": "z.yml"}, ready)
+    check("#562 C3: a required check whose workflow lacks merge_group, or that no workflow produces, blocks the queue; one that runs there does not",
+          got == [("orphan", None, "no workflow of a recent pull request produces it"), ("tests", "b.yml", "does not run on merge_group")], got)
+    said = []
+    blocked = queue_run(False, False, required=True, out=said)
+    check("#562 C3: the merge queue sync does not turn the queue on for it, and says why",
+          (blocked, "the merge queue waits: `checks / unit` from `.github/workflows/tests.yml` does not run on merge_group" in said[0]),
+          (["api -X POST repos/o/r/actions/variables -f name=DX_MERGE_QUEUE -f value=off"], True))
+    check("#562 C3: the drift check names the context and the workflow",
+          said[1] == ["the merge queue waits: `checks / unit` from `.github/workflows/tests.yml` does not run on merge_group"], said[1])
+    ready_run = queue_run(True, False, required=True, workflow=tests_wf.replace("  pull_request:\n", "  pull_request:\n  merge_group:\n"))
+    check("#562 C3: once its workflow runs on merge_group, the queue is turned on",
+          len(ready_run) == 2 and "repos/o/r/rulesets" in ready_run[0] and "value=on" in ready_run[1], ready_run)
+    said = []
+    kept = queue_run(True, True, required=True, out=said, produced="something else")
+    check("#562: a required check no recent pull request maps to leaves an existing queue as it is",
+          (kept, "left as it is" in said[0]), ([], True))
+    fresh = queue_run(False, False, required=True, produced="something else")
+    check("#562: the same unknown keeps a queue that does not exist yet off",
+          fresh, ["api -X POST repos/o/r/actions/variables -f name=DX_MERGE_QUEUE -f value=off"])
+    late_known = queue_run(False, True, required=True)
+    check("#562: a required check whose workflow lacks merge_group still turns an existing queue off",
+          len(late_known) == 2 and "value=off" in late_known[0] and "DELETE" in late_known[1], late_known)
     check("#187: `files` runs the shared files alone", runs["files"] == ["files"], runs["files"])
     check("#187: `dependabot` runs the Dependabot file alone", runs["dependabot"] == ["dependabot"], runs["dependabot"])
     check("#479 C1: `pre-pr` runs the make pre-pr files alone, and `all` does not", runs["pre-pr"] == ["pre-pr"] and "pre-pr" not in runs["all"], runs)
@@ -3002,7 +3839,7 @@ def self_test():
 def main(argv):
     if argv == ["--test"]:
         return self_test()
-    if not argv or argv[0] not in ("labels", "settings", "files", "dependabot", "pre-pr", "own-checks", "merge-queue", "callers", "i18n", "all", "check"):
+    if not argv or argv[0] not in ("labels", "settings", "security", "rulesets", "files", "dependabot", "pre-pr", "own-checks", "merge-queue", "callers", "project", "i18n", "all", "adopt", "pending", "check"):
         print(__doc__)
         return 64
     what, rest = argv[0], argv[1:]
@@ -3017,6 +3854,29 @@ def main(argv):
     if missing:
         print(f"No such repository (or archived, or excluded): {', '.join(missing)}")
         return 1
+    if what == "adopt" and not only:
+        print("adopt: name the repository (--repo NAME)")
+        return 64
+    every = None
+    if what in ("adopt", "rulesets", "pending"):
+        # Every adopted repository: the rulesets move to the property only
+        # once each of them holds it.
+        every = [r for r in (repositories([], conf.get("exclude") or []) if only else repos) if listed(r["name"]) is not None]
+    if what == "pending":
+        try:
+            names = not_adopted(every)
+        except (RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
+            print(f"pending: {exc}", file=sys.stderr)
+            return 1
+        print("\n".join(names or []))
+        return 0
+    if what == "rulesets":
+        try:
+            sync_rulesets([r for r in repos if listed(r["name"]) is not None], every, dry)
+        except (RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
+            print(f"  failed: {exc}")
+            return 1
+        return 0
     if what == "check":
         report = [f"# Repositories out of step with {ORG}/.github", "",
                   "What differs from `labels.yml`, `repos.yml`, `agents-block.md`, the Dependabot templates (`kinds/<kind>/dependabot.yml`, `policy/dependabot.default.yml`) and `workflow-templates/`. Labels and settings: `python3 scripts/sync-repos.py all`; files: the pull requests it opens; Dependabot: the pull requests `sync-repos.py dependabot` opens; workflow callers: `python3 scripts/sync-repos.py callers --repo NAME`, a pull request each.", ""]
@@ -3027,6 +3887,13 @@ def main(argv):
             if lines:
                 dirty += 1
                 report += [f"## {repo['name']}", ""] + [f"- {line}" for line in lines] + [""]
+        try:
+            whole = org_drift(conf)
+        except (RuntimeError, ValueError) as exc:
+            whole = [f"could not be checked: {str(exc)[:200]}"]
+        if whole:
+            dirty += 1
+            report += [f"## The organisation, {ORG}", ""] + [f"- {line}" for line in whole] + [""]
         if not dirty:
             report = [f"Every repository is in step with {ORG}/.github."]
         text = "\n".join(report) + "\n"
@@ -3040,10 +3907,17 @@ def main(argv):
     for repo in repos:
         print(f"{ORG}/{repo['name']}")
         try:
+            if what == "adopt":
+                adopt(repo, conf, labels, block, every, dry)
+                continue
             if what in ("labels", "all"):
                 sync_labels(repo, labels, dry)
             if what in ("settings", "all"):
                 sync_settings(repo, conf, dry)
+            if what == "security":
+                sync_security(repo, conf, dry)
+            if what == "project":
+                sync_project(repo, conf, dry)
             if what in ("files", "all"):
                 sync_files(repo, conf, block, dry)
             if what == "dependabot":

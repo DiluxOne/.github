@@ -170,22 +170,18 @@ def repos_yml(lines):
             "repos:\n" + "".join(l + "\n" for l in sorted(lines, key=lambda l: l.strip().lower())))
 
 
-REPRO_HEAD = ("\n# How a repository reproduces a bug when neither its kind's pack nor its\n"
-              "# own .github/review-policy.yml says (#377): its `repro:` as that file\n"
-              "# takes it (scripts/repro-ways.py), proposed by the installer from its\n"
-              "# stack (policy/repro-stacks.yml). Correct it; the repository's own\n"
-              "# policy goes over it.\nrepro:\n")
-
-
 def with_repro(text, proposals):
-    """repos.yml with a `repro:` entry for each (name, way's name, way),
-    in its section (written at the end when there is none)."""
-    block = "".join(f"  {name}:\n    ways:\n" + detect.way_yaml(wname, way, 6) for name, wname, way in proposals)
+    """repos.yml with a `repro:` in the entry of each (name, way's name,
+    way) (#562: one entry per repository): its one line, as the installer
+    writes it, becomes a block with its kinds and its way."""
     lines = text.split("\n")
-    if "repro:" in lines:
-        i = lines.index("repro:") + 1
-        return "\n".join(lines[:i]) + "\n" + block + "\n".join(lines[i:])
-    return text.rstrip("\n") + "\n" + REPRO_HEAD + block
+    for name, wname, way in proposals:
+        head = f"  {name}: {{kinds: "
+        i = next(n for n, l in enumerate(lines) if l.startswith(head) and l.rstrip().endswith("}"))
+        kinds = lines[i].rstrip()[len(head):-1]
+        block = f"  {name}:\n    kinds: {kinds}\n    repro:\n      ways:\n" + detect.way_yaml(wname, way, 8)
+        lines[i:i + 1] = block.rstrip("\n").split("\n")
+    return "\n".join(lines)
 
 
 def declares(conf, name, own, engine=ENGINE):
@@ -362,14 +358,15 @@ def self_test():
         names = {n: "main" for n in files}
         did = plan("Acme", "acme-bot", 7, t, names, lambda n: kinds_of.get(n, []), policy_of=lambda n: own.get(n, {}), way_of=way_of)
         conf = yaml.safe_load(open(os.path.join(t, "repos.yml")))
-        py = conf["repro"]["api-py"]["ways"]["pytest"]
+        repro = {n: e["repro"] for n, e in conf["repos"].items() if "repro" in e}
+        py = repro["api-py"]["ways"]["pytest"]
         check("C1 a pytest repository with no way: its pull request adds a Python way that writes a JUnit report",
               (py["test"], "--junitxml=build/repro.xml" in py["run"], py["junit"]), ("tests/repro/test_issue_{n}.py", True, "build/repro.xml"))
-        net = conf["repro"]["svc-net"]["ways"]["dotnet-test"]
+        net = repro["svc-net"]["ways"]["dotnet-test"]
         check("C2 a .NET test project: a dotnet test way with a JUnit logger",
               ("dotnet test tests/Svc.Tests/Svc.Tests.csproj" in net["run"], '--logger "junit;' in net["run"], net["test"]),
               (True, True, "tests/Svc.Tests/Repro/Issue{n}Tests.cs"))
-        check("a repository whose pack or own policy declares a way gets none proposed", sorted(conf["repro"]), ["api-py", "svc-net"])
+        check("a repository whose pack or own policy declares a way gets none proposed", sorted(repro), ["api-py", "svc-net"])
         check("one no stack is recognised in is said, by name", [d.split(":")[0] for d in did if d.startswith("lacks a way")], ["lacks a way"])
         check("what it proposes is said, by repository", sorted(d.split(" for ")[1].split(" ")[0] for d in did if d.startswith("proposed ")), ["api-py", "svc-net"])
         check("repos.yml with its ways is to the schema",
@@ -378,15 +375,15 @@ def self_test():
         check("installing again proposes nothing more: the ways are declared now", material(again), [])
         files["new-py"] = {"pytest.ini": "[pytest]"}
         more = plan("Acme", "acme-bot", 7, t, dict(names, **{"new-py": "main"}), lambda n: kinds_of.get(n, []), policy_of=lambda n: own.get(n, {}), way_of=way_of)
-        check("a new repository's way joins the others in `repro:`", (material(more), sorted(yaml.safe_load(open(os.path.join(t, "repos.yml")))["repro"])),
+        check("a new repository's way joins the others in `repro:`", (material(more), sorted(n for n, e in yaml.safe_load(open(os.path.join(t, "repos.yml")))["repos"].items() if "repro" in e)),
               (["added new-py to repos.yml", "proposed the pytest way (python-pytest) for new-py in repos.yml `repro:`"], ["api-py", "new-py", "svc-net"]))
 
         files["scratch"] = {"go.mod": "module x"}
         text = open(os.path.join(t, "repos.yml")).read()
-        open(os.path.join(t, "repos.yml"), "w").write(text.replace("\nrepro:\n", "\nrepro:\n  scratch: false\n"))
+        open(os.path.join(t, "repos.yml"), "w").write(text.replace("\nrepos:\n", "\nrepos:\n  scratch: {kinds: [], repro: false}\n"))
         none = plan("Acme", "acme-bot", 7, t, dict(names, scratch="main"), lambda n: kinds_of.get(n, []), policy_of=lambda n: own.get(n, {}), way_of=way_of)
-        check("a repository repos.yml says has no way by design gets none proposed", (material(none), yaml.safe_load(open(os.path.join(t, "repos.yml")))["repro"]["scratch"]),
-              (["added scratch to repos.yml"], False))
+        check("a repository repos.yml says has no way by design gets none proposed", (material(none), yaml.safe_load(open(os.path.join(t, "repos.yml")))["repos"]["scratch"]["repro"]),
+              ([], False))
 
         def unreadable_policy(n):
             raise RuntimeError("HTTP 502")
