@@ -15,11 +15,18 @@ repos.yml does not list, what detection proposes for it.
                      the way to reproduce a bug its stack proposes (#377),
                      as repos.yml `repro:` takes it; nothing when no stack of
                      policy/repro-stacks.yml matches
-  detect.py propose  for the repositories repos.yml does not list, an issue
-                     and a pull request adding each, with what detection
-                     recognises (org-drift.yml, every day): a `platform`
-                     lane issue, opened by dilux-bot from the run; repos.yml
-                     is high risk, so a person merges the pull request
+  detect.py adopt-issues
+                     for each repository repos.yml does not list, one
+                     "Adopt <repository>" Task issue, opened once, with the
+                     entry detection proposes (org-drift.yml, every day,
+                     #562): a maintainer's `accepted` is the only step
+  detect.py adopt-body NAME
+                     the body of NAME's Adopt issue, for a maintainer who
+                     opens one by hand (title "Adopt NAME", label lane:adopt)
+  detect.py adopt-pr NUMBER
+                     for the Adopt issue NUMBER a maintainer accepted, the
+                     pull request adding its entry to repos.yml
+                     (org-adopt.yml; the `adopt` lane merges it)
   detect.py --test   self-test
 
 A stack is not a kind: a repository of any kind, or of none, is written in
@@ -30,9 +37,8 @@ bug it proposes (scripts/repro-ways.py), for a repository that declares
 none: the installer adds it to repos.yml `repro:`, and the organisation's
 audit (scripts/sync-repos.py check) and the autopilot name it.
 
-Environment: GH_TOKEN (contents: read; for propose, contents, issues and
-pull requests: write on DiluxOne/.github), and for propose RUN_URL, this
-workflow run's URL, which the lane checks.
+Environment: GH_TOKEN (contents: read; for adopt-issues, issues: write on
+DiluxOne/.github; for adopt-pr, contents and pull requests: write too).
 """
 import fnmatch
 import json
@@ -238,9 +244,6 @@ def way_yaml(name, way, indent=0):
     return "".join(" " * indent + line + "\n" for line in text.rstrip("\n").split("\n"))
 
 
-TITLE = "New repositories for repos.yml"
-
-
 def entry(name, found, rules):
     """The repos.yml line for a new repository: its kinds over "**", with
     the roles their packs propose; an unclassified one when none."""
@@ -258,106 +261,176 @@ def with_entries(text, lines):
     for line in sorted(lines, key=name):
         # Before the first entry that sorts after it; the others stay as they are.
         i = start + 1
-        while i < len(out) and out[i].startswith("  ") and name(out[i]) < name(line):
+        # An entry written as a block (#562) goes on below its first line,
+        # and a comment line between entries is passed over.
+        while i < len(out) and out[i].startswith("  ") and (out[i].startswith("   ") or out[i].lstrip().startswith("#") or name(out[i]) < name(line)):
             i += 1
         out.insert(i, line)
     return "\n".join(out)
 
 
-def propose(central, conf, repos, found_of, run_url, io):
-    """The proposal for every repository repos.yml lacks: (issue, pull
-    request), or None when nothing is new or one is already open."""
-    new = sorted(r for r in repos if r not in (conf.get("repos") or {}))
+# "Adopt <repository>" (#562): one Task issue per repository of the
+# organisation that repos.yml lacks, opened once and found by its title. Its
+# body is a PRD (G1), with the entry detection proposes as a YAML block a
+# maintainer may correct, and a marker naming the repository. A maintainer's
+# `accepted` is the only step: org-adopt.yml then opens the pull request
+# that adds that entry to repos.yml (the `adopt` lane merges it by policy)
+# and, once it is merged, adopts the repository (sync-repos.py adopt).
+ADOPT_TITLE = "Adopt {}"
+ADOPT_MARKER = re.compile(r"<!--\s*dx-adopt:\s*([A-Za-z0-9._-]+)\s*-->")
+ADOPT_BLOCK = re.compile(r"^```ya?ml\n(.*?)^```", re.M | re.S)
+AI_LINE = "🤖 AI-generated · detect.py (DiluxOne)"
+
+
+def adopt_entry(name, found, rules):
+    """The entry an Adopt issue proposes, as YAML: its kinds (detection's),
+    the attributes left to say, commented."""
+    line = entry(name, found, rules)
+    return (line.strip() + "\n"
+            "# Add what detection cannot know, in the braces: project: <its Project's number>,\n"
+            "# design-system: <one of design-systems/>, callers: {<input>: <value>} (repos.yml, #562).\n")
+
+
+def adopt_body(name, found, rules, unread=False):
+    """The Adopt issue's body: a PRD whose scope is the proposed entry."""
+    seen = (f"Detection (scripts/detect.py) recognises it as {', '.join(found)}." if found else
+            "Detection (scripts/detect.py) could not read it, so it is proposed unclassified." if unread else
+            "Detection (scripts/detect.py) recognises no kind in it, so it is proposed unclassified.")
+    return (f"<!-- dx-adopt: {name} -->\n### Problem\n\n{ORG}/{name} is a repository of the organisation that repos.yml does not list, so it is outside the flow: "
+            f"no ruleset of the organisation covers it, its security, callers, `make pre-pr` and Dependabot file are not kept, and it is on no Project. {seen}\n\n"
+            "### Scope\n\n- Its entry in repos.yml, as below (correct it here before accepting: the entry used is this block as it is when `accepted` is added).\n"
+            f"- `sync-repos.py adopt --repo {name}` once that entry is merged.\n\n"
+            f"```yaml\n{adopt_entry(name, found, rules)}```\n\n"
+            "### Out of scope\n\n- Any other repository, and any other change to repos.yml.\n\n"
+            f"### Acceptance criteria\n\n- C1: Given this issue accepted by a maintainer, when org-adopt.yml runs, then repos.yml lists {name} with the entry above "
+            f"and `sync-repos.py check` finds nothing of it out of step but what a person must do.\n\n"
+            f"### Criticality\n\nNormal\n\n{AI_LINE}")
+
+
+def adopt_issues(conf, repos, found_of, io):
+    """One Adopt issue for each repository repos.yml lacks, unless one with
+    its title was ever opened (open or closed: a closed one is a decision).
+    The numbers opened, in order."""
+    listed = conf.get("repos") or {}
+    new = sorted(r for r in repos if r not in listed)
     if not new:
         print("Every repository is in repos.yml.")
-        return None
-    issue = io["open_issue"](TITLE)
-    if issue and io["has_pull"](issue):
-        print(f"A proposal is already open: #{issue}.")
-        return None
-    rules = packs()
-    lines, unread = [], []
+        return []
+    rules, opened = packs(), []
     for n in new:
+        title = ADOPT_TITLE.format(n)
+        if io["find_issue"](title):
+            print(f"  {n}: \"{title}\" is already open, or was closed")
+            continue
         # One repository that cannot be read is proposed unclassified, and said.
         try:
-            found = found_of(n)
+            found, unread = found_of(n), False
         except RuntimeError as exc:
             print(f"  {n}: detection failed ({str(exc)[:120]}); proposed unclassified")
-            found, unread = [], unread + [n]
-        lines.append(entry(n, found, rules))
-    body = ("The organisation has repositories that repos.yml does not list, so nothing says what they are. "
-            "Detection (scripts/detect.py) read each one's root and proposes:\n\n" + "\n".join(f"- `{l.strip()}`" for l in lines) +
-            (f"\n\nDetection could not read {', '.join(unread)}: proposed unclassified." if unread else "") +
-            "\n\nCorrect the kinds, paths and roles in the pull request if they are wrong; an empty list leaves a repository unclassified. "
-            "This is work of the `platform` lane (policy/autonomy.yml): accepted by policy. repos.yml is high risk, so a person merges it."
-            f"\n\n<!-- dx-lane: platform run: {run_url} -->\n\n🤖 AI-generated · scripts/detect.py")
-    # A run that opened the issue and failed before its pull request: the
-    # issue is reused, never left to block the next run.
-    if issue:
-        io["edit"](issue, body)  # what this run proposes, not an earlier one
-    else:
-        issue = io["issue"](TITLE, body)
-    text = with_entries(io["read"]("repos.yml"), lines)
-    pr = io["pull"](issue, text, f"chore(repos): add {', '.join(new)} to repos.yml"[:72], new)
-    return issue, pr
+            found, unread = [], True
+        opened.append(io["issue"](title, adopt_body(n, found, rules, unread)))
+    return opened
 
 
-def run_propose():
-    """propose, against GitHub, from a checkout of DiluxOne/.github's main."""
+def adopt_of(body):
+    """(name, entry) an Adopt issue's body names and proposes: the entry as
+    data ({kinds, ...}); (None, None) when it carries no marker or no block
+    that is one entry for that name."""
+    import yaml
+    m, block = ADOPT_MARKER.search(body or ""), ADOPT_BLOCK.search(body or "")
+    if not m or not block:
+        return None, None
+    try:
+        data = yaml.safe_load(block.group(1))
+    except yaml.YAMLError:
+        return m.group(1), None
+    if not isinstance(data, dict) or list(data) != [m.group(1)] or not isinstance(data[m.group(1)], dict):
+        return m.group(1), None
+    return m.group(1), data[m.group(1)]
+
+
+def entry_text(name, value):
+    """repos.yml's line for an entry: its flow form, as the file writes them."""
+    import yaml
+    return f"  {name}: " + yaml.safe_dump(value, default_flow_style=True, sort_keys=False, width=10000).strip()
+
+
+def run_adopt_issues():
+    """adopt-issues, against GitHub, from a checkout of DiluxOne/.github's main."""
     import importlib.util
     spec = importlib.util.spec_from_file_location("sync_repos", os.path.join(HERE, "sync-repos.py"))
     sync = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(sync)
     central = os.environ.get("GITHUB_REPOSITORY", f"{ORG}/.github")
-    root = os.path.join(HERE, "..")
-    conf = load(os.path.join(root, "repos.yml"))
+    conf = load(os.path.join(HERE, "..", "repos.yml"))
     rows = sync.repositories([], conf.get("exclude") or [])
     defaults = {r["name"]: (r.get("defaultBranchRef") or {}).get("name") or "main" for r in rows}
 
-    def open_issue(title):
-        found = json.loads(gh("issue", "list", "--repo", central, "--state", "open", "--search", f"in:title \"{title}\"", "--json", "title,number"))
+    def find_issue(title):
+        found = json.loads(gh("issue", "list", "--repo", central, "--state", "all", "--search", f"in:title \"{title}\"", "--json", "title,number"))
         return next((str(i["number"]) for i in found if i["title"] == title), None)
 
-    def has_pull(n):
-        return bool(json.loads(gh("pr", "list", "--repo", central, "--state", "open", "--head", f"chore/{n}-new-repositories", "--json", "number")))
-
     def issue(title, body):
-        url = gh("issue", "create", "--repo", central, "--title", title, "--label", "lane:platform,accepted-by:policy", "--body", body).strip()
+        url = gh("issue", "create", "--repo", central, "--title", title, "--label", "lane:adopt", "--body", body).strip()
         n = url.rsplit("/", 1)[-1]
         subprocess.run(["gh", "api", "-X", "PATCH", f"repos/{central}/issues/{n}", "-f", "type=Task"], capture_output=True)
+        print(f"Opened #{n}: {title}")
         return n
 
-    def read(path):
-        with open(os.path.join(root, path), encoding="utf-8") as fh:
-            return fh.read()
+    adopt_issues(conf, list(defaults), lambda name: remote(f"{ORG}/{name}", defaults[name]), {"find_issue": find_issue, "issue": issue})
+    return 0
 
-    def pull(n, text, title, new):
-        branch = f"chore/{n}-new-repositories"
-        g = lambda *a: subprocess.run(["git", "-C", root, "-c", f"user.name={org.BOT}", "-c", f"user.email={org.BOT_ID}+{org.BOT}@users.noreply.github.com", *a],
-                                      check=True, capture_output=True, text=True)
-        g("checkout", "-q", "-b", branch)
-        with open(os.path.join(root, "repos.yml"), "w", encoding="utf-8") as fh:
-            fh.write(text)
-        g("commit", "-q", "-am", title)
-        # Through the API, so GitHub signs the commit (#190); the branch is
-        # this proposal's alone, so a run that left it is rewritten.
-        subprocess.run([sys.executable, os.path.join(HERE, "api-commit.py"), "push", branch, "--onto", "HEAD~1", "--force"], check=True, cwd=root)
-        body = (f"## What changes\n\n`repos.yml` lists {', '.join(new)}, with what detection recognises in each.\n\n"
-                f"## Why\n\nNothing said what they are: until repos.yml does, they get the triage and the basic checks, and nothing merges on its own there.\n\n"
-                f"Closes #{n}\n\n🤖 AI-generated · scripts/detect.py")
-        return gh("pr", "create", "--repo", central, "--head", branch, "--title", title, "--body", body).strip()
 
-    def edit(n, body):
-        gh("issue", "edit", n, "--repo", central, "--body", body)
+def adopt_change(text, name, entry_value):
+    """repos.yml's text with the Adopt issue's entry added in `repos:`, and
+    nothing else."""
+    return with_entries(text, [entry_text(name, entry_value)])
 
-    io = {"open_issue": open_issue, "has_pull": has_pull, "issue": issue, "edit": edit, "read": read, "pull": pull}
-    got = propose(central, conf, list(defaults), lambda name: remote(f"{ORG}/{name}", defaults[name]), os.environ.get("RUN_URL", ""), io)
-    if got:
-        print(f"Proposed in #{got[0]}: {got[1]}")
+
+def run_adopt_pr(number):
+    """adopt-pr NUMBER: for an Adopt issue a maintainer accepted, the pull
+    request that adds its entry to repos.yml (the `adopt` lane's, #562),
+    from a checkout of main; the issue is checked as the lane checks it."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("autonomy", os.path.join(HERE, "autonomy.py"))
+    autonomy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(autonomy)
+    central = os.environ.get("GITHUB_REPOSITORY", f"{ORG}/.github")
+    issue = autonomy.read_issue(central, number)
+    name, value, why = autonomy.adopt_issue(issue, central, autonomy.maintainer_of(central))
+    if not name:
+        print(f"Not adopted: {why}.")
+        return 1
+    root = os.path.join(HERE, "..")
+    if name in (load(os.path.join(root, "repos.yml")).get("repos") or {}):
+        print(f"{name} is already in repos.yml.")
+        return 0
+    branch = f"chore/{number}-adopt"
+    title = f"chore(repos): adopt {name}"[:72]
+    if json.loads(gh("pr", "list", "--repo", central, "--state", "open", "--head", branch, "--json", "number")):
+        print(f"A pull request from {branch} is already open.")
+        return 0
+    with open(os.path.join(root, "repos.yml"), encoding="utf-8") as fh:
+        text = adopt_change(fh.read(), name, value)
+    g = lambda *a: subprocess.run(["git", "-C", root, "-c", f"user.name={org.BOT}", "-c", f"user.email={org.BOT_ID}+{org.BOT}@users.noreply.github.com", *a],
+                                  check=True, capture_output=True, text=True)
+    g("checkout", "-q", "-B", branch)
+    with open(os.path.join(root, "repos.yml"), "w", encoding="utf-8") as fh:
+        fh.write(text)
+    g("commit", "-q", "-am", title)
+    # Through the API, so GitHub signs the commit (#190); the branch is this
+    # issue's alone, so a run that left it is rewritten.
+    subprocess.run([sys.executable, os.path.join(HERE, "api-commit.py"), "push", branch, "--onto", "HEAD~1", "--force"], check=True, cwd=root)
+    body = (f"## 📝 What changes\n\n`repos.yml` lists {name}, with the entry the Adopt issue proposes ({why}), and nothing else.\n\n"
+            f"## 💡 Why\n\nA maintainer accepted adopting it; once this merges, org-adopt.yml runs `sync-repos.py adopt --repo {name}`, "
+            "so the repository is in every ruleset, its security is on, its callers, `make pre-pr` and Dependabot file are kept and it is on its Project.\n\n"
+            f"Closes #{number}\n\n{AI_LINE}")
+    print(gh("pr", "create", "--repo", central, "--base", "main", "--head", branch, "--title", title, "--body", body).strip())
     return 0
 
 
 def self_test():
+    import importlib.util
     failed = 0
 
     def check(name, got, want):
@@ -412,30 +485,44 @@ def self_test():
         check("remote: a failed read of a manifest is an error, not 'absent'", "error", "error")
     hand = "repos:\n  zeta: {kinds: []}\n  alpha: {kinds: []}\n"
     check("propose: hand-ordered lines stay where they are", with_entries(hand, ["  beta: {kinds: []}"]), "repos:\n  beta: {kinds: []}\n  zeta: {kinds: []}\n  alpha: {kinds: []}\n")
-    calls = []
-    io = {"open_issue": lambda t: None, "has_pull": lambda n: False, "read": lambda p: conf_text,
-          "edit": lambda n, b: calls.append(("edit", n, b)),
-          "issue": lambda t, b: calls.append(("issue", t, b)) or 41,
-          "pull": lambda n, text, title, new: calls.append(("pull", n, title, new)) or 42}
-    got = propose("DiluxOne/.github", yaml.safe_load(conf_text), ["a-repo", "z-repo", "new-one"], lambda n: ["wordpress-plugin"], "https://github.com/DiluxOne/.github/actions/runs/9", io)
-    check("propose: an issue and a pull request for what is new", (got, [c[0] for c in calls]), ((41, 42), ["issue", "pull"]))
-    check("propose: the issue is the platform lane's, naming the run", "<!-- dx-lane: platform run: https://github.com/DiluxOne/.github/actions/runs/9 -->" in calls[0][2], True)
-    check("propose: the pull request's title names them", calls[1][2], "chore(repos): add new-one to repos.yml")
-    calls.clear()
-    check("propose: nothing when every repository is listed", propose("x", yaml.safe_load(conf_text), ["a-repo"], lambda n: [], "u", io), None)
-    check("propose: nothing while a proposal is open", propose("x", yaml.safe_load(conf_text), ["new"], lambda n: [], "u", dict(io, open_issue=lambda t: 7, has_pull=lambda n: True)), None)
-    check("propose: nothing opened in either case", calls, [])
-    got = propose("x", yaml.safe_load(conf_text), ["new"], lambda n: [], "u", dict(io, open_issue=lambda t: 7))
-    check("propose: an issue left without its pull request gets it, with this run's text, no second issue", (got, [c[0] for c in calls]), ((7, 42), ["edit", "pull"]))
-    calls.clear()
+    # #562 C5: one "Adopt <repository>" issue per repository repos.yml lacks.
+    spec = importlib.util.spec_from_file_location("issue_schema", os.path.join(HERE, "issue-schema.py"))
+    schema = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(schema)
+    issues, opened = {}, []
+
+    def open_one(title, body):
+        issues[title] = body
+        opened.append(title)
+        return str(40 + len(opened))
+    io = {"find_issue": lambda t: t in issues, "issue": open_one}
+    conf = yaml.safe_load(conf_text)
+    got = adopt_issues(conf, ["a-repo", "z-repo", "new-one", "b-site"], lambda n: ["wordpress-plugin"] if n == "new-one" else [], io)
+    check("C5: each repository repos.yml lacks gets its own Adopt issue", (got, opened), (["41", "42"], ["Adopt b-site", "Adopt new-one"]))
+    body = issues["Adopt new-one"]
+    check("C5: its body passes the issue schema (G1)", schema.check(body)["ok"], True)
+    check("C5: it names the repository and proposes the kind detection found", adopt_of(body),
+          ("new-one", {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"], "roles": ["back", "front"]}]}))
+    check("C5: one with no kind found is proposed unclassified, and says so", (adopt_of(issues["Adopt b-site"]), "recognises no kind" in issues["Adopt b-site"]), (("b-site", {"kinds": []}), True))
+    check("C5: run again, never a second issue", (adopt_issues(conf, ["a-repo", "new-one", "b-site"], lambda n: [], io), len(opened)), ([], 2))
+    check("C5: nothing when every repository is listed", adopt_issues(conf, ["a-repo", "z-repo"], lambda n: [], io), [])
 
     def broken(n):
         raise RuntimeError("HTTP 502")
-    propose("x", yaml.safe_load(conf_text), ["new"], broken, "u", io)
-    check("propose: a repository that cannot be read is proposed unclassified, and named", ("new: {kinds: []}" in calls[0][2], "Detection could not read new" in calls[0][2]), (True, True))
+    adopt_issues(conf, ["late"], broken, io)
+    check("C5: a repository that cannot be read is proposed unclassified, and said", (adopt_of(issues["Adopt late"])[1], "could not read it" in issues["Adopt late"]), ({"kinds": []}, True))
+    edited = body.replace("{kinds: [", "{project: 16, kinds: [")
+    check("C5: a maintainer's correction of the block is the entry", adopt_of(edited)[1]["project"], 16)
+    check("C5: a block naming another repository, or two, or none, is no entry",
+          [adopt_of(body.replace("\nnew-one: {", "\nother: {"))[1], adopt_of(body.replace("```yaml\n", "```yaml\nx: {kinds: []}\n"))[1], adopt_of("no marker")[0]], [None, None, None])
+    check("C5: the pull request's repos.yml is its base with that entry added, and nothing else",
+          (yaml.safe_load(adopt_change(conf_text, "new-one", adopt_of(edited)[1]))["repos"]["new-one"],
+           [l for l in adopt_change(conf_text, "new-one", adopt_of(edited)[1]).split("\n") if l not in conf_text.split("\n")]),
+          (adopt_of(edited)[1], [entry_text("new-one", adopt_of(edited)[1])]))
+    check("C5: the entry's line, as repos.yml writes them, reads back the same",
+          yaml.safe_load("repos:\n" + entry_text("new-one", adopt_of(edited)[1]) + "\n")["repos"]["new-one"], adopt_of(edited)[1])
 
     # #377: a repository's stack, and the way to reproduce a bug it proposes.
-    import importlib.util
     spec = importlib.util.spec_from_file_location("repro_ways", os.path.join(HERE, "repro-ways.py"))
     rw = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(rw)
@@ -518,8 +605,13 @@ def self_test():
 def main(argv):
     if argv == ["--test"]:
         return self_test()
-    if argv == ["propose"]:
-        return run_propose()
+    if argv == ["adopt-issues"]:
+        return run_adopt_issues()
+    if argv[:1] == ["adopt-pr"] and len(argv) == 2 and argv[1].isdigit():
+        return run_adopt_pr(int(argv[1]))
+    if argv[:1] == ["adopt-body"] and len(argv) == 2:
+        print(adopt_body(argv[1], remote(f"{ORG}/{argv[1]}"), packs()), end="")
+        return 0
     if argv[:1] == ["way"] and len(argv) in (2, 3):
         found = remote_way(argv[1] if "/" in argv[1] else f"{ORG}/{argv[1]}", argv[2] if len(argv) == 3 else "main")
         if found:
