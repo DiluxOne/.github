@@ -109,15 +109,19 @@ settings:
   has_wiki: false
 
 # Security. Secret scanning and push protection come from the
-# organisation's code security configuration named here, which
-# `sync-repos.py security` attaches to each repository and keeps the default
-# for new ones (#562): never a per-repository setting, which the
+# organisation's code security configuration named here per visibility
+# (`public`, `private`, which covers internal; or one name for every
+# repository), which `sync-repos.py security` attaches to each repository of
+# that visibility and keeps the default for new ones of it (#562, #603): a
+# private repository with no `private` entry gets none (the sync never
+# detaches one already attached), never a per-repository setting, which the
 # enterprise's policy refuses (HTTP 422). Beside it, what a configuration
 # does not hold: Dependabot alerts and security updates everywhere, and
 # private vulnerability reporting where GitHub offers it (public
 # repositories on this plan).
 security:
-  configuration: DiluxOne
+  configuration:
+    public: DiluxOne
   vulnerability_alerts: true
   automated_security_fixes: true
   private_vulnerability_reporting: public-only
