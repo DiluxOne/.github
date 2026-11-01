@@ -60,8 +60,7 @@ Within `v5`, from the version that brings the PHP floor (#85), the plugin checks
 5. Reproductions start on their own: add the `repro-triaged` job from
    `workflow-templates/issues.yml`, which runs the reproduction when the
    triage classifies a report as a bug. Someone with write access can still
-   add `repro:run` (created on the first report; create it by hand to use it
-   before) or `repro:again`.
+   comment `/repro` on the issue to start one, or to try again.
 
 ## Migrating a repository from `v2` to `v3`
 

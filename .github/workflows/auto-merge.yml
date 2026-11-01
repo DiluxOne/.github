@@ -60,7 +60,7 @@ name: Auto-merge
 # decision, so a failure leaves nothing set to merge.
 #
 # A revert dilux-bot opened when a merge turned the default branch red
-# (gate G8, revert-on-red.yml: label `revert`, a `revert/` branch) is decided
+# (gate G8, revert-on-red.yml: a `revert/` branch, no label, #564) is decided
 # by scripts/revert.py decide: only within the `platform` lane of
 # policy/autonomy.yml (its repositories and caps, no protected path, the
 # review not blocking, its description true), labelled `merged-by:policy`;
@@ -437,7 +437,7 @@ jobs:
       # a token of its own, since that needs issues: write.
       - name: dilux-bot token (a revert's issue)
         id: revert-bot
-        if: contains(github.event.pull_request.labels.*.name, 'revert') && github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && startsWith(github.event.pull_request.head.ref, 'revert/') && steps.autopilot.outputs.handled != 'true'
+        if: github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && startsWith(github.event.pull_request.head.ref, 'revert/') && steps.autopilot.outputs.handled != 'true'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}

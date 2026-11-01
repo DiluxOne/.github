@@ -17,8 +17,8 @@ step-by-step flow with its commands is in
    and the autopilot steps aside; a claim with no pull request is released
    after 10 days. Without a claim, never edit code locally: open
    or improve the issue, answer the autopilot's questions on its pull
-   request, and let it work; when it stops, give it a hint and add
-   `autopilot:continue`, never finish its pull request by hand.
+   request, and let it work; when it stops, comment `/continue <hint>`,
+   never finish its pull request by hand.
 2. **The pull request's type fits the issue's Type**: `feat` (or any `!`)
    closes a Feature, `fix` a Bug; other types close any accepted issue.
 3. **Branch** `<type>/<number>-<short-kebab>`; **commit and title** as a

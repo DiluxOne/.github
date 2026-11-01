@@ -22,9 +22,12 @@ def test_the_start_on_opened_is_dilux_bots_unlabelled_issue():
     assert "!startsWith(github.event.issue.title, 'The bug reproduced from ')" in opened
 
 
-def test_an_opened_issue_starts_and_only_autopilot_continue_continues():
-    _, mode = triage_start()
-    assert mode == "${{ github.event.label.name == 'autopilot:continue' && 'continue' || 'start' }}"
+def test_an_opened_issue_starts_and_a_continue_is_review_replys_alone():
+    # #564: `/continue` from a writer is review-reply.yml's (one run, never
+    # two); the triage only starts, and never on a label.
+    cond, mode = triage_start()
+    assert mode == "start"
+    assert "continue" not in cond
 
 
 def test_a_start_that_finds_no_lane_asks_once_more():

@@ -22,7 +22,7 @@ name: Decided by policy
 # Changing a limit stays a pull request a person accepts and merges. Private
 # repositories are counted under their reasons, never named. The week's issue
 # closes as completed when it proposes nothing; with a proposal, it stays
-# open with `needs:maintainer` until a person decides it. The closed issues
+# open with `needs-human` until a person decides it. The closed issues
 # are the record of every week.
 #
 # And what became of the review's blockers and majors over the same four

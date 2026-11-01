@@ -99,9 +99,24 @@
        "nodes": [
         {
          "name": "accepted"
+        }
+       ]
+      },
+      "comments": {
+       "nodes": [
+        {
+         "author": {
+          "__typename": "User",
+          "login": "someone"
+         },
+         "body": "A question?"
         },
         {
-         "name": "autopilot:waiting"
+         "author": {
+          "__typename": "Bot",
+          "login": "dilux-bot"
+         },
+         "body": "<!-- dx-board -->\n**The issue's board**\n\n| Gate | State |\n| --- | --- |\n| Waits on | nobody <!-- dx-waits --> |\n<!-- dx-state v1 {\"waiting\":true} sha256=b566a1066fdfa0297da2908f3d0a32e1c209d9abd3e72855e04757ee85745f88 -->"
         }
        ]
       }

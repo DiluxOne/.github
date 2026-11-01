@@ -4,7 +4,7 @@ name: Issues
 # triage classifies it when it opens (from docs/roadmap.md and the docs) and
 # the reproduction job tries to write a failing unit test for a report the
 # triage calls a bug (repro-triaged), and a maintainer can start one by hand
-# with the label repro:run. A person claims an issue to work it with their
+# with the command `/repro` in a comment (#564). A person claims an issue to work it with their
 # own code (`/claim`, or the form's checkbox, #488): the autopilot steps
 # aside, and the daily run reminds, releases and hands it back to the
 # autopilot, so no accepted issue is left held by nobody.
@@ -12,7 +12,8 @@ name: Issues
 on:
   issues:
     types: [opened, edited, labeled, closed]
-  # Claims (#488): the commands in comments, and a person's pull request
+  # Claims (#488) and a writer's commands (`/continue`, `/spike`, `/repro`,
+  # #564): the commands in comments, and a person's pull request
   # (metadata only; its code is never checked out).
   issue_comment:
     types: [created]
@@ -25,8 +26,14 @@ permissions:
   contents: read
 
 jobs:
+  # A writer's command in a comment (#564: once labels): `/spike` reaches
+  # the triage (`/continue <hint>` is review-reply.yml's, through
+  # pull-request-comments.yml), `/repro` the reproduction; each called
+  # workflow reads the comment's first line and the commenter's permission.
   triage:
-    if: github.event_name == 'issues' || github.event_name == 'schedule'
+    if: >-
+      github.event_name == 'issues' || github.event_name == 'schedule' ||
+      (github.event_name == 'issue_comment' && github.event.comment.user.type != 'Bot' && startsWith(github.event.comment.body, '/spike'))
     permissions:
       contents: read
       issues: write
@@ -37,7 +44,10 @@ jobs:
     secrets: inherit
 
   repro:
-    if: github.event_name == 'issues'
+    if: >-
+      github.event_name == 'issues' ||
+      (github.event_name == 'issue_comment' && github.event.comment.user.type != 'Bot' && startsWith(github.event.comment.body, '/repro')) ||
+      (github.event_name == 'issue_comment' && github.event.comment.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.comment.body, '<!-- dx-repro-retry -->') || startsWith(github.event.comment.body, '<!-- dx-repro-unblocked -->')))
     permissions:
       actions: read
       contents: write
@@ -79,7 +89,7 @@ jobs:
 
   # A person claims an issue (#488): `/claim`, the form's checkbox, and the
   # daily reminders and releases; every release starts the autopilot. The
-  # only job that runs on issue_comment and pull_request_target. It inherits
+  # only job that runs on pull_request_target, and on every comment. It inherits
   # the secrets (dilux-bot's key, and the Claude token for the autopilot it
   # starts) and never checks out a pull request's code: on
   # pull_request_target it reads the pull request's metadata only.

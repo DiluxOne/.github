@@ -23,6 +23,13 @@ name: Claude review reply
 # fork's included; the bot comments what changed, so who added whom stays on
 # record. Such a comment wakes neither the reply nor the autopilot.
 #
+# The commands that replaced labels (#564), honoured from someone with write
+# access alone, on the comment's first line: `/continue <hint>` on an issue
+# or on the autopilot's pull request brings the autopilot back (the
+# `autopilot` job calls autopilot.yml, mode continue), and `/review full` on
+# a pull request asks the next review for a full pass. Neither wakes the
+# reply.
+#
 #   on:
 #     issue_comment:
 #       types: [created]
@@ -73,19 +80,32 @@ env:
 jobs:
   # A maintainer's answer to the autopilot's question (#247, guided mode):
   # a comment by someone with write access on an issue waiting for one
-  # (`autopilot:waiting`), or on its pull request, brings the autopilot back
-  # (`autopilot:continue`, added by dilux-bot, which issue-triage.yml
-  # accepts). The autopilot reads the answer itself, from the comments.
+  # (`waiting` in the issue's board state, #564), or on its pull request,
+  # brings the autopilot back (the `autopilot` job below, `answered` set so
+  # the run is free). The autopilot reads the answer itself, from the
+  # comments. The commands of a person with write access (#564, the
+  # comment's first line, never from anyone else): `/continue <hint>` on
+  # the issue or on the autopilot's pull request brings it back too (the
+  # rest of the comment is the hint it reads), and `/review full` on a pull
+  # request asks the next review for a full pass (`review_full` in the pull
+  # request's board state, read and cleared by claude-review.yml). A run
+  # that ended before its work was done comes back through dilux-bot's own
+  # comment on its pull request (`dx-autopilot-continue`, scripts/autopilot.py
+  # end), read from dilux-bot alone: anyone else's copy of the marker is
+  # nothing.
   answer:
     name: The autopilot's answer
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     if: >-
-      github.event_name == 'issue_comment' && github.event.action == 'created' && github.event.sender.type == 'User' &&
+      github.event_name == 'issue_comment' && github.event.action == 'created' &&
+      (github.event.sender.type == 'User' ||
+        (github.event.sender.type == 'Bot' && github.event.sender.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && contains(github.event.comment.body, '<!-- dx-autopilot-continue -->'))) &&
       !startsWith(github.event.comment.body, '/coauthor') && !startsWith(github.event.comment.body, '/uncoauthor')
     timeout-minutes: 5
     outputs:
       others: ${{ steps.back.outputs.others }}
       issue: ${{ steps.back.outputs.issue }}
+      continue: ${{ steps.back.outputs.continue }}
     steps:
       - name: dilux-bot token
         id: bot
@@ -97,6 +117,18 @@ jobs:
           permission-issues: write
           permission-pull-requests: read
 
+      # The board's state is read and written by receipts.py, which loads
+      # the scripts beside it (#564).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
+          path: .dx-central
+          persist-credentials: false
+
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+
       - name: Bring the autopilot back
         id: back
         env:
@@ -104,31 +136,103 @@ jobs:
           NUMBER: ${{ github.event.issue.number }}
           IS_PR: ${{ github.event.issue.pull_request != null }}
           LOGIN: ${{ github.event.sender.login }}
+          SENDER_TYPE: ${{ github.event.sender.type }}
         run: |
           set -euo pipefail
+          # The comment's first line, from the event's file: its text never
+          # reaches the script through an expression.
+          first=$(jq -r '.comment.body // ""' "$GITHUB_EVENT_PATH" | head -n 1 | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+          writer() {
+            local role
+            role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$LOGIN/permission" --jq .role_name 2>/dev/null || echo none)
+            case $role in admin|maintain|write) return 0 ;; *) return 1 ;; esac
+          }
+          state() { GITHUB_REPOSITORY="$GITHUB_REPOSITORY" python3 .dx-central/scripts/receipts.py state "$@"; }
+          bot_continue=false; command=""
+          if [ "$SENDER_TYPE" = Bot ]; then
+            # Only dilux-bot's own comment that carries the marker (the job's
+            # condition), on its pull request.
+            [ "$LOGIN" = "$DX_BOT_LOGIN" ] && [ "$IS_PR" = true ] || exit 0
+            jq -e '.comment.body | contains("<!-- dx-autopilot-continue -->")' "$GITHUB_EVENT_PATH" >/dev/null || exit 0
+            bot_continue=true
+          else
+            case "$first" in
+              "/review full") command="review-full" ;;
+              /continue|"/continue "*) command="continue" ;;
+            esac
+          fi
+          if [ "$command" = review-full ]; then
+            [ "$IS_PR" = true ] || { echo "/review full is for a pull request."; exit 0; }
+            writer || { echo "$LOGIN cannot ask for a full review: not a writer."; exit 0; }
+            NUMBER="$NUMBER" BOARD_TITLE="The pull request's board" state set review_full=true
+            echo "$LOGIN asked for a full review of #$NUMBER: the next review is a full pass."
+            exit 0
+          fi
           issue=$NUMBER
           if [ "$IS_PR" = true ]; then
-            issue=$(gh pr view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // empty')
+            pr=$(gh pr view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json author,labels,closingIssuesReferences)
+            issue=$(jq -r '.closingIssuesReferences[0].number // empty' <<<"$pr")
+            # A `/continue` and the bot's own continue are the autopilot's
+            # pull request's alone.
+            if [ "$command" = continue ] || [ "$bot_continue" = true ]; then
+              jq -e --arg app "$DX_BOT_APP" --arg login "$DX_BOT_LOGIN" '(.author.login == $app or .author.login == $login or .author.login == ("app/" + $app)) and ([.labels[].name] | index("autopilot") != null)' <<<"$pr" >/dev/null \
+                || { echo "#$NUMBER is not the autopilot's pull request: nothing to continue."; exit 0; }
+            fi
           fi
           [ -n "$issue" ] || exit 0
-          waiting=$(gh issue view "$issue" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | index("autopilot:waiting") != null')
-          [ "$waiting" = true ] || exit 0
-          role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$LOGIN/permission" --jq .role_name 2>/dev/null || echo none)
-          case $role in
-            admin|maintain|write) ;;
-            *)
-              # Someone else's opinion (#287): summarised for the maintainers
-              # next to the question, never an answer.
-              echo "$LOGIN cannot answer for the maintainers ($role): their opinion is summarised."
-              { echo "others=true"; echo "issue=$issue"; } >> "$GITHUB_OUTPUT"
-              exit 0 ;;
-          esac
-          gh label create "autopilot:continue" --repo "$GITHUB_REPOSITORY" --color 1D76DB --force --description "On an issue: the autopilot continues its draft pull request, or starts it" >/dev/null 2>&1 || true
-          # The run the answer starts does not count towards the autopilot's
-          # cap (#479): autopilot.yml labels it free.
-          gh label create "autopilot:answered" --repo "$GITHUB_REPOSITORY" --color 1D76DB --force --description "On an issue: a maintainer answered the autopilot's question; the run it starts does not count" >/dev/null 2>&1 || true
-          gh issue edit "$issue" --repo "$GITHUB_REPOSITORY" --add-label "autopilot:answered" --add-label "autopilot:continue" --remove-label "autopilot:waiting" >/dev/null
-          echo "$LOGIN answered; the autopilot goes on with #$issue."
+          # A release issue is never the autopilot's (#82).
+          if gh issue view "$issue" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | index("lane:release") != null' | grep -qx true; then
+            echo "#$issue is a release issue: the autopilot stays out."; exit 0
+          fi
+          if [ "$bot_continue" = true ]; then
+            echo "The autopilot's run ended before its work was done: it goes on with #$issue."
+            { echo "continue=true"; echo "issue=$issue"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A state edited by hand waits on nobody (#564): no answer frees a run.
+          st=$(NUMBER="$issue" state get)
+          [ -n "$st" ] || st='{}'
+          waiting=$(jq -r 'if (.tampered // false) then false else (.waiting // false) end' <<<"$st")
+          if [ "$waiting" != true ] && [ "$command" != continue ]; then exit 0; fi
+          if ! writer; then
+            [ "$waiting" = true ] || { echo "$LOGIN cannot /continue: not a writer."; exit 0; }
+            # Someone else's opinion (#287): summarised for the maintainers
+            # next to the question, never an answer.
+            echo "$LOGIN cannot answer for the maintainers: their opinion is summarised."
+            { echo "others=true"; echo "issue=$issue"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$waiting" = true ]; then
+            # The run the answer starts does not count towards the
+            # autopilot's cap (#479): autopilot.yml counts it free.
+            NUMBER="$issue" state set answered=true waiting=
+            echo "$LOGIN answered; the autopilot goes on with #$issue."
+          else
+            echo "$LOGIN asked the autopilot to continue #$issue."
+          fi
+          { echo "continue=true"; echo "issue=$issue"; } >> "$GITHUB_OUTPUT"
+
+  # The autopilot comes back (#564): a maintainer's answer, a writer's
+  # `/continue`, or a run that ended before its work was done. Here
+  # because the comment reaches this workflow and its caller inherits the
+  # secrets; autopilot.yml decides whether it may run.
+  autopilot:
+    needs: answer
+    if: needs.answer.outputs.continue == 'true'
+    # The agent's jobs read the repository, and its pull requests for
+    # next-version.py in `make pre-pr`, with the job's own token (#287, #537).
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: DiluxOne/.github/.github/workflows/autopilot.yml@v7
+    with:
+      mode: continue
+      issue: ${{ needs.answer.outputs.issue }}
+      central-ref: ${{ inputs.central-ref }}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
 
   # The others' opinions (#287), on their own: a summary waiting here never
   # holds a maintainer's answer, and a newer comment's run replaces a
@@ -317,6 +421,7 @@ jobs:
       github.event.comment.user.type != 'Bot' &&
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
       !startsWith(github.event.comment.body, '/coauthor') && !startsWith(github.event.comment.body, '/uncoauthor') &&
+      !startsWith(github.event.comment.body, '/continue') && !startsWith(github.event.comment.body, '/review full') &&
       (github.event_name == 'pull_request_review_comment' || github.event.issue.pull_request)
     steps:
       - name: dilux-bot token

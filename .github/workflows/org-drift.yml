@@ -1,7 +1,9 @@
 name: Repositories in step
 
 # Every day, and by hand, it first brings every repository in step on its
-# own (#189), as dilux-bot: the labels (labels.yml, through the API) and the
+# own (#189), as dilux-bot: the labels (labels.yml, through the API; a
+# retired one's state written into the board of every open item that has
+# it, then the label deleted, #564) and the
 # shared files (CODEOWNERS, the AGENTS.md block), each repository's as an
 # issue and a pull request of the org-sync lane, which the autonomy policy
 # accepts and merges when they hold only what main holds here
@@ -78,6 +80,8 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           # Off, a done milestone's release issue waits for a person (#287).
           DX_AUTOPILOT: ${{ vars.DX_AUTOPILOT }}
+          # The bot whose board holds the state a retired label carries (#564).
+          DX_BOT_APP: ${{ vars.DX_BOT_APP || 'dilux-bot' }}
         # Each part runs whatever the others did; the step fails if any did.
         run: |
           rc=0

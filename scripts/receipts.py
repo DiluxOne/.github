@@ -27,18 +27,55 @@ signed by GitHub and show as Verified.
                            review's verdict, the criteria, the policy's commit,
                            who accepted and who merged
   receipts.py board        the issue's board: one bot comment, kept up to date
+                           (it carries the board's state, below, as it was)
+  receipts.py state get [KEY]        the board's state (#564), or one key of
+                           it: a string printed bare, anything else as JSON,
+                           nothing when it is not set
+  receipts.py state set KEY=VALUE…   sets keys (VALUE read as JSON when it is
+                           JSON, else as a string; `KEY=` removes the key)
+  receipts.py state incr KEY         adds one to a number and prints it
+  receipts.py state add KEY VALUE    adds VALUE to a list, once
+  receipts.py state del KEY VALUE    takes VALUE out of a list
   receipts.py --test       self-test
+
+The board's state (#564): what labels used to carry and is neither a
+decision nor a warning a person reads at a glance (counters and the steps in
+between) lives in a hidden block of the board, the one bot comment of an
+issue or a pull request: `<!-- dx-state v1 {json} sha256=<hash> -->`. Only a
+comment of the bot (DX_BOT_APP) that starts with the board's marker is read,
+never another one; a block whose hash does not match what it holds was
+edited by hand and reads as tampered (`tampered: true`), which the readers
+take as the most restrictive state. Its keys:
+
+  runs, free     the autopilot's runs that count, and the free ones (lists of N)
+  rounds         the review rounds the autopilot answered (a number)
+  waiting        the autopilot asked and waits for an answer (true)
+  answered       a maintainer answered: the run it starts is free (true)
+  verdict        the triage's category (bug, enhancement, question, ...)
+  layer          where a defect shows (logic, browser, cli, api, workflow)
+  repro          the reproduction: unconfirmed, confirmed,
+                 could-not-reproduce, no-way, blocked or broken
+  revert         a pull request of G8 that reverts a merge (true); reverted,
+                 the issue or pull request it reverted (true)
+  claim_long     a long claim, never released for want of a pull request
+  spike          a person asked for an investigation first
+  review_full    the next review is a full pass
+  waits_on       {who, what, url}: the "Waits on" row of the board
+  mentioned      the "login|step" mentions already posted, once each
 
 Environment: GH_TOKEN; GITHUB_REPOSITORY (owner/name); NUMBER (the issue);
 BODY (a file holding the issue's body); ACCEPTED_BY (seal-prd); POLICY_REF
 (the commit of DiluxOne/.github whose policy applied); RECEIPTS_FIXTURE (a
-directory standing in for the branch, for the self-test).
+directory standing in for the branch, for the self-test); STATE_FIXTURE (a
+JSON file of an item's comments standing in for GitHub's, for the
+self-test); DX_BOT_APP (the bot App's slug).
 """
 import base64
 import datetime
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -52,6 +89,8 @@ _spec.loader.exec_module(schema_mod)
 
 BRANCH = "receipts"
 BOARD = "<!-- dx-board -->"
+STATE_RE = re.compile(r"<!-- dx-state v1 (\{.*?\}) sha256=([0-9a-f]{64}) -->", re.S)
+WAITS = "<!-- dx-waits -->"
 AI = "🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
 
 
@@ -138,7 +177,7 @@ def rule_link(policy):
     return f"[the rule](https://github.com/DiluxOne/.github/blob/{ref}/policy/autonomy.yml)"
 
 
-def board_text(number, ready, last_seal, merged, autopilot=None, labels=()):
+def board_text(number, ready, last_seal, merged, autopilot=None, labels=(), state=None):
     rows = ["| Gate | State |", "| --- | --- |"]
     rows.append(f"| G1 Issue ready | {'✓ the PRD follows the schema' if ready else '✗ see the G1 comment'} |")
     lane = next((l[5:] for l in labels if l.startswith("lane:")), None)
@@ -159,7 +198,164 @@ def board_text(number, ready, last_seal, merged, autopilot=None, labels=()):
     if merged:
         by = f"policy ({rule_link(merged.get('policy'))})" if merged.get("merged_by") == "policy" else merged.get("merged_by")
         rows.append(f"| G7 Merged | ✓ #{merged.get('pull_request')} by {by}; receipt in `receipts/issues/{number}/merged-{merged.get('at')}.json` |")
-    return f"{BOARD}\n**The issue's board**\n\n" + "\n".join(rows) + f"\n\n{AI}"
+    state = dict(state or {})
+    return f"{BOARD}\n**The issue's board**\n\n" + "\n".join(rows) + "\n" + waits_line(state) + f"\n\n{AI}\n" + state_block(state)
+
+
+# --- the board's state (#564) ----------------------------------------------
+
+def canonical(state):
+    return json.dumps(state, sort_keys=True, separators=(",", ":"), ensure_ascii=True).replace(">", "\\u003e")
+
+
+def state_block(state):
+    text = canonical(state)
+    return f"<!-- dx-state v1 {text} sha256={sha(text)} -->"
+
+
+def parse_state(body):
+    """The state a board's body holds: {} when it holds none; with
+    `tampered: true` when its hash does not match what it holds. Pure."""
+    m = STATE_RE.search(body or "")
+    if not m:
+        return {}
+    try:
+        state = json.loads(m.group(1))
+    except ValueError:
+        return {"tampered": True}
+    if not isinstance(state, dict):
+        return {"tampered": True}
+    if sha(m.group(1)) != m.group(2):
+        state["tampered"] = True
+    return state
+
+
+def waits_line(state):
+    """The board's "Waits on" row: who, what and the link; a dash when
+    nothing waits on anyone. Pure."""
+    w = (state or {}).get("waits_on") or {}
+    if not w.get("who"):
+        return f"| Waits on | nobody {WAITS} |"
+    who = w["who"] if " " in w["who"] else f"@{w['who'].lstrip('@')}"
+    link = f" {w['url']}" if w.get("url") else ""
+    return f"| Waits on | {who}: {w.get('what', '')}{link} {WAITS} |"
+
+
+def with_state(body, state):
+    """A board's body with its state block and its "Waits on" row replaced
+    (added when missing). Pure."""
+    # A tampered state stays so (it is written back with `tampered: true`):
+    # writing it again never launders a hand edit.
+    body = STATE_RE.sub("", body or "").rstrip()
+    line = waits_line(state)
+    lines = body.split("\n")
+    at = next((i for i, l in enumerate(lines) if WAITS in l), None)
+    if at is not None:
+        lines[at] = line
+    else:
+        last = max((i for i, l in enumerate(lines) if l.startswith("|")), default=None)
+        if last is None:
+            lines[1:1] = ["", "| Gate | State |", "| --- | --- |", line]
+        else:
+            lines.insert(last + 1, line)
+    return "\n".join(lines) + "\n" + state_block(state)
+
+
+def apply(state, op, args):
+    """The state after one `state` operation. Pure."""
+    state = dict(state)
+    if op == "set":
+        for a in args:
+            k, _, v = a.partition("=")
+            if k == "tampered":
+                continue
+            if not v:
+                state.pop(k, None)
+                continue
+            try:
+                state[k] = json.loads(v)
+            except ValueError:
+                state[k] = v
+    elif op == "incr":
+        state[args[0]] = int(state.get(args[0]) or 0) + 1
+    elif op == "add":
+        cur = list(state.get(args[0]) or [])
+        v = _value(args[1])
+        if v not in cur:
+            cur.append(v)
+        state[args[0]] = cur
+    elif op == "del":
+        v = _value(args[1])
+        state[args[0]] = [x for x in (state.get(args[0]) or []) if x != v]
+    return state
+
+
+def _value(v):
+    try:
+        return json.loads(v)
+    except ValueError:
+        return v
+
+
+def show(value):
+    if value is None:
+        return ""
+    return value if isinstance(value, str) else json.dumps(value)
+
+
+def bot_app():
+    if os.environ.get("DX_BOT_APP"):
+        return os.environ["DX_BOT_APP"]
+    try:
+        spec = importlib.util.spec_from_file_location("org", os.path.join(HERE, "org.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.APP
+    except Exception:  # noqa: BLE001
+        return "dilux-bot"
+
+
+def comments(repo, number):
+    if os.environ.get("STATE_FIXTURE"):
+        p = os.environ["STATE_FIXTURE"]
+        return json.load(open(p, encoding="utf-8")) if os.path.exists(p) else []
+    out = subprocess.run(["gh", "api", f"repos/{repo}/issues/{number}/comments", "--paginate"], capture_output=True, text=True)
+    if out.returncode != 0:
+        raise RuntimeError(out.stderr.strip()[:300])
+    # --paginate prints one JSON array per page.
+    return [c for page in json.loads("[" + re.sub(r"\]\s*\[", "],[", out.stdout.strip() or "[]") + "]") for c in page]
+
+
+def board_comment(cs, app):
+    """The bot's board among an item's comments (its last), never another
+    person's comment. Pure."""
+    mine = [c for c in cs if (c.get("user") or {}).get("type") == "Bot" and str((c.get("user") or {}).get("login", "")).startswith(app)
+            and str(c.get("body") or "").startswith(BOARD)]
+    return mine[-1] if mine else None
+
+
+def read_state(repo, number):
+    c = board_comment(comments(repo, number), bot_app())
+    return parse_state(c.get("body")) if c else {}
+
+
+def write_state(repo, number, state, title="The board"):
+    """Writes the state on the item's board: the board's comment edited,
+    or a new one when it has none yet."""
+    cs = comments(repo, number)
+    c = board_comment(cs, bot_app())
+    body = with_state(c["body"] if c else f"{BOARD}\n**{title}**\n\n{AI}", state)
+    if os.environ.get("STATE_FIXTURE"):
+        if c:
+            c["body"] = body
+        else:
+            cs.append({"id": len(cs) + 1, "user": {"login": f"{bot_app()}[bot]", "type": "Bot"}, "body": body})
+        json.dump(cs, open(os.environ["STATE_FIXTURE"], "w", encoding="utf-8"))
+        return
+    if c:
+        gh("-X", "PATCH", f"repos/{repo}/issues/comments/{c['id']}", "--input", "-", data={"body": body})
+    else:
+        gh("-X", "POST", f"repos/{repo}/issues/{number}/comments", "--input", "-", data={"body": body})
 
 
 def issue_labels(repo, number):
@@ -350,6 +546,41 @@ Normal
     mb = board_text(7, True, s, receipt(7, body, s, pr2, {}, "abc123", "t"))
     check("#188: a merge by policy links the rule at the commit it read", "by policy ([the rule](https://github.com/DiluxOne/.github/blob/abc123/policy/autonomy.yml))" in mb, True)
     check("#188: a person's merge names the person", "by soydiloreto;" in b, True)
+    # The board's state (#564): counters and steps round-trip, a hand edit is caught.
+    st = apply(apply(apply(apply({}, "add", ["runs", "1"]), "add", ["free", "2"]), "incr", ["rounds"]),
+               "set", ["layer=browser", "repro=no-way", "waiting=true"])
+    check("C1: counters and steps round-trip through the board", parse_state(board_text(7, True, s, None, None, (), st)),
+          {"runs": [1], "free": [2], "rounds": 1, "layer": "browser", "repro": "no-way", "waiting": True})
+    check("C1: add is once, del takes it out, set with nothing removes", (apply(apply({"runs": [1]}, "add", ["runs", "1"]), "del", ["runs", "1"]),
+          apply({"layer": "cli"}, "set", ["layer="])), ({"runs": []}, {}))
+    blk = state_block({"runs": [1]})
+    check("C1: a hand-edited counter reads as tampered", parse_state(blk.replace('"runs":[1]', '"runs":[]'))["tampered"], True)
+    check("C1: a tampered state stays tampered when written again", parse_state(with_state(BOARD, parse_state(blk.replace("[1]", "[]"))))["tampered"], True)
+    check("C1: set never clears tampered", apply({"tampered": True}, "set", ["tampered=false"])["tampered"], True)
+    check("C1: no state reads as empty", parse_state("<!-- dx-board -->\nno state"), {})
+    check("C1: a closing comment in a value cannot end the block", parse_state(state_block({"x": "a --> b"})), {"x": "a --> b"})
+    bot, person = {"login": "dilux-bot[bot]", "type": "Bot"}, {"login": "mallory", "type": "User"}
+    forged = {"user": person, "body": BOARD + "\n" + state_block({"runs": []})}
+    real = {"user": bot, "body": BOARD + "\n" + state_block({"runs": [1, 2]})}
+    check("C1: the state is read from the bot's board only, never a person's comment", board_comment([real, forged], "dilux-bot")["body"], real["body"])
+    check("C1: a person's comment alone is no board", board_comment([forged], "dilux-bot"), None)
+    wb = with_state(board_text(7, True, s, None), {"waits_on": {"who": "alice", "what": "answer the question", "url": "https://github.com/o/r/issues/7#c"}})
+    check("C5: the board names whom it waits on, with the action and the link", "| Waits on | @alice: answer the question https://github.com/o/r/issues/7#c" in wb, True)
+    check("C5: the row is replaced, never repeated", with_state(wb, {}).count("| Waits on |"), 1)
+    check("C5: nobody waited on says so", "| Waits on | nobody" in with_state(wb, {}), True)
+    with tempfile.TemporaryDirectory() as d:
+        fx = os.path.join(d, "comments.json")
+        env0 = dict(os.environ, STATE_FIXTURE=fx, GITHUB_REPOSITORY="o/r", NUMBER="3", DX_BOT_APP="dilux-bot")
+        st_run = lambda *a: subprocess.run([sys.executable, os.path.abspath(__file__), "state"] + list(a), env=env0, capture_output=True, text=True)
+        check("cli: state get on an item with no board is empty", st_run("get", "layer").stdout.strip(), "")
+        st_run("set", "layer=browser", "repro=no-way")
+        check("cli: state set makes the board", (st_run("get", "layer").stdout.strip(), len(json.load(open(fx)))), ("browser", 1))
+        check("cli: state incr counts", (st_run("incr", "rounds").stdout.strip(), st_run("incr", "rounds").stdout.strip()), ("1", "2"))
+        st_run("add", "runs", "1")
+        st_run("add", "runs", "2")
+        check("cli: state add and get of a list", st_run("get", "runs").stdout.strip(), "[1, 2]")
+        check("cli: the whole state", json.loads(st_run("get").stdout), {"layer": "browser", "repro": "no-way", "rounds": 2, "runs": [1, 2]})
+        check("cli: one board comment, never more", len(json.load(open(fx))), 1)
     with tempfile.TemporaryDirectory() as d:
         os.environ["RECEIPTS_FIXTURE"] = d
         write("o/r", "issues/7/prd-2026-10-11T00:00:00Z.json", s, "seal")
@@ -366,7 +597,7 @@ Normal
         bf = os.path.join(d, "body.md")
         with open(bf, "w", encoding="utf-8") as f:
             f.write(body)
-        env = dict(os.environ, AUTOPILOT_JSON="null", LABELS_JSON="[]", NUMBER="9", BODY=bf, GITHUB_REPOSITORY="o/r", ACCEPTED_BY="soydiloreto",
+        env = dict(os.environ, STATE_FIXTURE=os.path.join(d, "comments.json"), AUTOPILOT_JSON="null", LABELS_JSON="[]", NUMBER="9", BODY=bf, GITHUB_REPOSITORY="o/r", ACCEPTED_BY="soydiloreto",
                    PR_JSON=json.dumps(pr), CHECKS_JSON='{"success": 3}')
         run = lambda *a: sp.run([sys.executable, os.path.abspath(__file__)] + list(a), env=env, capture_output=True, text=True)
         check("cli: verify an issue never sealed", run("verify-prd").stdout.strip(), "unsealed")
@@ -455,7 +686,24 @@ def main(argv):
         ready = schema_mod.check(body)["ok"]
         names = [n for n in list_dir(repo, f"issues/{number}") if n.startswith("merged-")]
         merged = read(repo, f"issues/{number}/{names[-1]}") if names else None
-        print(board_text(number, ready, last_seal(repo, number), merged, autopilot_state(repo, number), issue_labels(repo, number)))
+        # The state is read first: a board written without it would lose it.
+        state = read_state(repo, number)
+        print(board_text(number, ready, last_seal(repo, number), merged, autopilot_state(repo, number), issue_labels(repo, number), state))
+        return 0
+    if mode == "state":
+        op, args = (argv[1] if len(argv) > 1 else "get"), argv[2:]
+        state = read_state(repo, number)
+        if op == "get":
+            print(show(state.get(args[0]) if args else state))
+            return 0
+        if op not in ("set", "incr", "add", "del") or (op != "set" and not args) or (op in ("add", "del") and len(args) < 2):
+            print(__doc__, file=sys.stderr)
+            return 64
+        new = apply(state, op, args)
+        if new != state:
+            write_state(repo, number, new, os.environ.get("BOARD_TITLE", "The board"))
+        if op == "incr":
+            print(new[args[0]])
         return 0
     print(__doc__, file=sys.stderr)
     return 64

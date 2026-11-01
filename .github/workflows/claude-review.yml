@@ -35,7 +35,9 @@ name: Claude review
 #      are answered by review-reply.yml.
 #   5. After `max-auto-reviews` automatic reviews on one PR (default 5), the
 #      next push keeps the last verdict, with auto-merge off, until someone
-#      adds the `review:full` label (read live, so a re-run honours it).
+#      with write access comments `/review full` (#564: `review_full` in the
+#      pull request's board state, set by review-reply.yml, read live so a
+#      re-run honours it, and cleared once the full review ran).
 #
 # Runs only on pull requests from branches of the repository itself: a fork's
 # code never runs with the organisation's keys. Comments are posted by the
@@ -69,7 +71,7 @@ on:
         type: string
         default: ''
       max-auto-reviews:
-        description: Automatic reviews per pull request before the next push needs the review:full label.
+        description: Automatic reviews per pull request before the next push needs a `/review full` comment.
         type: number
         default: 5
     outputs:
@@ -207,6 +209,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           BOT: ${{ steps.bot.outputs.app-slug }}[bot]
+          DX_BOT_APP: ${{ steps.bot.outputs.app-slug }}
           PR: ${{ github.event.pull_request.number }}
           HEAD: ${{ github.event.pull_request.head.sha }}
           BASE: ${{ github.event.pull_request.base.sha }}
@@ -228,11 +231,13 @@ jobs:
           count=$(jq -r '.count // 0' "$RUNNER_TEMP/previous.json")
           has_verdict=$(jq -r 'if .risk and .complexity and (.blocking != null) then "yes" else "no" end' "$RUNNER_TEMP/previous.json")
 
-          # Labels are read live, not from the event, so `review:full` works on a re-run too.
-          FULL_LABEL=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | index("review:full") != null')
+          # The board's state is read live, not from the event, so a
+          # `/review full` works on a re-run too (#564). A state edited by
+          # hand asks for nothing.
+          FULL=$(NUMBER="$PR" python3 .dx-central/scripts/receipts.py state get | jq -r 'if (.tampered // false) then false else (.review_full == true) end' 2>/dev/null || echo false)
 
           mode=full; range=""
-          if [ "$FULL_LABEL" = true ]; then
+          if [ "$FULL" = true ]; then
             mode=full
           elif [ "$last" = "$HEAD" ] && [ "$has_verdict" = yes ]; then
             mode=reuse
@@ -463,6 +468,7 @@ jobs:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           BODY: ${{ github.event.pull_request.body }}
           BOT: ${{ steps.bot.outputs.app-slug }}[bot]
+          DX_BOT_APP: ${{ steps.bot.outputs.app-slug }}
           PR: ${{ github.event.pull_request.number }}
           OUT: ${{ steps.claude.outputs.structured_output }}
           EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
@@ -499,7 +505,7 @@ jobs:
             dmatch=$(jq -r 'if .description_matches == false then "false" else "true" end' "$previous")
             # The verdict judged one description. A different one now has not
             # been read by anyone: it does not merge on its own until a push or
-            # the review:full label brings a new review.
+            # a `/review full` brings a new review.
             text=$(printf '%s' "$BODY" | tr -d '\r' | sha256sum | cut -c1-16)
             edited=false; if [ "$(jq -r '.text // ""' "$previous")" != "$text" ] && [ "$MODE" = reuse ]; then edited=true; dmatch=false; fi
             { echo "type=$(jq -r '.type // "chore"' "$previous")"; echo "description_ok=$dmatch"; } >> "$GITHUB_OUTPUT"
@@ -514,9 +520,9 @@ jobs:
               # shellcheck disable=SC2016 # jq variable, not a shell one.
               body=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate | jq -r -s --arg bot "$BOT" '[.[][] | select(.user.login == $bot and (.body | startswith("<!-- dx-review -->"))) | .body] | first // ""')
               if [ "$edited" = true ]; then
-                echo "::notice::The description changed since the review, so it counts as unchecked: no auto-merge until a push or the review:full label brings a new review."
+                echo "::notice::The description changed since the review, so it counts as unchecked: no auto-merge until a push or a /review full brings a new review."
                 if ! grep -q "description changed since" <<<"$body"; then
-                  note="> ✍️ The description changed since this review, so nobody has checked it against the code: no auto-merge until a push or the \`review:full\` label brings a new review."
+                  note="> ✍️ The description changed since this review, so nobody has checked it against the code: no auto-merge until a push or a \`/review full\` comment brings a new review."
                   post "$(printf '%s\n' "$body" | sed "0,/^<!-- dx-review -->/s//<!-- dx-review -->\n$note\n/")"
                 fi
               elif grep -q "description changed since" <<<"$body"; then
@@ -524,11 +530,11 @@ jobs:
                 post "$(grep -v "description changed since" <<<"$body")"
               fi
             else
-              echo "::warning::$COUNT automatic reviews already ran on this pull request; the verdict from ${LAST:0:7} stands and auto-merge is off. Add the review:full label for another review."
+              echo "::warning::$COUNT automatic reviews already ran on this pull request; the verdict from ${LAST:0:7} stands and auto-merge is off. Comment /review full for another review."
               # shellcheck disable=SC2016 # jq variable, not a shell one.
               body=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate | jq -r -s --arg bot "$BOT" '[.[][] | select(.user.login == $bot and (.body | startswith("<!-- dx-review -->"))) | .body] | first // ""')
-              if ! grep -q "review:full" <<<"$body"; then
-                note="> ⏸️ $COUNT automatic reviews already ran here, so ${SHA:0:7} was not reviewed: the verdict from ${LAST:0:7} stands and a human merges. Add the \`review:full\` label for another review."
+              if ! grep -q "/review full" <<<"$body"; then
+                note="> ⏸️ $COUNT automatic reviews already ran here, so ${SHA:0:7} was not reviewed: the verdict from ${LAST:0:7} stands and a human merges. Comment \`/review full\` for another review."
                 post "$(printf '%s\n' "$body" | sed "0,/^<!-- dx-review -->/s//<!-- dx-review -->\n$note\n/")"
               fi
             fi
@@ -572,7 +578,6 @@ jobs:
             case $l in *:low) c=0E8A16;; *:medium) c=FBCA04;; *) c=D93F0B;; esac
             gh label create "$l" --color "$c" --description "Set by the Claude review" --repo "$GITHUB_REPOSITORY" --force >/dev/null
           done
-          gh label create "review:full" --color 5319E7 --description "Ask the Claude review for a full pass on the next push" --repo "$GITHUB_REPOSITORY" --force >/dev/null
           for t in breaking feat fix perf refactor style docs test ci build chore revert; do
             gh label create "type:$t" --color 0075CA --description "The kind of change, read from the diff by the Claude review" --repo "$GITHUB_REPOSITORY" --force >/dev/null
           done
@@ -580,13 +585,19 @@ jobs:
           # is, so a person's type:* label stays theirs (scripts/review-type.sh
           # reads who put each label on last).
           want="risk:$risk,complexity:$complexity,type:$type"
-          have=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name|select(startswith("risk:") or startswith("complexity:") or startswith("type:") or . == "review:full")]|join(",")')
+          have=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name|select(startswith("risk:") or startswith("complexity:") or startswith("type:"))]|join(",")')
           # shellcheck disable=SC2016 # jq variables, not shell ones.
           stale=$(jq -nr --arg have "$have" --arg want "$want" '($want | split(",")) as $w | [$have | split(",")[] | select(. != "" and (. as $l | $w | index($l) | not))] | join(",")')
           # shellcheck disable=SC2016 # jq variables, not shell ones.
           missing=$(jq -nr --arg have "$have" --arg want "$want" '($have | split(",")) as $h | [$want | split(",")[] | select(. as $l | $h | index($l) | not)] | join(",")')
           [ -z "$stale" ] || gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label "$stale" >/dev/null
           [ -z "$missing" ] || gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label "$missing" >/dev/null
+          # The full pass it asked for ran: the board's `review_full` goes
+          # (#564), as the label once did.
+          if [ "$(NUMBER="$PR" python3 .dx-central/scripts/receipts.py state get review_full)" = true ]; then
+            NUMBER="$PR" BOARD_TITLE="The pull request's board" python3 .dx-central/scripts/receipts.py state set review_full= \
+              || echo "::warning::The board's review_full could not be cleared; the next push gets a full pass too."
+          fi
 
           # Only threads that really are the bot's open ones; resolved in the
           # next step, with a token the model never held.

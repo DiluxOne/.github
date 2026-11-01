@@ -399,7 +399,7 @@ if [ "${1:-}" = "--test" ]; then
   # claimed [who wrote the test marker] [labels] [the claim's comment]
   held='**Claimed by @ana** <!-- dx-claim {"login": "ana"} -->'
   claimed() {
-    issue 12 "$repo" OPEN "${2:-bug:confirmed,claimed}" "" Bug \
+    issue 12 "$repo" OPEN "${2-claimed}" "" Bug \
       | jq --arg who "${1:-dilux-bot[bot]}" --arg m "<!-- dx-claim-test {\"sha256\": \"$sum\", \"test\": \"tests/Unit/Repro/Issue12Test.php\"} -->" \
            --arg state "${3-$held}" \
            '.comments = {nodes: [{author: {login: "dilux-bot[bot]"}, body: $state}, {author: {login: $who}, body: ("The bug is yours.\n\n" + $m)}]}'
@@ -408,8 +408,8 @@ if [ "${1:-}" = "--test" ]; then
   by() { answer | jq --arg a "${1:-ana}" '.data.repository.pullRequest.author = {login: $a}'; }
   claimed | by | ISSUE_GATE_FILES=$files T="fix(x): a thing" case_ "C8 passes: the claimant's pull request with its test unchanged" 0 || fail=1
   claimed | by bob | ISSUE_GATE_FILES=$files T="fix(x): a thing" case_ "C8 fails: the test unchanged in someone else's pull request (not the claimant)" 1 || fail=1
-  claimed dilux-bot[bot] bug:confirmed "~~Claimed~~: released on 2026-11-11." | by | ISSUE_GATE_FILES=$files T="fix(x): a thing" case_ "C8 fails: a released claim (no \`claimed\`, its marker struck out)" 1 || fail=1
-  claimed dilux-bot[bot] bug:confirmed | by | ISSUE_GATE_FILES=$files T="fix(x): a thing" case_ "C8 fails: the \`claimed\` label taken off" 1 || fail=1
+  claimed dilux-bot[bot] "" "~~Claimed~~: released on 2026-11-11." | by | ISSUE_GATE_FILES=$files T="fix(x): a thing" case_ "C8 fails: a released claim (no \`claimed\`, its marker struck out)" 1 || fail=1
+  claimed dilux-bot[bot] "" | by | ISSUE_GATE_FILES=$files T="fix(x): a thing" case_ "C8 fails: the \`claimed\` label taken off" 1 || fail=1
   claimed | jq '.comments.nodes[0].author.login = "ana"' | by | ISSUE_GATE_FILES=$files T="fix(x): a thing" case_ "C8 fails: a claim's marker a person wrote is not the bot's" 1 || fail=1
   printf 'made to pass\n' > "$files/tests/Unit/Repro/Issue12Test.php"
   claimed | by | ISSUE_GATE_FILES=$files T="fix(x): a thing" case_ "C8 fails: a changed test's SHA-256" 1 || fail=1

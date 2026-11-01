@@ -4,7 +4,7 @@ what, for the layer the bug lives in.
 
 A bug lives in a layer: `logic`, `browser`, `cli`, `api` or `workflow` (a
 CI workflow's wiring: its triggers, its steps' order and conditions, #376).
-The triage says which (the `layer:<name>` label), knowing nothing of the
+The triage says which (`layer` in the issue's board state, #564), knowing nothing of the
 repository's tools. The repository says how it reproduces each layer: its
 kind's pack gives the default (kinds/<kind>/pack.yml, `repro:`), and its own
 .github/review-policy.yml may add a way, change one, or switch one off

@@ -104,7 +104,7 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    uses the model and effort the policy names for that floor (read from the
    base branch, so a change cannot pick its own reviewer), skips the
    repository's code rules for text-only changes, and after `max-auto-reviews`
-   (5) keeps the last verdict until the `review:full` label asks for more.
+   (5) keeps the last verdict until a maintainer's `/review full` asks for more.
    Drafts and forks are not reviewed; pull requests Dependabot or the
    organisation's App open are (`allowed_bots`).
 3. **Merge.** The autopilot works in a draft pull request (#109): the Spec
@@ -182,7 +182,7 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    green, and the run says it was flaky and nothing is reverted; red again,
    and dilux-bot opens a Bug issue linking the merge, the failing run and the
    original pull request, a pull request `revert: <original title>` that
-   closes it, labels the original `reverted` and reopens its issues (the
+   closes it, marks the original `reverted` in its board's state and reopens its issues (the
    cause is theirs to fix). The revert goes through the same checks and
    review; it merges on its own only within the `platform` lane of
    [`policy/autonomy.yml`](../policy/autonomy.yml) (its repositories and

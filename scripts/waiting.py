@@ -7,8 +7,9 @@ DiluxOne/.github, instead of one comment per pull request).
 What blocks a pull request, read from GitHub, the first that applies:
 
   needs-human          a person has it (`needs-human`)         the maintainer
-  its question         the autopilot asked (`autopilot:waiting` on the issue
-                       it closes)                               the maintainer
+  its question         the autopilot asked (`waiting` in the board's state
+                       of the issue it closes, #564; a state
+                       edited by hand counts as one)            the maintainer
   an acceptance        an issue it closes is not `accepted`   the maintainer
   a failed check       a check of its head failed             its author (the
                                                               autopilot for its own)
@@ -29,6 +30,7 @@ what blocks them, never named.
   waiting.py --test     self-test, from fixtures/waiting.json
 """
 import datetime
+import importlib.util
 import json
 import os
 import subprocess
@@ -51,7 +53,8 @@ QUERY = """query($q: String!, $after: String) {
       labels(first: 30) { nodes { name } }
       reviewThreads(first: 100) { nodes { isResolved } }
       commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
-      closingIssuesReferences(first: 10) { nodes { number labels(first: 30) { nodes { name } } } }
+      closingIssuesReferences(first: 10) { nodes { number labels(first: 30) { nodes { name } }
+        comments(first: 50) { nodes { author { __typename login } body } } } }
     } }
   }
 }"""
@@ -59,6 +62,29 @@ QUERY = """query($q: String!, $after: String) {
 
 def names(conn):
     return [n.get("name") for n in ((conn or {}).get("nodes") or []) if n]
+
+
+_RECEIPTS = []
+
+
+def receipts():
+    """scripts/receipts.py, the board's state (#564), loaded once."""
+    if not _RECEIPTS:
+        spec = importlib.util.spec_from_file_location("receipts", os.path.join(HERE, "receipts.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _RECEIPTS.append(mod)
+    return _RECEIPTS[0]
+
+
+def issue_state(issue):
+    """An issue's board's state (#564), from the comments the search read:
+    only the bot's board counts. Pure but for loading receipts.py."""
+    rc = receipts()
+    cs = [{"user": {"login": (c.get("author") or {}).get("login") or "", "type": (c.get("author") or {}).get("__typename") or ""},
+           "body": c.get("body") or ""} for c in ((issue.get("comments") or {}).get("nodes") or []) if c]
+    c = rc.board_comment(cs, rc.bot_app())
+    return rc.parse_state(c["body"]) if c else {}
 
 
 def blocker(pr):
@@ -69,7 +95,7 @@ def blocker(pr):
     issues = (pr.get("closingIssuesReferences") or {}).get("nodes") or []
     if "needs-human" in labels:
         return "needs-human", MAINTAINER
-    if any("autopilot:waiting" in names(i.get("labels")) for i in issues):
+    if any(st.get("waiting") or st.get("tampered") for st in map(issue_state, issues)):
         return "its question", MAINTAINER
     if any("accepted" not in names(i.get("labels")) for i in issues):
         return "an acceptance", MAINTAINER
@@ -168,6 +194,12 @@ def self_test():
     check("C7 grouped by whom it waits on, the maintainer first", body.index("## Waits on the maintainer") < body.index("## Waits on its author"), True)
     check("C7 the author is named where it waits on them", "waits on its author (`someone`)" in body, True)
     check("C7 a title cannot break the link", "[x] link" in body, False)
+    hand = {"comments": {"nodes": [{"author": {"__typename": "Bot", "login": receipts().bot_app()},
+                                    "body": receipts().with_state(receipts().BOARD, {"waiting": False}).replace('"waiting":false', '"waiting":true')}]}}
+    check("#564 a board's state edited by hand counts as the autopilot's question", issue_state(hand).get("tampered"), True)
+    forged = {"comments": {"nodes": [{"author": {"__typename": "User", "login": "mallory"}, "body": receipts().with_state(receipts().BOARD, {"waiting": True})}]}}
+    check("#564 a person's comment that copies the board is not read", issue_state(forged), {})
+    check("#564 no label carries the question", "autopilot:" + "waiting" in open(__file__, encoding="utf-8").read(), False)
     check("C7 nothing older than a day says so", "Nothing has waited more than a day." in render([], now), True)
     print("all tests passed" if not fails else f"{len(fails)} failed")
     return 1 if fails else 0

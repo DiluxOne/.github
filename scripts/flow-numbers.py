@@ -9,9 +9,10 @@ its body up to date in DiluxOne/.github).
                   apart
   merge queue     its groups' runs that week (merge_group): how many failed,
                   the share, and the median minutes a run took
-  autopilot runs  per merged autopilot pull request, its runs (the
-                  autopilot:run-N and autopilot:free-N labels, #479 C5),
-                  median and average
+  autopilot runs  per merged autopilot pull request, its runs (`runs` and
+                  `free` in its board's state, #564; they were labels,
+                  #479 C5), median and average; a state edited by hand is
+                  left out
   flaky tests     the tests the queue's E2E jobs reported flaky (a warning
                   titled "Flaky test", scripts/flaky.py), each once
 
@@ -25,9 +26,9 @@ the numbers, its flaky tests are counted, never named.
   flow-numbers.py --test       self-test, from fixtures/flow-numbers.json
 """
 import datetime
+import importlib.util
 import json
 import os
-import re
 import statistics
 import subprocess
 import sys
@@ -36,7 +37,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 MARKER = "<!-- dx-flow-numbers -->"
 BOT_LOGINS = ("dilux-bot", "dilux-bot[bot]", "app/dilux-bot")
 WEEK = datetime.timedelta(days=7)
-RUN_RE = re.compile(r"^autopilot:(?:run|free)-[0-9]+$")
 
 QUERY = """query($q: String!, $after: String) {
   search(query: $q, type: ISSUE, first: 50, after: $after) {
@@ -47,6 +47,7 @@ QUERY = """query($q: String!, $after: String) {
       repository { name isPrivate }
       labels(first: 50) { nodes { name } }
       closingIssuesReferences(first: 5) { nodes { createdAt } }
+      comments(first: 50) { nodes { author { __typename login } body } }
     } }
   }
 }"""
@@ -88,7 +89,8 @@ def numbers(data):
         "lead": {k: spread(v) for k, v in lead.items()},
         "queue": {"runs": len(done), "failed": len(failed), "rate": round(100 * len(failed) / len(done)) if done else None,
                   "median_minutes": spread(minutes)["median"]},
-        "runs": spread([p.get("runs") or 0 for p in data.get("prs") or [] if p.get("autopilot")]),
+        # A board's state edited by hand (runs None) is left out (#564).
+        "runs": spread([p.get("runs") or 0 for p in data.get("prs") or [] if p.get("autopilot") and p.get("runs", 0) is not None]),
         "flaky": flaky,
     }
 
@@ -129,6 +131,43 @@ def render(n, now):
     return "\n".join(lines) + "\n"
 
 
+_RECEIPTS = []
+
+
+def receipts():
+    """scripts/receipts.py, the board's state (#564), loaded once."""
+    if not _RECEIPTS:
+        spec = importlib.util.spec_from_file_location("receipts", os.path.join(HERE, "receipts.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _RECEIPTS.append(mod)
+    return _RECEIPTS[0]
+
+
+def board_state(node):
+    """A pull request's board's state (#564), from the comments the search
+    read: only the bot's board counts; {} when it has none."""
+    rc = receipts()
+    cs = [{"user": {"login": (c.get("author") or {}).get("login") or "", "type": (c.get("author") or {}).get("__typename") or ""},
+           "body": c.get("body") or ""} for c in ((node.get("comments") or {}).get("nodes") or []) if c]
+    c = rc.board_comment(cs, rc.bot_app())
+    return rc.parse_state(c["body"]) if c else {}
+
+
+def pr_row(p):
+    """One merged pull request as numbers() reads it, from the search's
+    node. Its runs, those that count and the free ones, are its board's
+    state (#564); a state edited by hand says none (`runs` None)."""
+    labels = [l["name"] for l in p["labels"]["nodes"]]
+    issues = sorted(i["createdAt"] for i in p["closingIssuesReferences"]["nodes"])
+    st = board_state(p)
+    runs = None if st.get("tampered") else len(set(st.get("runs") or []) | set(st.get("free") or []))
+    return {"repo": p["repository"]["name"], "private": p["repository"]["isPrivate"], "number": p["number"], "mergedAt": p["mergedAt"],
+            "issueCreatedAt": issues[0] if issues else None,
+            "autopilot": "autopilot" in labels and (p.get("author") or {}).get("login") in BOT_LOGINS,
+            "runs": runs}
+
+
 def gh_json(*args):
     res = subprocess.run(["gh", *args], capture_output=True, text=True)
     if res.returncode != 0:
@@ -145,14 +184,8 @@ def fetch(owner, now):
         args = ["api", "graphql", "-f", f"query={QUERY}", "-f", f"q=org:{owner} is:pr is:merged merged:>={since}"] + (["-f", f"after={after}"] if after else [])
         page = gh_json(*args)["data"]["search"]
         for p in page["nodes"]:
-            if not p:
-                continue
-            labels = [l["name"] for l in p["labels"]["nodes"]]
-            issues = sorted(i["createdAt"] for i in p["closingIssuesReferences"]["nodes"])
-            prs.append({"repo": p["repository"]["name"], "private": p["repository"]["isPrivate"], "number": p["number"], "mergedAt": p["mergedAt"],
-                        "issueCreatedAt": issues[0] if issues else None,
-                        "autopilot": "autopilot" in labels and (p.get("author") or {}).get("login") in BOT_LOGINS,
-                        "runs": sum(1 for l in labels if RUN_RE.match(l))})
+            if p:
+                prs.append(pr_row(p))
         if not page["pageInfo"]["hasNextPage"]:
             break
         after = page["pageInfo"]["endCursor"]
@@ -199,6 +232,21 @@ def self_test():
                  "- diluxone-users-wordpress: `tests/e2e/login.spec.ts:14`", "- 1 in private repositories"):
         check(f"C8 the body says: {what}", what in body, True)
     check("C8 a private repository's flaky test is counted, never named", "secret" in body, False)
+    # #564: a pull request's runs are its board's state, never labels.
+    rc = receipts()
+    bot = {"__typename": "Bot", "login": rc.bot_app()}
+    node = lambda comments, labels=("autopilot",): {"number": 5, "mergedAt": "2026-11-01T00:00:00Z", "author": {"login": "dilux-bot"},
+                                                     "repository": {"name": "x", "isPrivate": False}, "labels": {"nodes": [{"name": l} for l in labels]},
+                                                     "closingIssuesReferences": {"nodes": []}, "comments": {"nodes": comments}}
+    board = lambda st, who=bot: {"author": who, "body": rc.with_state(f"{rc.BOARD}\n**The pull request's board**", st)}
+    check("#564 runs are the board's `runs` and `free`", pr_row(node([board({"runs": [1, 2, 3], "free": [4]})]))["runs"], 4)
+    check("#564 no board: no run", pr_row(node([]))["runs"], 0)
+    check("#564 a person's comment that copies the board is not read", pr_row(node([board({"runs": [1, 2]}, {"__typename": "User", "login": "mallory"})]))["runs"], 0)
+    hand = board({"runs": [1]})
+    hand["body"] = hand["body"].replace('"runs":[1]', '"runs":[]')
+    check("#564 a board's state edited by hand is left out of the numbers",
+          (pr_row(node([hand]))["runs"], numbers({"prs": [{"autopilot": True, "runs": None}, {"autopilot": True, "runs": 2}]})["runs"]["n"]), (None, 1))
+    check("#564 the counter labels are no longer read", pr_row(node([], labels=("autopilot", "autopilot:" + "run-1")))["runs"], 0)
     empty = render(numbers({}), parse(fx["now"]))
     check("C8 an empty week says so", ("No group ran this week." in empty, "No autopilot pull request merged" in empty, "| The autopilot's | 0 | – | – |" in empty), (True, True, True))
     print("all tests passed" if not fails else f"{len(fails)} failed")

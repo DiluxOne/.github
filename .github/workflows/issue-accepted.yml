@@ -22,10 +22,9 @@ name: Issue accepted
 # `incomplete` one takes the label off with a comment that mentions who
 # added it and says what is missing. A maintainer's answer to an open
 # comment is read on the next edit or acceptance, not on its own. The
-# acceptance removes `needs-triage`: a person has looked at the issue. It
-# assigns the issue to the person who accepted it, unless it has an assignee
-# already (#73; scripts/issue-assignee.sh): with the bot's key, like the
-# comment. A lane's issue, accepted by policy and never labelled by a
+# acceptance assigns the issue to the person who accepted it, unless it has
+# an assignee already (#73; scripts/issue-assignee.sh): with the bot's key,
+# like the comment. A lane's issue, accepted by policy and never labelled by a
 # person, stays unassigned.
 #
 # A release issue (#82, "Release X.Y.Z", label `lane:release`) is not a PRD:
@@ -184,12 +183,14 @@ jobs:
     # `awaiting-acceptance` or `incomplete` and says what is missing; it
     # never touches `accepted` then. A bot's issue (a lane's) is left alone,
     # and so is a report the reproduction confirmed and handed to its lane
-    # (#427): `bug:confirmed` with both labels taken off. With the lane
-    # closed, the labels stay and the report still waits for a maintainer.
+    # (#427): `repro` confirmed in its board's state (#564; a state edited
+    # by hand is not read) with both labels taken off (the step "A report
+    # handed to its lane"). With the lane closed, the labels stay and the
+    # report still waits for a maintainer.
     if: >-
       github.event_name == 'issues' && github.event.sender.type != 'Bot' && !contains(github.event.issue.labels.*.name, 'lane:release') && (
         (github.event.action == 'labeled' && github.event.label.name == inputs.label) ||
-        ((github.event.action == 'opened' || github.event.action == 'edited') && github.event.issue.user.type != 'Bot' && !contains(github.event.issue.labels.*.name, inputs.label) && !(contains(github.event.issue.labels.*.name, 'bug:confirmed') && !contains(github.event.issue.labels.*.name, 'awaiting-acceptance') && !contains(github.event.issue.labels.*.name, 'incomplete'))))
+        ((github.event.action == 'opened' || github.event.action == 'edited') && github.event.issue.user.type != 'Bot' && !contains(github.event.issue.labels.*.name, inputs.label)))
     # One check at a time per issue: a later edit waits for the earlier run
     # rather than racing it on the labels and the comment.
     concurrency:
@@ -237,6 +238,26 @@ jobs:
           SENDER: ${{ github.event.sender.login }}
           SENDER_TYPE: ${{ github.event.sender.type }}
         run: bash .dx-central/scripts/issue-assignee.sh accepted
+      # A report the reproduction confirmed and handed to its lane (#427)
+      # waits for no acceptance: on an open or an edit, G1 leaves it alone
+      # when its board's state says `repro: confirmed` (#564, once a label)
+      # and it carries neither `awaiting-acceptance` nor `incomplete`. A
+      # state edited by hand is not read; one that cannot be read stops
+      # here rather than label a handed report.
+      - name: A report handed to its lane
+        id: handed
+        if: github.event.action != 'labeled' && steps.bot.outputs.token != '' && !contains(github.event.issue.labels.*.name, 'awaiting-acceptance') && !contains(github.event.issue.labels.*.name, 'incomplete')
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          repro=$(python3 .dx-central/scripts/receipts.py state get repro)
+          tampered=$(python3 .dx-central/scripts/receipts.py state get tampered)
+          if [ "$repro" = confirmed ] && [ -z "$tampered" ]; then
+            echo "The reproduction confirmed it and handed it to its lane: no acceptance to check."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
       # Not ready (#287): the schema says something is missing, or a person
       # commented after the PRD's last edit and no maintainer answered yet.
       # Then the acceptance does not stand: the label comes off, the issue
@@ -245,6 +266,7 @@ jobs:
       # `awaiting-acceptance` or `incomplete` and `accepted` is not touched.
       - name: Check the PRD and say so on the issue
         id: check
+        if: steps.handed.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           BODY: ${{ github.event.issue.body }}
@@ -353,8 +375,6 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s' "$BODY_TEXT" > "$RUNNER_TEMP/body.md"
-          # A person accepted it, so it was looked at: needs-triage goes.
-          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label needs-triage >/dev/null 2>&1 || true
           BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/receipts.py seal-prd
           board=$(BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/receipts.py board)
           id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '.[] | select(.user.type == "Bot" and (.user.login | startswith(env.DX_BOT_APP)) and (.body | startswith("<!-- dx-board -->"))) | .id' | tail -1)

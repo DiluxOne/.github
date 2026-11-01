@@ -17,7 +17,8 @@ name: Nightly review
 # follows a report's path (#287): a draft security advisory in a public
 # repository, opened with dilux-security's key and credited in its text to
 # this review, which security-fix.yml then fixes; a `security` issue in a
-# private one. What it opens carries `found-by:dilux-ai`. In a public repository, a second agent first
+# private one. What it opens says it was found by this review in its
+# body (no label, #564). In a public repository, a second agent first
 # judges whether publishing it could help an attacker; unsure, it stays in
 # the private list. A maintainer picks what else becomes work; an item they
 # tick or strike out is never listed again, and one still open keeps the
@@ -240,12 +241,12 @@ jobs:
             cp "$RUNNER_TEMP/bugs.jsonl" "$RUNNER_TEMP/open.jsonl"
           fi
           : > "$RUNNER_TEMP/issued.txt"
-          # What DiluxOne's own AI found, for the statistics (#287).
-          GH_TOKEN="$BUGS_TOKEN" gh label create "found-by:dilux-ai" --repo "$repo" --color 5319E7 --description "Found by DiluxOne's automated review" --force >/dev/null 2>&1 || true
+          # What DiluxOne's own AI found (#287) is said in the issue's body
+          # (its hidden marker and its text), never a label (#564).
           while IFS= read -r b; do
             [ -n "$b" ] || continue
             jq -r .issue_body <<<"$b" > "$RUNNER_TEMP/bug.md"
-            if url=$(GH_TOKEN="$BUGS_TOKEN" gh issue create --repo "$repo" --title "$(jq -r .issue_title <<<"$b")" --body-file "$RUNNER_TEMP/bug.md" --label "found-by:dilux-ai"); then
+            if url=$(GH_TOKEN="$BUGS_TOKEN" gh issue create --repo "$repo" --title "$(jq -r .issue_title <<<"$b")" --body-file "$RUNNER_TEMP/bug.md"); then
               printf '%s\t%s\n' "$(jq -r .where <<<"$b")" "$url" >> "$RUNNER_TEMP/issued.txt"
             else
               echo "::warning::A finding could not be opened as a Bug in $repo; it stays in the list."
@@ -284,7 +285,7 @@ jobs:
               else
                 jq -r .issue_body <<<"$v" > "$RUNNER_TEMP/vuln.md"
                 GH_TOKEN="$BUGS_TOKEN" gh label create security --repo "$repo" --color B60205 --description "A vulnerability report; a person merges its fix" --force >/dev/null 2>&1 || true
-                url=$(GH_TOKEN="$BUGS_TOKEN" gh issue create --repo "$repo" --title "$(jq -r .issue_title <<<"$v")" --body-file "$RUNNER_TEMP/vuln.md" --label security --label "found-by:dilux-ai" 2>/dev/null) || url=""
+                url=$(GH_TOKEN="$BUGS_TOKEN" gh issue create --repo "$repo" --title "$(jq -r .issue_title <<<"$v")" --body-file "$RUNNER_TEMP/vuln.md" --label security 2>/dev/null) || url=""
               fi
               if [ -n "$url" ]; then
                 printf '%s\t%s\n' "$(jq -r .where <<<"$v")" "$url" >> "$RUNNER_TEMP/issued.txt"

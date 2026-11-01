@@ -25,7 +25,7 @@ flowchart LR
     Q -- "yes" --> V["Fix issue opened by the bot<br/>accepted by policy (PRD sealed)<br/>the test is the spec"]
     V --> S
     S --> C["📋 Draft pull request, in the open<br/>a box per criterion<br/>one commit each, ticked as it lands"]
-    C -- "out of turns or time" --> K["🔁 autopilot:continue<br/>resumes the draft,<br/>or starts it"]
+    C -- "out of turns or time" --> K["🔁 /continue<br/>resumes the draft,<br/>or starts it"]
     K --> C
     C -- "stuck: says why" --> I
     C -- "every box ticked<br/>checks pass" --> D["✅ Ready for review<br/>conventions + accepted-issue gate<br/>checks of its kind"]
@@ -46,7 +46,7 @@ flowchart LR
 
 Publishing is the third decision a person makes, after accepting the issue and, sometimes, merging: an issue "Release X.Y.Z" (the Release form), whose acceptance opens the release pull request; once it merges, the release workflow checks that a person with the admin or maintain role accepted that issue for that version before anything is published. The bot opens one only when a person closes the version's milestone (`X.Y.Z`), and a person still accepts it.
 
-You can follow an autopilot run as it goes: its draft pull request is the Spec as a checklist, one box per criterion, ticked as each criterion's commit lands; the issue's board links the pull request, the run and the progress; the run's summary says what the agent read, ran and changed, and keeps its full transcript. A run never ends in silence: the pull request is ready for review, or the agent says where it stopped and why, or the run continues (`autopilot:continue`), or the workflow says so and hands it to a person (`needs-human`). A pull request that is not the autopilot's, a person's or a contributor's, joins the same path at "Ready for review".
+You can follow an autopilot run as it goes: its draft pull request is the Spec as a checklist, one box per criterion, ticked as each criterion's commit lands; the issue's board links the pull request, the run and the progress; the run's summary says what the agent read, ran and changed, and keeps its full transcript. A run never ends in silence: the pull request is ready for review, or the agent says where it stopped and why, or the run continues (a maintainer's `/continue <hint>`), or the workflow says so and hands it to a person (`needs-human`). A pull request that is not the autopilot's, a person's or a contributor's, joins the same path at "Ready for review".
 
 A person who wants to write the code of an accepted issue themselves claims it (`/claim`, or the checkbox in its form, #488): the autopilot steps aside for them, the first one wins, and a claim that stalls is released after 10 days and handed back to the autopilot, so no issue waits on nobody ([CONTRIBUTING.md](CONTRIBUTING.md), "Start from an issue").
 

@@ -2,8 +2,8 @@
 """A spike's answer, as the comment on its issue (#193).
 
 A spike is a step of the triage, not a type of work: when an issue cannot be
-classified, or something must be found out before deciding, a person adds
-`spike` and an agent investigates, read-only and for a capped time
+classified, or something must be found out before deciding, a person who
+can write to the repository comments `/spike` (#564) and an agent investigates, read-only and for a capped time
 (issue-triage.yml, job `spike`). It ends in one of three ways, and a person
 decides what follows:
 

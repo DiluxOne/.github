@@ -14,7 +14,9 @@ dilux-bot's key and none of the repository's code).
   claim.py event     one event (GITHUB_EVENT_NAME, GITHUB_EVENT_PATH): a
                      command in a comment (`/claim`, `/unclaim [@login]`,
                      `/yield @login`, `/adopt` on a pull request, the
-                     claimant's "still on it"), an issue opened, edited or
+                     claimant's "still on it", a maintainer's `/claim long`
+                     that keeps a claim from release for want of a pull
+                     request: `claim_long` in the board's state, #564), an issue opened, edited or
                      labelled (the form's checkbox, the clock that starts at
                      `accepted`), a person's pull request (it stops the
                      claim's clock, its pushes reset it; a third open one by
@@ -61,7 +63,7 @@ def _load(name, file):
     return mod
 
 
-CLAIMED, LONG, FIRST, LIST = "claimed", "claim:long", "good first issue", "run:claims"
+CLAIMED, LIST = "claimed", "run:claims"
 MARK = "dx-claim"
 TEST_MARK = "dx-claim-test"
 ADOPT_MARK = "dx-adopt"
@@ -120,10 +122,13 @@ def is_bot(login):
 def parse(body):
     """The command in a comment: (name, login) or None. A command is its
     comment's first line (`/claim`, `/unclaim`, `/unclaim @x`, `/yield @x`,
-    `/adopt`, `/adopt <sha>`: the head the maintainer read); "still on it"
-    anywhere in it asks for the one extension."""
+    `/adopt`, `/adopt <sha>`: the head the maintainer read, `/claim long`:
+    ("long", "")); "still on it" anywhere in it asks for the one extension."""
     text = (body or "").strip()
     first = text.splitlines()[0].strip() if text else ""
+    # `/claim long` replaces the label `claim:long` (#564).
+    if re.fullmatch(r"/claim\s+long\s*", first):
+        return "long", ""
     m = re.fullmatch(r"/(claim|unclaim|yield|adopt)(?:\s+@?([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))?)?\s*", first)
     if m:
         name, who = m.group(1), m.group(2) or ""
@@ -181,8 +186,10 @@ def read_marker(comments, name):
 
 def may_act(name, login, perm, target=""):
     """(ok, why) for a command only some may give: `/yield` and `/adopt` a
-    maintainer (write access or more, read from GitHub: `perm`), `/unclaim
-    @x` the claimant themselves or a maintainer."""
+    maintainer (write access or more, read from GitHub: `perm`), as
+    `/claim long`; `/unclaim @x` the claimant themselves or a maintainer."""
+    if name == "long" and perm not in WRITERS:
+        return False, f"@{login}, only a maintainer (write access, read from GitHub) gives `/claim long`"
     if name in ("yield", "adopt") and perm not in WRITERS:
         return False, f"@{login}, only a maintainer (write access, read from GitHub) gives `/{name}`"
     if name == "unclaim" and target and target != login and perm not in WRITERS:
@@ -283,12 +290,13 @@ def extend(state, when, cfg):
     return out, True, f"extended once: it is released on {day(release)} unless a pull request comes first"
 
 
-def daily_claim(state, when, labels, has_pr, last_push, cfg):
+def daily_claim(state, when, long_claim, has_pr, last_push, cfg):
     """What the daily run does to a claim: none, remind, release, or pending
-    (its clock waits) or waiting (a pull request stopped it)."""
+    (its clock waits) or waiting (a pull request stopped it). `long_claim`:
+    a maintainer's `/claim long` (the board's `claim_long`, #564)."""
     if not state.get("clock"):
         return "pending"
-    if LONG in labels:
+    if long_claim:
         return "none"
     if has_pr:
         return "waiting"
@@ -447,7 +455,7 @@ def daily_list(repo, claims, waiting, given_up):
     lines = [f"<!-- {LIST} {repo} -->", f"### {repo}", ""]
     lines += ["**Claims**", ""] + ([f"- #{n}: @{who}, {what}" for n, who, what in claims] or ["- none"]) + [""]
     lines += ["**Waiting on a maintainer's review** (its author's clock does not run)", ""] + ([f"- #{n} by @{who}" for n, who in waiting] or ["- none"]) + [""]
-    lines += ["**Anyone may `/claim`** (the autopilot gave up, or kept for a newcomer)", ""] + ([f"- #{n}: {why}" for n, why in given_up] or ["- none"])
+    lines += ["**Anyone may `/claim`** (the autopilot gave up)", ""] + ([f"- #{n}: {why}" for n, why in given_up] or ["- none"])
     return "\n".join(lines) + f"\n\n{SIGN}"
 
 
@@ -482,6 +490,30 @@ ISSUE_QUERY = """query($owner: String!, $name: String!, $number: Int!) {
 }"""
 
 
+def board_state(comments):
+    """The issue's board's state (#564), from its comments: only the bot's
+    board is read; {} when it has none."""
+    rc = receipts()
+    c = rc.board_comment(comments or [], rc.bot_app())
+    return rc.parse_state(c.get("body")) if c else {}
+
+
+_RECEIPTS = []
+
+
+def receipts():
+    """scripts/receipts.py, the board's state (#564), loaded once."""
+    if not _RECEIPTS:
+        _RECEIPTS.append(_load("receipts", "receipts.py"))
+    return _RECEIPTS[0]
+
+
+def mark_long(repo, number):
+    """`claim_long` set in the issue's board's state (#564)."""
+    rc = receipts()
+    rc.write_state(repo, number, rc.apply(rc.read_state(repo, number), "set", ["claim_long=true"]), "The issue's board")
+
+
 def issue_comments(repo, number):
     comments = gh_json("api", f"repos/{repo}/issues/{number}/comments", "--paginate", "--slurp") or []
     return [c for page in comments for c in page] if comments and isinstance(comments[0], list) else comments
@@ -501,10 +533,14 @@ def read_issue(repo, number):
     labels = [l["name"] for l in i["labels"]["nodes"]]
     _, state = read_marker(comments, MARK)
     test_id, test = read_marker(comments, TEST_MARK)
-    return {"test": test, "test_id": test_id, "number": i["number"], "state": i["state"], "title": i["title"], "body": i.get("body") or "", "labels": labels,
+    # What the labels `claim:long` and `bug:confirmed` said is the board's
+    # state now (#564); one edited by hand counts for neither.
+    board = board_state(comments)
+    trusted = not board.get("tampered")
+    return {"long": trusted and bool(board.get("claim_long")), "test": test, "test_id": test_id, "number": i["number"], "state": i["state"], "title": i["title"], "body": i.get("body") or "", "labels": labels,
             "type": (i.get("issueType") or {}).get("name") or "", "assignees": [a["login"] for a in i["assignees"]["nodes"]],
             "prs": prs, "comments": comments, "claim": state if CLAIMED in labels else None, "last_push": max([p for p in pushes if p] or [""]),
-            "accepted": "accepted" in labels or "bug:confirmed" in labels}
+            "accepted": "accepted" in labels or (trusted and board.get("repro") == "confirmed")}
 
 
 def permission(repo, login):
@@ -656,7 +692,7 @@ def on_comment(repo, event, cfg, when):
     number = iss["number"]
     is_pr = bool(iss.get("pull_request"))
     say = lambda text: gh("issue", "comment", str(number), "--repo", repo, "--body", f"{text}\n\n{SIGN}")
-    perm = permission(repo, login) if name in ("yield", "adopt", "unclaim") else "none"
+    perm = permission(repo, login) if name in ("yield", "adopt", "unclaim", "long") else "none"
     ok, why = may_act(name, login, perm, who)
     if not ok:
         if name != "adopt" or is_pr:
@@ -684,6 +720,10 @@ def on_comment(repo, event, cfg, when):
         acts, _ = plan_adopt_issue({"number": number, "author": author, "author_id": int(uid) if uid.isdigit() else None, "head": head}, login, issue, when)
         return apply_plan(repo, issues[0], acts, state_id)
     if is_pr:
+        return []
+    if name == "long":
+        mark_long(repo, number)
+        say(f"@{login}, this issue's claim is a long one now: it is never released for want of a pull request or a push (`/claim long`).")
         return []
     issue = read_issue(repo, number)
     state_id, state = read_marker(issue["comments"], MARK)
@@ -805,9 +845,6 @@ def daily(repo, cfg, when):
         except (RuntimeError, OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as err:
             print(f"::warning::#{(pr or {}).get('number')}: {str(err)[:300]}")
             failed.append((pr or {}).get("number"))
-    for n in gh("issue", "list", "--repo", repo, "--state", "open", "--label", FIRST, "--json", "number,labels", "--jq",
-                f'.[] | select([.labels[].name] | index("{CLAIMED}") == null) | .number').split():
-        given_up.append((n, "kept for a newcomer (`good first issue`)"))
     for line in gh("pr", "list", "--repo", repo, "--state", "open", "--label", "autopilot", "--label", "needs-human", "--json", "closingIssuesReferences",
                    "--jq", ".[].closingIssuesReferences[].number").split():
         given_up.append((line, "the autopilot reached its cap"))
@@ -823,7 +860,7 @@ def daily_issue(repo, n, cfg, when, claims):
     if not state:
         return []
     has_pr = any(p["state"] == "OPEN" and p["author"] == state["login"] for p in issue["prs"])
-    what = daily_claim(state, when, issue["labels"], has_pr, issue.get("last_push"), cfg)
+    what = daily_claim(state, when, issue.get("long", False), has_pr, issue.get("last_push"), cfg)
     _, release = deadlines(pushed(state, issue["last_push"]) if issue.get("last_push") else state, cfg)
     if what == "remind":
         new = {**(pushed(state, issue["last_push"]) if issue.get("last_push") else state)}
@@ -1021,7 +1058,7 @@ def self_test():
     check("C2 the form's checkbox claims it, ticked only", (form_claim(form), form_claim(form.replace("[X]", "[ ]")), form_claim("I want to work on this myself")), (True, False, False))
     acts, before = plan_claim("ana", "", t0, {**accepted, "labels": [], "accepted": False}, cfg)
     check("C2 a claim before acceptance is recorded with no clock, and says when it starts",
-          (before["clock"], "Its clock starts when the issue is accepted" in acts[2][1], daily_claim(before, at(40), [], False, None, cfg)), (None, True, "pending"))
+          (before["clock"], "Its clock starts when the issue is accepted" in acts[2][1], daily_claim(before, at(40), False, False, None, cfg)), (None, True, "pending"))
     started = start_clock(before, at(3))
     check("C2 the clock starts at the `accepted` event, and the dates run from it",
           (started["clock"], started["start"], [day(d) for d in deadlines(started, cfg)]), (iso(at(3)), iso(at(3)), ["2026-11-11", "2026-11-14"]))
@@ -1033,8 +1070,8 @@ def self_test():
     # C3: day 7 reminds, day 10 releases and starts the autopilot; a push to
     # a linked branch resets the clock.
     check("C3 days 6, 7 and 10 without a pull request or a push",
-          [daily_claim(state, at(n), [], False, None, cfg) for n in (6, 7, 10)], ["none", "remind", "release"])
-    check("C3 reminded once per clock", daily_claim({**state, "reminded": state["clock"]}, at(8), [], False, None, cfg), "none")
+          [daily_claim(state, at(n), False, False, None, cfg) for n in (6, 7, 10)], ["none", "remind", "release"])
+    check("C3 reminded once per clock", daily_claim({**state, "reminded": state["clock"]}, at(8), False, False, None, cfg), "none")
     rel = plan_release(state, "no pull request or push by 2026-11-11", 7)
     check("C3 the release takes the label off, unassigns, says why, and starts the autopilot",
           ([a[0] for a in rel], rel[-1], "@ana" in rel[3][1] and "The autopilot starts on it now" in rel[3][1]),
@@ -1066,22 +1103,59 @@ def self_test():
           [ln.strip()[:40] for ln in src.splitlines() if "plan_release(" in ln and not ln.lstrip().startswith("def ")],
           ["return plan_release(state, why, n, start", "return plan_release(state, why, n, start"])
     check("C3 a push to a linked branch on day 6 resets the clock: day 10 is not the release, day 16 is",
-          [daily_claim(state, at(n), [], False, iso(at(6)), cfg) for n in (10, 13, 16)], ["none", "remind", "release"])
+          [daily_claim(state, at(n), False, False, iso(at(6)), cfg) for n in (10, 13, 16)], ["none", "remind", "release"])
     check("C3 a push older than the clock changes nothing", pushed(state, iso(t0 - days(2))), state)
-    check("C3 a pull request stops the clock; `claim:long` exempts it",
-          (daily_claim(state, at(20), [], True, None, cfg), daily_claim(state, at(20), [LONG], False, None, cfg)), ("waiting", "none"))
+    check("C3 a pull request stops the clock; `/claim long` exempts it",
+          (daily_claim(state, at(20), False, True, None, cfg), daily_claim(state, at(20), True, False, None, cfg)), ("waiting", "none"))
     # C4: one "still on it" extends it; a second is refused and the claim
     # keeps the first one's deadline (choice 4a); 30 days from the clock's
     # start release it whatever happened since.
+    # #564: `/claim long` replaces the label `claim:long`: a maintainer's
+    # command, kept in the board's state.
+    check("#564 `/claim long` is a command of its own; `/claim @long` is none",
+          [parse("/claim long"), parse("/claim long\nfor the migration"), parse("/claim @long"), parse("/claim longer")], [("long", ""), ("long", ""), None, None])
+    check("#564 only a maintainer gives `/claim long`", [may_act("long", "bob", p_)[0] for p_ in ("read", "triage", "none", "write", "maintain", "admin")],
+          [False, False, False, True, True, True])
+
+    def comment_offline(body, perm, login="soy"):
+        calls = []
+        saved = {k: globals()[k] for k in ("gh", "permission", "mark_long", "read_issue")}
+        globals().update(gh=lambda *a, **k: calls.append(("gh",) + a[:2] + (a[-1],)) or "",
+                         permission=lambda repo, who: calls.append(("permission", who)) or perm,
+                         mark_long=lambda repo, n: calls.append(("mark_long", n)),
+                         read_issue=lambda repo, n: calls.append(("read_issue", n)) or {})
+        try:
+            on_comment("o/r", {"comment": {"user": {"login": login, "type": "User"}, "body": body}, "issue": {"number": 7}}, cfg, t0)
+        finally:
+            globals().update(saved)
+        return calls
+    calls = comment_offline("/claim long", "maintain")
+    check("#564 `/claim long` from a writer sets `claim_long` in the board's state, and says so",
+          ([c for c in calls if c[0] == "mark_long"], any(c[0] == "gh" and "`/claim long`" in c[-1] for c in calls)), ([("mark_long", 7)], True))
+    calls = comment_offline("/claim long", "read", login="bob")
+    check("#564 `/claim long` from a person without write access sets nothing, and says why",
+          ([c for c in calls if c[0] == "mark_long"], any(c[0] == "gh" and "only a maintainer" in c[-1] for c in calls)), ([], True))
+    calls = comment_offline("/claim long", "admin", login=org.BOT)
+    check("#564 nor from the bot", calls, [])
+    rc = receipts()
+    board = lambda st, user=None: {"id": 3, "user": user or {"login": f"{rc.bot_app()}[bot]", "type": "Bot"},
+                                   "body": rc.with_state(f"{rc.BOARD}\n**The issue's board**", st)}
+    check("#564 the board's state is read from the bot's board, never a person's comment",
+          (board_state([board({"claim_long": True})]).get("claim_long"), board_state([board({"claim_long": True}, {"login": "mallory", "type": "User"})])),
+          (True, {}))
+    hand = board({"claim_long": False})
+    hand["body"] = hand["body"].replace('"claim_long":false', '"claim_long":true')
+    check("#564 a board's state edited by hand reads as tampered", board_state([hand]).get("tampered"), True)
+    check("#564 the daily list keeps no issue for a newcomer", "newcomer" in daily_list("o/r", [], [], []), False)
     check("C4 \"still on it\" is the extension, anywhere in the comment", parse("Sorry, still on it, back Monday"), ("extend", ""))
     once, ok, why = extend(state, at(9), cfg)
     check("C4 the first extension restarts the clock once", (ok, once["clock"], once["extended"], day(deadlines(once, cfg)[1])), (True, iso(at(9)), True, "2026-11-20"))
     twice, ok2, why2 = extend(once, at(15), cfg)
     check("C4 a second is refused, and the first one's deadline stands",
-          (ok2, twice, "released on 2026-11-20" in why2, daily_claim(twice, at(19), [], False, None, cfg)), (False, once, True, "release"))
+          (ok2, twice, "released on 2026-11-20" in why2, daily_claim(twice, at(19), False, False, None, cfg)), (False, once, True, "release"))
     check("C4 pushes every week never take it past 30 days from the clock's start",
-          [daily_claim(state, at(n), [], False, iso(at(24)), cfg) for n in (29, 30)], ["none", "release"])
-    check("C4 nor does an extension late in the claim", daily_claim(extend(pushed(state, iso(at(22))), at(28), cfg)[0], at(30), [], False, None, cfg), "release")
+          [daily_claim(state, at(n), False, False, iso(at(24)), cfg) for n in (29, 30)], ["none", "release"])
+    check("C4 nor does an extension late in the claim", daily_claim(extend(pushed(state, iso(at(22))), at(28), cfg)[0], at(30), False, False, None, cfg), "release")
     # C5: the first one wins. `/claim` once the autopilot started is refused
     # with why; a maintainer's `/yield @login` cancels its run, closes its
     # draft and claims the issue for the person.
@@ -1129,7 +1203,7 @@ def self_test():
     review = {**stalled, "review": "REVIEW_REQUIRED", "reviewed": None, "pushed": iso(t0 - days(60))}
     check("C7 one that waits on a maintainer's review is never closed for it, however long",
           [daily_pr(review, at(n), False, cfg) for n in (14, 90)], ["waiting", "waiting"])
-    check("C7 ... and its claim's clock does not run", daily_claim(state, at(90), [], True, None, cfg), "waiting")
+    check("C7 ... and its claim's clock does not run", daily_claim(state, at(90), False, True, None, cfg), "waiting")
     listed = daily_list("o/r", [(7, "ana", "a pull request stopped its clock")], [(41, "ana")], [])
     check("C7 the daily list names it as waiting on the maintainer",
           "**Waiting on a maintainer's review** (its author's clock does not run)\n\n- #41 by @ana" in listed, True)

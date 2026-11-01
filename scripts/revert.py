@@ -13,7 +13,8 @@ is reverted, unless the red is a flaky job.
                           masked when private, as `name=` to GITHUB_OUTPUT
   revert.py act           one item of the plan (ITEM): re-run the failed jobs
                           once, or open the Bug issue and the revert pull
-                          request and label the original `reverted` (a merge
+                          request, and mark the original `reverted` in its
+                          board's state (#564; a merge
                           that does not revert cleanly, or that changed
                           workflow files, gets the issue alone, saying who
                           does what)
@@ -33,8 +34,9 @@ What is red, and when it is reverted (assess):
   - the first attempt failed: its failed jobs are re-run once. A re-run that
     passes is flaky, said in the report, and nothing is reverted; one that
     fails again holds, and the merge is reverted;
-  - never a revert's own merge, never twice (the `reverted` label, or the
-    Bug issue that names the commit), never with DX_AUTOPILOT=off or the
+  - never a revert's own merge (its `revert/` branch or its `revert:`
+    title), never twice (`reverted` in the original's board's state, #564,
+    or the Bug issue that names the commit), never with DX_AUTOPILOT=off or the
     autopilot off in the policy (the repository's .github/autonomy.yml can
     turn it off for that repository).
 
@@ -66,6 +68,7 @@ def _load(name, file):
 
 autonomy = _load("autonomy", "autonomy.py")
 autopilot = _load("autopilot", "autopilot.py")
+receipts = _load("receipts", "receipts.py")
 
 LANE = "platform"
 BOT = org.BOT
@@ -73,6 +76,8 @@ BOT_EMAIL = f"{org.BOT_ID}+{org.BOT}@users.noreply.github.com"
 AI_LINE = autopilot.AI_LINE
 RED = ("failure", "timed_out")
 WAIT = "<!-- dx-revert-wait -->"
+# The title of a revert's issue begins so: G8 finds its own issues by it.
+ISSUE_PREFIX = "Default branch red after #"
 RUNS_READ = 100
 # Where `act` clones from; the self-test points it at a local repository.
 GIT_BASE = "https://github.com/"
@@ -123,8 +128,16 @@ def pick(runs):
 
 
 def is_revert(pr):
-    labels = set(pr.get("labels") or [])
-    return "revert" in labels or (pr.get("head_ref") or "").startswith("revert/") or bool(re.match(r"^revert(\(|!|:)", pr.get("title") or ""))
+    # G8's own revert pull requests are found by their branch and title, no
+    # label (#564).
+    return (pr.get("head_ref") or "").startswith("revert/") or bool(re.match(r"^revert(\(|!|:)", pr.get("title") or ""))
+
+
+def already_reverted(state):
+    """Whether a pull request's board's state says it was reverted (#564).
+    A state edited by hand reads as reverted: G8 then leaves it to a person,
+    never reverts on a state it cannot trust. Pure."""
+    return bool((state or {}).get("reverted") or (state or {}).get("tampered"))
 
 
 def assess(run, pr, failed_jobs, pr_checks, already=False):
@@ -134,7 +147,9 @@ def assess(run, pr, failed_jobs, pr_checks, already=False):
         return "none", "its commit is not the merge of a pull request into the default branch"
     if is_revert(pr):
         return "none", f"the red merge is itself a revert (#{pr['number']}): a person looks"
-    if "reverted" in (pr.get("labels") or []) or already:
+    if pr.get("tampered"):
+        return "none", f"the board's state of #{pr['number']} was edited by hand: a person looks"
+    if pr.get("reverted") or already:
         return "none", f"#{pr['number']} is already reverted"
     if not failed_jobs:
         return "none", "no failed job to compare with the pull request"
@@ -201,7 +216,7 @@ def branch(number, title):
 
 
 def issue_title(item):
-    return short(f"Default branch red after #{item['pr']}: {item['pr_title']}", 100)
+    return short(f"{ISSUE_PREFIX}{item['pr']}: {item['pr_title']}", 100)
 
 
 def issue_body(item):
@@ -311,12 +326,27 @@ def repo_policy(repo, default):
     return autonomy.merge(org, mine)
 
 
+def state_of(repo, number):
+    """An issue's or a pull request's board's state (#564), read through
+    this script's own API calls: {} when it has no board."""
+    cs = [json.loads(l) for l in api_lines(f"repos/{repo}/issues/{number}/comments?per_page=100", ".[] | @json")]
+    c = receipts.board_comment(cs, receipts.bot_app())
+    return receipts.parse_state(c.get("body")) if c else {}
+
+
+def mark(repo, number, key, title="The pull request's board"):
+    """Sets `key` true in an item's board's state (#564)."""
+    receipts.write_state(repo, number, receipts.apply(receipts.read_state(repo, number), "set", [f"{key}=true"]), title)
+
+
 def find_pr(repo, sha, default):
     for p in api(f"repos/{repo}/commits/{sha}/pulls") or []:
         if p.get("merged_at") and p.get("merge_commit_sha") == sha and (p.get("base") or {}).get("ref") == default:
-            return {"number": p["number"], "title": p.get("title", ""), "url": p.get("html_url", ""),
-                    "head_sha": p["head"]["sha"], "head_ref": p["head"].get("ref", ""),
-                    "labels": [l["name"] for l in p.get("labels") or []]}
+            pr = {"number": p["number"], "title": p.get("title", ""), "url": p.get("html_url", ""),
+                  "head_sha": p["head"]["sha"], "head_ref": p["head"].get("ref", "")}
+            # Its board's state says whether G8 reverted it already (#564).
+            state = {} if is_revert(pr) else state_of(repo, p["number"])
+            return {**pr, "reverted": bool(state.get("reverted")), "tampered": bool(state.get("tampered"))}
     return None
 
 
@@ -338,9 +368,10 @@ def failed_jobs(repo, run_id):
 
 def issue_for(repo, sha):
     """The Bug issue dilux-bot opened for this merge, from the issue list (not
-    the search, which lags): every issue labelled `revert` it opened."""
-    issues = [json.loads(l) for l in api_lines(f"repos/{repo}/issues?state=all&labels=revert&creator={BOT}&per_page=100",
-                                               'map(select(.pull_request == null) | {number, body}) | .[] | @json')]
+    the search, which lags): every issue it opened whose title is a revert's
+    (no label, #564)."""
+    jq = f'map(select(.pull_request == null and (.title | startswith("{ISSUE_PREFIX}"))) | {{number, body}}) | .[] | @json'
+    issues = [json.loads(l) for l in api_lines(f"repos/{repo}/issues?state=all&creator={BOT}&per_page=100", jq)]
     return already_issue(issues, sha)
 
 
@@ -462,22 +493,11 @@ def read_item(planned):
         "pr": pr["number"], "pr_title": pr.get("title", ""), "pr_url": pr["html_url"], "private": is_private(r)}
 
 
-def ensure_label(repo, name):
-    try:
-        api(f"repos/{repo}/labels/{name}")
-        return
-    except RuntimeError as e:
-        if "404" not in str(e) and "Not Found" not in str(e):
-            raise
-    spec = next((l for l in autonomy.read_yaml(os.path.join(HERE, "..", "labels.yml")) if l.get("name") == name), {})
-    gh("label", "create", name, "--repo", repo, "--color", spec.get("color", "B60205"), "--description", spec.get("description", ""))
-
-
 def open_issue(repo, item, tmp, comment=None):
     body = os.path.join(tmp, "issue.md")
     with open(body, "w", encoding="utf-8") as fh:
         fh.write(issue_body(item))
-    issue = gh("issue", "create", "--repo", repo, "--title", issue_title(item), "--body-file", body, "--label", "revert").strip().rsplit("/", 1)[-1]
+    issue = gh("issue", "create", "--repo", repo, "--title", issue_title(item), "--body-file", body).strip().rsplit("/", 1)[-1]
     try:
         gh("api", "-X", "PATCH", f"repos/{repo}/issues/{issue}", "-f", "type=Bug")
     except RuntimeError as e:
@@ -552,11 +572,13 @@ def act():
     if latest and latest[0].get("conclusion") == "success":
         print("The default branch is green again since the scan; nothing is reverted.")
         return 0
-    if "reverted" in [l["name"] for l in pr.get("labels") or []] or issue_for(repo, item["sha"]):
+    state = state_of(repo, item["pr"])
+    if state.get("tampered"):
+        print("The original pull request's board's state was edited by hand; a person looks.")
+        return 0
+    if already_reverted(state) or issue_for(repo, item["sha"]):
         print("Already reverted.")
         return 0
-    for name in ("revert", "reverted"):
-        ensure_label(repo, name)
     files = api_lines(f"repos/{repo}/commits/{item['sha']}", ".files[] | .filename, (.previous_filename // empty)")
     with tempfile.TemporaryDirectory() as tmp:
         cannot = cannot_push(files)
@@ -593,7 +615,7 @@ def act():
             pbody = os.path.join(tmp, "pr.md")
             with open(pbody, "w", encoding="utf-8") as fh:
                 fh.write(pr_body(item, issue))
-            gh("pr", "create", "--repo", repo, "--base", item["default"], "--head", name, "--title", title, "--body-file", pbody, "--label", "revert")
+            revert_pr = gh("pr", "create", "--repo", repo, "--base", item["default"], "--head", name, "--title", title, "--body-file", pbody).strip().rsplit("/", 1)[-1]
         except RuntimeError as e:
             # The issue stays, and stops the next sweep from trying again:
             # it says what failed and who does what.
@@ -603,7 +625,13 @@ def act():
             except RuntimeError as c:
                 print(f"::warning::The issue could not say so either: {detail(c)}")
             raise RuntimeError(f"the revert pull request could not be opened: {detail(e)}") from None
-    gh("pr", "edit", str(item["pr"]), "--repo", repo, "--add-label", "reverted")
+    # The board's state carries what the labels did (#564): `revert` on the
+    # revert pull request, `reverted` on the original.
+    try:
+        mark(repo, revert_pr, "revert")
+    except RuntimeError as e:
+        print(f"::warning::The revert's board was not marked: {detail(e)}")
+    mark(repo, item["pr"], "reverted")
     # The cause is the original issue's: it opens again for the autopilot or a person.
     try:
         closed = json.loads(gh("pr", "view", str(item["pr"]), "--repo", repo, "--json", "closingIssuesReferences"))
@@ -651,7 +679,7 @@ def self_test():
                 "html_url": f"https://github.com/DiluxOne/x/actions/runs/{i}"}
 
     pr = {"number": 12, "title": "fix(sync): retry once", "url": "https://github.com/DiluxOne/x/pull/12",
-          "head_sha": "head12", "head_ref": "fix/9-retry", "labels": []}
+          "head_sha": "head12", "head_ref": "fix/9-retry"}
     checks = {"checks / PHP 8.3": "success", "checks / PHPCS": "success"}
 
     # Where the red began.
@@ -692,7 +720,13 @@ def self_test():
 
     # Nothing to revert.
     check("left alone: not a pull request's merge", assess(again, None, ["a"], {})[0], "none")
-    check("left alone: already reverted (label)", assess(again, {**pr, "labels": ["reverted"]}, ["checks / PHP 8.3"], checks)[0], "none")
+    check("#564 left alone: already reverted (the board's state)", assess(again, {**pr, "reverted": True}, ["checks / PHP 8.3"], checks)[0], "none")
+    check("#564 left alone: a board's state edited by hand, a person looks", assess(again, {**pr, "tampered": True}, ["checks / PHP 8.3"], checks),
+          ("none", "the board's state of #12 was edited by hand: a person looks"))
+    check("#564 the state's `reverted` reads as reverted; a tampered one too; none, not", [already_reverted(s_) for s_ in ({"reverted": True}, {"tampered": True}, {}, None)],
+          [True, True, False, False])
+    check("#564 a revert's own pull request is found without a label", (is_revert({"head_ref": "revert/3-x"}), is_revert({"title": "revert: x"}), is_revert({"labels": ["revert"]})),
+          (True, True, False))
     check("left alone: already reverted (its issue)", assess(again, pr, ["checks / PHP 8.3"], checks, already=True)[0], "none")
     check("left alone: a revert's own merge, never reverted in turn", assess(again, {**pr, "head_ref": "revert/40-x", "title": "revert: x"}, ["checks / PHP 8.3"], checks)[0], "none")
     check("left alone: it was red on the pull request too", assess(again, pr, ["checks / PHP 8.3"], {"checks / PHP 8.3": "failure"})[0], "none")
@@ -818,7 +852,7 @@ def self_test():
     check("locate: masks it again in its own job, then names it for the token", ("::add-mask::secret-pro" in printed.split("## Red default branches")[1], "name=secret-pro" in outputs), (True, True))
 
     # act, offline: a local repository in place of GitHub, gh and the API faked.
-    def act_offline(conflict=False, files=("src/a.txt",), kind="revert", green_since=False, undone=False, private=False, refuse_push=False, out=None):
+    def act_offline(conflict=False, files=("src/a.txt",), kind="revert", green_since=False, undone=False, private=False, refuse_push=False, out=None, board=None):
         calls = []
         with tempfile.TemporaryDirectory() as base:
             src = os.path.join(base, "DiluxOne", "x")
@@ -850,8 +884,6 @@ def self_test():
                     {"workflow_runs": [{"conclusion": "success" if green_since else "failure"}]},
                 "repos/DiluxOne/x/pulls/12": {"number": 12, "title": pr["title"], "html_url": pr["url"], "labels": []},
                 f"repos/DiluxOne/x/commits/{merge}": {"parents": [{"sha": "p"}]},
-                "repos/DiluxOne/x/labels/revert": {"name": "revert"},
-                "repos/DiluxOne/x/labels/reverted": {"name": "reverted"},
             }
 
             def fake_api(path, *args):
@@ -864,19 +896,26 @@ def self_test():
                     return ['"checks / PHP 8.3"']
                 if "/issues?" in path:
                     return []
+                if "/comments?" in path:
+                    return [json.dumps(c_) for c_ in board or []]
                 return list(files)
 
             def fake_gh(*args, input_text=None):
                 calls.append(("gh",) + args[:2])
-                return "https://github.com/DiluxOne/x/issues/40\n" if args[:2] == ("issue", "create") else "{}"
+                if args[:2] == ("issue", "create"):
+                    return "https://github.com/DiluxOne/x/issues/40\n"
+                return "https://github.com/DiluxOne/x/pull/41\n" if args[:2] == ("pr", "create") else "{}"
 
-            saved = {k: globals()[k] for k in ("api", "api_lines", "gh", "GIT_BASE", "push_branch")}
+            def fake_mark(repo, number, key, title="The pull request's board"):
+                calls.append(("mark", str(number), key))
+
+            saved = {k: globals()[k] for k in ("api", "api_lines", "gh", "GIT_BASE", "push_branch", "mark")}
             env = {k: os.environ.get(k) for k in ("ITEM", "GH_TOKEN", "DX_AUTOPILOT")}
             # GitHub's API is played by the local remote: the push is git's.
             def git_push(repo, work, name, env):
                 calls.append(("push", name))
                 run_git(["-C", work, "push", "-q", "origin", f"HEAD:refs/heads/{name}"], env)
-            globals().update(api=fake_api, api_lines=fake_lines, gh=fake_gh, GIT_BASE=base + os.sep, push_branch=git_push)
+            globals().update(api=fake_api, api_lines=fake_lines, gh=fake_gh, GIT_BASE=base + os.sep, push_branch=git_push, mark=fake_mark)
             os.environ.update(ITEM=json.dumps({"kind": kind, "repo_id": 7, "run_id": 4, "pr": 12}), GH_TOKEN="t", DX_AUTOPILOT="")
             import contextlib
             import io
@@ -901,24 +940,29 @@ def self_test():
     gh_calls = [c[1:] for c in calls if c[0] == "gh"]
     check("act: the revert is pushed on its branch", pushed, "revert: fix(sync): retry once")
     check("#190: through push_branch, the signed push", [c for c in calls if c[0] == "push"], [("push", "revert/40-fix-sync-retry-once")])
-    check("act: the issue, then the pull request, then `reverted`", [c for c in gh_calls if c in (("issue", "create"), ("pr", "create"), ("pr", "edit"))],
-          [("issue", "create"), ("pr", "create"), ("pr", "edit")])
+    check("act: the issue, then the pull request", [c for c in gh_calls if c in (("issue", "create"), ("pr", "create"), ("pr", "edit"))],
+          [("issue", "create"), ("pr", "create")])
+    check("#564 act: no label is created or added", [c for c in gh_calls if c[0] == "label" or "--label" in c or c == ("pr", "edit")], [])
+    check("#564 act: the board's state marks the revert pull request `revert` and the original `reverted`",
+          [c[1:] for c in calls if c[0] == "mark"], [("41", "revert"), ("12", "reverted")])
     lookup = [c[1] for c in calls if c[0] == "lines" and "/issues?" in c[1]]
-    check("act: never twice reads the `revert` issues dilux-bot opened, in every state",
-          bool(lookup) and all(k in lookup[0] for k in ("state=all", "labels=revert", f"creator={BOT}")), True)
+    check("act: never twice reads the issues dilux-bot opened, in every state, with no label",
+          bool(lookup) and all(k in lookup[0] for k in ("state=all", f"creator={BOT}")) and "labels=" not in lookup[0], True)
+    check("act: and reads the original's board's state", any(c[0] == "lines" and c[1].startswith("repos/DiluxOne/x/issues/12/comments") for c in calls), True)
+    bot_board = lambda st: [{"id": 1, "user": {"login": f"{receipts.bot_app()}[bot]", "type": "Bot"}, "body": receipts.with_state(f"{receipts.BOARD}\n**The board**", st)}]
+    calls, pushed = act_offline(board=bot_board({"reverted": True}))
+    check("#564 act: an original whose board's state says reverted is not reverted again", (pushed, any(c[0] in ("gh", "mark") for c in calls)), (None, False))
+    tampered = bot_board({"reverted": False})
+    tampered[0]["body"] = tampered[0]["body"].replace('"reverted":false', '"reverted":null')
+    calls, pushed = act_offline(board=tampered)
+    check("#564 act: a board's state edited by hand stops it", (pushed, any(c[0] in ("gh", "mark") for c in calls)), (None, False))
+    forged = [{**bot_board({"reverted": True})[0], "user": {"login": "someone", "type": "User"}}]
+    calls, pushed = act_offline(board=forged)
+    check("#564 act: a person's comment that copies the state is not the board", pushed, "revert: fix(sync): retry once")
     saved_api = globals()["api"]
 
     def no_access(path, *args):
         raise RuntimeError("HTTP 403: Resource not accessible by integration")
-    globals()["api"] = no_access
-    try:
-        ensure_label("DiluxOne/x", "revert")
-        raised = False
-    except RuntimeError:
-        raised = True
-    finally:
-        globals()["api"] = saved_api
-    check("act: a label read that fails, not missing, stops the act", raised, True)
     globals()["api"] = no_access
     try:
         repo_policy("DiluxOne/x", "main")
@@ -966,7 +1010,8 @@ def self_test():
     g8 = am[am.index("name: A revert pull request (G8)"):am.index("name: A sync run's pull request")]
     check("auto-merge.yml: only a missing .github/autonomy.yml reads as none; any other failure leaves it to a person",
           ("|| : >" not in g8, "grep -qE '404|Not Found'" in g8, 'if [ "$read_ok" = false ]; then' in g8), (True, True, True))
-    check("the labels exist in labels.yml", {"revert", "reverted"} <= {l.get("name") for l in autonomy.read_yaml(os.path.join(HERE, "..", "labels.yml"))}, True)
+    check("#564 auto-merge.yml finds a revert pull request without the `revert` label", ("'revert')" in am, "startsWith(github.event.pull_request.head.ref, 'revert/')" in am), (False, True))
+    check("#564 revert-on-red.yml's act passes DX_BOT_APP, which finds the board", "DX_BOT_APP: ${{ vars.DX_BOT_APP }}" in ror, True)
 
     if not failed:
         print("all tests passed")

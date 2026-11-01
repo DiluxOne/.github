@@ -1,6 +1,12 @@
 # Every label the organisation's workflows and people use, the same in every
 # repository. scripts/sync-repos.py creates them or brings their colour and
-# description in line; it never deletes a label a repository added.
+# description in line; it never deletes a label a repository added, only the
+# retired ones below.
+#
+# A label is a decision or a warning a person reads at a glance (#564):
+# never a counter nor a step in between. Those live in the board's state
+# (scripts/receipts.py `state`), the one bot comment of the issue or pull
+# request.
 #
 # The issue's kind is not a label: it is the native issue Type (Feature,
 # Bug, Task, Docs, set at the organisation). The type:* labels below are on
@@ -23,13 +29,10 @@
 - {name: "accepted-by:policy", color: "0E8A16", description: "Accepted by a lane of the autonomy policy, not by a person"}
 - {name: "merged-by:policy", color: "0E8A16", description: "Merged by the autonomy policy, not by a person"}
 - {name: autopilot, color: "1D76DB", description: "Opened by the autopilot from an accepted issue"}
-- {name: "autopilot:continue", color: "1D76DB", description: "On an issue: the autopilot continues its draft pull request, or starts it"}
-- {name: "autopilot:answered", color: "1D76DB", description: "On an issue: a maintainer answered the autopilot's question; the run it starts does not count"}
 - {name: needs-human, color: "D93F0B", description: "The autopilot handed this over to a person"}
-- {name: "needs:maintainer", color: "D93F0B", description: "Waits on a maintainer's decision"}
 
 # One issue per run of the bots' recurring work (scripts/run-issue.sh, #188):
-# closed when the run needed no one, open with needs:maintainer when it did.
+# closed when the run needed no one, open with needs-human when it did.
 - {name: "run:runner-image", color: "C5DEF5", description: "A build of the runner image (runner-image.yml)"}
 - {name: "run:autonomy-digest", color: "C5DEF5", description: "A week's decisions by policy (autonomy-digest.yml)"}
 - {name: "run:claims", color: "C5DEF5", description: "The daily list of claims (issue-claim.yml), one comment per repository"}
@@ -38,40 +41,9 @@
 
 # A person claims an issue (#488, issue-claim.yml): the autopilot steps aside.
 - {name: claimed, color: "5319E7", description: "A person claimed it: the autopilot steps aside"}
-- {name: "claim:long", color: "5319E7", description: "A long task: the claim is not released for want of a pull request"}
-- {name: "good first issue", color: "7057FF", description: "Kept for a newcomer to /claim: the autopilot does not start on it"}
 
-# Gate G8 (revert-on-red.yml): a merge that turned the default branch red.
-- {name: revert, color: "B60205", description: "Opened by dilux-bot to revert a merge that turned the default branch red"}
-- {name: reverted, color: "B60205", description: "Reverted: the default branch went red after it merged"}
-
-# The issue triage (issue-triage.yml).
-- {name: needs-triage, color: "E4E669", description: "Not looked at yet"}
-- {name: "bug:unconfirmed", color: "D93F0B", description: "A bug report: a reproduction starts on its own (repro:run starts one by hand)"}
-- {name: needs-info, color: "E4E669", description: "Waiting for versions, steps or logs"}
-- {name: spike, color: "FBCA04", description: "A person asks for a read-only investigation before deciding"}
-- {name: by-design, color: "BFDADC", description: "Works as documented, or a known limitation"}
-- {name: pro-feature, color: "5319E7", description: "Needs the paid service or add-on"}
-- {name: planned, color: "0E8A16", description: "Already planned"}
-- {name: exists-in-pro, color: "5319E7", description: "A paid product already has it"}
-- {name: question, color: "D876E3", description: "A usage question; the support channel has it"}
+# A vulnerability report (the triage, issue-triage.yml).
 - {name: security, color: "B60205", description: "A vulnerability report; a person merges its fix"}
-- {name: enhancement, color: "A2EEEF", description: "New feature or request"}
-- {name: duplicate, color: "CFD3D7", description: "An open issue already covers it"}
-# Where a defect shows (#352, #376): the reproduction uses the way the
-# repository declares for it (scripts/repro-ways.py).
-- {name: "layer:logic", color: "C5DEF5", description: "Where the defect shows: the reproduction uses the way the repository declares for it"}
-- {name: "layer:browser", color: "C5DEF5", description: "Where the defect shows: the reproduction uses the way the repository declares for it"}
-- {name: "layer:cli", color: "C5DEF5", description: "Where the defect shows: the reproduction uses the way the repository declares for it"}
-- {name: "layer:api", color: "C5DEF5", description: "Where the defect shows: the reproduction uses the way the repository declares for it"}
-- {name: "layer:workflow", color: "C5DEF5", description: "Where the defect shows: the reproduction uses the way the repository declares for it"}
-
-# The reproduction (issue-repro.yml).
-- {name: "repro:run", color: "FBCA04", description: "A maintainer asks for a reproduction attempt"}
-- {name: "repro:again", color: "FBCA04", description: "Ask for another reproduction attempt"}
-- {name: "bug:confirmed", color: "B60205", description: "Reproduced by a failing test"}
-- {name: could-not-reproduce, color: "FBCA04", description: "The reproduction attempt found nothing"}
-- {name: "repro:no-way", color: "D4C5F9", description: "No way this repository declares can reproduce this bug; the comment says why"}
 
 # The review, on pull requests (claude-review.yml).
 - {name: "risk:low", color: "0E8A16", description: "Set by the Claude review"}
@@ -80,7 +52,6 @@
 - {name: "complexity:low", color: "0E8A16", description: "Set by the Claude review"}
 - {name: "complexity:medium", color: "FBCA04", description: "Set by the Claude review"}
 - {name: "complexity:high", color: "D93F0B", description: "Set by the Claude review"}
-- {name: "review:full", color: "5319E7", description: "Ask the Claude review for a full pass on the next push"}
 - {name: "type:breaking", color: "0075CA", description: "The kind of change, read from the diff by the Claude review"}
 - {name: "type:feat", color: "0075CA", description: "The kind of change, read from the diff by the Claude review"}
 - {name: "type:fix", color: "0075CA", description: "The kind of change, read from the diff by the Claude review"}
@@ -104,3 +75,43 @@
 - {name: composer, color: "885630", description: "Updates a Composer package"}
 - {name: docker, color: "2496ED", description: "Updates a Docker image"}
 - {name: "ci:weekly", color: "B60205", description: "The weekly run failed"}
+
+# Retired (#564): sync-repos.py first carries each one's state into the
+# board of every open item that has it (`retired:`, the `state set` it
+# writes; `add: KEY` adds the label's number to a list), then deletes the
+# label in every repository, which takes it off every item. A trigger a
+# person set with a label is a writer's comment now: /continue, /repro,
+# /review full, /spike, /claim long.
+- {name: "autopilot:run-*", retired: {add: runs}}
+- {name: "autopilot:free-*", retired: {add: free}}
+- {name: "autopilot:round-*", retired: {max: rounds}}
+- {name: "autopilot:waiting", retired: {state: "waiting=true"}}
+- {name: "autopilot:answered", retired: {state: "answered=true"}}
+- {name: "autopilot:continue", retired: {}}
+- {name: "needs:maintainer", retired: {}}
+- {name: "claim:long", retired: {state: "claim_long=true"}}
+- {name: "good first issue", retired: {}}
+- {name: revert, retired: {state: "revert=true"}}
+- {name: reverted, retired: {state: "reverted=true"}}
+- {name: needs-triage, retired: {}}
+- {name: needs-info, retired: {state: "verdict=needs-info"}}
+- {name: spike, retired: {state: "spike=true"}}
+- {name: by-design, retired: {state: "verdict=by-design"}}
+- {name: pro-feature, retired: {state: "verdict=pro-feature"}}
+- {name: planned, retired: {state: "verdict=planned"}}
+- {name: exists-in-pro, retired: {state: "verdict=exists-in-pro"}}
+- {name: question, retired: {state: "verdict=question"}}
+- {name: enhancement, retired: {state: "verdict=enhancement"}}
+- {name: duplicate, retired: {state: "verdict=duplicate"}}
+- {name: "bug:unconfirmed", retired: {state: "repro=unconfirmed"}}
+- {name: "bug:confirmed", retired: {state: "repro=confirmed"}}
+- {name: could-not-reproduce, retired: {state: "repro=could-not-reproduce"}}
+- {name: "repro:no-way", retired: {state: "repro=no-way"}}
+- {name: "repro:run", retired: {}}
+- {name: "repro:again", retired: {}}
+- {name: "review:full", retired: {state: "review_full=true"}}
+- {name: "layer:logic", retired: {state: "layer=logic"}}
+- {name: "layer:browser", retired: {state: "layer=browser"}}
+- {name: "layer:cli", retired: {state: "layer=cli"}}
+- {name: "layer:api", retired: {state: "layer=api"}}
+- {name: "layer:workflow", retired: {state: "layer=workflow"}}

@@ -45,10 +45,18 @@ def test_every_issues_caller_runs_the_claims_daily_and_on_comments():
         assert "schedule" in on and on["issue_comment"]["types"] == ["created"] and "pull_request_target" in on, path
         claim = wf["jobs"]["claim"]
         assert claim["uses"].startswith("DiluxOne/.github/.github/workflows/issue-claim.yml@") and claim["secrets"] == "inherit", path
-        # The other jobs keep to their own events: a comment or a pull
-        # request never runs the triage, the reproduction or the acceptance.
+        # The other jobs keep to their own events: a pull request never runs
+        # the triage, the reproduction or the acceptance, and a comment only
+        # a person's command that once was a label (#564).
         for name in ("triage", "repro", "repro-triaged", "accepted"):
-            assert "github.event_name == 'issues'" in wf["jobs"][name]["if"], (path, name)
+            cond = wf["jobs"][name]["if"]
+            assert "github.event_name == 'issues'" in cond and "pull_request" not in cond, (path, name)
+        for name in ("repro-triaged", "accepted"):
+            assert "issue_comment" not in wf["jobs"][name]["if"], (path, name)
+        for name, commands in (("triage", ("/spike",)), ("repro", ("/repro",))):
+            cond = " ".join(wf["jobs"][name]["if"].split())
+            assert "github.event.comment.user.type != 'Bot'" in cond, (path, name)
+            assert all(f"startsWith(github.event.comment.body, '{c}')" in cond for c in commands), (path, name)
 
 
 def test_the_jobs_with_the_key_never_check_out_a_pull_request():
@@ -67,7 +75,7 @@ def test_yield_is_a_maintainers_and_may_cancel_the_autopilots_run():
     src = (ROOT / "scripts/claim.py").read_text(encoding="utf-8")
     # The maintainer is read from GitHub, never from author_association.
     assert 'f"repos/{repo}/collaborators/{login}/permission"' in src and ".author_association" not in src
-    assert 'perm = permission(repo, login) if name in ("yield", "adopt", "unclaim")' in src and "ok, why = may_act(name, login, perm, who)" in src
+    assert 'perm = permission(repo, login) if name in ("yield", "adopt", "unclaim", "long")' in src and "ok, why = may_act(name, login, perm, who)" in src
     # The autopilot's run is found by its prep job, named for the issue.
     prep = workflow("autopilot.yml")["jobs"]["prep"]["name"]
     assert prep.endswith("· may it run · #${{ inputs.issue || inputs.pr }}")

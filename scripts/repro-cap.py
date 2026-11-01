@@ -4,8 +4,8 @@
 A stranger's report starts a paid run with no person in between, so a flood
 stops here: at most MAX issues opened in the repository in 24 hours (not by
 the bot) and MAX_AUTHOR by the report's author. A maintainer's report, the
-nightly review's (dilux-bot's), and a run a maintainer started (adding
-`repro:run`) are never held: every bug found is worked. A count that could
+nightly review's (dilux-bot's), and a run a maintainer started (commenting
+`/repro`, #564) are never held: every bug found is worked. A count that could
 not be read (empty) holds the report, never lets it through.
 
     repro-cap.py decide   AUTHOR, AUTHOR_ROLE, SENDER_ROLE (role_name, read

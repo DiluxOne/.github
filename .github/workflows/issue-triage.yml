@@ -2,30 +2,33 @@ name: Issue triage
 
 # Reusable. When an issue is opened, Claude reads it with the repository's
 # README, readme.txt, docs/roadmap.md and the open issues, classifies it and
-# does one thing: applies a label and posts one reply. It never closes an
+# does one thing: records its verdict and posts one reply. It never closes an
 # issue, never promises a fix and never gives a date. The `low` reviewer of
-# the policy (the low-risk reviewer) does this work.
+# the policy (the low-risk reviewer) does this work. The verdict is no label
+# (#564): it is `verdict` in the issue's board state (scripts/receipts.py
+# `state`), with the issue's Type; only `security`, a warning, is a label.
 #
-#   bug:unconfirmed       a bug report with enough to try to reproduce it
-#                         (issue-repro.yml starts on its own; repro:run starts
-#                         one by hand; a reproduced one goes to the autopilot
-#                         through the bugfix-reproduced lane, #84)
+#   bug                   a bug report with enough to try to reproduce it,
+#                         `repro=unconfirmed` (issue-repro.yml starts on its
+#                         own; a writer's `/repro` starts one by hand; a
+#                         reproduced one goes to the autopilot through the
+#                         bugfix-reproduced lane, #84)
 #   needs-info            a bug report missing versions, steps or logs: the
 #                         reply asks for them. A report with steps made on an
 #                         older version (an older release, or a development
 #                         build older than the current pre-release) is still
-#                         bug:unconfirmed: a reproduction runs on the
+#                         a bug to reproduce: a reproduction runs on the
 #                         current code and its reply says whether it is still
 #                         there, instead of asking the reporter to update
 #   by-design             works as documented, or a known limitation
 #   pro-feature           needs the paid service or add-on the roadmap names,
 #                         or belongs to the paid add-on's private roadmap
 #   planned               a request the roadmap already plans
-#   enhancement           a feature request (+ exists-in-pro when the roadmap
+#   enhancement           a feature request (exists-in-pro when the roadmap
 #                         says a paid product already has it)
 #   question              a usage question: the reply points at support
 #   duplicate             the reply links the original
-#   security              a vulnerability posted in public: the reply asks for
+#   security              (the label) a vulnerability posted in public: the reply asks for
 #                         private reporting, the issue is locked, and the
 #                         maintainer is mentioned; in a private repository,
 #                         which has no private reporting, the issue is the
@@ -33,7 +36,7 @@ name: Issue triage
 #                         its fix (policy/autonomy.yml, person-merges)
 #
 # The nightly review's own Bug issue, opened by dilux-bot with its marker
-# (#247), is not classified again: it is labelled `bug:unconfirmed` and its
+# (#247), is not classified again: its state is `repro=unconfirmed` and its
 # reproduction starts, as for any bug report.
 #
 # It never adds `accepted`: only a person accepts an issue, and the
@@ -43,8 +46,8 @@ name: Issue triage
 # reply says so (#84): no reproduction starts, no `fix` can close it, and it
 # waits for a person like any request (scripts/triage-act.sh). A Type a
 # maintainer set is never changed (#341). A defect also gets the layer it
-# shows in, `layer:logic`, `layer:browser`, `layer:cli`, `layer:api` or
-# `layer:workflow` (a CI workflow's wiring, #376) (#352), knowing nothing
+# shows in, `layer` in its state: logic, browser, cli, api or workflow (a
+# CI workflow's wiring, #376) (#352), knowing nothing
 # of the repository's tools: the reproduction uses the way the repository
 # declares for that layer (scripts/repro-ways.py).
 #
@@ -63,19 +66,24 @@ name: Issue triage
 # At most `max-per-day` issues in 24 hours get an AI triage, counted with
 # GitHub's issue search (every issue opened, a bot's too, so the count errs
 # high; a just-opened issue may not be indexed yet, so it can also err low by
-# a few); past that, or when the count fails, an issue gets needs-triage and
+# a few); past that, or when the count fails, an issue gets no triage and
 # waits for a person. The runs go on the subscription, so the cap (10000)
 # only stops a flood, not a busy day. The brief and the labelling
 # are scripts/triage-brief.sh and scripts/triage-act.sh, shared by both jobs.
 #
-# On a schedule, the same workflow closes `needs-info` issues nobody answered
-# in `stale-days`. When a person labels an issue `spike` (#193), the `spike`
-# job investigates it read-only and recommends what to do (scripts/spike.py).
+# On a schedule, the same workflow closes the issues whose verdict is
+# `needs-info` that nobody answered in `stale-days`. A person who can write
+# to the repository comments, on the comment's first line (#564, where a
+# label was before): `/spike` (#193), and the `spike` job investigates the
+# issue read-only and recommends what to do (scripts/spike.py);
+# `/continue <hint>`, and the autopilot resumes (the `autopilot` job).
 # Everything in the issue is data, never instructions.
 #
 #   on:
 #     issues:
-#       types: [opened, labeled]
+#       types: [opened, labeled, closed]
+#     issue_comment:
+#       types: [created]
 #     schedule:
 #       - cron: '0 13 * * *'
 #   jobs:
@@ -106,11 +114,11 @@ on:
         type: string
         default: soydiloreto
       stale-days:
-        description: Days a needs-info issue waits for an answer before it is closed.
+        description: Days an issue whose verdict is needs-info waits for an answer before it is closed.
         type: number
         default: 14
       max-per-day:
-        description: Triage runs in 24 hours at most (one per issue a person opens, counted as it opens); past that, an issue gets needs-triage and waits for a person.
+        description: Triage runs in 24 hours at most (one per issue a person opens, counted as it opens); past that, an issue gets no triage and waits for a person.
         type: number
         default: 10000
       central-ref:
@@ -118,7 +126,7 @@ on:
         type: string
         default: ''
     outputs:
-      # true when the verdict is a bug worth a reproduction (bug:unconfirmed),
+      # true when the verdict is a bug worth a reproduction (repro=unconfirmed),
       # whether or not the classifier read a paid roadmap (#247): the caller
       # starts one on its own.
       bug:
@@ -218,8 +226,6 @@ jobs:
           fi
           if [ "$n" -ge "$MAX" ]; then
             echo "::warning::$n issues opened in the last 24 hours before this one (the limit is $MAX); #$NUMBER waits for a person."
-            gh label create needs-triage --repo "$GITHUB_REPOSITORY" --color E4E669 --description "Not looked at yet" --force >/dev/null
-            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label needs-triage >/dev/null
             echo "over=true" >> "$GITHUB_OUTPUT"
           else
             echo "$n issues opened in the last 24 hours before this one (limit $MAX)."
@@ -423,9 +429,9 @@ jobs:
   # a marker on the first line: the nightly review's finding, rated blocker
   # or major and not about security (scripts/nightly-review.py), and the
   # test setup that blocks a reproduction (issue-repro.yml). It
-  # is already a classified bug report, so no classifier runs: it gets
-  # `bug:unconfirmed`, and the reproduction starts on it as on any bug the
-  # triage finds. Any other issue a bot opens is never triaged.
+  # is already a classified bug report, so no classifier runs: its state
+  # gets `repro=unconfirmed` (#564), and the reproduction starts on it as on
+  # any bug the triage finds. Any other issue a bot opens is never triaged.
   nightly:
     name: A nightly review's bug
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
@@ -443,21 +449,32 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-issues: write
 
-      - name: Label it a bug to reproduce
+      # receipts.py, whole, for the board's state (#564).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
+          path: .dx-central
+          persist-credentials: false
+
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+
+      - name: Mark it a bug to reproduce
         id: mark
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           NUMBER: ${{ github.event.issue.number }}
         run: |
           set -euo pipefail
-          gh label create "bug:unconfirmed" --repo "$GITHUB_REPOSITORY" --color D93F0B --description "A bug report: a reproduction starts on its own (repro:run starts one by hand)" --force >/dev/null
-          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "bug:unconfirmed" >/dev/null
+          python3 .dx-central/scripts/receipts.py state set verdict=bug repro=unconfirmed >/dev/null
           gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/$NUMBER" -f type=Bug >/dev/null || echo "::warning::Could not set #$NUMBER's Type to Bug."
           echo "bug=true" >> "$GITHUB_OUTPUT"
 
   # A bug that blocked a reproduction (#247) closed as done: each issue it
-  # blocked and that waits for it (`repro:blocked`) gets `repro:unblocked`
-  # from dilux-bot, and its reproduction runs again (issue-repro.yml).
+  # blocked and that waits for it (`repro=blocked` in its board state, #564)
+  # gets dilux-bot's `<!-- dx-repro-unblocked -->` comment, and its
+  # reproduction runs again (issue-repro.yml, scripts/repro-trigger.sh).
   unblock:
     name: What this unblocks
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
@@ -472,6 +489,17 @@ jobs:
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }}
           permission-issues: write
+
+      # receipts.py, whole, for the board's state (#564).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
+          path: .dx-central
+          persist-credentials: false
+
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
 
       - name: Run their reproductions again
         env:
@@ -493,17 +521,20 @@ jobs:
           blocked=""
           # shellcheck disable=SC2086 # lists of numbers, split on purpose.
           for n in $(printf '%s\n' $deps $marks $more | sort -un); do
-            if ! state=$(gh issue view "$n" --repo "$GITHUB_REPOSITORY" --json state,labels --jq '.state == "OPEN" and ([.labels[].name] | index("repro:blocked") != null)'); then
+            # Open, and blocked in its board's state (#564); a state edited by
+            # hand (tampered) is never taken as blocked.
+            if ! open=$(gh issue view "$n" --repo "$GITHUB_REPOSITORY" --json state --jq '.state == "OPEN"') \
+              || ! st=$(NUMBER=$n python3 .dx-central/scripts/receipts.py state get); then
               echo "::warning::Could not read #$n."; failed=1; continue
             fi
-            [ "$state" != true ] || blocked="$blocked $n"
+            if [ "$open" = true ] && [ "$(jq -r '(. // {}) | if .tampered then "" else .repro // "" end' <<<"${st:-null}")" = blocked ]; then blocked="$blocked $n"; fi
           done
           [ -n "${blocked// }" ] || exit "$failed"
-          gh label create "repro:unblocked" --repo "$GITHUB_REPOSITORY" --color 0E8A16 --force --description "What blocked the reproduction is fixed: it runs again" >/dev/null 2>&1 || true
           for n in $blocked; do
-            # Off first, then on: a label already there would fire nothing.
-            for l in repro:blocked repro:unblocked; do gh issue edit "$n" --repo "$GITHUB_REPOSITORY" --remove-label "$l" >/dev/null 2>&1 || true; done
-            gh issue edit "$n" --repo "$GITHUB_REPOSITORY" --add-label repro:unblocked >/dev/null
+            # Unblocked first, so a second blocker closing runs it once; the
+            # comment, its marker on the first line, starts the run.
+            NUMBER=$n python3 .dx-central/scripts/receipts.py state set repro=unconfirmed >/dev/null
+            gh issue comment "$n" --repo "$GITHUB_REPOSITORY" --body "$(printf '<!-- dx-repro-unblocked -->\n#%s, which blocked this reproduction, is closed: it runs again.\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)' "$NUMBER")" >/dev/null
             echo "#$n: its reproduction runs again."
           done
           exit "$failed"
@@ -651,17 +682,79 @@ jobs:
           fi
           REPLY=$REPLY SUMMARY=$SUMMARY bash .dx-central/scripts/triage-act.sh
 
-  # A spike (#193, scripts/spike.py): when a person labels an issue `spike`,
-  # an agent investigates it read-only, for at most 30 minutes, and says on
-  # the issue whether to do it (as a bug, a minor change or a feature),
-  # clarify it, or discard it. It writes nothing and decides nothing: the
-  # issue gets `needs:maintainer`, and a maintainer decides what follows.
+  # A writer's command in a comment on an issue (#564), where a label was
+  # before, on the comment's first line: `/spike` asks for a spike (the `spike` label, #193; `spike=true` in the
+  # issue's board state while it runs). Honoured only from a person who can
+  # write to the repository, read from GitHub now (never from
+  # author_association), and never from a bot.
+  command:
+    name: A writer's command
+    runs-on: ubuntu-latest # fresh: it holds the key
+    timeout-minutes: 5
+    if: github.event_name == 'issue_comment' && github.event.action == 'created' && !github.event.issue.pull_request && github.event.comment.user.type != 'Bot' && github.event.sender.type != 'Bot' && (startsWith(github.event.comment.body, '/continue') || startsWith(github.event.comment.body, '/spike'))
+    permissions: {}
+    outputs:
+      command: ${{ steps.who.outputs.command }}
+    steps:
+      - name: dilux-bot token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-metadata: read
+          permission-issues: write
+
+      # receipts.py, whole, for the board's state.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
+          path: .dx-central
+          persist-credentials: false
+
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+
+      - name: Who asked, and for what
+        id: who
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          NUMBER: ${{ github.event.issue.number }}
+          LOGIN: ${{ github.event.comment.user.login }}
+          COMMENT: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          first=$(printf '%s\n' "$COMMENT" | head -n1 | tr -d '\r')
+          case "$first" in
+            /continue | "/continue "*) command="continue" ;;
+            /spike | "/spike "*) command="spike" ;;
+            *) echo "Not a command: $(printf '%s' "$first" | head -c 40)"; exit 0 ;;
+          esac
+          # The repository's own answer, now: a triager, a reader or a
+          # stranger asks for nothing.
+          role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$LOGIN/permission" --jq .role_name 2>/dev/null || echo unknown)
+          case "$role" in
+            admin | maintain | write) ;;
+            *) echo "::notice::/$command from $LOGIN ($role) is not a writer's: nothing starts."; exit 0 ;;
+          esac
+          if [ "$command" = spike ]; then python3 .dx-central/scripts/receipts.py state set spike=true >/dev/null; fi
+          echo "command=$command" >> "$GITHUB_OUTPUT"
+          echo "/$command from $LOGIN ($role)."
+
+  # A spike (#193, scripts/spike.py): when a writer comments `/spike`, an
+  # agent investigates the issue read-only, for at most 30 minutes, and says
+  # on the issue whether to do it (as a bug, a minor change or a feature),
+  # clarify it, or discard it. It writes nothing and decides nothing: a
+  # maintainer decides what follows.
   spike:
     name: Spike
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 35
-    if: github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'spike' && github.event.sender.type != 'Bot'
-    # One spike per issue at a time: labelling it again waits for the first
+    needs: command
+    if: needs.command.outputs.command == 'spike'
+    # One spike per issue at a time: asking again waits for the first
     # (GitHub keeps one waiting run per group and drops any further one).
     concurrency:
       group: spike-${{ github.repository }}-${{ github.event.issue.number }}
@@ -732,11 +825,12 @@ jobs:
             text=$(printf '<!-- dx-spike -->\n**Spike: no answer.** The investigation ended without one (its run: %s/%s/actions/runs/%s). A maintainer decides what follows.\n\n🤖 AI-generated · Claude (Anthropic), a read-only spike' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
           fi
           gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$text" >/dev/null
-          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label needs:maintainer --remove-label spike >/dev/null \
-            || echo "::warning::The spike's answer is on the issue, but its labels could not change (needs:maintainer, spike)."
+          # The spike is over: its request leaves the board's state (#564).
+          python3 .dx-central/scripts/receipts.py state set spike= >/dev/null \
+            || echo "::warning::The spike's answer is on the issue, but its board still says spike=true."
 
   stale:
-    name: Close needs-info issues nobody answered
+    name: Close the needs-info issues nobody answered
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 5
     if: github.event_name == 'schedule'
@@ -750,6 +844,15 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-contents: read
           permission-issues: write
+      # receipts.py, whole, for the board's state (#564).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
+          path: .dx-central
+          persist-credentials: false
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
       - env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           DAYS: ${{ inputs.stale-days }}
@@ -757,12 +860,17 @@ jobs:
         run: |
           set -euo pipefail
           cutoff=$(date -u -d "$DAYS days ago" +%Y-%m-%dT%H:%M:%SZ)
-          for n in $(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label needs-info --limit 100 --json number --jq '.[].number'); do
-            # Someone answered after the bot asked: the label comes off and a person looks.
+          # The verdict is the board's state (#564), not a label: the open
+          # issues nobody accepted, each one's state read; one edited by hand
+          # (tampered) is never closed.
+          for n in $(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "-label:accepted" --limit 300 --json number --jq '.[].number'); do
+            st=$(NUMBER=$n python3 .dx-central/scripts/receipts.py state get 2>/dev/null || echo null)
+            [ "$(jq -r '(. // {}) | if .tampered then "" else .verdict // "" end' <<<"${st:-null}" 2>/dev/null)" = needs-info ] || continue
+            # Someone answered after the bot asked: the verdict goes and a person looks.
             last=$(gh api "repos/$GITHUB_REPOSITORY/issues/$n/comments" --paginate 2>/dev/null | jq -rs 'add | last | "\(.user.login) \(.created_at)"' 2>/dev/null || echo "")
             author=${last%% *}; when=${last#* }
             if [ -n "$author" ] && [ "$author" != "$BOT" ]; then
-              gh issue edit "$n" --repo "$GITHUB_REPOSITORY" --remove-label needs-info >/dev/null; echo "#$n answered by $author: label removed."; continue
+              NUMBER=$n python3 .dx-central/scripts/receipts.py state set verdict= >/dev/null; echo "#$n answered by $author: needs-info removed."; continue
             fi
             if [ -z "$when" ] || ! [ "$when" \< "$cutoff" ]; then continue; fi
             gh issue comment "$n" --repo "$GITHUB_REPOSITORY" --body "$(printf 'Closing for now: the information asked for above did not arrive in %s days. Reopen it, or open a new issue, whenever you can add it.\n\n<sub>🤖 AI triage · scheduled</sub>' "$DAYS")" >/dev/null
@@ -772,10 +880,9 @@ jobs:
 
   # When a person accepts an issue: the autopilot (#83) works it to a pull
   # request, if the autopilot is on and the issue is ready (autopilot.yml
-  # decides both). `autopilot:continue` on the issue, from a person or from
-  # dilux-bot (a run that ran out of turns or time), resumes its draft pull
-  # request (#109), or starts the issue's next phase when no pull request
-  # of the autopilot's is open (#535). Here because this caller inherits the secrets. Never on
+  # decides both). A writer's `/continue <hint>` (#564, once the
+  # `autopilot:continue` label) is review-reply.yml's, on the issue as on
+  # the pull request, so it starts one run, never two. Here because this caller inherits the secrets. Never on
   # a release issue (#82, `lane:release`): its acceptance opens the release
   # pull request instead (issue-accepted.yml). An issue dilux-bot opens with
   # no label starts it too: an accepted decision's sub-issue
@@ -783,11 +890,13 @@ jobs:
   # GitHub whether a lane accepts it and starts nothing otherwise. A
   # reproduced bug's lane issue is left to issue-repro.yml, which starts it.
   autopilot:
+    # `command` is skipped on every event but a comment: the status function
+    # keeps this job from being skipped with it (#257, scripts/needs-chain.py).
+    needs: command
     if: >-
-      github.event_name == 'issues' && !contains(github.event.issue.labels.*.name, 'lane:release') && (
-        (github.event.action == 'labeled' && github.event.label.name == 'accepted' && github.event.sender.type != 'Bot') ||
-        (github.event.action == 'labeled' && github.event.label.name == 'autopilot:continue' && (github.event.sender.type != 'Bot' || github.event.sender.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]'))) ||
-        (github.event.action == 'opened' && github.event.sender.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && toJSON(github.event.issue.labels) == '[]' && !startsWith(github.event.issue.title, 'The bug reproduced from ')))
+      !cancelled() && !contains(github.event.issue.labels.*.name, 'lane:release') && (
+        (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'accepted' && github.event.sender.type != 'Bot') ||
+        (github.event.action == 'opened' && github.event_name == 'issues' && github.event.sender.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && toJSON(github.event.issue.labels) == '[]' && !startsWith(github.event.issue.title, 'The bug reproduced from ')))
     # The agent's jobs read the repository, and its pull requests for
     # next-version.py in `make pre-pr`, with the job's own token (#287, #537).
     permissions:
@@ -795,7 +904,7 @@ jobs:
       pull-requests: read
     uses: DiluxOne/.github/.github/workflows/autopilot.yml@v7
     with:
-      mode: ${{ github.event.label.name == 'autopilot:continue' && 'continue' || 'start' }}
+      mode: start
       issue: ${{ format('{0}', github.event.issue.number) }}
       central-ref: ${{ inputs.central-ref }}
     secrets: inherit

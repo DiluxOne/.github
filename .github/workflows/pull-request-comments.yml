@@ -1,7 +1,9 @@
 name: Pull request comments
 
 # This repository's own caller: a person who mentions @dilux-bot in a pull
-# request gets an answer from the Claude reviewer (review-reply.yml).
+# request gets an answer from the Claude reviewer (review-reply.yml), and a
+# writer's `/continue` or `/review full` comment, on an issue or a pull
+# request, reaches the autopilot and the review through it (#564).
 
 on:
   issue_comment:

@@ -36,7 +36,8 @@ name: Issue claims
 #                   autopilot's in one comment, and both stay open.
 #   schedule        the daily run: a reminder at 7 days without a pull
 #                   request or a push to a linked branch, released at 10,
-#                   never past 30 from its start (`claim:long` exempts it); a
+#                   never past 30 from its start (a maintainer's `/claim
+#                   long`, kept in the board's state, #564, exempts it); a
 #                   person's pull request with changes requested or failing
 #                   checks and no push by its author, reminded at 7 days and
 #                   closed with thanks at 14 (one that waits on a review is

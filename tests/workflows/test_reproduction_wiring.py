@@ -21,21 +21,22 @@ def step(all_steps, name):
     return next(s for s in all_steps if s.get("name") == name)
 
 
-def test_no_way_replaces_bug_unconfirmed_before_any_model_runs():
+def test_no_way_replaces_unconfirmed_before_any_model_runs():
     write = steps("issue-repro.yml", "write")
     names = [s.get("name") for s in write]
     no_way = step(write, "No way reproduces it")
     assert no_way["if"] == "steps.start.outputs.go == 'yes' && steps.way.outputs.ready != 'yes'"
-    assert "--add-label repro:no-way" in no_way["run"]
-    assert "--remove-label bug:unconfirmed" in no_way["run"]
+    # #564: the board's state, never a label.
+    assert "receipts.py state set repro=no-way" in no_way["run"]
+    assert "--add-label" not in no_way["run"] and "--remove-label" not in no_way["run"]
     assert no_way["env"]["WHY"] == "${{ steps.way.outputs.why }}"
     assert names.index("The way to reproduce") < names.index("No way reproduces it") < names.index("Daily cap")
     assert "steps.way.outputs.ready == 'yes'" in step(write, "Daily cap")["if"]
 
 
 def test_a_way_found_later_takes_repro_no_way_off():
-    report = step(steps("issue-repro.yml", "report"), "Labels, branch, pull request, comment")
-    assert re.search(r"for l in [^;]*\brepro:no-way\b[^;]*; do gh issue edit [^;]*--remove-label", report["run"])
+    report = step(steps("issue-repro.yml", "report"), "State, branch, pull request, comment")
+    assert 'if [ "$(state get repro)" = no-way ]; then state set repro=unconfirmed' in report["run"]
 
 
 def test_the_triage_can_choose_the_workflow_layer():
@@ -47,9 +48,12 @@ def test_the_triage_can_choose_the_workflow_layer():
     assert 'IN("logic","browser","cli","api","workflow")' in triage
 
 
-def test_the_labels_exist_everywhere():
-    names = {label["name"] for label in load("labels.yml")}
-    assert {"repro:no-way", "layer:workflow", "layer:logic", "layer:browser", "layer:cli", "layer:api"} <= names
+def test_the_retired_labels_say_where_their_state_went():
+    # #564: the layer and the reproduction's state are the board's.
+    retired = {label["name"]: label["retired"] for label in load("labels.yml") if "retired" in label}
+    assert retired["repro:no-way"] == {"state": "repro=no-way"}
+    for layer in ("workflow", "logic", "browser", "cli", "api"):
+        assert retired[f"layer:{layer}"] == {"state": f"layer={layer}"}
 
 
 def test_ci_runs_tests_with_the_pytest_the_ways_install():

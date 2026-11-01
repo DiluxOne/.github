@@ -49,10 +49,19 @@
                              reproduction test passes in the sandbox
   autopilot.py end           the workflow's end rule after the agent (WHY,
                              SPEC_OUTCOME: what the workflow already knows): ready,
-                             stopped, continue (`autopilot:continue`), or
-                             silent (a comment, `needs-human`, exit 1)
+                             stopped, continue (the bot's comment that
+                             starts the next run, #564), or silent (a
+                             comment, `needs-human`, exit 1)
   autopilot.py may-continue  whether a run may continue the pull request
-                             (RUNS: the runs before this one)
+                             (the runs before this one, from its board's
+                             state)
+  autopilot.py counts        the pull request's next run and round, from
+                             its board's state (#564; JSON: run, round,
+                             tampered)
+  autopilot.py count         counts this run (RUNS) or round (ROUND) in the
+                             pull request's board state, free when a
+                             maintainer's answer started it (the issue's
+                             `answered`, then cleared)
   autopilot.py work-log      the path of the agent's execution log for the
                              work, found wherever it is (WORK_LOG: the
                              action's output; else the file it writes; else
@@ -71,8 +80,7 @@
                              trailer), or nothing; push then adds that
                              trailer to every commit it pushes
   autopilot.py holder        whether a person holds the issue (#488): it is
-                             `claimed`, kept as a `good first issue`,
-                             assigned to a person (not the one #73 assigned
+                             `claimed`, assigned to a person (not the one #73 assigned
                              on acceptance), or closed by a person's open
                              pull request (GitHub's link) opened before the
                              autopilot started (STARTED, or its own pull
@@ -160,6 +168,7 @@ detect = _load("detect", "detect.py")
 prepr = _load("pre_pr", "pre-pr.py")
 review_count = _load("review_count", "review-count.py")
 credits = _load("credits", "credits.py")
+receipts = _load("receipts", "receipts.py")
 
 LEVELS = ["none", "low", "medium", "high"]
 # A path that is a test: code under tests/, test/, spec/ or __tests__/ (not
@@ -242,7 +251,8 @@ def may_start(policy, body, autopilot_var, lane=LANE, no_way=""):
 
 # What makes an issue a person's (#488): the autopilot does not start on it,
 # and stops before it opens its draft or pushes.
-CLAIMED, FIRST_ISSUE = "claimed", "good first issue"
+# A newcomer's issue is no longer held by a label (#564): only a claim is.
+CLAIMED = "claimed"
 HOLDER_QUERY = """query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     issue(number: $number) {
@@ -269,8 +279,6 @@ def held_by(issue, prs, started=""):
     labels = issue.get("labels") or []
     if CLAIMED in labels:
         return f"a person claimed it (`{CLAIMED}`)"
-    if FIRST_ISSUE in labels:
-        return f"it is kept for a newcomer (`{FIRST_ISSUE}`)"
     people = [a for a in issue.get("assignees") or [] if a not in BOT_LOGINS and not a.endswith("[bot]") and a != issue.get("accepted_by")]
     if people:
         return f"it is assigned to @{people[0]}"
@@ -430,37 +438,57 @@ CHECKLIST_START = "<!-- dx-checklist -->"
 CHECKLIST_END = "<!-- /dx-checklist -->"
 STOP = "<!-- dx-autopilot-stop -->"
 # A question to a maintainer in `guided` mode (#247): the run waits for the
-# answer, labelled autopilot:waiting, and goes on once one comes.
+# answer, `waiting` in the issue's board state, and goes on once one comes.
 ASK = "<!-- dx-autopilot-ask -->"
-WAITING = "autopilot:waiting"
-# What counts towards `autopilot-runs` (#479): each run is labelled on its
-# pull request, autopilot:run-N when it counts and autopilot:free-N when it
-# was not the autopilot's fault: started by a maintainer's answer to its own
-# question (review-reply.yml adds autopilot:answered beside the continue),
-# or ended because its runner was lost. N numbers every run; only run-N
-# labels count.
-RUN_PREFIX = "autopilot:run-"
-FREE_PREFIX = "autopilot:free-"
-ANSWERED = "autopilot:answered"
+# A run that ended before its work was done and continues on its own: the
+# bot's comment carrying this marker on its pull request is what starts the
+# next run (review-reply.yml, #564), where the bot once added a label.
+CONTINUE = "<!-- dx-autopilot-continue -->"
+# What counts towards `autopilot-runs` (#479) lives in the pull request's
+# board state (#564, scripts/receipts.py): `runs`, the runs that count, and
+# `free`, those that were not the autopilot's fault: started by a
+# maintainer's answer to its own question (review-reply.yml sets `answered`
+# in the issue's state beside the continue), or ended because its runner was
+# lost. N numbers every run; only `runs` count. `rounds` is the review
+# rounds. A state edited by hand (`tampered`) never lets a run go on.
+PR_BOARD = "The pull request's board"
 
 
-def run_numbers(labels):
+def _nums(state, key):
+    return [int(n) for n in (state or {}).get(key) or [] if isinstance(n, int) or str(n).isdigit()]
+
+
+def run_numbers(state):
     """(the next run's number, the runs that count) from a pull request's
-    labels. Pure."""
-    def nums(prefix):
-        return [int(m.group(1)) for l in labels if (m := re.fullmatch(re.escape(prefix) + r"([0-9]+)", str(l)))]
-    counted, free = nums(RUN_PREFIX), nums(FREE_PREFIX)
+    board state. Pure."""
+    counted, free = _nums(state, "runs"), _nums(state, "free")
     return max(counted + free, default=0) + 1, len(counted)
 
 
-def free_runs(labels):
-    return sum(1 for l in labels if re.fullmatch(re.escape(FREE_PREFIX) + r"[0-9]+", str(l)))
+def free_runs(state):
+    return len(_nums(state, "free"))
 
 
-def run_label(n, answered):
-    """The label of run N: free when an answer to the autopilot's question
-    started it."""
-    return f"{FREE_PREFIX}{n}" if answered else f"{RUN_PREFIX}{n}"
+def next_round(state):
+    """The next review round's number. Pure."""
+    try:
+        return int((state or {}).get("rounds") or 0) + 1
+    except (TypeError, ValueError):
+        return 1
+
+
+def count_run(state, mode, n, answered):
+    """The pull request's state once run or round N is counted: a fix
+    round in `rounds`, a run in `free` when an answer to the autopilot's
+    question started it, else in `runs`. Pure."""
+    if mode == "fix":
+        return receipts.apply(state, "set", [f"rounds={max(int(n), next_round(state) - 1)}"])
+    return receipts.apply(state, "add", ["free" if answered else "runs", str(int(n))])
+
+
+def free_run(state, n):
+    """Run N moved from `runs` to `free` (#479: its runner was lost). Pure."""
+    return receipts.apply(receipts.apply(state, "del", ["runs", str(int(n))]), "add", ["free", str(int(n))])
 
 
 def runner_lost(work_result, agent_outcome):
@@ -611,9 +639,12 @@ def set_tested(pr_body, text):
     return f"{head}{TESTED}\n{text.strip()}\n{after}"
 
 
-def may_continue(labels, pr_body, runs, cap):
+def may_continue(labels, pr_body, runs, cap, tampered=False):
     if "needs-human" in labels:
         return False, "a person has it (needs-human)"
+    if tampered:
+        # #564: a count edited by hand reads as the cap reached.
+        return False, f"the board's state was edited by hand, so its runs cannot be counted (the cap is {cap})"
     done, total = progress(pr_body)
     if total == 0:
         return False, "the pull request has no checklist"
@@ -674,17 +705,33 @@ def asked_since(comments, started):
                and c.get("createdAt", "") >= started for c in comments)
 
 
+def continue_command(body):
+    """Whether a comment's first line is the `/continue` command (#564),
+    which replaced the `autopilot:continue` label. Pure."""
+    first = (body or "").lstrip().split("\n", 1)[0].strip()
+    return first == "/continue" or first.startswith(("/continue ", "/continue\t"))
+
+
+def hint(body):
+    """A comment's words as the agent reads them: a `/continue` command's
+    hint, the rest of the comment, without the command. Pure."""
+    body = (body or "").strip()
+    if continue_command(body):
+        body = body[len("/continue"):].strip()
+    return body
+
+
 def answers(comments, writers):
     """What maintainers wrote after the autopilot's last comment that ended
     a run and waits on a person (a question, a stop, a silent or an
     unfinished end), or since the start when there is none (#540): their
     comments, in order, by a login in `writers` (people with write access,
-    checked live by the workflow). So a hint given with
-    `autopilot:continue` after a stop reaches the prompt too."""
+    checked live by the workflow). So a hint given with `/continue <hint>`
+    after a stop reaches the prompt too, without the command (#564)."""
     last = max((c.get("createdAt", "") for c in comments if c.get("body", "").startswith((ASK, STOP, SILENT, UNFINISHED))
                 and (c.get("author") or {}).get("login") in BOT_LOGINS), default="")
-    picked = [c for c in comments if c.get("createdAt", "") > last and (c.get("author") or {}).get("login") in writers]
-    said = "\n\n".join(f"{(c.get('author') or {}).get('login')}: {c.get('body', '').strip()}" for c in sorted(picked, key=lambda c: c.get("createdAt", "")))
+    picked = [c for c in comments if c.get("createdAt", "") > last and (c.get("author") or {}).get("login") in writers and hint(c.get("body", ""))]
+    said = "\n\n".join(f"{(c.get('author') or {}).get('login')}: {hint(c.get('body', ''))}" for c in sorted(picked, key=lambda c: c.get("createdAt", "")))
     # An opinion the maintainer took (#287): its summary, as data, never the
     # other person's own words.
     took = adopted(comments, said)
@@ -772,7 +819,7 @@ def adopted(comments, answer):
 
 def ask_comment(question):
     return (f"{ASK}\n**The autopilot has a question before it goes on.** {question.strip()}\n\n"
-            f"Answer here in your own words; the autopilot goes on with your answer (`{WAITING}`).\n\n{AI_LINE}")
+            f"Answer here in your own words; the autopilot goes on with your answer.\n\n{AI_LINE}")
 
 
 def stopped_since(comments, started):
@@ -822,9 +869,20 @@ def nudged_before(comments):
 
 def unfinished_comment(run_url):
     return f"""{UNFINISHED}
-**The autopilot ticked every criterion but ended without finishing.** The checks (`make pre-pr`), its own review and the finish were left, so it continues once to do them (`autopilot:continue`). What it did is in [the run]({run_url}).
+**The autopilot ticked every criterion but ended without finishing.** The checks (`make pre-pr`), its own review and the finish were left, so it continues once to do them. What it did is in [the run]({run_url}).
 
-{AI_LINE}"""
+{AI_LINE}
+{CONTINUE}"""
+
+
+def continue_comment(run_url, lost=False):
+    """The bot's comment that starts the next run of a run that ended
+    before its work was done (#564: review-reply.yml reads its marker)."""
+    why = "its runner was lost, so the run does not count" if lost else "it ran out of turns or time with criteria left"
+    return f"""**The autopilot's run ended before its work was done:** {why}. It continues from the branch and the unticked boxes. What it did is in [the run]({run_url}).
+
+{AI_LINE}
+{CONTINUE}"""
 
 
 def last_resort_comment(run_url):
@@ -1395,6 +1453,8 @@ Follow the repository's AGENTS.md. The review's summary and its open threads are
 
 
 def self_test():
+    import contextlib
+    import io
     failed = 0
 
     def check(name, got, want):
@@ -1676,15 +1736,67 @@ A class on html.
     pq = prompt_fix("o/r", "8", 2, 5, queue=True)
     check("#479 C6: the queue's fix round reads that log, counts as a round, and runs make pre-pr", (f"{IO_DIR}/{QUEUE_LOG}" in pq, "round 2 of 5" in pq, "make pre-pr" in pq, "review.md" in pq), (True, True, True, False))
     # #479 C5: what counts towards the cap.
-    check("#479 C5: the next run follows every run, counted or free; only run-N labels count",
-          (run_numbers(["autopilot", "autopilot:run-1", "autopilot:free-2", "autopilot:run-3"]), run_numbers([]), run_numbers(["autopilot:run-x", "autopilot:round-4"])),
+    check("#479 C5: the next run follows every run, counted or free; only `runs` count (#564: the board's state)",
+          (run_numbers({"runs": [1, 3], "free": [2]}), run_numbers({}), run_numbers({"runs": ["x"], "rounds": 4})),
           ((4, 2), (1, 0), (1, 0)))
-    check("#479 C5: a run an answer to the autopilot's question started is free", (run_label(4, True), run_label(4, False)), ("autopilot:free-4", "autopilot:run-4"))
+    check("#564: a run an answer to the autopilot's question started is free; a fix round counts in rounds",
+          (count_run({"runs": [1]}, "continue", "2", True), count_run({"runs": [1]}, "continue", "2", False), count_run({"rounds": 1}, "fix", "2", False), count_run({}, "fix", "1", False)),
+          ({"runs": [1], "free": [2]}, {"runs": [1, 2]}, {"rounds": 2}, {"rounds": 1}))
+    check("#564: a lost run moves from runs to free; the next round follows the last", (free_run({"runs": [1, 2]}, 2), next_round({}), next_round({"rounds": 3})),
+          ({"runs": [1], "free": [2]}, 1, 4))
+    check("#564: a count edited by hand never lets a run go on", may_continue([], "<!-- dx-checklist -->\n- [ ] **C1** x\n<!-- /dx-checklist -->\n", 0, 5, True)[0], False)
+    check("#564: a tampered state stays so once a run is counted", count_run({"runs": [], "tampered": True}, "continue", "1", False)["tampered"], True)
+    check("#564: the continue comments carry the marker that starts the next run", (CONTINUE in unfinished_comment("u"), CONTINUE in continue_comment("u"), CONTINUE in continue_comment("u", True),
+          "autopilot:continue" in unfinished_comment("u"), CONTINUE in silent_comment("x", "u"), CONTINUE in stop_comment("x")), (True, True, True, False, False, False))
+    check("#564: /continue is a command on the comment's first line only",
+          (continue_command("/continue"), continue_command("/continue look at t.py"), continue_command("  /continue\nthe hint"), continue_command("/continued"), continue_command("please /continue"), continue_command("x\n/continue")),
+          (True, True, True, False, False, False))
+    hc = [{"body": STOP + " Stopped.", "author": {"login": "dilux-bot"}, "createdAt": "2026-10-17T10:00:00Z"},
+          {"body": "/continue The failing test is t.py", "author": {"login": "boss"}, "createdAt": "2026-10-17T10:05:00Z"},
+          {"body": "/continue", "author": {"login": "boss"}, "createdAt": "2026-10-17T10:06:00Z"},
+          {"body": "/continue do B", "author": {"login": "stranger"}, "createdAt": "2026-10-17T10:07:00Z"}]
+    check("#564: a writer's /continue hint reaches the prompt without the command; a bare one and a stranger's add nothing",
+          answers(hc, {"boss"}), "boss: The failing test is t.py")
+    store = {}
+    real_rw = (receipts.read_state, receipts.write_state)
+    receipts.read_state = lambda repo, n: dict(store.get(str(n), {}))
+    receipts.write_state = lambda repo, n, st, title="The board": store.__setitem__(str(n), dict(st))
+    try:
+        saved = {k: os.environ.get(k) for k in ("MODE", "NUMBER", "PR", "RUNS", "ROUND", "GITHUB_REPOSITORY")}
+        os.environ.update(GITHUB_REPOSITORY="o/r", NUMBER="7", PR="9", RUNS="2", ROUND="", MODE="continue")
+        store.update({"7": {"answered": True}, "9": {"runs": [1]}})
+        with contextlib.redirect_stdout(io.StringIO()):
+            main(["count"])
+        check("#564 count: an answered continue is free, and the answer is spent once", (store["9"], store["7"]), ({"runs": [1], "free": [2]}, {}))
+        os.environ.update(RUNS="3")
+        with contextlib.redirect_stdout(io.StringIO()):
+            main(["count"])
+        check("#564 count: the next continue counts", store["9"], {"runs": [1, 3], "free": [2]})
+        store["7"] = {"answered": True, "tampered": True}
+        os.environ.update(RUNS="4")
+        with contextlib.redirect_stdout(io.StringIO()):
+            main(["count"])
+        check("#564 count: an answer in a state edited by hand frees nothing", store["9"]["runs"], [1, 3, 4])
+        os.environ.update(MODE="fix", ROUND="2")
+        with contextlib.redirect_stdout(io.StringIO()):
+            main(["count"])
+        check("#564 count: a fix round counts in rounds", store["9"]["rounds"], 2)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            main(["counts"])
+        check("#564 counts: the next run and round from the board", json.loads(out.getvalue()), {"run": 5, "round": 3, "tampered": False})
+    finally:
+        receipts.read_state, receipts.write_state = real_rw
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
     check("#479 C5: a work job that ended without its agent's outcome lost its runner; the agent's own failure did not",
           (runner_lost("failure", ""), runner_lost("cancelled", ""), runner_lost("failure", "failure"), runner_lost("success", "success"), runner_lost("skipped", "")),
           (True, False, False, False, False))
-    check("#479 C5: may-continue counts the run-N labels only, so free runs never reach the cap",
-          may_continue(["autopilot:run-1", "autopilot:free-2", "autopilot:free-3", "autopilot:free-4", "autopilot:free-5"], "<!-- dx-checklist -->\n- [ ] **C1** x\n<!-- /dx-checklist -->\n", run_numbers(["autopilot:run-1", "autopilot:free-2", "autopilot:free-3", "autopilot:free-4", "autopilot:free-5"])[1], 5)[0], True)
+    check("#479 C5: may-continue counts the board's runs only, so free runs never reach the cap",
+          may_continue(["autopilot"], "<!-- dx-checklist -->\n- [ ] **C1** x\n<!-- /dx-checklist -->\n", run_numbers({"runs": [1], "free": [2, 3, 4, 5]})[1], 5)[0], True)
     check("#479 C5: a draft whose runner was lost continues, uncounted, within the cap; never past it, nor a fix round",
           (end_verdict("continue", "8", True, False, 1, 3, False, 2, 5, lost=True, frees=1), end_verdict("continue", "8", True, False, 1, 3, False, 5, 5, lost=True, frees=1),
            end_verdict("continue", "8", True, False, 1, 3, False, 2, 5, lost=True, frees=6), end_verdict("fix", "8", False, False, 1, 3, False, 2, 5, lost=True, frees=1),
@@ -2232,6 +2344,7 @@ Clamp the value in Sum::add.
     # #488: a person's claim holds the issue; the autopilot does not start.
     check("C1 held_by: `claimed` holds it; an accepted issue nobody holds does not",
           (held_by({"labels": ["accepted", "claimed"]}, []), held_by({"labels": ["accepted"]}, [])), ("a person claimed it (`claimed`)", ""))
+    check("#564: a newcomer's issue is no longer held by a label", held_by({"labels": ["accepted", "good first issue"]}, []), "")
     check("C2 held_by: a claim made in the form holds it once accepted; the maintainer #73 assigned on acceptance does not",
           (held_by({"labels": ["accepted", "claimed"], "assignees": ["ana", "soydiloreto"], "accepted_by": "soydiloreto"}, []),
            held_by({"labels": ["accepted"], "assignees": ["soydiloreto"], "accepted_by": "soydiloreto"}, []),
@@ -3006,10 +3119,8 @@ def main(argv):
                 print("finish ask needs a question, and the draft pull request; without one, finish stop.")
                 return 1
             # Waiting first: an answer that comes right after the question
-            # must find the label.
-            subprocess.run(["gh", "label", "create", WAITING, "--repo", repo, "--color", "FBCA04", "--force",
-                            "--description", "The autopilot asked a maintainer and waits for the answer"], capture_output=True)
-            gh("issue", "edit", str(number), "--repo", repo, "--add-label", WAITING)
+            # must find it, in the issue's board state (#564).
+            receipts.write_state(repo, number, receipts.apply(receipts.read_state(repo, number), "set", ["waiting=true"]), "The issue's board")
             gh("pr", "comment", str(pr), "--repo", repo, "--body", ask_comment(question))
             print("Asked; the run ends here and goes on with the answer.")
             if number:
@@ -3069,15 +3180,28 @@ def main(argv):
         failed = queue_failed(runs, pr)
         print(", ".join(f"{r.get('name')} ({r.get('html_url')})" for r in failed) or "no check failed in its last merge group")
         return 0 if failed else 1
-    if argv[:1] == ["next-run"]:
-        # LABELS: the pull request's labels, comma-separated (#479): the
-        # next run's number, after every run, counted or free.
-        print(run_numbers([l for l in os.environ.get("LABELS", "").split(",") if l])[0])
+    if argv[:1] == ["counts"]:
+        # The pull request's next run, after every run, counted or free
+        # (#479), and its next review round, from its board's state (#564).
+        state = receipts.read_state(repo, pr)
+        print(json.dumps({"run": run_numbers(state)[0], "round": next_round(state), "tampered": bool(state.get("tampered"))}))
         return 0
-    if argv[:1] == ["run-label"]:
-        # N, the run's number; ANSWERED, true when an answer to the
-        # autopilot's question started it (#479): the label it carries.
-        print(run_label(int(os.environ.get("N", "1") or 1), os.environ.get("ANSWERED") == "true"))
+    if argv[:1] == ["count"]:
+        # MODE, the mode it was called with; RUNS, the run's number; ROUND,
+        # the fix round's. Counted before the agent runs (#479). A run a
+        # maintainer's answer to the autopilot's question started is free:
+        # the issue's `answered`, read and cleared here, once.
+        mode = os.environ.get("MODE", "")
+        answered = False
+        if mode == "continue" and number:
+            issue_state = receipts.read_state(repo, number)
+            answered = issue_state.get("answered") is True and not issue_state.get("tampered")
+            if "answered" in issue_state:
+                receipts.write_state(repo, number, receipts.apply(issue_state, "set", ["answered="]), "The issue's board")
+        n = os.environ.get("ROUND" if mode == "fix" else "RUNS", "1") or "1"
+        state = receipts.read_state(repo, pr)
+        receipts.write_state(repo, pr, count_run(state, mode, n, answered), PR_BOARD)
+        print(f"{'round' if mode == 'fix' else 'free run' if answered else 'run'} {n}")
         return 0
     if argv[:1] == ["continue-as"]:
         # IS_DRAFT (true or false), HEAD (the pull request's head), RECORD
@@ -3094,14 +3218,15 @@ def main(argv):
     runs = int(os.environ.get("RUNS", "0") or 0)
     if argv[:1] == ["may-continue"]:
         info = pr_json(repo, pr, "body,labels,isDraft,state")
+        state = receipts.read_state(repo, pr)
         # A continue that runs a fix round (#504, AS=fix) is on a pull
         # request already ready.
         if info.get("state") != "OPEN" or not (info.get("isDraft") or os.environ.get("AS") == "fix"):
             print(f"#{pr} is not an open draft")
             return 1
         names = [l["name"] for l in info["labels"]]
-        # The runs that count (#479): the run-N labels, never the free ones.
-        ok, why = may_continue(names, info["body"], run_numbers(names)[1], cap)
+        # The runs that count (#479): the board's `runs`, never the free ones.
+        ok, why = may_continue(names, info["body"], run_numbers(state)[1], cap, bool(state.get("tampered")))
         print(why)
         return 0 if ok else 1
     if argv[:1] == ["end"]:
@@ -3129,21 +3254,22 @@ def main(argv):
         draft_, done, total, pushed = True, 0, 0, False
         lost, frees = False, 0
         if pr:
-            info = pr_json(repo, pr, "body,isDraft,headRefOid,labels")
+            info = pr_json(repo, pr, "body,isDraft,headRefOid")
             draft_ = info["isDraft"]
             done, total = progress(info["body"])
             pushed = bool(os.environ.get("HEAD_BEFORE")) and info["headRefOid"] != os.environ.get("HEAD_BEFORE")
-            names = [l["name"] for l in info.get("labels") or []]
-            # #479: a run whose runner was lost does not count: its label
-            # becomes a free one.
+            state = receipts.read_state(repo, pr)
+            # #479: a run whose runner was lost does not count: it moves to
+            # the free ones in the board's state (#564).
             lost = mode != "fix" and not stopped and not asked and runner_lost(os.environ.get("WORK_RESULT", ""), os.environ.get("AGENT_OUTCOME", ""))
-            if lost and f"{RUN_PREFIX}{runs}" in names:
-                subprocess.run(["gh", "label", "create", f"{FREE_PREFIX}{runs}", "--repo", repo, "--color", "C5DEF5", "--force",
-                                "--description", "The autopilot's runs on this pull request that do not count towards its cap"], capture_output=True)
-                gh("pr", "edit", str(pr), "--repo", repo, "--remove-label", f"{RUN_PREFIX}{runs}", "--add-label", f"{FREE_PREFIX}{runs}")
-                names = [n for n in names if n != f"{RUN_PREFIX}{runs}"] + [f"{FREE_PREFIX}{runs}"]
-            if any(n.startswith((RUN_PREFIX, FREE_PREFIX)) for n in names):
-                runs, frees = run_numbers(names)[1], free_runs(names)
+            if lost and runs in _nums(state, "runs"):
+                state = free_run(state, runs)
+                receipts.write_state(repo, pr, state, PR_BOARD)
+            if state.get("tampered"):
+                # A count edited by hand reads as the cap reached.
+                runs, frees = cap, cap
+            elif _nums(state, "runs") or _nums(state, "free"):
+                runs, frees = run_numbers(state)[1], free_runs(state)
         nudged = bool(pr) and nudged_before(comments)
         v = end_verdict(mode, pr, draft_, stopped, done, total, limit, runs, cap, pushed, asked, nudged, lost, frees)
         if lost:
@@ -3158,13 +3284,11 @@ def main(argv):
                     fh.write(f"verdict={v}\n")
 
         if v == "continue":
-            subprocess.run(["gh", "label", "create", "autopilot:continue", "--repo", repo, "--color", "1D76DB", "--force",
-                            "--description", "On an issue: the autopilot continues its draft pull request"], capture_output=True)
-            gh("issue", "edit", str(number), "--repo", repo, "--add-label", "autopilot:continue")
-            # Once the continue is on its way: a comment that counts it
-            # never stands for one that did not start.
-            if total and done == total:
-                gh("pr", "comment", str(pr), "--repo", repo, "--body", unfinished_comment(run_url))
+            # The bot's comment on the pull request starts the next run
+            # (#564: review-reply.yml reads its marker, from the bot only),
+            # where a label once did.
+            text = unfinished_comment(run_url) if total and done == total else continue_comment(run_url, lost)
+            gh("pr", "comment", str(pr), "--repo", repo, "--body", text)
             said()
         elif v == "silent":
             why = silent_why(mode, pr, os.environ.get("WHY", ""), os.environ.get("SPEC_OUTCOME", ""), limit, done, total, runs, cap)

@@ -7,7 +7,11 @@ there. What it does not, this script brings to every repository that is not
 archived and not excluded in repos.yml:
 
   labels    labels.yml: creates each label or brings its colour and
-            description in line; never deletes one.
+            description in line; never deletes one a repository added. A
+            retired one (#564, `retired:`) is not created: what it carried
+            is first written into the board's state of every open issue and
+            pull request that has it (scripts/receipts.py), then the label
+            is deleted; a failed write keeps it.
   settings  repos.yml `settings` and `security` (Dependabot's alerts and
             security updates among them, and, on a public repository, every
             outside contributor's workflow runs approved by a maintainer,
@@ -178,6 +182,10 @@ SOURCES = ["repos.yml", "labels.yml", "agents-block.md", "workflow-templates", "
 _spec = importlib.util.spec_from_file_location("autonomy", os.path.join(HERE, "autonomy.py"))
 autonomy = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(autonomy)
+# The board's state (#564): where a retired label's state goes.
+_spec = importlib.util.spec_from_file_location("receipts", os.path.join(HERE, "receipts.py"))
+receipts = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(receipts)
 
 
 def load_yaml(path):
@@ -222,14 +230,100 @@ def with_block(agents, block):
     return block + "\n" + agents
 
 
-def sync_labels(repo, labels, dry):
-    if dry:
-        print(f"  would set {len(labels)} labels")
+def live_labels(labels):
+    """labels.yml's labels a repository has: every one not retired (#564)."""
+    return [l for l in labels if "retired" not in l]
+
+
+def retired_labels(labels):
+    return [l for l in labels if "retired" in l]
+
+
+def retired_matches(pattern, have):
+    """The labels of a repository a retired entry names, with the number a
+    prefix entry (`autopilot:run-*`) reads from each (None for a plain one)."""
+    if not pattern.endswith("*"):
+        return [(pattern, None)] if pattern in have else []
+    stem = pattern[:-1]
+    return [(n, n[len(stem):]) for n in have if n.startswith(stem)]
+
+
+def carried(state, retired, number):
+    """The board's state with what a retired label carried written in (#564):
+    `state: "k=v"` set, `add: KEY` the label's number added to a list, `max:
+    KEY` the greater of it and the number. Pure."""
+    if retired.get("state"):
+        state = receipts.apply(state, "set", [str(retired["state"])])
+    if retired.get("add"):
+        state = receipts.apply(state, "add", [str(retired["add"]), str(number)])
+    if retired.get("max"):
+        key = str(retired["max"])
+        try:
+            now = int(state.get(key) or 0)
+        except (TypeError, ValueError):
+            now = 0
+        state = receipts.apply(state, "set", [f"{key}={max(now, number)}"])
+    return state
+
+
+def retire_labels(full, retired, dry):
+    """Each retired label of a repository: its state carried into the board
+    of every open issue and pull request that has it, then the label deleted,
+    never before; a write that fails keeps the label (#564)."""
+    if not retired:
         return
-    for label in labels:
-        name, color, desc = str(label["name"]), str(label["color"]), str(label.get("description", ""))
-        gh("label", "create", name, "--repo", f"{ORG}/{repo['name']}", "--color", color, "--description", desc, "--force")
-    print(f"  {len(labels)} labels in step")
+    have = [str(l["name"]) for l in json.loads(gh("label", "list", "--repo", full, "--limit", "1000", "--json", "name").stdout)]
+    for entry in retired:
+        rule = entry.get("retired") or {}
+        for name, suffix in retired_matches(str(entry["name"]), have):
+            number = None
+            if suffix is not None:
+                if not suffix.isdigit():
+                    print(f"  kept `{name}`: no number after `{entry['name'][:-1]}` to carry; a person deletes it")
+                    continue
+                number = int(suffix)
+            ok = True
+            if rule:
+                items = []
+                try:
+                    for kind, title in (("issue", "The board"), ("pr", "The pull request's board")):
+                        rows = json.loads(gh(kind, "list", "--repo", full, "--label", name, "--state", "open", "--limit", "1000", "--json", "number").stdout or "[]")
+                        items += [(int(r["number"]), title) for r in rows]
+                except (RuntimeError, ValueError) as exc:
+                    print(f"  kept `{name}`: its open issues and pull requests could not be listed: {str(exc)[:160]}")
+                    continue
+                for n, title in items:
+                    if dry:
+                        print(f"  would carry `{name}` into the board's state of #{n}")
+                        continue
+                    try:
+                        state = receipts.read_state(full, n)
+                        new = carried(state, rule, number)
+                        if new != state:
+                            receipts.write_state(full, n, new, title)
+                    except Exception as exc:  # noqa: BLE001  any failure keeps the label
+                        ok = False
+                        print(f"  could not write `{name}`'s state on #{n}: {str(exc)[:160]}")
+            if not ok:
+                print(f"  kept `{name}`: its state is not on every board yet; the next run tries again")
+            elif dry:
+                print(f"  would delete `{name}`")
+            else:
+                gh("label", "delete", name, "--repo", full, "--yes")
+                print(f"  deleted `{name}` (retired, #564)")
+
+
+def sync_labels(repo, labels, dry):
+    live = live_labels(labels)
+    full = f"{ORG}/{repo['name']}"
+    if dry:
+        print(f"  would set {len(live)} labels")
+    else:
+        for label in live:
+            name, color, desc = str(label["name"]), str(label["color"]), str(label.get("description", ""))
+            gh("label", "create", name, "--repo", full, "--color", color, "--description", desc, "--force")
+        print(f"  {len(live)} labels in step")
+    retire_labels(full, retired_labels(labels), dry)
 
 
 # Who of the outside contributors needs a maintainer's approval before their
@@ -2424,13 +2518,16 @@ def drift(repo, conf, labels, block, current=0):
             except (RuntimeError, ValueError) as exc:
                 found.append(f"the checks its merge queue waits for could not be read: {str(exc)[:160]}")
     have = {l["name"]: l for l in json.loads(gh("label", "list", "--repo", full, "--limit", "1000", "--json", "name,color,description").stdout)}
-    for label in labels:
+    for label in live_labels(labels):
         name = str(label["name"])
         mine = have.get(name)
         if mine is None:
             found.append(f"label `{name}` is missing")
         elif mine["color"].upper() != str(label["color"]).upper() or (mine.get("description") or "") != str(label.get("description", "")):
             found.append(f"label `{name}` has another colour or description")
+    for label in retired_labels(labels):
+        for name, _ in retired_matches(str(label["name"]), list(have)):
+            found.append(f"label `{name}` is retired (#564): `sync-repos.py labels` carries its state into the boards and deletes it")
     data = json.loads(gh("api", f"repos/{full}").stdout)
     for key, value in (conf.get("settings") or {}).items():
         # A token that cannot see a setting says nothing about it: not drift.
@@ -2801,19 +2898,21 @@ def callers_test(check, conf):
     check("#562 C2: and none once it holds the value, nor one holding the repository's own",
           (placeholder_lines({".github/workflows/issues.yml": filled}, conf, "x"),
            placeholder_lines({".github/workflows/issues.yml": raw_issues.replace("https://example.com/support", "https://mine.example")}, conf, "x")), ([], []))
-    # Its labels: every label of labels.yml, those the triage, the acceptance
-    # and the autopilot set among them.
+    # Its labels: every live label of labels.yml, those the acceptance and
+    # the autopilot set among them; none retired (#564).
     labels = load_yaml(os.path.join(CENTRAL, "labels.yml"))
     made = []
-    globals()["gh"], ORG = (lambda *a, **k: made.append(a) or Out("")), "o"
+    globals()["gh"], ORG = (lambda *a, **k: made.append(a) or Out("[]" if a[:2] == ("label", "list") else "")), "o"
     try:
         with contextlib.redirect_stdout(io.StringIO()):
             sync_labels({"name": "dilux-agentic-workflow"}, labels, False)
     finally:
         globals()["gh"], ORG = saved_gh, saved_org
     names = {a[2] for a in made if a[:2] == ("label", "create") and "o/dilux-agentic-workflow" in a}
-    check("C3 (#552): `labels` gives DAW every label, the triage's, the acceptance's and the autopilot's among them",
-          names == {str(l["name"]) for l in labels} and {"needs-triage", "bug:unconfirmed", "awaiting-acceptance", "accepted", "autopilot", "autopilot:continue"} <= names, sorted(names))
+    check("C3 (#552): `labels` gives DAW every label, the acceptance's and the autopilot's among them",
+          names == {str(l["name"]) for l in live_labels(labels)} and {"awaiting-acceptance", "accepted", "autopilot", "needs-human"} <= names, sorted(names))
+    check("#564: a retired label is never created",
+          not names & {str(l["name"]) for l in retired_labels(labels)} and "autopilot:continue" not in names and not any(n.startswith("autopilot:run-") for n in names), sorted(names))
     # #320: a repository at a major whose migration is only the callers
     # moves to the current one in the same issue and pull request.
     files.clear()
@@ -2874,7 +2973,7 @@ def dependabot_test(check, conf, labels, block):
     templates_found = [DEPENDABOT_DEFAULT] + sorted(f"kinds/{k}/dependabot.yml" for k in os.listdir(os.path.join(CENTRAL, "kinds"))
                                                     if os.path.isfile(os.path.join(CENTRAL, "kinds", k, "dependabot.yml")))
     check("dependabot: the wordpress-plugin kind has its template", "kinds/wordpress-plugin/dependabot.yml" in templates_found, templates_found)
-    names = {str(l["name"]) for l in labels}
+    names = {str(l["name"]) for l in live_labels(labels)}
     every = {"github-actions": ["/"], "npm": ["/"], "composer": ["/"], "docker": ["/"]}
     for path in templates_found:
         text = open(os.path.join(CENTRAL, path), encoding="utf-8").read()
@@ -3383,7 +3482,7 @@ def ai_plugin_drift_test(check, conf, labels, block):
         if joined == f"{base}/automated-security-fixes":
             return Out(json.dumps({"enabled": True, "paused": False}))
         if args[:2] == ("label", "list"):
-            return Out(json.dumps([{"name": str(l["name"]), "color": str(l["color"]), "description": str(l.get("description", ""))} for l in labels]))
+            return Out(json.dumps([{"name": str(l["name"]), "color": str(l["color"]), "description": str(l.get("description", ""))} for l in live_labels(labels)]))
         if joined == base:
             return Out(json.dumps(settings))
         return Out("", 1, "HTTP 404")
@@ -3421,6 +3520,77 @@ def ai_plugin_drift_test(check, conf, labels, block):
     check("C9 (#552): one with no dx.mk, the kind's `make pre-pr`, is listed", got == [f"`{pre_pr.FRAGMENT}` is missing: it is its kind's `pre-pr-make`, the `make pre-pr` its Makefile includes (`sync-repos.py pre-pr`)"], got)
 
 
+def retired_test(check):
+    """A retired label (#564): its state written into the boards of the open
+    items that carry it, then the label deleted; never before."""
+    import contextlib
+    import io
+    retired = [{"name": "autopilot:run-*", "retired": {"add": "runs"}}, {"name": "autopilot:round-*", "retired": {"max": "rounds"}},
+               {"name": "autopilot:waiting", "retired": {"state": "waiting=true"}}, {"name": "good first issue", "retired": {}},
+               {"name": "spike", "retired": {"state": "spike=true"}}]
+    have = ["accepted", "autopilot:run-3", "autopilot:run-x", "autopilot:round-4", "autopilot:waiting", "good first issue"]
+    on = {("issue", "autopilot:run-3"): [5], ("pr", "autopilot:round-4"): [9], ("pr", "autopilot:waiting"): [9], ("issue", "autopilot:waiting"): [5]}
+
+    class Out:
+        def __init__(self, stdout="", returncode=0, stderr=""):
+            self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
+
+    def run(fail=(), dry=False):
+        global ORG
+        events, boards = [], {5: {"runs": [1]}, 9: {"rounds": 2}}
+
+        def fake(*args, check=True, input_text=None):
+            if args[:2] == ("label", "list"):
+                return Out(json.dumps([{"name": n} for n in have]))
+            if args[1:2] == ("list",) and "--label" in args:
+                events.append(("list", args[0], args[args.index("--label") + 1]))
+                return Out(json.dumps([{"number": n} for n in on.get((args[0], args[args.index("--label") + 1]), [])]))
+            if args[:2] == ("label", "delete"):
+                events.append(("delete", args[2]))
+            return Out("")
+
+        def write(repo, n, state, title="The board"):
+            if n in fail:
+                raise RuntimeError("HTTP 502")
+            boards[n] = state
+            events.append(("write", n, title))
+        saved = (globals()["gh"], ORG, receipts.read_state, receipts.write_state)
+        globals()["gh"], ORG = fake, "o"
+        receipts.read_state, receipts.write_state = (lambda repo, n: dict(boards[n])), write
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                retire_labels("o/r", retired, dry)
+        finally:
+            globals()["gh"], ORG, receipts.read_state, receipts.write_state = saved
+        return events, boards, out.getvalue()
+
+    events, boards, out = run()
+    deleted = [e[1] for e in events if e[0] == "delete"]
+    check("#564: every retired label there is deleted, one with no number after its prefix kept",
+          sorted(deleted) == ["autopilot:round-4", "autopilot:run-3", "autopilot:waiting", "good first issue"] and "kept `autopilot:run-x`" in out, (events, out))
+    check("#564: the state is written before its label is deleted",
+          all(events.index(("write", n, t)) < events.index(("delete", name))
+              for n, t, name in ((5, "The board", "autopilot:run-3"), (9, "The pull request's board", "autopilot:round-4"),
+                                 (5, "The board", "autopilot:waiting"), (9, "The pull request's board", "autopilot:waiting"))), events)
+    check("#564: a prefix label's number reaches the list, the greater round stays, a state is set",
+          boards == {5: {"runs": [1, 3], "waiting": True}, 9: {"rounds": 4, "waiting": True}}, boards)
+    check("#564: a label that carries nothing is deleted without reading any item",
+          ("list", "issue", "good first issue") not in events, events)
+    events, boards, out = run(fail=(9,))
+    deleted = [e[1] for e in events if e[0] == "delete"]
+    check("#564: a failed write keeps its label, and says so; the others go",
+          "autopilot:waiting" not in deleted and "autopilot:round-4" not in deleted and "autopilot:run-3" in deleted
+          and "kept `autopilot:waiting`" in out and boards[5].get("waiting") is True, (events, out))
+    events, boards, out = run(dry=True)
+    check("#564: a dry run writes and deletes nothing, and says what it would do",
+          not any(e[0] in ("write", "delete") for e in events) and "would carry `autopilot:run-3` into the board's state of #5" in out
+          and "would delete `autopilot:run-3`" in out, (events, out))
+    check("#564: carried(): max keeps the greater, add once, {} nothing",
+          (carried({"rounds": 5}, {"max": "rounds"}, 4), carried({"runs": [3]}, {"add": "runs"}, 3), carried({"a": 1}, {}, None)),
+          ({"rounds": 5}, {"runs": [3]}, {"a": 1}))
+
+
 def self_test():
     failed = 0
     # The runs below write through a stand-in for gh, never a real clone:
@@ -3449,7 +3619,7 @@ def self_test():
             check(f"a broken block fails: {name}", True)
     labels = load_yaml(os.path.join(CENTRAL, "labels.yml"))
     names = [str(l["name"]) for l in labels]
-    check("labels.yml: every label has a name, a colour and no repeat", all(re.fullmatch(r"[0-9A-F]{6}", str(l["color"])) for l in labels) and len(names) == len(set(names)), names)
+    check("labels.yml: every label has a name, a colour and no repeat", all(re.fullmatch(r"[0-9A-F]{6}", str(l["color"])) for l in live_labels(labels)) and len(names) == len(set(names)), names)
     check("labels.yml: accepted is there", "accepted" in names)
     conf = load_yaml(os.path.join(CENTRAL, "repos.yml"))
     check("#488: outside contributors' runs need approval on a public repository, and the drift says when not",
@@ -3480,7 +3650,7 @@ def self_test():
     def fake(*args, check=True, input_text=None):
         joined = " ".join(args)
         if args[:2] == ("label", "list"):
-            return Out(json.dumps([{"name": "accepted", "color": "000000", "description": "x"}]))
+            return Out(json.dumps([{"name": "accepted", "color": "000000", "description": "x"}, {"name": "autopilot:run-2", "color": "000000"}]))
         if joined.startswith("api repos/o/r/contents/.github/CODEOWNERS"):
             return Out("* @someone-else\n")
         if joined.startswith("api repos/o/r/contents/AGENTS.md"):
@@ -3496,7 +3666,8 @@ def self_test():
         saved, ORG = ORG, "o"
         lines = drift({"name": "r"}, {"settings": {"allow_squash_merge": True, "allow_merge_commit": False, "has_wiki": False}, "files": {".github/CODEOWNERS": "* @soydiloreto\n"},
                                       "design-system": {"r": "local"}},
-                      [{"name": "accepted", "color": "0E8A16", "description": "y"}, {"name": "planned", "color": "0E8A16"}], block)
+                      [{"name": "accepted", "color": "0E8A16", "description": "y"}, {"name": "planned", "color": "0E8A16"},
+                       {"name": "autopilot:run-*", "retired": {"add": "runs"}}, {"name": "spike", "retired": {}}], block)
         unknown = drift({"name": "r"}, {"design-system": {"r": "material"}}, [], block)
         named = drift({"name": "r"}, {"design-system": {"r": "wordpress-admin"}}, [], block)
     finally:
@@ -3505,6 +3676,8 @@ def self_test():
     text = "\n".join(lines)
     check("drift: a label of another colour", "label `accepted` has another colour" in text, lines)
     check("drift: a missing label", "label `planned` is missing" in text, lines)
+    check("#564: drift: a retired label still there, and only it", "label `autopilot:run-2` is retired" in text and "spike" not in text, lines)
+    retired_test(check)
     check("drift: a setting off", "setting `allow_merge_commit` is `True`" in text, lines)
     check("drift: a setting the token cannot read is not drift", "has_wiki" not in text, lines)
     check("drift: a file that differs", "`.github/CODEOWNERS` differs" in text, lines)

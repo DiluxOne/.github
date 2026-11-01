@@ -3,9 +3,10 @@
 # build (runner-image.yml) and the week's decisions by policy
 # (autonomy-digest.yml). Each run opens its own issue, labelled `run:<kind>`;
 # it closes as completed when the run needs no one, and stays open with
-# `needs:maintainer` when it does. The closed issues are the record and the
-# statistics: `is:issue label:run:<kind>` lists every run, and the open ones
-# are what waits on a person.
+# `needs-human` (the person's hand-over; needs:maintainer is retired, #564)
+# when it does. The closed issues are the record and the statistics:
+# `is:issue label:run:<kind>` lists every run, and the open ones are what
+# waits on a person.
 #
 #   run-issue.sh open KIND TITLE   reads the body on stdin; NEEDS=1 when the
 #                                  run needs a person, LABELS for any other
@@ -28,13 +29,13 @@
 # come from labels.yml, which the sync brings to every repository.
 set -euo pipefail
 
-# The labels for a run's issue: its kind's, the caller's, and needs:maintainer
+# The labels for a run's issue: its kind's, the caller's, and needs-human
 # when it needs a person. $1 kind, $2 extra labels (comma-separated), $3 1
 # when it needs a person.
 labels_for() {
   local out="run:$1"
   [ -z "$2" ] || out+=",$2"
-  [ "$3" != 1 ] || out+=",needs:maintainer"
+  [ "$3" != 1 ] || out+=",needs-human"
   printf '%s' "$out"
 }
 
@@ -59,7 +60,7 @@ build_result() {
 
 settle_runs() {
   local kind=$1 url=$2 n
-  for n in $(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label "run:$kind" --label needs:maintainer --limit 100 --json number --jq '.[].number'); do
+  for n in $(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label "run:$kind" --label needs-human --limit 100 --json number --jq '.[].number'); do
     gh issue close "$n" --repo "$GITHUB_REPOSITORY" --reason completed --comment "A later run needed no one: $url" >/dev/null
   done
 }
@@ -77,7 +78,7 @@ self_test() {
   GITHUB_REPOSITORY=o/r
 
   check "labels: the kind's alone" "$(labels_for runner-image "" 0)" "run:runner-image"
-  check "labels: with the caller's and needs:maintainer" "$(labels_for runner-image "lane:platform,accepted-by:policy" 1)" "run:runner-image,lane:platform,accepted-by:policy,needs:maintainer"
+  check "labels: with the caller's and needs-human" "$(labels_for runner-image "lane:platform,accepted-by:policy" 1)" "run:runner-image,lane:platform,accepted-by:policy,needs-human"
 
   : > "$log"
   got=$(printf 'All good.\n' | NEEDS=0 open_run runner-image "Runner image, run 7: promoted")
@@ -87,7 +88,7 @@ self_test() {
 
   : > "$log"
   printf 'Failed.\n' | NEEDS=1 LABELS="lane:platform" open_run runner-image "Runner image, run 8: build failed" >/dev/null
-  check "a run that needs a person: labelled needs:maintainer" "$(grep -c -- '--label run:runner-image,lane:platform,needs:maintainer ' "$log")" 1
+  check "a run that needs a person: labelled needs-human" "$(grep -c -- '--label run:runner-image,lane:platform,needs-human ' "$log")" 1
   check "a run that needs a person: stays open" "$(grep -c '^issue close' "$log")" 0
   check "only the kind's label is created when missing" "$(grep -c '^label create run:runner-image ' "$log"):$(grep -c '^label create' "$log")" "1:1"
 
@@ -99,7 +100,7 @@ self_test() {
 
   : > "$log"
   settle_runs runner-image "https://github.com/o/r/actions/runs/9"
-  check "settle: asks for the kind's open issues that wait on a person" "$(grep -c -- '^issue list --repo o/r --state open --label run:runner-image --label needs:maintainer ' "$log")" 1
+  check "settle: asks for the kind's open issues that wait on a person" "$(grep -c -- '^issue list --repo o/r --state open --label run:runner-image --label needs-human ' "$log")" 1
   check "settle: closes each as completed, naming the run" "$(grep -c -- '--reason completed --comment A later run needed no one: https://github.com/o/r/actions/runs/9$' "$log")" 2
 
   unset -f gh
@@ -112,5 +113,5 @@ case "${1:-}" in
   open) [ $# -eq 3 ] || { echo "usage: run-issue.sh open KIND TITLE < body" >&2; exit 64; }; open_run "$2" "$3" ;;
   build) [ $# -eq 4 ] || { echo "usage: run-issue.sh build PROMOTE SMOKE AUTOPILOT" >&2; exit 64; }; build_result "$2" "$3" "$4" ;;
   settle) [ $# -eq 3 ] || { echo "usage: run-issue.sh settle KIND URL" >&2; exit 64; }; settle_runs "$2" "$3" ;;
-  *) sed -n '2,28p' "$0" >&2; exit 64 ;;
+  *) sed -n '2,29p' "$0" >&2; exit 64 ;;
 esac

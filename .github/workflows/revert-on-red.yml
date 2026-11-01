@@ -15,10 +15,11 @@ name: Revert on red
 #     next sweep reads the verdict: green, and the report says it was flaky
 #     and nothing is reverted; red again, and the red holds;
 #   - a red that holds: the revert, committed first; then a Bug issue
-#     (labelled `revert`) linking the merge, the failing run and the
+#     (its title "Default branch red after #…") linking the merge, the failing run and the
 #     original pull request; a pull request `revert: <original title>` on a
-#     `revert/<issue>-…` branch, labelled `revert`, closing that issue; the
-#     label `reverted` on the original pull request; and its closed issues
+#     `revert/<issue>-…` branch, closing that issue, marked `revert` in its
+#     board's state; the original pull request marked `reverted` in its
+#     board's state (#564, no label); and its closed issues
 #     reopened, since the cause is still theirs. A merge that does not
 #     revert cleanly, or that changed workflow files (the App may not push
 #     them), gets the issue alone, saying who does what; so does a revert
@@ -154,4 +155,6 @@ jobs:
           GH_TOKEN: ${{ steps.rerun.outputs.token || steps.revert.outputs.token }}
           ITEM: ${{ toJSON(matrix.item) }}
           DX_AUTOPILOT: ${{ vars.DX_AUTOPILOT }}
+          # The board's state (#564) is read and written on the bot's board.
+          DX_BOT_APP: ${{ vars.DX_BOT_APP }}
         run: python3 scripts/revert.py act
