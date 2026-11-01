@@ -476,10 +476,11 @@ jobs:
           # Every mode works only from the PRD that was accepted: its seal
           # (written by issue-accepted.yml, which runs alongside on a
           # person's acceptance, by the reproduction when its lane accepted
-          # it, or below for a delegated sub-issue, #575) must exist and match the issue now. Waits up to two
-          # minutes for it, also while it reads "changed": a re-acceptance
-          # after an edit meets the old seal before the new one is written
-          # (#353). Says on the issue when it does not start.
+          # it, or below for a delegated sub-issue, #575) must exist and
+          # match the issue now. Waits up to two minutes for it, also while
+          # it reads "changed": a re-acceptance after an edit meets the old
+          # seal before the new one is written (#353). Says on the issue
+          # when it does not start.
           v=$(NUMBER="$ISSUE" python3 .dx-central/scripts/receipts.py verify-prd --wait 12 || true)
           # A person's acceptance that G1 took back (#287: not ready, the
           # label came off and nothing was sealed) already said why.
