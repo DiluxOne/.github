@@ -53,7 +53,8 @@ def autonomy(eng, *args, env=None, check=True):
 
 
 def engine_policy():
-    out = run("python3", str(ROOT / "scripts" / "autonomy.py"), "policy", env={"ORG_AUTONOMY": str(ROOT / "policy" / "autonomy.yml")})
+    # The same repository as autonomy()'s: what G7 protects depends on it (#561).
+    out = run("python3", str(ROOT / "scripts" / "autonomy.py"), "policy", env={"ORG_AUTONOMY": str(ROOT / "policy" / "autonomy.yml"), "GITHUB_REPOSITORY": "Acme/widgets"})
     return json.loads(out.stdout)
 
 

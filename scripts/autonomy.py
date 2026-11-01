@@ -136,9 +136,31 @@ def stricter_level(a, b):
     return LEVELS[min(ia, ib)]
 
 
-def merge(org, repo):
+# What every repository protects, whatever its policy says (#561): its
+# workflows, which the autopilot cannot push, and the files that say what
+# merges there and who reviews it, so no change merges a widening of them.
+ALWAYS_PROTECTED = [".github/workflows/**", ".github/autonomy.yml", ".github/review-policy.yml", ".github/CODEOWNERS"]
+
+
+def protected_paths(org_constitution, declared, where=""):
+    """The paths whose change G7 leaves to a person in the repository
+    `where` (#561 C4). In the organisation's own repository (org.CENTRAL),
+    or one not named (failing closed), the whole constitution: its
+    policy/, scripts/ and kinds/ are the engine. In any other,
+    ALWAYS_PROTECTED (its workflows and its own policy files) and the
+    paths it declares in its own policy
+    (`constitution:`): there scripts/ is ordinary code, under the lane's
+    caps like any other path. Pure."""
+    declared = [p for p in declared or [] if isinstance(p, str) and p]
+    base = list(org_constitution or []) if not where or where == org.CENTRAL else list(ALWAYS_PROTECTED)
+    return base + [p for p in declared if p not in base]
+
+
+def merge(org, repo, where=""):
     """The organisation's policy, made stricter by a repository's: never
-    looser, but what a lane merges may rise up to the lane's `ceiling`."""
+    looser, but what a lane merges may rise up to the lane's `ceiling`.
+    `constitution` stays the organisation's, added to; `protected` is what
+    G7 holds for a person in the repository `where` (protected_paths)."""
     out = copy.deepcopy(org)
     out.setdefault("lanes", {})
     out["autopilot"] = bool(org.get("autopilot", False)) and repo.get("autopilot", True) is not False
@@ -146,6 +168,7 @@ def merge(org, repo):
         warn("autopilot: the organisation has it off; a repository cannot turn it on. Ignored.")
     extra = [p for p in (repo.get("constitution") or []) if isinstance(p, str)]
     out["constitution"] = list(org.get("constitution") or []) + [p for p in extra if p not in (org.get("constitution") or [])]
+    out["protected"] = protected_paths(org.get("constitution"), extra, where)
     # How the autopilot settles a choice (#247): `guided` asks a maintainer,
     # `full` decides and logs it. A repository may choose up to the
     # organisation's ceiling; guided is always allowed (it is stricter).
@@ -1407,8 +1430,8 @@ def load_json(path):
 
 
 def policy_in_force():
-    org = load(os.environ.get("ORG_AUTONOMY") or os.path.join(HERE, "..", "policy", "autonomy.yml"))
-    return merge(org, load(os.environ.get("REPO_AUTONOMY")))
+    pol = load(os.environ.get("ORG_AUTONOMY") or os.path.join(HERE, "..", "policy", "autonomy.yml"))
+    return merge(pol, load(os.environ.get("REPO_AUTONOMY")), os.environ.get("GITHUB_REPOSITORY", ""))
 
 
 def self_test():
@@ -1663,6 +1686,18 @@ def self_test():
     check("a repository turns the autopilot off", m["autopilot"], False)
     m = merge({**org, "autopilot": False}, {"autopilot": True})
     check("a repository cannot turn it on", m["autopilot"], False)
+    # #561 C4: what G7 holds for a person depends on the repository.
+    here_p = merge(org, {}, sys.modules["org"].CENTRAL)["protected"]
+    there_p = merge(org, {}, "o/product")["protected"]
+    declared_p = merge(org, {"constitution": ["scripts/**"]}, "o/product")["protected"]
+    check("#561 C4: the organisation's own repository, or one not named, protects the whole constitution",
+          (here_p == org["constitution"], merge(org, {})["protected"] == org["constitution"]), (True, True))
+    check("#561 C4: another repository protects its workflows and what it declares, never the engine's scripts/ by default",
+          (there_p, declared_p, merge(org, {}, "o/product")["constitution"] == org["constitution"]),
+          (ALWAYS_PROTECTED, ALWAYS_PROTECTED + ["scripts/**"], True))
+    check("#561 C4: another repository's own policy files and workflows stay a person's",
+          [any(fnmatch.fnmatch(f, p) for p in there_p) for f in (".github/workflows/ci.yml", ".github/autonomy.yml", ".github/review-policy.yml", "scripts/x.py", ".github/ISSUE_TEMPLATE/bug.yml")],
+          [True, True, True, False, False])
     m = merge(org, {"constitution": ["docs/rules.md"]})
     check("a repository adds a protected path", "docs/rules.md" in m["constitution"], True)
 

@@ -11,6 +11,10 @@
 #
 # The golden rule: this file, the gates and the workflows that apply them
 # (`constitution` below) are always accepted and merged by a person.
+# The list holds in this repository, where those paths are the engine; in
+# any other, G7 protects its workflows, its own policy files and the paths
+# its own .github/autonomy.yml adds here, so a product's scripts/ is
+# ordinary code there (#561, scripts/autonomy.py protected_paths).
 # Autonomy cannot widen itself. Every path here is also high risk in the
 # review policy (this repository's or the default), so the auto-merge
 # decision never merges them; scripts/autonomy.py's self-test fails if one is

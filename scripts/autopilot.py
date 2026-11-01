@@ -1251,7 +1251,10 @@ def decide(policy, body, risk, complexity, blocking, description_ok, files, head
     if held:
         return False, f"the issue is labelled {held[0]}: a person merges it"
     import fnmatch
-    protected = [f for f in files if any(fnmatch.fnmatch(f, p) for p in policy.get("constitution") or [])]
+    # The repository's own protected set (#561, autonomy.protected_paths):
+    # the whole constitution in the organisation's, its workflows and what
+    # it declares elsewhere.
+    protected = [f for f in files if any(fnmatch.fnmatch(f, p) for p in policy.get("protected", policy.get("constitution")) or [])]
     # The golden rule (#397, autonomy.py constitution_merge): a protected
     # path is a person's, but in the reproduced bug's lane when the change
     # widens no permission, lane or limit; then its own caps apply.
@@ -1428,9 +1431,10 @@ def protected_rule(ev, number, repo=""):
     the paths that govern autonomy (#397), as long as it widens nothing;
     in the organisation's own repository (#498) those paths are the work.
     In any other repository a person's issue may change them too (#558):
-    there scripts/ or kinds/ are ordinary code, and G7 leaves any
-    protected path to a person to merge; only .github/workflows/, which
-    the autopilot cannot push, still stops it."""
+    there scripts/ or kinds/ are ordinary code, merged by the lane's caps
+    (#561, autonomy.protected_paths), and G7 leaves only the repository's
+    own policy files and the paths it declares to a person; only
+    .github/workflows/, which the autopilot cannot push, still stops it."""
     stop = f"still write the Spec, then run `NUMBER={number} {HELPER} finish stop \"<why, in one or two sentences>\"` and end."
     if engine_repo(repo):
         return ("This is the organisation's own repository: its engine (.github/workflows/, scripts/, policy/, kinds/) is what "
@@ -1438,9 +1442,11 @@ def protected_rule(ev, number, repo=""):
                 "pull request every permission, secret, lane or limit the change widens, so that person reads it before "
                 f"merging. If the change needs anything outside the PRD's scope, {stop}")
     if not ev:
-        return ("The change may touch a path the autonomy policy protects (policy/, scripts/, kinds/, .github/ but its "
-                "workflows), and then a person merges the pull request: G7 holds it for them. If the change needs anything "
-                f"outside the PRD's scope, or a file under .github/workflows/ (the autopilot cannot push one), {stop}")
+        return ("Change the code wherever the PRD needs, scripts/ and kinds/ included: here they are ordinary code, and G7 "
+                "decides the merge by the lane's caps like any other path. Only a change to this repository's own policy files "
+                "(.github/autonomy.yml, .github/review-policy.yml, .github/CODEOWNERS) or to a path its policy declares "
+                "protected (`constitution:` in .github/autonomy.yml) waits: a person merges the pull request then (#561). If the "
+                f"change needs anything outside the PRD's scope, or a file under .github/workflows/ (the autopilot cannot push one), {stop}")
     return ("A reproduced bug may be fixed wherever it is, the paths that govern autonomy (policy/, scripts/, kinds/, .github/) "
             "included, but the fix must never widen a permission, a lane or a limit: no lane added or opened up, no `merge` or "
             "`ceiling` raised, no protected path or label removed, no workflow permission or secret granted (G7 checks it, "
@@ -1682,6 +1688,8 @@ A class on html.
     other = protected_rule(None, 7, there)
     check("#498 #558 another repository: the Spec stops for workflows only, and a person merges",
           ("path under .github/, policy/, scripts/ or kinds/" in other, "a file under .github/workflows/" in other, "a person merges" in other), (False, True, True))
+    check("#561 C4: another repository's Spec prompt says scripts/ merges by the lane's caps, and what a person merges",
+          ("scripts/ and kinds/ included" in other, "by the lane's caps" in other, "`constitution:`" in other), (True, True, True))
     check("#498 the engine's repository: the prompts allow workflows",
           ("Never change .github/workflows" in prompt_work(here, "7", "8", "b", "x", [("C1", "a", None)], False),
            "Never touch .github/workflows" in prompt_fix(here, 9, 2, 3), "a person merges" in prompt_spec(here, 7, "x")), (False, False, True))
@@ -2269,6 +2277,20 @@ Clamp the value in Sum::add.
     check("#397 C4 decide: not knowing whether it widens (no WIDENING) is a person's", decide(pol, lane_spec, "medium", "medium", "false", "true", lhead + ["scripts/x.py"], lhead + ["scripts/x.py"], "", BOT, REPRO, sha)[0], False)
     check("#397 C4 decide: any other lane never merges a protected path, widening nothing or not",
           [decide(pol, spec, "low", "low", "false", "true", ["header.php", "tests/e2e/toggle.spec.ts", "scripts/x.py"], head + ["scripts/x.py"], "", widening=[])[0]], [False])
+    # #561 C4: a person's issue in a product repository whose fix is under
+    # scripts/: G7 decides it by the lane's caps, unless the repository
+    # declares the path protected; in the organisation's own, a person.
+    sfiles = ["header.php", "tests/e2e/toggle.spec.ts", "scripts/x.py"]
+    sdec = lambda where, repo_pol=None, **k: decide(autonomy.merge(org, repo_pol or {}, where), spec, k.get("risk", "low"), "low", "false", "true",
+                                                    sfiles, head + ["scripts/x.py"], "", widening=[])
+    check("#561 C4 decide: scripts/ in a product repository that declares nothing merges by the lane's caps",
+          (sdec("o/product")[0], sdec("o/product", risk="high")[0]), (True, False))
+    check("#561 C4 decide: scripts/ in a product repository that declares it protected, or in the organisation's own, is a person's",
+          (sdec("o/product", {"constitution": ["scripts/**"]})[0], sdec(sys.modules["org"].CENTRAL)[0], "scripts/x.py" in sdec("o/product", {"constitution": ["scripts/**"]})[1]),
+          (False, False, True))
+    check("#561 C4 decide: a product repository's workflow or own policy is still a person's",
+          [decide(autonomy.merge(org, {}, "o/product"), spec, "low", "low", "false", "true", ["header.php", "tests/e2e/toggle.spec.ts", f], head + [f], "", widening=[])[0]
+           for f in (".github/workflows/ci.yml", ".github/autonomy.yml")], [False, False])
     check("#84 decide: never under the lane without its evidence in the PRD", lok(body=spec, files=["header.php", "tests/e2e/toggle.spec.ts"], head=head), False)
     check("#84 decide: never when the repository switches the lane off", decide(autonomy.merge(org, {"lanes": {REPRO: {"enabled": False}}}), lane_spec, "low", "low", "false", "true", lhead, lhead, "", BOT, REPRO, sha)[0], False)
     check("#84 G6: the reproduction test is C1's test", criteria_evidence(lane_spec, set(lhead), set(lhead)), [])
