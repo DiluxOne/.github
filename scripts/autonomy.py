@@ -439,7 +439,9 @@ MEMBERS = {"OWNER", "MEMBER"}
 
 def delegated_accepts(name, lane, issue, repository):
     """(True, why) when the issue is a sub-issue the delegated lane accepts:
-    its parent open, in the organisation, accepted by a person (the last
+    its parent open, or closed as completed (the decision carried out while
+    its sub-issues elsewhere are still open, #572), in the organisation,
+    accepted by a person (the last
     `accepted` event a person's, the label still there); the sub-issue
     opened by a member or the lane's App, and not edited after it was
     linked. Pure: everything comes in `issue` (ISSUE_QUERY)."""
@@ -450,8 +452,10 @@ def delegated_accepts(name, lane, issue, repository):
     if where.split("/", 1)[0].lower() != repository.split("/", 1)[0].lower():
         return False, "its parent is outside the organisation"
     ref = f"{where}#{parent.get('number')}"
-    if parent.get("state") != "OPEN":
-        return False, f"its parent {ref} is not open"
+    if parent.get("state") == "CLOSED" and parent.get("stateReason") != "COMPLETED":
+        return False, f"its parent {ref} was closed without being completed"
+    if parent.get("state") not in ("OPEN", "CLOSED"):
+        return False, f"its parent {ref} is neither open nor closed as completed"
     if "accepted" not in [n.get("name") for n in ((parent.get("labels") or {}).get("nodes") or [])]:
         return False, f"its parent {ref} is not accepted"
     event = last_label_event(parent, "accepted")
@@ -1130,7 +1134,7 @@ ISSUE_QUERY = """query($o: String!, $n: String!, $i: Int!) {
         }
       }
       parent {
-        number state repository { nameWithOwner }
+        number state stateReason repository { nameWithOwner }
         labels(first: 50) { nodes { name } }
         timelineItems(itemTypes: [LABELED_EVENT, UNLABELED_EVENT], last: 100) {
           nodes {
@@ -1475,14 +1479,14 @@ def self_test():
 
     # #189: a sub-issue of an issue a person accepted.
     def child(parent_labels=("accepted",), actor="User", state="OPEN", where="DiluxOne/.github", assoc="MEMBER",
-              author="someone", edited=None, linked="2026-10-16T10:00:00Z", labels=(), parent=True, unlabeled=False):
+              author="someone", edited=None, linked="2026-10-16T10:00:00Z", labels=(), parent=True, unlabeled=False, reason=None):
         events = [{"__typename": "LabeledEvent", "label": {"name": "accepted"}, "actor": {"__typename": actor, "login": "soydiloreto" if actor == "User" else "dilux-bot"}}]
         if unlabeled:
             events.append({"__typename": "UnlabeledEvent", "label": {"name": "accepted"}, "actor": {"__typename": "User", "login": "soydiloreto"}})
         return {"number": 9, "body": "Carry it out here.", "author": {"login": author}, "authorAssociation": assoc, "lastEditedAt": edited,
                 "labels": {"nodes": [{"name": n} for n in labels]},
                 "timelineItems": {"nodes": [{"__typename": "ParentIssueAddedEvent", "createdAt": linked}] if linked else []},
-                "parent": {"number": 189, "state": state, "repository": {"nameWithOwner": where},
+                "parent": {"number": 189, "state": state, "stateReason": reason, "repository": {"nameWithOwner": where},
                            "labels": {"nodes": [{"name": n} for n in parent_labels]}, "timelineItems": {"nodes": events}} if parent else None}
     dpol = merge(org, {})
     acc = lambda i, var="": lane_accepts(dpol, i, None, "DiluxOne/diluxone-mail-wordpress", var)
@@ -1495,6 +1499,11 @@ def self_test():
     check("#189 C3: edited before it was linked counts as written then", acc(child(edited="2026-10-16T09:00:00Z"))[0], True)
     check("#189 C3: no link event read, no acceptance", acc(child(linked=None))[0], False)
     check("#189 C4: a closed parent takes it back", acc(child(state="CLOSED"))[0], False)
+    check("#572: a parent closed as completed still stands", acc(child(state="CLOSED", reason="COMPLETED"))[0], True)
+    check("#572: a parent closed as not planned takes it back", acc(child(state="CLOSED", reason="NOT_PLANNED")), (False, "its parent DiluxOne/.github#189 was closed without being completed"))
+    check("#572: a parent closed as a duplicate takes it back", acc(child(state="CLOSED", reason="DUPLICATE"))[0], False)
+    check("#572: a parent closed with no reason read takes it back", acc(child(state="CLOSED", reason=None))[0], False)
+    check("#572: a parent in any other state is neither open nor closed as completed", acc(child(state="UNKNOWN")), (False, "its parent DiluxOne/.github#189 is neither open nor closed as completed"))
     check("#189 C4: a parent whose accepted was removed takes it back", acc(child(parent_labels=(), unlabeled=True))[0], False)
     check("#189: a parent in another organisation", acc(child(where="Other/.github"))[0], False)
     check("#189: an issue with no parent and no lane is no lane's", acc(child(parent=False))[0], False)
