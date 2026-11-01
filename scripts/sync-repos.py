@@ -3236,7 +3236,7 @@ def security_visibility_test(check):
     check("#603: a public repository without it is drift", any("`Pub` is not attached" in l for l in lines), lines)
     for vis in ("PRIVATE", "INTERNAL"):
         writes, said, lines, _ = run({"public": "Pub"}, vis)
-        check(f"#603: an {vis.lower()} repository with no private configuration gets nothing, says so, and is not drift",
+        check(f"#603: a {vis.lower()} repository with no private configuration gets nothing, says so, and is not drift",
               (writes, "none attached" in said, [l for l in lines if "security configuration" in l]), ([], True, []))
     writes, said, lines, _ = run({"public": "Pub", "private": "Priv"}, "PRIVATE")
     check("#603: a private repository with a private configuration gets it, the default for new private and internal ones",
