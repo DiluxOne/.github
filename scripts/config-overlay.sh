@@ -120,8 +120,9 @@ lay() {
   fi
   for p in "${PATHS[@]}"; do
     [ -e "$tmp/config/$p" ] || continue
-    rm -rf "${dir:?}/$p" && cp -R "$tmp/merged/$p" "$dir/$p" \
-      || { echo "::error::$owner's $p could not be laid over the engine's."; return 1; }
+    if ! { rm -rf "${dir:?}/$p" && cp -R "$tmp/merged/$p" "$dir/$p"; }; then
+      echo "::error::$owner's $p could not be laid over the engine's."; return 1
+    fi
   done
   echo "Configuration: $owner/.github at $(git -C "$tmp/config" rev-parse --short=12 HEAD), over the engine's defaults."
 }

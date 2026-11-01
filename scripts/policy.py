@@ -549,6 +549,16 @@ def settings_tests():
     check("#568: the maintainers are added to it", trusted_authors_of(defaults, {}, {"maintainers": ["ana"]}) == ["dependabot[bot]", "ana"])
     check("#568: a repository's own list replaces it", trusted_authors_of(defaults, {"trusted-authors": ["bob"]}, {"maintainers": ["ana"]}) == ["bob"])
     check("#568: DiluxOne trusts whom it did", sorted(trusted_authors_of(defaults, {})) == ["dependabot[bot]", "soydiloreto"], trusted_authors_of(defaults, {}))
+    # #568: what main() and issue_gate() let a repository's file do with each
+    # key is what policy/settings-schema.yml says of it (its `repo:`).
+    rules = {"trusted-authors": "any", "issue-gate.required": "stricter", "issue-gate.label": "never", "issue-gate.optional": "never",
+             "max-changed-lines-untrusted": "lower-only", "docs-paths": "never", "high-risk": "add-only", "review": "any",
+             "budget-usd": "any", "auto-merge": "stricter", "release": "stricter", "auto-allowed": "never",
+             "low-risk-eligible": "add-only", "code": "add-only", "plugin-check": "add-only", "kind-settings": "add-only"}
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import settings  # the schema's reader
+    schema = {s["key"]: s.get("repo") for s in settings.entries(settings.schema(), "policy/review-policy.default.yml")}
+    check("#568: the schema's repo level of each review-policy key is policy.py's", schema == rules, {k: (schema.get(k), rules.get(k)) for k in set(schema) | set(rules) if schema.get(k) != rules.get(k)})
     check("#568: the own bot is org.yml's App when DX_BOT_LOGIN is unset", own_bot({"PR_AUTHOR": f"{org_conf()['bot']['app']}[bot]", "PR_AUTHOR_TYPE": "Bot", "HEAD_IN_REPO": "true"}))
 
     code, out = run_case(os.path.join(CENTRAL, "policy", "review-policy.default.yml"), "kind: wordpress-plugin\nkind-settings:\n  plugin-check:\n    ignore-codes: [one_more_code]\n    strict: false\n", [], POLICY_MODE="kind")

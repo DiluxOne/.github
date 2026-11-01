@@ -156,7 +156,9 @@ def merge(engine, theirs, settings, path=()):
 
 def overlay(engine_file, org_file, rel=None, conf=None):
     rel = rel or os.path.relpath(os.path.abspath(engine_file), ROOT)
-    return merge(load(engine_file), load(org_file), entries(conf if conf is not None else schema(), rel))
+    engine, theirs = load(engine_file), load(org_file)
+    # An empty file of the organisation's sets nothing.
+    return engine if theirs is None else merge(engine, theirs, entries(conf if conf is not None else schema(), rel))
 
 
 # Where the engine's code and data are (#568 C3): none of it may name the
@@ -496,6 +498,9 @@ def self_test():
             fh.write("b: {c: 4}\n")
         got = overlay(e, o, "x.yml", {})
         check("overlay: two files", got, {"a": 1, "merge-queue": "off", "b": {"c": 4, "d": 3}})
+        with open(os.path.join(t, "empty.yml"), "w", encoding="utf-8") as fh:
+            fh.write("# nothing set\n")
+        check("overlay: an empty file of the organisation's sets nothing", overlay(e, os.path.join(t, "empty.yml"), "x.yml", {}), {"a": 1, "merge-queue": "off", "b": {"c": 2, "d": 3}})
         check("overlay: written as YAML that reads the same", load_text(dump(got)), got)
         with open(o, "w", encoding="utf-8") as fh:
             fh.write("x" * (MAX_BYTES + 1))

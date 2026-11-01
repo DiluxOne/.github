@@ -142,8 +142,10 @@ act() {
   fi
   if [ "$category" = security ]; then
     # The caller's maintainer, else org.yml's maintainers (#568).
-    local who=${MAINTAINER:-$(python3 "$(dirname "${BASH_SOURCE[0]}")/org.py" maintainers 2>/dev/null || true)}
-    [ -z "$who" ] || reply="$reply"$'\n\n'"$(printf '@%s ' $who | sed 's/ $//')"
+    local who mentions
+    who=${MAINTAINER:-$(python3 "$(dirname "${BASH_SOURCE[0]}")/org.py" maintainers 2>/dev/null || true)}
+    mentions=$(tr -s ' \n' '\n' <<<"$who" | sed -n 's/^\([A-Za-z0-9-]\{1,39\}\)$/@\1/p' | paste -sd' ' -)
+    [ -z "$mentions" ] || reply="$reply"$'\n\n'"$mentions"
   fi
   # The record is public too: only the checked duplicate goes in it.
   record=$(jq -c --arg cost "${COST:-}" --arg summary "${SUMMARY:-}" --arg dup "$dup" '{category, exists_in_pro: (.exists_in_pro == true), duplicate_of: (if $dup == "" then null else ($dup | tonumber) end), summary: $summary, cost: $cost}' <<<"$VERDICT")
