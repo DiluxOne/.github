@@ -26,6 +26,14 @@ This script knows no tool by name.
   agent-manifests.py bump VERSION DiluxOne/NAME [DIR] [--ref TAG]
                                 brings that plugin's entries in the catalog at
                                 DIR up to the released VERSION (and to its tag)
+  agent-manifests.py publish-plan NAME VERSION ISSUES.json PRS.json
+                                what the publish workflow does next, from the
+                                catalog's open issues and pull requests (`gh
+                                ... list --json number,title`): `done N` when
+                                the pull request for NAME VERSION is open,
+                                `reuse N` when only its issue is (a run that
+                                failed after opening it), `create -` when
+                                neither is; exit 2 when a list is not one
   agent-manifests.py version VERSION [DIR]
                                 the release pull request (pack.yml `release`):
                                 every manifest at VERSION, the changelog.d
@@ -298,6 +306,31 @@ def bump(root, tools, repo, version, ref=None):
     return changed
 
 
+PUBLISH_ISSUE = "Bring {name} to {version} in the catalog"
+PUBLISH_PR = "chore(catalog): {name} {version}"
+
+
+def publish_plan(name, version, issues, prs):
+    """What the publish workflow does next (plugin-publish-ai.yml): ("done",
+    n) when the catalog's pull request for this version is open, ("reuse", n)
+    when only its issue is (an earlier run failed after opening it), and
+    ("create", None) when neither is. Titles are matched whole, since GitHub's
+    search is fuzzy. A list that is not one (a failed read) raises
+    ValueError: never taken as "none open"."""
+    found = {}
+    for kind, items, title in (("pr", prs, PUBLISH_PR), ("issue", issues, PUBLISH_ISSUE)):
+        if not isinstance(items, list) or not all(isinstance(i, dict) and isinstance(i.get("number"), int) for i in items):
+            raise ValueError(f"the open {kind}s are not a list of {{number, title}}")
+        want = title.format(name=name, version=version)
+        hits = sorted(i["number"] for i in items if i.get("title") == want)
+        found[kind] = hits[0] if hits else None
+    if found["pr"] is not None:
+        return "done", found["pr"]
+    if found["issue"] is not None:
+        return "reuse", found["issue"]
+    return "create", None
+
+
 CHANGELOG = "CHANGELOG.md"
 FRAGMENTS = "changelog.d"
 RELEASE_HEADING = re.compile(r"^## \[?(Unreleased|v?\d+\.\d+\.\d+)\b", re.M)
@@ -485,6 +518,30 @@ def self_test():
         check("C5: bump fails for a plugin the catalog does not list", False)
     except ValueError:
         check("C5: bump fails for a plugin the catalog does not list", True)
+    # The publish workflow is safe to re-run: it never opens a second issue or
+    # pull request, and a failed read of either list stops it.
+    issue = {"number": 7, "title": "Bring daw to 1.3.0 in the catalog"}
+    pr = {"number": 8, "title": "chore(catalog): daw 1.3.0"}
+    check("publish: nothing open, it creates the issue", publish_plan("daw", "1.3.0", [], []), ("create", None))
+    check("publish: the issue open with no pull request (a failed push or pull request), it reuses the issue",
+          publish_plan("daw", "1.3.0", [issue], []), ("reuse", 7))
+    check("publish: the pull request open, it stops", publish_plan("daw", "1.3.0", [issue], [pr]), ("done", 8))
+    check("publish: the pull request open without its issue, it still stops", publish_plan("daw", "1.3.0", [], [pr]), ("done", 8))
+    check("publish: another version's or plugin's issue is not this one",
+          publish_plan("daw", "1.3.0", [{"number": 5, "title": "Bring daw to 1.3.01 in the catalog"}, {"number": 6, "title": "Bring dawx to 1.3.0 in the catalog"}], []),
+          ("create", None))
+    check("publish: two issues open, the oldest is reused", publish_plan("daw", "1.3.0", [dict(issue, number=9), issue], []), ("reuse", 7))
+    for label, bad in (("nothing (a failed read)", None), ("an error object", {"message": "API rate limit exceeded"}), ("entries with no number", [{"title": "x"}])):
+        try:
+            publish_plan("daw", "1.3.0", bad, [])
+            check(f"publish: issues that are {label} stop it", "went on", "stopped")
+        except ValueError:
+            check(f"publish: issues that are {label} stop it", "stopped", "stopped")
+    plans = plugin({"i.json": [issue], "p.json": [], "empty.json": ""})
+    check("publish: the command says `reuse N`, and exits 2 on a list that is not JSON",
+          (main(["publish-plan", "daw", "1.3.0", os.path.join(plans, "i.json"), os.path.join(plans, "p.json")]),
+           main(["publish-plan", "daw", "1.3.0", os.path.join(plans, "empty.json"), os.path.join(plans, "p.json")])), (0, 2))
+
     # The release pull request (pack.yml `release.prepare`).
     tree = plugin({cc: same, gm: same, "CHANGELOG.md": "# Changelog\n\nIntro.\n\n## [1.2.0] - 2026-10-01\n\n* Old.\n",
                    "changelog.d/12.md": "* Second.\n", "changelog.d/9.md": "* First.\n"})
@@ -556,6 +613,18 @@ def main(argv):
             print(f"bump: {exc}", file=sys.stderr)
             return 1
         print("\n".join(changed))
+        return 0
+    if len(argv) == 5 and argv[0] == "publish-plan":
+        try:
+            lists = []
+            for path in argv[3:]:
+                with open(path, encoding="utf-8") as fh:
+                    lists.append(json.load(fh))
+            action, number = publish_plan(argv[1], argv[2], *lists)
+        except (OSError, ValueError) as exc:
+            print(f"publish-plan: {exc}", file=sys.stderr)
+            return 2
+        print(f"{action} {number if number is not None else '-'}")
         return 0
     if len(argv) in (2, 3) and argv[0] == "version":
         # version VERSION [DIR]: the release pull request's tree.

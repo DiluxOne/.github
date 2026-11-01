@@ -9,7 +9,10 @@ name: Publish to the catalog of plugins for coding agents
 # a push to the catalog's main: dilux-bot opens an issue there (Type Task)
 # and a pull request that closes it, linked to the release, which merges
 # like any other once a person accepts the issue. Its commit is made
-# through the API, so GitHub signs it (scripts/api-commit.py).
+# through the API, so GitHub signs it (scripts/api-commit.py). A re-run
+# never opens a second issue or pull request: it reuses the issue an
+# earlier run left without its pull request, and stops when a read of the
+# open ones fails (scripts/agent-manifests.py publish-plan).
 #
 # The token is dilux-bot's App token scoped to diluxone-plugins-ai alone,
 # with contents, issues and pull requests to write; it runs only on a
@@ -105,14 +108,25 @@ jobs:
           name=${PLUGIN#*/}
           python3 ../.dx-central/scripts/agent-manifests.py bump "$VERSION" "$PLUGIN" . --ref "$TAG"
           if git diff --quiet; then echo "The catalog already lists $PLUGIN at $VERSION." | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; fi
-          if gh pr list --repo "$CATALOG" --state open --search "in:title \"$name $VERSION\"" --json number --jq 'length' | grep -qv '^0$'; then
-            echo "A pull request for $name $VERSION is already open." | tee -a "$GITHUB_STEP_SUMMARY"; exit 0
-          fi
+          # Safe to re-run (#552): an open pull request for this version stops
+          # it, an open issue with none (a run that failed after opening it) is
+          # reused, and a failed read stops it rather than reading as "none".
+          gh issue list --repo "$CATALOG" --state open --limit 100 --search "\"$name $VERSION\" in:title" --json number,title > ../issues.json
+          gh pr list --repo "$CATALOG" --state open --limit 100 --search "\"$name $VERSION\" in:title" --json number,title > ../prs.json
+          read -r action n < <(python3 ../.dx-central/scripts/agent-manifests.py publish-plan "$name" "$VERSION" ../issues.json ../prs.json)
+          case "$action" in
+            done) echo "The pull request for $name $VERSION is already open: #$n." | tee -a "$GITHUB_STEP_SUMMARY"; exit 0 ;;
+            reuse) echo "The issue for $name $VERSION is already open, #$n: its pull request is opened now." | tee -a "$GITHUB_STEP_SUMMARY" ;;
+            create) ;;
+            *) echo "::error::No plan for $name $VERSION."; exit 1 ;;
+          esac
           footer=$'\n\n🤖 AI-generated · plugin-publish-ai.yml (DiluxOne/.github)'
           body="### Problem"$'\n\n'"$PLUGIN released $VERSION ($RELEASE_URL); the catalog still installs an older version."$'\n\n'"### Scope"$'\n\n'"- Its entries in every catalog file brought up to $VERSION and the tag $TAG (scripts/agent-manifests.py bump)."$'\n\n'"### Out of scope"$'\n\n'"- Anything of another plugin."$'\n\n'"### Acceptance criteria"$'\n\n'"- C1: Given the catalog, when a person installs $name from it, then they get $VERSION."$'\n\n'"### Criticality"$'\n\n'"Normal$footer"
-          url=$(gh issue create --repo "$CATALOG" --title "Bring $name to $VERSION in the catalog" --body "$body")
-          n=${url##*/}
-          gh api -X PATCH "repos/$CATALOG/issues/$n" -f type=Task >/dev/null || echo "::warning::The issue's Type could not be set."
+          if [ "$action" = create ]; then
+            url=$(gh issue create --repo "$CATALOG" --title "Bring $name to $VERSION in the catalog" --body "$body")
+            n=${url##*/}
+            gh api -X PATCH "repos/$CATALOG/issues/$n" -f type=Task >/dev/null || echo "::warning::The issue's Type could not be set."
+          fi
           branch="chore/$n-$name-$VERSION"
           branch=${branch//./-}
           git config user.name "$DX_BOT_LOGIN"
@@ -120,6 +134,8 @@ jobs:
           base=$(git rev-parse --abbrev-ref HEAD)
           git checkout -q -b "$branch"
           git commit -q -am "chore(catalog): $name $VERSION" -m "Closes #$n. From the release $RELEASE_URL."
-          GITHUB_REPOSITORY="$CATALOG" python3 ../.dx-central/scripts/api-commit.py push "$branch" --onto "origin/$base"
+          # --force: the branch is this run's own; a run that failed before its
+          # pull request may have left it, and it is made again from main.
+          GITHUB_REPOSITORY="$CATALOG" python3 ../.dx-central/scripts/api-commit.py push "$branch" --onto "origin/$base" --force
           gh pr create --repo "$CATALOG" --head "$branch" --title "chore(catalog): $name $VERSION" \
             --body "## 📝 What changes"$'\n\n'"$PLUGIN at $VERSION ($TAG) in every catalog file that lists it."$'\n\n'"## 💡 Why"$'\n\n'"Closes #$n. $RELEASE_URL was published.$footer"

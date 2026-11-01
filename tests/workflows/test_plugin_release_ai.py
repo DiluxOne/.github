@@ -62,3 +62,22 @@ def test_the_pack_releases_to_the_catalog():
     assert release["publishes-to"] == "diluxone-plugins-ai"
     assert release["workflow"] == "plugin-release-ai.yml" and release["publish"] == "plugin-publish-ai.yml"
     assert "stable" not in release and "{version}" in release["prepare"]
+
+
+def test_the_publish_is_safe_to_re_run():
+    # A re-run after a failed push or pull request reuses the issue the first
+    # run opened, and a failed read of the open ones stops it (#552).
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("agent_manifests", ROOT / "scripts" / "agent-manifests.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    run = " ".join(str(s.get("run", "")) for s in steps(load(".github/workflows/plugin-publish-ai.yml"), "bump"))
+    plan, create = run.index("agent-manifests.py publish-plan"), run.index("gh issue create")
+    assert run.index("gh issue list") < plan < create and run.index("gh pr list") < plan
+    assert '[ "$action" = create ]' in run[:create] and "*)" in run[plan:create]
+    assert "| grep" not in run[:create], "a failed read must not read as 'none open'"
+    # The titles it opens are the ones the plan looks for.
+    issue = mod.PUBLISH_ISSUE.format(name="$name", version="$VERSION")
+    pr = mod.PUBLISH_PR.format(name="$name", version="$VERSION")
+    assert f'--title "{issue}"' in run and f'--title "{pr}"' in run
+    assert 'api-commit.py push "$branch" --onto "origin/$base" --force' in run

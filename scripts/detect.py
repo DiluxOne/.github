@@ -120,9 +120,13 @@ def remote(full, default="main", run=run_gh):
     def exists(path):
         if "/" not in path:
             return path in names
-        rc, out, _ = run("api", f"repos/{full}/contents/{path}?ref={default}")
+        rc, out, err = run("api", f"repos/{full}/contents/{path}?ref={default}")
+        if rc != 0:
+            if "404" in err:  # not there
+                return False
+            raise RuntimeError(f"could not read {path}: {err.strip()[:200]}")
         try:
-            return rc == 0 and json.loads(out or "{}").get("type") == "file"
+            return json.loads(out or "{}").get("type") == "file"
         except (ValueError, AttributeError):
             return False
     return kinds(names, head, exists=exists)
@@ -397,6 +401,15 @@ def self_test():
             return 0, json.dumps({"type": "file"}), ""
         return 1, "", "HTTP 404"
     check("remote: a manifest in a folder is looked up, and recognised", remote("o/p", "main", fake_api), ["ai-agent-plugin"])
+    def broken_api(*args):
+        if args[1].startswith("repos/o/p/contents/?"):
+            return fake_api(*args)
+        return 1, "", "HTTP 502: Bad Gateway"
+    try:
+        remote("o/p", "main", broken_api)
+        check("remote: a failed read of a manifest is an error, not 'absent'", "absent", "error")
+    except RuntimeError:
+        check("remote: a failed read of a manifest is an error, not 'absent'", "error", "error")
     hand = "repos:\n  zeta: {kinds: []}\n  alpha: {kinds: []}\n"
     check("propose: hand-ordered lines stay where they are", with_entries(hand, ["  beta: {kinds: []}"]), "repos:\n  beta: {kinds: []}\n  zeta: {kinds: []}\n  alpha: {kinds: []}\n")
     calls = []
