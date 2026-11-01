@@ -493,7 +493,10 @@ def delegated_accepts(name, lane, issue, repository):
     accepted by a person (the last
     `accepted` event a person's, the label still there); the sub-issue
     opened by a member or the lane's App, and not edited after it was
-    linked. Pure: everything comes in `issue` (ISSUE_QUERY)."""
+    linked by anyone but the organisation's bot (DX_BOT_LOGIN, else
+    org.BOT; its board, its seal, #598), which its edit history
+    (userContentEdits) must show. Pure: everything comes in `issue`
+    (ISSUE_QUERY)."""
     parent = issue.get("parent") or {}
     if not parent:
         return False, "the issue is no sub-issue"
@@ -518,9 +521,19 @@ def delegated_accepts(name, lane, issue, repository):
     if not linked:
         return False, "its link to the parent could not be read"
     edited = issue.get("lastEditedAt")
-    if edited and edited > linked[-1]:
+    if edited and edited > linked[-1] and not bot_edits_only(issue, linked[-1]):
         return False, "the sub-issue was edited after it was linked to its parent"
     return True, f"accepted by policy: lane {name}, a sub-issue of {ref}, which {(event.get('actor') or {}).get('login')} accepted"
+
+
+def bot_edits_only(issue, since):
+    """Whether every edit of the issue after `since` is the organisation's
+    bot's (#598). Fails closed: no history read, an edit with no editor (a
+    deleted account), or no edit after `since` in the history (truncated,
+    while lastEditedAt says there is one) is not."""
+    edits = [e for e in (((issue.get("userContentEdits") or {}).get("nodes")) or []) if ((e or {}).get("createdAt") or "") > since]
+    bot = login(os.environ.get("DX_BOT_LOGIN") or org.BOT)
+    return bool(edits) and bool(bot) and all(login(((e.get("editor") or {}).get("login"))) == bot for e in edits)
 
 
 # --- the security-carry lane (#287): a published patch, into the default branch
@@ -1180,6 +1193,7 @@ ISSUE_QUERY = """query($o: String!, $n: String!, $i: Int!) {
     issue(number: $i) {
       number title body lastEditedAt authorAssociation author { login } issueType { name }
       labels(first: 50) { nodes { name } }
+      userContentEdits(last: 100) { nodes { createdAt editor { login } } }
       timelineItems(itemTypes: [LABELED_EVENT, UNLABELED_EVENT, PARENT_ISSUE_ADDED_EVENT], last: 100) {
         nodes {
           __typename
@@ -1534,12 +1548,13 @@ def self_test():
 
     # #189: a sub-issue of an issue a person accepted.
     def child(parent_labels=("accepted",), actor="User", state="OPEN", where="DiluxOne/.github", assoc="MEMBER",
-              author="someone", edited=None, linked="2026-10-16T10:00:00Z", labels=(), parent=True, unlabeled=False, reason=None):
+              author="someone", edited=None, linked="2026-10-16T10:00:00Z", labels=(), parent=True, unlabeled=False, reason=None, edits=None):
         events = [{"__typename": "LabeledEvent", "label": {"name": "accepted"}, "actor": {"__typename": actor, "login": "soydiloreto" if actor == "User" else "dilux-bot"}}]
         if unlabeled:
             events.append({"__typename": "UnlabeledEvent", "label": {"name": "accepted"}, "actor": {"__typename": "User", "login": "soydiloreto"}})
         return {"number": 9, "body": "Carry it out here.", "author": {"login": author}, "authorAssociation": assoc, "lastEditedAt": edited,
                 "labels": {"nodes": [{"name": n} for n in labels]},
+                "userContentEdits": {"nodes": [{"createdAt": at, "editor": {"login": who} if who else None} for at, who in edits or []]},
                 "timelineItems": {"nodes": [{"__typename": "ParentIssueAddedEvent", "createdAt": linked}] if linked else []},
                 "parent": {"number": 189, "state": state, "stateReason": reason, "repository": {"nameWithOwner": where},
                            "labels": {"nodes": [{"name": n} for n in parent_labels]}, "timelineItems": {"nodes": events}} if parent else None}
@@ -1552,6 +1567,25 @@ def self_test():
     check("#189 C3: a sub-issue from outside the organisation", acc(child(assoc="CONTRIBUTOR"))[0], False)
     check("#189 C3: a sub-issue edited after it was linked", acc(child(edited="2026-10-16T11:00:00Z"))[0], False)
     check("#189 C3: edited before it was linked counts as written then", acc(child(edited="2026-10-16T09:00:00Z"))[0], True)
+    after = "2026-10-16T11:00:00Z"
+    bot_edit = lambda **k: acc(child(assoc="NONE", author="dilux-bot[bot]", edited=after, **k))[0]
+    saved_bot = os.environ.get("DX_BOT_LOGIN")
+    os.environ["DX_BOT_LOGIN"] = "dilux-bot[bot]"
+    try:
+        check("#598: an edit after the link by the bot alone is accepted", bot_edit(edits=[(after, "dilux-bot[bot]")]), True)
+        check("#598: either spelling of the bot's login", bot_edit(edits=[(after, "dilux-bot")]), True)
+        check("#598: the bot's edits, then a person's, refused", bot_edit(edits=[("2026-10-16T10:30:00Z", "dilux-bot"), (after, "someone")]), False)
+        check("#598: a person's edit after the link is refused", bot_edit(edits=[(after, "someone")]), False)
+        check("#598: a person's edit before the link and the bot's after it", bot_edit(edits=[("2026-10-16T09:00:00Z", "someone"), (after, "dilux-bot")]), True)
+        check("#598: no history read is refused", bot_edit(), False)
+        check("#598: an edit with no editor (a deleted account) is refused", bot_edit(edits=[(after, None)]), False)
+        check("#598: a truncated history (no edit after the link) is refused", bot_edit(edits=[("2026-10-16T09:00:00Z", "dilux-bot")]), False)
+        check("#598: an edit before the link is still accepted", acc(child(edited="2026-10-16T09:00:00Z", edits=[("2026-10-16T09:00:00Z", "someone")]))[0], True)
+    finally:
+        if saved_bot is None:
+            os.environ.pop("DX_BOT_LOGIN", None)
+        else:
+            os.environ["DX_BOT_LOGIN"] = saved_bot
     check("#189 C3: no link event read, no acceptance", acc(child(linked=None))[0], False)
     check("#189 C4: a closed parent takes it back", acc(child(state="CLOSED"))[0], False)
     check("#572: a parent closed as completed still stands", acc(child(state="CLOSED", reason="COMPLETED"))[0], True)
