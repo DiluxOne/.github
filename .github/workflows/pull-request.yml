@@ -179,6 +179,7 @@ jobs:
       - run: python3 scripts/design-lint.py --test
       - run: python3 scripts/receipts.py --test
       - run: python3 scripts/autopilot.py --test
+      - run: python3 scripts/deciders.py --test
       - run: python3 scripts/revert.py --test
       - run: python3 scripts/api-commit.py --test
       - run: bash scripts/runner-vm/dx-runner-slot.sh --test

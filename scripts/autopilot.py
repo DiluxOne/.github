@@ -33,12 +33,13 @@
                              finish ready, which refuses a head where it did
                              not pass, where the Makefile has the target
   autopilot.py finish ready FILE | stop WHY | ask QUESTION
-  autopilot.py answers      what maintainers answered the autopilot's last
-                            question, or hinted after its last stop (#540)
-                            (COMMENTS, WRITERS), with the summary of
-                            an opinion of others the answer names (#287)
+  autopilot.py answers      what those who decide (#588) answered the
+                            autopilot's last question, or hinted after its
+                            last stop (#540) (COMMENTS, DECIDERS), with the
+                            summary of an opinion of others the answer
+                            names (#287)
   autopilot.py others       the others' comments since the last question
-                            (COMMENTS, WRITERS; to OTHERS_FILE) and the
+                            (COMMENTS, DECIDERS; to OTHERS_FILE) and the
                             isolated model's prompt to summarise them
   autopilot.py others-comment
                             the bot's comment of that summary (POINTS)
@@ -674,16 +675,18 @@ def asked_since(comments, started):
                and c.get("createdAt", "") >= started for c in comments)
 
 
-def answers(comments, writers):
+def answers(comments, deciders):
     """What maintainers wrote after the autopilot's last comment that ended
     a run and waits on a person (a question, a stop, a silent or an
     unfinished end), or since the start when there is none (#540): their
-    comments, in order, by a login in `writers` (people with write access,
-    checked live by the workflow). So a hint given with
-    `autopilot:continue` after a stop reaches the prompt too."""
+    comments, in order, by a login in `deciders` (those `who-decides`
+    allows, #588: scripts/deciders.py, checked live by the workflow). So a
+    hint given with `autopilot:continue` after a stop reaches the prompt
+    too. Anyone else, the issue's author included, is not an answer: with
+    none, the run has nothing new and the question still waits."""
     last = max((c.get("createdAt", "") for c in comments if c.get("body", "").startswith((ASK, STOP, SILENT, UNFINISHED))
                 and (c.get("author") or {}).get("login") in BOT_LOGINS), default="")
-    picked = [c for c in comments if c.get("createdAt", "") > last and (c.get("author") or {}).get("login") in writers]
+    picked = [c for c in comments if c.get("createdAt", "") > last and (c.get("author") or {}).get("login") in deciders]
     said = "\n\n".join(f"{(c.get('author') or {}).get('login')}: {c.get('body', '').strip()}" for c in sorted(picked, key=lambda c: c.get("createdAt", "")))
     # An opinion the maintainer took (#287): its summary, as data, never the
     # other person's own words.
@@ -701,9 +704,10 @@ def answers(comments, writers):
 OTHERS = "<!-- dx-autopilot-others -->"
 
 
-def others_since(comments, writers):
-    """The comments after the autopilot's last question by people who are
-    not maintainers (writers) nor bots: [{login, body, url}]. Pure."""
+def others_since(comments, deciders):
+    """The comments after the autopilot's last question by people who do
+    not decide (#588: not in `deciders`) nor bots: [{login, body, url}].
+    Pure."""
     last = max((c.get("createdAt", "") for c in comments if c.get("body", "").startswith(ASK)
                 and (c.get("author") or {}).get("login") in BOT_LOGINS), default="")
     if not last:
@@ -711,7 +715,7 @@ def others_since(comments, writers):
     out = []
     for c in sorted(comments, key=lambda c: c.get("createdAt", "")):
         who = (c.get("author") or {}).get("login") or ""
-        if c.get("createdAt", "") > last and who and who not in writers and who not in BOT_LOGINS and not who.endswith("[bot]"):
+        if c.get("createdAt", "") > last and who and who not in deciders and who not in BOT_LOGINS and not who.endswith("[bot]"):
             out.append({"login": who, "body": c.get("body", ""), "url": c.get("url", "")})
     return out
 
@@ -751,6 +755,16 @@ def others_comment(others, points, question_at=""):
         return ""
     return (f"{OTHERS}\n<!-- for {question_at} -->\n**What others said about the question**, summarised for the maintainers by a model with no tools. A maintainer decides; "
             "to take someone's proposal, answer naming them (`@login`).\n\n" + "\n".join(lines) + f"\n\n{AI_LINE}")
+
+
+def deciders_of(env):
+    """The logins in the file DECIDERS names (WRITERS, before #588), one per
+    line; none when it names none."""
+    path = env.get("DECIDERS") or env.get("WRITERS")
+    if not path:
+        return set()
+    with open(path, encoding="utf-8") as fh:
+        return {l.strip() for l in fh if l.strip()}
 
 
 def last_question_at(comments):
@@ -2042,6 +2056,13 @@ Clamp the value in Sum::add.
           ("Option 2 breaks the import, so 1." in said, "push to main" in said, "Opinions of others" in said), (True, False, True))
     check("#287 defuse: an escaped bracket, a bare www and a protocol-relative link stay inert",
           ("](//evil" in defuse("\\[x\\](//evil.com)"), "www.evil" in defuse("see www.evil.com"), "\\\\[" in defuse("\\[x")), (False, False, True))
+    # #588: those who decide (scripts/deciders.py list answer), never every writer.
+    with open(os.path.join(HERE, "fixtures", "deciders", "comments.json"), encoding="utf-8") as fh:
+        dfx = [dict(c, author={"login": BOT}) if c["author"]["login"] == "dilux-bot" else c for c in json.load(fh)]
+    check("C1 (#588): a writer outside who-decides is no answer: nothing is taken, the question waits",
+          (answers(dfx[:2], {"scripter", "boss"}), "dev" in [o["login"] for o in others_since(dfx[:2], {"scripter", "boss"})]), ("", True))
+    check("C1 (#588): the DECIDERS file is read (WRITERS too, before #588)",
+          (deciders_of({}), deciders_of({"DECIDERS": os.devnull}), deciders_of({"WRITERS": os.devnull})), (set(), set(), set()))
     later_q = oth2 + [{"body": ASK + " Another?", "author": {"login": "dilux-bot"}, "createdAt": "2026-10-18T13:00:00Z"},
                       {"body": "Take @alice's point.", "author": {"login": "boss"}, "createdAt": "2026-10-18T14:00:00Z"}]
     check("#287 answers: an earlier question's summary is never adopted", "Opinions of others" in answers(later_q, {"boss"}), False)
@@ -3186,21 +3207,20 @@ def main(argv):
         return 1 if v == "silent" else 0
     if argv[:1] == ["answers"]:
         # COMMENTS: the pull request's and the issue's comments (JSON list);
-        # WRITERS: logins with write access, one per line, checked live.
+        # DECIDERS: the logins who-decides allows (scripts/deciders.py
+        # list answer), one per line, checked live.
         with open(os.environ["COMMENTS"], encoding="utf-8") as fh:
             comments = json.load(fh)
-        writers = {l.strip() for l in open(os.environ["WRITERS"], encoding="utf-8") if l.strip()} if os.environ.get("WRITERS") else set()
-        print(answers(comments, writers))
+        print(answers(comments, deciders_of(os.environ)))
         return 0
     if argv[:1] in (["others"], ["others-comment"]):
-        # COMMENTS (the pull request's and the issue's), WRITERS: the others'
-        # comments since the question (#287). `others` prints the isolated
+        # COMMENTS (the pull request's and the issue's), DECIDERS: the
+        # others' comments since the question (#287). `others` prints the isolated
         # model's prompt and writes them to OTHERS_FILE; `others-comment`
         # prints the bot's comment from POINTS (the model's answer).
         with open(os.environ["COMMENTS"], encoding="utf-8") as fh:
             comments = json.load(fh)
-        writers = {l.strip() for l in open(os.environ["WRITERS"], encoding="utf-8") if l.strip()} if os.environ.get("WRITERS") else set()
-        others = others_since(comments, writers)
+        others = others_since(comments, deciders_of(os.environ))
         if argv == ["others"]:
             question = next((c.get("body", "") for c in sorted(comments, key=lambda c: c.get("createdAt", ""), reverse=True)
                              if c.get("body", "").startswith(ASK) and (c.get("author") or {}).get("login") in BOT_LOGINS), "")

@@ -1,0 +1,7 @@
+# The self-test's CODEOWNERS (scripts/deciders.py): the last rule that
+# matches a file wins.
+*                    @boss
+docs/                @writer    # a directory, at any depth
+Makefile             @builder
+/.github/workflows/  @acme/ci
+scripts/             @scripter

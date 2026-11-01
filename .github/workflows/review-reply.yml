@@ -12,8 +12,11 @@ name: Claude review reply
 # against the repository, not against author_association), and only on pull
 # requests from branches of the repository itself: a fork's code never runs
 # with the organisation's keys. Anyone may comment on the autopilot's
-# question (#287): someone who is not a maintainer is not an answer, and
-# their comments are summarised for the maintainers by a model with no tools.
+# question (#287): only those `who-decides` allows (#588,
+# scripts/deciders.py: the code owners of what the change touches, the
+# person who accepted it, or every writer; each with write access) answer
+# it, and everyone else's comments, the issue's author's included, are
+# summarised for them by a model with no tools.
 #
 # A maintainer's `/coauthor @login` or `/uncoauthor @login` on a pull request
 # (#491) corrects its Credits block, which the merge turns into the commit's
@@ -96,6 +99,18 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-issues: write
           permission-pull-requests: read
+          permission-contents: read # CODEOWNERS and the seal, for who decides (#588)
+
+      # Who decides (#588): scripts/deciders.py, at the engine's ref.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
+          path: .dx-central
+          persist-credentials: false
+
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
 
       - name: Bring the autopilot back
         id: back
@@ -113,16 +128,16 @@ jobs:
           [ -n "$issue" ] || exit 0
           waiting=$(gh issue view "$issue" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | index("autopilot:waiting") != null')
           [ "$waiting" = true ] || exit 0
-          role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$LOGIN/permission" --jq .role_name 2>/dev/null || echo none)
-          case $role in
-            admin|maintain|write) ;;
-            *)
-              # Someone else's opinion (#287): summarised for the maintainers
-              # next to the question, never an answer.
-              echo "$LOGIN cannot answer for the maintainers ($role): their opinion is summarised."
-              { echo "others=true"; echo "issue=$issue"; } >> "$GITHUB_OUTPUT"
-              exit 0 ;;
-          esac
+          # Only those `who-decides` allows answer (#588,
+          # scripts/deciders.py); anyone else, the issue's author included,
+          # gives an opinion (#287): summarised for the maintainers next to
+          # the question, never an answer. Who could not be read is no answer.
+          if ! why=$(NUMBER="$issue" PR="$([ "$IS_PR" = true ] && echo "$NUMBER" || true)" python3 .dx-central/scripts/deciders.py may answer "$LOGIN"); then
+            echo "$why"
+            echo "$LOGIN does not decide here: their opinion is summarised."
+            { echo "others=true"; echo "issue=$issue"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           gh label create "autopilot:continue" --repo "$GITHUB_REPOSITORY" --color 1D76DB --force --description "On an issue: the autopilot continues its draft pull request, or starts it" >/dev/null 2>&1 || true
           # The run the answer starts does not count towards the autopilot's
           # cap (#479): autopilot.yml labels it free.
@@ -152,6 +167,7 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-issues: write
           permission-pull-requests: read
+          permission-contents: read # CODEOWNERS and the seal, for who decides (#588)
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -184,12 +200,10 @@ jobs:
           [ -n "$pr" ] || { echo "No pull request closing #$ISSUE holds the autopilot's question: nothing to summarise."; exit 0; }
           { gh pr view "$pr" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments'; gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments'; } \
             | jq -s 'add | map({body, createdAt, url, author: {login: .author.login}})' > "$RUNNER_TEMP/comments.json"
-          : > "$RUNNER_TEMP/writers.txt"
-          for login in $(jq -r '.[].author.login' "$RUNNER_TEMP/comments.json" | sort -u); do
-            role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$login/permission" --jq .role_name 2>/dev/null || echo none)
-            case $role in admin|maintain|write) echo "$login" >> "$RUNNER_TEMP/writers.txt" ;; esac
-          done
-          COMMENTS="$RUNNER_TEMP/comments.json" WRITERS="$RUNNER_TEMP/writers.txt" OTHERS_FILE="$RUNNER_TEMP/others.json" python3 .dx-central/scripts/autopilot.py others > "$RUNNER_TEMP/others-prompt.md"
+          # Those who decide (#588) are not others; who could not be read is.
+          jq -r '.[].author.login' "$RUNNER_TEMP/comments.json" | sort -u \
+            | NUMBER="$ISSUE" PR="$pr" python3 .dx-central/scripts/deciders.py list answer > "$RUNNER_TEMP/deciders.txt" || : > "$RUNNER_TEMP/deciders.txt"
+          COMMENTS="$RUNNER_TEMP/comments.json" DECIDERS="$RUNNER_TEMP/deciders.txt" OTHERS_FILE="$RUNNER_TEMP/others.json" python3 .dx-central/scripts/autopilot.py others > "$RUNNER_TEMP/others-prompt.md"
           # A paid run per comment: past 20 others since the question, the
           # summary stays as it was and the maintainers read the thread.
           if [ "$(jq length "$RUNNER_TEMP/others.json")" -gt 20 ]; then echo "More than 20 comments by others since the question: not summarised again."; exit 0; fi
@@ -227,7 +241,7 @@ jobs:
           POINTS: ${{ steps.summary.outputs.structured_output }}
         run: |
           set -euo pipefail
-          COMMENTS="$RUNNER_TEMP/comments.json" WRITERS="$RUNNER_TEMP/writers.txt" python3 .dx-central/scripts/autopilot.py others-comment > "$RUNNER_TEMP/others.md"
+          COMMENTS="$RUNNER_TEMP/comments.json" DECIDERS="$RUNNER_TEMP/deciders.txt" python3 .dx-central/scripts/autopilot.py others-comment > "$RUNNER_TEMP/others.md"
           [ -s "$RUNNER_TEMP/others.md" ] || { echo "Nothing argued about the question."; exit 0; }
           # One comment a question, kept up to date.
           for_line=$(sed -n 2p "$RUNNER_TEMP/others.md")
