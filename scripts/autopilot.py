@@ -538,6 +538,24 @@ def add_decision(pr_body, text, day):
     return f"{before}{head}\n\n" + "\n".join(lines) + "\n" + rest
 
 
+CC_PREFIX = re.compile(r"^\s*(feat|fix|docs|chore|refactor|perf|test|build|ci|style|revert)(\([^)]*\))?(!)?:\s*", re.I)
+
+
+def title_type(title, kind):
+    """(prefix, subject) of the draft's title (#561 C6): an issue titled as
+    a Conventional Commit keeps its own type, scope and `!` where they fit
+    the issue's Type (`feat` or any `!` closes a Feature, `fix` a Bug, any
+    other type the rest); otherwise the Type's kind, the scope kept. Never
+    the type twice (`feat: feat: x`). Pure."""
+    m = CC_PREFIX.match(title or "")
+    if not m:
+        return kind, (title or "").strip()
+    t, scope, bang = m.group(1).lower(), m.group(2) or "", m.group(3) or ""
+    subject = title[m.end():].strip()
+    fits = t == kind and (not bang or kind == "feat") or (bang and kind == "feat") or (t not in ("feat", "fix") and not bang and kind not in ("feat", "fix"))
+    return (f"{t}{scope}{bang}" if fits else f"{kind}{scope}"), subject
+
+
 def draft(number, issue_type, title, body):
     """The branch, title and body of the draft pull request, before any code.
     ValueError when the issue yields no criterion: a draft with an empty
@@ -545,9 +563,10 @@ def draft(number, issue_type, title, body):
     if not criteria(body):
         raise ValueError(NO_CRITERIA)
     kind = TYPES.get((issue_type or "").strip().lower(), "chore")
-    subject = title.strip()
+    prefix, subject = title_type(title, kind)
     subject = subject[:1].lower() + subject[1:]
-    head = f"{kind}: {subject}"
+    title = subject
+    head = f"{prefix}: {subject}"
     if len(head) > 72:
         head = head[:71].rstrip() + "…"
     approach = dict(schema.parse(body)[0]).get("Spec: approach", "").strip()
@@ -1708,6 +1727,13 @@ A class on html.
     d = draft("7", "Feature", "Dark mode for the site", two)
     check("C1: the draft's branch follows the rules", d["branch"], "feat/7-dark-mode-for-the-site")
     check("C1: the draft's title is a Conventional Commit", d["title"], "feat: dark mode for the site")
+    dt = lambda kind, title: (lambda x: (x["title"], x["branch"]))(draft("7", kind, title, two))
+    check("#561 C6: an issue titled as a Conventional Commit keeps its type, never twice",
+          [dt("Feature", "feat: x"), dt("Feature", "fix(api)!: y"), dt("Task", "docs: w")],
+          [("feat: x", "feat/7-x"), ("fix(api)!: y", "feat/7-y"), ("docs: w", "chore/7-w")])
+    check("#561 C6: a type that does not fit the issue's Type gives way to it, the scope kept",
+          [dt("Bug", "fix(api)!: y")[0], dt("Bug", "feat: z")[0], dt("Task", "Feat(ui): Big Thing")[0], dt("Feature", "Dark mode")[0]],
+          ["fix(api): y", "fix: z", "chore(ui): big Thing", "feat: dark mode"])
     check("C1: the draft closes the issue", "Closes #7." in d["body"], True)
     check("C1: one unticked box per criterion, with its test", (progress(d["body"]), "Test: tests/e2e/persist.spec.ts" in d["body"]), ((0, 2), True))
     check("C1: a Bug's draft is a fix", draft("8", "Bug", "x", two)["branch"].startswith("fix/8-"), True)

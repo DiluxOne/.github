@@ -26,6 +26,7 @@ is reported and the others go on; the run then fails.
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -74,9 +75,27 @@ def selects(rules, repo):
     return True
 
 
-def child_body(body, parent_ref):
+# A parent's criterion for one repository only (#561): `- C6: [name] …`.
+TAGGED = re.compile(r"^(\s*(?:-\s+(?:\[[ xX]\]\s+)?)?C\d+:\s+)\[([\w.-]+)\]\s*")
+
+
+def own_criteria(text, repo):
+    """The Acceptance criteria a sub-issue in `repo` gets (#561): the
+    untagged ones and those tagged with its name (the tag dropped), never
+    another repository's. Pure."""
+    out = []
+    for line in text.split("\n"):
+        m = TAGGED.match(line)
+        if m and m.group(2) != repo:
+            continue
+        out.append(line if not m else m.group(1) + line[m.end():])
+    return "\n".join(out)
+
+
+def child_body(body, parent_ref, repo=""):
     """The sub-issue's text: the parent's PRD as it was accepted, but its
-    Repositories section (a sub-issue decides for its repository alone)."""
+    Repositories section (a sub-issue decides for its repository alone),
+    and, in `repo`, only its own criteria (own_criteria)."""
     sections, _ = schema.parse(body)
     prd = [s["heading"] for s in schema.schema()["prd"] if s["id"] != "repositories"]
     parts = []
@@ -88,6 +107,8 @@ def child_body(body, parent_ref):
         # so the sub-issue passes G1 as its parent did.
         if h == "Scope":
             t = f"- Carries out {parent_ref} in this repository, accepted with it (the delegated lane).\n{t}"
+        if h == "Acceptance criteria" and repo:
+            t = own_criteria(t, repo)
         parts.append(f"### {h}\n\n{t}")
     return "\n\n".join(parts) + f"\n\n{AI}\n"
 
@@ -179,7 +200,7 @@ def open_child(full, number, parent, repo):
     way left the issue unlinked: it is found by its text and reused, never
     opened twice."""
     org = full.split("/", 1)[0]
-    body = child_body(parent["body"], f"{full}#{number}")
+    body = child_body(parent["body"], f"{full}#{number}", repo)
     found = [i for i in json.loads(gh("issue", "list", "--repo", f"{org}/{repo}", "--state", "open", "--search", f"in:title {parent['title']}",
                                       "--json", "number,title,body")) if i["title"] == parent["title"] and i["body"].strip() == body.strip()]
     if found:
@@ -289,6 +310,13 @@ def self_test():
     check("child: without the Repositories section", "### Repositories" in body, False)
     check("child: says what it carries out", "Carries out DiluxOne/.github#300 in this repository" in body, True)
     check("child: its PRD passes G1", schema.check(body)["ok"], True)
+    tagged = prd.replace("- C1: Given a plugin", "- C1: Given every repository, when read, then x.\n- C2: [offload] Given offload, when read, then y.\n"
+                         "- C3: [mail] Given mail, when read, then z.\n- C4: Given a plugin")
+    mine = child_body(tagged, "DiluxOne/.github#300", "offload")
+    check("#561 child: a sub-issue gets the untagged criteria and its own, its tag dropped, never another repository's",
+          ("- C1: Given every repository" in mine, "- C2: Given offload" in mine, "[offload]" in mine, "C3:" in mine, "- C4: Given a plugin" in mine, schema.check(mine)["ok"]),
+          (True, True, False, False, True, True))
+    check("#561 child: the parent's tagged criteria pass G1 as they are", schema.check(tagged)["ok"], True)
 
     repos = [plugin, dict(plugin, name="mail"), dict(plugin, name="secret", visibility="PRIVATE"), {"name": ".github", "visibility": "PUBLIC", "kind": "wordpress-plugin"}]
     calls = {"open": [], "comment": []}
