@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 596,
+  "prd_sha256": "7ff809b24f2318b65c1d1a884f8f02643ebc75a8ffaabd4cb63c26c5a530da62",
+  "prd": "### Problem\n\nTwo changes are merged and not in a version: #584 (the autopilot moves on its own, from one state machine, #561) and #578 (a decision's sub-issue opened before its repository's adoption is sealed by the delegated lane, #575). Until they are released, the sub-issues of #552 in DiluxOne/dilux-agentic-workflow (#60), DiluxOne/diluxone-mermaid (#3) and DiluxOne/diluxone-plugins-ai (#3) cannot start, and no repository but this one gets the state machine.\n\n### Scope\n\n- Rebuild CHANGELOG.md with v7.11.0 (`scripts/changelog.py build --next v7.11.0`); a minor: one feature (#584), one fix (#578), nothing breaking for the callers.\n- Before moving `v7`, check that no reusable workflow asks the adopted callers for a permission, input or secret they do not give (the only additions, `contents: read`, are in the new `autopilot-sweep` job and workflow, which every caller of `pull-request.yml` already grants); tag v7.11.0 on the merge commit, move v7 to it (lightweight), and watch the adopted repositories for runs that end in `startup_failure` for 30 minutes.\n\n### Out of scope\n\n- Anything not merged yet (#595, #567 go in later releases).\n\n### Acceptance criteria\n\n- C1: Given the release pull request merged, when v7.11.0 is tagged, then v7 points at it, its GitHub Release lists #584 and #578, and no adopted repository's run ends in `startup_failure` in the next 30 minutes.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-01T20:12:36Z",
+  "policy": "DiluxOne/.github@6c5e3e152ee5"
+}
