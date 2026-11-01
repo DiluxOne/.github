@@ -344,6 +344,14 @@ def self_test():
         check("C5: nothing tagged, v7 not moved, nothing released", [c for c in fake.calls if c[:1] == ("git",) or c[:2] in (("gh", "release"), ("gh", "pr"))], [])
         check("C5: the bug names the scenario and its run", bool(bug) and "spec-to-draft" in " ".join(bug[0]) and "https://github.com/o/t/actions/runs/9" in " ".join(bug[0]), True)
         check("C5: no result at all is a failure", decide(p, [])["do"], "bug")
+        # C7: a `!`, the scenarios pass.
+        fake = Fake()
+        pb = plan(dict(nxt, bump="minor", next="7.11.0"), ["feat(autopilot)!: a required input"])
+        d = act(pb, passed, "O/.github", run=fake, root=root)
+        issue = [c for c in fake.calls if c[:3] == ("gh", "issue", "create")]
+        check("C7: a breaking change whose scenarios pass → the release issue", d["do"], "issue")
+        check("C7: the release issue is the Release form's", bool(issue) and ("--title", "Release 7.11.0") == issue[0][5:7] and "lane:release" in issue[0], True)
+        check("C7: nothing tagged, nothing moved", [c for c in fake.calls if c[:1] == ("git",) or c[:2] == ("gh", "release")], [])
         # C6: a startup_failure within 30 minutes of the move.
         since = "2026-11-02T10:00:00Z"
         runs = [{"id": 1, "created_at": "2026-11-02T10:05:00Z", "conclusion": "success", "html_url": "u1"},
