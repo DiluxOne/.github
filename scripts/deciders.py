@@ -207,7 +207,8 @@ def decide(value, action, login, role, codeowners=None, files=(), acceptor=""):
     me = (login or "").lower()
     out = {"value": value, "who": who}
     if role not in FLOORS[action]:
-        return dict(out, ok=False, why=f"@{login} has {role or 'no'} access here; who may {WHAT[action]}: {who}.")
+        had = "no" if role in ("", "none", None) else role
+        return dict(out, ok=False, why=f"@{login} has {had} access here; who may {WHAT[action]}: {who}.")
     if role == "admin" or effective == "writers":
         return dict(out, ok=True, why=f"@{login} may {WHAT[action]} ({role}, who-decides: {value}).")
     if effective == "acceptor" and me == acceptor.lower():
@@ -400,6 +401,7 @@ def self_test():
         check("C4 (choice 4a): the credits keep their floor of maintain, whatever the value",
               (cli(["may", "credits", "dev"], acc, "who-decides: writers\n")[0], decide("writers", "credits", "m", "maintain")["ok"]), (1, True))
         check("C5 cli: who says who may accept again", cli(["who", "accepted"], dict(base, codeowners=None)), (0, "anyone with write access to the repository"))
+        check("cli: someone the repository does not know has no access", cli(["may", "answer", "nobody"], base)[1].startswith("@nobody has no access here;"), True)
         check("cli: an unknown value is an error (exit 2), never a yes", cli(["may", "answer", "dev"], base, "who-decides: everyone\n")[0], 2)
     # C3: only GitHub's "not found" is no CODEOWNERS; any other failure is
     # never read as none (which would open the decision to every writer).

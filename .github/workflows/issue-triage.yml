@@ -1,6 +1,11 @@
 name: Issue triage
 
-# Reusable. When an issue is opened, Claude reads it with the repository's
+# Reusable. A person's `accepted` or `autopilot:continue` starts the
+# autopilot only when `who-decides` allows them (#588, the `steer` job,
+# scripts/deciders.py); anyone else's `autopilot:continue` comes off with a
+# comment that names who may add it.
+#
+# When an issue is opened, Claude reads it with the repository's
 # README, readme.txt, docs/roadmap.md and the open issues, classifies it and
 # does one thing: applies a label and posts one reply. It never closes an
 # issue, never promises a fix and never gives a date. The `low` reviewer of

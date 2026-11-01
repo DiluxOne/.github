@@ -238,6 +238,7 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-issues: write
           permission-contents: write # the receipts branch
+          permission-pull-requests: read # the change's files, for who decides (#588)
       # Who may accept (#588, scripts/deciders.py), before anything else: a
       # person `who-decides` does not allow has the label taken off and a
       # comment that names who may add it; nothing is checked nor sealed.

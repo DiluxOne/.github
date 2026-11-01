@@ -95,3 +95,18 @@ def test_every_issues_caller_forwards_the_comments_and_the_model_to_the_acceptan
         assert "github.event_name == 'issue_comment'" in acc["if"], path
         assert {"DILUX_BOT_PRIVATE_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"} <= set(acc["secrets"]), path
         assert acc["permissions"] == {"actions": "write", "issues": "read", "pull-requests": "read"}, path
+
+
+def test_every_job_that_asks_who_decides_can_read_what_decides():
+    """deciders.py reads CODEOWNERS and the seal (contents), the change's
+    files (pull requests) and the issue: a token without one refuses
+    everyone, every acceptance included."""
+    import json
+    for name in ("autopilot.yml", "issue-accepted.yml", "issue-triage.yml", "review-reply.yml"):
+        for job_name, job in workflow(name).get("jobs", {}).items():
+            if "deciders.py" not in json.dumps(job):
+                continue
+            token = next(s for s in job["steps"] if "create-github-app-token" in str(s.get("uses", "")) and s.get("id") == "bot")["with"]
+            assert token.get("permission-contents") in ("read", "write"), (name, job_name)
+            assert token.get("permission-pull-requests") in ("read", "write"), (name, job_name)
+            assert token.get("permission-issues") in ("read", "write"), (name, job_name)
