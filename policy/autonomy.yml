@@ -231,6 +231,32 @@ lanes:
     merge: {max-risk: medium, max-complexity: high}
     ceiling: {max-risk: high, max-complexity: high}
 
+  # A Bug a maintainer wrote (#564): the person who would accept it wrote
+  # it, so writing it is the acceptance, and it never goes through the
+  # outside reporter's triage and reproduction. The triage
+  # (scripts/triage-act.sh own-bug) labels it lane:maintainer-bug and
+  # `accepted`, seals its PRD as accepted by its author, and the autopilot
+  # starts; the autopilot's test-first still proves the bug with a failing
+  # test before the fix. Accepted when all of this holds, read from GitHub
+  # (scripts/autonomy.py, author_accepts()):
+  #   - the lane's App added lane:maintainer-bug last;
+  #   - its Type is Bug, and its author, a person, has the admin or maintain
+  #     role in the repository;
+  #   - its text was not edited after the label was added.
+  # Merging is the same as for a person's issue: every gate, and a person
+  # merges what the policy leaves to one.
+  maintainer-bug:
+    description: A Bug a person with the admin or maintain role wrote, accepted with its writing.
+    accept: policy
+    type: Bug
+    origin:
+      app: dilux-bot
+      author: maintain-or-admin
+    repositories: ["*"]
+    evidence: The author's admin or maintain role, read from GitHub, the lane's label added by the App, and the PRD sealed as the author's acceptance.
+    merge: {max-risk: medium, max-complexity: high}
+    ceiling: {max-risk: high, max-complexity: high}
+
   # Mechanical sync pull requests (#155): the Task issue and the pull request
   # scripts/sync-repos.py opens in a repository (`files`, `callers`,
   # `pre-pr`, `dependabot`) to bring

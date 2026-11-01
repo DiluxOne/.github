@@ -64,7 +64,7 @@ QUERY='query($owner: String!, $name: String!, $number: Int!) {
           timelineItems(itemTypes: [LABELED_EVENT, UNLABELED_EVENT, PARENT_ISSUE_ADDED_EVENT], last: 100) {
             nodes {
               __typename
-              ... on LabeledEvent { label { name } actor { __typename login } }
+              ... on LabeledEvent { createdAt label { name } actor { __typename login } }
               ... on UnlabeledEvent { label { name } actor { __typename login } }
               ... on ParentIssueAddedEvent { createdAt }
             }
@@ -356,6 +356,22 @@ if [ "${1:-}" = "--test" ]; then
   sub_issue User CONTRIBUTOR | answer | T="chore(x): carry it out" case_ "fails: a sub-issue from outside the organisation" 1 || fail=1
   sub_issue User MEMBER CLOSED COMPLETED | answer | T="chore(x): carry it out" case_ "passes: a sub-issue whose parent was closed as completed (#572)" 0 || fail=1
   sub_issue User MEMBER CLOSED NOT_PLANNED | answer | T="chore(x): carry it out" case_ "fails: a sub-issue whose parent was closed as not planned (#572)" 1 || fail=1
+  # A Bug a maintainer wrote (the maintainer-bug lane, #564): the bot's
+  # labels, the author's role read from GitHub (a stand-in gh here).
+  own_bug() {
+    jq -n --arg r "$repo" --arg who "${1:-boss}" --arg edited "${2:-}" '{number: 12, state: "OPEN", repository: {nameWithOwner: $r}, author: {login: $who}, authorAssociation: "MEMBER", body: "A PRD.", lastEditedAt: (if $edited == "" then null else $edited end), labels: {nodes: [{name: "lane:maintainer-bug"}, {name: "accepted"}]}, issueType: {name: "Bug"}, timelineItems: {nodes: [{__typename: "LabeledEvent", createdAt: "2026-11-01T10:00:00Z", label: {name: "lane:maintainer-bug"}, actor: {__typename: "Bot", login: "dilux-bot"}}, {__typename: "LabeledEvent", createdAt: "2026-11-01T10:00:01Z", label: {name: "accepted"}, actor: {__typename: "Bot", login: "dilux-bot"}}]}}'
+  }
+  fakebin=$(mktemp -d)
+  printf '#!/bin/sh\ncase "$*" in *collaborators/boss/permission*) echo maintain;; *collaborators/*) echo write;; *) exit 1;; esac\n' > "$fakebin/gh"; chmod +x "$fakebin/gh"
+  own_bug | answer | PATH="$fakebin:$PATH" T="fix(x): a thing" case_ "passes: a Bug a maintainer wrote, accepted by the maintainer-bug lane (#564)" 0 || fail=1
+  own_bug dev | answer | PATH="$fakebin:$PATH" T="fix(x): a thing" case_ "fails: a writer's Bug the bot labelled (#564)" 1 || fail=1
+  own_bug boss 2026-11-01T11:00:00Z | answer | PATH="$fakebin:$PATH" T="fix(x): a thing" case_ "fails: a maintainer's Bug edited after the lane accepted it (#564)" 1 || fail=1
+  rm -rf "$fakebin"
+  if printf '%s' "$QUERY" | grep -q 'LabeledEvent { createdAt label'; then
+    echo "ok   the query reads when each label was added (#564, the maintainer-bug lane)"
+  else
+    echo "FAIL the query reads when each label was added (#564, the maintainer-bug lane)"; fail=1
+  fi
   # The fixtures above are built by hand: the live query must read what
   # delegated_accepts() reads of the parent, stateReason included (#572).
   if printf '%s' "$QUERY" | grep -A1 'parent {' | grep -qw stateReason; then

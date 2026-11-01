@@ -405,6 +405,8 @@ def lane_accepts(policy, issue, run, repository, autopilot_var, sync=None):
         return carry_accepts(name, lane, issue, repository, sync or {})
     if origin.get("parent"):
         return delegated_accepts(name, lane, issue, repository)
+    if origin.get("author"):
+        return author_accepts(name, lane, issue, (sync or {}).get("maintainer"))
     app = origin.get("app", "")
     bot_logins = {app, f"{app}[bot]"}
     event = last_label_event(issue, f"lane:{name}")
@@ -435,6 +437,35 @@ def lane_accepts(policy, issue, run, repository, autopilot_var, sync=None):
 
 DELEGATED = "delegated"
 MEMBERS = {"OWNER", "MEMBER"}
+
+
+def author_accepts(name, lane, issue, maintainer):
+    """(True, why) when the issue is one its author accepted by writing it
+    (#564, the maintainer-bug lane): the lane's App added lane:<name> last,
+    its Type is the lane's, its author (a person, not the App) has the admin
+    or maintain role (`maintainer(login)`, read from GitHub), and its text
+    was not edited after the label was added. Pure but for `maintainer`."""
+    app = (lane.get("origin") or {}).get("app", "")
+    event = last_label_event(issue, f"lane:{name}")
+    if not event or event.get("__typename") != "LabeledEvent" or login((event.get("actor") or {}).get("login")) != login(app):
+        return False, f"the last to add lane:{name} was not {app}"
+    want = lane.get("type")
+    if want and ((issue.get("issueType") or {}).get("name") or "") != want:
+        return False, f"the issue is not a {want}"
+    author = (issue.get("author") or {}).get("login") or ""
+    if not author or login(author) == login(app):
+        return False, "the issue was not written by a person"
+    try:
+        role = bool(maintainer) and maintainer(author)
+    except (RuntimeError, OSError, ValueError):
+        role = False
+    if not role:
+        return False, f"its author {author} has neither the admin nor the maintain role"
+    if "lastEditedAt" not in issue:
+        return False, "the issue's edit history could not be read"
+    if issue.get("lastEditedAt") and (not event.get("createdAt") or issue["lastEditedAt"] > event["createdAt"]):
+        return False, "the issue's text was edited after it was accepted"
+    return True, f"accepted by policy: lane {name}, a {want or 'issue'} its author {author} (admin or maintain) wrote"
 
 
 def delegated_accepts(name, lane, issue, repository):
@@ -1400,7 +1431,7 @@ def self_test():
     check("#488 claims: a repository lowers a limit, never raises it",
           [merge(org, {"claims": {"release-days": 5}})["claims"]["release-days"], merge(org, {"claims": {"release-days": 50}})["claims"]["release-days"]], [5, 10])
     check("#488 claims: an unknown key or a day count that is not a number", [problems({**org, "claims": {"x": 1}}) != [], problems({**org, "claims": {"remind-days": "7"}}) != []], [True, True])
-    check("the organisation's policy has the eight lanes", sorted(org.get("lanes", {})), ["adopt", "bugfix-reproduced", "delegated", "human-issue", "org-sync", "platform", "release", "security-carry"])
+    check("the organisation's policy has the nine lanes", sorted(org.get("lanes", {})), ["adopt", "bugfix-reproduced", "delegated", "human-issue", "maintainer-bug", "org-sync", "platform", "release", "security-carry"])
     # The security-carry lane (#287).
     pol_c = merge(org, {})
     lane_c = pol_c["lanes"]["security-carry"]
@@ -1511,6 +1542,33 @@ def self_test():
     check("#189: DX_AUTOPILOT off stops it", acc(child(), "off")[0], False)
     check("#189: a repository switches it off", lane_accepts(merge(org, {"lanes": {"delegated": {"enabled": False}}}), child(), None, "DiluxOne/x", "")[0], False)
     check("a release is never accepted by policy", org["lanes"]["release"]["accept"], "human")
+
+    # #564 C2: a Bug its maintainer wrote is accepted with its writing.
+    def own_bug(author="boss", by="dilux-bot", actor="Bot", kind="Bug", edited=None, at="2026-11-01T10:00:00Z", labels=("lane:maintainer-bug",)):
+        return {"number": 7, "body": "A PRD.", "author": {"login": author}, "authorAssociation": "MEMBER", "lastEditedAt": edited,
+                "issueType": {"name": kind} if kind else None, "labels": {"nodes": [{"name": n} for n in labels]},
+                "timelineItems": {"nodes": [{"__typename": "LabeledEvent", "createdAt": at, "label": {"name": "lane:maintainer-bug"}, "actor": {"__typename": actor, "login": by}}]}}
+    roles = {"boss": "maintain", "root": "admin", "dev": "write"}
+    is_maint = lambda who: roles.get(who) in ("admin", "maintain")
+    macc = lambda i, var="", m=is_maint: lane_accepts(dpol, i, None, "DiluxOne/diluxone-fm", var, {"maintainer": m})
+    check("#564 C2: a maintainer's Bug is accepted by policy, as their writing", macc(own_bug()), (True, "accepted by policy: lane maintainer-bug, a Bug its author boss (admin or maintain) wrote"))
+    check("#564 C2: an admin's too", macc(own_bug(author="root"))[0], True)
+    check("#564 C2: a writer's Bug is not", macc(own_bug(author="dev")), (False, "its author dev has neither the admin nor the maintain role"))
+    check("#564 C2: nor an outside reporter's", macc(own_bug(author="alice"))[0], False)
+    check("#564 C2: the label added by a person accepts nothing", macc(own_bug(by="boss", actor="User"))[0], False)
+    check("#564 C2: only a Bug", macc(own_bug(kind="Feature")), (False, "the issue is not a Bug"))
+    check("#564 C2: no Type, no lane", macc(own_bug(kind=None))[0], False)
+    check("#564 C2: the bot's own issue is no person's writing", macc(own_bug(author="dilux-bot[bot]"))[0], False)
+    check("#564 C2: edited after it was accepted, it waits for a person", macc(own_bug(edited="2026-11-01T11:00:00Z"))[0], False)
+    check("#564 C2: edited before, it stands", macc(own_bug(edited="2026-11-01T09:00:00Z"))[0], True)
+    check("#564 C2: no role read, no acceptance", (macc(own_bug(), m=None)[0], lane_accepts(dpol, own_bug(), None, "DiluxOne/x", "")[0]), (False, False))
+    def failing(_):
+        raise RuntimeError("HTTP 502")
+    check("#564 C2: a role read that fails accepts nothing", macc(own_bug(), m=failing)[0], False)
+    check("#564 C2: DX_AUTOPILOT off stops it", macc(own_bug(), "off")[0], False)
+    check("#564 C2: a repository switches it off", lane_accepts(merge(org, {"lanes": {"maintainer-bug": {"enabled": False}}}), own_bug(), None, "DiluxOne/x", "", {"maintainer": is_maint})[0], False)
+    check("#564 C2: it merges as a person's issue does, never more", (org["lanes"]["maintainer-bug"]["merge"], org["lanes"]["maintainer-bug"].get("ceiling")),
+          (org["lanes"]["human-issue"]["merge"], org["lanes"]["human-issue"]["ceiling"]))
 
     # The golden rule (#397): no lane merges a change that widens autonomy.
     # Every lane of the policy, given a protected path that widens it (or
@@ -2032,7 +2090,8 @@ def main():
             print("the issue could not be read")
             return 1
         sync = sync_from_env(repository, os.environ.get("LANE_SCOPE") == "issue")
-        ok, why = lane_accepts(policy_in_force(), issue, read_run(issue, repository), repository, var, {**carry_from_env(repository), **sync})
+        ok, why = lane_accepts(policy_in_force(), issue, read_run(issue, repository), repository, var,
+                               {**carry_from_env(repository), **sync, "maintainer": maintainer_of(repository)})
         print(why)
         return 0 if ok else 1
     if mode == "lane-announce":

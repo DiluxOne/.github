@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ALLOWED = {
     "accepted", "awaiting-acceptance", "incomplete", "autopilot", "needs-human", "claimed", "security",
     "risk:low", "risk:medium", "risk:high",
-    "lane:platform", "lane:bugfix-reproduced", "lane:org-sync", "lane:adopt", "lane:release",
+    "lane:platform", "lane:bugfix-reproduced", "lane:org-sync", "lane:adopt", "lane:release", "lane:maintainer-bug",
     "accepted-by:policy", "merged-by:policy",
     "run:runner-image", "run:autonomy-digest", "run:claims", "run:waiting", "run:flow-numbers",
     "complexity:low", "complexity:medium", "complexity:high",

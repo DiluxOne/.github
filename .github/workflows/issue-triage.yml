@@ -39,8 +39,15 @@ name: Issue triage
 # (#247), is not classified again: its state is `repro=unconfirmed` and its
 # reproduction starts, as for any bug report.
 #
-# It never adds `accepted`: only a person accepts an issue, and the
-# accepted-issue gate (scripts/issue-gate.sh) ignores a label a bot added.
+# It never adds `accepted` on its own judgement: only a person accepts an
+# issue, and the accepted-issue gate (scripts/issue-gate.sh) ignores a label
+# a bot added. The one exception is a person's own writing (#564): a Bug
+# whose author has the admin or maintain role is not classified at all
+# (no `repro=unconfirmed`, no reproduction); complete (G1), the
+# `maintainer-bug` lane of policy/autonomy.yml accepts it as its author's
+# decision (lane:maintainer-bug, `accepted`, `accepted-by:policy`, its PRD
+# sealed with its author as who accepted), the gate asks that lane again,
+# and the autopilot starts (scripts/triage-act.sh own-bug).
 # An issue with no Type gets the category's; a bug report it reads as a
 # request (enhancement, planned, pro-feature) is retyped Feature and the
 # reply says so (#84): no reproduction starts, no `fix` can close it, and it
@@ -166,6 +173,9 @@ jobs:
       # Labels and numbers only: what a run that read the paid roadmap
       # produced, handed to the job that writes the public reply.
       paid: ${{ steps.verdict.outputs.paid }}
+      # true when the maintainer-bug lane accepted the issue (#564): the
+      # autopilot starts on it, as on a person's `accepted`.
+      own-accepted: ${{ steps.own.outputs.accepted }}
       verdict: ${{ steps.verdict.outputs.verdict }}
       bug: ${{ steps.verdict.outputs.bug }}
       language: ${{ steps.verdict.outputs.language }}
@@ -204,8 +214,45 @@ jobs:
           POLICY_LEVEL: low
         run: python3 .dx-central/scripts/policy.py
 
+      # A Bug its maintainer wrote (#564, the maintainer-bug lane): writing
+      # it was the acceptance, so it is not classified, gets no
+      # `repro=unconfirmed` and starts no reproduction; complete (G1), it is
+      # accepted by the lane, its PRD sealed as its author's acceptance (a
+      # token that writes the receipts branch, for this alone), and the
+      # autopilot starts (the `autopilot` job). Anyone else's issue, or one
+      # whose author's role cannot be read, is triaged as before.
+      - name: dilux-bot token (the receipts branch)
+        id: seal
+        if: github.event.issue.author_association == 'OWNER' || github.event.issue.author_association == 'MEMBER' || github.event.issue.author_association == 'COLLABORATOR'
+        continue-on-error: true
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write # the receipts branch: the PRD's seal
+          permission-issues: read
+
+      - name: A Bug its maintainer wrote
+        id: own
+        if: steps.seal.outputs.token != ''
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          SEAL_TOKEN: ${{ steps.seal.outputs.token }}
+          AUTHOR: ${{ github.event.issue.user.login }}
+          BODY_TEXT: ${{ github.event.issue.body }}
+          NUMBER: ${{ github.event.issue.number }}
+          DX_AUTOPILOT: ${{ vars.DX_AUTOPILOT }}
+          REPO_AUTONOMY: .github/autonomy.yml
+        run: |
+          set -euo pipefail
+          POLICY_REF=$(git -C .dx-central rev-parse --short=12 HEAD)
+          export POLICY_REF
+          bash .dx-central/scripts/triage-act.sh own-bug >> "$GITHUB_OUTPUT"
+
       - name: At most max-per-day triage runs in 24 hours
         id: cap
+        if: steps.own.outputs.own != 'yes'
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           MAX: ${{ inputs.max-per-day }}
@@ -238,7 +285,7 @@ jobs:
       - name: dilux-bot token for the paid add-on's roadmap
         id: paid
         continue-on-error: true
-        if: steps.cap.outputs.over != 'true' && steps.policy.outputs.paid_name != '' && steps.policy.outputs.paid_owner == github.repository_owner
+        if: steps.own.outputs.own != 'yes' && steps.cap.outputs.over != 'true' && steps.policy.outputs.paid_name != '' && steps.policy.outputs.paid_owner == github.repository_owner
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
@@ -249,7 +296,7 @@ jobs:
 
       - name: Brief
         id: brief
-        if: steps.cap.outputs.over != 'true'
+        if: steps.own.outputs.own != 'yes' && steps.cap.outputs.over != 'true'
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           PAID_TOKEN: ${{ steps.paid.outputs.token }}
@@ -287,7 +334,7 @@ jobs:
       # in a reply, not in a summary, not in a step's logged environment.
       - name: Classify
         id: claude
-        if: steps.cap.outputs.over != 'true'
+        if: steps.own.outputs.own != 'yes' && steps.cap.outputs.over != 'true'
         continue-on-error: true
         timeout-minutes: 8
         env:
@@ -366,7 +413,7 @@ jobs:
 
       - name: The verdict, as labels and numbers
         id: verdict
-        if: steps.cap.outputs.over != 'true'
+        if: steps.own.outputs.own != 'yes' && steps.cap.outputs.over != 'true'
         env:
           PAID: ${{ steps.brief.outputs.paid }}
           OUT: ${{ steps.claude.outputs.structured_output }}
@@ -387,7 +434,7 @@ jobs:
       # contents, which an App needs to transfer an issue).
       - name: The security repository
         id: sec
-        if: steps.cap.outputs.over != 'true' && steps.brief.outputs.paid != 'true' && !github.event.repository.private && contains(steps.verdict.outputs.verdict, '"security"')
+        if: steps.own.outputs.own != 'yes' && steps.cap.outputs.over != 'true' && steps.brief.outputs.paid != 'true' && !github.event.repository.private && contains(steps.verdict.outputs.verdict, '"security"')
         run: |
           repo=$(python3 -c 'import sys; sys.path.insert(0, ".dx-central/scripts"); import org; print(org.SECURITY)' 2>/dev/null || true)
           if [[ "$repo" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]] && [ "$repo" != "$GITHUB_REPOSITORY" ]; then
@@ -395,7 +442,7 @@ jobs:
           fi
       - name: dilux-bot token (this repository and the security one)
         id: sectoken
-        if: steps.cap.outputs.over != 'true' && steps.brief.outputs.paid != 'true' && !github.event.repository.private && contains(steps.verdict.outputs.verdict, '"security"') && steps.sec.outputs.name != ''
+        if: steps.own.outputs.own != 'yes' && steps.cap.outputs.over != 'true' && steps.brief.outputs.paid != 'true' && !github.event.repository.private && contains(steps.verdict.outputs.verdict, '"security"') && steps.sec.outputs.name != ''
         continue-on-error: true # without it, the report is locked as before
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -406,7 +453,7 @@ jobs:
           permission-contents: write # transferIssue asks an App for it on both repositories (#311)
 
       - name: Act (label, reply, lock)
-        if: steps.cap.outputs.over != 'true' && steps.brief.outputs.paid != 'true'
+        if: steps.own.outputs.own != 'yes' && steps.cap.outputs.over != 'true' && steps.brief.outputs.paid != 'true'
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           VERDICT: ${{ steps.verdict.outputs.verdict }}
@@ -889,13 +936,16 @@ jobs:
   # (scripts/decision.py, #415), which nobody labels; autopilot.yml asks
   # GitHub whether a lane accepts it and starts nothing otherwise. A
   # reproduced bug's lane issue is left to issue-repro.yml, which starts it.
+  # A Bug its maintainer wrote starts it when the triage job's lane accepted
+  # it (#564): that `accepted` is the bot's, which starts nothing on its own.
   autopilot:
     # `command` is skipped on every event but a comment: the status function
     # keeps this job from being skipped with it (#257, scripts/needs-chain.py).
-    needs: command
+    needs: [command, triage]
     if: >-
       !cancelled() && !contains(github.event.issue.labels.*.name, 'lane:release') && (
         (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'accepted' && github.event.sender.type != 'Bot') ||
+        (github.event_name == 'issues' && github.event.action == 'opened' && needs.triage.outputs.own-accepted == 'true') ||
         (github.event.action == 'opened' && github.event_name == 'issues' && github.event.sender.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && toJSON(github.event.issue.labels) == '[]' && !startsWith(github.event.issue.title, 'The bug reproduced from ')))
     # The agent's jobs read the repository, and its pull requests for
     # next-version.py in `make pre-pr`, with the job's own token (#287, #537).

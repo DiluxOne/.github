@@ -99,7 +99,7 @@ def test_the_command_job_never_runs_for_a_bot_or_on_a_pull_request():
 def test_the_spike_and_the_continue_wait_for_the_command():
     j = jobs("issue-triage.yml")
     assert j["spike"]["needs"] == "command" and j["spike"]["if"] == "needs.command.outputs.command == 'spike'"
-    assert j["autopilot"]["needs"] == "command" and str(j["autopilot"]["if"]).lstrip().startswith("!cancelled()")
+    assert "command" in j["autopilot"]["needs"] and str(j["autopilot"]["if"]).lstrip().startswith("!cancelled()")
 
 
 def test_the_spike_clears_its_request_when_it_answers(tmp_path):

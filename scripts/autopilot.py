@@ -178,6 +178,9 @@ TESTISH = re.compile(r"((^|/)(tests?|spec|__tests__)/[^/]+(/[^/]+)*\.(php|js|jsx
 # that lane (which_lane).
 LANE = "human-issue"
 REPRO = repro.LANE
+# A Bug its maintainer wrote, accepted with its writing (#564): a bug a
+# person accepted, held to the same bug gate as one under LANE.
+OWN_BUG = "maintainer-bug"
 
 
 def mode_of(policy):
@@ -206,19 +209,20 @@ def person_accepted(issue, label="accepted"):
     return bool(event) and event.get("__typename") == "LabeledEvent" and (event.get("actor") or {}).get("__typename") == "User"
 
 
-def which_lane(policy, issue, run, repository, autopilot_var):
+def which_lane(policy, issue, run, repository, autopilot_var, facts=None):
     """(lane, why): the lane the autopilot works the issue under. A lane's
     own issue (its `lane:` label, its origin checked against GitHub by
     autonomy.lane_accepts) is worked under that lane, with its caps; an issue
     a person accepted, under `human-issue`. (None, why) when neither holds:
     nobody accepted it, so nothing starts. A sub-issue a person accepted
-    themselves is theirs, not the delegated lane's (#189). Pure."""
+    themselves is theirs, not the delegated lane's (#189). Pure but for
+    what `facts` reads (the author's role, for the maintainer-bug lane)."""
     # An Adopt issue (#562) is carried out by org-adopt.yml, never written.
     if autonomy.adopt_lane_of(policy, issue):
         return None, "an Adopt issue is carried out by org-adopt.yml (the adopt lane), not by the autopilot"
     if autonomy.lane_of(issue)[0] == autonomy.DELEGATED and person_accepted(issue):
         return LANE, "a person accepted it"
-    ok, why = autonomy.lane_accepts(policy, issue, run, repository, autopilot_var)
+    ok, why = autonomy.lane_accepts(policy, issue, run, repository, autopilot_var, facts)
     if ok:
         return autonomy.lane_of(issue)[0], why
     if person_accepted(issue):
@@ -378,7 +382,7 @@ def bug_gate(issue_type, lane, declared, proposal, repo):
     proposes (detect.stack_way), or None. Pure."""
     # Only a bug a person accepted: a lane's own issue (a reproduced bug, a
     # failing CI run) is the lane's to work, by its own rules.
-    if (issue_type or "").strip().lower() != "bug" or lane != LANE or declared:
+    if (issue_type or "").strip().lower() != "bug" or lane not in (LANE, OWN_BUG) or declared:
         return ""
     where = (f"`repro:` in {org.CENTRAL}'s repos.yml (under `{repo.split('/', 1)[-1]}:`), "
              "or `repro.ways` in this repository's .github/review-policy.yml")
@@ -402,7 +406,7 @@ def bug_refusal(repo, lane, issue_type, policy_path):
     """bug_gate for REPO on GitHub: its ways, from repos.yml here and its
     policy at POLICY_PATH, and, when it declares none, what its stack
     proposes (read from GitHub; a help, never the gate)."""
-    if (issue_type or "").strip().lower() != "bug" or lane != LANE:
+    if (issue_type or "").strip().lower() != "bug" or lane not in (LANE, OWN_BUG):
         return ""
     policy = (schema.read_yaml(policy_path) if policy_path and os.path.exists(policy_path) and os.path.getsize(policy_path) else None) or {}
     declared = declared_ways(repo, policy if isinstance(policy, dict) else {})
@@ -2025,6 +2029,12 @@ Clamp the value in Sum::add.
     check("#84 lane: the lane's label added by a person accepts nothing", which_lane(pol, gql(["lane:bugfix-reproduced"], [("lane:bugfix-reproduced", "User", "someone")]), run42, "DiluxOne/x", "")[0], None)
     check("#84 lane: DX_AUTOPILOT off, the lane accepts nothing", which_lane(pol, lane_issue, run42, "DiluxOne/x", "off")[0], None)
     check("#84 lane: a lane's issue a person also accepted, when the lane refuses, is the person's", which_lane(pol, gql(["lane:bugfix-reproduced", "accepted"], [("lane:bugfix-reproduced", "Bot", "dilux-bot"), ("accepted", "User", "soydiloreto")]), None, "DiluxOne/x", "")[0], LANE)
+    own = gql(["lane:maintainer-bug", "accepted"], [("lane:maintainer-bug", "Bot", "dilux-bot"), ("accepted", "Bot", "dilux-bot")], author="boss", body=prd)
+    own.update({"issueType": {"name": "Bug"}, "lastEditedAt": None})
+    own["timelineItems"]["nodes"][0]["createdAt"] = "2026-11-01T10:00:00Z"
+    check("#564 C2 lane: a Bug its maintainer wrote is worked under maintainer-bug", which_lane(pol, own, None, "DiluxOne/x", "", {"maintainer": lambda who: who == "boss"})[0], OWN_BUG)
+    check("#564 C2 lane: a writer's, labelled by the bot, starts nothing", which_lane(pol, own, None, "DiluxOne/x", "", {"maintainer": lambda who: False})[0], None)
+    check("#564 C2: a maintainer's Bug is held to the bug gate (#377) too", bool(bug_gate("Bug", OWN_BUG, [], None, "DiluxOne/api")), True)
     check("#84 may start: a lane issue with its evidence", may_start(pol, lane_prd, "", REPRO)[0], True)
     # #377 C4: a bug in a repository with no way: the autopilot does not
     # start, and the issue says which way to declare.
@@ -3368,7 +3378,7 @@ def main(argv):
         if not issue:
             print(f"issue #{number} could not be read")
             return 1
-        name, why = which_lane(pol, issue, autonomy.read_run(issue, repo), repo, var)
+        name, why = which_lane(pol, issue, autonomy.read_run(issue, repo), repo, var, {"maintainer": autonomy.maintainer_of(repo)})
         print(name or why)
         if name:
             print(f"#{number}: lane {name}, {why}", file=sys.stderr)

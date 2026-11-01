@@ -25,12 +25,17 @@
 # as it is, for a person, and stops.
 #
 #   triage-act.sh          act
+#   triage-act.sh own-bug  a Bug its maintainer wrote (#564): accepted with
+#                          its writing, never classified (own_bug below)
 #   triage-act.sh --test   self-test, with a stand-in for gh
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 
 # The board's state of the issue (#564): `state get KEY`, `state set K=V…`.
 state() { python3 "$HERE/receipts.py" state "$@"; }
+# The receipts (seal-prd, board), and whether a lane accepts the issue.
+receipts() { python3 "$HERE/receipts.py" "$@"; }
+lane_accept() { python3 "$HERE/autonomy.py" lane-accept; }
 
 # Whether the issue's Type was last set by a person who can write to the
 # repository (#341): a maintainer's Type is theirs to change, their own
@@ -46,6 +51,62 @@ set_by_maintainer() {
   case $who in "" | bot | *"[bot]") return 1;; esac
   perm=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$who/permission" --jq .permission 2>/dev/null) || return 0
   case $perm in admin | maintain | write) return 0;; *) return 1;; esac
+}
+
+# A Bug its maintainer wrote (#564, the maintainer-bug lane of
+# policy/autonomy.yml): the author has the admin or maintain role, so
+# writing it was the acceptance. It is not classified, gets no
+# `repro=unconfirmed` and no reproduction: when its PRD passes G1, it is
+# labelled lane:maintainer-bug, the lane is asked (scripts/autonomy.py
+# lane-accept, from GitHub), and it gets `accepted` and
+# `accepted-by:policy`, its PRD sealed as accepted by its author and its
+# board written; the autopilot starts (the triage's `accepted` output). An
+# incomplete one waits on its author, like any other. Prints `own=yes` or
+# `own=no` (no: the usual triage goes on) and `accepted=true|false`, for
+# GITHUB_OUTPUT. Environment: AUTHOR, BODY_TEXT (the issue's body), NUMBER,
+# GITHUB_REPOSITORY, GH_TOKEN, SEAL_TOKEN (writes the receipts branch),
+# POLICY_REF, DX_AUTOPILOT, REPO_AUTONOMY.
+own_bug() {
+  local role have why body board id
+  # A role that cannot be read is no maintainer's: the usual triage goes on.
+  if ! [[ "${AUTHOR:-}" =~ ^[A-Za-z0-9-]+$ ]] \
+     || ! role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$AUTHOR/permission" --jq .role_name 2>/dev/null); then
+    printf 'own=no\naccepted=false\n'; return 0
+  fi
+  case $role in admin | maintain) ;; *) printf 'own=no\naccepted=false\n'; return 0;; esac
+  have=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" --jq '.type.name // ""' 2>/dev/null || true)
+  [ "$have" = Bug ] || { printf 'own=no\naccepted=false\n'; return 0; }
+  body=$(mktemp)
+  printf '%s' "${BODY_TEXT:-}" > "$body"
+  if ! python3 "$HERE/issue-schema.py" check --type Bug < "$body" >/dev/null 2>&1; then
+    rm -f "$body"
+    reply "This Bug was written by @$AUTHOR, who maintains this repository, so it is accepted with its writing once its PRD is complete: it is \`incomplete\` (the G1 comment says what is missing), and it waits on @$AUTHOR. No triage and no reproduction run on it."
+    printf 'own=yes\naccepted=false\n'; return 0
+  fi
+  gh label create lane:maintainer-bug --repo "$GITHUB_REPOSITORY" --color 1D76DB --description "A Bug a maintainer wrote, accepted with its writing" --force >/dev/null
+  gh label create accepted-by:policy --repo "$GITHUB_REPOSITORY" --color 0E8A16 --description "Accepted by a lane of the autonomy policy, not by a person" --force >/dev/null
+  gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label lane:maintainer-bug >/dev/null
+  if ! why=$(lane_accept); then
+    gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label lane:maintainer-bug >/dev/null 2>&1 || true
+    rm -f "$body"
+    reply "This Bug was written by @$AUTHOR, who maintains this repository, but no lane accepts it now ($why): it waits for a maintainer, who accepts it with \`accepted\`. No triage and no reproduction run on it."
+    printf 'own=yes\naccepted=false\n'; return 0
+  fi
+  gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label accepted --add-label accepted-by:policy >/dev/null
+  gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label awaiting-acceptance >/dev/null 2>&1 || true
+  GH_TOKEN=${SEAL_TOKEN:-$GH_TOKEN} BODY=$body ACCEPTED_BY=$AUTHOR receipts seal-prd >/dev/null
+  board=$(BODY=$body receipts board)
+  rm -f "$body"
+  id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '.[] | select(.user.type == "Bot" and (.user.login | startswith(env.DX_BOT_APP)) and (.body | startswith("<!-- dx-board -->"))) | .id' | tail -1)
+  if [ -n "$id" ]; then gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$board" >/dev/null
+  else gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$board" >/dev/null; fi
+  reply "This Bug was written by @$AUTHOR, who maintains this repository, so writing it was its acceptance (the \`maintainer-bug\` lane of the autonomy policy: $why). No triage and no reproduction run on it: the autopilot codes it in the organisation's runners, in a draft pull request, and proves the bug with a failing test before it fixes it."
+  printf 'own=yes\naccepted=true\n'
+}
+
+# The bot's reply on the issue, signed.
+reply() {
+  gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '%s\n\n<sub>🤖 Triage · no model ran</sub>' "$1")" >/dev/null
 }
 
 act() {
@@ -277,6 +338,44 @@ if [ "${1:-}" = "--test" ]; then
   if [ -s "$log" ]; then echo "FAIL no verdict leaves the issue as it is, for a person"; cat "$log"; fail=1; else echo "ok   no verdict leaves the issue as it is, for a person"; fi
   : > "$log"; ( VERDICT='{"category":"nonsense"}' REPLY=x SUMMARY=s NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m act >/dev/null 2>&1 ) || true
   if grep -q "^state set" "$log"; then echo "FAIL an unknown category records no verdict"; fail=1; else echo "ok   an unknown category records no verdict"; fi
+  # #564 C2: a Bug its maintainer wrote is accepted with its writing, never
+  # classified: no repro=unconfirmed, no repro=no-way, no reproduction.
+  prd=$'### Problem\n\nIt breaks.\n\n### Scope\n\n- The save.\n\n### Out of scope\n\n- Nothing.\n\n### Acceptance criteria\n\n- C1: Given a post, when saved, then it stays.\n\n### Criticality\n\nNormal\n'
+  receipts() { printf 'receipts %s accepted_by=%s token=%s\n' "$*" "${ACCEPTED_BY:-}" "${GH_TOKEN:-}" >> "$log"; [ "$1" != board ] || echo "<!-- dx-board -->"; }
+  lane_accept() { echo "lane-accept" >> "$log"; [ -z "${LANE_REFUSES:-}" ] || { echo "the autopilot is off"; return 1; }; echo "accepted by policy: lane maintainer-bug"; }
+  run_own() {
+    : > "$log"
+    out=$( ( NUMBER=7 GITHUB_REPOSITORY=o/r AUTHOR=${WHO:-boss} BODY_TEXT=${TEXT-$prd} HAS_TYPE=${HAS_TYPE-Bug} GH_TOKEN=t SEAL_TOKEN=s own_bug ) 2>/dev/null || true)
+  }
+  outt() {
+    if [ "$out" = "$2" ]; then echo "ok   $1"; else echo "FAIL $1 (got $out)"; fail=1; fi
+  }
+  ownt() {
+    local name=$1 want=$2
+    if grep -qE -- "$want" "$log"; then echo "ok   $name"; else echo "FAIL $name: no call matching $want in"; cat "$log"; fail=1; fi
+  }
+  PERM=maintain run_own
+  outt "#564 C2 a maintainer's Bug: own=yes, accepted=true" $'own=yes\naccepted=true'
+  ownt "#564 C2 a maintainer's Bug gets the lane's label, asked of the lane" "issue edit 7 --repo o/r --add-label lane:maintainer-bug"
+  ownt "#564 C2 and is accepted, by policy" "issue edit 7 --repo o/r --add-label accepted --add-label accepted-by:policy"
+  ownt "#564 C2 sealed as accepted by its author, with the receipts' token" "^receipts seal-prd accepted_by=boss token=s$"
+  ownt "#564 C2 with its board written" "issue comment 7 --repo o/r --body <!-- dx-board -->"
+  ownt "#564 C2 and the reply says no triage nor reproduction runs, and the autopilot codes it" "issue comment 7 .*written by @boss, who maintains this repository, so writing it was its acceptance.*No triage and no reproduction.*autopilot codes it"
+  if grep -qE "bug:unconfirmed|repro:no-way|repro=|verdict=|state set" "$log" || ! grep -q "lane-accept" "$log"; then echo "FAIL #564 C2 no bug:unconfirmed, no repro:no-way, no verdict:"; cat "$log"; fail=1; else echo "ok   #564 C2 no bug:unconfirmed, no repro:no-way, no verdict"; fi
+  PERM="admin" run_own
+  outt "#564 C2 an admin's Bug too" $'own=yes\naccepted=true'
+  PERM="write" run_own
+  if [ "$out" = $'own=no\naccepted=false' ] && ! grep -qE "add-label|receipts|issue comment" "$log"; then echo "ok   #564 C2 a write author's Bug is unchanged: the usual triage goes on"; else echo "FAIL #564 C2 a write author's Bug is unchanged ($out):"; cat "$log"; fail=1; fi
+  PERM_FAILS=1 PERM=maintain run_own
+  outt "#564 C2 a role that cannot be read is no maintainer's" $'own=no\naccepted=false'
+  PERM=maintain HAS_TYPE=Feature run_own
+  if [ "$out" = $'own=no\naccepted=false' ] && ! grep -q "add-label" "$log"; then echo "ok   #564 C2 a maintainer's Feature is triaged as before"; else echo "FAIL #564 C2 a maintainer's Feature is triaged as before ($out)"; fail=1; fi
+  WHO='x;rm' PERM=maintain run_own
+  outt "#564 C2 a login that is no login reads nothing" $'own=no\naccepted=false'
+  PERM=maintain TEXT="It broke." run_own
+  if [ "$out" = $'own=yes\naccepted=false' ] && ! grep -qE "add-label|receipts|lane-accept|state set" "$log" && grep -q "incomplete.*it waits on @boss" "$log"; then echo "ok   #564 C2 an incomplete one is not accepted, not classified, and waits on its author"; else echo "FAIL #564 C2 an incomplete one waits on its author ($out):"; cat "$log"; fail=1; fi
+  PERM=maintain LANE_REFUSES=1 run_own
+  if [ "$out" = $'own=yes\naccepted=false' ] && ! grep -qE "add-label accepted|receipts" "$log" && grep -q "remove-label lane:maintainer-bug" "$log" && grep -q "no lane accepts it now (the autopilot is off)" "$log"; then echo "ok   #564 C2 a lane that refuses leaves it to a maintainer's acceptance"; else echo "FAIL #564 C2 a lane that refuses leaves it to a maintainer ($out):"; cat "$log"; fail=1; fi
   # The state for real: receipts.py writes it on the issue's board (a fixture for GitHub's comments).
   fx=$(mktemp -d)
   ( state() { python3 "$HERE/receipts.py" state "$@"; }; gh() { :; }; VERDICT='{"category":"bug_unconfirmed","layer":"api"}' REPLY=x SUMMARY=s NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m DX_BOT_APP=dilux-bot STATE_FIXTURE="$fx/c.json" act >/dev/null 2>&1 ) || true
@@ -288,4 +387,7 @@ if [ "${1:-}" = "--test" ]; then
   exit "$fail"
 fi
 
-act
+case "${1:-}" in
+  own-bug) own_bug;;
+  *) act;;
+esac
