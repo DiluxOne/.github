@@ -1,0 +1,11 @@
+# The engine-test kind has no rules of its own (#563): its repository holds
+# only what the scenarios write, which the scenarios' `expect` checks, not a
+# review. kinds/README.md, "Adding a rule after a rejection", is how one is
+# added.
+
+language: text
+
+exclude:
+  - ".dx-central/**"
+
+rules: []

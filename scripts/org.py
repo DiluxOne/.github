@@ -24,6 +24,15 @@
                        `writers`: who steers the autopilot (#588; a
                        repository's exception is repos.yml's, read by
                        scripts/deciders.py)
+  org.py test-repo     the organisation's test repository (#563): org.yml
+                       `test-repo`, else `<org lowercased>-test`, where the
+                       release lane plays the scenarios before `v7` moves
+  org.py test-identity the test identity's login (#563): its pack's
+                       `identity.login`, kinds/engine-test/pack.yml
+  org.py core          the engine's core files (#563, #568), globs, one per
+                       line: while an open autopilot pull request touches
+                       one, the autopilot starts no other issue whose Spec
+                       touches the core
   org.py --test        self-test
 """
 import os
@@ -103,6 +112,41 @@ def who_decides(conf):
     return value
 
 
+def test_repo(conf):
+    """org.yml `test-repo` (#563): the repository of kind `engine-test` the
+    release lane plays the scenarios in; absent, `<org lowercased>-test`, so
+    another organisation gets its own without changing the engine."""
+    value = str(conf.get("test-repo") or "").strip()
+    if not value:
+        return f"{str(conf.get('org') or '').lower()}-test"
+    if "/" in value or not all(c.isalnum() or c in "-_." for c in value):
+        raise ValueError(f"org.yml `test-repo` is `{value}`: a repository's name, without its owner")
+    return value
+
+
+TEST_KIND = "engine-test"
+
+
+def test_pack(conf=None, root=os.path.join(HERE, "..")):
+    """What sets the test repository apart (#563), from its pack
+    kinds/engine-test/pack.yml: `identity` (`secret`, and `login` with
+    `{org}` the organisation's login lowercased), `autopilot`
+    (`fixed-change`: no model), `fixed-change`, `cleanup` and `publishes`."""
+    conf = _conf if conf is None else conf
+    path = os.path.join(root, "kinds", TEST_KIND, "pack.yml")
+    pack = (load(path) if os.path.exists(path) else {}) or {}
+    identity = dict(pack.get("identity") or {})
+    identity["login"] = str(identity.get("login") or "").replace("{org}", str(conf.get("org") or "").lower())
+    return {"identity": identity, "autopilot": pack.get("autopilot"), "fixed-change": pack.get("fixed-change") or {},
+            "cleanup": pack.get("cleanup"), "publishes": pack.get("publishes")}
+
+
+def core(conf):
+    """org.yml `core` (#563, #568): the engine's core files, globs from the
+    repository's root; none, no core (the autopilot never waits on it)."""
+    return [str(g) for g in (conf.get("core") or [])]
+
+
 def hardwired_bot(root=os.path.join(HERE, "..", ".github", "workflows")):
     """Where a shared workflow writes this organisation's App in (#197):
     another organisation calls them with its own App, named by its variables
@@ -166,6 +210,19 @@ def self_test():
     except ValueError:
         check("C2 (#588): an unknown who-decides fails", "ValueError", "ValueError")
     check("C2 (#588): org.yml keeps the default", who_decides(_conf), "codeowners")
+    check("C1 (#563): no test-repo is <org>-test", test_repo({"org": "DiluxOne"}), "diluxone-test")
+    check("C1 (#563): test-repo: acme-sandbox is acme-sandbox", test_repo({"org": "DiluxOne", "test-repo": "acme-sandbox"}), "acme-sandbox")
+    check("C1 (#563): org.yml's test repository", test_repo(_conf), "diluxone-test")
+    try:
+        test_repo({"org": "X", "test-repo": "Other/x"})
+        check("C1 (#563): a test-repo with an owner fails", "no error", "ValueError")
+    except ValueError:
+        check("C1 (#563): a test-repo with an owner fails", "ValueError", "ValueError")
+    pack = test_pack({"org": "Acme"})
+    check("#563: the test identity's login is the organisation's, its token a secret", (pack["identity"]["login"], pack["identity"]["secret"]), ("acme-test-bot", "DX_TEST_TOKEN"))
+    check("#563: the test repository calls no model, is cleaned up and publishes nothing", (pack["autopilot"], pack["cleanup"], pack["publishes"]), ("fixed-change", "after-run", "never"))
+    check("#563: no core is none", core({}), [])
+    check("#563: org.yml names the engine's core", "scripts/autopilot.py" in core(_conf), True)
     check("#568: {catalog} is the kind's catalog", publishes_to("{catalog}", "k", {"k": "acme-plugins"}), "acme-plugins")
     check("#568: no catalog for the kind publishes nowhere", publishes_to("{catalog}", "k", {}), "")
     check("#568: a place with no placeholder stays", publishes_to("wordpress.org", "k", {}), "wordpress.org")
@@ -201,6 +258,15 @@ if __name__ == "__main__":
         sys.exit(0)
     if sys.argv[1:] == ["who-decides"]:
         print(who_decides(_conf))
+        sys.exit(0)
+    if sys.argv[1:] == ["test-repo"]:
+        print(test_repo(_conf))
+        sys.exit(0)
+    if sys.argv[1:] == ["test-identity"]:
+        print(test_pack()["identity"]["login"])
+        sys.exit(0)
+    if sys.argv[1:] == ["core"]:
+        print("\n".join(core(_conf)))
         sys.exit(0)
     if sys.argv[1:] == ["attribution"]:
         print(attribution(_conf))

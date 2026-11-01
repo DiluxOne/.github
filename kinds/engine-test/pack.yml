@@ -1,0 +1,44 @@
+# The engine-test kind (#563): the organisation's test repository, org.yml
+# `test-repo` (scripts/org.py test-repo), where the release lane plays every
+# scenario of tests/release/scenarios.yml at `v7-next` before `v7` moves
+# (scripts/release-scenarios.py run). It is no product: nothing is published
+# from it, and the daily drift check fails when a repository of this kind is
+# also of a product kind or listed in org.yml `catalogs` (scripts/
+# sync-repos.py check). What each key means: kinds/README.md.
+
+name: The engine's test repository
+
+aliases: []
+
+# No battery of its own: its callers are the organisation's shipped ones
+# (workflow-templates/), at `v7-next` while the lane tries a candidate.
+workflows: []
+
+# No checks of its own to run, so no engines.
+adapters: []
+
+# The test identity (#563, the Spec's option A): a machine user, an outside
+# collaborator with write on the test repository only, whose fine-grained
+# token is the secret `secret` of the `release` environment of the
+# organisation's `.github`. It may accept issues in a repository of this
+# kind and nowhere else: scripts/deciders.py counts it only here, and the
+# daily drift check fails when it has more than read anywhere else. `{org}`
+# is the organisation's login, lowercased.
+identity:
+  secret: DX_TEST_TOKEN
+  login: "{org}-test-bot"
+
+# The autopilot in a fixed change that calls no model: for each criterion,
+# one file (`file`, `{n}` the issue's number, `{id}` the criterion's) and
+# one ticked box, so the scenarios try the flow, never the model.
+autopilot: fixed-change
+fixed-change:
+  file: "scenarios/{n}-{id}.md"
+
+# After each run of the scenarios, its issues are closed and locked, its pull
+# requests closed and their branches deleted (scripts/release-scenarios.py
+# cleanup).
+cleanup: after-run
+
+# Nothing is ever published from it: no release, no catalog.
+publishes: never
