@@ -23,8 +23,11 @@ The bots' work is linear, but for one merge (#550): the default branch
 merged into the work, clean. A merge commit is made again, with all its
 parents, only when it has two, its other parent is on the default branch on
 GitHub, and its tree is the one git's own merge gives (`git merge-tree
---write-tree`), so it brings nothing but what main already has. Every other
-merge is refused. Run from the checkout.
+--write-tree`), so it brings nothing but what main already has, but for the
+files that merge leaves in conflict, resolved (#556); a file under
+.github/workflows resolved by hand only with ENGINE=true, the
+organisation's own repository (#498). Every other merge is refused. Run
+from the checkout.
 """
 import base64
 import json
@@ -75,15 +78,23 @@ def on_default(api, repo, sha):
 
 def clean_merge(c, parents, api, repo, cwd=None):
     """Why the merge commit c may not be pushed, or None when it is main
-    merged in, clean (#550)."""
+    merged in, clean (#550) or with its conflicts resolved (#556)."""
     if len(parents) != 2:
         return f"{c[:12]} merges {len(parents)} parents; only the default branch merged in is pushed"
     if not on_default(api, repo, parents[1]):
         return f"{c[:12]} merges {parents[1][:12]}, which is not on the default branch on GitHub"
-    out = subprocess.run(["git", "merge-tree", "--write-tree", *parents], cwd=cwd, capture_output=True, text=True)
-    tree = out.stdout.split("\n", 1)[0].strip()
-    if out.returncode != 0 or tree != git("rev-parse", f"{c}^{{tree}}", cwd=cwd).strip():
-        return f"{c[:12]} is not the clean merge of its parents; resolved or changed merges are not pushed"
+    out = subprocess.run(["git", "merge-tree", "--write-tree", "--name-only", "--no-messages", *parents], cwd=cwd, capture_output=True, text=True)
+    if out.returncode not in (0, 1):
+        return f"{c[:12]}: git merge-tree failed: {out.stderr.strip()[:200]}"
+    tree, *conflicted = [l for l in out.stdout.splitlines() if l.strip()]
+    # #556: what differs from git's own merge is only the files it left in
+    # conflict, resolved; nothing else slips in.
+    differ = set(git("diff-tree", "-r", "--no-renames", "--name-only", "-z", tree, f"{c}^{{tree}}", cwd=cwd).split("\0")) - {""}
+    if differ - set(conflicted):
+        return f"{c[:12]} is not the merge of its parents: it changes {sorted(differ - set(conflicted))[0]}, which the merge left alone; changed merges are not pushed"
+    workflows = sorted(p for p in differ if p.startswith(".github/workflows/"))
+    if workflows and os.environ.get("ENGINE") != "true":
+        return f"{c[:12]} resolves {workflows[0]} by hand; .github/workflows is not pushed outside the organisation's own repository"
     return None
 
 
@@ -338,18 +349,54 @@ def self_test():
             fh.write("slipped in\n")
         git("add", "-A", cwd=work)
         git(*env, "commit", "-q", "--no-edit", cwd=work)
-        refused("push merge: a merge that changes more than main is refused", "feat/2-m", "not the clean merge")
+        refused("push merge: a merge that changes more than main is refused", "feat/2-m", "changes extra.txt, which the merge left alone")
         git("reset", "-q", "--hard", merged, cwd=work)
 
-        main_moves("chore: main changes x", {"x.txt": "main\n"})
-        commit("feat: x again (C3)", {"x.txt": "mine\n"})
-        subprocess.run(["git", *env, "merge", "-q", "--no-edit", "main"], cwd=work, capture_output=True)
-        with open(os.path.join(work, "x.txt"), "w") as fh:
-            fh.write("resolved\n")
-        git("add", "-A", cwd=work)
-        git(*env, "commit", "-q", "--no-edit", cwd=work)
-        refused("push merge: a conflict resolved by hand is refused", "feat/2-m", "not the clean merge")
+        # #556: a fix round on a pull request that conflicts with main merges
+        # it and resolves the conflicts; only those files may differ from
+        # git's own merge, and a workflow only in the engine's repository.
+        def conflicting_merge(name, resolved):
+            main_moves(f"chore: main changes {name}", {name: "main\n"})
+            commit(f"feat: {name} (C3)", {name: "mine\n"})
+            subprocess.run(["git", *env, "merge", "-q", "--no-edit", "main"], cwd=work, capture_output=True)
+            for p, text in resolved.items():
+                with open(os.path.join(work, p), "w") as fh:
+                    fh.write(text)
+            git("add", "-A", cwd=work)
+            git(*env, "commit", "-q", "--no-edit", cwd=work)
+
+        conflicting_merge("x.txt", {"x.txt": "resolved\n", "extra.txt": "slipped in\n"})
+        refused("push merge: a resolved merge that changes a file beyond the conflict is refused", "feat/2-m", "changes extra.txt")
         git("reset", "-q", "--hard", merged, cwd=work)
+
+        conflicting_merge("x.txt", {"x.txt": "main\nmine\n"})
+        local_tree = git("rev-parse", "HEAD^{tree}", cwd=work).strip()
+        try:
+            resolved = push("o/r", "feat/2-m", api=api, cwd=work)
+        except RuntimeError as exc:
+            resolved = str(exc)
+        check("push merge: a conflict with main resolved by hand is pushed, at the same tree",
+              git("rev-parse", f"{resolved}^{{tree}}", cwd=origin).strip() if len(resolved) == 40 else resolved, local_tree)
+        check("push merge: the resolved merge keeps main's commit as its other parent",
+              git("rev-parse", f"{resolved}^2", cwd=origin).strip() if len(resolved) == 40 else resolved, git("rev-parse", "main", cwd=work).strip())
+        merged = resolved
+
+        flow = ".github/workflows/ci.yml"
+        conflicting_merge(flow, {flow: "resolved\n"})
+        old = os.environ.pop("ENGINE", None)
+        try:
+            refused("push merge: a workflow resolved by hand is refused outside the engine's repository", "feat/2-m", "resolves .github/workflows/ci.yml")
+            os.environ["ENGINE"] = "true"
+            try:
+                push("o/r", "feat/2-m", api=api, cwd=work)
+                check("push merge: a workflow resolved by hand is pushed in the engine's repository", "pushed", "pushed")
+            except RuntimeError as exc:
+                check("push merge: a workflow resolved by hand is pushed in the engine's repository", str(exc), "pushed")
+        finally:
+            os.environ.pop("ENGINE", None)
+            if old is not None:
+                os.environ["ENGINE"] = old
+        merged = git("rev-parse", "HEAD", cwd=work).strip()
 
         third = git(*env, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-p", "main", "-p", "side", "-m", "octopus", cwd=work).strip()
         git("reset", "-q", "--hard", third, cwd=work)
