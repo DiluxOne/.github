@@ -22,7 +22,8 @@ archived and not excluded in repos.yml:
             (#562); then, once, the org rulesets ("org: main", "org: release
             tag creation", "org: release tags") moved from their list of
             names to the repositories with the property, only after every
-            adopted one holds it.
+            adopted one holds it, and never while that list covers a
+            repository repos.yml does not list or excludes (it names them).
   pending   the repositories repos.yml lists that do not hold that
             property yet, one per line (#562): what org-adopt.yml adopts,
             read from the organisation rather than from a push, so a run
@@ -152,6 +153,7 @@ archived and not excluded in repos.yml:
 Run by a maintainer with `gh` signed in as an owner of the organisation.
 """
 import base64
+import fnmatch
 import importlib.util
 import json
 import os
@@ -351,6 +353,36 @@ def with_property_condition(ruleset):
     return body
 
 
+def org_repo_names():
+    """The names of the organisation's repositories that are not archived,
+    forks and those repos.yml excludes included."""
+    rows = json.loads(gh("repo", "list", ORG, "--no-archived", "--limit", "1000", "--json", "name").stdout or "[]")
+    if len(rows) >= 1000:
+        raise RuntimeError("more than 1000 repositories: the list would be cut; raise the limit")
+    return {r["name"] for r in rows}
+
+
+def named_coverage(ruleset, names):
+    """Which of these repositories a ruleset's list of names covers: `~ALL`,
+    a name or an fnmatch pattern, less its exclusions."""
+    cond = (ruleset.get("conditions") or {}).get("repository_name") or {}
+
+    def hit(pats, n):
+        return any(p == "~ALL" or fnmatch.fnmatch(n.lower(), str(p).lower()) for p in pats or [])
+    return {n for n in names if hit(cond.get("include"), n) and not hit(cond.get("exclude"), n)}
+
+
+def would_drop(moving, every):
+    """{ruleset name: the repositories its list of names covers today that
+    would not hold the property once it moves}: those repos.yml does not
+    list or excludes (#562). An archived repository takes no push, and is
+    not counted."""
+    if not moving:
+        return {}
+    names, adopted = org_repo_names(), {r["name"] for r in every}
+    return {r["name"]: sorted(named_coverage(r, names) - adopted) for r in moving if named_coverage(r, names) - adopted}
+
+
 def property_values(names):
     """{repository: its value of the property}, for these names; None when
     they could not be read."""
@@ -380,6 +412,12 @@ def sync_rulesets(repos, every, dry):
     global ORG_RULESETS
     org_rs = [r for r in (org_rulesets() or []) if r.get("name") in ORG_RULESET_NAMES]
     moving = [r for r in org_rs if not by_property(r)]
+    dropped = would_drop(moving, every)
+    if dropped:
+        raise RuntimeError("moving the org rulesets to the property would leave out repositories they cover today, "
+                           "not listed in repos.yml or excluded there: "
+                           + "; ".join(f"\"{k}\": {', '.join(v)}" for k, v in sorted(dropped.items()))
+                           + ". List them in repos.yml (or take them out of the ruleset by hand) first: nothing was changed")
     names = sorted({r["name"] for r in repos} | ({r["name"] for r in every} if moving else set()))
     have = property_values(set(names)) if names else {}
     if have is None:
@@ -3063,7 +3101,7 @@ def adopt_test(check, conf, labels, block):
              "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}, "repository_name": {"include": ["old"], "exclude": []}},
              "rules": [{"type": "pull_request"}], "bypass_actors": []}
     moved = with_property_condition(named)
-    state = {"values": {"old": None, "new": None}, "attached": None}
+    state = {"values": {"old": None, "new": None}, "attached": None, "org": ["old", "new"]}
     calls, opened = [], []
 
     def fake(*args, check=True, input_text=None):
@@ -3081,6 +3119,8 @@ def adopt_test(check, conf, labels, block):
             return Out("{}")
         if joined.startswith("api orgs/o/properties/schema/"):
             return Out("{}")
+        if joined == "repo list o --no-archived --limit 1000 --json name":
+            return Out(json.dumps([{"name": n} for n in state["org"]]))
         if joined.startswith("api --paginate --slurp orgs/o/properties/values"):
             return Out(json.dumps([[{"repository_name": n, "properties": [{"property_name": ADOPTED, "value": v}]} for n, v in state["values"].items()]]))
         if joined == "api -X PATCH orgs/o/properties/values --input -":
@@ -3111,7 +3151,7 @@ def adopt_test(check, conf, labels, block):
         "api orgs/o/code-security/configurations?per_page=100", "api repos/o/new/code-security-configuration", "api repos/o/new",
         "api -X POST orgs/o/code-security/configurations/5/attach --input -",
         "api -X PUT orgs/o/code-security/configurations/5/defaults -f default_for_new_repos=all",
-        f"api orgs/o/properties/schema/{ADOPTED}",
+        f"api orgs/o/properties/schema/{ADOPTED}", "repo list o --no-archived --limit 1000 --json name",
         "api --paginate --slurp orgs/o/properties/values?per_page=100", "api -X PATCH orgs/o/properties/values --input -",
         "api --paginate --slurp orgs/o/properties/values?per_page=100", "api -X PUT orgs/o/rulesets/3 --input -",
         "project link 14 --owner o --repo o/new"]
@@ -3143,6 +3183,33 @@ def adopt_test(check, conf, labels, block):
     finally:
         globals().update(saved)
     eq("#562 C1: run again, in step, it only reads", [c for c in calls if " -X " in c], [])
+    # A ruleset whose list of names covers a repository repos.yml does not
+    # list (or excludes) is not moved: that repository would lose it.
+    for label, include, exclude, org_names, want in (
+            ("names an unlisted repository", ["old", "stray"], [], ["old", "new", "stray"], ["stray"]),
+            ("uses ~ALL over an unlisted repository", ["~ALL"], [], ["old", "new", "other"], ["other"]),
+            ("uses a pattern over an unlisted repository", ["o*"], [], ["old", "new", "other"], ["other"]),
+            ("uses ~ALL, the unlisted one excluded", ["~ALL"], ["other"], ["old", "new", "other"], []),
+            ("names a repository that no longer exists (or is archived)", ["old", "gone"], [], ["old", "new"], [])):
+        calls.clear()
+        state.update(values={"old": None, "new": None}, org=org_names)
+        wide = dict(named, conditions={**named["conditions"], "repository_name": {"include": include, "exclude": exclude}})
+        err = None
+        try:
+            globals().update(gh=fake, ORG="o", ORG_RULESETS=[wide], listed=lambda n: cfg["repos"].get(n))
+            with contextlib.redirect_stdout(io.StringIO()):
+                sync_rulesets([repo], every, False)
+        except RuntimeError as exc:
+            err = str(exc)
+        finally:
+            globals().update(saved)
+        writes = [c for c in calls if " -X " in c]
+        if want:
+            check(f"#562: a ruleset that {label} is not moved, and the error names {want}",
+                  err is not None and all(n in err for n in want) and not writes, (err, writes))
+        else:
+            check(f"#562: a ruleset that {label} is moved", err is None and "api -X PUT orgs/o/rulesets/3 --input -" in writes, (err, writes))
+    state["org"] = ["old", "new"]
     # The pull requests it opens are the org-sync lane's runs.
     modes = []
     root = [{"name": "composer.json"}, {"name": "plugin.php"}]
