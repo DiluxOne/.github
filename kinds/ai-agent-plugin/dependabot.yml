@@ -1,0 +1,30 @@
+# Dependabot, as DiluxOne/.github keeps it for every plugin for coding agents
+# (kinds/ai-agent-plugin/dependabot.yml there, #552): written by
+# scripts/sync-repos.py, and the drift check reports any difference. Change it
+# there, not here. A repository's own directories or `ignore` live in
+# DiluxOne/.github's repos.yml (`dependabot`).
+#
+# The actions its workflows use, kept on their latest version: checked daily,
+# no cooldown, majors included, one grouped pull request. What a plugin
+# bundles is its own to pin, and its review reads it.
+version: 2
+updates:
+  # The actions this repository's workflows use. The shared workflows of
+  # DiluxOne/.github are called at a major tag (`@v7`), never pinned, so
+  # there is nothing of theirs to bump.
+  - package-ecosystem: github-actions
+    directories: ["/"]
+    schedule:
+      interval: daily
+      time: "09:00"
+      timezone: America/Argentina/Buenos_Aires
+    groups:
+      github-actions:
+        patterns: ["*"]
+      github-actions-security:
+        applies-to: security-updates
+        patterns: ["*"]
+    labels: [dependencies, github-actions]
+    commit-message:
+      prefix: ci
+      include: scope

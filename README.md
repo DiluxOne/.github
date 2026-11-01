@@ -99,7 +99,7 @@ flowchart TB
 | | Folder | What it holds |
 | --- | --- | --- |
 | ⚙️ | [`.github/workflows/`](.github/workflows/) | The reusable workflows and the organisation's required pull request pipeline |
-| 🧩 | [`kinds/`](kinds/) | One pack per kind of project (today, `wordpress-plugin`): its rules, review profile and settings |
+| 🧩 | [`kinds/`](kinds/) | One pack per kind of project (today, `wordpress-plugin`, and `ai-agent-plugin`, a plugin for coding agents published in the `diluxone-plugins-ai` catalog): its rules, review profile and settings |
 | 📜 | [`policy/`](policy/) | The default review policy every repository adds to, and what every kind shares: the autonomy policy, the issue schema, the stacks a way to reproduce a bug is proposed from (`repro-stacks.yml`) |
 | 🤖 | [`review-profiles/`](review-profiles/) | What the Claude review looks for |
 | 🛠️ | [`scripts/`](scripts/) | The logic behind the workflows, each script with its own `--test`; [`scripts/runner-vm/`](scripts/runner-vm/) keeps the organisation's VM in its described state |

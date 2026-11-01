@@ -19,7 +19,15 @@ from there as if git had pushed it.
                          stand-in for GitHub
 
 Environment: GH_TOKEN (contents: write), GITHUB_REPOSITORY (owner/name).
-Merge commits are refused: the bots' work is linear. Run from the checkout.
+The bots' work is linear, but for one merge (#550): the default branch
+merged into the work, clean. A merge commit is made again, with all its
+parents, only when it has two, its other parent is on the default branch on
+GitHub, and its tree is the one git's own merge gives (`git merge-tree
+--write-tree`), so it brings nothing but what main already has, but for the
+files that merge leaves in conflict, resolved (#556); a file under
+.github/workflows resolved by hand only with ENGINE=true, the
+organisation's own repository (#498). Every other merge is refused. Run
+from the checkout.
 """
 import base64
 import json
@@ -58,6 +66,38 @@ def remote_head(api, repo, branch):
         raise
 
 
+def on_default(api, repo, sha):
+    """Whether the commit is on GitHub's default branch (never only a fork's,
+    whose commits GitHub's API also shows)."""
+    default = api("GET", f"repos/{repo}")["default_branch"]
+    try:
+        return api("GET", f"repos/{repo}/compare/{sha}...{default}")["status"] in ("ahead", "identical")
+    except RuntimeError:
+        return False
+
+
+def clean_merge(c, parents, api, repo, cwd=None):
+    """Why the merge commit c may not be pushed, or None when it is main
+    merged in, clean (#550) or with its conflicts resolved (#556)."""
+    if len(parents) != 2:
+        return f"{c[:12]} merges {len(parents)} parents; only the default branch merged in is pushed"
+    if not on_default(api, repo, parents[1]):
+        return f"{c[:12]} merges {parents[1][:12]}, which is not on the default branch on GitHub"
+    out = subprocess.run(["git", "merge-tree", "--write-tree", "--name-only", "--no-messages", *parents], cwd=cwd, capture_output=True, text=True)
+    if out.returncode not in (0, 1):
+        return f"{c[:12]}: git merge-tree failed: {out.stderr.strip()[:200]}"
+    tree, *conflicted = [l for l in out.stdout.splitlines() if l.strip()]
+    # #556: what differs from git's own merge is only the files it left in
+    # conflict, resolved; nothing else slips in.
+    differ = set(git("diff-tree", "-r", "--no-renames", "--name-only", "-z", tree, f"{c}^{{tree}}", cwd=cwd).split("\0")) - {""}
+    if differ - set(conflicted):
+        return f"{c[:12]} is not the merge of its parents: it changes {sorted(differ - set(conflicted))[0]}, which the merge left alone; changed merges are not pushed"
+    workflows = sorted(p for p in differ if p.startswith(".github/workflows/"))
+    if workflows and os.environ.get("ENGINE") != "true":
+        return f"{c[:12]} resolves {workflows[0]} by hand; .github/workflows is not pushed outside the organisation's own repository"
+    return None
+
+
 def changes(parent, commit, cwd=None):
     """The tree entries a commit changes from its parent: {path: (mode, blob
     sha)} for what it adds or modifies, None for what it removes."""
@@ -89,12 +129,15 @@ def push(repo, branch, onto=None, force=False, api=gh_api, cwd=None):
     known = subprocess.run(["git", "merge-base", "--is-ancestor", start, "HEAD"], cwd=cwd, capture_output=True)
     if known.returncode != 0:
         raise RuntimeError(f"{branch} on GitHub ({start[:12]}) is not under HEAD: fetch it and build on it, or use --force")
-    commits = git("rev-list", "--reverse", "--topo-order", f"{start}..HEAD", cwd=cwd).split()
+    # The branch's own line: what a merge brings in is on GitHub already.
+    commits = git("rev-list", "--reverse", "--first-parent", f"{start}..HEAD", cwd=cwd).split()
     head = start
     for c in commits:
         parents = git("rev-list", "--parents", "-n", "1", c, cwd=cwd).split()[1:]
         if len(parents) != 1:
-            raise RuntimeError(f"{c[:12]} is a merge commit; the bots' work is linear")
+            why = clean_merge(c, parents, api, repo, cwd=cwd)
+            if why:
+                raise RuntimeError(why)
         entries = []
         for path, entry in changes(parents[0], c, cwd=cwd).items():
             if entry is None:
@@ -109,7 +152,7 @@ def push(repo, branch, onto=None, force=False, api=gh_api, cwd=None):
         base_tree = api("GET", f"repos/{repo}/git/commits/{head}")["tree"]["sha"]
         tree = api("POST", f"repos/{repo}/git/trees", {"base_tree": base_tree, "tree": entries})["sha"] if entries else base_tree
         message = git("log", "-1", "--format=%B", c, cwd=cwd).rstrip("\n")
-        head = api("POST", f"repos/{repo}/git/commits", {"message": message, "tree": tree, "parents": [head]})["sha"]
+        head = api("POST", f"repos/{repo}/git/commits", {"message": message, "tree": tree, "parents": [head, *parents[1:]]})["sha"]
     if remote is None:
         api("POST", f"repos/{repo}/git/refs", {"ref": f"refs/heads/{branch}", "sha": head})
     elif head != remote:
@@ -190,9 +233,20 @@ def self_test():
                 os.remove(idx)
                 return {"sha": sha}
             if path.endswith("/git/commits") and method == "POST":
-                sha = subprocess.run(["git", *env, "commit-tree", body["tree"], "-p", body["parents"][0], "-m", body["message"]],
+                ps = [a for p in body["parents"] for a in ("-p", p)]
+                sha = subprocess.run(["git", *env, "commit-tree", body["tree"], *ps, "-m", body["message"]],
                                      cwd=origin, capture_output=True, text=True, check=True).stdout.strip()
                 return {"sha": sha}
+            if path == "repos/o/r":
+                return {"default_branch": "main"}
+            if "/compare/" in path:
+                sha, ref = path.split("/compare/")[1].split("...")
+                if subprocess.run(["git", "cat-file", "-e", f"{sha}^{{commit}}"], cwd=origin).returncode != 0:
+                    raise RuntimeError("HTTP 404 Not Found")
+                if git("rev-parse", f"refs/heads/{ref}", cwd=origin).strip() == sha:
+                    return {"status": "identical"}
+                under = subprocess.run(["git", "merge-base", "--is-ancestor", sha, f"refs/heads/{ref}"], cwd=origin).returncode == 0
+                return {"status": "ahead" if under else "diverged"}
             if "/git/ref/heads/" in path:
                 out = subprocess.run(["git", "rev-parse", "--verify", "-q", "refs/heads/" + path.split("/git/ref/heads/")[1]], cwd=origin, capture_output=True, text=True)
                 if out.returncode != 0:
@@ -251,6 +305,102 @@ def self_test():
             check("push: --onto elsewhere than GitHub's head needs --force", "pushed", "refused")
         except RuntimeError:
             check("push: --onto elsewhere than GitHub's head needs --force", "refused", "refused")
+
+        # The default branch merged in (#550): clean, it is made again with
+        # both parents; any other merge is refused.
+        def refused(name, branch, why):
+            try:
+                push("o/r", branch, api=api, cwd=work)
+                check(name, "pushed", "refused")
+            except RuntimeError as exc:
+                check(name, "refused" if why in str(exc) else str(exc), "refused")
+
+        def main_moves(msg, files):
+            git("checkout", "-q", "main", cwd=work)
+            sha = commit(msg, files)
+            git("push", "-q", "origin", "main", cwd=work)
+            git("checkout", "-q", "feat/2-m", cwd=work)
+            return sha
+
+        git("checkout", "-q", "-b", "feat/2-m", base, cwd=work)
+        commit("feat: x (C1)", {"x.txt": "x\n"})
+        mine = push("o/r", "feat/2-m", onto=base, api=api, cwd=work)
+        moved = main_moves("chore: main moves", {"m.txt": "m\n"})
+        git(*env, "merge", "-q", "--no-edit", "main", cwd=work)
+        commit("feat: y (C2)", {"y.txt": "y\n"})
+        local_tree = git("rev-parse", "HEAD^{tree}", cwd=work).strip()
+        merged = push("o/r", "feat/2-m", api=api, cwd=work)
+        check("push merge: GitHub's branch ends at the same tree", git("rev-parse", f"{merged}^{{tree}}", cwd=origin).strip(), local_tree)
+        check("push merge: made with both parents, main's kept as it is",
+              git("rev-list", "--parents", "-n", "1", f"{merged}~1", cwd=origin).split()[1:], [mine, moved])
+        check("push merge: main's commits are not made again", git("rev-list", "--count", f"{mine}..{merged}", cwd=origin).strip(), "3")
+
+        git("checkout", "-q", "-b", "side", base, cwd=work)
+        commit("feat: elsewhere", {"s.txt": "s\n"})
+        git("push", "-q", "origin", "side", cwd=work)
+        git("checkout", "-q", "feat/2-m", cwd=work)
+        git(*env, "merge", "-q", "--no-edit", "side", cwd=work)
+        refused("push merge: a branch other than the default is refused", "feat/2-m", "not on the default branch")
+        git("reset", "-q", "--hard", merged, cwd=work)
+
+        main_moves("chore: main moves again", {"n.txt": "n\n"})
+        git(*env, "merge", "-q", "--no-commit", "main", cwd=work)
+        with open(os.path.join(work, "extra.txt"), "w") as fh:
+            fh.write("slipped in\n")
+        git("add", "-A", cwd=work)
+        git(*env, "commit", "-q", "--no-edit", cwd=work)
+        refused("push merge: a merge that changes more than main is refused", "feat/2-m", "changes extra.txt, which the merge left alone")
+        git("reset", "-q", "--hard", merged, cwd=work)
+
+        # #556: a fix round on a pull request that conflicts with main merges
+        # it and resolves the conflicts; only those files may differ from
+        # git's own merge, and a workflow only in the engine's repository.
+        def conflicting_merge(name, resolved):
+            main_moves(f"chore: main changes {name}", {name: "main\n"})
+            commit(f"feat: {name} (C3)", {name: "mine\n"})
+            subprocess.run(["git", *env, "merge", "-q", "--no-edit", "main"], cwd=work, capture_output=True)
+            for p, text in resolved.items():
+                with open(os.path.join(work, p), "w") as fh:
+                    fh.write(text)
+            git("add", "-A", cwd=work)
+            git(*env, "commit", "-q", "--no-edit", cwd=work)
+
+        conflicting_merge("x.txt", {"x.txt": "resolved\n", "extra.txt": "slipped in\n"})
+        refused("push merge: a resolved merge that changes a file beyond the conflict is refused", "feat/2-m", "changes extra.txt")
+        git("reset", "-q", "--hard", merged, cwd=work)
+
+        conflicting_merge("x.txt", {"x.txt": "main\nmine\n"})
+        local_tree = git("rev-parse", "HEAD^{tree}", cwd=work).strip()
+        try:
+            resolved = push("o/r", "feat/2-m", api=api, cwd=work)
+        except RuntimeError as exc:
+            resolved = str(exc)
+        check("push merge: a conflict with main resolved by hand is pushed, at the same tree",
+              git("rev-parse", f"{resolved}^{{tree}}", cwd=origin).strip() if len(resolved) == 40 else resolved, local_tree)
+        check("push merge: the resolved merge keeps main's commit as its other parent",
+              git("rev-parse", f"{resolved}^2", cwd=origin).strip() if len(resolved) == 40 else resolved, git("rev-parse", "main", cwd=work).strip())
+        merged = resolved
+
+        flow = ".github/workflows/ci.yml"
+        conflicting_merge(flow, {flow: "resolved\n"})
+        old = os.environ.pop("ENGINE", None)
+        try:
+            refused("push merge: a workflow resolved by hand is refused outside the engine's repository", "feat/2-m", "resolves .github/workflows/ci.yml")
+            os.environ["ENGINE"] = "true"
+            try:
+                push("o/r", "feat/2-m", api=api, cwd=work)
+                check("push merge: a workflow resolved by hand is pushed in the engine's repository", "pushed", "pushed")
+            except RuntimeError as exc:
+                check("push merge: a workflow resolved by hand is pushed in the engine's repository", str(exc), "pushed")
+        finally:
+            os.environ.pop("ENGINE", None)
+            if old is not None:
+                os.environ["ENGINE"] = old
+        merged = git("rev-parse", "HEAD", cwd=work).strip()
+
+        third = git(*env, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-p", "main", "-p", "side", "-m", "octopus", cwd=work).strip()
+        git("reset", "-q", "--hard", third, cwd=work)
+        refused("push merge: an octopus merge is refused", "feat/2-m", "merges 3 parents")
 
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0

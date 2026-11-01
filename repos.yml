@@ -24,7 +24,7 @@ exclude:
 # Where a repository's .github/review-policy.yml names a kind too, this wins.
 repos:
   .github: {kinds: []}   # the organisation's own: its rules are its review policy
-  dilux-agentic-workflow: {kinds: []}
+  dilux-agentic-workflow: {kinds: [{kind: ai-agent-plugin, paths: ["**"], roles: [front]}]}   # DAW (#552)
   diluxone-comments-pro-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
   diluxone-comments-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
   diluxone-commerce-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
@@ -32,9 +32,11 @@ repos:
   diluxone-fm: {kinds: []}
   diluxone-help-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
   diluxone-mail-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
+  diluxone-mermaid: {kinds: [{kind: ai-agent-plugin, paths: ["**"], roles: [front]}]}
   diluxone-multisite-user-sync-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
   diluxone-offload-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
   diluxone-platform: {kinds: []}
+  diluxone-plugins-ai: {kinds: []}   # the catalog of the ai-agent-plugin kind (#552): its own pre-pr, agent-manifests.py catalog
   diluxone-slider-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
   diluxone-support-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
   diluxone-users-pro-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
@@ -172,6 +174,7 @@ callers:
     pull-request-comments.yml: [profile]
     plugin-checks-wp.yml: [slug, version-constant]
     release-wp.yml: [slug, version-constant, dry-run]
+    release-ai.yml: [dry-run]
 
 # How a repository reproduces a bug when neither its kind's pack nor its own
 # .github/review-policy.yml says (#377): its `repro:` as that file takes it
@@ -182,12 +185,12 @@ callers:
 repro:
   diluxone-wp-test: false   # a disposable environment, no code of its own
   security: false           # private: only the runs of security-fix.yml
+  diluxone-plugins-ai: false   # a catalog: a bug in it belongs to the plugin it lists (#552)
 
 # A repository's exception to org.yml `merge-queue` (#451): `on`, `off` or
 # `auto` (scripts/sync-repos.py merge-queue), quoted: YAML reads a bare on/off as true/false.
 merge-queue:
   .github: "off"                # its own pipeline (pull-request.yml) and its merges by a person; not yet on merge_group
-  dilux-agentic-workflow: "off"  # another maintainer's repository and flow
 
 # A repository with no `make pre-pr` by design (#479, scripts/pre-pr.py):
 # `false`, and the daily drift check does not list it, nor does the

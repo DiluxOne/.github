@@ -51,7 +51,11 @@ name: Autopilot
 #                   request already ready whose review blocks at its head
 #                   (#504, scripts/autopilot.py continue-as), the continue
 #                   runs one fix round instead, counted as a run: the
-#                   rounds cap does not refuse it, the runs cap does.
+#                   rounds cap does not refuse it, the runs cap does. So
+#                   does one on a ready pull request that conflicts with
+#                   main (#556, mergeStateStatus DIRTY), whatever its
+#                   review says: GitHub runs no checks on it, and the fix
+#                   round merges main into its branch first.
 #
 # Before `finish ready` (#482) the agent runs the local review's checks on
 # its own diff (scripts/local-review.sh --no-claude: the conventions, the
@@ -135,9 +139,11 @@ name: Autopilot
 # A reproduced bug (lane `bugfix-reproduced`): its failing test, written from
 # an outsider's report, is untrusted code. It never enters the agent's
 # working tree (a sparse checkout keeps it in the commits only, and the
-# repository's own tests cannot pick it up); the draft's branch starts at the
-# reproduction's commit, the test checked against the SHA-256 the PRD
-# sealed; the agent runs it only in the sandbox, always against a clean copy
+# repository's own tests cannot pick it up); the draft's branch starts at
+# current main with the reproduction's commits cherry-picked on top (#549),
+# the test checked against the SHA-256 the PRD sealed; the work merges main
+# into a branch behind it before the agent starts, and api-commit.py pushes
+# that merge only when it is clean (#550) or resolves only its conflicts (#556); the agent runs it only in the sandbox, always against a clean copy
 # of a commit, never the working tree, and `finish ready` refuses until it
 # passes there: a unit test in scripts/repro-sandbox.sh (no network, no
 # environment, no secret), any other way's (#397) the way it was written,
@@ -337,19 +343,34 @@ jobs:
           # A continue on a pull request already ready whose review blocks
           # at its head runs one fix round (#504): the review's last record,
           # read the way claude-review.yml reads it, from dilux-bot's own
-          # summary comment only.
-          as=$MODE
+          # summary comment only. So does one on a ready pull request that
+          # conflicts with main (#556): GitHub runs no checks on it, so it
+          # has no record at its head, and the fix round merges main first.
+          as=$MODE; conflicts=false
           if [ "$MODE" = continue ]; then
-            state=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json isDraft,headRefOid --jq '"\(.isDraft) \(.headRefOid)"')
+            # GitHub works out the merge state after a push or a move of
+            # main, UNKNOWN until then: read again for a few seconds; still
+            # unknown, it reads as no conflict.
+            for _ in 1 2 3 4 5; do
+              state=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json isDraft,headRefOid,mergeStateStatus --jq '"\(.isDraft) \(.headRefOid) \(.mergeStateStatus)"')
+              read -r is_draft head merge_state <<<"$state"
+              [ "$merge_state" = UNKNOWN ] || break
+              sleep 3
+            done
+            [ "$merge_state" != DIRTY ] || conflicts=true
             # Unread, it is no record: the continue runs as it always did.
             # shellcheck disable=SC2016 # jq variable, not a shell one.
             { gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
               | jq -r --arg bot "$DX_BOT_LOGIN" '.[] | select(.user.login == $bot and (.body | startswith("<!-- dx-review -->"))) | .body' \
               | { grep -oP '<!-- dx-review-record \K.*(?= -->)' || true; } | tail -1; } > "$RUNNER_TEMP/record.json" || echo null > "$RUNNER_TEMP/record.json"
-            as=$(IS_DRAFT="${state%% *}" HEAD="${state#* }" RECORD="$RUNNER_TEMP/record.json" python3 .dx-central/scripts/autopilot.py continue-as)
-            [ "$as" != fix ] || echo "#$PR is ready and its review blocks at its head: this continue runs one fix round."
+            as=$(IS_DRAFT="$is_draft" HEAD="$head" RECORD="$RUNNER_TEMP/record.json" CONFLICTS="$conflicts" python3 .dx-central/scripts/autopilot.py continue-as)
+            if [ "$as" = fix ] && [ "$conflicts" = true ]; then
+              echo "#$PR is ready and conflicts with main: this continue runs one fix round, which merges main first."
+            elif [ "$as" = fix ]; then
+              echo "#$PR is ready and its review blocks at its head: this continue runs one fix round."
+            fi
           fi
-          echo "mode=$as" >> "$GITHUB_OUTPUT"
+          { echo "mode=$as"; echo "conflicts=$conflicts"; } >> "$GITHUB_OUTPUT"
           [ -n "$ISSUE" ] || { echo "No issue to work on."; exit 1; }
           echo "issue=$ISSUE" >> "$GITHUB_OUTPUT"
           gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/body.md"
@@ -586,6 +607,10 @@ jobs:
           BRANCH: ${{ steps.what.outputs.branch }}
           ROUND: ${{ steps.what.outputs.round }}
           LANE: ${{ steps.may.outputs.lane }}
+          # #556: a continue's fix round on a pull request that conflicts
+          # with main merges it first.
+          CONFLICTS: ${{ steps.what.outputs.conflicts }}
+          DEFAULT: ${{ github.event.repository.default_branch }}
           # #479: a round for a pull request the queue dropped reads the
           # failed jobs' log instead of the review.
           QUEUE: ${{ github.event_name == 'pull_request' && github.event.action == 'dequeued' }}
@@ -603,13 +628,15 @@ jobs:
           fi
           python3 .dx-central/scripts/autopilot.py inputs "$MODE"
           if [ "$MODE" = fix ]; then
-            python3 .dx-central/scripts/autopilot.py prompt fix > "$DX_IO/prompt.md"
+            CONFLICTS="${CONFLICTS:-false}" python3 .dx-central/scripts/autopilot.py prompt fix > "$DX_IO/prompt.md"
             exit 0
           fi
           AUTOPILOT_RUN="$RUN_URL" python3 .dx-central/scripts/autopilot.py board
-          # What maintainers answered its last question (#247, guided mode):
-          # the comments after it, on the pull request and the issue, by
-          # people with write access to the repository, checked now.
+          # What maintainers answered its last question (#247, guided mode),
+          # or the hint they gave after a stop, a silent or an unfinished
+          # run (#540): the comments after the last of those, or all of them
+          # when there is none, on the pull request and the issue, by people
+          # with write access to the repository, checked now.
           gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "autopilot:waiting" >/dev/null 2>&1 || true
           { gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments'; gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments'; } \
             | jq -s 'add | map({body, createdAt, author: {login: .author.login}})' > "$RUNNER_TEMP/comments.json"
@@ -826,6 +853,7 @@ jobs:
           REPRO_TEST: ${{ needs.prep.outputs.repro-test }}
           REPRO_SHA: ${{ needs.prep.outputs.repro-sha }}
           REPRO_BRANCH: ${{ needs.prep.outputs.repro-branch }}
+          DEFAULT: ${{ needs.prep.outputs.default }}
           REPO_AUTONOMY: ${{ runner.temp }}/repo-autonomy.yml
         run: |
           set -euo pipefail
@@ -860,15 +888,20 @@ jobs:
           # A branch left by an earlier, failed attempt is not reused.
           if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then branch="$branch-$GITHUB_RUN_ID"; fi
           if [ "$LANE" = bugfix-reproduced ]; then
-            # A reproduced bug's branch starts at the reproduction's own
-            # commit: the failing test, byte for byte the one the PRD sealed
-            # (its SHA-256), committed but never written to the working tree.
+            # A reproduced bug's branch starts at current main with the
+            # reproduction's own commits on top (#549): the failing test,
+            # byte for byte the one the PRD sealed (its SHA-256), committed
+            # but never written to the agent's working tree.
             git fetch -q origin "$REPRO_BRANCH"
-            if [ "$(git cat-file blob "FETCH_HEAD:$REPRO_TEST" 2>/dev/null | sha256sum | cut -c1-64)" != "$REPRO_SHA" ]; then
+            git checkout -q -b "$branch" "origin/$DEFAULT"
+            if ! git cherry-pick "$(git merge-base FETCH_HEAD "origin/$DEFAULT")..FETCH_HEAD" > /dev/null 2>&1; then
+              git cherry-pick --abort 2>/dev/null || true
+              echo "why=The reproduction's commits on $REPRO_BRANCH do not apply on $DEFAULT; the draft pull request is not opened." >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            if [ "$(git cat-file blob "HEAD:$REPRO_TEST" 2>/dev/null | sha256sum | cut -c1-64)" != "$REPRO_SHA" ]; then
               echo "why=The reproduction test on $REPRO_BRANCH is not the one the PRD sealed; the draft pull request is not opened." >> "$GITHUB_OUTPUT"; exit 0
             fi
-            git checkout -q -b "$branch" FETCH_HEAD
-            onto=FETCH_HEAD
+            onto="origin/$DEFAULT"
           elif adopt=$(python3 .dx-central/scripts/autopilot.py adopted) && [ -n "$adopt" ]; then
             # A pull request a maintainer adopted (#488, `/adopt`): the branch
             # starts at the head they read, which scripts/claim.py copied to
@@ -984,9 +1017,19 @@ jobs:
           DEFAULT: ${{ needs.prep.outputs.default }}
         run: |
           set -euo pipefail
-          # What is new from here on goes to GitHub; tick reads the commits
-          # since the default branch.
-          { echo "start=$(git rev-parse HEAD)"; echo "base=$(git merge-base HEAD "origin/$DEFAULT")"; echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } >> "$GITHUB_OUTPUT"
+          # What is new from here on goes to GitHub, a merge of main
+          # included; tick reads the commits since the default branch.
+          echo "start=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          # The branch behind main gets it first (#549), as a clean merge,
+          # which api-commit.py pushes; on a conflict the work goes on from
+          # the branch as it is.
+          if [ "$(git rev-parse --abbrev-ref HEAD)" != "$DEFAULT" ] && ! git merge-base --is-ancestor "origin/$DEFAULT" HEAD; then
+            if ! git merge -q --no-edit "origin/$DEFAULT" > /dev/null 2>&1; then
+              git merge --abort 2>/dev/null || true
+              echo "::warning::$DEFAULT does not merge cleanly into the branch: the work goes on from the branch as it is."
+            fi
+          fi
+          { echo "base=$(git merge-base HEAD "origin/$DEFAULT")"; echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } >> "$GITHUB_OUTPUT"
           eof="DX_$(openssl rand -hex 16)"
           { echo "prompt<<$eof"; cat .dx-io/prompt.md; echo "$eof"; } >> "$GITHUB_OUTPUT"
 
@@ -1156,8 +1199,11 @@ jobs:
               echo "::error::The agent's commits do not build on $BRANCH as GitHub has it: nothing is pushed."; exit 1
             fi
             # Read whole, then searched: a pipe into grep -q could end early
-            # and, under pipefail, read as no match.
-            changed=$(git diff --name-only "origin/$BRANCH" "$new")
+            # and, under pipefail, read as no match. What the agent's own
+            # commits change: a merge of main brings only main's files, and
+            # the conflicts it resolved (api-commit.py refuses any other
+            # merge, #550, and a workflow resolved outside the engine, #556).
+            changed=$(git log --first-parent --no-merges --no-renames --format= --name-only "origin/$BRANCH..$new")
             if grep -q '^\.github/workflows/' <<<"$changed" && [ "$ENGINE" != true ]; then
               echo "::error::The agent's commits change .github/workflows: nothing is pushed."; exit 1
             fi

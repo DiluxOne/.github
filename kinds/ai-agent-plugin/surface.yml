@@ -1,0 +1,11 @@
+# What a `docs` pull request may change in a plugin for coding agents (#552),
+# beside the organisation's docs-paths (policy/review-policy.default.yml).
+# Shell `case` globs: `*` crosses directories. A skill's Markdown is what the
+# agent reads, and the kind's review rules (rules.yml) run on it whatever the
+# pull request's type. scripts/surface.py reads it; kinds/README.md, "Public
+# surface". No `surface` entries yet: an untrusted author's pull request is
+# read by the human merge.
+docs-paths:
+  - README.md
+  - docs/*
+  - skills/*.md
