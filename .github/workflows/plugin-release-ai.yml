@@ -4,7 +4,7 @@ name: Plugin release for coding agents
 # once a person has accepted the issue "Release X.Y.Z" (#82): the release
 # ends at the GitHub release, the tag and its notes, and the caller's
 # `publish` job, on that release's publishing, brings the plugin's entry in
-# the organisation's catalog, diluxone-plugins-ai, up to it
+# the organisation's catalog (org.yml `catalogs`, #568) up to it
 # (plugin-publish-ai.yml). The steps are plugin-release-wp.yml's, without
 # what is WordPress's (the zip, the readme, wordpress.org, the development
 # build and the security patch):

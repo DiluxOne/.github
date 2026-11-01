@@ -79,12 +79,12 @@ permissions:
   contents: read
 
 # The organisation's App, as GitHub shows it (#197): the calling
-# organisation's variables DX_BOT_LOGIN, DX_BOT_APP and DX_BOT_ID, or
-# DiluxOne's dilux-bot when it sets none.
+# organisation's variables DX_BOT_LOGIN, DX_BOT_APP and DX_BOT_ID, which
+# every organisation sets (#568): config-overlay.sh stops the run without them.
 env:
-  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
-  DX_BOT_APP: ${{ vars.DX_BOT_APP || 'dilux-bot' }}
-  DX_BOT_ID: ${{ vars.DX_BOT_ID || '333187390' }}
+  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN }}
+  DX_BOT_APP: ${{ vars.DX_BOT_APP }}
+  DX_BOT_ID: ${{ vars.DX_BOT_ID }}
 
 jobs:
   plan:
@@ -481,7 +481,7 @@ jobs:
           name: review-${{ matrix.p.ghsa }}
           path: ${{ runner.temp }}/review
 
-      - name: dilux-bot token (this repository)
+      - name: App token (this repository)
         id: here
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:

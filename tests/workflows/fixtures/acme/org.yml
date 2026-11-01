@@ -1,0 +1,8 @@
+# Acme's own `.github` (#568): another organisation that calls the engine's
+# workflows, with its own identity and only the settings it changes.
+org: Acme
+central: Acme/.github
+bot:
+  app: acme-bot
+  id: 7
+maintainers: [acme-admin]

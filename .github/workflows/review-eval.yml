@@ -59,10 +59,12 @@ jobs:
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
+          DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN }}
+          DX_BOT_ID: ${{ vars.DX_BOT_ID }}
         run: |
           set -euo pipefail
-          git config --global user.name "dilux-bot[bot]"
-          git config --global user.email "333187390+dilux-bot[bot]@users.noreply.github.com"
+          git config --global user.name "$DX_BOT_LOGIN"
+          git config --global user.email "$DX_BOT_ID+$DX_BOT_LOGIN@users.noreply.github.com"
           python3 scripts/review-eval.py run > "$RUNNER_TEMP/results.json"
 
       - name: Score against the baseline

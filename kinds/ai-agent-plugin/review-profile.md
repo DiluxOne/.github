@@ -1,8 +1,8 @@
 # Review profile: plugin for coding agents (kind `ai-agent-plugin`)
 
 For plugins wired into coding agents (Claude Code, Codex, Copilot, Cursor,
-Gemini, OpenCode) and published in the organisation's catalog,
-`diluxone-plugins-ai`. A plugin runs on the machine of whoever installs it:
+Gemini, OpenCode) and published in the organisation's catalog
+(org.yml `catalogs`). A plugin runs on the machine of whoever installs it:
 its hooks on every tool call, its skills, agents and commands as what the
 agent is told to do. What a script can check is a rule in `rules.yml` beside
 this file, run on every pull request (`Review rules (ai-agent-plugin)`), and

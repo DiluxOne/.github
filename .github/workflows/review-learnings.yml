@@ -54,7 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: dilux-bot token (whole organisation)
+      - name: App token (whole organisation)
         id: bot
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -163,7 +163,7 @@ jobs:
           prompt: |
             You improve the organisation's code review rules from evidence. learnings.json lists
             the pull requests merged across the organisation in the last 90 days that the Claude
-            review rated, each with: repo, number, title, url, mergedAt, mergedBy ("app/dilux-bot"
+            review rated, each with: repo, number, title, url, mergedAt, mergedBy ("app/${{ vars.DX_BOT_APP }}"
             means it merged on its own), author, recent (merged in the last 7 days), reverted
             (true, false, or null when unknown: unknown is never clean), and the review's record:
             risk (final), model_risk (what the reviewer said before the policy floor), floor,

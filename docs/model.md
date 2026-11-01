@@ -110,7 +110,7 @@ The gate ignores any label a bot adds, except a lane's label, and that only when
 
 ## Where each rule lives
 
-Three layers: the organisation (its `.github` repository), the kind, the repository. What is below adds or restricts; it never loosens what is above, except up to the ceiling the organisation sets.
+Three layers: the organisation (its `.github` repository), the kind, the repository. What is below adds or restricts; it never loosens what is above, except up to the ceiling the organisation sets. Beneath them all are the engine's defaults (DiluxOne/.github): an organisation's file overrides only the keys it sets and keeps the engine's for every other, and never drops an engine safeguard (#568). Every setting, its default, who may change it and its limit: [configuration](configuration.md).
 
 | What | Organisation | Kind | Repository |
 | --- | --- | --- | --- |

@@ -17,7 +17,7 @@ def test_the_start_on_opened_is_dilux_bots_unlabelled_issue():
     cond, _ = triage_start()
     # The last alternative of the condition is the start on `opened`.
     opened = cond[cond.index("(github.event.action == 'opened'"):]
-    assert "github.event.sender.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]')" in opened
+    assert "github.event.sender.login == vars.DX_BOT_LOGIN" in opened
     assert "toJSON(github.event.issue.labels) == '[]'" in opened
     assert "!startsWith(github.event.issue.title, 'The bug reproduced from ')" in opened
 

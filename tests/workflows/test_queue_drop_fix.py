@@ -31,12 +31,12 @@ def test_the_pipeline_starts_one_fix_round_when_the_queue_drops_an_autopilot_pul
     job = wf["jobs"]["autopilot-queue"]
     cond = " ".join(job["if"].split())
     for part in ("github.event.action == 'dequeued'", "contains(github.event.pull_request.labels.*.name, 'autopilot')",
-                 "github.event.pull_request.user.login == 'dilux-bot[bot]'", "github.repository != 'DiluxOne/.github'"):
+                 "github.event.pull_request.user.login == vars.DX_BOT_LOGIN", "github.repository != 'DiluxOne/.github'"):
         assert part in cond
     assert job["uses"].startswith("DiluxOne/.github/.github/workflows/autopilot.yml@")
     # No input the released major may lack: autopilot.yml reads the event.
     assert job["with"] == {"mode": "fix", "pr": "${{ format('{0}', github.event.pull_request.number) }}"}
-    assert job["permissions"] == {"contents": "read", "pull-requests": "read"}
+    assert job["permissions"] == {"contents": "read"}
 
 
 def test_nothing_else_of_the_pipeline_runs_on_dequeued():
