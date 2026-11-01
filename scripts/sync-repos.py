@@ -95,9 +95,13 @@ archived and not excluded in repos.yml:
             a private one on GitHub Enterprise Cloud. Off, or not allowed, the
             ruleset is deleted and DX_MERGE_QUEUE is `off`: the repository is
             ready for the day it is allowed. It is turned on only once every
-            workflow that calls a shared one on pull requests also runs on
-            `merge_group` (`callers` brings them in step), or the queue would
-            wait for checks that never run.
+            check the repository's rules require (the organisation's rulesets
+            that cover it, and its own) comes from a workflow that runs on
+            `merge_group`, each check mapped to its workflow through the runs
+            of its latest pull request (#562): one that does not, or that no
+            workflow can be found for, keeps it off, and the drift check
+            names the check and the workflow; else the queue would wait for
+            checks that never run.
   all       labels, settings, files, own-checks and merge-queue, in that order.
   adopt     one repository repos.yml lists, brought in the flow with no step
             by hand (#562): labels, settings, security, rulesets (its
@@ -1832,21 +1836,67 @@ def queue_allowed(visibility, plan):
     return None if plan is None else "enterprise" in str(plan).lower()
 
 
-def queue_callers_ready(files):
-    """The workflows that call a shared workflow (or one of the repository's
-    own reusable ones) on pull requests but not on `merge_group`: the queue
-    would wait for their checks forever."""
-    late = []
-    for path, text in sorted(files.items()):
-        try:
-            on = (yaml_text(text) or {}).get("on", (yaml_text(text) or {}).get(True)) or {}
-        except Exception:  # noqa: BLE001 - an unreadable workflow is not ready
-            late.append(path)
-            continue
-        events = set(on) if isinstance(on, (dict, list)) else {on}
-        if (SHARED_PREFIX in text or LOCAL_PREFIX in text) and "pull_request" in events and "merge_group" not in events:
-            late.append(path)
-    return late
+def runs_on_merge_group(text):
+    """Whether a workflow's text runs on `merge_group`; None when it does
+    not parse."""
+    try:
+        data = yaml_text(text) or {}
+    except Exception:  # noqa: BLE001 - an unreadable workflow is not ready
+        return None
+    on = data.get("on", data.get(True)) if isinstance(data, dict) else None
+    events = set(on) if isinstance(on, (dict, list)) else {on}
+    return "merge_group" in events
+
+
+def queue_blockers(contexts, workflow_of, files):
+    """#562: [(context, workflow or None, why)] of the checks a repository's
+    rules require that would never report in the merge queue: the workflow
+    that produces a context (`workflow_of`, from a recent pull request's
+    runs) does not run on `merge_group`, or no workflow could be found for
+    it. Empty: every required check runs in the queue. Pure."""
+    out = []
+    for context in sorted(set(contexts)):
+        path = workflow_of.get(context)
+        if not path:
+            out.append((context, None, "no workflow of a recent pull request produces it"))
+        elif path not in files:
+            out.append((context, path, "its workflow could not be read"))
+        elif not runs_on_merge_group(files[path]):
+            out.append((context, path, "does not run on merge_group"))
+    return out
+
+
+def queue_lines(blockers):
+    """The drift check's lines for queue_blockers()."""
+    return [f"the merge queue waits: `{c}` from `{w}` {why}" if w else f"the merge queue waits: `{c}`: {why}" for c, w, why in blockers]
+
+
+def required_contexts(name, mine, org):
+    """The checks the rules on a repository's default branch require: the
+    organisation's rulesets that cover it and its own, the queue's aside."""
+    rules = [r for r in org if covers(r, name)] + [r for r in mine if r.get("name") != QUEUE]
+    return {c for r in rules if r.get("target", "branch") == "branch" for c in required_checks(r)}
+
+
+def context_workflows(full):
+    """{check name: workflow path} from the runs of the repository's most
+    recent pull request's head: each check run's suite, its workflow run."""
+    pulls = json.loads(gh("pr", "list", "--repo", full, "--state", "all", "--limit", "1", "--json", "headRefOid").stdout or "[]")
+    if not pulls:
+        return {}
+    sha = pulls[0]["headRefOid"]
+    pages = json.loads(gh("api", "--paginate", "--slurp", f"repos/{full}/actions/runs?head_sha={sha}&per_page=100").stdout or "[]")
+    suites = {r.get("check_suite_id"): r.get("path") for page in pages for r in (page.get("workflow_runs") or [])}
+    pages = json.loads(gh("api", "--paginate", "--slurp", f"repos/{full}/commits/{sha}/check-runs?per_page=100").stdout or "[]")
+    return {c["name"]: suites.get((c.get("check_suite") or {}).get("id")) for page in pages for c in page.get("check_runs", [])
+            if suites.get((c.get("check_suite") or {}).get("id"))}
+
+
+def blockers_of(repo, files, mine=None):
+    """queue_blockers() for a repository, read from GitHub."""
+    full = f"{ORG}/{repo['name']}"
+    contexts = required_contexts(repo["name"], rulesets(full) if mine is None else mine, org_rulesets() or [])
+    return queue_blockers(contexts, context_workflows(full) if contexts else {}, files)
 
 
 def yaml_text(text):
@@ -1866,6 +1916,14 @@ def org_plan():
     return ORG_PLAN or None
 
 
+def queue_wanted(repo, conf):
+    """Whether the repository is to have a merge queue, by its mode and
+    what GitHub allows (sync_merge_queue's decision before its checks)."""
+    mode = queue_mode(repo["name"], conf, sys.modules["org"].load())
+    allowed = queue_allowed(repo.get("visibility"), org_plan())
+    return mode == "on" or (mode == "auto" and bool(allowed))
+
+
 def sync_merge_queue(repo, conf, dry):
     """Turns the merge queue on or off for one repository (see `merge-queue`
     above): its ruleset and DX_MERGE_QUEUE."""
@@ -1879,11 +1937,15 @@ def sync_merge_queue(repo, conf, dry):
     if mode == "on" and not allowed:
         raise ValueError(f"merge-queue is `on` but GitHub gives a {str(repo.get('visibility')).lower()} repository on this plan ({org_plan() or 'unknown'}) no merge queue")
     want = mode == "on" or (mode == "auto" and allowed)
-    late = queue_callers_ready(workflow_files(full)) if want else []
+    own = rulesets(full)
+    late = blockers_of(repo, workflow_files(full), own) if want else []
     if late:
-        print(f"  the merge queue waits: {', '.join(late)} run on pull requests but not on merge_group (`sync-repos.py callers` brings them in step)")
+        # Every check the rules require must report in the queue, or it
+        # waits forever (#562): it stays off, and says why.
+        for line in queue_lines(late):
+            print(f"  {line}")
         want = False
-    mine = [r for r in rulesets(full) if r.get("name") == QUEUE]
+    mine = [r for r in own if r.get("name") == QUEUE]
     value = "on" if want else "off"
     # The variable is never `on` without the queue: when turning it on the
     # ruleset comes first, when turning it off the variable does, so a write
@@ -2214,6 +2276,13 @@ def drift(repo, conf, labels, block, current=0):
             found.append(f"no \"{OWN}\" ruleset: nothing requires its own jobs' checks (`sync-repos.py own-checks`)")
         for _, rname in superseded(repo["name"], mine or [], org, pipeline_jobs()):
             found.append(f"the ruleset \"{rname}\" is covered by the organisation's (`sync-repos.py own-checks` deletes it)")
+        # #562 C3: a merge queue it is to have waits for every check its
+        # rules require to run on merge_group.
+        if mine is not None and queue_wanted(repo, conf):
+            try:
+                found += queue_lines(blockers_of(repo, files, mine))
+            except (RuntimeError, ValueError) as exc:
+                found.append(f"the checks its merge queue waits for could not be read: {str(exc)[:160]}")
     have = {l["name"]: l for l in json.loads(gh("label", "list", "--repo", full, "--limit", "1000", "--json", "name,color,description").stdout)}
     for label in labels:
         name = str(label["name"])
@@ -3435,31 +3504,51 @@ def self_test():
     check("#451: an unread plan is unknown for a private repository, never a public one", (queue_allowed("PRIVATE", None), queue_allowed("PUBLIC", None)), (None, True))
     # #451: the order of the writes, so a failure half way never leaves
     # DX_MERGE_QUEUE on without the queue.
-    def queue_run(want_rs, has_rs, plan="team", vis="PUBLIC", mode="auto"):
+    own_rs = {"id": 8, "name": OWN, "target": "branch", "rules": [{"type": "required_status_checks", "parameters": {
+        "required_status_checks": [{"context": "checks / unit"}]}}]}
+    tests_wf = "on:\n  pull_request:\njobs:\n  unit:\n    runs-on: ubuntu-latest\n    steps: [{run: 'true'}]\n"
+
+    def queue_run(want_rs, has_rs, plan="team", vis="PUBLIC", mode="auto", required=False, workflow=tests_wf, out=None):
         calls = []
         def fake(*args, check=True, input_text=None):
-            calls.append(" ".join(args))
-            if "rulesets?includes_parents" in " ".join(args):
-                return Out(json.dumps([[{"id": 9, "source_type": "Repository"}]] if has_rs else [[]]))
+            joined = " ".join(args)
+            calls.append(joined)
+            if "rulesets?includes_parents" in joined:
+                return Out(json.dumps([([{"id": 9, "source_type": "Repository"}] if has_rs else []) + ([{"id": 8, "source_type": "Repository"}] if required else [])]))
             if args[:2] == ("api", "repos/o/r/rulesets/9"):
                 return Out(json.dumps({"id": 9, "name": QUEUE}))
-            if "actions/variables/DX_MERGE_QUEUE" in " ".join(args) and "-X" not in args:
+            if args[:2] == ("api", "repos/o/r/rulesets/8"):
+                return Out(json.dumps(own_rs))
+            if "actions/variables/DX_MERGE_QUEUE" in joined and "-X" not in args:
                 return Out("", 1, "HTTP 404")
-            if "contents/.github/workflows" in " ".join(args):
-                return Out("", 1, "HTTP 404")
+            if joined == "api repos/o/r/contents/.github/workflows":
+                return Out(json.dumps([{"name": "tests.yml", "path": ".github/workflows/tests.yml"}]) if required else "", 0 if required else 1, "" if required else "HTTP 404")
+            if joined.startswith("api repos/o/r/contents/.github/workflows/tests.yml"):
+                return Out(workflow)
+            if args[:2] == ("pr", "list"):
+                return Out(json.dumps([{"headRefOid": "abc"}]))
+            if "actions/runs?head_sha=abc" in joined:
+                return Out(json.dumps([{"workflow_runs": [{"check_suite_id": 5, "path": ".github/workflows/tests.yml"}]}]))
+            if "commits/abc/check-runs" in joined:
+                return Out(json.dumps([{"check_runs": [{"name": "checks / unit", "check_suite": {"id": 5}}]}]))
+            if "orgs/o/rulesets" in joined:
+                return Out("[[]]")
             return Out("{}")
         org_mod = sys.modules["org"]
-        saved = (globals()["gh"], ORG, ORG_PLAN, org_mod.load)
+        saved = (globals()["gh"], ORG, ORG_PLAN, org_mod.load, ORG_RULESETS)
         try:
-            globals().update(gh=fake, ORG="o", ORG_PLAN=plan)
+            globals().update(gh=fake, ORG="o", ORG_PLAN=plan, ORG_RULESETS=None)
             org_mod.load = lambda *a, **k: {"merge-queue": mode}
             import contextlib
             import io
-            with contextlib.redirect_stdout(io.StringIO()):
+            with contextlib.redirect_stdout(io.StringIO()) as said:
                 sync_merge_queue({"name": "r", "visibility": vis}, {}, False)
+                if out is not None:
+                    out.append(said.getvalue())
+                    out.append(queue_lines(blockers_of({"name": "r"}, workflow_files("o/r"))))
         finally:
             globals()["gh"], org_mod.load = saved[0], saved[3]
-            globals().update(ORG=saved[1], ORG_PLAN=saved[2])
+            globals().update(ORG=saved[1], ORG_PLAN=saved[2], ORG_RULESETS=saved[4])
         writes = [c for c in calls if "-X" in c]
         return writes
     on = queue_run(True, False)
@@ -3470,7 +3559,20 @@ def self_test():
           len(off) == 2 and "value=off" in off[0] and "DELETE" in off[1], off)
     unread = queue_run(False, True, plan=False, vis="PRIVATE")
     check("#451 an unread plan on a private repository changes nothing", unread == [], unread)
-    check("#451: the queue waits for a caller that runs on pull requests but not on merge_group, and only for that one", queue_callers_ready(ready), ["b.yml", "e.yml"])
+    # #562 C3: every check the rules require must run on merge_group.
+    got = queue_blockers({"pipeline / checks", "tests", "orphan"}, {"pipeline / checks": "a.yml", "tests": "b.yml", "gone": "z.yml"}, ready)
+    check("#562 C3: a required check whose workflow lacks merge_group, or that no workflow produces, blocks the queue; one that runs there does not",
+          got == [("orphan", None, "no workflow of a recent pull request produces it"), ("tests", "b.yml", "does not run on merge_group")], got)
+    said = []
+    blocked = queue_run(False, False, required=True, out=said)
+    check("#562 C3: the merge queue sync does not turn the queue on for it, and says why",
+          (blocked, "the merge queue waits: `checks / unit` from `.github/workflows/tests.yml` does not run on merge_group" in said[0]),
+          (["api -X POST repos/o/r/actions/variables -f name=DX_MERGE_QUEUE -f value=off"], True))
+    check("#562 C3: the drift check names the context and the workflow",
+          said[1] == ["the merge queue waits: `checks / unit` from `.github/workflows/tests.yml` does not run on merge_group"], said[1])
+    ready_run = queue_run(True, False, required=True, workflow=tests_wf.replace("  pull_request:\n", "  pull_request:\n  merge_group:\n"))
+    check("#562 C3: once its workflow runs on merge_group, the queue is turned on",
+          len(ready_run) == 2 and "repos/o/r/rulesets" in ready_run[0] and "value=on" in ready_run[1], ready_run)
     check("#187: `files` runs the shared files alone", runs["files"] == ["files"], runs["files"])
     check("#187: `dependabot` runs the Dependabot file alone", runs["dependabot"] == ["dependabot"], runs["dependabot"])
     check("#479 C1: `pre-pr` runs the make pre-pr files alone, and `all` does not", runs["pre-pr"] == ["pre-pr"] and "pre-pr" not in runs["all"], runs)
