@@ -7,8 +7,8 @@ code) that an organisation ruleset lets only dilux-bot create or update and
 nobody delete or rewrite. A GitHub App's commits made through the API are
 signed by GitHub and show as Verified.
 
-  receipts.py seal-prd     on acceptance: the PRD's SHA-256, who accepted, when
-                           (issues/<n>/prd-<UTC>.json)
+  receipts.py seal-prd     on acceptance: the PRD's SHA-256 and its text (#588),
+                           who accepted, when (issues/<n>/prd-<UTC>.json)
   receipts.py seal-spec    at G3, when the autopilot wrote the Spec: its SHA-256
                            (issues/<n>/spec-<UTC>.json)
   receipts.py verify-spec  the Spec now against its seal: exit 0 only on "match"
@@ -20,6 +20,12 @@ signed by GitHub and show as Verified.
                            while it is "unsealed" or "changed", for the seal
                            of an acceptance that runs alongside (a
                            re-acceptance meets the old seal first, #353)
+  receipts.py sealed-prd   the PRD's text as its last seal sealed it (#588):
+                           the seal's own, else the issue's edit whose PRD
+                           has the sealed hash (EDITS_JSON, a list of bodies,
+                           stands in for the edit history); exit 1, printing
+                           nothing, when neither has it, 2 when the seal
+                           could not be read
   receipts.py merged       when the issue closes as completed: the receipt
                            (issues/<n>/merged-<UTC>.json; a reopened and
                            merged-again issue gets another): PRD and Spec hashes, the
@@ -78,8 +84,41 @@ def now():
 # --- what a seal and a receipt say (pure, tested) -------------------------
 
 def seal(number, body, accepted_by, policy_ref, at):
-    return {"kind": "prd-seal", "issue": number, "prd_sha256": prd_hash(body), "accepted_by": accepted_by,
-            "at": at, "policy": f"DiluxOne/.github@{policy_ref}" if policy_ref else None}
+    # The text too (#588, choice 5a): what changed since the seal can be
+    # said; it is public on the issue already.
+    return {"kind": "prd-seal", "issue": number, "prd_sha256": prd_hash(body), "prd": schema_mod.part_text(body, "prd"),
+            "accepted_by": accepted_by, "at": at, "policy": f"DiluxOne/.github@{policy_ref}" if policy_ref else None}
+
+
+def sealed_prd(last_seal, edits=()):
+    """The PRD's text as LAST_SEAL sealed it: its own `prd` when its hash is
+    the sealed one, else the PRD of the first body in EDITS (the issue's
+    edit history) whose hash is; "" when neither. Pure."""
+    if not last_seal:
+        return ""
+    want = last_seal.get("prd_sha256")
+    own = last_seal.get("prd")
+    if isinstance(own, str) and sha(own) == want:
+        return own
+    for body in edits or ():
+        if isinstance(body, str) and prd_hash(body) == want:
+            return schema_mod.part_text(body, "prd")
+    return ""
+
+
+def edit_history(repo, number):
+    """The issue's bodies as edited, from GitHub's edit history (EDITS_JSON
+    stands in for it); [] when it cannot be read: the comment then says the
+    sealed text is not available."""
+    if os.environ.get("EDITS_JSON"):
+        return json.loads(os.environ["EDITS_JSON"])
+    owner, _, name = repo.partition("/")
+    q = "query($o:String!,$n:String!,$i:Int!){repository(owner:$o,name:$n){issue(number:$i){userContentEdits(first:100){nodes{diff}}}}}"
+    try:
+        data = gh("graphql", "-f", f"query={q}", "-F", f"o={owner}", "-F", f"n={name}", "-F", f"i={number}")
+        return [n.get("diff") or "" for n in data["data"]["repository"]["issue"]["userContentEdits"]["nodes"]]
+    except (RuntimeError, KeyError, TypeError):
+        return []
 
 
 def verdict(body, last_seal):
@@ -375,6 +414,12 @@ Normal
     check("verify: a report added above does not matter", verdict("### What happened?\n\nx\n\n" + body, s), "match")
     check("verify: a changed criterion is caught", verdict(body.replace("turns dark", "turns light"), s), "changed")
     check("verify: no seal is unsealed", verdict(body, None), "unsealed")
+    check("C5 (#588): a seal holds the PRD's text", s["prd"], schema_mod.part_text(body, "prd"))
+    old = {k: v for k, v in s.items() if k != "prd"}
+    check("C5 (#588): the sealed text: the seal's own, else the edit whose hash is the sealed one, else none",
+          (sealed_prd(s), sealed_prd(old, ["### Problem\n\nOther.\n", "### What happened?\n\nx\n\n" + body]), sealed_prd(old, ["x"]), sealed_prd(None)),
+          (schema_mod.part_text(body, "prd"), schema_mod.part_text(body, "prd"), "", ""))
+    check("C5 (#588): a seal's text that does not hash to it is not taken", sealed_prd(dict(s, prd="forged")), "")
     def reads(*vs):
         it = iter(vs)
         return lambda: next(it)
@@ -433,6 +478,15 @@ Normal
         check("cli: verify an issue never sealed", run("verify-prd").stdout.strip(), "unsealed")
         check("cli: seal-prd writes a seal", run("seal-prd").returncode, 0)
         check("cli: verify the sealed PRD", run("verify-prd").stdout.strip(), "match")
+        # C5 (#588): the accepted body edited reads `changed`, and the
+        # sealed text is found to say what changed.
+        ef = os.path.join(d, "edited.md")
+        with open(ef, "w", encoding="utf-8") as f:
+            f.write(body.replace("turns dark", "turns light"))
+        check("C5 cli: an edited accepted body reads changed", (run_e := sp.run([sys.executable, os.path.abspath(__file__), "verify-prd"], env=dict(env, BODY=ef), capture_output=True, text=True)).stdout.strip(), "changed")
+        check("C5 cli: and exits 1", run_e.returncode, 1)
+        got = sp.run([sys.executable, os.path.abspath(__file__), "sealed-prd"], env=dict(env, BODY=ef), capture_output=True, text=True)
+        check("C5 cli: sealed-prd prints the text that was sealed", (got.returncode, got.stdout.strip() == schema_mod.part_text(body, "prd").strip()), (0, True))
         check("cli: merged writes a receipt", run("merged").returncode, 0)
         check("cli: the board shows the receipt", "G7 Merged" in run("board").stdout, True)
         check("cli: verify-spec with no Spec seal fails", run("verify-spec").returncode, 1)
@@ -548,6 +602,16 @@ def main(argv):
             return 2
         print(v)
         return 1 if v == "changed" else 0
+    if mode == "sealed-prd":
+        try:
+            last = last_seal(repo, number)
+        except Exception as e:  # noqa: BLE001 — unknown, never "not sealed"
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+        text = sealed_prd(last) or sealed_prd(last, edit_history(repo, number))
+        if text:
+            print(text)
+        return 0 if text else 1
     if mode == "merged":
         pr = json.loads(os.environ.get("PR_JSON", "{}"))
         checks = json.loads(os.environ.get("CHECKS_JSON", "{}"))

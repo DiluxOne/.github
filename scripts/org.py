@@ -20,6 +20,10 @@
                        catalog in org.yml `catalogs`; nothing when none
   org.py attribution   `warn` or `required`: what the conventions check
                        does with a model named as a co-author (#491)
+  org.py who-decides   `codeowners` (the default), `acceptor` or
+                       `writers`: who steers the autopilot (#588; a
+                       repository's exception is repos.yml's, read by
+                       scripts/deciders.py)
   org.py --test        self-test
 """
 import os
@@ -90,6 +94,15 @@ def attribution(conf):
     return mode
 
 
+def who_decides(conf):
+    """org.yml `who-decides` (#588): `codeowners` (the default), `acceptor`
+    or `writers`; anything else is an error, never a guess."""
+    value = conf.get("who-decides") or "codeowners"
+    if value not in ("codeowners", "acceptor", "writers"):
+        raise ValueError(f"org.yml `who-decides` is `{value}`: codeowners, acceptor or writers")
+    return value
+
+
 def hardwired_bot(root=os.path.join(HERE, "..", ".github", "workflows")):
     """Where a shared workflow writes this organisation's App in (#197):
     another organisation calls them with its own App, named by its variables
@@ -145,6 +158,14 @@ def self_test():
     except ValueError:
         check("#491: an unknown attribution fails", "ValueError", "ValueError")
     check("#491: org.yml starts at warn", attribution(_conf), "warn")
+    check("C2 (#588): who-decides defaults to codeowners, and takes the three values",
+          (who_decides({}), [who_decides({"who-decides": v}) for v in ("codeowners", "acceptor", "writers")]), ("codeowners", ["codeowners", "acceptor", "writers"]))
+    try:
+        who_decides({"who-decides": "everyone"})
+        check("C2 (#588): an unknown who-decides fails", "no error", "ValueError")
+    except ValueError:
+        check("C2 (#588): an unknown who-decides fails", "ValueError", "ValueError")
+    check("C2 (#588): org.yml keeps the default", who_decides(_conf), "codeowners")
     check("#568: {catalog} is the kind's catalog", publishes_to("{catalog}", "k", {"k": "acme-plugins"}), "acme-plugins")
     check("#568: no catalog for the kind publishes nowhere", publishes_to("{catalog}", "k", {}), "")
     check("#568: a place with no placeholder stays", publishes_to("wordpress.org", "k", {}), "wordpress.org")
@@ -177,6 +198,9 @@ if __name__ == "__main__":
         sys.exit(0 if value else 1)
     if sys.argv[1:] == ["maintainers"]:
         print("\n".join(MAINTAINERS))
+        sys.exit(0)
+    if sys.argv[1:] == ["who-decides"]:
+        print(who_decides(_conf))
         sys.exit(0)
     if sys.argv[1:] == ["attribution"]:
         print(attribution(_conf))

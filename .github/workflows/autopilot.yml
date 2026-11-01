@@ -675,17 +675,17 @@ jobs:
           # What maintainers answered its last question (#247, guided mode),
           # or the hint they gave after a stop, a silent or an unfinished
           # run (#540): the comments after the last of those, or all of them
-          # when there is none, on the pull request and the issue, by people
-          # with write access to the repository, checked now.
+          # when there is none, on the pull request and the issue, by those
+          # `who-decides` allows (#588, scripts/deciders.py: the code owners
+          # of what it touches, its acceptor or every writer, each with
+          # write access), checked now. Who could not be read decides
+          # nothing: the run goes on with no answer.
           gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "autopilot:waiting" >/dev/null 2>&1 || true
           { gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments'; gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments'; } \
             | jq -s 'add | map({body, createdAt, author: {login: .author.login}})' > "$RUNNER_TEMP/comments.json"
-          : > "$RUNNER_TEMP/writers.txt"
-          for login in $(jq -r '.[].author.login' "$RUNNER_TEMP/comments.json" | sort -u); do
-            role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$login/permission" --jq .role_name 2>/dev/null || echo none)
-            case $role in admin|maintain|write) echo "$login" >> "$RUNNER_TEMP/writers.txt" ;; esac
-          done
-          COMMENTS="$RUNNER_TEMP/comments.json" WRITERS="$RUNNER_TEMP/writers.txt" python3 .dx-central/scripts/autopilot.py answers > "$RUNNER_TEMP/answers.md"
+          jq -r '.[].author.login' "$RUNNER_TEMP/comments.json" | sort -u \
+            | python3 .dx-central/scripts/deciders.py list answer > "$RUNNER_TEMP/deciders.txt" || : > "$RUNNER_TEMP/deciders.txt"
+          COMMENTS="$RUNNER_TEMP/comments.json" DECIDERS="$RUNNER_TEMP/deciders.txt" python3 .dx-central/scripts/autopilot.py answers > "$RUNNER_TEMP/answers.md"
           # An answer that drops or changes a criterion (`drop C3`,
           # `C3: <new text>`) is applied to the checklist here, by the bot,
           # and logged in the Decisions (#561): the work and the finish

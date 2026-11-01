@@ -19,29 +19,39 @@
 # settled before the issue is accepted. The only lines allowed outside a
 # section's text are the organisation's markers (<!-- dx-… -->) and the AI
 # line at the end.
+#
+# `question` is what the bot asks an issue's author when the section is
+# missing or does not pass (#588, the shaping in issue-accepted.yml): their
+# answers are rewritten into the section, for a person to read before
+# accepting it.
 
 prd:
   - id: problem
     heading: Problem
     description: What is wrong or missing today, and for whom. Facts, not the solution.
     required: true
+    question: What is wrong or missing today, and who does it affect? Facts you saw, not the fix.
   - id: scope
     heading: Scope
     description: What this issue changes, as a list.
     required: true
+    question: What exactly should change? A short list of what the change does.
   - id: out-of-scope
     heading: Out of scope
     description: What it deliberately does not change.
     required: true
+    question: What should this deliberately not change, even if it is close?
   - id: criteria
     heading: Acceptance criteria
     description: "One line per criterion, each with its ID and a verifiable form: C1: Given …, when …, then …"
     required: true
     format: criteria
+    question: "How will we know it works? For each thing to check: the situation (given), what someone does (when), and what they see then (then)."
   - id: criticality
     heading: Criticality
     description: Normal, or Critical (a person merges it).
     required: true
+    question: Is it Normal, or Critical (something a person must merge by hand, such as security or data loss)?
     format: one-of
     values: [Normal, Critical]
   # A decision several repositories carry out (#189): which ones, as rules

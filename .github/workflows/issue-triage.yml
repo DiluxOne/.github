@@ -1,6 +1,11 @@
 name: Issue triage
 
-# Reusable. When an issue is opened, Claude reads it with the repository's
+# Reusable. A person's `accepted` or `autopilot:continue` starts the
+# autopilot only when `who-decides` allows them (#588, the `steer` job,
+# scripts/deciders.py); anyone else's `autopilot:continue` comes off with a
+# comment that names who may add it.
+#
+# When an issue is opened, Claude reads it with the repository's
 # README, readme.txt, docs/roadmap.md and the open issues, classifies it and
 # does one thing: applies a label and posts one reply. It never closes an
 # issue, never promises a fix and never gives a date. The `low` reviewer of
@@ -782,8 +787,66 @@ jobs:
   # (scripts/decision.py, #415), which nobody labels; autopilot.yml asks
   # GitHub whether a lane accepts it and starts nothing otherwise. A
   # reproduced bug's lane issue is left to issue-repro.yml, which starts it.
-  autopilot:
+  # Who may steer it (#588, scripts/deciders.py), before anything else: a
+  # person's `accepted` or `autopilot:continue` starts it only when
+  # `who-decides` allows them (the code owners of what it touches, whoever
+  # accepted it, or every writer; each with write access). Anyone else's
+  # `autopilot:continue` comes off here with a comment that names who may
+  # add it; an `accepted` of theirs, issue-accepted.yml takes off and says
+  # so. dilux-bot's own `autopilot:continue` needs no check.
+  steer:
+    name: Who may steer the autopilot
     if: >-
+      github.event_name == 'issues' && github.event.action == 'labeled' && github.event.sender.type != 'Bot' &&
+      (github.event.label.name == 'accepted' || github.event.label.name == 'autopilot:continue') && !contains(github.event.issue.labels.*.name, 'lane:release')
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    outputs:
+      ok: ${{ steps.may.outputs.ok }}
+    steps:
+      - name: App token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: read # CODEOWNERS and the seal
+          permission-issues: write
+          permission-pull-requests: read
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
+          path: .dx-central
+          persist-credentials: false
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+      - name: Who may add the label
+        id: may
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          NUMBER: ${{ github.event.issue.number }}
+          LABEL: ${{ github.event.label.name }}
+          SENDER: ${{ github.event.sender.login }}
+        run: |
+          set -euo pipefail
+          action=$([ "$LABEL" = accepted ] && echo accepted || echo continue)
+          rc=0; why=$(python3 .dx-central/scripts/deciders.py may "$action" "$SENDER") || rc=$?
+          echo "$why"
+          if [ "$rc" = 0 ]; then echo "ok=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          echo "ok=false" >> "$GITHUB_OUTPUT"
+          [ "$action" = continue ] || exit 0
+          # Exit 2 is "could not tell": refused too, never taken for yes.
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$LABEL" >/dev/null
+          [ "$rc" = 1 ] || why="Who may add it could not be read now; add it again in a while, or ask a maintainer."
+          # shellcheck disable=SC2016 # Markdown's backticks, not a command.
+          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '**The autopilot does not continue:** `%s` was taken off. %s\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)' "$LABEL" "$why")" >/dev/null
+
+  autopilot:
+    needs: steer
+    if: >-
+      !cancelled() && (needs.steer.result == 'skipped' || needs.steer.outputs.ok == 'true') &&
       github.event_name == 'issues' && !contains(github.event.issue.labels.*.name, 'lane:release') && (
         (github.event.action == 'labeled' && github.event.label.name == 'accepted' && github.event.sender.type != 'Bot') ||
         (github.event.action == 'labeled' && github.event.label.name == 'autopilot:continue' && (github.event.sender.type != 'Bot' || github.event.sender.login == vars.DX_BOT_LOGIN)) ||

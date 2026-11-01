@@ -1,0 +1,3 @@
+{
+  "body": "### What problem would this solve?\n\nI cannot read the site at night.\n\n### Problem\n\nThe site has no dark mode, so reading at night hurts.\n\n### Scope\n\n- A toggle in the header.\n\n### Out of scope\n\n- Per-page themes.\n\n### Acceptance criteria\n\n- C1: Given a visitor, when they press the toggle, then the page turns dark.\n\n### Criticality\n\nNormal\n"
+}

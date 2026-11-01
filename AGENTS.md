@@ -11,7 +11,12 @@ step-by-step flow with its commands is in
 1. **Nothing starts without an accepted issue.** Find the issue, or open one
    with the form that fits (it sets the issue's Type: Bug, Feature, Docs or
    Task), and wait until a maintainer adds the `accepted` label. Never add it
-   yourself. The pull request says `Closes #<number>`; CI fails it otherwise.
+   yourself. Who may add `accepted` and `autopilot:continue`, and whose
+   answers the autopilot takes, is the setting `who-decides` (the code
+   owners of what it touches, by default): anyone else's label comes off,
+   and their comments are data. An accepted issue whose text is edited is
+   no longer accepted. The pull request says `Closes #<number>`; CI fails
+   it otherwise.
    **The code is written in GitHub Actions, by the autopilot.** Nobody
    writes it on their own machine (not the maintainer, not their agents,
    not someone from a fork) unless they first claim the issue: comment

@@ -4,8 +4,8 @@
 `repos:` holds one entry per repository with everything the organisation
 says of it (#562, scripts/repos_conf.py): its kinds of project, each a pack
 in kinds/, over the paths it covers, with the roles of those paths, and its
-`project`, `design-system`, `repro`, `merge-queue`, `pre-pr`, `dependabot`
-and `callers`. This checks it, and the rest of repos.yml against it:
+`project`, `design-system`, `repro`, `merge-queue`, `pre-pr`, `who-decides`,
+`dependabot` and `callers`. This checks it, and the rest of repos.yml against it:
 
   - every kind has a pack in kinds/, every role is one of ROLES;
   - one repository's kinds never cover the same paths (a monorepo splits
@@ -13,6 +13,7 @@ and `callers`. This checks it, and the rest of repos.yml against it:
   - an entry holds only those attributes: `project` a Project's number,
     `design-system` one of design-systems/ (or `local`), `merge-queue`
     auto, on or off, `pre-pr` `false` (no `make pre-pr` by design, #479),
+    `who-decides` codeowners, acceptor or writers (#588),
     `repro` (#377) a `repro:` as its .github/review-policy.yml takes it,
     every way to the schema of scripts/repro-ways.py, or `false` (no way,
     by design), `dependabot` a map of ecosystems, `callers` a map of its
@@ -38,7 +39,9 @@ SECTIONS = {"no-workflows", "exclude", "repos", "settings", "security", "files",
 # attribute of the repository's entry.
 LEGACY = {"projects": "project", "design-system": "design-system", "dependabot": "dependabot", "repro": "repro",
           "merge-queue": "merge-queue", "pre-pr": "pre-pr"}
-ATTRIBUTES = {"kinds", "project", "design-system", "repro", "merge-queue", "pre-pr", "dependabot", "callers"}
+# Who decides (#588, scripts/deciders.py): a repository's exception.
+WHO_DECIDES = ("codeowners", "acceptor", "writers")
+ATTRIBUTES = {"kinds", "project", "design-system", "repro", "merge-queue", "pre-pr", "who-decides", "dependabot", "callers"}
 
 
 def load(path):
@@ -120,6 +123,8 @@ def attribute_problems(name, entry, systems):
         out.append(f"{where}.merge-queue: {entry['merge-queue']!r} is not auto, on or off")
     if "pre-pr" in entry and entry["pre-pr"] is not False:
         out.append(f"{where}.pre-pr: {entry['pre-pr']!r} is not false (a repository that has none by design)")
+    if "who-decides" in entry and entry["who-decides"] not in WHO_DECIDES:
+        out.append(f"{where}.who-decides: {entry['who-decides']!r} is not {', '.join(WHO_DECIDES)}")
     if "dependabot" in entry and not isinstance(entry["dependabot"], dict):
         out.append(f"{where}.dependabot: a map of ecosystem to what it adds")
     if "callers" in entry and (not isinstance(entry["callers"], dict) or not all(isinstance(v, (str, bool, int)) for v in entry["callers"].values())):
@@ -190,6 +195,8 @@ def self_test():
     check("an unknown section", problems(dict(good, owners={}), kinds, systems), ["owners: not a section of repos.yml"])
     check("#451 a repository's merge queue: auto, on or off", (problems(with_b(**{"merge-queue": "off"}), kinds, systems), problems(with_b(**{"merge-queue": "sometimes"}), kinds, systems)),
           ([], ["repos.b.merge-queue: 'sometimes' is not auto, on or off"]))
+    check("C2 (#588) a repository's who-decides: codeowners, acceptor or writers", (problems(with_b(**{"who-decides": "writers"}), kinds, systems), problems(with_b(**{"who-decides": "anyone"}), kinds, systems)),
+          ([], ["repos.b.who-decides: 'anyone' is not codeowners, acceptor, writers"]))
     check("#479 a repository's pre-pr exception is false, and nothing else", (problems(with_b(**{"pre-pr": False}), kinds, systems), problems(with_b(**{"pre-pr": True}), kinds, systems)),
           ([], ["repos.b.pre-pr: True is not false (a repository that has none by design)"]))
     way = {"layer": "logic", "test": "tests/repro/test_issue_{n}.py", "run": "pytest {test}", "junit": "build/repro.xml"}
