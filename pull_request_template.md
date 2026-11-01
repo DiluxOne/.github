@@ -19,6 +19,7 @@
 
 ## 📸 Screenshots
 
+<!-- What a user sees, before and after. An autopilot pull request that touches the browser layer gets them here on its own once it is marked ready (#564, pr-screenshots.yml). -->
 
 
 ## ✅ Checklist

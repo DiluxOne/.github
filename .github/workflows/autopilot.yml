@@ -2,7 +2,8 @@ name: Autopilot
 
 # Reusable. The autopilot (#83, the plan in #78): an issue a person accepted,
 # worked by Claude in the open, in a draft pull request, to a pull request
-# ready for review; then its review's blocking points fixed, round after
+# ready for review (with before and after screenshots when it touches the
+# browser layer, #564, pr-screenshots.yml); then its review's blocking points fixed, round after
 # round, until the review is clean or the rounds run out (#109).
 #
 #   mode: start     called from issue-triage.yml when a person adds
@@ -1122,6 +1123,10 @@ jobs:
     if: ${{ always() && needs.prep.outputs.go == 'true' }}
     runs-on: ubuntu-latest # fresh: it holds the key beside an agent's work (#287)
     timeout-minutes: 30
+    # The end rule's verdict: `ready` when this run marked the pull
+    # request ready, which takes its screenshots (#564).
+    outputs:
+      verdict: ${{ steps.end.outputs.verdict }}
     permissions: {}
     steps:
       - name: dilux-bot token
@@ -1304,3 +1309,20 @@ jobs:
             python3 .dx-central/scripts/autopilot.py account "$f" "$t" >> "$GITHUB_STEP_SUMMARY"
           done
           [ "$found" = true ] || printf '## The autopilot'"'"'s run\n\nThe agent did not run.\n' >> "$GITHUB_STEP_SUMMARY"
+
+  # The pull request this run marked ready: before and after screenshots of
+  # the specs it affects in the browser layer (#564, pr-screenshots.yml, which
+  # checks that it is the autopilot's, from a branch of this repository; none
+  # affected, nothing runs). Not after a fix round: it was ready before.
+  screenshots:
+    needs: [prep, draft, apply]
+    if: ${{ always() && needs.apply.outputs.verdict == 'ready' && needs.prep.outputs.mode != 'fix' && (needs.draft.outputs.pr || needs.prep.outputs.pr) != '' }}
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: DiluxOne/.github/.github/workflows/pr-screenshots.yml@v7
+    with:
+      pr: ${{ needs.draft.outputs.pr || needs.prep.outputs.pr }}
+      central-ref: ${{ inputs.central-ref }}
+    secrets:
+      DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
