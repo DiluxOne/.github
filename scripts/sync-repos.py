@@ -50,7 +50,11 @@ archived and not excluded in repos.yml:
             permission, #329) to
             the templates in workflow-templates/ (repos.yml `callers`): the
             ones in `every-repository`, and any other whose shared workflows
-            the repository calls. Each template job must be there with the
+            the repository calls. A caller it lacks of those, or of a template
+            that calls its kind's battery (kinds/<kind>/pack.yml `workflows`),
+            is written whole from its template, its inputs to fill in left for
+            the pull request's reviewer: a repository being adopted, with no
+            caller yet, gets them all (#552). Each template job must be there with the
             same `uses:`, `needs` (its own jobs may join them), `if`,
             `permissions`, `secrets` handling and inputs, but the inputs the
             template says to fill in (`repository-owned`). Inputs and jobs of
@@ -603,7 +607,11 @@ def sync_callers(repo, conf, dry):
         print("  this repository's own callers change in a pull request here, by hand")
         return
     files = workflow_files(full)
-    if not any(CALLS_RE.search(t) for t in files.values()):
+    branch = (repo.get("defaultBranchRef") or {}).get("name") or "main"
+    # The callers it lacks, written whole from their templates (#552): those
+    # every repository has, and those of its kind's battery.
+    added = new_callers(files, conf, repo_kind(full, branch), branch)
+    if not any(CALLS_RE.search(t) for t in files.values()) and not added:
         print("  calls none of the shared workflows: nothing to compare (docs/adopting.md)")
         return
     current = current_major()
@@ -617,7 +625,9 @@ def sync_callers(repo, conf, dry):
         return
     moved = {p: to_major(t, old, current) for p, t in files.items()} if old else dict(files)
     major = (old, current) if old else None
-    branch = (repo.get("defaultBranchRef") or {}).get("name") or "main"
+    # The templates call the major they were written at; a new caller calls the current one.
+    behind = old_versions(added.values(), current)
+    added = {p: to_major(t, behind, current) for p, t in added.items()} if behind else added
     parsed_moved = {p: (t, parse_yaml(t)) for p, t in moved.items()}
     shared = shared_callers([(n, d, caller_for(dict(d, _name=n), parsed_moved, False)) for n, (_, d) in templates(major).items()])
     open_prs = json.loads(gh("pr", "list", "--repo", full, "--state", "open", "--limit", "500", "--json", "headRefName").stdout)
@@ -628,7 +638,8 @@ def sync_callers(repo, conf, dry):
     wanted, notes, stuck = {}, [], set()
     for name, path, found in callers_drift(moved, conf, major=major, default=branch):
         if not path:
-            notes.append(f"no caller of workflow-templates/{name}: add it from the template by hand (docs/adopting.md)")
+            if f".github/workflows/{name}" not in added:
+                notes.append(f"no caller of workflow-templates/{name}: add it from the template by hand (docs/adopting.md)")
             continue
         # The template at the major the repository moves to (it already is,
         # once that major is released).
@@ -670,6 +681,13 @@ def sync_callers(repo, conf, dry):
     for path, text in moved.items():
         if text != files[path] and path not in wanted:
             wanted[path] = text
+    # The callers it lacked, whole; an input that is the repository's own is
+    # left at the template's value, for the pull request's reviewer to fill in.
+    for path, text in added.items():
+        wanted[path] = text
+        name = os.path.basename(path)
+        for key in owned.get(name) or []:
+            notes.append(f"{path}: new, from workflow-templates/{name}; fill in `{key}` in its pull request")
     for note in notes:
         print(f"  {note}")
     if not wanted:
@@ -680,7 +698,7 @@ def sync_callers(repo, conf, dry):
         import difflib
         print(f"  would open an issue and a pull request for: {changed}")
         for path, new in wanted.items():
-            sys.stdout.writelines("    " + l for l in difflib.unified_diff(files[path].splitlines(True), new.splitlines(True), path, path))
+            sys.stdout.writelines("    " + l for l in difflib.unified_diff(files.get(path, "").splitlines(True), new.splitlines(True), path, path))
         return
     default = (repo.get("defaultBranchRef") or {}).get("name") or "main"
     templates_named = ", ".join(sorted({f"workflow-templates/{n}" for n, p, _ in callers_drift(moved, conf, major=major, default=branch) if p in wanted})) or "the templates"
@@ -923,6 +941,37 @@ def callers_drift(files, conf, central=False, major=None, default="main"):
                 found += job_differences(job, want, mine[job] or {}, set(owned.get(name) or []), central)
         if found:
             out.append((name, path, found))
+    return out
+
+
+def kind_battery(kind):
+    """The shared workflows of a kind's battery (kinds/<kind>/pack.yml
+    `workflows`); empty for no kind, or one with no pack."""
+    if not kind or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", str(kind)):
+        return set()
+    pack = os.path.join(CENTRAL, "kinds", kind, "pack.yml")
+    return set(load_yaml(pack).get("workflows") or []) if os.path.isfile(pack) else set()
+
+
+def new_callers(files, conf, kind, default="main", major=None):
+    """{path: text} of the callers a repository lacks, written whole from their
+    templates (#552): those of `every-repository` (the triage and the
+    autopilot start from issues.yml) and those that call a workflow of its
+    kind's battery, each at .github/workflows/<template>, unless a file of its
+    already calls that template's shared workflows or has that name. A
+    repository that calls none of them yet (one being adopted) gets them all
+    this way. Pure but for reading the templates and the pack."""
+    spec = conf.get("callers") or {}
+    every, battery = set(spec.get("every-repository") or []), kind_battery(kind)
+    parsed = {p: (t, parse_yaml(t)) for p, t in files.items()}
+    out = {}
+    for name, (text, data) in templates(major).items():
+        if name not in every and not (shared_calls(data) & battery):
+            continue
+        path = f".github/workflows/{name}"
+        if path in files or caller_for(dict(data, _name=name), parsed) is not None:
+            continue
+        out[path] = text.replace("$default-branch", default)
     return out
 
 
@@ -2151,6 +2200,57 @@ def callers_test(check, conf):
     both = written.get(".github/workflows/all.yml", ("", ""))[1]
     check("callers: a file that is the caller of two templates takes both rewrites",
           "  repro-triaged:" in both and "  reply:" in both and callers_drift({".github/workflows/all.yml": both}, conf) == [], both)
+    # #552, C3: a repository of the ai-agent-plugin kind being adopted, with
+    # no caller at all, gets those every repository has (issues.yml starts
+    # the triage, and the autopilot once an issue is accepted;
+    # pull-request-comments.yml) and its kind's battery, whole, in step with
+    # their templates; one that has them gets nothing new.
+    added = new_callers({}, conf, "ai-agent-plugin", "trunk")
+    check("C3 (#552): a plugin for coding agents with no caller gets the triage's, the comments' and its kind's",
+          {".github/workflows/issues.yml", ".github/workflows/pull-request-comments.yml", ".github/workflows/plugin-checks-ai.yml"} <= set(added), sorted(added))
+    triage = jobs_of(parse_yaml(added.get(".github/workflows/issues.yml", "")))
+    check("C3 (#552): its issues.yml triages every issue and hands an accepted one on",
+          split_uses(triage.get("triage", {}).get("uses"))[0] == "issue-triage.yml" and split_uses(triage.get("accepted", {}).get("uses"))[0] == "issue-accepted.yml", sorted(triage))
+    check("C3 (#552): the new callers are in step with their templates, on its default branch",
+          callers_drift(added, conf, default="trunk") == [] and "$default-branch" not in "".join(added.values()) and "[trunk]" in added[".github/workflows/plugin-checks-ai.yml"],
+          callers_drift(added, conf, default="trunk"))
+    check("C3 (#552): not the battery of another kind", not any("-wp" in p for p in added), sorted(added))
+    check("C3 (#552): one that has them gets nothing new", new_callers(added, conf, "ai-agent-plugin", "trunk") == {}, new_callers(added, conf, "ai-agent-plugin", "trunk"))
+    check("C3 (#552): a repository of no kind gets those every repository has",
+          sorted(new_callers({}, conf, None)), [".github/workflows/issues.yml", ".github/workflows/pull-request-comments.yml"])
+    renamed = {".github/workflows/triage.yml": added[".github/workflows/issues.yml"]}
+    check("C3 (#552): a caller under another name counts", ".github/workflows/issues.yml" not in new_callers(renamed, conf, "ai-agent-plugin"), "")
+    # And through `callers` against the stand-in: a repository repos.yml says
+    # is of the kind (DAW), with no workflow, gets one pull request with them.
+    files.clear()
+    calls.clear()
+    written.clear()
+    daw_fake = lambda *a, **k: fake(*[x.replace("repos/o/dilux-agentic-workflow/", "repos/o/r/") for x in a], **k)  # noqa: E731
+    globals()["gh"], ORG = daw_fake, "o"
+    try:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            sync_callers({"name": "dilux-agentic-workflow", "defaultBranchRef": {"name": "main"}}, conf, False)
+    finally:
+        globals()["gh"], ORG = saved_gh, saved_org
+    check("C3 (#552): `callers` writes DAW's issues.yml, pull-request-comments.yml and plugin-checks-ai.yml in one pull request",
+          {".github/workflows/issues.yml", ".github/workflows/pull-request-comments.yml", ".github/workflows/plugin-checks-ai.yml"} <= set(written)
+          and len([a for a in calls if a[:2] == ("pr", "create")]) == 1 and "uses: DiluxOne/.github/.github/workflows/issue-triage.yml@v" in written[".github/workflows/issues.yml"][1],
+          (sorted(written), out.getvalue()))
+    check("C3 (#552): and says which input of its own to fill in", "fill in `support-url`" in out.getvalue(), out.getvalue())
+    # Its labels: every label of labels.yml, those the triage, the acceptance
+    # and the autopilot set among them.
+    labels = load_yaml(os.path.join(CENTRAL, "labels.yml"))
+    made = []
+    globals()["gh"], ORG = (lambda *a, **k: made.append(a) or Out("")), "o"
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            sync_labels({"name": "dilux-agentic-workflow"}, labels, False)
+    finally:
+        globals()["gh"], ORG = saved_gh, saved_org
+    names = {a[2] for a in made if a[:2] == ("label", "create") and "o/dilux-agentic-workflow" in a}
+    check("C3 (#552): `labels` gives DAW every label, the triage's, the acceptance's and the autopilot's among them",
+          names == {str(l["name"]) for l in labels} and {"needs-triage", "bug:unconfirmed", "awaiting-acceptance", "accepted", "autopilot", "autopilot:continue"} <= names, sorted(names))
     # #320: a repository at a major whose migration is only the callers
     # moves to the current one in the same issue and pull request.
     files.clear()

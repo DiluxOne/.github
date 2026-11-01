@@ -24,7 +24,7 @@ exclude:
 # Where a repository's .github/review-policy.yml names a kind too, this wins.
 repos:
   .github: {kinds: []}   # the organisation's own: its rules are its review policy
-  dilux-agentic-workflow: {kinds: []}
+  dilux-agentic-workflow: {kinds: [{kind: ai-agent-plugin, paths: ["**"], roles: [front]}]}   # DAW (#552)
   diluxone-comments-pro-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
   diluxone-comments-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
   diluxone-commerce-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
@@ -32,7 +32,7 @@ repos:
   diluxone-fm: {kinds: []}
   diluxone-help-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
   diluxone-mail-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
-  diluxone-mermaid: {kinds: []}
+  diluxone-mermaid: {kinds: [{kind: ai-agent-plugin, paths: ["**"], roles: [front]}]}
   diluxone-multisite-user-sync-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
   diluxone-offload-wordpress: {kinds: [{kind: wordpress-plugin, paths: ["**"], roles: [back, front]}]}
   diluxone-platform: {kinds: []}
@@ -189,7 +189,6 @@ repro:
 # `auto` (scripts/sync-repos.py merge-queue), quoted: YAML reads a bare on/off as true/false.
 merge-queue:
   .github: "off"                # its own pipeline (pull-request.yml) and its merges by a person; not yet on merge_group
-  dilux-agentic-workflow: "off"  # another maintainer's repository and flow
 
 # A repository with no `make pre-pr` by design (#479, scripts/pre-pr.py):
 # `false`, and the daily drift check does not list it, nor does the
