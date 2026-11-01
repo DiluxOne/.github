@@ -475,8 +475,8 @@ jobs:
           fi
           # Every mode works only from the PRD that was accepted: its seal
           # (written by issue-accepted.yml, which runs alongside on a
-          # person's acceptance, or by the reproduction when its lane
-          # accepted it) must exist and match the issue now. Waits up to two
+          # person's acceptance, by the reproduction when its lane accepted
+          # it, or below for a delegated sub-issue, #575) must exist and match the issue now. Waits up to two
           # minutes for it, also while it reads "changed": a re-acceptance
           # after an edit meets the old seal before the new one is written
           # (#353). Says on the issue when it does not start.
