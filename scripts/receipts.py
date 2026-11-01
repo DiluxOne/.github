@@ -68,7 +68,8 @@ BODY (a file holding the issue's body); ACCEPTED_BY (seal-prd); POLICY_REF
 (the commit of DiluxOne/.github whose policy applied); RECEIPTS_FIXTURE (a
 directory standing in for the branch, for the self-test); STATE_FIXTURE (a
 JSON file of an item's comments standing in for GitHub's, for the
-self-test); DX_BOT_APP (the bot App's slug).
+self-test); DX_BOT_APP (the bot App's slug); STATE_SETTLE (the seconds a
+state write waits before it reads the board again to check that it held, 2).
 """
 import base64
 import datetime
@@ -357,28 +358,82 @@ def board_comment(cs, app):
     return mine[-1] if mine else None
 
 
+# The state each item's board held when this process last read it: the base
+# a write's change is measured from (#567).
+_READ = {}
+
+
+def merge(fresh, base, new):
+    """`fresh` with the change from `base` to `new` applied, and nothing
+    else of `new`: a key the writer did not touch keeps what another writer
+    put there; a list gains the items the writer added and loses the ones it
+    took out, whatever else it holds. Pure."""
+    out = dict(fresh)
+    for k in set(base) | set(new):
+        b, n = base.get(k), new.get(k)
+        if b == n:
+            continue
+        if k not in new:
+            out.pop(k, None)
+        elif isinstance(n, list) and isinstance(b, (list, type(None))):
+            cur = [x for x in (out.get(k) if isinstance(out.get(k), list) else []) if x not in (b or []) or x in n]
+            out[k] = cur + [x for x in n if x not in (b or []) and x not in cur]
+        else:
+            out[k] = n
+    return out
+
+
 def read_state(repo, number):
     c = board_comment(comments(repo, number), bot_app())
-    return parse_state(c.get("body")) if c else {}
+    state = parse_state(c.get("body")) if c else {}
+    _READ[(repo, str(number))] = dict(state)
+    return state
 
 
-def write_state(repo, number, state, title="The board"):
-    """Writes the state on the item's board: the board's comment edited,
-    or a new one when it has none yet."""
-    cs = comments(repo, number)
-    c = board_comment(cs, bot_app())
-    body = with_state(c["body"] if c else f"{BOARD}\n**{title}**\n\n{AI}", state)
+def _put(repo, number, cs, c, body):
     if os.environ.get("STATE_FIXTURE"):
         if c:
             c["body"] = body
         else:
             cs.append({"id": len(cs) + 1, "user": {"login": f"{bot_app()}[bot]", "type": "Bot"}, "body": body})
         json.dump(cs, open(os.environ["STATE_FIXTURE"], "w", encoding="utf-8"))
-        return
-    if c:
+    elif c:
         gh("-X", "PATCH", f"repos/{repo}/issues/comments/{c['id']}", "--input", "-", data={"body": body})
     else:
         gh("-X", "POST", f"repos/{repo}/issues/{number}/comments", "--input", "-", data={"body": body})
+
+
+def write_state(repo, number, state, title="The board", tries=5):
+    """Writes the state on the item's board: the board's comment edited,
+    or a new one when it has none yet. Several workflows write the same
+    board and GitHub offers no compare-and-swap on a comment (#567), so only
+    this writer's change (from the state it last read) is applied, on the
+    board as it is right before the write; then the board is read again, a
+    moment later, and the change written again if a writer that read before
+    it landed on top of it."""
+    key = (repo, str(number))
+    base = _READ.get(key)
+    settle = 0 if os.environ.get("STATE_FIXTURE") else float(os.environ.get("STATE_SETTLE", "2"))
+    for attempt in range(tries):
+        cs = comments(repo, number)
+        c = board_comment(cs, bot_app())
+        fresh = parse_state(c.get("body")) if c else {}
+        target = state if base is None else merge(fresh, base, state)
+        if c and target == fresh:
+            _READ[key] = fresh
+            return
+        _put(repo, number, cs, c, with_state(c["body"] if c else f"{BOARD}\n**{title}**\n\n{AI}", target))
+        if base is None:
+            base = fresh
+        if settle:
+            import time
+            time.sleep(settle * (attempt + 1))
+        c = board_comment(comments(repo, number), bot_app())
+        got = parse_state(c.get("body")) if c else {}
+        if c and merge(got, base, state) == got:
+            _READ[key] = got
+            return
+    raise RuntimeError(f"#{number}: the board's state kept changing under this write ({tries} tries)")
 
 
 def issue_labels(repo, number):
@@ -618,6 +673,53 @@ Normal
         check("cli: state add and get of a list", st_run("get", "runs").stdout.strip(), "[1, 2]")
         check("cli: the whole state", json.loads(st_run("get").stdout), {"layer": "browser", "repro": "no-way", "rounds": 2, "runs": [1, 2]})
         check("cli: one board comment, never more", len(json.load(open(fx))), 1)
+    # Two writers of the same board (#567): each read it before the other
+    # wrote; both changes survive, whichever writes last.
+    with tempfile.TemporaryDirectory() as d:
+        saved = {k: os.environ.get(k) for k in ("STATE_FIXTURE", "DX_BOT_APP")}
+        os.environ.update(STATE_FIXTURE=os.path.join(d, "comments.json"), DX_BOT_APP="dilux-bot")
+        try:
+            _READ.clear()
+            write_state("o/r", 5, apply(read_state("o/r", 5), "set", ["answered=true", "waiting=true"]))
+            a, b = read_state("o/r", 5), read_state("o/r", 5)
+            write_state("o/r", 5, apply(a, "set", ["waiting="]))
+            _READ[("o/r", "5")] = b  # the second writer read before the first wrote
+            write_state("o/r", 5, apply(apply(b, "add", ["runs", "3"]), "add", ["mentioned", "alice|x"]))
+            check("race: a stale writer keeps the other's change", read_state("o/r", 5), {"answered": True, "runs": [3], "mentioned": ["alice|x"]})
+            c, e = read_state("o/r", 5), read_state("o/r", 5)
+            write_state("o/r", 5, apply(apply(c, "add", ["runs", "4"]), "set", ["answered="]))
+            _READ[("o/r", "5")] = e
+            write_state("o/r", 5, apply(apply(e, "add", ["free", "5"]), "add", ["mentioned", "bob|y"]))
+            check("race: both writers' list items and cleared keys survive", read_state("o/r", 5),
+                  {"runs": [3, 4], "free": [5], "mentioned": ["alice|x", "bob|y"]})
+            # A writer that lands between our write and our check is caught,
+            # and ours is written again on top of it.
+            real, calls = globals()["comments"], []
+
+            def racing(repo, number):
+                cs = real(repo, number)
+                calls.append(1)
+                if len(calls) == 2:  # right after the first PATCH
+                    board = board_comment(cs, "dilux-bot")
+                    # The other writer read before ours landed: it drops our 9.
+                    board["body"] = with_state(board["body"], apply(parse_state(board["body"]), "set", ["spike=true", "runs=[3,4]"]))
+                    json.dump(cs, open(os.environ["STATE_FIXTURE"], "w", encoding="utf-8"))
+                return cs
+            stale = read_state("o/r", 5)
+            globals()["comments"] = racing
+            try:
+                write_state("o/r", 5, apply(stale, "add", ["runs", "9"]))
+            finally:
+                globals()["comments"] = real
+            got = read_state("o/r", 5)
+            check("race: a write that lands right after ours is detected, and ours written again", (got.get("spike"), got.get("runs")), (True, [3, 4, 9]))
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+            _READ.clear()
     with tempfile.TemporaryDirectory() as d:
         os.environ["RECEIPTS_FIXTURE"] = d
         write("o/r", "issues/7/prd-2026-10-11T00:00:00Z.json", s, "seal")
