@@ -30,7 +30,6 @@ jobs:
     permissions:
       contents: read
       issues: write
-      pull-requests: read # the autopilot it starts (#537)
     uses: DiluxOne/.github/.github/workflows/issue-triage.yml@v7
     with:
       support-url: https://example.com/support # this repository's own page for usage questions (a forum, a help page), not an example's
@@ -86,6 +85,5 @@ jobs:
   claim:
     permissions:
       contents: read
-      pull-requests: read # the autopilot it starts (#537)
     uses: DiluxOne/.github/.github/workflows/issue-claim.yml@v7
     secrets: inherit
