@@ -372,6 +372,14 @@ def self_test():
         base = {"roles": roles, "codeowners": owners, "files": ["scripts/deciders.py"]}
         check("C1 cli: may answer refuses the writer outside, exit 1", cli(["may", "answer", "dev"], base)[0], 1)
         check("C1 cli: list keeps only those who decide", cli(["list", "answer"], base, stdin="\n".join(logins)), (0, "boss\nscripter"))
+        # C2: a repository's `writers` over the organisation's `codeowners`.
+        check("C2: repos.yml's who-decides wins over org.yml's", setting({"who-decides": "codeowners"}, {"repos": {"r": {"kinds": [], "who-decides": "writers"}}}, "r"), "writers")
+        check("C2: another repository keeps the organisation's", setting({"who-decides": "acceptor"}, {"repos": {"r": {"kinds": [], "who-decides": "writers"}}}, "s"), "acceptor")
+        over = ("who-decides: codeowners\n", "repos:\n  r:\n    kinds: []\n    who-decides: writers\n")
+        check("C2 cli: with writers over codeowners, a writer's answer is taken", cli(["may", "answer", "dev"], base, *over),
+              (0, "@dev may answer the autopilot (write, who-decides: writers)."))
+        check("C2 cli: setting says the value in force", cli(["setting"], base, *over), (0, "writers"))
+        check("C2 cli: and still never someone without write", cli(["may", "answer", "stranger"], base, *over)[0], 1)
         check("cli: an unknown value is an error (exit 2), never a yes", cli(["may", "answer", "dev"], base, "who-decides: everyone\n")[0], 2)
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0

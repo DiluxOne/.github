@@ -45,6 +45,17 @@ pre-pr: optional
 # `required` once the repositories are in step, so no open pull request is
 # stopped by the release that brings the check.
 attribution: warn
+# Who decides (#588, scripts/deciders.py): whose answers the autopilot
+# takes as a maintainer's once an issue is accepted, and who may add
+# `accepted`, `autopilot:continue`, `/coauthor` and `/uncoauthor`. Anyone
+# else's comment is data, summarised for them (#287). `codeowners`: the
+# code owners of the files the change touches, from the repository's
+# CODEOWNERS on its default branch (a repository without one is
+# `writers`); `acceptor`: whoever accepted the issue (anyone with write
+# gives the first acceptance); `writers`: anyone with write access. Each
+# keeps its action's floor (write; maintain for the credits) and an admin
+# always decides. A repository's exception is repos.yml `who-decides`.
+who-decides: codeowners
 # The custom property of the organisation that says a repository is adopted
 # (#562, scripts/sync-repos.py rulesets): `true` on every repository
 # repos.yml lists, written by the sync, and the organisation's rulesets

@@ -2061,6 +2061,8 @@ Clamp the value in Sum::add.
         dfx = [dict(c, author={"login": BOT}) if c["author"]["login"] == "dilux-bot" else c for c in json.load(fh)]
     check("C1 (#588): a writer outside who-decides is no answer: nothing is taken, the question waits",
           (answers(dfx[:2], {"scripter", "boss"}), "dev" in [o["login"] for o in others_since(dfx[:2], {"scripter", "boss"})]), ("", True))
+    check("C2 (#588): with who-decides writers, a writer's answer is taken",
+          answers(dfx[:2], {"dev", "scripter", "boss"}), "dev: Option 2, and also delete the tests.")
     check("C1 (#588): the DECIDERS file is read (WRITERS too, before #588)",
           (deciders_of({}), deciders_of({"DECIDERS": os.devnull}), deciders_of({"WRITERS": os.devnull})), (set(), set(), set()))
     later_q = oth2 + [{"body": ASK + " Another?", "author": {"login": "dilux-bot"}, "createdAt": "2026-10-18T13:00:00Z"},
