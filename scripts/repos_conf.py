@@ -50,6 +50,25 @@ def names_with(conf, key):
     return out
 
 
+def slug_of(name):
+    """A repository's slug: its name without the `-wordpress` ending."""
+    return name[:-len("-wordpress")] if name.endswith("-wordpress") else name
+
+
+def caller_values(conf, name):
+    """{input: value} a caller of repository NAME is written with (#562):
+    repos.yml `callers: defaults`, `{slug}` and `{SLUG}` filled in, under
+    its entry's `callers`, which wins."""
+    defaults = (conf.get("callers") or {}).get("defaults") if isinstance(conf.get("callers"), dict) else None
+    slug = slug_of(name)
+    out = {}
+    for key, v in (defaults if isinstance(defaults, dict) else {}).items():
+        out[key] = v.replace("{slug}", slug).replace("{SLUG}", slug.upper().replace("-", "_")) if isinstance(v, str) else v
+    own = value(conf, name, "callers")
+    out.update(own if isinstance(own, dict) else {})
+    return out
+
+
 def self_test(check):
     conf = {"repos": {"a": {"kinds": [], "project": 3, "pre-pr": False}, "b": {"kinds": []}}}
     check("entry: the repository's own", entry(conf, "a"), {"kinds": [], "project": 3, "pre-pr": False})
@@ -58,3 +77,7 @@ def self_test(check):
     old = {"repos": {"a": {"kinds": [], "repro": False}}, "projects": {"a": 1, "c": 2}, "repro": {"a": {"ways": {}}}}
     check("the older shape is read, the entry winning", (value(old, "a", "project"), value(old, "a", "repro")), (1, False))
     check("names_with: every repository setting it", names_with(old, "project"), {"a": 1, "c": 2})
+    values = {"callers": {"defaults": {"slug": "{slug}", "version-constant": "{SLUG}_VERSION", "dry-run": False}},
+              "repos": {"diluxone-mail-wordpress": {"kinds": [], "callers": {"dry-run": True}}}}
+    check("caller_values: the defaults, the slug from the name, the entry winning",
+          caller_values(values, "diluxone-mail-wordpress"), {"slug": "diluxone-mail", "version-constant": "DILUXONE_MAIL_VERSION", "dry-run": True})

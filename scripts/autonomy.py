@@ -709,11 +709,12 @@ def needs_of(job):
 CALLER_KEYS = ("uses", "with", "needs", "if", "permissions", "secrets")
 
 
-def job_vs_template(have, before, want, owned):
+def job_vs_template(have, before, want, owned, values=None):
     """Why a caller's job, as a sync run changed it, is not its template's
     job (`want`); None when it is. The inputs the template says to fill in
     (`owned`) and the inputs it does not set are the repository's: they
-    keep the values they had."""
+    keep the values they had, but a template's placeholder, which becomes
+    the value repos.yml gives (`values`, #562); one left is refused."""
     if plain(have.get("if", "")) != plain(want.get("if", "")):
         return f"runs if `{plain(have.get('if', '')) or 'always'}`, not the template's"
     if not needs_of(want) <= needs_of(have):
@@ -721,8 +722,12 @@ def job_vs_template(have, before, want, owned):
     tw, hw, bw = want.get("with") or {}, have.get("with") or {}, (before or {}).get("with") or {}
     for key, value in tw.items():
         if key in owned:
-            if before is not None and key in bw and plain(hw.get(key)) != plain(bw[key]):
+            given = (values or {}).get(key)
+            filled = key in (values or {}) and plain(bw.get(key)) == plain(value) and plain(hw.get(key)) == plain(given)
+            if before is not None and key in bw and plain(hw.get(key)) != plain(bw[key]) and not filled:
                 return f"changes `{key}`, which is the repository's to fill in"
+            if key in (values or {}) and key in hw and plain(hw[key]) == plain(value) and plain(value) != plain(given):
+                return f"still holds `{key}` at the template's placeholder, where repos.yml gives a value"
         elif key not in hw or plain(hw[key]) != plain(value):
             return f"passes `{key}` other than the template does"
     for key in set(hw) - set(tw):
@@ -752,14 +757,18 @@ def moved_major(before, have, majors):
             and {k: v for k, v in before.items() if k != "uses"} == {k: v for k, v in have.items() if k != "uses"})
 
 
-def caller_problem(path, base_text, head_text, templates, owned):
+def caller_problem(path, base_text, head_text, templates, owned, values=None, texts=None):
     """(why, high): why a caller the pull request changes is more than a
     sync run of the callers writes, and whether that is a change of
     permissions or secrets (high risk); (None, False) when it is not.
     `templates` is {name: data} at the commit the issue names; `owned` is
-    {template: [inputs]} from repos.yml there (`callers.repository-owned`)."""
+    {template: [inputs]} from repos.yml there (`callers.repository-owned`);
+    `values` the repository's caller values there (#562) and `texts` the
+    templates' text: a new caller is its template with those values."""
     if base_text is None:
-        return f"{path} is a new workflow: a sync run only changes callers that exist", False
+        if new_caller_ok(path, head_text, texts or {}, owned, values):
+            return None, False
+        return f"{path} is a new workflow, not its template with the values repos.yml gives", False
     try:
         base, head = parse_text(base_text), parse_text(head_text)
     except ValueError:
@@ -791,7 +800,7 @@ def caller_problem(path, base_text, head_text, templates, owned):
                  if isinstance(jobs_of(d).get(job), dict) and jobs_of(d)[job].get("uses") == uses]
         if not found:
             return f"{path}: the job {job} is no template's job (workflow-templates/ at the commit named)", False
-        whys = [job_vs_template(have, before, want, set(owned.get(t) or [])) for t, want in found]
+        whys = [job_vs_template(have, before, want, set(owned.get(t) or []), values) for t, want in found]
         if all(whys):
             return f"{path}: the job {job} {whys[0]}", False
         # A new job is a grant of its own, whatever it asks for.
@@ -800,6 +809,20 @@ def caller_problem(path, base_text, head_text, templates, owned):
         if have.get("permissions") != before.get("permissions") or have.get("secrets") != before.get("secrets"):
             return f"{path}: the job {job} changes its permissions or the secrets it passes: high risk, a person merges it", True
     return None, False
+
+
+def new_caller_ok(path, head_text, texts, owned, values):
+    """Whether a new caller is what a sync run writes for a repository that
+    lacks it (#552, #562): .github/workflows/<template>, the template's text
+    at the commit with its default branch and the values repos.yml gives."""
+    name = path.rsplit("/", 1)[-1]
+    if values is None or path != f".github/workflows/{name}" or texts.get(name) is None or head_text is None:
+        return False
+    token = "DXDEFAULTBRANCHDX"
+    want = sync_module().fill_inputs(texts[name].replace("$default-branch", token), set(owned.get(name) or []), values)
+    first, *rest = re.escape(want).split(token)
+    pattern = first + "".join(("([A-Za-z0-9._/-]+)" if i == 0 else "\\1") + part for i, part in enumerate(rest))
+    return re.fullmatch(pattern, head_text) is not None
 
 
 def sync_merge(policy, issue, repository, autopilot_var, sync, review):
@@ -848,7 +871,8 @@ def sync_merge(policy, issue, repository, autopilot_var, sync, review):
                  or facts.get("dependabot-default") != now.get("dependabot-default")
                  or repos_conf.entry(conf, short) != repos_conf.entry(conf_now, short))
     else:
-        stale = facts.get("templates") != now.get("templates") or conf.get("callers") != conf_now.get("callers")
+        stale = (facts.get("templates") != now.get("templates") or conf.get("callers") != conf_now.get("callers")
+                 or repos_conf.caller_values(conf, short) != repos_conf.caller_values(conf_now, short))
     if stale:
         return False, f"what a {mode} run writes from changed in {CENTRAL} after {org[:12]}: the run is stale"
     for f in change["files"]:
@@ -868,7 +892,7 @@ def sync_merge(policy, issue, repository, autopilot_var, sync, review):
                 return False, f"{path} is not what repos.yml holds at {CENTRAL}@{org[:12]}"
         elif mode == "callers":
             owned = (conf.get("callers") or {}).get("repository-owned") or {}
-            problem, _ = caller_problem(path, base.get(path), head[path], templates, owned)
+            problem, _ = caller_problem(path, base.get(path), head[path], templates, owned, repos_conf.caller_values(conf, short), facts.get("templates"))
             if problem:
                 return False, problem
         elif mode == "pre-pr":
@@ -1760,6 +1784,30 @@ def self_test():
                            ("a ref that is not a major", own_at("main")), ("more than its call", own_at("v5", "    with:\n      x: y\n"))):
         check(f"#320: a job of the repository's own moved to {name} does not merge on its own",
               merges(sync_case("callers", files={".github/workflows/issues.yml": head_own}, base=own_base))[0], False)
+    # #562 C2: a template's placeholder becomes the value repos.yml gives,
+    # and none is left; a new caller is its template with those values.
+    support = "https://github.com/DiluxOne/.github/blob/main/SUPPORT.md"
+    valued = dict(org_facts, **{"repos.yml": json.dumps({"files": {".github/CODEOWNERS": owners}, "callers": {
+        "repository-owned": {"issues.yml": ["support-url"]}, "defaults": {"support-url": support}}})})
+    valued["main"] = dict(org_facts["main"], **{"repos.yml": valued["repos.yml"]})
+
+    def valued_case(head, base):
+        case = sync_case("callers", files={".github/workflows/issues.yml": head}, base={".github/workflows/issues.yml": base} if base is not None else {})
+        case[1]["org"] = lambda _sha, _contents=False: valued
+        return case
+    placeheld = caller_base.replace("https://mine.example", "https://example.com")
+    check("#562 C2: a callers run that fills a template's placeholder with repos.yml's value merges on its own",
+          merges(valued_case(caller_head.replace("https://mine.example", support), placeheld))[0], True)
+    ok, why = merges(valued_case(caller_head.replace("https://mine.example", "https://example.com"), placeheld))
+    check("#562 C2: one that leaves the placeholder does not", (ok, "placeholder" in why), (False, True))
+    check("#562 C2: nor one that writes a value repos.yml does not give",
+          merges(valued_case(caller_head.replace("https://mine.example", "https://other.example"), placeheld))[0], False)
+    check("#562 C2: the repository's own value is still kept, never replaced",
+          merges(valued_case(caller_head.replace("https://mine.example", support), caller_base))[0], False)
+    new_caller = template.replace("https://example.com", support)
+    check("#562 C2: a new caller that is its template with repos.yml's values merges on its own", merges(valued_case(new_caller, None))[0], True)
+    for name, text in (("still holds the placeholder", template), ("adds a line", new_caller + "  more:\n    uses: x/y/.github/workflows/z.yml@v1\n")):
+        check(f"#562 C2: a new caller that {name} does not merge on its own", merges(valued_case(text, None))[0], False)
     check("a CODEOWNERS that is not repos.yml's does not merge on its own", merges(sync_case(files={".github/CODEOWNERS": "* @someone\n", "AGENTS.md": agents_head}))[0], False)
     check("an AGENTS.md changed outside its block does not merge on its own", merges(sync_case(files={".github/CODEOWNERS": owners, "AGENTS.md": agents_head + "\nMore.\n"}))[0], False)
     check("a stale files run (main's repos.yml moved on) does not merge on its own",

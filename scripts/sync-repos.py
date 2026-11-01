@@ -66,9 +66,11 @@ archived and not excluded in repos.yml:
             ones in `every-repository`, and any other whose shared workflows
             the repository calls. A caller it lacks of those, or of a template
             that calls its kind's battery (kinds/<kind>/pack.yml `workflows`),
-            is written whole from its template, its inputs to fill in left for
-            the pull request's reviewer: a repository being adopted, with no
-            caller yet, gets them all (#552). Each template job must be there with the
+            is written whole from its template, its inputs to fill in with
+            the values repos.yml gives (its entry's `callers`, else `callers:
+            defaults`, #562), so none is a placeholder: a repository being
+            adopted, with no caller yet, gets them all (#552), and a caller
+            still holding a template's placeholder gets the value. Each template job must be there with the
             same `uses:`, `needs` (its own jobs may join them), `if`,
             `permissions`, `secrets` handling and inputs, but the inputs the
             template says to fill in (`repository-owned`). Inputs and jobs of
@@ -807,7 +809,8 @@ def sync_callers(repo, conf, dry):
     branch = (repo.get("defaultBranchRef") or {}).get("name") or "main"
     # The callers it lacks, written whole from their templates (#552): those
     # every repository has, and those of its kind's battery.
-    added = new_callers(files, conf, repo_kind(full, branch), branch)
+    added = new_callers(files, conf, repo_kind(full, branch), branch, name=repo["name"])
+    values = repos_conf.caller_values(conf, repo["name"])
     if not any(CALLS_RE.search(t) for t in files.values()) and not added:
         print("  calls none of the shared workflows: nothing to compare (docs/adopting.md)")
         return
@@ -850,6 +853,9 @@ def sync_callers(repo, conf, dry):
             stuck.add(path)
             continue
         new = triggered if new is not None else new
+        # And the values a template's placeholder still stands for (#562).
+        if new is not None:
+            new = fill_inputs(new, set(owned.get(name) or []), values, placeholders(new, text, set(owned.get(name) or []), values))
         # And the permissions it grants that the caller lacks (#329).
         if new is not None and path not in shared:
             granted = with_permissions(new, text)
@@ -878,13 +884,24 @@ def sync_callers(repo, conf, dry):
     for path, text in moved.items():
         if text != files[path] and path not in wanted:
             wanted[path] = text
-    # The callers it lacked, whole; an input that is the repository's own is
-    # left at the template's value, for the pull request's reviewer to fill in.
+    # A caller in step but for a template's placeholder (#562): the value
+    # repos.yml gives it, its entry's or the organisation's default.
+    for tname, (ttext, data) in templates(major).items():
+        path = caller_for(dict(data, _name=tname), parsed_moved, False)
+        if path is None or path in stuck:
+            continue
+        have = wanted.get(path, moved[path])
+        left = placeholders(have, ttext, set(owned.get(tname) or []), values)
+        if set(left) & set(values):
+            wanted[path] = fill_inputs(have, set(owned.get(tname) or []), values, left)
+        for key in sorted(set(left) - set(values)):
+            notes.append(f"{path}: `{key}` is still the template's placeholder and repos.yml gives no value: set it in its entry's `callers`")
+    # The callers it lacked, whole, with the values repos.yml gives them.
     for path, text in added.items():
         wanted[path] = text
         name = os.path.basename(path)
-        for key in owned.get(name) or []:
-            notes.append(f"{path}: new, from workflow-templates/{name}; fill in `{key}` in its pull request")
+        for key in sorted(set(owned.get(name) or []) - set(values)):
+            notes.append(f"{path}: new, from workflow-templates/{name}; repos.yml gives no `{key}`: set it in its entry's `callers`")
     for note in notes:
         print(f"  {note}")
     if not wanted:
@@ -1150,7 +1167,71 @@ def kind_battery(kind):
     return set(load_yaml(pack).get("workflows") or []) if os.path.isfile(pack) else set()
 
 
-def new_callers(files, conf, kind, default="main", major=None):
+def yaml_scalar(value):
+    """A value as a caller's input line writes it."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    text = str(value)
+    return text if re.fullmatch(r"[A-Za-z0-9_./-][A-Za-z0-9_./:+-]*", text) and text.lower() not in ("true", "false", "yes", "no", "on", "off", "null", "~") else json.dumps(text)
+
+
+def owned_lines(text, owned):
+    """{input: (line index, its value)} of the inputs in OWNED a caller's
+    `with:` blocks set, the last of each."""
+    lines, out, inside = text.splitlines(keepends=True), {}, False
+    for i, line in enumerate(lines):
+        if re.match(r"^    with:\s*(#.*)?$", line):
+            inside = True
+            continue
+        if inside and line.strip() and not line.startswith("      "):
+            inside = False
+        m = INPUT_RE.match(line) if inside else None
+        if m and m.group(1) in owned:
+            raw = line.split(":", 1)[1]
+            value = parse_yaml(f"v: {raw.strip()}" if raw.strip() else "v:") or {}
+            out[m.group(1)] = (i, value.get("v"))
+    return out
+
+
+def fill_inputs(text, owned, values, only=None):
+    """The caller's text with each input in OWNED that VALUES gives written
+    with that value, its comment dropped (it said to fill it in); with
+    `only`, those inputs alone."""
+    lines = text.splitlines(keepends=True)
+    for key, (i, _) in owned_lines(text, owned).items():
+        if key in values and (only is None or key in only):
+            lines[i] = f"      {key}: {yaml_scalar(values[key])}\n"
+    return "".join(lines)
+
+
+def placeholders(text, template_text, owned, values):
+    """{input: the template's placeholder} of the inputs in OWNED a caller
+    still holds at its template's value, where repos.yml gives another, or
+    none (#562): a value nobody filled in."""
+    theirs = {k: v for k, (_, v) in owned_lines(template_text, owned).items()}
+    out = {}
+    for key, (_, have) in owned_lines(text, owned).items():
+        if key in theirs and plain(have) == plain(theirs[key]) and (key not in values or plain(values[key]) != plain(have)):
+            out[key] = theirs[key]
+    return out
+
+
+def placeholder_lines(files, conf, name, central=False, major=None):
+    """The drift lines of the callers that hold a template's placeholder."""
+    owned, values = (conf.get("callers") or {}).get("repository-owned") or {}, repos_conf.caller_values(conf, name)
+    parsed = {p: (t, parse_yaml(t)) for p, t in files.items()}
+    out = []
+    for tname, (ttext, data) in templates(major).items():
+        path = caller_for(dict(data, _name=tname), parsed, central)
+        if path is None:
+            continue
+        for key, value in sorted(placeholders(files[path], ttext, set(owned.get(tname) or []), values).items()):
+            give = f"repos.yml gives `{yaml_scalar(values[key])}` (`sync-repos.py callers` writes it)" if key in values else "set it in its entry's `callers` in repos.yml"
+            out.append(f"`{path}` still holds `{key}: {yaml_scalar(value)}`, the template's placeholder: {give}")
+    return out
+
+
+def new_callers(files, conf, kind, default="main", major=None, name=None):
     """{path: text} of the callers a repository lacks, written whole from their
     templates (#552): those of `every-repository` (the triage and the
     autopilot start from issues.yml) and those that call a workflow of its
@@ -1160,15 +1241,18 @@ def new_callers(files, conf, kind, default="main", major=None):
     this way. Pure but for reading the templates and the pack."""
     spec = conf.get("callers") or {}
     every, battery = set(spec.get("every-repository") or []), kind_battery(kind)
+    owned, values = spec.get("repository-owned") or {}, repos_conf.caller_values(conf, name or "")
     parsed = {p: (t, parse_yaml(t)) for p, t in files.items()}
     out = {}
-    for name, (text, data) in templates(major).items():
-        if name not in every and not (shared_calls(data) & battery):
+    for tname, (text, data) in templates(major).items():
+        if tname not in every and not (shared_calls(data) & battery):
             continue
-        path = f".github/workflows/{name}"
-        if path in files or caller_for(dict(data, _name=name), parsed) is not None:
+        path = f".github/workflows/{tname}"
+        if path in files or caller_for(dict(data, _name=tname), parsed) is not None:
             continue
-        out[path] = text.replace("$default-branch", default)
+        text = text.replace("$default-branch", default)
+        # Written with the repository's values (#562): never a placeholder.
+        out[path] = fill_inputs(text, set(owned.get(tname) or []), values) if name is not None else text
     return out
 
 
@@ -2113,6 +2197,7 @@ def drift(repo, conf, labels, block, current=0):
             try:
                 central = repo["name"] == ".github"
                 found += caller_lines(callers_drift(files, conf, central, default=default or "main"), central)
+                found += placeholder_lines(files, conf, repo["name"], central)
             except ValueError as exc:  # a workflow that does not parse is reported, not skipped
                 found.append(f"its workflow callers could not be compared: {str(exc)[:200]}")
         for w, r in pinned_calls(texts):
@@ -2478,7 +2563,28 @@ def callers_test(check, conf):
           {".github/workflows/issues.yml", ".github/workflows/pull-request-comments.yml", ".github/workflows/plugin-checks-ai.yml"} <= set(written)
           and len([a for a in calls if a[:2] == ("pr", "create")]) == 1 and "uses: DiluxOne/.github/.github/workflows/issue-triage.yml@v" in written[".github/workflows/issues.yml"][1],
           (sorted(written), out.getvalue()))
-    check("C3 (#552): and says which input of its own to fill in", "fill in `support-url`" in out.getvalue(), out.getvalue())
+    check("#562 C2: and writes each input of its own with repos.yml's value, never the template's placeholder",
+          ("support-url: https://github.com/DiluxOne/.github/blob/main/SUPPORT.md\n" in written[".github/workflows/issues.yml"][1],
+           "example.com" in written[".github/workflows/issues.yml"][1], "fill in" in out.getvalue()), (True, False, False))
+    # #562 C2: the callers' values come from the entry or the defaults.
+    owned_all = (conf.get("callers") or {}).get("repository-owned") or {}
+    plugin_conf = {**conf, "repos": {**conf["repos"], "diluxone-new-wordpress": {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"]}], "callers": {"slug": "new-one"}}}}
+    fresh = new_callers({}, plugin_conf, "wordpress-plugin", "main", name="diluxone-new-wordpress")
+    left = {p: placeholders(t, templates()[os.path.basename(p)][0], set(owned_all.get(os.path.basename(p)) or []), repos_conf.caller_values(plugin_conf, "diluxone-new-wordpress"))
+            for p, t in fresh.items()}
+    check("#562 C2: every new caller of a plugin holds no template placeholder", {p: v for p, v in left.items() if v} == {}, left)
+    release = fresh.get(".github/workflows/release-wp.yml", "")
+    check("#562 C2: the entry's value wins over the default, and the default fills the rest",
+          ("slug: new-one\n" in release, "version-constant: DILUXONE_NEW_VERSION\n" in release, "dry-run: false\n" in release, "my-plugin" in release), (True, True, True, False))
+    raw_issues = templates()["issues.yml"][0].replace("$default-branch", "main")
+    lines = placeholder_lines({".github/workflows/issues.yml": raw_issues}, conf, "diluxone-new-wordpress")
+    check("#562 C2: the drift check lists a caller that still holds a template placeholder, with the value repos.yml gives",
+          lines == ["`.github/workflows/issues.yml` still holds `support-url: https://example.com/support`, the template's placeholder: "
+                    "repos.yml gives `https://github.com/DiluxOne/.github/blob/main/SUPPORT.md` (`sync-repos.py callers` writes it)"], lines)
+    filled = fill_inputs(raw_issues, {"support-url"}, repos_conf.caller_values(conf, "x"))
+    check("#562 C2: and none once it holds the value, nor one holding the repository's own",
+          (placeholder_lines({".github/workflows/issues.yml": filled}, conf, "x"),
+           placeholder_lines({".github/workflows/issues.yml": raw_issues.replace("https://example.com/support", "https://mine.example")}, conf, "x")), ([], []))
     # Its labels: every label of labels.yml, those the triage, the acceptance
     # and the autopilot set among them.
     labels = load_yaml(os.path.join(CENTRAL, "labels.yml"))
@@ -2973,7 +3079,7 @@ def ai_plugin_drift_test(check, conf, labels, block):
         global ORG, ORG_RULESETS
         tree = trees[name]
         repo = {"name": name, "defaultBranchRef": {"name": "main"}, "visibility": "PUBLIC"}
-        callers = {p: t for p, t in new_callers({}, cfg, tree["kind"], "main").items() if p != drop}
+        callers = {p: t for p, t in new_callers({}, cfg, tree["kind"], "main", name=name).items() if p != drop}
         state.update(name=name, files=callers, makefile=makefile if tree["kind"] else ".PHONY: pre-pr\npre-pr:\n\ttrue\n",
                      **{"dx.mk": pre_pr.render_kind(tree["kind"]) if dx else None})
         saved_gh, saved_org, saved_rs = globals()["gh"], ORG, ORG_RULESETS
