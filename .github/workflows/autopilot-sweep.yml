@@ -6,8 +6,9 @@ name: Autopilot in step with main
 # scripts/autopilot.py sweep (next-step's own answer) says `update`, and the
 # bot merges main into it (GitHub's update-branch), or `continue`, and
 # dilux-bot adds `autopilot:continue` to its issue, whose run merges main
-# and leaves the conflict to the agent to resolve (a fix round, counted
-# against the runs cap). A draft is left alone: its own run merges main
+# and leaves the conflict to the agent to resolve (a fix round, free: it
+# only catches up with another merge, so `autopilot:catchup` beside the
+# continue labels it autopilot:free-N, #563). A draft is left alone: its own run merges main
 # first. A pull request whose state GitHub has not worked out yet is left
 # to the next sweep. An issue that waits for another autopilot pull request
 # on the engine's core (`autopilot:core-wait`, #563) gets its
@@ -105,7 +106,10 @@ jobs:
               continue)
                 [ -n "$issue" ] || { echo "::warning::$repo#$n closes no issue: nothing to continue."; continue; }
                 gh label create "autopilot:continue" --repo "$repo" --color 1D76DB --force --description "On an issue: the autopilot continues its draft pull request, or starts it" >/dev/null 2>&1 || true
-                gh issue edit "$issue" --repo "$repo" --add-label "autopilot:continue" >/dev/null \
+                # The run it starts only catches up with another merge: free
+                # (#563, autopilot:catchup).
+                gh label create "autopilot:catchup" --repo "$repo" --color 1D76DB --force --description "On an issue: the run the continue starts only catches up with another merge; it does not count" >/dev/null 2>&1 || true
+                gh issue edit "$issue" --repo "$repo" --add-label "autopilot:catchup" --add-label "autopilot:continue" >/dev/null \
                   || echo "::warning::$repo#$issue: the continue could not be asked for." ;;
             esac
           done 3< "$RUNNER_TEMP/prs.txt"

@@ -602,7 +602,9 @@ jobs:
       # called with: a continue's fix round (#504) is a run. A continue that
       # a maintainer's answer to the autopilot's own question started
       # (review-reply.yml adds autopilot:answered beside the continue) is
-      # free: labelled autopilot:free-N, it does not count (#479). The end
+      # free: labelled autopilot:free-N, it does not count (#479); so is one
+      # that only catches up with another merge (autopilot-sweep.yml adds
+      # autopilot:catchup beside its continue on a conflict, #563). The end
       # rule frees a run whose runner was lost.
       - name: Count the round or the run
         if: steps.may.outputs.go == 'true' && steps.what.outputs.mode != 'start'
@@ -615,15 +617,19 @@ jobs:
           RUNS: ${{ steps.what.outputs.runs }}
         run: |
           set -euo pipefail
-          answered=false
+          answered=false; catchup=false
           if [ "$MODE" = continue ] && [ -n "$ISSUE" ]; then
             answered=$(gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | index("autopilot:answered") != null')
             [ "$answered" != true ] || gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label "autopilot:answered" >/dev/null
+            # A run that only catches up with another merge (#563: the
+            # sweep's continue on a conflict) is free too.
+            catchup=$(gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | index("autopilot:catchup") != null')
+            [ "$catchup" != true ] || gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label "autopilot:catchup" >/dev/null
           fi
           if [ "$MODE" = fix ]; then l="autopilot:round-$ROUND"; d="The autopilot's review rounds on this pull request"
           else
-            l=$(N="$RUNS" ANSWERED="$answered" python3 .dx-central/scripts/autopilot.py run-label)
-            d="The autopilot's runs on this pull request"; [ "$answered" != true ] || d="The autopilot's runs on this pull request that do not count towards its cap"
+            l=$(N="$RUNS" ANSWERED="$answered" CATCHUP="$catchup" python3 .dx-central/scripts/autopilot.py run-label)
+            d="The autopilot's runs on this pull request"; [ "$answered" != true ] && [ "$catchup" != true ] || d="The autopilot's runs on this pull request that do not count towards its cap"
           fi
           gh label create "$l" --repo "$GITHUB_REPOSITORY" --color C5DEF5 --description "$d" 2>/dev/null || true
           gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label "$l" >/dev/null

@@ -443,6 +443,10 @@ WAITING = "autopilot:waiting"
 RUN_PREFIX = "autopilot:run-"
 FREE_PREFIX = "autopilot:free-"
 ANSWERED = "autopilot:answered"
+# On an issue (#563): the run the sweep's continue starts only catches up
+# with what another merge did (main conflicts with a ready pull request), so
+# it is free, as an answered one is.
+CATCHUP = "autopilot:catchup"
 
 
 def run_numbers(labels):
@@ -458,10 +462,11 @@ def free_runs(labels):
     return sum(1 for l in labels if re.fullmatch(re.escape(FREE_PREFIX) + r"[0-9]+", str(l)))
 
 
-def run_label(n, answered):
+def run_label(n, answered, catchup=False):
     """The label of run N: free when an answer to the autopilot's question
-    started it."""
-    return f"{FREE_PREFIX}{n}" if answered else f"{RUN_PREFIX}{n}"
+    started it, or when it only catches up with another merge (#563: the
+    sweep's continue on a conflict main's move caused)."""
+    return f"{FREE_PREFIX}{n}" if answered or catchup else f"{RUN_PREFIX}{n}"
 
 
 def runner_lost(work_result, agent_outcome):
@@ -2201,6 +2206,10 @@ A class on html.
     check("C11: before its Spec, the Spec is written", nsa(**dict(busy, spec=False)), ("spec", "start"))
     check("C11: its own pull request is not another", core_busy(["scripts/autopilot.py"], core, [{"number": 7, "files": ["scripts/autopilot.py"]}], mine=7), 0)
     check("C11: the comment names the pull request it waits for, once (its marker)", (core_comment(7).startswith(CORE_MARK), "#7 merges or closes" in core_comment(7)), (True, True))
+    before = ["autopilot", "autopilot:run-1", "autopilot:run-2"]
+    after = before + [run_label(run_numbers(before)[0], False, catchup=True)]
+    check("C12: a catch-up run is labelled autopilot:free-N", after[-1], "autopilot:free-3")
+    check("C12: and the count against the cap does not change", (run_numbers(before)[1], run_numbers(after)[1], run_numbers(after)[0]), (2, 2, 4))
     check("#561 C1: next-step says its step in one line", step_comment(ns(lane="")).startswith("Next step: wait for accept, on a maintainer: "), True)
     # #561 C2: a merge into main brings each ready autopilot pull request
     # back in step on its own, with no label a person adds.
@@ -3537,7 +3546,9 @@ def main(argv):
     if argv[:1] == ["run-label"]:
         # N, the run's number; ANSWERED, true when an answer to the
         # autopilot's question started it (#479): the label it carries.
-        print(run_label(int(os.environ.get("N", "1") or 1), os.environ.get("ANSWERED") == "true"))
+        # CATCHUP, true when the sweep's continue on a conflict started it
+        # (#563).
+        print(run_label(int(os.environ.get("N", "1") or 1), os.environ.get("ANSWERED") == "true", os.environ.get("CATCHUP") == "true"))
         return 0
     if argv[:1] == ["next-step"]:
         # The state on stdin (JSON, read from the API by the workflow), the
