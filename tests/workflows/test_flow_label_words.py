@@ -108,7 +108,7 @@ def test_a_maintainers_answer_after_a_stop_brings_the_autopilot_back():
     assert '*,needs-human,*) ;; *) exit 0 ;;' in run and '*,autopilot,*) ;; *) exit 0 ;;' in run
     off = run.index('labels/needs-human" >/dev/null')
     assert off < run.index('--add-label "autopilot:continue" >/dev/null', off)
-    # Only a maintainer's answer, after the role check; a stop asked no
+    # Only a decider's answer, after scripts/deciders.py (#588); a stop asked no
     # question, so another's comment is neither an answer nor summarised.
-    assert run.index("role=") < off
+    assert run.index("deciders.py may answer") < off
     assert '[ -z "$stopped" ] || exit 0' in run
