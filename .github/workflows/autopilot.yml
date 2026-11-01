@@ -505,11 +505,12 @@ jobs:
           fi
           # Every mode works only from the PRD that was accepted: its seal
           # (written by issue-accepted.yml, which runs alongside on a
-          # person's acceptance, or by the reproduction when its lane
-          # accepted it) must exist and match the issue now. Waits up to two
-          # minutes for it, also while it reads "changed": a re-acceptance
-          # after an edit meets the old seal before the new one is written
-          # (#353). Says on the issue when it does not start.
+          # person's acceptance, by the reproduction when its lane accepted
+          # it, or below for a delegated sub-issue, #575) must exist and
+          # match the issue now. Waits up to two minutes for it, also while
+          # it reads "changed": a re-acceptance after an edit meets the old
+          # seal before the new one is written (#353). Says on the issue
+          # when it does not start.
           v=$(NUMBER="$ISSUE" python3 .dx-central/scripts/receipts.py verify-prd --wait 12 || true)
           # A person's acceptance that G1 took back (#287: not ready, the
           # label came off and nothing was sealed) already said why.
@@ -517,6 +518,19 @@ jobs:
             && [ "$(gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | index("accepted") == null')" = true ]; then
             echo "The acceptance was taken back (not ready): the autopilot does not start."
             echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # A delegated lane's sub-issue (#575): dilux-bot opened it and the
+          # policy accepted it, so no person's label ran issue-accepted.yml
+          # and nothing sealed it. The lane, read above, already checked that
+          # a person accepted its parent and that its text was not edited
+          # since it was linked: an unsealed one is sealed as it stands, here,
+          # and read again. Any other lane, or a changed one, is refused below;
+          # so is one whose sealing failed, which then still reads unsealed.
+          if [ "$v" = unsealed ] && [ "$LANE" = delegated ]; then
+            POLICY_REF=$(git -C .dx-central rev-parse --short=12 HEAD)
+            NUMBER="$ISSUE" POLICY_REF="$POLICY_REF" ACCEPTED_BY="policy (lane delegated)" python3 .dx-central/scripts/receipts.py seal-prd >/dev/null \
+              || echo "::warning::Sealing the PRD of #$ISSUE failed."
+            v=$(NUMBER="$ISSUE" python3 .dx-central/scripts/receipts.py verify-prd --wait 12 || true)
           fi
           if [ "$v" != match ]; then
             msg="The autopilot did not run: the issue's PRD is not the one sealed when it was accepted ($v). A maintainer accepts it again (remove and add \`accepted\`) to seal the text as it stands."
