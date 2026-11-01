@@ -62,3 +62,36 @@ def test_an_accepted_issue_edited_after_its_seal_is_unsealed():
     # A seal that cannot be read is never taken for a change.
     assert 'if [ "$rc" -gt 1 ]; then' in run and '[ "$verdict" = changed ] ||' in run
     assert job["concurrency"]["group"] == workflow("issue-accepted.yml")["jobs"]["ready"]["concurrency"]["group"]
+
+
+def test_an_incomplete_issue_is_shaped_by_its_answers_only():
+    wf = workflow("issue-accepted.yml")
+    job = wf["jobs"]["shape"]
+    cond = " ".join(job["if"].split())
+    for part in ("github.event_name == 'issue_comment'", "!github.event.issue.pull_request", "github.event.comment.user.type != 'Bot'",
+                 "contains(github.event.issue.labels.*.name, 'incomplete')", "!contains(github.event.issue.labels.*.name, inputs.label)"):
+        assert part in cond, part
+    steps = {s.get("id") or s.get("name"): s for s in job["steps"]}
+    who = steps["who"]["run"]
+    # Only the author's and the deciders' words reach the rewrite.
+    assert "deciders.py list answer" in who and "issue-schema.py shape-prompt" in who and 'ANSWERS="$RUNNER_TEMP/answers.json"' in who
+    assert "shape-others" in who and "steps.who.outputs.others" in steps["summary"]["if"]
+    for model in ("rewrite", "summary"):
+        args = steps[model]["with"]["claude_args"]
+        assert '--allowedTools ""' in args and "Bash" in args and "--max-budget-usd" in args
+    apply = next(s for s in job["steps"] if s.get("name") == "The rewrite, checked, on the issue")["run"]
+    assert apply.index("issue-schema.py shape-check") < apply.index("gh issue edit \"$NUMBER\" --repo \"$GITHUB_REPOSITORY\" --body-file")
+    assert job["runs-on"].startswith("ubuntu-latest") and job["permissions"] == {"issues": "read"}
+    assert job["concurrency"]["group"] == wf["jobs"]["ready"]["concurrency"]["group"]
+    # The G1 comment asks the questions.
+    check = next(s for s in wf["jobs"]["ready"]["steps"] if s.get("id") == "check")["run"]
+    assert "issue-schema.py questions" in check
+
+
+def test_every_issues_caller_forwards_the_comments_and_the_model_to_the_acceptance():
+    for path in (".github/workflows/issues.yml", "workflow-templates/issues.yml"):
+        wf = yaml.safe_load((ROOT / path).read_text(encoding="utf-8"))
+        acc = wf["jobs"]["accepted"]
+        assert "github.event_name == 'issue_comment'" in acc["if"], path
+        assert {"DILUX_BOT_PRIVATE_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"} <= set(acc["secrets"]), path
+        assert acc["permissions"] == {"actions": "write", "issues": "read", "pull-requests": "read"}, path

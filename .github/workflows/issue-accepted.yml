@@ -102,6 +102,12 @@ on:
       # keeps the re-run and skips the Project.
       DILUX_BOT_PRIVATE_KEY:
         required: false
+      # The shaping's model (#588), with no tools: the maintainer's Claude
+      # subscription, else the API key. Without either, nothing is rewritten.
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: false
+      ANTHROPIC_API_KEY:
+        required: false
 
 # Nothing at the workflow level: a reusable workflow cannot ask for more than
 # its caller's job grants, and the issues.yml template grants the accepted job
@@ -252,6 +258,7 @@ jobs:
           echo "refused=true" >> "$GITHUB_OUTPUT"
           gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$LABEL" >/dev/null
           [ "$rc" = 1 ] || why="Who may add it could not be read now; add it again in a while, or ask a maintainer."
+          # shellcheck disable=SC2016 # Markdown's backticks, not a command.
           gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '**Not accepted:** `%s` was taken off. %s\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)' "$LABEL" "$why")" >/dev/null
       # Whoever accepted it works it (#73), unless someone already does: the
       # Project shows who owns each accepted issue. Only a person gets here
@@ -318,6 +325,12 @@ jobs:
           if [ "$ready" != true ]; then
             if [ "$(jq -r .ok <<<"$result")" != true ]; then
               missing+="The PRD does not follow the schema yet (policy/issue-schema.yml in DiluxOne/.github):"$'\n\n'"$(jq -r '.errors[] | "- `" + gsub("`"; "\u0027") + "`"' <<<"$result")"$'\n'
+              # The questions that fill it (#588): the author answers in a
+              # comment, and the bot rewrites the issue with the answers.
+              asked=$(printf '%s' "$BODY" | python3 .dx-central/scripts/issue-schema.py questions)
+              if [ -n "$asked" ] && [ "$ACTION" != labeled ]; then
+                missing+=$'\n'"To complete it, answer these in a comment (the author, or a maintainer); the bot rewrites the issue with the answers, for a maintainer to read before accepting it:"$'\n\n'"$asked"$'\n'
+              fi
             fi
             if [ -n "$open" ]; then
               missing+=$'\n'"A comment after the PRD's last edit waits for a maintainer's answer (answer it, or settle it in the PRD):"$'\n\n'"$(while IFS= read -r u; do printf -- '- %s\n' "$u"; done <<<"$open")"$'\n'
@@ -453,7 +466,9 @@ jobs:
           python3 .dx-central/scripts/receipts.py sealed-prd > "$RUNNER_TEMP/sealed.md" || : > "$RUNNER_TEMP/sealed.md"
           changed=$(python3 .dx-central/scripts/issue-schema.py diff "$RUNNER_TEMP/sealed.md" < "$BODY")
           who=$(python3 .dx-central/scripts/deciders.py who accepted) || who="those who-decides allows (org.yml, repos.yml)"
+          # shellcheck disable=SC2016 # Markdown's backticks, not a command.
           state=$([ "$ready" = true ] && echo '`awaiting-acceptance`' || echo '`incomplete`')
+          # shellcheck disable=SC2016 # Markdown's backticks, not a command.
           {
             printf '**Acceptance withdrawn (G2):** @%s edited the PRD after it was accepted, so it is no longer the one sealed: `%s` was taken off and the issue is %s. The autopilot does not go on until it is accepted again.\n\n' "$SENDER" "$LABEL" "$state"
             printf '**What changed since the seal:**\n\n%s\n\n' "$changed"
@@ -462,6 +477,171 @@ jobs:
           } > "$RUNNER_TEMP/unseal.md"
           gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/unseal.md" >/dev/null
           cat "$RUNNER_TEMP/unseal.md"
+
+  # The shaping (#588): an `incomplete` issue, before any acceptance, gets
+  # the questions that fill what it misses (the G1 comment, above), and each
+  # answer in a comment, by its author or by someone `who-decides` allows,
+  # has a model with no tools and no key rewrite the body into the schema
+  # from the body and those answers only. The rewrite is taken only when
+  # issue-schema.py shape-check lets it (no text outside the sections, no
+  # comment nor marker, no Spec, every section that was valid kept word for
+  # word); the bot edits the body, comments what changed, and labels it
+  # `awaiting-acceptance` once it passes. Anyone else's comment never
+  # reaches the rewrite: it is summarised apart, as data (#287). Nothing is
+  # coded from it: a person reads the text before accepting it.
+  shape:
+    name: Shape the issue (G1)
+    runs-on: ubuntu-latest # fresh: it holds the key beside a model's work (#287)
+    timeout-minutes: 10
+    if: >-
+      github.event_name == 'issue_comment' && github.event.action == 'created' && !github.event.issue.pull_request &&
+      github.event.comment.user.type != 'Bot' && !startsWith(github.event.comment.body, '/') &&
+      contains(github.event.issue.labels.*.name, 'incomplete') && !contains(github.event.issue.labels.*.name, inputs.label) &&
+      !contains(github.event.issue.labels.*.name, 'lane:release')
+    concurrency:
+      group: issue-g1-${{ github.repository }}-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    # The model's action reads the issue with the job's token, nothing more.
+    permissions:
+      issues: read
+    steps:
+      - name: The scripts
+        env:
+          REF: ${{ inputs.central-ref || job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          git init -q .dx-central && git -C .dx-central fetch -q --depth 1 https://github.com/DiluxOne/.github "$REF" && git -C .dx-central checkout -q FETCH_HEAD
+          test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+      - name: App token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-issues: write
+          permission-contents: read # CODEOWNERS and the seal, for who decides
+          permission-pull-requests: read
+      # Whose words reach the rewrite: the author's and those who decide,
+      # by the logins GitHub gives, never by what a comment says.
+      - name: The answers, and the others
+        id: who
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          NUMBER: ${{ github.event.issue.number }}
+          LOGIN: ${{ github.event.comment.user.login }}
+          AUTHOR: ${{ github.event.issue.user.login }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" --jq '.body // ""' > "$RUNNER_TEMP/body.md"
+          gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate \
+            --jq '[.[] | select(.user.type != "Bot" and (.body | startswith("/") | not)) | {login: .user.login, body, url: .html_url}]' | jq -s 'add // []' > "$RUNNER_TEMP/comments.json"
+          { echo "$AUTHOR"; jq -r '.[].login' "$RUNNER_TEMP/comments.json" | sort -u | python3 .dx-central/scripts/deciders.py list answer || true; } | sort -u > "$RUNNER_TEMP/answerers.txt"
+          jq --rawfile a "$RUNNER_TEMP/answerers.txt" '[.[] | select(.login as $l | ($a | split("\n") | index($l)))] | .[-20:]' "$RUNNER_TEMP/comments.json" > "$RUNNER_TEMP/answers.json"
+          jq --rawfile a "$RUNNER_TEMP/answerers.txt" '[.[] | select(.login as $l | ($a | split("\n") | index($l)) | not)] | .[-20:]' "$RUNNER_TEMP/comments.json" > "$RUNNER_TEMP/others.json"
+          eof="DX_$(openssl rand -hex 16)"
+          if grep -qxF "$LOGIN" "$RUNNER_TEMP/answerers.txt"; then
+            echo "$LOGIN answers: the body is rewritten with the answers."
+            { echo "rewrite<<$eof"; BODY="$RUNNER_TEMP/body.md" ANSWERS="$RUNNER_TEMP/answers.json" python3 .dx-central/scripts/issue-schema.py shape-prompt; echo "$eof"; } >> "$GITHUB_OUTPUT"
+          else
+            echo "$LOGIN neither wrote the issue nor decides here: their comment is summarised apart, as data."
+            { echo "others<<$eof"; BODY="$RUNNER_TEMP/body.md" OTHERS="$RUNNER_TEMP/others.json" python3 .dx-central/scripts/issue-schema.py shape-others; echo "$eof"; } >> "$GITHUB_OUTPUT"
+          fi
+      - name: A model with no tools rewrites the body
+        id: rewrite
+        if: steps.who.outputs.rewrite != ''
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1.0.264
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
+          github_token: ${{ github.token }}
+          # The author may be anyone: this model has no tool to act with.
+          allowed_non_write_users: '*'
+          prompt: ${{ steps.who.outputs.rewrite }}
+          claude_args: |
+            --model claude-sonnet-5-5
+            --max-turns 2
+            --max-budget-usd 0.3
+            --allowedTools ""
+            --disallowedTools "Bash,Read,Write,Edit,MultiEdit,Glob,Grep,WebFetch,WebSearch,NotebookEdit,Task"
+            --json-schema '{"type":"object","additionalProperties":false,"required":["body"],"properties":{"body":{"type":"string","maxLength":20000}}}'
+      - name: A model with no tools summarises the others
+        id: summary
+        if: steps.who.outputs.others != ''
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1.0.264
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
+          github_token: ${{ github.token }}
+          allowed_non_write_users: '*'
+          prompt: ${{ steps.who.outputs.others }}
+          claude_args: |
+            --model claude-sonnet-5-5
+            --max-turns 2
+            --max-budget-usd 0.3
+            --allowedTools ""
+            --disallowedTools "Bash,Read,Write,Edit,MultiEdit,Glob,Grep,WebFetch,WebSearch,NotebookEdit,Task"
+            --json-schema '{"type":"object","additionalProperties":false,"required":["points"],"properties":{"points":{"type":"array","maxItems":30,"items":{"type":"object","additionalProperties":false,"required":["i","argument"],"properties":{"i":{"type":"integer"},"argument":{"type":"string","maxLength":400}}}}}}'
+      - name: The rewrite, checked, on the issue
+        if: steps.rewrite.outputs.structured_output != ''
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          NUMBER: ${{ github.event.issue.number }}
+          LOGIN: ${{ github.event.comment.user.login }}
+          OUT: ${{ steps.rewrite.outputs.structured_output }}
+        run: |
+          set -euo pipefail
+          jq -r '.body // ""' <<<"$OUT" > "$RUNNER_TEMP/new.md"
+          [ -s "$RUNNER_TEMP/new.md" ] || { echo "The model wrote no body."; exit 0; }
+          # Written with a model's help: the AI line closes it (CONTRIBUTING.md).
+          ai="🤖 AI-assisted · Claude Sonnet 5.5 (Anthropic)"
+          if ! tail -n 1 "$RUNNER_TEMP/new.md" | grep -q '^🤖 AI-'; then printf '\n%s\n' "$ai" >> "$RUNNER_TEMP/new.md"; fi
+          rc=0; verdict=$(python3 .dx-central/scripts/issue-schema.py shape-check "$RUNNER_TEMP/body.md" "$RUNNER_TEMP/new.md") || rc=$?
+          if [ "$rc" != 0 ]; then
+            why=$(jq -r '.why // "the check failed"' <<<"$verdict" 2>/dev/null || echo "the check failed")
+            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '**The answers were not written into the issue:** the rewrite was refused (%s). The issue stays as it is; edit it by hand, or answer again.\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)' "$why")" >/dev/null
+            exit 0
+          fi
+          changed=$(python3 .dx-central/scripts/issue-schema.py diff "$RUNNER_TEMP/body.md" < "$RUNNER_TEMP/new.md")
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/new.md" >/dev/null
+          gh label create awaiting-acceptance --repo "$GITHUB_REPOSITORY" --color FBCA04 --description "The issue follows the schema; it waits for a maintainer's decision" >/dev/null 2>&1 || true
+          add=$(jq -r '.add | join(",")' <<<"$verdict")
+          for l in $(jq -r '.remove[]' <<<"$verdict"); do gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$l" >/dev/null 2>&1 || true; done
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "$add" >/dev/null
+          if [ "$(jq -r .ready <<<"$verdict")" = true ]; then
+            state="It now follows the schema and is \`awaiting-acceptance\`: a maintainer reads it and decides; nothing is coded before."
+            g1="**Issue complete (G1):** the PRD has every section of the schema. It is \`awaiting-acceptance\`: the decision is a maintainer's."
+          else
+            asked=$(python3 .dx-central/scripts/issue-schema.py questions < "$RUNNER_TEMP/new.md")
+            state="It is still \`incomplete\`. What it still needs:"$'\n\n'"$asked"
+            g1="**Issue incomplete (G1):** what is missing before a maintainer can accept it:"$'\n\n'"$asked"$'\n\n'"It is checked again every time the issue is edited or answered."
+          fi
+          {
+            printf '**The issue, rewritten with the answers (G1):** after @%s'"'"'s comment, a model with no tools wrote the answers of the author and the maintainers into the schema'"'"'s sections, checked before it was saved. Anyone else'"'"'s comment was left out.\n\n' "$LOGIN"
+            printf '**What changed:**\n\n%s\n\n%s\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)\n' "$changed" "$state"
+          } > "$RUNNER_TEMP/shaped.md"
+          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/shaped.md" >/dev/null
+          # The G1 comment, kept up to date: the bot's own edit runs no check.
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '.[] | select(.user.type == "Bot" and (.user.login | startswith(env.DX_BOT_APP)) and (.body | startswith("<!-- dx-g1 -->"))) | .id' | tail -1)
+          if [ -n "$id" ]; then gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="<!-- dx-g1 -->"$'\n'"$g1"$'\n\n'"🤖 AI-generated · Claude Opus 5.5 (Anthropic)" >/dev/null; fi
+      - name: The others' summary, on the issue
+        if: steps.summary.outputs.structured_output != ''
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          NUMBER: ${{ github.event.issue.number }}
+          POINTS: ${{ steps.summary.outputs.structured_output }}
+        run: |
+          set -euo pipefail
+          OTHERS="$RUNNER_TEMP/others.json" python3 .dx-central/scripts/issue-schema.py shape-others-comment > "$RUNNER_TEMP/others.md"
+          [ -s "$RUNNER_TEMP/others.md" ] || { echo "Nothing argued about the issue."; exit 0; }
+          # One comment, kept up to date.
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '.[] | select(.user.type == "Bot" and (.user.login | startswith(env.DX_BOT_APP)) and (.body | startswith("<!-- dx-autopilot-others -->"))) | .id' | tail -1)
+          if [ -n "$id" ]; then gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -F body=@"$RUNNER_TEMP/others.md" >/dev/null
+          else gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/others.md" >/dev/null; fi
 
   receipt:
     name: The merge's receipt

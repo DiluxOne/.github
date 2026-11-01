@@ -835,6 +835,7 @@ jobs:
           # Exit 2 is "could not tell": refused too, never taken for yes.
           gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$LABEL" >/dev/null
           [ "$rc" = 1 ] || why="Who may add it could not be read now; add it again in a while, or ask a maintainer."
+          # shellcheck disable=SC2016 # Markdown's backticks, not a command.
           gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '**The autopilot does not continue:** `%s` was taken off. %s\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)' "$LABEL" "$why")" >/dev/null
 
   autopilot:
