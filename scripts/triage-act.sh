@@ -33,6 +33,11 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 
 # The board's state of the issue (#564): `state get KEY`, `state set K=V…`.
 state() { python3 "$HERE/receipts.py" state "$@"; }
+# What happens next, and on whom it waits (#564 C5): the triage's first reply
+# opens with it, and so do README.md, CONTRIBUTING.md, agents-block.md and
+# workflow-templates/README.template.md, word for word (the self-test checks).
+NEXT='**What happens next.** An issue is triaged first. Then it waits on a maintainer, who accepts it with the `accepted` label or says why not. Once it is accepted, the autopilot writes the code in the organisation'"'"'s runners (GitHub Actions), in a draft pull request anyone can follow. To write the code yourself instead, comment `/claim` on the issue (or tick "I want to work on this myself" in its form) before it is accepted, and the autopilot steps aside. The issue'"'"'s board says whom it waits on at each step, and mentions you when it is you.'
+
 # The receipts (seal-prd, board), and whether a lane accepts the issue.
 receipts() { python3 "$HERE/receipts.py" "$@"; }
 lane_accept() { python3 "$HERE/autonomy.py" lane-accept; }
@@ -181,6 +186,9 @@ act() {
   fi
   reply=${REPLY:-}
   [ -n "${reply//[[:space:]]/}" ] || reply="Thanks! A maintainer will take a look."
+  # It opens with what happens next (#564 C5); a security report's reply,
+  # below, is ours alone.
+  reply="$NEXT"$'\n\n'"$reply"
   if [ -n "$kept" ]; then
     reply="$reply"$'\n\n'"A maintainer set this issue's Type to Bug, so it stays a Bug, unconfirmed. Its reproduction does not start on its own: a maintainer starts it by commenting /repro."
   fi
@@ -268,8 +276,8 @@ if [ "${1:-}" = "--test" ]; then
   VERDICT='{"category":"pro_feature"}' REPLY="" SUMMARY=pro_feature t "an empty reply posts a plain one" "Thanks! A maintainer will take a look"
   VERDICT='{"category":"enhancement","exists_in_pro":true}' REPLY=x SUMMARY=s t "#564 a paid product's feature is recorded so" "^state set verdict=exists-in-pro$"
   VERDICT='{"category":"duplicate","duplicate_of":3}' REPLY=x SUMMARY=s t "a duplicate names the original" "Duplicate of #3"
-  VERDICT='{"category":"duplicate","duplicate_of":4}' REPLY=x SUMMARY=s t "a closed original is not named" "issue comment 7 --repo o/r --body x  <sub>"
-  VERDICT='{"category":"duplicate","duplicate_of":31337}' REPLY=x SUMMARY=s t "a number that is no open issue names nothing" "issue comment 7 --repo o/r --body x  <sub>"
+  VERDICT='{"category":"duplicate","duplicate_of":4}' REPLY=x SUMMARY=s t "a closed original is not named" "issue comment 7 --repo o/r --body \*\*What happens next.* you when it is you\.  x  <sub>"
+  VERDICT='{"category":"duplicate","duplicate_of":31337}' REPLY=x SUMMARY=s t "a number that is no open issue names nothing" "issue comment 7 --repo o/r --body \*\*What happens next.* you when it is you\.  x  <sub>"
   VERDICT='{"category":"duplicate","duplicate_of":31337}' REPLY=x SUMMARY=s t "nor does the record carry it" '"duplicate_of":null'
   VERDICT='{"category":"needs_info","duplicate_of":3}' REPLY=x SUMMARY=s t "a number outside a duplicate is not recorded" '"duplicate_of":null'
   VERDICT='{"category":"duplicate","duplicate_of":3}' REPLY=x SUMMARY=s t "a real duplicate is recorded" '"duplicate_of":3'
@@ -376,6 +384,17 @@ if [ "${1:-}" = "--test" ]; then
   if [ "$out" = $'own=yes\naccepted=false' ] && ! grep -qE "add-label|receipts|lane-accept|state set" "$log" && grep -q "incomplete.*it waits on @boss" "$log"; then echo "ok   #564 C2 an incomplete one is not accepted, not classified, and waits on its author"; else echo "FAIL #564 C2 an incomplete one waits on its author ($out):"; cat "$log"; fail=1; fi
   PERM=maintain LANE_REFUSES=1 run_own
   if [ "$out" = $'own=yes\naccepted=false' ] && ! grep -qE "add-label accepted|receipts" "$log" && grep -q "remove-label lane:maintainer-bug" "$log" && grep -q "no lane accepts it now (the autopilot is off)" "$log"; then echo "ok   #564 C2 a lane that refuses leaves it to a maintainer's acceptance"; else echo "FAIL #564 C2 a lane that refuses leaves it to a maintainer ($out):"; cat "$log"; fail=1; fi
+  # #564 C5: the first reply opens with what happens next, and the docs open with the same.
+  VERDICT='{"category":"enhancement"}' REPLY="Thanks for the idea." SUMMARY=s t "#564 C5 the first reply opens with what happens next" "issue comment 7 --repo o/r --body \*\*What happens next\.\*\* An issue is triaged first\. .*Thanks for the idea\."
+  for want in "is triaged first" "waits on a maintainer, who accepts it" "the autopilot writes the code in the organisation's runners" 'comment `/claim` on the issue .* before it is accepted, and the autopilot steps aside' "mentions you when it is you"; do
+    VERDICT='{"category":"needs_info"}' REPLY=x SUMMARY=s t "#564 C5 it says: $want" "issue comment 7 .*$want"
+  done
+  : > "$log"; ( VERDICT='{"category":"security"}' REPLY=x SUMMARY=s AUTHOR=alice SECURITY_REPO=o/sec SECURITY_TOKEN=t NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m act >/dev/null 2>&1 ) || true
+  if grep -q "What happens next" "$log"; then echo "FAIL #564 C5 a security report's reply is ours alone"; fail=1; else echo "ok   #564 C5 a security report's reply is ours alone"; fi
+  flat=$(printf '%s' "$NEXT" | tr -s '[:space:]' ' ')
+  for doc in README.md CONTRIBUTING.md agents-block.md AGENTS.md workflow-templates/README.template.md; do
+    if tr -s '[:space:]' ' ' < "$HERE/../$doc" | grep -qF -- "$flat"; then echo "ok   #564 C5 $doc says what happens next, word for word"; else echo "FAIL #564 C5 $doc says what happens next, word for word"; fail=1; fi
+  done
   # The state for real: receipts.py writes it on the issue's board (a fixture for GitHub's comments).
   fx=$(mktemp -d)
   ( state() { python3 "$HERE/receipts.py" state "$@"; }; gh() { :; }; VERDICT='{"category":"bug_unconfirmed","layer":"api"}' REPLY=x SUMMARY=s NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m DX_BOT_APP=dilux-bot STATE_FIXTURE="$fx/c.json" act >/dev/null 2>&1 ) || true

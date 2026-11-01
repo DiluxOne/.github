@@ -591,6 +591,20 @@ Normal
     check("C5: the board names whom it waits on, with the action and the link", "| Waits on | @alice: answer the question https://github.com/o/r/issues/7#c" in wb, True)
     check("C5: the row is replaced, never repeated", with_state(wb, {}).count("| Waits on |"), 1)
     check("C5: nobody waited on says so", "| Waits on | nobody" in with_state(wb, {}), True)
+    # #564 C5: when it waits on the issue's author (an outside contributor),
+    # the board names them and they are mentioned once, on the item.
+    url = "https://github.com/o/r/issues/7"
+    st1, said1 = wait_on({}, "alice", "Complete the PRD of", url)
+    check("C5: the board names the author it waits on", waits_line(st1), f"| Waits on | @alice: Complete the PRD of {url} {WAITS} |")
+    check("C5: and mentions them, with the action and its URL", said1, f"@alice: Complete the PRD of {url}")
+    st2, said2 = wait_on(st1, "alice", "Complete the PRD of", url)
+    check("C5: once: the same step again mentions nobody", (said2, st2["mentioned"]), (None, ["alice|Complete the PRD of"]))
+    check("C5: the mention survives a board written again", parse_state(with_state(with_state(board_text(7, True, s, None), st1), st2)).get("mentioned"), ["alice|Complete the PRD of"])
+    st3, said3 = wait_on(st2, "alice", "Answer the triage's question on", url)
+    check("C5: a new step of theirs mentions them again", said3, f"@alice: Answer the triage's question on {url}")
+    check("C5: the autopilot's step names it, mentions nobody", wait_on({}, "the autopilot", "The autopilot works on", url, person=False), ({"waits_on": {"who": "the autopilot", "what": "The autopilot works on", "url": url}}, None))
+    check("C5: what they just did themselves mentions nobody, and is recorded", wait_on({}, "Alice", "Complete the PRD of", url, sender="alice"), ({"waits_on": {"who": "Alice", "what": "Complete the PRD of", "url": url}, "mentioned": ["Alice|Complete the PRD of"]}, None))
+    check("C5: nothing waits: the row goes, the mentions stay", wait_on(st2, ""), ({"mentioned": ["alice|Complete the PRD of"]}, None))
     with tempfile.TemporaryDirectory() as d:
         fx = os.path.join(d, "comments.json")
         env0 = dict(os.environ, STATE_FIXTURE=fx, GITHUB_REPOSITORY="o/r", NUMBER="3", DX_BOT_APP="dilux-bot")

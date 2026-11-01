@@ -2,6 +2,8 @@
 
 Thanks for helping. This is the default guide for every DiluxOne repository; a repository with its own `CONTRIBUTING.md` adds project-specific rules (setup, tests, release) on top of this.
 
+**What happens next.** An issue is triaged first. Then it waits on a maintainer, who accepts it with the `accepted` label or says why not. Once it is accepted, the autopilot writes the code in the organisation's runners (GitHub Actions), in a draft pull request anyone can follow. To write the code yourself instead, comment `/claim` on the issue (or tick "I want to work on this myself" in its form) before it is accepted, and the autopilot steps aside. The issue's board says whom it waits on at each step, and mentions you when it is you.
+
 ## Before you start
 
 - **Questions about using a plugin** go to its wordpress.org support forum, not to issues.

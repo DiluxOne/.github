@@ -4,7 +4,18 @@
 You are working in a DiluxOne repository. Whoever you work for (the
 maintainer, or someone contributing from a fork), these hold here, and the
 step-by-step flow with its commands is in
-[DiluxOne/.github, `docs/agents.md`](https://github.com/DiluxOne/.github/blob/main/docs/agents.md):
+[DiluxOne/.github, `docs/agents.md`](https://github.com/DiluxOne/.github/blob/main/docs/agents.md).
+
+**What happens next.** An issue is triaged first. Then it waits on a
+maintainer, who accepts it with the `accepted` label or says why not. Once
+it is accepted, the autopilot writes the code in the organisation's runners
+(GitHub Actions), in a draft pull request anyone can follow. To write the
+code yourself instead, comment `/claim` on the issue (or tick "I want to
+work on this myself" in its form) before it is accepted, and the autopilot
+steps aside. The issue's board says whom it waits on at each step, and
+mentions you when it is you.
+
+These are the rules:
 
 1. **Nothing starts without an accepted issue.** Find the issue, or open one
    with the form that fits (it sets the issue's Type: Bug, Feature, Docs or

@@ -7,6 +7,8 @@
 
 **How every DiluxOne repository is checked, reviewed, merged and released, written once, here.**
 
+**What happens next.** An issue is triaged first. Then it waits on a maintainer, who accepts it with the `accepted` label or says why not. Once it is accepted, the autopilot writes the code in the organisation's runners (GitHub Actions), in a draft pull request anyone can follow. To write the code yourself instead, comment `/claim` on the issue (or tick "I want to work on this myself" in its form) before it is accepted, and the autopilot steps aside. The issue's board says whom it waits on at each step, and mentions you when it is you.
+
 Each repository calls the workflows in this one instead of carrying its own copy, and inherits its community files (contributing guide, security policy, issue forms, pull request template). Change a rule here and every repository follows it.
 
 | 🎫 No issue, no code | 🔍 Checked and reviewed | 🚦 Nothing merges red |
