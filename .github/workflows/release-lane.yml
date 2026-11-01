@@ -199,3 +199,40 @@ jobs:
           out=$(python3 scripts/release-lane.py act --plan "$RUNNER_TEMP/plan.json" --results "$RUNNER_TEMP/scenarios/results.md" --repo "$GITHUB_REPOSITORY" --run "$RUN_URL")
           echo "$out"
           for key in do version previous moved_at; do echo "$key=$(jq -r --arg k "$key" '.[$k] // ""' <<<"$out")" >> "$GITHUB_OUTPUT"; done
+
+  watch:
+    name: Watch the repositories for 30 minutes
+    needs: act
+    if: needs.act.outputs.do == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - name: App token (every repository's runs, and this one's tags, issues and releases)
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-actions: read
+          permission-contents: write # moving v7 back, and the release's notes
+          permission-issues: write
+          permission-metadata: read
+          permission-organization-custom-properties: read
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.app.outputs.token }}
+
+      - name: Watch, and move v7 back on the first engine failure
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          VERSION: ${{ needs.act.outputs.version }}
+          PREVIOUS: ${{ needs.act.outputs.previous }}
+          SINCE: ${{ needs.act.outputs.moved_at }}
+        run: python3 scripts/release-lane.py watch --repo "$GITHUB_REPOSITORY" --version "$VERSION" --previous "$PREVIOUS" --since "$SINCE" --minutes 30 --every 120

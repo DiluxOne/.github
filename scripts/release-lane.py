@@ -203,6 +203,78 @@ def release_issue(version, why, lane_run=""):
     return mod.engine_issue(version, why, lane_run)
 
 
+# The watch.
+
+def engine_failure(run_, central):
+    """Whether a run, as `gh api repos/R/actions/runs/ID` gives it with its
+    failed jobs' names (`failed_jobs`), failed on the engine: it never
+    started, or it failed in a job of a workflow of the engine (one of its
+    `referenced_workflows`, whose jobs are named `<caller> / <job>`). Pure."""
+    if run_.get("conclusion") == "startup_failure":
+        return True
+    if run_.get("conclusion") != "failure":
+        return False
+    engine = any(str(w.get("path", "")).startswith(f"{central}/.github/workflows/") for w in run_.get("referenced_workflows") or [])
+    return engine and any(" / " in str(j) for j in run_.get("failed_jobs") or [])
+
+
+def first_failure(runs, central, since, minutes=30):
+    """The first run, by its start, within `minutes` after `since` that
+    failed on the engine, or None. Pure."""
+    start = parse_time(since)
+    end = start + datetime.timedelta(minutes=minutes)
+    inside = [r for r in runs if start <= parse_time(r.get("created_at")) <= end and engine_failure(r, central)]
+    return min(inside, key=lambda r: parse_time(r.get("created_at"))) if inside else None
+
+
+def parse_time(value):
+    return datetime.datetime.strptime(str(value), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+
+
+def adopted(org_name, prop, run=sh):
+    values = json.loads(run("gh", "api", "--paginate", f"orgs/{org_name}/properties/values", "--jq", "[.[]]") or "[]")
+    return sorted(v["repository_full_name"] for v in values
+                  if any(p.get("property_name") == prop and str(p.get("value")).lower() == "true" for p in v.get("properties") or []))
+
+
+def runs_since(full, since, run=sh):
+    listed = json.loads(run("gh", "api", f"repos/{full}/actions/runs?created=>={since}&per_page=100", "--jq", ".workflow_runs") or "[]")
+    out = []
+    for r in listed:
+        if r.get("conclusion") == "failure":
+            jobs = json.loads(run("gh", "api", f"repos/{full}/actions/runs/{r['id']}/jobs", "--jq", "[.jobs[] | select(.conclusion == \"failure\") | .name]") or "[]")
+            r = dict(r, failed_jobs=jobs)
+        out.append(r)
+    return out
+
+
+def rollback(p, failure, repo, run=sh, root="."):
+    """`vN` back at the previous release, a bug with the run's link, and
+    the release says so."""
+    major, link = p["major"], failure.get("html_url", "")
+    move(major, p["previous"], run, root)
+    run("gh", "issue", "create", "--repo", repo, "--title", f"fix: {p['version']} failed in a repository; {major} is back at {p['previous']}",
+        "--body", f"{MARK}\nWithin 30 minutes of `{major}` moving to {p['version']}, a run failed on the engine: {link}\n\n`{major}` points at {p['previous']} again.\n")
+    body = json.loads(run("gh", "release", "view", p["version"], "--repo", repo, "--json", "body") or "{}").get("body", "")
+    run("gh", "release", "edit", p["version"], "--repo", repo, "--notes",
+        f"> {major} moved back to {p['previous']}: this release failed in a repository ({link}).\n\n{body}")
+
+
+def watch(p, repo, central, org_name, prop, since, run=sh, sleep=time.sleep, minutes=30, every=120, root="."):
+    """Returns the failed run it rolled back on, or None."""
+    waited = 0
+    while True:
+        runs = [r for full in adopted(org_name, prop, run) for r in runs_since(full, since, run)]
+        bad = first_failure(runs, central, since, minutes)
+        if bad:
+            rollback(p, bad, repo, run, root)
+            return bad
+        if waited >= minutes * 60:
+            return None
+        sleep(every)
+        waited += every
+
+
 class Fake:
     """A fake `gh` and `git` that records every command."""
 
@@ -272,6 +344,29 @@ def self_test():
         check("C5: nothing tagged, v7 not moved, nothing released", [c for c in fake.calls if c[:1] == ("git",) or c[:2] in (("gh", "release"), ("gh", "pr"))], [])
         check("C5: the bug names the scenario and its run", bool(bug) and "spec-to-draft" in " ".join(bug[0]) and "https://github.com/o/t/actions/runs/9" in " ".join(bug[0]), True)
         check("C5: no result at all is a failure", decide(p, [])["do"], "bug")
+        # C6: a startup_failure within 30 minutes of the move.
+        since = "2026-11-02T10:00:00Z"
+        runs = [{"id": 1, "created_at": "2026-11-02T10:05:00Z", "conclusion": "success", "html_url": "u1"},
+                {"id": 2, "created_at": "2026-11-02T10:12:00Z", "conclusion": "startup_failure", "html_url": "https://github.com/O/a/actions/runs/2"},
+                {"id": 3, "created_at": "2026-11-02T10:45:00Z", "conclusion": "startup_failure", "html_url": "late"}]
+        check("C6: the first engine failure within 30 minutes", first_failure(runs, central, since)["id"], 2)
+        check("C6: one after 30 minutes is not the release's", first_failure(runs[2:], central, since), None)
+        own = {"conclusion": "failure", "referenced_workflows": [{"path": "O/.github/.github/workflows/issue-triage.yml@v7"}], "failed_jobs": ["triage / classify"]}
+        check("C6: a failure in a job of the engine's workflow is the engine's", engine_failure(own, central), True)
+        check("C6: a failure in the repository's own job is not", engine_failure(dict(own, failed_jobs=["build"]), central), False)
+        props = json.dumps([{"repository_full_name": "O/a", "properties": [{"property_name": "dx-adopted", "value": "true"}]},
+                            {"repository_full_name": "O/b", "properties": [{"property_name": "dx-adopted", "value": "false"}]}])
+        fake = Fake({"properties/values": props, "repos/O/a/actions/runs?": json.dumps(runs[:2]), "gh release view": json.dumps({"body": "notes"})})
+        moved_p = dict(p, version="v7.10.1", previous="v7.10.0")
+        bad = watch(moved_p, "O/.github", central, "O", "dx-adopted", since, run=fake, sleep=lambda s: None, root=root)
+        check("C6: the watch reads only the adopted repositories", (bool(fake.named("repos/O/a/")), bool(fake.named("repos/O/b/"))), (True, False))
+        check("C6: v7 points at the previous release again", (fake.has("git", "-C", root, "tag", "-f", "v7", "v7.10.0^{commit}"), fake.has("git", "-C", root, "push", "-f", "origin", "refs/tags/v7")), (True, True))
+        made = [c for c in fake.calls if c[:3] == ("gh", "issue", "create")]
+        check("C6: a bug with the run's link", bool(made) and "https://github.com/O/a/actions/runs/2" in " ".join(made[0]), True)
+        edit = [c for c in fake.calls if c[:3] == ("gh", "release", "edit")]
+        check("C6: the release says so", bool(edit) and "moved back to v7.10.0" in " ".join(edit[0]) and bad["id"] == 2, True)
+        fake = Fake({"properties/values": props, "repos/O/a/actions/runs?": json.dumps(runs[:1])})
+        check("C6: a quiet half hour moves nothing", (watch(moved_p, "O/.github", central, "O", "dx-adopted", since, run=fake, sleep=lambda s: None, every=600, root=root), fake.has("git")), (None, False))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
@@ -281,7 +376,7 @@ def main(argv):
         return self_test()
     import argparse
     ap = argparse.ArgumentParser(prog="release-lane.py")
-    ap.add_argument("mode", choices=("plan", "candidate", "decide", "act"))
+    ap.add_argument("mode", choices=("plan", "candidate", "decide", "act", "watch"))
     ap.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""))
     ap.add_argument("--central", default="")
     ap.add_argument("--plan", default="")
@@ -321,6 +416,13 @@ def main(argv):
         return 0
     if a.mode == "act":
         print(json.dumps(act(load(a.plan), results_of(a.results), a.repo, lane_run=a.run)))
+        return 0
+    if a.mode == "watch":
+        conf = org.load()
+        p = {"version": a.version, "previous": a.previous, "major": f"v{a.version.lstrip('v').split('.')[0]}"}
+        bad = watch(p, a.repo, central, a.org or org.ORG, a.property or str(conf.get("adopted-property") or "dx-adopted"), a.since,
+                    minutes=a.minutes, every=a.every)
+        print(json.dumps({"rolled_back": bool(bad), "run": (bad or {}).get("html_url", "")}))
         return 0
     return 64
 
