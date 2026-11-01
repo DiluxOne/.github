@@ -829,6 +829,7 @@ jobs:
       branch: ${{ steps.draft.outputs.branch }}
       why: ${{ steps.draft.outputs.why }}
       held: ${{ steps.draft.outputs.held }}
+      core: ${{ steps.draft.outputs.core }}
     steps:
       - name: App token
         id: bot
@@ -919,6 +920,15 @@ jobs:
             echo "::warning::The Spec does not pass G3: $(jq -c .errors "$RUNNER_TEMP/g3.json")"
             echo "why=The Spec on the issue does not pass G3: $(jq -r '.errors | join("; ")' "$RUNNER_TEMP/g3.json" | head -c 300)" >> "$GITHUB_OUTPUT"; exit 0
           fi
+          # One change to the engine's core at a time (#563, org.yml `core`):
+          # while an open autopilot pull request already touches a core file
+          # the Spec touches too, no draft opens; the end rule says so once
+          # and autopilot-sweep.yml starts it again once that one merges or
+          # closes. A list that cannot be read opens nothing either.
+          if ! core=$(BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/autopilot.py core-wait); then
+            echo "why=The open autopilot pull requests could not be read, so the core could not be checked; the draft pull request is not opened." >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -n "$core" ]; then echo "The autopilot waits for #$core, which already changes the core."; echo "core=$core" >> "$GITHUB_OUTPUT"; exit 0; fi
           BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/receipts.py seal-spec
           title=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json title --jq .title)
           # No checklist, no draft: the end rule then stops the run with a
@@ -1319,6 +1329,8 @@ jobs:
           # A job that failed is reported as itself (#561), not as silence.
           FAILED: ${{ needs.spec.result == 'failure' && 'spec' || needs.draft.result == 'failure' && 'draft' || (needs.work.result == 'failure' && needs.work.outputs.outcome != '') && 'work' || '' }}
           HELD: ${{ needs.draft.outputs.held || steps.applied.outputs.held }}
+          # #563: it waits for another pull request on the core.
+          CORE: ${{ needs.draft.outputs.core }}
           WORK_LOG: .dx-out/transcript/2-work.json
           RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
           REPO_AUTONOMY: ${{ runner.temp }}/repo-autonomy.yml

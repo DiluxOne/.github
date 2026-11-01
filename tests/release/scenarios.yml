@@ -135,6 +135,11 @@ scenarios:
     opens: {issue: {title: "feat: a greeting, drafted", body: complete-feature}}
     steps: [{label: accepted}]
     expect: {pull: {closes: true, branch: "^feat/[0-9]+-", title: "^feat(\\(.+\\))?: "}, comments: ["<!-- dx-prd-seal -->"]}
+  - id: core-one-at-a-time
+    covers: [next_step:wait:core]
+    opens: {issue: {title: "feat: a greeting on the core, twice", body: complete-feature, labels: [accepted]}}
+    steps: [{wait: 120}, {label: accepted}]
+    expect: {comments: ["<!-- dx-autopilot-core -->"], labels: [autopilot:core-wait]}
   - id: prd-edited-after-acceptance
     covers: [next_step:wait:answer]
     opens: {issue: {title: "feat: a greeting, then edited", body: complete-feature}}

@@ -9,7 +9,10 @@ name: Autopilot in step with main
 # and leaves the conflict to the agent to resolve (a fix round, counted
 # against the runs cap). A draft is left alone: its own run merges main
 # first. A pull request whose state GitHub has not worked out yet is left
-# to the next sweep.
+# to the next sweep. An issue that waits for another autopilot pull request
+# on the engine's core (`autopilot:core-wait`, #563) gets its
+# `autopilot:continue` once no open one touches the core its Spec touches:
+# here at once on a merge, within the hour on a close.
 #
 #   push to main    here, from pull-request.yml's `autopilot-sweep` job,
 #                   for this repository at once.
@@ -106,3 +109,16 @@ jobs:
                   || echo "::warning::$repo#$issue: the continue could not be asked for." ;;
             esac
           done 3< "$RUNNER_TEMP/prs.txt"
+          # The issues that wait for a pull request on the core (#563).
+          gh search issues "${where[@]}" --state open --label "autopilot:core-wait" --limit 100 --json repository,number \
+            --jq '.[] | "\(.repository.nameWithOwner) \(.number)"' > "$RUNNER_TEMP/core.txt"
+          while read -r repo n <&3; do
+            [ -n "$repo" ] || continue
+            gh issue view "$n" --repo "$repo" --json body --jq .body > "$RUNNER_TEMP/body.md" || continue
+            busy=$(GITHUB_REPOSITORY="$repo" BODY="$RUNNER_TEMP/body.md" python3 scripts/autopilot.py core-wait) || { echo "::warning::$repo#$n: the core could not be checked."; continue; }
+            if [ -n "$busy" ]; then echo "$repo#$n: still waits for #$busy"; continue; fi
+            echo "$repo#$n: the core is free: it starts"
+            gh label create "autopilot:continue" --repo "$repo" --color 1D76DB --force --description "On an issue: the autopilot continues its draft pull request, or starts it" >/dev/null 2>&1 || true
+            gh issue edit "$n" --repo "$repo" --remove-label "autopilot:core-wait" --add-label "autopilot:continue" >/dev/null \
+              || echo "::warning::$repo#$n: the continue could not be asked for."
+          done 3< "$RUNNER_TEMP/core.txt"

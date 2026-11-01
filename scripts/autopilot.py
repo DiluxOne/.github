@@ -765,8 +765,38 @@ def end_verdict(mode, pr, draft_, stopped, done, total, limit_hit, runs, cap, pu
 # always a `wait` on one of these, never a label someone must add.
 BOT_ACTIONS = ("spec", "draft", "work", "merge-main", "finish", "fix", "queue")
 PERSON_DECISIONS = ("accept", "answer", "merge", "claim")
-# The waits on no person, but on the bot's own work elsewhere (#563).
-BOT_WAITS = ()
+# The waits on no person, but on the bot's own work elsewhere (#563):
+# `core`, another open autopilot pull request already changing the engine's
+# core (org.yml `core`), which this issue's Spec touches too.
+BOT_WAITS = ("core",)
+# On an issue that waits for `core` (#563): autopilot-sweep.yml starts it
+# again (`autopilot:continue`) once that pull request merges or closes; its
+# comment, once, carries CORE_MARK.
+CORE_WAIT = "autopilot:core-wait"
+CORE_MARK = "<!-- dx-autopilot-core -->"
+
+
+def core_busy(spec_files, core, others, mine=0):
+    """The open autopilot pull request an issue waits for (#563): when the
+    Spec's files touch the core (globs), the lowest-numbered other one
+    (`others`: [{number, files}]) whose diff touches it; 0 when none. Pure."""
+    import fnmatch
+
+    def touches(files):
+        return any(fnmatch.fnmatchcase(str(f), g) for f in files or [] for g in core or [])
+    if not core or not touches(spec_files):
+        return 0
+    for other in sorted(others or [], key=lambda o: int(o.get("number") or 0)):
+        if int(other.get("number") or 0) != int(mine or 0) and touches(other.get("files")):
+            return int(other["number"])
+    return 0
+
+
+def core_comment(number):
+    """What the issue says while it waits for `core` (#563)."""
+    return (f"{CORE_MARK}\nThe autopilot waits for #{number}: that open autopilot pull request already changes the engine's core "
+            f"(org.yml `core`), which this issue's Spec touches too, and two changes to the core at once keep putting each other in conflict. "
+            f"It starts this one on its own once #{number} merges or closes.\n\n{AI_LINE}")
 # How `merge-main` merges main in (#561), and what sweep_step returns: the
 # release scenarios (tests/release/scenarios.yml) cover each of these.
 MERGE_HOWS = ("conflicted", "clean")
@@ -812,6 +842,9 @@ def next_step(state):
         if state.get("prs"):
             return none("a pull request that is not the autopilot's already closes it")
         if state.get("spec"):
+            busy = core_busy(state.get("spec_files"), state.get("core"), state.get("others"))
+            if busy:
+                return wait("core", f"#{busy}", f"#{busy}, an open autopilot pull request, already changes the core this Spec touches: it starts once #{busy} merges or closes")
             return {"action": "draft", "as": "start", "why": "the Spec is on the issue: the draft opens from it"}
         return {"action": "spec", "as": "start", "why": "accepted and ready: the agent writes the Spec"}
     if not pr.get("author_is_bot", True):
@@ -2157,6 +2190,17 @@ A class on html.
           "| Held | 🙋 @ana holds it with #40, which closes it: the autopilot does not start |" in board9, True)
     check("#561 C9: an autopilot pull request's own row replaces it once the autopilot works it",
           "| Held |" in _load("receipts_board", "receipts.py").board_text(561, True, None, None, {"pr": 9, "url": "u", "draft": True}, [], "x"), False)
+    # C11 (#563): one change to the core at a time.
+    core = ["scripts/autopilot.py", ".github/workflows/*.yml"]
+    busy = {"spec": True, "core": core, "spec_files": ["scripts/autopilot.py", "docs/x.md"], "others": [{"number": 12, "files": ["README.md"]}, {"number": 7, "files": [".github/workflows/issues.yml"]}]}
+    step = ns(**busy)
+    check("C11: a Spec on the core, with an open autopilot pull request on it, waits for `core` naming that pull request",
+          (step["action"], step["for"], step["who"], "#7" in step["why"]), ("wait", "core", "#7", True))
+    check("C11: once it merged or closed, the draft opens", nsa(**dict(busy, others=[{"number": 12, "files": ["README.md"]}])), ("draft", "start"))
+    check("C11: a Spec off the core never waits", nsa(**dict(busy, spec_files=["docs/x.md"])), ("draft", "start"))
+    check("C11: before its Spec, the Spec is written", nsa(**dict(busy, spec=False)), ("spec", "start"))
+    check("C11: its own pull request is not another", core_busy(["scripts/autopilot.py"], core, [{"number": 7, "files": ["scripts/autopilot.py"]}], mine=7), 0)
+    check("C11: the comment names the pull request it waits for, once (its marker)", (core_comment(7).startswith(CORE_MARK), "#7 merges or closes" in core_comment(7)), (True, True))
     check("#561 C1: next-step says its step in one line", step_comment(ns(lane="")).startswith("Next step: wait for accept, on a maintainer: "), True)
     # #561 C2: a merge into main brings each ready autopilot pull request
     # back in step on its own, with no label a person adds.
@@ -3530,6 +3574,21 @@ def main(argv):
             with open(copy, "w", encoding="utf-8") as fh:
                 fh.write(new)
         return 0
+    if argv[:1] == ["core-wait"]:
+        # Before the draft opens (#563): BODY, the issue's body with its
+        # Spec; prints the number of the open autopilot pull request whose
+        # diff already touches the core the Spec touches, or nothing.
+        body = open(os.environ["BODY"], encoding="utf-8").read() if os.environ.get("BODY") and os.path.exists(os.environ["BODY"]) else ""
+        core = org.core(org.load())
+        if not core:
+            return 0
+        listed = json.loads(gh("pr", "list", "--repo", repo, "--state", "open", "--label", "autopilot", "--json", "number,files,author", "--limit", "100") or "[]")
+        others = [{"number": p["number"], "files": [f.get("path") for f in p.get("files") or []]} for p in listed
+                  if ((p.get("author") or {}).get("login") or "") in BOT_LOGINS + (f"app/{org.APP}",)]
+        import deciders  # the Spec's files, read as who-decides reads them
+        busy = core_busy(deciders.spec_files(body), core, others, int(pr or 0))
+        print(busy or "")
+        return 0
     if argv[:1] == ["sweep"]:
         # One open autopilot pull request after a merge into main (#561 C2):
         # {pr: gh pr view's JSON, issue_labels: [...]} on stdin; prints
@@ -3574,6 +3633,20 @@ def main(argv):
         return 0 if ok else 1
     if argv[:1] == ["end"]:
         mode = os.environ.get("MODE", "start")
+        if os.environ.get("CORE"):
+            # It waits for another pull request on the core (#563): said
+            # once on the issue, which autopilot-sweep.yml starts again.
+            n = os.environ["CORE"].lstrip("#")
+            said = json.loads(gh("issue", "view", str(number), "--repo", repo, "--json", "comments") or "{}").get("comments") or []
+            if not any(c.get("body", "").startswith(CORE_MARK) and f"#{n}:" in c.get("body", "") for c in said):
+                gh("issue", "comment", str(number), "--repo", repo, "--body", core_comment(n))
+            gh("label", "create", CORE_WAIT, "--repo", repo, "--color", "C5DEF5", "--force", "--description", "On an issue: the autopilot waits for another pull request on the engine's core")
+            gh("issue", "edit", str(number), "--repo", repo, "--add-label", CORE_WAIT)
+            if os.environ.get("GITHUB_OUTPUT"):
+                with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+                    fh.write("verdict=core\n")
+            print(f"waits for #{n}")
+            return 0
         if os.environ.get("HELD"):
             # A person took the issue mid-run (#488): the run stepped aside
             # before it wrote, and says so where it works.
