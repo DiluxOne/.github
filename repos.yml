@@ -161,7 +161,9 @@ files:
 # caller is written with (#562), so none is left a template's placeholder
 # to fill by hand: a repository's entry's `callers` wins over it. `{slug}`
 # is the repository's name without its `-wordpress` ending, `{SLUG}` the
-# same in capitals with `_` for `-`.
+# same in capitals with `_` for `-`. `dry-run` stays the templates' `true`:
+# a release rehearses until the repository's entry sets `dry-run: false`,
+# so no pull request merged by policy ever makes one publish.
 # `migrates-from` names the older majors whose migration asks a repository
 # for nothing but its callers (docs/migrating.md): `callers` moves one at
 # such a major to the current one in the same pull request, every call of
@@ -179,6 +181,6 @@ callers:
   defaults:
     support-url: https://github.com/DiluxOne/.github/blob/main/SUPPORT.md
     profile: general
-    dry-run: false
+    dry-run: true
     slug: "{slug}"
     version-constant: "{SLUG}_VERSION"

@@ -23,6 +23,11 @@ archived and not excluded in repos.yml:
             tag creation", "org: release tags") moved from their list of
             names to the repositories with the property, only after every
             adopted one holds it.
+  pending   the repositories repos.yml lists that do not hold that
+            property yet, one per line (#562): what org-adopt.yml adopts,
+            read from the organisation rather than from a push, so a run
+            GitHub drops while it waits loses no adoption. Nothing until the
+            org rulesets cover the repositories by the property.
   project   the repository linked to its Project (its entry's `project`);
             said when it has none.
   files     repos.yml `files` (CODEOWNERS) and the opening block of
@@ -140,6 +145,7 @@ archived and not excluded in repos.yml:
 
   sync-repos.py <labels|settings|security|rulesets|files|dependabot|pre-pr|own-checks|merge-queue|callers|project|i18n|all> [--repo NAME ...] [--dry-run]
   sync-repos.py adopt --repo NAME [--dry-run]
+  sync-repos.py pending
   sync-repos.py check [--repo NAME ...] [--report FILE]
   sync-repos.py --test
 
@@ -398,6 +404,20 @@ def sync_rulesets(repos, every, dry):
         print(f"  \"{r['name']}\" covers the repositories with {ADOPTED}=true")
     if moving and not dry:
         ORG_RULESETS = None
+
+
+def not_adopted(every):
+    """The names of `every` (the repositories repos.yml lists) whose property
+    is not true, sorted (#562); None while an org ruleset still covers a
+    list of names, as the property then says nothing yet."""
+    org_rs = [r for r in (org_rulesets() or []) if r.get("name") in ORG_RULESET_NAMES]
+    if not org_rs or not all(by_property(r) for r in org_rs):
+        return None
+    names = {r["name"] for r in every}
+    have = property_values(names) if names else {}
+    if have is None:
+        raise RuntimeError(f"the values of {ADOPTED} could not be read")
+    return sorted(n for n in names if have.get(n) != "true")
 
 
 def sync_project(repo, conf, dry):
@@ -2708,7 +2728,12 @@ def callers_test(check, conf):
     check("#562 C2: every new caller of a plugin holds no template placeholder", {p: v for p, v in left.items() if v} == {}, left)
     release = fresh.get(".github/workflows/release-wp.yml", "")
     check("#562 C2: the entry's value wins over the default, and the default fills the rest",
-          ("slug: new-one\n" in release, "version-constant: DILUXONE_NEW_VERSION\n" in release, "dry-run: false\n" in release, "my-plugin" in release), (True, True, True, False))
+          ("slug: new-one\n" in release, "version-constant: DILUXONE_NEW_VERSION\n" in release, "dry-run: true\n" in release, "my-plugin" in release), (True, True, True, False))
+    # A release that rehearses is left rehearsing: nothing merged by policy makes it publish.
+    rehearsing = templates()["release-wp.yml"][0].replace("my-plugin", "new-one").replace("MY_PLUGIN_VERSION", "DILUXONE_NEW_VERSION")
+    check("#562 C2: a caller holding the template's `dry-run: true` is no placeholder, and is never rewritten to publish",
+          ("dry-run" in placeholders(rehearsing, templates()["release-wp.yml"][0], {"dry-run"}, repos_conf.caller_values(plugin_conf, "diluxone-new-wordpress")),
+           "dry-run: false" in fill_inputs(rehearsing, {"dry-run"}, repos_conf.caller_values(plugin_conf, "diluxone-new-wordpress"))), (False, False))
     raw_issues = templates()["issues.yml"][0].replace("$default-branch", "main")
     lines = placeholder_lines({".github/workflows/issues.yml": raw_issues}, conf, "diluxone-new-wordpress")
     check("#562 C2: the drift check lists a caller that still holds a template placeholder, with the value repos.yml gives",
@@ -3095,6 +3120,19 @@ def adopt_test(check, conf, labels, block):
           (moved["rules"], moved["conditions"]["ref_name"], "repository_name" in moved["conditions"], moved["conditions"]["repository_property"]["include"][0]["name"], "id" in moved),
           (named["rules"], named["conditions"]["ref_name"], False, ADOPTED, False))
     eq("#562 C1: a ruleset covering by the property covers an adopted repository, and only one", (covers(moved, "x", True), covers(moved, "x", False)), (True, False))
+    # What org-adopt.yml adopts comes from the property, not from the push.
+    try:
+        globals().update(gh=fake, ORG="o", ORG_RULESETS=[named], listed=lambda n: cfg["repos"].get(n))
+        before_move = not_adopted(every)
+        globals()["ORG_RULESETS"] = [dict(named, conditions=moved["conditions"])]
+        state["values"] = {"old": "true", "new": None}
+        after_move = not_adopted(every)
+        state["values"] = {"old": "true", "new": "true"}
+        none_left = not_adopted(every)
+    finally:
+        globals().update(saved)
+    eq("#562 C5: `pending` names a listed repository without the property, nothing before the rulesets move, and none once all hold it",
+       (before_move, after_move, none_left), (None, ["new"], []))
     # Again, in step: nothing is written.
     calls.clear()
     try:
@@ -3704,7 +3742,7 @@ def self_test():
 def main(argv):
     if argv == ["--test"]:
         return self_test()
-    if not argv or argv[0] not in ("labels", "settings", "security", "rulesets", "files", "dependabot", "pre-pr", "own-checks", "merge-queue", "callers", "project", "i18n", "all", "adopt", "check"):
+    if not argv or argv[0] not in ("labels", "settings", "security", "rulesets", "files", "dependabot", "pre-pr", "own-checks", "merge-queue", "callers", "project", "i18n", "all", "adopt", "pending", "check"):
         print(__doc__)
         return 64
     what, rest = argv[0], argv[1:]
@@ -3723,10 +3761,18 @@ def main(argv):
         print("adopt: name the repository (--repo NAME)")
         return 64
     every = None
-    if what in ("adopt", "rulesets"):
+    if what in ("adopt", "rulesets", "pending"):
         # Every adopted repository: the rulesets move to the property only
         # once each of them holds it.
         every = [r for r in (repositories([], conf.get("exclude") or []) if only else repos) if listed(r["name"]) is not None]
+    if what == "pending":
+        try:
+            names = not_adopted(every)
+        except (RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
+            print(f"pending: {exc}", file=sys.stderr)
+            return 1
+        print("\n".join(names or []))
+        return 0
     if what == "rulesets":
         try:
             sync_rulesets([r for r in repos if listed(r["name"]) is not None], every, dry)

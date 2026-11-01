@@ -259,8 +259,12 @@ lanes:
   # `pre-pr-make`, the Makefile its base with `include dx.mk` added, and
   # .github/dependabot.yml its kind's template for the ecosystems at its
   # head with what repos.yml adds (#562). A job that changes
-  # its permissions or the secrets it passes, a new job among them, is high
-  # risk: a person merges it. `max-risk: high` because the review's floor for
+  # its permissions or the secrets it passes, a new job in an existing
+  # caller among them, is high risk: a person merges it. A new caller that
+  # is its template whole, with the repository's default branch and the
+  # values repos.yml gives (its entry's `callers`, else `callers:
+  # defaults`, where `dry-run` stays `true`), merges by policy (#552, #562):
+  # its grants are the template's, which a person merged here. `max-risk: high` because the review's floor for
   # .github/** and AGENTS.md is high whatever the change; the checks above,
   # not the rating, are what hold it.
   org-sync:
@@ -296,7 +300,8 @@ lanes:
   # <repository>" (scripts/detect.py adopt-issues) for a repository of the
   # organisation repos.yml lacks, with the entry detection proposes as a
   # YAML block, which anyone may correct and a maintainer may open by hand
-  # (the "Adopt a repository" form). A maintainer's `accepted` is the
+  # (the body `detect.py adopt-body NAME` prints; there is no form). A
+  # maintainer's `accepted` is the
   # acceptance (`accept: human`: nothing accepts it by policy) and the only
   # step: org-adopt.yml opens the pull request that adds that entry to
   # repos.yml, which merges on its own (auto-merge.yml, autonomy.py
