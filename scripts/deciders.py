@@ -8,11 +8,11 @@ repos.yml (`repos.<name>.who-decides`); `codeowners` when neither says:
   codeowners  the code owners of the files the change touches, from the
               repository's CODEOWNERS on its default branch (.github/,
               the root, docs/; the last rule that matches a file wins). The
-              files are the open pull request's that closes the issue (its
-              diff counts), else the Spec's `Spec: files` while its seal
-              (receipts.py seal-spec) still matches it, never a Spec
-              someone wrote or edited in the body since, else the owners
-              of the catch-all rule (`*`); with none of those, `writers`. A repository with no
+              files are the diff of the open pull request that closes the
+              issue when the autopilot opened it (never a person's), else
+              the Spec's `Spec: files` while its seal (receipts.py
+              seal-spec) still matches it, else the catch-all's (`*`)
+              owners; with none of those, `writers`. A repository with no
               CODEOWNERS file is `writers`. Only people named in it count:
               a team (`@org/team`) decides nothing, and a file only teams
               own lets nobody but an admin decide (it fails closed).
@@ -167,6 +167,15 @@ def sealed_spec_files(body, spec_seal, live_sha):
     return spec_files(body)
 
 
+def by_autopilot(author):
+    """Whether a pull request's diff counts: only when the autopilot
+    (dilux-bot) opened it. A person's pull request that closes the issue
+    could touch only files its author owns and make them a decider."""
+    sys.path.insert(0, HERE)
+    import org
+    return (author or "").lower() in {a.lower() for a in (org.APP, org.BOT, f"app/{org.APP}")}
+
+
 def spec_files(body):
     """The paths the Spec's `Spec: files` names, one per line: the first
     word of each, or what its backticks hold."""
@@ -285,7 +294,8 @@ class Live:
         return None
 
     def files(self):
-        """The change's files: the open pull request's, else the Spec's."""
+        """The change's files: the autopilot's open pull request's, else the
+        sealed Spec's."""
         if self.fixture is not None:
             return list(self.fixture.get("files") or [])
         pr = self.pr
@@ -293,7 +303,7 @@ class Live:
             refs = json.loads(_gh("issue", "view", self.number, "--repo", self.repo, "--json", "closedByPullRequestsReferences"))
             opened = [str(r["number"]) for r in refs.get("closedByPullRequestsReferences") or [] if r.get("state", "OPEN") == "OPEN"]
             pr = opened[-1] if opened else ""
-        if pr:
+        if pr and by_autopilot(_gh("api", f"repos/{self.repo}/pulls/{pr}", "--jq", ".user.login").strip()):
             names = [l for l in _gh("api", "--paginate", f"repos/{self.repo}/pulls/{pr}/files", "--jq", ".[].filename").splitlines() if l]
             if names:
                 return names
@@ -500,6 +510,27 @@ def self_test():
             check("spec: a body-edited Spec does not widen who decides", (files, decide("codeowners", "accepted", "writer", "write", owners, files)["ok"]), ([], False))
             body["now"] = spec_body
             check("spec: the sealed Spec's files count", live.files(), ["scripts/deciders.py"])
+            # The review of #589: a writer's own pull request that closes
+            # the issue and touches only docs/mine.md does not make them a
+            # decider; only the autopilot's pull request's diff counts.
+            pr = {"author": "writer"}
+
+            def with_pr(*args):
+                if args[:2] == ("issue", "view"):
+                    return json.dumps({"closedByPullRequestsReferences": [{"number": 9, "state": "OPEN"}]})
+                if args[1] == "repos/o/r/pulls/9":
+                    return pr["author"] + "\n"
+                if "repos/o/r/pulls/9/files" in args:
+                    return "docs/mine.md\n"
+                return issue(*args)
+            _gh = with_pr
+            files = live.files()
+            check("pr: a person's pull request's diff does not count, the sealed Spec does",
+                  (files, decide("codeowners", "accepted", "writer", "write", owners, files)["ok"]), (["scripts/deciders.py"], False))
+            pr["author"] = "dilux-bot[bot]"
+            check("pr: the autopilot's pull request's diff counts", live.files(), ["docs/mine.md"])
+            check("pr: by_autopilot knows the App by each of its names, and no one else",
+                  [by_autopilot(a) for a in ("dilux-bot[bot]", "dilux-bot", "app/dilux-bot", "Dilux-Bot[bot]", "writer", "")], [True, True, True, True, False, False])
         finally:
             _gh = real
             if old is None:
