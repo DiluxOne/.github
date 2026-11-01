@@ -608,9 +608,11 @@ def boxes(pr_body):
 
 
 # A maintainer's answer that drops or changes a criterion (#561 C3), one
-# per line: `drop C3` (or `remove C3`), `C3: <the new text>`.
+# per line: `drop C3` (or `remove C3`), `change C3: <the new text>`. The
+# verb marks it: a line that only starts `C3:` (an answer about C3, a quoted
+# criterion) changes nothing.
 EDIT_DROP = re.compile(r"^\s*(?:drop|remove)\s+(C\d{1,3})\b", re.I)
-EDIT_CHANGE = re.compile(r"^\s*(C\d{1,3})\s*:\s*(\S.*?)\s*$")
+EDIT_CHANGE = re.compile(r"^\s*change\s+(C\d{1,3})\s*:\s*(\S.*?)\s*$", re.I)
 
 
 def criteria_edits(answer):
@@ -2168,7 +2170,10 @@ A class on html.
     three = "<!-- dx-checklist -->\n- [x] **C1** a  \n  Test: t1\n- [ ] **C2** b  \n  Test: t2\n- [ ] **C3** c\n<!-- /dx-checklist -->\n\n## 🧭 Decisions\n"
     issue3 = "### Acceptance criteria\n\n- C1: a\n- C2: b\n- C3: c\n"
     check("#561 C3: an answer's edits, one per line, after the login too",
-          criteria_edits("boss: drop C2\n\nboss: 1, as recommended\nC3: c, in red\nRemove C9 and more"), [("C2", None), ("C3", "c, in red"), ("C9", None)])
+          criteria_edits("boss: drop C2\n\nboss: 1, as recommended\nChange C3: c, in red\nRemove C9 and more"), [("C2", None), ("C3", "c, in red"), ("C9", None)])
+    check("#561 C3: a line that only starts `C2:`, an answer about it or a quoted criterion, changes nothing",
+          (criteria_edits("boss: C2: option 2\n> C2: Given a draft, when x\nC2: Given a draft, yes but red\nchange C2 later"),
+           apply_answer(three, issue3, criteria_edits("boss: C2: option 2"))[1]), ([], []))
     dropped, notes3 = apply_answer(three, issue3, [("C2", None)])
     check("#561 C3: a dropped criterion leaves the checklist, its Test line with it, and the finish no longer waits on it",
           (sorted(boxes(dropped)), "t2" in dropped, "t1" in dropped, progress(dropped), len(notes3)), (["C1", "C3"], False, True, (1, 2), 1))

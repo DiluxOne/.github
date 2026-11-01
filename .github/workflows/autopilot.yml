@@ -40,7 +40,7 @@ name: Autopilot
 #                   brings it back the same way: review-reply.yml takes
 #                   `needs-human` off and dilux-bot adds the continue (#561).
 #                   A maintainer's answer that drops or changes a
-#                   criterion (`drop C3`, `C3: <new text>`) is applied to
+#                   criterion (`drop C3`, `change C3: <new text>`) is applied to
 #                   the checklist by the bot before the work (#561,
 #                   scripts/autopilot.py criteria-edit).
 #                   With no open `autopilot` pull request closing an open
@@ -687,7 +687,7 @@ jobs:
             | python3 .dx-central/scripts/deciders.py list answer > "$RUNNER_TEMP/deciders.txt" || : > "$RUNNER_TEMP/deciders.txt"
           COMMENTS="$RUNNER_TEMP/comments.json" DECIDERS="$RUNNER_TEMP/deciders.txt" python3 .dx-central/scripts/autopilot.py answers > "$RUNNER_TEMP/answers.md"
           # An answer that drops or changes a criterion (`drop C3`,
-          # `C3: <new text>`) is applied to the checklist here, by the bot,
+          # `change C3: <new text>`) is applied to the checklist here, by the bot,
           # and logged in the Decisions (#561): the work and the finish
           # read the checklist as it is then.
           ANSWERS="$RUNNER_TEMP/answers.md" python3 .dx-central/scripts/autopilot.py criteria-edit
