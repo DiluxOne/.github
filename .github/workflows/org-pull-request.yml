@@ -115,6 +115,18 @@ jobs:
   # An autopilot pull request whose review blocks: one round of fixes by the
   # autopilot (#83), which pushes and so runs this pipeline again; after its
   # rounds it hands the pull request to a person.
+  # What waits on whom (#564): a pull request marked ready waits on someone
+  # new (its review, a person's merge); its board and the view follow
+  # (issues.yml covers its other events). Not a fork's: it needs the key.
+  waiting:
+    if: github.event_name == 'pull_request' && github.event.action == 'ready_for_review' && github.event.pull_request.head.repo.full_name == github.repository && github.repository != 'DiluxOne/.github'
+    permissions: {}
+    uses: DiluxOne/.github/.github/workflows/waiting-update.yml@v7
+    with:
+      number: ${{ format('{0}', github.event.pull_request.number) }}
+    secrets:
+      DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+
   autopilot-fix:
     needs: review
     # Only dilux-bot's own pull requests, and only for a new commit (an edit

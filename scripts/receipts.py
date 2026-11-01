@@ -241,6 +241,29 @@ def waits_line(state):
     return f"| Waits on | {who}: {w.get('what', '')}{link} {WAITS} |"
 
 
+def wait_on(state, who, what="", url="", person=True, sender=""):
+    """(the state with its "Waits on" row set, the one mention to post or
+    None) (#564). `who` empty: nothing waits. A person (`person`, `who` a
+    login) is mentioned once per waiting step (`login|what`, kept in
+    `mentioned`), never again, and never for what they just did themselves
+    (`sender`, whose step is recorded as mentioned). Pure."""
+    new = dict(state or {})
+    if not who:
+        new.pop("waits_on", None)
+        return new, None
+    new["waits_on"] = {"who": who, "what": what, "url": url}
+    if not person:
+        return new, None
+    key = f"{who}|{what}"
+    seen = [m for m in (new.get("mentioned") or []) if isinstance(m, str)]
+    if key in seen:
+        return new, None
+    new["mentioned"] = seen + [key]
+    if sender and sender.lower() == who.lower():
+        return new, None
+    return new, f"@{who}: {what} {url}".rstrip()
+
+
 def with_state(body, state):
     """A board's body with its state block and its "Waits on" row replaced
     (added when missing). Pure."""

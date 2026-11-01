@@ -90,7 +90,7 @@ flowchart TB
 - **A review lesson becomes a rule.** Something a reviewer sent back once becomes one entry in its kind's `rules.yml`, with fixtures, never a new script ([`kinds/`](kinds/)).
 - **Secrets never meet a fork's code.** Actions are pinned to a commit and every token asks for the least it needs.
 - **Every job starts clean.** Public repositories run on GitHub's runners; private ones on the organisation's VM, each job in a disposable container of an image rebuilt and smoke-tested every day ([`runner/`](runner/)).
-- **What waits is listed, every day.** One pinned issue here lists each open pull request older than a day, what blocks it and on whom it waits; another, every week, the lead time, the merge queue's failures, the autopilot's runs and the flaky tests found ([docs](docs/workflows.md)).
+- **What waits is listed, as it happens.** One pinned issue here lists every open issue and pull request that waits on someone, by person, each action with its link, rewritten on every event; the person is mentioned once, on the item; another, every week, the lead time, the merge queue's failures, the autopilot's runs and the flaky tests found ([docs](docs/workflows.md)).
 - **Every pending step names its action and its URL.** Agents tell a maintainer exactly what to accept, approve or merge, with the link; an outside contributor is never asked for a maintainer's step.
 - **Versions are tags.** Repositories call `@v7`. A breaking change ships as `v8`, and older majors stay where they are.
 

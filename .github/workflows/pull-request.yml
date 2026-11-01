@@ -261,6 +261,18 @@ jobs:
   # the round never runs twice; scripts/autopilot.py --test keeps the two
   # the same). Only dilux-bot's own branch matches, never a fork's. The
   # scripts are read from main, like the review's.
+  # What waits on whom (#564): a pull request marked ready waits on someone
+  # new (its review, a person's merge); its board and the view follow
+  # (issues.yml covers its other events). Not a fork's: it needs the key.
+  waiting:
+    if: github.event_name == 'pull_request' && github.event.action == 'ready_for_review' && github.event.pull_request.head.repo.full_name == github.repository
+    permissions: {}
+    uses: ./.github/workflows/waiting-update.yml
+    with:
+      number: ${{ format('{0}', github.event.pull_request.number) }}
+    secrets:
+      DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+
   autopilot-fix:
     needs: review
     # Only dilux-bot's own pull requests, and only for a new commit (an edit

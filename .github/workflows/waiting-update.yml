@@ -1,0 +1,121 @@
+name: What waits (one item)
+
+# Reusable (#564). On an issue's or a pull request's event, from the
+# repository's issues.yml (its issues, its comments, and pull_request_target
+# for its pull requests, a fork's included: metadata only, no code is ever
+# checked out) and from the pull request pipelines (marked ready): what the
+# item waits on now (scripts/waiting.py update: needs-human, an acceptance,
+# the autopilot's question, a failed check, a thread, a person's merge, and
+# for an outside contributor their PRD, their answer or their claimed work),
+# written in its board's "Waits on" row, with the action and its URL; the
+# first time a step waits on a person, one mention of them on the item
+# itself (`@login: <action> <URL>`), never again for that step, never for
+# what they just did, and a maintainer is never mentioned for a
+# contributor's step nor a contributor for a maintainer's. Then it asks
+# DiluxOne/.github to rewrite the pinned "What waits" issue
+# (waiting-digest.yml, by person, one line per action with its URL), which
+# also runs every day as a sweep. One run per item at a time, the last
+# event's: cancel-in-progress.
+#
+#   jobs:
+#     waiting:
+#       permissions: {}
+#       uses: DiluxOne/.github/.github/workflows/waiting-update.yml@v7
+#       with:
+#         number: ${{ github.event.issue.number || github.event.pull_request.number }}
+#       secrets:
+#         DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+
+on:
+  workflow_call:
+    inputs:
+      number:
+        description: The issue or pull request that changed.
+        type: string
+        required: true
+      maintainer:
+        description: The GitHub login a maintainer's step waits on (the same as issue-triage.yml's).
+        type: string
+        default: soydiloreto
+      central-ref:
+        description: The ref of DiluxOne/.github whose scripts run. Empty (the default) means the very commit this workflow runs from, job.workflow_sha.
+        type: string
+        default: ''
+    secrets:
+      DILUX_BOT_PRIVATE_KEY:
+        required: true
+
+# Nothing from the caller's token: the bot's, below, does the writing.
+permissions: {}
+
+env:
+  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
+  DX_BOT_APP: ${{ vars.DX_BOT_APP || 'dilux-bot' }}
+  DX_BOT_ID: ${{ vars.DX_BOT_ID || '333187390' }}
+
+jobs:
+  update:
+    name: What waits
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    # A bot's label counts (the G1 check's `awaiting-acceptance`), but not
+    # a bot's comment: the board and the mention it writes wait on nobody new.
+    if: inputs.number != '' && !(github.event_name == 'issue_comment' && github.event.comment.user.type == 'Bot')
+    permissions: {}
+    concurrency:
+      group: waiting-${{ github.repository }}-${{ inputs.number }}
+      cancel-in-progress: true
+    steps:
+      - name: dilux-bot token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-issues: write # the board and the mention
+          permission-pull-requests: read
+          permission-checks: read # a failed check of its head
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
+          path: .dx-central
+          persist-credentials: false
+
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+
+      - name: Its board's Waits on row, and the mention
+        id: item
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          NUMBER: ${{ inputs.number }}
+          MAINTAINER: ${{ inputs.maintainer }}
+          SENDER: ${{ github.event.sender.login }}
+        run: |
+          set -euo pipefail
+          python3 .dx-central/scripts/waiting.py update
+          echo "central=$(python3 -c 'import sys; sys.path.insert(0, ".dx-central/scripts"); import org; print(org.CENTRAL)')" >> "$GITHUB_OUTPUT"
+
+      # The view is DiluxOne/.github's: a token for its Actions alone, to
+      # start the rewrite there (one run at a time, the last one wins).
+      - name: dilux-bot token (the view's repository)
+        id: view
+        continue-on-error: true # the daily sweep repairs a view not rewritten
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: .github
+          permission-actions: write # start waiting-digest.yml
+
+      - name: Rewrite the view
+        if: steps.view.outputs.token != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.view.outputs.token }}
+          CENTRAL: ${{ steps.item.outputs.central }}
+        run: gh workflow run waiting-digest.yml --repo "$CENTRAL" --ref main

@@ -12,7 +12,10 @@ name: Issues
 # re-run on its pull requests, the PRD's seal, and the autopilot
 # (issue-triage.yml calls it); the claims (#488, issue-claim.yml): `/claim`
 # and the other commands in comments, the form's checkbox, a person's pull
-# request, and the daily reminders and releases. Most of this repository is a protected path
+# request, and the daily reminders and releases; and what waits on whom
+# (#564, waiting-update.yml): every item's event updates its board's "Waits
+# on" row, mentions the person once, and rewrites the pinned "What waits".
+# Most of this repository is a protected path
 # of policy/autonomy.yml, and an autopilot pull request that touches one is
 # never merged by policy.
 
@@ -91,9 +94,23 @@ jobs:
     secrets:
       DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
 
+  # What waits on whom (#564): on every issue's and pull request's event
+  # (pull_request_target: metadata only, never its code), what the item
+  # waits on now goes on its board, with the action and its URL, the person
+  # is mentioned once on the item, and the pinned "What waits" issue of
+  # DiluxOne/.github is rewritten.
+  waiting:
+    if: github.event_name != 'schedule'
+    permissions: {}
+    uses: DiluxOne/.github/.github/workflows/waiting-update.yml@v7
+    with:
+      number: ${{ format('{0}', github.event.issue.number || github.event.pull_request.number) }}
+    secrets:
+      DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+
   # A person claims an issue (#488): `/claim`, the form's checkbox, and the
   # daily reminders and releases; every release starts the autopilot. The
-  # only job that runs on pull_request_target, and on every comment. It inherits
+  # job that runs on pull_request_target and on every comment beside `waiting`. It inherits
   # the secrets (dilux-bot's key, and the Claude token for the autopilot it
   # starts) and never checks out a pull request's code: on
   # pull_request_target it reads the pull request's metadata only.

@@ -736,7 +736,7 @@ jobs:
   # author_association), and never from a bot.
   command:
     name: A writer's command
-    runs-on: ubuntu-latest # fresh: it holds the key
+    runs-on: ubuntu-latest # fresh: it holds the key (#287)
     timeout-minutes: 5
     if: github.event_name == 'issue_comment' && github.event.action == 'created' && !github.event.issue.pull_request && github.event.comment.user.type != 'Bot' && github.event.sender.type != 'Bot' && (startsWith(github.event.comment.body, '/continue') || startsWith(github.event.comment.body, '/spike'))
     permissions: {}

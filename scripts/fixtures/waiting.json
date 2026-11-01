@@ -1,587 +1,920 @@
 {
- "now": "2026-10-30T09:00:00Z",
- "prs": [
-  {
-   "number": 1,
-   "title": "a person has it",
-   "url": "https://github.com/DiluxOne/diluxone-users-wordpress/pull/1",
-   "createdAt": "2026-10-21T08:00:00Z",
-   "isDraft": false,
-   "author": {
-    "login": "dilux-bot[bot]"
-   },
-   "repository": {
-    "name": "diluxone-users-wordpress",
-    "isPrivate": false
-   },
-   "labels": {
-    "nodes": [
-     {
-      "name": "autopilot"
-     },
-     {
-      "name": "needs-human"
-     }
-    ]
-   },
-   "reviewThreads": {
-    "nodes": []
-   },
-   "commits": {
-    "nodes": [
-     {
-      "commit": {
-       "statusCheckRollup": {
-        "state": "SUCCESS"
-       }
-      }
-     }
-    ]
-   },
-   "closingIssuesReferences": {
-    "nodes": [
-     {
-      "number": 101,
+  "now": "2026-10-30T09:00:00Z",
+  "prs": [
+    {
+      "number": 1,
+      "title": "a person has it",
+      "url": "https://github.com/DiluxOne/diluxone-users-wordpress/pull/1",
+      "createdAt": "2026-10-21T08:00:00Z",
+      "isDraft": false,
+      "author": {
+        "login": "dilux-bot[bot]"
+      },
+      "repository": {
+        "name": "diluxone-users-wordpress",
+        "isPrivate": false
+      },
       "labels": {
-       "nodes": [
-        {
-         "name": "accepted"
-        }
-       ]
-      }
-     }
-    ]
-   },
-   "want": [
-    "needs-human",
-    "the maintainer"
-   ]
-  },
-  {
-   "number": 2,
-   "title": "the autopilot asked",
-   "url": "https://github.com/DiluxOne/diluxone-users-wordpress/pull/2",
-   "createdAt": "2026-10-27T08:00:00Z",
-   "isDraft": true,
-   "author": {
-    "login": "dilux-bot[bot]"
-   },
-   "repository": {
-    "name": "diluxone-users-wordpress",
-    "isPrivate": false
-   },
-   "labels": {
-    "nodes": [
-     {
-      "name": "autopilot"
-     }
-    ]
-   },
-   "reviewThreads": {
-    "nodes": []
-   },
-   "commits": {
-    "nodes": [
-     {
-      "commit": {
-       "statusCheckRollup": {
-        "state": "SUCCESS"
-       }
-      }
-     }
-    ]
-   },
-   "closingIssuesReferences": {
-    "nodes": [
-     {
-      "number": 102,
+        "nodes": [
+          {
+            "name": "autopilot"
+          },
+          {
+            "name": "needs-human"
+          }
+        ]
+      },
+      "reviewThreads": {
+        "nodes": []
+      },
+      "commits": {
+        "nodes": [
+          {
+            "commit": {
+              "statusCheckRollup": {
+                "state": "SUCCESS"
+              }
+            }
+          }
+        ]
+      },
+      "closingIssuesReferences": {
+        "nodes": [
+          {
+            "number": 101,
+            "labels": {
+              "nodes": [
+                {
+                  "name": "accepted"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "want": [
+        "needs-human",
+        "the maintainer"
+      ]
+    },
+    {
+      "number": 2,
+      "title": "the autopilot asked",
+      "url": "https://github.com/DiluxOne/diluxone-users-wordpress/pull/2",
+      "createdAt": "2026-10-27T08:00:00Z",
+      "isDraft": true,
+      "author": {
+        "login": "dilux-bot[bot]"
+      },
+      "repository": {
+        "name": "diluxone-users-wordpress",
+        "isPrivate": false
+      },
       "labels": {
-       "nodes": [
-        {
-         "name": "accepted"
-        }
-       ]
+        "nodes": [
+          {
+            "name": "autopilot"
+          }
+        ]
+      },
+      "reviewThreads": {
+        "nodes": []
+      },
+      "commits": {
+        "nodes": [
+          {
+            "commit": {
+              "statusCheckRollup": {
+                "state": "SUCCESS"
+              }
+            }
+          }
+        ]
+      },
+      "closingIssuesReferences": {
+        "nodes": [
+          {
+            "number": 102,
+            "labels": {
+              "nodes": [
+                {
+                  "name": "accepted"
+                }
+              ]
+            },
+            "comments": {
+              "nodes": [
+                {
+                  "author": {
+                    "__typename": "User",
+                    "login": "someone"
+                  },
+                  "body": "A question?"
+                },
+                {
+                  "author": {
+                    "__typename": "Bot",
+                    "login": "dilux-bot"
+                  },
+                  "body": "<!-- dx-board -->\n**The issue's board**\n\n| Gate | State |\n| --- | --- |\n| Waits on | nobody <!-- dx-waits --> |\n<!-- dx-state v1 {\"waiting\":true} sha256=b566a1066fdfa0297da2908f3d0a32e1c209d9abd3e72855e04757ee85745f88 -->"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "want": [
+        "its question",
+        "the maintainer"
+      ]
+    },
+    {
+      "number": 3,
+      "title": "its issue is not accepted",
+      "url": "https://github.com/DiluxOne/diluxone-users-wordpress/pull/3",
+      "createdAt": "2026-10-28T08:00:00Z",
+      "isDraft": false,
+      "author": {
+        "login": "someone"
+      },
+      "repository": {
+        "name": "diluxone-users-wordpress",
+        "isPrivate": false
+      },
+      "labels": {
+        "nodes": []
+      },
+      "reviewThreads": {
+        "nodes": []
+      },
+      "commits": {
+        "nodes": [
+          {
+            "commit": {
+              "statusCheckRollup": {
+                "state": "SUCCESS"
+              }
+            }
+          }
+        ]
+      },
+      "closingIssuesReferences": {
+        "nodes": [
+          {
+            "number": 103,
+            "labels": {
+              "nodes": []
+            }
+          }
+        ]
+      },
+      "want": [
+        "an acceptance",
+        "the maintainer"
+      ]
+    },
+    {
+      "number": 4,
+      "title": "a check failed",
+      "url": "https://github.com/DiluxOne/diluxone-users-wordpress/pull/4",
+      "createdAt": "2026-10-25T08:00:00Z",
+      "isDraft": false,
+      "author": {
+        "login": "someone"
+      },
+      "repository": {
+        "name": "diluxone-users-wordpress",
+        "isPrivate": false
+      },
+      "labels": {
+        "nodes": []
+      },
+      "reviewThreads": {
+        "nodes": []
+      },
+      "commits": {
+        "nodes": [
+          {
+            "commit": {
+              "statusCheckRollup": {
+                "state": "FAILURE"
+              }
+            }
+          }
+        ]
+      },
+      "closingIssuesReferences": {
+        "nodes": [
+          {
+            "number": 104,
+            "labels": {
+              "nodes": [
+                {
+                  "name": "accepted"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "want": [
+        "a failed check",
+        "its author"
+      ]
+    },
+    {
+      "number": 5,
+      "title": "the autopilot's check failed",
+      "url": "https://github.com/DiluxOne/diluxone-users-wordpress/pull/5",
+      "createdAt": "2026-10-26T08:00:00Z",
+      "isDraft": false,
+      "author": {
+        "login": "dilux-bot[bot]"
+      },
+      "repository": {
+        "name": "diluxone-users-wordpress",
+        "isPrivate": false
+      },
+      "labels": {
+        "nodes": [
+          {
+            "name": "autopilot"
+          }
+        ]
+      },
+      "reviewThreads": {
+        "nodes": []
+      },
+      "commits": {
+        "nodes": [
+          {
+            "commit": {
+              "statusCheckRollup": {
+                "state": "FAILURE"
+              }
+            }
+          }
+        ]
+      },
+      "closingIssuesReferences": {
+        "nodes": [
+          {
+            "number": 105,
+            "labels": {
+              "nodes": [
+                {
+                  "name": "accepted"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "want": [
+        "a failed check",
+        "the autopilot"
+      ]
+    },
+    {
+      "number": 6,
+      "title": "two threads open",
+      "url": "https://github.com/DiluxOne/diluxone-users-wordpress/pull/6",
+      "createdAt": "2026-10-24T08:00:00Z",
+      "isDraft": false,
+      "author": {
+        "login": "someone"
+      },
+      "repository": {
+        "name": "diluxone-users-wordpress",
+        "isPrivate": false
+      },
+      "labels": {
+        "nodes": []
+      },
+      "reviewThreads": {
+        "nodes": [
+          {
+            "isResolved": false
+          },
+          {
+            "isResolved": true
+          },
+          {
+            "isResolved": false
+          }
+        ]
+      },
+      "commits": {
+        "nodes": [
+          {
+            "commit": {
+              "statusCheckRollup": {
+                "state": "SUCCESS"
+              }
+            }
+          }
+        ]
+      },
+      "closingIssuesReferences": {
+        "nodes": [
+          {
+            "number": 106,
+            "labels": {
+              "nodes": [
+                {
+                  "name": "accepted"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "want": [
+        "2 unresolved threads",
+        "its author"
+      ]
+    },
+    {
+      "number": 7,
+      "title": "the autopilot works",
+      "url": "https://github.com/DiluxOne/diluxone-users-wordpress/pull/7",
+      "createdAt": "2026-10-28T20:00:00Z",
+      "isDraft": true,
+      "author": {
+        "login": "dilux-bot[bot]"
+      },
+      "repository": {
+        "name": "diluxone-users-wordpress",
+        "isPrivate": false
+      },
+      "labels": {
+        "nodes": [
+          {
+            "name": "autopilot"
+          }
+        ]
+      },
+      "reviewThreads": {
+        "nodes": []
+      },
+      "commits": {
+        "nodes": [
+          {
+            "commit": {
+              "statusCheckRollup": {
+                "state": "SUCCESS"
+              }
+            }
+          }
+        ]
+      },
+      "closingIssuesReferences": {
+        "nodes": [
+          {
+            "number": 107,
+            "labels": {
+              "nodes": [
+                {
+                  "name": "accepted"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "want": [
+        "the autopilot's work",
+        "the autopilot"
+      ]
+    },
+    {
+      "number": 8,
+      "title": "checks still running",
+      "url": "https://github.com/DiluxOne/diluxone-users-wordpress/pull/8",
+      "createdAt": "2026-10-28T01:00:00Z",
+      "isDraft": false,
+      "author": {
+        "login": "someone"
+      },
+      "repository": {
+        "name": "diluxone-users-wordpress",
+        "isPrivate": false
+      },
+      "labels": {
+        "nodes": []
+      },
+      "reviewThreads": {
+        "nodes": []
+      },
+      "commits": {
+        "nodes": [
+          {
+            "commit": {
+              "statusCheckRollup": {
+                "state": "PENDING"
+              }
+            }
+          }
+        ]
+      },
+      "closingIssuesReferences": {
+        "nodes": [
+          {
+            "number": 108,
+            "labels": {
+              "nodes": [
+                {
+                  "name": "accepted"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "want": [
+        "checks running",
+        "the checks"
+      ]
+    },
+    {
+      "number": 9,
+      "title": "ready, nobody merged it [x] link",
+      "url": "https://github.com/DiluxOne/diluxone-website/pull/9",
+      "createdAt": "2026-10-21T08:00:00Z",
+      "isDraft": false,
+      "author": {
+        "login": "someone"
+      },
+      "repository": {
+        "name": "diluxone-website",
+        "isPrivate": false
+      },
+      "labels": {
+        "nodes": []
+      },
+      "reviewThreads": {
+        "nodes": []
+      },
+      "commits": {
+        "nodes": [
+          {
+            "commit": {
+              "statusCheckRollup": {
+                "state": "SUCCESS"
+              }
+            }
+          }
+        ]
+      },
+      "closingIssuesReferences": {
+        "nodes": [
+          {
+            "number": 109,
+            "labels": {
+              "nodes": [
+                {
+                  "name": "accepted"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "want": [
+        "a person's merge",
+        "the maintainer"
+      ]
+    },
+    {
+      "number": 10,
+      "title": "a private one",
+      "url": "https://github.com/DiluxOne/secret-repo/pull/10",
+      "createdAt": "2026-10-22T08:00:00Z",
+      "isDraft": false,
+      "author": {
+        "login": "someone"
+      },
+      "repository": {
+        "name": "secret-repo",
+        "isPrivate": true
+      },
+      "labels": {
+        "nodes": []
+      },
+      "reviewThreads": {
+        "nodes": []
+      },
+      "commits": {
+        "nodes": [
+          {
+            "commit": {
+              "statusCheckRollup": {
+                "state": "FAILURE"
+              }
+            }
+          }
+        ]
+      },
+      "closingIssuesReferences": {
+        "nodes": [
+          {
+            "number": 110,
+            "labels": {
+              "nodes": [
+                {
+                  "name": "accepted"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "want": [
+        "a failed check",
+        "its author"
+      ]
+    },
+    {
+      "number": 11,
+      "title": "opened today",
+      "url": "https://github.com/DiluxOne/diluxone-users-wordpress/pull/11",
+      "createdAt": "2026-10-30T07:00:00Z",
+      "isDraft": false,
+      "author": {
+        "login": "someone"
+      },
+      "repository": {
+        "name": "diluxone-users-wordpress",
+        "isPrivate": false
+      },
+      "labels": {
+        "nodes": []
+      },
+      "reviewThreads": {
+        "nodes": []
+      },
+      "commits": {
+        "nodes": [
+          {
+            "commit": {
+              "statusCheckRollup": {
+                "state": "SUCCESS"
+              }
+            }
+          }
+        ]
+      },
+      "closingIssuesReferences": {
+        "nodes": [
+          {
+            "number": 111,
+            "labels": {
+              "nodes": [
+                {
+                  "name": "accepted"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "want": [
+        "a person's merge",
+        "the maintainer"
+      ]
+    }
+  ],
+  "issues": [
+    {
+      "__typename": "Issue",
+      "number": 274,
+      "title": "a complete issue nobody accepted yet",
+      "url": "https://github.com/DiluxOne/diluxone-fm/issues/274",
+      "createdAt": "2026-10-30T08:30:00Z",
+      "state": "OPEN",
+      "author": {
+        "login": "ana"
+      },
+      "repository": {
+        "name": "diluxone-fm",
+        "nameWithOwner": "DiluxOne/diluxone-fm",
+        "isPrivate": false
+      },
+      "labels": {
+        "nodes": [
+          {
+            "name": "awaiting-acceptance"
+          }
+        ]
       },
       "comments": {
-       "nodes": [
-        {
-         "author": {
-          "__typename": "User",
-          "login": "someone"
-         },
-         "body": "A question?"
-        },
-        {
-         "author": {
-          "__typename": "Bot",
-          "login": "dilux-bot"
-         },
-         "body": "<!-- dx-board -->\n**The issue's board**\n\n| Gate | State |\n| --- | --- |\n| Waits on | nobody <!-- dx-waits --> |\n<!-- dx-state v1 {\"waiting\":true} sha256=b566a1066fdfa0297da2908f3d0a32e1c209d9abd3e72855e04757ee85745f88 -->"
-        }
-       ]
-      }
-     }
-    ]
-   },
-   "want": [
-    "its question",
-    "the maintainer"
-   ]
-  },
-  {
-   "number": 3,
-   "title": "its issue is not accepted",
-   "url": "https://github.com/DiluxOne/diluxone-users-wordpress/pull/3",
-   "createdAt": "2026-10-28T08:00:00Z",
-   "isDraft": false,
-   "author": {
-    "login": "someone"
-   },
-   "repository": {
-    "name": "diluxone-users-wordpress",
-    "isPrivate": false
-   },
-   "labels": {
-    "nodes": []
-   },
-   "reviewThreads": {
-    "nodes": []
-   },
-   "commits": {
-    "nodes": [
-     {
-      "commit": {
-       "statusCheckRollup": {
-        "state": "SUCCESS"
-       }
-      }
-     }
-    ]
-   },
-   "closingIssuesReferences": {
-    "nodes": [
-     {
-      "number": 103,
+        "nodes": []
+      },
+      "closedByPullRequestsReferences": {
+        "totalCount": 0
+      },
+      "want": [
+        "an acceptance",
+        "the maintainer"
+      ]
+    },
+    {
+      "__typename": "Issue",
+      "number": 275,
+      "title": "an outside contributor's issue, incomplete",
+      "url": "https://github.com/DiluxOne/diluxone-fm/issues/275",
+      "createdAt": "2026-10-29T08:00:00Z",
+      "state": "OPEN",
+      "author": {
+        "login": "ana"
+      },
+      "repository": {
+        "name": "diluxone-fm",
+        "nameWithOwner": "DiluxOne/diluxone-fm",
+        "isPrivate": false
+      },
       "labels": {
-       "nodes": []
-      }
-     }
-    ]
-   },
-   "want": [
-    "an acceptance",
-    "the maintainer"
-   ]
-  },
-  {
-   "number": 4,
-   "title": "a check failed",
-   "url": "https://github.com/DiluxOne/diluxone-users-wordpress/pull/4",
-   "createdAt": "2026-10-25T08:00:00Z",
-   "isDraft": false,
-   "author": {
-    "login": "someone"
-   },
-   "repository": {
-    "name": "diluxone-users-wordpress",
-    "isPrivate": false
-   },
-   "labels": {
-    "nodes": []
-   },
-   "reviewThreads": {
-    "nodes": []
-   },
-   "commits": {
-    "nodes": [
-     {
-      "commit": {
-       "statusCheckRollup": {
-        "state": "FAILURE"
-       }
-      }
-     }
-    ]
-   },
-   "closingIssuesReferences": {
-    "nodes": [
-     {
-      "number": 104,
+        "nodes": [
+          {
+            "name": "incomplete"
+          }
+        ]
+      },
+      "comments": {
+        "nodes": []
+      },
+      "closedByPullRequestsReferences": {
+        "totalCount": 0
+      },
+      "want": [
+        "its PRD",
+        "its author"
+      ]
+    },
+    {
+      "__typename": "Issue",
+      "number": 276,
+      "title": "the triage asked for more",
+      "url": "https://github.com/DiluxOne/diluxone-fm/issues/276",
+      "createdAt": "2026-10-29T08:00:00Z",
+      "state": "OPEN",
+      "author": {
+        "login": "someone"
+      },
+      "repository": {
+        "name": "diluxone-fm",
+        "nameWithOwner": "DiluxOne/diluxone-fm",
+        "isPrivate": false
+      },
       "labels": {
-       "nodes": [
-        {
-         "name": "accepted"
-        }
-       ]
-      }
-     }
-    ]
-   },
-   "want": [
-    "a failed check",
-    "its author"
-   ]
-  },
-  {
-   "number": 5,
-   "title": "the autopilot's check failed",
-   "url": "https://github.com/DiluxOne/diluxone-users-wordpress/pull/5",
-   "createdAt": "2026-10-26T08:00:00Z",
-   "isDraft": false,
-   "author": {
-    "login": "dilux-bot[bot]"
-   },
-   "repository": {
-    "name": "diluxone-users-wordpress",
-    "isPrivate": false
-   },
-   "labels": {
-    "nodes": [
-     {
-      "name": "autopilot"
-     }
-    ]
-   },
-   "reviewThreads": {
-    "nodes": []
-   },
-   "commits": {
-    "nodes": [
-     {
-      "commit": {
-       "statusCheckRollup": {
-        "state": "FAILURE"
-       }
-      }
-     }
-    ]
-   },
-   "closingIssuesReferences": {
-    "nodes": [
-     {
-      "number": 105,
+        "nodes": []
+      },
+      "comments": {
+        "nodes": [
+          {
+            "author": {
+              "__typename": "Bot",
+              "login": "dilux-bot"
+            },
+            "body": "<!-- dx-board -->\n\n| Gate | State |\n| --- | --- |\n| Waits on | nobody <!-- dx-waits --> |\n**The issue's board**\n<!-- dx-state v1 {\"verdict\":\"needs-info\"} sha256=778b37072cc9dcd3f6ceaa5d71ebf1b7887629614d0835ac7af5f2caff267d2f -->"
+          }
+        ]
+      },
+      "closedByPullRequestsReferences": {
+        "totalCount": 0
+      },
+      "want": [
+        "an answer",
+        "its author"
+      ]
+    },
+    {
+      "__typename": "Issue",
+      "number": 277,
+      "title": "claimed, no pull request yet",
+      "url": "https://github.com/DiluxOne/diluxone-fm/issues/277",
+      "createdAt": "2026-10-29T08:00:00Z",
+      "state": "OPEN",
+      "author": {
+        "login": "someone"
+      },
+      "repository": {
+        "name": "diluxone-fm",
+        "nameWithOwner": "DiluxOne/diluxone-fm",
+        "isPrivate": false
+      },
       "labels": {
-       "nodes": [
-        {
-         "name": "accepted"
-        }
-       ]
-      }
-     }
-    ]
-   },
-   "want": [
-    "a failed check",
-    "the autopilot"
-   ]
-  },
-  {
-   "number": 6,
-   "title": "two threads open",
-   "url": "https://github.com/DiluxOne/diluxone-users-wordpress/pull/6",
-   "createdAt": "2026-10-24T08:00:00Z",
-   "isDraft": false,
-   "author": {
-    "login": "someone"
-   },
-   "repository": {
-    "name": "diluxone-users-wordpress",
-    "isPrivate": false
-   },
-   "labels": {
-    "nodes": []
-   },
-   "reviewThreads": {
-    "nodes": [
-     {
-      "isResolved": false
-     },
-     {
-      "isResolved": true
-     },
-     {
-      "isResolved": false
-     }
-    ]
-   },
-   "commits": {
-    "nodes": [
-     {
-      "commit": {
-       "statusCheckRollup": {
-        "state": "SUCCESS"
-       }
-      }
-     }
-    ]
-   },
-   "closingIssuesReferences": {
-    "nodes": [
-     {
-      "number": 106,
+        "nodes": [
+          {
+            "name": "accepted"
+          },
+          {
+            "name": "claimed"
+          }
+        ]
+      },
+      "comments": {
+        "nodes": [
+          {
+            "author": {
+              "__typename": "Bot",
+              "login": "dilux-bot"
+            },
+            "body": "The issue is yours.\n\n<!-- dx-claim {\"login\": \"ana\", \"at\": \"2026-10-28T08:00:00Z\"} -->"
+          }
+        ]
+      },
+      "closedByPullRequestsReferences": {
+        "totalCount": 0
+      },
+      "want": [
+        "their claimed work",
+        "its claimant"
+      ]
+    },
+    {
+      "__typename": "Issue",
+      "number": 278,
+      "title": "accepted, the autopilot's",
+      "url": "https://github.com/DiluxOne/diluxone-fm/issues/278",
+      "createdAt": "2026-10-29T08:00:00Z",
+      "state": "OPEN",
+      "author": {
+        "login": "ana"
+      },
+      "repository": {
+        "name": "diluxone-fm",
+        "nameWithOwner": "DiluxOne/diluxone-fm",
+        "isPrivate": false
+      },
       "labels": {
-       "nodes": [
-        {
-         "name": "accepted"
-        }
-       ]
-      }
-     }
-    ]
-   },
-   "want": [
-    "2 unresolved threads",
-    "its author"
-   ]
-  },
-  {
-   "number": 7,
-   "title": "the autopilot works",
-   "url": "https://github.com/DiluxOne/diluxone-users-wordpress/pull/7",
-   "createdAt": "2026-10-28T20:00:00Z",
-   "isDraft": true,
-   "author": {
-    "login": "dilux-bot[bot]"
-   },
-   "repository": {
-    "name": "diluxone-users-wordpress",
-    "isPrivate": false
-   },
-   "labels": {
-    "nodes": [
-     {
-      "name": "autopilot"
-     }
-    ]
-   },
-   "reviewThreads": {
-    "nodes": []
-   },
-   "commits": {
-    "nodes": [
-     {
-      "commit": {
-       "statusCheckRollup": {
-        "state": "SUCCESS"
-       }
-      }
-     }
-    ]
-   },
-   "closingIssuesReferences": {
-    "nodes": [
-     {
-      "number": 107,
+        "nodes": [
+          {
+            "name": "accepted"
+          },
+          {
+            "name": "autopilot"
+          }
+        ]
+      },
+      "comments": {
+        "nodes": []
+      },
+      "closedByPullRequestsReferences": {
+        "totalCount": 0
+      },
+      "want": null
+    },
+    {
+      "__typename": "Issue",
+      "number": 279,
+      "title": "a person has it",
+      "url": "https://github.com/DiluxOne/diluxone-fm/issues/279",
+      "createdAt": "2026-10-29T08:00:00Z",
+      "state": "OPEN",
+      "author": {
+        "login": "ana"
+      },
+      "repository": {
+        "name": "diluxone-fm",
+        "nameWithOwner": "DiluxOne/diluxone-fm",
+        "isPrivate": false
+      },
       "labels": {
-       "nodes": [
-        {
-         "name": "accepted"
-        }
-       ]
-      }
-     }
-    ]
-   },
-   "want": [
-    "the autopilot's work",
-    "the autopilot"
-   ]
-  },
-  {
-   "number": 8,
-   "title": "checks still running",
-   "url": "https://github.com/DiluxOne/diluxone-users-wordpress/pull/8",
-   "createdAt": "2026-10-28T01:00:00Z",
-   "isDraft": false,
-   "author": {
-    "login": "someone"
-   },
-   "repository": {
-    "name": "diluxone-users-wordpress",
-    "isPrivate": false
-   },
-   "labels": {
-    "nodes": []
-   },
-   "reviewThreads": {
-    "nodes": []
-   },
-   "commits": {
-    "nodes": [
-     {
-      "commit": {
-       "statusCheckRollup": {
-        "state": "PENDING"
-       }
-      }
-     }
-    ]
-   },
-   "closingIssuesReferences": {
-    "nodes": [
-     {
-      "number": 108,
+        "nodes": [
+          {
+            "name": "needs-human"
+          },
+          {
+            "name": "accepted"
+          }
+        ]
+      },
+      "comments": {
+        "nodes": []
+      },
+      "closedByPullRequestsReferences": {
+        "totalCount": 0
+      },
+      "want": [
+        "needs-human",
+        "the maintainer"
+      ]
+    },
+    {
+      "__typename": "Issue",
+      "number": 280,
+      "title": "the autopilot asked on the issue",
+      "url": "https://github.com/DiluxOne/diluxone-fm/issues/280",
+      "createdAt": "2026-10-29T08:00:00Z",
+      "state": "OPEN",
+      "author": {
+        "login": "ana"
+      },
+      "repository": {
+        "name": "diluxone-fm",
+        "nameWithOwner": "DiluxOne/diluxone-fm",
+        "isPrivate": false
+      },
       "labels": {
-       "nodes": [
-        {
-         "name": "accepted"
-        }
-       ]
-      }
-     }
-    ]
-   },
-   "want": [
-    "checks running",
-    "the checks"
-   ]
-  },
-  {
-   "number": 9,
-   "title": "ready, nobody merged it [x] link",
-   "url": "https://github.com/DiluxOne/diluxone-website/pull/9",
-   "createdAt": "2026-10-21T08:00:00Z",
-   "isDraft": false,
-   "author": {
-    "login": "someone"
-   },
-   "repository": {
-    "name": "diluxone-website",
-    "isPrivate": false
-   },
-   "labels": {
-    "nodes": []
-   },
-   "reviewThreads": {
-    "nodes": []
-   },
-   "commits": {
-    "nodes": [
-     {
-      "commit": {
-       "statusCheckRollup": {
-        "state": "SUCCESS"
-       }
-      }
-     }
-    ]
-   },
-   "closingIssuesReferences": {
-    "nodes": [
-     {
-      "number": 109,
+        "nodes": [
+          {
+            "name": "accepted"
+          }
+        ]
+      },
+      "comments": {
+        "nodes": [
+          {
+            "author": {
+              "__typename": "Bot",
+              "login": "dilux-bot"
+            },
+            "body": "<!-- dx-board -->\n\n| Gate | State |\n| --- | --- |\n| Waits on | nobody <!-- dx-waits --> |\n**The issue's board**\n<!-- dx-state v1 {\"waiting\":true} sha256=b566a1066fdfa0297da2908f3d0a32e1c209d9abd3e72855e04757ee85745f88 -->"
+          }
+        ]
+      },
+      "closedByPullRequestsReferences": {
+        "totalCount": 0
+      },
+      "want": [
+        "its question",
+        "the maintainer"
+      ]
+    },
+    {
+      "__typename": "Issue",
+      "number": 281,
+      "title": "claimed, and its pull request is open",
+      "url": "https://github.com/DiluxOne/diluxone-fm/issues/281",
+      "createdAt": "2026-10-29T08:00:00Z",
+      "state": "OPEN",
+      "author": {
+        "login": "ana"
+      },
+      "repository": {
+        "name": "diluxone-fm",
+        "nameWithOwner": "DiluxOne/diluxone-fm",
+        "isPrivate": false
+      },
       "labels": {
-       "nodes": [
-        {
-         "name": "accepted"
-        }
-       ]
-      }
-     }
-    ]
-   },
-   "want": [
-    "a person's merge",
-    "the maintainer"
-   ]
-  },
-  {
-   "number": 10,
-   "title": "a private one",
-   "url": "https://github.com/DiluxOne/secret-repo/pull/10",
-   "createdAt": "2026-10-22T08:00:00Z",
-   "isDraft": false,
-   "author": {
-    "login": "someone"
-   },
-   "repository": {
-    "name": "secret-repo",
-    "isPrivate": true
-   },
-   "labels": {
-    "nodes": []
-   },
-   "reviewThreads": {
-    "nodes": []
-   },
-   "commits": {
-    "nodes": [
-     {
-      "commit": {
-       "statusCheckRollup": {
-        "state": "FAILURE"
-       }
-      }
-     }
-    ]
-   },
-   "closingIssuesReferences": {
-    "nodes": [
-     {
-      "number": 110,
+        "nodes": [
+          {
+            "name": "accepted"
+          },
+          {
+            "name": "claimed"
+          }
+        ]
+      },
+      "comments": {
+        "nodes": [
+          {
+            "author": {
+              "__typename": "Bot",
+              "login": "dilux-bot"
+            },
+            "body": "The issue is yours.\n\n<!-- dx-claim {\"login\": \"ana\", \"at\": \"2026-10-28T08:00:00Z\"} -->"
+          }
+        ]
+      },
+      "closedByPullRequestsReferences": {
+        "totalCount": 1
+      },
+      "want": null
+    },
+    {
+      "__typename": "Issue",
+      "number": 9,
+      "title": "a private issue",
+      "url": "https://github.com/DiluxOne/secret-repo/issues/9",
+      "createdAt": "2026-10-29T08:00:00Z",
+      "state": "OPEN",
+      "author": {
+        "login": "ana"
+      },
+      "repository": {
+        "name": "secret-repo",
+        "nameWithOwner": "DiluxOne/secret-repo",
+        "isPrivate": true
+      },
       "labels": {
-       "nodes": [
-        {
-         "name": "accepted"
-        }
-       ]
-      }
-     }
-    ]
-   },
-   "want": [
-    "a failed check",
-    "its author"
-   ]
-  },
-  {
-   "number": 11,
-   "title": "opened today",
-   "url": "https://github.com/DiluxOne/diluxone-users-wordpress/pull/11",
-   "createdAt": "2026-10-30T07:00:00Z",
-   "isDraft": false,
-   "author": {
-    "login": "someone"
-   },
-   "repository": {
-    "name": "diluxone-users-wordpress",
-    "isPrivate": false
-   },
-   "labels": {
-    "nodes": []
-   },
-   "reviewThreads": {
-    "nodes": []
-   },
-   "commits": {
-    "nodes": [
-     {
-      "commit": {
-       "statusCheckRollup": {
-        "state": "SUCCESS"
-       }
-      }
-     }
-    ]
-   },
-   "closingIssuesReferences": {
-    "nodes": [
-     {
-      "number": 111,
-      "labels": {
-       "nodes": [
-        {
-         "name": "accepted"
-        }
-       ]
-      }
-     }
-    ]
-   },
-   "want": [
-    "a person's merge",
-    "the maintainer"
-   ]
-  }
- ]
+        "nodes": [
+          {
+            "name": "awaiting-acceptance"
+          }
+        ]
+      },
+      "comments": {
+        "nodes": []
+      },
+      "closedByPullRequestsReferences": {
+        "totalCount": 0
+      },
+      "want": [
+        "an acceptance",
+        "the maintainer"
+      ]
+    }
+  ]
 }

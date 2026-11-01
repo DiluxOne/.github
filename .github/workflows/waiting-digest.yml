@@ -1,14 +1,20 @@
 name: What waits
 
-# Not reusable. Every day, and by hand (#479): every open pull request of the
-# organisation older than a day, what blocks it (needs-human, the
-# autopilot's question, an acceptance, a failed check, an unresolved thread,
-# a draft, the checks, a person's merge) and on whom it waits, in one issue
-# of this repository, labelled `run:waiting` and pinned, whose body is
-# rewritten every run (scripts/waiting.py): the place the maintainer reads,
-# instead of a comment on each pull request. The issue is public, so a
-# private repository's pull requests are counted, never named. A search that
-# fails fails the run and leaves the last body as it was.
+# Not reusable. On every issue's and pull request's event of the
+# organisation (waiting-update.yml starts it, #564), every day as a sweep
+# that repairs a missed event, and by hand (#479): every open issue and pull
+# request of the organisation that waits on someone, what blocks it
+# (needs-human, the autopilot's question, an acceptance, a failed check, an
+# unresolved thread, a draft, the checks, a person's merge; for an issue, its
+# PRD, an answer or a claimed work of its author or claimant), grouped by
+# the person it waits on, one line per action with its full URL, in one
+# issue of this repository, labelled `run:waiting` and pinned, whose body is
+# rewritten every run (scripts/waiting.py): the place the maintainer reads.
+# The issue is public, so a private repository's items are counted, never
+# named, and nobody is mentioned in it: the one mention goes on the item
+# itself (waiting-update.yml). A search that fails fails the run and leaves
+# the last body as it was. One run at a time, the newest: an event storm
+# cancels the runs it makes stale.
 
 on:
   schedule:
@@ -20,6 +26,7 @@ permissions:
 
 concurrency:
   group: waiting-digest
+  cancel-in-progress: true
 
 jobs:
   digest:
@@ -47,11 +54,12 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           OWNER: ${{ github.repository_owner }}
+          MAINTAINER: soydiloreto # the login a maintainer's step waits on, as issue-triage.yml's `maintainer`
         run: |
           set -euo pipefail
           python3 scripts/waiting.py > "$RUNNER_TEMP/waiting.md"
           gh label create "run:waiting" --repo "$GITHUB_REPOSITORY" --color C5DEF5 --force \
-            --description "What waits, every day (waiting-digest.yml): one pinned issue, its body rewritten" >/dev/null
+            --description "What waits on whom (waiting-digest.yml): one pinned issue, its body rewritten" >/dev/null
           number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label "run:waiting" --limit 1 --json number --jq '.[0].number // empty')
           if [ -z "$number" ]; then
             url=$(gh issue create --repo "$GITHUB_REPOSITORY" --title "What waits" --label "run:waiting" --body-file "$RUNNER_TEMP/waiting.md")
