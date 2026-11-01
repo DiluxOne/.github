@@ -1680,9 +1680,15 @@ def dependabot_ecosystems(root, extra):
 
 def render_dependabot(template, ecosystems, extra):
     """The template's text with only these ecosystems' entries, each with its
-    directories and the repository's `ignore` (repos.yml) added."""
+    directories and the repository's `ignore` (repos.yml) added. A kind's
+    template may keep fewer ecosystems than the organisation's default
+    (ai-agent-plugin's: its actions only, #552): one the repository has and
+    the template does not keep is left out, unless repos.yml adds to it."""
     head, entries = dependabot_entries(template)
-    unknown = sorted(set(ecosystems) - {e for e, _ in entries})
+    kept = {e for e, _ in entries}
+    with open(os.path.join(CENTRAL, DEPENDABOT_DEFAULT), encoding="utf-8") as fh:
+        known = {e for e, _ in dependabot_entries(fh.read())[1]}
+    unknown = sorted(e for e in set(ecosystems) - kept if e not in known or e in extra)
     if unknown:
         raise ValueError(f"the template has no entry for {', '.join(unknown)}")
     blocks = []
@@ -2211,8 +2217,13 @@ def dependabot_test(check, conf, labels, block):
         text = open(os.path.join(CENTRAL, path), encoding="utf-8").read()
         data = parse_yaml(text)
         updates = data.get("updates") or []
-        check(f"dependabot {path}: version 2, one entry per ecosystem the organisation's repositories use",
-              data.get("version") == 2 and sorted(u.get("package-ecosystem") for u in updates) == sorted(every), updates)
+        ecos = sorted(u.get("package-ecosystem") for u in updates)
+        if path == DEPENDABOT_DEFAULT or path == "kinds/wordpress-plugin/dependabot.yml":
+            check(f"dependabot {path}: version 2, one entry per ecosystem the organisation's repositories use",
+                  data.get("version") == 2 and ecos == sorted(every), updates)
+        else:
+            check(f"dependabot {path}: version 2, one entry for each ecosystem the kind keeps, github-actions among them",
+                  data.get("version") == 2 and "github-actions" in ecos and set(ecos) <= set(every) and len(set(ecos)) == len(ecos), updates)
         # C2: daily, no cooldown, majors included, one pull request per ecosystem.
         check(f"C2 (#178) {path}: every ecosystem checked daily, with no cooldown and nothing ignored",
               all((u.get("schedule") or {}).get("interval") == "daily" and "cooldown" not in u and "ignore" not in u for u in updates), updates)
@@ -2227,6 +2238,15 @@ def dependabot_test(check, conf, labels, block):
         check(f"dependabot {path}: every entry has one `directories:` line to fill in",
               all(sum(1 for l in lines if DIRECTORIES_RE.match(l)) == 1 for _, lines in dependabot_entries(text)[1]), "")
         check(f"dependabot {path}: written with every ecosystem at the root, it is the template itself", render_dependabot(text, every, {}) == text, render_dependabot(text, every, {}))
+    agent = open(os.path.join(CENTRAL, "kinds/ai-agent-plugin/dependabot.yml"), encoding="utf-8").read()
+    got = parse_yaml(render_dependabot(agent, dependabot_ecosystems({"package.json", ".claude-plugin"}, {}), {}))
+    check("dependabot (#552): a plugin for coding agents with a package.json gets its actions alone (what it bundles is its own to pin)",
+          [u["package-ecosystem"] for u in got["updates"]] == ["github-actions"], got)
+    try:
+        render_dependabot(agent, dependabot_ecosystems({"package.json"}, {"npm": {"directories": ["/web"]}}), {"npm": {"directories": ["/web"]}})
+        check("dependabot (#552): repos.yml adding to an ecosystem the kind does not keep stops it", False, "no error")
+    except ValueError:
+        check("dependabot (#552): repos.yml adding to an ecosystem the kind does not keep stops it", True)
     plugin = open(os.path.join(CENTRAL, "kinds/wordpress-plugin/dependabot.yml"), encoding="utf-8").read()
     check("dependabot: a kind's template, else the default", [dependabot_template(k) for k in ("wordpress-plugin", None, "nope", "../kinds/wordpress-plugin")]
           == ["kinds/wordpress-plugin/dependabot.yml", DEPENDABOT_DEFAULT, DEPENDABOT_DEFAULT, DEPENDABOT_DEFAULT], "")

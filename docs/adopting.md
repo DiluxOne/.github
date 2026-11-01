@@ -11,8 +11,10 @@ of its gates, the workflows of its battery) lives in a pack under
 `kind:` in its `.github/review-policy.yml`. Every rejection a review sends
 back becomes one entry in the kind's `rules.yml`, with fixtures, never a new
 script or workflow. [`kinds/README.md`](../kinds/README.md) explains the model,
-how to add a rule and how to add a kind; the one kind today is
-[`wordpress-plugin`](../kinds/wordpress-plugin/).
+how to add a rule and how to add a kind; the kinds today are
+[`wordpress-plugin`](../kinds/wordpress-plugin/) and
+[`ai-agent-plugin`](../kinds/ai-agent-plugin/), a plugin for coding agents
+(#552).
 
 ## Another organisation
 
@@ -133,7 +135,7 @@ The organisation holds what GitHub lets it hold: the issue Types (Feature, Bug, 
 - [`labels.yml`](../labels.yml): every label the workflows and people use (`accepted` among them).
 - [`repos.yml`](../repos.yml): the merge and security settings, the files GitHub reads only from the repository (`.github/CODEOWNERS`), which public Project of the organisation each repository's accepted issues land on, and which design system its screens follow ([`design-systems/`](../design-systems/)).
 - [`agents-block.md`](../agents-block.md): the opening of every `AGENTS.md`, the organisation's rules for any agent, between `dx:org` markers.
-- The Dependabot templates: [`kinds/wordpress-plugin/dependabot.yml`](../kinds/wordpress-plugin/dependabot.yml) for a plugin, [`policy/dependabot.default.yml`](../policy/dependabot.default.yml) for a repository without a kind (or of a kind without one). Every dependency stays on its latest version: each ecosystem is checked daily, with no cooldown, majors included, and its updates come grouped in one pull request (`ci(deps)` for the actions, `build(deps)` or `build(deps-dev)` for the packages and images). A repository's `.github/dependabot.yml` is its kind's template with only the ecosystems it has: github-actions always, npm with a `package.json` at its root, composer with a `composer.json`, docker with a `Dockerfile`. What it adds (other directories, an `ignore`) goes in `repos.yml` (`dependabot`), never in its own file: the drift check reports any difference, and `dependabot` brings it back.
+- The Dependabot templates: [`kinds/wordpress-plugin/dependabot.yml`](../kinds/wordpress-plugin/dependabot.yml) for a WordPress plugin, [`kinds/ai-agent-plugin/dependabot.yml`](../kinds/ai-agent-plugin/dependabot.yml) for a plugin for coding agents (its actions only), [`policy/dependabot.default.yml`](../policy/dependabot.default.yml) for a repository without a kind (or of a kind without one). Every dependency stays on its latest version: each ecosystem is checked daily, with no cooldown, majors included, and its updates come grouped in one pull request (`ci(deps)` for the actions, `build(deps)` or `build(deps-dev)` for the packages and images). A repository's `.github/dependabot.yml` is its kind's template with only the ecosystems it has: github-actions always, npm with a `package.json` at its root, composer with a `composer.json`, docker with a `Dockerfile`. What it adds (other directories, an `ignore`) goes in `repos.yml` (`dependabot`), never in its own file: the drift check reports any difference, and `dependabot` brings it back.
 
 ```bash
 python3 scripts/sync-repos.py all --dry-run          # what would change, everywhere

@@ -1,0 +1,50 @@
+# The ai-agent-plugin kind: a plugin for coding agents (Claude Code, Codex,
+# Copilot, Cursor, Gemini, OpenCode...), its hooks, skills, agents and
+# commands, published in the organisation's catalog, diluxone-plugins-ai
+# (#552). A repository opts in with `kind: ai-agent-plugin` in its
+# .github/review-policy.yml (repos.yml says it too). What each key means:
+# kinds/README.md. The tools, their manifests and how each installs:
+# tools.yml beside this file.
+
+name: Plugin for coding agents
+
+# No other name: the kind is new.
+aliases: []
+
+# The reusable workflows that make up this kind's battery, in
+# .github/workflows/. A repository's caller names them
+# (workflow-templates/plugin-checks-ai.yml); they read their rules and
+# settings from this pack.
+workflows:
+  - plugin-checks-ai.yml
+
+# How detection recognises a repository of this kind (#191,
+# scripts/detect.py): one of `any-files`, the manifests of tools.yml, from
+# the repository's root. Detection only proposes: repos.yml says what a
+# repository is. A plugin runs on the machine of whoever installs it, a
+# client the user controls: the `front` role (rules/front-no-credentials.md).
+detect:
+  roles: [front]
+  any-files:
+    - .claude-plugin/plugin.json
+    - .codex-plugin/plugin.json
+    - .cursor-plugin/plugin.json
+    - gemini-extension.json
+
+# The engines this kind's checks run, and the language adapter of each.
+adapters:
+  - engine: scripts/review-rules.php
+    rules: rules.yml
+    languages: [text]
+  - engine: scripts/agent-manifests.py
+    rules: tools.yml
+    languages: [json]
+
+# No `settings`: nothing a repository can add to; the tools are tools.yml's.
+
+# What the autopilot adds to every change of this kind, beside what the Spec
+# names (#341, scripts/autopilot.py): one instruction per line, for its work
+# prompt.
+autopilot:
+  - "The changelog: this change's line in a file of its own, `changelog.d/<the issue's number>.md`, one bullet (`* …`); never in CHANGELOG.md itself, which the release writes. None for a change no user sees (tests, tooling, CI)."
+  - "The manifests: every tool's manifest the plugin ships (kinds/ai-agent-plugin/tools.yml: .claude-plugin/plugin.json, .codex-plugin/plugin.json, .cursor-plugin/plugin.json, plugin.json, gemini-extension.json) keeps the same name, version and description: a change to one (a version bumped, a description reworded) is made to every one of them in the same commit (scripts/agent-manifests.py check fails the pull request otherwise)."

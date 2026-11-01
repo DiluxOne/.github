@@ -1,0 +1,117 @@
+# The coding agents a plugin of the ai-agent-plugin kind can be wired into,
+# as data (#552): for each tool, the manifest a plugin ships for it and the
+# fields that hold its name, version and description, and how a person
+# installs it. scripts/agent-manifests.py reads this file and nothing else
+# about the tools, so a new tool is one entry here.
+#
+#   name        the tool, for people
+#   manifest    the file, from the plugin's root, that declares the plugin to
+#               the tool; a plugin declares the tool when it ships it. None
+#               (null): the tool has no manifest of its own to check.
+#   fields      the JSON keys of the manifest that hold the plugin's name,
+#               version and description; `check` fails when two manifests a
+#               plugin ships disagree on one of them, and names both files
+#   install     catalog: a person adds a catalog (a marketplace) and installs
+#               the plugin from it; the organisation's is diluxone-plugins-ai.
+#               instructions: the tool installs from the plugin's repository
+#               by a command its README gives (`how`)
+#   catalog     with `install: catalog`: `path`, the catalog's file in
+#               diluxone-plugins-ai, and `entry`, the form of an entry's
+#               `source` that points to a plugin's own repository ({repo} is
+#               DiluxOne/<name>); or `shares`, another tool whose catalog file
+#               this tool reads too, so the plugin is listed once for both
+#   how         what a person runs, for the catalog's README ({repo} as above,
+#               {plugin} the plugin's name, {catalog} the catalog's name)
+#   source      the documentation this entry was checked against, read on the
+#               date beside it. A tool whose documentation shows no catalog a
+#               person can add from a GitHub repository stays `instructions`.
+
+tools:
+  claude-code:
+    name: Claude Code
+    manifest: .claude-plugin/plugin.json
+    fields:
+      name: name
+      version: version
+      description: description
+    install: catalog
+    catalog:
+      path: .claude-plugin/marketplace.json
+      entry:
+        source: github
+        repo: "{repo}"
+    how: "/plugin marketplace add DiluxOne/diluxone-plugins-ai, then /plugin install {plugin}@{catalog}"
+    source: https://code.claude.com/docs/en/plugin-marketplaces (2026-11-01)
+
+  codex:
+    name: Codex
+    # Codex reads a root plugin.json (Agent Plugins) first; this one is its
+    # own, which it still reads, and the one plugins of the kind ship.
+    manifest: .codex-plugin/plugin.json
+    fields:
+      name: name
+      version: version
+      description: description
+    install: catalog
+    catalog:
+      path: .agents/plugins/marketplace.json
+      # Codex documents no `github` source for an entry: a Git URL is its
+      # form for a plugin at a repository's root.
+      entry:
+        source: url
+        url: "https://github.com/{repo}.git"
+    how: "codex plugin marketplace add DiluxOne/diluxone-plugins-ai, then install {plugin} from the {catalog} marketplace"
+    source: https://developers.openai.com/codex/plugins/build (2026-11-01)
+
+  copilot:
+    name: GitHub Copilot CLI
+    # The portable Agent Plugins manifest, at the plugin's root; Copilot CLI
+    # reads .claude-plugin/plugin.json too, so a plugin that ships only
+    # Claude Code's is declared to Copilot as well.
+    manifest: plugin.json
+    fields:
+      name: name
+      version: version
+      description: description
+    install: catalog
+    catalog:
+      # "Copilot CLI also looks for the marketplace.json file in the
+      # .claude-plugin/ directory": one file serves both.
+      shares: claude-code
+    how: "copilot plugin marketplace add DiluxOne/diluxone-plugins-ai, then copilot plugin install {plugin}@{catalog}"
+    source: https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-plugin-reference (2026-11-01)
+
+  cursor:
+    name: Cursor
+    manifest: .cursor-plugin/plugin.json
+    fields:
+      name: name
+      version: version
+      description: description
+    # Its .cursor-plugin/marketplace.json lists the plugins of one
+    # repository by path; a catalog of other repositories is a team
+    # marketplace (paid plans) or Cursor's own, by submission.
+    install: instructions
+    how: "clone https://github.com/{repo} into ~/.cursor/plugins/local/{plugin}"
+    source: https://cursor.com/docs/reference/plugins (2026-11-01)
+
+  gemini:
+    name: Gemini CLI
+    manifest: gemini-extension.json
+    fields:
+      name: name
+      version: version
+      description: description
+    install: instructions
+    how: "gemini extensions install https://github.com/{repo}"
+    source: https://github.com/google-gemini/gemini-cli/blob/main/docs/extensions/reference.md (2026-11-01)
+
+  opencode:
+    name: OpenCode
+    # Its plugins are JavaScript modules it loads from .opencode/plugins/ or
+    # from an npm package its configuration names: no manifest of its own,
+    # and a plugin's package.json is often its tooling's, not the plugin's.
+    manifest: null
+    install: instructions
+    how: "the plugin's README, OpenCode section"
+    source: https://opencode.ai/docs/plugins (2026-11-01)
