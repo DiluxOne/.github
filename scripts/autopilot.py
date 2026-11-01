@@ -202,6 +202,9 @@ def which_lane(policy, issue, run, repository, autopilot_var):
     a person accepted, under `human-issue`. (None, why) when neither holds:
     nobody accepted it, so nothing starts. A sub-issue a person accepted
     themselves is theirs, not the delegated lane's (#189). Pure."""
+    # An Adopt issue (#562) is carried out by org-adopt.yml, never written.
+    if autonomy.adopt_lane_of(policy, issue):
+        return None, "an Adopt issue is carried out by org-adopt.yml (the adopt lane), not by the autopilot"
     if autonomy.lane_of(issue)[0] == autonomy.DELEGATED and person_accepted(issue):
         return LANE, "a person accepted it"
     ok, why = autonomy.lane_accepts(policy, issue, run, repository, autopilot_var)
@@ -1872,6 +1875,8 @@ Clamp the value in Sum::add.
     sub = gql(["accepted"], [("accepted", "User", "soydiloreto")], author="someone", body=prd)
     sub["parent"] = {"number": 189, "state": "OPEN", "repository": {"nameWithOwner": "DiluxOne/.github"}, "labels": {"nodes": []}, "timelineItems": {"nodes": []}}
     check("#189 lane: a sub-issue a person accepted is worked under human-issue", which_lane(pol, sub, None, "DiluxOne/x", "")[0], LANE)
+    adopt_issue = gql(["accepted", "lane:adopt"], [("accepted", "User", "soydiloreto")], author="dilux-bot[bot]", body=prd)
+    check("#562 lane: an Adopt issue a maintainer accepted is never the autopilot's", which_lane(pol, adopt_issue, None, "DiluxOne/.github", "")[0], None)
     check("#84 lane: nobody accepted it, nothing starts", which_lane(pol, gql(["bug"], [], author="someone", body=prd), None, "DiluxOne/x", "")[0], None)
     check("#84 lane: a bot's `accepted` is nobody's acceptance", which_lane(pol, gql(["accepted"], [("accepted", "Bot", "dilux-bot")], author="someone", body=prd), None, "DiluxOne/x", "")[0], None)
     check("#84 lane: the lane's label added by a person accepts nothing", which_lane(pol, gql(["lane:bugfix-reproduced"], [("lane:bugfix-reproduced", "User", "someone")]), run42, "DiluxOne/x", "")[0], None)

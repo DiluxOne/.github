@@ -6,21 +6,25 @@ name: Repositories in step
 # issue and a pull request of the org-sync lane, which the autonomy policy
 # accepts and merges when they hold only what main holds here
 # (scripts/sync-repos.py labels and files), and opens the sub-issue of every
-# accepted decision a repository now matches (scripts/decision.py sync), and
-# proposes, as a platform lane issue and pull request, the repositories
-# repos.yml does not list yet (scripts/detect.py propose; a person merges),
+# accepted decision a repository now matches (scripts/decision.py sync),
+# opens "Adopt <repository>" for each repository repos.yml does not list yet,
+# with the kind detection proposes (scripts/detect.py adopt-issues, #562: a
+# maintainer's `accepted` is the only step, org-adopt.yml does the rest),
 # and opens "Release X.Y.Z" where a version milestone X.Y.Z closed
 # (scripts/milestones.py open; accepting it stays a person's decision).
 # What a run cannot do on its own
 # (settings, rulesets, the Dependabot file, the workflow callers) stays a
-# maintainer's run, and the check below reports it.
+# maintainer's run (`sync-repos.py adopt` for a new one), and the check below
+# reports it.
 #
 # Then it compares every repository of the organisation with
 # what this repository keeps for all of them (labels.yml, repos.yml,
 # Dependabot's security updates among its settings, agents-block.md,
 # .github/dependabot.yml against its kind's template, the workflow callers
 # against workflow-templates/, the kind's "own checks" ruleset, the rulesets
-# the organisation's cover, and a way to reproduce a bug, #377),
+# the organisation's cover, and a way to reproduce a bug, #377; the custom
+# property the organisation's rulesets cover, the code security
+# configuration, the Project, #562),
 # through scripts/sync-repos.py check, and changes nothing.
 # One issue here, "Repositories out of step", lists what differs: opened or
 # updated when something does, closed when nothing does.
@@ -66,7 +70,7 @@ jobs:
 
       # A failure in one repository is reported and the others go on; the
       # check below still runs and lists what is left.
-      - name: Sync (labels, shared files, decisions, new repositories, releases)
+      - name: Sync (labels, shared files, decisions, Adopt issues, releases)
         if: github.ref == 'refs/heads/main' && steps.sync.outputs.token != ''
         continue-on-error: true
         env:
@@ -80,7 +84,7 @@ jobs:
           python3 scripts/sync-repos.py labels || rc=1
           python3 scripts/sync-repos.py files || rc=1
           python3 scripts/decision.py sync || rc=1
-          python3 scripts/detect.py propose || rc=1
+          python3 scripts/detect.py adopt-issues || rc=1
           python3 scripts/milestones.py open || rc=1
           exit "$rc"
 
@@ -96,8 +100,12 @@ jobs:
           permission-issues: read
           permission-metadata: read
           # The organisation's rulesets, to tell which of a repository's own
-          # they cover. Read-only.
+          # they cover, and its code security configurations; the custom
+          # property the rulesets cover, and each repository's attached
+          # configuration (#562). Read-only.
           permission-organization-administration: read
+          permission-organization-custom-properties: read
+          permission-administration: read
 
       - name: Compare
         env:

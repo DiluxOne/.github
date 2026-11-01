@@ -157,10 +157,9 @@ lanes:
     accept: policy
     origin:
       app: dilux-bot
-      # org-drift.yml: the daily run's proposal of the new repositories
-      # for repos.yml (scripts/detect.py, #191); repos.yml is high risk,
-      # so a person still merges it.
-      workflows: [runner-image.yml, org-drift.yml]
+      # The new repositories are no longer this lane's: each is an "Adopt
+      # <repository>" issue, the `adopt` lane below (#562).
+      workflows: [runner-image.yml]
     repositories: [".github"]
     evidence: The workflow run that opened the issue, with its smoke test.
     # Also the limits of gate G8 (#142): a revert dilux-bot opens when a
@@ -291,6 +290,42 @@ lanes:
           paths: [".github/dependabot.yml"]
     repositories: ["*"]
     evidence: The merged commit of DiluxOne/.github the issue names, and the run's fingerprint, which the pull request's files must give again.
+    merge: {max-risk: high, max-complexity: low}
+
+  # Adopting a repository (#562): the daily drift check opens "Adopt
+  # <repository>" (scripts/detect.py adopt-issues) for a repository of the
+  # organisation repos.yml lacks, with the entry detection proposes as a
+  # YAML block, which anyone may correct and a maintainer may open by hand
+  # (the "Adopt a repository" form). A maintainer's `accepted` is the
+  # acceptance (`accept: human`: nothing accepts it by policy) and the only
+  # step: org-adopt.yml opens the pull request that adds that entry to
+  # repos.yml, which merges on its own (auto-merge.yml, autonomy.py
+  # lane-merge, adopt_accepts()) only when all of this holds, read from
+  # GitHub:
+  #   - in this repository only; the issue carries lane:adopt and its
+  #     marker (<!-- dx-adopt: <repository> -->), its title is "Adopt
+  #     <repository>", and its block is one entry for that repository;
+  #   - the last to add `accepted` was a person with the admin or maintain
+  #     role here, and the issue's text was not edited after that;
+  #   - the pull request: opened by the lane's App from `branch`, modifying
+  #     repos.yml alone, only adding lines, and its repos.yml is its base's
+  #     with that one new entry in `repos:`, equal to the issue's block,
+  #     and holds to its schema (repos-config.py);
+  #   - the review does not block, its description is true, within `merge`.
+  # Once it merges, org-adopt.yml runs `sync-repos.py adopt --repo NAME`.
+  # The autopilot never works such an issue (scripts/autopilot.py).
+  # `max-risk: high` because repos.yml's floor is high; the checks above,
+  # not the rating, are what hold it.
+  adopt:
+    description: The pull request that adds to repos.yml the entry of an "Adopt <repository>" issue a maintainer accepted.
+    accept: human
+    type: Task
+    origin:
+      app: dilux-bot
+      adopt: accepted-by-a-maintainer
+      branch: "chore/{issue}-adopt"
+    repositories: [".github"]
+    evidence: The maintainer's `accepted` on the Adopt issue, its block unedited since, and the pull request's repos.yml its base's with that entry alone.
     merge: {max-risk: high, max-complexity: low}
 
   # A security patch's carry (#287): once a patch released from

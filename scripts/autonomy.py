@@ -939,6 +939,122 @@ def dependabot_problem(path, head_text, facts, kind, extra, root):
     return None if head_text == want else f"{path} is not its kind's template at the commit named, for the ecosystems its head has"
 
 
+def adopt_lane_of(policy, issue):
+    """The adopt lane an issue's lane:<name> label names (#562), or None."""
+    for n in ((issue.get("labels") or {}).get("nodes") or []):
+        name = (n.get("name") or "")
+        if name.startswith("lane:") and ((((policy.get("lanes") or {}).get(name[len("lane:"):]) or {}).get("origin") or {}).get("adopt")):
+            return name[len("lane:"):]
+    return None
+
+
+def adopt_module():
+    spec = importlib.util.spec_from_file_location("detect", os.path.join(HERE, "detect.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def adopt_issue(issue, repository, maintainer):
+    """(name, entry, why) of an Adopt issue a maintainer accepted (#562):
+    the repository it names and the entry its block proposes, as it was when
+    `accepted` was added; (None, None, why) when it is not one."""
+    if repository.lower() != CENTRAL.lower():
+        return None, None, f"an Adopt issue is {CENTRAL}'s alone"
+    name, entry = adopt_module().adopt_of(issue.get("body") or "")
+    if not name or entry is None:
+        return None, None, "the issue carries no dx-adopt marker and one entry for the repository it names"
+    if issue.get("title") != f"Adopt {name}":
+        return None, None, f"its title is not \"Adopt {name}\""
+    event = last_label_event(issue, "accepted")
+    actor = (event or {}).get("actor") or {}
+    if not event or event.get("__typename") != "LabeledEvent" or actor.get("__typename") != "User" or not maintainer(actor.get("login") or ""):
+        return None, None, "the last to add `accepted` was not a person with the admin or maintain role"
+    if "lastEditedAt" not in issue:
+        return None, None, "the issue's edit history could not be read"
+    if issue.get("lastEditedAt") and (not event.get("createdAt") or issue["lastEditedAt"] > event["createdAt"]):
+        return None, None, "the issue's text was edited after it was accepted"
+    return name, entry, f"accepted by {actor.get('login')}"
+
+
+def adopt_accepts(policy, issue, repository, autopilot_var, facts):
+    """(True, why) when the adopt lane's pull request is the issue's entry
+    and nothing else (#562); (False, why) otherwise. Pure: `facts` holds
+    maintainer(login), pr (its author and branch), change() (its files, with
+    repos.yml at its base and head) and problems(conf), repos-config.py's."""
+    if (autopilot_var or "").strip().lower() == "off":
+        return False, "the organisation's DX_AUTOPILOT is off"
+    if not policy.get("autopilot", False):
+        return False, "the autopilot is off in the policy"
+    lane_name = adopt_lane_of(policy, issue)
+    if not lane_name:
+        return False, "the issue is no adopt lane's"
+    lane = policy["lanes"][lane_name]
+    # A maintainer accepts its issue (`accept: human`): the lane only merges.
+    if not lane.get("enabled", True):
+        return False, f"the lane {lane_name} is off"
+    if repository.split("/", 1)[-1] not in (lane.get("repositories") or []):
+        return False, f"the lane {lane_name} does not cover {repository}"
+    origin = lane.get("origin") or {}
+    want = lane.get("type")
+    if want and (issue.get("issueType") or {}).get("name") != want:
+        return False, f"the issue's Type is not {want}"
+    name, entry, why = adopt_issue(issue, repository, facts["maintainer"])
+    if not name:
+        return False, why
+    pr = facts.get("pr") or {}
+    app = origin.get("app", "")
+    if login((pr.get("author") or {}).get("login")) != login(app):
+        return False, f"the pull request was not opened by {app}"
+    branch = (origin.get("branch") or "").format(issue=issue.get("number"))
+    if not branch or pr.get("headRefName") != branch:
+        return False, f"its branch is not the lane's ({branch or 'none named'})"
+    change = facts["change"]() if facts.get("change") else None
+    if not change:
+        return False, "what the pull request changes could not be read"
+    if [(f.get("path"), f.get("status")) for f in change.get("files") or []] != [("repos.yml", "modified")]:
+        return False, "it changes more than repos.yml, or does not modify it"
+    base_text, head_text = (change.get("base") or {}).get("repos.yml"), (change.get("head") or {}).get("repos.yml")
+    if base_text is None or head_text is None:
+        return False, "repos.yml at its base or head could not be read"
+    import difflib
+    ops = {op for op, *_ in difflib.SequenceMatcher(None, base_text.split("\n"), head_text.split("\n"), autojunk=False).get_opcodes()}
+    if ops - {"equal", "insert"}:
+        return False, "repos.yml changes lines of its base, not only adds"
+    try:
+        base, head = parse_text(base_text), parse_text(head_text)
+    except ValueError:
+        return False, "repos.yml does not parse"
+    if not isinstance(base, dict) or not isinstance(head, dict) or not isinstance(head.get("repos"), dict):
+        return False, "repos.yml is not a mapping with `repos:`"
+    if name in (base.get("repos") or {}):
+        return False, f"{name} is already in repos.yml"
+    rest = dict(head, repos={k: v for k, v in head["repos"].items() if k != name})
+    if rest != base or head["repos"].get(name) != entry:
+        return False, f"repos.yml is not its base with {name}'s entry, as the issue proposes it, alone"
+    found = facts["problems"](head)
+    if found:
+        return False, f"repos.yml does not hold to its schema: {found[0]}"
+    return True, f"lane {lane_name}: {name}'s entry, as the Adopt issue {why} proposes it, and nothing else"
+
+
+def adopt_merge(policy, issue, repository, autopilot_var, facts, review):
+    """(True, why) when the adopt lane's pull request merges on its own."""
+    ok, why = adopt_accepts(policy, issue, repository, autopilot_var, facts)
+    if not ok:
+        return False, why
+    if review.get("blocking") != "false":
+        return False, "the review is blocking"
+    if review.get("description_ok") != "true":
+        return False, "the description does not match the code"
+    caps = policy["lanes"][adopt_lane_of(policy, issue)].get("merge") or {}
+    for key, cap in (("risk", caps.get("max-risk", "none")), ("complexity", caps.get("max-complexity", "none"))):
+        level = review.get(key) or ""
+        if level not in LEVELS or cap not in LEVELS or level == "none" or LEVELS.index(level) > LEVELS.index(cap):
+            return False, f"{key} {level or 'unknown'} is above the lane's {cap}"
+    return True, f"merges by policy: {why}, risk {review.get('risk')}, complexity {review.get('complexity')}"
+
+
 def sync_lane_of(policy, issue):
     """The sync lane an issue's lane:<name> label names, or None."""
     for n in ((issue.get("labels") or {}).get("nodes") or []):
@@ -979,12 +1095,12 @@ def sync_module():
 ISSUE_QUERY = """query($o: String!, $n: String!, $i: Int!) {
   repository(owner: $o, name: $n) {
     issue(number: $i) {
-      number body lastEditedAt authorAssociation author { login } issueType { name }
+      number title body lastEditedAt authorAssociation author { login } issueType { name }
       labels(first: 50) { nodes { name } }
       timelineItems(itemTypes: [LABELED_EVENT, UNLABELED_EVENT, PARENT_ISSUE_ADDED_EVENT], last: 100) {
         nodes {
           __typename
-          ... on LabeledEvent { label { name } actor { __typename login } }
+          ... on LabeledEvent { createdAt label { name } actor { __typename login } }
           ... on UnlabeledEvent { label { name } actor { __typename login } }
           ... on ParentIssueAddedEvent { createdAt }
         }
@@ -1099,6 +1215,28 @@ def sync_from_env(repository, issue_only):
             cache[key] = load_json(env["LANE_ORG"]) if env.get("LANE_ORG") else read_org(sha, contents)
         return cache[key]
     return {"issue_only": issue_only, "pr": pr, "change": change, "org": org}
+
+
+def maintainer_of(repository):
+    """login -> whether that person has the admin or maintain role in the
+    repository, read from GitHub."""
+    def has(name):
+        out = gh_bytes("api", f"repos/{repository}/collaborators/{name}/permission", "--jq", ".role_name")
+        return (out or "").strip() in ("admin", "maintain")
+    return has
+
+
+def adopt_from_env(repository):
+    """What the adopt lane reads (#562), from GitHub, each read once."""
+    sync = sync_from_env(repository, False)
+
+    def problems(conf):
+        spec = importlib.util.spec_from_file_location("repos_config", os.path.join(HERE, "repos-config.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        root = os.path.join(HERE, "..")
+        return mod.problems(conf, mod.dirs(os.path.join(root, "kinds")), mod.dirs(os.path.join(root, "design-systems")))
+    return {"maintainer": maintainer_of(repository), "pr": sync["pr"], "change": sync["change"], "problems": problems}
 
 
 def carry_from_env(repository, pr=None):
@@ -1234,7 +1372,7 @@ def self_test():
     check("#488 claims: a repository lowers a limit, never raises it",
           [merge(org, {"claims": {"release-days": 5}})["claims"]["release-days"], merge(org, {"claims": {"release-days": 50}})["claims"]["release-days"]], [5, 10])
     check("#488 claims: an unknown key or a day count that is not a number", [problems({**org, "claims": {"x": 1}}) != [], problems({**org, "claims": {"remind-days": "7"}}) != []], [True, True])
-    check("the organisation's policy has the seven lanes", sorted(org.get("lanes", {})), ["bugfix-reproduced", "delegated", "human-issue", "org-sync", "platform", "release", "security-carry"])
+    check("the organisation's policy has the eight lanes", sorted(org.get("lanes", {})), ["adopt", "bugfix-reproduced", "delegated", "human-issue", "org-sync", "platform", "release", "security-carry"])
     # The security-carry lane (#287).
     pol_c = merge(org, {})
     lane_c = pol_c["lanes"]["security-carry"]
@@ -1692,6 +1830,64 @@ def self_test():
            merges(mech_case("dependabot", {".github/dependabot.yml": dependabot}, main={"repos.yml": json.dumps({"repos": {"diluxone-offload-wordpress": dict(entry, dependabot={})}})}))[0]),
           (False, False, False))
 
+    # #562 C5: the adopt lane merges the pull request that adds the Adopt
+    # issue's entry to repos.yml, and nothing else.
+    detect = adopt_module()
+    adopt_entry_ = {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"], "roles": ["back", "front"]}]}
+    adopt_body = detect.adopt_body("diluxone-new", ["wordpress-plugin"], detect.packs())
+    with open(os.path.join(HERE, "..", "repos.yml"), encoding="utf-8") as fh:
+        repos_base = fh.read()
+    repos_head = detect.with_entries(repos_base, [detect.entry_text("diluxone-new", adopt_entry_)])
+    spec = importlib.util.spec_from_file_location("repos_config", os.path.join(HERE, "repos-config.py"))
+    rc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rc)
+    rc_problems = lambda conf: rc.problems(conf, rc.dirs(os.path.join(HERE, "..", "kinds")), rc.dirs(os.path.join(HERE, "..", "design-systems")))  # noqa: E731
+
+    def adopt_case(body=adopt_body, title="Adopt diluxone-new", actor=("User", "soydiloreto"), edited=None, head=repos_head, files=None,
+                   pr_author="dilux-bot[bot]", branch="chore/61-adopt", labels=("lane:adopt", "accepted"), typ="Task"):
+        i = {"number": 61, "title": title, "author": {"login": "dilux-bot[bot]"}, "body": body, "lastEditedAt": edited, "issueType": {"name": typ},
+             "labels": {"nodes": [{"name": n} for n in labels]},
+             "timelineItems": {"nodes": [{"__typename": "LabeledEvent", "createdAt": "2026-11-01T10:00:00Z", "label": {"name": "accepted"},
+                                          "actor": {"__typename": actor[0], "login": actor[1]}}]}}
+        change = {"files": files or [{"status": "modified", "path": "repos.yml"}], "base": {"repos.yml": repos_base}, "head": {"repos.yml": head}}
+        facts = {"maintainer": lambda who: who == "soydiloreto", "pr": {"author": {"login": pr_author}, "headRefName": branch},
+                 "change": lambda: change, "problems": rc_problems}
+        return i, facts
+
+    def adopted(case, repository=CENTRAL, var="", p=pol):
+        return adopt_accepts(p, case[0], repository, var, case[1])
+    check("#562 C5: the adopt lane: a maintainer accepts its issue, nothing accepts it by policy", (org["lanes"]["adopt"]["accept"], org["lanes"]["adopt"]["repositories"]), ("human", [".github"]))
+    ok, why = adopted(adopt_case())
+    check("#562 C5: a pull request adding only the Adopt issue's entry passes", (ok, why), (True, why))
+    check("#562 C5: and merges by policy, green", adopt_merge(pol, adopt_case()[0], CENTRAL, "", adopt_case()[1], green)[0], True)
+    check("#562 C5: nor when the lane is switched off", adopted(adopt_case(), p=merge(org, {"lanes": {"adopt": {"enabled": False}}}))[0], False)
+    edited_block = adopt_body.replace("{kinds: [", "{project: 16, kinds: [")
+    check("#562 C5: the block as a maintainer corrected it before accepting is the entry",
+          adopted(adopt_case(body=edited_block, edited="2026-11-01T09:00:00Z",
+                             head=detect.with_entries(repos_base, [detect.entry_text("diluxone-new", dict(adopt_entry_, project=16))])))[0], True)
+    other = detect.with_entries(repos_base, [detect.entry_text("diluxone-new", adopt_entry_), "  diluxone-more: {kinds: []}"])
+    for name, case in (("another entry beside it", adopt_case(head=other)),
+                       ("an entry other than the issue's", adopt_case(head=detect.with_entries(repos_base, [detect.entry_text("diluxone-new", {"kinds": []})]))),
+                       ("another line of repos.yml changed", adopt_case(head=repos_head.replace("has_wiki: false", "has_wiki: true"))),
+                       ("a comment changed", adopt_case(head=repos_head.replace("# Merging: squash only", "# Merging: any"))),
+                       ("another file", adopt_case(files=[{"status": "modified", "path": "repos.yml"}, {"status": "modified", "path": "policy/autonomy.yml"}])),
+                       ("an entry out of the schema", adopt_case(body=adopt_body.replace("{kinds: [", "{owner: me, kinds: ["),
+                                                                 head=detect.with_entries(repos_base, [detect.entry_text("diluxone-new", dict(adopt_entry_, owner="me"))]))),
+                       ("the text edited after it was accepted", adopt_case(edited="2026-11-01T11:00:00Z")),
+                       ("`accepted` added by someone without the role", adopt_case(actor=("User", "someone"))),
+                       ("`accepted` added by a bot", adopt_case(actor=("Bot", "soydiloreto"))),
+                       ("a title that is not the marker's", adopt_case(title="Adopt diluxone-other")),
+                       ("a pull request someone else opened", adopt_case(pr_author="someone")),
+                       ("another branch", adopt_case(branch="chore/61-mine")),
+                       ("no lane:adopt", adopt_case(labels=("accepted",))),
+                       ("a Type other than Task", adopt_case(typ="Feature"))):
+        check(f"#562 C5: the adopt lane refuses {name}", adopted(case)[0], False)
+    check("#562 C5: never outside DiluxOne/.github, nor with DX_AUTOPILOT off",
+          (adopted(adopt_case(), repository="DiluxOne/x"), adopted(adopt_case(), var="off")[0]), ((False, adopted(adopt_case(), repository="DiluxOne/x")[1]), False))
+    check("#562 C5: nor one the review blocks or rates above the lane's complexity",
+          (adopt_merge(pol, adopt_case()[0], CENTRAL, "", adopt_case()[1], dict(green, blocking="true"))[0],
+           adopt_merge(pol, adopt_case()[0], CENTRAL, "", adopt_case()[1], dict(green, complexity="medium"))[0]), (False, False))
+
     # #84: the lane a reproduction hands a bug to, asked before its issue exists.
     check("lane-open: bugfix-reproduced is open everywhere by default", lane_open(pol, "bugfix-reproduced", "DiluxOne/x", "")[0], True)
     check("lane-open: not with DX_AUTOPILOT off", lane_open(pol, "bugfix-reproduced", "DiluxOne/x", "off")[0], False)
@@ -1811,6 +2007,15 @@ def main():
             # that was released, nothing more and nothing less.
             try:
                 ok, why = carry_merge(policy, issue, repository, var, carry_from_env(repository, sync_from_env(repository, False)["pr"]), review)
+            except Exception as exc:  # any failure is a person's merge, said as a failure
+                print(f"the decision failed: {exc}")
+                return 3
+            print(why)
+            return 0 if ok else 1
+        if adopt_lane_of(policy, issue):
+            # An Adopt issue's pull request (#562): its entry, and nothing else.
+            try:
+                ok, why = adopt_merge(policy, issue, repository, var, adopt_from_env(repository), review)
             except Exception as exc:  # any failure is a person's merge, said as a failure
                 print(f"the decision failed: {exc}")
                 return 3
