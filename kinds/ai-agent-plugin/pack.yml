@@ -18,6 +18,17 @@ aliases: []
 workflows:
   - plugin-checks-ai.yml
 
+# What a repository of this kind requires of its own jobs, beside the
+# organisation's pipeline: a repository ruleset named "own checks"
+# (scripts/sync-repos.py own-checks), from the check runs of its last merged
+# pull request whose job is one of `jobs` ("checks / Manifests of every
+# tool"). One that exists is never rewritten: a repository adds its own
+# suites to it by hand (DAW's verify, mutations and behavioral).
+own-checks:
+  callers-of: [plugin-checks-ai.yml]
+  jobs: [checks]
+  skip: []
+
 # How detection recognises a repository of this kind (#191,
 # scripts/detect.py): one of `any-files`, the manifests of tools.yml, from
 # the repository's root. Detection only proposes: repos.yml says what a

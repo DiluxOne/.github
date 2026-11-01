@@ -1,0 +1,8 @@
+{
+  "name": "Plugin checks, coding agents (DiluxOne)",
+  "description": "The checks of a plugin for coding agents from DiluxOne/.github: its manifests for every tool agree, and the kind's review rules; the organisation's required workflow does the conventions and the review.",
+  "iconName": "octicon check",
+  "categories": [
+    "Code quality"
+  ]
+}
