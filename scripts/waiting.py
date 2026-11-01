@@ -35,8 +35,10 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import org  # noqa: E402  the organisation's App, from org.yml (#568)
 MARKER = "<!-- dx-waiting -->"
-BOT_LOGINS = ("dilux-bot", "dilux-bot[bot]", "app/dilux-bot")
+BOT_LOGINS = (org.APP, org.BOT, f"app/{org.APP}")
 MAINTAINER, AUTHOR, AUTOPILOT, CHECKS = "the maintainer", "its author", "the autopilot", "the checks"
 ORDER = (MAINTAINER, AUTHOR, AUTOPILOT, CHECKS)
 DAY = datetime.timedelta(days=1)

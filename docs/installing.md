@@ -29,7 +29,7 @@ What it leaves out keeps the engine's default: `policy/` (the review and autonom
 Then, what no pull request can do (the installer prints it with each URL):
 
 1. Organisation secrets: `DILUX_BOT_PRIVATE_KEY` (its App's key) and the Claude token.
-2. Organisation variables: `DILUX_BOT_CLIENT_ID` (its App's client ID), and `DX_BOT_LOGIN`, `DX_BOT_APP` and `DX_BOT_ID` (its App's login, slug and bot user id), so the workflows recognise its App where they would recognise dilux-bot ([workflows](workflows.md#organisation-secrets-and-variables)).
+2. Organisation variables: `DILUX_BOT_CLIENT_ID` (its App's client ID), and `DX_BOT_LOGIN`, `DX_BOT_APP` and `DX_BOT_ID` (its App's login, slug and bot user id), so the workflows recognise its App; no workflow names one, and a workflow that reads them stops while one is unset ([workflows](workflows.md#organisation-secrets-and-variables)).
 3. An organisation ruleset requiring `<Org>/.github/.github/workflows/org-pull-request.yml` on every repository's default branch.
 
 ## Optional: private runners and the merge queue

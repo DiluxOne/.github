@@ -2221,7 +2221,7 @@ Clamp the value in Sum::add.
                here_fix.get("permissions"), here_fix.get("secrets"), mine in cond(here_fix), cond(here_fix) == cond(org_fix).replace(theirs, mine)),
               ("./.github/workflows/autopilot.yml", "review", "fix", "main", {"contents": "read", "pull-requests": "read"}, "inherit", True, True))
         clauses = ["github.event_name == 'pull_request'", "needs.review.outputs.blocking == 'true'", "contains(github.event.pull_request.labels.*.name, 'autopilot')",
-                   "github.event.pull_request.user.login == 'dilux-bot[bot]'", "github.event.action != 'edited'"]
+                   "github.event.pull_request.user.login == vars.DX_BOT_LOGIN", "github.event.action != 'edited'"]
         check("#504 C2: no round here for another author's pull request, one without the label, a review that does not block, or an edit",
               ([c for c in clauses if c not in cond(here_fix)], [c for c in clauses if c not in cond(org_fix)], " || " in cond(here_fix)), ([], [], False))
         check("#504 C3: every other repository's round is as it was, and never runs here",

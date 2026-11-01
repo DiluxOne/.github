@@ -67,7 +67,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: dilux-bot token (read, every repository)
+      - name: App token (read, every repository)
         id: read
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -107,7 +107,7 @@ jobs:
 
       # The plan carries numbers only: the repository's name comes from its
       # id, masked before anything prints it when the repository is private.
-      - name: dilux-bot token (metadata, every repository)
+      - name: App token (metadata, every repository)
         id: meta
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -123,7 +123,7 @@ jobs:
           ITEM: ${{ toJSON(matrix.item) }}
         run: python3 scripts/revert.py locate
 
-      - name: dilux-bot token (re-run, this repository)
+      - name: App token (re-run, this repository)
         id: rerun
         if: matrix.item.kind == 'rerun'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -135,7 +135,7 @@ jobs:
           permission-actions: write
           permission-pull-requests: read
 
-      - name: dilux-bot token (revert, this repository)
+      - name: App token (revert, this repository)
         id: revert
         if: matrix.item.kind == 'revert'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0

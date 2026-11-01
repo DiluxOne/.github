@@ -47,6 +47,9 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import org  # noqa: E402  the organisation's App, from org.yml (#568)
+
 # The makers whose models sign as co-authors, and how to tell them: an
 # address of theirs, or a name that is the model's and nothing else
 # ("Claude", "Claude Opus 5.5", "GitHub Copilot"), never a person who shares
@@ -114,7 +117,7 @@ ENTRY_RE = re.compile(rf"^\s*[-*]\s*@(?P<login>{LOGIN}):\s*(?P<kind>co-author|su
 COMMAND_RE = re.compile(rf"^\s*/(?P<cmd>coauthor|uncoauthor)(?P<who>(?:\s+@{LOGIN})+)\s*$", re.I)
 NOREPLY_RE = re.compile(r"^(?:\d+\+)?(?P<login>[^@+]+)@users\.noreply\.github\.com$", re.I)
 # The organisation's own bots by login, whatever the API says of them.
-BOTS = {"dilux-bot", "dependabot", "github-actions", "renovate"}
+BOTS = {org.APP, "dependabot", "github-actions", "renovate"} - {""}
 
 
 def entry_line(e):

@@ -17,7 +17,8 @@
 # Environment: VERDICT (JSON: category, layer, exists_in_pro, duplicate_of), REPLY
 # and SUMMARY (the public text; an empty reply posts a plain one), PRIVATE
 # (true in a private repository: a security report stays as the issue), NUMBER,
-# MAINTAINER, MODEL, COST (optional), GITHUB_REPOSITORY, GH_TOKEN; AUTHOR (the
+# MAINTAINER (who a security report mentions; else org.yml `maintainers`),
+# MODEL, COST (optional), GITHUB_REPOSITORY, GH_TOKEN; AUTHOR (the
 # issue's author), SECURITY_REPO and SECURITY_TOKEN (optional). A verdict
 # with no category labels the issue needs-triage and stops.
 #
@@ -139,7 +140,11 @@ act() {
     move=yes
     reply="Thanks for reporting this. Security reports are handled in private: this issue is being moved where only the maintainers can see it, and a private security advisory is opened for it, with you credited and invited to follow it there. Please do not post more details here."
   fi
-  if [ "$category" = security ]; then reply="$reply"$'\n\n'"@$MAINTAINER"; fi
+  if [ "$category" = security ]; then
+    # The caller's maintainer, else org.yml's maintainers (#568).
+    local who=${MAINTAINER:-$(python3 "$(dirname "${BASH_SOURCE[0]}")/org.py" maintainers 2>/dev/null || true)}
+    [ -z "$who" ] || reply="$reply"$'\n\n'"$(printf '@%s ' $who | sed 's/ $//')"
+  fi
   # The record is public too: only the checked duplicate goes in it.
   record=$(jq -c --arg cost "${COST:-}" --arg summary "${SUMMARY:-}" --arg dup "$dup" '{category, exists_in_pro: (.exists_in_pro == true), duplicate_of: (if $dup == "" then null else ($dup | tonumber) end), summary: $summary, cost: $cost}' <<<"$VERDICT")
   local intake=""
@@ -242,10 +247,12 @@ if [ "${1:-}" = "--test" ]; then
   set +e; ( set -e; LOCK_FAILS=1 VERDICT='{"category":"security"}' REPLY=x SUMMARY=s NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m act >/dev/null 2>&1 ); rc=$?; set -e
   if [ "$rc" = 0 ]; then echo "ok   #311 a lock that fails is said, and the run goes on"; else echo "FAIL #311 a lock that fails ends the run"; fail=1; fi
   wf="$(dirname "$0")/../.github/workflows/issue-triage.yml"
-  if [ "$(awk '/id: sectoken/{s=1} s&&/permission-contents: write/{n++; s=0} /^      - name:/&&!/dilux-bot token \(this repository and the security one\)/{s=0} END{print n+0}' "$wf")" = 2 ] && [ "$(grep -c 'id: sectoken' "$wf")" = 2 ]; then echo "ok   #311 both security tokens can transfer an issue (issues and contents write)"; else echo "FAIL #311 a security token lacks contents: write, so transferIssue is refused"; fail=1; fi
+  if [ "$(awk '/id: sectoken/{s=1} s&&/permission-contents: write/{n++; s=0} /^      - name:/&&!/App token \(this repository and the security one\)/{s=0} END{print n+0}' "$wf")" = 2 ] && [ "$(grep -c 'id: sectoken' "$wf")" = 2 ]; then echo "ok   #311 both security tokens can transfer an issue (issues and contents write)"; else echo "FAIL #311 a security token lacks contents: write, so transferIssue is refused"; fail=1; fi
   MOVE_FAILS=1 VERDICT='{"category":"security"}' REPLY=x SUMMARY=s AUTHOR=alice SECURITY_REPO=o/sec SECURITY_TOKEN=t t "#287 a move that fails locks it and asks for a private report" "issue lock 7 .*--reason off_topic"
   PRIVATE=true VERDICT='{"category":"security"}' REPLY=x SUMMARY=s t "#194 in a private repository a security report is a Bug" "api -X PATCH repos/o/r/issues/7 -f type=Bug"
   PRIVATE=true VERDICT='{"category":"security"}' REPLY="report it privately" SUMMARY=s t "#194 and the reply says the issue is the report" "issue comment 7 .*this issue is the report.*@boss"
+  : > "$log"; ( PRIVATE=true VERDICT='{"category":"security"}' REPLY="report it privately" SUMMARY=s NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER="" MODEL=m act >/dev/null 2>&1 ) || true
+  if grep -q "issue comment 7 .*@$(python3 "$(dirname "${BASH_SOURCE[0]}")/org.py" maintainers | head -n 1)" "$log"; then echo "ok   #568 without a maintainer given, org.yml's are mentioned"; else echo "FAIL #568 without a maintainer given, org.yml's are mentioned"; fail=1; fi
   : > "$log"; if ( PRIVATE=true VERDICT='{"category":"security"}' REPLY="report it privately" SUMMARY=s NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m act >/dev/null 2>&1; grep -qE "issue lock|issue comment .*report it privately" "$log" ); then echo "FAIL #194 nor locked, nor sent to private reporting"; fail=1; else echo "ok   #194 nor locked, nor sent to private reporting"; fi
   # #352: the layer the defect shows in, as a label the reproduction reads.
   VERDICT='{"category":"bug_unconfirmed","layer":"browser"}' REPLY=x SUMMARY=s t "#352 a browser bug gets layer:browser" "issue edit 7 --repo o/r --add-label layer:browser"

@@ -165,7 +165,7 @@ def plan(title, number, nxt, kind, release, inputs, central_path):
         return {"ok": False, "version": version, "why": f"the caller of `{release['workflow']}` has no `{e.args[0]}` input, which `kinds/{kind}/pack.yml` needs to prepare the release"}
     except ValueError as e:
         return {"ok": False, "version": version, "why": str(e)}
-    where = release.get("publishes-to") or "where the kind publishes"
+    where = org.publishes_to(release.get("publishes-to"), kind) or "where the kind publishes"
     branch = f"chore/{number}-release-{version.replace('.', '-')}"
     pr_title = f"chore(release): {version}"
     body = f"""## 📝 What changes

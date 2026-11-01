@@ -54,7 +54,7 @@ jobs:
 
       # Every repository the App is installed on, to write what the sync
       # brings: labels, and the shared files as an issue and a pull request.
-      - name: dilux-bot token (sync, every repository)
+      - name: App token (sync, every repository)
         id: sync
         if: github.ref == 'refs/heads/main'
         continue-on-error: true # without it the check below still runs
@@ -89,7 +89,7 @@ jobs:
           exit "$rc"
 
       # Every repository the App is installed on, read-only, for the check.
-      - name: dilux-bot token (read, every repository)
+      - name: App token (read, every repository)
         id: read
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -112,7 +112,7 @@ jobs:
           GH_TOKEN: ${{ steps.read.outputs.token }}
         run: python3 scripts/sync-repos.py check --report "$RUNNER_TEMP/drift.md"
 
-      - name: dilux-bot token (issues, this repository)
+      - name: App token (issues, this repository)
         id: write
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:

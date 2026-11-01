@@ -44,6 +44,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import org  # noqa: E402  the organisation's App, from org.yml (#568)
 import importlib.util  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location("issue_schema", os.path.join(HERE, "issue-schema.py"))
@@ -223,7 +224,7 @@ def ensure_branch(repo):
             raise
     tree = gh("-X", "POST", f"repos/{repo}/git/trees", "--input", "-", data={"tree": [{
         "path": "README.md", "mode": "100644", "type": "blob",
-        "content": "# Receipts\n\nSeals and receipts of this repository's issues, written by dilux-bot (DiluxOne/.github, scripts/receipts.py). Nobody else writes here, and nothing here is deleted or rewritten.\n"}]})
+        "content": "# Receipts\n\nSeals and receipts of this repository's issues, written by " + org.APP + " (" + org.CENTRAL + ", scripts/receipts.py). Nobody else writes here, and nothing here is deleted or rewritten.\n"}]})
     commit = gh("-X", "POST", f"repos/{repo}/git/commits", "--input", "-", data={"message": "Receipts begin", "tree": tree["sha"], "parents": []})
     try:
         gh("-X", "POST", f"repos/{repo}/git/refs", "--input", "-", data={"ref": f"refs/heads/{BRANCH}", "sha": commit["sha"]})

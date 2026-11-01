@@ -105,6 +105,7 @@ jobs:
       - run: bash scripts/weekly-failure.sh --test
       - run: bash scripts/config-overlay.sh --test
       - run: python3 scripts/settings.py --test
+      - run: python3 scripts/settings.py org-free
       - run: bash scripts/review-brief.sh --test
       - run: bash scripts/local-review.sh --test
       - run: python3 scripts/policy.py --test
@@ -267,7 +268,7 @@ jobs:
     # Only dilux-bot's own pull requests, and only for a new commit (an edit
     # of the description keeps the review's verdict and must not spend a
     # round).
-    if: always() && github.event_name == 'pull_request' && github.repository == 'DiluxOne/.github' && needs.review.outputs.blocking == 'true' && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == 'dilux-bot[bot]' && github.event.action != 'edited'
+    if: always() && github.event_name == 'pull_request' && github.repository == 'DiluxOne/.github' && needs.review.outputs.blocking == 'true' && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && github.event.action != 'edited'
     # The agent's jobs read the repository, and its pull requests for
     # next-version.py in `make pre-pr`, with the job's own token (#287, #537).
     permissions:

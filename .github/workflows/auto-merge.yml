@@ -136,9 +136,9 @@ permissions:
 # organisation's variables DX_BOT_LOGIN, DX_BOT_APP and DX_BOT_ID, or
 # DiluxOne's dilux-bot when it sets none.
 env:
-  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
-  DX_BOT_APP: ${{ vars.DX_BOT_APP || 'dilux-bot' }}
-  DX_BOT_ID: ${{ vars.DX_BOT_ID || '333187390' }}
+  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN }}
+  DX_BOT_APP: ${{ vars.DX_BOT_APP }}
+  DX_BOT_ID: ${{ vars.DX_BOT_ID }}
   # How the bot merges (#451): where the repository has a merge queue
   # (DX_MERGE_QUEUE), it queues the pull request and the queue's own merge
   # method holds (GitHub refuses one given beside it); elsewhere, a squash.
@@ -155,9 +155,9 @@ jobs:
   # network but the machine's. A unit test's lane issue runs nothing here.
   repro:
     name: The reproduction test, again (no secrets)
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')
     # The lane's branch, by dilux-bot: the route always gives GitHub's runner.
-    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 45
     permissions:
       contents: read
@@ -249,14 +249,14 @@ jobs:
 
   decide:
     name: Auto-merge decision
-    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 5
     # After the optional `repro` job, skipped for every other pull request
     # (#257, scripts/needs-chain.py).
     needs: repro
     if: "!cancelled() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository"
     steps:
-      - name: dilux-bot token
+      - name: App token
         id: bot
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -435,9 +435,9 @@ jobs:
 
       # A revert's issue gets a comment when the revert waits for a person:
       # a token of its own, since that needs issues: write.
-      - name: dilux-bot token (a revert's issue)
+      - name: App token (a revert's issue)
         id: revert-bot
-        if: contains(github.event.pull_request.labels.*.name, 'revert') && github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && startsWith(github.event.pull_request.head.ref, 'revert/') && steps.autopilot.outputs.handled != 'true'
+        if: contains(github.event.pull_request.labels.*.name, 'revert') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && startsWith(github.event.pull_request.head.ref, 'revert/') && steps.autopilot.outputs.handled != 'true'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
@@ -591,13 +591,13 @@ jobs:
           gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label merged-by:policy >/dev/null 2>&1 || true
           person() { echo "A human merges this one: $1."; exit 0; }
           [ "$(tr '[:upper:]' '[:lower:]' <<<"${DX_AUTOPILOT:-}")" != off ] || person "DX_AUTOPILOT is off"
-          [ "$PR_AUTHOR" = "$DX_BOT_LOGIN" ] || person "the release pull request was not opened by dilux-bot"
+          [ "$PR_AUTHOR" = "$DX_BOT_LOGIN" ] || person "the release pull request was not opened by $DX_BOT_LOGIN"
           [ "$BLOCKING" = false ] || person "the review is blocking"
           [ "$DESCRIPTION_OK" = true ] || person "the description does not match the code, or changed after the review"
           commits=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/commits" --paginate --jq '.[] | [.sha, .author.login // "", (.parents | length | tostring), .parents[0].sha] | @tsv')
           [ "$(wc -l <<<"$commits")" -eq 1 ] || person "it has more than one commit"
           IFS=$'\t' read -r sha author nparents base <<<"$commits"
-          if [ "$sha" != "$HEAD_SHA" ] || [ "$author" != "$DX_BOT_LOGIN" ] || [ "$nparents" != 1 ]; then person "its commit is not dilux-bot's single commit at the head"; fi
+          if [ "$sha" != "$HEAD_SHA" ] || [ "$author" != "$DX_BOT_LOGIN" ] || [ "$nparents" != 1 ]; then person "its commit is not $DX_BOT_LOGIN's single commit at the head"; fi
           { git init -q "$RUNNER_TEMP/central" && git -C "$RUNNER_TEMP/central" fetch -q --depth 1 https://github.com/DiluxOne/.github "$CENTRAL_REF" && git -C "$RUNNER_TEMP/central" checkout -q FETCH_HEAD && { test ! -f "$RUNNER_TEMP/central"/scripts/config-overlay.sh || bash "$RUNNER_TEMP/central"/scripts/config-overlay.sh "$RUNNER_TEMP/central"; }; }
           # The decision: the release issue accepted by a person with the
           # admin or maintain role, or by a maintainer's plan.

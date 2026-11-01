@@ -213,7 +213,7 @@ def issue_body(item):
 - **Failing run:** {item['run_url']} ({item['workflow']}: {jobs})
 - **Original pull request:** {item['pr_url']}, whose head passed the same checks.
 
-dilux-bot reverts the merge in a pull request that closes this issue, or says below why a person does. The revert goes through the gates like any change and merges on its own only within the `{LANE}` lane of policy/autonomy.yml; otherwise this issue says who does what. Fixing the cause is the original issue's, reopened.
+{org.APP} reverts the merge in a pull request that closes this issue, or says below why a person does. The revert goes through the gates like any change and merges on its own only within the `{LANE}` lane of policy/autonomy.yml; otherwise this issue says who does what. Fixing the cause is the original issue's, reopened.
 
 {AI_LINE}"""
 
@@ -251,7 +251,7 @@ Approve and merge {pr_url}
 
 
 def by_hand_comment(item, why):
-    return f"""**dilux-bot did not open the revert:** {why}. A person reverts it by hand.
+    return f"""**{org.APP} did not open the revert:** {why}. A person reverts it by hand.
 
 Revert #{item['pr']} by hand: {item['pr_url']}
 
@@ -262,7 +262,7 @@ def cannot_push(files):
     """Why dilux-bot cannot push the revert itself, or None: the App may not
     change workflow files (it has no `workflows` permission)."""
     wf = [f for f in files if f.startswith(".github/workflows/")]
-    return f"the merge changed workflow files ({', '.join(wf[:3])}), which dilux-bot may not change" if wf else None
+    return f"the merge changed workflow files ({', '.join(wf[:3])}), which {org.APP} may not change" if wf else None
 
 
 def already_issue(issues, sha):

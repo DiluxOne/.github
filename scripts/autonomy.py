@@ -344,6 +344,19 @@ def constitution_merge(policy, lane_name, protected, widening):
     return True, caps
 
 
+def lane_app(origin):
+    """The App that opens a lane's issues: its origin's `app`, else the
+    organisation's own (org.yml, or the caller's DX_BOT_APP, #568)."""
+    return str((origin or {}).get("app") or org.APP)
+
+
+def lane_people(origin):
+    """Who may run a sync lane's script beside its App: its origin's
+    `people`, else the organisation's maintainers (org.yml, #568)."""
+    origin = origin or {}
+    return list(origin.get("people") or []) if "people" in origin else list(org.MAINTAINERS)
+
+
 def last_label_event(issue, label):
     events = [e for e in ((issue.get("timelineItems") or {}).get("nodes") or []) if (e.get("label") or {}).get("name") == label]
     return events[-1] if events else None
@@ -412,7 +425,7 @@ def lane_accepts(policy, issue, run, repository, autopilot_var, sync=None):
         return carry_accepts(name, lane, issue, repository, sync or {})
     if origin.get("parent"):
         return delegated_accepts(name, lane, issue, repository)
-    app = origin.get("app", "")
+    app = lane_app(origin)
     bot_logins = {app, f"{app}[bot]"}
     event = last_label_event(issue, f"lane:{name}")
     if not event or event.get("__typename") != "LabeledEvent" or (event.get("actor") or {}).get("login") not in bot_logins:
@@ -468,7 +481,7 @@ def delegated_accepts(name, lane, issue, repository):
     event = last_label_event(parent, "accepted")
     if not event or event.get("__typename") != "LabeledEvent" or (event.get("actor") or {}).get("__typename") != "User":
         return False, f"its parent {ref} was not accepted by a person"
-    app = (lane.get("origin") or {}).get("app", "")
+    app = lane_app(lane.get("origin"))
     author = login((issue.get("author") or {}).get("login"))
     if issue.get("authorAssociation") not in MEMBERS and author != login(app):
         return False, "the sub-issue was not opened by a member of the organisation"
@@ -509,7 +522,7 @@ def carry_accepts(name, lane, issue, repository, carry):
     publishes advisories, once a maintainer approved the patch (patch:go):
     that is the acceptance this lane carries. Pure: `carry` holds
     advisory(ghsa) and released(version)."""
-    app = (lane.get("origin") or {}).get("app", "")
+    app = lane_app(lane.get("origin"))
     if login((issue.get("author") or {}).get("login")) != login(app):
         return False, f"the issue was not opened by {app}"
     event = last_label_event(issue, f"lane:{name}")
@@ -547,7 +560,7 @@ def carry_merge(policy, issue, repository, autopilot_var, carry, review):
     lane = policy["lanes"][name]
     version = CARRY_MARKER.search(issue.get("body") or "").group(2)
     pr = carry.get("pr") or {}
-    app = (lane.get("origin") or {}).get("app", "")
+    app = lane_app(lane.get("origin"))
     if login((pr.get("author") or {}).get("login")) != login(app):
         return False, f"the pull request was not opened by {app}"
     want = carry_branch(lane, issue.get("number"), version)
@@ -645,8 +658,8 @@ def sync_accepts(name, lane, issue, repository, sync):
     origin = lane.get("origin") or {}
     if repository.lower() == CENTRAL.lower():
         return False, f"the lane {name} never applies to {CENTRAL}, whose own changes a person accepts"
-    app = origin.get("app", "")
-    allowed = {login(app)} | {login(p) for p in origin.get("people") or []}
+    app = lane_app(origin)
+    allowed = {login(app)} | {login(p) for p in lane_people(origin)}
     allowed.discard("")
     author = login((issue.get("author") or {}).get("login"))
     if not author or author not in allowed:
@@ -1038,7 +1051,7 @@ def adopt_accepts(policy, issue, repository, autopilot_var, facts):
     if not name:
         return False, why
     pr = facts.get("pr") or {}
-    app = origin.get("app", "")
+    app = lane_app(origin)
     if login((pr.get("author") or {}).get("login")) != login(app):
         return False, f"the pull request was not opened by {app}"
     branch = (origin.get("branch") or "").format(issue=issue.get("number"))
@@ -1729,9 +1742,16 @@ def self_test():
         i, s = case
         return sync_merge(p, i, sr, "", s, review or green)
 
-    check("the lane names who may run the sync, and only a policy file can", org["lanes"]["org-sync"]["origin"].get("people"), ["soydiloreto"])
+    import org as org_conf  # the module: `org` is the policy here
+    check("#568: who may run the sync is org.yml's maintainers, unless the lane names them", (lane_people(org["lanes"]["org-sync"]["origin"]), lane_people({"people": ["x"]}), lane_people({"people": []})), (org_conf.MAINTAINERS, ["x"], []))
     m = merge(org, {"lanes": {"org-sync": {"origin": {"people": ["someone"]}}}})
-    check("a repository cannot add a person to a sync lane", m["lanes"]["org-sync"]["origin"]["people"], ["soydiloreto"])
+    check("a repository cannot add a person to a sync lane", lane_people(m["lanes"]["org-sync"]["origin"]), org_conf.MAINTAINERS)
+    # #568: DiluxOne's values in force are the same now they come from
+    # org.yml: every lane's App is dilux-bot, and the sync's people the
+    # maintainer, as the policy wrote them before.
+    check("#568: DiluxOne's lanes are still opened by dilux-bot", {lane_app(lane.get("origin")) for lane in org["lanes"].values() if lane.get("origin")}, {"dilux-bot"} if not os.environ.get("DX_BOT_APP") else {os.environ["DX_BOT_APP"]})
+    check("#568: and the sync is still run by its maintainer", lane_people(org["lanes"]["org-sync"]["origin"]), ["soydiloreto"])
+    check("#568: the policy names no App and no person of its own", [n for n, lane in org["lanes"].items() if {"app", "people"} & set(lane.get("origin") or {})], [])
     check("the marker a run writes is the one the lane reads", bool(SYNC_MARKER.fullmatch(sync_marker("org-sync", sr, "callers", sha, {"a": "b"}))), True)
     check("the fingerprint changes with any byte of any file", fingerprint(sr, "files", sha, {"a": "b"}) != fingerprint(sr, "files", sha, {"a": "b "}), True)
     # C1: a callers run's issue, naming a merged commit here, is accepted by

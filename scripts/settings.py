@@ -10,16 +10,28 @@
                        by each entry's name), and a key marked `identity` is
                        never kept from the engine's. PATH is the file's path
                        in the engine (policy/autonomy.yml), else ENGINE_FILE's
+  settings.py org-free [ROOT]
+                       search the engine's packs, workflows, workflow
+                       templates, scripts, review profiles and policy/ for
+                       the organisation's own values (org.yml and
+                       repos.yml: its App's slug, login and id, its
+                       security repository, maintainers and catalogs, and
+                       every repository but `.github`, the engine); exit 1,
+                       listing each, when one is found. Comments, each
+                       script's self-test, tests/ and scripts/fixtures/ are
+                       not searched
   settings.py --test   self-test
 
 Environment: DX_SETTINGS_SCHEMA, the schema to read (default:
 policy/settings-schema.yml beside this script's directory; the engine's
 own, never an organisation's).
 """
+import ast
 import copy
 import fnmatch
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -129,6 +141,105 @@ def overlay(engine_file, org_file, rel=None, conf=None):
     return merge(load(engine_file), load(org_file), entries(conf if conf is not None else schema(), rel))
 
 
+# Where the engine's code and data are (#568 C3): none of it may name the
+# organisation that runs it. The organisation's own files (org.yml,
+# repos.yml, labels.yml), the docs and the tests are not searched.
+SEARCHED = ("kinds", ".github/workflows", "workflow-templates", "scripts", "review-profiles", "policy")
+NOT_SEARCHED = ("scripts/fixtures/",)
+
+
+def identity_values(root):
+    """The organisation's own values, from its org.yml and repos.yml."""
+    conf = load(os.path.join(root, "org.yml")) or {}
+    repos = load(os.path.join(root, "repos.yml")) or {}
+    bot = conf.get("bot") or {}
+    out = set()
+    if bot.get("app"):
+        out |= {str(bot["app"]), f"{bot['app']}[bot]"}
+    if bot.get("id"):
+        out.add(str(bot["id"]))
+    security = str(conf.get("security") or "")
+    if security:
+        out.add(security)
+    out |= {str(m) for m in conf.get("maintainers") or []}
+    out |= {str(c) for c in (conf.get("catalogs") or {}).values()}
+    # A repository by its name; the security one by its full name, since
+    # its name alone may be a word ("security").
+    names = set((repos.get("repos") or {})) | set(repos.get("no-workflows") or []) | set(repos.get("exclude") or [])
+    out |= {str(n) for n in names if n != ".github" and f"{conf.get('org')}/{n}" != security}
+    return sorted(v for v in out if v)
+
+
+def skipped_lines(path, text):
+    """The lines of a file that are not searched: its comments, its
+    docstrings and its self-test (a Python function named self_test,
+    test... or ..._test, found with ast; a shell function whose name has
+    `test` in it, or an `if` on `--test` at the top level)."""
+    lines = text.split("\n")
+    skip = set()
+    for n, line in enumerate(lines, 1):
+        code = line.strip()
+        if code.startswith("#") or code.startswith("//") or (path.endswith(".php") and code.startswith("*")):
+            skip.add(n)
+    if path.endswith(".py"):
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            return skip
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and re.fullmatch(r"self_test|test\w*|\w*_tests?", node.name) and node in tree.body:
+                skip |= set(range(node.lineno, node.end_lineno + 1))
+            if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.body:
+                first = node.body[0]
+                if isinstance(first, ast.Expr) and isinstance(getattr(first, "value", None), ast.Constant) and isinstance(first.value.value, str):
+                    skip |= set(range(first.lineno, first.end_lineno + 1))
+    elif path.endswith(".sh"):
+        n = 0
+        while n < len(lines):
+            end = None
+            if re.match(r"^[A-Za-z_]*test[A-Za-z_]*\(\)\s*\{", lines[n]):
+                end = "}"
+            elif re.match(r"^if .*--test", lines[n]):
+                end = "fi"
+            if end:
+                m = n
+                while m < len(lines) and not re.match(rf"^{re.escape(end)}(?![\w-])", lines[m]):
+                    m += 1
+                skip |= set(range(n + 1, m + 2))
+                n = m
+            n += 1
+    return skip
+
+
+def org_free(root=ROOT, values=None):
+    """Where the engine names the organisation: ["path:line: value"]."""
+    values = identity_values(root) if values is None else values
+    if not values:
+        return []
+    pattern = re.compile(r"(?<![\w-])(" + "|".join(re.escape(v) for v in sorted(values, key=len, reverse=True)) + r")(?![\w-])")
+    found = []
+    for top in SEARCHED:
+        for base, dirs, files in os.walk(os.path.join(root, top)):
+            dirs.sort()
+            for name in sorted(files):
+                path = os.path.join(base, name)
+                rel = os.path.relpath(path, root).replace(os.sep, "/")
+                if any(rel.startswith(p) for p in NOT_SEARCHED) or os.path.islink(path):
+                    continue
+                try:
+                    with open(path, encoding="utf-8") as fh:
+                        text = fh.read()
+                except (UnicodeDecodeError, OSError):
+                    continue
+                skip = skipped_lines(rel, text)
+                for n, line in enumerate(text.split("\n"), 1):
+                    if n in skip:
+                        continue
+                    for m in pattern.finditer(line):
+                        found.append(f"{rel}:{n}: {m.group(1)}")
+    return found
+
+
 def self_test():
     failed = 0
 
@@ -176,7 +287,23 @@ def self_test():
                 [{"name": "accepted", "description": "Acme's"}, {"name": "acme:own", "color": "000000"}], labels)
     check("labels merge by name", got, [{"name": "accepted", "color": "0E8A16", "description": "Acme's"}, {"name": "claimed", "color": "5319E7"}, {"name": "acme:own", "color": "000000"}])
     check("a kind's pack has its rules", rule(entries(conf, "kinds/web-app/pack.yml"), ["release", "publishes-to"]).get("org"), "any")
+    # C3: the organisation's values, and where they are not searched.
+    values = identity_values(ROOT)
+    check("C3: the App, its login and id, the maintainers and the catalog are searched", {"dilux-bot", "dilux-bot[bot]", "333187390", "soydiloreto", "diluxone-plugins-ai", "DiluxOne/security"} <= set(values), True)
+    check("C3: every repository but the engine, the security one by its full name", ("diluxone-mermaid" in values, ".github" in values, "security" in values), (True, False, False))
+    py = 'X = 1\n# dilux-bot\n"""a"""\n\n\ndef self_test():\n    return "dilux-bot"\n\n\ndef merge_tests():\n    return 1\n\n\ndef main():\n    return 2\n'
+    check("C3: a Python script's comments and self-tests are skipped", sorted(skipped_lines("x.py", py)), [2, 6, 7, 10, 11])
+    sh = 'a=1\n# x\nself_test() {\n  b=2\n}\nif [ "${1:-}" = --test ]; then\n  self_test\nfi\nmain\n'
+    check("C3: a shell script's comments and its --test block are skipped", sorted(skipped_lines("x.sh", sh)), [2, 3, 4, 5, 6, 7, 8])
+    check("C3: in YAML only comments", sorted(skipped_lines("x.yml", "a: 1\n  # b\nc: 2\n")), [2])
     import tempfile
+    with tempfile.TemporaryDirectory() as t:
+        os.makedirs(os.path.join(t, "kinds", "k"))
+        with open(os.path.join(t, "kinds", "k", "pack.yml"), "w", encoding="utf-8") as fh:
+            fh.write("# acme-bot\nrelease: {publishes-to: acme-plugins}\nwho: [xacme-bot, acme-bot-x]\nbot: acme-bot[bot]\n")
+        check("C3: a value is found as a whole word, and only there", org_free(t, ["acme-bot", "acme-bot[bot]", "acme-plugins"]),
+              ["kinds/k/pack.yml:2: acme-plugins", "kinds/k/pack.yml:4: acme-bot[bot]"])
+        check("C3: no values, nothing to find", org_free(t, []), [])
     with tempfile.TemporaryDirectory() as t:
         e, o = os.path.join(t, "e.yml"), os.path.join(t, "o.yml")
         with open(e, "w", encoding="utf-8") as fh:
@@ -210,6 +337,11 @@ def load_text(text):
 def main(argv):
     if argv == ["--test"]:
         return self_test()
+    if argv[:1] == ["org-free"] and len(argv) <= 2:
+        found = org_free(argv[1] if len(argv) == 2 else ROOT)
+        for line in found:
+            print(f"{line}: the organisation's own value, in the engine (org.yml or repos.yml holds it; read it from there)")
+        return 1 if found else 0
     if argv[:1] == ["overlay"] and len(argv) in (3, 5) and (len(argv) == 3 or argv[3] == "--as"):
         try:
             sys.stdout.write(dump(overlay(argv[1], argv[2], argv[4] if len(argv) == 5 else None)))

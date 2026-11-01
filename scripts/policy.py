@@ -54,7 +54,7 @@ With POLICY_MODE=issue-gate it writes, for the conventions check:
   max_lines the most lines PR_AUTHOR's pull request may change; empty when
             the author is trusted, a maintainer took the pull request
             over, the author is the organisation's own bot (PR_AUTHOR is
-            DX_BOT_LOGIN, dilux-bot[bot] when unset, PR_AUTHOR_TYPE Bot)
+            DX_BOT_LOGIN, org.yml's App when unset, PR_AUTHOR_TYPE Bot)
             from a branch of this repository (HEAD_IN_REPO true, never a
             fork, #361), or there is no limit
   taken_over the trusted author who took a bot's pull request over (#130):
@@ -193,11 +193,30 @@ def taken_over_by(trusted_authors, env):
     return who[0]
 
 
+def org_conf():
+    """org.yml beside the policy (#191): who the organisation is."""
+    return load_yaml(os.path.join(CENTRAL, "org.yml")) or {}
+
+
+def trusted_authors_of(defaults, repo, conf=None):
+    """Who may have a pull request merged without a person: the
+    repository's own list when it has one, else the default policy's with
+    the organisation's maintainers (org.yml `maintainers`, #568) added."""
+    if "trusted-authors" in repo:
+        return list(repo.get("trusted-authors") or [])
+    mine = list(defaults.get("trusted-authors") or [])
+    more = (conf if conf is not None else org_conf()).get("maintainers") or []
+    return mine + [m for m in more if m not in mine]
+
+
 def own_bot(env):
     """True when the pull request is the organisation's own bot's, from a
     branch of this repository (#361): only someone with write access
     pushes there, so a fork cannot borrow the bot's login."""
-    bot = env.get("DX_BOT_LOGIN", "") or "dilux-bot[bot]"
+    app = str((org_conf().get("bot") or {}).get("app") or "")
+    bot = env.get("DX_BOT_LOGIN", "") or (f"{app}[bot]" if app else "")
+    if not bot:
+        return False
     return (env.get("PR_AUTHOR", "") == bot and env.get("PR_AUTHOR_TYPE", "") == "Bot"
             and env.get("HEAD_IN_REPO", "") == "true")
 
@@ -217,7 +236,7 @@ def issue_gate(defaults, repo):
         return 1
     if "label" in mine and mine.get("label") != label:
         print("::warning::issue-gate.label is the organisation's; a repository cannot change it, ignored.")
-    trusted_authors = repo.get("trusted-authors", defaults.get("trusted-authors", [])) or []
+    trusted_authors = trusted_authors_of(defaults, repo)
     trusted = os.environ.get("PR_AUTHOR", "") in trusted_authors
     taken_over = taken_over_by(trusted_authors, os.environ)
     if taken_over:
@@ -332,7 +351,7 @@ def main():
 
     high = defaults.get("high-risk", []) + repo.get("high-risk", [])
     low = defaults.get("low-risk-eligible", []) + repo.get("low-risk-eligible", [])
-    trusted_authors = repo.get("trusted-authors", defaults.get("trusted-authors", []))
+    trusted_authors = trusted_authors_of(defaults, repo)
 
     high_hits = [f for f in files if matches(f, high)]
     if forced:
@@ -522,6 +541,15 @@ def settings_tests():
         nonlocal failed
         print(("ok   " if ok else "FAIL ") + name + ("" if ok else f": {detail}"))
         failed += 0 if ok else 1
+
+    # #568: the maintainers are org.yml's, added to the default list; the
+    # authors DiluxOne trusts are the same as when the policy named them.
+    defaults = load_yaml(os.path.join(CENTRAL, "policy", "review-policy.default.yml"))
+    check("#568: the default policy names no person", defaults.get("trusted-authors") == ["dependabot[bot]"], defaults.get("trusted-authors"))
+    check("#568: the maintainers are added to it", trusted_authors_of(defaults, {}, {"maintainers": ["ana"]}) == ["dependabot[bot]", "ana"])
+    check("#568: a repository's own list replaces it", trusted_authors_of(defaults, {"trusted-authors": ["bob"]}, {"maintainers": ["ana"]}) == ["bob"])
+    check("#568: DiluxOne trusts whom it did", sorted(trusted_authors_of(defaults, {})) == ["dependabot[bot]", "soydiloreto"], trusted_authors_of(defaults, {}))
+    check("#568: the own bot is org.yml's App when DX_BOT_LOGIN is unset", own_bot({"PR_AUTHOR": f"{org_conf()['bot']['app']}[bot]", "PR_AUTHOR_TYPE": "Bot", "HEAD_IN_REPO": "true"}))
 
     code, out = run_case(os.path.join(CENTRAL, "policy", "review-policy.default.yml"), "kind: wordpress-plugin\nkind-settings:\n  plugin-check:\n    ignore-codes: [one_more_code]\n    strict: false\n", [], POLICY_MODE="kind")
     settings = json.loads(out.get("settings", "{}"))

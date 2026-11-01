@@ -57,7 +57,7 @@ on:
       review-bot:
         description: The login of the App that posts the Claude review; only its comments carry a record the conventions trust.
         type: string
-        default: 'dilux-bot[bot]'
+        default: ''
       central-ref:
         description: The ref of DiluxOne/.github whose scripts and policy run. Empty (the default) means the very commit this workflow runs from, job.workflow_sha, so a caller that pins a SHA or a tag runs that commit's scripts too (#287).
         type: string
@@ -69,7 +69,7 @@ permissions:
 jobs:
   conventions:
     name: Conventions (branch, title, commits)
-    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 5
     if: github.event_name == 'pull_request'
     permissions:
@@ -134,7 +134,7 @@ jobs:
           HEAD_IN_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
           # The organisation's own bot, from a branch of this repository, has
           # no size cap (#361); another organisation names its App here.
-          DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
+          DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN }}
           PR: ${{ github.event.pull_request.number }}
           GH_TOKEN: ${{ github.token }}
         # Read from the base branch, never the pull request's own copy: a
@@ -189,7 +189,7 @@ jobs:
           DX_AUTOPILOT: ${{ vars.DX_AUTOPILOT }}
           BASE: ${{ github.event.pull_request.base.sha }}
           # A claimed bug's test is read only from the App's own comment (#488).
-          DX_BOT_APP: ${{ vars.DX_BOT_APP || 'dilux-bot' }}
+          DX_BOT_APP: ${{ vars.DX_BOT_APP }}
         run: |
           git show "$BASE:.github/autonomy.yml" > "$RUNNER_TEMP/repo-autonomy.yml" 2>/dev/null || : > "$RUNNER_TEMP/repo-autonomy.yml"
           REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml" bash .dx-central/scripts/issue-gate.sh
@@ -228,7 +228,7 @@ jobs:
           SECTIONS: ${{ inputs.required-sections }}
           LABELS: ${{ steps.live.outputs.labels }}
           COMMENTS_FILE: ${{ runner.temp }}/comments.json
-          REVIEW_BOT: ${{ inputs.review-bot != 'dilux-bot[bot]' && inputs.review-bot || vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
+          REVIEW_BOT: ${{ inputs.review-bot || vars.DX_BOT_LOGIN }}
           # Empty for a trusted author, a pull request a maintainer took
           # over, or the organisation's own bot from a branch of this
           # repository: the policy's max-changed-lines-untrusted.
@@ -251,7 +251,7 @@ jobs:
 
   docs:
     name: Docs (links and names)
-    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - name: Checkout

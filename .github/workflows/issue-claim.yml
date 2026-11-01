@@ -74,9 +74,9 @@ on:
 permissions: {}
 
 env:
-  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
-  DX_BOT_APP: ${{ vars.DX_BOT_APP || 'dilux-bot' }}
-  DX_BOT_ID: ${{ vars.DX_BOT_ID || '333187390' }}
+  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN }}
+  DX_BOT_APP: ${{ vars.DX_BOT_APP }}
+  DX_BOT_ID: ${{ vars.DX_BOT_ID }}
 
 jobs:
   claim:
@@ -97,7 +97,7 @@ jobs:
     outputs:
       start: ${{ steps.claim.outputs.start || '[]' }}
     steps:
-      - name: dilux-bot token
+      - name: App token
         id: bot
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -136,7 +136,7 @@ jobs:
     outputs:
       start: ${{ steps.daily.outputs.start || '[]' }}
     steps:
-      - name: dilux-bot token
+      - name: App token
         id: bot
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:

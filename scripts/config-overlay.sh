@@ -33,9 +33,30 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 org_of() { sed -n "s/^org:[[:space:]]*[\"']\{0,1\}\([A-Za-z0-9-]*\).*/\1/p" "$1" | head -n 1; }
 
+# The organisation's App, named by its variables (#568, D1): a workflow
+# that passes DX_BOT_LOGIN, DX_BOT_APP or DX_BOT_ID in its env with the
+# variable unset would recognise no App, so the run stops and says which to
+# set. Every organisation sets them, DiluxOne too: no workflow names an App.
+# A pull request from a fork only warns: its run is never the App's.
+app_vars() {
+  local v missing=()
+  [ "${GITHUB_ACTIONS:-}" = true ] || return 0
+  for v in DX_BOT_LOGIN DX_BOT_APP DX_BOT_ID; do
+    if [ -n "${!v+set}" ] && [ -z "${!v}" ]; then missing+=("$v"); fi
+  done
+  [ "${#missing[@]}" -gt 0 ] || return 0
+  if [ -n "${GITHUB_EVENT_PATH:-}" ] && [ "$(jq -r '.pull_request.head.repo.fork // false' "$GITHUB_EVENT_PATH" 2>/dev/null)" = true ]; then
+    echo "::warning::The organisation variables ${missing[*]} are not set: this fork's run recognises no App."
+    return 0
+  fi
+  echo "::error::Set the organisation variables ${missing[*]} (the App's login, slug and user id, docs/installing.md): without them no workflow recognises the organisation's App."
+  return 1
+}
+
 overlay() {
   local dir=${1:-.dx-central} owner=${GITHUB_REPOSITORY_OWNER:-} engine src tmp
   [ -f "$dir/org.yml" ] || return 0
+  app_vars || return 1
   engine=$(org_of "$dir/org.yml")
   [ -n "$owner" ] || { echo "::error::GITHUB_REPOSITORY_OWNER is not set: whose configuration to read is unknown."; return 1; }
   if [ "${owner,,}" = "${engine,,}" ]; then
@@ -261,6 +282,17 @@ print("\n".join(bad))
 PY
 )
   ok "every full engine checkout is followed by the overlay" "$out" ""
+
+  # #568 D1: the App's variables, declared by the workflow and unset, stop it.
+  engine
+  if GITHUB_ACTIONS=true DX_BOT_LOGIN="" DX_BOT_APP=a DX_BOT_ID=1 GITHUB_REPOSITORY_OWNER=DiluxOne overlay "$t/e" >/dev/null 2>&1; then ok "an App variable unset stops the run" ran stopped; else ok "an App variable unset stops the run" stopped stopped; fi
+  out=$(GITHUB_ACTIONS=true DX_BOT_LOGIN="" DX_BOT_APP="" DX_BOT_ID=1 GITHUB_REPOSITORY_OWNER=DiluxOne overlay "$t/e" 2>&1 || true)
+  ok "and says which to set" "$(grep -c "Set the organisation variables DX_BOT_LOGIN DX_BOT_APP" <<<"$out")" 1
+  ok "all three set: it goes on" "$(GITHUB_ACTIONS=true DX_BOT_LOGIN="a[bot]" DX_BOT_APP=a DX_BOT_ID=1 GITHUB_REPOSITORY_OWNER=DiluxOne overlay "$t/e" >/dev/null 2>&1 && echo ran)" ran
+  ok "none declared (a workflow that does not read them): it goes on" "$(env -u DX_BOT_LOGIN -u DX_BOT_APP -u DX_BOT_ID GITHUB_ACTIONS=true GITHUB_REPOSITORY_OWNER=DiluxOne bash "${BASH_SOURCE[0]}" "$t/e" >/dev/null 2>&1 && echo ran)" ran
+  echo '{"pull_request": {"head": {"repo": {"fork": true}}}}' > "$t/event.json"
+  ok "a fork's pull request only warns" "$(GITHUB_ACTIONS=true GITHUB_EVENT_PATH="$t/event.json" DX_BOT_LOGIN="" DX_BOT_APP=a DX_BOT_ID=1 GITHUB_REPOSITORY_OWNER=DiluxOne overlay "$t/e" 2>&1 | grep -c '::warning::The organisation variables DX_BOT_LOGIN')" 1
+  ok "outside Actions nothing is asked" "$(DX_BOT_LOGIN="" GITHUB_ACTIONS="" GITHUB_REPOSITORY_OWNER=DiluxOne overlay "$t/e" >/dev/null 2>&1 && echo ran)" ran
 
   [ "$fail" = 0 ] && echo "all tests passed" || echo "some tests failed"
   return "$fail"

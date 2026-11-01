@@ -195,9 +195,9 @@ on:
 # organisation's variables DX_BOT_LOGIN, DX_BOT_APP and DX_BOT_ID, or
 # DiluxOne's dilux-bot when it sets none.
 env:
-  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
-  DX_BOT_APP: ${{ vars.DX_BOT_APP || 'dilux-bot' }}
-  DX_BOT_ID: ${{ vars.DX_BOT_ID || '333187390' }}
+  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN }}
+  DX_BOT_APP: ${{ vars.DX_BOT_APP }}
+  DX_BOT_ID: ${{ vars.DX_BOT_ID }}
 
 jobs:
   version:
@@ -568,7 +568,7 @@ jobs:
       # the caller already hands over (`secrets: inherit`): the job's own
       # token gets no issues permission, so no caller has to grant one.
       # Without the key, not knowing holds the release (the step below).
-      - name: dilux-bot token (read the security issues)
+      - name: App token (read the security issues)
         id: issues
         continue-on-error: true
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -645,7 +645,7 @@ jobs:
             if [ "$rc" = 1 ]; then
               echo "::error::A security weakness not released yet is still being fixed on $BASE (issue #${held//$'\n'/, #}): its fix merges first. Nothing was released."
             else
-              echo "::error::Whether a security weakness is still being fixed on $BASE could not be told (exit $rc; without dilux-bot's key, DILUX_BOT_PRIVATE_KEY, the issues are not read). Nothing was released."
+              echo "::error::Whether a security weakness is still being fixed on $BASE could not be told (exit $rc; without the App's key, DILUX_BOT_PRIVATE_KEY, the issues are not read). Nothing was released."
             fi
             exit 1
           fi

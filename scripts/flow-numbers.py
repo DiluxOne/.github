@@ -33,8 +33,10 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import org  # noqa: E402  the organisation's App, from org.yml (#568)
 MARKER = "<!-- dx-flow-numbers -->"
-BOT_LOGINS = ("dilux-bot", "dilux-bot[bot]", "app/dilux-bot")
+BOT_LOGINS = (org.APP, org.BOT, f"app/{org.APP}")
 WEEK = datetime.timedelta(days=7)
 RUN_RE = re.compile(r"^autopilot:(?:run|free)-[0-9]+$")
 

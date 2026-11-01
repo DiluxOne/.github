@@ -13,7 +13,7 @@ kind: wordpress-plugin
 | Kind | Pack | For |
 | --- | --- | --- |
 | `wordpress-plugin` | [`wordpress-plugin/`](wordpress-plugin/) | a plugin published on wordpress.org |
-| `ai-agent-plugin` | [`ai-agent-plugin/`](ai-agent-plugin/) | a plugin for coding agents (Claude Code, Codex, Copilot, Cursor, Gemini, OpenCode), published in the organisation's catalog, `diluxone-plugins-ai` (#552) |
+| `ai-agent-plugin` | [`ai-agent-plugin/`](ai-agent-plugin/) | a plugin for coding agents (Claude Code, Codex, Copilot, Cursor, Gemini, OpenCode), published in the organisation's catalog, the one org.yml `catalogs` names (#552, #568) |
 
 ## What a pack holds
 
@@ -247,8 +247,8 @@ it and one `directories: ["/"]` line. A repository gets only the entries of
 the ecosystems it has: github-actions always, npm with a `package.json` at
 its root, composer with a `composer.json`, docker with a `Dockerfile`. A
 kind's template may keep fewer: ai-agent-plugin's keeps github-actions
-alone, since what a plugin bundles it pins on purpose (diluxone-mermaid
-tests three majors of mermaid side by side), so its repositories get their
+alone, since what a plugin bundles it pins on purpose (a plugin may test
+three majors of a library side by side), so its repositories get their
 actions' updates only, and `repos.yml` cannot add to an ecosystem the kind
 does not keep. What
 a repository adds lives in its entry of [`repos.yml`](../repos.yml) (`dependabot`), per
@@ -290,7 +290,7 @@ A plugin of the `ai-agent-plugin` kind is wired into several coding agents,
 each through a manifest of its own. [`ai-agent-plugin/tools.yml`](ai-agent-plugin/tools.yml)
 says, for each tool, the manifest's path from the plugin's root and the
 fields that hold its name, version and description, and how a person
-installs it: `catalog` (a catalog file in `diluxone-plugins-ai`, and the form
+installs it: `catalog` (a catalog file in the organisation's catalog, and the form
 of an entry that points to the plugin's own repository; or `shares`, another
 tool's catalog file that this tool reads too) or `instructions` (a command
 from the plugin's repository, for its README). Each entry's `source` is the

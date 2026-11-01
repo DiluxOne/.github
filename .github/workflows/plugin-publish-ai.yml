@@ -2,11 +2,11 @@ name: Publish to the catalog of plugins for coding agents
 
 # Reusable. When a plugin for coding agents' release is published
 # (plugin-release-ai.yml, #552), brings its entries in the organisation's
-# catalog, diluxone-plugins-ai, up to that version: every catalog file that
+# catalog (org.yml `catalogs`, #568) up to that version: every catalog file that
 # lists it (Claude Code's .claude-plugin/marketplace.json, Codex's
 # .agents/plugins/marketplace.json; kinds/ai-agent-plugin/tools.yml) gets
 # the version and the release's tag (scripts/agent-manifests.py bump). Never
-# a push to the catalog's main: dilux-bot opens an issue there (Type Task)
+# a push to the catalog's main: the App opens an issue there (Type Task)
 # and a pull request that closes it, linked to the release, which merges
 # like any other once a person accepts the issue. Its commit is made
 # through the API, so GitHub signs it (scripts/api-commit.py). A re-run
@@ -14,10 +14,13 @@ name: Publish to the catalog of plugins for coding agents
 # earlier run left without its pull request, and stops when a read of the
 # open ones fails (scripts/agent-manifests.py publish-plan).
 #
-# The token is dilux-bot's App token scoped to diluxone-plugins-ai alone,
+# The token is the organisation's App token scoped to the catalog alone,
 # with contents, issues and pull requests to write; it runs only on a
 # release published in a repository of the organisation (never a fork's
-# code: nothing of the plugin is checked out), or by hand with a tag.
+# code: nothing of the plugin is checked out), or by hand with a tag, and
+# only where a catalog is configured: the `catalog` input, else the kind's
+# pack (`release.publishes-to: "{catalog}"`, org.yml `catalogs`). With none,
+# the run says so and publishes nothing.
 #
 #   jobs:
 #     publish:
@@ -36,9 +39,9 @@ on:
         type: string
         default: ''
       catalog:
-        description: The catalog repository of the organisation.
+        description: The catalog repository of the organisation. Empty (the default) is the ai-agent-plugin kind's, from its pack and org.yml `catalogs` (#568).
         type: string
-        default: diluxone-plugins-ai
+        default: ''
       central-ref:
         description: The ref of DiluxOne/.github whose scripts run. Empty (the default) means the very commit this workflow runs from, job.workflow_sha (#287).
         type: string
@@ -52,7 +55,7 @@ permissions: {}
 jobs:
   bump:
     name: The catalog's entry at this version
-    if: github.repository_owner == 'DiluxOne' && !github.event.repository.fork
+    if: ${{ !github.event.repository.fork }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -77,31 +80,44 @@ jobs:
           persist-credentials: false
       - name: The organisation's configuration (#197)
         run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
-      - name: dilux-bot's token, for the catalog alone
+      - name: The catalog
+        id: catalog
+        env:
+          CATALOG: ${{ inputs.catalog }}
+        run: |
+          set -euo pipefail
+          name=${CATALOG:-$(python3 .dx-central/scripts/org.py publishes-to ai-agent-plugin)}
+          [ -n "$name" ] || { echo "No catalog is configured for plugins for coding agents (org.yml \`catalogs\`): nothing is published." | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; }
+          [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::'$name' is not a repository name."; exit 1; }
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+      - name: The App's token, for the catalog alone
         id: app
+        if: steps.catalog.outputs.name != ''
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
-          repositories: ${{ inputs.catalog }}
+          repositories: ${{ steps.catalog.outputs.name }}
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.catalog.outputs.name != ''
         with:
-          repository: DiluxOne/${{ inputs.catalog }}
+          repository: ${{ github.repository_owner }}/${{ steps.catalog.outputs.name }}
           path: catalog
           token: ${{ steps.app.outputs.token }}
           persist-credentials: false
       - name: An issue and a pull request in the catalog
+        if: steps.catalog.outputs.name != ''
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
-          CATALOG: DiluxOne/${{ inputs.catalog }}
+          CATALOG: ${{ github.repository_owner }}/${{ steps.catalog.outputs.name }}
           PLUGIN: ${{ github.repository }}
           TAG: ${{ steps.rel.outputs.tag }}
           VERSION: ${{ steps.rel.outputs.version }}
           RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.rel.outputs.tag }}
-          DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
+          DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN }}
         run: |
           set -euo pipefail
           cd catalog
