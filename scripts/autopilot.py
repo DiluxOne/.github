@@ -1226,8 +1226,11 @@ def engine_repo(repo):
 def protected_rule(ev, number, repo=""):
     """When the Spec stops for a person. A reproduced bug's fix may be in
     the paths that govern autonomy (#397), as long as it widens nothing;
-    any other issue's never is, except in the organisation's own
-    repository (#498), where those paths are the work."""
+    in the organisation's own repository (#498) those paths are the work.
+    In any other repository a person's issue may change them too (#558):
+    there scripts/ or kinds/ are ordinary code, and G7 leaves any
+    protected path to a person to merge; only .github/workflows/, which
+    the autopilot cannot push, still stops it."""
     stop = f"still write the Spec, then run `NUMBER={number} {HELPER} finish stop \"<why, in one or two sentences>\"` and end."
     if engine_repo(repo):
         return ("This is the organisation's own repository: its engine (.github/workflows/, scripts/, policy/, kinds/) is what "
@@ -1235,7 +1238,9 @@ def protected_rule(ev, number, repo=""):
                 "pull request every permission, secret, lane or limit the change widens, so that person reads it before "
                 f"merging. If the change needs anything outside the PRD's scope, {stop}")
     if not ev:
-        return f"If the change needs anything outside the PRD's scope, or a path under .github/, policy/, scripts/ or kinds/, {stop}"
+        return ("The change may touch a path the autonomy policy protects (policy/, scripts/, kinds/, .github/ but its "
+                "workflows), and then a person merges the pull request: G7 holds it for them. If the change needs anything "
+                f"outside the PRD's scope, or a file under .github/workflows/ (the autopilot cannot push one), {stop}")
     return ("A reproduced bug may be fixed wherever it is, the paths that govern autonomy (policy/, scripts/, kinds/, .github/) "
             "included, but the fix must never widen a permission, a lane or a limit: no lane added or opened up, no `merge` or "
             "`ceiling` raised, no protected path or label removed, no workflow permission or secret granted (G7 checks it, "
@@ -1469,7 +1474,9 @@ A class on html.
     here, there = sys.modules["org"].CENTRAL, "o/r"  # this test shadows the name org
     check("#498 the engine's repository: the Spec does not stop for workflows or scripts",
           (".github/workflows/, scripts/" in protected_rule(None, 7, here), "path under .github/, policy/" in protected_rule(None, 7, here)), (True, False))
-    check("#498 another repository: the Spec stops as before", "path under .github/, policy/, scripts/ or kinds/" in protected_rule(None, 7, there), True)
+    other = protected_rule(None, 7, there)
+    check("#498 #558 another repository: the Spec stops for workflows only, and a person merges",
+          ("path under .github/, policy/, scripts/ or kinds/" in other, "a file under .github/workflows/" in other, "a person merges" in other), (False, True, True))
     check("#498 the engine's repository: the prompts allow workflows",
           ("Never change .github/workflows" in prompt_work(here, "7", "8", "b", "x", [("C1", "a", None)], False),
            "Never touch .github/workflows" in prompt_fix(here, 9, 2, 3), "a person merges" in prompt_spec(here, 7, "x")), (False, False, True))
@@ -1997,8 +2004,10 @@ Clamp the value in Sum::add.
     check("#397 finish ready runs the way's test with repro-run.sh, a unit test with repro-sandbox.sh",
           (os.path.basename(finish_run("t", '{"run":"x"}')[1]), os.path.basename(finish_run("t", "")[1])), ("repro-run.sh", "repro-sandbox.sh"))
     psw = prompt_spec("o/r", 12, "x", way_ev)
-    check("#397 C4 a reproduced bug's Spec may fix a protected path, never widening it; a person's issue still stops there",
-          ("never widen a permission, a lane or a limit" in psw, "a path under .github/, policy/, scripts/ or kinds/" in prompt_spec("o/r", 7, "x")), (True, True))
+    ps558 = prompt_spec("o/r", 7, "x")
+    check("#397 C4 #558 a reproduced bug's Spec may fix a protected path, never widening it; a person's issue stops only for workflows",
+          ("never widen a permission, a lane or a limit" in psw, "a path under .github/, policy/, scripts/ or kinds/" in ps558,
+           "a file under .github/workflows/" in ps558, "a person merges" in ps558), (True, False, True, True))
     check("#84 a person's issue gets none of it", any("repro-sandbox" in p for p in (prompt_spec("o/r", 7, "x"), prompt_work("o/r", 7, 5, "b", "x", [], False), prompt_fix("o/r", 9, 1, 3))), False)
     lbl = [f"lane:{REPRO}", "accepted-by:policy"]
     check("#84 finish: a reproduced bug needs its sealed test to pass", repro_needed(lane_spec, lbl, "match"), ("", test12))
