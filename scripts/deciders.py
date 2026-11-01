@@ -380,7 +380,39 @@ def self_test():
               (0, "@dev may answer the autopilot (write, who-decides: writers)."))
         check("C2 cli: setting says the value in force", cli(["setting"], base, *over), (0, "writers"))
         check("C2 cli: and still never someone without write", cli(["may", "answer", "stranger"], base, *over)[0], 1)
+        # C3: no setting anywhere, and no CODEOWNERS file: `writers`.
+        check("C3: no setting is codeowners", setting({}, {}, "r"), "codeowners")
+        check("C3: codeowners with no CODEOWNERS file is writers", decide("codeowners", "answer", "dev", "write", None, ["a.py"])["ok"], True)
+        check("C3 cli: no setting, no CODEOWNERS: a writer's answer is taken", cli(["may", "answer", "dev"], dict(base, codeowners=None))[0], 0)
+        check("C3 cli: and the list is every writer", cli(["list", "answer"], dict(base, codeowners=None), stdin="\n".join(logins)), (0, "boss\ndev\nscripter"))
         check("cli: an unknown value is an error (exit 2), never a yes", cli(["may", "answer", "dev"], base, "who-decides: everyone\n")[0], 2)
+    # C3: only GitHub's "not found" is no CODEOWNERS; any other failure is
+    # never read as none (which would open the decision to every writer).
+    global _gh
+    real, seen = _gh, []
+
+    def fake(*args):
+        seen.append(args[1])
+        if args[1].endswith("/.github/CODEOWNERS") or args[1].endswith("/contents/CODEOWNERS"):
+            raise RuntimeError("HTTP 404: Not Found")
+        if fail:
+            raise RuntimeError("HTTP 502: Bad Gateway")
+        return json.dumps({"content": base64.b64encode(b"* @boss\n").decode()})
+    try:
+        _gh = fake
+        fail = False
+        live = Live("o/r")
+        live.fixture = None
+        check("C3: GitHub's three places, in its order; the first found is read",
+              (live.codeowners(), [s.rsplit("/contents/", 1)[1] for s in seen]), ("* @boss\n", list(CODEOWNERS)))
+        fail = True
+        try:
+            live.codeowners()
+            check("C3: a failure to read is no missing file", "none", "raised")
+        except RuntimeError:
+            check("C3: a failure to read is no missing file", "raised", "raised")
+    finally:
+        _gh = real
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
