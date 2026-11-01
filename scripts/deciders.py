@@ -385,6 +385,19 @@ def self_test():
         check("C3: codeowners with no CODEOWNERS file is writers", decide("codeowners", "answer", "dev", "write", None, ["a.py"])["ok"], True)
         check("C3 cli: no setting, no CODEOWNERS: a writer's answer is taken", cli(["may", "answer", "dev"], dict(base, codeowners=None))[0], 0)
         check("C3 cli: and the list is every writer", cli(["list", "answer"], dict(base, codeowners=None), stdin="\n".join(logins)), (0, "boss\ndev\nscripter"))
+        # C4: `accepted` and `autopilot:continue` by someone outside.
+        for action, label in (("accepted", "add `accepted`"), ("continue", "add `autopilot:continue`")):
+            rc, why = cli(["may", action, "dev"], dict(base, files=[]))
+            check(f"C4 cli: may {action} refuses a writer outside, naming who may {label}", (rc, f"who may {label}: the code owners of what it touches (@boss)" in why), (1, True))
+            check(f"C4 cli: may {action} refuses someone without write, naming who may", cli(["may", action, "stranger"], dict(base, codeowners=None))[1],
+                  f"@stranger has read access here; who may {label}: anyone with write access to the repository.")
+        acc = dict(base, codeowners=None, acceptor="boss", roles=dict(roles, root="admin"))
+        check("C4 cli: acceptor: once accepted, only the acceptor (or an admin) re-accepts or continues",
+              [cli(["may", "continue", w], acc, "who-decides: acceptor\n")[0] for w in ("boss", "dev", "root")], [0, 1, 0])
+        check("C4 cli: acceptor: the refusal names the acceptor", "@boss, who accepted it" in cli(["may", "continue", "dev"], acc, "who-decides: acceptor\n")[1], True)
+        check("C4 cli: acceptor: before any acceptance, any writer gives the first", cli(["may", "accepted", "dev"], dict(acc, acceptor=""), "who-decides: acceptor\n")[0], 0)
+        check("C4 (choice 4a): the credits keep their floor of maintain, whatever the value",
+              (cli(["may", "credits", "dev"], acc, "who-decides: writers\n")[0], decide("writers", "credits", "m", "maintain")["ok"]), (1, True))
         check("cli: an unknown value is an error (exit 2), never a yes", cli(["may", "answer", "dev"], base, "who-decides: everyone\n")[0], 2)
     # C3: only GitHub's "not found" is no CODEOWNERS; any other failure is
     # never read as none (which would open the decision to every writer).

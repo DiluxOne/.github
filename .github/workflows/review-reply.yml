@@ -22,7 +22,8 @@ name: Claude review reply
 # (#491) corrects its Credits block, which the merge turns into the commit's
 # `Co-authored-by` trailers (scripts/credits.py): only someone with the
 # maintain or admin role on the repository (asked of the repository, never
-# author_association), with no model and none of the pull request's code, a
+# author_association) whom `who-decides` allows (#588, scripts/deciders.py),
+# with no model and none of the pull request's code, a
 # fork's included; the bot comments what changed, so who added whom stays on
 # record. Such a comment wakes neither the reply nor the autopilot.
 #
@@ -273,24 +274,11 @@ jobs:
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }}
           permission-pull-requests: write
-
-      - name: The commenter maintains this repository
-        id: who
-        # The repository's answer, never author_association: write is not
-        # enough to say who wrote the change.
-        env:
-          GH_TOKEN: ${{ steps.bot.outputs.token }}
-          LOGIN: ${{ github.event.comment.user.login }}
-        run: |
-          set -euo pipefail
-          role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$LOGIN/permission" --jq .role_name 2>/dev/null || echo none)
-          case "$role" in
-            admin|maintain) echo "ok=true" >> "$GITHUB_OUTPUT"; echo "$LOGIN may correct the credits ($role)." ;;
-            *) echo "ok=false" >> "$GITHUB_OUTPUT"; echo "::notice::$LOGIN has $role permission on this repository; only a maintainer corrects the credits." ;;
-          esac
+          # Who decides (#588): CODEOWNERS and the seal, and the issue.
+          permission-contents: read
+          permission-issues: read
 
       - name: Checkout the credits script
-        if: steps.who.outputs.ok == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: DiluxOne/.github
@@ -299,8 +287,25 @@ jobs:
           persist-credentials: false
 
       - name: The organisation's configuration (#197)
-        if: steps.who.outputs.ok == 'true'
         run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+
+      - name: The commenter may correct the credits
+        id: who
+        # The repository's answer, never author_association: write is not
+        # enough to say who wrote the change. `who-decides` (#588,
+        # scripts/deciders.py) narrows it, within the maintain or admin role.
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          PR: ${{ github.event.issue.number }}
+          LOGIN: ${{ github.event.comment.user.login }}
+        run: |
+          set -euo pipefail
+          issue=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // empty' || true)
+          if why=$(NUMBER="$issue" python3 .dx-central/scripts/deciders.py may credits "$LOGIN"); then
+            echo "ok=true" >> "$GITHUB_OUTPUT"; echo "$why"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"; echo "::notice::$why"
+          fi
 
       - name: Correct the Credits block
         if: steps.who.outputs.ok == 'true'
