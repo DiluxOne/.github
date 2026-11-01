@@ -1,0 +1,220 @@
+name: Plugin release for coding agents
+
+# Reusable. Releases a plugin for coding agents (kinds/ai-agent-plugin, #552)
+# once a person has accepted the issue "Release X.Y.Z" (#82): the release
+# ends at the GitHub release, the tag and its notes, and the caller's
+# `publish` job, on that release's publishing, brings the plugin's entry in
+# the organisation's catalog, diluxone-plugins-ai, up to it
+# (plugin-publish-ai.yml). The steps are plugin-release-wp.yml's, without
+# what is WordPress's (the zip, the readme, wordpress.org, the development
+# build and the security patch):
+#
+# On a push to the default branch, the `version` job runs
+# scripts/next-version.py: the type:* labels of the pull requests merged
+# since the last X.Y.Z tag give the bump (a version:* label a person set
+# wins). Nothing pending, or the policy's `release:` says `off`: the run
+# ends there, green. The release pull request (accepting the issue opens
+# it: the kind's `release.prepare`, scripts/agent-manifests.py version)
+# sets every tool's manifest to X.Y.Z and writes the changelog fragments
+# into CHANGELOG.md; until it merges, the manifests say another version and
+# the run ends green with "Not ready". Then the approval: a person who
+# accepted that issue (scripts/release-issue.py verify), or else the
+# environment's required reviewers (scripts/release-gate.py). The `release`
+# job checks again that it is still the release to make (no such tag yet),
+# that the manifests agree and say X.Y.Z (scripts/agent-manifests.py), and
+# that CHANGELOG.md has its entry, then creates the tag and the release in
+# one call with the release App's token, whose key lives in the environment.
+# On a tag X.Y.Z pushed by hand, the same, and the tag must be the version
+# the labels say is next. `dry-run` rehearses everything but the tag and the
+# release.
+#
+#   jobs:
+#     release:
+#       if: github.event_name == 'push'
+#       uses: DiluxOne/.github/.github/workflows/plugin-release-ai.yml@v7
+#       secrets: inherit
+#
+# (workflow-templates/release-ai.yml.)
+
+on:
+  workflow_call:
+    inputs:
+      dry-run:
+        description: Check everything, create no tag and no release, show the notes in the summary. For rehearsing.
+        type: boolean
+        default: false
+      environment:
+        description: The repository environment the release job runs in, which holds the release App's key (DILUX_RELEASE_PRIVATE_KEY). The approval is the accepted release issue (#82); its required reviewers, if any, approve too.
+        type: string
+        default: release
+      central-ref:
+        description: The ref of DiluxOne/.github whose scripts and policy run. Empty (the default) means the very commit this workflow runs from, job.workflow_sha (#287).
+        type: string
+        default: ''
+    outputs:
+      version:
+        description: The version released, or empty when nothing was.
+        value: ${{ jobs.release.outputs.version }}
+
+jobs:
+  version:
+    name: What is next
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # No permissions block: the caller's token as granted (contents and
+    # pull-requests to read the labels of what merged, `issues: read` for
+    # the release issue, `actions: read` for the environment's rules).
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
+          path: .dx-central
+          persist-credentials: false
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+      - id: next
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          DEFAULT_POLICY: .dx-central/policy/review-policy.default.yml
+          BASE: ${{ github.event.repository.default_branch }}
+          PRIVATE: ${{ github.event.repository.private }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          set -euo pipefail
+          echo "version=" >> "$GITHUB_OUTPUT"
+          exclude=""; case "$GITHUB_REF" in refs/tags/*) exclude="${GITHUB_REF#refs/tags/}";; esac
+          if [ -n "$exclude" ]; then
+            [[ "$exclude" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Tag '$exclude' is not X.Y.Z; nothing runs for it."; exit 1; }
+            if gh release view "$exclude" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null | grep -q false; then
+              echo "Release $exclude already exists: this tag was created together with it. Nothing to do." | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          fi
+          next=$(python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$BASE" ${exclude:+--exclude-tag "$exclude"} --json)
+          bump=$(jq -r .bump <<<"$next"); pending=$(jq -r .pending <<<"$next"); coming=$(jq -r .next <<<"$next"); last=$(jq -r .last <<<"$next")
+          per_type=$(jq -r '.pulls | to_entries[] | "\(.key): " + (.value | map("#\(.)") | join(", "))' <<<"$next")
+          if [ "$pending" != true ]; then
+            # shellcheck disable=SC2016 # backticks in the Markdown of the summary.
+            printf '## Nothing to release\n\nSince %s nothing merged asks for a version.\n\n%s\n' "$last" "${per_type:-_no pull requests_}" >> "$GITHUB_STEP_SUMMARY"
+            [ -z "$exclude" ] || { echo "::error::Tag $exclude cannot be released: nothing merged since $last asks for a version."; exit 1; }
+            exit 0
+          fi
+          if [ -n "$exclude" ] && [ "$exclude" != "$coming" ]; then
+            echo "::error::Tag $exclude cannot be released: the labels say $coming is next. Label a merged pull request version:major, version:minor or version:patch, then re-run."
+            exit 1
+          fi
+          version=$coming
+          # Ready when the release pull request merged: every manifest says
+          # the version (scripts/agent-manifests.py version wrote them).
+          if ! python3 .dx-central/scripts/agent-manifests.py check . >/dev/null || ! python3 .dx-central/scripts/agent-manifests.py says . "$version"; then
+            # shellcheck disable=SC2016 # backticks in the Markdown of the summary.
+            printf '## Not ready\n\nThe labels give a **%s** release after %s (%s), but the manifests do not all say %s yet: accept the issue "Release %s", and merge the release pull request it opens.\n\n%s\n' "$bump" "$last" "$version" "$version" "$version" "$per_type" >> "$GITHUB_STEP_SUMMARY"
+            [ -z "$exclude" ] || { echo "::error::Tag $exclude cannot be released: the manifests do not say it."; exit 1; }
+            exit 0
+          fi
+          mode=$(python3 - "$DEFAULT_POLICY" .github/review-policy.yml "$bump" <<'PY'
+          import sys; sys.path.insert(0, ".dx-central/scripts"); import policy
+          d = policy.load_yaml(sys.argv[1]) or {}; r = policy.load_yaml(sys.argv[2]) or {}
+          rel = {**(d.get("release") or {}), **(r.get("release") or {})}
+          mode = str(rel.get(sys.argv[3], "approve"))
+          print("approve" if mode == "auto" and not d.get("auto-allowed", False) else mode)
+          PY
+          )
+          case "$mode" in
+            off) printf '## Not released\n\nA %s release (%s) is pending but the policy says release.%s: off.\n' "$bump" "$version" "$bump" >> "$GITHUB_STEP_SUMMARY"; exit 0 ;;
+            approve|auto) ;;
+            *) echo "::error::release.$bump is '$mode'; it must be approve, auto or off."; exit 1 ;;
+          esac
+          label=$(python3 -c 'import sys; sys.path.insert(0, ".dx-central/scripts"); import policy; print(str(((policy.load_yaml(sys.argv[1]) or {}).get("issue-gate") or {}).get("label") or "accepted"))' "$DEFAULT_POLICY")
+          VERSION="$version" LABEL="$label" python3 .dx-central/scripts/release-issue.py verify > "$RUNNER_TEMP/release-issue.json" || true
+          if ! gh api "repos/$GITHUB_REPOSITORY/environments/$ENVIRONMENT" > "$RUNNER_TEMP/environment.json" 2> "$RUNNER_TEMP/environment.err"; then
+            if grep -q "HTTP 404" "$RUNNER_TEMP/environment.err"; then echo '{"protection_rules": []}' > "$RUNNER_TEMP/environment.json"; else : > "$RUNNER_TEMP/environment.json"; fi
+          fi
+          echo '{"workflow_runs": []}' > "$RUNNER_TEMP/waiting.json"
+          gate=$(PRIVATE="$PRIVATE" MODE="$mode" DRY_RUN="$DRY_RUN" VERSION="$version" RUN_ID="$GITHUB_RUN_ID" \
+                 RELEASE_ISSUE_FILE="$RUNNER_TEMP/release-issue.json" ENVIRONMENT_FILE="$RUNNER_TEMP/environment.json" WAITING_FILE="$RUNNER_TEMP/waiting.json" GITHUB_OUTPUT="$RUNNER_TEMP/gate.out" \
+                 python3 .dx-central/scripts/release-gate.py)
+          if ! grep -q '^go=true$' "$RUNNER_TEMP/gate.out"; then
+            printf '%s\n%s\n' "$gate" "$per_type" >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::Not released: $(grep '^why=' "$RUNNER_TEMP/gate.out" | cut -d= -f2-)"
+            exit 0
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          printf '## Release %s\n\nA **%s** release after %s:\n\n%s\n\n%s\n' "$version" "$bump" "$last" "$per_type" "$gate" >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    name: Release
+    needs: version
+    if: needs.version.outputs.version != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read # the checkout; the tag and the release go through the release App's token
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: release-${{ github.repository }}
+      cancel-in-progress: false
+    outputs:
+      version: ${{ needs.version.outputs.version }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
+          path: .dx-central
+          persist-credentials: false
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+      - name: Still the release to make
+        id: still
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/$VERSION^{commit}" >/dev/null; then
+            echo "go=false" >> "$GITHUB_OUTPUT"; echo "Tag $VERSION exists: released already." >> "$GITHUB_STEP_SUMMARY"; exit 0
+          fi
+          echo "go=true" >> "$GITHUB_OUTPUT"
+      - name: The manifests say this version, and its changelog
+        if: steps.still.outputs.go == 'true'
+        run: |
+          set -euo pipefail
+          python3 .dx-central/scripts/agent-manifests.py check .
+          python3 .dx-central/scripts/agent-manifests.py says . "$VERSION"
+          python3 .dx-central/scripts/agent-manifests.py notes . "$VERSION" > "$RUNNER_TEMP/notes.md"
+      - name: The release App's token
+        if: ${{ steps.still.outputs.go == 'true' && !inputs.dry-run }}
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_RELEASE_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_RELEASE_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+      - name: The release notes, in a rehearsal
+        if: steps.still.outputs.go == 'true' && inputs.dry-run
+        run: |
+          printf '## Rehearsal of %s\n\nNo tag and no release were created. The notes would be:\n\n' "$VERSION" >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/notes.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: GitHub release, and the tag with it
+        # Made with the App's token, so its publishing starts the caller's
+        # `publish` job (a release made with the job's own token starts no
+        # workflow).
+        if: steps.still.outputs.go == 'true' && !inputs.dry-run
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          tag_name: ${{ needs.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          body_path: ${{ runner.temp }}/notes.md
+          token: ${{ steps.app.outputs.token }}

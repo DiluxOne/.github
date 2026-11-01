@@ -17,6 +17,8 @@ aliases: []
 # settings from this pack.
 workflows:
   - plugin-checks-ai.yml
+  - plugin-release-ai.yml
+  - plugin-publish-ai.yml
 
 # What a repository of this kind requires of its own jobs, beside the
 # organisation's pipeline: a repository ruleset named "own checks"
@@ -86,3 +88,17 @@ adapters:
 autopilot:
   - "The changelog: this change's line in a file of its own, `changelog.d/<the issue's number>.md`, one bullet (`* …`); never in CHANGELOG.md itself, which the release writes. None for a change no user sees (tests, tooling, CI)."
   - "The manifests: every tool's manifest the plugin ships (kinds/ai-agent-plugin/tools.yml: .claude-plugin/plugin.json, .codex-plugin/plugin.json, .cursor-plugin/plugin.json, plugin.json, gemini-extension.json) keeps the same name, version and description: a change to one (a version bumped, a description reworded) is made to every one of them in the same commit (scripts/agent-manifests.py check fails the pull request otherwise)."
+
+# How a version of this kind is released (#82; kinds/README.md). A person
+# accepts the issue "Release X.Y.Z"; the release pull request is then this
+# `prepare` command run on the default branch (every tool's manifest at the
+# version, the changelog fragments written into CHANGELOG.md), and once it
+# merges `workflow` makes the GitHub release, whose publishing runs
+# `publish`: a pull request on the catalog, diluxone-plugins-ai, that brings
+# the plugin's entries up to it. No `stable`: the catalog follows the
+# releases, so the last GitHub release is the one in production.
+release:
+  publishes-to: diluxone-plugins-ai
+  workflow: plugin-release-ai.yml
+  publish: plugin-publish-ai.yml
+  prepare: [python3, "{central}/scripts/agent-manifests.py", version, "{version}", .]

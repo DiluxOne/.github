@@ -1,0 +1,122 @@
+name: Publish to the catalog of plugins for coding agents
+
+# Reusable. When a plugin for coding agents' release is published
+# (plugin-release-ai.yml, #552), brings its entries in the organisation's
+# catalog, diluxone-plugins-ai, up to that version: every catalog file that
+# lists it (Claude Code's .claude-plugin/marketplace.json, Codex's
+# .agents/plugins/marketplace.json; kinds/ai-agent-plugin/tools.yml) gets
+# the version and the release's tag (scripts/agent-manifests.py bump). Never
+# a push to the catalog's main: dilux-bot opens an issue there (Type Task)
+# and a pull request that closes it, linked to the release, which merges
+# like any other once a person accepts the issue. Its commit is made
+# through the API, so GitHub signs it (scripts/api-commit.py).
+#
+# The token is dilux-bot's App token scoped to diluxone-plugins-ai alone,
+# with contents, issues and pull requests to write; it runs only on a
+# release published in a repository of the organisation (never a fork's
+# code: nothing of the plugin is checked out), or by hand with a tag.
+#
+#   jobs:
+#     publish:
+#       if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+#       uses: DiluxOne/.github/.github/workflows/plugin-publish-ai.yml@v7
+#       with:
+#         tag: ${{ inputs.tag || '' }}
+#       secrets:
+#         DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: The release to publish, X.Y.Z. Empty, the default, the release whose publishing started the run.
+        type: string
+        default: ''
+      catalog:
+        description: The catalog repository of the organisation.
+        type: string
+        default: diluxone-plugins-ai
+      central-ref:
+        description: The ref of DiluxOne/.github whose scripts run. Empty (the default) means the very commit this workflow runs from, job.workflow_sha (#287).
+        type: string
+        default: ''
+    secrets:
+      DILUX_BOT_PRIVATE_KEY:
+        required: true
+
+permissions: {}
+
+jobs:
+  bump:
+    name: The catalog's entry at this version
+    if: github.repository_owner == 'DiluxOne' && !github.event.repository.fork
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: The release to publish
+        id: rel
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::'$TAG' is not a release X.Y.Z."; exit 1; }
+          draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease --jq '.isDraft or .isPrerelease')
+          [ "$draft" = false ] || { echo "::error::$TAG is a draft or a pre-release: the catalog only takes a published release."; exit 1; }
+          { echo "tag=$TAG"; echo "version=${TAG#v}"; } >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
+          path: .dx-central
+          persist-credentials: false
+      - name: dilux-bot's token, for the catalog alone
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ inputs.catalog }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/${{ inputs.catalog }}
+          path: catalog
+          token: ${{ steps.app.outputs.token }}
+          persist-credentials: false
+      - name: An issue and a pull request in the catalog
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          CATALOG: DiluxOne/${{ inputs.catalog }}
+          PLUGIN: ${{ github.repository }}
+          TAG: ${{ steps.rel.outputs.tag }}
+          VERSION: ${{ steps.rel.outputs.version }}
+          RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.rel.outputs.tag }}
+        run: |
+          set -euo pipefail
+          cd catalog
+          name=${PLUGIN#*/}
+          python3 ../.dx-central/scripts/agent-manifests.py bump "$VERSION" "$PLUGIN" . --ref "$TAG"
+          if git diff --quiet; then echo "The catalog already lists $PLUGIN at $VERSION." | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; fi
+          if gh pr list --repo "$CATALOG" --state open --search "in:title \"$name $VERSION\"" --json number --jq 'length' | grep -qv '^0$'; then
+            echo "A pull request for $name $VERSION is already open." | tee -a "$GITHUB_STEP_SUMMARY"; exit 0
+          fi
+          footer=$'\n\n🤖 AI-generated · plugin-publish-ai.yml (DiluxOne/.github)'
+          body="### Problem"$'\n\n'"$PLUGIN released $VERSION ($RELEASE_URL); the catalog still installs an older version."$'\n\n'"### Scope"$'\n\n'"- Its entries in every catalog file brought up to $VERSION and the tag $TAG (scripts/agent-manifests.py bump)."$'\n\n'"### Out of scope"$'\n\n'"- Anything of another plugin."$'\n\n'"### Acceptance criteria"$'\n\n'"- C1: Given the catalog, when a person installs $name from it, then they get $VERSION."$'\n\n'"### Criticality"$'\n\n'"Normal$footer"
+          url=$(gh issue create --repo "$CATALOG" --title "Bring $name to $VERSION in the catalog" --body "$body")
+          n=${url##*/}
+          gh api -X PATCH "repos/$CATALOG/issues/$n" -f type=Task >/dev/null || echo "::warning::The issue's Type could not be set."
+          branch="chore/$n-$name-$VERSION"
+          branch=${branch//./-}
+          git config user.name "dilux-bot[bot]"
+          git config user.email "dilux-bot[bot]@users.noreply.github.com"
+          base=$(git rev-parse --abbrev-ref HEAD)
+          git checkout -q -b "$branch"
+          git commit -q -am "chore(catalog): $name $VERSION" -m "Closes #$n. From the release $RELEASE_URL."
+          GITHUB_REPOSITORY="$CATALOG" python3 ../.dx-central/scripts/api-commit.py push "$branch" --onto "origin/$base"
+          gh pr create --repo "$CATALOG" --head "$branch" --title "chore(catalog): $name $VERSION" \
+            --body "## 📝 What changes"$'\n\n'"$PLUGIN at $VERSION ($TAG) in every catalog file that lists it."$'\n\n'"## 💡 Why"$'\n\n'"Closes #$n. $RELEASE_URL was published.$footer"
