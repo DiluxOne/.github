@@ -3,9 +3,10 @@
 repository (org.yml `test-repo`, kind engine-test) at `v7-next` before `v7`
 moves, as data in tests/release/scenarios.yml.
 
-Every pair of a reusable workflow and an event a shipped caller wires
-(workflow-templates/*.yml, and org-pull-request.yml, the organisation's
-required workflow; `sync-repos.py callers` writes the templates), and every
+Every pair of a reusable workflow and an event the test repository's
+callers wire (its pack's `callers` among workflow-templates/*.yml, and
+org-pull-request.yml, the organisation's required workflow), but a
+`schedule` no scenario can cause, and every
 transition of the autopilot's state machine (scripts/autopilot.py:
 `next_step`'s BOT_ACTIONS, its waits on PERSON_DECISIONS and BOT_WAITS, the
 MERGE_HOWS of `merge-main`, and what `sweep_step` returns), has a scenario
@@ -25,7 +26,10 @@ complete feature), `steps` (each one of
   release-scenarios.py coverage [ROOT]
         fails naming every pair and transition with no scenario, every
         scenario that covers what is neither, and every scenario whose
-        `expect` cannot hold against its own setup (`preconditions`)
+        `expect` cannot hold against its own setup (`preconditions`: a
+        dispatch of a workflow the test repository cannot run on demand
+        among them). Every other pair a shipped caller wires is held to the
+        engine statically, by scripts/caller-contract.py check
   release-scenarios.py run --repo OWNER/NAME [--ref v7-next] [--only ID ...]
                            [--out FILE] [--minutes N]
         plays them in the test repository with the test identity's token
@@ -75,10 +79,10 @@ def job_events(cond, events):
     return [e for e in events if e in named]
 
 
-def pairs(root=ROOT):
-    """{"<reusable workflow>:<event>"} every shipped caller wires."""
+def pairs(root=ROOT, callers=CALLERS):
+    """{"<reusable workflow>:<event>"} the callers (globs) wire."""
     out = set()
-    for pattern in CALLERS:
+    for pattern in callers:
         for path in sorted(glob.glob(os.path.join(root, pattern))):
             doc = load_yaml(path)
             events = caller_events(doc)
@@ -93,6 +97,36 @@ def pairs(root=ROOT):
                 m = re.search(r"/\.github/workflows/([^@/]+\.yml)@", str(job.get("uses") or ""))
                 if m:
                     out |= {f"{m.group(1)}:{e}" for e in reach[name]}
+    return out
+
+
+# What no scenario can cause in its few minutes: the daily run comes when it
+# comes. A scheduled pair is held to the engine statically.
+UNPLAYABLE = ("schedule",)
+
+
+def test_callers(pack):
+    """The test repository's callers, as globs: its pack's `callers` among
+    the shipped ones, and org-pull-request.yml, which runs everywhere."""
+    return tuple(f"workflow-templates/{c}" for c in pack.get("callers") or []) + (".github/workflows/org-pull-request.yml",)
+
+
+def played(root, pack):
+    """The pairs a scenario plays (#563): those the test repository's
+    callers wire, with an event a scenario can cause. Every other pair a
+    shipped caller wires is held to the engine by scripts/caller-contract.py
+    check, which needs no run."""
+    return {p for p in pairs(root, test_callers(pack)) if p.rsplit(":", 1)[1] not in UNPLAYABLE}
+
+
+def dispatchable(root, pack):
+    """The test repository's callers a scenario can dispatch: its own, with
+    `workflow_dispatch`."""
+    out = set()
+    for pattern in test_callers(pack)[:-1]:
+        for path in glob.glob(os.path.join(root, pattern)):
+            if "workflow_dispatch" in caller_events(load_yaml(path)):
+                out.add(os.path.basename(path))
     return out
 
 
@@ -141,15 +175,25 @@ def coverage(scenarios, wanted):
 CORE_LABEL, CORE_MARK = "autopilot:core-wait", "<!-- dx-autopilot-core -->"
 
 
-def preconditions(scenarios, bodies, pack):
+def preconditions(scenarios, bodies, pack, can_dispatch=(), passes=None):
     """Every scenario whose `expect` its own setup can never make hold
     (#563): a pull's `closes` with no `{issue}` in its body (a fixed number
-    is another object's), and a wait on the core with no open issue before
-    it or a test repository whose fixed change touches no core. Pure."""
+    is another object's), a wait on the core with no open issue before it
+    or a test repository whose fixed change touches no core, a `dispatch` of
+    a workflow the test repository cannot run on demand (`can_dispatch`),
+    and an issue that should await acceptance whose body the schema refuses
+    (`passes(body)`: the triage would call it `incomplete`). Pure."""
     import fnmatch
     out = []
     for s in scenarios:
         sid, expect, opens = s.get("id") or "?", s.get("expect") or {}, s.get("opens") or {}
+        for step in s.get("steps") or []:
+            if isinstance(step, dict) and "dispatch" in step and str(step["dispatch"]) not in can_dispatch:
+                out.append(f"scenario {sid}: dispatches {step['dispatch']}, which the test repository has not, or not with workflow_dispatch "
+                           f"(its pack's `callers`: {', '.join(sorted(can_dispatch)) or 'none dispatchable'})")
+        if passes and "issue" in opens and ("awaiting-acceptance" in (expect.get("labels") or []) or "incomplete" in (expect.get("absent") or [])):
+            if not passes(body_of(opens["issue"].get("body"), bodies)):
+                out.append(f"scenario {sid}: expects its issue to await acceptance, but its body does not pass the issue schema")
         if "pull" in opens and (expect.get("pull") or {}).get("closes"):
             if "{issue}" not in body_of(opens["pull"].get("body"), bodies):
                 out.append(f"scenario {sid}: expects its pull request to close an issue, but its body names no `{{issue}}` it opens")
@@ -364,6 +408,24 @@ def test_pack(root=ROOT):
     return org.test_pack(root=root)
 
 
+def schema_passes(root=ROOT):
+    """Whether a body passes the issue schema's PRD stage (G1), as the
+    triage reads it (scripts/issue-schema.py)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("issue_schema", os.path.join(root, "scripts", "issue-schema.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return lambda body: bool(mod.check(body, "prd")["ok"])
+
+
+def problems(conf, root=ROOT):
+    """What `coverage` names: every played pair and transition with no
+    scenario, and every scenario its setup cannot make hold."""
+    pack = test_pack(root)
+    return (coverage(conf.get("scenarios") or [], played(root, pack) | transitions(root))
+            + preconditions(conf.get("scenarios") or [], conf.get("bodies") or {}, pack, dispatchable(root, pack), schema_passes(root)))
+
+
 def self_test():
     failed = 0
 
@@ -397,8 +459,19 @@ def self_test():
         some[0]["covers"] += ["claim.yml:schedule", "gone.yml:push"]
         check("C2: a scenario covering what nothing wires is named", coverage(some, wanted), ["scenario s1: covers gone.yml:push, which no caller wires and no transition is"])
     real = load_yaml(os.path.join(ROOT, SCENARIOS))
-    check("C2: every pair and transition of the engine has its scenario", coverage(real.get("scenarios") or [], pairs() | transitions()), [])
-    check("#563: every scenario's expect can hold against its own setup", preconditions(real.get("scenarios") or [], real.get("bodies") or {}, test_pack()), [])
+    check("C2: every pair the test repository plays, and every transition, has its scenario; every scenario can hold", problems(real), [])
+    rpack = test_pack()
+    check("#563: the test repository's callers are shipped ones", all(os.path.exists(os.path.join(ROOT, "workflow-templates", c)) for c in rpack["callers"]) and rpack["callers"] != [], True)
+    check("#563: a pair no caller of the test repository wires is not played, nor a scheduled one: caller-contract.py holds them",
+          ({"plugin-checks-wp.yml:pull_request", "issue-triage.yml:schedule"} & played(ROOT, rpack), "issue-triage.yml:issues" in played(ROOT, rpack)), (set(), True))
+    check("#563: a dispatch of a workflow the test repository has not is named",
+          preconditions([{"id": "d", "steps": [{"dispatch": "nightly-review.yml"}], "opens": {}, "expect": {}}], {}, rpack, dispatchable(ROOT, rpack)),
+          [f"scenario d: dispatches nightly-review.yml, which the test repository has not, or not with workflow_dispatch (its pack's `callers`: {', '.join(sorted(dispatchable(ROOT, rpack))) or 'none dispatchable'})"])
+    check("#563: a caller without workflow_dispatch is not dispatchable", "issues.yml" in dispatchable(ROOT, rpack), False)
+    passes = schema_passes()
+    check("#563: an issue that should await acceptance with a body the schema refuses is named",
+          preconditions([{"id": "b", "opens": {"issue": {"body": "x"}}, "expect": {"labels": ["awaiting-acceptance"]}}], {"x": real["bodies"]["complete-feature"].replace("Normal", "Low")}, rpack, (), passes),
+          ["scenario b: expects its issue to await acceptance, but its body does not pass the issue schema"])
     pack = {"fixed-change": {"file": "scenarios/{n}-{id}.md"}, "core": ["scenarios/*"]}
     pr_fixed = {"id": "p", "opens": {"pull": {"body": "pull"}}, "expect": {"pull": {"closes": True}}}
     core_alone = {"id": "c", "opens": {"issue": {"labels": ["accepted"]}}, "expect": {"labels": [CORE_LABEL]}}
@@ -476,7 +549,7 @@ def main(argv):
     if argv[:1] == ["coverage"] and len(argv) <= 2:
         root = argv[1] if len(argv) == 2 else ROOT
         conf = load_yaml(os.path.join(root, SCENARIOS))
-        out = coverage(conf.get("scenarios") or [], pairs(root) | transitions(root)) + preconditions(conf.get("scenarios") or [], conf.get("bodies") or {}, test_pack(root))
+        out = problems(conf, root)
         for line in out:
             print(line)
         if not out:

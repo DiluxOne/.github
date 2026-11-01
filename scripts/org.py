@@ -132,15 +132,16 @@ def test_pack(conf=None, root=os.path.join(HERE, "..")):
     kinds/engine-test/pack.yml: `identity` (`secret`, and `login` with
     `{org}` the organisation's login lowercased), `autopilot`
     (`fixed-change`: no model), `fixed-change`, `core` (its own core globs,
-    in place of org.yml's: the engine's paths are never in it), `cleanup`
-    and `publishes`."""
+    in place of org.yml's: the engine's paths are never in it), `cleanup`,
+    `publishes` and `callers` (the shipped callers it has)."""
     conf = _conf if conf is None else conf
     path = os.path.join(root, "kinds", TEST_KIND, "pack.yml")
     pack = (load(path) if os.path.exists(path) else {}) or {}
     identity = dict(pack.get("identity") or {})
     identity["login"] = str(identity.get("login") or "").replace("{org}", str(conf.get("org") or "").lower())
     return {"identity": identity, "autopilot": pack.get("autopilot"), "fixed-change": pack.get("fixed-change") or {},
-            "core": [str(g) for g in (pack.get("core") or [])], "cleanup": pack.get("cleanup"), "publishes": pack.get("publishes")}
+            "core": [str(g) for g in (pack.get("core") or [])], "cleanup": pack.get("cleanup"), "publishes": pack.get("publishes"),
+            "callers": [str(c) for c in (pack.get("callers") or [])]}
 
 
 def core(conf):

@@ -294,8 +294,9 @@ def propose_ways(path, names, policy_of, way_of, engine=ENGINE):
     return did
 
 
-# The callers the test repository has: those every repository has (#563).
-TEST_CALLERS = ("issues.yml", "pull-request-comments.yml")
+# The callers the test repository has (#563): its pack's `callers`,
+# kinds/engine-test/pack.yml, which the scenarios play.
+TEST_CALLERS = tuple(org.test_pack({"org": org.ORG})["callers"])
 
 
 def run_cmd(argv, env=None):

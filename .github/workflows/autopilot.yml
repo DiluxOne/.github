@@ -280,6 +280,9 @@ jobs:
       default: ${{ steps.when.outputs.default }}
       budget-spec: ${{ steps.when.outputs.budget-spec }}
       budget-work: ${{ steps.when.outputs.budget-work }}
+      # The test repository's fixed change (#563, kinds/engine-test/pack.yml
+      # `autopilot: fixed-change`): `true`, and no model is called.
+      fixed: ${{ steps.task.outputs.fixed }}
     steps:
       - name: App token
         id: bot
@@ -651,6 +654,7 @@ jobs:
       # What the agent reads, written here: its task, the Spec, the pull
       # request's body and, for a fix round, the review's own words.
       - name: The agent's task
+        id: task
         if: steps.may.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
@@ -674,6 +678,14 @@ jobs:
           set -euo pipefail
           export BODY="$RUNNER_TEMP/body.md" REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml" DX_IO="$GITHUB_WORKSPACE/.dx-io"
           mkdir -p "$DX_IO"
+          # The test repository (#563): its Spec is the fixed change's,
+          # queued here as the agent would have, and the work writes it.
+          fixed=$(python3 .dx-central/scripts/autopilot.py fixed)
+          if [ -n "$fixed" ]; then
+            echo "fixed=true" >> "$GITHUB_OUTPUT"
+            echo "The test repository: the fixed change ($fixed), no model."
+            [ "$MODE" != start ] || python3 .dx-central/scripts/autopilot.py fixed spec
+          fi
           if [ "$MODE" = start ]; then
             # A Feature's Spec carries its phases too (#193).
             ISSUE_TYPE=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" --jq '.type.name // ""' || true)  # G3 checks it again, failing closed
@@ -733,7 +745,8 @@ jobs:
     permissions:
       contents: read
     outputs:
-      outcome: ${{ steps.spec.outcome }}
+      # The fixed change's Spec was queued by prep (#563): no model ran.
+      outcome: ${{ needs.prep.outputs.fixed == 'true' && 'success' || steps.spec.outcome }}
     steps:
       # The working tree, with the job's token, which only reads; nothing
       # keeps it. A reproduced bug's test was written from an outsider's
@@ -784,6 +797,7 @@ jobs:
 
       - name: Claude writes the Spec
         id: spec
+        if: needs.prep.outputs.fixed != 'true'
         timeout-minutes: 20
         uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1.0.264
         env:
@@ -1051,7 +1065,7 @@ jobs:
     permissions:
       contents: read
     outputs:
-      outcome: ${{ steps.work.outcome }}
+      outcome: ${{ needs.prep.outputs.fixed == 'true' && steps.fixed.outcome || steps.work.outcome }}
     steps:
       # The working tree, with the job's token, which only reads; nothing
       # keeps it. A reproduced bug's test was written from an outsider's
@@ -1118,8 +1132,22 @@ jobs:
           eof="DX_$(openssl rand -hex 16)"
           { echo "prompt<<$eof"; cat .dx-io/prompt.md; echo "$eof"; } >> "$GITHUB_OUTPUT"
 
+      # The test repository's fixed change (#563): each unticked criterion's
+      # file, committed and ticked, then ready, through the agent's own
+      # helpers, with no model.
+      - name: The fixed change
+        id: fixed
+        if: needs.prep.outputs.fixed == 'true'
+        env:
+          DX_IO: ${{ github.workspace }}/.dx-io
+          DX_BASE: ${{ steps.task.outputs.base }}
+          NUMBER: ${{ needs.prep.outputs.issue }}
+          MODE: ${{ needs.prep.outputs.mode }}
+        run: python3 .dx-central/scripts/autopilot.py fixed work
+
       - name: Claude works
         id: work
+        if: needs.prep.outputs.fixed != 'true'
         # Under the job's timeout: what it committed still goes on.
         timeout-minutes: 75
         uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1.0.264

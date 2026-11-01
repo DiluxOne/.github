@@ -10,9 +10,19 @@ name: The engine's test repository
 
 aliases: []
 
-# No battery of its own: its callers are the organisation's shipped ones
-# (workflow-templates/), at `v7-next` while the lane tries a candidate.
+# No battery of its own: no product's checks, releases or publishing run
+# here.
 workflows: []
+
+# The shipped callers (workflow-templates/) the test repository has, which
+# scripts/install.py writes there (at `v7-next` while the lane tries a
+# candidate), beside org-pull-request.yml, the organisation's required
+# workflow. A scenario plays only what these wire (scripts/release-scenarios.py
+# coverage); every other caller is held to the engine statically
+# (scripts/caller-contract.py check).
+callers:
+  - issues.yml
+  - pull-request-comments.yml
 
 # No checks of its own to run, so no engines.
 adapters: []

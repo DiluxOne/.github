@@ -281,18 +281,32 @@ def parse_time(value):
     return datetime.datetime.strptime(str(value), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
 
 
+def pages(text):
+    """The items of `gh api --paginate --jq` output, which prints one JSON
+    array per page: every page's array, joined. Pure."""
+    out, text, at = [], text or "", 0
+    decoder = json.JSONDecoder()
+    while True:
+        while at < len(text) and text[at].isspace():
+            at += 1
+        if at >= len(text):
+            return out
+        value, at = decoder.raw_decode(text, at)
+        out.extend(value if isinstance(value, list) else [value])
+
+
 def adopted(org_name, prop, run=sh):
-    values = json.loads(run("gh", "api", "--paginate", f"orgs/{org_name}/properties/values", "--jq", "[.[]]") or "[]")
+    values = pages(run("gh", "api", "--paginate", f"orgs/{org_name}/properties/values?per_page=100", "--jq", "[.[]]"))
     return sorted(v["repository_full_name"] for v in values
                   if any(p.get("property_name") == prop and str(p.get("value")).lower() == "true" for p in v.get("properties") or []))
 
 
 def runs_since(full, since, run=sh):
-    listed = json.loads(run("gh", "api", f"repos/{full}/actions/runs?created=>={since}&per_page=100", "--jq", ".workflow_runs") or "[]")
+    listed = pages(run("gh", "api", "--paginate", f"repos/{full}/actions/runs?created=>={since}&per_page=100", "--jq", ".workflow_runs"))
     out = []
     for r in listed:
         if r.get("conclusion") == "failure":
-            jobs = json.loads(run("gh", "api", f"repos/{full}/actions/runs/{r['id']}/jobs", "--jq", "[.jobs[] | select(.conclusion == \"failure\") | {name, steps: [.steps[]? | select(.conclusion == \"failure\") | .name]}]") or "[]")
+            jobs = pages(run("gh", "api", "--paginate", f"repos/{full}/actions/runs/{r['id']}/jobs?per_page=100", "--jq", "[.jobs[] | select(.conclusion == \"failure\") | {name, steps: [.steps[]? | select(.conclusion == \"failure\") | .name]}]"))
             r = dict(r, failed_jobs=jobs)
         out.append(r)
     return out
@@ -317,12 +331,21 @@ def watch(p, repo, central, org_name, prop, since, run=sh, sleep=time.sleep, min
     read = read or run
     waited = 0
     while True:
-        runs = [r for full in adopted(org_name, prop, read) for r in runs_since(full, since, read)]
+        # A read that fails is tried again at the next poll, never taken for
+        # a quiet half hour: the last poll failing is an error.
+        try:
+            runs = [r for full in adopted(org_name, prop, read) for r in runs_since(full, since, read)]
+            failed = ""
+        except (RuntimeError, ValueError) as err:
+            runs, failed = [], str(err)
+            print(f"::warning::the watch could not read the runs: {failed}", file=sys.stderr)
         bad = first_failure(runs, central, since, minutes)
         if bad:
             rollback(p, bad, repo, run, root)
             return bad
         if waited >= minutes * 60:
+            if failed:
+                raise RuntimeError(f"the watch could not read the runs at its last poll, nothing is known of the last minutes: {failed}")
             return None
         sleep(every)
         waited += every
@@ -497,6 +520,25 @@ def self_test():
         check("C6: a bug with the run's link", bool(made) and "https://github.com/O/a/actions/runs/2" in " ".join(made[0]), True)
         edit = [c for c in fake.calls if c[:3] == ("gh", "release", "edit")]
         check("C6: the release says so", bool(edit) and "moved back to v7.10.0" in " ".join(edit[0]) and bad["id"] == 2, True)
+        two = (json.dumps([{"repository_full_name": "O/a", "properties": [{"property_name": "dx-adopted", "value": "true"}]}]) + "\n"
+               + json.dumps([{"repository_full_name": "O/c", "properties": [{"property_name": "dx-adopted", "value": "true"}]}]) + "\n")
+        check("C6: two pages of properties are both read", adopted("O", "dx-adopted", Fake({"properties/values": two})), ["O/a", "O/c"])
+        check("C6: two pages of runs are both read", [r["id"] for r in runs_since("O/a", since, Fake({"actions/runs?": json.dumps(runs[:1]) + "\n" + json.dumps(runs[1:]) + "\n"}))], [1, 2, 3])
+        check("C6: every list is read with --paginate", all("--paginate" in c for c in reader.calls), True)
+        broken = Fake({"properties/values": lambda argv: (_ for _ in ()).throw(RuntimeError("HTTP 502"))})
+        err = _raises(lambda: watch(moved_p, "O/.github", central, "O", "dx-adopted", since, run=Fake(), read=broken, sleep=lambda s: None, every=1800, root=root))
+        check("C6: a read that keeps failing is an error, never a quiet half hour", "could not read" in str(err), True)
+        flaky = iter([RuntimeError("HTTP 502")])
+
+        def once(argv):
+            e = next(flaky, None)
+            if e:
+                raise e
+            return props
+        fake = Fake({"gh release view": json.dumps({"body": "notes"})})
+        bad = watch(moved_p, "O/.github", central, "O", "dx-adopted", since, run=fake, sleep=lambda s: None, root=root,
+                    read=Fake({"properties/values": once, "repos/O/a/actions/runs?": json.dumps(runs[:2])}))
+        check("C6: a read that fails once is tried again at the next poll", (bad or {}).get("id"), 2)
         fake = Fake({"properties/values": props, "repos/O/a/actions/runs?": json.dumps(runs[:1])})
         check("C6: a quiet half hour moves nothing", (watch(moved_p, "O/.github", central, "O", "dx-adopted", since, run=fake, sleep=lambda s: None, every=600, root=root), fake.has("git")), (None, False))
     check_workflow(check)

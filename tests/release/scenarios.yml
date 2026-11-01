@@ -2,9 +2,13 @@
 # repository (org.yml `test-repo`, kind engine-test) at `v7-next` before `v7`
 # moves, and what the installer plays once (scripts/install.py apply).
 # scripts/release-scenarios.py reads this file: `coverage` (in the scripts
-# job) fails naming each pair of a reusable workflow and an event a shipped
-# caller wires, and each transition of the autopilot's state machine, that
-# no scenario covers; `run` plays them. The script's header says what each
+# job) fails naming each pair of a reusable workflow and an event the test
+# repository's callers wire (its pack's `callers`, and org-pull-request.yml;
+# a `schedule` aside), and each transition of the autopilot's state machine,
+# that no scenario covers, and each scenario that dispatches a workflow the
+# test repository cannot run on demand; `run` plays them. Every other
+# shipped caller (the products' batteries, the nightly and security runs)
+# is held to the engine statically, by scripts/caller-contract.py check. The script's header says what each
 # key means. A bug that reached the repositories after a release adds its
 # scenario here in its fix (#585's is `caller-permission-585`).
 #
@@ -34,7 +38,7 @@ bodies:
 
     ### Criticality
 
-    Low
+    Normal
   edited-feature: |
     ### Problem
 
@@ -54,7 +58,7 @@ bodies:
 
     ### Criticality
 
-    Low
+    Normal
   incomplete: |
     Something should be better.
   bug: |
@@ -72,7 +76,7 @@ bodies:
 
     ### Criticality
 
-    Low
+    Normal
   bug-not-reproduced: |
     ### What happened
 
@@ -88,7 +92,7 @@ bodies:
 
     ### Criticality
 
-    Low
+    Normal
   decision: |
     ### Decision
 
@@ -119,12 +123,6 @@ scenarios:
     opens: {issue: {title: "something", body: incomplete}}
     steps: [{comment: "It should greet who opens the repository."}]
     expect: {labels: [incomplete], absent: [awaiting-acceptance]}
-  - id: triage-schedule
-    covers: [issue-triage.yml:schedule, issue-claim.yml:schedule]
-    opens: {issue: {title: "feat: a greeting, swept daily", body: complete-feature}}
-    steps: [{dispatch: issues.yml}]
-    expect: {labels: [awaiting-acceptance]}
-
   # Accepted, sealed, and the autopilot starting.
   - id: accepted-spec
     covers: [next_step:wait:accept, next_step:spec]
@@ -237,7 +235,6 @@ scenarios:
   - id: drift-and-adopt
     covers: []
     opens: {issue: {title: "chore: the drift check and adopting", body: complete-feature}}
-    steps: [{dispatch: issues.yml}]
     expect: {labels: [awaiting-acceptance]}
 
   # #585: a caller that does not grant a permission the engine asks for:
@@ -245,25 +242,4 @@ scenarios:
   - id: caller-permission-585
     covers: []
     opens: {issue: {title: "feat: a greeting, with the adopted callers", body: complete-feature}}
-    expect: {labels: [awaiting-acceptance]}
-
-  # Every scheduled and dispatched workflow a shipped caller wires, and the
-  # products' batteries (run here with nothing published: `publishes: never`).
-  - id: nightly-and-security
-    covers: [nightly-review.yml:schedule, nightly-review.yml:workflow_dispatch, security-fix.yml:issue_comment, security-fix.yml:schedule, security-fix.yml:workflow_dispatch, security-patch.yml:schedule, security-patch.yml:workflow_dispatch]
-    opens: {issue: {title: "chore: the nightly and the security runs", body: complete-feature}}
-    steps: [{dispatch: nightly-review.yml}, {dispatch: security-fix.yml}, {dispatch: security-patch.yml}]
-    expect: {labels: [awaiting-acceptance]}
-  - id: plugin-batteries
-    covers: [plugin-checks-ai.yml:merge_group, plugin-checks-ai.yml:pull_request, plugin-checks-ai.yml:push, plugin-checks-ai.yml:workflow_dispatch,
-             plugin-checks-wp.yml:merge_group, plugin-checks-wp.yml:pull_request, plugin-checks-wp.yml:push, plugin-checks-wp.yml:schedule, plugin-checks-wp.yml:workflow_dispatch,
-             plugin-tests-wp.yml:merge_group, plugin-tests-wp.yml:pull_request, plugin-tests-wp.yml:push, plugin-tests-wp.yml:schedule, plugin-tests-wp.yml:workflow_dispatch,
-             weekly-failure.yml:schedule]
-    opens: {pull: {title: "test: the plugin batteries", body: pull}}
-    steps: [{dispatch: plugin-checks-ai.yml}, {dispatch: plugin-checks-wp.yml}]
-    expect: {merged: false}
-  - id: plugin-releases-publish-nothing
-    covers: [plugin-release-ai.yml:push, plugin-release-wp.yml:push, plugin-publish-ai.yml:release, plugin-publish-ai.yml:workflow_dispatch, plugin-publish-wp.yml:release, plugin-publish-wp.yml:workflow_dispatch, svn-auth-check.yml:workflow_dispatch]
-    opens: {issue: {title: "chore: the releases publish nothing here", body: complete-feature}}
-    steps: [{dispatch: release-ai.yml}, {dispatch: release-wp.yml}, {dispatch: svn-auth-check-wp.yml}]
     expect: {labels: [awaiting-acceptance]}

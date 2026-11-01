@@ -531,7 +531,7 @@ files:
       org: any
       repo: never
       limit: "engine-test only: the file the autopilot writes per criterion instead of calling a model"
-      read-by: [scripts/org.py]
+      read-by: [scripts/org.py, scripts/autopilot.py]
       issue: "#563"
       says: The canned change the autopilot commits in the test repository.
     - key: core
@@ -541,6 +541,13 @@ files:
       read-by: [scripts/org.py, scripts/autopilot.py]
       issue: "#563"
       says: The test repository's own core.
+    - key: callers
+      org: any
+      repo: never
+      limit: "engine-test only: names of workflow-templates/ files"
+      read-by: [scripts/org.py, scripts/install.py, scripts/release-scenarios.py]
+      issue: "#563"
+      says: The shipped callers the test repository has, which the release scenarios play.
     - key: cleanup
       org: any
       repo: never
