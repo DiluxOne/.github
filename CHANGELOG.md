@@ -2,6 +2,20 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [7.7.0](https://github.com/DiluxOne/.github/releases/tag/v7.7.0) · 2026-11-01
+
+### Features
+
+- feat: a kind for coding-agent plugins; DAW and the catalog adopted ([#553](https://github.com/DiluxOne/.github/pull/553))
+
+### Fixes
+
+- the bug reproduced from #549 ([#551](https://github.com/DiluxOne/.github/pull/551))
+
+### Maintenance
+
+- **repos:** add diluxone-mermaid, diluxone-plugins to repos.yml ([#547](https://github.com/DiluxOne/.github/pull/547))
+
 ## [7.6.0](https://github.com/DiluxOne/.github/releases/tag/v7.6.0) · 2026-10-31
 
 ### Features
@@ -15,6 +29,10 @@ Every version of the engine (the workflows, scripts, policy and kinds other repo
 ### CI
 
 - **deps:** Bump anthropics/claude-code-action from 1.0.263 to 1.0.264 ([#530](https://github.com/DiluxOne/.github/pull/530))
+
+### Maintenance
+
+- release v7.6.0 ([#544](https://github.com/DiluxOne/.github/pull/544))
 
 ## [7.5.0](https://github.com/DiluxOne/.github/releases/tag/v7.5.0) · 2026-10-30
 
