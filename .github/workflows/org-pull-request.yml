@@ -121,11 +121,9 @@ jobs:
     # of the description keeps the review's verdict and must not spend a
     # round).
     if: always() && github.event_name == 'pull_request' && github.repository != 'DiluxOne/.github' && needs.review.outputs.blocking == 'true' && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && github.event.action != 'edited'
-    # The agent's jobs read the repository, and its pull requests for
-    # next-version.py in `make pre-pr`, with the job's own token (#287, #537).
+    # The agent's jobs read the repository with the job's own token (#287).
     permissions:
       contents: read
-      pull-requests: read
     uses: DiluxOne/.github/.github/workflows/autopilot.yml@v7
     with:
       mode: fix
@@ -139,11 +137,9 @@ jobs:
   # who took it out of the queue).
   autopilot-queue:
     if: github.event_name == 'pull_request' && github.event.action == 'dequeued' && github.repository != 'DiluxOne/.github' && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN
-    # The agent's jobs read the repository, and its pull requests for
-    # next-version.py in `make pre-pr`, with the job's own token (#287, #537).
+    # The agent's jobs read the repository with the job's own token (#287).
     permissions:
       contents: read
-      pull-requests: read
     uses: DiluxOne/.github/.github/workflows/autopilot.yml@v7
     with:
       mode: fix

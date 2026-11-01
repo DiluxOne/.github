@@ -36,7 +36,7 @@ def test_the_pipeline_starts_one_fix_round_when_the_queue_drops_an_autopilot_pul
     assert job["uses"].startswith("DiluxOne/.github/.github/workflows/autopilot.yml@")
     # No input the released major may lack: autopilot.yml reads the event.
     assert job["with"] == {"mode": "fix", "pr": "${{ format('{0}', github.event.pull_request.number) }}"}
-    assert job["permissions"] == {"contents": "read", "pull-requests": "read"}
+    assert job["permissions"] == {"contents": "read"}
 
 
 def test_nothing_else_of_the_pipeline_runs_on_dequeued():

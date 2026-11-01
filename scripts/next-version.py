@@ -22,17 +22,26 @@ With --with-pull N the labels of pull request N count as if it had merged:
 the checks of an open pull request (the one that releases, above all) see
 the version it will release once it merges, its own version:* label included.
 
-    next-version.py [--repo OWNER/REPO] [--base main] [--tag-prefix v] [--exclude-tag X.Y.Z] [--with-pull N] [--json]
+With --pulls-from FILE (or DX_PULLS naming a file that exists) the pull
+requests are read from FILE instead of GitHub, which --save-pulls FILE
+wrote: the autopilot's agent works with a token that reads the repository
+and not its pull requests, so the job that holds the key saves them into
+what the agent reads, and `make pre-pr` finds them there (#585). Only their
+numbers, labels and merges cross; the tags still come from GitHub.
+
+    next-version.py [--repo OWNER/REPO] [--base main] [--tag-prefix v] [--exclude-tag X.Y.Z] [--with-pull N] [--pulls-from FILE] [--json]
+    next-version.py [--repo OWNER/REPO] [--base main] --save-pulls FILE
     next-version.py --test
 
 Needs `gh` logged in (or GH_TOKEN). Exit 0 with the answer, 2 on a bad
-argument, 1 when GitHub could not be read or a pull request carries a
-`version:*` label that is not major, minor or patch: a version is never
-guessed.
+argument, 1 when GitHub could not be read, a pull request carries a
+`version:*` label that is not major, minor or patch, or FILE lists another
+repository's or branch's pull requests: a version is never guessed.
 """
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -119,9 +128,50 @@ def gh(*args):
     return out.stdout
 
 
-def read_github(repo, base, prefix, exclude=None):
+def list_pulls(repo, base, state="closed"):
+    """The pull requests into `base`, with only what decides a version."""
+    pages = json.loads(gh("api", "repos/%s/pulls?state=%s&base=%s&per_page=100" % (repo, state, base), "--paginate", "--slurp"))
+    return [{"number": p["number"], "merged_at": p.get("merged_at"), "merge_commit_sha": p.get("merge_commit_sha"),
+             "labels": [l["name"] for l in p["labels"]]} for page in pages for p in page]
+
+
+def saved(repo, base, pulls):
+    """What --save-pulls writes: the pull requests and whose they are."""
+    return {"repo": repo, "base": base, "pulls": pulls}
+
+
+def load_pulls(path, repo, base):
+    """The pull requests --save-pulls wrote into `path`, for `repo` and
+    `base` only: another one's would give another version."""
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    if (data.get("repo"), data.get("base")) != (repo, base):
+        raise ValueError("%s lists the pull requests of %s into %s, not of %s into %s"
+                         % (path, data.get("repo"), data.get("base"), repo, base))
+    return data["pulls"]
+
+
+def merged_since(listed, shas, merged_after):
+    """[(number, [labels])] of what merged after the last release: by its
+    merge commit when compare listed them all, else by date."""
+    pulls = []
+    for p in listed:
+        if not p.get("merged_at"):
+            continue
+        if shas is not None:
+            if p.get("merge_commit_sha") not in shas:
+                continue
+        elif merged_after and not p["merged_at"] > merged_after:
+            # Past what compare lists: by date, strictly after the tag's commit.
+            continue
+        pulls.append((p["number"], p["labels"]))
+    return sorted(pulls)
+
+
+def read_github(repo, base, prefix, exclude=None, listed=None):
     """The facts from GitHub. `exclude` is a tag to leave out of the search
-    for the last release: the one being released right now, when it exists."""
+    for the last release: the one being released right now, when it exists.
+    `listed`, when given, are the pull requests (list_pulls), not read here."""
     tags = json.loads(gh("api", "repos/%s/tags" % repo, "--paginate", "--slurp"))
     versions = [v for page in tags for v in (parse(t["name"], prefix) for t in page if t["name"] != exclude) if v]
     last = max(versions) if versions else (0, 0, 0)
@@ -140,19 +190,9 @@ def read_github(repo, base, prefix, exclude=None):
         m = re.search(r'[?&]page=(\d+)>; rel="last"', head)
         commits_since = int(m.group(1)) if m else 1
         shas, merged_after = None, None
-    pages = json.loads(gh("api", "repos/%s/pulls?state=closed&base=%s&per_page=100" % (repo, base), "--paginate", "--slurp"))
-    pulls = []
-    for p in (p for page in pages for p in page):
-        if not p.get("merged_at"):
-            continue
-        if shas is not None:
-            if p.get("merge_commit_sha") not in shas:
-                continue
-        elif merged_after and not p["merged_at"] > merged_after:
-            # Past what compare lists: by date, strictly after the tag's commit.
-            continue
-        pulls.append((p["number"], [l["name"] for l in p["labels"]]))
-    return last, sorted(pulls), commits_since
+    if listed is None:
+        listed = list_pulls(repo, base)
+    return last, merged_since(listed, shas, merged_after), commits_since
 
 
 def self_test():
@@ -198,6 +238,38 @@ def self_test():
             self.assertEqual(decide((2, 0, 0), with_pull(merged, 9, ["type:chore"]), 4)["next"], "2.1.0")
             self.assertEqual(with_pull(merged, 3, ["version:major"]), merged)
 
+        def test_merged_since(self):
+            listed = [{"number": 1, "merged_at": "2026-01-02T00:00:00Z", "merge_commit_sha": "a", "labels": ["type:feat"]},
+                      {"number": 2, "merged_at": None, "merge_commit_sha": "b", "labels": ["type:breaking"]},
+                      {"number": 3, "merged_at": "2026-01-01T00:00:00Z", "merge_commit_sha": "c", "labels": ["type:fix"]}]
+            self.assertEqual(merged_since(listed, {"a", "b"}, None), [(1, ["type:feat"])])
+            self.assertEqual(merged_since(listed, None, "2026-01-01T12:00:00Z"), [(1, ["type:feat"])])
+            self.assertEqual(merged_since(listed, None, None), [(1, ["type:feat"]), (3, ["type:fix"])])
+
+        def test_saved_pulls(self):
+            # #585: what the keyed job saves is what the agent's job reads,
+            # for the repository and branch it was saved for, and no other.
+            import os
+            import tempfile
+            listed = [{"number": 7, "merged_at": "2026-01-02T00:00:00Z", "merge_commit_sha": "a", "labels": ["type:feat"]}]
+            with tempfile.TemporaryDirectory() as d:
+                path = os.path.join(d, "pulls.json")
+                with open(path, "w", encoding="utf-8") as fh:
+                    json.dump(saved("o/r", "main", listed), fh)
+                self.assertEqual(load_pulls(path, "o/r", "main"), listed)
+                with self.assertRaises(ValueError):
+                    load_pulls(path, "o/r", "develop")
+                with self.assertRaises(ValueError):
+                    load_pulls(path, "o/other", "main")
+                os.environ["DX_PULLS"] = path
+                try:
+                    self.assertEqual(pulls_file(None), path)
+                    self.assertEqual(pulls_file("x.json"), "x.json")
+                    os.environ["DX_PULLS"] = os.path.join(d, "missing.json")
+                    self.assertIsNone(pulls_file(None))
+                finally:
+                    del os.environ["DX_PULLS"]
+
         def test_monotonic(self):
             # A bigger bump only ever raises the coming version.
             last = (1, 4, 2)
@@ -209,6 +281,15 @@ def self_test():
     sys.exit(0 if result.wasSuccessful() else 1)
 
 
+def pulls_file(given):
+    """The file to read the pull requests from: --pulls-from, else DX_PULLS
+    when it names a file that exists, else None (GitHub)."""
+    if given:
+        return given
+    env = os.environ.get("DX_PULLS", "")
+    return env if env and os.path.isfile(env) else None
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--repo", help="OWNER/REPO (default: the repository of the current directory)")
@@ -216,15 +297,36 @@ def main():
     ap.add_argument("--tag-prefix", default="", help="what precedes X.Y.Z in the release tags (this repository: v)")
     ap.add_argument("--exclude-tag", default=None, help="a tag to ignore when looking for the last release: the one being released")
     ap.add_argument("--with-pull", type=int, default=None, help="an open pull request whose labels count as if it had merged")
+    ap.add_argument("--pulls-from", default=None, help="read the pull requests from this file (--save-pulls wrote it), not GitHub; default: DX_PULLS when that file exists")
+    ap.add_argument("--save-pulls", default=None, help="write the base's pull requests, open and closed, into this file and exit")
     ap.add_argument("--json", action="store_true", help="print the answer as JSON")
     ap.add_argument("--test", action="store_true", help="run the self-tests and exit")
     a = ap.parse_args()
     if a.test:
         self_test()
     repo = a.repo or gh("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner").strip()
-    last, pulls, commits_since = read_github(repo, a.base, a.tag_prefix, a.exclude_tag)
+    if a.save_pulls:
+        with open(a.save_pulls, "w", encoding="utf-8") as fh:
+            json.dump(saved(repo, a.base, list_pulls(repo, a.base, "all")), fh)
+        return
+    listed = None
+    path = pulls_file(a.pulls_from)
+    if path:
+        try:
+            listed = load_pulls(path, repo, a.base)
+        except (OSError, ValueError, KeyError) as e:
+            sys.stderr.write("error: %s\n" % e)
+            sys.exit(1)
+    last, pulls, commits_since = read_github(repo, a.base, a.tag_prefix, a.exclude_tag, listed)
     if a.with_pull and a.with_pull not in {n for n, _ in pulls}:
-        labels = json.loads(gh("api", "repos/%s/pulls/%d" % (repo, a.with_pull), "--jq", "[.labels[].name]"))
+        if listed is not None:
+            found = [p["labels"] for p in listed if p["number"] == a.with_pull]
+            if not found:
+                sys.stderr.write("error: #%d is not among the pull requests in %s\n" % (a.with_pull, path))
+                sys.exit(1)
+            labels = found[0]
+        else:
+            labels = json.loads(gh("api", "repos/%s/pulls/%d" % (repo, a.with_pull), "--jq", "[.labels[].name]"))
         pulls = with_pull(pulls, a.with_pull, labels)
     try:
         d = decide(last, pulls, commits_since)
