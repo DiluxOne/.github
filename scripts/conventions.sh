@@ -115,7 +115,7 @@ check() {
   SECTIONS=${SECTIONS-What changes,Why}
   LABELS=${LABELS:-}
   COMMENTS_FILE=${COMMENTS_FILE:-}
-  REVIEW_BOT=${REVIEW_BOT:-${DX_BOT_LOGIN:-dilux-bot[bot]}}
+  REVIEW_BOT=${REVIEW_BOT:-$(python3 "$(dirname "${BASH_SOURCE[0]}")/org.py" bot login || true)}
   AUTHOR_TYPE=${AUTHOR_TYPE:-User}
   MAX_LINES=${MAX_LINES:-}
   TAKEN_OVER=${TAKEN_OVER:-}

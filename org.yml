@@ -13,6 +13,18 @@ bot:
 # advisories' fixes, the patches, the nightly review, and where a
 # vulnerability posted in a public issue is moved, out of sight.
 security: DiluxOne/security
+# Its maintainers (#568): trusted authors in every repository
+# (scripts/policy.py adds them to the review policy's `trusted-authors`),
+# who may run scripts/sync-repos.py for the org-sync lane (scripts/
+# autonomy.py, when the lane names no `people`), and who a security report
+# posted in public mentions (scripts/triage-act.sh).
+maintainers: [soydiloreto]
+# The catalog each kind publishes its releases to (#552, #568): a pack's
+# `release.publishes-to: "{catalog}"` is this, for its kind
+# (scripts/release-issue.py, plugin-publish-ai.yml). A kind with none here
+# publishes nowhere.
+catalogs:
+  ai-agent-plugin: diluxone-plugins-ai
 # The merge queue (#451, scripts/sync-repos.py merge-queue): `auto` turns it
 # on wherever GitHub gives one (every public repository; a private one only
 # on GitHub Enterprise Cloud) and leaves the others ready for the day it
@@ -33,3 +45,42 @@ pre-pr: optional
 # `required` once the repositories are in step, so no open pull request is
 # stopped by the release that brings the check.
 attribution: warn
+# Who decides (#588, scripts/deciders.py): whose answers the autopilot
+# takes as a maintainer's once an issue is accepted, and who may add
+# `accepted`, `autopilot:continue`, `/coauthor` and `/uncoauthor`. Anyone
+# else's comment is data, summarised for them (#287). `codeowners`: the
+# code owners of the files the change touches (the diff of the open pull
+# request that closes the issue when the autopilot opened it, never a
+# person's, else the Spec's files while its seal still matches, else the
+# catch-all rule's owners), from the repository's
+# CODEOWNERS on its default branch (a repository without one is
+# `writers`); `acceptor`: whoever accepted the issue (anyone with write
+# gives the first acceptance); `writers`: anyone with write access. Each
+# keeps its action's floor (write; maintain for the credits) and an admin
+# always decides. A repository's exception is repos.yml `who-decides`.
+who-decides: codeowners
+# The custom property of the organisation that says a repository is adopted
+# (#562, scripts/sync-repos.py rulesets): `true` on every repository
+# repos.yml lists, written by the sync, and the organisation's rulesets
+# cover the repositories that have it instead of a list of names.
+adopted-property: dx-adopted
+# A repository's own commit rules that contradict the organisation's (#562,
+# scripts/sync-repos.py check): each pattern is matched against its
+# commit-msg hook (.githooks/, .husky/), its commitlint configuration, and
+# the lines of its AGENTS.md (the dx:org block aside) and CONTRIBUTING.md
+# that speak of commits or trailers; a line that says "never" or "not" of it
+# is no contradiction. The daily drift check lists each one found. `listed`
+# and `kept` are its fixtures: lines it must find, and lines it must not.
+conventions-contradictions:
+  - pattern: '(?i)\bAI-assisted:\s*(yes|true)\b'
+    says: "an `AI-assisted: yes` trailer, where the organisation's is `Assisted-by: <model> (<maker>)`"
+    listed: ["Every commit an agent helped with ends with `AI-assisted: yes`.", "grep -q '^AI-assisted: yes$' \"$1\" || exit 1"]
+    kept: ["End it with `Assisted-by: Claude Opus 5.5 (Anthropic)`.", "Never write `AI-assisted: yes`."]
+  - pattern: '(?i)\bCo-authored-by:\s*(Claude|ChatGPT|GPT-?\d|Copilot|Gemini|Codex)\b'
+    says: "a model named as a `Co-authored-by`, which the conventions check refuses (a model is `Assisted-by:`)"
+    listed: ["Add `Co-authored-by: Claude <noreply@anthropic.com>` to the commit."]
+    kept: ["Co-authored-by: Ana <1+ana@users.noreply.github.com>", "A model is never a `Co-authored-by: Claude`."]
+  - pattern: '(?i)\bGenerated with\b'
+    says: 'a "Generated with …" footer, where the organisation''s is the AI line (`🤖 AI-generated · <model> (<maker>)`)'
+    listed: ["End the commit body with 🤖 Generated with Claude Code."]
+    kept: ["Never \"Generated with …\".", "End it with `🤖 AI-generated · Claude Opus 5.5 (Anthropic)`."]

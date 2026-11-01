@@ -77,8 +77,8 @@ A change moves only if it passes each gate in order. The deterministic gates alw
 
 | Gate | What it verifies | If it fails |
 | --- | --- | --- |
-| G1 Issue ready | Problem, scope, out of scope, verifiable criteria, the tests that prove them, criticality; checked when the issue opens and on every edit (`awaiting-acceptance` or `incomplete`) | It cannot be accepted; the issue says what is missing |
-| G2 Acceptance | `accepted` from a person, or a lane of the policy | Nothing starts |
+| G1 Issue ready | Problem, scope, out of scope, verifiable criteria, the tests that prove them, criticality; checked when the issue opens and on every edit (`awaiting-acceptance` or `incomplete`) | It cannot be accepted; the issue asks its author what is missing, and their answers are rewritten into it (#588) |
+| G2 Acceptance | `accepted` from a person `who-decides` allows (#588: the code owners of what it touches by default, the acceptor, or every writer), or a lane of the policy; an edit after the seal withdraws it | Nothing starts; anyone else's label comes off |
 | G3 Plan | Files, approach and tests before code; in scope, no protected path (a reproduced bug's may touch one, never widening it) | It asks the maintainer, with the action and its URL |
 | G4 The kind's checks | Conventions, lint, static analysis, tests | The agent fixes and pushes again (a round) |
 | G5 Clean review | No open blocker or major | The agent fixes; after 5 rounds, a person |
@@ -106,11 +106,11 @@ The review sets the risk, and a pull request cannot lower it: the high-risk path
 
 Everything decided without a maintainer comes from one file, `policy/autonomy.yml`. A repository can restrict it freely, or widen it only up to the ceiling the organisation sets. Each lane is a named entry, and nothing is accepted on its own unless it fits one: it says who can originate it (which workflow, which author), how it is recognised (a `lane:<name>` label, or, for a sub-issue of an issue a person accepted, its parent), what evidence it demands, up to which risk it merges on its own and in which repositories.
 
-The gate ignores any label a bot adds, except a lane's label, and that only when the issue's history shows it was opened by the workflow and the author the lane names. A sub-issue needs no label: it is accepted while its parent stays open and accepted by a person, if a member of the organisation opened it and did not edit it after linking it.
+The gate ignores any label a bot adds, except a lane's label, and that only when the issue's history shows it was opened by the workflow and the author the lane names. A sub-issue needs no label: it is accepted while its parent stays open, or was closed as completed, and accepted by a person, if a member of the organisation opened it and did not edit it after linking it.
 
 ## Where each rule lives
 
-Three layers: the organisation (its `.github` repository), the kind, the repository. What is below adds or restricts; it never loosens what is above, except up to the ceiling the organisation sets.
+Three layers: the organisation (its `.github` repository), the kind, the repository. What is below adds or restricts; it never loosens what is above, except up to the ceiling the organisation sets. Beneath them all are the engine's defaults (DiluxOne/.github): an organisation's file overrides only the keys it sets and keeps the engine's for every other, and never drops an engine safeguard (#568). Every setting, its default, who may change it and its limit: [configuration](configuration.md).
 
 | What | Organisation | Kind | Repository |
 | --- | --- | --- | --- |
@@ -145,7 +145,7 @@ Any automatic decision is answered in three clicks: the issue's board says what 
 The agent reads text anyone can write. No layer depends on the agent behaving well:
 
 1. The issue has exactly its form's headings; loose text fails the gate.
-2. The maintainer reads the PRD before accepting, and the hash freezes it; the agent reads the PRD and the Spec at those hashes, never third parties' comments.
+2. The maintainer reads the PRD before accepting, and the hash freezes it; the agent reads the PRD and the Spec at those hashes, never third parties' comments. Only those `who-decides` allows answer it (#588); anyone else, the issue's author included once it is sealed, is summarised as data. Before the seal, the author's answers are rewritten into the issue by a model with no tools, checked by the schema and read by a person before acceptance.
 3. The prompt presents the issue as a specification, never as instructions.
 4. The agent that can run commands holds no key and its token writes nothing: what it would do on GitHub, a separate job that runs no agent does, within a fixed list of actions (push onto its pull request's branch, never a workflow outside the organisation's own repository, where its engine is the work and a person merges it, #498: there, as with any pull request in that repository, its branch's workflows and scripts run with the organisation's secrets before that person merges, a risk the maintainer accepted; tick, decide, ask, stop, reply), and everything goes through a pull request with gates.
 5. A reproduction runs in a sandbox with no network and no secrets.

@@ -200,7 +200,7 @@ jobs:
       # dilux-bot opens the issues, so a failed build's issue is a `platform`
       # lane issue (policy/autonomy.yml): the lane checks it was opened by
       # that App from this workflow's run, named in the body.
-      - name: dilux-bot token
+      - name: App token
         id: bot
         if: always() && github.event_name != 'pull_request'
         continue-on-error: true # without it the build is still recorded, by the workflow's own token

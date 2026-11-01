@@ -48,6 +48,8 @@ Publishing is the third decision a person makes, after accepting the issue and, 
 
 You can follow an autopilot run as it goes: its draft pull request is the Spec as a checklist, one box per criterion, ticked as each criterion's commit lands; the issue's board links the pull request, the run and the progress; the run's summary says what the agent read, ran and changed, and keeps its full transcript. A run never ends in silence: the pull request is ready for review, or the agent says where it stopped and why, or the run continues (`autopilot:continue`), or the workflow says so and hands it to a person (`needs-human`). A pull request that is not the autopilot's, a person's or a contributor's, joins the same path at "Ready for review".
 
+Who steers it is a setting, `who-decides` (#588, org.yml with a repository's exception in repos.yml): by default the code owners of what the change touches, else whoever accepted it, or every writer. Only they accept an issue or answer the autopilot; anyone else's comment, the author's included once the issue is accepted, is summarised as data. An issue that is not complete yet asks its author the questions that fill it and is rewritten with their answers, for a person to read before accepting it; one edited after its acceptance loses it.
+
 A person who wants to write the code of an accepted issue themselves claims it (`/claim`, or the checkbox in its form, #488): the autopilot steps aside for them, the first one wins, and a claim that stalls is released after 10 days and handed back to the autopilot, so no issue waits on nobody ([CONTRIBUTING.md](CONTRIBUTING.md), "Start from an issue").
 
 A bug report needs no person to start its fix once it is reproduced: the reproduction writes a unit test from the report, runs it where it can reach nothing, and when it fails, the bot opens an issue of its own for the fix, accepted by the `bugfix-reproduced` lane of the autonomy policy; the autopilot then has to make that exact test pass, through every gate. A report that does not reproduce gets what was tried and what would settle it; one that is really a feature request becomes a Feature and waits for a maintainer, like any request.
@@ -107,7 +109,7 @@ flowchart TB
 | 🏃 | [`runner/`](runner/) | The image every job on the organisation's VM runs in, `ghcr.io/diluxone/runner` |
 | 📋 | [`workflow-templates/`](workflow-templates/) | Ready-made callers for a new repository |
 | 🎨 | [`design-systems/`](design-systems/) | What a screen looks like: tokens, components and the rules a review checks (today, `wordpress-admin`); each project names its own in `repos.yml` |
-| 🏷️ | [`labels.yml`](labels.yml) · [`repos.yml`](repos.yml) | Labels, settings, Projects, design systems, the way a repository reproduces a bug when its pack and its policy declare none (`repro:`) and what each repository adds to its Dependabot template (`kinds/<kind>/dependabot.yml`, `policy/dependabot.default.yml`), kept in step by `scripts/sync-repos.py` |
+| 🏷️ | [`labels.yml`](labels.yml) · [`repos.yml`](repos.yml) | Labels, settings, and one entry per repository (#562): its kind, Project, design system, the way it reproduces a bug when its pack and its policy declare none (`repro:`), its callers' values and what it adds to its Dependabot template (`kinds/<kind>/dependabot.yml`, `policy/dependabot.default.yml`), kept in step by `scripts/sync-repos.py` |
 | 🖼️ | [`profile/`](profile/) | The organisation's public page on GitHub |
 
 ## Read more
@@ -121,6 +123,7 @@ flowchart TB
 | Run the engine in another organisation | [docs/installing.md](docs/installing.md) |
 | Move a repository to a newer major | [docs/migrating.md](docs/migrating.md) |
 | Look up a workflow, a script, a secret | [docs/workflows.md](docs/workflows.md) |
+| Look up a setting: its default, who may change it, its limit | [docs/configuration.md](docs/configuration.md) |
 | Understand the model: types of work, gates, what merges on its own | [docs/model.md](docs/model.md) |
 | Read the rules every change meets | [rules/README.md](rules/README.md) |
 | Add a review rule or a kind of project | [kinds/README.md](kinds/README.md) |

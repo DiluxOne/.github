@@ -7,8 +7,8 @@ code) that an organisation ruleset lets only dilux-bot create or update and
 nobody delete or rewrite. A GitHub App's commits made through the API are
 signed by GitHub and show as Verified.
 
-  receipts.py seal-prd     on acceptance: the PRD's SHA-256, who accepted, when
-                           (issues/<n>/prd-<UTC>.json)
+  receipts.py seal-prd     on acceptance: the PRD's SHA-256 and its text (#588),
+                           who accepted, when (issues/<n>/prd-<UTC>.json)
   receipts.py seal-spec    at G3, when the autopilot wrote the Spec: its SHA-256
                            (issues/<n>/spec-<UTC>.json)
   receipts.py verify-spec  the Spec now against its seal: exit 0 only on "match"
@@ -20,6 +20,12 @@ signed by GitHub and show as Verified.
                            while it is "unsealed" or "changed", for the seal
                            of an acceptance that runs alongside (a
                            re-acceptance meets the old seal first, #353)
+  receipts.py sealed-prd   the PRD's text as its last seal sealed it (#588):
+                           the seal's own, else the issue's edit whose PRD
+                           has the sealed hash (EDITS_JSON, a list of bodies,
+                           stands in for the edit history); exit 1, printing
+                           nothing, when neither has it, 2 when the seal
+                           could not be read
   receipts.py merged       when the issue closes as completed: the receipt
                            (issues/<n>/merged-<UTC>.json; a reopened and
                            merged-again issue gets another): PRD and Spec hashes, the
@@ -39,11 +45,14 @@ import datetime
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import org  # noqa: E402  the organisation's App, from org.yml (#568)
 import importlib.util  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location("issue_schema", os.path.join(HERE, "issue-schema.py"))
@@ -75,8 +84,41 @@ def now():
 # --- what a seal and a receipt say (pure, tested) -------------------------
 
 def seal(number, body, accepted_by, policy_ref, at):
-    return {"kind": "prd-seal", "issue": number, "prd_sha256": prd_hash(body), "accepted_by": accepted_by,
-            "at": at, "policy": f"DiluxOne/.github@{policy_ref}" if policy_ref else None}
+    # The text too (#588, choice 5a): what changed since the seal can be
+    # said; it is public on the issue already.
+    return {"kind": "prd-seal", "issue": number, "prd_sha256": prd_hash(body), "prd": schema_mod.part_text(body, "prd"),
+            "accepted_by": accepted_by, "at": at, "policy": f"DiluxOne/.github@{policy_ref}" if policy_ref else None}
+
+
+def sealed_prd(last_seal, edits=()):
+    """The PRD's text as LAST_SEAL sealed it: its own `prd` when its hash is
+    the sealed one, else the PRD of the first body in EDITS (the issue's
+    edit history) whose hash is; "" when neither. Pure."""
+    if not last_seal:
+        return ""
+    want = last_seal.get("prd_sha256")
+    own = last_seal.get("prd")
+    if isinstance(own, str) and sha(own) == want:
+        return own
+    for body in edits or ():
+        if isinstance(body, str) and prd_hash(body) == want:
+            return schema_mod.part_text(body, "prd")
+    return ""
+
+
+def edit_history(repo, number):
+    """The issue's bodies as edited, from GitHub's edit history (EDITS_JSON
+    stands in for it); [] when it cannot be read: the comment then says the
+    sealed text is not available."""
+    if os.environ.get("EDITS_JSON"):
+        return json.loads(os.environ["EDITS_JSON"])
+    owner, _, name = repo.partition("/")
+    q = "query($o:String!,$n:String!,$i:Int!){repository(owner:$o,name:$n){issue(number:$i){userContentEdits(first:100){nodes{diff}}}}}"
+    try:
+        data = gh("graphql", "-f", f"query={q}", "-F", f"o={owner}", "-F", f"n={name}", "-F", f"i={number}")
+        return [n.get("diff") or "" for n in data["data"]["repository"]["issue"]["userContentEdits"]["nodes"]]
+    except (RuntimeError, KeyError, TypeError):
+        return []
 
 
 def verdict(body, last_seal):
@@ -138,9 +180,13 @@ def rule_link(policy):
     return f"[the rule](https://github.com/DiluxOne/.github/blob/{ref}/policy/autonomy.yml)"
 
 
-def board_text(number, ready, last_seal, merged, autopilot=None, labels=()):
+def board_text(number, ready, last_seal, merged, autopilot=None, labels=(), held=""):
     rows = ["| Gate | State |", "| --- | --- |"]
     rows.append(f"| G1 Issue ready | {'✓ the PRD follows the schema' if ready else '✗ see the G1 comment'} |")
+    # A person holds it (#488, #561): a claim, an assignment, their own
+    # open pull request that closes it; the autopilot does not start.
+    if held and not autopilot:
+        rows.append(f"| Held | 🙋 {held}: the autopilot does not start |")
     lane = next((l[5:] for l in labels if l.startswith("lane:")), None)
     if last_seal:
         by = last_seal.get("accepted_by") or ""
@@ -160,6 +206,19 @@ def board_text(number, ready, last_seal, merged, autopilot=None, labels=()):
         by = f"policy ({rule_link(merged.get('policy'))})" if merged.get("merged_by") == "policy" else merged.get("merged_by")
         rows.append(f"| G7 Merged | ✓ #{merged.get('pull_request')} by {by}; receipt in `receipts/issues/{number}/merged-{merged.get('at')}.json` |")
     return f"{BOARD}\n**The issue's board**\n\n" + "\n".join(rows) + f"\n\n{AI}"
+
+
+def holder(repo, number):
+    """Why a person holds the issue (autopilot.py held_by, #488), read from
+    GitHub (HELD stands in for it in the self-test); "" when nobody does or
+    it cannot be read: the board then says less, never something wrong."""
+    if "HELD" in os.environ:
+        return os.environ["HELD"]
+    try:
+        ap = _autopilot()
+        return ap.held_by(*ap.read_holder(repo, number))
+    except Exception:  # the board never fails on it
+        return ""
 
 
 def issue_labels(repo, number):
@@ -223,7 +282,7 @@ def ensure_branch(repo):
             raise
     tree = gh("-X", "POST", f"repos/{repo}/git/trees", "--input", "-", data={"tree": [{
         "path": "README.md", "mode": "100644", "type": "blob",
-        "content": "# Receipts\n\nSeals and receipts of this repository's issues, written by dilux-bot (DiluxOne/.github, scripts/receipts.py). Nobody else writes here, and nothing here is deleted or rewritten.\n"}]})
+        "content": "# Receipts\n\nSeals and receipts of this repository's issues, written by " + org.APP + " (" + org.CENTRAL + ", scripts/receipts.py). Nobody else writes here, and nothing here is deleted or rewritten.\n"}]})
     commit = gh("-X", "POST", f"repos/{repo}/git/commits", "--input", "-", data={"message": "Receipts begin", "tree": tree["sha"], "parents": []})
     try:
         gh("-X", "POST", f"repos/{repo}/git/refs", "--input", "-", data={"ref": f"refs/heads/{BRANCH}", "sha": commit["sha"]})
@@ -243,9 +302,50 @@ def write(repo, path, obj, message):
             json.dump(obj, f, indent=2)
         return
     ensure_branch(repo)
+    put(repo, path, obj, message)
+
+
+# Two writers at once (two issues accepted together, #561): the second
+# write's commit meets a branch head that just moved, and GitHub answers
+# 409, or 422 on a stale head. Each try reads the head anew; a path that
+# already exists is never written again.
+WRITE_TRIES = 5
+
+
+def put(repo, path, obj, message, api=None, nap=None):
+    """Write one receipt on the branch, retrying when the branch moved under
+    it (HTTP 409, or 422 on a sha or a conflict) up to WRITE_TRIES times
+    with a short back-off; never an overwrite: without a sha the API
+    refuses a path that exists, and a 422 for a path that exists ends
+    there. api and nap are for the self-test."""
+    api = api or gh
+    nap = nap or time.sleep
     # Never an overwrite: without a sha, the API refuses a path that exists.
     payload = {"message": message, "branch": BRANCH, "content": base64.b64encode((json.dumps(obj, indent=2) + "\n").encode()).decode()}
-    gh("-X", "PUT", f"repos/{repo}/contents/{path}", "--input", "-", data=payload)
+    for n in range(1, WRITE_TRIES + 1):
+        try:
+            return api("-X", "PUT", f"repos/{repo}/contents/{path}", "--input", "-", data=payload)
+        except RuntimeError as e:
+            text = str(e)
+            moved = "409" in text or ("422" in text and re.search(r"(?i)\bsha\b|conflict", text))
+            if not moved or n == WRITE_TRIES:
+                raise
+            if "422" in text and exists(repo, path, api):
+                raise RuntimeError(f"{path} exists; a receipt is never overwritten") from e
+            nap(0.5 * 2 ** (n - 1))
+    return None
+
+
+def exists(repo, path, api=None):
+    """Whether path is on the receipts branch; a read that fails other
+    than 404 is raised."""
+    try:
+        (api or gh)(f"repos/{repo}/contents/{path}?ref={BRANCH}")
+        return True
+    except RuntimeError as e:
+        if "404" in str(e) or "Not Found" in str(e):
+            return False
+        raise
 
 
 def list_dir(repo, path):
@@ -314,6 +414,12 @@ Normal
     check("verify: a report added above does not matter", verdict("### What happened?\n\nx\n\n" + body, s), "match")
     check("verify: a changed criterion is caught", verdict(body.replace("turns dark", "turns light"), s), "changed")
     check("verify: no seal is unsealed", verdict(body, None), "unsealed")
+    check("C5 (#588): a seal holds the PRD's text", s["prd"], schema_mod.part_text(body, "prd"))
+    old = {k: v for k, v in s.items() if k != "prd"}
+    check("C5 (#588): the sealed text: the seal's own, else the edit whose hash is the sealed one, else none",
+          (sealed_prd(s), sealed_prd(old, ["### Problem\n\nOther.\n", "### What happened?\n\nx\n\n" + body]), sealed_prd(old, ["x"]), sealed_prd(None)),
+          (schema_mod.part_text(body, "prd"), schema_mod.part_text(body, "prd"), "", ""))
+    check("C5 (#588): a seal's text that does not hash to it is not taken", sealed_prd(dict(s, prd="forged")), "")
     def reads(*vs):
         it = iter(vs)
         return lambda: next(it)
@@ -372,6 +478,15 @@ Normal
         check("cli: verify an issue never sealed", run("verify-prd").stdout.strip(), "unsealed")
         check("cli: seal-prd writes a seal", run("seal-prd").returncode, 0)
         check("cli: verify the sealed PRD", run("verify-prd").stdout.strip(), "match")
+        # C5 (#588): the accepted body edited reads `changed`, and the
+        # sealed text is found to say what changed.
+        ef = os.path.join(d, "edited.md")
+        with open(ef, "w", encoding="utf-8") as f:
+            f.write(body.replace("turns dark", "turns light"))
+        check("C5 cli: an edited accepted body reads changed", (run_e := sp.run([sys.executable, os.path.abspath(__file__), "verify-prd"], env=dict(env, BODY=ef), capture_output=True, text=True)).stdout.strip(), "changed")
+        check("C5 cli: and exits 1", run_e.returncode, 1)
+        got = sp.run([sys.executable, os.path.abspath(__file__), "sealed-prd"], env=dict(env, BODY=ef), capture_output=True, text=True)
+        check("C5 cli: sealed-prd prints the text that was sealed", (got.returncode, got.stdout.strip() == schema_mod.part_text(body, "prd").strip()), (0, True))
         check("cli: merged writes a receipt", run("merged").returncode, 0)
         check("cli: the board shows the receipt", "G7 Merged" in run("board").stdout, True)
         check("cli: verify-spec with no Spec seal fails", run("verify-spec").returncode, 1)
@@ -385,6 +500,49 @@ Normal
         r10 = sp.run([sys.executable, os.path.abspath(__file__), "verify-prd"], env=dict(env, NUMBER="10"), capture_output=True, text=True)
         check("cli: a seal that cannot be read exits 2", r10.returncode, 2)
         del os.environ["RECEIPTS_FIXTURE"]
+    # #561 C5: two writers at once, each answered 409 once by a branch that
+    # moved, then written; a path that exists is never written again.
+    branch_files, calls, naps5 = {}, [], []
+
+    def moving_api(*args, data=None):
+        url = next(a for a in args if a.startswith("repos/"))
+        path = url.split("/contents/", 1)[1].split("?", 1)[0]
+        calls.append((args[1] if args[0] == "-X" else "GET", path))
+        if args[:2] == ("-X", "PUT"):
+            if path in branch_files:
+                raise RuntimeError('gh: Invalid request. "sha" wasn\'t supplied. (HTTP 422)')
+            if sum(1 for c in calls if c == ("PUT", path)) == 1:
+                raise RuntimeError("gh: is at abc but expected def (HTTP 409)")
+            branch_files[path] = data["content"]
+            return {"content": {"path": path}}
+        if path in branch_files:
+            return {"path": path}
+        raise RuntimeError("gh: Not Found (HTTP 404)")
+
+    for n in (8, 9):
+        put("o/r", f"issues/{n}/prd-1.json", {"issue": n}, f"seal #{n}", api=moving_api, nap=naps5.append)
+    check("#561 C5: two seals written at the same moment both succeed, each after one 409", (sorted(branch_files), len(naps5)),
+          (["issues/8/prd-1.json", "issues/9/prd-1.json"], 2))
+    try:
+        put("o/r", "issues/8/prd-1.json", {"issue": 8, "x": 1}, "again", api=moving_api, nap=naps5.append)
+        again = "written"
+    except RuntimeError as e:
+        again = str(e)
+    check("#561 C5: a path that exists is never written again", ("never overwritten" in again, json.loads(base64.b64decode(branch_files["issues/8/prd-1.json"]))),
+          (True, {"issue": 8}))
+    always = lambda *a, data=None: (_ for _ in ()).throw(RuntimeError("gh: conflict (HTTP 409)"))
+    try:
+        put("o/r", "issues/10/prd-1.json", {}, "x", api=always, nap=lambda s: None)
+        capped = "written"
+    except RuntimeError as e:
+        capped = str(e)
+    check("#561 C5: a branch that keeps moving fails after the tries, said", "409" in capped, True)
+    try:
+        put("o/r", "issues/11/prd-1.json", {}, "x", api=lambda *a, data=None: (_ for _ in ()).throw(RuntimeError("gh: Bad credentials (HTTP 401)")), nap=lambda s: 1 / 0)
+        other = "written"
+    except RuntimeError as e:
+        other = str(e)
+    check("#561 C5: any other failure is not retried", "401" in other, True)
     # A job that runs this script reads the organisation's scripts whole:
     # it loads autopilot.py for an autopilot pull request's board (#306).
     try:
@@ -444,6 +602,16 @@ def main(argv):
             return 2
         print(v)
         return 1 if v == "changed" else 0
+    if mode == "sealed-prd":
+        try:
+            last = last_seal(repo, number)
+        except Exception as e:  # noqa: BLE001 — unknown, never "not sealed"
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+        text = sealed_prd(last) or sealed_prd(last, edit_history(repo, number))
+        if text:
+            print(text)
+        return 0 if text else 1
     if mode == "merged":
         pr = json.loads(os.environ.get("PR_JSON", "{}"))
         checks = json.loads(os.environ.get("CHECKS_JSON", "{}"))
@@ -455,7 +623,7 @@ def main(argv):
         ready = schema_mod.check(body)["ok"]
         names = [n for n in list_dir(repo, f"issues/{number}") if n.startswith("merged-")]
         merged = read(repo, f"issues/{number}/{names[-1]}") if names else None
-        print(board_text(number, ready, last_seal(repo, number), merged, autopilot_state(repo, number), issue_labels(repo, number)))
+        print(board_text(number, ready, last_seal(repo, number), merged, autopilot_state(repo, number), issue_labels(repo, number), holder(repo, number)))
         return 0
     print(__doc__, file=sys.stderr)
     return 64

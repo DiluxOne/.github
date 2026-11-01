@@ -4,9 +4,10 @@
 # says can lower what these rules decide.
 
 # Who may have a pull request merged without a human. Anyone else, always
-# a human. A repository can narrow or widen this list.
+# a human. The organisation's maintainers (org.yml `maintainers`, #568) are
+# added to it by scripts/policy.py. A repository's own list replaces it,
+# to narrow or widen it.
 trusted-authors:
-  - soydiloreto
   - dependabot[bot]
 
 # Every pull request starts from an issue a maintainer accepted: its
@@ -32,7 +33,7 @@ issue-gate:
 # file can say that. A pull request the autopilot opened and a maintainer
 # took over (`needs-human`, no `autopilot`, the head commit the
 # maintainer's) is the maintainer's: no cap (#130). Nor has the
-# organisation's own bot (DX_BOT_LOGIN, dilux-bot when unset) from a
+# organisation's own bot (DX_BOT_LOGIN, org.yml's App when unset) from a
 # branch of the same repository, never a fork (#361).
 max-changed-lines-untrusted: 600
 
@@ -73,7 +74,7 @@ high-risk:
 # Which reviewer each risk level gets: the model id as the API names it and
 # the reasoning effort (low, medium, high, xhigh, max). A repository overrides
 # any level, or any single key of a level, in its own .github/review-policy.yml;
-# what it leaves out stays as here. Replies to @dilux-bot and the weekly
+# what it leaves out stays as here. Replies to the App and the weekly
 # learnings use the `high` reviewer.
 review:
   low:    { model: claude-sonnet-5-5, effort: low }

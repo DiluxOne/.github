@@ -7,7 +7,8 @@ name: Pull request
 # rewrite the rules that review it. The conventions script comes from the pull
 # request itself: it can change conventions.yml anyway. An autopilot pull
 # request whose review blocks gets its fix round here (autopilot-fix, #504),
-# as org-pull-request.yml gives it everywhere else.
+# as org-pull-request.yml gives it everywhere else. A push to main brings
+# the open autopilot pull requests in step with it (autopilot-sweep, #561).
 
 on:
   # An edit of the title or description is handled by pull-request-edited.yml.
@@ -104,6 +105,9 @@ jobs:
       - run: bash scripts/issue-assignee.sh --test
       - run: bash scripts/weekly-failure.sh --test
       - run: bash scripts/config-overlay.sh --test
+      - run: python3 scripts/settings.py --test
+      - run: python3 scripts/settings.py org-free
+      - run: python3 scripts/settings.py check
       - run: bash scripts/review-brief.sh --test
       - run: bash scripts/local-review.sh --test
       - run: python3 scripts/policy.py --test
@@ -176,6 +180,7 @@ jobs:
       - run: python3 scripts/design-lint.py --test
       - run: python3 scripts/receipts.py --test
       - run: python3 scripts/autopilot.py --test
+      - run: python3 scripts/deciders.py --test
       - run: python3 scripts/revert.py --test
       - run: python3 scripts/api-commit.py --test
       - run: bash scripts/runner-vm/dx-runner-slot.sh --test
@@ -266,7 +271,7 @@ jobs:
     # Only dilux-bot's own pull requests, and only for a new commit (an edit
     # of the description keeps the review's verdict and must not spend a
     # round).
-    if: always() && github.event_name == 'pull_request' && github.repository == 'DiluxOne/.github' && needs.review.outputs.blocking == 'true' && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == 'dilux-bot[bot]' && github.event.action != 'edited'
+    if: always() && github.event_name == 'pull_request' && github.repository == 'DiluxOne/.github' && needs.review.outputs.blocking == 'true' && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && github.event.action != 'edited'
     # The agent's jobs read the repository with the job's own token (#287).
     permissions:
       contents: read
@@ -275,4 +280,16 @@ jobs:
       mode: fix
       pr: ${{ format('{0}', github.event.pull_request.number) }}
       central-ref: main
+    secrets: inherit
+
+  # A merge into main here brings this repository's open autopilot pull
+  # requests it leaves behind or in conflict back in step at once (#561);
+  # elsewhere the same sweep runs every hour from this repository.
+  autopilot-sweep:
+    if: github.event_name == 'push' && github.repository == 'DiluxOne/.github'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/autopilot-sweep.yml
+    with:
+      repo: ${{ github.repository }}
     secrets: inherit

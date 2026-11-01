@@ -141,7 +141,7 @@ case "$mode" in
       auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
       echo "::add-mask::$auth"
       git -C "$src" -c "http.extraheader=AUTHORIZATION: basic $auth" fetch -q --depth 1 "$base/$owner/$repo" "$ref" \
-        || { echo "::error::requires-plugins-from: $owner/$repo@$ref could not be fetched (does the ref exist, and can dilux-bot read the repository?)." >&2; exit 1; }
+        || { echo "::error::requires-plugins-from: $owner/$repo@$ref could not be fetched (does the ref exist, and can the App read the repository?)." >&2; exit 1; }
       git -C "$src" checkout -q FETCH_HEAD
       mkdir -p "$out/$slug"
       excludes=()

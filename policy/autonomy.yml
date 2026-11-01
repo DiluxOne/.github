@@ -11,6 +11,10 @@
 #
 # The golden rule: this file, the gates and the workflows that apply them
 # (`constitution` below) are always accepted and merged by a person.
+# The list holds in this repository, where those paths are the engine; in
+# any other, G7 protects its workflows, its own policy files and the paths
+# its own .github/autonomy.yml adds here, so a product's scripts/ is
+# ordinary code there (#561, scripts/autonomy.py protected_paths).
 # Autonomy cannot widen itself. Every path here is also high risk in the
 # review policy (this repository's or the default), so the auto-merge
 # decision never merges them; scripts/autonomy.py's self-test fails if one is
@@ -30,7 +34,8 @@
 # the `org-sync` lane below: in a repository
 # other than this one, it merges the files scripts/sync-repos.py keeps in
 # step (callers under .github/workflows/, .github/CODEOWNERS, the dx:org
-# block of AGENTS.md) only when they are what a commit a person already
+# block of AGENTS.md, dx.mk and its include, .github/dependabot.yml) only
+# when they are what a commit a person already
 # merged here holds, and never a change of permissions or secrets.
 #
 # The organisation variable DX_AUTOPILOT=off stops every autonomous action at
@@ -155,11 +160,9 @@ lanes:
     description: The organisation's own machinery that a scheduled job keeps current, starting with the runner image.
     accept: policy
     origin:
-      app: dilux-bot
-      # org-drift.yml: the daily run's proposal of the new repositories
-      # for repos.yml (scripts/detect.py, #191); repos.yml is high risk,
-      # so a person still merges it.
-      workflows: [runner-image.yml, org-drift.yml]
+      # The new repositories are no longer this lane's: each is an "Adopt
+      # <repository>" issue, the `adopt` lane below (#562).
+      workflows: [runner-image.yml]
     repositories: [".github"]
     evidence: The workflow run that opened the issue, with its smoke test.
     # Also the limits of gate G8 (#142): a revert dilux-bot opens when a
@@ -187,7 +190,6 @@ lanes:
     description: A reported bug that the reproduction confirmed with a failing test.
     accept: policy
     origin:
-      app: dilux-bot
       workflows: [issue-repro.yml]
     repositories: ["*"]
     evidence: The failing test the reproduction wrote, named in the PRD with its SHA-256; the fix makes it pass in the sandbox, unchanged.
@@ -211,9 +213,10 @@ lanes:
   # one decision needs one acceptance, not one per repository. Recognised
   # by its parent, not by a label. Accepted when all of this holds, read
   # from GitHub (scripts/autonomy.py, delegated_accepts()):
-  #   - its parent is open, in this organisation, and carries `accepted`,
-  #     added last by a person (a bot's never counts), and still there:
-  #     a parent that loses it, or closes, takes the children's with it;
+  #   - its parent is open, or closed as completed (#572), in this
+  #     organisation, and carries `accepted`, added last by a person (a
+  #     bot's never counts), and still there: a parent that loses it, or
+  #     closes any other way, takes the children's with it;
   #   - the sub-issue was opened by a member of the organisation, or by the
   #     lane's App;
   #   - its text was not edited after it was linked to the parent.
@@ -223,7 +226,6 @@ lanes:
     description: A sub-issue of an issue a person accepted, carrying out that decision in its repository.
     accept: policy
     origin:
-      app: dilux-bot
       parent: accepted-by-a-person
     repositories: ["*"]
     evidence: The parent's acceptance by a person, read from its history, and the sub-issue's link to it.
@@ -231,7 +233,8 @@ lanes:
     ceiling: {max-risk: high, max-complexity: high}
 
   # Mechanical sync pull requests (#155): the Task issue and the pull request
-  # scripts/sync-repos.py opens in a repository (`files`, `callers`) to bring
+  # scripts/sync-repos.py opens in a repository (`files`, `callers`,
+  # `pre-pr`, `dependabot`) to bring
   # it in line with a change a person already merged here. A maintainer runs
   # the script from their machine, so the issue is theirs and no workflow
   # run opened it: instead of `workflows`, the lane names who may run it
@@ -254,9 +257,16 @@ lanes:
   # holds: CODEOWNERS as repos.yml has it, AGENTS.md with only its dx:org
   # block replaced by agents-block.md, and each caller job it changes a
   # template's job (workflow-templates/), but the inputs that are the
-  # repository's, with nothing else in the file changed. A job that changes
-  # its permissions or the secrets it passes, a new job among them, is high
-  # risk: a person merges it. `max-risk: high` because the review's floor for
+  # repository's, with nothing else in the file changed; dx.mk its kind's
+  # `pre-pr-make`, the Makefile its base with `include dx.mk` added, and
+  # .github/dependabot.yml its kind's template for the ecosystems at its
+  # head with what repos.yml adds (#562). A job that changes
+  # its permissions or the secrets it passes, a new job in an existing
+  # caller among them, is high risk: a person merges it. A new caller that
+  # is its template whole, with the repository's default branch and the
+  # values repos.yml gives (its entry's `callers`, else `callers:
+  # defaults`, where `dry-run` stays `true`), merges by policy (#552, #562):
+  # its grants are the template's, which a person merged here. `max-risk: high` because the review's floor for
   # .github/** and AGENTS.md is high whatever the change; the checks above,
   # not the rating, are what hold it.
   org-sync:
@@ -264,8 +274,6 @@ lanes:
     accept: policy
     type: Task
     origin:
-      app: dilux-bot
-      people: [soydiloreto]
       script: scripts/sync-repos.py
       runs:
         files:
@@ -274,8 +282,54 @@ lanes:
         callers:
           branch: "ci/{issue}-org-workflow-callers"
           paths: [".github/workflows/*.yml", ".github/workflows/*.yaml"]
+        # `make pre-pr` and the Dependabot file (#562), as mechanical as the
+        # callers: dx.mk is its kind's pack's `pre-pr-make` at the commit,
+        # the Makefile only gains `include dx.mk`, and .github/dependabot.yml
+        # is its kind's template rendered for the ecosystems at its head.
+        pre-pr:
+          branch: "chore/{issue}-org-pre-pr"
+          paths: ["dx.mk", "Makefile"]
+        dependabot:
+          branch: "chore/{issue}-org-dependabot"
+          paths: [".github/dependabot.yml"]
     repositories: ["*"]
     evidence: The merged commit of DiluxOne/.github the issue names, and the run's fingerprint, which the pull request's files must give again.
+    merge: {max-risk: high, max-complexity: low}
+
+  # Adopting a repository (#562): the daily drift check opens "Adopt
+  # <repository>" (scripts/detect.py adopt-issues) for a repository of the
+  # organisation repos.yml lacks, with the entry detection proposes as a
+  # YAML block, which anyone may correct and a maintainer may open by hand
+  # (the body `detect.py adopt-body NAME` prints; there is no form). A
+  # maintainer's `accepted` is the
+  # acceptance (`accept: human`: nothing accepts it by policy) and the only
+  # step: org-adopt.yml opens the pull request that adds that entry to
+  # repos.yml, which merges on its own (auto-merge.yml, autonomy.py
+  # lane-merge, adopt_accepts()) only when all of this holds, read from
+  # GitHub:
+  #   - in this repository only; the issue carries lane:adopt and its
+  #     marker (<!-- dx-adopt: <repository> -->), its title is "Adopt
+  #     <repository>", and its block is one entry for that repository;
+  #   - the last to add `accepted` was a person with the admin or maintain
+  #     role here, and the issue's text was not edited after that;
+  #   - the pull request: opened by the lane's App from `branch`, modifying
+  #     repos.yml alone, only adding lines, and its repos.yml is its base's
+  #     with that one new entry in `repos:`, equal to the issue's block,
+  #     and holds to its schema (repos-config.py);
+  #   - the review does not block, its description is true, within `merge`.
+  # Once it merges, org-adopt.yml runs `sync-repos.py adopt --repo NAME`.
+  # The autopilot never works such an issue (scripts/autopilot.py).
+  # `max-risk: high` because repos.yml's floor is high; the checks above,
+  # not the rating, are what hold it.
+  adopt:
+    description: The pull request that adds to repos.yml the entry of an "Adopt <repository>" issue a maintainer accepted.
+    accept: human
+    type: Task
+    origin:
+      adopt: accepted-by-a-maintainer
+      branch: "chore/{issue}-adopt"
+    repositories: [".github"]
+    evidence: The maintainer's `accepted` on the Adopt issue, its block unedited since, and the pull request's repos.yml its base's with that entry alone.
     merge: {max-risk: high, max-complexity: low}
 
   # A security patch's carry (#287): once a patch released from
@@ -301,7 +355,6 @@ lanes:
     accept: policy
     type: Bug
     origin:
-      app: dilux-bot
       evidence: published-advisory
       branch: "fix/{issue}-carry-security-fix-of-{version}"
     repositories: ["*"]

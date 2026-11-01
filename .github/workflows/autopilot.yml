@@ -26,15 +26,23 @@ name: Autopilot
 #                   criterion. Then the agent works the criteria in order,
 #                   one commit each, each box ticked only once a commit names
 #                   it (scripts/autopilot.py tick).
-#   mode: continue  called from issue-triage.yml when `autopilot:continue` is
-#                   added to the issue (by a person, or by this workflow when
-#                   a run ran out of turns or time with criteria left): the
+#   mode: continue  called from issue-triage.yml when dilux-bot adds
+#                   `autopilot:continue` to the issue (a run ran out of turns
+#                   or time with criteria left, a maintainer answered, a
+#                   merge into main left it in conflict; a maintainer's own
+#                   label is only a manual override, #561): the
 #                   agent resumes from the branch and the unticked boxes (or,
 #                   every box ticked and still a draft, only runs the checks
 #                   and finishes), up to `autopilot-runs` runs per issue (5);
 #                   a run an answer to its question started, or whose
 #                   runner was lost, is free and does not count (#479).
-#                   A person who took it back removes `needs-human` first.
+#                   A maintainer's answer after a stop or a silent end
+#                   brings it back the same way: review-reply.yml takes
+#                   `needs-human` off and dilux-bot adds the continue (#561).
+#                   A maintainer's answer that drops or changes a
+#                   criterion (`drop C3`, `change C3: <new text>`) is applied to
+#                   the checklist by the bot before the work (#561,
+#                   scripts/autopilot.py criteria-edit).
 #                   With no open `autopilot` pull request closing an open
 #                   issue (#535), the continue starts the issue's next phase
 #                   instead, as `mode: start` does, through its gates: the
@@ -49,13 +57,16 @@ name: Autopilot
 #                   whose run ended without finishing continues once (a
 #                   comment says so), then goes to a person. On a pull
 #                   request already ready whose review blocks at its head
-#                   (#504, scripts/autopilot.py continue-as), the continue
+#                   (#504; what a continue runs is scripts/autopilot.py
+#                   next-step's one answer, #561), the continue
 #                   runs one fix round instead, counted as a run: the
 #                   rounds cap does not refuse it, the runs cap does. So
 #                   does one on a ready pull request that conflicts with
 #                   main (#556, mergeStateStatus DIRTY), whatever its
 #                   review says: GitHub runs no checks on it, and the fix
-#                   round merges main into its branch first.
+#                   round merges main into its branch first. One that
+#                   is only behind main, the bot brings in step itself
+#                   (GitHub's update-branch) and no agent runs.
 #
 # Before `finish ready` (#482) the agent runs the local review's checks on
 # its own diff (scripts/local-review.sh --no-claude: the conventions, the
@@ -193,23 +204,23 @@ concurrency:
   cancel-in-progress: false
 
 # The organisation's App, as GitHub shows it (#197): the calling
-# organisation's variables DX_BOT_LOGIN, DX_BOT_APP and DX_BOT_ID, or
-# DiluxOne's dilux-bot when it sets none.
+# organisation's variables DX_BOT_LOGIN, DX_BOT_APP and DX_BOT_ID, which
+# every organisation sets (#568): config-overlay.sh stops the run without them.
 env:
-  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
-  DX_BOT_APP: ${{ vars.DX_BOT_APP || 'dilux-bot' }}
-  DX_BOT_ID: ${{ vars.DX_BOT_ID || '333187390' }}
+  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN }}
+  DX_BOT_APP: ${{ vars.DX_BOT_APP }}
+  DX_BOT_ID: ${{ vars.DX_BOT_ID }}
 
 jobs:
   where:
     name: Where the autopilot runs
-    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions: {}
     outputs:
       github-hosted: ${{ steps.lane.outputs.github-hosted }}
     steps:
-      - name: dilux-bot token
+      - name: App token
         id: bot
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -270,7 +281,7 @@ jobs:
       budget-spec: ${{ steps.when.outputs.budget-spec }}
       budget-work: ${{ steps.when.outputs.budget-work }}
     steps:
-      - name: dilux-bot token
+      - name: App token
         id: bot
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -329,7 +340,7 @@ jobs:
           fi
           if [ "$MODE" != start ]; then
             author=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json author --jq .author.login)
-            is_bot "$author" || { echo "#$PR was opened by $author, not dilux-bot: the autopilot stays out."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; }
+            is_bot "$author" || { echo "#$PR was opened by $author, not $DX_BOT_LOGIN: the autopilot stays out."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; }
             [ "$MODE" = continue ] || ISSUE=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // empty')
             branch=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json headRefName --jq .headRefName)
             labels=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | join(",")')
@@ -363,12 +374,29 @@ jobs:
             { gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
               | jq -r --arg bot "$DX_BOT_LOGIN" '.[] | select(.user.login == $bot and (.body | startswith("<!-- dx-review -->"))) | .body' \
               | { grep -oP '<!-- dx-review-record \K.*(?= -->)' || true; } | tail -1; } > "$RUNNER_TEMP/record.json" || echo null > "$RUNNER_TEMP/record.json"
-            as=$(IS_DRAFT="$is_draft" HEAD="$head" RECORD="$RUNNER_TEMP/record.json" CONFLICTS="$conflicts" python3 .dx-central/scripts/autopilot.py continue-as)
-            if [ "$as" = fix ] && [ "$conflicts" = true ]; then
-              echo "#$PR is ready and conflicts with main: this continue runs one fix round, which merges main first."
-            elif [ "$as" = fix ]; then
-              echo "#$PR is ready and its review blocks at its head: this continue runs one fix round."
-            fi
+            # What to run is next-step's one answer (#561), from the state
+            # read here: `fix` on a ready pull request whose review blocks
+            # at its head or that conflicts with main (a fix round merges
+            # main first), the bot's own merge of main into one that is
+            # only behind, a continue otherwise. Its line goes to the log.
+            # Who holds it, whether it may start and its seal are the next
+            # step's own checks; the run cap, may-continue's below.
+            jq -e . "$RUNNER_TEMP/record.json" >/dev/null 2>&1 || echo null > "$RUNNER_TEMP/record.json"
+            gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq '.body // ""' > "$RUNNER_TEMP/pr-body.md"
+            jq -n --argjson draft "$is_draft" --arg head "$head" --arg merge "$merge_state" --arg labels "$labels" \
+              --slurpfile record "$RUNNER_TEMP/record.json" --rawfile body "$RUNNER_TEMP/pr-body.md" \
+              '{issue: {state: "OPEN", labels: []}, lane: "checked below", runs: 0,
+                pr: {author_is_bot: true, draft: $draft, head: $head, merge: ($merge | ascii_downcase), record: ($record[0] // null),
+                     labels: ($labels | split(",")), body: $body}}' > "$RUNNER_TEMP/state.json"
+            step=$(python3 .dx-central/scripts/autopilot.py next-step < "$RUNNER_TEMP/state.json")
+            case $(jq -r '.as // ""' <<<"$step") in
+              fix) as=fix; echo "#$PR: $(jq -r .why <<<"$step")" ;;
+              update)
+                echo "#$PR: $(jq -r .why <<<"$step")"
+                gh api -X PUT "repos/$GITHUB_REPOSITORY/pulls/$PR/update-branch" -f expected_head_sha="$head" >/dev/null
+                echo "go=false" >> "$GITHUB_OUTPUT"; exit 0 ;;
+              *) as="continue" ;;
+            esac
           fi
           { echo "mode=$as"; echo "conflicts=$conflicts"; } >> "$GITHUB_OUTPUT"
           [ -n "$ISSUE" ] || { echo "No issue to work on."; exit 1; }
@@ -425,6 +453,8 @@ jobs:
           held=$(NUMBER="$ISSUE" python3 .dx-central/scripts/autopilot.py holder) || rc=$?
           if [ "$rc" -ne 0 ]; then
             echo "The autopilot does not start: $held"
+            # The issue's board says who holds it (#561).
+            [ "$rc" -ne 1 ] || HELD="$held" NUMBER="$ISSUE" python3 .dx-central/scripts/autopilot.py board
             if [ "$rc" -eq 2 ]; then
               gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "The autopilot did not run: $held, so it could not tell whether a person holds this issue. A maintainer accepts it again (remove and add \`accepted\`) to try once more.
 
@@ -509,9 +539,12 @@ jobs:
             echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
           if [ "$AS" = start ]; then
-            open_prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --search "linked:issue $ISSUE" --json number --jq 'length')
+            # Only the open pull requests GitHub lists as closing the issue
+            # (closed ones are left out), never a text search, which matches
+            # any pull request linked to an issue that mentions the number (#577).
+            open_prs=$(gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json closedByPullRequestsReferences --jq '.closedByPullRequestsReferences | length')
             if [ "$open_prs" != 0 ]; then
-              echo "A pull request already closes #$ISSUE: nothing to start (\`autopilot:continue\` resumes the autopilot's)."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+              echo "A pull request already closes #$ISSUE: nothing to start (a person's holds the issue; the autopilot's goes on by itself, from an answer, a merge into main or the end of its run)."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
             fi
           else
             # A failed read stops the step: it must not count as "no label".
@@ -623,6 +656,8 @@ jobs:
           # with main merges it first.
           CONFLICTS: ${{ steps.what.outputs.conflicts }}
           DEFAULT: ${{ github.event.repository.default_branch }}
+          # The default branch as GitHub says it, whatever the event (#585).
+          BASE: ${{ steps.when.outputs.default }}
           # #479: a round for a pull request the queue dropped reads the
           # failed jobs' log instead of the review.
           QUEUE: ${{ github.event_name == 'pull_request' && github.event.action == 'dequeued' }}
@@ -639,6 +674,11 @@ jobs:
             exit 0
           fi
           python3 .dx-central/scripts/autopilot.py inputs "$MODE"
+          # The pull requests' numbers and labels, for next-version.py in
+          # `make pre-pr`: the work job's token does not read them (#585).
+          # Most repositories' `make pre-pr` never asks, so a failure warns.
+          python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$BASE" --save-pulls "$DX_IO/pulls.json" \
+            || { rm -f "$DX_IO/pulls.json"; echo "::warning::The pull requests could not be saved for next-version.py: a make pre-pr that runs it will fail."; }
           if [ "$MODE" = fix ]; then
             CONFLICTS="${CONFLICTS:-false}" python3 .dx-central/scripts/autopilot.py prompt fix > "$DX_IO/prompt.md"
             exit 0
@@ -647,17 +687,22 @@ jobs:
           # What maintainers answered its last question (#247, guided mode),
           # or the hint they gave after a stop, a silent or an unfinished
           # run (#540): the comments after the last of those, or all of them
-          # when there is none, on the pull request and the issue, by people
-          # with write access to the repository, checked now.
+          # when there is none, on the pull request and the issue, by those
+          # `who-decides` allows (#588, scripts/deciders.py: the code owners
+          # of what it touches, its acceptor or every writer, each with
+          # write access), checked now. Who could not be read decides
+          # nothing: the run goes on with no answer.
           gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "autopilot:waiting" >/dev/null 2>&1 || true
           { gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments'; gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments'; } \
             | jq -s 'add | map({body, createdAt, author: {login: .author.login}})' > "$RUNNER_TEMP/comments.json"
-          : > "$RUNNER_TEMP/writers.txt"
-          for login in $(jq -r '.[].author.login' "$RUNNER_TEMP/comments.json" | sort -u); do
-            role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$login/permission" --jq .role_name 2>/dev/null || echo none)
-            case $role in admin|maintain|write) echo "$login" >> "$RUNNER_TEMP/writers.txt" ;; esac
-          done
-          COMMENTS="$RUNNER_TEMP/comments.json" WRITERS="$RUNNER_TEMP/writers.txt" python3 .dx-central/scripts/autopilot.py answers > "$RUNNER_TEMP/answers.md"
+          jq -r '.[].author.login' "$RUNNER_TEMP/comments.json" | sort -u \
+            | python3 .dx-central/scripts/deciders.py list answer > "$RUNNER_TEMP/deciders.txt" || : > "$RUNNER_TEMP/deciders.txt"
+          COMMENTS="$RUNNER_TEMP/comments.json" DECIDERS="$RUNNER_TEMP/deciders.txt" python3 .dx-central/scripts/autopilot.py answers > "$RUNNER_TEMP/answers.md"
+          # An answer that drops or changes a criterion (`drop C3`,
+          # `change C3: <new text>`) is applied to the checklist here, by the bot,
+          # and logged in the Decisions (#561): the work and the finish
+          # read the checklist as it is then.
+          ANSWERS="$RUNNER_TEMP/answers.md" python3 .dx-central/scripts/autopilot.py criteria-edit
           ANSWERS="$RUNNER_TEMP/answers.md" python3 .dx-central/scripts/autopilot.py prompt work > "$DX_IO/prompt.md"
 
       - name: Hand it to the agent
@@ -747,9 +792,9 @@ jobs:
           # The job's own token, which can only read this repository: the
           # agent holds nothing that writes (#287).
           github_token: ${{ github.token }}
-          bot_name: ${{ vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
-          bot_id: ${{ vars.DX_BOT_ID || '333187390' }}
-          allowed_bots: ${{ vars.DX_BOT_APP || 'dilux-bot' }}
+          bot_name: ${{ vars.DX_BOT_LOGIN }}
+          bot_id: ${{ vars.DX_BOT_ID }}
+          allowed_bots: ${{ vars.DX_BOT_APP }}
           prompt: ${{ steps.task.outputs.prompt }}
           claude_args: |
             --model claude-opus-5-5
@@ -797,7 +842,7 @@ jobs:
       why: ${{ steps.draft.outputs.why }}
       held: ${{ steps.draft.outputs.held }}
     steps:
-      - name: dilux-bot token
+      - name: App token
         id: bot
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -950,6 +995,7 @@ jobs:
           PR: ${{ steps.draft.outputs.pr }}
           BRANCH: ${{ steps.draft.outputs.branch }}
           LANE: ${{ needs.prep.outputs.lane }}
+          DEFAULT: ${{ needs.prep.outputs.default }}
           REPO_AUTONOMY: ${{ runner.temp }}/repo-autonomy.yml
         run: |
           set -euo pipefail
@@ -957,6 +1003,11 @@ jobs:
           export BODY="$RUNNER_TEMP/body.md" DX_IO="$GITHUB_WORKSPACE/.dx-io"
           mkdir -p "$DX_IO"
           python3 .dx-central/scripts/autopilot.py inputs start
+          # The pull requests' numbers and labels, for next-version.py in
+          # `make pre-pr`: the work job's token does not read them (#585).
+          # Most repositories' `make pre-pr` never asks, so a failure warns.
+          python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$DEFAULT" --save-pulls "$DX_IO/pulls.json" \
+            || { rm -f "$DX_IO/pulls.json"; echo "::warning::The pull requests could not be saved for next-version.py: a make pre-pr that runs it will fail."; }
           python3 .dx-central/scripts/autopilot.py prompt work > "$DX_IO/prompt.md"
 
       - name: Hand it to the agent
@@ -976,6 +1027,9 @@ jobs:
     if: ${{ !cancelled() && needs.prep.outputs.go == 'true' && (needs.prep.outputs.mode != 'start' || needs.draft.outputs.pr != '') }}
     runs-on: ${{ (vars.DX_RUNNER_HEAVY != '' && needs.where.outputs.github-hosted == 'false') && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 90
+    # It reads the repository and writes nothing; the pull requests
+    # next-version.py lists in `make pre-pr` come from prep or draft, in
+    # .dx-io/pulls.json (#585), so no caller grants more than it reads.
     permissions:
       contents: read
     outputs:
@@ -1030,12 +1084,16 @@ jobs:
           # included; tick reads the commits since the default branch.
           echo "start=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           # The branch behind main gets it first (#549), as a clean merge,
-          # which api-commit.py pushes; on a conflict the work goes on from
-          # the branch as it is.
+          # which api-commit.py pushes. On a conflict (#561) the merge is
+          # left to the agent, before any criterion: its prompt says so, and
+          # api-commit.py pushes the merge with only the conflicts resolved.
           if [ "$(git rev-parse --abbrev-ref HEAD)" != "$DEFAULT" ] && ! git merge-base --is-ancestor "origin/$DEFAULT" HEAD; then
             if ! git merge -q --no-edit "origin/$DEFAULT" > /dev/null 2>&1; then
               git merge --abort 2>/dev/null || true
-              echo "::warning::$DEFAULT does not merge cleanly into the branch: the work goes on from the branch as it is."
+              echo "::notice::$DEFAULT does not merge cleanly into the branch: the agent merges it and resolves the conflicts first."
+              # A fix round's prompt already asks for it (#556).
+              grep -q "Main does not merge cleanly" .dx-io/prompt.md \
+                || python3 .dx-central/scripts/autopilot.py conflict-note "$DEFAULT" >> .dx-io/prompt.md
             fi
           fi
           { echo "base=$(git merge-base HEAD "origin/$DEFAULT")"; echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } >> "$GITHUB_OUTPUT"
@@ -1050,6 +1108,9 @@ jobs:
         env:
           DX_IO: ${{ github.workspace }}/.dx-io
           DX_BASE: ${{ steps.task.outputs.base }}
+          # The pull requests prep or draft saved: next-version.py reads them
+          # there in `make pre-pr`, since this job's token does not (#585).
+          DX_PULLS: ${{ github.workspace }}/.dx-io/pulls.json
           NUMBER: ${{ needs.prep.outputs.issue }}
           PR: ${{ needs.draft.outputs.pr || needs.prep.outputs.pr }}
           BRANCH: ${{ needs.draft.outputs.branch || needs.prep.outputs.branch }}
@@ -1071,9 +1132,9 @@ jobs:
           # The job's own token, which can only read this repository: the
           # agent holds nothing that writes (#287).
           github_token: ${{ github.token }}
-          bot_name: ${{ vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
-          bot_id: ${{ vars.DX_BOT_ID || '333187390' }}
-          allowed_bots: ${{ vars.DX_BOT_APP || 'dilux-bot' }}
+          bot_name: ${{ vars.DX_BOT_LOGIN }}
+          bot_id: ${{ vars.DX_BOT_ID }}
+          allowed_bots: ${{ vars.DX_BOT_APP }}
           prompt: ${{ steps.task.outputs.prompt }}
           claude_args: |
             --model claude-opus-5-5
@@ -1123,7 +1184,7 @@ jobs:
     timeout-minutes: 30
     permissions: {}
     steps:
-      - name: dilux-bot token
+      - name: App token
         id: bot
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -1233,7 +1294,7 @@ jobs:
           python3 .dx-central/scripts/autopilot.py apply .dx-out/outbox.jsonl
 
       # A fresh token for the verdict, however long the rest took.
-      - name: dilux-bot token for the end
+      - name: App token for the end
         id: bot-end
         if: always()
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -1267,6 +1328,8 @@ jobs:
           # outcome to report.
           SPEC_OUTCOME: ${{ needs.prep.outputs.spec != 'present' && (needs.spec.outputs.outcome || needs.spec.result) || '' }}
           WHY: ${{ needs.draft.outputs.why }}
+          # A job that failed is reported as itself (#561), not as silence.
+          FAILED: ${{ needs.spec.result == 'failure' && 'spec' || needs.draft.result == 'failure' && 'draft' || (needs.work.result == 'failure' && needs.work.outputs.outcome != '') && 'work' || '' }}
           HELD: ${{ needs.draft.outputs.held || steps.applied.outputs.held }}
           WORK_LOG: .dx-out/transcript/2-work.json
           RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}

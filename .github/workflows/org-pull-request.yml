@@ -120,7 +120,7 @@ jobs:
     # Only dilux-bot's own pull requests, and only for a new commit (an edit
     # of the description keeps the review's verdict and must not spend a
     # round).
-    if: always() && github.event_name == 'pull_request' && github.repository != 'DiluxOne/.github' && needs.review.outputs.blocking == 'true' && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == 'dilux-bot[bot]' && github.event.action != 'edited'
+    if: always() && github.event_name == 'pull_request' && github.repository != 'DiluxOne/.github' && needs.review.outputs.blocking == 'true' && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && github.event.action != 'edited'
     # The agent's jobs read the repository with the job's own token (#287).
     permissions:
       contents: read
@@ -136,7 +136,7 @@ jobs:
   # it only when a check failed there (not for a conflict, nor for a person
   # who took it out of the queue).
   autopilot-queue:
-    if: github.event_name == 'pull_request' && github.event.action == 'dequeued' && github.repository != 'DiluxOne/.github' && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == 'dilux-bot[bot]'
+    if: github.event_name == 'pull_request' && github.event.action == 'dequeued' && github.repository != 'DiluxOne/.github' && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN
     # The agent's jobs read the repository with the job's own token (#287).
     permissions:
       contents: read

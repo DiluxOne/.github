@@ -68,7 +68,7 @@ ADOPT_MARK = "dx-adopt"
 LINK_MARK = "dx-claim-link"
 PR_REMIND_MARK = "dx-claim-pr-reminder"
 CHECKBOX = "I want to work on this myself"
-SIGN = "<sub>🤖 dilux-bot · claims (DiluxOne/.github, scripts/claim.py)</sub>"
+SIGN = f"<sub>🤖 {org.APP} · claims ({org.CENTRAL}, scripts/claim.py)</sub>"
 BOTS = (org.APP, org.BOT, f"app/{org.APP}")
 DEFAULTS = {"remind-days": 7, "release-days": 10, "cap-days": 30, "pr-remind-days": 7, "pr-close-days": 14,
             "newcomer-claims": 1, "contributor-claims": 3, "open-prs": 2}

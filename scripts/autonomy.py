@@ -74,6 +74,7 @@ import urllib.parse
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import org  # noqa: E402  the organisation, from org.yml (#191)
+import repos_conf  # noqa: E402  repos.yml's one entry per repository (#562)
 LEVELS = ["none", "low", "medium", "high"]
 CENTRAL = org.CENTRAL
 MARKER = re.compile(r"<!--\s*dx-lane:\s*([a-z0-9-]+)\s+run:\s*(https://github\.com/([^/\s]+)/([^/\s]+)/actions/runs/(\d+))\s*-->")
@@ -135,9 +136,31 @@ def stricter_level(a, b):
     return LEVELS[min(ia, ib)]
 
 
-def merge(org, repo):
+# What every repository protects, whatever its policy says (#561): its
+# workflows, which the autopilot cannot push, and the files that say what
+# merges there and who reviews it, so no change merges a widening of them.
+ALWAYS_PROTECTED = [".github/workflows/**", ".github/autonomy.yml", ".github/review-policy.yml", ".github/CODEOWNERS"]
+
+
+def protected_paths(org_constitution, declared, where=""):
+    """The paths whose change G7 leaves to a person in the repository
+    `where` (#561 C4). In the organisation's own repository (org.CENTRAL),
+    or one not named (failing closed), the whole constitution: its
+    policy/, scripts/ and kinds/ are the engine. In any other,
+    ALWAYS_PROTECTED (its workflows and its own policy files) and the
+    paths it declares in its own policy
+    (`constitution:`): there scripts/ is ordinary code, under the lane's
+    caps like any other path. Pure."""
+    declared = [p for p in declared or [] if isinstance(p, str) and p]
+    base = list(org_constitution or []) if not where or where == org.CENTRAL else list(ALWAYS_PROTECTED)
+    return base + [p for p in declared if p not in base]
+
+
+def merge(org, repo, where=""):
     """The organisation's policy, made stricter by a repository's: never
-    looser, but what a lane merges may rise up to the lane's `ceiling`."""
+    looser, but what a lane merges may rise up to the lane's `ceiling`.
+    `constitution` stays the organisation's, added to; `protected` is what
+    G7 holds for a person in the repository `where` (protected_paths)."""
     out = copy.deepcopy(org)
     out.setdefault("lanes", {})
     out["autopilot"] = bool(org.get("autopilot", False)) and repo.get("autopilot", True) is not False
@@ -145,6 +168,7 @@ def merge(org, repo):
         warn("autopilot: the organisation has it off; a repository cannot turn it on. Ignored.")
     extra = [p for p in (repo.get("constitution") or []) if isinstance(p, str)]
     out["constitution"] = list(org.get("constitution") or []) + [p for p in extra if p not in (org.get("constitution") or [])]
+    out["protected"] = protected_paths(org.get("constitution"), extra, where)
     # How the autopilot settles a choice (#247): `guided` asks a maintainer,
     # `full` decides and logs it. A repository may choose up to the
     # organisation's ceiling; guided is always allowed (it is stricter).
@@ -220,6 +244,13 @@ TOP_KEYS = {"claims", "autopilot", "autopilot-rounds", "autopilot-runs", "autopi
 BUDGETS = ("autopilot-spec", "autopilot-work", "autopilot-fix", "security-fix")
 CLAIMS = ("remind-days", "release-days", "cap-days", "pr-remind-days", "pr-close-days", "newcomer-claims", "contributor-claims", "open-prs")
 MODES = ("guided", "full")
+# What merge() lets a repository's own file do with each key, as
+# policy/settings-schema.yml says it (#568, its `repo:`); any other key is
+# never a repository's. The self-test holds the two together.
+REPO_RULES = {"autopilot": "stricter", "autopilot-mode": "up-to-ceiling", "budgets-usd.*": "lower-only",
+              "claims.*": "lower-only", "constitution": "add-only", "person-merges": "add-only",
+              "lanes.*.enabled": "stricter", "lanes.*.accept": "stricter", "lanes.*.repositories": "stricter",
+              "lanes.*.merge": "up-to-ceiling"}
 LANE_KEYS = {"description", "accept", "type", "origin", "repositories", "evidence", "merge", "ceiling", "constitution-merge", "enabled"}
 # The one lane whose fix may merge in a protected path, and only when it
 # widens nothing (#397, constitution_merge()).
@@ -336,6 +367,23 @@ def constitution_merge(policy, lane_name, protected, widening):
     return True, caps
 
 
+def lane_app(origin):
+    """The App that opens a lane's issues: its origin's `app`, else the
+    organisation's own (org.yml, or the caller's DX_BOT_APP, #568); "" when
+    neither names one, which every lane check refuses (NO_APP)."""
+    return str((origin or {}).get("app") or org.APP)
+
+
+NO_APP = "no App opens this lane's issues (the lane's origin `app`, org.yml's bot or DX_BOT_APP): a person takes it"
+
+
+def lane_people(origin):
+    """Who may run a sync lane's script beside its App: its origin's
+    `people`, else the organisation's maintainers (org.yml, #568)."""
+    origin = origin or {}
+    return list(origin.get("people") or []) if "people" in origin else list(org.MAINTAINERS)
+
+
 def last_label_event(issue, label):
     events = [e for e in ((issue.get("timelineItems") or {}).get("nodes") or []) if (e.get("label") or {}).get("name") == label]
     return events[-1] if events else None
@@ -404,7 +452,9 @@ def lane_accepts(policy, issue, run, repository, autopilot_var, sync=None):
         return carry_accepts(name, lane, issue, repository, sync or {})
     if origin.get("parent"):
         return delegated_accepts(name, lane, issue, repository)
-    app = origin.get("app", "")
+    app = lane_app(origin)
+    if not app:
+        return False, NO_APP
     bot_logins = {app, f"{app}[bot]"}
     event = last_label_event(issue, f"lane:{name}")
     if not event or event.get("__typename") != "LabeledEvent" or (event.get("actor") or {}).get("login") not in bot_logins:
@@ -438,7 +488,9 @@ MEMBERS = {"OWNER", "MEMBER"}
 
 def delegated_accepts(name, lane, issue, repository):
     """(True, why) when the issue is a sub-issue the delegated lane accepts:
-    its parent open, in the organisation, accepted by a person (the last
+    its parent open, or closed as completed (the decision carried out while
+    its sub-issues elsewhere are still open, #572), in the organisation,
+    accepted by a person (the last
     `accepted` event a person's, the label still there); the sub-issue
     opened by a member or the lane's App, and not edited after it was
     linked. Pure: everything comes in `issue` (ISSUE_QUERY)."""
@@ -449,16 +501,18 @@ def delegated_accepts(name, lane, issue, repository):
     if where.split("/", 1)[0].lower() != repository.split("/", 1)[0].lower():
         return False, "its parent is outside the organisation"
     ref = f"{where}#{parent.get('number')}"
-    if parent.get("state") != "OPEN":
-        return False, f"its parent {ref} is not open"
+    if parent.get("state") == "CLOSED" and parent.get("stateReason") != "COMPLETED":
+        return False, f"its parent {ref} was closed without being completed"
+    if parent.get("state") not in ("OPEN", "CLOSED"):
+        return False, f"its parent {ref} is neither open nor closed as completed"
     if "accepted" not in [n.get("name") for n in ((parent.get("labels") or {}).get("nodes") or [])]:
         return False, f"its parent {ref} is not accepted"
     event = last_label_event(parent, "accepted")
     if not event or event.get("__typename") != "LabeledEvent" or (event.get("actor") or {}).get("__typename") != "User":
         return False, f"its parent {ref} was not accepted by a person"
-    app = (lane.get("origin") or {}).get("app", "")
+    app = lane_app(lane.get("origin"))
     author = login((issue.get("author") or {}).get("login"))
-    if issue.get("authorAssociation") not in MEMBERS and author != login(app):
+    if issue.get("authorAssociation") not in MEMBERS and (not app or author != login(app)):
         return False, "the sub-issue was not opened by a member of the organisation"
     linked = [e.get("createdAt") for e in ((issue.get("timelineItems") or {}).get("nodes") or []) if e.get("__typename") == "ParentIssueAddedEvent"]
     if not linked:
@@ -497,7 +551,9 @@ def carry_accepts(name, lane, issue, repository, carry):
     publishes advisories, once a maintainer approved the patch (patch:go):
     that is the acceptance this lane carries. Pure: `carry` holds
     advisory(ghsa) and released(version)."""
-    app = (lane.get("origin") or {}).get("app", "")
+    app = lane_app(lane.get("origin"))
+    if not app:
+        return False, NO_APP
     if login((issue.get("author") or {}).get("login")) != login(app):
         return False, f"the issue was not opened by {app}"
     event = last_label_event(issue, f"lane:{name}")
@@ -535,7 +591,9 @@ def carry_merge(policy, issue, repository, autopilot_var, carry, review):
     lane = policy["lanes"][name]
     version = CARRY_MARKER.search(issue.get("body") or "").group(2)
     pr = carry.get("pr") or {}
-    app = (lane.get("origin") or {}).get("app", "")
+    app = lane_app(lane.get("origin"))
+    if not app:
+        return False, NO_APP
     if login((pr.get("author") or {}).get("login")) != login(app):
         return False, f"the pull request was not opened by {app}"
     want = carry_branch(lane, issue.get("number"), version)
@@ -633,8 +691,8 @@ def sync_accepts(name, lane, issue, repository, sync):
     origin = lane.get("origin") or {}
     if repository.lower() == CENTRAL.lower():
         return False, f"the lane {name} never applies to {CENTRAL}, whose own changes a person accepts"
-    app = origin.get("app", "")
-    allowed = {login(app)} | {login(p) for p in origin.get("people") or []}
+    app = lane_app(origin)
+    allowed = {login(app)} | {login(p) for p in lane_people(origin)}
     allowed.discard("")
     author = login((issue.get("author") or {}).get("login"))
     if not author or author not in allowed:
@@ -708,11 +766,12 @@ def needs_of(job):
 CALLER_KEYS = ("uses", "with", "needs", "if", "permissions", "secrets")
 
 
-def job_vs_template(have, before, want, owned):
+def job_vs_template(have, before, want, owned, values=None):
     """Why a caller's job, as a sync run changed it, is not its template's
     job (`want`); None when it is. The inputs the template says to fill in
     (`owned`) and the inputs it does not set are the repository's: they
-    keep the values they had."""
+    keep the values they had, but a template's placeholder, which becomes
+    the value repos.yml gives (`values`, #562); one left is refused."""
     if plain(have.get("if", "")) != plain(want.get("if", "")):
         return f"runs if `{plain(have.get('if', '')) or 'always'}`, not the template's"
     if not needs_of(want) <= needs_of(have):
@@ -720,8 +779,12 @@ def job_vs_template(have, before, want, owned):
     tw, hw, bw = want.get("with") or {}, have.get("with") or {}, (before or {}).get("with") or {}
     for key, value in tw.items():
         if key in owned:
-            if before is not None and key in bw and plain(hw.get(key)) != plain(bw[key]):
+            given = (values or {}).get(key)
+            filled = key in (values or {}) and plain(bw.get(key)) == plain(value) and plain(hw.get(key)) == plain(given)
+            if before is not None and key in bw and plain(hw.get(key)) != plain(bw[key]) and not filled:
                 return f"changes `{key}`, which is the repository's to fill in"
+            if key in (values or {}) and key in hw and plain(hw[key]) == plain(value) and plain(value) != plain(given):
+                return f"still holds `{key}` at the template's placeholder, where repos.yml gives a value"
         elif key not in hw or plain(hw[key]) != plain(value):
             return f"passes `{key}` other than the template does"
     for key in set(hw) - set(tw):
@@ -751,14 +814,18 @@ def moved_major(before, have, majors):
             and {k: v for k, v in before.items() if k != "uses"} == {k: v for k, v in have.items() if k != "uses"})
 
 
-def caller_problem(path, base_text, head_text, templates, owned):
+def caller_problem(path, base_text, head_text, templates, owned, values=None, texts=None):
     """(why, high): why a caller the pull request changes is more than a
     sync run of the callers writes, and whether that is a change of
     permissions or secrets (high risk); (None, False) when it is not.
     `templates` is {name: data} at the commit the issue names; `owned` is
-    {template: [inputs]} from repos.yml there (`callers.repository-owned`)."""
+    {template: [inputs]} from repos.yml there (`callers.repository-owned`);
+    `values` the repository's caller values there (#562) and `texts` the
+    templates' text: a new caller is its template with those values."""
     if base_text is None:
-        return f"{path} is a new workflow: a sync run only changes callers that exist", False
+        if new_caller_ok(path, head_text, texts or {}, owned, values):
+            return None, False
+        return f"{path} is a new workflow, not its template with the values repos.yml gives", False
     try:
         base, head = parse_text(base_text), parse_text(head_text)
     except ValueError:
@@ -790,7 +857,7 @@ def caller_problem(path, base_text, head_text, templates, owned):
                  if isinstance(jobs_of(d).get(job), dict) and jobs_of(d)[job].get("uses") == uses]
         if not found:
             return f"{path}: the job {job} is no template's job (workflow-templates/ at the commit named)", False
-        whys = [job_vs_template(have, before, want, set(owned.get(t) or [])) for t, want in found]
+        whys = [job_vs_template(have, before, want, set(owned.get(t) or []), values) for t, want in found]
         if all(whys):
             return f"{path}: the job {job} {whys[0]}", False
         # A new job is a grant of its own, whatever it asks for.
@@ -799,6 +866,20 @@ def caller_problem(path, base_text, head_text, templates, owned):
         if have.get("permissions") != before.get("permissions") or have.get("secrets") != before.get("secrets"):
             return f"{path}: the job {job} changes its permissions or the secrets it passes: high risk, a person merges it", True
     return None, False
+
+
+def new_caller_ok(path, head_text, texts, owned, values):
+    """Whether a new caller is what a sync run writes for a repository that
+    lacks it (#552, #562): .github/workflows/<template>, the template's text
+    at the commit with its default branch and the values repos.yml gives."""
+    name = path.rsplit("/", 1)[-1]
+    if values is None or path != f".github/workflows/{name}" or texts.get(name) is None or head_text is None:
+        return False
+    token = "DXDEFAULTBRANCHDX"
+    want = sync_module().fill_inputs(texts[name].replace("$default-branch", token), set(owned.get(name) or []), values)
+    first, *rest = re.escape(want).split(token)
+    pattern = first + "".join(("([A-Za-z0-9._/-]+)" if i == 0 else "\\1") + part for i, part in enumerate(rest))
+    return re.fullmatch(pattern, head_text) is not None
 
 
 def sync_merge(policy, issue, repository, autopilot_var, sync, review):
@@ -836,10 +917,19 @@ def sync_merge(policy, issue, repository, autopilot_var, sync, review):
         return False, f"repos.yml at {CENTRAL}@{org[:12]} or at main could not be read"
     # A run from a commit main has since moved past would roll back what
     # changed after it: what it writes from must be the same at main now.
+    short = repository.split("/")[-1]
+    kind = entry_kind(conf, short)
     if mode == "files":
         stale = conf.get("files") != conf_now.get("files") or facts.get("agents-block.md") != now.get("agents-block.md")
+    elif mode in ("pre-pr", "dependabot"):
+        # That run's sources: the kind's pack and templates, the default
+        # template and the repository's entry (#562).
+        stale = (kind != entry_kind(conf_now, short) or (facts.get("kinds") or {}).get(kind) != (now.get("kinds") or {}).get(kind)
+                 or facts.get("dependabot-default") != now.get("dependabot-default")
+                 or repos_conf.entry(conf, short) != repos_conf.entry(conf_now, short))
     else:
-        stale = facts.get("templates") != now.get("templates") or conf.get("callers") != conf_now.get("callers")
+        stale = (facts.get("templates") != now.get("templates") or conf.get("callers") != conf_now.get("callers")
+                 or repos_conf.caller_values(conf, short) != repos_conf.caller_values(conf_now, short))
     if stale:
         return False, f"what a {mode} run writes from changed in {CENTRAL} after {org[:12]}: the run is stale"
     for f in change["files"]:
@@ -859,12 +949,193 @@ def sync_merge(policy, issue, repository, autopilot_var, sync, review):
                 return False, f"{path} is not what repos.yml holds at {CENTRAL}@{org[:12]}"
         elif mode == "callers":
             owned = (conf.get("callers") or {}).get("repository-owned") or {}
-            problem, _ = caller_problem(path, base.get(path), head[path], templates, owned)
+            problem, _ = caller_problem(path, base.get(path), head[path], templates, owned, repos_conf.caller_values(conf, short), facts.get("templates"))
+            if problem:
+                return False, problem
+        elif mode == "pre-pr":
+            problem = pre_pr_problem(path, base.get(path), head[path], ((facts.get("kinds") or {}).get(kind) or {}).get("pack.yml"))
+            if problem:
+                return False, problem
+        elif mode == "dependabot":
+            problem = dependabot_problem(path, head[path], facts, kind, repos_conf.value(conf, short, "dependabot") or {}, change.get("root"))
             if problem:
                 return False, problem
         else:
             return False, f"no rule says what a {mode} run may write"
     return True, f"merges by policy: lane {name}, risk {review.get('risk')}, complexity {review.get('complexity')}, every file what {CENTRAL}@{org[:12]} holds"
+
+
+def entry_kind(conf, name):
+    """The kind repos.yml gives a repository with exactly one, else None."""
+    kinds = repos_conf.value(conf, name, "kinds") or []
+    return kinds[0].get("kind") if len(kinds) == 1 and isinstance(kinds[0], dict) else None
+
+
+def pre_pr_module():
+    spec = importlib.util.spec_from_file_location("pre_pr", os.path.join(HERE, "pre-pr.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def pre_pr_problem(path, base_text, head_text, pack_text):
+    """Why a file a pre-pr run's pull request writes is not what the run
+    writes (#562): dx.mk is the kind's `pre-pr-make` rendered, the Makefile
+    its base with `include dx.mk` added and nothing else; None when it is."""
+    pre_pr = pre_pr_module()
+    if path == pre_pr.FRAGMENT:
+        try:
+            pack = parse_text(pack_text) if pack_text is not None else None
+        except ValueError:
+            pack = None
+        want = pre_pr.render((pack or {}).get("pre-pr-make")) if isinstance(pack, dict) else None
+        if want is None:
+            return f"{path}: the repository's kind has no `pre-pr-make` at the commit named"
+        return None if head_text == want else f"{path} is not its kind's `pre-pr-make` at the commit named"
+    if path == "Makefile":
+        if pre_pr.own_recipe(base_text):
+            return "Makefile: its own `pre-pr` has a recipe, which a pre-pr run never includes dx.mk over"
+        return None if head_text == pre_pr.with_include(base_text) else "Makefile changes more than adding `include dx.mk`"
+    return f"no rule says what a pre-pr run may write in {path}"
+
+
+def dependabot_problem(path, head_text, facts, kind, extra, root):
+    """Why .github/dependabot.yml is not what a dependabot run writes (#562):
+    its kind's template (or the organisation's default) at the commit,
+    rendered for the ecosystems the head's root has and what repos.yml adds;
+    None when it is."""
+    if path != ".github/dependabot.yml":
+        return f"no rule says what a dependabot run may write in {path}"
+    if root is None:
+        return "the names at the root of its head could not be read"
+    default = facts.get("dependabot-default")
+    template = ((facts.get("kinds") or {}).get(kind) or {}).get("dependabot.yml") or default
+    if template is None or default is None:
+        return "the Dependabot templates at the commit named could not be read"
+    sync = sync_module()
+    try:
+        want = sync.render_dependabot(template, sync.dependabot_ecosystems(set(root), extra), extra, default)
+    except ValueError as exc:
+        return f"{path}: {exc}"
+    return None if head_text == want else f"{path} is not its kind's template at the commit named, for the ecosystems its head has"
+
+
+def adopt_lane_of(policy, issue):
+    """The adopt lane an issue's lane:<name> label names (#562), or None."""
+    for n in ((issue.get("labels") or {}).get("nodes") or []):
+        name = (n.get("name") or "")
+        if name.startswith("lane:") and ((((policy.get("lanes") or {}).get(name[len("lane:"):]) or {}).get("origin") or {}).get("adopt")):
+            return name[len("lane:"):]
+    return None
+
+
+def adopt_module():
+    spec = importlib.util.spec_from_file_location("detect", os.path.join(HERE, "detect.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def adopt_issue(issue, repository, maintainer):
+    """(name, entry, why) of an Adopt issue a maintainer accepted (#562):
+    the repository it names and the entry its block proposes, as it was when
+    `accepted` was added; (None, None, why) when it is not one."""
+    if repository.lower() != CENTRAL.lower():
+        return None, None, f"an Adopt issue is {CENTRAL}'s alone"
+    name, entry = adopt_module().adopt_of(issue.get("body") or "")
+    if not name or entry is None:
+        return None, None, "the issue carries no dx-adopt marker and one entry for the repository it names"
+    if issue.get("title") != f"Adopt {name}":
+        return None, None, f"its title is not \"Adopt {name}\""
+    event = last_label_event(issue, "accepted")
+    actor = (event or {}).get("actor") or {}
+    if not event or event.get("__typename") != "LabeledEvent" or actor.get("__typename") != "User" or not maintainer(actor.get("login") or ""):
+        return None, None, "the last to add `accepted` was not a person with the admin or maintain role"
+    if "lastEditedAt" not in issue:
+        return None, None, "the issue's edit history could not be read"
+    if issue.get("lastEditedAt") and (not event.get("createdAt") or issue["lastEditedAt"] > event["createdAt"]):
+        return None, None, "the issue's text was edited after it was accepted"
+    return name, entry, f"accepted by {actor.get('login')}"
+
+
+def adopt_accepts(policy, issue, repository, autopilot_var, facts):
+    """(True, why) when the adopt lane's pull request is the issue's entry
+    and nothing else (#562); (False, why) otherwise. Pure: `facts` holds
+    maintainer(login), pr (its author and branch), change() (its files, with
+    repos.yml at its base and head) and problems(conf), repos-config.py's."""
+    if (autopilot_var or "").strip().lower() == "off":
+        return False, "the organisation's DX_AUTOPILOT is off"
+    if not policy.get("autopilot", False):
+        return False, "the autopilot is off in the policy"
+    lane_name = adopt_lane_of(policy, issue)
+    if not lane_name:
+        return False, "the issue is no adopt lane's"
+    lane = policy["lanes"][lane_name]
+    # A maintainer accepts its issue (`accept: human`): the lane only merges.
+    if not lane.get("enabled", True):
+        return False, f"the lane {lane_name} is off"
+    if repository.split("/", 1)[-1] not in (lane.get("repositories") or []):
+        return False, f"the lane {lane_name} does not cover {repository}"
+    origin = lane.get("origin") or {}
+    want = lane.get("type")
+    if want and (issue.get("issueType") or {}).get("name") != want:
+        return False, f"the issue's Type is not {want}"
+    name, entry, why = adopt_issue(issue, repository, facts["maintainer"])
+    if not name:
+        return False, why
+    pr = facts.get("pr") or {}
+    app = lane_app(origin)
+    if not app:
+        return False, NO_APP
+    if login((pr.get("author") or {}).get("login")) != login(app):
+        return False, f"the pull request was not opened by {app}"
+    branch = (origin.get("branch") or "").format(issue=issue.get("number"))
+    if not branch or pr.get("headRefName") != branch:
+        return False, f"its branch is not the lane's ({branch or 'none named'})"
+    change = facts["change"]() if facts.get("change") else None
+    if not change:
+        return False, "what the pull request changes could not be read"
+    if [(f.get("path"), f.get("status")) for f in change.get("files") or []] != [("repos.yml", "modified")]:
+        return False, "it changes more than repos.yml, or does not modify it"
+    base_text, head_text = (change.get("base") or {}).get("repos.yml"), (change.get("head") or {}).get("repos.yml")
+    if base_text is None or head_text is None:
+        return False, "repos.yml at its base or head could not be read"
+    import difflib
+    ops = {op for op, *_ in difflib.SequenceMatcher(None, base_text.split("\n"), head_text.split("\n"), autojunk=False).get_opcodes()}
+    if ops - {"equal", "insert"}:
+        return False, "repos.yml changes lines of its base, not only adds"
+    try:
+        base, head = parse_text(base_text), parse_text(head_text)
+    except ValueError:
+        return False, "repos.yml does not parse"
+    if not isinstance(base, dict) or not isinstance(head, dict) or not isinstance(head.get("repos"), dict):
+        return False, "repos.yml is not a mapping with `repos:`"
+    if name in (base.get("repos") or {}):
+        return False, f"{name} is already in repos.yml"
+    rest = dict(head, repos={k: v for k, v in head["repos"].items() if k != name})
+    if rest != base or head["repos"].get(name) != entry:
+        return False, f"repos.yml is not its base with {name}'s entry, as the issue proposes it, alone"
+    found = facts["problems"](head)
+    if found:
+        return False, f"repos.yml does not hold to its schema: {found[0]}"
+    return True, f"lane {lane_name}: {name}'s entry, as the Adopt issue {why} proposes it, and nothing else"
+
+
+def adopt_merge(policy, issue, repository, autopilot_var, facts, review):
+    """(True, why) when the adopt lane's pull request merges on its own."""
+    ok, why = adopt_accepts(policy, issue, repository, autopilot_var, facts)
+    if not ok:
+        return False, why
+    if review.get("blocking") != "false":
+        return False, "the review is blocking"
+    if review.get("description_ok") != "true":
+        return False, "the description does not match the code"
+    caps = policy["lanes"][adopt_lane_of(policy, issue)].get("merge") or {}
+    for key, cap in (("risk", caps.get("max-risk", "none")), ("complexity", caps.get("max-complexity", "none"))):
+        level = review.get(key) or ""
+        if level not in LEVELS or cap not in LEVELS or level == "none" or LEVELS.index(level) > LEVELS.index(cap):
+            return False, f"{key} {level or 'unknown'} is above the lane's {cap}"
+    return True, f"merges by policy: {why}, risk {review.get('risk')}, complexity {review.get('complexity')}"
 
 
 def sync_lane_of(policy, issue):
@@ -907,18 +1178,18 @@ def sync_module():
 ISSUE_QUERY = """query($o: String!, $n: String!, $i: Int!) {
   repository(owner: $o, name: $n) {
     issue(number: $i) {
-      number body lastEditedAt authorAssociation author { login } issueType { name }
+      number title body lastEditedAt authorAssociation author { login } issueType { name }
       labels(first: 50) { nodes { name } }
       timelineItems(itemTypes: [LABELED_EVENT, UNLABELED_EVENT, PARENT_ISSUE_ADDED_EVENT], last: 100) {
         nodes {
           __typename
-          ... on LabeledEvent { label { name } actor { __typename login } }
+          ... on LabeledEvent { createdAt label { name } actor { __typename login } }
           ... on UnlabeledEvent { label { name } actor { __typename login } }
           ... on ParentIssueAddedEvent { createdAt }
         }
       }
       parent {
-        number state repository { nameWithOwner }
+        number state stateReason repository { nameWithOwner }
         labels(first: 50) { nodes { name } }
         timelineItems(itemTypes: [LABELED_EVENT, UNLABELED_EVENT], last: 100) {
           nodes {
@@ -967,7 +1238,10 @@ def read_change(repository, pr):
             head[f["path"]] = raw(repository, f["path"], pr["headRefOid"])
         if f["status"] == "modified":
             base[f["path"]] = raw(repository, f["path"], pr["baseRefOid"])
-    return {"files": files, "head": head, "base": base}
+    # The names at its head's root: the ecosystems a dependabot run writes for.
+    listing = gh_bytes("api", f"repos/{repository}/contents/?ref={pr['headRefOid']}")
+    root = [e.get("name") for e in json.loads(listing)] if listing else None
+    return {"files": files, "head": head, "base": base, "root": root}
 
 
 def org_sources(ref):
@@ -979,6 +1253,13 @@ def org_sources(ref):
     out["templates"] = {n: raw(CENTRAL, f"workflow-templates/{n}", ref) for n in names if n.endswith((".yml", ".yaml"))}
     if listing is None or any(t is None for t in out["templates"].values()):
         out["repos.yml"] = None
+    # The pre-pr and dependabot runs' sources (#562): each kind's pack and
+    # Dependabot template, and the organisation's default template.
+    out["dependabot-default"] = raw(CENTRAL, "policy/dependabot.default.yml", ref)
+    kinds = gh_bytes("api", f"repos/{CENTRAL}/contents/kinds?ref={ref}")
+    out["kinds"] = {e["name"]: {"pack.yml": raw(CENTRAL, f"kinds/{e['name']}/pack.yml", ref),
+                                "dependabot.yml": raw(CENTRAL, f"kinds/{e['name']}/dependabot.yml", ref)}
+                    for e in (json.loads(kinds) if kinds else []) if e.get("type") == "dir"}
     return out
 
 
@@ -1017,6 +1298,28 @@ def sync_from_env(repository, issue_only):
             cache[key] = load_json(env["LANE_ORG"]) if env.get("LANE_ORG") else read_org(sha, contents)
         return cache[key]
     return {"issue_only": issue_only, "pr": pr, "change": change, "org": org}
+
+
+def maintainer_of(repository):
+    """login -> whether that person has the admin or maintain role in the
+    repository, read from GitHub."""
+    def has(name):
+        out = gh_bytes("api", f"repos/{repository}/collaborators/{name}/permission", "--jq", ".role_name")
+        return (out or "").strip() in ("admin", "maintain")
+    return has
+
+
+def adopt_from_env(repository):
+    """What the adopt lane reads (#562), from GitHub, each read once."""
+    sync = sync_from_env(repository, False)
+
+    def problems(conf):
+        spec = importlib.util.spec_from_file_location("repos_config", os.path.join(HERE, "repos-config.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        root = os.path.join(HERE, "..")
+        return mod.problems(conf, mod.dirs(os.path.join(root, "kinds")), mod.dirs(os.path.join(root, "design-systems")))
+    return {"maintainer": maintainer_of(repository), "pr": sync["pr"], "change": sync["change"], "problems": problems}
 
 
 def carry_from_env(repository, pr=None):
@@ -1127,8 +1430,8 @@ def load_json(path):
 
 
 def policy_in_force():
-    org = load(os.environ.get("ORG_AUTONOMY") or os.path.join(HERE, "..", "policy", "autonomy.yml"))
-    return merge(org, load(os.environ.get("REPO_AUTONOMY")))
+    pol = load(os.environ.get("ORG_AUTONOMY") or os.path.join(HERE, "..", "policy", "autonomy.yml"))
+    return merge(pol, load(os.environ.get("REPO_AUTONOMY")), os.environ.get("GITHUB_REPOSITORY", ""))
 
 
 def self_test():
@@ -1152,7 +1455,7 @@ def self_test():
     check("#488 claims: a repository lowers a limit, never raises it",
           [merge(org, {"claims": {"release-days": 5}})["claims"]["release-days"], merge(org, {"claims": {"release-days": 50}})["claims"]["release-days"]], [5, 10])
     check("#488 claims: an unknown key or a day count that is not a number", [problems({**org, "claims": {"x": 1}}) != [], problems({**org, "claims": {"remind-days": "7"}}) != []], [True, True])
-    check("the organisation's policy has the seven lanes", sorted(org.get("lanes", {})), ["bugfix-reproduced", "delegated", "human-issue", "org-sync", "platform", "release", "security-carry"])
+    check("the organisation's policy has the eight lanes", sorted(org.get("lanes", {})), ["adopt", "bugfix-reproduced", "delegated", "human-issue", "org-sync", "platform", "release", "security-carry"])
     # The security-carry lane (#287).
     pol_c = merge(org, {})
     lane_c = pol_c["lanes"]["security-carry"]
@@ -1231,14 +1534,14 @@ def self_test():
 
     # #189: a sub-issue of an issue a person accepted.
     def child(parent_labels=("accepted",), actor="User", state="OPEN", where="DiluxOne/.github", assoc="MEMBER",
-              author="someone", edited=None, linked="2026-10-16T10:00:00Z", labels=(), parent=True, unlabeled=False):
+              author="someone", edited=None, linked="2026-10-16T10:00:00Z", labels=(), parent=True, unlabeled=False, reason=None):
         events = [{"__typename": "LabeledEvent", "label": {"name": "accepted"}, "actor": {"__typename": actor, "login": "soydiloreto" if actor == "User" else "dilux-bot"}}]
         if unlabeled:
             events.append({"__typename": "UnlabeledEvent", "label": {"name": "accepted"}, "actor": {"__typename": "User", "login": "soydiloreto"}})
         return {"number": 9, "body": "Carry it out here.", "author": {"login": author}, "authorAssociation": assoc, "lastEditedAt": edited,
                 "labels": {"nodes": [{"name": n} for n in labels]},
                 "timelineItems": {"nodes": [{"__typename": "ParentIssueAddedEvent", "createdAt": linked}] if linked else []},
-                "parent": {"number": 189, "state": state, "repository": {"nameWithOwner": where},
+                "parent": {"number": 189, "state": state, "stateReason": reason, "repository": {"nameWithOwner": where},
                            "labels": {"nodes": [{"name": n} for n in parent_labels]}, "timelineItems": {"nodes": events}} if parent else None}
     dpol = merge(org, {})
     acc = lambda i, var="": lane_accepts(dpol, i, None, "DiluxOne/diluxone-mail-wordpress", var)
@@ -1251,6 +1554,11 @@ def self_test():
     check("#189 C3: edited before it was linked counts as written then", acc(child(edited="2026-10-16T09:00:00Z"))[0], True)
     check("#189 C3: no link event read, no acceptance", acc(child(linked=None))[0], False)
     check("#189 C4: a closed parent takes it back", acc(child(state="CLOSED"))[0], False)
+    check("#572: a parent closed as completed still stands", acc(child(state="CLOSED", reason="COMPLETED"))[0], True)
+    check("#572: a parent closed as not planned takes it back", acc(child(state="CLOSED", reason="NOT_PLANNED")), (False, "its parent DiluxOne/.github#189 was closed without being completed"))
+    check("#572: a parent closed as a duplicate takes it back", acc(child(state="CLOSED", reason="DUPLICATE"))[0], False)
+    check("#572: a parent closed with no reason read takes it back", acc(child(state="CLOSED", reason=None))[0], False)
+    check("#572: a parent in any other state is neither open nor closed as completed", acc(child(state="UNKNOWN")), (False, "its parent DiluxOne/.github#189 is neither open nor closed as completed"))
     check("#189 C4: a parent whose accepted was removed takes it back", acc(child(parent_labels=(), unlabeled=True))[0], False)
     check("#189: a parent in another organisation", acc(child(where="Other/.github"))[0], False)
     check("#189: an issue with no parent and no lane is no lane's", acc(child(parent=False))[0], False)
@@ -1304,6 +1612,25 @@ def self_test():
     check("#188: a repository still lowers a lane with a ceiling", m["lanes"]["human-issue"]["merge"]["max-risk"], "low")
     m = merge(org, {"lanes": {"release": {"merge": {"max-risk": "high"}}}})
     check("#188: a release never merges on its own, whatever a repository says", m["lanes"]["release"]["merge"]["max-risk"], "none")
+    # #568 C2: what merge() lets a repository do is what the settings'
+    # schema says of each key, and a key it says `never` of stays the
+    # organisation's whatever the repository's file holds.
+    import settings  # the schema's reader, here only: the lane job fetches autonomy.py's imports
+    schema = {s["key"]: s.get("repo") for s in settings.entries(settings.schema(), "policy/autonomy.yml")}
+    check("#568 C2: the schema's repo level of each key is merge()'s", schema, {**{k: "never" for k in schema}, **REPO_RULES})
+    for key in (k for k, how in schema.items() if how == "never"):
+        top, _, rest = key.partition(".")
+        if top == "lanes":
+            name, part = "human-issue", rest.split(".", 1)[1]
+            repo = {"lanes": {name: {part: {"app": "someone"} if part == "origin" else "x"}}}
+            got = merge(org, repo)["lanes"][name].get(part), org["lanes"][name].get(part)
+        else:
+            repo = {top: {"max-files": 1} if top == "security-patch" else 1}
+            got = merge(org, repo).get(top), org.get(top)
+        check(f"#568 C2: a repository cannot set {key}", got[0], got[1])
+    acme = {**org, "lanes": {**org["lanes"], "human-issue": {**org["lanes"]["human-issue"], "merge": {"max-risk": "low", "max-complexity": "high"}, "ceiling": {"max-risk": "medium", "max-complexity": "high"}}}}
+    check("#568 C2: a repository raises merge within its organisation's ceiling", merge(acme, {"lanes": {"human-issue": {"merge": {"max-risk": "medium"}}}})["lanes"]["human-issue"]["merge"], {"max-risk": "medium", "max-complexity": "high"})
+    check("#568 C2: past it, the organisation's ceiling applies", merge(acme, {"lanes": {"human-issue": {"merge": {"max-risk": "high"}}}})["lanes"]["human-issue"]["merge"], {"max-risk": "medium", "max-complexity": "high"})
     lane = lambda **k: {"lanes": {**org["lanes"], "human-issue": {**org["lanes"]["human-issue"], **k}}}
     check("#188 schema: a key the policy does not know", problems({**org, "owner": "me"}), ["owner: not a key of the policy"])
     check("#247 schema: a planned release is auto or confirm", [problems({**org, "planned-release": v}) for v in ("auto", "confirm", "yes")],
@@ -1359,6 +1686,18 @@ def self_test():
     check("a repository turns the autopilot off", m["autopilot"], False)
     m = merge({**org, "autopilot": False}, {"autopilot": True})
     check("a repository cannot turn it on", m["autopilot"], False)
+    # #561 C4: what G7 holds for a person depends on the repository.
+    here_p = merge(org, {}, sys.modules["org"].CENTRAL)["protected"]
+    there_p = merge(org, {}, "o/product")["protected"]
+    declared_p = merge(org, {"constitution": ["scripts/**"]}, "o/product")["protected"]
+    check("#561 C4: the organisation's own repository, or one not named, protects the whole constitution",
+          (here_p == org["constitution"], merge(org, {})["protected"] == org["constitution"]), (True, True))
+    check("#561 C4: another repository protects its workflows and what it declares, never the engine's scripts/ by default",
+          (there_p, declared_p, merge(org, {}, "o/product")["constitution"] == org["constitution"]),
+          (ALWAYS_PROTECTED, ALWAYS_PROTECTED + ["scripts/**"], True))
+    check("#561 C4: another repository's own policy files and workflows stay a person's",
+          [any(fnmatch.fnmatch(f, p) for p in there_p) for f in (".github/workflows/ci.yml", ".github/autonomy.yml", ".github/review-policy.yml", "scripts/x.py", ".github/ISSUE_TEMPLATE/bug.yml")],
+          [True, True, True, False, False])
     m = merge(org, {"constitution": ["docs/rules.md"]})
     check("a repository adds a protected path", "docs/rules.md" in m["constitution"], True)
 
@@ -1450,9 +1789,28 @@ def self_test():
         i, s = case
         return sync_merge(p, i, sr, "", s, review or green)
 
-    check("the lane names who may run the sync, and only a policy file can", org["lanes"]["org-sync"]["origin"].get("people"), ["soydiloreto"])
+    import org as org_conf  # the module: `org` is the policy here
+    check("#568: who may run the sync is org.yml's maintainers, unless the lane names them", (lane_people(org["lanes"]["org-sync"]["origin"]), lane_people({"people": ["x"]}), lane_people({"people": []})), (org_conf.MAINTAINERS, ["x"], []))
     m = merge(org, {"lanes": {"org-sync": {"origin": {"people": ["someone"]}}}})
-    check("a repository cannot add a person to a sync lane", m["lanes"]["org-sync"]["origin"]["people"], ["soydiloreto"])
+    check("a repository cannot add a person to a sync lane", lane_people(m["lanes"]["org-sync"]["origin"]), org_conf.MAINTAINERS)
+    # #568: DiluxOne's values in force are the same now they come from
+    # org.yml: every lane's App is dilux-bot, and the sync's people the
+    # maintainer, as the policy wrote them before.
+    check("#568: DiluxOne's lanes are still opened by dilux-bot", {lane_app(lane.get("origin")) for lane in org["lanes"].values() if lane.get("origin")}, {"dilux-bot"} if not os.environ.get("DX_BOT_APP") else {os.environ["DX_BOT_APP"]})
+    check("#568: and the sync is still run by its maintainer", lane_people(org["lanes"]["org-sync"]["origin"]), ["soydiloreto"])
+    saved, org_conf.APP = org_conf.APP, ""
+    try:
+        check("#568: no App anywhere, the lane names none", lane_app({}), "")
+        check("#568: and a lane check refuses it, not an issue whose author is empty",
+              carry_accepts("x", {}, {"author": {"login": ""}, "body": ""}, "o/r", {}), (False, NO_APP))
+        check("#568: nor does an empty App let a non-member's sub-issue through",
+              delegated_accepts("x", {"origin": {"parent": True}}, {"authorAssociation": "NONE", "author": {"login": ""}, "parent": {
+                  "repository": {"nameWithOwner": "o/p"}, "number": 1, "state": "OPEN", "labels": {"nodes": [{"name": "accepted"}]},
+                  "timelineItems": {"nodes": [{"__typename": "LabeledEvent", "label": {"name": "accepted"}, "actor": {"__typename": "User", "login": "boss"}}]}}}, "o/r"),
+              (False, "the sub-issue was not opened by a member of the organisation"))
+    finally:
+        org_conf.APP = saved
+    check("#568: the policy names no App and no person of its own", [n for n, lane in org["lanes"].items() if {"app", "people"} & set(lane.get("origin") or {})], [])
     check("the marker a run writes is the one the lane reads", bool(SYNC_MARKER.fullmatch(sync_marker("org-sync", sr, "callers", sha, {"a": "b"}))), True)
     check("the fingerprint changes with any byte of any file", fingerprint(sr, "files", sha, {"a": "b"}) != fingerprint(sr, "files", sha, {"a": "b "}), True)
     # C1: a callers run's issue, naming a merged commit here, is accepted by
@@ -1540,6 +1898,30 @@ def self_test():
                            ("a ref that is not a major", own_at("main")), ("more than its call", own_at("v5", "    with:\n      x: y\n"))):
         check(f"#320: a job of the repository's own moved to {name} does not merge on its own",
               merges(sync_case("callers", files={".github/workflows/issues.yml": head_own}, base=own_base))[0], False)
+    # #562 C2: a template's placeholder becomes the value repos.yml gives,
+    # and none is left; a new caller is its template with those values.
+    support = "https://github.com/DiluxOne/.github/blob/main/SUPPORT.md"
+    valued = dict(org_facts, **{"repos.yml": json.dumps({"files": {".github/CODEOWNERS": owners}, "callers": {
+        "repository-owned": {"issues.yml": ["support-url"]}, "defaults": {"support-url": support}}})})
+    valued["main"] = dict(org_facts["main"], **{"repos.yml": valued["repos.yml"]})
+
+    def valued_case(head, base):
+        case = sync_case("callers", files={".github/workflows/issues.yml": head}, base={".github/workflows/issues.yml": base} if base is not None else {})
+        case[1]["org"] = lambda _sha, _contents=False: valued
+        return case
+    placeheld = caller_base.replace("https://mine.example", "https://example.com")
+    check("#562 C2: a callers run that fills a template's placeholder with repos.yml's value merges on its own",
+          merges(valued_case(caller_head.replace("https://mine.example", support), placeheld))[0], True)
+    ok, why = merges(valued_case(caller_head.replace("https://mine.example", "https://example.com"), placeheld))
+    check("#562 C2: one that leaves the placeholder does not", (ok, "placeholder" in why), (False, True))
+    check("#562 C2: nor one that writes a value repos.yml does not give",
+          merges(valued_case(caller_head.replace("https://mine.example", "https://other.example"), placeheld))[0], False)
+    check("#562 C2: the repository's own value is still kept, never replaced",
+          merges(valued_case(caller_head.replace("https://mine.example", support), caller_base))[0], False)
+    new_caller = template.replace("https://example.com", support)
+    check("#562 C2: a new caller that is its template with repos.yml's values merges on its own", merges(valued_case(new_caller, None))[0], True)
+    for name, text in (("still holds the placeholder", template), ("adds a line", new_caller + "  more:\n    uses: x/y/.github/workflows/z.yml@v1\n")):
+        check(f"#562 C2: a new caller that {name} does not merge on its own", merges(valued_case(text, None))[0], False)
     check("a CODEOWNERS that is not repos.yml's does not merge on its own", merges(sync_case(files={".github/CODEOWNERS": "* @someone\n", "AGENTS.md": agents_head}))[0], False)
     check("an AGENTS.md changed outside its block does not merge on its own", merges(sync_case(files={".github/CODEOWNERS": owners, "AGENTS.md": agents_head + "\nMore.\n"}))[0], False)
     check("a stale files run (main's repos.yml moved on) does not merge on its own",
@@ -1549,6 +1931,124 @@ def self_test():
     check("a files run is not stale for a change of main elsewhere in repos.yml",
           merges(sync_case(main={"repos.yml": json.dumps({"files": {".github/CODEOWNERS": owners}, "projects": {"x": 1}})}))[0], True)
     check("the lane merges what the review rates high only because of its paths", (org["lanes"]["org-sync"]["merge"]["max-risk"], org["lanes"]["org-sync"]["merge"]["max-complexity"]), ("high", "low"))
+
+    # #562 C1: the pre-pr and dependabot runs, as mechanical as the callers:
+    # accepted and merged by policy, each file what the commit renders.
+    def central_text(path):
+        with open(os.path.join(HERE, "..", path), encoding="utf-8") as fh:
+            return fh.read()
+    pre_pr, sync = pre_pr_module(), sync_module()
+    pack = central_text("kinds/wordpress-plugin/pack.yml")
+    plugin_template, default_template = central_text("kinds/wordpress-plugin/dependabot.yml"), central_text("policy/dependabot.default.yml")
+    ignore = {"composer": {"ignore": [{"dependency-name": "php"}]}}
+    entry = {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"]}], "dependabot": ignore}
+    mech_conf = {"repos": {"diluxone-offload-wordpress": entry}}
+    mech_facts = dict(org_facts, **{"repos.yml": json.dumps(mech_conf), "dependabot-default": default_template,
+                                    "kinds": {"wordpress-plugin": {"pack.yml": pack, "dependabot.yml": plugin_template}}})
+    mech_facts["main"] = {k: mech_facts[k] for k in ("repos.yml", "agents-block.md", "templates", "dependabot-default", "kinds")}
+    makefile_base = "check:\n\tphpunit\n"
+    dx = pre_pr.render(parse_text(pack)["pre-pr-make"])
+    root = ["composer.json", "plugin.php", ".github"]
+    dependabot = sync.render_dependabot(plugin_template, sync.dependabot_ecosystems(set(root), ignore), ignore, default_template)
+
+    def mech_case(mode, files, base=None, main=None, root=root):
+        case = sync_case(mode, files=files, base=base or {})
+        facts = dict(mech_facts, main=dict(mech_facts["main"], **(main or {})))
+        case[1]["org"] = lambda _sha, _contents=False: facts
+        change = case[1]["change"]()
+        change["root"] = root
+        case[1]["change"] = lambda: change
+        return case
+    pre_files = {"dx.mk": dx, "Makefile": pre_pr.with_include(makefile_base)}
+    pre_base = {"Makefile": makefile_base}
+    check("#562 C1: the lane names a pre-pr and a dependabot run, each with its branch and paths",
+          (runs["pre-pr"], runs["dependabot"]), ({"branch": "chore/{issue}-org-pre-pr", "paths": ["dx.mk", "Makefile"]},
+                                                 {"branch": "chore/{issue}-org-dependabot", "paths": [".github/dependabot.yml"]}))
+    check("#562 C1: a pre-pr run's issue is accepted by policy, and its pull request passes the gate",
+          (sync_ok(mech_case("pre-pr", pre_files, pre_base), scope="issue"), sync_ok(mech_case("pre-pr", pre_files, pre_base))), (True, True))
+    check("#562 C1: a pre-pr run's pull request, green, merges by policy", merges(mech_case("pre-pr", pre_files, pre_base)), (True, merges(mech_case("pre-pr", pre_files, pre_base))[1]))
+    check("#562 C1: one for a repository with no Makefile yet merges by policy too",
+          merges(mech_case("pre-pr", {"dx.mk": dx, "Makefile": pre_pr.INCLUDE + "\n"}))[0], True)
+    check("#562 C1: a dependabot run's issue is accepted by policy, and its pull request merges by policy",
+          (sync_ok(mech_case("dependabot", {".github/dependabot.yml": dependabot}), scope="issue"),
+           merges(mech_case("dependabot", {".github/dependabot.yml": dependabot}))[0]), (True, True))
+    for name, files in (("a Makefile line changed beside the include", {"dx.mk": dx, "Makefile": pre_pr.with_include(makefile_base).replace("phpunit", "true")}),
+                        ("a dx.mk that is not the pack's", {"dx.mk": dx.replace("pre-pr:", "pre-pr: extra"), "Makefile": pre_pr.with_include(makefile_base)})):
+        ok, why = merges(mech_case("pre-pr", files, pre_base))
+        check(f"#562 C1: a pre-pr run with {name} does not merge on its own", (ok, bool(why)), (False, True))
+    check("#562 C1: a Makefile whose own pre-pr has a recipe is not a pre-pr run's to include",
+          merges(mech_case("pre-pr", {"dx.mk": dx, "Makefile": pre_pr.with_include("pre-pr:\n\tnpm test\n")}, {"Makefile": "pre-pr:\n\tnpm test\n"}))[0], False)
+    for name, text in (("a changed entry", dependabot.replace("interval: daily", "interval: weekly", 1)),
+                       ("an ecosystem its head does not have", sync.render_dependabot(plugin_template, sync.dependabot_ecosystems(set(root) | {"package.json"}, ignore), ignore, default_template)),
+                       ("the repository's ignore dropped", sync.render_dependabot(plugin_template, sync.dependabot_ecosystems(set(root), {}), {}, default_template))):
+        check(f"#562 C1: a dependabot run with {name} does not merge on its own", merges(mech_case("dependabot", {".github/dependabot.yml": text}))[0], False)
+    check("#562 C1: a dependabot run whose head's root could not be read does not merge on its own",
+          merges(mech_case("dependabot", {".github/dependabot.yml": dependabot}, root=None))[0], False)
+    check("#562 C1: a pre-pr run's file outside its paths fails the gate", sync_ok(mech_case("pre-pr", dict(pre_files, **{".github/dependabot.yml": dependabot}), pre_base)), False)
+    moved = dict(mech_facts["kinds"], **{"wordpress-plugin": {"pack.yml": pack + "\n# more\n", "dependabot.yml": plugin_template}})
+    check("#562 C1: a stale pre-pr or dependabot run (the pack, the default template or the entry moved on) does not merge on its own",
+          (merges(mech_case("pre-pr", pre_files, pre_base, main={"kinds": moved}))[0],
+           merges(mech_case("dependabot", {".github/dependabot.yml": dependabot}, main={"dependabot-default": default_template + "\n"}))[0],
+           merges(mech_case("dependabot", {".github/dependabot.yml": dependabot}, main={"repos.yml": json.dumps({"repos": {"diluxone-offload-wordpress": dict(entry, dependabot={})}})}))[0]),
+          (False, False, False))
+
+    # #562 C5: the adopt lane merges the pull request that adds the Adopt
+    # issue's entry to repos.yml, and nothing else.
+    detect = adopt_module()
+    adopt_entry_ = {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"], "roles": ["back", "front"]}]}
+    adopt_body = detect.adopt_body("diluxone-new", ["wordpress-plugin"], detect.packs())
+    with open(os.path.join(HERE, "..", "repos.yml"), encoding="utf-8") as fh:
+        repos_base = fh.read()
+    repos_head = detect.with_entries(repos_base, [detect.entry_text("diluxone-new", adopt_entry_)])
+    spec = importlib.util.spec_from_file_location("repos_config", os.path.join(HERE, "repos-config.py"))
+    rc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rc)
+    rc_problems = lambda conf: rc.problems(conf, rc.dirs(os.path.join(HERE, "..", "kinds")), rc.dirs(os.path.join(HERE, "..", "design-systems")))  # noqa: E731
+
+    def adopt_case(body=adopt_body, title="Adopt diluxone-new", actor=("User", "soydiloreto"), edited=None, head=repos_head, files=None,
+                   pr_author="dilux-bot[bot]", branch="chore/61-adopt", labels=("lane:adopt", "accepted"), typ="Task"):
+        i = {"number": 61, "title": title, "author": {"login": "dilux-bot[bot]"}, "body": body, "lastEditedAt": edited, "issueType": {"name": typ},
+             "labels": {"nodes": [{"name": n} for n in labels]},
+             "timelineItems": {"nodes": [{"__typename": "LabeledEvent", "createdAt": "2026-11-01T10:00:00Z", "label": {"name": "accepted"},
+                                          "actor": {"__typename": actor[0], "login": actor[1]}}]}}
+        change = {"files": files or [{"status": "modified", "path": "repos.yml"}], "base": {"repos.yml": repos_base}, "head": {"repos.yml": head}}
+        facts = {"maintainer": lambda who: who == "soydiloreto", "pr": {"author": {"login": pr_author}, "headRefName": branch},
+                 "change": lambda: change, "problems": rc_problems}
+        return i, facts
+
+    def adopted(case, repository=CENTRAL, var="", p=pol):
+        return adopt_accepts(p, case[0], repository, var, case[1])
+    check("#562 C5: the adopt lane: a maintainer accepts its issue, nothing accepts it by policy", (org["lanes"]["adopt"]["accept"], org["lanes"]["adopt"]["repositories"]), ("human", [".github"]))
+    ok, why = adopted(adopt_case())
+    check("#562 C5: a pull request adding only the Adopt issue's entry passes", (ok, why), (True, why))
+    check("#562 C5: and merges by policy, green", adopt_merge(pol, adopt_case()[0], CENTRAL, "", adopt_case()[1], green)[0], True)
+    check("#562 C5: nor when the lane is switched off", adopted(adopt_case(), p=merge(org, {"lanes": {"adopt": {"enabled": False}}}))[0], False)
+    edited_block = adopt_body.replace("{kinds: [", "{project: 16, kinds: [")
+    check("#562 C5: the block as a maintainer corrected it before accepting is the entry",
+          adopted(adopt_case(body=edited_block, edited="2026-11-01T09:00:00Z",
+                             head=detect.with_entries(repos_base, [detect.entry_text("diluxone-new", dict(adopt_entry_, project=16))])))[0], True)
+    other = detect.with_entries(repos_base, [detect.entry_text("diluxone-new", adopt_entry_), "  diluxone-more: {kinds: []}"])
+    for name, case in (("another entry beside it", adopt_case(head=other)),
+                       ("an entry other than the issue's", adopt_case(head=detect.with_entries(repos_base, [detect.entry_text("diluxone-new", {"kinds": []})]))),
+                       ("another line of repos.yml changed", adopt_case(head=repos_head.replace("has_wiki: false", "has_wiki: true"))),
+                       ("a comment changed", adopt_case(head=repos_head.replace("# Merging: squash only", "# Merging: any"))),
+                       ("another file", adopt_case(files=[{"status": "modified", "path": "repos.yml"}, {"status": "modified", "path": "policy/autonomy.yml"}])),
+                       ("an entry out of the schema", adopt_case(body=adopt_body.replace("{kinds: [", "{owner: me, kinds: ["),
+                                                                 head=detect.with_entries(repos_base, [detect.entry_text("diluxone-new", dict(adopt_entry_, owner="me"))]))),
+                       ("the text edited after it was accepted", adopt_case(edited="2026-11-01T11:00:00Z")),
+                       ("`accepted` added by someone without the role", adopt_case(actor=("User", "someone"))),
+                       ("`accepted` added by a bot", adopt_case(actor=("Bot", "soydiloreto"))),
+                       ("a title that is not the marker's", adopt_case(title="Adopt diluxone-other")),
+                       ("a pull request someone else opened", adopt_case(pr_author="someone")),
+                       ("another branch", adopt_case(branch="chore/61-mine")),
+                       ("no lane:adopt", adopt_case(labels=("accepted",))),
+                       ("a Type other than Task", adopt_case(typ="Feature"))):
+        check(f"#562 C5: the adopt lane refuses {name}", adopted(case)[0], False)
+    check("#562 C5: never outside DiluxOne/.github, nor with DX_AUTOPILOT off",
+          (adopted(adopt_case(), repository="DiluxOne/x"), adopted(adopt_case(), var="off")[0]), ((False, adopted(adopt_case(), repository="DiluxOne/x")[1]), False))
+    check("#562 C5: nor one the review blocks or rates above the lane's complexity",
+          (adopt_merge(pol, adopt_case()[0], CENTRAL, "", adopt_case()[1], dict(green, blocking="true"))[0],
+           adopt_merge(pol, adopt_case()[0], CENTRAL, "", adopt_case()[1], dict(green, complexity="medium"))[0]), (False, False))
 
     # #84: the lane a reproduction hands a bug to, asked before its issue exists.
     check("lane-open: bugfix-reproduced is open everywhere by default", lane_open(pol, "bugfix-reproduced", "DiluxOne/x", "")[0], True)
@@ -1669,6 +2169,15 @@ def main():
             # that was released, nothing more and nothing less.
             try:
                 ok, why = carry_merge(policy, issue, repository, var, carry_from_env(repository, sync_from_env(repository, False)["pr"]), review)
+            except Exception as exc:  # any failure is a person's merge, said as a failure
+                print(f"the decision failed: {exc}")
+                return 3
+            print(why)
+            return 0 if ok else 1
+        if adopt_lane_of(policy, issue):
+            # An Adopt issue's pull request (#562): its entry, and nothing else.
+            try:
+                ok, why = adopt_merge(policy, issue, repository, var, adopt_from_env(repository), review)
             except Exception as exc:  # any failure is a person's merge, said as a failure
                 print(f"the decision failed: {exc}")
                 return 3

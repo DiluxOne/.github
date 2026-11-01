@@ -15,10 +15,11 @@
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 # The organisation's App authors the patch: the calling organisation's
-# DX_BOT_LOGIN and DX_BOT_ID (security-patch.yml's env, #197), DiluxOne's
-# dilux-bot by default.
-BOT=${DX_BOT_LOGIN:-dilux-bot[bot]}
-BOT_EMAIL="${DX_BOT_ID:-333187390}+$BOT@users.noreply.github.com"
+# DX_BOT_LOGIN and DX_BOT_ID (security-patch.yml's env, #197), else
+# org.yml's App (#568).
+BOT=$(python3 "$HERE/org.py" bot login) || { echo "::error::No App to author the patch: set DX_BOT_LOGIN, or org.yml's bot." >&2; exit 1; }
+BOT_ID=$(python3 "$HERE/org.py" bot id) || { echo "::error::No App id to author the patch: set DX_BOT_ID, or org.yml's bot." >&2; exit 1; }
+BOT_EMAIL="$BOT_ID+$BOT@users.noreply.github.com"
 
 g() { git -c core.hooksPath=/dev/null -c "user.name=$BOT" -c "user.email=$BOT_EMAIL" "$@"; }
 
