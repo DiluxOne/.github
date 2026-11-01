@@ -51,7 +51,11 @@ name: Autopilot
 #                   request already ready whose review blocks at its head
 #                   (#504, scripts/autopilot.py continue-as), the continue
 #                   runs one fix round instead, counted as a run: the
-#                   rounds cap does not refuse it, the runs cap does.
+#                   rounds cap does not refuse it, the runs cap does. So
+#                   does one on a ready pull request that conflicts with
+#                   main (#556, mergeStateStatus DIRTY), whatever its
+#                   review says: GitHub runs no checks on it, and the fix
+#                   round merges main into its branch first.
 #
 # Before `finish ready` (#482) the agent runs the local review's checks on
 # its own diff (scripts/local-review.sh --no-claude: the conventions, the
@@ -339,19 +343,27 @@ jobs:
           # A continue on a pull request already ready whose review blocks
           # at its head runs one fix round (#504): the review's last record,
           # read the way claude-review.yml reads it, from dilux-bot's own
-          # summary comment only.
-          as=$MODE
+          # summary comment only. So does one on a ready pull request that
+          # conflicts with main (#556): GitHub runs no checks on it, so it
+          # has no record at its head, and the fix round merges main first.
+          as=$MODE; conflicts=false
           if [ "$MODE" = continue ]; then
-            state=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json isDraft,headRefOid --jq '"\(.isDraft) \(.headRefOid)"')
+            state=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json isDraft,headRefOid,mergeStateStatus --jq '"\(.isDraft) \(.headRefOid) \(.mergeStateStatus)"')
+            read -r is_draft head merge_state <<<"$state"
+            [ "$merge_state" != DIRTY ] || conflicts=true
             # Unread, it is no record: the continue runs as it always did.
             # shellcheck disable=SC2016 # jq variable, not a shell one.
             { gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
               | jq -r --arg bot "$DX_BOT_LOGIN" '.[] | select(.user.login == $bot and (.body | startswith("<!-- dx-review -->"))) | .body' \
               | { grep -oP '<!-- dx-review-record \K.*(?= -->)' || true; } | tail -1; } > "$RUNNER_TEMP/record.json" || echo null > "$RUNNER_TEMP/record.json"
-            as=$(IS_DRAFT="${state%% *}" HEAD="${state#* }" RECORD="$RUNNER_TEMP/record.json" python3 .dx-central/scripts/autopilot.py continue-as)
-            [ "$as" != fix ] || echo "#$PR is ready and its review blocks at its head: this continue runs one fix round."
+            as=$(IS_DRAFT="$is_draft" HEAD="$head" RECORD="$RUNNER_TEMP/record.json" CONFLICTS="$conflicts" python3 .dx-central/scripts/autopilot.py continue-as)
+            if [ "$as" = fix ] && [ "$conflicts" = true ]; then
+              echo "#$PR is ready and conflicts with main: this continue runs one fix round, which merges main first."
+            elif [ "$as" = fix ]; then
+              echo "#$PR is ready and its review blocks at its head: this continue runs one fix round."
+            fi
           fi
-          echo "mode=$as" >> "$GITHUB_OUTPUT"
+          { echo "mode=$as"; echo "conflicts=$conflicts"; } >> "$GITHUB_OUTPUT"
           [ -n "$ISSUE" ] || { echo "No issue to work on."; exit 1; }
           echo "issue=$ISSUE" >> "$GITHUB_OUTPUT"
           gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/body.md"
@@ -588,6 +600,10 @@ jobs:
           BRANCH: ${{ steps.what.outputs.branch }}
           ROUND: ${{ steps.what.outputs.round }}
           LANE: ${{ steps.may.outputs.lane }}
+          # #556: a continue's fix round on a pull request that conflicts
+          # with main merges it first.
+          CONFLICTS: ${{ steps.what.outputs.conflicts }}
+          DEFAULT: ${{ github.event.repository.default_branch }}
           # #479: a round for a pull request the queue dropped reads the
           # failed jobs' log instead of the review.
           QUEUE: ${{ github.event_name == 'pull_request' && github.event.action == 'dequeued' }}
@@ -605,7 +621,7 @@ jobs:
           fi
           python3 .dx-central/scripts/autopilot.py inputs "$MODE"
           if [ "$MODE" = fix ]; then
-            python3 .dx-central/scripts/autopilot.py prompt fix > "$DX_IO/prompt.md"
+            CONFLICTS="${CONFLICTS:-false}" python3 .dx-central/scripts/autopilot.py prompt fix > "$DX_IO/prompt.md"
             exit 0
           fi
           AUTOPILOT_RUN="$RUN_URL" python3 .dx-central/scripts/autopilot.py board
