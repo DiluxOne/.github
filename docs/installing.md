@@ -44,6 +44,17 @@ Then, what no pull request can do (the installer prints it with each URL):
 1. Organisation secrets: `DILUX_BOT_PRIVATE_KEY` (its App's key) and the Claude token.
 2. Organisation variables: `DILUX_BOT_CLIENT_ID` (its App's client ID), and `DX_BOT_LOGIN`, `DX_BOT_APP` and `DX_BOT_ID` (its App's login, slug and bot user id), so the workflows recognise its App; no workflow names one, and a workflow that reads them stops while one is unset ([workflows](workflows.md#organisation-secrets-and-variables)).
 3. An organisation ruleset requiring `<Org>/.github/.github/workflows/org-pull-request.yml` on every repository's default branch.
+4. The test identity (#563): a machine user (`<org>-test-bot`, the `engine-test` pack's `identity`), whose fine-grained token, with write on the test repository only, is the one secret the organisation provides for it: `DX_TEST_TOKEN`, in the `release` environment of `<Org>/.github` (main only).
+
+### The test repository
+
+The last step of `apply` (and `python3 scripts/install.py test-repo --org <Org>` on its own, once the test identity exists) sets up the organisation's test repository, so it sees that its installation works before its first real issue (#563):
+
+1. it creates `<org>-test` (org.yml `test-repo`), private when the organisation's plan gives rulesets to private repositories, else public;
+2. writes its callers (`issues.yml`, `pull-request-comments.yml`) calling the engine at its commit, pinned, with the version in a comment (`@v7` for DiluxOne);
+3. adopts it (`scripts/sync-repos.py adopt`, #562), as a repository of kind [`engine-test`](../kinds/engine-test/): the autopilot calls no model there, nothing is published from it, and what each scenario opens is closed after it;
+4. gives the test identity write there, and nowhere else (the daily drift check lists it anywhere else);
+5. plays every release scenario of [`tests/release/scenarios.yml`](../tests/release/scenarios.yml) there once (`scripts/release-scenarios.py run`, with `DX_TEST_TOKEN` when it is set) and prints the table of results: each scenario, pass or fail, and its run.
 
 ## Optional: private runners and the merge queue
 

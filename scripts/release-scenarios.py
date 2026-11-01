@@ -277,8 +277,38 @@ def cleanup(repo, made, run=gh):
             pass
 
 
-def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20):
+def at_ref(text, central, ref):
+    """A caller's calls of the engine at `ref`, its pinned version's comment
+    dropped. Pure."""
+    return re.sub(r"^(\s+uses: " + re.escape(central) + r"/\.github/workflows/[\w.-]+\.yml)@\S+([ \t]+#[^\n]*)?$", rf"\1@{ref}", text, flags=re.M)
+
+
+def point_callers(repo, ref, run=gh, central=None):
+    """The test repository's callers at `ref` (`v7-next` while the lane
+    tries a candidate, `v7` once the installer plays them), so what plays
+    is that ref's engine. Returns the callers it rewrote."""
+    import base64
+    if central is None:
+        sys.path.insert(0, HERE)
+        import org
+        central = org.CENTRAL
+    moved = []
+    for f in json.loads(run("api", f"repos/{repo}/contents/.github/workflows") or "[]"):
+        if not str(f.get("name", "")).endswith(".yml"):
+            continue
+        got = json.loads(run("api", f"repos/{repo}/contents/.github/workflows/{f['name']}") or "{}")
+        text = base64.b64decode(got.get("content") or "").decode()
+        new = at_ref(text, central, ref)
+        if new != text:
+            run("api", "-X", "PUT", f"repos/{repo}/contents/.github/workflows/{f['name']}", "-f", f"message=ci: the engine at {ref}",
+                "-f", f"content={base64.b64encode(new.encode()).decode()}", "-f", f"sha={got.get('sha', '')}")
+            moved.append(f["name"])
+    return moved
+
+
+def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20, central=None):
     bodies = conf.get("bodies") or {}
+    point_callers(repo, ref, run, central)
     return [play(s, repo, ref, bodies, run, sleep, minutes) for s in conf.get("scenarios") or [] if not only or s["id"] in only]
 
 
@@ -335,9 +365,22 @@ def self_test():
         return "[]"
     scen = {"scenarios": [{"id": "a", "covers": [], "opens": {"issue": {"title": "t", "body": "b"}}, "steps": [{"label": "x"}], "expect": {"labels": ["awaiting-acceptance"]}},
                           {"id": "b", "covers": [], "opens": {"issue": {"title": "t"}}, "expect": {"labels": ["accepted"]}}], "bodies": {"b": "body"}}
-    res = run_all(scen, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=1)
+    res = run_all(scen, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=1, central="O/.github")
     check("run: a scenario whose expect holds passes, one whose does not fails, named", [(r["id"], r["ok"], r["why"]) for r in res], [("a", True, []), ("b", False, ["no label accepted"])])
     check("run: its issues are closed and locked after it", sum(1 for c in calls if c[:2] in (("issue", "close"), ("issue", "lock"))), 4)
+    import base64
+    caller = "jobs:\n  t:\n    uses: O/.github/.github/workflows/issue-triage.yml@abc123 # v7\n"
+    check("at_ref: a pinned call moves to the ref tried", at_ref(caller, "O/.github", "v7-next"), "jobs:\n  t:\n    uses: O/.github/.github/workflows/issue-triage.yml@v7-next\n")
+    pcalls = []
+
+    def pfake(*args, input=None):
+        pcalls.append(args)
+        if args[-1] == "repos/o/t/contents/.github/workflows":
+            return json.dumps([{"name": "issues.yml"}])
+        if args[-1].endswith("issues.yml"):
+            return json.dumps({"content": base64.b64encode(caller.encode()).decode(), "sha": "s1"})
+        return ""
+    check("run: the test repository's callers call the ref tried", (point_callers("o/t", "v7-next", pfake, "O/.github"), any(c[:3] == ("api", "-X", "PUT") for c in pcalls)), (["issues.yml"], True))
     check("run: the table names each scenario, its result and its run", table(res).splitlines()[2], "| `a` | pass | https://github.com/o/t/actions/runs/1 |")
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
