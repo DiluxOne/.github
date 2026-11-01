@@ -135,9 +135,11 @@ name: Autopilot
 # A reproduced bug (lane `bugfix-reproduced`): its failing test, written from
 # an outsider's report, is untrusted code. It never enters the agent's
 # working tree (a sparse checkout keeps it in the commits only, and the
-# repository's own tests cannot pick it up); the draft's branch starts at the
-# reproduction's commit, the test checked against the SHA-256 the PRD
-# sealed; the agent runs it only in the sandbox, always against a clean copy
+# repository's own tests cannot pick it up); the draft's branch starts at
+# current main with the reproduction's commits cherry-picked on top (#549),
+# the test checked against the SHA-256 the PRD sealed; the work merges main
+# into a branch behind it before the agent starts, and api-commit.py pushes
+# that merge only when it is clean (#550); the agent runs it only in the sandbox, always against a clean copy
 # of a commit, never the working tree, and `finish ready` refuses until it
 # passes there: a unit test in scripts/repro-sandbox.sh (no network, no
 # environment, no secret), any other way's (#397) the way it was written,
@@ -828,6 +830,7 @@ jobs:
           REPRO_TEST: ${{ needs.prep.outputs.repro-test }}
           REPRO_SHA: ${{ needs.prep.outputs.repro-sha }}
           REPRO_BRANCH: ${{ needs.prep.outputs.repro-branch }}
+          DEFAULT: ${{ needs.prep.outputs.default }}
           REPO_AUTONOMY: ${{ runner.temp }}/repo-autonomy.yml
         run: |
           set -euo pipefail
@@ -862,15 +865,20 @@ jobs:
           # A branch left by an earlier, failed attempt is not reused.
           if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then branch="$branch-$GITHUB_RUN_ID"; fi
           if [ "$LANE" = bugfix-reproduced ]; then
-            # A reproduced bug's branch starts at the reproduction's own
-            # commit: the failing test, byte for byte the one the PRD sealed
-            # (its SHA-256), committed but never written to the working tree.
+            # A reproduced bug's branch starts at current main with the
+            # reproduction's own commits on top (#549): the failing test,
+            # byte for byte the one the PRD sealed (its SHA-256), committed
+            # but never written to the agent's working tree.
             git fetch -q origin "$REPRO_BRANCH"
-            if [ "$(git cat-file blob "FETCH_HEAD:$REPRO_TEST" 2>/dev/null | sha256sum | cut -c1-64)" != "$REPRO_SHA" ]; then
+            git checkout -q -b "$branch" "origin/$DEFAULT"
+            if ! git cherry-pick "$(git merge-base FETCH_HEAD "origin/$DEFAULT")..FETCH_HEAD" > /dev/null 2>&1; then
+              git cherry-pick --abort 2>/dev/null || true
+              echo "why=The reproduction's commits on $REPRO_BRANCH do not apply on $DEFAULT; the draft pull request is not opened." >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            if [ "$(git cat-file blob "HEAD:$REPRO_TEST" 2>/dev/null | sha256sum | cut -c1-64)" != "$REPRO_SHA" ]; then
               echo "why=The reproduction test on $REPRO_BRANCH is not the one the PRD sealed; the draft pull request is not opened." >> "$GITHUB_OUTPUT"; exit 0
             fi
-            git checkout -q -b "$branch" FETCH_HEAD
-            onto=FETCH_HEAD
+            onto="origin/$DEFAULT"
           elif adopt=$(python3 .dx-central/scripts/autopilot.py adopted) && [ -n "$adopt" ]; then
             # A pull request a maintainer adopted (#488, `/adopt`): the branch
             # starts at the head they read, which scripts/claim.py copied to
@@ -983,9 +991,19 @@ jobs:
           DEFAULT: ${{ needs.prep.outputs.default }}
         run: |
           set -euo pipefail
-          # What is new from here on goes to GitHub; tick reads the commits
-          # since the default branch.
-          { echo "start=$(git rev-parse HEAD)"; echo "base=$(git merge-base HEAD "origin/$DEFAULT")"; echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } >> "$GITHUB_OUTPUT"
+          # What is new from here on goes to GitHub, a merge of main
+          # included; tick reads the commits since the default branch.
+          echo "start=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          # The branch behind main gets it first (#549), as a clean merge,
+          # which api-commit.py pushes; on a conflict the work goes on from
+          # the branch as it is.
+          if [ "$(git rev-parse --abbrev-ref HEAD)" != "$DEFAULT" ] && ! git merge-base --is-ancestor "origin/$DEFAULT" HEAD; then
+            if ! git merge -q --no-edit "origin/$DEFAULT" > /dev/null 2>&1; then
+              git merge --abort 2>/dev/null || true
+              echo "::warning::$DEFAULT does not merge cleanly into the branch: the work goes on from the branch as it is."
+            fi
+          fi
+          { echo "base=$(git merge-base HEAD "origin/$DEFAULT")"; echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } >> "$GITHUB_OUTPUT"
           eof="DX_$(openssl rand -hex 16)"
           { echo "prompt<<$eof"; cat .dx-io/prompt.md; echo "$eof"; } >> "$GITHUB_OUTPUT"
 
@@ -1155,8 +1173,10 @@ jobs:
               echo "::error::The agent's commits do not build on $BRANCH as GitHub has it: nothing is pushed."; exit 1
             fi
             # Read whole, then searched: a pipe into grep -q could end early
-            # and, under pipefail, read as no match.
-            changed=$(git diff --name-only "origin/$BRANCH" "$new")
+            # and, under pipefail, read as no match. What the agent's own
+            # commits change: a merge of main brings only main's files
+            # (api-commit.py refuses any merge that is not clean, #550).
+            changed=$(git log --first-parent --no-merges --no-renames --format= --name-only "origin/$BRANCH..$new")
             if grep -q '^\.github/workflows/' <<<"$changed" && [ "$ENGINE" != true ]; then
               echo "::error::The agent's commits change .github/workflows: nothing is pushed."; exit 1
             fi
