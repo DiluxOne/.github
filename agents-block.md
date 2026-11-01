@@ -15,10 +15,13 @@ step-by-step flow with its commands is in
    not someone from a fork) unless they first claim the issue: comment
    `/claim` on it (or tick "I want to work on this myself" in its form),
    and the autopilot steps aside; a claim with no pull request is released
-   after 10 days. Without a claim, never edit code locally: open
-   or improve the issue, answer the autopilot's questions on its pull
-   request, and let it work; when it stops, give it a hint and add
-   `autopilot:continue`, never finish its pull request by hand.
+   after 10 days. Without a claim, never edit code locally: open or improve
+   the issue, answer on GitHub in words (an answer to the autopilot's
+   question, a hint when it stops), accept or merge only where the person
+   you work for may, and never add or remove a flow label
+   (`autopilot:continue`, `needs-human`, `autopilot:*`) to move the flow:
+   the bot moves it from the answer. Never finish the autopilot's pull
+   request by hand.
 2. **The pull request's type fits the issue's Type**: `feat` (or any `!`)
    closes a Feature, `fix` a Bug; other types close any accepted issue.
 3. **Branch** `<type>/<number>-<short-kebab>`; **commit and title** as a
