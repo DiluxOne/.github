@@ -13,10 +13,13 @@ archived and not excluded in repos.yml:
             outside contributor's workflow runs approved by a maintainer,
             #488), through the API.
   security  the organisation's code security configuration repos.yml
-            `security: configuration` names (#562), attached to the
-            repository when it is not, and kept the default for new ones:
-            secret scanning and push protection are its, never a
-            per-repository setting.
+            `security: configuration` names for the repository's
+            visibility (#562, #603: one name, or `public` / `private`, the
+            latter for internal too), attached to the repository when it
+            is not, and kept the default for new ones of that visibility;
+            none for a visibility the mapping does not name: secret
+            scanning and push protection are its, never a per-repository
+            setting.
   rulesets  the organisation's custom property (org.yml `adopted-property`,
             dx-adopted) set to true on every repository repos.yml lists
             (#562); then, once, the org rulesets ("org: main", "org: release
@@ -277,12 +280,38 @@ def sync_settings(repo, conf, dry):
 SECURITY_CONFIGS = {}
 
 
-def security_configuration(conf):
-    """(id, name) of repos.yml `security: configuration`, the organisation's
-    code security configuration of that name; ValueError when there is none."""
-    name = str((conf.get("security") or {}).get("configuration") or "")
-    if not name:
+def configuration_names(conf):
+    """repos.yml `security: configuration` as {visibility: name}: a plain
+    name for every visibility (`all`), or a mapping `public` / `private`
+    (#603; internal counts as private). Empty when it names none."""
+    got = (conf.get("security") or {}).get("configuration")
+    if isinstance(got, dict):
+        return {k: str(got[k]) for k in ("public", "private") if got.get(k)}
+    return {"all": str(got)} if got else {}
+
+
+def security_configuration(conf, visibility=None):
+    """(id, name, default scope) of the organisation's code security
+    configuration repos.yml `security: configuration` gives a repository of
+    that visibility (any, when None): the default scope is the
+    `default_for_new_repos` it keeps (`all` for a plain name or one name
+    for both, else `public` or `private_and_internal`). None when the
+    mapping names none for that visibility; ValueError when it names none
+    at all or one the organisation does not have."""
+    names = configuration_names(conf)
+    if not names:
         raise ValueError("repos.yml `security: configuration` names no code security configuration")
+    if "all" in names or names.get("public") == names.get("private"):
+        key, scope = next(iter(names)), "all"
+    elif visibility is None:
+        key = next(iter(names))
+        scope = "public" if key == "public" else "private_and_internal"
+    else:
+        key = "public" if str(visibility).upper() == "PUBLIC" else "private"
+        scope = "public" if key == "public" else "private_and_internal"
+        if key not in names:
+            return None
+    name = names[key]
     if name not in SECURITY_CONFIGS:
         rows = json.loads(gh("api", f"orgs/{ORG}/code-security/configurations?per_page=100").stdout or "[]")
         found = [r for r in rows if r.get("name") == name]
@@ -290,7 +319,7 @@ def security_configuration(conf):
             raise ValueError(f"the organisation has no code security configuration named `{name}` "
                              f"(it has: {', '.join(sorted(str(r.get('name')) for r in rows)) or 'none'})")
         SECURITY_CONFIGS[name] = found[0]["id"]
-    return SECURITY_CONFIGS[name], name
+    return SECURITY_CONFIGS[name], name, scope
 
 
 def attached_configuration(full):
@@ -305,10 +334,15 @@ def attached_configuration(full):
 
 
 def sync_security(repo, conf, dry):
-    """Attaches the organisation's code security configuration to the
-    repository when it is not, and keeps it the default for new ones."""
+    """Attaches the organisation's code security configuration for the
+    repository's visibility when it is not, and keeps it the default for
+    new ones of that visibility; nothing when there is none for it (#603)."""
     full = f"{ORG}/{repo['name']}"
-    cid, name = security_configuration(conf)
+    got = security_configuration(conf, repo.get("visibility"))
+    if got is None:
+        print("  no code security configuration for a private repository: none attached")
+        return
+    cid, name, scope = got
     if attached_configuration(full) == cid:
         print(f"  the code security configuration `{name}` is attached")
         return
@@ -321,7 +355,7 @@ def sync_security(repo, conf, dry):
     if out.returncode != 0:
         held = " (held at the enterprise level: out of the sync's reach, the maintainer changes it once there)" if "422" in out.stderr else ""
         raise RuntimeError(f"could not attach the code security configuration `{name}`{held}: {out.stderr.strip()[:200]}")
-    gh("api", "-X", "PUT", f"orgs/{ORG}/code-security/configurations/{cid}/defaults", "-f", "default_for_new_repos=all")
+    gh("api", "-X", "PUT", f"orgs/{ORG}/code-security/configurations/{cid}/defaults", "-f", f"default_for_new_repos={scope}")
     print(f"  the code security configuration `{name}` attached")
 
 
@@ -2298,8 +2332,17 @@ def org_drift(conf):
     login = org.test_pack()["identity"].get("login", "")
     names = sorted(((conf or {}).get("repos") or {}))
     found += test_repo_drift(conf, org.CATALOGS, packs, login, test_identity_permissions(names, login) if login else {})
+    found += org_drift_security(conf)
+    return found
+
+
+def org_drift_security(conf):
+    """The organisation's code security configurations repos.yml names that
+    it lacks, as lines: every name the mapping gives (#603)."""
+    found = []
     try:
-        security_configuration(conf)
+        for visibility in ("PUBLIC", "PRIVATE"):
+            security_configuration(conf, visibility)
     except ValueError as exc:
         found.append(f"{exc}: secret scanning and push protection are the configuration's, which GitHub may hold at the enterprise level only (HTTP 422 on a repository), out of the sync's reach: the maintainer sets it once there")
     return found
@@ -2358,9 +2401,10 @@ def adoption_drift(repo, conf):
     if values is not None and value != "true":
         found.append(f"its custom property `{ADOPTED}` is `{value or 'unset'}`, not `true`: the organisation's rulesets do not cover it (`sync-repos.py rulesets`)")
     try:
-        cid, name = security_configuration(conf)
-        if attached_configuration(full) != cid:
-            found.append(f"the code security configuration `{name}` is not attached (`sync-repos.py security`)")
+        # A private repository with no private configuration is in step (#603).
+        got = security_configuration(conf, repo.get("visibility"))
+        if got is not None and attached_configuration(full) != got[0]:
+            found.append(f"the code security configuration `{got[1]}` is not attached (`sync-repos.py security`)")
     except ValueError:
         pass  # said once, for the organisation
     if repos_conf.value(conf, repo["name"], "project") is None:
@@ -3146,6 +3190,66 @@ def dependabot_test(check, conf, labels, block):
               got == [f"could not be checked: {exc}"], got)
 
 
+def security_visibility_test(check):
+    """#603: repos.yml `security: configuration` by visibility. A public
+    repository gets the public one, the default for new public ones only;
+    a private one with no private entry gets nothing, with no write, and is
+    in step; a private one with one gets it, the default for new private
+    and internal ones."""
+    import contextlib
+    import io
+
+    class Out:
+        def __init__(self, stdout="", returncode=0, stderr=""):
+            self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
+
+    def run(mapping, visibility):
+        calls = []
+
+        def fake(*args, check=True, input_text=None):
+            joined = " ".join(args)
+            calls.append(joined)
+            if joined == "api orgs/o/code-security/configurations?per_page=100":
+                return Out(json.dumps([{"id": 5, "name": "Pub"}, {"id": 6, "name": "Priv"}]))
+            if joined == "api repos/o/r/code-security-configuration":
+                return Out("", 1, "HTTP 404 Not Found")
+            if joined == "api repos/o/r":
+                return Out(json.dumps({"id": 99}))
+            return Out("{}")
+        saved = {n: globals()[n] for n in ("gh", "ORG", "SECURITY_CONFIGS", "listed", "property_values")}
+        repo = {"name": "r", "visibility": visibility}
+        conf = {"security": {"configuration": mapping}, "repos": {"r": {"project": 1}}}
+        try:
+            globals().update(gh=fake, ORG="o", SECURITY_CONFIGS={}, listed=lambda n: {}, property_values=lambda names: {"r": "true"})
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                sync_security(repo, conf, False)
+            lines = adoption_drift(repo, conf)
+            org_lines = org_drift_security(conf)
+        finally:
+            globals().update(saved)
+        return [c for c in calls if " -X " in c], out.getvalue(), lines, org_lines
+
+    writes, said, lines, _ = run({"public": "Pub"}, "PUBLIC")
+    check("#603: a public repository gets the public configuration, the default for new public ones only",
+          writes == ["api -X POST orgs/o/code-security/configurations/5/attach --input -",
+                     "api -X PUT orgs/o/code-security/configurations/5/defaults -f default_for_new_repos=public"], writes)
+    check("#603: a public repository without it is drift", any("`Pub` is not attached" in l for l in lines), lines)
+    for vis in ("PRIVATE", "INTERNAL"):
+        writes, said, lines, _ = run({"public": "Pub"}, vis)
+        check(f"#603: an {vis.lower()} repository with no private configuration gets nothing, says so, and is not drift",
+              (writes, "none attached" in said, [l for l in lines if "security configuration" in l]), ([], True, []))
+    writes, said, lines, _ = run({"public": "Pub", "private": "Priv"}, "PRIVATE")
+    check("#603: a private repository with a private configuration gets it, the default for new private and internal ones",
+          writes == ["api -X POST orgs/o/code-security/configurations/6/attach --input -",
+                     "api -X PUT orgs/o/code-security/configurations/6/defaults -f default_for_new_repos=private_and_internal"], writes)
+    writes, _, _, _ = run({"public": "Pub", "private": "Pub"}, "PRIVATE")
+    check("#603: one configuration named for both visibilities is the default for all", writes[-1:] == ["api -X PUT orgs/o/code-security/configurations/5/defaults -f default_for_new_repos=all"], writes)
+    _, _, _, org_lines = run({"public": "Pub", "private": "Missing"}, "PUBLIC")
+    check("#603: the organisation's drift names a mapped configuration it does not have", any("`Missing`" in l for l in org_lines), org_lines)
+    _, _, _, org_lines = run({"public": "Pub"}, "PUBLIC")
+    check("#603: and nothing when every mapped one exists", org_lines == [], org_lines)
+
+
 def adopt_test(check, conf, labels, block):
     """#562, C1: `adopt --repo NAME` against a stand-in for gh: the property
     written (and the rulesets moved to it once every adopted repository
@@ -3159,7 +3263,8 @@ def adopt_test(check, conf, labels, block):
         def __init__(self, stdout="", returncode=0, stderr=""):
             self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
     entry = {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"], "roles": ["back", "front"]}], "project": 14}
-    cfg = {**conf, "repos": {**(conf.get("repos") or {}), "new": entry}}
+    # A plain name: every visibility, the default for all new repositories.
+    cfg = {**conf, "security": {**(conf.get("security") or {}), "configuration": "DiluxOne"}, "repos": {**(conf.get("repos") or {}), "new": entry}}
     repo = {"name": "new", "visibility": "PUBLIC", "defaultBranchRef": {"name": "main"}}
     every = [repo, {"name": "old", "visibility": "PUBLIC", "defaultBranchRef": {"name": "main"}}]
     named = {"id": 3, "name": "org: main", "target": "branch", "enforcement": "active", "source_type": "Organization",
@@ -3634,6 +3739,7 @@ def self_test():
     dependabot_test(check, conf, labels, block_file)
     ai_plugin_drift_test(check, conf, labels, block_file)
     adopt_test(check, conf, labels, block_file)
+    security_visibility_test(check)
     conventions_test(check, block_file)
     # The org-sync lane (#155): a run from a merged commit marks its issue,
     # and labels it only once its Type is Task; the lane reads it back.
