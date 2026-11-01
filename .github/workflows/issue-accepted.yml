@@ -100,17 +100,17 @@ on:
 permissions: {}
 
 # The organisation's App, as GitHub shows it (#197): the calling
-# organisation's variables DX_BOT_LOGIN, DX_BOT_APP and DX_BOT_ID, or
-# DiluxOne's dilux-bot when it sets none.
+# organisation's variables DX_BOT_LOGIN, DX_BOT_APP and DX_BOT_ID, which
+# every organisation sets (#568): config-overlay.sh stops the run without them.
 env:
-  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
-  DX_BOT_APP: ${{ vars.DX_BOT_APP || 'dilux-bot' }}
-  DX_BOT_ID: ${{ vars.DX_BOT_ID || '333187390' }}
+  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN }}
+  DX_BOT_APP: ${{ vars.DX_BOT_APP }}
+  DX_BOT_ID: ${{ vars.DX_BOT_ID }}
 
 jobs:
   rerun:
     name: Re-run the gate
-    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 5
     # After the seal (the ready job): the gate compares the PRD with the
     # newest seal, so a re-acceptance after an edit must be sealed first.
@@ -164,7 +164,7 @@ jobs:
 
   ready:
     name: Issue ready (G1)
-    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 5
     # Whether the acceptance stands, for the Project (#372): read by the
     # `project` job, which sets Accepted only when it is true.
@@ -212,7 +212,7 @@ jobs:
           git init -q .dx-central && git -C .dx-central fetch -q --depth 1 https://github.com/DiluxOne/.github "$REF" && git -C .dx-central checkout -q FETCH_HEAD
           test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh .dx-central
           if [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then echo "ref=${REF:0:12}" >> "$GITHUB_OUTPUT"; else echo "ref=$(git ls-remote https://github.com/DiluxOne/.github "$REF" "$REF^{}" | tail -1 | cut -c1-12)" >> "$GITHUB_OUTPUT"; fi
-      - name: dilux-bot token
+      - name: App token
         id: bot
         continue-on-error: true
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -363,7 +363,7 @@ jobs:
 
   receipt:
     name: The merge's receipt
-    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 5
     # When an accepted issue closes as completed by a merged pull request: the
     # receipt (#81), committed to the receipts branch, and the board updated.
@@ -385,7 +385,7 @@ jobs:
           git init -q .dx-central && git -C .dx-central fetch -q --depth 1 https://github.com/DiluxOne/.github "$REF" && git -C .dx-central checkout -q FETCH_HEAD
           test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh .dx-central
           if [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then echo "ref=${REF:0:12}" >> "$GITHUB_OUTPUT"; else echo "ref=$(git ls-remote https://github.com/DiluxOne/.github "$REF" "$REF^{}" | tail -1 | cut -c1-12)" >> "$GITHUB_OUTPUT"; fi
-      - name: dilux-bot token
+      - name: App token
         id: bot
         continue-on-error: true
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -431,7 +431,7 @@ jobs:
       # read from the lane issue's sealed PRD (repro-lane.py evidence), never
       # from its title, and only on an issue dilux-bot opened for the lane.
       - name: Close the report it came from
-        if: steps.receipt.outputs.pr != '' && github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && contains(github.event.issue.labels.*.name, 'lane:bugfix-reproduced') && contains(github.event.issue.labels.*.name, 'accepted-by:policy')
+        if: steps.receipt.outputs.pr != '' && github.event.issue.user.login == vars.DX_BOT_LOGIN && contains(github.event.issue.labels.*.name, 'lane:bugfix-reproduced') && contains(github.event.issue.labels.*.name, 'accepted-by:policy')
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           BODY_TEXT: ${{ github.event.issue.body }}
@@ -448,7 +448,7 @@ jobs:
 
   release:
     name: The release pull request
-    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 10
     # A person accepts a release issue (#82): the release pull request, as
     # the header says. Or the plan accepted it (#247): dilux-bot opened it on
@@ -460,7 +460,7 @@ jobs:
     if: >-
       github.event_name == 'issues' && github.event.action == 'labeled' && contains(github.event.issue.labels.*.name, 'lane:release') &&
       ((github.event.label.name == inputs.label && github.event.sender.type != 'Bot') ||
-       (github.event.label.name == 'accepted-by:policy' && github.event.sender.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && github.event.issue.milestone != null))
+       (github.event.label.name == 'accepted-by:policy' && github.event.sender.login == vars.DX_BOT_LOGIN && github.event.issue.user.login == vars.DX_BOT_LOGIN && github.event.issue.milestone != null))
     permissions: {}
     concurrency:
       group: release-pr-${{ github.repository }}
@@ -468,7 +468,7 @@ jobs:
     steps:
       # Without the bot's key (an old caller) nothing is opened, and the log
       # says so: a person prepares the release by hand, as before.
-      - name: dilux-bot token
+      - name: App token
         id: bot
         continue-on-error: true
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -482,7 +482,7 @@ jobs:
 
       - name: No bot key
         if: steps.bot.outputs.token == ''
-        run: echo "::warning::No dilux-bot key passed to issue-accepted.yml, so no release pull request is opened; a person prepares it by hand."
+        run: echo "::warning::No App key passed to issue-accepted.yml, so no release pull request is opened; a person prepares it by hand."
 
       # The default branch, with its tags; its credentials push the branch.
       - if: steps.bot.outputs.token != ''
@@ -591,7 +591,7 @@ jobs:
 
   lane:
     name: Accepted by policy
-    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 5
     # A lane's label added to an issue: whether its lane accepts it, as the
     # header says. Reads with the caller's token (the issue, and the run
@@ -614,8 +614,9 @@ jobs:
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::$REF is not a ref of DiluxOne/.github."; exit 1; }
           mkdir -p .dx-central/scripts .dx-central/policy
           base="https://raw.githubusercontent.com/DiluxOne/.github/$sha"
-          # autonomy.py reads the organisation from org.yml, through org.py (#191).
-          for f in scripts/autonomy.py scripts/org.py scripts/repos_conf.py org.yml policy/autonomy.yml; do curl -fsSL --retry 3 "$base/$f" -o ".dx-central/$f"; done
+          # autonomy.py reads the organisation from org.yml, through org.py (#191);
+          # the overlay merges with settings.py by the schema (#568).
+          for f in scripts/autonomy.py scripts/org.py scripts/repos_conf.py scripts/settings.py org.yml policy/autonomy.yml policy/settings-schema.yml; do curl -fsSL --retry 3 "$base/$f" -o ".dx-central/$f"; done
           # The organisation's configuration over those (#197); a ref from
           # before the overlay has none.
           code=$(curl -sSL --retry 3 -w '%{http_code}' "$base/scripts/config-overlay.sh" -o .dx-central/scripts/config-overlay.sh || echo 000)
@@ -623,7 +624,7 @@ jobs:
           test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh .dx-central
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
-      - name: dilux-bot token
+      - name: App token
         id: bot
         continue-on-error: true
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -677,7 +678,7 @@ jobs:
     name: The decision's sub-issues
     # After the seal: what is carried out is the PRD a person accepted.
     needs: ready
-    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 15
     # When a person accepts an issue of DiluxOne/.github whose PRD names
     # Repositories (#189): a sub-issue in each repository its rules select,
@@ -693,7 +694,7 @@ jobs:
           repository: DiluxOne/.github
           ref: ${{ inputs.central-ref || job.workflow_sha }}
           persist-credentials: false
-      - name: dilux-bot token (issues, every repository)
+      - name: App token (issues, every repository)
         id: bot
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -711,7 +712,7 @@ jobs:
 
   project:
     name: The product's Project
-    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 5
     # The Projects go through the bot's own token; DiluxOne/.github is public,
     # so its checkout needs nothing from the workflow's.
@@ -749,7 +750,7 @@ jobs:
           [[ "$n" =~ ^[0-9]+$ ]] && echo "number=$n" >> "$GITHUB_OUTPUT" || echo "$REPO puts its issues on no Project (repos.yml)."
 
       # Projects belong to the organisation: a token for its Projects alone.
-      - name: dilux-bot token (organisation Projects)
+      - name: App token (organisation Projects)
         id: bot
         if: steps.which.outputs.number != ''
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0

@@ -61,7 +61,7 @@ jobs:
           ref: main
           persist-credentials: false
 
-      - name: dilux-bot token (this repository)
+      - name: App token (this repository)
         id: bot
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -97,7 +97,7 @@ jobs:
       # the repository its settings, labels, variables, rulesets and the pull
       # requests of the shared files, callers, pre-pr and Dependabot. Minted
       # only here, on main, after a merge a person or the adopt lane made.
-      - name: dilux-bot token (adopting)
+      - name: App token (adopting)
         id: bot
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:

@@ -18,11 +18,12 @@
 # A bot as the sender never starts one, on either trigger.
 #
 # The organisation's App is DX_BOT_LOGIN, the calling organisation's (the
-# workflow's env, #197), DiluxOne's dilux-bot by default.
+# workflow's env, #197), else org.yml's App (#568).
 set -euo pipefail
 
 decide() {
-  local trigger=$1 event=$2 action=$3 label=$4 sender=$5 role=$6 triage_bug=$7 nightly=${8:-false} login=${9:-} bot=${DX_BOT_LOGIN:-dilux-bot[bot]}
+  local trigger=$1 event=$2 action=$3 label=$4 sender=$5 role=$6 triage_bug=$7 nightly=${8:-false} login=${9:-} bot
+  bot=$(python3 "$(dirname "${BASH_SOURCE[0]}")/org.py" bot login || true)
   [ "$event" = issues ] || { echo no; return; }
   # A bot starts one in a single case (#247): the nightly review's own Bug
   # issue, opened by the organisation's App with its marker, which the
@@ -31,9 +32,9 @@ decide() {
     if [ "$nightly" = true ] && [ "$trigger" = triage ] && [ "$action" = opened ] && [ "$triage_bug" = true ]; then echo yes
     # ...and when what blocked a reproduction is fixed: the App's own
     # repro:unblocked (issue-triage.yml, unblock).
-    elif [ "$trigger" = label ] && [ "$action" = labeled ] && [ "$label" = repro:unblocked ] && [ "$login" = "$bot" ]; then echo yes
+    elif [ "$trigger" = label ] && [ "$action" = labeled ] && [ "$label" = repro:unblocked ] && [ -n "$bot" ] && [ "$login" = "$bot" ]; then echo yes
     # ...and once more when its first test was written wrong (#261).
-    elif [ "$trigger" = label ] && [ "$action" = labeled ] && [ "$label" = repro:retry ] && [ "$login" = "$bot" ]; then echo yes
+    elif [ "$trigger" = label ] && [ "$action" = labeled ] && [ "$label" = repro:retry ] && [ -n "$bot" ] && [ "$login" = "$bot" ]; then echo yes
     else echo no; fi
     return
   fi

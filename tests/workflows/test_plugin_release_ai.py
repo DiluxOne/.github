@@ -45,11 +45,17 @@ def test_the_publish_token_is_scoped_to_the_catalog_and_never_pushes_main():
     wf = load(".github/workflows/plugin-publish-ai.yml")
     assert wf["permissions"] == {}
     job = wf["jobs"]["bump"]
-    assert "github.repository_owner == 'DiluxOne'" in job["if"] and "fork" in job["if"]
+    # #568: any organisation's, never a fork's, and only with a catalog.
+    assert "DiluxOne" not in job["if"] and "!github.event.repository.fork" in job["if"]
     app = [s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/create-github-app-token@")][0]
-    assert app["with"]["repositories"] == "${{ inputs.catalog }}"
-    assert triggers(wf)["workflow_call"]["inputs"]["catalog"]["default"] == "diluxone-plugins-ai"
-    run = " ".join(str(s.get("run", "")) for s in job["steps"])
+    assert app["with"]["repositories"] == "${{ steps.catalog.outputs.name }}"
+    assert app["if"] == "steps.catalog.outputs.name != ''"
+    assert triggers(wf)["workflow_call"]["inputs"]["catalog"]["default"] == ""
+    catalog = [s for s in job["steps"] if s.get("id") == "catalog"][0]
+    assert "org.py publishes-to ai-agent-plugin" in catalog["run"] and catalog["env"]["CATALOG"] == "${{ inputs.catalog }}"
+    after = job["steps"][job["steps"].index(catalog) + 1:]
+    assert all(s.get("if") == "steps.catalog.outputs.name != ''" for s in after)
+    run = " ".join(str(s.get("run", "")) for s in after)
     assert 'agent-manifests.py bump "$VERSION" "$PLUGIN" . --ref "$TAG"' in run
     assert "gh pr create" in run and "gh issue create" in run and "api-commit.py push" in run
     assert "git push" not in run
@@ -59,7 +65,9 @@ def test_the_publish_token_is_scoped_to_the_catalog_and_never_pushes_main():
 
 def test_the_pack_releases_to_the_catalog():
     release = load("kinds/ai-agent-plugin/pack.yml")["release"]
-    assert release["publishes-to"] == "diluxone-plugins-ai"
+    # #568: the organisation's catalog, from org.yml, never named in the pack.
+    assert release["publishes-to"] == "{catalog}"
+    assert load("org.yml")["catalogs"]["ai-agent-plugin"] == "diluxone-plugins-ai"
     assert release["workflow"] == "plugin-release-ai.yml" and release["publish"] == "plugin-publish-ai.yml"
     assert "stable" not in release and "{version}" in release["prepare"]
 

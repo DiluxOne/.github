@@ -63,12 +63,12 @@ permissions:
   issues: write
 
 # The organisation's App, as GitHub shows it (#197): the calling
-# organisation's variables DX_BOT_LOGIN, DX_BOT_APP and DX_BOT_ID, or
-# DiluxOne's dilux-bot when it sets none.
+# organisation's variables DX_BOT_LOGIN, DX_BOT_APP and DX_BOT_ID, which
+# every organisation sets (#568): config-overlay.sh stops the run without them.
 env:
-  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
-  DX_BOT_APP: ${{ vars.DX_BOT_APP || 'dilux-bot' }}
-  DX_BOT_ID: ${{ vars.DX_BOT_ID || '333187390' }}
+  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN }}
+  DX_BOT_APP: ${{ vars.DX_BOT_APP }}
+  DX_BOT_ID: ${{ vars.DX_BOT_ID }}
 
 jobs:
   # A maintainer's answer to the autopilot's question (#247, guided mode):
@@ -78,7 +78,7 @@ jobs:
   # accepts). The autopilot reads the answer itself, from the comments.
   answer:
     name: The autopilot's answer
-    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     if: >-
       github.event_name == 'issue_comment' && github.event.action == 'created' && github.event.sender.type == 'User' &&
       !startsWith(github.event.comment.body, '/coauthor') && !startsWith(github.event.comment.body, '/uncoauthor')
@@ -87,7 +87,7 @@ jobs:
       others: ${{ steps.back.outputs.others }}
       issue: ${{ steps.back.outputs.issue }}
     steps:
-      - name: dilux-bot token
+      - name: App token
         id: bot
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -143,7 +143,7 @@ jobs:
     runs-on: ubuntu-latest # fresh: it holds the key beside an agent's work (#287)
     timeout-minutes: 10
     steps:
-      - name: dilux-bot token
+      - name: App token
         id: bot
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -244,14 +244,14 @@ jobs:
   # description runs auto-merge again, which writes the body anew.
   credits:
     name: Credits (/coauthor, /uncoauthor)
-    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     if: >-
       github.event_name == 'issue_comment' && github.event.action == 'created' && github.event.issue.pull_request &&
       github.event.comment.user.type != 'Bot' &&
       (startsWith(github.event.comment.body, '/coauthor') || startsWith(github.event.comment.body, '/uncoauthor'))
     timeout-minutes: 5
     steps:
-      - name: dilux-bot token
+      - name: App token
         id: bot
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -310,16 +310,16 @@ jobs:
 
   reply:
     name: Claude reply
-    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 15
     if: >-
-      contains(github.event.comment.body, format('@{0}', vars.DX_BOT_APP || 'dilux-bot')) &&
+      contains(github.event.comment.body, format('@{0}', vars.DX_BOT_APP)) &&
       github.event.comment.user.type != 'Bot' &&
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
       !startsWith(github.event.comment.body, '/coauthor') && !startsWith(github.event.comment.body, '/uncoauthor') &&
       (github.event_name == 'pull_request_review_comment' || github.event.issue.pull_request)
     steps:
-      - name: dilux-bot token
+      - name: App token
         id: bot
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:

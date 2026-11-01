@@ -92,7 +92,7 @@ jobs:
           echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "Reviewing $GITHUB_REPOSITORY_OWNER/$name."
 
-      - name: dilux-bot token (read that repository)
+      - name: App token (read that repository)
         id: read
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -136,7 +136,7 @@ jobs:
 
       # The reviewed repository's issues only, after the agent: its Bug
       # issues (#247).
-      - name: dilux-bot token (the repository's bugs)
+      - name: App token (the repository's bugs)
         id: bugs-token
         if: steps.agent.outcome == 'success'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -148,7 +148,7 @@ jobs:
           permission-issues: write
 
       # The calling repository's issues only, after the agent.
-      - name: dilux-bot token (the list)
+      - name: App token (the list)
         id: write
         # A night that did not finish leaves the list as it was.
         if: steps.agent.outcome == 'success'

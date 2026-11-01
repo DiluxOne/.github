@@ -3,8 +3,8 @@ name: Release
 # Releases this plugin for coding agents through the shared workflows in
 # DiluxOne/.github (#552): the release ends at the GitHub release (the tag
 # and the notes, from CHANGELOG.md), and the `publish` job, on that
-# release's publishing, opens a pull request on the organisation's catalog,
-# diluxone-plugins-ai, that brings this plugin's entries up to it
+# release's publishing, opens a pull request on the organisation's catalog
+# (org.yml `catalogs` in DiluxOne/.github), that brings this plugin's entries up to it
 # (plugin-publish-ai.yml). On every push to main the workflow computes the
 # next version from the type:* labels of what merged. A release is a
 # person's decision (DiluxOne/.github#82): a maintainer opens the issue
