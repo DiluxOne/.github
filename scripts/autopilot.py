@@ -765,6 +765,12 @@ def end_verdict(mode, pr, draft_, stopped, done, total, limit_hit, runs, cap, pu
 # always a `wait` on one of these, never a label someone must add.
 BOT_ACTIONS = ("spec", "draft", "work", "merge-main", "finish", "fix", "queue")
 PERSON_DECISIONS = ("accept", "answer", "merge", "claim")
+# The waits on no person, but on the bot's own work elsewhere (#563).
+BOT_WAITS = ()
+# How `merge-main` merges main in (#561), and what sweep_step returns: the
+# release scenarios (tests/release/scenarios.yml) cover each of these.
+MERGE_HOWS = ("conflicted", "clean")
+SWEEP_STEPS = ("update", "continue")
 
 
 def next_step(state):

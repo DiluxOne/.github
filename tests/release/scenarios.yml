@@ -1,0 +1,259 @@
+# The release scenarios (#563): what the release lane plays in the test
+# repository (org.yml `test-repo`, kind engine-test) at `v7-next` before `v7`
+# moves, and what the installer plays once (scripts/install.py apply).
+# scripts/release-scenarios.py reads this file: `coverage` (in the scripts
+# job) fails naming each pair of a reusable workflow and an event a shipped
+# caller wires, and each transition of the autopilot's state machine, that
+# no scenario covers; `run` plays them. The script's header says what each
+# key means. A bug that reached the repositories after a release adds its
+# scenario here in its fix (#585's is `caller-permission-585`).
+#
+# In the test repository the autopilot calls no model (its pack's
+# `autopilot: fixed-change`), the test identity may accept (its pack's
+# `identity`), and every issue and pull request a scenario opens is closed
+# after it (`cleanup: after-run`).
+
+# The bodies the scenarios open and edit with, by name.
+bodies:
+  complete-feature: |
+    ### Problem
+
+    The test repository has no greeting.
+
+    ### Scope
+
+    - A greeting file.
+
+    ### Out of scope
+
+    - Anything else.
+
+    ### Acceptance criteria
+
+    - C1: Given the repository, when it is read, then it has a greeting.
+
+    ### Criticality
+
+    Low
+  edited-feature: |
+    ### Problem
+
+    The test repository has no greeting, nor a farewell.
+
+    ### Scope
+
+    - A greeting file and a farewell file.
+
+    ### Out of scope
+
+    - Anything else.
+
+    ### Acceptance criteria
+
+    - C1: Given the repository, when it is read, then it has a greeting.
+
+    ### Criticality
+
+    Low
+  incomplete: |
+    Something should be better.
+  bug: |
+    ### What happened
+
+    `scenarios/greeting.md` says "helo".
+
+    ### What should happen
+
+    It says "hello".
+
+    ### How to reproduce
+
+    Read `scenarios/greeting.md`.
+
+    ### Criticality
+
+    Low
+  bug-not-reproduced: |
+    ### What happened
+
+    Something failed once, nobody knows where.
+
+    ### What should happen
+
+    It does not fail.
+
+    ### How to reproduce
+
+    Unknown.
+
+    ### Criticality
+
+    Low
+  decision: |
+    ### Decision
+
+    The greeting and the farewell are two sub-issues of this one.
+
+    ### Sub-issues
+
+    - A greeting file.
+    - A farewell file.
+  release: |
+    ### Version
+
+    Next.
+  pull: |
+    A change of the scenarios.
+
+    Closes #1
+
+scenarios:
+  # Issues, before acceptance.
+  - id: issue-complete
+    covers: [issue-triage.yml:issues, issue-accepted.yml:issues, issue-claim.yml:issues, issue-repro.yml:issues]
+    opens: {issue: {title: "feat: a greeting", body: complete-feature}}
+    expect: {labels: [awaiting-acceptance], absent: [incomplete, accepted]}
+  - id: issue-incomplete
+    covers: [issue-accepted.yml:issue_comment]
+    opens: {issue: {title: "something", body: incomplete}}
+    steps: [{comment: "It should greet who opens the repository."}]
+    expect: {labels: [incomplete], absent: [awaiting-acceptance]}
+  - id: triage-schedule
+    covers: [issue-triage.yml:schedule, issue-claim.yml:schedule]
+    opens: {issue: {title: "feat: a greeting, swept daily", body: complete-feature}}
+    steps: [{dispatch: issues.yml}]
+    expect: {labels: [awaiting-acceptance]}
+
+  # Accepted, sealed, and the autopilot starting.
+  - id: accepted-spec
+    covers: [next_step:wait:accept, next_step:spec]
+    opens: {issue: {title: "feat: a greeting", body: complete-feature}}
+    steps: [{label: accepted}]
+    expect: {labels: [accepted, autopilot], comments: ["<!-- dx-prd-seal -->"]}
+  - id: spec-to-draft
+    covers: [next_step:draft, next_step:work, next_step:finish]
+    opens: {issue: {title: "feat: a greeting, drafted", body: complete-feature}}
+    steps: [{label: accepted}]
+    expect: {pull: {closes: true, branch: "^feat/[0-9]+-", title: "^feat(\\(.+\\))?: "}, comments: ["<!-- dx-prd-seal -->"]}
+  - id: prd-edited-after-acceptance
+    covers: [next_step:wait:answer]
+    opens: {issue: {title: "feat: a greeting, then edited", body: complete-feature}}
+    steps: [{label: accepted}, {wait: 60}, {edit: edited-feature}]
+    expect: {absent: [accepted], waiting: true}
+  - id: decision-sub-issues
+    covers: []
+    opens: {issue: {title: "Decision: a greeting and a farewell", body: decision, labels: [accepted]}}
+    expect: {labels: [accepted], comments: ["sub-issue"]}
+
+  # Claims.
+  - id: claim-and-release
+    covers: [issue-claim.yml:issue_comment, next_step:wait:claim]
+    opens: {issue: {title: "feat: a greeting, claimed", body: complete-feature, labels: [accepted]}}
+    steps: [{comment: "/claim"}, {wait: 60}, {comment: "/unclaim"}]
+    expect: {absent: [claim:long]}
+  - id: claim-pull-request
+    covers: [issue-claim.yml:pull_request_target]
+    opens: {pull: {title: "feat: a greeting by hand", body: pull}}
+    expect: {pull: {closes: true}}
+
+  # Bugs.
+  - id: bug-reproduced
+    covers: [next_step:fix]
+    opens: {issue: {title: "fix: the greeting says helo", body: bug}}
+    expect: {labels: [bug:confirmed], pull: {closes: true, branch: "^fix/[0-9]+-", title: "^fix(\\(.+\\))?: "}}
+  - id: bug-not-reproduced
+    covers: []
+    opens: {issue: {title: "fix: something failed once", body: bug-not-reproduced}}
+    expect: {labels: [bug:unconfirmed], absent: [bug:confirmed]}
+
+  # The autopilot's questions, stops and hints.
+  - id: question-answered
+    covers: []
+    opens: {issue: {title: "feat: a greeting, asked", body: complete-feature, labels: [accepted]}}
+    steps: [{wait: 300}, {comment: "Option 1."}]
+    expect: {absent: [autopilot:waiting, autopilot:continue], pull: {closes: true}}
+  - id: stop-hint-continue
+    covers: []
+    opens: {issue: {title: "feat: a greeting, stopped", body: complete-feature, labels: [accepted]}}
+    steps: [{wait: 300}, {comment: "Hint: write it in scenarios/."}, {label: autopilot:continue}]
+    expect: {absent: [needs-human], pull: {closes: true}}
+
+  # The autopilot's pull request and main.
+  - id: draft-in-conflict
+    covers: [next_step:merge-main, next_step:merge-main:conflicted, sweep_step:continue]
+    opens: {issue: {title: "feat: a greeting, in conflict", body: complete-feature, labels: [accepted]}}
+    steps: [{wait: 300}, {push: conflict}]
+    expect: {pull: {closes: true}, absent: [needs-human]}
+  - id: ready-behind-main
+    covers: [next_step:merge-main:clean, sweep_step:update]
+    opens: {issue: {title: "feat: a greeting, behind", body: complete-feature, labels: [accepted]}}
+    steps: [{wait: 600}, {push: behind}]
+    expect: {pull: {closes: true}}
+
+  # The review, the required checks and the merge queue.
+  - id: review-changes-asked
+    covers: [conventions.yml:pull_request, claude-review.yml:pull_request, autopilot.yml:pull_request, pull-request-assignee.yml:pull_request, runner-wake.yml:pull_request]
+    opens: {pull: {title: "feat: a greeting with a secret", body: pull}}
+    steps: [{push: secret}]
+    expect: {check: {conventions: success}}
+  - id: review-replied
+    covers: [review-reply.yml:issue_comment, review-reply.yml:pull_request_review_comment]
+    opens: {pull: {title: "docs: a greeting", body: pull}}
+    steps: [{comment: "@dilux-bot why?"}]
+    expect: {comments: ["<!-- dx-review"]}
+  - id: fork-without-secrets
+    covers: []
+    opens: {pull: {title: "docs: a greeting from a fork", body: pull, fork: true}}
+    expect: {check: {conventions: success}, merged: false}
+  - id: merge-queue
+    covers: [runner-wake.yml:merge_group, next_step:queue]
+    opens: {pull: {title: "docs: a greeting, queued", body: pull}}
+    steps: [{label: risk:low}]
+    expect: {merged: true}
+  - id: low-risk-merges
+    covers: [auto-merge.yml:pull_request, next_step:wait:merge]
+    opens: {pull: {title: "docs: a greeting, low risk", body: pull}}
+    expect: {merged: true}
+  - id: high-risk-waits
+    covers: []
+    opens: {pull: {title: "ci: a greeting in a workflow", body: pull}}
+    expect: {merged: false, labels: [risk:high]}
+
+  # A release, the drift check and adopting.
+  - id: release-issue
+    covers: []
+    opens: {issue: {title: "Release 0.0.1", body: release, labels: [accepted]}}
+    expect: {pull: {title: "^chore: release"}}
+  - id: drift-and-adopt
+    covers: []
+    opens: {issue: {title: "chore: the drift check and adopting", body: complete-feature}}
+    steps: [{dispatch: issues.yml}]
+    expect: {labels: [awaiting-acceptance]}
+
+  # #585: a caller that does not grant a permission the engine asks for:
+  # every repository's Issues workflow failed at startup.
+  - id: caller-permission-585
+    covers: []
+    opens: {issue: {title: "feat: a greeting, with the adopted callers", body: complete-feature}}
+    expect: {labels: [awaiting-acceptance]}
+
+  # Every scheduled and dispatched workflow a shipped caller wires, and the
+  # products' batteries (run here with nothing published: `publishes: never`).
+  - id: nightly-and-security
+    covers: [nightly-review.yml:schedule, nightly-review.yml:workflow_dispatch, security-fix.yml:issue_comment, security-fix.yml:schedule, security-fix.yml:workflow_dispatch, security-patch.yml:schedule, security-patch.yml:workflow_dispatch]
+    opens: {issue: {title: "chore: the nightly and the security runs", body: complete-feature}}
+    steps: [{dispatch: nightly-review.yml}, {dispatch: security-fix.yml}, {dispatch: security-patch.yml}]
+    expect: {labels: [awaiting-acceptance]}
+  - id: plugin-batteries
+    covers: [plugin-checks-ai.yml:merge_group, plugin-checks-ai.yml:pull_request, plugin-checks-ai.yml:push, plugin-checks-ai.yml:workflow_dispatch,
+             plugin-checks-wp.yml:merge_group, plugin-checks-wp.yml:pull_request, plugin-checks-wp.yml:push, plugin-checks-wp.yml:schedule, plugin-checks-wp.yml:workflow_dispatch,
+             plugin-tests-wp.yml:merge_group, plugin-tests-wp.yml:pull_request, plugin-tests-wp.yml:push, plugin-tests-wp.yml:schedule, plugin-tests-wp.yml:workflow_dispatch,
+             weekly-failure.yml:schedule]
+    opens: {pull: {title: "test: the plugin batteries", body: pull}}
+    steps: [{dispatch: plugin-checks-ai.yml}, {dispatch: plugin-checks-wp.yml}]
+    expect: {merged: false}
+  - id: plugin-releases-publish-nothing
+    covers: [plugin-release-ai.yml:push, plugin-release-wp.yml:push, plugin-publish-ai.yml:release, plugin-publish-ai.yml:workflow_dispatch, plugin-publish-wp.yml:release, plugin-publish-wp.yml:workflow_dispatch, svn-auth-check.yml:workflow_dispatch]
+    opens: {issue: {title: "chore: the releases publish nothing here", body: complete-feature}}
+    steps: [{dispatch: release-ai.yml}, {dispatch: release-wp.yml}, {dispatch: svn-auth-check-wp.yml}]
+    expect: {labels: [awaiting-acceptance]}
