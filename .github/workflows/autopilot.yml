@@ -449,6 +449,8 @@ jobs:
           held=$(NUMBER="$ISSUE" python3 .dx-central/scripts/autopilot.py holder) || rc=$?
           if [ "$rc" -ne 0 ]; then
             echo "The autopilot does not start: $held"
+            # The issue's board says who holds it (#561).
+            [ "$rc" -ne 1 ] || HELD="$held" NUMBER="$ISSUE" python3 .dx-central/scripts/autopilot.py board
             if [ "$rc" -eq 2 ]; then
               gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "The autopilot did not run: $held, so it could not tell whether a person holds this issue. A maintainer accepts it again (remove and add \`accepted\`) to try once more.
 

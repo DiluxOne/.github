@@ -141,9 +141,13 @@ def rule_link(policy):
     return f"[the rule](https://github.com/DiluxOne/.github/blob/{ref}/policy/autonomy.yml)"
 
 
-def board_text(number, ready, last_seal, merged, autopilot=None, labels=()):
+def board_text(number, ready, last_seal, merged, autopilot=None, labels=(), held=""):
     rows = ["| Gate | State |", "| --- | --- |"]
     rows.append(f"| G1 Issue ready | {'✓ the PRD follows the schema' if ready else '✗ see the G1 comment'} |")
+    # A person holds it (#488, #561): a claim, an assignment, their own
+    # open pull request that closes it; the autopilot does not start.
+    if held and not autopilot:
+        rows.append(f"| Held | 🙋 {held}: the autopilot does not start |")
     lane = next((l[5:] for l in labels if l.startswith("lane:")), None)
     if last_seal:
         by = last_seal.get("accepted_by") or ""
@@ -163,6 +167,19 @@ def board_text(number, ready, last_seal, merged, autopilot=None, labels=()):
         by = f"policy ({rule_link(merged.get('policy'))})" if merged.get("merged_by") == "policy" else merged.get("merged_by")
         rows.append(f"| G7 Merged | ✓ #{merged.get('pull_request')} by {by}; receipt in `receipts/issues/{number}/merged-{merged.get('at')}.json` |")
     return f"{BOARD}\n**The issue's board**\n\n" + "\n".join(rows) + f"\n\n{AI}"
+
+
+def holder(repo, number):
+    """Why a person holds the issue (autopilot.py held_by, #488), read from
+    GitHub (HELD stands in for it in the self-test); "" when nobody does or
+    it cannot be read: the board then says less, never something wrong."""
+    if "HELD" in os.environ:
+        return os.environ["HELD"]
+    try:
+        ap = _autopilot()
+        return ap.held_by(*ap.read_holder(repo, number))
+    except Exception:  # the board never fails on it
+        return ""
 
 
 def issue_labels(repo, number):
@@ -429,7 +446,6 @@ Normal
         r10 = sp.run([sys.executable, os.path.abspath(__file__), "verify-prd"], env=dict(env, NUMBER="10"), capture_output=True, text=True)
         check("cli: a seal that cannot be read exits 2", r10.returncode, 2)
         del os.environ["RECEIPTS_FIXTURE"]
-    # A job that runs this script reads the organisation's scripts whole:
     # #561 C5: two writers at once, each answered 409 once by a branch that
     # moved, then written; a path that exists is never written again.
     branch_files, calls, naps5 = {}, [], []
@@ -473,6 +489,7 @@ Normal
     except RuntimeError as e:
         other = str(e)
     check("#561 C5: any other failure is not retried", "401" in other, True)
+    # A job that runs this script reads the organisation's scripts whole:
     # it loads autopilot.py for an autopilot pull request's board (#306).
     try:
         import yaml
@@ -542,7 +559,7 @@ def main(argv):
         ready = schema_mod.check(body)["ok"]
         names = [n for n in list_dir(repo, f"issues/{number}") if n.startswith("merged-")]
         merged = read(repo, f"issues/{number}/{names[-1]}") if names else None
-        print(board_text(number, ready, last_seal(repo, number), merged, autopilot_state(repo, number), issue_labels(repo, number)))
+        print(board_text(number, ready, last_seal(repo, number), merged, autopilot_state(repo, number), issue_labels(repo, number), holder(repo, number)))
         return 0
     print(__doc__, file=sys.stderr)
     return 64

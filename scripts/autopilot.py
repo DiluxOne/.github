@@ -278,7 +278,7 @@ def held_by(issue, prs, started=""):
         author = p.get("author") or ""
         if (p.get("state", "OPEN") == "OPEN" and p.get("author_type") == "User" and author not in BOT_LOGINS
                 and "autopilot" not in (p.get("labels") or []) and (not started or (p.get("created") or "") < started)):
-            return f"#{p['number']} by @{author} closes it"
+            return f"@{author} holds it with #{p['number']}, which closes it"
     return ""
 
 
@@ -2102,6 +2102,16 @@ A class on html.
     check("#561 C1: next-step names who a wait is on",
           (ns(prs=[theirs561])["who"], ns(lane="")["who"], ns(pr=dpr, runs=5)["who"]), ("ana", "a maintainer", "anyone"))
     check("#561 C1: next-step lists the open criteria", ns(pr=dpr)["left"], ["C2"])
+    # #561 C9: a person's open pull request that closes the issue holds it:
+    # the autopilot does not start, and the board names them.
+    held9 = ns(prs=[theirs561], spec=True)
+    board9 = _load("receipts_board", "receipts.py").board_text(561, True, None, None, None, ["accepted"], held_by({"labels": ["accepted"]}, [theirs561]))
+    check("#561 C9: a person's open closing pull request: wait on them, before the Spec or the draft",
+          (held9["action"], held9["for"], held9["who"], "@ana holds it with #40" in held9["why"]), ("wait", "claim", "ana", True))
+    check("#561 C9: the board says the person holds it, and the autopilot does not start",
+          "| Held | 🙋 @ana holds it with #40, which closes it: the autopilot does not start |" in board9, True)
+    check("#561 C9: an autopilot pull request's own row replaces it once the autopilot works it",
+          "| Held |" in _load("receipts_board", "receipts.py").board_text(561, True, None, None, {"pr": 9, "url": "u", "draft": True}, [], "x"), False)
     check("#561 C1: next-step says its step in one line", step_comment(ns(lane="")).startswith("Next step: wait for accept, on a maintainer: "), True)
     # #561 C2: a merge into main brings each ready autopilot pull request
     # back in step on its own, with no label a person adds.
@@ -2581,11 +2591,11 @@ Clamp the value in Sum::add.
     # one opened after the autopilot started does not stop it.
     theirs = {"number": 40, "state": "OPEN", "created": "2026-11-01T10:00:00Z", "author": "ana", "author_type": "User", "labels": []}
     check("C6 held_by: a person's pull request that closes it, by GitHub's link",
-          held_by({"labels": ["accepted"]}, [theirs]), "#40 by @ana closes it")
+          held_by({"labels": ["accepted"]}, [theirs]), "@ana holds it with #40, which closes it")
     check("C6 held_by: the autopilot's own, a bot's, or a closed one does not",
           [held_by({"labels": ["accepted"]}, [p]) for p in ({**theirs, "labels": ["autopilot"]}, {**theirs, "author": BOT_LOGINS[1], "author_type": "Bot"}, {**theirs, "state": "CLOSED"})], ["", "", ""])
     check("C6 held_by: one opened after the autopilot started does not stop its pushes; one before does",
-          (held_by({"labels": ["accepted"]}, [theirs], "2026-11-01T09:00:00Z"), held_by({"labels": ["accepted"]}, [theirs], "2026-11-01T11:00:00Z")), ("", "#40 by @ana closes it"))
+          (held_by({"labels": ["accepted"]}, [theirs], "2026-11-01T09:00:00Z"), held_by({"labels": ["accepted"]}, [theirs], "2026-11-01T11:00:00Z")), ("", "@ana holds it with #40, which closes it"))
     check("C6 holder reads GitHub's closing link, never a text search of the pull requests",
           ("closedByPullRequestsReferences(first: 20, includeClosedPrs: false)" in HOLDER_QUERY, "search" in HOLDER_QUERY), (True, False))
     check("C6 the run that steps aside says so", held_comment("a person claimed it (`claimed`)").startswith("The autopilot steps aside: a person claimed it"), True)
