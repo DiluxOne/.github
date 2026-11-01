@@ -72,6 +72,8 @@ jobs:
           ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
       - name: dilux-bot's token, for the catalog alone
         id: app
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -96,6 +98,7 @@ jobs:
           TAG: ${{ steps.rel.outputs.tag }}
           VERSION: ${{ steps.rel.outputs.version }}
           RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.rel.outputs.tag }}
+          DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
         run: |
           set -euo pipefail
           cd catalog
@@ -112,8 +115,8 @@ jobs:
           gh api -X PATCH "repos/$CATALOG/issues/$n" -f type=Task >/dev/null || echo "::warning::The issue's Type could not be set."
           branch="chore/$n-$name-$VERSION"
           branch=${branch//./-}
-          git config user.name "dilux-bot[bot]"
-          git config user.email "dilux-bot[bot]@users.noreply.github.com"
+          git config user.name "$DX_BOT_LOGIN"
+          git config user.email "$DX_BOT_LOGIN@users.noreply.github.com"
           base=$(git rev-parse --abbrev-ref HEAD)
           git checkout -q -b "$branch"
           git commit -q -am "chore(catalog): $name $VERSION" -m "Closes #$n. From the release $RELEASE_URL."
