@@ -24,7 +24,8 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    A sub-issue of an issue a person accepted is accepted by the
    `delegated` lane (#189): its parent open, or closed as completed, and accepted by a person, the
    sub-issue opened by a member of the organisation (or dilux-bot) and not
-   edited after it was linked, so one decision for several repositories
+   edited after it was linked by anyone but dilux-bot (its own edits, its
+   board and its seal, read from the issue's edit history, #598), so one decision for several repositories
    needs one acceptance. A repository's own
    `.github/autonomy.yml` can make that stricter, or raise what a lane
    merges on its own up to the lane's `ceiling` (human-issue: medium by
