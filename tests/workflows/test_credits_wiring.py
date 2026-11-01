@@ -72,8 +72,8 @@ def test_coauthor_runs_only_for_a_maintainer_and_comments_the_change():
     assert "github.event_name == 'issue_comment'" in cond and "github.event.issue.pull_request" in cond
     assert "startsWith(github.event.comment.body, '/coauthor')" in cond and "startsWith(github.event.comment.body, '/uncoauthor')" in cond
     who = next(s for s in job["steps"] if s.get("id") == "who")
-    assert "collaborators/$LOGIN/permission" in who["run"]
-    assert "admin|maintain) echo \"ok=true\"" in who["run"] and "write)" not in who["run"]
+    # Who decides (#588): scripts/deciders.py, within maintain or admin.
+    assert 'deciders.py may credits "$LOGIN"' in who["run"] and "write)" not in who["run"]
     assert "author_association" not in str(job)
     checkouts = [s for s in job["steps"] if "actions/checkout" in s.get("uses", "")]
     assert [c["with"]["repository"] for c in checkouts] == ["DiluxOne/.github"]
@@ -83,9 +83,9 @@ def test_coauthor_runs_only_for_a_maintainer_and_comments_the_change():
     assert 'python3 .dx-central/scripts/credits.py command "$LOGIN"' in edit["run"]
     assert 'gh api -X PATCH "repos/$GITHUB_REPOSITORY/pulls/$PR" -F body=@"$RUNNER_TEMP/new.md"' in edit["run"]
     assert 'gh pr comment "$PR"' in edit["run"]
-    # No new permission: the token only writes pull requests.
+    # The token only writes pull requests; it reads what decides (#588).
     bot = next(s for s in job["steps"] if s.get("id") == "bot")
-    assert {k: v for k, v in bot["with"].items() if k.startswith("permission-")} == {"permission-pull-requests": "write"}
+    assert {k: v for k, v in bot["with"].items() if k.startswith("permission-")} == {"permission-pull-requests": "write", "permission-contents": "read", "permission-issues": "read"}
 
 
 def test_a_credits_command_wakes_neither_the_reply_nor_the_autopilot():

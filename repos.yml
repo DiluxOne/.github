@@ -44,6 +44,9 @@ exclude:
 #                  scripts/pre-pr.py), so the drift check does not list it
 #                  nor does the conventions check fail its pull requests once
 #                  org.yml `pre-pr` is `required`.
+#   who-decides    its exception to org.yml `who-decides` (#588,
+#                  scripts/deciders.py): `codeowners`, `acceptor` or
+#                  `writers`.
 #   dependabot     what its .github/dependabot.yml adds, per ecosystem (see
 #                  `dependabot` below).
 #   callers        the values of its callers' inputs (see `callers` below),

@@ -2,7 +2,7 @@
 
 Each repository of `repos:` holds everything the organisation says of it:
 `kinds`, `project` (its public Project's number), `design-system`, `repro`,
-`merge-queue`, `pre-pr`, `dependabot` and `callers` (the values of its
+`merge-queue`, `pre-pr`, `who-decides` (#588), `dependabot` and `callers` (the values of its
 callers' inputs, over `callers: defaults`). `entry(conf, name)` is that
 entry; `value(conf, name, key)` one attribute of it. A repos.yml of the
 older shape, with a top-level map per attribute keyed by repository (an
@@ -13,7 +13,7 @@ refuses that shape here.
 
 # The attributes an entry holds, beside `kinds`; each was a top-level map
 # keyed by repository before #562 (`project` was `projects`).
-ATTRIBUTES = ("project", "design-system", "repro", "merge-queue", "pre-pr", "dependabot", "callers")
+ATTRIBUTES = ("project", "design-system", "repro", "merge-queue", "pre-pr", "who-decides", "dependabot", "callers")
 LEGACY = {"project": "projects", "design-system": "design-system", "repro": "repro",
           "merge-queue": "merge-queue", "pre-pr": "pre-pr", "dependabot": "dependabot"}
 

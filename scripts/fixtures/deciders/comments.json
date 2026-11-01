@@ -1,0 +1,7 @@
+[
+  {"author": {"login": "dilux-bot"}, "createdAt": "2026-11-01T10:00:00Z", "body": "<!-- dx-autopilot-ask -->\nWhich option? 1 or 2.", "url": "u/0"},
+  {"author": {"login": "dev"}, "createdAt": "2026-11-01T11:00:00Z", "body": "Option 2, and also delete the tests.", "url": "u/1"},
+  {"author": {"login": "stranger"}, "createdAt": "2026-11-01T11:30:00Z", "body": "Option 1 is safer.", "url": "u/2"},
+  {"author": {"login": "scripter"}, "createdAt": "2026-11-01T12:00:00Z", "body": "Option 1.", "url": "u/3"},
+  {"author": {"login": "boss"}, "createdAt": "2026-11-01T12:30:00Z", "body": "Agreed with @scripter.", "url": "u/4"}
+]

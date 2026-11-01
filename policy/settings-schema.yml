@@ -105,6 +105,13 @@ files:
       read-by: [scripts/pre-pr.py, scripts/sync-repos.py]
       issue: "#479"
       says: Whether a repository without `make pre-pr` fails its pull requests.
+    - key: who-decides
+      org: any
+      repo: any
+      limit: "`codeowners` (the owners of the files the autopilot's open pull request that closes the issue touches (never a person's), else of the Spec's `Spec: files` while its seal still matches, else of the catch-all rule), `acceptor` or `writers`, each within its action's floor (write; maintain for the credits); a repository's exception is repos.yml `who-decides`"
+      read-by: [scripts/org.py, scripts/deciders.py]
+      issue: "#588"
+      says: Whose answers the autopilot takes, and who may add `accepted`, `autopilot:continue`, `/coauthor` and `/uncoauthor`.
     - key: attribution
       org: any
       repo: never
@@ -139,6 +146,14 @@ files:
       read-by: [scripts/repos_conf.py, scripts/sync-repos.py]
       issue: "#451"
       says: A repository's exception to org.yml `merge-queue`.
+    - key: repos.*.who-decides
+      default: org.yml `who-decides`
+      org: any
+      repo: any
+      limit: "`codeowners`, `acceptor` or `writers`"
+      read-by: [scripts/repos_conf.py, scripts/deciders.py]
+      issue: "#588"
+      says: A repository's exception to org.yml `who-decides`.
     - key: repos.*.pre-pr
       default: true
       org: any
