@@ -29,6 +29,33 @@ own-checks:
   jobs: [checks]
   skip: []
 
+# What a repository of this kind's `make pre-pr` runs (#479,
+# scripts/pre-pr.py): every check its pull request and its merge queue run,
+# one after the other, stopping at the first failure. `dx check` runs it
+# before the local review, and so does the autopilot before it marks a pull
+# request ready.
+pre-pr:
+  - the repository's own suites, as its pull request and its merge queue run them (its Makefile's prerequisites of pre-pr; DAW's verify, mutations and behavioral)
+  - the manifests of every tool agree (scripts/agent-manifests.py check)
+  - the review rules (scripts/review-rules.php with this pack's rules.yml)
+
+# How it runs them: `scripts/sync-repos.py pre-pr` writes these lines into
+# the repository's dx.mk, the `pre-pr` target its Makefile includes (#479,
+# scripts/pre-pr.py render). `run` is bash, one command a line, from the
+# checkout, stopping at the first failure. The repository's own suites are
+# its own: it adds them as prerequisites in its Makefile, in the order its
+# CI runs them (`pre-pr: verify mutations behavioral`), never in dx.mk, so
+# make runs them first and stops at the first that fails. DX_CENTRAL is the
+# organisation's checkout (`dx check` sets it; the autopilot's is
+# .dx-central, the default).
+pre-pr-make:
+  run:
+    - central=${DX_CENTRAL:-.dx-central}
+    # Quoted: a plain scalar with ": " in it would be read as a map.
+    - 'test -f "$central/scripts/agent-manifests.py" || { echo "pre-pr: DX_CENTRAL ($central) is not a checkout of DiluxOne/.github" >&2; exit 1; }'
+    - python3 "$central/scripts/agent-manifests.py" check .
+    - php "$central/scripts/review-rules.php" --kind ai-agent-plugin --repo .
+
 # How detection recognises a repository of this kind (#191,
 # scripts/detect.py): one of `any-files`, the manifests of tools.yml, from
 # the repository's root. Detection only proposes: repos.yml says what a

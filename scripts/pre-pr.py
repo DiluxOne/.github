@@ -31,6 +31,7 @@ What it must cover is data: a kind's pack says it (kinds/<kind>/pack.yml
                                the pack has none)
   pre-pr.py --test             self-test
 """
+import json
 import os
 import re
 import sys
@@ -261,6 +262,48 @@ def self_test():
             named = subprocess.run(["make", "-s", "pre-pr"], cwd=d, capture_output=True, text=True)
             check("C1 with the include last, make pre-pr still runs the repository's prerequisite first",
                   (named.returncode, open(os.path.join(d, "log")).read()), (0, "all\npre-pr\n"))
+    # #552 C4: a plugin for coding agents. Its pack's lines check the
+    # manifests and run the kind's rules; its own suites (DAW's verify,
+    # mutations and behavioral) are its Makefile's prerequisites, so make
+    # runs them first, in order, and stops at the first that fails.
+    frag = render_kind("ai-agent-plugin")
+    check("C4 the ai-agent-plugin pack renders a dx.mk with a pre-pr target", has_target(frag), True)
+    for step in ("test -f \"$$central/scripts/agent-manifests.py\" || {", "agent-manifests.py\" check .", "review-rules.php\" --kind ai-agent-plugin --repo ."):
+        check(f"C4 its pre-pr runs {step}", step in (frag or ""), True)
+    items = [str(x) for x in policy.load_yaml(policy.pack_path("ai-agent-plugin")).get("pre-pr") or []]
+    for what in ("own suites", "manifests", "review rules"):
+        check(f"C4 the ai-agent-plugin pack's pre-pr covers {what}", any(what in i for i in items), True)
+    if shutil.which("make") and shutil.which("bash"):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, FRAGMENT), "w") as fh:
+                fh.write(frag)
+            suites = "".join(f"{s}:\n\t@echo {s} >> log\n\t@test ! -f {s}.fails\n" for s in ("verify", "mutations", "behavioral"))
+            with open(os.path.join(d, "Makefile"), "w") as fh:
+                fh.write(with_include(".PHONY: verify mutations behavioral\n" + suites + "pre-pr: verify mutations behavioral\n"))
+            os.makedirs(os.path.join(d, ".claude-plugin"))
+            manifest = {"name": "daw", "version": "1.0.0", "description": "d"}
+            with open(os.path.join(d, ".claude-plugin", "plugin.json"), "w") as fh:
+                json.dump(manifest, fh)
+            env = dict(os.environ, DX_CENTRAL=os.path.abspath(CENTRAL))
+            open(os.path.join(d, "mutations.fails"), "w").close()
+            first = subprocess.run(["make", "-s", "pre-pr"], cwd=d, env=env, capture_output=True, text=True)
+            check("C4 make pre-pr runs verify, then mutations, and stops there when it fails: behavioral and the pack's lines never run",
+                  (first.returncode != 0, open(os.path.join(d, "log")).read(), "agree" in first.stdout + first.stderr), (True, "verify\nmutations\n", False))
+            os.remove(os.path.join(d, "mutations.fails"))
+            os.remove(os.path.join(d, "log"))
+            os.makedirs(os.path.join(d, ".codex-plugin"))
+            with open(os.path.join(d, ".codex-plugin", "plugin.json"), "w") as fh:
+                json.dump(dict(manifest, version="2.0.0"), fh)
+            second = subprocess.run(["make", "-s", "pre-pr"], cwd=d, env=env, capture_output=True, text=True)
+            out = second.stdout + second.stderr
+            check("C4 with the suites green, two manifests that disagree stop it at that line: the rules never run",
+                  (second.returncode != 0, open(os.path.join(d, "log")).read(), "disagree on the version" in out, "error(s)" in out),
+                  (True, "verify\nmutations\nbehavioral\n", True, False))
+            if shutil.which("php"):
+                with open(os.path.join(d, ".codex-plugin", "plugin.json"), "w") as fh:
+                    json.dump(manifest, fh)
+                third = subprocess.run(["make", "-s", "pre-pr"], cwd=d, env=env, capture_output=True, text=True)
+                check("C4 and with everything in step it passes, the rules run last", (third.returncode, "0 error(s)" in third.stdout), (0, True))
     print("all tests passed" if not fails else f"{len(fails)} failed")
     return 1 if fails else 0
 
