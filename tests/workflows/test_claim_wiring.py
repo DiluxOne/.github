@@ -44,7 +44,9 @@ def test_every_issues_caller_runs_the_claims_daily_and_on_comments():
         on = wf[True] if True in wf else wf["on"]
         assert "schedule" in on and on["issue_comment"]["types"] == ["created"] and "pull_request_target" in on, path
         claim = wf["jobs"]["claim"]
-        assert claim["uses"].startswith("DiluxOne/.github/.github/workflows/issue-claim.yml@") and claim["secrets"] == "inherit", path
+        # This repository calls its own engine at `./` (#563 C10).
+        assert claim["uses"] in ("./.github/workflows/issue-claim.yml",) or claim["uses"].startswith("DiluxOne/.github/.github/workflows/issue-claim.yml@"), path
+        assert claim["secrets"] == "inherit", path
         # The other jobs keep to their own events: a comment or a pull
         # request never runs the triage, the reproduction or the acceptance.
         for name in ("triage", "repro", "repro-triaged", "accepted"):
