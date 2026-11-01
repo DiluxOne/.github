@@ -221,7 +221,14 @@ TOP_KEYS = {"claims", "autopilot", "autopilot-rounds", "autopilot-runs", "autopi
 BUDGETS = ("autopilot-spec", "autopilot-work", "autopilot-fix", "security-fix")
 CLAIMS = ("remind-days", "release-days", "cap-days", "pr-remind-days", "pr-close-days", "newcomer-claims", "contributor-claims", "open-prs")
 MODES = ("guided", "full")
-LANE_KEYS = {"description", "accept", "type", "origin", "repositories", "evidence", "merge", "ceiling", "constitution-merge", "enabled"}
+# What merge() lets a repository's own file do with each key, as
+# policy/settings-schema.yml says it (#568, its `repo:`); any other key is
+# never a repository's. The self-test holds the two together.
+REPO_RULES = {"autopilot": "stricter", "autopilot-mode": "up-to-ceiling", "budgets-usd.*": "lower-only",
+              "claims.*": "lower-only", "constitution": "add-only", "person-merges": "add-only",
+              "lanes.*.enabled": "stricter", "lanes.*.accept": "stricter", "lanes.*.repositories": "stricter",
+              "lanes.*.merge": "up-to-ceiling"}
+LANE_KEYS ={"description", "accept", "type", "origin", "repositories", "evidence", "merge", "ceiling", "constitution-merge", "enabled"}
 # The one lane whose fix may merge in a protected path, and only when it
 # widens nothing (#397, constitution_merge()).
 CONSTITUTION_LANE = "bugfix-reproduced"
@@ -1557,6 +1564,25 @@ def self_test():
     check("#188: a repository still lowers a lane with a ceiling", m["lanes"]["human-issue"]["merge"]["max-risk"], "low")
     m = merge(org, {"lanes": {"release": {"merge": {"max-risk": "high"}}}})
     check("#188: a release never merges on its own, whatever a repository says", m["lanes"]["release"]["merge"]["max-risk"], "none")
+    # #568 C2: what merge() lets a repository do is what the settings'
+    # schema says of each key, and a key it says `never` of stays the
+    # organisation's whatever the repository's file holds.
+    import settings  # the schema's reader, here only: the lane job fetches autonomy.py's imports
+    schema = {s["key"]: s.get("repo") for s in settings.entries(settings.schema(), "policy/autonomy.yml")}
+    check("#568 C2: the schema's repo level of each key is merge()'s", schema, {**{k: "never" for k in schema}, **REPO_RULES})
+    for key in (k for k, how in schema.items() if how == "never"):
+        top, _, rest = key.partition(".")
+        if top == "lanes":
+            name, part = "human-issue", rest.split(".", 1)[1]
+            repo = {"lanes": {name: {part: {"app": "someone"} if part == "origin" else "x"}}}
+            got = merge(org, repo)["lanes"][name].get(part), org["lanes"][name].get(part)
+        else:
+            repo = {top: {"max-files": 1} if top == "security-patch" else 1}
+            got = merge(org, repo).get(top), org.get(top)
+        check(f"#568 C2: a repository cannot set {key}", got[0], got[1])
+    acme = {**org, "lanes": {**org["lanes"], "human-issue": {**org["lanes"]["human-issue"], "merge": {"max-risk": "low", "max-complexity": "high"}, "ceiling": {"max-risk": "medium", "max-complexity": "high"}}}}
+    check("#568 C2: a repository raises merge within its organisation's ceiling", merge(acme, {"lanes": {"human-issue": {"merge": {"max-risk": "medium"}}}})["lanes"]["human-issue"]["merge"], {"max-risk": "medium", "max-complexity": "high"})
+    check("#568 C2: past it, the organisation's ceiling applies", merge(acme, {"lanes": {"human-issue": {"merge": {"max-risk": "high"}}}})["lanes"]["human-issue"]["merge"], {"max-risk": "medium", "max-complexity": "high"})
     lane = lambda **k: {"lanes": {**org["lanes"], "human-issue": {**org["lanes"]["human-issue"], **k}}}
     check("#188 schema: a key the policy does not know", problems({**org, "owner": "me"}), ["owner: not a key of the policy"])
     check("#247 schema: a planned release is auto or confirm", [problems({**org, "planned-release": v}) for v in ("auto", "confirm", "yes")],

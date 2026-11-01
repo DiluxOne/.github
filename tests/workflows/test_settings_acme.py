@@ -81,3 +81,26 @@ def test_c1_acme_is_its_own_organisation(engine):
     assert "Acme" in org and "DiluxOne" not in org
     out = run("python3", "-c", "import org; print(org.ORG, org.APP, org.BOT, org.BOT_ID)", cwd=engine / "scripts")
     assert out.stdout.split() == ["Acme", "acme-bot", "acme-bot[bot]", "7"]
+
+
+def repo_file(tmp_path, text):
+    path = tmp_path / "autonomy.yml"
+    path.write_text(text, encoding="utf-8")
+    return str(path)
+
+
+def test_c2_a_repository_raises_merge_within_the_ceiling(engine, tmp_path):
+    out = autonomy(engine, "policy", env={"REPO_AUTONOMY": repo_file(tmp_path, "lanes:\n  human-issue:\n    merge: {max-risk: medium}\n")})
+    assert json.loads(out.stdout)["lanes"]["human-issue"]["merge"] == {"max-risk": "medium", "max-complexity": "high"}
+    assert "::warning::" not in out.stderr
+
+
+def test_c2_past_the_ceiling_the_organisations_limit_applies_with_a_warning(engine, tmp_path):
+    out = autonomy(engine, "policy", env={"REPO_AUTONOMY": repo_file(tmp_path, "lanes:\n  human-issue:\n    merge: {max-risk: high}\n")})
+    assert json.loads(out.stdout)["lanes"]["human-issue"]["merge"] == {"max-risk": "medium", "max-complexity": "high"}
+    assert "::warning::lanes.human-issue.merge.max-risk" in out.stderr and "(medium)" in out.stderr
+
+
+def test_c2_without_its_own_file_a_repository_has_acmes(engine):
+    out = autonomy(engine, "policy")
+    assert json.loads(out.stdout)["lanes"]["human-issue"]["merge"] == {"max-risk": "low", "max-complexity": "high"}
