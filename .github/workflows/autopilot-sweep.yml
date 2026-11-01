@@ -2,14 +2,16 @@ name: Autopilot in step with main
 
 # Not reusable. A merge into main brings every open autopilot pull request
 # it leaves behind or in conflict back in step on its own (#561, #556,
-# #549), with no label a person adds: for each ready one,
+# #549), with no label a person adds: for each one,
 # scripts/autopilot.py sweep (next-step's own answer) says `update`, and the
 # bot merges main into it (GitHub's update-branch), or `continue`, and
 # dilux-bot adds `autopilot:continue` to its issue, whose run merges main
 # and leaves the conflict to the agent to resolve (a fix round, free: it
 # only catches up with another merge, so `autopilot:catchup` beside the
-# continue labels it autopilot:free-N, #563). A draft is left alone: its own run merges main
-# first. A pull request whose state GitHub has not worked out yet is left
+# continue labels it autopilot:free-N, #563). A draft only behind main,
+# with no conflicting hunk, is updated the same way (#563): a step with no
+# model, so no run is spent on it; a draft in conflict is left alone: its
+# own run merges main first. A pull request whose state GitHub has not worked out yet is left
 # to the next sweep. An issue that waits for another autopilot pull request
 # on the engine's core (`autopilot:core-wait`, #563) gets its
 # `autopilot:continue` once no open one touches the core its Spec touches:

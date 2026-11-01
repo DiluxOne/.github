@@ -899,7 +899,7 @@ def next_step(state):
 def sweep_step(pr, issue_labels=(), runs=0, cap=5):
     """What a merge into main does for one open autopilot pull request
     (#561 C2, autopilot-sweep.yml): `update` (the bot merges main into one
-    that is ready and only behind, GitHub's update-branch), `continue` (one
+    that is only behind, ready or a draft (#563), GitHub's update-branch), `continue` (one
     that is ready and conflicts: dilux-bot adds `autopilot:continue` to its
     issue, and the run next-step starts merges main and resolves the
     conflict) or "" (nothing: a draft's own run merges main first, and a
@@ -911,6 +911,11 @@ def sweep_step(pr, issue_labels=(), runs=0, cap=5):
     if "autopilot" not in labels or author not in BOT_LOGINS:
         return "", "not an autopilot pull request"
     if pr.get("isDraft", True):
+        # Only behind, with no conflicting hunk (#563 C13): GitHub's
+        # update-branch merges main in, a step with no model, and no run is
+        # spent on it. One in conflict: its own run merges main first.
+        if str(pr.get("mergeStateStatus") or "").upper() == "BEHIND" and "needs-human" not in labels:
+            return "update", "a draft only behind main: the bot merges main into it, with no model and no run"
         return "", "a draft: its own run merges main first"
     if "autopilot:continue" in issue_labels:
         return "", "a continue is already asked for"
@@ -2222,6 +2227,11 @@ A class on html.
            sweep_step({"number": 9, "isDraft": False, "mergeStateStatus": "DIRTY", "labels": [{"name": "autopilot"}], "author": {"login": BOT_LOGINS[1]}}, ["autopilot:continue"])[0],
            sweep_step({"number": 9, "isDraft": False, "mergeStateStatus": "DIRTY", "labels": [{"name": "autopilot"}, {"name": "needs-human"}], "author": {"login": BOT_LOGINS[1]}})[0]),
           ("", "", "", ""))
+    check("C13: a draft only behind main is updated by the bot, with no model",
+          (swp(mergeStateStatus="BEHIND", isDraft=True), swp(mergeStateStatus="BLOCKED", isDraft=True), swp(mergeStateStatus="BEHIND", isDraft=True, labels=[{"name": "autopilot"}, {"name": "needs-human"}])),
+          ("update", "", ""))
+    drafted = ["autopilot", "autopilot:run-1"]
+    check("C13: and no run is counted: the sweep labels none", run_numbers(drafted), (2, 1))
     check("#561 C2: a work run whose branch conflicts with main merges it before any criterion",
           ("before any criterion" in conflict_note(True, "trunk", work=True), "git merge origin/trunk" in conflict_note(True, "trunk", work=True),
            conflict_note(False, "trunk", work=True)), (True, True, ""))
