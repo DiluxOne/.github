@@ -2535,6 +2535,100 @@ def dependabot_test(check, conf, labels, block):
               got == [f"could not be checked: {exc}"], got)
 
 
+def ai_plugin_drift_test(check, conf, labels, block):
+    """#552, C9: the daily drift check against a stand-in for gh lists
+    nothing for the three repositories #552 adopts once they are in step:
+    DAW and diluxone-mermaid (the ai-agent-plugin kind, whose pack declares
+    no way to reproduce a bug: each one's is in repos.yml `repro:`) with
+    their callers, dx.mk and a Makefile with pre-pr, and the catalog
+    (no kind, no way by design) with the callers every repository has."""
+    class Out:
+        def __init__(self, stdout="", returncode=0, stderr=""):
+            self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
+    pre_pr = _script("pre_pr", "pre-pr.py")
+    current = max(int(v) for t in templates().values() for v in USES_RE.findall(t[0]))
+    way = {"layer": "logic", "test": "tests/repro/test_issue_{n}.py", "run": "pytest {test}", "junit": "build/repro.xml"}
+    makefile = "verify:\n\ttrue\n\n.PHONY: pre-pr\npre-pr: verify\n\ninclude dx.mk\n"
+    trees = {
+        "dilux-agentic-workflow": {"kind": "ai-agent-plugin", "root": ["Makefile", "dx.mk", "README.md", "gemini-extension.json"]},
+        "diluxone-mermaid": {"kind": "ai-agent-plugin", "root": ["Makefile", "dx.mk", "README.md"]},
+        "diluxone-plugins-ai": {"kind": None, "root": ["Makefile", "README.md"]},
+    }
+    owned = {"name": OWN, "id": 1, "target": "branch", "enforcement": "active", "rules": []}
+    settings = dict(conf.get("settings") or {})
+    state = {}
+
+    def fake(*args, check=True, input_text=None):
+        joined = " ".join(args)
+        name, tree = state["name"], trees[state["name"]]
+        base = f"api repos/o/{name}"
+        files = state["files"]
+        if joined == f"{base}/contents/.github/workflows":
+            return Out(json.dumps([{"name": p.rsplit("/", 1)[1], "path": p} for p in files]))
+        for p in files:
+            if joined.startswith(f"{base}/contents/{p} "):
+                return Out(files[p])
+        if joined.startswith(f"{base}/contents/?ref="):
+            return Out(json.dumps([{"name": n, "type": "file"} for n in tree["root"]]))
+        if joined.startswith(f"{base}/contents/Makefile?ref="):
+            return Out(state["makefile"])
+        if joined.startswith(f"{base}/contents/{pre_pr.FRAGMENT}?ref=") and state["dx.mk"] is not None:
+            return Out(state["dx.mk"])
+        if joined.startswith(f"{base}/contents/{DEPENDABOT}?ref="):
+            return Out(state["dependabot"])
+        for path, content in (conf.get("files") or {}).items():
+            if joined.startswith(f"{base}/contents/{path}?ref="):
+                return Out(content)
+        if joined.startswith(f"{base}/contents/AGENTS.md?ref="):
+            return Out(with_block("# AGENTS.md\n", block))
+        if joined.startswith(f"api --paginate --slurp repos/o/{name}/rulesets"):
+            return Out(json.dumps([[{"id": 1, "source_type": "Repository"}]]))
+        if joined == f"{base}/rulesets/1":
+            return Out(json.dumps(owned))
+        if joined.startswith("api --paginate --slurp orgs/o/rulesets"):
+            return Out("[[]]")
+        if joined.startswith(f"{base}/actions/permissions/fork-pr-contributor-approval"):
+            return Out(FORK_APPROVAL + "\n")
+        if joined == f"{base}/automated-security-fixes":
+            return Out(json.dumps({"enabled": True, "paused": False}))
+        if args[:2] == ("label", "list"):
+            return Out(json.dumps([{"name": str(l["name"]), "color": str(l["color"]), "description": str(l.get("description", ""))} for l in labels]))
+        if joined == base:
+            return Out(json.dumps(settings))
+        return Out("", 1, "HTTP 404")
+
+    def lines_for(name, cfg, dx=True, drop=None):
+        global ORG, ORG_RULESETS
+        tree = trees[name]
+        repo = {"name": name, "defaultBranchRef": {"name": "main"}, "visibility": "PUBLIC"}
+        callers = {p: t for p, t in new_callers({}, cfg, tree["kind"], "main").items() if p != drop}
+        state.update(name=name, files=callers, makefile=makefile if tree["kind"] else ".PHONY: pre-pr\npre-pr:\n\ttrue\n",
+                     **{"dx.mk": pre_pr.render_kind(tree["kind"]) if dx else None})
+        saved_gh, saved_org, saved_rs = globals()["gh"], ORG, ORG_RULESETS
+        globals()["gh"], ORG, ORG_RULESETS = fake, "o", None
+        try:
+            state["dependabot"] = dependabot_wanted(repo, cfg, "main")[1]
+            import contextlib
+            import io
+            with contextlib.redirect_stderr(io.StringIO()):  # the stack proposal's warning
+                return drift_or_reason(repo, cfg, labels, block, current)
+        finally:
+            globals()["gh"], ORG, ORG_RULESETS = saved_gh, saved_org, saved_rs
+    adopted = {**conf, "repro": {**(conf.get("repro") or {}), "dilux-agentic-workflow": {"ways": {"pytest": way}}, "diluxone-mermaid": {"ways": {"pytest": way}}}}
+    for name in trees:
+        got = lines_for(name, adopted)
+        check(f"C9 (#552): the drift check lists nothing for {name}, in step", got == [], got)
+    check("C9 (#552): repos.yml keeps the catalog's no way by design, and needs no pre-pr exception for it",
+          ((conf.get("repro") or {}).get("diluxone-plugins-ai"), "diluxone-plugins-ai" in (conf.get("pre-pr") or {})), (False, False))
+    got = lines_for("diluxone-mermaid", conf if "diluxone-mermaid" not in (conf.get("repro") or {}) else {**conf, "repro": {}})
+    check("C9 (#552): a plugin of the kind with no way in repos.yml `repro:` is listed (its pack declares none)",
+          any("declares no way to reproduce a bug" in l for l in got), got)
+    got = lines_for("dilux-agentic-workflow", adopted, drop=".github/workflows/issues.yml")
+    check("C9 (#552): one without the triage's caller is listed", any("workflow-templates/issues.yml" in l for l in got), got)
+    got = lines_for("dilux-agentic-workflow", adopted, dx=False)
+    check("C9 (#552): one with no dx.mk, the kind's `make pre-pr`, is listed", got == [f"`{pre_pr.FRAGMENT}` is missing: it is its kind's `pre-pr-make`, the `make pre-pr` its Makefile includes (`sync-repos.py pre-pr`)"], got)
+
+
 def self_test():
     failed = 0
     # The runs below write through a stand-in for gh, never a real clone:
@@ -2687,6 +2781,7 @@ def self_test():
     triggers_test(check)
     callers_test(check, conf)
     dependabot_test(check, conf, labels, block_file)
+    ai_plugin_drift_test(check, conf, labels, block_file)
     # The org-sync lane (#155): a run from a merged commit marks its issue,
     # and labels it only once its Type is Task; the lane reads it back.
     policy = load_yaml(os.path.join(CENTRAL, "policy", "autonomy.yml"))
