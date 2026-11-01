@@ -263,6 +263,15 @@ def self_test():
         check("C4: its GitHub Release is published", fake.has("gh", "release", "create", "v7.10.1"), True)
         check("C4: no person's step: no release issue", fake.has("gh", "issue", "create"), False)
         check("C4: what the watch needs", (d["version"], d["previous"]), ("v7.10.1", "v7.10.0"))
+        # C5: one scenario fails.
+        fake = Fake()
+        failing = passed[:1] + [{"id": "spec-to-draft", "ok": False, "why": ["no label autopilot"], "run": "https://github.com/o/t/actions/runs/9"}]
+        d = act(p, failing, "O/.github", run=fake, root=root)
+        bug = fake.named("fails scenario")
+        check("C5: one fails → a bug", d["do"], "bug")
+        check("C5: nothing tagged, v7 not moved, nothing released", [c for c in fake.calls if c[:1] == ("git",) or c[:2] in (("gh", "release"), ("gh", "pr"))], [])
+        check("C5: the bug names the scenario and its run", bool(bug) and "spec-to-draft" in " ".join(bug[0]) and "https://github.com/o/t/actions/runs/9" in " ".join(bug[0]), True)
+        check("C5: no result at all is a failure", decide(p, [])["do"], "bug")
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
