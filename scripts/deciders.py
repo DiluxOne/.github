@@ -8,9 +8,11 @@ repos.yml (`repos.<name>.who-decides`); `codeowners` when neither says:
   codeowners  the code owners of the files the change touches, from the
               repository's CODEOWNERS on its default branch (.github/,
               the root, docs/; the last rule that matches a file wins). The
-              files are the open pull request's, else the Spec's `Spec:
-              files`, else (no Spec yet) the owners of the catch-all rule
-              (`*`); with none of those, `writers`. A repository with no
+              files are the open pull request's that closes the issue (its
+              diff counts), else the Spec's `Spec: files` while its seal
+              (receipts.py seal-spec) still matches it, never a Spec
+              someone wrote or edited in the body since, else the owners
+              of the catch-all rule (`*`); with none of those, `writers`. A repository with no
               CODEOWNERS file is `writers`. Only people named in it count:
               a team (`@org/team`) decides nothing, and a file only teams
               own lets nobody but an admin decide (it fails closed).
@@ -120,7 +122,11 @@ def _glob(pattern):
             out.append(re.escape(p[i]))
             i += 1
     head = "^" if anchored else "^(?:.*/)?"
-    tail = "/.*$" if directory else "(?:/.*)?$"
+    # A name with no wildcard in its last part may be a directory, and owns
+    # what is under it; `docs/*` owns only what is directly in docs/, as
+    # GitHub says, never docs/a/b.md.
+    last = p.rsplit("/", 1)[-1]
+    tail = "/.*$" if directory else ("$" if "*" in last or "?" in last else "(?:/.*)?$")
     return re.compile(head + "".join(out) + tail)
 
 
@@ -149,6 +155,16 @@ def teams(owners):
 def catch_all(rules):
     """The owners of the catch-all rule (`*`), the last one, if any."""
     return next((o for p, o in reversed(rules) if p in ("*", "/*", "**", "/**")), [])
+
+
+def sealed_spec_files(body, spec_seal, live_sha):
+    """The Spec's files only when its seal covers it: SPEC_SEAL (the newest
+    seal-spec receipt, or None) names LIVE_SHA, the Spec's hash now. A Spec
+    with no seal, or edited since, names nothing: anyone who may edit the
+    body could otherwise name a file they own and decide."""
+    if not spec_seal or not live_sha or spec_seal.get("spec_sha256") != live_sha:
+        return []
+    return spec_files(body)
 
 
 def spec_files(body):
@@ -283,8 +299,20 @@ class Live:
                 return names
         if self.number:
             body = json.loads(_gh("api", f"repos/{self.repo}/issues/{self.number}")).get("body") or ""
-            return spec_files(body)
+            return sealed_spec_files(body, self.spec_seal(), self._receipts().spec_hash(body))
         return []
+
+    def _receipts(self):
+        sys.path.insert(0, HERE)
+        import receipts
+        return receipts
+
+    def spec_seal(self):
+        """The newest seal-spec receipt, None before any; a failure to read
+        raises (receipts.list_dir), never taken for "no seal"."""
+        r = self._receipts()
+        seals = [n for n in r.list_dir(self.repo, f"issues/{self.number}") if n.startswith("spec-")]
+        return r.read(self.repo, f"issues/{self.number}/{seals[-1]}") if seals else None
 
     def acceptor(self):
         """The newest seal's `accepted_by`; "" before any, or a lane's."""
@@ -341,8 +369,25 @@ def self_test():
     check("codeowners: a directory rule covers what is under it", owners_of(rules, "docs/a/b.md"), ["@writer"])
     check("codeowners: an unanchored name matches at any depth", owners_of(rules, "x/y/Makefile"), ["@builder"])
     check("codeowners: an anchored pattern only from the root", (owners_of(rules, "workflows/x.yml"), owners_of(rules, ".github/workflows/x.yml")), (["@boss"], ["@acme/ci"]))
+    flat = parse_codeowners("docs/ @writer\ndocs/* @flat\n/src/*.py @py\n")
+    check("codeowners: `docs/*` owns what is directly in docs/, as GitHub says",
+          (matches("docs/*", "docs/a.md"), matches("docs/*", "docs/x/a.md")), (True, False))
+    check("codeowners: a later `docs/*` takes over only docs/'s own files, never nested ones",
+          (owners_of(flat, "docs/a.md"), owners_of(flat, "docs/x/a.md")), (["@flat"], ["@writer"]))
+    check("codeowners: a wildcard in the last part matches no directory", (owners_of(flat, "src/a.py"), owners_of(flat, "src/a.py/b")), (["@py"], []))
+    check("codeowners: a name with no wildcard still owns what is under it", (matches("Makefile", "x/Makefile/y"), matches("/docs", "docs/x/a.md")), (True, True))
     check("codeowners: a team is no person", (people(["@acme/ci", "@Boss", "a@b.c"]), teams(["@acme/ci", "@boss"])), ({"boss"}, {"@acme/ci"}))
     check("spec_files: the first word, or the backticks", spec_files("### Spec: files\n\n- scripts/a.py (new)\n- `b c.md`\n\n### Spec: tests\n\n- x\n"), ["scripts/a.py", "b c.md"])
+    # A Spec counts only while its seal covers it: anyone who may edit the
+    # body could otherwise name a file they own there and decide.
+    sys.path.insert(0, HERE)
+    import receipts
+    spec_body = "### Spec: files\n\n- scripts/deciders.py\n"
+    edited = "### Spec: files\n\n- docs/mine.md\n"
+    seal_of = {"kind": "spec-seal", "spec_sha256": receipts.spec_hash(spec_body)}
+    check("spec: a sealed Spec that still matches names its files", sealed_spec_files(spec_body, seal_of, receipts.spec_hash(spec_body)), ["scripts/deciders.py"])
+    check("spec: a Spec with no seal names nothing", sealed_spec_files(spec_body, None, receipts.spec_hash(spec_body)), [])
+    check("spec: a Spec edited since its seal names nothing", sealed_spec_files(edited, seal_of, receipts.spec_hash(edited)), [])
     # C1: `codeowners`, and a collaborator with write access who owns none
     # of the files the change touches.
     d = decide("codeowners", "answer", "dev", "write", owners, ["scripts/deciders.py"])
@@ -430,6 +475,37 @@ def self_test():
             check("C3: a failure to read is no missing file", "raised", "raised")
     finally:
         _gh = real
+    # The review of #589: a writer who owns docs/ only edits the issue's
+    # Spec to name docs/mine.md; the seal still covers the old one, so the
+    # catch-all's owner decides, never the writer.
+    body = {"now": edited}
+
+    def issue(*args):
+        if args[:2] == ("issue", "view"):
+            return json.dumps({"closedByPullRequestsReferences": []})
+        if args[1] == "repos/o/r/issues/7":
+            return json.dumps({"body": body["now"]})
+        raise RuntimeError(f"unexpected {args}")
+    with tempfile.TemporaryDirectory() as t:
+        os.makedirs(os.path.join(t, "issues", "7"))
+        with open(os.path.join(t, "issues", "7", "spec-2026-01-01T00:00:00Z.json"), "w", encoding="utf-8") as fh:
+            json.dump(seal_of, fh)
+        old = os.environ.get("RECEIPTS_FIXTURE")
+        os.environ["RECEIPTS_FIXTURE"] = t
+        try:
+            _gh = issue
+            live = Live("o/r", "7")
+            live.fixture = None
+            files = live.files()
+            check("spec: a body-edited Spec does not widen who decides", (files, decide("codeowners", "accepted", "writer", "write", owners, files)["ok"]), ([], False))
+            body["now"] = spec_body
+            check("spec: the sealed Spec's files count", live.files(), ["scripts/deciders.py"])
+        finally:
+            _gh = real
+            if old is None:
+                os.environ.pop("RECEIPTS_FIXTURE", None)
+            else:
+                os.environ["RECEIPTS_FIXTURE"] = old
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 

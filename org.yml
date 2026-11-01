@@ -49,7 +49,9 @@ attribution: warn
 # takes as a maintainer's once an issue is accepted, and who may add
 # `accepted`, `autopilot:continue`, `/coauthor` and `/uncoauthor`. Anyone
 # else's comment is data, summarised for them (#287). `codeowners`: the
-# code owners of the files the change touches, from the repository's
+# code owners of the files the change touches (the diff of the open pull
+# request that closes the issue, else the Spec's files while its seal
+# still matches, else the catch-all rule's owners), from the repository's
 # CODEOWNERS on its default branch (a repository without one is
 # `writers`); `acceptor`: whoever accepted the issue (anyone with write
 # gives the first acceptance); `writers`: anyone with write access. Each

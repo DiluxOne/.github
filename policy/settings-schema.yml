@@ -108,7 +108,7 @@ files:
     - key: who-decides
       org: any
       repo: any
-      limit: "`codeowners`, `acceptor` or `writers`, each within its action's floor (write; maintain for the credits); a repository's exception is repos.yml `who-decides`"
+      limit: "`codeowners` (the owners of the files the open pull request that closes the issue touches, its diff counting, else of the Spec's `Spec: files` while its seal still matches, else of the catch-all rule), `acceptor` or `writers`, each within its action's floor (write; maintain for the credits); a repository's exception is repos.yml `who-decides`"
       read-by: [scripts/org.py, scripts/deciders.py]
       issue: "#588"
       says: Whose answers the autopilot takes, and who may add `accepted`, `autopilot:continue`, `/coauthor` and `/uncoauthor`.
