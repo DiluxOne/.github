@@ -143,7 +143,7 @@ name: Autopilot
 # current main with the reproduction's commits cherry-picked on top (#549),
 # the test checked against the SHA-256 the PRD sealed; the work merges main
 # into a branch behind it before the agent starts, and api-commit.py pushes
-# that merge only when it is clean (#550); the agent runs it only in the sandbox, always against a clean copy
+# that merge only when it is clean (#550) or resolves only its conflicts (#556); the agent runs it only in the sandbox, always against a clean copy
 # of a commit, never the working tree, and `finish ready` refuses until it
 # passes there: a unit test in scripts/repro-sandbox.sh (no network, no
 # environment, no secret), any other way's (#397) the way it was written,
@@ -348,8 +348,15 @@ jobs:
           # has no record at its head, and the fix round merges main first.
           as=$MODE; conflicts=false
           if [ "$MODE" = continue ]; then
-            state=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json isDraft,headRefOid,mergeStateStatus --jq '"\(.isDraft) \(.headRefOid) \(.mergeStateStatus)"')
-            read -r is_draft head merge_state <<<"$state"
+            # GitHub works out the merge state after a push or a move of
+            # main, UNKNOWN until then: read again for a few seconds; still
+            # unknown, it reads as no conflict.
+            for _ in 1 2 3 4 5; do
+              state=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json isDraft,headRefOid,mergeStateStatus --jq '"\(.isDraft) \(.headRefOid) \(.mergeStateStatus)"')
+              read -r is_draft head merge_state <<<"$state"
+              [ "$merge_state" = UNKNOWN ] || break
+              sleep 3
+            done
             [ "$merge_state" != DIRTY ] || conflicts=true
             # Unread, it is no record: the continue runs as it always did.
             # shellcheck disable=SC2016 # jq variable, not a shell one.
@@ -1190,8 +1197,9 @@ jobs:
             fi
             # Read whole, then searched: a pipe into grep -q could end early
             # and, under pipefail, read as no match. What the agent's own
-            # commits change: a merge of main brings only main's files
-            # (api-commit.py refuses any merge that is not clean, #550).
+            # commits change: a merge of main brings only main's files, and
+            # the conflicts it resolved (api-commit.py refuses any other
+            # merge, #550, and a workflow resolved outside the engine, #556).
             changed=$(git log --first-parent --no-merges --no-renames --format= --name-only "origin/$BRANCH..$new")
             if grep -q '^\.github/workflows/' <<<"$changed" && [ "$ENGINE" != true ]; then
               echo "::error::The agent's commits change .github/workflows: nothing is pushed."; exit 1

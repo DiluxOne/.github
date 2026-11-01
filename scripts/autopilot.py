@@ -1365,7 +1365,7 @@ def conflict_note(conflicts, default):
         return ""
     return f"""
 
-Main does not merge cleanly into the branch: before any other fix, merge `origin/{default}` into it (`git merge origin/{default}`), resolve the conflicts so that both sides keep working, run the repository's checks, and commit the merge. Without a blocking review, `{IO_DIR}/review.md` may hold no points: that is fine, the merge is the round's work."""
+Main does not merge cleanly into the branch: before any other fix, merge `origin/{default}` into it (`git merge origin/{default}`), resolve the conflicts so that both sides keep working, and commit the merge with nothing in it but those resolutions (the push refuses a merge that changes any other file; fix anything else in commits of its own after it), then run the repository's checks. Without a blocking review, `{IO_DIR}/review.md` may hold no points: that is fine, the merge is the round's work."""
 
 
 def prompt_fix(repo, pr, rnd, max_rounds, ev=None, queue=False, conflicts=False, default="main"):
@@ -2169,16 +2169,20 @@ Clamp the value in Sum::add.
         # The step's own lines, with a gh that answers as GitHub would.
         what = steps("prep")[sid("prep", "what")]["run"]
         decide_as = what[what.index("\nas=$MODE"):what.index('{ echo "mode=$as"')] + 'echo "$as"\n'
-        def ran_as(mode, draft_, comments, head="h1", merge="CLEAN"):
+        def ran_as(mode, draft_, comments, head="h1", merge="CLEAN", later=""):
             with tempfile.TemporaryDirectory() as d:
+                # LATER: the merge state from the second read on (#556: UNKNOWN first).
                 with open(os.path.join(d, "gh"), "w", encoding="utf-8") as fh:
-                    fh.write("#!/bin/sh\ncase \"$1\" in pr) printf '%s\\n' \"$PR_STATE\" ;; api) printf '%s' \"$COMMENTS\" ;; esac\n")
+                    fh.write("#!/bin/sh\ncase \"$1\" in pr) if [ -n \"$LATER\" ] && [ -f read ]; then printf '%s\\n' \"${PR_STATE% *} $LATER\"; else : > read; printf '%s\\n' \"$PR_STATE\"; fi ;; api) printf '%s' \"$COMMENTS\" ;; esac\n")
+                with open(os.path.join(d, "sleep"), "w", encoding="utf-8") as fh:
+                    fh.write("#!/bin/sh\n")
+                os.chmod(os.path.join(d, "sleep"), 0o755)
                 os.chmod(os.path.join(d, "gh"), 0o755)
                 os.makedirs(os.path.join(d, ".dx-central"))
                 os.symlink(os.path.join(HERE), os.path.join(d, ".dx-central", "scripts"))
                 r = subprocess.run(["bash", "-c", "set -euo pipefail\n" + decide_as], cwd=d, capture_output=True, text=True,
                                    env={"PATH": d + os.pathsep + os.environ.get("PATH", ""), "MODE": mode, "PR": "8", "GITHUB_REPOSITORY": "o/r", "RUNNER_TEMP": d,
-                                        "DX_BOT_LOGIN": BOT, "PR_STATE": f"{str(draft_).lower()} {head} {merge}", "COMMENTS": json.dumps(comments)})
+                                        "DX_BOT_LOGIN": BOT, "PR_STATE": f"{str(draft_).lower()} {head} {merge}", "LATER": later, "COMMENTS": json.dumps(comments)})
                 return r.stdout.strip().splitlines()[-1] if r.returncode == 0 and r.stdout.strip() else f"failed: {r.stderr.strip()[-200:]}"
         rec = lambda sha, sev, who=BOT: {"user": {"login": who}, "body": f"{REVIEW_MARK}\n### Claude review\n<!-- dx-review-record {json.dumps({'sha': sha, 'blocking': True, 'findings': [{'severity': sev, 'file': 'a', 'title': 't'}]})} -->"}
         check("#504 C4: a continue on a ready pull request blocked at its head runs a fix round; a draft, no block, an older head, a stranger's record or none does not",
@@ -2189,6 +2193,8 @@ Clamp the value in Sum::add.
         check("#556: a continue on a ready pull request that conflicts with main runs a fix round, with a record or none; a draft that conflicts continues",
               (ran_as("continue", False, [], merge="DIRTY"), ran_as("continue", False, [rec("h1", "minor")], merge="DIRTY"), ran_as("continue", True, [], merge="DIRTY"),
                ran_as("continue", False, [], merge="BLOCKED")), ("fix", "fix", "continue", "continue"))
+        check("#556: a merge state GitHub has not worked out yet (UNKNOWN) is read again; one that stays unknown is no conflict",
+              (ran_as("continue", False, [], merge="UNKNOWN", later="DIRTY"), ran_as("continue", False, [], merge="UNKNOWN")), ("fix", "continue"))
         # #504: the fix round runs here from this repository's own pipeline,
         # with the condition every other repository's has, but the
         # repository: each runs it once.
