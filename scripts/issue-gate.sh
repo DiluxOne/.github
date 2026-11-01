@@ -70,7 +70,7 @@ QUERY='query($owner: String!, $name: String!, $number: Int!) {
             }
           }
           parent {
-            number state repository { nameWithOwner }
+            number state stateReason repository { nameWithOwner }
             labels(first: 50) { nodes { name } }
             timelineItems(itemTypes: [LABELED_EVENT, UNLABELED_EVENT], last: 100) {
               nodes {
@@ -349,11 +349,20 @@ if [ "${1:-}" = "--test" ]; then
   rm -f "$runfile"
   # A sub-issue of an issue a person accepted (the delegated lane, #189).
   sub_issue() {
-    jq -n --arg r "$repo" --arg who "${1:-User}" --arg assoc "${2:-MEMBER}" '{number: 12, state: "OPEN", repository: {nameWithOwner: $r}, author: {login: "someone"}, authorAssociation: $assoc, body: "Carry it out here.", lastEditedAt: null, labels: {nodes: []}, issueType: {name: "Task"}, timelineItems: {nodes: [{__typename: "ParentIssueAddedEvent", createdAt: "2026-10-16T10:00:00Z"}]}, parent: {number: 189, state: "OPEN", repository: {nameWithOwner: "DiluxOne/.github"}, labels: {nodes: [{name: "accepted"}]}, timelineItems: {nodes: [{__typename: "LabeledEvent", label: {name: "accepted"}, actor: {__typename: $who, login: "soydiloreto"}}]}}}'
+    jq -n --arg r "$repo" --arg who "${1:-User}" --arg assoc "${2:-MEMBER}" --arg state "${3:-OPEN}" --arg reason "${4:-}" '{number: 12, state: "OPEN", repository: {nameWithOwner: $r}, author: {login: "someone"}, authorAssociation: $assoc, body: "Carry it out here.", lastEditedAt: null, labels: {nodes: []}, issueType: {name: "Task"}, timelineItems: {nodes: [{__typename: "ParentIssueAddedEvent", createdAt: "2026-10-16T10:00:00Z"}]}, parent: {number: 189, state: $state, stateReason: (if $reason == "" then null else $reason end), repository: {nameWithOwner: "DiluxOne/.github"}, labels: {nodes: [{name: "accepted"}]}, timelineItems: {nodes: [{__typename: "LabeledEvent", label: {name: "accepted"}, actor: {__typename: $who, login: "soydiloreto"}}]}}}'
   }
   sub_issue | answer | T="chore(x): carry it out" case_ "passes: a member's sub-issue of a person's accepted issue (#189)" 0 || fail=1
   sub_issue Bot | answer | T="chore(x): carry it out" case_ "fails: a sub-issue whose parent a bot accepted" 1 || fail=1
   sub_issue User CONTRIBUTOR | answer | T="chore(x): carry it out" case_ "fails: a sub-issue from outside the organisation" 1 || fail=1
+  sub_issue User MEMBER CLOSED COMPLETED | answer | T="chore(x): carry it out" case_ "passes: a sub-issue whose parent was closed as completed (#572)" 0 || fail=1
+  sub_issue User MEMBER CLOSED NOT_PLANNED | answer | T="chore(x): carry it out" case_ "fails: a sub-issue whose parent was closed as not planned (#572)" 1 || fail=1
+  # The fixtures above are built by hand: the live query must read what
+  # delegated_accepts() reads of the parent, stateReason included (#572).
+  if printf '%s' "$QUERY" | grep -A1 'parent {' | grep -qw stateReason; then
+    echo "ok   the query reads the parent's stateReason (#572)"
+  else
+    echo "FAIL the query reads the parent's stateReason (#572)"; fail=1
+  fi
   # A sync run's issue (lane org-sync, #155): opened and labelled by a person
   # the lane names, its marker naming a merged commit and the run's files.
   sync_dir=$(mktemp -d)
