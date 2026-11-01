@@ -2293,11 +2293,56 @@ def org_drift(conf):
     for r in org_rulesets() or []:
         if r.get("name") in ORG_RULESET_NAMES and not by_property(r):
             found.append(f"the ruleset \"{r['name']}\" names its repositories instead of covering those with `{ADOPTED}=true` (`sync-repos.py rulesets`)")
+    # The test repository and the test identity (#563).
+    packs = {k: pack_of(k) for k in os.listdir(os.path.join(HERE, "..", "kinds")) if os.path.isfile(os.path.join(HERE, "..", "kinds", k, "pack.yml"))}
+    login = org.test_pack()["identity"].get("login", "")
+    names = sorted(((conf or {}).get("repos") or {}))
+    found += test_repo_drift(conf, org.CATALOGS, packs, login, test_identity_permissions(names, login) if login else {})
     try:
         security_configuration(conf)
     except ValueError as exc:
         found.append(f"{exc}: secret scanning and push protection are the configuration's, which GitHub may hold at the enterprise level only (HTTP 422 on a repository), out of the sync's reach: the maintainer sets it once there")
     return found
+
+
+def pack_of(kind, root=os.path.join(HERE, "..")):
+    path = os.path.join(root, "kinds", kind, "pack.yml")
+    return (org.load(path) if os.path.exists(path) else {}) or {}
+
+
+def test_repo_drift(conf, catalogs, packs, login, permissions):
+    """#563: what makes the test repository other than a test, as lines.
+    A repository of kind `engine-test` that is also of a kind that
+    publishes (any whose pack does not say `publishes: never`) or is a
+    catalog of org.yml `catalogs`; and the test identity (`login`) with
+    more than read on any repository of another kind (`permissions`, the
+    repository's name to its permission for that login): it may accept
+    there only. Pure."""
+    found = []
+    tests = set()
+    for name, entry in sorted(((conf or {}).get("repos") or {}).items()):
+        kinds = [k.get("kind") for k in (entry or {}).get("kinds") or [] if isinstance(k, dict)]
+        if org.TEST_KIND not in kinds:
+            continue
+        tests.add(name)
+        products = [k for k in kinds if k != org.TEST_KIND and (packs.get(k) or {}).get("publishes") != "never"]
+        if products:
+            found.append(f"{name} is of kind `{org.TEST_KIND}` and also of {', '.join(f'`{k}`' for k in products)}: the test repository is no product (repos.yml)")
+        if name in set((catalogs or {}).values()):
+            found.append(f"{name} is of kind `{org.TEST_KIND}` and a catalog in org.yml `catalogs`: the test repository publishes nothing")
+    for name, level in sorted((permissions or {}).items()):
+        if name not in tests and level in ("write", "maintain", "admin", "triage"):
+            found.append(f"the test identity {login} has `{level}` on {name}: it may accept only in the test repository; take it back to read")
+    return found
+
+
+def test_identity_permissions(names, login):
+    """The test identity's permission on each repository, from GitHub."""
+    out = {}
+    for name in names:
+        got = gh("api", f"repos/{ORG}/{name}/collaborators/{login}/permission", "--jq", ".role_name // .permission", check=False)
+        out[name] = (got.stdout or "").strip() if got.returncode == 0 else "none"
+    return out
 
 
 def adoption_drift(repo, conf):
@@ -3432,6 +3477,20 @@ def self_test():
         nonlocal failed
         print(("ok   " if ok else "FAIL ") + name + ("" if ok else f": {detail}"))
         failed += 0 if ok else 1
+
+    # C8 (#563): the test repository is no product, and its identity
+    # accepts nowhere else.
+    packs = {"engine-test": {"publishes": "never"}, "wordpress-plugin": {"release": {}}}
+    tconf = {"repos": {"t-test": {"kinds": [{"kind": "engine-test"}, {"kind": "wordpress-plugin"}]}, "plugin": {"kinds": [{"kind": "wordpress-plugin"}]}}}
+    got = test_repo_drift(tconf, {"ai-agent-plugin": "t-test"}, packs, "t-test-bot", {"t-test": "write", "plugin": "write", "site": "read"})
+    check("C8: an engine-test repository also of a product kind is named", any(l.startswith("t-test is of kind `engine-test` and also of `wordpress-plugin`") for l in got), got)
+    check("C8: an engine-test repository that is a catalog is named", any(l.startswith("t-test is of kind `engine-test` and a catalog") for l in got), got)
+    check("C8: the test identity with write elsewhere is named, read is not", [l for l in got if "test identity" in l] == ["the test identity t-test-bot has `write` on plugin: it may accept only in the test repository; take it back to read"], got)
+    tconf["repos"]["t-test"]["kinds"] = [{"kind": "engine-test"}]
+    check("C8: a test repository that is only that, and an identity with write there only, are in step",
+          test_repo_drift(tconf, {}, packs, "t-test-bot", {"t-test": "write", "plugin": "read"}) == [], "")
+    check("C8: this organisation's repos.yml keeps its test repository a test",
+          test_repo_drift(sys.modules["org"].load(os.path.join(HERE, "..", "repos.yml")), sys.modules["org"].CATALOGS, {k: pack_of(k) for k in ("engine-test", "wordpress-plugin", "ai-agent-plugin")}, "", {}) == [], "")
 
     block = f"{START} (x) -->\nRULES\n{END}\n"
     plain = "# AGENTS.md\n\nIntro.\n\n## Mine\n"
