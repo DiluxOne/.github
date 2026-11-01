@@ -895,8 +895,9 @@ def answers(comments, writers):
     a run and waits on a person (a question, a stop, a silent or an
     unfinished end), or since the start when there is none (#540): their
     comments, in order, by a login in `writers` (people with write access,
-    checked live by the workflow). So a hint given with
-    `autopilot:continue` after a stop reaches the prompt too."""
+    checked live by the workflow). So a maintainer's hint after a stop,
+    which brings the autopilot back (review-reply.yml, #561), reaches the
+    prompt too."""
     last = max((c.get("createdAt", "") for c in comments if c.get("body", "").startswith((ASK, STOP, SILENT, UNFINISHED))
                 and (c.get("author") or {}).get("login") in BOT_LOGINS), default="")
     picked = [c for c in comments if c.get("createdAt", "") > last and (c.get("author") or {}).get("login") in writers]
@@ -1028,7 +1029,7 @@ def silent_why(mode, pr, why, spec_outcome, limit_hit, done, total, runs, cap, f
 
 def silent_comment(verdict_why, run_url):
     return f"""{SILENT}
-**The autopilot ended without a result.** {verdict_why} Nothing was marked ready and the agent left no stop comment, so a person takes it from here (`needs-human`). What it did is in [the run]({run_url}): its summary, and the full transcript as an artifact.
+**The autopilot ended without a result.** {verdict_why} Nothing was marked ready and the agent left no stop comment, so a person takes it from here (`needs-human`): a maintainer's answer here, a hint in words, brings it back, or they take it over. What it did is in [the run]({run_url}): its summary, and the full transcript as an artifact.
 
 {AI_LINE}"""
 
@@ -1048,7 +1049,7 @@ def unfinished_comment(run_url):
 
 def last_resort_comment(run_url):
     return f"""{SILENT}
-**The autopilot's run ended, and its end rule could not say how.** Nothing was marked ready, and the step that writes the verdict failed before it could (the run's log says why), so a person takes it from here (`needs-human`). What the agent did is in [the run]({run_url}): its summary, and the transcript as an artifact when there is one.
+**The autopilot's run ended, and its end rule could not say how.** Nothing was marked ready, and the step that writes the verdict failed before it could (the run's log says why), so a person takes it from here (`needs-human`): a maintainer's answer here, a hint in words, brings it back, or they take it over. What the agent did is in [the run]({run_url}): its summary, and the transcript as an artifact when there is one.
 
 {AI_LINE}"""
 
@@ -2099,6 +2100,28 @@ A class on html.
     ]
     for name, got, want in table:
         check(f"#561 C1: next-step, {name}", got, want)
+    # #561 C7: every state's action is one the bot runs, a wait on a
+    # person's decision, or nothing; and none of their words tells anyone to
+    # add or remove a flow label.
+    steps7 = [ns(**k) for k in (
+        {"issue": {"state": "CLOSED", "labels": []}}, {"issue": {"labels": ["accepted", "claimed"]}}, {"prs": [theirs561]}, {"lane": ""},
+        {"may_start": [False, "off"]}, {"seal": "changed"}, {"issue": {"labels": ["accepted", WAITING]}, "pr": dpr}, {}, {"spec": True},
+        {"pr": {**dpr, "author_is_bot": False}}, {"pr": {**dpr, "labels": ["autopilot", "needs-human"]}}, {"pr": dpr, "runs": 5}, {"pr": dpr},
+        {"pr": {**dpr, "merge": "dirty"}}, {"pr": {**dpr, "body": all2}}, {"pr": {**rpr, "merge": "dirty"}}, {"pr": {**rpr, "merge": "dirty"}, "runs": 5},
+        {"pr": {**rpr, "merge": "behind"}}, {"pr": {**rpr, "dequeued": True, "queue_failed": True}}, {"pr": {**rpr, "dequeued": True}},
+        {"pr": {**rpr, "dequeued": True, "queue_failed": True}, "round": 4}, {"pr": {**rpr, "record": blk("h")}}, {"pr": {**rpr, "record": blk("h")}, "round": 4},
+        {"pr": {**rpr, "record": {"sha": "h", "blocking": False, "findings": []}}}, {"pr": {**rpr, "record": blk("old")}})]
+    check("#561 C7: every state next-step reads is in the table",
+          sorted(set((s["action"], s.get("how") or s.get("for") or s.get("as")) for s in steps7)), sorted(set(w for _, _, w in table)))
+    check("#561 C7: every action is the bot's, a wait on a person's decision, or nothing",
+          [s for s in steps7 if not (s["action"] in BOT_ACTIONS and s.get("as") in ("start", "continue", "fix", "update")
+                                     or s["action"] == "wait" and s["for"] in PERSON_DECISIONS or s["action"] == "none")], [])
+    told7 = re.compile(r"(?i)\b(add|adds|remove|removes|give|gives|with)\s+(the\s+)?`(autopilot:[\w*-]+|needs-human)`")
+    check("#561 C7: no step's words tell anyone to add or remove a flow label",
+          [s["why"] for s in steps7 if told7.search(s["why"])], [])
+    check("#561 C7: a stop and a silent end say a maintainer's answer brings it back, never a label",
+          [("a maintainer's answer here, a hint in words, brings it back" in c, bool(told7.search(c)))
+           for c in (stop_comment("x"), silent_comment("x", "u"), last_resort_comment("u"))], [(True, False)] * 3)
     check("#561 C1: next-step names who a wait is on",
           (ns(prs=[theirs561])["who"], ns(lane="")["who"], ns(pr=dpr, runs=5)["who"]), ("ana", "a maintainer", "anyone"))
     check("#561 C1: next-step lists the open criteria", ns(pr=dpr)["left"], ["C2"])
@@ -3178,7 +3201,7 @@ def review_for_agent(repo, pr):
 
 
 def stop_comment(why):
-    return f"{STOP}\n**The autopilot stopped here.** {why.strip()}\n\nA person takes it from here (`needs-human`).\n\n{AI_LINE}"
+    return f"{STOP}\n**The autopilot stopped here.** {why.strip()}\n\nA person takes it from here (`needs-human`): a maintainer's answer here, a hint in words, brings it back, or they take it over.\n\n{AI_LINE}"
 
 
 def main(argv):

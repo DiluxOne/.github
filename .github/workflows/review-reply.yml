@@ -76,6 +76,13 @@ jobs:
   # (`autopilot:waiting`), or on its pull request, brings the autopilot back
   # (`autopilot:continue`, added by dilux-bot, which issue-triage.yml
   # accepts). The autopilot reads the answer itself, from the comments.
+  # So does a maintainer's hint after the autopilot stopped or ended
+  # silent (#561): on its pull request still labelled `autopilot` (or on
+  # the issue, with none), labelled `needs-human` and whose last comment of
+  # dilux-bot's is that stop or silent end, the comment takes `needs-human`
+  # off and brings it back, a run that counts. A maintainer who takes it
+  # over removes `autopilot` first; a stop for the runs or rounds cap ends
+  # in another comment, and stays with a person.
   answer:
     name: The autopilot's answer
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
@@ -112,11 +119,30 @@ jobs:
           fi
           [ -n "$issue" ] || exit 0
           waiting=$(gh issue view "$issue" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | index("autopilot:waiting") != null')
-          [ "$waiting" = true ] || exit 0
+          stopped=""
+          if [ "$waiting" != true ]; then
+            # A hint after a stop (#561): where the stop was said.
+            pr=""
+            if [ "$IS_PR" = true ]; then
+              pr=$NUMBER
+            else
+              for n in $(gh issue view "$issue" --repo "$GITHUB_REPOSITORY" --json closedByPullRequestsReferences --jq '.closedByPullRequestsReferences[].number'); do
+                if gh pr view "$n" --repo "$GITHUB_REPOSITORY" --json state,labels --jq '.state == "OPEN" and ([.labels[].name] | index("autopilot") != null)' | grep -qx true; then pr=$n; fi
+              done
+            fi
+            if [ -n "$pr" ]; then kind=pr; stopped=$pr; else kind=issue; stopped=$issue; fi
+            labels=$(gh "$kind" view "$stopped" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | join(",")')
+            case ",$labels," in *,needs-human,*) ;; *) exit 0 ;; esac
+            if [ "$kind" = pr ]; then case ",$labels," in *,autopilot,*) ;; *) exit 0 ;; esac; fi
+            last=$(gh api "repos/$GITHUB_REPOSITORY/issues/$stopped/comments" --paginate --jq '.[] | select(.user.login == env.DX_BOT_LOGIN) | .body | split("\n")[0]' | tail -n 1)
+            case $last in "<!-- dx-autopilot-stop -->"*|"<!-- dx-autopilot-silent -->"*) ;; *) exit 0 ;; esac
+          fi
           role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$LOGIN/permission" --jq .role_name 2>/dev/null || echo none)
           case $role in
             admin|maintain|write) ;;
             *)
+              # A stop asked nothing: no answer, and nothing to summarise.
+              [ -z "$stopped" ] || exit 0
               # Someone else's opinion (#287): summarised for the maintainers
               # next to the question, never an answer.
               echo "$LOGIN cannot answer for the maintainers ($role): their opinion is summarised."
@@ -127,6 +153,14 @@ jobs:
           # The run the answer starts does not count towards the autopilot's
           # cap (#479): autopilot.yml labels it free.
           gh label create "autopilot:answered" --repo "$GITHUB_REPOSITORY" --color 1D76DB --force --description "On an issue: a maintainer answered the autopilot's question; the run it starts does not count" >/dev/null 2>&1 || true
+          if [ -n "$stopped" ]; then
+            # needs-human first: the continue's run stays out of a pull
+            # request that still carries it.
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/$stopped/labels/needs-human" >/dev/null
+            gh issue edit "$issue" --repo "$GITHUB_REPOSITORY" --add-label "autopilot:continue" >/dev/null
+            echo "$LOGIN answered the stop; the autopilot goes on with #$issue."
+            exit 0
+          fi
           gh issue edit "$issue" --repo "$GITHUB_REPOSITORY" --add-label "autopilot:answered" --add-label "autopilot:continue" --remove-label "autopilot:waiting" >/dev/null
           echo "$LOGIN answered; the autopilot goes on with #$issue."
 
