@@ -18,6 +18,11 @@ reusable workflows that call it in turn:
   - every secret it marks required, and every secret it reads that it does
     not declare, passed (or the caller's `secrets: inherit`).
 
+And this repository's own callers (its workflows that are not reusable,
+org-pull-request.yml aside, which runs in the other repositories): every
+call of its own engine uses one ref (#563 C10), so the caller and the
+engine are never read from two commits (#589).
+
   caller-contract.py check [ROOT]   each problem, one per line, naming the
                                     workflow, the job and what is missing
   caller-contract.py --test
@@ -148,7 +153,26 @@ def check(root=ROOT, central=None):
                     continue
                 granted = perms(job.get("permissions")) if "permissions" in job else top
                 out += contract(name, reusables[name], job, reusables, granted, central, (f"{rel} job `{jname}`",))
+    out += one_ref(workflows, central)
     return sorted(set(out))
+
+
+def one_ref(workflows, central):
+    """C10: every call of this repository's own engine from its own
+    callers uses one ref (`./` is main)."""
+    refs = {}
+    for name, doc in workflows.items():
+        if reusable(doc) or name == "org-pull-request.yml":
+            continue
+        for jname, job in (doc.get("jobs") or {}).items():
+            uses = str(job.get("uses") or "")
+            if not callee(uses, central):
+                continue
+            ref = "./" if uses.startswith("./") else uses.rsplit("@", 1)[1]
+            refs.setdefault(ref, []).append(f"{name} job `{jname}`")
+    if len(refs) <= 1:
+        return []
+    return [f"this repository calls its own engine at {len(refs)} refs: " + "; ".join(f"{ref} in {', '.join(where)}" for ref, where in sorted(refs.items()))]
 
 
 def self_test():
@@ -189,10 +213,19 @@ def self_test():
         open(os.path.join(wf, "triage.yml"), "a").write("  more:\n    permissions: {contents: read}\n    uses: ./.github/workflows/inner.yml\n")
         ok("#585: a nested call asks no more than the outer caller grants",
            check(root, "O/.github"), ["inner.yml job `go` (called by triage.yml job `more`): asks actions: write (granted none)"])
+        os.unlink(os.path.join(wf, "inner.yml"))
+        open(os.path.join(wf, "triage.yml"), "w").write("on: {workflow_call: {}}\njobs:\n  a:\n    runs-on: x\n    steps: []\n")
+        open(os.path.join(wf, "issues.yml"), "w").write("on: issues\njobs:\n  t:\n    uses: O/.github/.github/workflows/triage.yml@v7\n")
+        open(os.path.join(wf, "pull-request.yml"), "w").write("on: pull_request\njobs:\n  t:\n    uses: ./.github/workflows/triage.yml\n")
+        open(os.path.join(root, "workflow-templates", "issues.yml"), "w").write("on: issues\njobs:\n  t:\n    uses: O/.github/.github/workflows/triage.yml@v7\n")
+        ok("C10: own callers at two refs fail, naming each", check(root, "O/.github"),
+           ["this repository calls its own engine at 2 refs: ./ in pull-request.yml job `t`; v7 in issues.yml job `t`"])
+        open(os.path.join(wf, "issues.yml"), "w").write("on: issues\njobs:\n  t:\n    uses: ./.github/workflows/triage.yml\n")
+        ok("C10: own callers at one ref pass", check(root, "O/.github"), [])
         open(os.path.join(wf, "triage.yml"), "w").write("on: {workflow_call: {}}\njobs:\n  a:\n    environment: e\n    runs-on: x\n    steps:\n      - run: echo \"${{ secrets.SVN }}\"\n")
         open(os.path.join(root, "workflow-templates", "issues.yml"), "w").write("on: issues\njobs:\n  t:\n    uses: O/.github/.github/workflows/triage.yml@v7\n")
         ok("C3: an environment's secrets need no passing", check(root, "O/.github"), [])
-    ok("C3: the engine's workflows and its shipped callers keep the contract", check(), [])
+    ok("C3, C10: the engine's workflows, its shipped callers and its own callers keep the contract", check(), [])
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
@@ -205,7 +238,7 @@ def main(argv):
         for line in out:
             print(line)
         if not out:
-            print("every caller gives what the workflows it calls ask")
+            print("every caller gives what the workflows it calls ask, and this repository calls its engine at one ref")
         return 1 if out else 0
     print(__doc__, file=sys.stderr)
     return 64
