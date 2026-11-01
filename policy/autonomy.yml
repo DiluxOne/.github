@@ -219,7 +219,9 @@ lanes:
   #     closes any other way, takes the children's with it;
   #   - the sub-issue was opened by a member of the organisation, or by the
   #     lane's App;
-  #   - its text was not edited after it was linked to the parent.
+  #   - its text was not edited after it was linked to the parent, but by
+  #     the organisation's own App (DX_BOT_LOGIN), as its edit history
+  #     shows (#598).
   # Merging is the same as for a person's issue: every gate, and a person
   # merges what the policy leaves to one.
   delegated:
