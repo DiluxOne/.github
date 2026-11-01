@@ -964,8 +964,11 @@ jobs:
     if: ${{ !cancelled() && needs.prep.outputs.go == 'true' && (needs.prep.outputs.mode != 'start' || needs.draft.outputs.pr != '') }}
     runs-on: ${{ (vars.DX_RUNNER_HEAVY != '' && needs.where.outputs.github-hosted == 'false') && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 90
+    # It reads the repository, and the closed pull requests next-version.py
+    # lists in `make pre-pr` (#537); it writes nothing.
     permissions:
       contents: read
+      pull-requests: read
     outputs:
       outcome: ${{ steps.work.outcome }}
     steps:
