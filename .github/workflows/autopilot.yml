@@ -497,7 +497,10 @@ jobs:
             echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
           if [ "$AS" = start ]; then
-            open_prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --search "linked:issue $ISSUE" --json number --jq 'length')
+            # Only the open pull requests GitHub lists as closing the issue
+            # (closed ones are left out), never a text search, which matches
+            # any pull request linked to an issue that mentions the number (#577).
+            open_prs=$(gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json closedByPullRequestsReferences --jq '.closedByPullRequestsReferences | length')
             if [ "$open_prs" != 0 ]; then
               echo "A pull request already closes #$ISSUE: nothing to start (\`autopilot:continue\` resumes the autopilot's)."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
             fi
