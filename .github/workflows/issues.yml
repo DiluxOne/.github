@@ -98,11 +98,12 @@ jobs:
   # (pull_request_target: metadata only, never its code), what the item
   # waits on now goes on its board, with the action and its URL, the person
   # is mentioned once on the item, and the pinned "What waits" issue of
-  # DiluxOne/.github is rewritten.
+  # DiluxOne/.github is rewritten. Here only, through the local call, until
+  # a release ships waiting-update.yml in v7; then the template gets it too.
   waiting:
     if: github.event_name != 'schedule'
     permissions: {}
-    uses: DiluxOne/.github/.github/workflows/waiting-update.yml@v7
+    uses: ./.github/workflows/waiting-update.yml
     with:
       number: ${{ format('{0}', github.event.issue.number || github.event.pull_request.number) }}
     secrets:

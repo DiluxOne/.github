@@ -2254,11 +2254,8 @@ Clamp the value in Sum::add.
               (sorted(agents), [j for j in agents if j in keyed], [jobs[j].get("permissions") for j in agents],
                all("github.token" in st.get("with", {}).get("github_token", "") for j in agents for st in jobs[j]["steps"] if "claude-code-action" in str(st.get("uses", "")))),
               (["spec", "work"], [], [{"contents": "read"}, {"contents": "read", "pull-requests": "read"}], True))
-        check("#287: the jobs with the key run no agent, on GitHub's fresh runners (the screenshots' call runs its own, #564)",
-              (sorted(keyed), {jobs[j]["runs-on"] for j in keyed if j not in ("where", "screenshots")},
-               jobs["screenshots"].get("uses", "").split("@")[0]),
-              (["apply", "draft", "prep", "screenshots", "where"], {"ubuntu-latest"},
-               "DiluxOne/.github/.github/workflows/pr-screenshots.yml"))
+        check("#287: the jobs with the key run no agent, on GitHub's fresh runners",
+              (sorted(keyed), {jobs[j]["runs-on"] for j in keyed if j != "where"}), (["apply", "draft", "prep", "where"], {"ubuntu-latest"}))
         steps = lambda job: jobs[job]["steps"]
         sid = lambda job, key: next(i for i, st in enumerate(steps(job)) if st.get("id") == key)
         tree = lambda job: next(st for st in steps(job) if st.get("name") == "The working tree")["run"]

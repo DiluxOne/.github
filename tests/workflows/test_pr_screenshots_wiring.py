@@ -1,6 +1,8 @@
 """Screenshots of an autopilot pull request (#564 C4): taken when it is
 marked ready, only for the autopilot's own pull request from a branch of the
-same repository, never a fork's; its code runs without a secret."""
+same repository, never a fork's; its code runs without a secret. Here
+through pull-request.yml's local call: autopilot.yml and org-pull-request.yml
+call it once a release ships it (test_shared_calls_released.py)."""
 from pathlib import Path
 
 import yaml
@@ -14,9 +16,8 @@ def load(name):
     return data.get("on", data.get(True)), data["jobs"]
 
 
-def test_the_pipelines_call_it_on_ready_for_review_of_an_autopilot_pull_request_from_this_repository():
-    for name, uses in (("pull-request.yml", "./.github/workflows/pr-screenshots.yml"),
-                       ("org-pull-request.yml", "DiluxOne/.github/.github/workflows/pr-screenshots.yml@v7")):
+def test_the_pipeline_calls_it_on_ready_for_review_of_an_autopilot_pull_request_from_this_repository():
+    for name, uses in (("pull-request.yml", "./.github/workflows/pr-screenshots.yml"),):
         on, jobs = load(name)
         assert "ready_for_review" in on["pull_request"]["types"] and "pull_request_target" not in on, name
         job = jobs["screenshots"]
@@ -29,12 +30,17 @@ def test_the_pipelines_call_it_on_ready_for_review_of_an_autopilot_pull_request_
         assert set(job["secrets"]) == {"DILUX_BOT_PRIVATE_KEY"}
 
 
-def test_the_autopilot_calls_it_when_its_run_marks_the_pull_request_ready():
-    _, jobs = load("autopilot.yml")
-    assert jobs["apply"]["outputs"]["verdict"] == "${{ steps.end.outputs.verdict }}"
-    job = jobs["screenshots"]
-    assert job["uses"] == "DiluxOne/.github/.github/workflows/pr-screenshots.yml@v7"
-    assert "needs.apply.outputs.verdict == 'ready'" in job["if"] and "needs.prep.outputs.mode != 'fix'" in job["if"]
+def test_the_caller_grants_what_its_jobs_ask_for():
+    # A nested job may not ask for more than its caller grants, or the
+    # whole pipeline fails to start.
+    _, jobs = load("pull-request.yml")
+    _, called = load("pr-screenshots.yml")
+    granted = jobs["screenshots"]["permissions"]
+    for job in called.values():
+        for scope, level in (job.get("permissions") or {}).items():
+            assert granted.get(scope) in (level, "write"), (scope, level)
+    _, waiting = load("waiting-update.yml")
+    assert all(not job.get("permissions") for job in waiting.values()) and jobs["waiting"]["permissions"] == {}
 
 
 def test_it_checks_the_pull_request_itself_and_runs_its_code_without_a_secret():

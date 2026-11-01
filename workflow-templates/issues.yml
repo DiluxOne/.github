@@ -87,23 +87,9 @@ jobs:
     secrets:
       DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
 
-  # What waits on whom (#564): on every issue's and pull request's event
-  # (pull_request_target: metadata only, never its code), what the item
-  # waits on now goes on its board, with the action and its URL, the person
-  # is mentioned once on the item, and the pinned "What waits" issue of
-  # DiluxOne/.github is rewritten.
-  waiting:
-    if: github.event_name != 'schedule'
-    permissions: {}
-    uses: DiluxOne/.github/.github/workflows/waiting-update.yml@v7
-    with:
-      number: ${{ format('{0}', github.event.issue.number || github.event.pull_request.number) }}
-    secrets:
-      DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
-
   # A person claims an issue (#488): `/claim`, the form's checkbox, and the
   # daily reminders and releases; every release starts the autopilot. The
-  # job that runs on pull_request_target and on every comment beside `waiting`. It inherits
+  # job that runs on pull_request_target and on every comment. It inherits
   # the secrets (dilux-bot's key, and the Claude token for the autopilot it
   # starts) and never checks out a pull request's code: on
   # pull_request_target it reads the pull request's metadata only.

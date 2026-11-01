@@ -115,33 +115,6 @@ jobs:
   # An autopilot pull request whose review blocks: one round of fixes by the
   # autopilot (#83), which pushes and so runs this pipeline again; after its
   # rounds it hands the pull request to a person.
-  # What waits on whom (#564): a pull request marked ready waits on someone
-  # new (its review, a person's merge); its board and the view follow
-  # (issues.yml covers its other events). Not a fork's: it needs the key.
-  waiting:
-    if: github.event_name == 'pull_request' && github.event.action == 'ready_for_review' && github.event.pull_request.head.repo.full_name == github.repository && github.repository != 'DiluxOne/.github'
-    permissions: {}
-    uses: DiluxOne/.github/.github/workflows/waiting-update.yml@v7
-    with:
-      number: ${{ format('{0}', github.event.pull_request.number) }}
-    secrets:
-      DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
-
-  # Before and after screenshots of the specs an autopilot pull request
-  # affects in the browser layer, once it is marked ready (#564,
-  # pr-screenshots.yml, which checks again that it is the autopilot's, from
-  # a branch of this repository).
-  screenshots:
-    if: github.event_name == 'pull_request' && github.event.action == 'ready_for_review' && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && github.event.pull_request.head.repo.full_name == github.repository && github.repository != 'DiluxOne/.github'
-    permissions:
-      contents: read
-      pull-requests: read
-    uses: DiluxOne/.github/.github/workflows/pr-screenshots.yml@v7
-    with:
-      pr: ${{ format('{0}', github.event.pull_request.number) }}
-    secrets:
-      DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
-
   autopilot-fix:
     needs: review
     # Only dilux-bot's own pull requests, and only for a new commit (an edit
