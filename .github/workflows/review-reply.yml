@@ -130,7 +130,7 @@ jobs:
                 if gh pr view "$n" --repo "$GITHUB_REPOSITORY" --json state,labels --jq '.state == "OPEN" and ([.labels[].name] | index("autopilot") != null)' | grep -qx true; then pr=$n; fi
               done
             fi
-            if [ -n "$pr" ]; then kind=pr; stopped=$pr; else kind=issue; stopped=$issue; fi
+            if [ -n "$pr" ]; then kind="pr"; stopped=$pr; else kind="issue"; stopped=$issue; fi
             labels=$(gh "$kind" view "$stopped" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | join(",")')
             case ",$labels," in *,needs-human,*) ;; *) exit 0 ;; esac
             if [ "$kind" = pr ]; then case ",$labels," in *,autopilot,*) ;; *) exit 0 ;; esac; fi

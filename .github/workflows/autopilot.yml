@@ -395,7 +395,7 @@ jobs:
                 echo "#$PR: $(jq -r .why <<<"$step")"
                 gh api -X PUT "repos/$GITHUB_REPOSITORY/pulls/$PR/update-branch" -f expected_head_sha="$head" >/dev/null
                 echo "go=false" >> "$GITHUB_OUTPUT"; exit 0 ;;
-              *) as=continue ;;
+              *) as="continue" ;;
             esac
           fi
           { echo "mode=$as"; echo "conflicts=$conflicts"; } >> "$GITHUB_OUTPUT"

@@ -51,7 +51,7 @@ env:
 jobs:
   sweep:
     name: Autopilot pull requests in step with main
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest # fresh: it holds the bot's key, with contents: write on every repository (#287)
     timeout-minutes: 15
     steps:
       - name: App token
