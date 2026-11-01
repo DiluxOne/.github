@@ -70,6 +70,24 @@ def test_a_comment_or_a_self_test_is_not(tree):
     assert out.returncode == 0, out.stdout
 
 
+def test_a_shell_default_is_found(tree):
+    """A `${DX_BOT_LOGIN:-dilux-bot[bot]}` fallback names the organisation as
+    surely as a literal does; the `-` of `:-` is no part of a word."""
+    (tree / "scripts" / "planted.sh").write_text(
+        '#!/usr/bin/env bash\nBOT=${DX_BOT_LOGIN:-dilux-bot[bot]}\nID="${DX_BOT_ID:-333187390}"\n', encoding="utf-8")
+    out = org_free(tree)
+    assert "scripts/planted.sh:2: dilux-bot[bot]" in out.stdout and "scripts/planted.sh:3: 333187390" in out.stdout
+
+
+def test_a_function_named_like_a_test_is_still_searched(tree):
+    """claim_test() reads a claim's test marker: the script's own code, not
+    its self-test, so a value in it is found."""
+    (tree / "scripts" / "planted.sh").write_text(
+        '#!/usr/bin/env bash\nclaim_test() {\n  jq --arg app dilux-bot .\n}\n', encoding="utf-8")
+    out = org_free(tree)
+    assert "scripts/planted.sh:3: dilux-bot" in out.stdout
+
+
 def test_the_organisations_own_files_and_tests_are_not_searched(tree):
     (tree / "tests").mkdir()
     (tree / "tests" / "test_x.py").write_text('BOT = "dilux-bot"\n', encoding="utf-8")

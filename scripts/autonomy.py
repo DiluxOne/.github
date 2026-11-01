@@ -228,7 +228,7 @@ REPO_RULES = {"autopilot": "stricter", "autopilot-mode": "up-to-ceiling", "budge
               "claims.*": "lower-only", "constitution": "add-only", "person-merges": "add-only",
               "lanes.*.enabled": "stricter", "lanes.*.accept": "stricter", "lanes.*.repositories": "stricter",
               "lanes.*.merge": "up-to-ceiling"}
-LANE_KEYS ={"description", "accept", "type", "origin", "repositories", "evidence", "merge", "ceiling", "constitution-merge", "enabled"}
+LANE_KEYS = {"description", "accept", "type", "origin", "repositories", "evidence", "merge", "ceiling", "constitution-merge", "enabled"}
 # The one lane whose fix may merge in a protected path, and only when it
 # widens nothing (#397, constitution_merge()).
 CONSTITUTION_LANE = "bugfix-reproduced"
@@ -346,8 +346,12 @@ def constitution_merge(policy, lane_name, protected, widening):
 
 def lane_app(origin):
     """The App that opens a lane's issues: its origin's `app`, else the
-    organisation's own (org.yml, or the caller's DX_BOT_APP, #568)."""
+    organisation's own (org.yml, or the caller's DX_BOT_APP, #568); "" when
+    neither names one, which every lane check refuses (NO_APP)."""
     return str((origin or {}).get("app") or org.APP)
+
+
+NO_APP = "no App opens this lane's issues (the lane's origin `app`, org.yml's bot or DX_BOT_APP): a person takes it"
 
 
 def lane_people(origin):
@@ -426,6 +430,8 @@ def lane_accepts(policy, issue, run, repository, autopilot_var, sync=None):
     if origin.get("parent"):
         return delegated_accepts(name, lane, issue, repository)
     app = lane_app(origin)
+    if not app:
+        return False, NO_APP
     bot_logins = {app, f"{app}[bot]"}
     event = last_label_event(issue, f"lane:{name}")
     if not event or event.get("__typename") != "LabeledEvent" or (event.get("actor") or {}).get("login") not in bot_logins:
@@ -483,7 +489,7 @@ def delegated_accepts(name, lane, issue, repository):
         return False, f"its parent {ref} was not accepted by a person"
     app = lane_app(lane.get("origin"))
     author = login((issue.get("author") or {}).get("login"))
-    if issue.get("authorAssociation") not in MEMBERS and author != login(app):
+    if issue.get("authorAssociation") not in MEMBERS and (not app or author != login(app)):
         return False, "the sub-issue was not opened by a member of the organisation"
     linked = [e.get("createdAt") for e in ((issue.get("timelineItems") or {}).get("nodes") or []) if e.get("__typename") == "ParentIssueAddedEvent"]
     if not linked:
@@ -523,6 +529,8 @@ def carry_accepts(name, lane, issue, repository, carry):
     that is the acceptance this lane carries. Pure: `carry` holds
     advisory(ghsa) and released(version)."""
     app = lane_app(lane.get("origin"))
+    if not app:
+        return False, NO_APP
     if login((issue.get("author") or {}).get("login")) != login(app):
         return False, f"the issue was not opened by {app}"
     event = last_label_event(issue, f"lane:{name}")
@@ -561,6 +569,8 @@ def carry_merge(policy, issue, repository, autopilot_var, carry, review):
     version = CARRY_MARKER.search(issue.get("body") or "").group(2)
     pr = carry.get("pr") or {}
     app = lane_app(lane.get("origin"))
+    if not app:
+        return False, NO_APP
     if login((pr.get("author") or {}).get("login")) != login(app):
         return False, f"the pull request was not opened by {app}"
     want = carry_branch(lane, issue.get("number"), version)
@@ -1052,6 +1062,8 @@ def adopt_accepts(policy, issue, repository, autopilot_var, facts):
         return False, why
     pr = facts.get("pr") or {}
     app = lane_app(origin)
+    if not app:
+        return False, NO_APP
     if login((pr.get("author") or {}).get("login")) != login(app):
         return False, f"the pull request was not opened by {app}"
     branch = (origin.get("branch") or "").format(issue=issue.get("number"))
@@ -1751,6 +1763,18 @@ def self_test():
     # maintainer, as the policy wrote them before.
     check("#568: DiluxOne's lanes are still opened by dilux-bot", {lane_app(lane.get("origin")) for lane in org["lanes"].values() if lane.get("origin")}, {"dilux-bot"} if not os.environ.get("DX_BOT_APP") else {os.environ["DX_BOT_APP"]})
     check("#568: and the sync is still run by its maintainer", lane_people(org["lanes"]["org-sync"]["origin"]), ["soydiloreto"])
+    saved, org_conf.APP = org_conf.APP, ""
+    try:
+        check("#568: no App anywhere, the lane names none", lane_app({}), "")
+        check("#568: and a lane check refuses it, not an issue whose author is empty",
+              carry_accepts("x", {}, {"author": {"login": ""}, "body": ""}, "o/r", {}), (False, NO_APP))
+        check("#568: nor does an empty App let a non-member's sub-issue through",
+              delegated_accepts("x", {"origin": {"parent": True}}, {"authorAssociation": "NONE", "author": {"login": ""}, "parent": {
+                  "repository": {"nameWithOwner": "o/p"}, "number": 1, "state": "OPEN", "labels": {"nodes": [{"name": "accepted"}]},
+                  "timelineItems": {"nodes": [{"__typename": "LabeledEvent", "label": {"name": "accepted"}, "actor": {"__typename": "User", "login": "boss"}}]}}}, "o/r"),
+              (False, "the sub-issue was not opened by a member of the organisation"))
+    finally:
+        org_conf.APP = saved
     check("#568: the policy names no App and no person of its own", [n for n, lane in org["lanes"].items() if {"app", "people"} & set(lane.get("origin") or {})], [])
     check("the marker a run writes is the one the lane reads", bool(SYNC_MARKER.fullmatch(sync_marker("org-sync", sr, "callers", sha, {"a": "b"}))), True)
     check("the fingerprint changes with any byte of any file", fingerprint(sr, "files", sha, {"a": "b"}) != fingerprint(sr, "files", sha, {"a": "b "}), True)

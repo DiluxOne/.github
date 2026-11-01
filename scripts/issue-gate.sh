@@ -24,8 +24,8 @@
 # Environment: REQUIRED (true|false), LABEL, TITLE (the pull request's
 # Conventional Commit title), AUTHOR_TYPE (User|Bot),
 # GITHUB_REPOSITORY (owner/name), PR (the pull request's number), GH_TOKEN
-# (issues: read and pull-requests: read), DX_BOT_APP (the App, dilux-bot by
-# default).
+# (issues: read and pull-requests: read), DX_BOT_APP (the App, else
+# org.yml's, #568).
 #
 # A claimed bug the reproduction confirmed (#488) needs no acceptance: the
 # claimant's own pull request, while the issue is still `claimed` by them
@@ -163,7 +163,11 @@ lane_verdict() {
 # names the author. A marker in anyone else's comment is never read.
 claim_test() {
   # shellcheck disable=SC2016 # jq variables, not shell ones.
-  jq -c --argjson n "$2" --arg app "${DX_BOT_APP:-dilux-bot}" '
+  local app
+  app=$(python3 "$(dirname "${BASH_SOURCE[0]}")/org.py" bot app || true)
+  # No App, no marker of its: an empty slug would match any login.
+  [ -n "$app" ] || return 0
+  jq -c --argjson n "$2" --arg app "$app" '
     .data.repository.pullRequest as $pr
     | [$pr.closingIssuesReferences.nodes[] | select(.number == $n)] | first // empty
     | select(any(.labels.nodes[]?; .name == "claimed"))

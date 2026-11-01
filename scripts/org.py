@@ -10,6 +10,10 @@
                each kind publishes to
 
   org.py maintainers   its maintainers, one per line
+  org.py bot app|login|id
+                       its App's slug, login or id: DX_BOT_APP, DX_BOT_LOGIN
+                       or DX_BOT_ID when set, else org.yml's; nothing (and
+                       exit 1) when it names none
   org.py publishes-to KIND
                        where the kind KIND publishes a release: its pack's
                        `release.publishes-to`, with `{catalog}` the kind's
@@ -146,6 +150,17 @@ def self_test():
     check("#568: a place with no placeholder stays", publishes_to("wordpress.org", "k", {}), "wordpress.org")
     check("#568: the ai-agent-plugin kind publishes to org.yml's catalog", pack_publishes_to("ai-agent-plugin"), CATALOGS.get("ai-agent-plugin", ""))
     check("#568: a kind that is not one publishes nowhere", pack_publishes_to("../x"), "")
+    import subprocess
+
+    def bot(field, **env):
+        out = subprocess.run([sys.executable, os.path.abspath(__file__), "bot", field], capture_output=True, text=True,
+                             env={**{k: v for k, v in os.environ.items() if not k.startswith("DX_BOT_")}, **env})
+        return out.stdout.strip(), out.returncode
+    mine = app(_conf, {})
+    check("#568: `bot` is org.yml's App when no variable is set", (bot("app"), bot("login"), bot("id")),
+          ((mine[0], 0), (mine[1], 0), (str(mine[2]), 0)))
+    check("#568: `bot` reads the calling organisation's variables first", (bot("login", DX_BOT_LOGIN="acme-bot[bot]"), bot("id", DX_BOT_ID="7"), bot("app", DX_BOT_APP="acme-bot")),
+          (("acme-bot[bot]", 0), ("7", 0), ("acme-bot", 0)))
     check("#197, #568: the shared workflows never name the App, not even as a fallback", hardwired_bot(), [])
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
@@ -155,6 +170,11 @@ if __name__ == "__main__":
     if sys.argv[1:2] == ["publishes-to"] and len(sys.argv) == 3:
         print(pack_publishes_to(sys.argv[2]))
         sys.exit(0)
+    if sys.argv[1:2] == ["bot"] and len(sys.argv) == 3 and sys.argv[2] in ("app", "login", "id"):
+        value = dict(zip(("app", "login", "id"), (APP, BOT, BOT_ID or "")))[sys.argv[2]]
+        if value:
+            print(value)
+        sys.exit(0 if value else 1)
     if sys.argv[1:] == ["maintainers"]:
         print("\n".join(MAINTAINERS))
         sys.exit(0)

@@ -100,8 +100,8 @@ on:
 permissions: {}
 
 # The organisation's App, as GitHub shows it (#197): the calling
-# organisation's variables DX_BOT_LOGIN, DX_BOT_APP and DX_BOT_ID, or
-# DiluxOne's dilux-bot when it sets none.
+# organisation's variables DX_BOT_LOGIN, DX_BOT_APP and DX_BOT_ID, which
+# every organisation sets (#568): config-overlay.sh stops the run without them.
 env:
   DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN }}
   DX_BOT_APP: ${{ vars.DX_BOT_APP }}

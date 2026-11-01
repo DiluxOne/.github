@@ -193,8 +193,9 @@ def identity_values(root):
 def skipped_lines(path, text):
     """The lines of a file that are not searched: its comments, its
     docstrings and its self-test (a Python function named self_test,
-    test... or ..._test, found with ast; a shell function whose name has
-    `test` in it, or an `if` on `--test` at the top level)."""
+    test... or ..._test, found with ast; a shell function named self_test,
+    test or test_..., or an `if` on `--test` at the top level: claim_test
+    or tested is the script's own code, searched like the rest)."""
     lines = text.split("\n")
     skip = set()
     for n, line in enumerate(lines, 1):
@@ -217,7 +218,7 @@ def skipped_lines(path, text):
         n = 0
         while n < len(lines):
             end = None
-            if re.match(r"^[A-Za-z_]*test[A-Za-z_]*\(\)\s*\{", lines[n]):
+            if re.match(r"^(self_test|test|test_[A-Za-z_]*)\(\)\s*\{", lines[n]):
                 end = "}"
             elif re.match(r"^if .*--test", lines[n]):
                 end = "fi"
@@ -236,7 +237,7 @@ def org_free(root=ROOT, values=None):
     values = identity_values(root) if values is None else values
     if not values:
         return []
-    pattern = re.compile(r"(?<![\w-])(" + "|".join(re.escape(v) for v in sorted(values, key=len, reverse=True)) + r")(?![\w-])")
+    pattern = re.compile(r"(?:(?<=:-)|(?<![\w-]))(" + "|".join(re.escape(v) for v in sorted(values, key=len, reverse=True)) + r")(?![\w-])")
     found = []
     for top in SEARCHED:
         for base, dirs, files in os.walk(os.path.join(root, top)):
@@ -482,6 +483,7 @@ def self_test():
     check("C3: a Python script's comments and self-tests are skipped", sorted(skipped_lines("x.py", py)), [2, 6, 7, 10, 11])
     sh = 'a=1\n# x\nself_test() {\n  b=2\n}\nif [ "${1:-}" = --test ]; then\n  self_test\nfi\nmain\n'
     check("C3: a shell script's comments and its --test block are skipped", sorted(skipped_lines("x.sh", sh)), [2, 3, 4, 5, 6, 7, 8])
+    check("C3: a shell function that is the script's own code is searched, whatever its name", sorted(skipped_lines("x.sh", "claim_test() {\n  a=1\n}\ntested() {\n  b=2\n}\ntest_case() {\n  c=3\n}\n")), [7, 8, 9])
     check("C3: in YAML only comments", sorted(skipped_lines("x.yml", "a: 1\n  # b\nc: 2\n")), [2])
     with tempfile.TemporaryDirectory() as t:
         os.makedirs(os.path.join(t, "kinds", "k"))
@@ -490,6 +492,11 @@ def self_test():
         check("C3: a value is found as a whole word, and only there", org_free(t, ["acme-bot", "acme-bot[bot]", "acme-plugins"]),
               ["kinds/k/pack.yml:2: acme-plugins", "kinds/k/pack.yml:4: acme-bot[bot]"])
         check("C3: no values, nothing to find", org_free(t, []), [])
+        os.makedirs(os.path.join(t, "scripts"))
+        with open(os.path.join(t, "scripts", "x.sh"), "w", encoding="utf-8") as fh:
+            fh.write('BOT=${DX_BOT_LOGIN:-acme-bot[bot]}\nAPP="${DX_BOT_APP:-acme-bot}"\nX=a-acme-bot\n')
+        check("C3: a shell default (${VAR:-value}) is found", [f for f in org_free(t, ["acme-bot", "acme-bot[bot]"]) if f.startswith("scripts/")],
+              ["scripts/x.sh:1: acme-bot[bot]", "scripts/x.sh:2: acme-bot"])
     with tempfile.TemporaryDirectory() as t:
         e, o = os.path.join(t, "e.yml"), os.path.join(t, "o.yml")
         with open(e, "w", encoding="utf-8") as fh:
