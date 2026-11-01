@@ -215,8 +215,8 @@ files:
       repo: add-only
       limit: "`policy/**` and `rules/**` are always protected"
       read-by: [scripts/autonomy.py, scripts/no-widening.py]
-      issue: "#78, #187"
-      says: The protected paths, always accepted and merged by a person.
+      issue: "#78, #187, #561"
+      says: "The protected paths, always accepted and merged by a person. The organisation's list holds in its own repository; in any other, G7 protects its workflows, its own policy files and the paths its own file declares here."
     - key: person-merges
       merge: add-only
       org: add-only

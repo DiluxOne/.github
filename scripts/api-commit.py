@@ -398,6 +398,21 @@ def self_test():
                 os.environ["ENGINE"] = old
         merged = git("rev-parse", "HEAD", cwd=work).strip()
 
+        # #561 C2: a work run on a branch main conflicts with merges main
+        # first, resolves the conflict, then commits a criterion: both go,
+        # the merge with main's commit as its other parent.
+        conflicting_merge("y.txt", {"y.txt": "main\nmine\n"})
+        commit("feat: after the merge (C4)", {"z.txt": "z\n"})
+        local_tree = git("rev-parse", "HEAD^{tree}", cwd=work).strip()
+        try:
+            after = push("o/r", "feat/2-m", api=api, cwd=work)
+        except RuntimeError as exc:
+            after = str(exc)
+        check("push merge: a work run's resolved merge of main, then a criterion's commit, both go",
+              (git("rev-parse", f"{after}^{{tree}}", cwd=origin).strip(), git("rev-parse", f"{after}^^2", cwd=origin).strip()) if len(after) == 40 else after,
+              (local_tree, git("rev-parse", "main", cwd=work).strip()))
+        merged = after if len(after) == 40 else merged
+
         third = git(*env, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-p", "main", "-p", "side", "-m", "octopus", cwd=work).strip()
         git("reset", "-q", "--hard", third, cwd=work)
         refused("push merge: an octopus merge is refused", "feat/2-m", "merges 3 parents")

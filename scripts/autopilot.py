@@ -279,7 +279,7 @@ def held_by(issue, prs, started=""):
         author = p.get("author") or ""
         if (p.get("state", "OPEN") == "OPEN" and p.get("author_type") == "User" and author not in BOT_LOGINS
                 and "autopilot" not in (p.get("labels") or []) and (not started or (p.get("created") or "") < started)):
-            return f"#{p['number']} by @{author} closes it"
+            return f"@{author} holds it with #{p['number']}, which closes it"
     return ""
 
 
@@ -539,6 +539,24 @@ def add_decision(pr_body, text, day):
     return f"{before}{head}\n\n" + "\n".join(lines) + "\n" + rest
 
 
+CC_PREFIX = re.compile(r"^\s*(feat|fix|docs|chore|refactor|perf|test|build|ci|style|revert)(\([^)]*\))?(!)?:\s*", re.I)
+
+
+def title_type(title, kind):
+    """(prefix, subject) of the draft's title (#561 C6): an issue titled as
+    a Conventional Commit keeps its own type, scope and `!` where they fit
+    the issue's Type (`feat` or any `!` closes a Feature, `fix` a Bug, any
+    other type the rest); otherwise the Type's kind, the scope kept. Never
+    the type twice (`feat: feat: x`). Pure."""
+    m = CC_PREFIX.match(title or "")
+    if not m:
+        return kind, (title or "").strip()
+    t, scope, bang = m.group(1).lower(), m.group(2) or "", m.group(3) or ""
+    subject = title[m.end():].strip()
+    fits = t == kind and (not bang or kind == "feat") or (bang and kind == "feat") or (t not in ("feat", "fix") and not bang and kind not in ("feat", "fix"))
+    return (f"{t}{scope}{bang}" if fits else f"{kind}{scope}"), subject
+
+
 def draft(number, issue_type, title, body):
     """The branch, title and body of the draft pull request, before any code.
     ValueError when the issue yields no criterion: a draft with an empty
@@ -546,9 +564,10 @@ def draft(number, issue_type, title, body):
     if not criteria(body):
         raise ValueError(NO_CRITERIA)
     kind = TYPES.get((issue_type or "").strip().lower(), "chore")
-    subject = title.strip()
+    prefix, subject = title_type(title, kind)
     subject = subject[:1].lower() + subject[1:]
-    head = f"{kind}: {subject}"
+    title = subject
+    head = f"{prefix}: {subject}"
     if len(head) > 72:
         head = head[:71].rstrip() + "…"
     approach = dict(schema.parse(body)[0]).get("Spec: approach", "").strip()
@@ -586,6 +605,81 @@ def boxes(pr_body):
     """{id: ticked} from the checklist on the pull request."""
     block = pr_body.split(CHECKLIST_START, 1)[1].split(CHECKLIST_END, 1)[0] if CHECKLIST_START in pr_body else ""
     return {m.group(2): m.group(1).lower() == "x" for m in re.finditer(r"^- \[([ xX])\] \*\*(C\d+)\*\*", block, re.M)}
+
+
+# A maintainer's answer that drops or changes a criterion (#561 C3), one
+# per line: `drop C3` (or `remove C3`), `change C3: <the new text>`. The
+# verb marks it: a line that only starts `C3:` (an answer about C3, a quoted
+# criterion) changes nothing.
+EDIT_DROP = re.compile(r"^\s*(?:drop|remove)\s+(C\d{1,3})\b", re.I)
+EDIT_CHANGE = re.compile(r"^\s*change\s+(C\d{1,3})\s*:\s*(\S.*?)\s*$", re.I)
+
+
+def criteria_edits(answer):
+    """[(id, new text or None to drop it)] from a maintainer's answer, in
+    order; `answers()` gives `login: comment`, so a line's own words are read
+    after the login on the comment's first line too. Pure."""
+    out = []
+    for line in (answer or "").split("\n"):
+        for text in (line, line.split(": ", 1)[1] if re.match(r"^[\w-]+(\[bot\])?: ", line) else ""):
+            m = EDIT_DROP.match(text)
+            if m:
+                out.append((m.group(1), None))
+                break
+            m = EDIT_CHANGE.match(text)
+            if m:
+                out.append((m.group(1), m.group(2)))
+                break
+    return out
+
+
+def apply_answer(pr_body, issue_body, edits):
+    """(pr_body, notes): the checklist with each edit applied (#561 C3): a
+    dropped criterion's box goes, with its Test line; a changed one gets the
+    new text and is unticked, its work to be done again. Only a box on the
+    checklist is edited, never the last one left, and an edit that changes
+    nothing is none, so an answer read again is applied once. The issue's
+    PRD stays the one sealed at its acceptance: the checklist and the
+    Decisions, one note per edit, are the record. Pure."""
+    if CHECKLIST_START not in pr_body or CHECKLIST_END not in pr_body:
+        return pr_body, []
+    head, rest = pr_body.split(CHECKLIST_START, 1)
+    block, tail = rest.split(CHECKLIST_END, 1)
+    rows = re.split(r"\n(?=- \[[ xX]\] \*\*C\d+\*\*)", block.strip("\n"))
+    known = {c[0] for c in criteria(issue_body or "")}
+    notes = []
+    for cid, text in edits:
+        at = next((i for i, r in enumerate(rows) if re.match(rf"- \[[ xX]\] \*\*{cid}\*\* ", r)), None)
+        if at is None or (known and cid not in known):
+            continue
+        row = rows[at]
+        if text is None:
+            if len(rows) == 1:
+                continue
+            del rows[at]
+            notes.append(f"{cid} is dropped, as a maintainer answered: its box leaves the checklist, and the finish no longer waits on it.")
+            continue
+        first, _, test = row.partition("  \n")
+        old = re.sub(rf"^- \[[ xX]\] \*\*{cid}\*\* ", "", first)
+        if old == text:
+            continue
+        rows[at] = f"- [ ] **{cid}** {text}" + (f"  \n{test}" if test else "")
+        notes.append(f"{cid} now reads, as a maintainer answered: {text}")
+    if not notes:
+        return pr_body, []
+    return f"{head}{CHECKLIST_START}\n" + "\n".join(rows) + f"\n{CHECKLIST_END}{tail}", notes
+
+
+def left_criteria(issue_body, pr_body):
+    """[(id, text, test)] still to do: the issue's criteria whose box is on
+    the checklist and unticked, in the checklist's words (a maintainer may
+    have changed one, #561 C3). A body with no checklist: every unticked
+    criterion of the issue. Pure."""
+    ticked = boxes(pr_body)
+    if CHECKLIST_START not in pr_body:
+        return [c for c in criteria(issue_body) if not ticked.get(c[0])]
+    words = {m.group(1): m.group(2).strip() for m in re.finditer(r"^- \[[ xX]\] \*\*(C\d+)\*\* (.*?)(?:  )?$", pr_body, re.M)}
+    return [(cid, words.get(cid) or text, test) for cid, text, test in criteria(issue_body) if cid in ticked and not ticked[cid]]
 
 
 def progress(pr_body):
@@ -666,6 +760,130 @@ def end_verdict(mode, pr, draft_, stopped, done, total, limit_hit, runs, cap, pu
     return "silent"
 
 
+# What next_step returns (#561): the bot's own actions, each run by
+# autopilot.yml, and the decisions only a person makes. A stuck state is
+# always a `wait` on one of these, never a label someone must add.
+BOT_ACTIONS = ("spec", "draft", "work", "merge-main", "finish", "fix", "queue")
+PERSON_DECISIONS = ("accept", "answer", "merge", "claim")
+
+
+def next_step(state):
+    """The one thing to do for an issue and its autopilot pull request (#561).
+    Pure. `state` (JSON, gathered from the API by the workflow, never from
+    the agent): issue {state, labels, assignees, accepted_by}, prs (its open
+    closing pull requests, as held_by reads them), started, lane (who
+    accepted it, "" for nobody), may_start [ok, why], seal ("match" or why
+    not), spec (the Spec is on the issue), pr (the autopilot's open pull
+    request, or null: number, author_is_bot, draft, body, labels, merge
+    (clean, behind, dirty, unknown), head, record, dequeued, queue_failed),
+    runs, cap, round, rounds. Returns {action, why} and, by action, `as`
+    (the mode autopilot.yml runs), `left`, `how`, `who`, `for`."""
+    issue = state.get("issue") or {}
+    labels = issue.get("labels") or []
+    pr = state.get("pr") or None
+
+    def wait(for_, who, why):
+        return {"action": "wait", "for": for_, "who": who, "why": why}
+
+    def none(why):
+        return {"action": "none", "why": why}
+
+    if (issue.get("state") or "OPEN") != "OPEN":
+        return none("the issue is closed")
+    held = held_by(issue, state.get("prs") or [], state.get("started") or "")
+    if held:
+        return wait("claim", held.split("@", 1)[1].split()[0].strip("`") if "@" in held else "the person who holds it", f"a person holds it: {held}")
+    if not state.get("lane"):
+        return wait("accept", "a maintainer", "nobody accepted it: a maintainer adds `accepted`")
+    ok, why = (list(state.get("may_start") or [True, ""]) + [""])[:2]
+    if not ok:
+        return none(why or "the autopilot may not start")
+    if (state.get("seal") or "match") != "match":
+        return wait("accept", "a maintainer", f"the PRD is not the one sealed at its acceptance ({state.get('seal')}): a maintainer accepts it again")
+    if WAITING in labels:
+        return wait("answer", "a maintainer", "the autopilot asked a question and waits for the answer")
+    if not pr:
+        if state.get("prs"):
+            return none("a pull request that is not the autopilot's already closes it")
+        if state.get("spec"):
+            return {"action": "draft", "as": "start", "why": "the Spec is on the issue: the draft opens from it"}
+        return {"action": "spec", "as": "start", "why": "accepted and ready: the agent writes the Spec"}
+    if not pr.get("author_is_bot", True):
+        return none(f"#{pr.get('number')} is not the bot's: the autopilot stays out")
+    pr_labels = pr.get("labels") or []
+    if "needs-human" in pr_labels:
+        return wait("answer", "a maintainer", "the autopilot stopped and a person has it (`needs-human`): a maintainer answers on the pull request, or takes it over")
+    runs, cap = int(state.get("runs") or 0), int(state.get("cap") or 5)
+    rnd, rounds = int(state.get("round") or 0), int(state.get("rounds") or 3)
+    merge = (pr.get("merge") or "unknown").lower()
+    body = pr.get("body") or ""
+    if pr.get("draft", True):
+        ok, why = may_continue(pr_labels, body, runs, cap)
+        if not ok:
+            if runs >= cap:
+                return wait("claim", "anyone", f"{why}: anyone may `/claim` the issue, or a maintainer takes the pull request over")
+            return none(why)
+        if merge == "dirty":
+            return {"action": "merge-main", "how": "conflicted", "as": "continue", "why": f"main conflicts with the branch: the work merges it and resolves the conflict; {why}"}
+        done, total = progress(body)
+        if done < total:
+            b = boxes(body)
+            return {"action": "work", "as": "continue", "left": [c for c, t in b.items() if not t], "why": why}
+        return {"action": "finish", "as": "continue", "why": why}
+    if merge == "dirty":
+        if runs >= cap:
+            return wait("claim", "anyone", f"main conflicts with it and the autopilot already ran {runs} times (the cap is {cap})")
+        return {"action": "merge-main", "how": "conflicted", "as": "fix", "why": "ready, and main conflicts with it: a fix round merges main and resolves the conflict"}
+    if merge == "behind":
+        return {"action": "merge-main", "how": "clean", "as": "update", "why": "ready, and behind main: the bot merges main into it"}
+    if pr.get("dequeued"):
+        if not pr.get("queue_failed"):
+            return none("the merge queue dropped it with no failed check (a conflict, or a person took it out)")
+        if rnd > rounds:
+            return wait("claim", "anyone", f"the merge queue dropped it and the autopilot spent its {rounds} rounds")
+        return {"action": "queue", "as": "fix", "why": "the merge queue dropped it on a failed check: one round from the failed jobs' log"}
+    if continue_as(False, pr.get("record"), pr.get("head") or "") == "fix":
+        if rnd > rounds:
+            return wait("claim", "anyone", f"the review still blocks and the autopilot spent its {rounds} rounds")
+        return {"action": "fix", "as": "fix", "why": "the review blocks at its head: one round of fixes"}
+    rec = pr.get("record")
+    if isinstance(rec, dict) and pr.get("head") and rec.get("sha") == pr.get("head"):
+        return wait("merge", "a maintainer", "the review passed at its head: G7 merges it, or a maintainer does where the policy leaves it to a person")
+    return none("ready for review: the review runs at its head")
+
+
+def sweep_step(pr, issue_labels=(), runs=0, cap=5):
+    """What a merge into main does for one open autopilot pull request
+    (#561 C2, autopilot-sweep.yml): `update` (the bot merges main into one
+    that is ready and only behind, GitHub's update-branch), `continue` (one
+    that is ready and conflicts: dilux-bot adds `autopilot:continue` to its
+    issue, and the run next-step starts merges main and resolves the
+    conflict) or "" (nothing: a draft's own run merges main first, and a
+    wait stays a wait). `pr` is `gh pr view --json number,isDraft,
+    mergeStateStatus,labels,headRefOid,author` as GitHub gives it. Returns
+    (what, why)."""
+    labels = [l.get("name", "") if isinstance(l, dict) else str(l) for l in pr.get("labels") or []]
+    author = (pr.get("author") or {}).get("login", "") if isinstance(pr.get("author"), dict) else str(pr.get("author") or "")
+    if "autopilot" not in labels or author not in BOT_LOGINS:
+        return "", "not an autopilot pull request"
+    if pr.get("isDraft", True):
+        return "", "a draft: its own run merges main first"
+    if "autopilot:continue" in issue_labels:
+        return "", "a continue is already asked for"
+    step = next_step({"issue": {"state": "OPEN", "labels": list(issue_labels)}, "lane": "swept", "runs": runs, "cap": cap,
+                      "pr": {"number": pr.get("number"), "author_is_bot": True, "draft": False, "labels": labels,
+                             "merge": str(pr.get("mergeStateStatus") or "unknown").lower(), "head": pr.get("headRefOid") or ""}})
+    if step["action"] == "merge-main":
+        return ("update" if step.get("how") == "clean" else "continue"), step["why"]
+    return "", step["why"]
+
+
+def step_comment(step):
+    """One line for the run's summary and the Decisions (#561)."""
+    what = step["action"] + (f" ({step['how']})" if step.get("how") else "") + (f" for {step['for']}, on {step['who']}" if step["action"] == "wait" else "")
+    return f"Next step: {what}: {step.get('why', '')}"
+
+
 BOT_LOGINS = (org.APP, org.BOT, f"app/{org.APP}")
 
 
@@ -681,9 +899,10 @@ def answers(comments, deciders):
     unfinished end), or since the start when there is none (#540): their
     comments, in order, by a login in `deciders` (those `who-decides`
     allows, #588: scripts/deciders.py, checked live by the workflow). So a
-    hint given with `autopilot:continue` after a stop reaches the prompt
-    too. Anyone else, the issue's author included, is not an answer: with
-    none, the run has nothing new and the question still waits."""
+    maintainer's hint after a stop, which brings the autopilot back
+    (review-reply.yml, #561), reaches the prompt too. Anyone else, the
+    issue's author included, is not an answer: with none, the run has
+    nothing new and the question still waits."""
     last = max((c.get("createdAt", "") for c in comments if c.get("body", "").startswith((ASK, STOP, SILENT, UNFINISHED))
                 and (c.get("author") or {}).get("login") in BOT_LOGINS), default="")
     picked = [c for c in comments if c.get("createdAt", "") > last and (c.get("author") or {}).get("login") in deciders]
@@ -805,11 +1024,14 @@ def scrub(text):
     return SECRET.sub("[redacted]", text)
 
 
-def silent_why(mode, pr, why, spec_outcome, limit_hit, done, total, runs, cap):
+def silent_why(mode, pr, why, spec_outcome, limit_hit, done, total, runs, cap, failed=""):
     """Why a run ended without a result, in one sentence, from what the
-    workflow knows."""
+    workflow knows; a job that failed is named (#561), never left to read
+    as an agent that said nothing."""
     if why:
         return why
+    if failed:
+        return f"The {failed} job failed before the run could end on its own: its log, in the run, says why."
     if mode == "start" and not pr and spec_outcome not in ("", "success"):
         return f"Writing the Spec did not finish ({spec_outcome})."
     if limit_hit and pr and total and done == total:
@@ -823,7 +1045,7 @@ def silent_why(mode, pr, why, spec_outcome, limit_hit, done, total, runs, cap):
 
 def silent_comment(verdict_why, run_url):
     return f"""{SILENT}
-**The autopilot ended without a result.** {verdict_why} Nothing was marked ready and the agent left no stop comment, so a person takes it from here (`needs-human`). What it did is in [the run]({run_url}): its summary, and the full transcript as an artifact.
+**The autopilot ended without a result.** {verdict_why} Nothing was marked ready and the agent left no stop comment, so a person takes it from here (`needs-human`): a maintainer's answer here, a hint in words, brings it back, or they take it over. What it did is in [the run]({run_url}): its summary, and the full transcript as an artifact.
 
 {AI_LINE}"""
 
@@ -843,7 +1065,7 @@ def unfinished_comment(run_url):
 
 def last_resort_comment(run_url):
     return f"""{SILENT}
-**The autopilot's run ended, and its end rule could not say how.** Nothing was marked ready, and the step that writes the verdict failed before it could (the run's log says why), so a person takes it from here (`needs-human`). What the agent did is in [the run]({run_url}): its summary, and the transcript as an artifact when there is one.
+**The autopilot's run ended, and its end rule could not say how.** Nothing was marked ready, and the step that writes the verdict failed before it could (the run's log says why), so a person takes it from here (`needs-human`): a maintainer's answer here, a hint in words, brings it back, or they take it over. What the agent did is in [the run]({run_url}): its summary, and the transcript as an artifact when there is one.
 
 {AI_LINE}"""
 
@@ -1068,7 +1290,10 @@ def decide(policy, body, risk, complexity, blocking, description_ok, files, head
     if held:
         return False, f"the issue is labelled {held[0]}: a person merges it"
     import fnmatch
-    protected = [f for f in files if any(fnmatch.fnmatch(f, p) for p in policy.get("constitution") or [])]
+    # The repository's own protected set (#561, autonomy.protected_paths):
+    # the whole constitution in the organisation's, its workflows and what
+    # it declares elsewhere.
+    protected = [f for f in files if any(fnmatch.fnmatch(f, p) for p in policy.get("protected", policy.get("constitution")) or [])]
     # The golden rule (#397, autonomy.py constitution_merge): a protected
     # path is a person's, but in the reproduced bug's lane when the change
     # widens no permission, lane or limit; then its own caps apply.
@@ -1245,9 +1470,10 @@ def protected_rule(ev, number, repo=""):
     the paths that govern autonomy (#397), as long as it widens nothing;
     in the organisation's own repository (#498) those paths are the work.
     In any other repository a person's issue may change them too (#558):
-    there scripts/ or kinds/ are ordinary code, and G7 leaves any
-    protected path to a person to merge; only .github/workflows/, which
-    the autopilot cannot push, still stops it."""
+    there scripts/ or kinds/ are ordinary code, merged by the lane's caps
+    (#561, autonomy.protected_paths), and G7 leaves only the repository's
+    own policy files and the paths it declares to a person; only
+    .github/workflows/, which the autopilot cannot push, still stops it."""
     stop = f"still write the Spec, then run `NUMBER={number} {HELPER} finish stop \"<why, in one or two sentences>\"` and end."
     if engine_repo(repo):
         return ("This is the organisation's own repository: its engine (.github/workflows/, scripts/, policy/, kinds/) is what "
@@ -1255,9 +1481,11 @@ def protected_rule(ev, number, repo=""):
                 "pull request every permission, secret, lane or limit the change widens, so that person reads it before "
                 f"merging. If the change needs anything outside the PRD's scope, {stop}")
     if not ev:
-        return ("The change may touch a path the autonomy policy protects (policy/, scripts/, kinds/, .github/ but its "
-                "workflows), and then a person merges the pull request: G7 holds it for them. If the change needs anything "
-                f"outside the PRD's scope, or a file under .github/workflows/ (the autopilot cannot push one), {stop}")
+        return ("Change the code wherever the PRD needs, scripts/ and kinds/ included: here they are ordinary code, and G7 "
+                "decides the merge by the lane's caps like any other path. Only a change to this repository's own policy files "
+                "(.github/autonomy.yml, .github/review-policy.yml, .github/CODEOWNERS) or to a path its policy declares "
+                "protected (`constitution:` in .github/autonomy.yml) waits: a person merges the pull request then (#561). If the "
+                f"change needs anything outside the PRD's scope, or a file under .github/workflows/ (the autopilot cannot push one), {stop}")
     return ("A reproduced bug may be fixed wherever it is, the paths that govern autonomy (policy/, scripts/, kinds/, .github/) "
             "included, but the fix must never widen a permission, a lane or a limit: no lane added or opened up, no `merge` or "
             "`ceiling` raised, no protected path or label removed, no workflow permission or secret granted (G7 checks it, "
@@ -1380,11 +1608,16 @@ def queue_log_text(pr, logs):
     return "\n".join(parts)
 
 
-def conflict_note(conflicts, default):
+def conflict_note(conflicts, default, work=False):
     """#556: the paragraph a fix round on a pull request that conflicts
-    with main gets, before any other fix."""
+    with main gets, before any other fix; with `work`, the one a work run
+    gets when main conflicts with its branch (#561), before any criterion."""
     if not conflicts:
         return ""
+    if work:
+        return f"""
+
+Main does not merge cleanly into the branch: before any criterion, merge `origin/{default}` into it (`git merge origin/{default}`), resolve the conflicts so that both sides keep working, and commit the merge with nothing in it but those resolutions (the push refuses a merge that changes any other file), then run the repository's checks and go on with the criteria left."""
     return f"""
 
 Main does not merge cleanly into the branch: before any other fix, merge `origin/{default}` into it (`git merge origin/{default}`), resolve the conflicts so that both sides keep working, and commit the merge with nothing in it but those resolutions (the push refuses a merge that changes any other file; fix anything else in commits of its own after it), then run the repository's checks. Without a blocking review, `{IO_DIR}/review.md` may hold no points: that is fine, the merge is the round's work."""
@@ -1494,6 +1727,8 @@ A class on html.
     other = protected_rule(None, 7, there)
     check("#498 #558 another repository: the Spec stops for workflows only, and a person merges",
           ("path under .github/, policy/, scripts/ or kinds/" in other, "a file under .github/workflows/" in other, "a person merges" in other), (False, True, True))
+    check("#561 C4: another repository's Spec prompt says scripts/ merges by the lane's caps, and what a person merges",
+          ("scripts/ and kinds/ included" in other, "by the lane's caps" in other, "`constitution:`" in other), (True, True, True))
     check("#498 the engine's repository: the prompts allow workflows",
           ("Never change .github/workflows" in prompt_work(here, "7", "8", "b", "x", [("C1", "a", None)], False),
            "Never touch .github/workflows" in prompt_fix(here, 9, 2, 3), "a person merges" in prompt_spec(here, 7, "x")), (False, False, True))
@@ -1509,6 +1744,13 @@ A class on html.
     d = draft("7", "Feature", "Dark mode for the site", two)
     check("C1: the draft's branch follows the rules", d["branch"], "feat/7-dark-mode-for-the-site")
     check("C1: the draft's title is a Conventional Commit", d["title"], "feat: dark mode for the site")
+    dt = lambda kind, title: (lambda x: (x["title"], x["branch"]))(draft("7", kind, title, two))
+    check("#561 C6: an issue titled as a Conventional Commit keeps its type, never twice",
+          [dt("Feature", "feat: x"), dt("Feature", "fix(api)!: y"), dt("Task", "docs: w")],
+          [("feat: x", "feat/7-x"), ("fix(api)!: y", "feat/7-y"), ("docs: w", "chore/7-w")])
+    check("#561 C6: a type that does not fit the issue's Type gives way to it, the scope kept",
+          [dt("Bug", "fix(api)!: y")[0], dt("Bug", "feat: z")[0], dt("Task", "Feat(ui): Big Thing")[0], dt("Feature", "Dark mode")[0]],
+          ["fix(api): y", "fix: z", "chore(ui): big Thing", "feat: dark mode"])
     check("C1: the draft closes the issue", "Closes #7." in d["body"], True)
     check("C1: one unticked box per criterion, with its test", (progress(d["body"]), "Test: tests/e2e/persist.spec.ts" in d["body"]), ((0, 2), True))
     check("C1: a Bug's draft is a fix", draft("8", "Bug", "x", two)["branch"].startswith("fix/8-"), True)
@@ -1668,6 +1910,9 @@ A class on html.
     check("silent: an all-ticked run says the checks and the finish were left", "checks and the finish left" in silent_why("continue", "5", "", "", True, 2, 2, 2, 5), True)
     check("silent: a Spec run out of time, no pull request, says so", silent_why("start", "", "", "success", True, 0, 0, 1, 5), "It ran out of turns or time before there was a pull request to work in.")
     check("silent: the workflow's own reason wins", silent_why("start", "", "G3 failed.", "success", False, 0, 0, 1, 5), "G3 failed.")
+    check("#561 silent: a job that failed is named, never an agent that said nothing",
+          (silent_why("start", "", "", "success", False, 0, 0, 1, 5, "draft").startswith("The draft job failed"),
+           silent_why("start", "", "G3 failed.", "success", False, 0, 0, 1, 5, "draft")), (True, "G3 failed."))
     check("C4: an all-ticked draft that already had its continue goes to a person, not round again", end_verdict("continue", "5", True, False, 2, 2, True, 2, 5, nudged=True), "silent")
     check("#482 C3: an all-ticked draft that ended without finish continues once, out of time or not",
           (end_verdict("start", "5", True, False, 2, 2, False, 1, 5), end_verdict("continue", "5", True, False, 2, 2, True, 2, 5),
@@ -1831,6 +2076,118 @@ A class on html.
     check("#556: the fix prompt asks for the merge of main only when it conflicts",
           ("Main does not merge cleanly" in prompt_fix("o/r", 9, 1, 3, conflicts=True, default="trunk"), "git merge origin/trunk" in prompt_fix("o/r", 9, 1, 3, conflicts=True, default="trunk"),
            "Main does not merge cleanly" in prompt_fix("o/r", 9, 1, 3)), (True, True, False))
+    # #561 C1: every state an issue and its pull request can be in, and the
+    # one action next_step returns for it, each wait included.
+    left2 = "<!-- dx-checklist -->\n- [x] **C1** a\n- [ ] **C2** b\n<!-- /dx-checklist -->\n"
+    all2 = left2.replace("[ ] **C2", "[x] **C2")
+    base = {"issue": {"state": "OPEN", "labels": ["accepted"]}, "prs": [], "lane": LANE, "may_start": [True, "ready"], "seal": "match",
+            "spec": False, "pr": None, "runs": 1, "cap": 5, "round": 1, "rounds": 3}
+    dpr = {"number": 9, "author_is_bot": True, "draft": True, "body": left2, "labels": ["autopilot"], "merge": "clean", "head": "h"}
+    rpr = {**dpr, "draft": False, "body": all2}
+    theirs561 = {"number": 40, "author": "ana", "author_type": "User", "labels": [], "state": "OPEN", "created": "2026-11-01T10:00:00Z"}
+    ns = lambda **k: next_step({**base, **k})
+    nsa = lambda **k: (lambda s: (s["action"], s.get("how") or s.get("for") or s.get("as")))(ns(**k))
+    table = [
+        ("closed issue", nsa(issue={"state": "CLOSED", "labels": ["accepted"]}), ("none", None)),
+        ("claimed", nsa(issue={"labels": ["accepted", "claimed"]}), ("wait", "claim")),
+        ("a person's open closing pull request", nsa(prs=[theirs561]), ("wait", "claim")),
+        ("nobody accepted it", nsa(lane=""), ("wait", "accept")),
+        ("the autopilot is off", nsa(may_start=[False, "the autopilot is off in the policy"]), ("none", None)),
+        ("the PRD changed since its seal", nsa(seal="changed"), ("wait", "accept")),
+        ("a question unanswered", nsa(issue={"labels": ["accepted", WAITING]}, pr=dpr), ("wait", "answer")),
+        ("no Spec yet", nsa(), ("spec", "start")),
+        ("the Spec on the issue, no draft", nsa(spec=True), ("draft", "start")),
+        ("a pull request not dilux-bot's", nsa(pr={**dpr, "author_is_bot": False}), ("none", None)),
+        ("stopped: needs-human", nsa(pr={**dpr, "labels": ["autopilot", "needs-human"]}), ("wait", "answer")),
+        ("a draft at the runs cap", nsa(pr=dpr, runs=5), ("wait", "claim")),
+        ("a draft with criteria left", nsa(pr=dpr), ("work", "continue")),
+        ("a draft that conflicts with main", nsa(pr={**dpr, "merge": "dirty"}), ("merge-main", "conflicted")),
+        ("a draft with every box ticked", nsa(pr={**dpr, "body": all2}), ("finish", "continue")),
+        ("ready, in conflict with main", nsa(pr={**rpr, "merge": "dirty"}), ("merge-main", "conflicted")),
+        ("ready, in conflict, at the runs cap", nsa(pr={**rpr, "merge": "dirty"}, runs=5), ("wait", "claim")),
+        ("ready, behind main", nsa(pr={**rpr, "merge": "behind"}), ("merge-main", "clean")),
+        ("dropped by the queue on a failed check", nsa(pr={**rpr, "dequeued": True, "queue_failed": True}), ("queue", "fix")),
+        ("dropped by the queue on no check", nsa(pr={**rpr, "dequeued": True}), ("none", None)),
+        ("dropped by the queue past the rounds", nsa(pr={**rpr, "dequeued": True, "queue_failed": True}, round=4), ("wait", "claim")),
+        ("ready, the review blocks at its head", nsa(pr={**rpr, "record": blk("h")}), ("fix", "fix")),
+        ("ready, the review blocks past the rounds", nsa(pr={**rpr, "record": blk("h")}, round=4), ("wait", "claim")),
+        ("ready, the review passed at its head", nsa(pr={**rpr, "record": {"sha": "h", "blocking": False, "findings": []}}), ("wait", "merge")),
+        ("ready, no review at its head yet", nsa(pr={**rpr, "record": blk("old")}), ("none", None)),
+    ]
+    for name, got, want in table:
+        check(f"#561 C1: next-step, {name}", got, want)
+    # #561 C7: every state's action is one the bot runs, a wait on a
+    # person's decision, or nothing; and none of their words tells anyone to
+    # add or remove a flow label.
+    steps7 = [ns(**k) for k in (
+        {"issue": {"state": "CLOSED", "labels": []}}, {"issue": {"labels": ["accepted", "claimed"]}}, {"prs": [theirs561]}, {"lane": ""},
+        {"may_start": [False, "off"]}, {"seal": "changed"}, {"issue": {"labels": ["accepted", WAITING]}, "pr": dpr}, {}, {"spec": True},
+        {"pr": {**dpr, "author_is_bot": False}}, {"pr": {**dpr, "labels": ["autopilot", "needs-human"]}}, {"pr": dpr, "runs": 5}, {"pr": dpr},
+        {"pr": {**dpr, "merge": "dirty"}}, {"pr": {**dpr, "body": all2}}, {"pr": {**rpr, "merge": "dirty"}}, {"pr": {**rpr, "merge": "dirty"}, "runs": 5},
+        {"pr": {**rpr, "merge": "behind"}}, {"pr": {**rpr, "dequeued": True, "queue_failed": True}}, {"pr": {**rpr, "dequeued": True}},
+        {"pr": {**rpr, "dequeued": True, "queue_failed": True}, "round": 4}, {"pr": {**rpr, "record": blk("h")}}, {"pr": {**rpr, "record": blk("h")}, "round": 4},
+        {"pr": {**rpr, "record": {"sha": "h", "blocking": False, "findings": []}}}, {"pr": {**rpr, "record": blk("old")}})]
+    check("#561 C7: every state next-step reads is in the table",
+          sorted(set((s["action"], s.get("how") or s.get("for") or s.get("as")) for s in steps7)), sorted(set(w for _, _, w in table)))
+    check("#561 C7: every action is the bot's, a wait on a person's decision, or nothing",
+          [s for s in steps7 if not (s["action"] in BOT_ACTIONS and s.get("as") in ("start", "continue", "fix", "update")
+                                     or s["action"] == "wait" and s["for"] in PERSON_DECISIONS or s["action"] == "none")], [])
+    told7 = re.compile(r"(?i)\b(add|adds|remove|removes|give|gives|with)\s+(the\s+)?`(autopilot:[\w*-]+|needs-human)`")
+    check("#561 C7: no step's words tell anyone to add or remove a flow label",
+          [s["why"] for s in steps7 if told7.search(s["why"])], [])
+    check("#561 C7: a stop and a silent end say a maintainer's answer brings it back, never a label",
+          [("a maintainer's answer here, a hint in words, brings it back" in c, bool(told7.search(c)))
+           for c in (stop_comment("x"), silent_comment("x", "u"), last_resort_comment("u"))], [(True, False)] * 3)
+    check("#561 C1: next-step names who a wait is on",
+          (ns(prs=[theirs561])["who"], ns(lane="")["who"], ns(pr=dpr, runs=5)["who"]), ("ana", "a maintainer", "anyone"))
+    check("#561 C1: next-step lists the open criteria", ns(pr=dpr)["left"], ["C2"])
+    # #561 C9: a person's open pull request that closes the issue holds it:
+    # the autopilot does not start, and the board names them.
+    held9 = ns(prs=[theirs561], spec=True)
+    board9 = _load("receipts_board", "receipts.py").board_text(561, True, None, None, None, ["accepted"], held_by({"labels": ["accepted"]}, [theirs561]))
+    check("#561 C9: a person's open closing pull request: wait on them, before the Spec or the draft",
+          (held9["action"], held9["for"], held9["who"], "@ana holds it with #40" in held9["why"]), ("wait", "claim", "ana", True))
+    check("#561 C9: the board says the person holds it, and the autopilot does not start",
+          "| Held | 🙋 @ana holds it with #40, which closes it: the autopilot does not start |" in board9, True)
+    check("#561 C9: an autopilot pull request's own row replaces it once the autopilot works it",
+          "| Held |" in _load("receipts_board", "receipts.py").board_text(561, True, None, None, {"pr": 9, "url": "u", "draft": True}, [], "x"), False)
+    check("#561 C1: next-step says its step in one line", step_comment(ns(lane="")).startswith("Next step: wait for accept, on a maintainer: "), True)
+    # #561 C2: a merge into main brings each ready autopilot pull request
+    # back in step on its own, with no label a person adds.
+    swp = lambda **k: sweep_step({"number": 9, "isDraft": False, "mergeStateStatus": "CLEAN", "labels": [{"name": "autopilot"}],
+                                  "headRefOid": "h", "author": {"login": BOT_LOGINS[2]}, **k})[0]
+    check("#561 C2: the sweep merges main into a ready pull request only behind it",
+          (swp(mergeStateStatus="BEHIND"), swp(mergeStateStatus="DIRTY"), swp(), swp(mergeStateStatus="UNKNOWN")), ("update", "continue", "", ""))
+    check("#561 C2: the sweep leaves a draft, a person's pull request and one already continuing alone",
+          (swp(mergeStateStatus="DIRTY", isDraft=True), swp(mergeStateStatus="DIRTY", author={"login": "ana"}),
+           sweep_step({"number": 9, "isDraft": False, "mergeStateStatus": "DIRTY", "labels": [{"name": "autopilot"}], "author": {"login": BOT_LOGINS[1]}}, ["autopilot:continue"])[0],
+           sweep_step({"number": 9, "isDraft": False, "mergeStateStatus": "DIRTY", "labels": [{"name": "autopilot"}, {"name": "needs-human"}], "author": {"login": BOT_LOGINS[1]}})[0]),
+          ("", "", "", ""))
+    check("#561 C2: a work run whose branch conflicts with main merges it before any criterion",
+          ("before any criterion" in conflict_note(True, "trunk", work=True), "git merge origin/trunk" in conflict_note(True, "trunk", work=True),
+           conflict_note(False, "trunk", work=True)), (True, True, ""))
+    # #561 C3: a maintainer's answer that drops or changes a criterion.
+    three = "<!-- dx-checklist -->\n- [x] **C1** a  \n  Test: t1\n- [ ] **C2** b  \n  Test: t2\n- [ ] **C3** c\n<!-- /dx-checklist -->\n\n## 🧭 Decisions\n"
+    issue3 = "### Acceptance criteria\n\n- C1: a\n- C2: b\n- C3: c\n"
+    check("#561 C3: an answer's edits, one per line, after the login too",
+          criteria_edits("boss: drop C2\n\nboss: 1, as recommended\nChange C3: c, in red\nRemove C9 and more"), [("C2", None), ("C3", "c, in red"), ("C9", None)])
+    check("#561 C3: a line that only starts `C2:`, an answer about it or a quoted criterion, changes nothing",
+          (criteria_edits("boss: C2: option 2\n> C2: Given a draft, when x\nC2: Given a draft, yes but red\nchange C2 later"),
+           apply_answer(three, issue3, criteria_edits("boss: C2: option 2"))[1]), ([], []))
+    dropped, notes3 = apply_answer(three, issue3, [("C2", None)])
+    check("#561 C3: a dropped criterion leaves the checklist, its Test line with it, and the finish no longer waits on it",
+          (sorted(boxes(dropped)), "t2" in dropped, "t1" in dropped, progress(dropped), len(notes3)), (["C1", "C3"], False, True, (1, 2), 1))
+    check("#561 C3: once every box left is ticked, a draft goes to the finish",
+          next_step({**base, "pr": {**dpr, "body": tick(dropped, "C3", ["feat: c (C3)"])}})["action"], "finish")
+    changed, notes3 = apply_answer(tick(three, "C3", ["feat: c (C3)"]), issue3, [("C3", "c, in red")])
+    check("#561 C3: a changed criterion takes the new words and is unticked, its work to do again",
+          (boxes(changed)["C3"], "**C3** c, in red" in changed, [c[1] for c in left_criteria(issue3, changed)]), (False, True, ["b", "c, in red"]))
+    check("#561 C3: an edit read again, of a criterion not on the checklist, or of the last box, changes nothing",
+          (apply_answer(dropped, issue3, [("C2", None)])[1], apply_answer(three, issue3, [("C7", None), ("C3", "c")])[1],
+           apply_answer("<!-- dx-checklist -->\n- [ ] **C1** a\n<!-- /dx-checklist -->", "- C1: a\n", [("C1", None)])[1], apply_answer("no list", issue3, [("C1", None)])[1]),
+          ([], [], [], []))
+    check("#561 C3: the work's prompt lists only the criteria left on the checklist",
+          [c[0] for c in left_criteria(issue3, dropped)], ["C3"])
     check("C4: never at the cap", may_continue([], t, 5, 5)[0], False)
     full = tick(t, "C2", ["fix: keep it (C2)"])
     check("C2 (#112): a draft with every box ticked continues, for the checks and the finish", may_continue([], full, 1, 5)[0], True)
@@ -2004,6 +2361,20 @@ Clamp the value in Sum::add.
     check("#397 C4 decide: not knowing whether it widens (no WIDENING) is a person's", decide(pol, lane_spec, "medium", "medium", "false", "true", lhead + ["scripts/x.py"], lhead + ["scripts/x.py"], "", BOT, REPRO, sha)[0], False)
     check("#397 C4 decide: any other lane never merges a protected path, widening nothing or not",
           [decide(pol, spec, "low", "low", "false", "true", ["header.php", "tests/e2e/toggle.spec.ts", "scripts/x.py"], head + ["scripts/x.py"], "", widening=[])[0]], [False])
+    # #561 C4: a person's issue in a product repository whose fix is under
+    # scripts/: G7 decides it by the lane's caps, unless the repository
+    # declares the path protected; in the organisation's own, a person.
+    sfiles = ["header.php", "tests/e2e/toggle.spec.ts", "scripts/x.py"]
+    sdec = lambda where, repo_pol=None, **k: decide(autonomy.merge(org, repo_pol or {}, where), spec, k.get("risk", "low"), "low", "false", "true",
+                                                    sfiles, head + ["scripts/x.py"], "", widening=[])
+    check("#561 C4 decide: scripts/ in a product repository that declares nothing merges by the lane's caps",
+          (sdec("o/product")[0], sdec("o/product", risk="high")[0]), (True, False))
+    check("#561 C4 decide: scripts/ in a product repository that declares it protected, or in the organisation's own, is a person's",
+          (sdec("o/product", {"constitution": ["scripts/**"]})[0], sdec(sys.modules["org"].CENTRAL)[0], "scripts/x.py" in sdec("o/product", {"constitution": ["scripts/**"]})[1]),
+          (False, False, True))
+    check("#561 C4 decide: a product repository's workflow or own policy is still a person's",
+          [decide(autonomy.merge(org, {}, "o/product"), spec, "low", "low", "false", "true", ["header.php", "tests/e2e/toggle.spec.ts", f], head + [f], "", widening=[])[0]
+           for f in (".github/workflows/ci.yml", ".github/autonomy.yml")], [False, False])
     check("#84 decide: never under the lane without its evidence in the PRD", lok(body=spec, files=["header.php", "tests/e2e/toggle.spec.ts"], head=head), False)
     check("#84 decide: never when the repository switches the lane off", decide(autonomy.merge(org, {"lanes": {REPRO: {"enabled": False}}}), lane_spec, "low", "low", "false", "true", lhead, lhead, "", BOT, REPRO, sha)[0], False)
     check("#84 G6: the reproduction test is C1's test", criteria_evidence(lane_spec, set(lhead), set(lhead)), [])
@@ -2235,7 +2606,7 @@ Clamp the value in Sum::add.
                 os.symlink(os.path.join(HERE), os.path.join(d, ".dx-central", "scripts"))
                 r = subprocess.run(["bash", "-c", "set -euo pipefail\n" + decide_as], cwd=d, capture_output=True, text=True,
                                    env={"PATH": d + os.pathsep + os.environ.get("PATH", ""), "MODE": mode, "PR": "8", "GITHUB_REPOSITORY": "o/r", "RUNNER_TEMP": d,
-                                        "DX_BOT_LOGIN": BOT, "PR_STATE": f"{str(draft_).lower()} {head} {merge}", "LATER": later, "COMMENTS": json.dumps(comments)})
+                                        "DX_BOT_LOGIN": BOT, "labels": "autopilot", "PR_STATE": f"{str(draft_).lower()} {head} {merge}", "LATER": later, "COMMENTS": json.dumps(comments)})
                 return r.stdout.strip().splitlines()[-1] if r.returncode == 0 and r.stdout.strip() else f"failed: {r.stderr.strip()[-200:]}"
         rec = lambda sha, sev, who=BOT: {"user": {"login": who}, "body": f"{REVIEW_MARK}\n### Claude review\n<!-- dx-review-record {json.dumps({'sha': sha, 'blocking': True, 'findings': [{'severity': sev, 'file': 'a', 'title': 't'}]})} -->"}
         check("#504 C4: a continue on a ready pull request blocked at its head runs a fix round; a draft, no block, an older head, a stranger's record or none does not",
@@ -2281,11 +2652,11 @@ Clamp the value in Sum::add.
     # one opened after the autopilot started does not stop it.
     theirs = {"number": 40, "state": "OPEN", "created": "2026-11-01T10:00:00Z", "author": "ana", "author_type": "User", "labels": []}
     check("C6 held_by: a person's pull request that closes it, by GitHub's link",
-          held_by({"labels": ["accepted"]}, [theirs]), "#40 by @ana closes it")
+          held_by({"labels": ["accepted"]}, [theirs]), "@ana holds it with #40, which closes it")
     check("C6 held_by: the autopilot's own, a bot's, or a closed one does not",
           [held_by({"labels": ["accepted"]}, [p]) for p in ({**theirs, "labels": ["autopilot"]}, {**theirs, "author": BOT_LOGINS[1], "author_type": "Bot"}, {**theirs, "state": "CLOSED"})], ["", "", ""])
     check("C6 held_by: one opened after the autopilot started does not stop its pushes; one before does",
-          (held_by({"labels": ["accepted"]}, [theirs], "2026-11-01T09:00:00Z"), held_by({"labels": ["accepted"]}, [theirs], "2026-11-01T11:00:00Z")), ("", "#40 by @ana closes it"))
+          (held_by({"labels": ["accepted"]}, [theirs], "2026-11-01T09:00:00Z"), held_by({"labels": ["accepted"]}, [theirs], "2026-11-01T11:00:00Z")), ("", "@ana holds it with #40, which closes it"))
     check("C6 holder reads GitHub's closing link, never a text search of the pull requests",
           ("closedByPullRequestsReferences(first: 20, includeClosedPrs: false)" in HOLDER_QUERY, "search" in HOLDER_QUERY), (True, False))
     check("C6 the run that steps aside says so", held_comment("a person claimed it (`claimed`)").startswith("The autopilot steps aside: a person claimed it"), True)
@@ -2868,7 +3239,7 @@ def review_for_agent(repo, pr):
 
 
 def stop_comment(why):
-    return f"{STOP}\n**The autopilot stopped here.** {why.strip()}\n\nA person takes it from here (`needs-human`).\n\n{AI_LINE}"
+    return f"{STOP}\n**The autopilot stopped here.** {why.strip()}\n\nA person takes it from here (`needs-human`): a maintainer's answer here, a hint in words, brings it back, or they take it over.\n\n{AI_LINE}"
 
 
 def main(argv):
@@ -3118,6 +3489,58 @@ def main(argv):
         # autopilot's question started it (#479): the label it carries.
         print(run_label(int(os.environ.get("N", "1") or 1), os.environ.get("ANSWERED") == "true"))
         return 0
+    if argv[:1] == ["next-step"]:
+        # The state on stdin (JSON, read from the API by the workflow), the
+        # one action on stdout (JSON, #561); its line on stderr for the log.
+        try:
+            state = json.load(sys.stdin)
+        except ValueError as err:
+            print(f"next-step needs a JSON state on stdin ({err})", file=sys.stderr)
+            return 64
+        step = next_step(state if isinstance(state, dict) else {})
+        print(step_comment(step), file=sys.stderr)
+        print(json.dumps(step))
+        return 0
+    if argv[:1] == ["criteria-edit"]:
+        # With the key, in prep, before the work's prompt (#561 C3): a
+        # maintainer's answer (ANSWERS, what answers() kept: writers only)
+        # that drops or changes a criterion, applied to the pull request's
+        # checklist and logged in its Decisions; DX_IO's copy follows.
+        answer = open(os.environ["ANSWERS"], encoding="utf-8").read() if os.environ.get("ANSWERS") and os.path.exists(os.environ["ANSWERS"]) else ""
+        edits = criteria_edits(answer)
+        if not edits or not pr:
+            return 0
+        issue_body = open(os.environ["BODY"], encoding="utf-8").read() if os.environ.get("BODY") and os.path.exists(os.environ["BODY"]) else \
+            json.loads(gh("issue", "view", str(number), "--repo", repo, "--json", "body"))["body"] or ""
+        new, notes = apply_answer(pr_json(repo, pr, "body")["body"] or "", issue_body, edits)
+        if not notes:
+            return 0
+        for note in notes:
+            new = add_decision(new, note, datetime.date.today().isoformat()) or new
+            print(note)
+        set_body(repo, pr, new)
+        copy = os.path.join(os.environ.get(IO_ENV, ""), "pr.md")
+        if os.environ.get(IO_ENV) and os.path.exists(copy):
+            with open(copy, "w", encoding="utf-8") as fh:
+                fh.write(new)
+        return 0
+    if argv[:1] == ["sweep"]:
+        # One open autopilot pull request after a merge into main (#561 C2):
+        # {pr: gh pr view's JSON, issue_labels: [...]} on stdin; prints
+        # `update`, `continue` or nothing, then a tab and why.
+        try:
+            got = json.load(sys.stdin)
+        except ValueError as err:
+            print(f"sweep needs a JSON object on stdin ({err})", file=sys.stderr)
+            return 64
+        what, why = sweep_step(got.get("pr") or {}, got.get("issue_labels") or [])
+        print(f"{what}\t{why}")
+        return 0
+    if argv[:1] == ["conflict-note"]:
+        # The work run's paragraph when main conflicts with its branch
+        # (#561 C2), appended to the agent's prompt by autopilot.yml.
+        print(conflict_note(True, argv[1] if len(argv) > 1 else "main", work=True))
+        return 0
     if argv[:1] == ["continue-as"]:
         # IS_DRAFT (true or false), HEAD (the pull request's head), RECORD
         # (a file holding the review's last record, or null), CONFLICTS
@@ -3206,8 +3629,9 @@ def main(argv):
                 gh("pr", "comment", str(pr), "--repo", repo, "--body", unfinished_comment(run_url))
             said()
         elif v == "silent":
-            why = silent_why(mode, pr, os.environ.get("WHY", ""), os.environ.get("SPEC_OUTCOME", ""), limit, done, total, runs, cap)
-            if mode == "fix" and not os.environ.get("WHY"):
+            why = silent_why(mode, pr, os.environ.get("WHY", ""), os.environ.get("SPEC_OUTCOME", ""), limit, done, total, runs, cap,
+                             os.environ.get("FAILED", ""))
+            if mode == "fix" and not os.environ.get("WHY") and not os.environ.get("FAILED"):
                 why = "The fix round pushed nothing and the agent did not say why."
             gh(target[0], "comment", str(target[1]), "--repo", repo, "--body", silent_comment(why, run_url))
             said()
@@ -3298,7 +3722,7 @@ def main(argv):
     if argv[:2] == ["prompt", "work"]:
         info = pr_json(repo, pr, "body")
         ticked = boxes(info["body"])
-        left = [c for c in criteria(body) if not ticked.get(c[0])]
+        left = left_criteria(body, info["body"] or "")
         answered = open(os.environ["ANSWERS"], encoding="utf-8").read() if os.environ.get("ANSWERS") and os.path.exists(os.environ["ANSWERS"]) else ""
         print(prompt_work(repo, number, pr, os.environ["BRANCH"], schema.part_text(body, "prd"), left, any(ticked.values()), ev, mode_of(pol), answered, kind_notes()))
         return 0

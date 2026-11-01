@@ -1,0 +1,108 @@
+name: Autopilot in step with main
+
+# Not reusable. A merge into main brings every open autopilot pull request
+# it leaves behind or in conflict back in step on its own (#561, #556,
+# #549), with no label a person adds: for each ready one,
+# scripts/autopilot.py sweep (next-step's own answer) says `update`, and the
+# bot merges main into it (GitHub's update-branch), or `continue`, and
+# dilux-bot adds `autopilot:continue` to its issue, whose run merges main
+# and leaves the conflict to the agent to resolve (a fix round, counted
+# against the runs cap). A draft is left alone: its own run merges main
+# first. A pull request whose state GitHub has not worked out yet is left
+# to the next sweep.
+#
+#   push to main    here, from pull-request.yml's `autopilot-sweep` job,
+#                   for this repository at once.
+#   schedule        every hour, for every repository of the organisation:
+#                   a ruleset's required workflow gets no push event, so
+#                   elsewhere a merge into main is seen within the hour.
+#   by hand         workflow_dispatch, every repository or one.
+
+on:
+  schedule:
+    - cron: '7 * * * *'
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: One repository (owner/name); empty for every one.
+        type: string
+        default: ''
+  workflow_call:
+    inputs:
+      repo:
+        type: string
+        default: ''
+    secrets:
+      DILUX_BOT_PRIVATE_KEY:
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: autopilot-sweep-${{ inputs.repo || 'all' }}
+  cancel-in-progress: false
+
+env:
+  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN }}
+  DX_BOT_APP: ${{ vars.DX_BOT_APP }}
+  DX_BOT_ID: ${{ vars.DX_BOT_ID }}
+
+jobs:
+  sweep:
+    name: Autopilot pull requests in step with main
+    runs-on: ubuntu-latest # fresh: it holds the bot's key, with contents: write on every repository (#287)
+    timeout-minutes: 15
+    steps:
+      - name: App token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-contents: write # update-branch
+          permission-issues: write # autopilot:continue on the issue
+          permission-pull-requests: write
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Bring each one in step
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ inputs.repo }}
+        run: |
+          set -euo pipefail
+          if [ -n "$REPO" ]; then where=(--repo "$REPO"); else where=(--owner "$OWNER"); fi
+          gh search prs "${where[@]}" --state open --label autopilot --limit 100 --json repository,number \
+            --jq '.[] | "\(.repository.nameWithOwner) \(.number)"' > "$RUNNER_TEMP/prs.txt"
+          while read -r repo n <&3; do
+            [ -n "$repo" ] || continue
+            # GitHub works out the merge state after main moves: UNKNOWN
+            # until then, read again; still unknown, the next sweep has it.
+            for _ in 1 2 3 4 5; do
+              pr=$(gh pr view "$n" --repo "$repo" --json number,isDraft,mergeStateStatus,labels,headRefOid,author,closingIssuesReferences) || { pr=""; break; }
+              [ "$(jq -r .mergeStateStatus <<<"$pr")" = UNKNOWN ] || break
+              sleep 5
+            done
+            [ -n "$pr" ] || { echo "::warning::$repo#$n could not be read."; continue; }
+            issue=$(jq -r '.closingIssuesReferences[0].number // empty' <<<"$pr")
+            issue_labels='[]'
+            [ -z "$issue" ] || issue_labels=$(gh issue view "$issue" --repo "$repo" --json labels --jq '[.labels[].name]' || echo '[]')
+            out=$(jq -n --argjson pr "$pr" --argjson labels "$issue_labels" '{pr: $pr, issue_labels: $labels}' | python3 scripts/autopilot.py sweep)
+            what=${out%%$'\t'*}
+            echo "$repo#$n: ${what:-nothing}: ${out#*$'\t'}"
+            case $what in
+              update)
+                gh api -X PUT "repos/$repo/pulls/$n/update-branch" -f expected_head_sha="$(jq -r .headRefOid <<<"$pr")" >/dev/null \
+                  || echo "::warning::$repo#$n: main could not be merged into it." ;;
+              continue)
+                [ -n "$issue" ] || { echo "::warning::$repo#$n closes no issue: nothing to continue."; continue; }
+                gh label create "autopilot:continue" --repo "$repo" --color 1D76DB --force --description "On an issue: the autopilot continues its draft pull request, or starts it" >/dev/null 2>&1 || true
+                gh issue edit "$issue" --repo "$repo" --add-label "autopilot:continue" >/dev/null \
+                  || echo "::warning::$repo#$issue: the continue could not be asked for." ;;
+            esac
+          done 3< "$RUNNER_TEMP/prs.txt"
