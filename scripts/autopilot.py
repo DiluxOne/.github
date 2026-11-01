@@ -665,6 +665,104 @@ def end_verdict(mode, pr, draft_, stopped, done, total, limit_hit, runs, cap, pu
     return "silent"
 
 
+# What next_step returns (#561): the bot's own actions, each run by
+# autopilot.yml, and the decisions only a person makes. A stuck state is
+# always a `wait` on one of these, never a label someone must add.
+BOT_ACTIONS = ("spec", "draft", "work", "merge-main", "finish", "fix", "queue")
+PERSON_DECISIONS = ("accept", "answer", "merge", "claim")
+
+
+def next_step(state):
+    """The one thing to do for an issue and its autopilot pull request (#561).
+    Pure. `state` (JSON, gathered from the API by the workflow, never from
+    the agent): issue {state, labels, assignees, accepted_by}, prs (its open
+    closing pull requests, as held_by reads them), started, lane (who
+    accepted it, "" for nobody), may_start [ok, why], seal ("match" or why
+    not), spec (the Spec is on the issue), pr (the autopilot's open pull
+    request, or null: number, author_is_bot, draft, body, labels, merge
+    (clean, behind, dirty, unknown), head, record, dequeued, queue_failed),
+    runs, cap, round, rounds. Returns {action, why} and, by action, `as`
+    (the mode autopilot.yml runs), `left`, `how`, `who`, `for`."""
+    issue = state.get("issue") or {}
+    labels = issue.get("labels") or []
+    pr = state.get("pr") or None
+
+    def wait(for_, who, why):
+        return {"action": "wait", "for": for_, "who": who, "why": why}
+
+    def none(why):
+        return {"action": "none", "why": why}
+
+    if (issue.get("state") or "OPEN") != "OPEN":
+        return none("the issue is closed")
+    held = held_by(issue, state.get("prs") or [], state.get("started") or "")
+    if held:
+        return wait("claim", held.split("@", 1)[1].split()[0].strip("`") if "@" in held else "the person who holds it", f"a person holds it: {held}")
+    if not state.get("lane"):
+        return wait("accept", "a maintainer", "nobody accepted it: a maintainer adds `accepted`")
+    ok, why = (list(state.get("may_start") or [True, ""]) + [""])[:2]
+    if not ok:
+        return none(why or "the autopilot may not start")
+    if (state.get("seal") or "match") != "match":
+        return wait("accept", "a maintainer", f"the PRD is not the one sealed at its acceptance ({state.get('seal')}): a maintainer accepts it again")
+    if WAITING in labels:
+        return wait("answer", "a maintainer", "the autopilot asked a question and waits for the answer")
+    if not pr:
+        if state.get("prs"):
+            return none("a pull request that is not the autopilot's already closes it")
+        if state.get("spec"):
+            return {"action": "draft", "as": "start", "why": "the Spec is on the issue: the draft opens from it"}
+        return {"action": "spec", "as": "start", "why": "accepted and ready: the agent writes the Spec"}
+    if not pr.get("author_is_bot", True):
+        return none(f"#{pr.get('number')} is not dilux-bot's: the autopilot stays out")
+    pr_labels = pr.get("labels") or []
+    if "needs-human" in pr_labels:
+        return wait("answer", "a maintainer", "the autopilot stopped and a person has it (`needs-human`): a maintainer answers on the pull request, or takes it over")
+    runs, cap = int(state.get("runs") or 0), int(state.get("cap") or 5)
+    rnd, rounds = int(state.get("round") or 0), int(state.get("rounds") or 3)
+    merge = (pr.get("merge") or "unknown").lower()
+    body = pr.get("body") or ""
+    if pr.get("draft", True):
+        ok, why = may_continue(pr_labels, body, runs, cap)
+        if not ok:
+            if runs >= cap:
+                return wait("claim", "anyone", f"{why}: anyone may `/claim` the issue, or a maintainer takes the pull request over")
+            return none(why)
+        if merge == "dirty":
+            return {"action": "merge-main", "how": "conflicted", "as": "continue", "why": f"main conflicts with the branch: the work merges it and resolves the conflict; {why}"}
+        done, total = progress(body)
+        if done < total:
+            b = boxes(body)
+            return {"action": "work", "as": "continue", "left": [c for c, t in b.items() if not t], "why": why}
+        return {"action": "finish", "as": "continue", "why": why}
+    if merge == "dirty":
+        if runs >= cap:
+            return wait("claim", "anyone", f"main conflicts with it and the autopilot already ran {runs} times (the cap is {cap})")
+        return {"action": "merge-main", "how": "conflicted", "as": "fix", "why": "ready, and main conflicts with it: a fix round merges main and resolves the conflict"}
+    if merge == "behind":
+        return {"action": "merge-main", "how": "clean", "as": "update", "why": "ready, and behind main: the bot merges main into it"}
+    if pr.get("dequeued"):
+        if not pr.get("queue_failed"):
+            return none("the merge queue dropped it with no failed check (a conflict, or a person took it out)")
+        if rnd > rounds:
+            return wait("claim", "anyone", f"the merge queue dropped it and the autopilot spent its {rounds} rounds")
+        return {"action": "queue", "as": "fix", "why": "the merge queue dropped it on a failed check: one round from the failed jobs' log"}
+    if continue_as(False, pr.get("record"), pr.get("head") or "") == "fix":
+        if rnd > rounds:
+            return wait("claim", "anyone", f"the review still blocks and the autopilot spent its {rounds} rounds")
+        return {"action": "fix", "as": "fix", "why": "the review blocks at its head: one round of fixes"}
+    rec = pr.get("record")
+    if isinstance(rec, dict) and pr.get("head") and rec.get("sha") == pr.get("head"):
+        return wait("merge", "a maintainer", "the review passed at its head: G7 merges it, or a maintainer does where the policy leaves it to a person")
+    return none("ready for review: the review runs at its head")
+
+
+def step_comment(step):
+    """One line for the run's summary and the Decisions (#561)."""
+    what = step["action"] + (f" ({step['how']})" if step.get("how") else "") + (f" for {step['for']}, on {step['who']}" if step["action"] == "wait" else "")
+    return f"Next step: {what}: {step.get('why', '')}"
+
+
 BOT_LOGINS = (org.APP, org.BOT, f"app/{org.APP}")
 
 
@@ -1817,6 +1915,50 @@ A class on html.
     check("#556: the fix prompt asks for the merge of main only when it conflicts",
           ("Main does not merge cleanly" in prompt_fix("o/r", 9, 1, 3, conflicts=True, default="trunk"), "git merge origin/trunk" in prompt_fix("o/r", 9, 1, 3, conflicts=True, default="trunk"),
            "Main does not merge cleanly" in prompt_fix("o/r", 9, 1, 3)), (True, True, False))
+    # #561 C1: every state an issue and its pull request can be in, and the
+    # one action next_step returns for it, each wait included.
+    left2 = "<!-- dx-checklist -->\n- [x] **C1** a\n- [ ] **C2** b\n<!-- /dx-checklist -->\n"
+    all2 = left2.replace("[ ] **C2", "[x] **C2")
+    base = {"issue": {"state": "OPEN", "labels": ["accepted"]}, "prs": [], "lane": LANE, "may_start": [True, "ready"], "seal": "match",
+            "spec": False, "pr": None, "runs": 1, "cap": 5, "round": 1, "rounds": 3}
+    dpr = {"number": 9, "author_is_bot": True, "draft": True, "body": left2, "labels": ["autopilot"], "merge": "clean", "head": "h"}
+    rpr = {**dpr, "draft": False, "body": all2}
+    theirs561 = {"number": 40, "author": "ana", "author_type": "User", "labels": [], "state": "OPEN", "created": "2026-11-01T10:00:00Z"}
+    ns = lambda **k: next_step({**base, **k})
+    nsa = lambda **k: (lambda s: (s["action"], s.get("how") or s.get("for") or s.get("as")))(ns(**k))
+    table = [
+        ("closed issue", nsa(issue={"state": "CLOSED", "labels": ["accepted"]}), ("none", None)),
+        ("claimed", nsa(issue={"labels": ["accepted", "claimed"]}), ("wait", "claim")),
+        ("a person's open closing pull request", nsa(prs=[theirs561]), ("wait", "claim")),
+        ("nobody accepted it", nsa(lane=""), ("wait", "accept")),
+        ("the autopilot is off", nsa(may_start=[False, "the autopilot is off in the policy"]), ("none", None)),
+        ("the PRD changed since its seal", nsa(seal="changed"), ("wait", "accept")),
+        ("a question unanswered", nsa(issue={"labels": ["accepted", WAITING]}, pr=dpr), ("wait", "answer")),
+        ("no Spec yet", nsa(), ("spec", "start")),
+        ("the Spec on the issue, no draft", nsa(spec=True), ("draft", "start")),
+        ("a pull request not dilux-bot's", nsa(pr={**dpr, "author_is_bot": False}), ("none", None)),
+        ("stopped: needs-human", nsa(pr={**dpr, "labels": ["autopilot", "needs-human"]}), ("wait", "answer")),
+        ("a draft at the runs cap", nsa(pr=dpr, runs=5), ("wait", "claim")),
+        ("a draft with criteria left", nsa(pr=dpr), ("work", "continue")),
+        ("a draft that conflicts with main", nsa(pr={**dpr, "merge": "dirty"}), ("merge-main", "conflicted")),
+        ("a draft with every box ticked", nsa(pr={**dpr, "body": all2}), ("finish", "continue")),
+        ("ready, in conflict with main", nsa(pr={**rpr, "merge": "dirty"}), ("merge-main", "conflicted")),
+        ("ready, in conflict, at the runs cap", nsa(pr={**rpr, "merge": "dirty"}, runs=5), ("wait", "claim")),
+        ("ready, behind main", nsa(pr={**rpr, "merge": "behind"}), ("merge-main", "clean")),
+        ("dropped by the queue on a failed check", nsa(pr={**rpr, "dequeued": True, "queue_failed": True}), ("queue", "fix")),
+        ("dropped by the queue on no check", nsa(pr={**rpr, "dequeued": True}), ("none", None)),
+        ("dropped by the queue past the rounds", nsa(pr={**rpr, "dequeued": True, "queue_failed": True}, round=4), ("wait", "claim")),
+        ("ready, the review blocks at its head", nsa(pr={**rpr, "record": blk("h")}), ("fix", "fix")),
+        ("ready, the review blocks past the rounds", nsa(pr={**rpr, "record": blk("h")}, round=4), ("wait", "claim")),
+        ("ready, the review passed at its head", nsa(pr={**rpr, "record": {"sha": "h", "blocking": False, "findings": []}}), ("wait", "merge")),
+        ("ready, no review at its head yet", nsa(pr={**rpr, "record": blk("old")}), ("none", None)),
+    ]
+    for name, got, want in table:
+        check(f"#561 C1: next-step, {name}", got, want)
+    check("#561 C1: next-step names who a wait is on",
+          (ns(prs=[theirs561])["who"], ns(lane="")["who"], ns(pr=dpr, runs=5)["who"]), ("ana", "a maintainer", "anyone"))
+    check("#561 C1: next-step lists the open criteria", ns(pr=dpr)["left"], ["C2"])
+    check("#561 C1: next-step says its step in one line", step_comment(ns(lane="")).startswith("Next step: wait for accept, on a maintainer: "), True)
     check("C4: never at the cap", may_continue([], t, 5, 5)[0], False)
     full = tick(t, "C2", ["fix: keep it (C2)"])
     check("C2 (#112): a draft with every box ticked continues, for the checks and the finish", may_continue([], full, 1, 5)[0], True)
@@ -3078,6 +3220,18 @@ def main(argv):
         # N, the run's number; ANSWERED, true when an answer to the
         # autopilot's question started it (#479): the label it carries.
         print(run_label(int(os.environ.get("N", "1") or 1), os.environ.get("ANSWERED") == "true"))
+        return 0
+    if argv[:1] == ["next-step"]:
+        # The state on stdin (JSON, read from the API by the workflow), the
+        # one action on stdout (JSON, #561); its line on stderr for the log.
+        try:
+            state = json.load(sys.stdin)
+        except ValueError as err:
+            print(f"next-step needs a JSON state on stdin ({err})", file=sys.stderr)
+            return 64
+        step = next_step(state if isinstance(state, dict) else {})
+        print(step_comment(step), file=sys.stderr)
+        print(json.dumps(step))
         return 0
     if argv[:1] == ["continue-as"]:
         # IS_DRAFT (true or false), HEAD (the pull request's head), RECORD

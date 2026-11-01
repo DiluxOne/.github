@@ -49,13 +49,16 @@ name: Autopilot
 #                   whose run ended without finishing continues once (a
 #                   comment says so), then goes to a person. On a pull
 #                   request already ready whose review blocks at its head
-#                   (#504, scripts/autopilot.py continue-as), the continue
+#                   (#504; what a continue runs is scripts/autopilot.py
+#                   next-step's one answer, #561), the continue
 #                   runs one fix round instead, counted as a run: the
 #                   rounds cap does not refuse it, the runs cap does. So
 #                   does one on a ready pull request that conflicts with
 #                   main (#556, mergeStateStatus DIRTY), whatever its
 #                   review says: GitHub runs no checks on it, and the fix
-#                   round merges main into its branch first.
+#                   round merges main into its branch first. One that
+#                   is only behind main, the bot brings in step itself
+#                   (GitHub's update-branch) and no agent runs.
 #
 # Before `finish ready` (#482) the agent runs the local review's checks on
 # its own diff (scripts/local-review.sh --no-claude: the conventions, the
@@ -363,12 +366,29 @@ jobs:
             { gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
               | jq -r --arg bot "$DX_BOT_LOGIN" '.[] | select(.user.login == $bot and (.body | startswith("<!-- dx-review -->"))) | .body' \
               | { grep -oP '<!-- dx-review-record \K.*(?= -->)' || true; } | tail -1; } > "$RUNNER_TEMP/record.json" || echo null > "$RUNNER_TEMP/record.json"
-            as=$(IS_DRAFT="$is_draft" HEAD="$head" RECORD="$RUNNER_TEMP/record.json" CONFLICTS="$conflicts" python3 .dx-central/scripts/autopilot.py continue-as)
-            if [ "$as" = fix ] && [ "$conflicts" = true ]; then
-              echo "#$PR is ready and conflicts with main: this continue runs one fix round, which merges main first."
-            elif [ "$as" = fix ]; then
-              echo "#$PR is ready and its review blocks at its head: this continue runs one fix round."
-            fi
+            # What to run is next-step's one answer (#561), from the state
+            # read here: `fix` on a ready pull request whose review blocks
+            # at its head or that conflicts with main (a fix round merges
+            # main first), the bot's own merge of main into one that is
+            # only behind, a continue otherwise. Its line goes to the log.
+            # Who holds it, whether it may start and its seal are the next
+            # step's own checks; the run cap, may-continue's below.
+            jq -e . "$RUNNER_TEMP/record.json" >/dev/null 2>&1 || echo null > "$RUNNER_TEMP/record.json"
+            gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq '.body // ""' > "$RUNNER_TEMP/pr-body.md"
+            jq -n --argjson draft "$is_draft" --arg head "$head" --arg merge "$merge_state" --arg labels "$labels" \
+              --slurpfile record "$RUNNER_TEMP/record.json" --rawfile body "$RUNNER_TEMP/pr-body.md" \
+              '{issue: {state: "OPEN", labels: []}, lane: "checked below", runs: 0,
+                pr: {author_is_bot: true, draft: $draft, head: $head, merge: ($merge | ascii_downcase), record: ($record[0] // null),
+                     labels: ($labels | split(",")), body: $body}}' > "$RUNNER_TEMP/state.json"
+            step=$(python3 .dx-central/scripts/autopilot.py next-step < "$RUNNER_TEMP/state.json")
+            case $(jq -r '.as // ""' <<<"$step") in
+              fix) as=fix; echo "#$PR: $(jq -r .why <<<"$step")" ;;
+              update)
+                echo "#$PR: $(jq -r .why <<<"$step")"
+                gh api -X PUT "repos/$GITHUB_REPOSITORY/pulls/$PR/update-branch" -f expected_head_sha="$head" >/dev/null
+                echo "go=false" >> "$GITHUB_OUTPUT"; exit 0 ;;
+              *) as=continue ;;
+            esac
           fi
           { echo "mode=$as"; echo "conflicts=$conflicts"; } >> "$GITHUB_OUTPUT"
           [ -n "$ISSUE" ] || { echo "No issue to work on."; exit 1; }
