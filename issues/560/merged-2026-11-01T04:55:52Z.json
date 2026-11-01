@@ -1,0 +1,27 @@
+{
+  "kind": "merge-receipt",
+  "issue": 560,
+  "at": "2026-11-01T04:55:52Z",
+  "prd_sha256": "41dbc1b4fdfef5dfca33acc50c9af71dedf7b2ad07f8f6c9337dd08ed09776f6",
+  "prd_matches_seal": true,
+  "spec_sha256": "214a4ad9eafd2671ddab7888f306a1f609d543dfb29578e74eeb48ca6dad0a86",
+  "accepted_by": "policy (lane bugfix-reproduced)",
+  "pull_request": 565,
+  "head_commit": "26dcfbdea124c35a4cd53dd553a1e15a1ea32408",
+  "merge_commit": "8876c53e4f1ef6f85586b4cd758d9ea65badced0",
+  "merged_by": "soydiloreto",
+  "review": {
+    "risk": "high",
+    "complexity": "low",
+    "type": "fix"
+  },
+  "checks": {
+    "pending": 1,
+    "skipped": 19,
+    "success": 9
+  },
+  "criteria": [
+    "C1"
+  ],
+  "policy": "DiluxOne/.github@bf38dba70039"
+}
