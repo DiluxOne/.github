@@ -44,7 +44,7 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     permissions: {}
     steps:
-      - name: dilux-bot token (dispatch runner-vm.yml)
+      - name: App token (dispatch runner-vm.yml)
         id: bot
         continue-on-error: true
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -60,7 +60,7 @@ jobs:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           CENTRAL: ${{ github.repository_owner }}/.github
         run: |
-          if [ -z "$GH_TOKEN" ]; then echo "::warning::No dilux-bot token with actions: write on $CENTRAL: the VM waits for runner-vm.yml's schedule."; exit 0; fi
+          if [ -z "$GH_TOKEN" ]; then echo "::warning::No App token with actions: write on $CENTRAL: the VM waits for runner-vm.yml's schedule."; exit 0; fi
           if gh workflow run runner-vm.yml --repo "$CENTRAL" --ref main -f action=start; then
             echo "Asked runner-vm.yml to start the VM."
           else

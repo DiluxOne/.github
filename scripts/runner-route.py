@@ -114,8 +114,9 @@ def decide(heavy, event, bot=None):
 def expression(fallback="ubuntu-latest"):
     pr = "github.event.pull_request"
     head = f"{pr}.head.ref"
-    # The calling organisation's App (#197): its DX_BOT_LOGIN, else ours.
-    bot = f"(vars.DX_BOT_LOGIN || '{BOT}')"
+    # The calling organisation's App (#197): its DX_BOT_LOGIN, with no
+    # literal fallback (config-overlay.sh stops a run without it, #568).
+    bot = "vars.DX_BOT_LOGIN"
     repro = (f"({pr}.user.login == {bot} && (startsWith({head}, '{REPRO_PREFIX}')"
              f" || (contains({head}, '/') && contains({head}, '{LANE_MARK}'))))")
     issue = "github.event.issue"
@@ -355,7 +356,8 @@ def self_test():
     ]
     expr = expression()
     for name, var, event, want in events:
-        got = evaluate(expr, {"vars": {"DX_RUNNER_HEAVY": var} if var else {}, "github": {"event": event}})
+        vars_ = {"DX_BOT_LOGIN": BOT} | ({"DX_RUNNER_HEAVY": var} if var else {})
+        got = evaluate(expr, {"vars": vars_, "github": {"event": event}})
         check(f"expression: {name}", got, want)
         check(f"decide: {name}", decide(var, event) or gh, want)
 
@@ -377,6 +379,7 @@ def self_test():
         check("#190: a value that is not JSON fails, as on GitHub (so the docs name only JSON)", "failed", "failed")
     check("the fallback is the one asked for", evaluate(expression("ubuntu-24.04"), {"vars": {}, "github": {"event": {}}}), "ubuntu-24.04")
     check("the expression is one line", "\n" in expr, False)
+    check("#568: the expression names no App login of its own, only DX_BOT_LOGIN", BOT.lower() in expr.lower(), False)
     check("the expression has no \" #\" (YAML would read the rest as a comment)", " #" in expr, False)
 
     old = "${{ vars.DX_RUNNER == 'self-hosted' && fromJSON('[\"self-hosted\",\"linux\",\"x64\",\"diluxone\"]') || 'ubuntu-24.04' }}"

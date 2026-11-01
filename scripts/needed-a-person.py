@@ -86,7 +86,8 @@ def policy():
     return {
         "constitution": auto.get("constitution") or [],
         "lanes": auto.get("lanes") or {},
-        "trusted": review.get("trusted-authors") or [],
+        # The organisation's maintainers are trusted too (#568, policy.py).
+        "trusted": list(review.get("trusted-authors") or []) + [m for m in autonomy.org.MAINTAINERS if m not in (review.get("trusted-authors") or [])],
         "max-lines": int(review.get("max-changed-lines-untrusted") or 0),
     }
 

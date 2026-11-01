@@ -193,23 +193,23 @@ concurrency:
   cancel-in-progress: false
 
 # The organisation's App, as GitHub shows it (#197): the calling
-# organisation's variables DX_BOT_LOGIN, DX_BOT_APP and DX_BOT_ID, or
-# DiluxOne's dilux-bot when it sets none.
+# organisation's variables DX_BOT_LOGIN, DX_BOT_APP and DX_BOT_ID, which
+# every organisation sets (#568): config-overlay.sh stops the run without them.
 env:
-  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
-  DX_BOT_APP: ${{ vars.DX_BOT_APP || 'dilux-bot' }}
-  DX_BOT_ID: ${{ vars.DX_BOT_ID || '333187390' }}
+  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN }}
+  DX_BOT_APP: ${{ vars.DX_BOT_APP }}
+  DX_BOT_ID: ${{ vars.DX_BOT_ID }}
 
 jobs:
   where:
     name: Where the autopilot runs
-    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions: {}
     outputs:
       github-hosted: ${{ steps.lane.outputs.github-hosted }}
     steps:
-      - name: dilux-bot token
+      - name: App token
         id: bot
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -270,7 +270,7 @@ jobs:
       budget-spec: ${{ steps.when.outputs.budget-spec }}
       budget-work: ${{ steps.when.outputs.budget-work }}
     steps:
-      - name: dilux-bot token
+      - name: App token
         id: bot
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -329,7 +329,7 @@ jobs:
           fi
           if [ "$MODE" != start ]; then
             author=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json author --jq .author.login)
-            is_bot "$author" || { echo "#$PR was opened by $author, not dilux-bot: the autopilot stays out."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; }
+            is_bot "$author" || { echo "#$PR was opened by $author, not $DX_BOT_LOGIN: the autopilot stays out."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; }
             [ "$MODE" = continue ] || ISSUE=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // empty')
             branch=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json headRefName --jq .headRefName)
             labels=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | join(",")')
@@ -614,6 +614,8 @@ jobs:
           # with main merges it first.
           CONFLICTS: ${{ steps.what.outputs.conflicts }}
           DEFAULT: ${{ github.event.repository.default_branch }}
+          # The default branch as GitHub says it, whatever the event (#585).
+          BASE: ${{ steps.when.outputs.default }}
           # #479: a round for a pull request the queue dropped reads the
           # failed jobs' log instead of the review.
           QUEUE: ${{ github.event_name == 'pull_request' && github.event.action == 'dequeued' }}
@@ -630,6 +632,11 @@ jobs:
             exit 0
           fi
           python3 .dx-central/scripts/autopilot.py inputs "$MODE"
+          # The pull requests' numbers and labels, for next-version.py in
+          # `make pre-pr`: the work job's token does not read them (#585).
+          # Most repositories' `make pre-pr` never asks, so a failure warns.
+          python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$BASE" --save-pulls "$DX_IO/pulls.json" \
+            || { rm -f "$DX_IO/pulls.json"; echo "::warning::The pull requests could not be saved for next-version.py: a make pre-pr that runs it will fail."; }
           if [ "$MODE" = fix ]; then
             CONFLICTS="${CONFLICTS:-false}" python3 .dx-central/scripts/autopilot.py prompt fix > "$DX_IO/prompt.md"
             exit 0
@@ -738,9 +745,9 @@ jobs:
           # The job's own token, which can only read this repository: the
           # agent holds nothing that writes (#287).
           github_token: ${{ github.token }}
-          bot_name: ${{ vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
-          bot_id: ${{ vars.DX_BOT_ID || '333187390' }}
-          allowed_bots: ${{ vars.DX_BOT_APP || 'dilux-bot' }}
+          bot_name: ${{ vars.DX_BOT_LOGIN }}
+          bot_id: ${{ vars.DX_BOT_ID }}
+          allowed_bots: ${{ vars.DX_BOT_APP }}
           prompt: ${{ steps.task.outputs.prompt }}
           claude_args: |
             --model claude-opus-5-5
@@ -788,7 +795,7 @@ jobs:
       why: ${{ steps.draft.outputs.why }}
       held: ${{ steps.draft.outputs.held }}
     steps:
-      - name: dilux-bot token
+      - name: App token
         id: bot
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -941,6 +948,7 @@ jobs:
           PR: ${{ steps.draft.outputs.pr }}
           BRANCH: ${{ steps.draft.outputs.branch }}
           LANE: ${{ needs.prep.outputs.lane }}
+          DEFAULT: ${{ needs.prep.outputs.default }}
           REPO_AUTONOMY: ${{ runner.temp }}/repo-autonomy.yml
         run: |
           set -euo pipefail
@@ -948,6 +956,11 @@ jobs:
           export BODY="$RUNNER_TEMP/body.md" DX_IO="$GITHUB_WORKSPACE/.dx-io"
           mkdir -p "$DX_IO"
           python3 .dx-central/scripts/autopilot.py inputs start
+          # The pull requests' numbers and labels, for next-version.py in
+          # `make pre-pr`: the work job's token does not read them (#585).
+          # Most repositories' `make pre-pr` never asks, so a failure warns.
+          python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$DEFAULT" --save-pulls "$DX_IO/pulls.json" \
+            || { rm -f "$DX_IO/pulls.json"; echo "::warning::The pull requests could not be saved for next-version.py: a make pre-pr that runs it will fail."; }
           python3 .dx-central/scripts/autopilot.py prompt work > "$DX_IO/prompt.md"
 
       - name: Hand it to the agent
@@ -967,11 +980,11 @@ jobs:
     if: ${{ !cancelled() && needs.prep.outputs.go == 'true' && (needs.prep.outputs.mode != 'start' || needs.draft.outputs.pr != '') }}
     runs-on: ${{ (vars.DX_RUNNER_HEAVY != '' && needs.where.outputs.github-hosted == 'false') && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 90
-    # It reads the repository, and the closed pull requests next-version.py
-    # lists in `make pre-pr` (#537); it writes nothing.
+    # It reads the repository and writes nothing; the pull requests
+    # next-version.py lists in `make pre-pr` come from prep or draft, in
+    # .dx-io/pulls.json (#585), so no caller grants more than it reads.
     permissions:
       contents: read
-      pull-requests: read
     outputs:
       outcome: ${{ steps.work.outcome }}
     steps:
@@ -1044,6 +1057,9 @@ jobs:
         env:
           DX_IO: ${{ github.workspace }}/.dx-io
           DX_BASE: ${{ steps.task.outputs.base }}
+          # The pull requests prep or draft saved: next-version.py reads them
+          # there in `make pre-pr`, since this job's token does not (#585).
+          DX_PULLS: ${{ github.workspace }}/.dx-io/pulls.json
           NUMBER: ${{ needs.prep.outputs.issue }}
           PR: ${{ needs.draft.outputs.pr || needs.prep.outputs.pr }}
           BRANCH: ${{ needs.draft.outputs.branch || needs.prep.outputs.branch }}
@@ -1065,9 +1081,9 @@ jobs:
           # The job's own token, which can only read this repository: the
           # agent holds nothing that writes (#287).
           github_token: ${{ github.token }}
-          bot_name: ${{ vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
-          bot_id: ${{ vars.DX_BOT_ID || '333187390' }}
-          allowed_bots: ${{ vars.DX_BOT_APP || 'dilux-bot' }}
+          bot_name: ${{ vars.DX_BOT_LOGIN }}
+          bot_id: ${{ vars.DX_BOT_ID }}
+          allowed_bots: ${{ vars.DX_BOT_APP }}
           prompt: ${{ steps.task.outputs.prompt }}
           claude_args: |
             --model claude-opus-5-5
@@ -1117,7 +1133,7 @@ jobs:
     timeout-minutes: 30
     permissions: {}
     steps:
-      - name: dilux-bot token
+      - name: App token
         id: bot
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -1227,7 +1243,7 @@ jobs:
           python3 .dx-central/scripts/autopilot.py apply .dx-out/outbox.jsonl
 
       # A fresh token for the verdict, however long the rest took.
-      - name: dilux-bot token for the end
+      - name: App token for the end
         id: bot-end
         if: always()
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0

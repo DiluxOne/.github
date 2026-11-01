@@ -102,7 +102,7 @@ def planned_mode(root, autopilot_var=None):
 
 
 PLANNERS = ("admin", "maintain")
-BOTS = ("dilux-bot[bot]",)
+BOTS = (org.BOT,)
 
 
 def plan_kept(issues, removed, role_of):

@@ -13,6 +13,18 @@ bot:
 # advisories' fixes, the patches, the nightly review, and where a
 # vulnerability posted in a public issue is moved, out of sight.
 security: DiluxOne/security
+# Its maintainers (#568): trusted authors in every repository
+# (scripts/policy.py adds them to the review policy's `trusted-authors`),
+# who may run scripts/sync-repos.py for the org-sync lane (scripts/
+# autonomy.py, when the lane names no `people`), and who a security report
+# posted in public mentions (scripts/triage-act.sh).
+maintainers: [soydiloreto]
+# The catalog each kind publishes its releases to (#552, #568): a pack's
+# `release.publishes-to: "{catalog}"` is this, for its kind
+# (scripts/release-issue.py, plugin-publish-ai.yml). A kind with none here
+# publishes nowhere.
+catalogs:
+  ai-agent-plugin: diluxone-plugins-ai
 # The merge queue (#451, scripts/sync-repos.py merge-queue): `auto` turns it
 # on wherever GitHub gives one (every public repository; a private one only
 # on GitHub Enterprise Cloud) and leaves the others ready for the day it

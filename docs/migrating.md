@@ -4,10 +4,6 @@ What a repository changes to move from one major of the shared workflows to the 
 
 A major whose migration is nothing but the callers is named in `repos.yml` (`callers: migrates-from`): `python3 scripts/sync-repos.py callers` then moves each repository on its own, in one issue and pull request of the org-sync lane, every call of the shared workflows at the new major (its own jobs' too) and its callers in step with the templates (#320). Any other major is migrated by hand, as below.
 
-## Within `v7`: `pull-requests: read` for the autopilot (#537)
-
-The autopilot's `work` job runs `make pre-pr`, whose `next-version.py` lists the repository's closed pull requests with the job's own token, so it reads pull requests now. A called workflow gets no more than its caller grants, and GitHub refuses a call that grants less, so a repository that copied `workflow-templates/issues.yml` adds `pull-requests: read` to its `triage` and `claim` jobs before it moves to the release that carries this (`permissions: { contents: read, issues: write, pull-requests: read }` and `{ contents: read, pull-requests: read }`); until then its issue workflow fails to start.
-
 ## Migrating a repository from `v6` to `v7`
 
 `v7` keeps two pull requests of a WordPress plugin from conflicting on its changelog and its translations (#452). A change's changelog lines are a file of its own, `changelog.d/<issue>.md`, which the release writes into `readme.txt` (`scripts/changelog-fragments.sh`); on a pull request, `readme.txt`'s changelog no longer changes by hand. With `translations-complete`, `languages/*.pot` and `*.po` are held to the form that merges (no source references, sorted, the header's dates fixed) and no `.mo` is committed: the checks, the suites and the release compile them (`scripts/plugin-i18n.sh`). A repository that is not a WordPress plugin changes nothing but its callers.

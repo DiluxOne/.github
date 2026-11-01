@@ -198,12 +198,12 @@ permissions:
   pull-requests: write
 
 # The organisation's App, as GitHub shows it (#197): the calling
-# organisation's variables DX_BOT_LOGIN, DX_BOT_APP and DX_BOT_ID, or
-# DiluxOne's dilux-bot when it sets none.
+# organisation's variables DX_BOT_LOGIN, DX_BOT_APP and DX_BOT_ID, which
+# every organisation sets (#568): config-overlay.sh stops the run without them.
 env:
-  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN || 'dilux-bot[bot]' }}
-  DX_BOT_APP: ${{ vars.DX_BOT_APP || 'dilux-bot' }}
-  DX_BOT_ID: ${{ vars.DX_BOT_ID || '333187390' }}
+  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN }}
+  DX_BOT_APP: ${{ vars.DX_BOT_APP }}
+  DX_BOT_ID: ${{ vars.DX_BOT_ID }}
 
 jobs:
   write:
@@ -217,7 +217,7 @@ jobs:
         (inputs.trigger == 'triage' && github.event.action == 'opened') ||
         (inputs.trigger == 'label' && github.event.action == 'labeled' &&
           ((github.event.sender.type != 'Bot' && (github.event.label.name == 'repro:run' || github.event.label.name == 'repro:again')) ||
-           (github.event.sender.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (github.event.label.name == 'repro:unblocked' || github.event.label.name == 'repro:retry')))))
+           (github.event.sender.login == vars.DX_BOT_LOGIN && (github.event.label.name == 'repro:unblocked' || github.event.label.name == 'repro:retry')))))
     concurrency:
       group: issue-repro-${{ github.repository }}-${{ github.event.issue.number }}
       cancel-in-progress: false
@@ -301,7 +301,7 @@ jobs:
           TRIAGE_BUG: ${{ inputs.triage-bug }}
           # The nightly review's own Bug issue (#247): opened by the App,
           # with its marker on the first line.
-          NIGHTLY: ${{ github.event.issue.user.login == (vars.DX_BOT_LOGIN || 'dilux-bot[bot]') && (startsWith(github.event.issue.body, '<!-- dx-nightly-finding') || startsWith(github.event.issue.body, '<!-- dx-repro-blocker')) }}
+          NIGHTLY: ${{ github.event.issue.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.issue.body, '<!-- dx-nightly-finding') || startsWith(github.event.issue.body, '<!-- dx-repro-blocker')) }}
           SENDER_LOGIN: ${{ github.event.sender.login }}
         run: bash .dx-central/scripts/repro-trigger.sh decide
 
@@ -329,7 +329,7 @@ jobs:
       # `why`), with the way the repository's stack proposes when one is
       # recognised (`proposed`, #377). `repro:again` tries again once one
       # is declared.
-      - name: dilux-bot token (the issue's comment)
+      - name: App token (the issue's comment)
         id: say
         if: steps.start.outputs.go == 'yes' && steps.way.outputs.ready != 'yes'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -601,7 +601,7 @@ jobs:
       # Once the reproduction decided to run, a step of its own that fails
       # says so on the issue, with the run: report needs this job to
       # succeed, so nothing else would (#393).
-      - name: dilux-bot token (the broken run's comment)
+      - name: App token (the broken run's comment)
         id: broke
         if: failure() && steps.cap.outputs.run == 'true'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -790,7 +790,7 @@ jobs:
     outputs:
       lane-issue: ${{ steps.lane.outputs.issue }}
     steps:
-      - name: dilux-bot token
+      - name: App token
         id: bot
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -1195,11 +1195,9 @@ jobs:
     # `report` runs after the optional `diagnose`; without a status function
     # this job would be skipped with it (#257, scripts/needs-chain.py).
     if: "!cancelled() && needs.report.result == 'success' && needs.report.outputs.lane-issue != ''"
-    # The agent's jobs read the repository, and its pull requests for
-    # next-version.py in `make pre-pr`, with the job's own token (#287, #537).
+    # The agent's jobs read the repository with the job's own token (#287).
     permissions:
       contents: read
-      pull-requests: read
     uses: DiluxOne/.github/.github/workflows/autopilot.yml@v7
     with:
       mode: start

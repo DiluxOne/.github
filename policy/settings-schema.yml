@@ -1,0 +1,551 @@
+# Every setting the engine applies (#568): which file holds it and at which
+# key, who may change it and how far. scripts/settings.py reads it to lay an
+# organisation's configuration over the engine's defaults (`overlay`), to
+# hold the engine's files and the scripts that read them to it (`check`),
+# to write docs/configuration.md (`docs`) and to say which level a value in
+# force comes from (`explain`). A key the engine's files add and this file
+# lacks fails `settings.py check` in CI, and so does a setting no script it
+# names reads.
+#
+# Three levels, named the same everywhere:
+#   engine  the engine's defaults, the files of DiluxOne/.github
+#   org     the organisation's configuration, its own `.github` repository,
+#           laid over the engine's by scripts/config-overlay.sh: it
+#           overrides only the keys it sets (a mapping key by key, a value
+#           or a list replaced, an `add-only` list added to)
+#   repo    a repository's own file (.github/autonomy.yml,
+#           .github/review-policy.yml, its entry in repos.yml), read by the
+#           script that applies the setting
+#
+# What a level may do with a setting (`org:` and `repo:`):
+#   any            set any value the setting takes
+#   lower-only     lower it, never raise it
+#   stricter       make it stricter (switch off, narrow, ask a person),
+#                  never looser
+#   up-to-ceiling  raise it up to the setting's ceiling, never past it; a
+#                  value past it is held at the ceiling, with a warning
+#   add-only       add entries, never remove the engine's
+#   never          not at this level
+#
+# Each setting: `key` (dots between levels, `*` for any lane, kind or
+# repository; `.` for the file's whole list), `org`, `repo`, `limit` (what no level may pass), `read-by`
+# (the scripts or workflows that read it), `issue` and `says`; `default`
+# when the engine's file does not hold it (else the file's value is the
+# default); `identity: true` for a value that names the organisation
+# itself, which an organisation's file never inherits from the engine's;
+# `merge: add-only` for a list an organisation adds to instead of
+# replacing; `by: name` for a list of mappings merged by their `name`.
+# This file is the engine's alone: an organisation's copy is never laid
+# over it.
+
+files:
+  # Who the organisation is (#191): replaced by each organisation's own.
+  org.yml:
+    - key: org
+      identity: true
+      org: any
+      repo: never
+      limit: the login of the organisation whose `.github` it is; the overlay stops a run whose org.yml names another
+      read-by: [scripts/org.py, scripts/config-overlay.sh]
+      issue: "#191"
+      says: The organisation's login on GitHub.
+    - key: central
+      identity: true
+      org: any
+      repo: never
+      limit: "the organisation's `.github` repository"
+      read-by: [scripts/org.py]
+      issue: "#191"
+      says: The repository that holds the organisation's configuration.
+    - key: bot
+      identity: true
+      org: any
+      repo: never
+      limit: the organisation variables DX_BOT_APP, DX_BOT_LOGIN and DX_BOT_ID win over it, and every workflow needs them
+      read-by: [scripts/org.py]
+      issue: "#191, #197, #568"
+      says: "The organisation's App: `app` its slug, `id` its user id."
+    - key: security
+      identity: true
+      org: any
+      repo: never
+      limit: a private repository of the organisation; none, no security work
+      read-by: [scripts/org.py]
+      issue: "#194, #287"
+      says: The private repository where security work happens.
+    - key: maintainers
+      identity: true
+      default: []
+      org: any
+      repo: never
+      limit: people with the admin or maintain role
+      read-by: [scripts/org.py, scripts/autonomy.py, scripts/policy.py]
+      issue: "#568"
+      says: The organisation's maintainers, trusted authors of every repository and who may run scripts/sync-repos.py for the org-sync lane.
+    - key: catalogs
+      identity: true
+      default: {}
+      org: any
+      repo: never
+      limit: a repository of the organisation, per kind that publishes to a catalog
+      read-by: [scripts/org.py]
+      issue: "#552, #568"
+      says: "The catalog each kind publishes to (`{catalog}` in its pack's `release.publishes-to`); a kind without one publishes nowhere."
+    - key: merge-queue
+      org: any
+      repo: any
+      limit: "`auto`, `on` or `off`; a repository's exception is repos.yml `merge-queue`"
+      read-by: [scripts/sync-repos.py, scripts/repos_conf.py]
+      issue: "#451"
+      says: Whether the merge queue is on where GitHub gives one.
+    - key: pre-pr
+      org: any
+      repo: stricter
+      limit: "`optional` or `required`; a repository without one by design is repos.yml `pre-pr: false`"
+      read-by: [scripts/pre-pr.py, scripts/sync-repos.py]
+      issue: "#479"
+      says: Whether a repository without `make pre-pr` fails its pull requests.
+    - key: attribution
+      org: any
+      repo: never
+      limit: "`warn` or `required`"
+      read-by: [scripts/org.py]
+      issue: "#491"
+      says: What the conventions check does with a model named as a co-author.
+    - key: adopted-property
+      org: any
+      repo: never
+      limit: a custom property of the organisation
+      read-by: [scripts/sync-repos.py]
+      issue: "#562"
+      says: The custom property that says a repository is adopted, which the organisation's rulesets cover.
+    - key: conventions-contradictions
+      default: the patterns in org.yml
+      org: any
+      repo: never
+      limit: each pattern with the lines it must find and must not
+      read-by: [scripts/sync-repos.py]
+      issue: "#562"
+      says: A repository's own commit rules that contradict the organisation's, which the daily drift check lists.
+
+  # Every repository of the organisation (#191, #562): replaced whole by an
+  # organisation's own, since each repository in it is the organisation's.
+  repos.yml:
+    - key: repos.*.merge-queue
+      default: org.yml `merge-queue`
+      org: any
+      repo: any
+      limit: "`auto`, `on` or `off`"
+      read-by: [scripts/repos_conf.py, scripts/sync-repos.py]
+      issue: "#451"
+      says: A repository's exception to org.yml `merge-queue`.
+    - key: repos.*.pre-pr
+      default: true
+      org: any
+      repo: stricter
+      limit: "`false` only for a repository with no `make pre-pr` by design"
+      read-by: [scripts/repos_conf.py, scripts/sync-repos.py]
+      issue: "#479"
+      says: Whether a repository has `make pre-pr`.
+
+  # The autonomy policy (#78): a repository's .github/autonomy.yml only makes
+  # it stricter, but a lane's `merge` up to its `ceiling` (scripts/autonomy.py
+  # merge()).
+  policy/autonomy.yml:
+    - key: autopilot
+      org: any
+      repo: stricter
+      limit: the organisation variable DX_AUTOPILOT=off stops it everywhere
+      read-by: [scripts/autonomy.py]
+      issue: "#78"
+      says: Whether anything proceeds without a person deciding.
+    - key: autopilot-rounds
+      org: any
+      repo: never
+      limit: a whole number above 0
+      read-by: [scripts/autopilot.py]
+      issue: "#83"
+      says: Review rounds the autopilot may spend on a blocked pull request.
+    - key: autopilot-runs
+      org: any
+      repo: never
+      limit: a whole number above 0
+      read-by: [scripts/autopilot.py]
+      issue: "#83"
+      says: Runs the autopilot may spend on one issue's draft pull request.
+    - key: autopilot-mode
+      org: any
+      repo: up-to-ceiling
+      limit: "`guided` or `full`, a repository up to `ceiling`"
+      read-by: [scripts/autonomy.py, scripts/autopilot.py]
+      issue: "#247"
+      says: How the autopilot settles a choice the Spec leaves open.
+    - key: budgets-usd.*
+      org: any
+      repo: lower-only
+      limit: above 0 and at most 200 dollars
+      read-by: [scripts/autonomy.py, scripts/autopilot.py]
+      issue: "#287"
+      says: The most one agent's run may cost.
+    - key: claims.*
+      org: any
+      repo: lower-only
+      limit: a whole number from 1 to 365
+      read-by: [scripts/autonomy.py, scripts/claim.py]
+      issue: "#488"
+      says: A person's claim on an issue, its days and its limits.
+    - key: constitution
+      merge: add-only
+      org: add-only
+      repo: add-only
+      limit: "`policy/**` and `rules/**` are always protected"
+      read-by: [scripts/autonomy.py, scripts/no-widening.py]
+      issue: "#78, #187"
+      says: The protected paths, always accepted and merged by a person.
+    - key: person-merges
+      merge: add-only
+      org: add-only
+      repo: add-only
+      limit: "`security` is always there"
+      read-by: [scripts/autonomy.py]
+      issue: "#194"
+      says: The labels whose issue a person always merges.
+    - key: planned-release
+      org: any
+      repo: never
+      limit: "`auto` or `confirm`; DX_AUTOPILOT=off is always `confirm`"
+      read-by: [scripts/milestones.py]
+      issue: "#247"
+      says: Whether a planned version's release issue is accepted by policy when its milestone closes.
+    - key: security-patch.*
+      org: any
+      repo: never
+      limit: "max-files 1 to 100, max-lines 1 to 5000, forbidden globs, a Claude reviewer-model"
+      read-by: [scripts/security-patch.py]
+      issue: "#247, #287"
+      says: The limits a security patch must stay within before it is announced.
+    - key: lanes.*.description
+      org: any
+      repo: never
+      limit: says what the lane covers
+      read-by: [scripts/autonomy.py]
+      issue: "#78"
+      says: What the lane covers.
+    - key: lanes.*.enabled
+      default: true
+      org: any
+      repo: stricter
+      limit: a lane switched off accepts nothing
+      read-by: [scripts/autonomy.py]
+      issue: "#78"
+      says: Whether the lane is on.
+    - key: lanes.*.accept
+      org: any
+      repo: stricter
+      limit: "`human` or `policy`; the release lane is always `human`"
+      read-by: [scripts/autonomy.py]
+      issue: "#78, #397"
+      says: "Whether the lane's issue is accepted by policy, or waits for a person's `accepted` (a reproduced bug fixed on its own, or waiting)."
+    - key: lanes.*.type
+      org: any
+      repo: never
+      limit: the issue's Type the lane takes
+      read-by: [scripts/autonomy.py]
+      issue: "#155"
+      says: The Type of the lane's issue.
+    - key: lanes.*.origin
+      org: any
+      repo: never
+      limit: "`app` is org.yml's App when it is not set, `people` org.yml `maintainers`"
+      read-by: [scripts/autonomy.py]
+      issue: "#78, #568"
+      says: Who opens the lane's issues, and how it is recognised.
+    - key: lanes.*.repositories
+      org: any
+      repo: stricter
+      limit: a repository only narrows it
+      read-by: [scripts/autonomy.py]
+      issue: "#78"
+      says: The repositories the lane covers.
+    - key: lanes.*.evidence
+      org: any
+      repo: never
+      limit: what the lane's acceptance rests on
+      read-by: [scripts/autonomy.py]
+      issue: "#78"
+      says: What the lane's acceptance rests on, in words.
+    - key: lanes.*.merge
+      org: any
+      repo: up-to-ceiling
+      limit: up to the lane's `ceiling`; the release lane never merges on its own; an issue marked Critical never does
+      read-by: [scripts/autonomy.py]
+      issue: "#83, #188"
+      says: The most a pull request closing the lane's issue may be, as the review rates it, and still merge on its own.
+    - key: lanes.*.ceiling
+      default: the lane's `merge`
+      org: any
+      repo: never
+      limit: never below the lane's `merge`; the release lane has none
+      read-by: [scripts/autonomy.py]
+      issue: "#188"
+      says: The most a repository's own file may raise the lane's `merge` to.
+    - key: lanes.*.constitution-merge
+      org: any
+      repo: never
+      limit: only the bugfix-reproduced lane, and only a fix that widens nothing (scripts/no-widening.py)
+      read-by: [scripts/autonomy.py]
+      issue: "#397"
+      says: The caps within which a reproduced bug's fix in a protected path merges on its own.
+
+  # The review policy (scripts/policy.py): a repository's
+  # .github/review-policy.yml is laid over it, lists added, values replaced,
+  # within the limits each says.
+  policy/review-policy.default.yml:
+    - key: trusted-authors
+      org: any
+      repo: any
+      limit: org.yml `maintainers` are always added
+      read-by: [scripts/policy.py]
+      issue: "#78, #568"
+      says: Who may have a pull request merged without a person.
+    - key: issue-gate.required
+      org: any
+      repo: stricter
+      limit: "a repository turns it off only when `optional` is true"
+      read-by: [scripts/policy.py]
+      issue: "#78"
+      says: Every pull request closes an accepted issue.
+    - key: issue-gate.label
+      org: any
+      repo: never
+      limit: the label a person adds
+      read-by: [scripts/policy.py]
+      issue: "#78"
+      says: The label that accepts an issue.
+    - key: issue-gate.optional
+      org: any
+      repo: never
+      limit: true lets a repository turn the gate off
+      read-by: [scripts/policy.py]
+      issue: "#78"
+      says: Whether a repository may turn the issue gate off.
+    - key: max-changed-lines-untrusted
+      org: any
+      repo: lower-only
+      limit: 0 is no limit, and only the organisation can say it
+      read-by: [scripts/policy.py]
+      issue: "#130, #361"
+      says: The most lines a pull request from an author who is not trusted may change.
+    - key: docs-paths
+      org: any
+      repo: never
+      limit: a kind adds its own (kinds/<kind>/surface.yml)
+      read-by: [scripts/surface.py]
+      issue: "#353"
+      says: What a pull request titled docs may change.
+    - key: high-risk
+      org: any
+      repo: add-only
+      limit: a repository only adds paths
+      read-by: [scripts/policy.py]
+      issue: "#78"
+      says: The paths that make a pull request high risk.
+    - key: review
+      org: any
+      repo: any
+      limit: a model id and an effort of low, medium, high, xhigh or max
+      read-by: [scripts/policy.py]
+      issue: "#78"
+      says: Which reviewer each risk level gets.
+    - key: budget-usd
+      org: any
+      repo: any
+      limit: dollars per review run
+      read-by: [scripts/policy.py]
+      issue: "#78"
+      says: The most one review run may spend.
+    - key: auto-merge
+      org: any
+      repo: stricter
+      limit: false here stops it everywhere
+      read-by: [scripts/policy.py]
+      issue: "#78"
+      says: Whether a pull request that meets every condition merges on its own.
+    - key: release
+      org: any
+      repo: stricter
+      limit: "`auto` only where `auto-allowed` is true"
+      read-by: [.github/workflows/plugin-release-wp.yml]
+      issue: "#82"
+      says: Whether a release waits for a person, per kind of bump.
+    - key: auto-allowed
+      org: any
+      repo: never
+      limit: true lets a repository set a bump to `auto`
+      read-by: [.github/workflows/plugin-release-wp.yml]
+      issue: "#82"
+      says: Whether a repository may release a bump without a person.
+    - key: low-risk-eligible
+      org: any
+      repo: add-only
+      limit: a repository only adds paths
+      read-by: [scripts/policy.py]
+      issue: "#78"
+      says: The paths a pull request may change and still be rated low risk.
+    - key: code
+      org: any
+      repo: add-only
+      limit: a repository only adds paths
+      read-by: [scripts/policy.py]
+      issue: "#78"
+      says: What counts as code, for the slow suites.
+    - key: plugin-check
+      org: any
+      repo: add-only
+      limit: a repository only adds paths
+      read-by: [scripts/policy.py]
+      issue: "#78"
+      says: The files that are not code but that Plugin Check reads.
+    - key: kind-settings
+      default: {}
+      org: never
+      repo: add-only
+      limit: a list is appended to the pack's, a map merged; a single value of the pack is never replaced
+      read-by: [scripts/policy.py]
+      issue: "#191"
+      says: A repository's exceptions to its kind's `settings`.
+
+  # A kind of project (kinds/README.md): an organisation's own pack is laid
+  # over the engine's key by key, and a kind the engine has not is its own.
+  kinds/*/pack.yml:
+    - key: name
+      org: any
+      repo: never
+      limit: the kind's name for people
+      read-by: [scripts/detect.py]
+      issue: "#191"
+      says: The kind's name.
+    - key: aliases
+      org: any
+      repo: never
+      limit: names a profile may still use
+      read-by: [scripts/policy.py]
+      issue: "#191"
+      says: Other names of the kind.
+    - key: workflows
+      org: any
+      repo: never
+      limit: reusable workflows of the engine
+      read-by: [scripts/sync-repos.py]
+      issue: "#191"
+      says: The workflows that make up the kind's battery.
+    - key: own-checks
+      org: any
+      repo: never
+      limit: a ruleset that exists is never rewritten
+      read-by: [scripts/sync-repos.py]
+      issue: "#552"
+      says: What a repository of the kind requires of its own jobs.
+    - key: pre-pr
+      org: any
+      repo: never
+      limit: every check the pull request and the merge queue run
+      read-by: [scripts/pre-pr.py]
+      issue: "#479"
+      says: What a repository of the kind's `make pre-pr` runs, in words.
+    - key: pre-pr-make
+      org: any
+      repo: never
+      limit: bash, one command a line
+      read-by: [scripts/pre-pr.py, scripts/sync-repos.py]
+      issue: "#479"
+      says: How `make pre-pr` runs them (dx.mk).
+    - key: detect
+      org: any
+      repo: never
+      limit: detection only proposes; repos.yml says what a repository is
+      read-by: [scripts/detect.py]
+      issue: "#191"
+      says: How detection recognises a repository of the kind.
+    - key: adapters
+      org: any
+      repo: never
+      limit: engines of the engine
+      read-by: [scripts/policy.py]
+      issue: "#191"
+      says: The engines the kind's checks run, and the language of each.
+    - key: settings
+      org: any
+      repo: add-only
+      limit: a repository adds exceptions with `kind-settings`, never turns a gate off
+      read-by: [scripts/policy.py]
+      issue: "#191"
+      says: The kind's settings for its checks.
+    - key: autopilot
+      org: any
+      repo: never
+      limit: instructions added to the autopilot's work prompt
+      read-by: [scripts/autopilot.py]
+      issue: "#341"
+      says: What the autopilot adds to every change of the kind.
+    - key: repro
+      org: any
+      repo: any
+      limit: "a repository's own `repro:` wins (scripts/repro-ways.py)"
+      read-by: [scripts/repro-ways.py]
+      issue: "#377"
+      says: How a bug of the kind is reproduced.
+    - key: release.publishes-to
+      org: any
+      repo: never
+      limit: "`{catalog}` is org.yml `catalogs` for the kind"
+      read-by: [scripts/release-issue.py]
+      issue: "#82, #552, #568"
+      says: Where a release of the kind is published.
+    - key: release.workflow
+      org: any
+      repo: never
+      limit: a reusable workflow of the engine
+      read-by: [scripts/release-issue.py]
+      issue: "#82"
+      says: The workflow that makes the GitHub release.
+    - key: release.publish
+      org: any
+      repo: never
+      limit: a reusable workflow of the engine
+      read-by: [scripts/install.py]
+      issue: "#82"
+      says: The workflow that publishes the release.
+    - key: release.prepare
+      org: any
+      repo: never
+      limit: a command of the engine's scripts
+      read-by: [scripts/release-issue.py]
+      issue: "#82"
+      says: The command that prepares the release pull request.
+    - key: release.defaults
+      org: any
+      repo: any
+      limit: a repository's caller inputs win
+      read-by: [scripts/release-issue.py]
+      issue: "#82"
+      says: The defaults of the release's inputs.
+    - key: release.stable
+      org: any
+      repo: never
+      limit: where the version in production is read
+      read-by: [scripts/production-version.py]
+      issue: "#287"
+      says: Where the version in production is read, when it is not the last GitHub release.
+
+  # The labels of every repository (scripts/sync-repos.py): an
+  # organisation's are merged with the engine's by name.
+  labels.yml:
+    - key: "."
+      by: name
+      org: any
+      repo: never
+      limit: a label the engine's workflows use keeps its name
+      read-by: [scripts/sync-repos.py]
+      issue: "#78, #564"
+      says: Every label the organisation's workflows and people use, with its colour and description.

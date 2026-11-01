@@ -156,7 +156,6 @@ lanes:
     description: The organisation's own machinery that a scheduled job keeps current, starting with the runner image.
     accept: policy
     origin:
-      app: dilux-bot
       # The new repositories are no longer this lane's: each is an "Adopt
       # <repository>" issue, the `adopt` lane below (#562).
       workflows: [runner-image.yml]
@@ -187,7 +186,6 @@ lanes:
     description: A reported bug that the reproduction confirmed with a failing test.
     accept: policy
     origin:
-      app: dilux-bot
       workflows: [issue-repro.yml]
     repositories: ["*"]
     evidence: The failing test the reproduction wrote, named in the PRD with its SHA-256; the fix makes it pass in the sandbox, unchanged.
@@ -224,7 +222,6 @@ lanes:
     description: A sub-issue of an issue a person accepted, carrying out that decision in its repository.
     accept: policy
     origin:
-      app: dilux-bot
       parent: accepted-by-a-person
     repositories: ["*"]
     evidence: The parent's acceptance by a person, read from its history, and the sub-issue's link to it.
@@ -273,8 +270,6 @@ lanes:
     accept: policy
     type: Task
     origin:
-      app: dilux-bot
-      people: [soydiloreto]
       script: scripts/sync-repos.py
       runs:
         files:
@@ -327,7 +322,6 @@ lanes:
     accept: human
     type: Task
     origin:
-      app: dilux-bot
       adopt: accepted-by-a-maintainer
       branch: "chore/{issue}-adopt"
     repositories: [".github"]
@@ -357,7 +351,6 @@ lanes:
     accept: policy
     type: Bug
     origin:
-      app: dilux-bot
       evidence: published-advisory
       branch: "fix/{issue}-carry-security-fix-of-{version}"
     repositories: ["*"]

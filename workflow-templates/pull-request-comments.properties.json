@@ -1,6 +1,6 @@
 {
   "name": "Pull request comments (DiluxOne)",
-  "description": "Claude answers whoever mentions @dilux-bot in a pull request.",
+  "description": "Claude answers whoever mentions the organisation's App in a pull request.",
   "iconName": "octicon check",
   "categories": [
     "Automation"

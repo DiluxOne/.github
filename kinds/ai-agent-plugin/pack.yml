@@ -1,7 +1,7 @@
 # The ai-agent-plugin kind: a plugin for coding agents (Claude Code, Codex,
 # Copilot, Cursor, Gemini, OpenCode...), its hooks, skills, agents and
-# commands, published in the organisation's catalog, diluxone-plugins-ai
-# (#552). A repository opts in with `kind: ai-agent-plugin` in its
+# commands, published in the organisation's catalog (org.yml `catalogs`,
+# #552, #568). A repository opts in with `kind: ai-agent-plugin` in its
 # .github/review-policy.yml (repos.yml says it too). What each key means:
 # kinds/README.md. The tools, their manifests and how each installs:
 # tools.yml beside this file.
@@ -94,11 +94,12 @@ autopilot:
 # `prepare` command run on the default branch (every tool's manifest at the
 # version, the changelog fragments written into CHANGELOG.md), and once it
 # merges `workflow` makes the GitHub release, whose publishing runs
-# `publish`: a pull request on the catalog, diluxone-plugins-ai, that brings
-# the plugin's entries up to it. No `stable`: the catalog follows the
-# releases, so the last GitHub release is the one in production.
+# `publish`: a pull request on the catalog, the organisation's for this
+# kind (`{catalog}`, org.yml `catalogs`, #568), that brings the plugin's
+# entries up to it. No `stable`: the catalog follows the releases, so the
+# last GitHub release is the one in production.
 release:
-  publishes-to: diluxone-plugins-ai
+  publishes-to: "{catalog}"
   workflow: plugin-release-ai.yml
   publish: plugin-publish-ai.yml
   prepare: [python3, "{central}/scripts/agent-manifests.py", version, "{version}", .]

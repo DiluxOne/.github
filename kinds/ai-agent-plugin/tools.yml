@@ -21,7 +21,8 @@
 #               DiluxOne/<name>); or `shares`, another tool whose catalog file
 #               this tool reads too, so the plugin is listed once for both
 #   how         what a person runs, for the catalog's README ({repo} as above,
-#               {plugin} the plugin's name, {catalog} the catalog's name)
+#               {plugin} the plugin's name, {catalog} the catalog's name,
+#               {owner} the organisation)
 #   source      the documentation this entry was checked against, read on the
 #               date beside it. A tool whose documentation shows no catalog a
 #               person can add from a GitHub repository stays `instructions`.
@@ -40,7 +41,7 @@ tools:
       entry:
         source: github
         repo: "{repo}"
-    how: "/plugin marketplace add DiluxOne/diluxone-plugins-ai, then /plugin install {plugin}@{catalog}"
+    how: "/plugin marketplace add {owner}/{catalog}, then /plugin install {plugin}@{catalog}"
     source: https://code.claude.com/docs/en/plugin-marketplaces (2026-11-01)
 
   codex:
@@ -60,7 +61,7 @@ tools:
       entry:
         source: url
         url: "https://github.com/{repo}.git"
-    how: "codex plugin marketplace add DiluxOne/diluxone-plugins-ai, then install {plugin} from the {catalog} marketplace"
+    how: "codex plugin marketplace add {owner}/{catalog}, then install {plugin} from the {catalog} marketplace"
     source: https://developers.openai.com/codex/plugins/build (2026-11-01)
 
   copilot:
@@ -78,7 +79,7 @@ tools:
       # "Copilot CLI also looks for the marketplace.json file in the
       # .claude-plugin/ directory": one file serves both.
       shares: claude-code
-    how: "copilot plugin marketplace add DiluxOne/diluxone-plugins-ai, then copilot plugin install {plugin}@{catalog}"
+    how: "copilot plugin marketplace add {owner}/{catalog}, then copilot plugin install {plugin}@{catalog}"
     source: https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-plugin-reference (2026-11-01)
 
   cursor:
