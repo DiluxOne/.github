@@ -77,8 +77,8 @@ A change moves only if it passes each gate in order. The deterministic gates alw
 
 | Gate | What it verifies | If it fails |
 | --- | --- | --- |
-| G1 Issue ready | Problem, scope, out of scope, verifiable criteria, the tests that prove them, criticality; checked when the issue opens and on every edit (`awaiting-acceptance` or `incomplete`) | It cannot be accepted; the issue says what is missing |
-| G2 Acceptance | `accepted` from a person, or a lane of the policy | Nothing starts |
+| G1 Issue ready | Problem, scope, out of scope, verifiable criteria, the tests that prove them, criticality; checked when the issue opens and on every edit (`awaiting-acceptance` or `incomplete`) | It cannot be accepted; the issue asks its author what is missing, and their answers are rewritten into it (#588) |
+| G2 Acceptance | `accepted` from a person `who-decides` allows (#588: the code owners of what it touches by default, the acceptor, or every writer), or a lane of the policy; an edit after the seal withdraws it | Nothing starts; anyone else's label comes off |
 | G3 Plan | Files, approach and tests before code; in scope, no protected path (a reproduced bug's may touch one, never widening it) | It asks the maintainer, with the action and its URL |
 | G4 The kind's checks | Conventions, lint, static analysis, tests | The agent fixes and pushes again (a round) |
 | G5 Clean review | No open blocker or major | The agent fixes; after 5 rounds, a person |
@@ -145,7 +145,7 @@ Any automatic decision is answered in three clicks: the issue's board says what 
 The agent reads text anyone can write. No layer depends on the agent behaving well:
 
 1. The issue has exactly its form's headings; loose text fails the gate.
-2. The maintainer reads the PRD before accepting, and the hash freezes it; the agent reads the PRD and the Spec at those hashes, never third parties' comments.
+2. The maintainer reads the PRD before accepting, and the hash freezes it; the agent reads the PRD and the Spec at those hashes, never third parties' comments. Only those `who-decides` allows answer it (#588); anyone else, the issue's author included once it is sealed, is summarised as data. Before the seal, the author's answers are rewritten into the issue by a model with no tools, checked by the schema and read by a person before acceptance.
 3. The prompt presents the issue as a specification, never as instructions.
 4. The agent that can run commands holds no key and its token writes nothing: what it would do on GitHub, a separate job that runs no agent does, within a fixed list of actions (push onto its pull request's branch, never a workflow outside the organisation's own repository, where its engine is the work and a person merges it, #498: there, as with any pull request in that repository, its branch's workflows and scripts run with the organisation's secrets before that person merges, a risk the maintainer accepted; tick, decide, ask, stop, reply), and everything goes through a pull request with gates.
 5. A reproduction runs in a sandbox with no network and no secrets.
