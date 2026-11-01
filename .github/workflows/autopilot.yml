@@ -1057,12 +1057,16 @@ jobs:
           # included; tick reads the commits since the default branch.
           echo "start=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           # The branch behind main gets it first (#549), as a clean merge,
-          # which api-commit.py pushes; on a conflict the work goes on from
-          # the branch as it is.
+          # which api-commit.py pushes. On a conflict (#561) the merge is
+          # left to the agent, before any criterion: its prompt says so, and
+          # api-commit.py pushes the merge with only the conflicts resolved.
           if [ "$(git rev-parse --abbrev-ref HEAD)" != "$DEFAULT" ] && ! git merge-base --is-ancestor "origin/$DEFAULT" HEAD; then
             if ! git merge -q --no-edit "origin/$DEFAULT" > /dev/null 2>&1; then
               git merge --abort 2>/dev/null || true
-              echo "::warning::$DEFAULT does not merge cleanly into the branch: the work goes on from the branch as it is."
+              echo "::notice::$DEFAULT does not merge cleanly into the branch: the agent merges it and resolves the conflicts first."
+              # A fix round's prompt already asks for it (#556).
+              grep -q "Main does not merge cleanly" .dx-io/prompt.md \
+                || python3 .dx-central/scripts/autopilot.py conflict-note "$DEFAULT" >> .dx-io/prompt.md
             fi
           fi
           { echo "base=$(git merge-base HEAD "origin/$DEFAULT")"; echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } >> "$GITHUB_OUTPUT"

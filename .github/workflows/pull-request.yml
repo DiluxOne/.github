@@ -7,7 +7,8 @@ name: Pull request
 # rewrite the rules that review it. The conventions script comes from the pull
 # request itself: it can change conventions.yml anyway. An autopilot pull
 # request whose review blocks gets its fix round here (autopilot-fix, #504),
-# as org-pull-request.yml gives it everywhere else.
+# as org-pull-request.yml gives it everywhere else. A push to main brings
+# the open autopilot pull requests in step with it (autopilot-sweep, #561).
 
 on:
   # An edit of the title or description is handled by pull-request-edited.yml.
@@ -278,4 +279,16 @@ jobs:
       mode: fix
       pr: ${{ format('{0}', github.event.pull_request.number) }}
       central-ref: main
+    secrets: inherit
+
+  # A merge into main here brings this repository's open autopilot pull
+  # requests it leaves behind or in conflict back in step at once (#561);
+  # elsewhere the same sweep runs every hour from this repository.
+  autopilot-sweep:
+    if: github.event_name == 'push' && github.repository == 'DiluxOne/.github'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/autopilot-sweep.yml
+    with:
+      repo: ${{ github.repository }}
     secrets: inherit

@@ -714,7 +714,7 @@ def next_step(state):
             return {"action": "draft", "as": "start", "why": "the Spec is on the issue: the draft opens from it"}
         return {"action": "spec", "as": "start", "why": "accepted and ready: the agent writes the Spec"}
     if not pr.get("author_is_bot", True):
-        return none(f"#{pr.get('number')} is not dilux-bot's: the autopilot stays out")
+        return none(f"#{pr.get('number')} is not the bot's: the autopilot stays out")
     pr_labels = pr.get("labels") or []
     if "needs-human" in pr_labels:
         return wait("answer", "a maintainer", "the autopilot stopped and a person has it (`needs-human`): a maintainer answers on the pull request, or takes it over")
@@ -755,6 +755,32 @@ def next_step(state):
     if isinstance(rec, dict) and pr.get("head") and rec.get("sha") == pr.get("head"):
         return wait("merge", "a maintainer", "the review passed at its head: G7 merges it, or a maintainer does where the policy leaves it to a person")
     return none("ready for review: the review runs at its head")
+
+
+def sweep_step(pr, issue_labels=(), runs=0, cap=5):
+    """What a merge into main does for one open autopilot pull request
+    (#561 C2, autopilot-sweep.yml): `update` (the bot merges main into one
+    that is ready and only behind, GitHub's update-branch), `continue` (one
+    that is ready and conflicts: dilux-bot adds `autopilot:continue` to its
+    issue, and the run next-step starts merges main and resolves the
+    conflict) or "" (nothing: a draft's own run merges main first, and a
+    wait stays a wait). `pr` is `gh pr view --json number,isDraft,
+    mergeStateStatus,labels,headRefOid,author` as GitHub gives it. Returns
+    (what, why)."""
+    labels = [l.get("name", "") if isinstance(l, dict) else str(l) for l in pr.get("labels") or []]
+    author = (pr.get("author") or {}).get("login", "") if isinstance(pr.get("author"), dict) else str(pr.get("author") or "")
+    if "autopilot" not in labels or author not in BOT_LOGINS:
+        return "", "not an autopilot pull request"
+    if pr.get("isDraft", True):
+        return "", "a draft: its own run merges main first"
+    if "autopilot:continue" in issue_labels:
+        return "", "a continue is already asked for"
+    step = next_step({"issue": {"state": "OPEN", "labels": list(issue_labels)}, "lane": "swept", "runs": runs, "cap": cap,
+                      "pr": {"number": pr.get("number"), "author_is_bot": True, "draft": False, "labels": labels,
+                             "merge": str(pr.get("mergeStateStatus") or "unknown").lower(), "head": pr.get("headRefOid") or ""}})
+    if step["action"] == "merge-main":
+        return ("update" if step.get("how") == "clean" else "continue"), step["why"]
+    return "", step["why"]
 
 
 def step_comment(step):
@@ -1464,11 +1490,16 @@ def queue_log_text(pr, logs):
     return "\n".join(parts)
 
 
-def conflict_note(conflicts, default):
+def conflict_note(conflicts, default, work=False):
     """#556: the paragraph a fix round on a pull request that conflicts
-    with main gets, before any other fix."""
+    with main gets, before any other fix; with `work`, the one a work run
+    gets when main conflicts with its branch (#561), before any criterion."""
     if not conflicts:
         return ""
+    if work:
+        return f"""
+
+Main does not merge cleanly into the branch: before any criterion, merge `origin/{default}` into it (`git merge origin/{default}`), resolve the conflicts so that both sides keep working, and commit the merge with nothing in it but those resolutions (the push refuses a merge that changes any other file), then run the repository's checks and go on with the criteria left."""
     return f"""
 
 Main does not merge cleanly into the branch: before any other fix, merge `origin/{default}` into it (`git merge origin/{default}`), resolve the conflicts so that both sides keep working, and commit the merge with nothing in it but those resolutions (the push refuses a merge that changes any other file; fix anything else in commits of its own after it), then run the repository's checks. Without a blocking review, `{IO_DIR}/review.md` may hold no points: that is fine, the merge is the round's work."""
@@ -1959,6 +1990,20 @@ A class on html.
           (ns(prs=[theirs561])["who"], ns(lane="")["who"], ns(pr=dpr, runs=5)["who"]), ("ana", "a maintainer", "anyone"))
     check("#561 C1: next-step lists the open criteria", ns(pr=dpr)["left"], ["C2"])
     check("#561 C1: next-step says its step in one line", step_comment(ns(lane="")).startswith("Next step: wait for accept, on a maintainer: "), True)
+    # #561 C2: a merge into main brings each ready autopilot pull request
+    # back in step on its own, with no label a person adds.
+    swp = lambda **k: sweep_step({"number": 9, "isDraft": False, "mergeStateStatus": "CLEAN", "labels": [{"name": "autopilot"}],
+                                  "headRefOid": "h", "author": {"login": BOT_LOGINS[2]}, **k})[0]
+    check("#561 C2: the sweep merges main into a ready pull request only behind it",
+          (swp(mergeStateStatus="BEHIND"), swp(mergeStateStatus="DIRTY"), swp(), swp(mergeStateStatus="UNKNOWN")), ("update", "continue", "", ""))
+    check("#561 C2: the sweep leaves a draft, a person's pull request and one already continuing alone",
+          (swp(mergeStateStatus="DIRTY", isDraft=True), swp(mergeStateStatus="DIRTY", author={"login": "ana"}),
+           sweep_step({"number": 9, "isDraft": False, "mergeStateStatus": "DIRTY", "labels": [{"name": "autopilot"}], "author": {"login": BOT_LOGINS[1]}}, ["autopilot:continue"])[0],
+           sweep_step({"number": 9, "isDraft": False, "mergeStateStatus": "DIRTY", "labels": [{"name": "autopilot"}, {"name": "needs-human"}], "author": {"login": BOT_LOGINS[1]}})[0]),
+          ("", "", "", ""))
+    check("#561 C2: a work run whose branch conflicts with main merges it before any criterion",
+          ("before any criterion" in conflict_note(True, "trunk", work=True), "git merge origin/trunk" in conflict_note(True, "trunk", work=True),
+           conflict_note(False, "trunk", work=True)), (True, True, ""))
     check("C4: never at the cap", may_continue([], t, 5, 5)[0], False)
     full = tick(t, "C2", ["fix: keep it (C2)"])
     check("C2 (#112): a draft with every box ticked continues, for the checks and the finish", may_continue([], full, 1, 5)[0], True)
@@ -2344,7 +2389,7 @@ Clamp the value in Sum::add.
                 os.symlink(os.path.join(HERE), os.path.join(d, ".dx-central", "scripts"))
                 r = subprocess.run(["bash", "-c", "set -euo pipefail\n" + decide_as], cwd=d, capture_output=True, text=True,
                                    env={"PATH": d + os.pathsep + os.environ.get("PATH", ""), "MODE": mode, "PR": "8", "GITHUB_REPOSITORY": "o/r", "RUNNER_TEMP": d,
-                                        "DX_BOT_LOGIN": BOT, "PR_STATE": f"{str(draft_).lower()} {head} {merge}", "LATER": later, "COMMENTS": json.dumps(comments)})
+                                        "DX_BOT_LOGIN": BOT, "labels": "autopilot", "PR_STATE": f"{str(draft_).lower()} {head} {merge}", "LATER": later, "COMMENTS": json.dumps(comments)})
                 return r.stdout.strip().splitlines()[-1] if r.returncode == 0 and r.stdout.strip() else f"failed: {r.stderr.strip()[-200:]}"
         rec = lambda sha, sev, who=BOT: {"user": {"login": who}, "body": f"{REVIEW_MARK}\n### Claude review\n<!-- dx-review-record {json.dumps({'sha': sha, 'blocking': True, 'findings': [{'severity': sev, 'file': 'a', 'title': 't'}]})} -->"}
         check("#504 C4: a continue on a ready pull request blocked at its head runs a fix round; a draft, no block, an older head, a stranger's record or none does not",
@@ -3238,6 +3283,23 @@ def main(argv):
         step = next_step(state if isinstance(state, dict) else {})
         print(step_comment(step), file=sys.stderr)
         print(json.dumps(step))
+        return 0
+    if argv[:1] == ["sweep"]:
+        # One open autopilot pull request after a merge into main (#561 C2):
+        # {pr: gh pr view's JSON, issue_labels: [...]} on stdin; prints
+        # `update`, `continue` or nothing, then a tab and why.
+        try:
+            got = json.load(sys.stdin)
+        except ValueError as err:
+            print(f"sweep needs a JSON object on stdin ({err})", file=sys.stderr)
+            return 64
+        what, why = sweep_step(got.get("pr") or {}, got.get("issue_labels") or [])
+        print(f"{what}\t{why}")
+        return 0
+    if argv[:1] == ["conflict-note"]:
+        # The work run's paragraph when main conflicts with its branch
+        # (#561 C2), appended to the agent's prompt by autopilot.yml.
+        print(conflict_note(True, argv[1] if len(argv) > 1 else "main", work=True))
         return 0
     if argv[:1] == ["continue-as"]:
         # IS_DRAFT (true or false), HEAD (the pull request's head), RECORD
