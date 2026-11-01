@@ -20,6 +20,24 @@
                        listing each, when one is found. Comments, each
                        script's self-test, tests/ and scripts/fixtures/ are
                        not searched
+  settings.py check [ROOT]
+                       exit 1, with the reasons, when a key of the engine's
+                       default files (org.yml, policy/autonomy.yml,
+                       policy/review-policy.default.yml, kinds/*/pack.yml)
+                       is not in the schema, when a setting is not found in
+                       the scripts its `read-by` names, when an entry lacks
+                       what it must say, or when docs/configuration.md is
+                       not what `docs` writes
+  settings.py docs [ROOT]
+                       print docs/configuration.md, the reference of every
+                       setting, from the schema and the engine's files
+  settings.py explain FILE KEY [--org ORG_FILE] [--repo REPO_FILE]
+                       print, for the setting KEY of FILE (policy/autonomy.yml
+                       lanes.bugfix-reproduced.accept), the value in force and
+                       the level it comes from: the engine's file, the
+                       organisation's ORG_FILE over it, a repository's
+                       REPO_FILE over that (the autonomy policy as
+                       autonomy.py merges it)
   settings.py --test   self-test
 
 Environment: DX_SETTINGS_SCHEMA, the schema to read (default:
@@ -240,6 +258,154 @@ def org_free(root=ROOT, values=None):
     return found
 
 
+# The engine's files whose every key is a setting (#568 C4). repos.yml is
+# the organisation's own, replaced whole; its settings are the schema's
+# alone.
+CHECKED = ("org.yml", "policy/autonomy.yml", "policy/review-policy.default.yml", "kinds/*/pack.yml")
+HOWS = ("any", "lower-only", "stricter", "up-to-ceiling", "add-only", "never")
+DOC = "docs/configuration.md"
+
+
+def files_of(root, pattern):
+    import glob
+    return sorted(os.path.relpath(p, root).replace(os.sep, "/") for p in glob.glob(os.path.join(root, pattern)))
+
+
+def covered(settings, path):
+    """Whether PATH is a setting, or lies inside one."""
+    return any(key_matches(str(s.get("key", "")), path[:n]) for s in settings for n in range(1, len(path) + 1))
+
+
+def inside(settings, path):
+    """Whether some setting lies deeper than PATH, a mapping."""
+    return any(str(s.get("key", "")) != "." and len(str(s["key"]).split(".")) > len(path)
+               and key_matches(".".join(str(s["key"]).split(".")[:len(path)]), path) for s in settings)
+
+
+def missing(settings, data, path=()):
+    """The key paths of DATA that no setting covers."""
+    out = []
+    for key, value in (data or {}).items() if isinstance(data, dict) else ():
+        here = (*path, str(key))
+        if covered(settings, list(here)):
+            continue
+        if isinstance(value, dict) and inside(settings, list(here)):
+            out += missing(settings, value, here)
+        else:
+            out.append(".".join(here))
+    return out
+
+
+def problems(root=ROOT):
+    """What keeps the schema, the engine's files and the scripts apart."""
+    conf = load(os.path.join(root, "policy", "settings-schema.yml")) or {}
+    out = []
+    for pattern, settings in (conf.get("files") or {}).items():
+        for s in settings or []:
+            where = f"{pattern} {s.get('key')}"
+            for part in ("key", "org", "repo", "limit", "read-by", "issue", "says"):
+                if s.get(part) in (None, "", []):
+                    out.append(f"{where}: says no `{part}`")
+            for level in ("org", "repo"):
+                if s.get(level) is not None and s.get(level) not in HOWS:
+                    out.append(f"{where}: `{level}` is one of {', '.join(HOWS)}")
+            word = next((p for p in reversed(str(s.get("key", "")).split(".")) if p not in ("*", "")), "")
+            for script in s.get("read-by") or []:
+                path = os.path.join(root, script)
+                if not os.path.isfile(path):
+                    out.append(f"{where}: read by {script}, which is not there")
+                elif word and not re.search(r"(?<![\w-])" + re.escape(word) + r"(?![\w-])", open(path, encoding="utf-8").read()):
+                    out.append(f"{where}: {script} does not read `{word}`")
+    for pattern in CHECKED:
+        for rel in files_of(root, pattern):
+            for key in missing(entries(conf, rel), load(os.path.join(root, rel))):
+                out.append(f"{rel} {key}: a setting the schema (policy/settings-schema.yml) does not list")
+    doc = os.path.join(root, DOC)
+    if not os.path.isfile(doc) or open(doc, encoding="utf-8").read() != docs(root):
+        out.append(f"{DOC}: not what `settings.py docs` writes; run `python3 scripts/settings.py docs > {DOC}`")
+    return out
+
+
+def shown(value, limit=70):
+    text = json.dumps(value, ensure_ascii=False, separators=(", ", ": "))
+    text = text if len(text) <= limit else text[:limit - 1] + "…"
+    return "`" + text.replace("|", "\\|").replace("`", "'") + "`"
+
+
+def default_of(root, rel_pattern, s):
+    """A setting's default, for people."""
+    if s.get("identity"):
+        return "the organisation's own, never the engine's"
+    if "default" in s:
+        d = s["default"]
+        return d if isinstance(d, str) and " " in d else shown(d)
+    key = str(s.get("key", ""))
+    if "*" in key or "*" in rel_pattern or key == ".":
+        return f"each one's own, in `{rel_pattern}`"
+    value = load(os.path.join(root, rel_pattern)) or {}
+    for part in key.split("."):
+        if not isinstance(value, dict) or part not in value:
+            return "none"
+        value = value[part]
+    return shown(value)
+
+
+LEVELS_DOC = """The levels, named the same everywhere:
+
+- **engine**: the engine's defaults, the files of DiluxOne/.github.
+- **org**: the organisation's configuration, its own `.github` repository, laid over the engine's by `scripts/config-overlay.sh`. A file it has overrides only the keys it sets: a mapping key by key, a value or a list replaced, an `add-only` list added to (the engine's entries are kept), `labels.yml` merged by name. `repos.yml` and any file that is not YAML replace the engine's whole. The merged autonomy policy must pass `autonomy.py check`, or the run stops.
+- **repo**: a repository's own file (`.github/autonomy.yml`, `.github/review-policy.yml`, its entry in `repos.yml`), read by the script that applies the setting, within what its organisation lets it and never past the engine's safeguards: autonomy cannot widen itself.
+
+What a level may do: `any` value; `lower-only`; `stricter` (switch off, narrow, ask a person); `up-to-ceiling` (raise it up to the setting's ceiling; past it, held there with a warning); `add-only` (add entries, never remove one); `never`.
+"""
+
+
+def docs(root=ROOT):
+    """docs/configuration.md, from the schema and the engine's files."""
+    conf = load(os.path.join(root, "policy", "settings-schema.yml")) or {}
+    out = ["# Configuration", "",
+           "Every setting the engine applies (#568): its default, who may change it and how far. Written by `python3 scripts/settings.py docs` from [`policy/settings-schema.yml`](../policy/settings-schema.yml), which CI holds to the engine's files and to the scripts that read them (`settings.py check`): edit the schema, never this page. Which level a value in force comes from: `settings.py explain FILE KEY`.",
+           "", LEVELS_DOC.rstrip(), ""]
+    for pattern, settings in (conf.get("files") or {}).items():
+        out += [f"## `{pattern}`", "", "| Setting | Default | org | repo | Limit | Read by | Issue |", "|---|---|---|---|---|---|---|"]
+        for s in settings or []:
+            key = str(s.get("key", ""))
+            name = "(the whole list)" if key == "." else f"`{key}`"
+            extra = " Added to, never replaced." if s.get("merge") == "add-only" else (" Merged by `name`." if s.get("by") else "")
+            readers = ", ".join(f"[`{os.path.basename(r)}`](../{r})" for r in s.get("read-by") or [])
+            cells = [f"{name}: {s.get('says', '')}{extra}", default_of(root, pattern, s), f"`{s.get('org')}`", f"`{s.get('repo')}`",
+                     str(s.get("limit", "")), readers, str(s.get("issue", ""))]
+            out.append("| " + " | ".join(c.replace("\n", " ").replace("|", "\\|") if i != 1 else c for i, c in enumerate(cells)) + " |")
+        out.append("")
+    return "\n".join(out).rstrip() + "\n"
+
+
+def value_at(data, key):
+    for part in key.split("."):
+        if not isinstance(data, dict) or part not in data:
+            return False, None
+        data = data[part]
+    return True, data
+
+
+def explain(rel, key, org_file=None, repo_file=None, root=ROOT):
+    """(the value in force, the level it comes from) of KEY in REL."""
+    engine = load(os.path.join(root, rel)) or {}
+    theirs = load(org_file) if org_file else {}
+    merged = merge(engine, theirs or {}, entries(schema(), rel)) if theirs else engine
+    force = merged
+    if repo_file and rel == "policy/autonomy.yml":
+        sys.path.insert(0, HERE)
+        import autonomy
+        force = autonomy.merge(merged, load(repo_file) or {})
+    has, value = value_at(force, key)
+    for level, data in (("repo", load(repo_file) if repo_file else {}), ("org", theirs or {})):
+        there, mine = value_at(data, key)
+        if there and mine == value:
+            return value, level
+    return value, "engine" if has else "none"
+
+
 def self_test():
     failed = 0
 
@@ -248,6 +414,7 @@ def self_test():
         print(("ok   " if got == want else "FAIL ") + name + ("" if got == want else f": got {got!r}, want {want!r}"))
         failed |= got != want
 
+    import tempfile
     conf = schema()
     autonomy = entries(conf, "policy/autonomy.yml")
     check("the schema has the autonomy policy's settings", bool(rule(autonomy, ["lanes", "human-issue", "merge"])), True)
@@ -287,6 +454,24 @@ def self_test():
                 [{"name": "accepted", "description": "Acme's"}, {"name": "acme:own", "color": "000000"}], labels)
     check("labels merge by name", got, [{"name": "accepted", "color": "0E8A16", "description": "Acme's"}, {"name": "claimed", "color": "5319E7"}, {"name": "acme:own", "color": "000000"}])
     check("a kind's pack has its rules", rule(entries(conf, "kinds/web-app/pack.yml"), ["release", "publishes-to"]).get("org"), "any")
+    # C4: the schema covers every key of the engine's files, and the docs.
+    check("C4: the engine's files, the schema, the scripts and the docs agree", problems(ROOT), [])
+    with_more = {"autopilot": True, "lanes": {"x": {"accept": "human", "new-key": 1}}, "brand-new": 2}
+    check("C4: a key the schema does not list is found", missing(autonomy, with_more), ["lanes.x.new-key", "brand-new"])
+    check("C4: a setting covers what lies inside it", missing(autonomy, {"budgets-usd": {"x": 1}, "security-patch": {"max-files": 1}}), [])
+    check("C4: the docs list every setting", all(f"`{s['key']}`" in docs(ROOT) for s in autonomy), True)
+    check("C4: a default is the engine's file's", default_of(ROOT, "policy/autonomy.yml", {"key": "autopilot-runs"}), "`5`")
+    check("C4: an identity is never the engine's", default_of(ROOT, "org.yml", {"key": "bot", "identity": True}), "the organisation's own, never the engine's")
+    with tempfile.TemporaryDirectory() as t:
+        o, r = os.path.join(t, "o.yml"), os.path.join(t, "r.yml")
+        with open(o, "w", encoding="utf-8") as fh:
+            fh.write("lanes:\n  human-issue: {merge: {max-risk: low}}\n  bugfix-reproduced: {accept: human}\n")
+        with open(r, "w", encoding="utf-8") as fh:
+            fh.write("lanes:\n  human-issue: {merge: {max-risk: medium}}\n")
+        check("explain: the engine's", explain("policy/autonomy.yml", "autopilot-runs", o, r), (5, "engine"))
+        check("explain: the organisation's", explain("policy/autonomy.yml", "lanes.bugfix-reproduced.accept", o, r), ("human", "org"))
+        check("explain: the repository's", explain("policy/autonomy.yml", "lanes.human-issue.merge.max-risk", o, r), ("medium", "repo"))
+        check("explain: a key that is none", explain("policy/autonomy.yml", "lanes.nope", o), (None, "none"))
     # C3: the organisation's values, and where they are not searched.
     values = identity_values(ROOT)
     check("C3: the App, its login and id, the maintainers and the catalog are searched", {"dilux-bot", "dilux-bot[bot]", "333187390", "soydiloreto", "diluxone-plugins-ai", "DiluxOne/security"} <= set(values), True)
@@ -296,7 +481,6 @@ def self_test():
     sh = 'a=1\n# x\nself_test() {\n  b=2\n}\nif [ "${1:-}" = --test ]; then\n  self_test\nfi\nmain\n'
     check("C3: a shell script's comments and its --test block are skipped", sorted(skipped_lines("x.sh", sh)), [2, 3, 4, 5, 6, 7, 8])
     check("C3: in YAML only comments", sorted(skipped_lines("x.yml", "a: 1\n  # b\nc: 2\n")), [2])
-    import tempfile
     with tempfile.TemporaryDirectory() as t:
         os.makedirs(os.path.join(t, "kinds", "k"))
         with open(os.path.join(t, "kinds", "k", "pack.yml"), "w", encoding="utf-8") as fh:
@@ -337,6 +521,22 @@ def load_text(text):
 def main(argv):
     if argv == ["--test"]:
         return self_test()
+    if argv[:1] == ["check"] and len(argv) <= 2:
+        found = problems(argv[1] if len(argv) == 2 else ROOT)
+        for line in found:
+            print(line)
+        return 1 if found else 0
+    if argv[:1] == ["docs"] and len(argv) <= 2:
+        sys.stdout.write(docs(argv[1] if len(argv) == 2 else ROOT))
+        return 0
+    if argv[:1] == ["explain"] and len(argv) >= 3:
+        opts = dict(zip(argv[3::2], argv[4::2]))
+        if len(argv) % 2 == 0 or set(opts) - {"--org", "--repo"}:
+            print(__doc__, file=sys.stderr)
+            return 64
+        value, level = explain(argv[1], argv[2], opts.get("--org"), opts.get("--repo"))
+        print(json.dumps({"key": f"{argv[1]} {argv[2]}", "value": value, "level": level}))
+        return 0
     if argv[:1] == ["org-free"] and len(argv) <= 2:
         found = org_free(argv[1] if len(argv) == 2 else ROOT)
         for line in found:

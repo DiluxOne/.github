@@ -121,6 +121,7 @@ flowchart TB
 | Run the engine in another organisation | [docs/installing.md](docs/installing.md) |
 | Move a repository to a newer major | [docs/migrating.md](docs/migrating.md) |
 | Look up a workflow, a script, a secret | [docs/workflows.md](docs/workflows.md) |
+| Look up a setting: its default, who may change it, its limit | [docs/configuration.md](docs/configuration.md) |
 | Understand the model: types of work, gates, what merges on its own | [docs/model.md](docs/model.md) |
 | Read the rules every change meets | [rules/README.md](rules/README.md) |
 | Add a review rule or a kind of project | [kinds/README.md](kinds/README.md) |

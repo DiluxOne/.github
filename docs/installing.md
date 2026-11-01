@@ -24,7 +24,20 @@ It reads the organisation's repositories and what each one is (detection, each p
 | `.github/workflows/org-pull-request.yml` | The pull request pipeline every repository runs (conventions, review, auto-merge), calling the engine; each `secrets: inherit` written out as the secrets the called workflow asks for, since `inherit` does not cross organisations (one to a workflow that declares none stays: see the limits below). |
 | `workflow-templates/` | The callers a repository adds from *Actions, New workflow*. |
 
-What it leaves out keeps the engine's default: `policy/` (the review and autonomy policies), `labels.yml`, `kinds/`. The organisation adds any of them to its `.github`, whole files, when it wants its own; a kind it adds joins the engine's.
+What it leaves out keeps the engine's default: `policy/` (the review and autonomy policies), `labels.yml`, `kinds/`. A YAML file the organisation adds to its `.github` overrides only the keys it sets (#568): every other key stays the engine's, and so does every key a later release of the engine adds. A mapping merges key by key, a value or a list replaces the engine's, but an `add-only` list (`constitution`, `person-merges`) only adds to it, so no engine safeguard is dropped; `labels.yml` merges by label name; `repos.yml` and any file that is not YAML replace the engine's whole; a kind it adds joins the engine's. The merged autonomy policy must pass `autonomy.py check`, or every run stops. Every setting, its default, who may change it and how far, is in [the configuration reference](configuration.md); `scripts/settings.py explain FILE KEY --org FILE` says which level a value in force comes from.
+
+For example, an organisation `Acme` whose reproduced bugs wait for a person's `accepted`, and whose people's issues merge on their own only when the review rates them low risk, up to medium in a repository that asks, writes only this in `Acme/.github/policy/autonomy.yml`:
+
+```yaml
+lanes:
+  bugfix-reproduced:
+    accept: human
+  human-issue:
+    merge: {max-risk: low}
+    ceiling: {max-risk: medium}
+```
+
+A repository of Acme raises it in its own `.github/autonomy.yml` (`lanes: {human-issue: {merge: {max-risk: medium}}}`); past Acme's `ceiling`, Acme's ceiling applies, with a warning. Every other setting is the engine's (`tests/workflows/test_settings_acme.py` runs this).
 
 Then, what no pull request can do (the installer prints it with each URL):
 

@@ -53,7 +53,7 @@ files:
       identity: true
       org: any
       repo: never
-      limit: "<org>/.github"
+      limit: "the organisation's `.github` repository"
       read-by: [scripts/org.py]
       issue: "#191"
       says: The repository that holds the organisation's configuration.
@@ -88,7 +88,7 @@ files:
       org: any
       repo: never
       limit: a repository of the organisation, per kind that publishes to a catalog
-      read-by: [scripts/org.py, scripts/release-issue.py]
+      read-by: [scripts/org.py]
       issue: "#552, #568"
       says: "The catalog each kind publishes to (`{catalog}` in its pack's `release.publishes-to`); a kind without one publishes nowhere."
     - key: merge-queue
@@ -120,6 +120,7 @@ files:
       issue: "#562"
       says: The custom property that says a repository is adopted, which the organisation's rulesets cover.
     - key: conventions-contradictions
+      default: the patterns in org.yml
       org: any
       repo: never
       limit: each pattern with the lines it must find and must not
@@ -470,7 +471,7 @@ files:
       org: any
       repo: never
       limit: engines of the engine
-      read-by: [scripts/rules.py]
+      read-by: [scripts/policy.py]
       issue: "#191"
       says: The engines the kind's checks run, and the language of each.
     - key: settings
