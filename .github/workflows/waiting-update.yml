@@ -26,7 +26,7 @@ name: What waits (update)
 #     waiting:
 #       if: github.event_name != 'schedule'
 #       permissions: { contents: read }
-#       uses: DiluxOne/.github/.github/workflows/waiting-update.yml@v7
+#       uses: DiluxOne/.github/.github/workflows/waiting-update.yml@v7-next
 #       secrets:
 #         DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
 

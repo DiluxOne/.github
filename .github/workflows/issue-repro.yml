@@ -139,13 +139,13 @@ name: Issue reproduction
 #   jobs:
 #     repro:
 #       permissions: { actions: read, contents: write, issues: write, pull-requests: write }
-#       uses: DiluxOne/.github/.github/workflows/issue-repro.yml@v7
+#       uses: DiluxOne/.github/.github/workflows/issue-repro.yml@v7-next
 #       secrets: inherit
 #     repro-triaged:
 #       needs: triage
 #       if: needs.triage.outputs.bug == 'true'
 #       permissions: { actions: read, contents: write, issues: write, pull-requests: write }
-#       uses: DiluxOne/.github/.github/workflows/issue-repro.yml@v7
+#       uses: DiluxOne/.github/.github/workflows/issue-repro.yml@v7-next
 #       with:
 #         trigger: triage
 #         triage-bug: ${{ needs.triage.outputs.bug }}
@@ -1198,7 +1198,7 @@ jobs:
     # The agent's jobs read the repository with the job's own token (#287).
     permissions:
       contents: read
-    uses: DiluxOne/.github/.github/workflows/autopilot.yml@v7
+    uses: DiluxOne/.github/.github/workflows/autopilot.yml@v7-next
     with:
       mode: start
       issue: ${{ needs.report.outputs.lane-issue }}

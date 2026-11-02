@@ -183,7 +183,7 @@ jobs:
     # The agent's jobs read the repository with the job's own token (#287).
     permissions:
       contents: read
-    uses: DiluxOne/.github/.github/workflows/autopilot.yml@v7
+    uses: DiluxOne/.github/.github/workflows/autopilot.yml@v7-next
     with:
       mode: start
       issue: ${{ matrix.issue }}
