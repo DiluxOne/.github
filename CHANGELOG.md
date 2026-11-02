@@ -2,7 +2,21 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
-## [7.12.0](https://github.com/DiluxOne/.github/releases/tag/v7.12.0) · 2026-11-02
+## [7.13.0](https://github.com/DiluxOne/.github/releases/tag/v7.13.0) · 2026-11-02
+
+### Features
+
+- a few labels, and one view of what waits on me ([#606](https://github.com/DiluxOne/.github/pull/606))
+
+### Fixes
+
+- the release lane cannot merge its own callers PR in the test repo ([#625](https://github.com/DiluxOne/.github/pull/625))
+- a maintainer's own Bug is accepted but the autopilot never starts ([#626](https://github.com/DiluxOne/.github/pull/626))
+- the waiting job cannot write the board (HTTP 403) ([#621](https://github.com/DiluxOne/.github/pull/621))
+- the release lane writes the test repo's protected main directly ([#622](https://github.com/DiluxOne/.github/pull/622))
+- the bug reproduced from #615 ([#617](https://github.com/DiluxOne/.github/pull/617))
+
+## [7.12.0](https://github.com/DiluxOne/.github/releases/tag/v7.12.0) · 2026-11-01
 
 ### Features
 
@@ -13,6 +27,10 @@ Every version of the engine (the workflows, scripts, policy and kinds other repo
 - the bug reproduced from #610 ([#612](https://github.com/DiluxOne/.github/pull/612))
 - the bug reproduced from #607 ([#609](https://github.com/DiluxOne/.github/pull/609))
 - the bug reproduced from #603 ([#605](https://github.com/DiluxOne/.github/pull/605))
+
+### Maintenance
+
+- release v7.12.0 ([#614](https://github.com/DiluxOne/.github/pull/614))
 
 ## [7.11.1](https://github.com/DiluxOne/.github/releases/tag/v7.11.1) · 2026-11-01
 
