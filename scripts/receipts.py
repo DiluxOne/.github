@@ -32,11 +32,17 @@ signed by GitHub and show as Verified.
                            pull request, its head commit, its checks, the
                            review's verdict, the criteria, the policy's commit,
                            who accepted and who merged
+  receipts.py own-bug      whether the last seal accepted a maintainer's own
+                           Bug with its writing (#564): sealed so, by the
+                           issue's author (AUTHOR), and the PRD still the
+                           sealed one; exit 0 when it did, 1 when not, 2
+                           when the seal could not be read
   receipts.py board        the issue's board: one bot comment, kept up to date
   receipts.py --test       self-test
 
 Environment: GH_TOKEN; GITHUB_REPOSITORY (owner/name); NUMBER (the issue);
-BODY (a file holding the issue's body); ACCEPTED_BY (seal-prd); POLICY_REF
+BODY (a file holding the issue's body); ACCEPTED_BY and ACCEPTED_HOW
+(seal-prd; `own-bug` for a maintainer's own Bug, #564); AUTHOR (own-bug); POLICY_REF
 (the commit of DiluxOne/.github whose policy applied); RECEIPTS_FIXTURE (a
 directory standing in for the branch, for the self-test).
 """
@@ -83,11 +89,29 @@ def now():
 
 # --- what a seal and a receipt say (pure, tested) -------------------------
 
-def seal(number, body, accepted_by, policy_ref, at):
+OWN_BUG = "own-bug"
+
+
+def seal(number, body, accepted_by, policy_ref, at, how=None):
     # The text too (#588, choice 5a): what changed since the seal can be
-    # said; it is public on the issue already.
-    return {"kind": "prd-seal", "issue": number, "prd_sha256": prd_hash(body), "prd": schema_mod.part_text(body, "prd"),
-            "accepted_by": accepted_by, "at": at, "policy": f"DiluxOne/.github@{policy_ref}" if policy_ref else None}
+    # said; it is public on the issue already. `how` (#564): `own-bug` when
+    # the triage accepted a maintainer's own Bug with its writing.
+    s = {"kind": "prd-seal", "issue": number, "prd_sha256": prd_hash(body), "prd": schema_mod.part_text(body, "prd"),
+         "accepted_by": accepted_by, "at": at, "policy": f"DiluxOne/.github@{policy_ref}" if policy_ref else None}
+    if how:
+        s["how"] = how
+    return s
+
+
+def own_bug_accepted(last_seal, body, author):
+    """Whether LAST_SEAL accepted a maintainer's own Bug (#564): the triage
+    sealed it so, the person it names is the issue's AUTHOR, and BODY's PRD
+    is still the sealed one. Only dilux-bot writes the receipts branch, and
+    the triage seals it so only after it read the author's maintain or
+    admin role. Pure."""
+    who = (author or "").strip().lower()
+    return bool(last_seal and who and last_seal.get("how") == OWN_BUG
+                and str(last_seal.get("accepted_by") or "").strip().lower() == who and verdict(body, last_seal) == "match")
 
 
 def sealed_prd(last_seal, edits=()):
@@ -193,6 +217,9 @@ def board_text(number, ready, last_seal, merged, autopilot=None, labels=(), held
         # A lane seals as "policy (lane <name>)": it links the rule it followed (#188).
         if by.startswith("policy (lane "):
             by = f"{by}, {rule_link(last_seal.get('policy'))}"
+        # A maintainer's own Bug (#564): accepted with its writing.
+        elif last_seal.get("how") == OWN_BUG:
+            by = f"{by}, their own Bug, accepted with its writing,"
         rows.append(f"| G2 Accepted | ✓ by {by} at {last_seal.get('at')}; PRD sealed `{last_seal.get('prd_sha256', '')[:12]}` |")
     elif lane and "accepted-by:policy" in labels:
         # Every automatic decision links the rule it followed (#188).
@@ -451,6 +478,13 @@ Normal
     check("#188: a lane's acceptance names the lane and links its rule", "✓ by policy, lane `platform` ([the rule](https://github.com/DiluxOne/.github/blob/main/policy/autonomy.yml))" in lb, True)
     ls = seal(7, body, "policy (lane bugfix-reproduced)", "def456", "t")
     check("#188: a lane's sealed acceptance links the rule at its commit", "✓ by policy (lane bugfix-reproduced), [the rule](https://github.com/DiluxOne/.github/blob/def456/policy/autonomy.yml) at t" in board_text(7, True, ls, None), True)
+    ob = seal(7, body, "boss", "abc123", "t", OWN_BUG)
+    check("C2 (#564): a maintainer's own Bug is sealed so, by its author", (ob["how"], ob["accepted_by"], "how" in s), (OWN_BUG, "boss", False))
+    check("C2 (#564): it is accepted for its author, while the PRD is the sealed one",
+          (own_bug_accepted(ob, body, "boss"), own_bug_accepted(ob, body, "Boss"), own_bug_accepted(ob, body.replace("turns dark", "turns light"), "boss")), (True, True, False))
+    check("C2 (#564): never for someone else, never from a person's seal, never with no seal",
+          (own_bug_accepted(ob, body, "alice"), own_bug_accepted(ob, body, ""), own_bug_accepted(s, body, "soydiloreto"), own_bug_accepted(None, body, "boss")), (False, False, False, False))
+    check("C2 (#564): the board says it was the author's own Bug", "✓ by boss, their own Bug, accepted with its writing, at t" in board_text(7, True, ob, None), True)
     check("#188: a person whose login starts with policy is a person", "policyfoo at" in board_text(7, True, seal(7, body, "policyfoo", "x", "t"), None), True)
     check("#188: a lane's label alone is no acceptance", "not sealed" in board_text(7, True, None, None, None, ["lane:platform"]), True)
     mb = board_text(7, True, s, receipt(7, body, s, pr2, {}, "abc123", "t"))
@@ -478,6 +512,12 @@ Normal
         check("cli: verify an issue never sealed", run("verify-prd").stdout.strip(), "unsealed")
         check("cli: seal-prd writes a seal", run("seal-prd").returncode, 0)
         check("cli: verify the sealed PRD", run("verify-prd").stdout.strip(), "match")
+        check("C2 cli: a person's seal is no own Bug", (run("own-bug").returncode, run("own-bug").stdout.strip()), (1, "no"))
+        env11 = dict(env, NUMBER="11", ACCEPTED_BY="boss", ACCEPTED_HOW=OWN_BUG, AUTHOR="boss")
+        sp.run([sys.executable, os.path.abspath(__file__), "seal-prd"], env=env11, capture_output=True, text=True)
+        got11 = sp.run([sys.executable, os.path.abspath(__file__), "own-bug"], env=env11, capture_output=True, text=True)
+        check("C2 cli: seal-prd with ACCEPTED_HOW=own-bug, then own-bug for its author", (got11.returncode, got11.stdout.strip()), (0, "yes"))
+        check("C2 cli: and not for anyone else", sp.run([sys.executable, os.path.abspath(__file__), "own-bug"], env=dict(env11, AUTHOR="alice"), capture_output=True, text=True).returncode, 1)
         # C5 (#588): the accepted body edited reads `changed`, and the
         # sealed text is found to say what changed.
         ef = os.path.join(d, "edited.md")
@@ -567,7 +607,7 @@ def main(argv):
     policy_ref = os.environ.get("POLICY_REF")
     if mode == "seal-prd":
         at = now()
-        s = seal(number, body, os.environ.get("ACCEPTED_BY", "?"), policy_ref, at)
+        s = seal(number, body, os.environ.get("ACCEPTED_BY", "?"), policy_ref, at, os.environ.get("ACCEPTED_HOW") or None)
         write(repo, f"issues/{number}/prd-{at}.json", s, f"Seal #{number}'s PRD")
         print(json.dumps(s))
         return 0
@@ -612,6 +652,15 @@ def main(argv):
         if text:
             print(text)
         return 0 if text else 1
+    if mode == "own-bug":
+        try:
+            last = last_seal(repo, number)
+        except Exception as e:  # noqa: BLE001 — unknown, never read as accepted
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+        ok = own_bug_accepted(last, body, os.environ.get("AUTHOR", ""))
+        print("yes" if ok else "no")
+        return 0 if ok else 1
     if mode == "merged":
         pr = json.loads(os.environ.get("PR_JSON", "{}"))
         checks = json.loads(os.environ.get("CHECKS_JSON", "{}"))

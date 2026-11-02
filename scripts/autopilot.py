@@ -205,7 +205,7 @@ def person_accepted(issue, label="accepted"):
     return bool(event) and event.get("__typename") == "LabeledEvent" and (event.get("actor") or {}).get("__typename") == "User"
 
 
-def which_lane(policy, issue, run, repository, autopilot_var):
+def which_lane(policy, issue, run, repository, autopilot_var, own_bug=False):
     """(lane, why): the lane the autopilot works the issue under. A lane's
     own issue (its `lane:` label, its origin checked against GitHub by
     autonomy.lane_accepts) is worked under that lane, with its caps; an issue
@@ -222,7 +222,29 @@ def which_lane(policy, issue, run, repository, autopilot_var):
         return autonomy.lane_of(issue)[0], why
     if person_accepted(issue):
         return LANE, "a person accepted it"
+    # A maintainer's own Bug (#564): the triage sealed its PRD in its
+    # author's name (receipts.py own-bug, OWN_BUG), which is their acceptance.
+    if own_bug:
+        return LANE, "its author, a maintainer, accepted their own Bug with its writing"
     return None, f"no person accepted it, and no lane does ({why})"
+
+
+def own_bug_of(repo, number, issue):
+    """Whether the triage accepted the issue as its author's own Bug (#564):
+    its last seal says so, in its author's name, for the PRD it has now
+    (receipts.py own_bug_accepted). A seal that cannot be read is not one."""
+    try:
+        rc = _receipts()
+        return rc.own_bug_accepted(rc.last_seal(repo, number), issue.get("body") or "", (issue.get("author") or {}).get("login") or "")
+    except Exception:  # noqa: BLE001 — never read as accepted
+        return False
+
+
+def _receipts():
+    spec = importlib.util.spec_from_file_location("receipts", os.path.join(HERE, "receipts.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def may_start(policy, body, autopilot_var, lane=LANE, no_way=""):
@@ -2469,6 +2491,23 @@ Clamp the value in Sum::add.
     check("#562 lane: an Adopt issue a maintainer accepted is never the autopilot's", which_lane(pol, adopt_issue, None, "DiluxOne/.github", "")[0], None)
     check("#84 lane: nobody accepted it, nothing starts", which_lane(pol, gql(["bug"], [], author="someone", body=prd), None, "DiluxOne/x", "")[0], None)
     check("#84 lane: a bot's `accepted` is nobody's acceptance", which_lane(pol, gql(["accepted"], [("accepted", "Bot", "dilux-bot")], author="someone", body=prd), None, "DiluxOne/x", "")[0], None)
+    check("C2 (#564) lane: a maintainer's own Bug, sealed so by the triage, is worked under human-issue",
+          which_lane(pol, gql(["accepted"], [("accepted", "Bot", "dilux-bot")], author="boss", body=prd), None, "DiluxOne/x", "", own_bug=True)[0], LANE)
+    import tempfile
+    with tempfile.TemporaryDirectory() as seals:
+        rc = _receipts()
+        saved = os.environ.get("RECEIPTS_FIXTURE")
+        os.environ["RECEIPTS_FIXTURE"] = seals
+        try:
+            rc.write("DiluxOne/x", "issues/9/prd-t.json", rc.seal(9, prd, "boss", None, "t", rc.OWN_BUG), "seal")
+            check("C2 (#564) lane: the triage's own-Bug seal, read for the issue's author only",
+                  (own_bug_of("DiluxOne/x", 9, {"body": prd, "author": {"login": "boss"}}), own_bug_of("DiluxOne/x", 9, {"body": prd, "author": {"login": "eve"}}),
+                   own_bug_of("DiluxOne/x", 10, {"body": prd, "author": {"login": "boss"}})), (True, False, False))
+        finally:
+            if saved is None:
+                os.environ.pop("RECEIPTS_FIXTURE", None)
+            else:
+                os.environ["RECEIPTS_FIXTURE"] = saved
     check("#84 lane: the lane's label added by a person accepts nothing", which_lane(pol, gql(["lane:bugfix-reproduced"], [("lane:bugfix-reproduced", "User", "someone")]), run42, "DiluxOne/x", "")[0], None)
     check("#84 lane: DX_AUTOPILOT off, the lane accepts nothing", which_lane(pol, lane_issue, run42, "DiluxOne/x", "off")[0], None)
     check("#84 lane: a lane's issue a person also accepted, when the lane refuses, is the person's", which_lane(pol, gql(["lane:bugfix-reproduced", "accepted"], [("lane:bugfix-reproduced", "Bot", "dilux-bot"), ("accepted", "User", "soydiloreto")]), None, "DiluxOne/x", "")[0], LANE)
@@ -3949,7 +3988,7 @@ def main(argv):
         if not issue:
             print(f"issue #{number} could not be read")
             return 1
-        name, why = which_lane(pol, issue, autonomy.read_run(issue, repo), repo, var)
+        name, why = which_lane(pol, issue, autonomy.read_run(issue, repo), repo, var, own_bug_of(repo, number, issue))
         print(name or why)
         if name:
             print(f"#{number}: lane {name}, {why}", file=sys.stderr)

@@ -35,7 +35,7 @@ def test_continue_is_guarded_before_the_autopilot_starts():
     cond = " ".join(steer["if"].split())
     assert "github.event.label.name == 'autopilot:continue'" in cond and "github.event.label.name == 'accepted'" in cond
     assert "github.event.sender.type != 'Bot'" in cond
-    assert ap["needs"] == "steer"
+    assert "steer" in ap["needs"]  # and `own`, a maintainer's own Bug (#564)
     acond = " ".join(ap["if"].split())
     assert acond.startswith("!cancelled() && (needs.steer.result == 'skipped' || needs.steer.outputs.ok == 'true')")
 

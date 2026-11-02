@@ -198,7 +198,9 @@ jobs:
     # Before the decision (#353): when a person opens an issue, or edits one
     # that is not accepted yet, the same check labels it
     # `awaiting-acceptance` or `incomplete` and says what is missing; it
-    # never touches `accepted` then. A bot's issue (a lane's) is left alone,
+    # never touches `accepted` then; a maintainer's own complete Bug it
+    # leaves to the triage, which accepts it with its writing (#564). A
+    # bot's issue (a lane's) is left alone,
     # and so is a report the reproduction confirmed and handed to its lane
     # (#427): `bug:confirmed` with both labels taken off. With the lane
     # closed, the labels stay and the report still waits for a maintainer.
@@ -292,6 +294,7 @@ jobs:
           LABEL: ${{ inputs.label }}
           ACTION: ${{ github.event.action }}
           SENDER: ${{ github.event.sender.login }}
+          AUTHOR: ${{ github.event.issue.user.login }}
         run: |
           set -euo pipefail
           # Exit 1 is "not ready" with its reasons (each in code, so text the
@@ -354,6 +357,12 @@ jobs:
           echo "ready=$ready" >> "$GITHUB_OUTPUT"
           echo "$text"
           [ -n "$GH_TOKEN" ] || { echo "No bot key: the result stays in this log."; exit 0; }
+          # A maintainer's own Bug, complete (C2, #564): the triage accepts
+          # it with its writing (issue-triage.yml, the `own` job), so it is
+          # never left `awaiting-acceptance` here.
+          if [ "$ACTION" = opened ] && [ "$ready" = true ] && [ "$(bash .dx-central/scripts/triage-act.sh own-bug-check)" = yes ]; then
+            echo "A maintainer's own Bug: the triage accepts it with its writing."; exit 0
+          fi
           # The state's labels (#353), one of the two at a time, created where
           # the repository does not have them yet (labels.yml has them).
           for l in "awaiting-acceptance|FBCA04|The issue follows the schema; it waits for a maintainer's decision" "incomplete|D4C5F9|The issue does not follow the schema yet; a comment says what is missing"; do

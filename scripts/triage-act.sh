@@ -22,8 +22,28 @@
 # issue's author), SECURITY_REPO and SECURITY_TOKEN (optional). A verdict
 # with no category labels the issue needs-triage and stops.
 #
-#   triage-act.sh          act
-#   triage-act.sh --test   self-test, with a stand-in for gh
+# A maintainer's own Bug (C2, #564) is not an outside reporter's report:
+# `own-bug` runs before the triage, and when the issue's Type is Bug and its
+# author's role on the repository is maintain or admin, nothing classifies
+# it, no `bug:unconfirmed` nor `layer:` goes on, and no reproduction starts
+# (the autopilot's test-first still writes its failing test). Complete (G1,
+# scripts/issue-schema.py), it is accepted with its writing: its PRD sealed
+# on the receipts branch in its author's name (receipts.py seal-prd,
+# ACCEPTED_HOW=own-bug, with SEAL_TOKEN, which writes contents), then
+# `accepted`, and the board; the gate (issue-gate.sh) and the autopilot
+# (autopilot.py lane) read that seal as the author's acceptance.
+# Incomplete, it gets `incomplete` from the G1 check and waits on its author
+# like any other. It writes own=true|false and accepted=true|false to
+# GITHUB_OUTPUT; a read that fails is no maintainer's: the triage reads it.
+# `own-bug-check` only prints yes or no (issue-accepted.yml's G1 check
+# leaves a complete one to the triage). Environment: AUTHOR, BODY (a file
+# holding the issue's body), NUMBER, GITHUB_REPOSITORY, GH_TOKEN, SEAL_TOKEN,
+# POLICY_REF (optional).
+#
+#   triage-act.sh                 act
+#   triage-act.sh own-bug         a maintainer's own Bug: accept it, or not
+#   triage-act.sh own-bug-check   whether the issue is one (yes|no)
+#   triage-act.sh --test          self-test, with a stand-in for gh
 set -euo pipefail
 
 # Whether the issue's Type was last set by a person who can write to the
@@ -40,6 +60,66 @@ set_by_maintainer() {
   case $who in "" | bot | *"[bot]") return 1;; esac
   perm=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$who/permission" --jq .permission 2>/dev/null) || return 0
   case $perm in admin | maintain | write) return 0;; *) return 1;; esac
+}
+
+# Whether issue $NUMBER is a maintainer's own Bug (#564): its Type is Bug and
+# AUTHOR's role on the repository is maintain or admin (the REST answer's
+# role_name; its legacy `permission` says write for maintain). Prints yes or
+# no; a read that fails prints no, so the triage reads it as any other.
+own_bug() {
+  local type role
+  [[ "${AUTHOR:-}" =~ ^[A-Za-z0-9-]{1,39}$ ]] || { echo no; return 0; }
+  type=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" --jq '.type.name // ""' 2>/dev/null) || { echo no; return 0; }
+  [ "$type" = Bug ] || { echo no; return 0; }
+  role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$AUTHOR/permission" --jq '.role_name // .permission' 2>/dev/null) || { echo no; return 0; }
+  case $role in admin | maintain) echo yes;; *) echo no;; esac
+}
+
+# The issue's board, created or updated (receipts.py board): the one bot
+# comment that starts with its marker.
+board_upsert() {
+  local board id
+  board=$(python3 "$(dirname "${BASH_SOURCE[0]}")/receipts.py" board) || return 1
+  # shellcheck disable=SC2016 # jq's env, not the shell's.
+  id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '.[] | select(.user.type == "Bot" and (.body | startswith("<!-- dx-board -->"))) | .id' 2>/dev/null | tail -1)
+  if [ -n "$id" ]; then gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$board" >/dev/null
+  else gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$board" >/dev/null; fi
+}
+
+own_accept() {
+  local out=${GITHUB_OUTPUT:-/dev/null} here ready reply
+  here=$(dirname "${BASH_SOURCE[0]}")
+  if [ "$(own_bug)" != yes ]; then
+    { echo "own=false"; echo "accepted=false"; } >> "$out"
+    echo "Issue #$NUMBER: not a maintainer's own Bug; the triage reads it."
+    return 0
+  fi
+  echo "own=true" >> "$out"
+  ready=$(python3 "$here/issue-schema.py" check < "$BODY" 2>/dev/null | jq -r '.ok // false' 2>/dev/null || true)
+  if [ "$ready" != true ]; then
+    echo "accepted=false" >> "$out"
+    reply="You wrote this Bug with the maintain or admin role, so it skips the outside reporter's triage and reproduction. It is \`incomplete\` for now: the G1 comment says what is missing. Once it is complete, add \`accepted\` and the autopilot codes it in the organisation's runners, starting from a failing test."
+    gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '%s\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)' "$reply")" >/dev/null
+    echo "Issue #$NUMBER: a maintainer's own Bug, incomplete; it waits on its author."
+    return 0
+  fi
+  # The seal first: the gate and the autopilot read the acceptance from it.
+  if ! GH_TOKEN=${SEAL_TOKEN:-$GH_TOKEN} ACCEPTED_BY=$AUTHOR ACCEPTED_HOW=own-bug python3 "$here/receipts.py" seal-prd >/dev/null; then
+    echo "accepted=false" >> "$out"
+    echo "::warning::#$NUMBER's PRD could not be sealed; it waits for its author's \`accepted\`."
+    gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '%s\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)' "You wrote this Bug with the maintain or admin role, so it skips the outside reporter's triage and reproduction; its PRD could not be sealed now, so add \`accepted\` yourself to start the autopilot.")" >/dev/null
+    return 0
+  fi
+  gh label create accepted --repo "$GITHUB_REPOSITORY" --color 0E8A16 --description "A maintainer accepted it: the autopilot may start" >/dev/null 2>&1 || true
+  gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label accepted >/dev/null
+  for l in awaiting-acceptance incomplete needs-triage; do
+    gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$l" >/dev/null 2>&1 || true
+  done
+  echo "accepted=true" >> "$out"
+  board_upsert || echo "::warning::#$NUMBER's board could not be written."
+  reply="You wrote this Bug with the maintain or admin role, so it is accepted with its writing: no triage classifies it and no reproduction runs, and its PRD is sealed in your name. The autopilot codes it now in the organisation's runners, starting from a failing test."
+  gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '%s\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)' "$reply")" >/dev/null
+  echo "Issue #$NUMBER: a maintainer's own Bug, accepted and sealed by @$AUTHOR."
 }
 
 act() {
@@ -263,6 +343,34 @@ if [ "${1:-}" = "--test" ]; then
   : > "$log"; if ( VERDICT='{"category":"enhancement","layer":"browser"}' REPLY=x SUMMARY=s NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m act >/dev/null 2>&1; grep -q "add-label layer:" "$log" ); then echo "FAIL #352 a request gets no layer"; fail=1; else echo "ok   #352 a request gets no layer"; fi
   : > "$log"; if ( VERDICT='{"category":"bug_unconfirmed","layer":"screen"}' REPLY=x SUMMARY=s NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m act >/dev/null 2>&1; grep -q "add-label layer:" "$log" ); then echo "FAIL #352 an unknown layer is no label"; fail=1; else echo "ok   #352 an unknown layer is no label"; fi
   : > "$log"; if ( HAS_LAYER=1 VERDICT='{"category":"bug_unconfirmed","layer":"logic"}' REPLY=x SUMMARY=s NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m act >/dev/null 2>&1; grep -q "add-label layer:logic" "$log" ); then echo "FAIL #352 a layer a person set stays"; fail=1; else echo "ok   #352 a layer a person set stays"; fi
+  # C2 (#564): a maintainer's own Bug is accepted with its writing.
+  prd=$(mktemp); printf '### Problem\n\nIt breaks.\n\n### Scope\n\n- Fix it.\n\n### Out of scope\n\n- Nothing.\n\n### Acceptance criteria\n\n- C1: Given a page, when it loads, then it does not break.\n\n### Criticality\n\nNormal\n' > "$prd"
+  half=$(mktemp); printf '### Problem\n\nIt breaks.\n' > "$half"
+  o() {
+    : > "$log"; seals=$(mktemp -d); outf=$(mktemp)
+    ( export RECEIPTS_FIXTURE=$seals AUTOPILOT_JSON=null LABELS_JSON='[]' HELD='' GITHUB_OUTPUT=$outf NUMBER=7 GITHUB_REPOSITORY=o/r AUTHOR=${WHO:-boss} BODY=${B:-$prd}; own_accept >/dev/null 2>&1 ) || true
+  }
+  for role in maintain admin; do
+    HAS_TYPE=Bug PERM=$role o
+    sealed=$(cat "$seals"/issues/7/prd-*.json 2>/dev/null || echo '{}')
+    if grep -q "^own=true" "$outf" && grep -q "^accepted=true" "$outf" && grep -q -- "--add-label accepted" "$log" \
+       && [ "$(jq -r '.accepted_by + " " + .how' <<<"$sealed")" = "boss own-bug" ] \
+       && ! grep -qE -- "--add-label [^ ]*(bug:unconfirmed|repro:no-way|layer:|needs-triage)" "$log"; then
+      echo "ok   C2 a Bug by a $role author: accepted and sealed by the author, no bug:unconfirmed, no repro:no-way"
+    else echo "FAIL C2 a Bug by a $role author: accepted and sealed by the author, no bug:unconfirmed, no repro:no-way:"; cat "$log" "$outf"; fail=1; fi
+  done
+  HAS_TYPE=Bug PERM=maintain o
+  if grep -q "issue comment 7 .*accepted with its writing" "$log" && grep -q "issue comment 7 .*dx-board" "$log" && grep -q -- "--remove-label awaiting-acceptance" "$log"; then echo "ok   C2 its reply says so, its board shows the seal, awaiting-acceptance comes off"; else echo "FAIL C2 its reply says so, its board shows the seal, awaiting-acceptance comes off:"; cat "$log"; fail=1; fi
+  for case_ in "write Bug" "maintain Feature" "admin " "read Bug"; do
+    HAS_TYPE=${case_#* } PERM=${case_%% *} o
+    if grep -q "^own=false" "$outf" && ! grep -qE -- "add-label|issue comment" "$log" && [ -z "$(ls "$seals")" ]; then echo "ok   C2 role ${case_%% *}, Type ${case_#* }: left to the triage, unchanged"; else echo "FAIL C2 role ${case_%% *}, Type ${case_#* }: left to the triage, unchanged:"; cat "$log" "$outf"; fail=1; fi
+  done
+  HAS_TYPE=Bug PERM_FAILS=1 o
+  if grep -q "^own=false" "$outf"; then echo "ok   C2 a role that cannot be read is no maintainer's"; else echo "FAIL C2 a role that cannot be read is no maintainer's"; fail=1; fi
+  HAS_TYPE=Bug PERM=maintain B=$half o
+  if grep -q "^own=true" "$outf" && grep -q "^accepted=false" "$outf" && ! grep -qE -- "--add-label" "$log" && [ -z "$(ls "$seals")" ] && grep -q "issue comment 7 .*incomplete" "$log"; then echo "ok   C2 an incomplete one is not accepted, gets no triage label, and waits on its author"; else echo "FAIL C2 an incomplete one is not accepted, gets no triage label, and waits on its author:"; cat "$log" "$outf"; fail=1; fi
+  if [ "$(HAS_TYPE=Bug PERM=admin NUMBER=7 GITHUB_REPOSITORY=o/r AUTHOR=boss own_bug)" = yes ] && [ "$(HAS_TYPE=Bug PERM=write NUMBER=7 GITHUB_REPOSITORY=o/r AUTHOR=alice own_bug)" = no ] && [ "$(HAS_TYPE=Bug PERM=admin NUMBER=7 GITHUB_REPOSITORY=o/r AUTHOR='a b' own_bug)" = no ]; then echo "ok   C2 own-bug-check: yes for a maintainer's Bug only"; else echo "FAIL C2 own-bug-check: yes for a maintainer's Bug only"; fail=1; fi
+  rm -f "$prd" "$half"
   VERDICT='' REPLY=x SUMMARY=s t "no verdict waits for a person" "--add-label needs-triage"
   VERDICT='{"category":"nonsense"}' REPLY=x SUMMARY=s t "an unknown category waits for a person" "--add-label needs-triage"
   rm -f "$log"
@@ -270,4 +378,8 @@ if [ "${1:-}" = "--test" ]; then
   exit "$fail"
 fi
 
-act
+case "${1:-}" in
+  own-bug) own_accept ;;
+  own-bug-check) own_bug ;;
+  *) act ;;
+esac
