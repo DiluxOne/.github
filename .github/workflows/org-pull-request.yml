@@ -27,6 +27,9 @@ name: Pull request (organisation)
 # wait for them yet (docs/plans/org-first.md, step 6). On a fork's pull
 # request the conventions and the gate run with a read-only token and no
 # secret; the review, which needs secrets, skips forks.
+# After the review, whom the pull request waits on goes on its board, with
+# one mention, and into the organisation's "What waits" view (waiting,
+# #564); a fork's is covered by issues.yml, by its metadata only.
 #
 # This repository runs its own pipeline (pull-request.yml), which reviews
 # changes to these workflows with the version in the pull request, so the
@@ -111,6 +114,20 @@ jobs:
       description-ok: ${{ needs.review.outputs.description-ok }}
       enabled: ${{ needs.review.outputs.auto-merge }}
     secrets: inherit
+
+  # What waits on whom (#564, waiting-update.yml), after the review: whom
+  # the pull request waits on now (a failed check, a thread, a person's
+  # merge), on its board with one mention, and the organisation's view. A
+  # fork's pull request has no secrets here: issues.yml's
+  # pull_request_target covers it, by its metadata only.
+  waiting:
+    needs: review
+    if: always() && github.event_name == 'pull_request' && github.repository != 'DiluxOne/.github' && github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+    uses: DiluxOne/.github/.github/workflows/waiting-update.yml@v7
+    secrets:
+      DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
 
   # An autopilot pull request whose review blocks: one round of fixes by the
   # autopilot (#83), which pushes and so runs this pipeline again; after its

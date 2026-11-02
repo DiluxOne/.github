@@ -568,5 +568,289 @@
     "the maintainer"
    ]
   }
+ ],
+ "issues": [
+  {
+   "__typename": "Issue",
+   "number": 201,
+   "title": "complete, not accepted",
+   "url": "https://github.com/DiluxOne/diluxone-users-wordpress/issues/201",
+   "createdAt": "2026-10-29T08:00:00Z",
+   "author": {
+    "login": "someone"
+   },
+   "repository": {
+    "name": "diluxone-users-wordpress",
+    "nameWithOwner": "DiluxOne/diluxone-users-wordpress",
+    "isPrivate": false
+   },
+   "labels": {
+    "nodes": [
+     {
+      "name": "awaiting-acceptance"
+     }
+    ]
+   },
+   "assignees": {
+    "nodes": []
+   },
+   "timelineItems": {
+    "nodes": [
+     {
+      "createdAt": "2026-10-29T09:00:00Z",
+      "label": {
+       "name": "awaiting-acceptance"
+      }
+     }
+    ]
+   },
+   "want": [
+    "an acceptance",
+    "the maintainer"
+   ]
+  },
+  {
+   "__typename": "Issue",
+   "number": 202,
+   "title": "incomplete, an outside contributor's",
+   "url": "https://github.com/DiluxOne/diluxone-users-wordpress/issues/202",
+   "createdAt": "2026-10-29T08:00:00Z",
+   "author": {
+    "login": "outsider"
+   },
+   "repository": {
+    "name": "diluxone-users-wordpress",
+    "nameWithOwner": "DiluxOne/diluxone-users-wordpress",
+    "isPrivate": false
+   },
+   "labels": {
+    "nodes": [
+     {
+      "name": "incomplete"
+     }
+    ]
+   },
+   "assignees": {
+    "nodes": []
+   },
+   "timelineItems": {
+    "nodes": [
+     {
+      "createdAt": "2026-10-28T10:00:00Z",
+      "label": {
+       "name": "incomplete"
+      }
+     },
+     {
+      "createdAt": "2026-10-29T10:00:00Z",
+      "label": {
+       "name": "incomplete"
+      }
+     }
+    ]
+   },
+   "want": [
+    "completing it",
+    "its author"
+   ]
+  },
+  {
+   "__typename": "Issue",
+   "number": 203,
+   "title": "accepted",
+   "url": "https://github.com/DiluxOne/diluxone-users-wordpress/issues/203",
+   "createdAt": "2026-10-29T08:00:00Z",
+   "author": {
+    "login": "someone"
+   },
+   "repository": {
+    "name": "diluxone-users-wordpress",
+    "nameWithOwner": "DiluxOne/diluxone-users-wordpress",
+    "isPrivate": false
+   },
+   "labels": {
+    "nodes": [
+     {
+      "name": "accepted"
+     }
+    ]
+   },
+   "assignees": {
+    "nodes": []
+   },
+   "timelineItems": {
+    "nodes": []
+   },
+   "want": [
+    "the autopilot's work",
+    "the autopilot"
+   ]
+  },
+  {
+   "__typename": "Issue",
+   "number": 204,
+   "title": "the triage asked",
+   "url": "https://github.com/DiluxOne/diluxone-users-wordpress/issues/204",
+   "createdAt": "2026-10-29T08:00:00Z",
+   "author": {
+    "login": "someone"
+   },
+   "repository": {
+    "name": "diluxone-users-wordpress",
+    "nameWithOwner": "DiluxOne/diluxone-users-wordpress",
+    "isPrivate": false
+   },
+   "labels": {
+    "nodes": [
+     {
+      "name": "needs-info"
+     }
+    ]
+   },
+   "assignees": {
+    "nodes": []
+   },
+   "timelineItems": {
+    "nodes": []
+   },
+   "want": [
+    "the answer",
+    "its author"
+   ]
+  },
+  {
+   "__typename": "Issue",
+   "number": 205,
+   "title": "claimed",
+   "url": "https://github.com/DiluxOne/diluxone-users-wordpress/issues/205",
+   "createdAt": "2026-10-29T08:00:00Z",
+   "author": {
+    "login": "someone"
+   },
+   "repository": {
+    "name": "diluxone-users-wordpress",
+    "nameWithOwner": "DiluxOne/diluxone-users-wordpress",
+    "isPrivate": false
+   },
+   "labels": {
+    "nodes": [
+     {
+      "name": "accepted"
+     },
+     {
+      "name": "claimed"
+     }
+    ]
+   },
+   "assignees": {
+    "nodes": [
+     {
+      "login": "ana"
+     }
+    ]
+   },
+   "timelineItems": {
+    "nodes": []
+   },
+   "want": [
+    "the claimed work",
+    "the claimant"
+   ]
+  },
+  {
+   "__typename": "Issue",
+   "number": 206,
+   "title": "just opened, not triaged yet",
+   "url": "https://github.com/DiluxOne/diluxone-users-wordpress/issues/206",
+   "createdAt": "2026-10-29T08:00:00Z",
+   "author": {
+    "login": "someone"
+   },
+   "repository": {
+    "name": "diluxone-users-wordpress",
+    "nameWithOwner": "DiluxOne/diluxone-users-wordpress",
+    "isPrivate": false
+   },
+   "labels": {
+    "nodes": []
+   },
+   "assignees": {
+    "nodes": []
+   },
+   "timelineItems": {
+    "nodes": []
+   },
+   "want": null
+  },
+  {
+   "__typename": "Issue",
+   "number": 207,
+   "title": "the autopilot asked on the issue",
+   "url": "https://github.com/DiluxOne/diluxone-users-wordpress/issues/207",
+   "createdAt": "2026-10-29T08:00:00Z",
+   "author": {
+    "login": "someone"
+   },
+   "repository": {
+    "name": "diluxone-users-wordpress",
+    "nameWithOwner": "DiluxOne/diluxone-users-wordpress",
+    "isPrivate": false
+   },
+   "labels": {
+    "nodes": [
+     {
+      "name": "accepted"
+     },
+     {
+      "name": "autopilot:waiting"
+     }
+    ]
+   },
+   "assignees": {
+    "nodes": []
+   },
+   "timelineItems": {
+    "nodes": []
+   },
+   "want": [
+    "its question",
+    "the maintainer"
+   ]
+  },
+  {
+   "__typename": "Issue",
+   "number": 208,
+   "title": "a person has it",
+   "url": "https://github.com/DiluxOne/diluxone-users-wordpress/issues/208",
+   "createdAt": "2026-10-29T08:00:00Z",
+   "author": {
+    "login": "someone"
+   },
+   "repository": {
+    "name": "diluxone-users-wordpress",
+    "nameWithOwner": "DiluxOne/diluxone-users-wordpress",
+    "isPrivate": false
+   },
+   "labels": {
+    "nodes": [
+     {
+      "name": "accepted"
+     },
+     {
+      "name": "needs-human"
+     }
+    ]
+   },
+   "assignees": {
+    "nodes": []
+   },
+   "timelineItems": {
+    "nodes": []
+   },
+   "want": [
+    "needs-human",
+    "the maintainer"
+   ]
+  }
  ]
 }

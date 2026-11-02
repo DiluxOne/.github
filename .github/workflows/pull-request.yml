@@ -9,6 +9,8 @@ name: Pull request
 # request whose review blocks gets its fix round here (autopilot-fix, #504),
 # as org-pull-request.yml gives it everywhere else. A push to main brings
 # the open autopilot pull requests in step with it (autopilot-sweep, #561).
+# After the review, whom the pull request waits on goes on its board, with
+# one mention, and into the "What waits" view (waiting, #564).
 
 on:
   # An edit of the title or description is handled by pull-request-edited.yml.
@@ -298,3 +300,19 @@ jobs:
     with:
       repo: ${{ github.repository }}
     secrets: inherit
+
+  # What waits on whom (#564, waiting-update.yml), after the review: whom
+  # the pull request waits on now (a failed check, a thread, a person's
+  # merge), on its board with one mention, and the organisation's view. A
+  # fork's pull request has no secrets here: issues.yml's
+  # pull_request_target covers it, by its metadata only.
+  waiting:
+    needs: review
+    if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+    uses: ./.github/workflows/waiting-update.yml
+    with:
+      central-ref: main
+    secrets:
+      DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}

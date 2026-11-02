@@ -47,7 +47,8 @@ signed by GitHub and show as Verified.
                            rewritten; refused (exit 3) on a block edited by
                            hand
   receipts.py waits        whom the item waits on now (WAITS_JSON: who, a
-                           login, or role; what; url; step), on the board's
+                           login or a list of them, or role; what; url;
+                           step; ITEM=pr for a pull request's board), on the board's
                            "Waits on" row, and one mention of that person
                            per waiting step (#564)
   receipts.py --test       self-test
@@ -249,27 +250,33 @@ def waits_row(waits):
     here) or the role, the action, and its link."""
     if not waits:
         return None
-    who = str(waits.get("who") or "")
-    whom = f"`{who}`" if who and LOGIN.match(who) else clean(waits.get("role") or "nobody")
+    logins = logins_of(waits)
+    whom = ", ".join(f"`{l}`" for l in logins) if logins else clean(waits.get("role") or "nobody")
     url = str(waits.get("url") or "")
     link = f" ([link]({url}))" if url.startswith("https://github.com/") else ""
     return f"| Waits on | {whom}: {clean(waits.get('what'))}{link} |"
 
 
+def logins_of(waits):
+    """The people it waits on (`who`: a login or a list of them), never a
+    bot."""
+    who = (waits or {}).get("who") or []
+    who = [who] if isinstance(who, str) else who if isinstance(who, list) else []
+    return [w for w in who if isinstance(w, str) and LOGIN.match(w)]
+
+
 def mention(state, waits):
-    """(the comment that mentions the person it waits on, or None; the new
+    """(the comment that mentions the people it waits on, or None; the new
     state): once per person per waiting step (its `step`, else its action
     and link), never a bot, never a role."""
-    who = str((waits or {}).get("who") or "")
-    if not who or not LOGIN.match(who):
-        return None, state
-    key = f"{who.lower()}|{waits.get('step') or (clean(waits.get('what')) + ' ' + str(waits.get('url') or ''))}"
+    step = (waits or {}).get("step") or (clean((waits or {}).get("what")) + " " + str((waits or {}).get("url") or ""))
     done = [k for k in (state.get("mentioned") or []) if isinstance(k, str)]
-    if key in done:
+    new = [w for w in logins_of(waits) if f"{w.lower()}|{step}" not in done]
+    if not new:
         return None, state
     url = str(waits.get("url") or "")
-    text = f"@{who}: {clean(waits.get('what'))}" + (f" {url}" if url.startswith("https://github.com/") else "")
-    return f"{text}\n\n{AI}", dict(state, mentioned=(done + [key])[-50:])
+    text = " ".join(f"@{w}" for w in new) + f": {clean(waits.get('what'))}" + (f" {url}" if url.startswith("https://github.com/") else "")
+    return f"{text}\n\n{AI}", dict(state, mentioned=(done + [f"{w.lower()}|{step}" for w in new])[-50:])
 
 
 def autopilot_row(a):
@@ -328,6 +335,18 @@ def board_text(number, ready, last_seal, merged, autopilot=None, labels=(), held
     # by hand, so a person's edit is never given a valid hash.
     block = raw_state if not intact else (state_block(state) if state else "")
     return f"{BOARD}\n**The issue's board**\n\n" + "\n".join(rows) + f"\n\n{AI}" + (f"\n{block}" if block else "")
+
+
+def pr_board_text(state=None, intact=True, raw_state=""):
+    """A pull request's board (#564): one bot comment of the pull request,
+    with whom it waits on and its state; its gates are its checks."""
+    rows = ["| | State |", "| --- | --- |"]
+    if not intact:
+        rows.append("| State | ✗ the board's state was edited by hand: the bot sets nothing on it and mentions nobody; a maintainer restores it |")
+    row = waits_row((state or {}).get("waits")) if intact else None
+    rows.append(row or "| Waits on | nobody |")
+    block = raw_state if not intact else (state_block(state) if state else "")
+    return f"{BOARD}\n**The pull request's board**\n\n" + "\n".join(rows) + f"\n\n{AI}" + (f"\n{block}" if block else "")
 
 
 def holder(repo, number):
@@ -646,6 +665,10 @@ Normal
     check("C5 the author is mentioned when it waits on them, with the action and its link", t1.startswith("@alice: complete the issue https://github.com/o/r/issues/7"), True)
     check("C5 once: the same step mentions nobody again", (t2, st2), (None, st1))
     check("C5 a new step mentions them again", mention(st1, dict(w, what="answer the question", url="https://github.com/o/r/issues/7#issuecomment-1"))[0] is not None, True)
+    pb = pr_board_text({"waits": {"who": ["boss"], "what": "review it and merge it", "url": "https://github.com/o/r/pull/8"}})
+    check("C3 a pull request's board names whom it waits on", ("pull request's board" in pb, "| Waits on | `boss`: review it and merge it ([link](https://github.com/o/r/pull/8)) |" in pb, "G1" in pb), (True, True, False))
+    tm = mention({}, {"who": ["boss", "ana", "dilux-bot[bot]"], "what": "x", "step": "s"})
+    check("C3 several people, each once, in one comment, never a bot", (tm[0].split(":")[0], mention(tm[1], {"who": ["boss", "ana"], "what": "x", "step": "s"})[0]), ("@boss @ana", None))
     check("C5 a role, a bot or nobody is never mentioned", (mention({}, {"role": "a maintainer", "what": "x"})[0], mention({}, {"who": "dilux-bot[bot]", "what": "x"})[0], mention({}, None)[0]), (None, None, None))
     with tempfile.TemporaryDirectory() as d:
         os.environ["RECEIPTS_FIXTURE"] = d
@@ -762,10 +785,14 @@ Normal
         wf = yaml.safe_load(open(os.path.join(HERE, "..", ".github", "workflows", "issue-accepted.yml"), encoding="utf-8"))
         runs = {name: json.dumps(job) for name, job in wf["jobs"].items() if "receipts.py" in json.dumps(job)}
         check("#306 every job that runs receipts.py checks the scripts out whole", sorted(n for n, t in runs.items() if "git init -q .dx-central" not in t), [])
-        g1 = next(st for st in wf["jobs"]["ready"]["steps"] if st.get("id") == "check")
-        check("C5 the G1 check puts whom the issue waits on on its board: its author while incomplete",
-              ("receipts.py waits" in g1["run"], "{who: $w, what: \"complete the issue" in g1["run"], g1["env"].get("AUTHOR")),
-              (True, True, "${{ github.event.issue.user.login }}"))
+        # C5 (#564): every event of an issue puts whom it waits on on its
+        # board (waiting.py update, which hands it to `waits` here).
+        issues_wf = yaml.safe_load(open(os.path.join(HERE, "..", ".github", "workflows", "issues.yml"), encoding="utf-8"))
+        upd = yaml.safe_load(open(os.path.join(HERE, "..", ".github", "workflows", "waiting-update.yml"), encoding="utf-8"))
+        check("C5 every event of an issue puts whom it waits on on its board",
+              (issues_wf["jobs"]["waiting"]["uses"], any("waiting.py update" in (st.get("run") or "") for st in upd["jobs"]["update"]["steps"]),
+               "receipts.py\"), \"waits\"" in open(os.path.join(HERE, "waiting.py"), encoding="utf-8").read()),
+              ("./.github/workflows/waiting-update.yml", True, True))
     except ImportError:
         print("skip the workflow's wiring (no PyYAML here)")
     if not failed:
@@ -851,6 +878,8 @@ def main(argv):
         raw = m.group(0) if m and not intact else ""
 
         def render(st):
+            if os.environ.get("ITEM") == "pr":
+                return pr_board_text(st, intact, raw)
             names = [n for n in list_dir(repo, f"issues/{number}") if n.startswith("merged-")]
             merged = read(repo, f"issues/{number}/{names[-1]}") if names else None
             return board_text(number, schema_mod.check(body)["ok"], last_seal(repo, number), merged, autopilot_state(repo, number),

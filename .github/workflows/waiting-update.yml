@@ -1,0 +1,124 @@
+name: What waits (update)
+
+# Reusable (#564). On every event of an issue or a pull request, from the
+# repository's issues.yml (issues, comments, and pull_request_target, so a
+# fork's pull request too, by its metadata only) and from the pull request
+# pipelines (pull-request.yml here, org-pull-request.yml everywhere else,
+# after the review): whom the item waits on now (scripts/waiting.py update:
+# needs-human, an acceptance, the autopilot's question, a failed check, an
+# open thread, a person's merge; for an outside contributor their answer or
+# their claimed work), on its board, the one bot comment of the issue or the
+# pull request, which mentions that person once per waiting step
+# (scripts/receipts.py waits); then the "What waits" issue of DiluxOne/.github,
+# pinned, rewritten from every open issue and pull request of the
+# organisation, grouped by person, one line per action with its full URL
+# (scripts/waiting.py publish; a private repository's are counted, never
+# named). waiting-digest.yml sweeps the same view once a day. It never
+# checks out the repository's code: only DiluxOne/.github's scripts. A
+# comment of a bot (the board, the mention) starts nothing, nor does an
+# event on the bot's own `run:` issues, so it never feeds itself. One run
+# at a time per item, queued, so a mention is never posted twice; the
+# view's runs replace each other.
+#
+#   jobs:
+#     waiting:
+#       if: github.event_name != 'schedule'
+#       permissions: { contents: read }
+#       uses: DiluxOne/.github/.github/workflows/waiting-update.yml@v7
+#       secrets:
+#         DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+
+on:
+  workflow_call:
+    inputs:
+      central-ref:
+        description: The ref of DiluxOne/.github whose scripts run. Empty (the default) means the very commit this workflow runs from, job.workflow_sha (#287).
+        type: string
+        default: ''
+    secrets:
+      DILUX_BOT_PRIVATE_KEY:
+        required: false
+
+permissions: {}
+
+env:
+  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN }}
+  DX_BOT_APP: ${{ vars.DX_BOT_APP }}
+  DX_BOT_ID: ${{ vars.DX_BOT_ID }}
+
+jobs:
+  update:
+    name: What waits on whom
+    if: >-
+      (github.event_name == 'issues' || github.event_name == 'issue_comment' || github.event_name == 'pull_request_target' ||
+       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) &&
+      !(github.event_name == 'issue_comment' && github.event.comment.user.type == 'Bot') &&
+      !contains(join(github.event.issue.labels.*.name, ','), 'run:')
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    concurrency:
+      group: waiting-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
+      cancel-in-progress: false
+    permissions: {}
+    steps:
+      # The organisation's App, for its repositories: the item's board and
+      # its mention here, the search of every open item (a private one only
+      # counted), and the view's issue in DiluxOne/.github.
+      - name: App token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-issues: write
+          permission-pull-requests: read
+          permission-checks: read # the heads' checks, for a failed one
+          permission-contents: read # the seals, for the board
+          permission-metadata: read
+      - name: The organisation's scripts
+        env:
+          REF: ${{ inputs.central-ref || job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          git init -q .dx-central && git -C .dx-central fetch -q --depth 1 https://github.com/DiluxOne/.github "$REF" && git -C .dx-central checkout -q FETCH_HEAD
+          test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh .dx-central
+      - name: Whom it waits on, on its board
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+        run: python3 .dx-central/scripts/waiting.py update
+
+  view:
+    name: The "What waits" view
+    needs: update
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    concurrency:
+      group: waiting-view-${{ github.repository }}
+      cancel-in-progress: true
+    permissions: {}
+    steps:
+      - name: App token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-issues: write # the view's issue in DiluxOne/.github
+          permission-pull-requests: read
+          permission-checks: read
+          permission-metadata: read
+      - name: The organisation's scripts
+        env:
+          REF: ${{ inputs.central-ref || job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          git init -q .dx-central && git -C .dx-central fetch -q --depth 1 https://github.com/DiluxOne/.github "$REF" && git -C .dx-central checkout -q FETCH_HEAD
+          test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh .dx-central
+      - name: Rewrite the view
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          OWNER: ${{ github.repository_owner }}
+        run: python3 .dx-central/scripts/waiting.py publish
