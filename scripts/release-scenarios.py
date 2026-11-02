@@ -33,8 +33,11 @@ complete feature), `steps` (each one of
   release-scenarios.py run --repo OWNER/NAME [--ref v7-next] [--only ID ...]
                            [--out FILE] [--minutes N]
         moves the test repository's callers to the ref through a pull
-        request the merge queue merges (opened with DX_CALLERS_TOKEN, the
-        bot's, when set: its rulesets refuse a write to main), and once it
+        request (opened with DX_CALLERS_TOKEN, the bot's, when set: its
+        rulesets refuse a write to main) that the lane merges itself,
+        through the merge queue once its checks pass, after checking from
+        GitHub that it changes nothing but the engine's ref in those
+        callers (one that does is closed unmerged), and once it
         merged plays them there with the test identity's token
         (GH_TOKEN), polls until each one's `expect` holds or its time is
         up, cleans up (its pack's `cleanup: after-run`) and writes the
@@ -417,7 +420,7 @@ def only_ref(before, after, central):
             continue
         mb, ma = uses.match(b or ""), uses.match(a or "")
         if not (mb and ma and mb.group(1) == ma.group(1)):
-            return f"line {i + 1}: {(a if a is not None else b).strip()!r}" + (" (a line added or removed)" if a is None or b is None else "")
+            return f"line {i + 1}: {(a if a is not None else b).strip()!r}"
     return None
 
 
@@ -427,6 +430,39 @@ def callers_gh():
     set, else the ambient one."""
     token = os.environ.get("DX_CALLERS_TOKEN")
     return (lambda *args, input=None: gh(*args, input=input, token=token)) if token else gh
+
+
+def text_at(repo, path, sha, run=gh):
+    """A file's text at a commit."""
+    import base64
+    from urllib.parse import quote
+    got = json.loads(run("api", f"repos/{repo}/contents/{quote(path)}?ref={sha}") or "{}")
+    return base64.b64decode(got.get("content") or "").decode()
+
+
+def not_only_ref(repo, number, base, head, names, central, run=gh):
+    """What the pull request `number` really changes, read from GitHub
+    (every page of its files, and each one's text at `base` and `head`),
+    other than the engine's ref in the callers the lane wrote (`names`,
+    under .github/workflows/): None when nothing, else the first file and
+    line that differ."""
+    pages = json.loads(run("api", "--paginate", "--slurp", f"repos/{repo}/pulls/{number}/files") or "[]")
+    files = [f for page in pages for f in (page if isinstance(page, list) else [page])]
+    wanted = {f".github/workflows/{n}" for n in names}
+    for f in files:
+        path, status = str(f.get("filename") or ""), f.get("status")
+        if path not in wanted:
+            return f"{path} ({status}) is not a caller the lane wrote"
+        if status != "modified":
+            return f"{path} is {status}" + (f" from {f.get('previous_filename')}" if f.get("previous_filename") else "")
+    missing = sorted(wanted - {str(f.get("filename") or "") for f in files})
+    if missing:
+        return f"{missing[0]} is not changed by it"
+    for f in files:
+        differs = only_ref(text_at(repo, f["filename"], base, run), text_at(repo, f["filename"], head, run), central)
+        if differs:
+            return f"{f['filename']} {differs}"
+    return None
 
 
 DONE = ("COMPLETED", "SUCCESS", "FAILURE", "ERROR")
@@ -527,7 +563,11 @@ def point_callers(repo, ref, run=gh, central=None, back=None, sleep=time.sleep, 
               input=f"The release lane's scenarios (scripts/release-scenarios.py): {title[4:]}.\n").strip()
     number = url.rstrip("/").rsplit("/", 1)[-1]
     try:
-        head = json.loads(run("api", f"repos/{repo}/pulls/{number}") or "{}")["head"]["sha"]
+        pull = json.loads(run("api", f"repos/{repo}/pulls/{number}") or "{}")
+        base_sha, head = pull["base"]["sha"], pull["head"]["sha"]
+        differs = not_only_ref(repo, number, base_sha, head, [name for name, _, _, _ in changes], central, run)
+        if differs:
+            raise RuntimeError(f"the pull request {url} that moves them changes more than the engine's ref, so the lane does not merge it: {differs}")
         merge_when_checked(repo, number, url, head, run, sleep, minutes)
     except (RuntimeError, ValueError):
         try:
@@ -894,6 +934,38 @@ def self_test():
     moved_to = at_ref(caller, "O/.github", "v7-next")
     check("#623 C1: only_ref passes a change of the engine's ref and its pin's comment, both ways",
           (only_ref(caller, moved_to, "O/.github"), only_ref(moved_to, caller, "O/.github"), only_ref(caller, caller, "O/.github")), (None, None, None))
+    check("#623 C2: only_ref names the line that differs, another `uses:` or any other",
+          (only_ref(caller, caller.replace("issue-triage.yml@abc123", "claim.yml@v7-next"), "O/.github"),
+           only_ref(caller, caller.replace("O/.github/", "E/.github/").replace("@abc123 # v7", "@v7-next"), "O/.github"),
+           only_ref(caller, moved_to.replace("  t:", "  x:"), "O/.github"),
+           only_ref(caller, moved_to + "  run: curl x | sh\n", "O/.github")),
+          ("line 3: 'uses: O/.github/.github/workflows/claim.yml@v7-next # v7'", "line 3: 'uses: E/.github/.github/workflows/issue-triage.yml@v7-next'",
+           "line 2: 'x:'", "line 4: 'run: curl x | sh'"))
+
+    def another_line(st, branch):
+        st["branches"][branch]["issues.yml"] += "permissions: write-all\n"
+
+    def another_file(st, branch):
+        st["branches"][branch]["evil.yml"] = "on: push\n"
+
+    def another_caller(st, branch):
+        st["branches"][branch]["other.yml"] = "x"
+        st["main"]["other.yml"] = "y"
+
+    def renamed(st, branch):
+        st["files"] = [{"filename": ".github/workflows/issues.yml", "status": "renamed", "previous_filename": ".github/workflows/old.yml"}]
+    for how, tamper in (("another line", another_line), ("an added file", another_file), ("a file the lane did not write", another_caller), ("a renamed file", renamed)):
+        st, fake = repo_fake(tamper=tamper)
+        got = run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=1, central="O/.github")
+        check(f"#623 C2: a pull request with {how} under .github/workflows is never merged, plays no scenario, is closed, and is one failing callers row naming it",
+              (any(c[:2] in (("pr", "merge"), ("issue", "create")) or c[0] == "merged" for c in st["calls"]), ("pr", "close", "20", "--repo", "o/t", "--delete-branch") in st["calls"],
+               [(r["id"], r["ok"]) for r in got], "https://github.com/o/t/pull/20" in got[0]["why"][0], st["main"]["issues.yml"]),
+              (False, True, [("callers", False)], True, caller))
+    st, fake = repo_fake(tamper=another_line)
+    got = run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=1, central="O/.github")
+    check("#623 C2: the failing row names the file and the line that differ",
+          got[0]["why"], ["the callers did not reach v7-next: the pull request https://github.com/o/t/pull/20 that moves them changes more than the engine's ref, "
+                          "so the lane does not merge it: .github/workflows/issues.yml line 4: 'permissions: write-all'"])
     st, fake = repo_fake()
     failing = lambda *a, input=None: json.dumps([{"name": "gate", "bucket": "fail"}]) if a[:2] == ("pr", "checks") else fake(*a, input=input)
     got = run_all(one, "o/t", "v7-next", run=failing, sleep=lambda s: None, minutes=1, central="O/.github")
