@@ -27,18 +27,23 @@
 # author's role on the repository is maintain or admin, nothing classifies
 # it, no `bug:unconfirmed` nor `layer:` goes on, and no reproduction starts
 # (the autopilot's test-first still writes its failing test). Complete (G1,
-# scripts/issue-schema.py), it is accepted with its writing: its PRD sealed
+# scripts/issue-schema.py), and its author one `who-decides` lets add
+# `accepted` (#624, deciders.py may accepted, which the autopilot asks
+# again), it is accepted with its writing: its PRD sealed
 # on the receipts branch in its author's name (receipts.py seal-prd,
 # ACCEPTED_HOW=own-bug, with SEAL_TOKEN, which writes contents), then
 # `accepted`, and the board; the gate (issue-gate.sh) and the autopilot
-# (autopilot.py lane) read that seal as the author's acceptance.
+# (autopilot.py lane) read that seal as the author's acceptance. An author
+# who-decides does not let accept (or who cannot be told) gets no seal and
+# no `accepted`: `awaiting-acceptance`, and a reply naming who may accept.
 # Incomplete, it gets `incomplete` from the G1 check and waits on its author
 # like any other. It writes own=true|false and accepted=true|false to
 # GITHUB_OUTPUT; a read that fails is no maintainer's: the triage reads it.
 # `own-bug-check` only prints yes or no (issue-accepted.yml's G1 check
 # leaves a complete one to the triage). Environment: AUTHOR, BODY (a file
 # holding the issue's body), NUMBER, GITHUB_REPOSITORY, GH_TOKEN, SEAL_TOKEN,
-# POLICY_REF (optional).
+# POLICY_REF (optional); DECIDERS_PY stands in for deciders.py in the
+# self-test.
 #
 #   triage-act.sh                 act
 #   triage-act.sh own-bug         a maintainer's own Bug: accept it, or not
@@ -114,6 +119,23 @@ own_accept() {
     reply="You wrote this Bug with the maintain or admin role, so it skips the outside reporter's triage and reproduction. It is \`incomplete\` for now: the G1 comment says what is missing. Once it is complete, add \`accepted\` and the autopilot codes it in the organisation's runners, starting from a failing test."
     gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '%s\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)' "$reply")" >/dev/null
     echo "Issue #$NUMBER: a maintainer's own Bug, incomplete; it waits on its author."
+    return 0
+  fi
+  # Only an author `who-decides` lets add `accepted` (#624): the autopilot
+  # asks the same before it starts, so a seal it would refuse is never
+  # written. Exit 1 (no) or 2 (could not be read) is no; the issue waits on
+  # those who decide, like any other.
+  local decider=${DECIDERS_PY:-$here/deciders.py} may_rc=0 who
+  python3 "$decider" may accepted "$AUTHOR" >/dev/null 2>&1 || may_rc=$?
+  if [ "$may_rc" -ne 0 ]; then
+    echo "accepted=false" >> "$out"
+    who=$(python3 "$decider" who accepted 2>/dev/null) || who="a maintainer who-decides allows"
+    gh label create awaiting-acceptance --repo "$GITHUB_REPOSITORY" --color FBCA04 --description "The issue follows the schema; it waits for a maintainer's decision" >/dev/null 2>&1 || true
+    gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label awaiting-acceptance >/dev/null 2>&1 || true
+    board_upsert || echo "::warning::#$NUMBER's board could not be written."
+    reply="You wrote this Bug with the maintain or admin role, so it skips the outside reporter's triage and reproduction. The repository's \`who-decides\` setting does not let you accept it yourself, so it is not sealed in your name: it waits for an acceptance, which ${who} may give (the \`accepted\` label); then the autopilot codes it in the organisation's runners, starting from a failing test."
+    gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '%s\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)' "$reply")" >/dev/null
+    echo "Issue #$NUMBER: a maintainer's own Bug, but who-decides does not let @$AUTHOR accept it (exit $may_rc); it waits on those who decide."
     return 0
   fi
   # The seal first: the gate and the autopilot read the acceptance from it.
@@ -362,9 +384,13 @@ if [ "${1:-}" = "--test" ]; then
   # C2 (#564): a maintainer's own Bug is accepted with its writing.
   prd=$(mktemp); printf '### Problem\n\nIt breaks.\n\n### Scope\n\n- Fix it.\n\n### Out of scope\n\n- Nothing.\n\n### Acceptance criteria\n\n- C1: Given a page, when it loads, then it does not break.\n\n### Criticality\n\nNormal\n' > "$prd"
   half=$(mktemp); printf '### Problem\n\nIt breaks.\n' > "$half"
+  # who-decides (#624): a stand-in for deciders.py, which logs what it was
+  # asked, and when; MAY_RC is its answer to `may`.
+  decider=$(mktemp)
+  printf '#!/usr/bin/env python3\nimport os, sys\nopen(os.environ["DECIDER_LOG"], "a").write("deciders " + " ".join(sys.argv[1:]) + " " + os.environ.get("NUMBER", "") + "\\n")\nif sys.argv[1] == "who":\n    print("@carol")\nsys.exit(int(os.environ.get("MAY_RC", "0")) if sys.argv[1] == "may" else 0)\n' > "$decider"
   o() {
     : > "$log"; seals=$(mktemp -d); outf=$(mktemp)
-    ( export RECEIPTS_FIXTURE=$seals AUTOPILOT_JSON=null LABELS_JSON='[]' HELD='' GITHUB_OUTPUT=$outf NUMBER=7 GITHUB_REPOSITORY=o/r AUTHOR=${WHO:-boss} BODY=${B:-$prd}; own_accept >/dev/null 2>&1 ) || true
+    ( export DECIDERS_PY=$decider DECIDER_LOG=$log RECEIPTS_FIXTURE=$seals AUTOPILOT_JSON=null LABELS_JSON='[]' HELD='' GITHUB_OUTPUT=$outf NUMBER=7 GITHUB_REPOSITORY=o/r AUTHOR=${WHO:-boss} BODY=${B:-$prd}; own_accept >/dev/null 2>&1 ) || true
   }
   for role in maintain admin; do
     HAS_TYPE=Bug PERM=$role o
@@ -381,12 +407,22 @@ if [ "${1:-}" = "--test" ]; then
     HAS_TYPE=${case_#* } PERM=${case_%% *} o
     if grep -q "^own=false" "$outf" && ! grep -qE -- "add-label|issue comment" "$log" && [ -z "$(ls "$seals")" ]; then echo "ok   C2 role ${case_%% *}, Type ${case_#* }: left to the triage, unchanged"; else echo "FAIL C2 role ${case_%% *}, Type ${case_#* }: left to the triage, unchanged:"; cat "$log" "$outf"; fail=1; fi
   done
+  HAS_TYPE=Bug PERM=maintain o
+  if grep -q "^deciders may accepted boss 7$" "$log" && [ "$(grep -n "^deciders may accepted boss" "$log" | cut -d: -f1)" -lt "$(grep -n -- "--add-label accepted" "$log" | cut -d: -f1)" ]; then echo "ok   C1 (#624) who-decides is asked for the author, before the seal and the label"; else echo "FAIL C1 (#624) who-decides is asked for the author, before the seal and the label:"; cat "$log"; fail=1; fi
+  for rc in 1 2; do
+    HAS_TYPE=Bug PERM=maintain MAY_RC=$rc o
+    if grep -q "^own=true" "$outf" && grep -q "^accepted=false" "$outf" && [ -z "$(ls "$seals")" ] && ! grep -q -- "--add-label accepted" "$log" \
+       && grep -q -- "--add-label awaiting-acceptance" "$log" && grep -q "issue comment 7 .*does not let you accept it yourself.*@carol may give" "$log" \
+       && ! grep -qE -- "--add-label [^ ]*(bug:unconfirmed|layer:)" "$log"; then
+      echo "ok   C1 (#624) who-decides says no (exit $rc): no seal, no accepted, it waits on who decides, named"
+    else echo "FAIL C1 (#624) who-decides says no (exit $rc): no seal, no accepted, it waits on who decides, named:"; cat "$log" "$outf"; fail=1; fi
+  done
   HAS_TYPE=Bug PERM_FAILS=1 o
   if grep -q "^own=false" "$outf"; then echo "ok   C2 a role that cannot be read is no maintainer's"; else echo "FAIL C2 a role that cannot be read is no maintainer's"; fail=1; fi
   HAS_TYPE=Bug PERM=maintain B=$half o
   if grep -q "^own=true" "$outf" && grep -q "^accepted=false" "$outf" && ! grep -qE -- "--add-label" "$log" && [ -z "$(ls "$seals")" ] && grep -q "issue comment 7 .*incomplete" "$log"; then echo "ok   C2 an incomplete one is not accepted, gets no triage label, and waits on its author"; else echo "FAIL C2 an incomplete one is not accepted, gets no triage label, and waits on its author:"; cat "$log" "$outf"; fail=1; fi
   if [ "$(HAS_TYPE=Bug PERM=admin NUMBER=7 GITHUB_REPOSITORY=o/r AUTHOR=boss own_bug)" = yes ] && [ "$(HAS_TYPE=Bug PERM=write NUMBER=7 GITHUB_REPOSITORY=o/r AUTHOR=alice own_bug)" = no ] && [ "$(HAS_TYPE=Bug PERM=admin NUMBER=7 GITHUB_REPOSITORY=o/r AUTHOR='a b' own_bug)" = no ]; then echo "ok   C2 own-bug-check: yes for a maintainer's Bug only"; else echo "FAIL C2 own-bug-check: yes for a maintainer's Bug only"; fail=1; fi
-  rm -f "$prd" "$half"
+  rm -f "$prd" "$half" "$decider"
   # C5 (#564): the first reply says what happens next and whom it waits on.
   VERDICT='{"category":"enhancement"}' REPLY="Nice idea." SUMMARY=s t "C5 the first reply opens with what happens next" "issue comment 7 --repo o/r --body \*\*What happens next.\*\* This triage reads every new issue first. Then a maintainer decides whether to accept it .*Nice idea"
   VERDICT='{"category":"enhancement"}' REPLY=x SUMMARY=s t "C5 the triage, then the acceptance, then the autopilot in the organisation's runners" "triage reads.*decides whether to accept it.*the autopilot writes the code in the organisation's runners"
