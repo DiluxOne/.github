@@ -399,6 +399,8 @@ def check_workflow(check, path=os.path.join(ROOT, ".github", "workflows", "relea
           [(t or {}).get("permission-checks") == "read" and (t or {}).get("permission-statuses") == "read" for t in used], [True, True])
     check("workflow: the waits' tokens are the test repository's alone (#627)",
           [(t or {}).get("repositories") for t in used], ["${{ steps.test.outputs.repo }}"] * 2)
+    check("workflow: every App token of the scenarios job asks for checks: read and statuses: read (#627)",
+          bool(minted) and all(t.get("permission-checks") == "read" and t.get("permission-statuses") == "read" for t in minted.values()), True)
 
 
 class Fake:
