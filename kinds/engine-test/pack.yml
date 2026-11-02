@@ -15,11 +15,14 @@ aliases: []
 workflows: []
 
 # The shipped callers (workflow-templates/) the test repository has, which
-# scripts/install.py writes there (at `v7-next` while the lane tries a
-# candidate), beside org-pull-request.yml, the organisation's required
-# workflow. A scenario plays only what these wire (scripts/release-scenarios.py
+# scripts/install.py writes there, beside org-pull-request.yml, the
+# organisation's required workflow. A scenario plays only what these wire (scripts/release-scenarios.py
 # coverage); every other caller is held to the engine statically
-# (scripts/caller-contract.py check).
+# (scripts/caller-contract.py check). While the lane tries a candidate they
+# move to `v7-next` through a pull request the bot opens there and the merge
+# queue merges, and are put back after the same way, with a token minted
+# after the scenarios (scripts/release-scenarios.py point_callers, back):
+# nothing writes the test repository's main.
 callers:
   - issues.yml
   - pull-request-comments.yml

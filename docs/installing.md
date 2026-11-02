@@ -54,7 +54,7 @@ The last step of `apply` (and `python3 scripts/install.py test-repo --org <Org>`
 2. writes its callers (`issues.yml`, `pull-request-comments.yml`) calling the engine at its commit, pinned, with the version in a comment (`@v7` for DiluxOne);
 3. adopts it (`scripts/sync-repos.py adopt`, #562), as a repository of kind [`engine-test`](../kinds/engine-test/): the autopilot calls no model there, nothing is published from it, and what each scenario opens is closed after it;
 4. gives the test identity write there, and nowhere else (the daily drift check lists it anywhere else);
-5. plays every release scenario of [`tests/release/scenarios.yml`](../tests/release/scenarios.yml) there once (`scripts/release-scenarios.py run`, with `DX_TEST_TOKEN` when it is set) and prints the table of results: each scenario, pass or fail, and its run.
+5. plays every release scenario of [`tests/release/scenarios.yml`](../tests/release/scenarios.yml) there once (`scripts/release-scenarios.py run`, with `DX_TEST_TOKEN` when it is set; its callers are already at that ref, so nothing moves them, where the release lane moves them to `v7-next` and back through a pull request the merge queue merges) and prints the table of results: each scenario, pass or fail, and its run.
 
 ## Optional: private runners and the merge queue
 
