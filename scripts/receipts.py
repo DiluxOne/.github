@@ -37,14 +37,34 @@ signed by GitHub and show as Verified.
                            issue's author (AUTHOR), and the PRD still the
                            sealed one; exit 0 when it did, 1 when not, 2
                            when the seal could not be read
-  receipts.py board        the issue's board: one bot comment, kept up to date
+  receipts.py board        the issue's board: one bot comment, kept up to date;
+                           its hidden state block (#564) carried forward
+  receipts.py state get [KEY]
+                           the board's state (#564), or one key of it, as
+                           JSON; exit 3 when the block was edited by hand
+  receipts.py state set KEY=JSON...
+                           those keys set in the board's state, the board
+                           rewritten; refused (exit 3) on a block edited by
+                           hand
+  receipts.py waits        whom the item waits on now (WAITS_JSON: who, a
+                           login, or role; what; url; step), on the board's
+                           "Waits on" row, and one mention of that person
+                           per waiting step (#564)
   receipts.py --test       self-test
 
 Environment: GH_TOKEN; GITHUB_REPOSITORY (owner/name); NUMBER (the issue);
 BODY (a file holding the issue's body); ACCEPTED_BY and ACCEPTED_HOW
 (seal-prd; `own-bug` for a maintainer's own Bug, #564); AUTHOR (own-bug); POLICY_REF
 (the commit of DiluxOne/.github whose policy applied); RECEIPTS_FIXTURE (a
-directory standing in for the branch, for the self-test).
+directory standing in for the branch, and for the board's comment and the
+mentions, under comments/<n>/, for the self-test).
+
+The board's state (#564): one hidden block in the board's comment,
+`<!-- dx-state v1 {...} -->`, JSON holding what the flow counts and where it
+stands (whom it waits on, who was mentioned for which step), with a
+SHA-256 of its content. It is read only from dilux-bot's own board comment;
+a block whose hash does not match was edited by hand and reads as the most
+restrictive state: nothing is set on it and nobody is mentioned from it.
 """
 import base64
 import datetime
@@ -185,6 +205,73 @@ def receipt(number, body, last_seal, pr, checks, policy_ref, at):
     }
 
 
+# --- the board's state and whom it waits on (#564; pure, tested) -----------
+
+STATE_RE = re.compile(r"<!-- dx-state v1 (.*?) -->", re.S)
+LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
+
+
+def state_hash(state):
+    return sha(json.dumps({k: v for k, v in state.items() if k != "sha256"}, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+
+
+def state_block(state):
+    """The hidden block: the state and its hash, as JSON that cannot end the
+    HTML comment it sits in."""
+    data = dict({k: v for k, v in state.items() if k != "sha256"}, sha256=state_hash(state))
+    text = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return "<!-- dx-state v1 " + text.replace("<", "\\u003c").replace(">", "\\u003e").replace("--", "-\\u002d") + " -->"
+
+
+def parse_state(body):
+    """(state, intact) from a board's comment: no block is an empty state;
+    one that does not parse or whose hash does not match is not intact."""
+    m = STATE_RE.search(body or "")
+    if not m:
+        return {}, True
+    try:
+        data = json.loads(m.group(1))
+    except ValueError:
+        return {}, False
+    if not isinstance(data, dict) or data.get("sha256") != state_hash(data):
+        return {}, False
+    data.pop("sha256")
+    return data, True
+
+
+def clean(text):
+    """A short text for a table cell: no pipes, no mentions, one line."""
+    return re.sub(r"\s+", " ", str(text or "")).replace("|", "/").replace("@", "＠").strip()[:200]
+
+
+def waits_row(waits):
+    """The board's "Waits on" row: the person (named, never mentioned
+    here) or the role, the action, and its link."""
+    if not waits:
+        return None
+    who = str(waits.get("who") or "")
+    whom = f"`{who}`" if who and LOGIN.match(who) else clean(waits.get("role") or "nobody")
+    url = str(waits.get("url") or "")
+    link = f" ([link]({url}))" if url.startswith("https://github.com/") else ""
+    return f"| Waits on | {whom}: {clean(waits.get('what'))}{link} |"
+
+
+def mention(state, waits):
+    """(the comment that mentions the person it waits on, or None; the new
+    state): once per person per waiting step (its `step`, else its action
+    and link), never a bot, never a role."""
+    who = str((waits or {}).get("who") or "")
+    if not who or not LOGIN.match(who):
+        return None, state
+    key = f"{who.lower()}|{waits.get('step') or (clean(waits.get('what')) + ' ' + str(waits.get('url') or ''))}"
+    done = [k for k in (state.get("mentioned") or []) if isinstance(k, str)]
+    if key in done:
+        return None, state
+    url = str(waits.get("url") or "")
+    text = f"@{who}: {clean(waits.get('what'))}" + (f" {url}" if url.startswith("https://github.com/") else "")
+    return f"{text}\n\n{AI}", dict(state, mentioned=(done + [key])[-50:])
+
+
 def autopilot_row(a):
     """The autopilot's row: its pull request, the run, criteria done of total."""
     if not a:
@@ -204,7 +291,7 @@ def rule_link(policy):
     return f"[the rule](https://github.com/DiluxOne/.github/blob/{ref}/policy/autonomy.yml)"
 
 
-def board_text(number, ready, last_seal, merged, autopilot=None, labels=(), held=""):
+def board_text(number, ready, last_seal, merged, autopilot=None, labels=(), held="", state=None, intact=True, raw_state=""):
     rows = ["| Gate | State |", "| --- | --- |"]
     rows.append(f"| G1 Issue ready | {'✓ the PRD follows the schema' if ready else '✗ see the G1 comment'} |")
     # A person holds it (#488, #561): a claim, an assignment, their own
@@ -232,7 +319,15 @@ def board_text(number, ready, last_seal, merged, autopilot=None, labels=(), held
     if merged:
         by = f"policy ({rule_link(merged.get('policy'))})" if merged.get("merged_by") == "policy" else merged.get("merged_by")
         rows.append(f"| G7 Merged | ✓ #{merged.get('pull_request')} by {by}; receipt in `receipts/issues/{number}/merged-{merged.get('at')}.json` |")
-    return f"{BOARD}\n**The issue's board**\n\n" + "\n".join(rows) + f"\n\n{AI}"
+    if not intact:
+        rows.append("| State | ✗ the board's state was edited by hand: the bot sets nothing on it and mentions nobody; a maintainer restores it |")
+    row = waits_row((state or {}).get("waits")) if intact else None
+    if row:
+        rows.append(row)
+    # The state block, hidden (#564): carried as it was when it was edited
+    # by hand, so a person's edit is never given a valid hash.
+    block = raw_state if not intact else (state_block(state) if state else "")
+    return f"{BOARD}\n**The issue's board**\n\n" + "\n".join(rows) + f"\n\n{AI}" + (f"\n{block}" if block else "")
 
 
 def holder(repo, number):
@@ -280,6 +375,45 @@ def autopilot_state(repo, number):
     except (subprocess.CalledProcessError, KeyError, ValueError):
         return None
     return None
+
+
+def board_comment(repo, number):
+    """(id, body) of dilux-bot's board comment on the issue or pull
+    request, or (None, ""); under RECEIPTS_FIXTURE, comments/<n>/board.md."""
+    if os.environ.get("RECEIPTS_FIXTURE"):
+        path = os.path.join(os.environ["RECEIPTS_FIXTURE"], "comments", str(number), "board.md")
+        return (path, open(path, encoding="utf-8").read()) if os.path.exists(path) else (None, "")
+    out = subprocess.run(["gh", "api", "--paginate", f"repos/{repo}/issues/{number}/comments",
+                          "--jq", '.[] | select(.user.type == "Bot" and (.user.login | startswith("' + org.APP + '")) and (.body | startswith("' + BOARD + '"))) | {id, body}'],
+                         capture_output=True, text=True)
+    if out.returncode != 0:
+        raise RuntimeError(f"the board could not be read: {out.stderr.strip()[:200]}")
+    found = [json.loads(l) for l in out.stdout.splitlines() if l.strip()]
+    return (found[-1]["id"], found[-1]["body"]) if found else (None, "")
+
+
+def put_board(repo, number, cid, text):
+    """The board's comment written: edited when it exists, else created."""
+    if os.environ.get("RECEIPTS_FIXTURE"):
+        path = os.path.join(os.environ["RECEIPTS_FIXTURE"], "comments", str(number), "board.md")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return
+    if cid:
+        gh("-X", "PATCH", f"repos/{repo}/issues/comments/{cid}", "-f", f"body={text}")
+    else:
+        gh("-X", "POST", f"repos/{repo}/issues/{number}/comments", "-f", f"body={text}")
+
+
+def post_comment(repo, number, text):
+    if os.environ.get("RECEIPTS_FIXTURE"):
+        path = os.path.join(os.environ["RECEIPTS_FIXTURE"], "comments", str(number), "mentions.md")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(text + "\n---\n")
+        return
+    gh("-X", "POST", f"repos/{repo}/issues/{number}/comments", "-f", f"body={text}")
 
 
 def _autopilot():
@@ -490,6 +624,29 @@ Normal
     mb = board_text(7, True, s, receipt(7, body, s, pr2, {}, "abc123", "t"))
     check("#188: a merge by policy links the rule at the commit it read", "by policy ([the rule](https://github.com/DiluxOne/.github/blob/abc123/policy/autonomy.yml))" in mb, True)
     check("#188: a person's merge names the person", "by soydiloreto;" in b, True)
+    # #564: the board's state, hidden, hashed, carried; whom it waits on.
+    st = {"runs": 2, "waits": {"who": "alice", "what": "answer --> <b>", "url": "https://github.com/o/r/issues/7"}}
+    blk = state_block(st)
+    check("#564 the state round-trips through its block", parse_state("board\n" + blk), (st, True))
+    check("#564 a value cannot end the comment it sits in", blk.count("-->"), 1)
+    check("#564 no block is an empty state", parse_state("<!-- dx-board -->\nrows"), ({}, True))
+    check("#564 a block edited by hand is not intact", parse_state(blk.replace('"runs":2', '"runs":0')), ({}, False))
+    check("#564 nor is one that does not parse", parse_state("<!-- dx-state v1 {nope -->"), ({}, False))
+    wb = board_text(7, True, s, None, state=st)
+    check("C5 the board names whom it waits on, the action and its link, mentioning nobody",
+          ("| Waits on | `alice`: answer --> <b> ([link](https://github.com/o/r/issues/7)) |" in wb, "@alice" in wb), (True, False))
+    check("C5 its state is carried, hidden, at the end", wb.rstrip().endswith(blk), True)
+    check("C5 a role is named as one", waits_row({"role": "a maintainer", "what": "accept it", "url": "https://github.com/o/r/issues/7"}), "| Waits on | a maintainer: accept it ([link](https://github.com/o/r/issues/7)) |")
+    check("C5 a link that is not GitHub's is not linked", "evil" in (waits_row({"who": "alice", "what": "x", "url": "https://evil.example"}) or ""), False)
+    tb = board_text(7, True, s, None, state={}, intact=False, raw_state=blk.replace('"runs":2', '"runs":0'))
+    check("#564 a state edited by hand is said, kept as it was, and names nobody", ("edited by hand" in tb, '"runs":0' in tb, "Waits on" in tb), (True, True, False))
+    w = {"who": "alice", "what": "complete the issue", "url": "https://github.com/o/r/issues/7"}
+    t1, st1 = mention({}, w)
+    t2, st2 = mention(st1, w)
+    check("C5 the author is mentioned when it waits on them, with the action and its link", t1.startswith("@alice: complete the issue https://github.com/o/r/issues/7"), True)
+    check("C5 once: the same step mentions nobody again", (t2, st2), (None, st1))
+    check("C5 a new step mentions them again", mention(st1, dict(w, what="answer the question", url="https://github.com/o/r/issues/7#issuecomment-1"))[0] is not None, True)
+    check("C5 a role, a bot or nobody is never mentioned", (mention({}, {"role": "a maintainer", "what": "x"})[0], mention({}, {"who": "dilux-bot[bot]", "what": "x"})[0], mention({}, None)[0]), (None, None, None))
     with tempfile.TemporaryDirectory() as d:
         os.environ["RECEIPTS_FIXTURE"] = d
         write("o/r", "issues/7/prd-2026-10-11T00:00:00Z.json", s, "seal")
@@ -530,6 +687,21 @@ Normal
         check("cli: merged writes a receipt", run("merged").returncode, 0)
         check("cli: the board shows the receipt", "G7 Merged" in run("board").stdout, True)
         check("cli: verify-spec with no Spec seal fails", run("verify-spec").returncode, 1)
+        # C5 (#564): whom it waits on, on the board, and one mention.
+        wenv = dict(env, NUMBER="12", HELD="", WAITS_JSON=json.dumps({"who": "alice", "what": "complete the issue: the G1 comment says what is missing", "url": "https://github.com/o/r/issues/12"}))
+        wrun = lambda *a, **kw: sp.run([sys.executable, os.path.abspath(__file__)] + list(a), env=dict(wenv, **kw), capture_output=True, text=True)
+        wrun("waits"), wrun("waits")
+        board12 = open(os.path.join(d, "comments/12/board.md"), encoding="utf-8").read()
+        mentions12 = open(os.path.join(d, "comments/12/mentions.md"), encoding="utf-8").read()
+        check("C5 cli: the board names the author it waits on", "| Waits on | `alice`: complete the issue" in board12, True)
+        check("C5 cli: and mentions them once, however often it runs", mentions12.count("@alice: complete the issue"), 1)
+        check("C5 cli: the board's run keeps the state", parse_state(wrun("board").stdout)[0].get("waits", {}).get("who"), "alice")
+        check("#564 cli: state set, then state get", (wrun("state", "set", "runs=3").returncode, wrun("state", "get", "runs").stdout.strip()), (0, "3"))
+        with open(os.path.join(d, "comments/12/board.md"), "w", encoding="utf-8") as f:
+            f.write(board12.replace('"who":"alice"', '"who":"mallory"'))
+        check("#564 cli: on a state edited by hand, get and set exit 3, and nobody is mentioned",
+              (wrun("state", "get").returncode, wrun("state", "set", "runs=0").returncode, wrun("waits", WAITS_JSON='{"who": "mallory", "what": "x"}').returncode,
+               open(os.path.join(d, "comments/12/mentions.md"), encoding="utf-8").read().count("@")), (3, 3, 3, 1))
         import time
         time.sleep(1.1)
         run("merged")
@@ -590,6 +762,10 @@ Normal
         wf = yaml.safe_load(open(os.path.join(HERE, "..", ".github", "workflows", "issue-accepted.yml"), encoding="utf-8"))
         runs = {name: json.dumps(job) for name, job in wf["jobs"].items() if "receipts.py" in json.dumps(job)}
         check("#306 every job that runs receipts.py checks the scripts out whole", sorted(n for n, t in runs.items() if "git init -q .dx-central" not in t), [])
+        g1 = next(st for st in wf["jobs"]["ready"]["steps"] if st.get("id") == "check")
+        check("C5 the G1 check puts whom the issue waits on on its board: its author while incomplete",
+              ("receipts.py waits" in g1["run"], "{who: $w, what: \"complete the issue" in g1["run"], g1["env"].get("AUTHOR")),
+              (True, True, "${{ github.event.issue.user.login }}"))
     except ImportError:
         print("skip the workflow's wiring (no PyYAML here)")
     if not failed:
@@ -668,12 +844,40 @@ def main(argv):
         write(repo, f"issues/{number}/merged-{r['at']}.json", r, f"Receipt for #{number}")
         print(json.dumps(r))
         return 0
-    if mode == "board":
-        ready = schema_mod.check(body)["ok"]
-        names = [n for n in list_dir(repo, f"issues/{number}") if n.startswith("merged-")]
-        merged = read(repo, f"issues/{number}/{names[-1]}") if names else None
-        print(board_text(number, ready, last_seal(repo, number), merged, autopilot_state(repo, number), issue_labels(repo, number), holder(repo, number)))
-        return 0
+    if mode in ("board", "state", "waits"):
+        cid, current = board_comment(repo, number)
+        state, intact = parse_state(current)
+        m = STATE_RE.search(current or "")
+        raw = m.group(0) if m and not intact else ""
+
+        def render(st):
+            names = [n for n in list_dir(repo, f"issues/{number}") if n.startswith("merged-")]
+            merged = read(repo, f"issues/{number}/{names[-1]}") if names else None
+            return board_text(number, schema_mod.check(body)["ok"], last_seal(repo, number), merged, autopilot_state(repo, number),
+                              issue_labels(repo, number), holder(repo, number), st, intact, raw)
+        if mode == "board":
+            print(render(state))
+            return 0
+        if mode == "state" and argv[1:2] == ["get"]:
+            print(json.dumps(state.get(argv[2]) if len(argv) > 2 else state))
+            return 0 if intact else 3
+        if not intact:
+            print("The board's state was edited by hand: nothing is set on it, nobody is mentioned.", file=sys.stderr)
+            return 3
+        if mode == "state" and argv[1:2] == ["set"]:
+            for pair in argv[2:]:
+                key, _, value = pair.partition("=")
+                state[key] = json.loads(value) if value else None
+            put_board(repo, number, cid, render(state))
+            return 0
+        if mode == "waits":
+            waits = json.loads(os.environ.get("WAITS_JSON") or "null")
+            text, state = mention(dict(state, waits=waits), waits)
+            put_board(repo, number, cid, render(state))
+            if text:
+                post_comment(repo, number, text)
+            print(f"#{number} waits on {(waits or {}).get('who') or (waits or {}).get('role') or 'nobody'}" + ("; mentioned" if text else ""))
+            return 0
     print(__doc__, file=sys.stderr)
     return 64
 

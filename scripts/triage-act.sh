@@ -62,6 +62,19 @@ set_by_maintainer() {
   case $perm in admin | maintain | write) return 0;; *) return 1;; esac
 }
 
+# What happens next (C5, #564): the triage's first reply opens with it, and
+# README.md, CONTRIBUTING.md and agents-block.md (every repository's
+# AGENTS.md) open with the same words (the self-test keeps them in step).
+NEXT="Then a maintainer decides whether to accept it (the \`accepted\` label); once it is accepted, the autopilot writes the code in the organisation's runners (GitHub Actions) and opens the pull request. If you want to write the code yourself, comment \`/claim\` on the issue (or tick \"I want to work on this myself\" in its form) before it is accepted, and the autopilot steps aside."
+
+# The opening of the first reply: what happens next, and whom it waits on
+# now ($1, the category: a report missing something waits on its author).
+next_steps() {
+  local who="It waits on a maintainer's acceptance now; the issue's board says whom it waits on as it moves."
+  [ "$1" != needs_info ] || who="It waits on you now: the reply below says what is missing; the issue's board says whom it waits on as it moves."
+  printf '**What happens next.** This triage reads every new issue first. %s %s' "$NEXT" "$who"
+}
+
 # Whether issue $NUMBER is a maintainer's own Bug (#564): its Type is Bug and
 # AUTHOR's role on the repository is maintain or admin (the REST answer's
 # role_name; its legacy `permission` says write for maintain). Prints yes or
@@ -191,6 +204,9 @@ act() {
   fi
   reply=${REPLY:-}
   [ -n "${reply//[[:space:]]/}" ] || reply="Thanks! A maintainer will take a look."
+  # Every new issue's first reply says what happens next (C5, #564); a
+  # security report's has its own words below.
+  [ "$category" = security ] || reply="$(next_steps "$category")"$'\n\n'"$reply"
   if [ -n "$kept" ]; then
     reply="$reply"$'\n\n'"A maintainer set this issue's Type to Bug, so it stays a Bug, labelled bug:unconfirmed. Its reproduction does not start on its own: a maintainer starts it with the repro:run label."
   fi
@@ -282,8 +298,8 @@ if [ "${1:-}" = "--test" ]; then
   VERDICT='{"category":"pro_feature"}' REPLY="" SUMMARY=pro_feature t "an empty reply posts a plain one" "Thanks! A maintainer will take a look"
   VERDICT='{"category":"enhancement","exists_in_pro":true}' REPLY=x SUMMARY=s t "a paid product's feature gets both labels" "--add-label enhancement,exists-in-pro"
   VERDICT='{"category":"duplicate","duplicate_of":3}' REPLY=x SUMMARY=s t "a duplicate names the original" "Duplicate of #3"
-  VERDICT='{"category":"duplicate","duplicate_of":4}' REPLY=x SUMMARY=s t "a closed original is not named" "issue comment 7 --repo o/r --body x  <sub>"
-  VERDICT='{"category":"duplicate","duplicate_of":31337}' REPLY=x SUMMARY=s t "a number that is no open issue names nothing" "issue comment 7 --repo o/r --body x  <sub>"
+  VERDICT='{"category":"duplicate","duplicate_of":4}' REPLY=x SUMMARY=s t "a closed original is not named" "issue comment 7 --repo o/r --body .*as it moves\.  x  <sub>"
+  VERDICT='{"category":"duplicate","duplicate_of":31337}' REPLY=x SUMMARY=s t "a number that is no open issue names nothing" "issue comment 7 --repo o/r --body .*as it moves\.  x  <sub>"
   VERDICT='{"category":"duplicate","duplicate_of":31337}' REPLY=x SUMMARY=s t "nor does the record carry it" '"duplicate_of":null'
   VERDICT='{"category":"needs_info","duplicate_of":3}' REPLY=x SUMMARY=s t "a number outside a duplicate is not recorded" '"duplicate_of":null'
   VERDICT='{"category":"duplicate","duplicate_of":3}' REPLY=x SUMMARY=s t "a real duplicate is recorded" '"duplicate_of":3'
@@ -371,6 +387,18 @@ if [ "${1:-}" = "--test" ]; then
   if grep -q "^own=true" "$outf" && grep -q "^accepted=false" "$outf" && ! grep -qE -- "--add-label" "$log" && [ -z "$(ls "$seals")" ] && grep -q "issue comment 7 .*incomplete" "$log"; then echo "ok   C2 an incomplete one is not accepted, gets no triage label, and waits on its author"; else echo "FAIL C2 an incomplete one is not accepted, gets no triage label, and waits on its author:"; cat "$log" "$outf"; fail=1; fi
   if [ "$(HAS_TYPE=Bug PERM=admin NUMBER=7 GITHUB_REPOSITORY=o/r AUTHOR=boss own_bug)" = yes ] && [ "$(HAS_TYPE=Bug PERM=write NUMBER=7 GITHUB_REPOSITORY=o/r AUTHOR=alice own_bug)" = no ] && [ "$(HAS_TYPE=Bug PERM=admin NUMBER=7 GITHUB_REPOSITORY=o/r AUTHOR='a b' own_bug)" = no ]; then echo "ok   C2 own-bug-check: yes for a maintainer's Bug only"; else echo "FAIL C2 own-bug-check: yes for a maintainer's Bug only"; fail=1; fi
   rm -f "$prd" "$half"
+  # C5 (#564): the first reply says what happens next and whom it waits on.
+  VERDICT='{"category":"enhancement"}' REPLY="Nice idea." SUMMARY=s t "C5 the first reply opens with what happens next" "issue comment 7 --repo o/r --body \*\*What happens next.\*\* This triage reads every new issue first. Then a maintainer decides whether to accept it .*Nice idea"
+  VERDICT='{"category":"enhancement"}' REPLY=x SUMMARY=s t "C5 the triage, then the acceptance, then the autopilot in the organisation's runners" "triage reads.*decides whether to accept it.*the autopilot writes the code in the organisation's runners"
+  VERDICT='{"category":"bug_unconfirmed"}' REPLY=x SUMMARY=s t "C5 and /claim before it is accepted" 'comment `/claim` on the issue .*before it is accepted, and the autopilot steps aside'
+  VERDICT='{"category":"enhancement"}' REPLY=x SUMMARY=s t "C5 a request waits on a maintainer's acceptance" "It waits on a maintainer's acceptance now"
+  VERDICT='{"category":"needs_info"}' REPLY=x SUMMARY=s t "C5 a report missing something waits on its author" "It waits on you now"
+  : > "$log"; ( VERDICT='{"category":"security"}' REPLY=x SUMMARY=s NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m act >/dev/null 2>&1 ) || true
+  if grep -q "/claim" "$log"; then echo "FAIL C5 a security report is never invited to claim"; fail=1; else echo "ok   C5 a security report is never invited to claim"; fi
+  root="$(dirname "${BASH_SOURCE[0]}")/.."
+  for doc in README.md CONTRIBUTING.md agents-block.md AGENTS.md; do
+    if tr '\n' ' ' < "$root/$doc" | tr -s ' ' | grep -qF "$NEXT"; then echo "ok   C5 $doc says the same"; else echo "FAIL C5 $doc does not open with what happens next, in the triage's words"; fail=1; fi
+  done
   VERDICT='' REPLY=x SUMMARY=s t "no verdict waits for a person" "--add-label needs-triage"
   VERDICT='{"category":"nonsense"}' REPLY=x SUMMARY=s t "an unknown category waits for a person" "--add-label needs-triage"
   rm -f "$log"

@@ -389,6 +389,20 @@ jobs:
             # so. One that was incomplete has its comment, updated above.
             gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$body" >/dev/null
           fi
+          # Whom it waits on now (C5, #564), on the issue's board: its author
+          # while it is incomplete, mentioned once (scripts/receipts.py
+          # waits), a maintainer's acceptance once it is complete.
+          if [ "$ACTION" != labeled ]; then
+            url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/issues/$NUMBER"
+            if [ "$ready" = true ]; then
+              waits=$(jq -nc --arg u "$url" '{role: "a maintainer", what: "accept it (the `accepted` label) or say why not", url: $u, step: "acceptance"}')
+            else
+              waits=$(jq -nc --arg w "$AUTHOR" --arg u "$url" '{who: $w, what: "complete the issue: the G1 comment says what is missing", url: $u, step: "incomplete"}')
+            fi
+            printf '%s' "$BODY" > "$RUNNER_TEMP/g1-body.md"
+            WAITS_JSON=$waits BODY="$RUNNER_TEMP/g1-body.md" python3 .dx-central/scripts/receipts.py waits \
+              || echo "::warning::#$NUMBER's board could not say whom it waits on."
+          fi
       # Gate G2's seal (#81): the PRD's SHA-256, who accepted and when, in a
       # JSON file dilux-bot commits to the receipts branch (an organisation
       # ruleset lets only dilux-bot write there, and nobody delete or
