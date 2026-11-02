@@ -195,6 +195,10 @@ repro:
       run: npx playwright test -c playwright.dx-repro.config.ts --project=chromium {test}
       junit: build/dx-repro-junit.xml
       teardown: npx wp-env stop
+      # The before and after screenshots of an autopilot pull request
+      # (#564, scripts/screenshots.py): its affected specs, through the
+      # generated playwright.dx-shots.config.ts, after the same setup.
+      shots: npx playwright test -c playwright.dx-shots.config.ts --project=chromium {tests}
       minutes: 20
       context: [playwright.config.ts, .wp-env.json]
       list: ["tests/e2e/**"]

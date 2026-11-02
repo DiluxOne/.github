@@ -15,7 +15,9 @@ name: Issues
 # re-run on its pull requests, the PRD's seal, and the autopilot
 # (issue-triage.yml calls it); the claims (#488, issue-claim.yml): `/claim`
 # and the other commands in comments, the form's checkbox, a person's pull
-# request, and the daily reminders and releases. Most of this repository is a protected path
+# request, and the daily reminders and releases; and on every event of an
+# issue or a pull request, whom it waits on (#564, waiting-update.yml), on
+# its board with one mention, and the "What waits" view. Most of this repository is a protected path
 # of policy/autonomy.yml, and an autopilot pull request that touches one is
 # never merged by policy.
 
@@ -100,3 +102,16 @@ jobs:
       contents: read
     uses: ./.github/workflows/issue-claim.yml
     secrets: inherit
+
+  # What waits on whom (#564, waiting-update.yml): on every event of an
+  # issue or a pull request (a fork's by its metadata only), whom it waits
+  # on, on its board, with one mention of that person, and the
+  # organisation's "What waits" view in DiluxOne/.github. A bot's comment
+  # starts nothing.
+  waiting:
+    if: github.event_name != 'schedule'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/waiting-update.yml
+    secrets:
+      DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}

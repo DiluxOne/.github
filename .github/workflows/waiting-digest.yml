@@ -1,14 +1,17 @@
 name: What waits
 
-# Not reusable. Every day, and by hand (#479): every open pull request of the
-# organisation older than a day, what blocks it (needs-human, the
-# autopilot's question, an acceptance, a failed check, an unresolved thread,
-# a draft, the checks, a person's merge) and on whom it waits, in one issue
-# of this repository, labelled `run:waiting` and pinned, whose body is
-# rewritten every run (scripts/waiting.py): the place the maintainer reads,
-# instead of a comment on each pull request. The issue is public, so a
-# private repository's pull requests are counted, never named. A search that
-# fails fails the run and leaves the last body as it was.
+# Not reusable. Every day, and by hand (#479, #564): the sweep of the "What
+# waits" view, which waiting-update.yml rewrites on every event of an issue
+# or a pull request: every open issue and pull request of the organisation
+# that waits on someone, what blocks it (needs-human, the autopilot's
+# question, an acceptance, an incomplete issue, a triage's question, a
+# claim, a failed check, an unresolved thread, a draft, the checks, a
+# person's merge), the action and its full URL, grouped by whom it waits
+# on, in one issue of this repository, labelled `run:waiting` and pinned,
+# whose body is rewritten every run (scripts/waiting.py publish): the place
+# the maintainer reads. A run repairs what a missed event left. The issue
+# is public, so a private repository's items are counted, never named. A
+# search that fails fails the run and leaves the last body as it was.
 
 on:
   schedule:
@@ -47,18 +50,5 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           OWNER: ${{ github.repository_owner }}
-        run: |
-          set -euo pipefail
-          python3 scripts/waiting.py > "$RUNNER_TEMP/waiting.md"
-          gh label create "run:waiting" --repo "$GITHUB_REPOSITORY" --color C5DEF5 --force \
-            --description "What waits, every day (waiting-digest.yml): one pinned issue, its body rewritten" >/dev/null
-          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label "run:waiting" --limit 1 --json number --jq '.[0].number // empty')
-          if [ -z "$number" ]; then
-            url=$(gh issue create --repo "$GITHUB_REPOSITORY" --title "What waits" --label "run:waiting" --body-file "$RUNNER_TEMP/waiting.md")
-            number=${url##*/}
-            gh issue pin "$number" --repo "$GITHUB_REPOSITORY" || echo "::warning::#$number could not be pinned; pin it by hand."
-          else
-            gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/waiting.md" >/dev/null
-          fi
-          echo "What waits: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/issues/$number"
-          cat "$RUNNER_TEMP/waiting.md" >> "$GITHUB_STEP_SUMMARY"
+          VIEW_REPO: ${{ github.repository }}
+        run: python3 scripts/waiting.py publish

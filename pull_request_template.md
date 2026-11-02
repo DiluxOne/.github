@@ -19,7 +19,9 @@
 
 ## 📸 Screenshots
 
-
+<!-- What a user sees, before and after. An autopilot pull request that changes the browser layer gets its own here, between the markers, when it is marked ready (#564). -->
+<!-- dx-screenshots -->
+<!-- /dx-screenshots -->
 
 ## ✅ Checklist
 

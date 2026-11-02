@@ -6,6 +6,11 @@
 # a label a bot added does not count, so no automation (the triage reads
 # untrusted issue text) can accept an issue. Only people with triage access or
 # more can label an issue, so the label is a maintainer's decision.
+# One exception (#564): a maintainer's own Bug, which the triage accepted
+# with its writing: the bot's `accepted` stands when the issue's last seal
+# says so, in its author's name, for the PRD it has now (receipts.py
+# own-bug); the triage seals it so only after reading that author's
+# maintain or admin role.
 #
 # The issue's Type (GitHub's own field, the organisation's issue types) must
 # fit the pull request's: a feat or breaking pull request closes a Feature,
@@ -126,6 +131,21 @@ prd_seal() {
   jq -r --argjson n "$2" '.data.repository.pullRequest.closingIssuesReferences.nodes[] | select(.number == $n) | .body // ""' "$1" > "$body"
   NUMBER=$2 BODY=$body python3 "$(dirname "${BASH_SOURCE[0]}")/receipts.py" verify-prd
   local rc=$?
+  rm -f "$body"
+  return "$rc"
+}
+
+# Whether issue $2 of the answer in $1 is a maintainer's own Bug the triage
+# accepted with its writing (#564): its last seal on the receipts branch
+# (which only dilux-bot writes) says so, names the issue's author, and its
+# PRD is still the sealed one (scripts/receipts.py own-bug). The `accepted`
+# a bot added then stands for the author's own.
+own_bug() {
+  local body author rc
+  body=$(mktemp)
+  jq -r --argjson n "$2" '.data.repository.pullRequest.closingIssuesReferences.nodes[] | select(.number == $n) | .body // ""' "$1" > "$body"
+  author=$(jq -r --argjson n "$2" '.data.repository.pullRequest.closingIssuesReferences.nodes[] | select(.number == $n) | .author.login // ""' "$1")
+  rc=0; NUMBER=$2 BODY=$body AUTHOR=$author python3 "$(dirname "${BASH_SOURCE[0]}")/receipts.py" own-bug >/dev/null 2>&1 || rc=$?
   rm -f "$body"
   return "$rc"
 }
@@ -267,8 +287,14 @@ check() {
         fi ;;
       other-repo) echo "#$n is in another repository; the issue must be in this one." ;;
       closed) echo "#$n is closed; the issue must be open." ;;
-      no-label|bot-label)
-        if why=$(lane_verdict "$answer" "$n"); then
+      bot-label|no-label)
+        if [ "$v" = bot-label ] && own_bug "$answer" "$n"; then
+          if type_fits "$answer" "$n"; then
+            echo "#$n is its author's own Bug, a maintainer's, accepted with its writing (#564; PRD: match)."; ok=1
+          else
+            echo "#$n is its author's own Bug, accepted with its writing, but its Type is not $(needed_types | jq -r '.[0]'), the kind this pull request's title says."
+          fi
+        elif why=$(lane_verdict "$answer" "$n"); then
           if type_fits "$answer" "$n"; then
             echo "#$n is $why."; ok=1
           else
@@ -328,6 +354,19 @@ if [ "${1:-}" = "--test" ]; then
   { issue 3 "$repo" OPEN bug ""; issue 12 "$repo" OPEN accepted LabeledEvent:accepted:User; } | answer | case_ "passes: one accepted among several" 0 || fail=1
   issue 12 "$repo" OPEN accepted LabeledEvent:approved:User,LabeledEvent:accepted:Bot | answer | case_ "fails: a person's event for another label does not count" 1 || fail=1
   echo '{"errors":[{"message":"Resource not accessible by integration"}]}' | case_ "fails: an answer that is an error" 1 || fail=1
+  # C2 (#564): a maintainer's own Bug, accepted by the triage with its writing.
+  own_prd='### Problem\n\nIt breaks.\n\n### Scope\n\n- Fix it.\n\n### Out of scope\n\n- Nothing.\n\n### Acceptance criteria\n\n- C1: Given a page, when it loads, then it does not break.\n\n### Criticality\n\nNormal\n'
+  own_body=$(mktemp); printf "$own_prd" > "$own_body"
+  NUMBER=40 BODY=$own_body ACCEPTED_BY=boss ACCEPTED_HOW=own-bug python3 "$(dirname "${BASH_SOURCE[0]}")/receipts.py" seal-prd >/dev/null
+  NUMBER=41 BODY=$own_body ACCEPTED_BY=boss python3 "$(dirname "${BASH_SOURCE[0]}")/receipts.py" seal-prd >/dev/null
+  own_issue() { issue "$1" "$repo" OPEN accepted LabeledEvent:accepted:Bot Bug | jq --arg b "$(cat "${3:-$own_body}")" --arg who "${2:-boss}" '. + {body: $b, author: {login: $who}}'; }
+  own_issue 40 | answer | T="fix(x): a thing" case_ "C2 passes: a maintainer's own Bug the triage accepted and sealed in their name" 0 || fail=1
+  own_issue 40 alice | answer | T="fix(x): a thing" case_ "C2 fails: the seal names someone else than the issue's author" 1 || fail=1
+  own_issue 41 | answer | T="fix(x): a thing" case_ "C2 fails: a bot's label on an issue a person's seal accepted" 1 || fail=1
+  edited=$(mktemp); printf "${own_prd/breaks/works}" > "$edited"
+  own_issue 40 boss "$edited" | answer | T="fix(x): a thing" case_ "C2 fails: its PRD edited after the seal" 1 || fail=1
+  own_issue 40 | answer | T="feat(x): a thing" case_ "C2 fails: its Type is still checked" 1 || fail=1
+  rm -f "$own_body" "$edited"
   echo '{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"totalCount":11,"nodes":[]}}}}}' | case_ "fails: more closing issues than it reads" 1 || fail=1
   issue 12 "$repo" OPEN accepted LabeledEvent:accepted:User Feature | answer | T="feat(x): a thing" case_ "passes: a feature closing a Feature" 0 || fail=1
   issue 12 "$repo" OPEN accepted LabeledEvent:accepted:User Bug | answer | T="feat(x): a thing" case_ "fails: a feature closing a Bug" 1 || fail=1

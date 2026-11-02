@@ -70,6 +70,9 @@ GITHUB_ONLY = ("plugin-release-wp.yml", "plugin-publish-wp.yml", "svn-auth-check
                "plugin-release-ai.yml", "plugin-publish-ai.yml",
                # It wakes the VM (#154): it cannot wait for the VM it starts.
                "runner-wake.yml",
+               # It runs an autopilot pull request's code for its screenshots
+               # (#564), code written from an issue's text: a fresh runner.
+               "pr-screenshots.yml",
                # An agent works on a stranger's report, and the job holds an
                # embargoed fix (#194): a fresh runner each time.
                "security-fix.yml",
