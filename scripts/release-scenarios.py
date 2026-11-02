@@ -41,7 +41,14 @@ complete feature), `steps` (each one of
         Markdown table of results (scenario, pass or fail, run link) to
         FILE (and stdout), then puts the callers back the same way; a
         pull request that does not merge is a failing `callers` row;
-        exits 1 when one fails
+        exits 1 when one fails. With --moved MOVED, what moved is written
+        to MOVED and left for `back`
+  release-scenarios.py back --repo OWNER/NAME --moved MOVED [--ref v7-next]
+                            [--out FILE] [--minutes N]
+        puts back the callers `run --moved` left at the ref (with
+        DX_CALLERS_TOKEN, minted after the scenarios: an App token lasts
+        an hour) and adds a failing `callers` row to FILE if they do not
+        come back; exits 1 when a row of FILE fails
   release-scenarios.py --test
 """
 import ast
@@ -450,30 +457,66 @@ def point_callers(repo, ref, run=gh, central=None, back=None, sleep=time.sleep, 
     return [{"name": name, "before": text} for name, text, _, _ in changes]
 
 
-def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20, central=None, callers=None):
+def put_back(repo, ref, moved, callers=gh, central=None, sleep=time.sleep, minutes=20):
+    """The callers `point_callers` moved (`moved`) put back from `ref`,
+    through another merged pull request: [] once they are, else one failing
+    `callers` row that says why."""
+    if not moved:
+        return []
+    try:
+        point_callers(repo, ref, callers, central, back={m["name"]: m["before"] for m in moved}, sleep=sleep, minutes=minutes)
+    except (RuntimeError, ValueError) as e:
+        return [{"id": "callers", "ok": False, "why": [f"the callers were not put back from {ref}: {e}"], "run": ""}]
+    return []
+
+
+def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20, central=None, callers=None, moved_out=None):
     """Every scenario at `ref`: the callers moved there first (a merged pull
     request, or no scenario plays and one failing `callers` row says why),
     and put back after, through another; a failure to put them back is a
     failing `callers` row too, so nothing is released over a test repository
-    left at `ref`."""
+    left at `ref`. With `moved_out` (a list), what moved goes there and is
+    not put back: the caller does that with `put_back`, with a token minted
+    after the scenarios (an App's lasts an hour, the scenarios can take
+    longer)."""
     bodies = conf.get("bodies") or {}
     callers = callers or (callers_gh() if run is gh else run)
     try:
         moved = point_callers(repo, ref, callers, central, sleep=sleep, minutes=minutes)
     except (RuntimeError, ValueError) as e:
         return [{"id": "callers", "ok": False, "why": [f"the callers did not reach {ref}: {e}"], "run": ""}]
+    if moved_out is not None:
+        moved_out.extend(moved)
     results = []
     try:
         for s in conf.get("scenarios") or []:
             if not only or s["id"] in only:
                 results.append(play(s, repo, ref, bodies, run, sleep, minutes))
     finally:
-        if moved:
-            try:
-                point_callers(repo, ref, callers, central, back={m["name"]: m["before"] for m in moved}, sleep=sleep, minutes=minutes)
-            except (RuntimeError, ValueError) as e:
-                results.append({"id": "callers", "ok": False, "why": [f"the callers were not put back from {ref}: {e}"], "run": ""})
+        if moved_out is None:
+            results.extend(put_back(repo, ref, moved, callers, central, sleep, minutes))
     return results
+
+
+def write_results(results, out):
+    """The table of `results` to stdout, and to `out` with the record the
+    lane's next job reads."""
+    text = table(results)
+    sys.stdout.write(text)
+    if out:
+        with open(out, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.write(f"\n<!-- dx-scenarios {json.dumps(results)} -->\n")
+
+
+def read_results(path):
+    """The results `write_results` wrote to `path`; [] when there are none."""
+    try:
+        text = open(path, encoding="utf-8").read()
+    except OSError:
+        return []
+    m = re.search(r"<!-- dx-scenarios (.*) -->", text)
+    return json.loads(m.group(1)) if m else []
 
 
 DEFAULTS = ("main", "master")
@@ -704,6 +747,33 @@ def self_test():
         got = run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=1, central="O/.github")
         check(f"C1: a pull request that {how} plays no scenario and gives one failing callers row",
               (any(c[:2] == ("issue", "create") for c in st["calls"]), [(r["id"], r["ok"]) for r in got], st["main"]["issues.yml"]), (False, [("callers", False)], caller))
+    st, fake = repo_fake()
+    moved = []
+    got = run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=1, central="O/.github", moved_out=moved)
+    check("#622: with moved_out the scenarios play at the ref and the callers are left there for put_back",
+          ([r["id"] for r in got], [m["name"] for m in moved], ("merged", "21") in st["calls"], "issue-triage.yml@v7-next\n" in st["main"]["issues.yml"]), (["a"], ["issues.yml"], False, True))
+    fresh = []
+    check("#622: put_back, with the runner given it (a token minted after the scenarios), puts them back",
+          (put_back("o/t", "v7-next", moved, lambda *a, input=None: fresh.append(a) or fake(*a, input=input), "O/.github", lambda s: None, 1), st["main"]["issues.yml"], any(c[:2] == ("pr", "create") for c in fresh)), ([], caller, True))
+    check("#622: put_back with nothing moved does nothing", put_back("o/t", "v7-next", [], lambda *a, input=None: 1 / 0), [])
+    st, fake = repo_fake()
+    moved = []
+    run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=1, central="O/.github", moved_out=moved)
+
+    def expired(*a, input=None):
+        raise RuntimeError("gh api repos/o/t/contents/.github/workflows: HTTP 401: Bad credentials")
+    check("#622: callers that do not come back are one failing callers row",
+          [(r["id"], r["ok"]) for r in put_back("o/t", "v7-next", moved, expired, "O/.github", lambda s: None, 1)], [("callers", False)])
+    import contextlib
+    import io
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        out = os.path.join(d, "results.md")
+        with contextlib.redirect_stdout(io.StringIO()):
+            write_results([{"id": "a", "ok": True, "why": [], "run": ""}], out)
+        check("#622: back reads the run's results and adds its row to them",
+              read_results(out) + [{"id": "callers", "ok": False, "why": ["x"], "run": ""}], [{"id": "a", "ok": True, "why": [], "run": ""}, {"id": "callers", "ok": False, "why": ["x"], "run": ""}])
+        check("#622: no results file reads as none", read_results(os.path.join(d, "none.md")), [])
     own = open(os.path.abspath(__file__), encoding="utf-8").read()
     check("C2: nothing in this script writes a default branch through the contents API", default_writes(own), [])
     check("C2: a PUT to contents/ on main, or with no branch, is named",
@@ -742,14 +812,32 @@ def main(argv):
         p.add_argument("--only", nargs="*", default=[])
         p.add_argument("--out", default="")
         p.add_argument("--minutes", type=int, default=20)
+        p.add_argument("--moved", default="")
         a = p.parse_args(argv[1:])
-        results = run_all(load_yaml(os.path.join(ROOT, SCENARIOS)), a.repo, a.ref, a.only, minutes=a.minutes)
-        text = table(results)
-        sys.stdout.write(text)
-        if a.out:
-            with open(a.out, "w", encoding="utf-8") as fh:
-                fh.write(text)
-                fh.write(f"\n<!-- dx-scenarios {json.dumps(results)} -->\n")
+        moved = [] if a.moved else None
+        try:
+            results = run_all(load_yaml(os.path.join(ROOT, SCENARIOS)), a.repo, a.ref, a.only, minutes=a.minutes, moved_out=moved)
+        finally:
+            if a.moved:
+                with open(a.moved, "w", encoding="utf-8") as fh:
+                    json.dump(moved, fh)
+        write_results(results, a.out)
+        return 0 if all(r["ok"] for r in results) else 1
+    if argv[:1] == ["back"]:
+        import argparse
+        p = argparse.ArgumentParser(prog="release-scenarios.py back")
+        p.add_argument("--repo", required=True)
+        p.add_argument("--ref", default="v7-next")
+        p.add_argument("--moved", required=True)
+        p.add_argument("--out", default="")
+        p.add_argument("--minutes", type=int, default=20)
+        a = p.parse_args(argv[1:])
+        try:
+            moved = json.load(open(a.moved, encoding="utf-8"))
+        except (OSError, ValueError):
+            moved = []
+        results = (read_results(a.out) if a.out else []) + put_back(a.repo, a.ref, moved, callers_gh(), minutes=a.minutes)
+        write_results(results, a.out)
         return 0 if all(r["ok"] for r in results) else 1
     print(__doc__, file=sys.stderr)
     return 64

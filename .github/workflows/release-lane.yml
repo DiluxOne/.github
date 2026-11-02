@@ -167,9 +167,36 @@ jobs:
           TEST_REPO: ${{ steps.test.outputs.repo }}
         run: |
           set -uo pipefail
-          python3 scripts/release-scenarios.py run --repo "$OWNER/$TEST_REPO" --ref v7-next --out "$RUNNER_TEMP/results.md"
-          cat "$RUNNER_TEMP/results.md" >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/release-scenarios.py run --repo "$OWNER/$TEST_REPO" --ref v7-next --out "$RUNNER_TEMP/results.md" --moved "$RUNNER_TEMP/moved.json"
           # The decision is the next job's: a failed scenario is a bug, not a red lane.
+          exit 0
+
+      # An App token lasts an hour and the scenarios can take longer: the
+      # callers are put back with one minted after them.
+      - name: App token (the same, to put the callers back)
+        id: back
+        if: always()
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.test.outputs.repo }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+
+      - name: The callers back from v7-next
+        if: always()
+        env:
+          DX_CALLERS_TOKEN: ${{ steps.back.outputs.token }}
+          OWNER: ${{ github.repository_owner }}
+          TEST_REPO: ${{ steps.test.outputs.repo }}
+        run: |
+          set -uo pipefail
+          python3 scripts/release-scenarios.py back --repo "$OWNER/$TEST_REPO" --ref v7-next --moved "$RUNNER_TEMP/moved.json" --out "$RUNNER_TEMP/results.md"
+          cat "$RUNNER_TEMP/results.md" >> "$GITHUB_STEP_SUMMARY"
+          # A callers row that fails is the next job's to read, like a scenario's.
           exit 0
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
