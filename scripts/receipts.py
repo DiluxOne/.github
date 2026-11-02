@@ -296,6 +296,19 @@ def mention(state, waits, said=()):
     return f"{text}\n\n{AI}\n{marks}", dict(state, mentioned=(done + [key(w) for w in new])[-50:])
 
 
+def announce(state, waits, bodies, put, post):
+    """Mention whom it waits on, then write the board (PUT with the new
+    state): the comment first, so a post that fails leaves the board as it
+    was and the next run mentions them; a board write that fails after it
+    is covered by the comment's mark (BODIES, the bot's comments). Returns
+    the comment posted, or None."""
+    text, state = mention(dict(state, waits=waits), waits, mentioned_in(bodies))
+    if text:
+        post(text)
+    put(state)
+    return text
+
+
 def autopilot_row(a):
     """The autopilot's row: its pull request, the run, criteria done of total."""
     if not a:
@@ -696,6 +709,18 @@ Normal
           mention({}, w, mentioned_in([t1]))[0], None)
     check("C5 the mark hides in the comment", (mention_mark("alice|s") in mention({}, dict(w, step="s"))[0], "alice|" in t1), (True, False))
     check("C5 a new step mentions them again", mention(st1, dict(w, what="answer the question", url="https://github.com/o/r/issues/7#issuecomment-1"))[0] is not None, True)
+    boards, posts = [], []
+
+    def failing(t):
+        raise RuntimeError("POST failed")
+    try:
+        announce({}, w, [], boards.append, failing)
+    except RuntimeError:
+        pass
+    check("C3 a mention whose post fails is not recorded on the board", boards, [])
+    announce({}, w, [], boards.append, posts.append)
+    check("C3 so the next run mentions them, once", (len(posts), posts[0].startswith("@alice"), "alice|" in str(boards[-1].get("mentioned"))), (1, True, True))
+    check("C3 a board write that failed after the post never mentions again", announce({}, w, posts, boards.append, posts.append), None)
     pb = pr_board_text({"waits": {"who": ["boss"], "what": "review it and merge it", "url": "https://github.com/o/r/pull/8"}})
     check("C3 a pull request's board names whom it waits on", ("pull request's board" in pb, "| Waits on | `boss`: review it and merge it ([link](https://github.com/o/r/pull/8)) |" in pb, "G1" in pb), (True, True, False))
     tm = mention({}, {"who": ["boss", "ana", "dilux-bot[bot]"], "what": "x", "step": "s"})
@@ -939,10 +964,9 @@ def main(argv):
             return 0
         if mode == "waits":
             waits = json.loads(os.environ.get("WAITS_JSON") or "null")
-            text, state = mention(dict(state, waits=waits), waits, mentioned_in(b for _, b in comments))
-            put_board(repo, number, cid, render(state))
-            if text:
-                post_comment(repo, number, text)
+            text = announce(state, waits, [b for _, b in comments],
+                            lambda st: put_board(repo, number, cid, render(st)),
+                            lambda t: post_comment(repo, number, t))
             print(f"#{number} waits on {(waits or {}).get('who') or (waits or {}).get('role') or 'nobody'}" + ("; mentioned" if text else ""))
             return 0
     print(__doc__, file=sys.stderr)

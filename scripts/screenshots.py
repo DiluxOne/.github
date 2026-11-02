@@ -174,14 +174,24 @@ def collect(report_path, label, out, root="."):
     return done
 
 
+NAME = re.compile(r"[a-z0-9-]{1,80}")
+
+
 def listed(out):
-    """{label: {(spec, test)}} of the images under OUT."""
+    """{label: {(spec, test)}} of the images under OUT. OUT comes from a job
+    that ran the pull request's code, so only what `slug` could have made
+    counts: a name that is not one, a symlink, or a file where a directory
+    goes (or the reverse) is skipped, never rendered nor pushed."""
     found = {"before": set(), "after": set()}
+    real_dir = lambda p: os.path.isdir(p) and not os.path.islink(p)
     for label in found:
         base = os.path.join(out, label)
-        for spec in sorted(os.listdir(base)) if os.path.isdir(base) else []:
+        for spec in sorted(os.listdir(base)) if real_dir(base) else []:
+            if not NAME.fullmatch(spec) or not real_dir(os.path.join(base, spec)):
+                continue
             for name in sorted(os.listdir(os.path.join(base, spec))):
-                if name.endswith(".png"):
+                full = os.path.join(base, spec, name)
+                if name.endswith(".png") and NAME.fullmatch(name[:-4]) and os.path.isfile(full) and not os.path.islink(full):
                     found[label].add((spec, name[:-4]))
     return found
 
@@ -232,14 +242,8 @@ def gh(*args, data=None):
 def push(repo, number, out, api=gh):
     """The images under OUT committed to BRANCH as pr-<n>/..., through the
     API (signed); the branch is created, orphan, when it is missing."""
-    files = []
-    for label in ("before", "after"):
-        base = os.path.join(out, label)
-        for root, _, names in os.walk(base):
-            for name in sorted(names):
-                if name.endswith(".png"):
-                    full = os.path.join(root, name)
-                    files.append((f"pr-{number}/{os.path.relpath(full, out)}", full))
+    files = [(f"pr-{number}/{label}/{spec}/{test}.png", os.path.join(out, label, spec, f"{test}.png"))
+             for label, keys in listed(out).items() for spec, test in sorted(keys)]
     if not files:
         return 0
     try:
@@ -331,7 +335,18 @@ def self_test():
         open(os.path.join(out, "before", "front-layout", "the-header-stays-on-one-line.png"), "wb").write(b"\x89PNG")
         os.makedirs(os.path.join(out, "after", "admin"))
         open(os.path.join(out, "after", "admin", "a-new-screen.png"), "wb").write(b"\x89PNG")
+        hostile = ["@someone x", "a|b", "x](javascript:alert)", "<img src=x>", "a\nb"]
+        for h in hostile:
+            os.makedirs(os.path.join(out, "after", h))
+            open(os.path.join(out, "after", h, "t.png"), "wb").write(b"\x89PNG")
+            open(os.path.join(out, "after", "admin", h + ".png"), "wb").write(b"\x89PNG")
+        open(os.path.join(out, "after", "a-file"), "w").close()
+        os.symlink("/etc/passwd", os.path.join(out, "after", "admin", "leak.png"))
+        os.symlink(os.path.join(out, "after", "admin"), os.path.join(out, "after", "linked"))
         found = listed(out)
+        check("C4 only names slug makes, regular files and directories, are listed: a hostile name, a file for a spec or a symlink is skipped",
+              found, {"before": {("front-layout", "the-header-stays-on-one-line")},
+                      "after": {("front-layout", "the-header-stays-on-one-line"), ("admin", "a-new-screen")}})
         text = section("DiluxOne/x", 12, found, "https://github.com/DiluxOne/x/actions/runs/9")
         check("C4 the section links the before and the after image of each test",
               "| `front-layout` · the-header-stays-on-one-line | ![before](https://github.com/DiluxOne/x/blob/dx-screenshots/pr-12/before/front-layout/the-header-stays-on-one-line.png?raw=true) | ![after](https://github.com/DiluxOne/x/blob/dx-screenshots/pr-12/after/front-layout/the-header-stays-on-one-line.png?raw=true) |" in text, True)

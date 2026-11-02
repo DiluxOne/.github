@@ -227,6 +227,17 @@ def heading(who, item, maintainers):
     return who
 
 
+def safe_title(text):
+    """A title anyone may have written, inert in the view: one line, no
+    mention (a full-width at-sign), no HTML, code, table or link syntax,
+    no autolink, at most 120 characters."""
+    t = re.sub(r"\s+", " ", str(text or "")).strip()[:120]
+    t = t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    t = t.replace("@", "\uff20").replace("[", "(").replace("]", ")")
+    t = re.sub(r"([\\`*_|!#~])", r"\\\1", t)
+    return re.sub(r"(?i)\b(https?|www)\b", lambda m: m.group(1)[0] + "\u200b" + m.group(1)[1:], t)
+
+
 def render(items, now, maintainers=()):
     """The view's body: every item that waits on someone, by whom, one line
     per action with its full URL, oldest first; private ones counted. Pure."""
@@ -244,7 +255,7 @@ def render(items, now, maintainers=()):
         if (it.get("repository") or {}).get("isPrivate"):
             hidden[(group, what)] = hidden.get((group, what), 0) + 1
             continue
-        title = re.sub(r"[\[\]]", lambda m: "(" if m.group(0) == "[" else ")", it.get("title") or "")
+        title = safe_title(it.get("title"))
         kind = "pull request" if is_pr(it) else "issue"
         groups[group].append(f"- **{action(what)}**: {it['url']} ({kind} {it['repository']['name']}#{it['number']}, {title})")
     # The maintainer first, then the people, then the autopilot and the checks.
@@ -369,6 +380,12 @@ def self_test():
     check("C3 a private one is counted, never named", ("secret-repo" in body, "- 1 in private repositories: **fix the failed check**" in body), (False, True))
     check("C3 a pull request of today is listed too", "opened today" in body, True)
     check("C3 a title cannot break the link", "[x] link" in body, False)
+    hostile = dict(next(i for i in public if not is_pr(i)), title="@someone @DiluxOne/team <img src=x onerror=alert(1)> `x` | https://evil.example\nnext")
+    hb = render([hostile], now, boss)
+    check("C3 a hostile title mentions nobody and carries no HTML, code, pipe, link or newline",
+          (re.search(r"@\w", hb.split("\n", 3)[3]), "<img" in hb, "`x`" in hb, " | " in hb, "https://evil" in hb, "\nnext" in hb),
+          (None, False, False, False, False, False))
+    check("C3 a long title is cut", len(safe_title("a" * 500)), 120)
     check("C3 nothing waiting says so", "Nothing waits on anyone." in render([], now, boss), True)
     check("C3 the bot's own run: issues wait on nobody", issue_blocker({"labels": {"nodes": [{"name": "run:waiting"}, {"name": "needs-human"}]}}), None)
     # The board and the one mention (rule 7: each waits on its own people).
