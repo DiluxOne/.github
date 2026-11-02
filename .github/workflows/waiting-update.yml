@@ -13,7 +13,9 @@ name: What waits (update)
 # pinned, rewritten from every open issue and pull request of the
 # organisation, grouped by person, one line per action with its full URL
 # (scripts/waiting.py publish; a private repository's are counted, never
-# named). waiting-digest.yml sweeps the same view once a day. It never
+# named). The board is written with the App's token for the item's
+# repository alone (#619); the view, with one for the organisation.
+# waiting-digest.yml sweeps the same view once a day. It never
 # checks out the repository's code: only DiluxOne/.github's scripts. A
 # comment of a bot (the board, the mention) starts nothing, nor does an
 # event on the bot's own `run:` issues, so it never feeds itself. One run
@@ -61,17 +63,18 @@ jobs:
       cancel-in-progress: false
     permissions: {}
     steps:
-      # The organisation's App, for its repositories: the item's board and
-      # its mention here, the search of every open item (a private one only
-      # counted), and the view's issue in DiluxOne/.github.
+      # The organisation's App, for the item's repository alone (#619: a
+      # token for the whole installation had the board's comment answered
+      # with HTTP 403): the item's board and its mention here, and the reads
+      # waiting.py update and receipts.py waits make there.
       - name: App token
         id: bot
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          permission-issues: write
+          repositories: ${{ github.event.repository.name }}
+          permission-issues: write # the board and the mention
           permission-pull-requests: read
           permission-checks: read # the heads' checks, for a failed one
           permission-contents: read # the seals, for the board

@@ -66,3 +66,19 @@ def test_the_update_reads_the_item_then_rewrites_the_view_and_never_runs_a_pull_
 def test_the_daily_digest_is_the_sweep_of_the_same_view():
     steps = load(WF / "waiting-digest.yml")["jobs"]["digest"]["steps"]
     assert any(s.get("run") == "python3 scripts/waiting.py publish" for s in steps)
+
+
+def test_the_board_is_written_with_a_token_for_the_items_repository_that_may_write_issues():
+    # #619: an owner-wide token, minted for the whole installation, had its
+    # board comment answered with HTTP 403.
+    update = load(WF / "waiting-update.yml")["jobs"]["update"]
+    assert update["permissions"] == {}, "the callers grant contents: read, no more"
+    token = next(s for s in update["steps"] if s.get("id") == "bot")
+    assert token["uses"].startswith("actions/create-github-app-token@")
+    got = token["with"]
+    assert "owner" not in got, "never a token for every repository of the installation"
+    assert got["repositories"] == "${{ github.event.repository.name }}"
+    asked = {k[len("permission-"):]: v for k, v in got.items() if k.startswith("permission-")}
+    assert asked == {"issues": "write", "pull-requests": "read", "checks": "read", "contents": "read", "metadata": "read"}
+    board = next(s for s in update["steps"] if "waiting.py update" in s.get("run", ""))
+    assert board["env"]["GH_TOKEN"] == "${{ steps.bot.outputs.token }}"

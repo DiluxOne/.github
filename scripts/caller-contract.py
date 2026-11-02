@@ -18,6 +18,11 @@ reusable workflows that call it in turn:
   - every secret it marks required, and every secret it reads that it does
     not declare, passed (or the caller's `secrets: inherit`).
 
+And the App tokens of TOKENS (#619): a job there mints the App's token for
+the scope it names and with exactly the permissions it names, never one for
+the whole installation (`owner:`), so what its callers reach is no more
+than it needs.
+
 And this repository's own callers (its workflows that are not reusable,
 org-pull-request.yml aside, which runs in the other repositories): every
 call of its own engine uses one ref (#563 C10), so the caller and the
@@ -25,6 +30,7 @@ engine are never read from two commits (#589).
 
   caller-contract.py check [ROOT]   each problem, one per line, naming the
                                     workflow, the job and what is missing
+                                    or wider
   caller-contract.py --test
 """
 import glob
@@ -38,6 +44,15 @@ LEVEL = {"none": 0, "read": 1, "write": 2}
 SHIPPED = ("workflow-templates/*.yml", ".github/workflows/org-pull-request.yml")
 ALL = ("actions", "attestations", "checks", "contents", "deployments", "discussions", "id-token", "issues", "models",
        "packages", "pages", "pull-requests", "repository-projects", "security-events", "statuses")
+# workflow -> job -> the App token it may mint: its `repositories:` and its
+# permissions, exactly (#619).
+TOKENS = {
+    "waiting-update.yml": {
+        "update": {"repositories": "${{ github.event.repository.name }}",
+                   "permissions": {"issues": "write", "pull-requests": "read", "checks": "read", "contents": "read", "metadata": "read"}},
+    },
+}
+APP_TOKEN = "actions/create-github-app-token@"
 
 
 def load(path):
@@ -153,8 +168,41 @@ def check(root=ROOT, central=None):
                     continue
                 granted = perms(job.get("permissions")) if "permissions" in job else top
                 out += contract(name, reusables[name], job, reusables, granted, central, (f"{rel} job `{jname}`",))
+    out += tokens(workflows)
     out += one_ref(workflows, central)
     return sorted(set(out))
+
+
+def tokens(workflows, table=None):
+    """#619: each job of `table` (TOKENS) mints its App token for its scope
+    alone, with exactly its permissions; a workflow not here is not read."""
+    out = []
+    for name, jobs in sorted((TOKENS if table is None else table).items()):
+        if name not in workflows:
+            continue
+        for jname, want in sorted(jobs.items()):
+            where = f"{name} job `{jname}`"
+            job = (workflows[name].get("jobs") or {}).get(jname)
+            if job is None:
+                out.append(f"{where}: is not there, and its App token is checked")
+                continue
+            steps = [s for s in job.get("steps") or [] if str(s.get("uses") or "").startswith(APP_TOKEN)]
+            if not steps:
+                out.append(f"{where}: mints no App token, and it must for {want['repositories']}")
+            for step in steps:
+                got = step.get("with") or {}
+                if "owner" in got:
+                    out.append(f"{where}: mints its App token for the whole installation (`owner:`), not for {want['repositories']} alone")
+                if str(got.get("repositories", "")) != want["repositories"]:
+                    out.append(f"{where}: mints its App token for `{got.get('repositories', 'every repository')}`, not for {want['repositories']} alone")
+                asked = {k[len("permission-"):]: str(v) for k, v in got.items() if k.startswith("permission-")}
+                for scope in sorted(set(asked) | set(want["permissions"])):
+                    a, w = asked.get(scope, "none"), want["permissions"].get(scope, "none")
+                    if LEVEL.get(a, 0) > LEVEL.get(w, 0):
+                        out.append(f"{where}: its App token asks {scope}: {a}, more than it needs ({w})")
+                    elif LEVEL.get(a, 0) < LEVEL.get(w, 0):
+                        out.append(f"{where}: its App token asks {scope}: {a}, and it needs {w}")
+    return out
 
 
 def one_ref(workflows, central):
@@ -225,6 +273,24 @@ def self_test():
         open(os.path.join(wf, "triage.yml"), "w").write("on: {workflow_call: {}}\njobs:\n  a:\n    environment: e\n    runs-on: x\n    steps:\n      - run: echo \"${{ secrets.SVN }}\"\n")
         open(os.path.join(root, "workflow-templates", "issues.yml"), "w").write("on: issues\njobs:\n  t:\n    uses: O/.github/.github/workflows/triage.yml@v7\n")
         ok("C3: an environment's secrets need no passing", check(root, "O/.github"), [])
+    # #619: the App tokens of TOKENS, for their scope alone.
+    want = {"w.yml": {"u": {"repositories": "${{ github.event.repository.name }}", "permissions": {"issues": "write", "metadata": "read"}}}}
+
+    def token(**with_):
+        return {"w.yml": {"jobs": {"u": {"steps": [{"uses": APP_TOKEN + "abc", "with": dict({"client-id": "x"}, **with_)}]}}}}
+    good = {"repositories": "${{ github.event.repository.name }}", "permission-issues": "write", "permission-metadata": "read"}
+    ok("#619: the token for the item's repository, with what it needs, passes", tokens(token(**good), want), [])
+    ok("#619: an owner-wide token is named", tokens(token(**{k: v for k, v in good.items() if k != "repositories"}, owner="${{ github.repository_owner }}"), want),
+       ["w.yml job `u`: mints its App token for the whole installation (`owner:`), not for ${{ github.event.repository.name }} alone",
+        "w.yml job `u`: mints its App token for `every repository`, not for ${{ github.event.repository.name }} alone"])
+    ok("#619: an extra permission-*: write is named", tokens(token(**good, **{"permission-contents": "write"}), want),
+       ["w.yml job `u`: its App token asks contents: write, more than it needs (none)"])
+    ok("#619: a permission it needs and does not ask is named", tokens(token(**dict(good, **{"permission-issues": "read"})), want),
+       ["w.yml job `u`: its App token asks issues: read, and it needs write"])
+    ok("#619: a job of the table that mints no token is named", tokens({"w.yml": {"jobs": {"u": {"steps": [{"run": "x"}]}}}}, want),
+       ["w.yml job `u`: mints no App token, and it must for ${{ github.event.repository.name }}"])
+    ok("#619: the shipped waiting job's token is exactly what it needs",
+       tokens({"waiting-update.yml": load(os.path.join(ROOT, ".github", "workflows", "waiting-update.yml"))}), [])
     ok("C3, C10: the engine's workflows, its shipped callers and its own callers keep the contract", check(), [])
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
@@ -238,7 +304,7 @@ def main(argv):
         for line in out:
             print(line)
         if not out:
-            print("every caller gives what the workflows it calls ask, and this repository calls its engine at one ref")
+            print("every caller gives what the workflows it calls ask, every App token of TOKENS is for its scope alone, and this repository calls its engine at one ref")
         return 1 if out else 0
     print(__doc__, file=sys.stderr)
     return 64
