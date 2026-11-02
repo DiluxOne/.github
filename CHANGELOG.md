@@ -2,11 +2,27 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [7.12.0](https://github.com/DiluxOne/.github/releases/tag/v7.12.0) · 2026-11-02
+
+### Features
+
+- feat: the engine releases itself once main is green ([#595](https://github.com/DiluxOne/.github/pull/595))
+
+### Fixes
+
+- the bug reproduced from #610 ([#612](https://github.com/DiluxOne/.github/pull/612))
+- the bug reproduced from #607 ([#609](https://github.com/DiluxOne/.github/pull/609))
+- the bug reproduced from #603 ([#605](https://github.com/DiluxOne/.github/pull/605))
+
 ## [7.11.1](https://github.com/DiluxOne/.github/releases/tag/v7.11.1) · 2026-11-01
 
 ### Fixes
 
 - the bug reproduced from #598 ([#600](https://github.com/DiluxOne/.github/pull/600))
+
+### Maintenance
+
+- release v7.11.1 ([#602](https://github.com/DiluxOne/.github/pull/602))
 
 ## [7.11.0](https://github.com/DiluxOne/.github/releases/tag/v7.11.0) · 2026-11-01
 
