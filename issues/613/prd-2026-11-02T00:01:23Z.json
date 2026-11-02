@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 613,
+  "prd_sha256": "0496d887df7acde4b33454719756da6c68e61b7399727a4eb36bb7aa295f36f3",
+  "prd": "### Problem\n\nFour changes are merged and not in a version: #595 (the engine releases itself once main is green, #563), #605 (a security configuration per visibility, #603), #609 (the docs check passes a repository with no Markdown under `.github`, #607) and #612 (the release lane's candidate commit is signed, #610). The release lane cannot make this release itself yet: its scenarios run in DiluxOne/diluxone-test, whose adoption pull requests (#2, #4, #6) fail the docs check that #609 fixes, which reaches them only once it is released. This one release is made by hand; the next ones go through the lane.\n\n### Scope\n\n- Rebuild CHANGELOG.md with v7.12.0 (`scripts/changelog.py build --next v7.12.0`); a minor: one feature (#595), three fixes (#605, #609, #612), nothing breaking for the callers.\n- Before moving `v7`, `scripts/caller-contract.py check` passes (every caller gives what the workflows it calls ask; the only new permission is `pull-requests: read` in `release-lane.yml`, which runs only here); tag v7.12.0 on the merge commit, move v7 to it (lightweight), and watch the adopted repositories for runs that end in `startup_failure` for 30 minutes.\n\n### Out of scope\n\n- Anything not merged yet (#606 goes in v8.0.0).\n\n### Acceptance criteria\n\n- C1: Given the release pull request merged, when v7.12.0 is tagged, then v7 points at it, its GitHub Release lists #595, #605, #609 and #612, and no adopted repository's run ends in `startup_failure` in the next 30 minutes.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-02T00:01:23Z",
+  "policy": "DiluxOne/.github@73b8a2c80ddc"
+}
