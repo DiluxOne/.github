@@ -44,6 +44,9 @@ A way is one entry of `repro.ways`:
   context   files the writer reads whole; list: globs it sees by name;
   example   a glob whose first match it reads as the house style
   guide     what the writer must do and avoid, for this way
+  shots     for a browser way, the command that runs a pull request's
+            affected specs ({tests}) through the screenshot configuration
+            (scripts/screenshots.py, #564)
 `repro.affected` maps paths to the tests a pull request that touches them
 runs (`{paths: [globs], tests: [paths]}`), instead of the whole suite.
 `repro.smoke` (#479) lists the few specs a pull request runs beside the
@@ -96,7 +99,7 @@ sys.path.insert(0, HERE)
 import repos_conf  # noqa: E402  repos.yml's one entry per repository (#562)
 LAYERS = ("logic", "browser", "cli", "api", "workflow")
 KEYS = {"layer", "noun", "test", "needs", "sandbox", "setup", "theme", "run", "junit", "case", "assertion", "teardown",
-        "minutes", "context", "list", "example", "guide"}
+        "minutes", "context", "list", "example", "guide", "shots"}
 SANDBOXES = ("php-unit",)
 # How the comments say each layer is reproduced.
 WHERE = {"logic": "with a test of the code's logic", "browser": "in a browser", "cli": "through a command's output",

@@ -1,0 +1,147 @@
+name: Screenshots
+
+# Reusable (#564). When an autopilot pull request whose head is a branch of
+# this same repository (never a fork's) is marked ready for review, the
+# before and after screenshots of the browser-layer specs it affects, in its
+# "📸 Screenshots" section (scripts/screenshots.py). Which specs: the pack's,
+# not a list here: the repository's way whose layer is `browser`
+# (kinds/<kind>/pack.yml, its .github/review-policy.yml over it) and
+# `repro.affected` on the paths it changes; none, nothing runs. Each side
+# (the base, the head) runs in its own checkout with that way's `setup`, its
+# `shots` command through a generated playwright.dx-shots.config.ts that
+# imports the repository's configuration and turns `screenshot` on (the
+# repository's own file is not changed), and its `teardown`.
+#
+# The `take` job runs the pull request's code, the autopilot's, written
+# from an issue's text: on a fresh GitHub runner, with a read-only token
+# and no secret, and it hands the images over as an artifact. The
+# `publish` job never checks the code out: with dilux-bot's key it commits
+# the images to the repository's orphan branch `dx-screenshots`
+# (pr-<n>/{before,after}/<spec>/<test>.png, through the API, so signed),
+# visible to whoever sees the pull request, and rewrites the section
+# between its markers with a before/after table; a later run replaces it.
+# A run that fails says so in the section and blocks nothing: no ruleset
+# requires it.
+#
+#   jobs:
+#     screenshots:
+#       needs: review
+#       permissions: { contents: read }
+#       uses: DiluxOne/.github/.github/workflows/pr-screenshots.yml@v7
+#       secrets:
+#         DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+
+on:
+  workflow_call:
+    inputs:
+      central-ref:
+        description: The ref of DiluxOne/.github whose scripts and packs run. Empty (the default) means the very commit this workflow runs from, job.workflow_sha (#287).
+        type: string
+        default: ''
+    secrets:
+      DILUX_BOT_PRIVATE_KEY:
+        required: false
+
+permissions: {}
+
+env:
+  DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN }}
+  DX_BOT_APP: ${{ vars.DX_BOT_APP }}
+  DX_BOT_ID: ${{ vars.DX_BOT_ID }}
+
+jobs:
+  take:
+    name: Before and after
+    if: >-
+      github.event_name == 'pull_request' && github.event.action == 'ready_for_review' &&
+      contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      specs: ${{ steps.plan.outputs.specs }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
+          path: .dx-central
+          persist-credentials: false
+      - name: The head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: after
+          fetch-depth: 0
+          persist-credentials: false
+      - name: The base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: before
+          persist-credentials: false
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh .dx-central
+      - name: The browser-layer specs it affects
+        id: plan
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git -C after diff --name-only "$BASE...$HEAD" | DIR=after CENTRAL=.dx-central python3 .dx-central/scripts/screenshots.py plan > "$RUNNER_TEMP/dx-shots-plan.json"
+          cat "$RUNNER_TEMP/dx-shots-plan.json"
+      - name: Before (the base)
+        if: steps.plan.outputs.specs != ''
+        run: DIR=before python3 .dx-central/scripts/screenshots.py take before "$RUNNER_TEMP/dx-shots-plan.json" "$RUNNER_TEMP/dx-shots"
+      - name: After (this branch)
+        if: steps.plan.outputs.specs != ''
+        run: DIR=after python3 .dx-central/scripts/screenshots.py take after "$RUNNER_TEMP/dx-shots-plan.json" "$RUNNER_TEMP/dx-shots"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.plan.outputs.specs != ''
+        with:
+          name: dx-screenshots
+          path: ${{ runner.temp }}/dx-shots
+          if-no-files-found: ignore
+          retention-days: 3
+
+  publish:
+    name: In the pull request
+    needs: take
+    if: always() && needs.take.result != 'skipped' && (needs.take.result != 'success' || needs.take.outputs.specs != '')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions: {}
+    steps:
+      - name: App token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write # the dx-screenshots branch
+          permission-pull-requests: write # the section of the description
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
+          path: .dx-central
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.take.result == 'success'
+        continue-on-error: true
+        with:
+          name: dx-screenshots
+          path: ${{ runner.temp }}/dx-shots
+      - name: The images and the section
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          PR: ${{ github.event.pull_request.number }}
+          FAILED: ${{ needs.take.result != 'success' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/dx-shots"
+          python3 .dx-central/scripts/screenshots.py publish "$RUNNER_TEMP/dx-shots"

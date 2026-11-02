@@ -30,6 +30,9 @@ name: Pull request (organisation)
 # After the review, whom the pull request waits on goes on its board, with
 # one mention, and into the organisation's "What waits" view (waiting,
 # #564); a fork's is covered by issues.yml, by its metadata only.
+# An autopilot pull request of this repository's own branch that changes
+# the browser layer gets its before and after screenshots when it is
+# marked ready (screenshots, pr-screenshots.yml, #564).
 #
 # This repository runs its own pipeline (pull-request.yml), which reviews
 # changes to these workflows with the version in the pull request, so the
@@ -126,6 +129,17 @@ jobs:
     permissions:
       contents: read
     uses: DiluxOne/.github/.github/workflows/waiting-update.yml@v7
+    secrets:
+      DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+
+  # The before and after screenshots of an autopilot pull request that
+  # changes the browser layer, when it is marked ready (#564,
+  # pr-screenshots.yml): only dilux-bot's own branch here, never a fork's.
+  screenshots:
+    if: github.event_name == 'pull_request' && github.repository != 'DiluxOne/.github' && github.event.action == 'ready_for_review' && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+    uses: DiluxOne/.github/.github/workflows/pr-screenshots.yml@v7
     secrets:
       DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
 
