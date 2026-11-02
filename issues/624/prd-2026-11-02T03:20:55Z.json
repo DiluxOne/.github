@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 624,
+  "prd_sha256": "ff9b480b216c0818cfad18a6081b1ecb70008cfdcd19fb1137f36ad37a3e250b",
+  "prd": "### Problem\n\nThe own-Bug acceptance says the autopilot starts, but the autopilot's acceptance check counts only a person's label event, so the maintainer still has to add `accepted` by hand, which C2 meant to remove.\n\n### Scope\n\n- The autopilot's acceptance check accepts an issue whose seal on the receipts branch says `how: own-bug` with `accepted_by` a user `who-decides` allows, as it accepts a person's `accepted`; and the triage's `own` job starts the autopilot right after it seals.\n\n### Out of scope\n\n- The acceptance of anything but a maintainer's own Bug.\n\n### Acceptance criteria\n\n- C1: Given a maintainer's own Bug sealed with `how: own-bug`, when the triage finishes, then the autopilot starts on it with no person's step.\n- C2: Given an issue whose `accepted` was added by the bot with no own-bug seal, when the autopilot's check reads it, then it still refuses it.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-02T03:20:55Z",
+  "policy": "DiluxOne/.github@05ce792686af"
+}
