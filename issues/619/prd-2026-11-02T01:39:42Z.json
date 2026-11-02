@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 619,
+  "prd_sha256": "f5ef5a6e6d5ca824c18afcfd9c28f22aa59ecc0a3caa2d79c96adca1937fbbea",
+  "prd": "### Problem\n\nThe token the waiting job writes the board with has no permission to write issue comments, so the \"what waits on me\" view never reaches an item's board.\n\n### Scope\n\n- The waiting job writes the board with a token that may write issues in the item's repository only (the App's, minted for that repository with `issues: write`), and `caller-contract.py` and the templates give it what it needs.\n\n### Out of scope\n\n- The view's content.\n\n### Acceptance criteria\n\n- C1: Given an issue event, when the waiting job runs, then the item's board says whom it waits on, with no HTTP 403.\n- C2: Given the shipped callers, when `caller-contract.py check` runs, then the waiting job gets no more than it needs.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-02T01:39:42Z",
+  "policy": "DiluxOne/.github@c374ebd754ada943801b680bfcce05c51dfa4dc8",
+  "how": "own-bug"
+}
