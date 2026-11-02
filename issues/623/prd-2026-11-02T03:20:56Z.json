@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 623,
+  "prd_sha256": "1fb6dff58b9ed9a0d66fdee96e9ea91905e874bfd4188af5aa4c2a999adc6c01",
+  "prd": "### Problem\n\nThe lane's own mechanical pull request in the test repository goes through the auto-merge decision meant for people's changes, which never merges a workflow change, so no release can reach its scenarios.\n\n### Scope\n\n- The lane merges its callers pull request itself, through the merge queue with the App's token, once its required checks pass, after checking that the pull request changes nothing but the engine's ref in the callers (`@v7` \u2194 `@v7-next`, which `release-scenarios.py` already verifies); the auto-merge decision and the review policy stay as they are for every other pull request.\n- The same when it moves them back.\n\n### Out of scope\n\n- The review policy's high-risk paths.\n\n### Acceptance criteria\n\n- C1: Given the lane's callers pull request in the test repository changing only the engine's ref, when its checks pass, then the lane merges it and the first scenario starts.\n- C2: Given a pull request in the test repository that changes anything else in `.github/workflows`, when the lane's merge step sees it, then it refuses to merge it and the lane fails naming it.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-02T03:20:56Z",
+  "policy": "DiluxOne/.github@05ce792686af"
+}
