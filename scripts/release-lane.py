@@ -388,6 +388,17 @@ def check_workflow(check, path=os.path.join(ROOT, ".github", "workflows", "relea
     wide = [t for t in watch_tokens if not t.get("repositories")]
     check("workflow: the watch's installation-wide token only reads", bool(wide) and all(v in ("read",) for t in wide for k, v in t.items() if k.startswith("permission-")), True)
     check("workflow: the watch runs once v7 moved, even when act failed after", "always()" in str(jobs.get("watch", {}).get("if")), True)
+    # The scenarios job waits on the callers pull request's checks with the
+    # token it passes as DX_CALLERS_TOKEN: that token reads them (#627).
+    steps = jobs.get("scenarios", {}).get("steps") or []
+    minted = {st.get("id"): st.get("with") or {} for st in steps if "create-github-app-token" in str(st.get("uses"))}
+    waits = [(st.get("env") or {}).get("DX_CALLERS_TOKEN") for st in steps if re.search(r"release-scenarios\.py (run|back)\b", str(st.get("run")))]
+    used = [minted.get(m.group(1)) if (m := re.fullmatch(r"\$\{\{ steps\.([\w-]+)\.outputs\.token \}\}", str(w))) else None for w in waits]
+    check("workflow: both waits on the callers pull request use a token of the scenarios job (#627)", len(used) == 2 and all(t is not None for t in used), True)
+    check("workflow: the waits' tokens read the checks and the statuses (#627)",
+          [(t or {}).get("permission-checks") == "read" and (t or {}).get("permission-statuses") == "read" for t in used], [True, True])
+    check("workflow: the waits' tokens are the test repository's alone (#627)",
+          [(t or {}).get("repositories") for t in used], ["${{ steps.test.outputs.repo }}"] * 2)
 
 
 class Fake:
