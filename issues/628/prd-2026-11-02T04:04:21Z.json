@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 628,
+  "prd_sha256": "0270b015011e3707d92e6460ffb2939b6a6ef564c7fa1605e0b17a92767a26ed",
+  "prd": "### Problem\n\nSix changes are merged and not in a version: #606 (what waits on whom, a maintainer's own Bug, the first reply, screenshots, #564), #617 (the docs check passes a repository with no link, #615), #621 (the waiting job writes the board, #619), #622 (the lane moves the test repository's callers through a pull request, #620), #625 (the lane merges its own callers pull request, #623) and #626 (a maintainer's own Bug starts the autopilot, #624). The release lane cannot make this release yet (#627: its token cannot read the test repository's checks), so this one is made by hand.\n\n### Scope\n\n- Rebuild CHANGELOG.md with v7.13.0 (`scripts/changelog.py build --next v7.13.0`); a minor: one feature (#606), five fixes, nothing breaking for the callers.\n- Before moving `v7`, `scripts/caller-contract.py check` passes; tag v7.13.0 on the merge commit, move v7 to it (lightweight), and watch the adopted repositories for runs that end in `startup_failure` for 30 minutes.\n\n### Out of scope\n\n- Anything not merged yet (#627).\n\n### Acceptance criteria\n\n- C1: Given the release pull request merged, when v7.13.0 is tagged, then v7 points at it, its GitHub Release lists #606, #617, #621, #622, #625 and #626, and no adopted repository's run ends in `startup_failure` in the next 30 minutes.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-02T04:04:21Z",
+  "policy": "DiluxOne/.github@77922d7d5115"
+}
