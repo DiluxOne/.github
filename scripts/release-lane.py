@@ -15,7 +15,9 @@ in the test repository; a breaking change waits on a person.
         the reusable workflows' inner calls of the engine at `@vN` moved to
         `@vN-next` (GitHub reads them before any expression, so the
         scenarios would otherwise try vN's), checked to differ from main in
-        nothing else, and the lightweight `vN-next` tag moved to it
+        nothing else, made through the API with GH_TOKEN (scripts/api-
+        commit.py, so GitHub signs it: never `git commit` and a push from
+        the runner, #610), and the lightweight `vN-next` tag moved to it
   release-lane.py decide --plan F --results F
         from the plan and the scenarios' results (scripts/release-scenarios.py
         run): `release`, `bug` (one failed: nothing tagged, nothing moved,
@@ -116,8 +118,17 @@ def candidate(central, major, root=".", run=sh):
         if t != files[p]:
             with open(os.path.join(root, p), "w", encoding="utf-8") as fh:
                 fh.write(t)
-    run("git", "-C", root, "commit", "--allow-empty", "-qam", f"chore: release candidate, inner calls at @{major}-next")
-    run("git", "-C", root, "push", "-f", "origin", f"HEAD:refs/heads/{CANDIDATE}")
+    # The organisation's ruleset refuses an unsigned commit on any branch
+    # (#610): the commit object is built here without `git commit` (empty
+    # when nothing moved, as --allow-empty made it), then made again through
+    # the API with the App's token (scripts/api-commit.py, GH_TOKEN), which
+    # GitHub signs, moves the branch and points the local HEAD at it. It
+    # runs from the checkout, which in release-lane.yml is `root`.
+    run("git", "-C", root, "add", "-u")
+    tree = run("git", "-C", root, "write-tree").strip()
+    sha = run("git", "-C", root, "commit-tree", tree, "-p", "HEAD", "-m", f"chore: release candidate, inner calls at @{major}-next").strip()
+    run("git", "-C", root, "reset", "-q", "--soft", sha)
+    run(sys.executable, os.path.join(HERE, "api-commit.py"), "push", CANDIDATE, "--onto", "HEAD~1", "--force")
     run("git", "-C", root, "tag", "-f", f"{major}-next", "HEAD")
     run("git", "-C", root, "push", "-f", "origin", f"refs/tags/{major}-next")
     return run("git", "-C", root, "rev-parse", "HEAD").strip()
@@ -369,6 +380,8 @@ def check_workflow(check, path=os.path.join(ROOT, ".github", "workflows", "relea
         return [st.get("with") or {} for st in jobs.get(job, {}).get("steps") or [] if "create-github-app-token" in str(st.get("uses"))]
     cand = tokens("candidate")
     check("workflow: the candidate's token may push the workflow files it rewrites", [t.get("permission-workflows") for t in cand], ["write"])
+    envs = [st.get("env") or {} for st in jobs.get("candidate", {}).get("steps") or [] if "release-lane.py candidate" in str(st.get("run"))]
+    check("workflow: the candidate's commit is made with the App's token (#610)", [e.get("GH_TOKEN") for e in envs], ["${{ steps.app.outputs.token }}"])
     watch_tokens = tokens("watch")
     writes = [t for t in watch_tokens if any(v == "write" for k, v in t.items() if k.startswith("permission-"))]
     check("workflow: the watch's write token is this repository's alone", bool(writes) and all(t.get("repositories") for t in writes), True)
@@ -418,11 +431,22 @@ def self_test():
     check("candidate: the inner calls move to @v7-next", moved, text.replace("autopilot.yml@v7", "autopilot.yml@v7-next"))
     check("candidate: differs from main only in those refs", only_refs_differ({"a.yml": text}, {"a.yml": moved}, "v7"), [])
     check("candidate: anything else is named", only_refs_differ({"a.yml": text}, {"a.yml": moved + "# more\n"}, "v7"), ["a.yml"])
+    import tempfile
+    with tempfile.TemporaryDirectory() as root:
+        os.makedirs(os.path.join(root, ".github", "workflows"))
+        with open(os.path.join(root, ".github", "workflows", "a.yml"), "w", encoding="utf-8") as fh:
+            fh.write("on:\n  workflow_call:\n" + text)
+        fake = Fake()
+        candidate(central, "v7", root=root, run=fake)
+        words = [[str(a) for a in c] for c in fake.calls]
+        check("candidate: no commit is made in the runner (#610)", [c for c in words if c[:1] == ["git"] and "commit" in c], [])
+        check("candidate: no branch is pushed from the runner (#610)", [c for c in words if c[:1] == ["git"] and "push" in c and any(a.startswith("refs/heads/") or a.startswith("HEAD:") for a in c)], [])
+        check("candidate: its commit goes through the API, signed (#610)", [c[2:] for c in words if c[1:2] and c[1].endswith("api-commit.py")], [["push", CANDIDATE, "--onto", "HEAD~1", "--force"]])
+        check("candidate: v7-next is moved at the signed commit", fake.has("git", "-C", root, "push", "-f", "origin", "refs/tags/v7-next"), True)
 
     passed = [{"id": "issue-complete", "ok": True, "why": [], "run": "https://github.com/o/t/actions/runs/1"},
               {"id": "spec-to-draft", "ok": True, "why": [], "run": "https://github.com/o/t/actions/runs/2"}]
     # C4: a fix, main green, every scenario passing.
-    import tempfile
     with tempfile.TemporaryDirectory() as root:
         def missing(argv):
             raise RuntimeError("release not found")

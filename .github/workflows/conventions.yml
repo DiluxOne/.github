@@ -259,11 +259,26 @@ jobs:
         with:
           persist-credentials: false
 
+      # A repository whose Markdown has no link is not broken: lychee's
+      # failIfEmpty (true by default) would fail it with "No links were
+      # found" (#615), so both halves turn it off; a broken link still fails.
       - name: Relative links resolve
         uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
         with:
-          args: --offline --no-progress --exclude-path node_modules --exclude-path vendor './**/*.md' './.github/**/*.md'
+          args: --offline --no-progress --exclude-path node_modules --exclude-path vendor './**/*.md'
           fail: true
+          failIfEmpty: false
+
+      # The glob matches nothing in a repository with no Markdown under
+      # .github/, and lychee then fails with "No files found for this input
+      # source" (#607): this half runs only when there is something to check.
+      - name: Relative links resolve under .github/
+        if: hashFiles('.github/**/*.md') != ''
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          args: --offline --no-progress --exclude-path node_modules --exclude-path vendor './.github/**/*.md'
+          fail: true
+          failIfEmpty: false
 
       - name: No retired product names
         env:

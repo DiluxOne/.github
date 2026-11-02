@@ -11,7 +11,9 @@ name: Release lane
 # they tried, merges the release pull request, tags vX.Y.Z at its merge
 # commit, moves `v7` (lightweight) and publishes the Release (or edits it
 # when engine-release.yml, on the tag's push, made it first). The candidate's
-# token has `workflows`: its commit rewrites workflow files. A scenario that fails: nothing is tagged, `v7` stays, and a
+# token has `workflows`: its commit rewrites workflow files, and it makes
+# that commit through the API (scripts/api-commit.py), so GitHub signs it,
+# as the organisation's ruleset requires on every branch. A scenario that fails: nothing is tagged, `v7` stays, and a
 # bug names the scenario and its run. A breaking change (`!`): the scenarios
 # run, then the release issue opens for a person. After `v7` moves, the
 # watch reads every adopted repository's runs for 30 minutes (a read-only
@@ -110,6 +112,9 @@ jobs:
       - name: The release candidate, and v7-next at it
         env:
           PLAN: ${{ needs.plan.outputs.plan }}
+          # scripts/api-commit.py makes the candidate's commit through the
+          # API, which GitHub signs (the ruleset refuses an unsigned one).
+          GH_TOKEN: ${{ steps.app.outputs.token }}
           DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN }}
           DX_BOT_ID: ${{ vars.DX_BOT_ID }}
         run: |
