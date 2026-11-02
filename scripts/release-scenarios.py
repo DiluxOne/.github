@@ -42,13 +42,16 @@ complete feature), `steps` (each one of
         FILE (and stdout), then puts the callers back the same way; a
         pull request that does not merge is a failing `callers` row;
         exits 1 when one fails. With --moved MOVED, what moved is written
-        to MOVED and left for `back`
+        to MOVED as soon as the pointing is over, before the first
+        scenario plays ([] when it failed cleanly), and left for `back`
   release-scenarios.py back --repo OWNER/NAME --moved MOVED [--ref v7-next]
                             [--out FILE] [--minutes N]
         puts back the callers `run --moved` left at the ref (with
         DX_CALLERS_TOKEN, minted after the scenarios: an App token lasts
         an hour) and adds a failing `callers` row to FILE if they do not
-        come back; exits 1 when a row of FILE fails
+        come back, or if MOVED is missing or unreadable (a run cancelled
+        or killed while pointing: could not tell, never "nothing moved");
+        exits 1 when a row of FILE fails
   release-scenarios.py --test
 """
 import ast
@@ -470,7 +473,28 @@ def put_back(repo, ref, moved, callers=gh, central=None, sleep=time.sleep, minut
     return []
 
 
-def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20, central=None, callers=None, moved_out=None):
+def write_moved(moved, path):
+    """What moved written to `path`, for `back`."""
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(moved, fh)
+
+
+def read_moved(path, ref):
+    """What `run --moved` wrote to `path`, and the rows that say why it could
+    not be read: a missing or unreadable file is "could not tell", never
+    "nothing moved" (a run cancelled or killed while pointing writes none),
+    so it is one failing `callers` row."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            moved = json.load(fh)
+        if not isinstance(moved, list) or not all(isinstance(m, dict) and "name" in m and "before" in m for m in moved):
+            raise ValueError("not a list of moved callers")
+        return moved, []
+    except (OSError, ValueError) as e:
+        return [], [{"id": "callers", "ok": False, "why": [f"could not read what moved to {ref}, the callers may be left there: {e}"], "run": ""}]
+
+
+def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20, central=None, callers=None, moved_out=None, record=None):
     """Every scenario at `ref`: the callers moved there first (a merged pull
     request, or no scenario plays and one failing `callers` row says why),
     and put back after, through another; a failure to put them back is a
@@ -478,13 +502,19 @@ def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20, cent
     left at `ref`. With `moved_out` (a list), what moved goes there and is
     not put back: the caller does that with `put_back`, with a token minted
     after the scenarios (an App's lasts an hour, the scenarios can take
-    longer)."""
+    longer). `record`, when given, is called with what moved as soon as the
+    pointing is over ([] when it failed cleanly), before the first scenario
+    plays: a run killed after that still leaves the record `back` reads."""
     bodies = conf.get("bodies") or {}
     callers = callers or (callers_gh() if run is gh else run)
     try:
         moved = point_callers(repo, ref, callers, central, sleep=sleep, minutes=minutes)
     except (RuntimeError, ValueError) as e:
+        if record:
+            record([])
         return [{"id": "callers", "ok": False, "why": [f"the callers did not reach {ref}: {e}"], "run": ""}]
+    if record:
+        record(moved)
     if moved_out is not None:
         moved_out.extend(moved)
     results = []
@@ -774,6 +804,27 @@ def self_test():
         check("#622: back reads the run's results and adds its row to them",
               read_results(out) + [{"id": "callers", "ok": False, "why": ["x"], "run": ""}], [{"id": "a", "ok": True, "why": [], "run": ""}, {"id": "callers", "ok": False, "why": ["x"], "run": ""}])
         check("#622: no results file reads as none", read_results(os.path.join(d, "none.md")), [])
+        path = os.path.join(d, "moved.json")
+        st, fake = repo_fake()
+        seen = []
+
+        def plays(*a, input=None):
+            if a[:2] == ("issue", "create") and not seen:
+                seen.append(read_moved(path, "v7-next"))
+            return fake(*a, input=input)
+        run_all(one, "o/t", "v7-next", run=plays, sleep=lambda s: None, minutes=1, central="O/.github", moved_out=[], record=lambda m: write_moved(m, path))
+        check("#622: what moved is written before the first scenario plays",
+              [([m["name"] for m in got], rows) for got, rows in seen], [(["issues.yml"], [])])
+        st, fake = repo_fake(False)
+        run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=1, central="O/.github", moved_out=[], record=lambda m: write_moved(m, path))
+        check("#622: a pointing that fails cleanly writes nothing moved", read_moved(path, "v7-next"), ([], []))
+        check("#622: a missing moved file is one failing callers row",
+              [(r["id"], r["ok"]) for r in read_moved(os.path.join(d, "gone.json"), "v7-next")[1]], [("callers", False)])
+        for bad in ("{not json", '{"a": 1}', '[{"name": "x"}]'):
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(bad)
+            check(f"#622: an unreadable moved file ({bad}) is one failing callers row",
+                  [(r["id"], r["ok"]) for r in read_moved(path, "v7-next")[1]], [("callers", False)])
     own = open(os.path.abspath(__file__), encoding="utf-8").read()
     check("C2: nothing in this script writes a default branch through the contents API", default_writes(own), [])
     check("C2: a PUT to contents/ on main, or with no branch, is named",
@@ -815,12 +866,8 @@ def main(argv):
         p.add_argument("--moved", default="")
         a = p.parse_args(argv[1:])
         moved = [] if a.moved else None
-        try:
-            results = run_all(load_yaml(os.path.join(ROOT, SCENARIOS)), a.repo, a.ref, a.only, minutes=a.minutes, moved_out=moved)
-        finally:
-            if a.moved:
-                with open(a.moved, "w", encoding="utf-8") as fh:
-                    json.dump(moved, fh)
+        record = (lambda m: write_moved(m, a.moved)) if a.moved else None
+        results = run_all(load_yaml(os.path.join(ROOT, SCENARIOS)), a.repo, a.ref, a.only, minutes=a.minutes, moved_out=moved, record=record)
         write_results(results, a.out)
         return 0 if all(r["ok"] for r in results) else 1
     if argv[:1] == ["back"]:
@@ -832,11 +879,8 @@ def main(argv):
         p.add_argument("--out", default="")
         p.add_argument("--minutes", type=int, default=20)
         a = p.parse_args(argv[1:])
-        try:
-            moved = json.load(open(a.moved, encoding="utf-8"))
-        except (OSError, ValueError):
-            moved = []
-        results = (read_results(a.out) if a.out else []) + put_back(a.repo, a.ref, moved, callers_gh(), minutes=a.minutes)
+        moved, unread = read_moved(a.moved, a.ref)
+        results = (read_results(a.out) if a.out else []) + unread + put_back(a.repo, a.ref, moved, callers_gh(), minutes=a.minutes)
         write_results(results, a.out)
         return 0 if all(r["ok"] for r in results) else 1
     print(__doc__, file=sys.stderr)
