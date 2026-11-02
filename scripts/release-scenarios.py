@@ -476,6 +476,44 @@ def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20, cent
     return results
 
 
+DEFAULTS = ("main", "master")
+
+
+def _lead(node):
+    """A string argument's text, or an f-string's text with its values as
+    `{}`; None for anything else."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(v.value if isinstance(v, ast.Constant) else "{}" for v in node.values)
+    return None
+
+
+def default_writes(source):
+    """Every `PUT` to a `contents/` path in `source` that does not name a
+    branch other than the default (`branch=` missing, or `branch=main`):
+    ["line N: ..."]. A default branch is protected by its rulesets, so
+    nothing here writes one. Pure."""
+    out = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        texts = [_lead(a) for a in node.args]
+        if "PUT" not in texts or not any(t and "contents/" in t for t in texts):
+            continue
+        branches = [t.split("=", 1)[1] for t in texts if t and t.startswith("branch=")]
+        if not branches or any(b in DEFAULTS for b in branches):
+            out.append(f"line {node.lineno}: a PUT to contents/ that writes the default branch ({'branch=' + branches[0] if branches else 'no branch='})")
+    return out
+
+
+def put_default(calls):
+    """The recorded `gh` calls that write a contents path on the default
+    branch. Pure."""
+    return [c for c in calls if tuple(c[:3]) == ("api", "-X", "PUT") and "/contents/" in str(c[3])
+            and not any(str(x).startswith("branch=") and str(x)[7:] not in DEFAULTS for x in c[4:])]
+
+
 def test_pack(root=ROOT):
     sys.path.insert(0, os.path.join(root, "scripts"))
     import org
@@ -666,6 +704,18 @@ def self_test():
         got = run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=1, central="O/.github")
         check(f"C1: a pull request that {how} plays no scenario and gives one failing callers row",
               (any(c[:2] == ("issue", "create") for c in st["calls"]), [(r["id"], r["ok"]) for r in got], st["main"]["issues.yml"]), (False, [("callers", False)], caller))
+    own = open(os.path.abspath(__file__), encoding="utf-8").read()
+    check("C2: nothing in this script writes a default branch through the contents API", default_writes(own), [])
+    check("C2: a PUT to contents/ on main, or with no branch, is named",
+          default_writes('run("api", "-X", "PUT", f"repos/{r}/contents/x", "-f", "branch=main")\nrun("api", "-X", "PUT", f"repos/{r}/contents/{p}", "-f", "content=x")\n'),
+          ["line 1: a PUT to contents/ that writes the default branch (branch=main)", "line 2: a PUT to contents/ that writes the default branch (no branch=)"])
+    st, fake = repo_fake()
+    recorded = []
+    run_all({"scenarios": [{"id": "p", "opens": {"pull": {"title": "t", "body": "x"}}, "steps": [{"push": "more"}], "expect": {}}]}, "o/t", "v7-next",
+            run=lambda *a, input=None: recorded.append(a) or fake(*a, input=input), sleep=lambda s: None, minutes=1, central="O/.github")
+    check("C2: every contents PUT run_all, play and point_callers make names a branch, never main",
+          (len([c for c in recorded if c[:3] == ("api", "-X", "PUT")]) >= 4, put_default(recorded)), (True, []))
+    check("C2: a recorded PUT on main is named", len(put_default([("api", "-X", "PUT", "repos/o/t/contents/x", "-f", "branch=main"), ("api", "-X", "PUT", "repos/o/t/contents/y")])), 2)
     check("callers_gh: the ambient token when DX_CALLERS_TOKEN is not set", callers_gh() is gh if not os.environ.get("DX_CALLERS_TOKEN") else True, True)
     check("run: the table names each scenario, its result and its run", table(res).splitlines()[2], "| `a` | pass | https://github.com/o/t/actions/runs/1 |")
     print("all tests passed" if not failed else "some tests failed")
