@@ -265,18 +265,35 @@ def logins_of(waits):
     return [w for w in who if isinstance(w, str) and LOGIN.match(w)]
 
 
-def mention(state, waits):
+MENTION_RE = re.compile(r"<!-- dx-mention ([0-9a-f]{16}) -->")
+
+
+def mention_mark(key):
+    return f"<!-- dx-mention {sha(key)[:16]} -->"
+
+
+def mentioned_in(bodies):
+    """The mentions already made, from the marks in the bot's comments."""
+    return {m for b in bodies for m in MENTION_RE.findall(b or "")}
+
+
+def mention(state, waits, said=()):
     """(the comment that mentions the people it waits on, or None; the new
     state): once per person per waiting step (its `step`, else its action
-    and link), never a bot, never a role."""
+    and link), never a bot, never a role. A mention is recorded twice: in
+    the state, and as a hidden mark in its own comment (SAID, the marks
+    found in the bot's comments), so a board another job rewrote with an
+    older state still never repeats one."""
     step = (waits or {}).get("step") or (clean((waits or {}).get("what")) + " " + str((waits or {}).get("url") or ""))
     done = [k for k in (state.get("mentioned") or []) if isinstance(k, str)]
-    new = [w for w in logins_of(waits) if f"{w.lower()}|{step}" not in done]
+    key = lambda w: f"{w.lower()}|{step}"
+    new = [w for w in logins_of(waits) if key(w) not in done and sha(key(w))[:16] not in set(said)]
     if not new:
         return None, state
     url = str(waits.get("url") or "")
     text = " ".join(f"@{w}" for w in new) + f": {clean(waits.get('what'))}" + (f" {url}" if url.startswith("https://github.com/") else "")
-    return f"{text}\n\n{AI}", dict(state, mentioned=(done + [f"{w.lower()}|{step}" for w in new])[-50:])
+    marks = "".join(mention_mark(key(w)) for w in new)
+    return f"{text}\n\n{AI}\n{marks}", dict(state, mentioned=(done + [key(w) for w in new])[-50:])
 
 
 def autopilot_row(a):
@@ -396,19 +413,30 @@ def autopilot_state(repo, number):
     return None
 
 
-def board_comment(repo, number):
-    """(id, body) of dilux-bot's board comment on the issue or pull
-    request, or (None, ""); under RECEIPTS_FIXTURE, comments/<n>/board.md."""
+def bot_comments(repo, number):
+    """[(id, body)] of dilux-bot's comments on the issue or pull request,
+    in order; under RECEIPTS_FIXTURE, comments/<n>/board.md and the
+    mentions. A read that fails is raised, never taken for none."""
     if os.environ.get("RECEIPTS_FIXTURE"):
-        path = os.path.join(os.environ["RECEIPTS_FIXTURE"], "comments", str(number), "board.md")
-        return (path, open(path, encoding="utf-8").read()) if os.path.exists(path) else (None, "")
+        base = os.path.join(os.environ["RECEIPTS_FIXTURE"], "comments", str(number))
+        out = []
+        if os.path.exists(os.path.join(base, "mentions.md")):
+            out += [(None, b) for b in open(os.path.join(base, "mentions.md"), encoding="utf-8").read().split("\n---\n") if b.strip()]
+        if os.path.exists(os.path.join(base, "board.md")):
+            out.append((os.path.join(base, "board.md"), open(os.path.join(base, "board.md"), encoding="utf-8").read()))
+        return out
     out = subprocess.run(["gh", "api", "--paginate", f"repos/{repo}/issues/{number}/comments",
-                          "--jq", '.[] | select(.user.type == "Bot" and (.user.login | startswith("' + org.APP + '")) and (.body | startswith("' + BOARD + '"))) | {id, body}'],
+                          "--jq", '.[] | select(.user.type == "Bot" and (.user.login | startswith("' + org.APP + '"))) | {id, body}'],
                          capture_output=True, text=True)
     if out.returncode != 0:
         raise RuntimeError(f"the board could not be read: {out.stderr.strip()[:200]}")
-    found = [json.loads(l) for l in out.stdout.splitlines() if l.strip()]
-    return (found[-1]["id"], found[-1]["body"]) if found else (None, "")
+    return [(c["id"], c["body"] or "") for c in (json.loads(l) for l in out.stdout.splitlines() if l.strip())]
+
+
+def board_comment(repo, number, comments=None):
+    """(id, body) of dilux-bot's board comment, or (None, "")."""
+    found = [c for c in (bot_comments(repo, number) if comments is None else comments) if c[1].startswith(BOARD)]
+    return found[-1] if found else (None, "")
 
 
 def put_board(repo, number, cid, text):
@@ -664,6 +692,9 @@ Normal
     t2, st2 = mention(st1, w)
     check("C5 the author is mentioned when it waits on them, with the action and its link", t1.startswith("@alice: complete the issue https://github.com/o/r/issues/7"), True)
     check("C5 once: the same step mentions nobody again", (t2, st2), (None, st1))
+    check("C5 a mention already made, found by its mark in the bot's comments, is not made again from a state another job overwrote",
+          mention({}, w, mentioned_in([t1]))[0], None)
+    check("C5 the mark hides in the comment", (mention_mark("alice|s") in mention({}, dict(w, step="s"))[0], "alice|" in t1), (True, False))
     check("C5 a new step mentions them again", mention(st1, dict(w, what="answer the question", url="https://github.com/o/r/issues/7#issuecomment-1"))[0] is not None, True)
     pb = pr_board_text({"waits": {"who": ["boss"], "what": "review it and merge it", "url": "https://github.com/o/r/pull/8"}})
     check("C3 a pull request's board names whom it waits on", ("pull request's board" in pb, "| Waits on | `boss`: review it and merge it ([link](https://github.com/o/r/pull/8)) |" in pb, "G1" in pb), (True, True, False))
@@ -718,6 +749,12 @@ Normal
         mentions12 = open(os.path.join(d, "comments/12/mentions.md"), encoding="utf-8").read()
         check("C5 cli: the board names the author it waits on", "| Waits on | `alice`: complete the issue" in board12, True)
         check("C5 cli: and mentions them once, however often it runs", mentions12.count("@alice: complete the issue"), 1)
+        with open(os.path.join(d, "comments/12/board.md"), "w", encoding="utf-8") as f:
+            f.write(board_text(12, True, None, None))
+        wrun("waits")
+        check("C5 cli: a board rewritten by another job, with no state, still mentions nobody twice",
+              open(os.path.join(d, "comments/12/mentions.md"), encoding="utf-8").read().count("@alice: complete the issue"), 1)
+        board12 = open(os.path.join(d, "comments/12/board.md"), encoding="utf-8").read()
         check("C5 cli: the board's run keeps the state", parse_state(wrun("board").stdout)[0].get("waits", {}).get("who"), "alice")
         check("#564 cli: state set, then state get", (wrun("state", "set", "runs=3").returncode, wrun("state", "get", "runs").stdout.strip()), (0, "3"))
         with open(os.path.join(d, "comments/12/board.md"), "w", encoding="utf-8") as f:
@@ -872,7 +909,8 @@ def main(argv):
         print(json.dumps(r))
         return 0
     if mode in ("board", "state", "waits"):
-        cid, current = board_comment(repo, number)
+        comments = bot_comments(repo, number)
+        cid, current = board_comment(repo, number, comments)
         state, intact = parse_state(current)
         m = STATE_RE.search(current or "")
         raw = m.group(0) if m and not intact else ""
@@ -901,7 +939,7 @@ def main(argv):
             return 0
         if mode == "waits":
             waits = json.loads(os.environ.get("WAITS_JSON") or "null")
-            text, state = mention(dict(state, waits=waits), waits)
+            text, state = mention(dict(state, waits=waits), waits, mentioned_in(b for _, b in comments))
             put_board(repo, number, cid, render(state))
             if text:
                 post_comment(repo, number, text)
