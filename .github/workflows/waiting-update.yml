@@ -75,7 +75,7 @@ jobs:
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }}
           permission-issues: write # the board and the mention
-          permission-pull-requests: read
+          permission-pull-requests: write # a pull request's board and mention (#633: read alone had them answered with HTTP 403)
           permission-checks: read # the heads' checks, for a failed one
           permission-contents: read # the seals, for the board
           permission-metadata: read
