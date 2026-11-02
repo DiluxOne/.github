@@ -2543,6 +2543,18 @@ Clamp the value in Sum::add.
             own, own_why = own_bug_status("DiluxOne/x", 9, sealed_issue, may)
             check("C1 (#624) lane: an own-Bug seal whose author who-decides allows is worked under human-issue",
                   (own, which_lane(pol, sealed_issue, None, "DiluxOne/x", "", own, own_why)[0]), (True, LANE))
+            rc.write("DiluxOne/x", "issues/11/prd-t.json", rc.seal(11, prd, "eve", None, "t", rc.OWN_BUG), "seal")
+            rc.write("DiluxOne/x", "issues/12/prd-t.json", rc.seal(12, prd, "boss", None, "t"), "seal")
+            for n, author, says in ((10, "boss", "no own-Bug seal"), (12, "boss", "no own-Bug seal"), (11, "eve", "who-decides does not let accept")):
+                issue_ = gql(["accepted"], [("accepted", "Bot", "dilux-bot")], author=author, body=prd)
+                own, own_why = own_bug_status("DiluxOne/x", n, issue_, may)
+                name, why = which_lane(pol, issue_, None, "DiluxOne/x", "", own, own_why)
+                check(f"C2 (#624) lane: a bot's `accepted` on #{n} ({says}) is refused, saying which",
+                      (own, own_bug_of("DiluxOne/x", n, issue_, may), name, says in why), (False, False, None, True))
+            check("C2 (#624): a who-decides that cannot be read is no acceptance",
+                  own_bug_of("DiluxOne/x", 9, sealed_issue, lambda *a: (_ for _ in ()).throw(RuntimeError("down"))), False)
+            check("C2 (#624): deciders.py's refusal (exit 1 or 2) is no acceptance",
+                  own_bug_of("DiluxOne/x", 9, sealed_issue, lambda *a: (False, "exit 2")), False)
         finally:
             if saved is None:
                 os.environ.pop("RECEIPTS_FIXTURE", None)
