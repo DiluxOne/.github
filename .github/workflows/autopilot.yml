@@ -12,8 +12,12 @@ name: Autopilot
 #                   for a reproduced bug (#84). Who accepted it is read
 #                   from GitHub (scripts/autopilot.py lane): a lane's own
 #                   issue is worked under that lane, with its caps; one a
-#                   person accepted, under `human-issue`; any other
-#                   issue starts nothing. It starts only if the autopilot is on
+#                   person accepted, under `human-issue`, and so is a
+#                   maintainer's own Bug the triage sealed `how: own-bug`
+#                   when `who-decides` lets the seal's `accepted_by` add
+#                   `accepted` (#564, #624: its own acceptance, asked of
+#                   scripts/deciders.py); any other issue, a bot's
+#                   `accepted` with no such seal included, starts nothing. It starts only if the autopilot is on
 #                   (policy/autonomy.yml, the repository's own
 #                   .github/autonomy.yml, DX_AUTOPILOT) and the issue is
 #                   ready (G1); a Bug, only in a repository that declares

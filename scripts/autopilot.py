@@ -205,13 +205,15 @@ def person_accepted(issue, label="accepted"):
     return bool(event) and event.get("__typename") == "LabeledEvent" and (event.get("actor") or {}).get("__typename") == "User"
 
 
-def which_lane(policy, issue, run, repository, autopilot_var, own_bug=False):
+def which_lane(policy, issue, run, repository, autopilot_var, own_bug=False, own_why=""):
     """(lane, why): the lane the autopilot works the issue under. A lane's
     own issue (its `lane:` label, its origin checked against GitHub by
     autonomy.lane_accepts) is worked under that lane, with its caps; an issue
     a person accepted, under `human-issue`. (None, why) when neither holds:
     nobody accepted it, so nothing starts. A sub-issue a person accepted
-    themselves is theirs, not the delegated lane's (#189). Pure."""
+    themselves is theirs, not the delegated lane's (#189). OWN_BUG is
+    own_bug_of's answer, OWN_WHY why it is no acceptance when it is not
+    (#624). Pure."""
     # An Adopt issue (#562) is carried out by org-adopt.yml, never written.
     if autonomy.adopt_lane_of(policy, issue):
         return None, "an Adopt issue is carried out by org-adopt.yml (the adopt lane), not by the autopilot"
@@ -223,21 +225,48 @@ def which_lane(policy, issue, run, repository, autopilot_var, own_bug=False):
     if person_accepted(issue):
         return LANE, "a person accepted it"
     # A maintainer's own Bug (#564): the triage sealed its PRD in its
-    # author's name (receipts.py own-bug, OWN_BUG), which is their acceptance.
+    # author's name (receipts.py own-bug, OWN_BUG), which is their acceptance
+    # when `who-decides` lets them accept (#624, own_bug_of).
     if own_bug:
-        return LANE, "its author, a maintainer, accepted their own Bug with its writing"
-    return None, f"no person accepted it, and no lane does ({why})"
+        return LANE, "its author, a maintainer who-decides allows, accepted their own Bug with its writing"
+    return None, f"no person accepted it, {own_why or 'no own-Bug seal accepts it'}, and no lane does ({why})"
 
 
-def own_bug_of(repo, number, issue):
-    """Whether the triage accepted the issue as its author's own Bug (#564):
-    its last seal says so, in its author's name, for the PRD it has now
-    (receipts.py own_bug_accepted). A seal that cannot be read is not one."""
+def own_bug_status(repo, number, issue, may=None):
+    """(accepted, why) for own_bug_of: why is what refused it."""
     try:
         rc = _receipts()
-        return rc.own_bug_accepted(rc.last_seal(repo, number), issue.get("body") or "", (issue.get("author") or {}).get("login") or "")
-    except Exception:  # noqa: BLE001 — never read as accepted
-        return False
+        if not rc.own_bug_accepted(rc.last_seal(repo, number), issue.get("body") or "", (issue.get("author") or {}).get("login") or ""):
+            return False, "no own-Bug seal in its author's name accepts its PRD"
+        who = (issue.get("author") or {}).get("login") or ""
+        ok, why = (may or _may_accept)(repo, number, who)
+        if not ok:
+            return False, f"its own-Bug seal names @{who}, whom who-decides does not let accept ({why})"
+        return True, ""
+    except Exception as err:  # noqa: BLE001 — never read as accepted
+        return False, f"its own-Bug seal could not be checked ({str(err)[:200]})"
+
+
+def own_bug_of(repo, number, issue, may=None):
+    """Whether the triage accepted the issue as its author's own Bug (#564):
+    its last seal says so, in its author's name, for the PRD it has now
+    (receipts.py own_bug_accepted), and `who-decides` lets that author add
+    `accepted` (#624, deciders.py may accepted). A seal or a setting that
+    cannot be read is not one. MAY (repo, number, login) -> (ok, why) stands
+    in for deciders.py in the self-test."""
+    return own_bug_status(repo, number, issue, may)[0]
+
+
+def _may_accept(repo, number, login):
+    """(ok, why): deciders.py may accepted LOGIN for the issue; exit 1 or 2,
+    or a run that fails, is no."""
+    env = dict(os.environ, NUMBER=str(number), GITHUB_REPOSITORY=repo)
+    try:
+        r = subprocess.run([sys.executable, os.path.join(HERE, "deciders.py"), "may", "accepted", login],
+                           env=env, capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as err:
+        return False, f"who-decides could not be read: {err}"
+    return r.returncode == 0, (r.stdout or r.stderr).strip()[:300]
 
 
 def _receipts():
@@ -2500,9 +2529,32 @@ Clamp the value in Sum::add.
         os.environ["RECEIPTS_FIXTURE"] = seals
         try:
             rc.write("DiluxOne/x", "issues/9/prd-t.json", rc.seal(9, prd, "boss", None, "t", rc.OWN_BUG), "seal")
+            # #624: who-decides is asked for the seal's author, through MAY.
+            asked = []
+
+            def may(repo_, number_, login):
+                asked.append((repo_, number_, login))
+                return login == "boss", "only @boss may add `accepted`"
             check("C2 (#564) lane: the triage's own-Bug seal, read for the issue's author only",
-                  (own_bug_of("DiluxOne/x", 9, {"body": prd, "author": {"login": "boss"}}), own_bug_of("DiluxOne/x", 9, {"body": prd, "author": {"login": "eve"}}),
-                   own_bug_of("DiluxOne/x", 10, {"body": prd, "author": {"login": "boss"}})), (True, False, False))
+                  (own_bug_of("DiluxOne/x", 9, {"body": prd, "author": {"login": "boss"}}, may), own_bug_of("DiluxOne/x", 9, {"body": prd, "author": {"login": "eve"}}, may),
+                   own_bug_of("DiluxOne/x", 10, {"body": prd, "author": {"login": "boss"}}, may)), (True, False, False))
+            check("C1 (#624): who-decides is asked for the seal's author, for the issue", asked[:1], [("DiluxOne/x", 9, "boss")])
+            sealed_issue = gql(["accepted"], [("accepted", "Bot", "dilux-bot")], author="boss", body=prd)
+            own, own_why = own_bug_status("DiluxOne/x", 9, sealed_issue, may)
+            check("C1 (#624) lane: an own-Bug seal whose author who-decides allows is worked under human-issue",
+                  (own, which_lane(pol, sealed_issue, None, "DiluxOne/x", "", own, own_why)[0]), (True, LANE))
+            rc.write("DiluxOne/x", "issues/11/prd-t.json", rc.seal(11, prd, "eve", None, "t", rc.OWN_BUG), "seal")
+            rc.write("DiluxOne/x", "issues/12/prd-t.json", rc.seal(12, prd, "boss", None, "t"), "seal")
+            for n, author, says in ((10, "boss", "no own-Bug seal"), (12, "boss", "no own-Bug seal"), (11, "eve", "who-decides does not let accept")):
+                issue_ = gql(["accepted"], [("accepted", "Bot", "dilux-bot")], author=author, body=prd)
+                own, own_why = own_bug_status("DiluxOne/x", n, issue_, may)
+                name, why = which_lane(pol, issue_, None, "DiluxOne/x", "", own, own_why)
+                check(f"C2 (#624) lane: a bot's `accepted` on #{n} ({says}) is refused, saying which",
+                      (own, own_bug_of("DiluxOne/x", n, issue_, may), name, says in why), (False, False, None, True))
+            check("C2 (#624): a who-decides that cannot be read is no acceptance",
+                  own_bug_of("DiluxOne/x", 9, sealed_issue, lambda *a: (_ for _ in ()).throw(RuntimeError("down"))), False)
+            check("C2 (#624): deciders.py's refusal (exit 1 or 2) is no acceptance",
+                  own_bug_of("DiluxOne/x", 9, sealed_issue, lambda *a: (False, "exit 2")), False)
         finally:
             if saved is None:
                 os.environ.pop("RECEIPTS_FIXTURE", None)
@@ -3988,7 +4040,8 @@ def main(argv):
         if not issue:
             print(f"issue #{number} could not be read")
             return 1
-        name, why = which_lane(pol, issue, autonomy.read_run(issue, repo), repo, var, own_bug_of(repo, number, issue))
+        own, own_why = own_bug_status(repo, number, issue)
+        name, why = which_lane(pol, issue, autonomy.read_run(issue, repo), repo, var, own, own_why)
         print(name or why)
         if name:
             print(f"#{number}: lane {name}, {why}", file=sys.stderr)
