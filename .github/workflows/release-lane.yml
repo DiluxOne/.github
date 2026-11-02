@@ -7,7 +7,9 @@ name: Release lane
 # reusable workflows' inner calls at `@v7-next`, checked to differ in nothing
 # else), plays every scenario of tests/release/scenarios.yml in the test
 # repository (org.yml `test-repo`, whose callers move to `@v7-next` and back
-# through pull requests the bot opens there and the merge queue merges, never
+# through pull requests the bot opens there and queues itself once their
+# checks pass, after checking that they change nothing but the engine's ref:
+# the auto-merge decision never merges a change to .github/workflows; never
 # a write to its main) with the test identity's token, and only when all
 # pass, and main is still the commit they tried, merges the release pull request, tags vX.Y.Z at its merge
 # commit, moves `v7` (lightweight) and publishes the Release (or edits it
@@ -144,9 +146,13 @@ jobs:
         run: echo "repo=$(python3 scripts/org.py test-repo)" >> "$GITHUB_OUTPUT"
 
       # The callers move to v7-next, and back, through a pull request in the
-      # test repository that the merge queue merges: its rulesets refuse a
-      # write to main, from anyone. The bot opens it, scoped to that
-      # repository alone; the files are under .github/workflows/.
+      # test repository that goes through its merge queue: its rulesets
+      # refuse a write to main, from anyone. The bot opens it, scoped to that
+      # repository alone (the files are under .github/workflows/), and
+      # merges it itself, never by auto-merge: it checks from GitHub that the
+      # pull request changes nothing but the engine's ref in those callers,
+      # waits for its required checks, and queues it at that head
+      # (scripts/release-scenarios.py point_callers).
       - name: App token (contents, pull requests and workflows, the test repository)
         id: app
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0

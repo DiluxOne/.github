@@ -33,8 +33,11 @@ complete feature), `steps` (each one of
   release-scenarios.py run --repo OWNER/NAME [--ref v7-next] [--only ID ...]
                            [--out FILE] [--minutes N]
         moves the test repository's callers to the ref through a pull
-        request the merge queue merges (opened with DX_CALLERS_TOKEN, the
-        bot's, when set: its rulesets refuse a write to main), and once it
+        request (opened with DX_CALLERS_TOKEN, the bot's, when set: its
+        rulesets refuse a write to main) that the lane merges itself,
+        through the merge queue once its checks pass, after checking from
+        GitHub that it changes nothing but the engine's ref in those
+        callers (one that does is closed unmerged), and once it
         merged plays them there with the test identity's token
         (GH_TOKEN), polls until each one's `expect` holds or its time is
         up, cleans up (its pack's `cleanup: after-run`) and writes the
@@ -272,11 +275,20 @@ def table(results):
     return "\n".join(lines) + "\n"
 
 
+class GhError(RuntimeError):
+    """A `gh` that exited non-zero, with what it printed: `gh pr checks`
+    exits 8 while a check is pending and 1 when one failed, JSON and all."""
+
+    def __init__(self, message, code=1, stdout="", stderr=""):
+        super().__init__(message)
+        self.code, self.stdout, self.stderr = code, stdout, stderr
+
+
 def gh(*args, input=None, token=None):
     out = subprocess.run(["gh", *args], capture_output=True, text=True, input=input,
                          env=dict(os.environ, GH_TOKEN=token) if token else None)
     if out.returncode:
-        raise RuntimeError(f"gh {' '.join(args[:3])}: {out.stderr.strip()}")
+        raise GhError(f"gh {' '.join(args[:3])}: {out.stderr.strip()}", out.returncode, out.stdout, out.stderr)
     return out.stdout
 
 
@@ -388,7 +400,28 @@ def at_ref(text, central, ref):
     dropped; a call already at `ref` stays as it is, comment and all. Pure."""
     def to(m):
         return m.group(0) if m.group(2) == ref else f"{m.group(1)}@{ref}"
-    return re.sub(r"^(\s+uses: " + re.escape(central) + r"/\.github/workflows/[\w.-]+\.yml)@(\S+)([ \t]+#[^\n]*)?$", to, text, flags=re.M)
+    return re.sub(USES.format(re.escape(central)), to, text, flags=re.M)
+
+
+USES = r"^(\s+uses: {}/\.github/workflows/[\w.-]+\.yml)@(\S+)([ \t]+#[^\n]*)?$"
+
+
+def only_ref(before, after, central):
+    """What differs between a caller's `before` and `after` other than the
+    engine's ref: None when both have the same lines and every line that
+    differs is, on both sides, a call of the same engine workflow (the
+    calls `at_ref` rewrites) with only its ref and its pin's comment
+    changed, else the first line that differs ("line N: ..."). Pure."""
+    one, two = before.split("\n"), after.split("\n")
+    uses = re.compile(USES.format(re.escape(central)))
+    for i in range(max(len(one), len(two))):
+        b, a = (one[i] if i < len(one) else None), (two[i] if i < len(two) else None)
+        if b == a:
+            continue
+        mb, ma = uses.match(b or ""), uses.match(a or "")
+        if not (mb and ma and mb.group(1) == ma.group(1)):
+            return f"line {i + 1}: {(a if a is not None else b).strip()!r}"
+    return None
 
 
 def callers_gh():
@@ -399,14 +432,103 @@ def callers_gh():
     return (lambda *args, input=None: gh(*args, input=input, token=token)) if token else gh
 
 
+def text_at(repo, path, sha, run=gh):
+    """A file's text at a commit."""
+    import base64
+    from urllib.parse import quote
+    got = json.loads(run("api", f"repos/{repo}/contents/{quote(path)}?ref={sha}") or "{}")
+    return base64.b64decode(got.get("content") or "").decode()
+
+
+def not_only_ref(repo, number, base, head, names, central, run=gh):
+    """What the pull request `number` really changes, read from GitHub
+    (every page of its files, and each one's text at `base` and `head`),
+    other than the engine's ref in the callers the lane wrote (`names`,
+    under .github/workflows/): None when nothing, else the first file and
+    line that differ."""
+    pages = json.loads(run("api", "--paginate", "--slurp", f"repos/{repo}/pulls/{number}/files") or "[]")
+    files = [f for page in pages for f in (page if isinstance(page, list) else [page])]
+    wanted = {f".github/workflows/{n}" for n in names}
+    for f in files:
+        path, status = str(f.get("filename") or ""), f.get("status")
+        if path not in wanted:
+            return f"{path} ({status}) is not a caller the lane wrote"
+        if status != "modified":
+            return f"{path} is {status}" + (f" from {f.get('previous_filename')}" if f.get("previous_filename") else "")
+    missing = sorted(wanted - {str(f.get("filename") or "") for f in files})
+    if missing:
+        return f"{missing[0]} is not changed by it"
+    for f in files:
+        differs = only_ref(text_at(repo, f["filename"], base, run), text_at(repo, f["filename"], head, run), central)
+        if differs:
+            return f"{f['filename']} {differs}"
+    return None
+
+
+DONE = ("COMPLETED", "SUCCESS", "FAILURE", "ERROR")
+
+
+def required_checks(repo, number, run=gh):
+    """The head's required checks, [{name, bucket}]: none yet while GitHub
+    reports none (a pull request just opened), whatever `gh pr checks`
+    exits with while one is pending (8) or failed (1)."""
+    try:
+        return json.loads(run("pr", "checks", number, "--repo", repo, "--required", "--json", "name,bucket") or "[]")
+    except GhError as e:
+        if e.stdout.strip():
+            return json.loads(e.stdout)
+        if "no required checks reported" in e.stderr or "no checks reported" in e.stderr:
+            return []
+        raise
+
+
+def merge_when_checked(repo, number, url, head, run=gh, sleep=time.sleep, minutes=20):
+    """The lane's own callers pull request merged by the lane, never by
+    auto-merge (the auto-merge decision never merges a change to
+    .github/workflows): once its required checks pass at `head` and every
+    other check there finished (so nothing turns anything off after it is
+    queued), queued with `gh pr merge --squash --match-head-commit`, which
+    goes through the merge queue and never past it, then waited for until
+    it merged. Raises, naming the pull request and the check, on a required
+    check that fails or is cancelled, a pull request that closes, a head
+    that moves, or `minutes` running out."""
+    waited, queued, why = 0, False, "its checks did not finish"
+    while True:
+        view = json.loads(run("pr", "view", number, "--repo", repo, "--json", "mergedAt,state,headRefOid,statusCheckRollup") or "{}")
+        if view.get("mergedAt"):
+            return
+        if view.get("state") == "CLOSED":
+            raise RuntimeError(f"the pull request {url} that moves them closed unmerged")
+        if view.get("headRefOid") and view["headRefOid"] != head:
+            raise RuntimeError(f"the pull request {url} that moves them changed head ({view['headRefOid']}, not {head})")
+        if not queued:
+            required = required_checks(repo, number, run)
+            bad = [c.get("name") for c in required if c.get("bucket") in ("fail", "cancel")]
+            if bad:
+                raise RuntimeError(f"the pull request {url} that moves them failed its required check {bad[0]}")
+            rollup = view.get("statusCheckRollup") or []
+            pending = [c.get("name") or c.get("context") for c in rollup if (c.get("status") or c.get("state") or "").upper() not in DONE]
+            pending += [c.get("name") for c in required if c.get("bucket") not in ("pass", "skipping")]
+            if rollup and not pending:
+                run("pr", "merge", number, "--repo", repo, "--squash", "--match-head-commit", head)
+                queued, why = True, "it did not merge from the merge queue"
+            else:
+                why = f"its check {pending[0]} did not finish" if pending else "it reported no check"
+        if waited >= minutes * 60:
+            raise RuntimeError(f"the pull request {url} that moves them did not merge in {minutes} minutes: {why}")
+        sleep(30)
+        waited += 30
+
+
 def point_callers(repo, ref, run=gh, central=None, back=None, sleep=time.sleep, minutes=20):
     """The test repository's callers at `ref` (`v7-next` while the lane
     tries a candidate, `v7` once the installer plays them), so what plays
     is that ref's engine; with `back` ({name: text}), those callers put back
     as they were. Never written on the default branch, which its rulesets
     protect: the change goes on `ci/callers-<ref>`, through a pull request
-    the merge queue merges (`gh pr merge --squash --auto`), and it returns
-    once that merged. Nothing to change opens nothing. Returns what it moved,
+    the lane merges itself (`merge_when_checked`: the merge queue, once its
+    checks pass; auto-merge never merges a change to .github/workflows),
+    and it returns once that merged. Nothing to change opens nothing. Returns what it moved,
     each caller's `name` and its text `before`."""
     import base64
     if central is None:
@@ -441,16 +563,12 @@ def point_callers(repo, ref, run=gh, central=None, back=None, sleep=time.sleep, 
               input=f"The release lane's scenarios (scripts/release-scenarios.py): {title[4:]}.\n").strip()
     number = url.rstrip("/").rsplit("/", 1)[-1]
     try:
-        run("pr", "merge", number, "--repo", repo, "--squash", "--auto")
-        waited = 0
-        while True:
-            view = json.loads(run("pr", "view", number, "--repo", repo, "--json", "mergedAt,state") or "{}")
-            if view.get("mergedAt"):
-                break
-            if view.get("state") == "CLOSED" or waited >= minutes * 60:
-                raise RuntimeError(f"the pull request {url} that moves them did not merge")
-            sleep(30)
-            waited += 30
+        pull = json.loads(run("api", f"repos/{repo}/pulls/{number}") or "{}")
+        base_sha, head = pull["base"]["sha"], pull["head"]["sha"]
+        differs = not_only_ref(repo, number, base_sha, head, [name for name, _, _, _ in changes], central, run)
+        if differs:
+            raise RuntimeError(f"the pull request {url} that moves them changes more than the engine's ref, so the lane does not merge it: {differs}")
+        merge_when_checked(repo, number, url, head, run, sleep, minutes)
     except (RuntimeError, ValueError):
         try:
             run("pr", "close", number, "--repo", repo, "--delete-branch")
@@ -715,18 +833,30 @@ def self_test():
     check("at_ref: a pinned call moves to the ref tried", at_ref(caller, "O/.github", "v7-next"), "jobs:\n  t:\n    uses: O/.github/.github/workflows/issue-triage.yml@v7-next\n")
     check("at_ref: a call already at the ref keeps its pin's comment", at_ref(caller.replace("abc123", "v7-next"), "O/.github", "v7-next"), caller.replace("abc123", "v7-next"))
 
-    def repo_fake(merges=True):
+    def repo_fake(merges=True, pending=1, tamper=None):
         """A test repository with issues.yml at `@abc123 # v7`, whose pull
-        requests merge (their branch's callers reach main) on their second
-        view, or close unmerged (`merges` False), or never merge (None)."""
-        st = {"main": {"issues.yml": caller}, "branches": {}, "prs": {}, "views": {}, "calls": []}
+        requests' required check is pending for `pending` polls then
+        passes, and which merge (their branch's callers reach main) on the
+        view after the lane queues them, or close unmerged (`merges` False),
+        or never merge (None). `tamper(st, branch)`, when given, changes the
+        branch after the lane wrote it, before the pull request opens."""
+        st = {"main": {"issues.yml": caller}, "branches": {}, "prs": {}, "polls": {}, "queued": set(), "calls": [], "files": None}
+
+        def at(number, side):
+            pr = st["prs"][number]
+            return pr["base"] if side == "base" else st["branches"][pr["head"]]
 
         def fake(*args, input=None):
             st["calls"].append(args)
-            if args[-1] == "repos/o/t/contents/.github/workflows":
+            path = str(args[-1])
+            if path == "repos/o/t/contents/.github/workflows":
                 return json.dumps([{"name": n} for n in st["main"]])
-            if args[0] == "api" and "/contents/.github/workflows/" in args[-1]:
-                return json.dumps({"content": base64.b64encode(st["main"][args[-1].rsplit("/", 1)[1]].encode()).decode(), "sha": "s1"})
+            if args[0] == "api" and "/contents/.github/workflows/" in path and args[1] != "-X":
+                name, _, ref = path.split("/contents/.github/workflows/", 1)[1].partition("?ref=")
+                files = at(ref.split("-")[1], ref.split("-")[0]) if ref else st["main"]
+                if name not in files:
+                    raise GhError("gh api: HTTP 404: Not Found", 1, "", "HTTP 404")
+                return json.dumps({"content": base64.b64encode(files[name].encode()).decode(), "sha": "s1"})
             if args[-2:] == ("--jq", ".default_branch"):
                 return "main\n"
             if args[-2:] == ("--jq", ".object.sha"):
@@ -738,15 +868,37 @@ def self_test():
                 st["branches"][f["branch"]][args[3].rsplit("/", 1)[1]] = base64.b64decode(f["content"]).decode()
             if args[:2] == ("pr", "create"):
                 n = str(20 + len(st["prs"]))
-                st["prs"][n] = args[args.index("--head") + 1]
+                head = args[args.index("--head") + 1]
+                if tamper:
+                    tamper(st, head)
+                st["prs"][n] = {"head": head, "base": dict(st["main"])}
                 return f"https://github.com/o/t/pull/{n}\n"
+            m = re.fullmatch(r"repos/o/t/pulls/(\d+)(/files)?", path)
+            if args[0] == "api" and m:
+                n = m.group(1)
+                if not m.group(2):
+                    return json.dumps({"head": {"sha": f"head-{n}"}, "base": {"sha": f"base-{n}"}})
+                if st["files"] is not None:
+                    return json.dumps([st["files"]])
+                base, head = at(n, "base"), at(n, "head")
+                return json.dumps([[{"filename": f".github/workflows/{k}", "status": "added" if k not in base else "removed" if k not in head else "modified"}
+                                    for k in sorted(set(base) | set(head)) if base.get(k) != head.get(k)]])
+            if args[:2] == ("pr", "checks"):
+                st["polls"][args[2]] = st["polls"].get(args[2], 0) + 1
+                return json.dumps([{"name": "gate", "bucket": "pending" if st["polls"][args[2]] <= pending else "pass"}])
+            if args[:2] == ("pr", "merge"):
+                st["queued"].add(args[2])
             if args[:2] == ("pr", "view") and args[2] in st["prs"]:
-                st["views"][args[2]] = st["views"].get(args[2], 0) + 1
-                if merges and st["views"][args[2]] == 2:
-                    st["main"] = dict(st["branches"][st["prs"][args[2]]])
-                    st["calls"].append(("merged", args[2]))
+                n = args[2]
+                if merges is False:
+                    return json.dumps({"state": "CLOSED"})
+                if merges and n in st["queued"]:
+                    st["main"] = dict(st["branches"][st["prs"][n]["head"]])
+                    st["calls"].append(("merged", n))
                     return json.dumps({"mergedAt": "2026-11-02T10:00:00Z", "state": "MERGED"})
-                return json.dumps({"state": "CLOSED" if merges is False else "OPEN"})
+                done = st["polls"].get(n, 0) >= pending
+                return json.dumps({"state": "OPEN", "headRefOid": f"head-{n}",
+                                   "statusCheckRollup": [{"name": "gate", "status": "COMPLETED" if done else "IN_PROGRESS", "conclusion": "SUCCESS" if done else ""}]})
             if args[:2] == ("issue", "create"):
                 return "https://github.com/o/t/issues/9\n"
             if args[:2] == ("issue", "view"):
@@ -762,16 +914,73 @@ def self_test():
           ("api", "repos/o/t/git/refs", "-f", "ref=refs/heads/ci/callers-v7-next", "-f", "sha=h1") in calls, True)
     check("C1: @v7-next is written there, not on main",
           ("branch=ci/callers-v7-next" in writes[0], "issue-triage.yml@v7-next\n" in base64.b64decode(next(x for x in writes[0] if x.startswith("content=")).split("=", 1)[1]).decode()), (True, True))
-    check("C1: a pull request is opened and put in the merge queue",
-          (calls.index(next(c for c in calls if c[:2] == ("pr", "create"))) < calls.index(("pr", "merge", "20", "--repo", "o/t", "--squash", "--auto"))), True)
+    queue = ("pr", "merge", "20", "--repo", "o/t", "--squash", "--match-head-commit", "head-20")
+    check("#623 C1: a pull request is opened, and the lane enables no auto-merge",
+          (calls.index(next(c for c in calls if c[:2] == ("pr", "create"))) < calls.index(queue), [c for c in calls if "--auto" in c]), (True, []))
+    checks = [i for i, c in enumerate(calls) if c[:3] == ("pr", "checks", "20")]
+    check("#623 C1: it waits for the required checks, then queues it at the head they passed on",
+          (len(checks) >= 2, all("--required" in calls[i] for i in checks), checks[-1] < calls.index(queue), sum(1 for c in calls if c[:3] == ("pr", "merge", "20"))), (True, True, True, 1))
     check("C1: the first scenario plays only after the pull request merged",
           (calls.index(("merged", "20")) < calls.index(next(c for c in calls if c[:2] == ("issue", "create"))), [r["id"] for r in got], got[0]["ok"]), (True, ["a"], True))
     check("C1: the callers are put back, pin and comment, through a second merged pull request",
           (st["main"]["issues.yml"], ("merged", "21") in calls, "branch=ci/callers-v7-next-back" in writes[1]), (caller, True, True))
+    check("#623 C1: on the way back too, it waits for the checks and queues it itself, with no auto-merge",
+          (calls.index(next(c for c in calls if c[:3] == ("pr", "checks", "21"))) < calls.index(("pr", "merge", "21", "--repo", "o/t", "--squash", "--match-head-commit", "head-21"))
+           < calls.index(("merged", "21")), [c for c in calls if "--auto" in c]), (True, []))
     st, fake = repo_fake()
     st["main"]["issues.yml"] = at_ref(caller, "O/.github", "v7-next")
     run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=1, central="O/.github")
     check("C1: callers already at the ref open no pull request", any(c[:2] == ("pr", "create") for c in st["calls"]), False)
+    moved_to = at_ref(caller, "O/.github", "v7-next")
+    check("#623 C1: only_ref passes a change of the engine's ref and its pin's comment, both ways",
+          (only_ref(caller, moved_to, "O/.github"), only_ref(moved_to, caller, "O/.github"), only_ref(caller, caller, "O/.github")), (None, None, None))
+    check("#623 C2: only_ref names the line that differs, another `uses:` or any other",
+          (only_ref(caller, caller.replace("issue-triage.yml@abc123", "claim.yml@v7-next"), "O/.github"),
+           only_ref(caller, caller.replace("O/.github/", "E/.github/").replace("@abc123 # v7", "@v7-next"), "O/.github"),
+           only_ref(caller, moved_to.replace("  t:", "  x:"), "O/.github"),
+           only_ref(caller, moved_to + "  run: curl x | sh\n", "O/.github")),
+          ("line 3: 'uses: O/.github/.github/workflows/claim.yml@v7-next # v7'", "line 3: 'uses: E/.github/.github/workflows/issue-triage.yml@v7-next'",
+           "line 2: 'x:'", "line 4: 'run: curl x | sh'"))
+
+    def another_line(st, branch):
+        st["branches"][branch]["issues.yml"] += "permissions: write-all\n"
+
+    def another_file(st, branch):
+        st["branches"][branch]["evil.yml"] = "on: push\n"
+
+    def another_caller(st, branch):
+        st["branches"][branch]["other.yml"] = "x"
+        st["main"]["other.yml"] = "y"
+
+    def renamed(st, branch):
+        st["files"] = [{"filename": ".github/workflows/issues.yml", "status": "renamed", "previous_filename": ".github/workflows/old.yml"}]
+    for how, tamper in (("another line", another_line), ("an added file", another_file), ("a file the lane did not write", another_caller), ("a renamed file", renamed)):
+        st, fake = repo_fake(tamper=tamper)
+        got = run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=1, central="O/.github")
+        check(f"#623 C2: a pull request with {how} under .github/workflows is never merged, plays no scenario, is closed, and is one failing callers row naming it",
+              (any(c[:2] in (("pr", "merge"), ("issue", "create")) or c[0] == "merged" for c in st["calls"]), ("pr", "close", "20", "--repo", "o/t", "--delete-branch") in st["calls"],
+               [(r["id"], r["ok"]) for r in got], "https://github.com/o/t/pull/20" in got[0]["why"][0], st["main"]["issues.yml"]),
+              (False, True, [("callers", False)], True, caller))
+    st, fake = repo_fake(tamper=another_line)
+    got = run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=1, central="O/.github")
+    check("#623 C2: the failing row names the file and the line that differ",
+          got[0]["why"], ["the callers did not reach v7-next: the pull request https://github.com/o/t/pull/20 that moves them changes more than the engine's ref, "
+                          "so the lane does not merge it: .github/workflows/issues.yml line 4: 'permissions: write-all'"])
+    st, fake = repo_fake()
+    failing = lambda *a, input=None: json.dumps([{"name": "gate", "bucket": "fail"}]) if a[:2] == ("pr", "checks") else fake(*a, input=input)
+    got = run_all(one, "o/t", "v7-next", run=failing, sleep=lambda s: None, minutes=1, central="O/.github")
+    check("#623 C1: a required check that fails is never queued, plays no scenario, and names the pull request and the check",
+          (any(c[:2] in (("pr", "merge"), ("issue", "create")) for c in st["calls"]), [(r["id"], r["ok"]) for r in got],
+           "https://github.com/o/t/pull/20" in got[0]["why"][0] and "gate" in got[0]["why"][0], ("pr", "close", "20", "--repo", "o/t", "--delete-branch") in st["calls"]),
+          (False, [("callers", False)], True, True))
+
+    def pending8(*a, input=None):
+        raise GhError("gh pr checks 20: exit 8", 8, json.dumps([{"name": "gate", "bucket": "pending"}]), "")
+
+    def none_yet(*a, input=None):
+        raise GhError("gh pr checks 20", 1, "", "no required checks reported on the 'ci/callers-v7-next' branch")
+    check("#623 C1: `gh pr checks` exiting 8 while a check is pending, or 1 before any is reported, is read, not raised",
+          (required_checks("o/t", "20", pending8), required_checks("o/t", "20", none_yet)), ([{"name": "gate", "bucket": "pending"}], []))
     for how, merges in (("closes unmerged", False), ("never merges", None)):
         st, fake = repo_fake(merges)
         got = run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=1, central="O/.github")
@@ -785,6 +994,9 @@ def self_test():
     fresh = []
     check("#622: put_back, with the runner given it (a token minted after the scenarios), puts them back",
           (put_back("o/t", "v7-next", moved, lambda *a, input=None: fresh.append(a) or fake(*a, input=input), "O/.github", lambda s: None, 1), st["main"]["issues.yml"], any(c[:2] == ("pr", "create") for c in fresh)), ([], caller, True))
+    check("#623 C1: put_back queues its pull request itself, at its head, once its checks passed",
+          ([c for c in fresh if c[:2] == ("pr", "merge")], [c for c in fresh if "--auto" in c], any(c[:2] == ("pr", "checks") for c in fresh)),
+          ([("pr", "merge", "21", "--repo", "o/t", "--squash", "--match-head-commit", "head-21")], [], True))
     check("#622: put_back with nothing moved does nothing", put_back("o/t", "v7-next", [], lambda *a, input=None: 1 / 0), [])
     st, fake = repo_fake()
     moved = []
