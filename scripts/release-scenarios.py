@@ -32,11 +32,16 @@ complete feature), `steps` (each one of
         engine statically, by scripts/caller-contract.py check
   release-scenarios.py run --repo OWNER/NAME [--ref v7-next] [--only ID ...]
                            [--out FILE] [--minutes N]
-        plays them in the test repository with the test identity's token
+        moves the test repository's callers to the ref through a pull
+        request the merge queue merges (opened with DX_CALLERS_TOKEN, the
+        bot's, when set: its rulesets refuse a write to main), and once it
+        merged plays them there with the test identity's token
         (GH_TOKEN), polls until each one's `expect` holds or its time is
         up, cleans up (its pack's `cleanup: after-run`) and writes the
         Markdown table of results (scenario, pass or fail, run link) to
-        FILE (and stdout); exits 1 when one fails
+        FILE (and stdout), then puts the callers back the same way; a
+        pull request that does not merge is a failing `callers` row;
+        exits 1 when one fails
   release-scenarios.py --test
 """
 import ast
@@ -257,8 +262,9 @@ def table(results):
     return "\n".join(lines) + "\n"
 
 
-def gh(*args, input=None):
-    out = subprocess.run(["gh", *args], capture_output=True, text=True, input=input)
+def gh(*args, input=None, token=None):
+    out = subprocess.run(["gh", *args], capture_output=True, text=True, input=input,
+                         env=dict(os.environ, GH_TOKEN=token) if token else None)
     if out.returncode:
         raise RuntimeError(f"gh {' '.join(args[:3])}: {out.stderr.strip()}")
     return out.stdout
@@ -369,37 +375,105 @@ def cleanup(repo, made, run=gh):
 
 def at_ref(text, central, ref):
     """A caller's calls of the engine at `ref`, its pinned version's comment
-    dropped. Pure."""
-    return re.sub(r"^(\s+uses: " + re.escape(central) + r"/\.github/workflows/[\w.-]+\.yml)@\S+([ \t]+#[^\n]*)?$", rf"\1@{ref}", text, flags=re.M)
+    dropped; a call already at `ref` stays as it is, comment and all. Pure."""
+    def to(m):
+        return m.group(0) if m.group(2) == ref else f"{m.group(1)}@{ref}"
+    return re.sub(r"^(\s+uses: " + re.escape(central) + r"/\.github/workflows/[\w.-]+\.yml)@(\S+)([ \t]+#[^\n]*)?$", to, text, flags=re.M)
 
 
-def point_callers(repo, ref, run=gh, central=None):
+def callers_gh():
+    """The runner `point_callers` writes with: the bot's token
+    (DX_CALLERS_TOKEN, the App's, scoped to the test repository) when it is
+    set, else the ambient one."""
+    token = os.environ.get("DX_CALLERS_TOKEN")
+    return (lambda *args, input=None: gh(*args, input=input, token=token)) if token else gh
+
+
+def point_callers(repo, ref, run=gh, central=None, back=None, sleep=time.sleep, minutes=20):
     """The test repository's callers at `ref` (`v7-next` while the lane
     tries a candidate, `v7` once the installer plays them), so what plays
-    is that ref's engine. Returns the callers it rewrote."""
+    is that ref's engine; with `back` ({name: text}), those callers put back
+    as they were. Never written on the default branch, which its rulesets
+    protect: the change goes on `ci/callers-<ref>`, through a pull request
+    the merge queue merges (`gh pr merge --squash --auto`), and it returns
+    once that merged. Nothing to change opens nothing. Returns what it moved,
+    each caller's `name` and its text `before`."""
     import base64
     if central is None:
         sys.path.insert(0, HERE)
         import org
         central = org.CENTRAL
-    moved = []
+    changes = []
     for f in json.loads(run("api", f"repos/{repo}/contents/.github/workflows") or "[]"):
-        if not str(f.get("name", "")).endswith(".yml"):
+        name = str(f.get("name", ""))
+        if not name.endswith(".yml") or (back is not None and name not in back):
             continue
-        got = json.loads(run("api", f"repos/{repo}/contents/.github/workflows/{f['name']}") or "{}")
+        got = json.loads(run("api", f"repos/{repo}/contents/.github/workflows/{name}") or "{}")
         text = base64.b64decode(got.get("content") or "").decode()
-        new = at_ref(text, central, ref)
+        new = back[name] if back is not None else at_ref(text, central, ref)
         if new != text:
-            run("api", "-X", "PUT", f"repos/{repo}/contents/.github/workflows/{f['name']}", "-f", f"message=ci: the engine at {ref}",
-                "-f", f"content={base64.b64encode(new.encode()).decode()}", "-f", f"sha={got.get('sha', '')}")
-            moved.append(f["name"])
-    return moved
+            changes.append((name, text, new, got.get("sha", "")))
+    if not changes:
+        return []
+    base = run("api", f"repos/{repo}", "--jq", ".default_branch").strip()
+    branch = f"ci/callers-{ref}" + ("-back" if back is not None else "")
+    try:
+        run("api", "-X", "DELETE", f"repos/{repo}/git/refs/heads/{branch}")
+    except RuntimeError:
+        pass  # no leftover
+    head = run("api", f"repos/{repo}/git/ref/heads/{base}", "--jq", ".object.sha").strip()
+    run("api", f"repos/{repo}/git/refs", "-f", f"ref=refs/heads/{branch}", "-f", f"sha={head}")
+    title = f"ci: the engine's callers {'back from' if back is not None else 'at'} {ref}"
+    for name, _, new, sha in changes:
+        run("api", "-X", "PUT", f"repos/{repo}/contents/.github/workflows/{name}", "-f", f"message={title}",
+            "-f", f"branch={branch}", "-f", f"content={base64.b64encode(new.encode()).decode()}", "-f", f"sha={sha}")
+    url = run("pr", "create", "--repo", repo, "--base", base, "--head", branch, "--title", title, "--body-file", "-",
+              input=f"The release lane's scenarios (scripts/release-scenarios.py): {title[4:]}.\n").strip()
+    number = url.rstrip("/").rsplit("/", 1)[-1]
+    try:
+        run("pr", "merge", number, "--repo", repo, "--squash", "--auto")
+        waited = 0
+        while True:
+            view = json.loads(run("pr", "view", number, "--repo", repo, "--json", "mergedAt,state") or "{}")
+            if view.get("mergedAt"):
+                break
+            if view.get("state") == "CLOSED" or waited >= minutes * 60:
+                raise RuntimeError(f"the pull request {url} that moves them did not merge")
+            sleep(30)
+            waited += 30
+    except (RuntimeError, ValueError):
+        try:
+            run("pr", "close", number, "--repo", repo, "--delete-branch")
+        except RuntimeError:
+            pass
+        raise
+    return [{"name": name, "before": text} for name, text, _, _ in changes]
 
 
-def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20, central=None):
+def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20, central=None, callers=None):
+    """Every scenario at `ref`: the callers moved there first (a merged pull
+    request, or no scenario plays and one failing `callers` row says why),
+    and put back after, through another; a failure to put them back is a
+    failing `callers` row too, so nothing is released over a test repository
+    left at `ref`."""
     bodies = conf.get("bodies") or {}
-    point_callers(repo, ref, run, central)
-    return [play(s, repo, ref, bodies, run, sleep, minutes) for s in conf.get("scenarios") or [] if not only or s["id"] in only]
+    callers = callers or (callers_gh() if run is gh else run)
+    try:
+        moved = point_callers(repo, ref, callers, central, sleep=sleep, minutes=minutes)
+    except (RuntimeError, ValueError) as e:
+        return [{"id": "callers", "ok": False, "why": [f"the callers did not reach {ref}: {e}"], "run": ""}]
+    results = []
+    try:
+        for s in conf.get("scenarios") or []:
+            if not only or s["id"] in only:
+                results.append(play(s, repo, ref, bodies, run, sleep, minutes))
+    finally:
+        if moved:
+            try:
+                point_callers(repo, ref, callers, central, back={m["name"]: m["before"] for m in moved}, sleep=sleep, minutes=minutes)
+            except (RuntimeError, ValueError) as e:
+                results.append({"id": "callers", "ok": False, "why": [f"the callers were not put back from {ref}: {e}"], "run": ""})
+    return results
 
 
 def test_pack(root=ROOT):
@@ -528,16 +602,71 @@ def self_test():
     import base64
     caller = "jobs:\n  t:\n    uses: O/.github/.github/workflows/issue-triage.yml@abc123 # v7\n"
     check("at_ref: a pinned call moves to the ref tried", at_ref(caller, "O/.github", "v7-next"), "jobs:\n  t:\n    uses: O/.github/.github/workflows/issue-triage.yml@v7-next\n")
-    pcalls = []
+    check("at_ref: a call already at the ref keeps its pin's comment", at_ref(caller.replace("abc123", "v7-next"), "O/.github", "v7-next"), caller.replace("abc123", "v7-next"))
 
-    def pfake(*args, input=None):
-        pcalls.append(args)
-        if args[-1] == "repos/o/t/contents/.github/workflows":
-            return json.dumps([{"name": "issues.yml"}])
-        if args[-1].endswith("issues.yml"):
-            return json.dumps({"content": base64.b64encode(caller.encode()).decode(), "sha": "s1"})
-        return ""
-    check("run: the test repository's callers call the ref tried", (point_callers("o/t", "v7-next", pfake, "O/.github"), any(c[:3] == ("api", "-X", "PUT") for c in pcalls)), (["issues.yml"], True))
+    def repo_fake(merges=True):
+        """A test repository with issues.yml at `@abc123 # v7`, whose pull
+        requests merge (their branch's callers reach main) on their second
+        view, or close unmerged (`merges` False), or never merge (None)."""
+        st = {"main": {"issues.yml": caller}, "branches": {}, "prs": {}, "views": {}, "calls": []}
+
+        def fake(*args, input=None):
+            st["calls"].append(args)
+            if args[-1] == "repos/o/t/contents/.github/workflows":
+                return json.dumps([{"name": n} for n in st["main"]])
+            if args[0] == "api" and "/contents/.github/workflows/" in args[-1]:
+                return json.dumps({"content": base64.b64encode(st["main"][args[-1].rsplit("/", 1)[1]].encode()).decode(), "sha": "s1"})
+            if args[-2:] == ("--jq", ".default_branch"):
+                return "main\n"
+            if args[-2:] == ("--jq", ".object.sha"):
+                return "h1\n"
+            if args[:3] == ("api", "repos/o/t/git/refs", "-f"):
+                st["branches"][args[3].split("refs/heads/", 1)[1]] = dict(st["main"])
+            if args[:3] == ("api", "-X", "PUT") and "/contents/.github/workflows/" in args[3]:
+                f = dict(x.split("=", 1) for x in args[4:] if "=" in x)
+                st["branches"][f["branch"]][args[3].rsplit("/", 1)[1]] = base64.b64decode(f["content"]).decode()
+            if args[:2] == ("pr", "create"):
+                n = str(20 + len(st["prs"]))
+                st["prs"][n] = args[args.index("--head") + 1]
+                return f"https://github.com/o/t/pull/{n}\n"
+            if args[:2] == ("pr", "view") and args[2] in st["prs"]:
+                st["views"][args[2]] = st["views"].get(args[2], 0) + 1
+                if merges and st["views"][args[2]] == 2:
+                    st["main"] = dict(st["branches"][st["prs"][args[2]]])
+                    st["calls"].append(("merged", args[2]))
+                    return json.dumps({"mergedAt": "2026-11-02T10:00:00Z", "state": "MERGED"})
+                return json.dumps({"state": "CLOSED" if merges is False else "OPEN"})
+            if args[:2] == ("issue", "create"):
+                return "https://github.com/o/t/issues/9\n"
+            if args[:2] == ("issue", "view"):
+                return json.dumps({"labels": [{"name": "awaiting-acceptance"}], "comments": []})
+            return "[]"
+        return st, fake
+    one = {"scenarios": [{"id": "a", "covers": [], "opens": {"issue": {"title": "t"}}, "expect": {"labels": ["awaiting-acceptance"]}}]}
+    st, fake = repo_fake()
+    got = run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=1, central="O/.github")
+    calls = st["calls"]
+    writes = [c for c in calls if c[:3] == ("api", "-X", "PUT")]
+    check("C1: the callers move on ci/callers-v7-next, created from main's head",
+          ("api", "repos/o/t/git/refs", "-f", "ref=refs/heads/ci/callers-v7-next", "-f", "sha=h1") in calls, True)
+    check("C1: @v7-next is written there, not on main",
+          ("branch=ci/callers-v7-next" in writes[0], "issue-triage.yml@v7-next\n" in base64.b64decode(next(x for x in writes[0] if x.startswith("content=")).split("=", 1)[1]).decode()), (True, True))
+    check("C1: a pull request is opened and put in the merge queue",
+          (calls.index(next(c for c in calls if c[:2] == ("pr", "create"))) < calls.index(("pr", "merge", "20", "--repo", "o/t", "--squash", "--auto"))), True)
+    check("C1: the first scenario plays only after the pull request merged",
+          (calls.index(("merged", "20")) < calls.index(next(c for c in calls if c[:2] == ("issue", "create"))), [r["id"] for r in got], got[0]["ok"]), (True, ["a"], True))
+    check("C1: the callers are put back, pin and comment, through a second merged pull request",
+          (st["main"]["issues.yml"], ("merged", "21") in calls, "branch=ci/callers-v7-next-back" in writes[1]), (caller, True, True))
+    st, fake = repo_fake()
+    st["main"]["issues.yml"] = at_ref(caller, "O/.github", "v7-next")
+    run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=1, central="O/.github")
+    check("C1: callers already at the ref open no pull request", any(c[:2] == ("pr", "create") for c in st["calls"]), False)
+    for how, merges in (("closes unmerged", False), ("never merges", None)):
+        st, fake = repo_fake(merges)
+        got = run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=1, central="O/.github")
+        check(f"C1: a pull request that {how} plays no scenario and gives one failing callers row",
+              (any(c[:2] == ("issue", "create") for c in st["calls"]), [(r["id"], r["ok"]) for r in got], st["main"]["issues.yml"]), (False, [("callers", False)], caller))
+    check("callers_gh: the ambient token when DX_CALLERS_TOKEN is not set", callers_gh() is gh if not os.environ.get("DX_CALLERS_TOKEN") else True, True)
     check("run: the table names each scenario, its result and its run", table(res).splitlines()[2], "| `a` | pass | https://github.com/o/t/actions/runs/1 |")
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
