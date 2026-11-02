@@ -117,7 +117,7 @@ own_accept() {
     return 0
   fi
   # The seal first: the gate and the autopilot read the acceptance from it.
-  if ! GH_TOKEN=${SEAL_TOKEN:-$GH_TOKEN} ACCEPTED_BY=$AUTHOR ACCEPTED_HOW=own-bug python3 "$here/receipts.py" seal-prd >/dev/null; then
+  if ! GH_TOKEN=${SEAL_TOKEN:-${GH_TOKEN:-}} ACCEPTED_BY=$AUTHOR ACCEPTED_HOW=own-bug python3 "$here/receipts.py" seal-prd >/dev/null; then
     echo "accepted=false" >> "$out"
     echo "::warning::#$NUMBER's PRD could not be sealed; it waits for its author's \`accepted\`."
     gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '%s\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)' "You wrote this Bug with the maintain or admin role, so it skips the outside reporter's triage and reproduction; its PRD could not be sealed now, so add \`accepted\` yourself to start the autopilot.")" >/dev/null
