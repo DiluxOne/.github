@@ -8,8 +8,8 @@ name: Release lane
 # else), plays every scenario of tests/release/scenarios.yml in the test
 # repository (org.yml `test-repo`, whose callers move to `@v7-next` and back
 # through pull requests the bot opens there and the merge queue merges, never
-# a write to its main) with the test identity's token, and only when all pass, and main is still the commit
-# they tried, merges the release pull request, tags vX.Y.Z at its merge
+# a write to its main) with the test identity's token, and only when all
+# pass, and main is still the commit they tried, merges the release pull request, tags vX.Y.Z at its merge
 # commit, moves `v7` (lightweight) and publishes the Release (or edits it
 # when engine-release.yml, on the tag's push, made it first). The candidate's
 # token has `workflows`: its commit rewrites workflow files, and it makes
