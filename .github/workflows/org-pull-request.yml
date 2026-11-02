@@ -121,8 +121,8 @@ jobs:
   # What waits on whom (#564, waiting-update.yml), after the review: whom
   # the pull request waits on now (a failed check, a thread, a person's
   # merge), on its board with one mention, and the organisation's view. A
-  # fork's pull request has no secrets here: issues.yml's
-  # pull_request_target covers it, by its metadata only.
+  # fork's pull request has no secrets here: issues.yml covers it, by its
+  # metadata only.
   waiting:
     needs: review
     if: always() && github.event_name == 'pull_request' && github.repository != 'DiluxOne/.github' && github.event.pull_request.head.repo.full_name == github.repository

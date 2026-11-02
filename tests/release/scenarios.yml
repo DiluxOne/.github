@@ -115,11 +115,12 @@ bodies:
 scenarios:
   # Issues, before acceptance.
   - id: issue-complete
-    covers: [issue-triage.yml:issues, issue-accepted.yml:issues, issue-claim.yml:issues, issue-repro.yml:issues]
+    covers: [issue-triage.yml:issues, issue-accepted.yml:issues, issue-claim.yml:issues, issue-repro.yml:issues, waiting-update.yml:issues]
     opens: {issue: {title: "feat: a greeting", body: complete-feature}}
-    expect: {labels: [awaiting-acceptance], absent: [incomplete, accepted]}
+    # Its board says it waits on a maintainer's acceptance (#564).
+    expect: {labels: [awaiting-acceptance], absent: [incomplete, accepted], comments: ["<!-- dx-board -->"]}
   - id: issue-incomplete
-    covers: [issue-accepted.yml:issue_comment]
+    covers: [issue-accepted.yml:issue_comment, waiting-update.yml:issue_comment]
     opens: {issue: {title: "something", body: incomplete}}
     steps: [{comment: "It should greet who opens the repository."}]
     expect: {labels: [incomplete], absent: [awaiting-acceptance]}
@@ -130,7 +131,7 @@ scenarios:
     steps: [{label: accepted}]
     expect: {labels: [accepted, autopilot], comments: ["<!-- dx-prd-seal -->"]}
   - id: spec-to-draft
-    covers: [next_step:draft, next_step:work, next_step:finish]
+    covers: [next_step:draft, next_step:work, next_step:finish, pr-screenshots.yml:pull_request]
     opens: {issue: {title: "feat: a greeting, drafted", body: complete-feature}}
     steps: [{label: accepted}]
     expect: {pull: {closes: true, branch: "^feat/[0-9]+-", title: "^feat(\\(.+\\))?: "}, comments: ["<!-- dx-prd-seal -->"]}
@@ -160,7 +161,7 @@ scenarios:
     steps: [{comment: "/claim"}, {wait: 60}, {comment: "/unclaim"}]
     expect: {absent: [claim:long]}
   - id: claim-pull-request
-    covers: [issue-claim.yml:pull_request_target]
+    covers: [issue-claim.yml:pull_request_target, waiting-update.yml:pull_request_target]
     opens: {pull: {title: "feat: a greeting by hand", body: pull, issue: {title: "feat: a greeting, claimed for a hand", body: complete-feature, labels: [accepted]}}}
     expect: {pull: {closes: true}}
 
@@ -200,7 +201,7 @@ scenarios:
 
   # The review, the required checks and the merge queue.
   - id: review-changes-asked
-    covers: [conventions.yml:pull_request, claude-review.yml:pull_request, autopilot.yml:pull_request, pull-request-assignee.yml:pull_request, runner-wake.yml:pull_request]
+    covers: [conventions.yml:pull_request, claude-review.yml:pull_request, autopilot.yml:pull_request, pull-request-assignee.yml:pull_request, runner-wake.yml:pull_request, waiting-update.yml:pull_request]
     opens: {pull: {title: "feat: a greeting with a secret", body: pull}}
     steps: [{push: secret}]
     expect: {check: {conventions: success}}
