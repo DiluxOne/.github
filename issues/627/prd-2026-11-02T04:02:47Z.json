@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 627,
+  "prd_sha256": "aaf037715994af7c9cf6d92f045f63b88b7194a0536736c2facc4d3738f638df",
+  "prd": "### Problem\n\nThe lane's token in the test repository cannot read the checks it waits for, so it can never merge its own callers pull request.\n\n### Scope\n\n- The App token the scenarios job mints for the test repository asks for `checks: read` and `statuses: read` beside what it asks today, and the step that waits on the callers pull request reads its checks with it.\n\n### Out of scope\n\n- The scenarios themselves.\n\n### Acceptance criteria\n\n- C1: Given the lane's callers pull request in the test repository, when the lane waits on it, then it reads its checks without an HTTP 403 and merges it once they pass.\n- C2: Given release-lane.yml, when the scripts job runs, then the scenarios job's token asks for `checks: read` and `statuses: read`.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-02T04:02:47Z",
+  "policy": "DiluxOne/.github@77922d7d511500b46c3b27318b72a6a634941fd4",
+  "how": "own-bug"
+}
