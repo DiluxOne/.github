@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 620,
+  "prd_sha256": "8ccbf4a13886d1b18601a63f48db23fa6bec8ed8933e3774d89320386c9972d3",
+  "prd": "### Problem\n\nThe lane writes the test repository's protected `main` directly, which the organisation's rulesets refuse for everyone, so no scenario plays and no release goes out on its own.\n\n### Scope\n\n- `point_callers` moves the callers through a pull request in the test repository (a branch, the change, the pull request, its merge through the queue by the bot with the App's token), waits for it to merge before the first scenario, and does the same to put them back; nothing writes the test repository's `main` directly, and no ruleset is loosened.\n- A test that `release-scenarios.py` never writes a repository's default branch through the contents API.\n\n### Out of scope\n\n- The organisation's rulesets, which stay as they are.\n\n### Acceptance criteria\n\n- C1: Given the test repository's callers at `@v7`, when the lane plays the scenarios at `v7-next`, then the callers reach `@v7-next` through a merged pull request and the first scenario starts.\n- C2: Given `release-scenarios.py`, when the scripts job runs, then it fails if any write targets a default branch through the contents API.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-02T02:14:21Z",
+  "policy": "DiluxOne/.github@c374ebd754ad"
+}
