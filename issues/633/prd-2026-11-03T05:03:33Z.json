@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 633,
+  "prd_sha256": "bc4dbedde53136b7a741617300e1da748f27fff7b9069d574f73df8f33629808",
+  "prd": "### Problem\n\nThe update job of `waiting-update.yml` cannot comment on a pull request, and the required workflow fails every same-repository pull request in the organisation.\n\n### Scope\n\n- `.github/workflows/waiting-update.yml`: the update job's App token asks `permission-pull-requests: write`.\n- `scripts/caller-contract.py` TOKENS and `tests/workflows/test_waiting_events_wiring.py`: hold the new scope.\n\n### Out of scope\n\n- Whether the board's failure should fail the required workflow at all.\n- The view job, which writes only an issue in DiluxOne/.github.\n\n### Acceptance criteria\n\n- C1: Given a same-repository pull request in any DiluxOne repository, when `waiting / What waits on whom` runs, then it posts or updates the board's comment and passes.\n- C2: Given the wiring test and `caller-contract.py check`, when they read `waiting-update.yml`, then the update job's token asks `pull-requests: write` and they pass.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-03T05:03:33Z",
+  "policy": "DiluxOne/.github@53085be03e54"
+}
