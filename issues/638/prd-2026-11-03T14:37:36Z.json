@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 638,
+  "prd_sha256": "3dcc183aec00e0a420ef8cbe57fde4d6926a30317ad8da5800b7a15518f60692",
+  "prd": "### Problem\n\n#634 (the board may comment on a pull request, #633) is merged and not in a version. Until v7 carries it, the required `waiting / What waits on whom` job fails with HTTP 403 in every repository but this one, so no same-repository pull request can merge anywhere in the organisation. The release lane cannot make this release yet (dilux-bot has no Commit statuses permission), so this one is made by hand.\n\n### Scope\n\n- Rebuild CHANGELOG.md with v7.13.1 (`scripts/changelog.py build --next v7.13.1`); a patch: two fixes (#630, #634), nothing breaking for the callers.\n- Before moving `v7`, `scripts/caller-contract.py check` passes; tag v7.13.1 on the merge commit, move v7 to it (lightweight), and watch the adopted repositories for runs that end in `startup_failure` for 30 minutes.\n\n### Out of scope\n\n- The release lane's missing permission.\n\n### Acceptance criteria\n\n- C1: Given the release pull request merged, when v7.13.1 is tagged, then v7 points at it, its GitHub Release lists #630 and #634, the `waiting` job passes on the organisation's open pull requests, and no adopted repository's run ends in `startup_failure` in the next 30 minutes.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-03T14:37:36Z",
+  "policy": "DiluxOne/.github@be6619cef89f"
+}
