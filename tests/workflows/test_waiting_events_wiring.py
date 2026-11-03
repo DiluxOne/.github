@@ -79,6 +79,16 @@ def test_the_board_is_written_with_a_token_for_the_items_repository_that_may_wri
     assert "owner" not in got, "never a token for every repository of the installation"
     assert got["repositories"] == "${{ github.event.repository.name }}"
     asked = {k[len("permission-"):]: v for k, v in got.items() if k.startswith("permission-")}
-    assert asked == {"issues": "write", "pull-requests": "read", "checks": "read", "contents": "read", "metadata": "read"}
+    assert asked == {"issues": "write", "pull-requests": "write", "checks": "read", "contents": "read", "metadata": "read"}
     board = next(s for s in update["steps"] if "waiting.py update" in s.get("run", ""))
     assert board["env"]["GH_TOKEN"] == "${{ steps.bot.outputs.token }}"
+
+
+def test_the_update_may_comment_on_a_pull_request():
+    # #633: a comment on a pull request needs pull-requests: write; with
+    # read alone every same-repository pull request failed the required
+    # workflow with HTTP 403.
+    doc = load(WF / "waiting-update.yml")
+    token = next(s for s in doc["jobs"]["update"]["steps"] if s.get("id") == "bot")
+    assert token["with"]["permission-issues"] == "write"
+    assert token["with"]["permission-pull-requests"] == "write"

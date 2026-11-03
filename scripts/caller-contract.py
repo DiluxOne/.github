@@ -49,7 +49,7 @@ ALL = ("actions", "attestations", "checks", "contents", "deployments", "discussi
 TOKENS = {
     "waiting-update.yml": {
         "update": {"repositories": "${{ github.event.repository.name }}",
-                   "permissions": {"issues": "write", "pull-requests": "read", "checks": "read", "contents": "read", "metadata": "read"}},
+                   "permissions": {"issues": "write", "pull-requests": "write", "checks": "read", "contents": "read", "metadata": "read"}},
     },
 }
 APP_TOKEN = "actions/create-github-app-token@"
