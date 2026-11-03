@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 644,
+  "prd_sha256": "3fc5cd5c5ba77c8f73082dd0cb9e7ba90ef19e0bd10b2cb9654fb74e143ed5df",
+  "prd": "### Problem\n\nThe release lane's callers tokens cannot read the test repository's pull request checks, so every release stops at the `callers` scenario, and the lane opens no bug for it.\n\n### Scope\n\n- `.github/workflows/release-lane.yml`: both callers App tokens ask `permission-actions: read`.\n- The `Release, bug or issue` job runs when a scenario fails, so a failed scenario opens its bug.\n- `tests/workflows/`: a test holds both.\n\n### Out of scope\n\n- Any change to the scenarios themselves.\n\n### Acceptance criteria\n\n- C1: Given the release lane runs on a new main, when the `callers` scenario reads the test repository's callers pull request, then it reads its checks and the scenarios run.\n- C2: Given a scenario fails, when the scenarios job ends, then the `Release, bug or issue` job runs and opens a bug naming the scenario and its run.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-03T23:36:21Z",
+  "policy": "DiluxOne/.github@e61fad37f7f1f4163660941d1741acd231309798",
+  "how": "own-bug"
+}
