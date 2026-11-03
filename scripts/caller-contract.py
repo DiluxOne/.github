@@ -49,7 +49,8 @@ ALL = ("actions", "attestations", "checks", "contents", "deployments", "discussi
 TOKENS = {
     "waiting-update.yml": {
         "update": {"repositories": "${{ github.event.repository.name }}",
-                   "permissions": {"issues": "write", "pull-requests": "write", "checks": "read", "contents": "read", "metadata": "read"}},
+                   "permissions": {"issues": "write", "pull-requests": "write", "checks": "read", "contents": "read", "statuses": "read",
+                                   "metadata": "read"}},
     },
 }
 APP_TOKEN = "actions/create-github-app-token@"
@@ -291,6 +292,12 @@ def self_test():
        ["w.yml job `u`: mints no App token, and it must for ${{ github.event.repository.name }}"])
     ok("#619: the shipped waiting job's token is exactly what it needs",
        tokens({"waiting-update.yml": load(os.path.join(ROOT, ".github", "workflows", "waiting-update.yml"))}), [])
+    shipped = load(os.path.join(ROOT, ".github", "workflows", "waiting-update.yml"))
+    for step in shipped["jobs"]["update"]["steps"]:
+        (step.get("with") or {}).pop("permission-statuses", None)
+    ok("#641: the waiting job's token must ask statuses: read, for statusCheckRollup",
+       tokens({"waiting-update.yml": shipped}),
+       ["waiting-update.yml job `update`: its App token asks statuses: none, and it needs read"])
     ok("C3, C10: the engine's workflows, its shipped callers and its own callers keep the contract", check(), [])
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
