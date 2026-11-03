@@ -92,3 +92,12 @@ def test_the_update_may_comment_on_a_pull_request():
     token = next(s for s in doc["jobs"]["update"]["steps"] if s.get("id") == "bot")
     assert token["with"]["permission-issues"] == "write"
     assert token["with"]["permission-pull-requests"] == "write"
+
+
+def test_the_view_may_read_a_private_repositorys_commits():
+    # #641: the view's search reads each pull request's last commit; in a
+    # private repository the commits answer HTTP 403 without contents: read.
+    doc = load(WF / "waiting-update.yml")
+    token = next(s for s in doc["jobs"]["view"]["steps"] if s.get("id") == "bot")
+    assert token["with"]["permission-contents"] == "read"
+    assert token["with"]["permission-statuses"] == "read"

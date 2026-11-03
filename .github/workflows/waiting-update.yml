@@ -114,6 +114,7 @@ jobs:
           permission-pull-requests: read
           permission-checks: read
           permission-statuses: read # each pull request's commit statuses, in statusCheckRollup (#641)
+          permission-contents: read # a private repository's commits, for statusCheckRollup (#641: without it, HTTP 403)
           permission-metadata: read
       - name: The organisation's scripts
         env:
