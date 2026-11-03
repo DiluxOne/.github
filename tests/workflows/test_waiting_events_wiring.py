@@ -79,7 +79,7 @@ def test_the_board_is_written_with_a_token_for_the_items_repository_that_may_wri
     assert "owner" not in got, "never a token for every repository of the installation"
     assert got["repositories"] == "${{ github.event.repository.name }}"
     asked = {k[len("permission-"):]: v for k, v in got.items() if k.startswith("permission-")}
-    assert asked == {"issues": "write", "pull-requests": "write", "checks": "read", "contents": "read", "metadata": "read"}
+    assert asked == {"issues": "write", "pull-requests": "write", "checks": "read", "contents": "read", "statuses": "read", "metadata": "read"}
     board = next(s for s in update["steps"] if "waiting.py update" in s.get("run", ""))
     assert board["env"]["GH_TOKEN"] == "${{ steps.bot.outputs.token }}"
 
