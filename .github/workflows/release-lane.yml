@@ -153,9 +153,9 @@ jobs:
       # pull request changes nothing but the engine's ref in those callers,
       # waits for its required checks, and queues it at that head
       # (scripts/release-scenarios.py point_callers). It reads those checks
-      # with this token, which asks for the check runs and the commit
-      # statuses (#627).
-      - name: App token (contents, pull requests, workflows, checks and statuses, the test repository)
+      # with this token, which asks for the check runs, the commit statuses
+      # (#627) and the workflow runs behind them (#644).
+      - name: App token (contents, pull requests, workflows, checks, statuses and actions, the test repository)
         id: app
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -168,6 +168,7 @@ jobs:
           permission-workflows: write
           permission-checks: read
           permission-statuses: read
+          permission-actions: read
 
       - name: Play every scenario at v7-next
         env:
@@ -197,6 +198,7 @@ jobs:
           permission-workflows: write
           permission-checks: read
           permission-statuses: read
+          permission-actions: read
 
       - name: The callers back from v7-next
         if: always()
