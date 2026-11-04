@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 656,
+  "prd_sha256": "2ed46cfffb70ae1fb916f93284bfeb192dc1a561db484ca3832ccf85f336fe9a",
+  "prd": "### Problem\n\n#654 (the `ai-agent-plugin` pack's way to reproduce a bug, #653) is merged and not in a version. Until v7 carries it, the autopilot takes no bug in DiluxOne/dilux-agentic-workflow nor DiluxOne/diluxone-mermaid (DAW's #67 waits on it). The release lane cannot make it: its scenarios fail in the test repository (#655), so this release is made by hand.\n\n### Scope\n\n- Rebuild CHANGELOG.md with v7.13.3 (`scripts/changelog.py build --next v7.13.3`); a patch: one fix (#654) and the runner image's digest (#635), nothing breaking for the callers.\n- Before moving `v7`, `scripts/caller-contract.py check` passes; tag v7.13.3 on the merge commit, move v7 to it (lightweight), and watch the adopted repositories for runs that end in `startup_failure` for 30 minutes.\n\n### Out of scope\n\n- #655, the release lane's scenarios.\n\n### Acceptance criteria\n\n- C1: Given the release pull request merged, when v7.13.3 is tagged, then v7 points at it, its GitHub Release lists #654 and #635, and no adopted repository's run ends in `startup_failure` in the next 30 minutes.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-04T13:26:43Z",
+  "policy": "DiluxOne/.github@a5e03a44b355"
+}
