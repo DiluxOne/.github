@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 653,
+  "prd_sha256": "d467b7c0232255f607b9075ae63dd100121ef62e1ec91968893b0ea92091c242",
+  "prd": "### Problem\n\nThe `ai-agent-plugin` pack declares no way to reproduce a bug, so the autopilot takes no bug in its repositories.\n\n### Scope\n\n- `kinds/ai-agent-plugin/pack.yml`: a `repro:` with a `logic`/`cli` way for a Python test run with pytest (`tests/repro/test_issue_{n}.py`, pytest and PyYAML installed for the run, no network, no secrets), as the `wordpress-plugin` pack does for its kind.\n- A repository of the kind that has no Python tests can still switch it off in its own `.github/review-policy.yml`.\n- A test holds the pack's way.\n\n### Out of scope\n\n- A browser way for these repositories.\n- DAW's own bugs, which go through their issues once this lands.\n\n### Acceptance criteria\n\n- C1: Given DiluxOne/dilux-agentic-workflow at v7 with this change, when an accepted Bug of the `logic` or `cli` layer reaches the autopilot, then it starts by writing a failing test at `tests/repro/test_issue_<n>.py`.\n- C2: Given the pack's way, when `scripts/repro-ways.py` reads it for a repository of the kind, then it lists the pytest way with its test path, setup and run.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-04T07:48:03Z",
+  "policy": "DiluxOne/.github@060687a3b6daca19e3e19d2be0c7ac9fdeb25269",
+  "how": "own-bug"
+}
