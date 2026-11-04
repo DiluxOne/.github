@@ -75,9 +75,10 @@ jobs:
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }}
           permission-issues: write # the board and the mention
-          permission-pull-requests: read
+          permission-pull-requests: write # a pull request's board and mention (#633: read alone had them answered with HTTP 403)
           permission-checks: read # the heads' checks, for a failed one
           permission-contents: read # the seals, for the board
+          permission-statuses: read # the heads' commit statuses, in statusCheckRollup (#641)
           permission-metadata: read
       - name: The organisation's scripts
         env:
@@ -112,6 +113,8 @@ jobs:
           permission-issues: write # the view's issue in DiluxOne/.github
           permission-pull-requests: read
           permission-checks: read
+          permission-statuses: read # each pull request's commit statuses, in statusCheckRollup (#641)
+          permission-contents: read # a private repository's commits, for statusCheckRollup (#641: without it, HTTP 403)
           permission-metadata: read
       - name: The organisation's scripts
         env:

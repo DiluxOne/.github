@@ -2,6 +2,25 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [7.13.2](https://github.com/DiluxOne/.github/releases/tag/v7.13.2) · 2026-11-04
+
+### Fixes
+
+- the release lane's callers tokens cannot read the checks' runs ([#649](https://github.com/DiluxOne/.github/pull/649))
+- an answer after a stop is hidden by the board's mention ([#648](https://github.com/DiluxOne/.github/pull/648))
+- the bug reproduced from #641 ([#643](https://github.com/DiluxOne/.github/pull/643))
+
+## [7.13.1](https://github.com/DiluxOne/.github/releases/tag/v7.13.1) · 2026-11-03
+
+### Fixes
+
+- the board may comment on a pull request ([#634](https://github.com/DiluxOne/.github/pull/634))
+- the release lane's token cannot read the test repo's checks ([#630](https://github.com/DiluxOne/.github/pull/630))
+
+### Maintenance
+
+- release v7.13.1 ([#639](https://github.com/DiluxOne/.github/pull/639))
+
 ## [7.13.0](https://github.com/DiluxOne/.github/releases/tag/v7.13.0) · 2026-11-02
 
 ### Features
@@ -15,6 +34,10 @@ Every version of the engine (the workflows, scripts, policy and kinds other repo
 - the waiting job cannot write the board (HTTP 403) ([#621](https://github.com/DiluxOne/.github/pull/621))
 - the release lane writes the test repo's protected main directly ([#622](https://github.com/DiluxOne/.github/pull/622))
 - the bug reproduced from #615 ([#617](https://github.com/DiluxOne/.github/pull/617))
+
+### Maintenance
+
+- release v7.13.0 ([#629](https://github.com/DiluxOne/.github/pull/629))
 
 ## [7.12.0](https://github.com/DiluxOne/.github/releases/tag/v7.12.0) · 2026-11-01
 
