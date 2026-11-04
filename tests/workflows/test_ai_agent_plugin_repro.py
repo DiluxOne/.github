@@ -34,11 +34,15 @@ def test_the_kind_reproduces_a_bug_with_pytest(tmp_path):
 
 
 def test_repro_ways_lists_the_pytest_way(tmp_path):
-    spec = json.loads(resolve(tmp_path, "logic")["spec"])
+    got = resolve(tmp_path, "logic")
+    assert got["problems"] == "" and got["minutes"] == "10"
+    spec = json.loads(got["spec"])
     assert spec["test"] == "tests/repro/test_issue_653.py"
     assert spec["junit"] == "build/repro.xml"
     setup = " ".join(spec["setup"])
-    assert "pip install" in setup and "--target build/" in setup
+    assert all("pip install" in line and "--target build/dx-py" in line for line in spec["setup"])
+    # A repository's own dependencies, only where it has them.
+    assert any(line.startswith("if [ -f requirements.txt ]") for line in spec["setup"])
     # The pins this repository's own ways and CI install.
     own = yaml.safe_load((ROOT / ".github/review-policy.yml").read_text(encoding="utf-8"))["repro"]["ways"]["python"]
     assert sorted(PINS.findall(setup)) == sorted(PINS.findall(" ".join(own["setup"]))) != []
