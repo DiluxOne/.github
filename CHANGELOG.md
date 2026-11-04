@@ -2,6 +2,16 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [7.13.3](https://github.com/DiluxOne/.github/releases/tag/v7.13.3) · 2026-11-04
+
+### Fixes
+
+- the ai-agent-plugin pack declares no way to reproduce a bug ([#654](https://github.com/DiluxOne/.github/pull/654))
+
+### Build and dependencies
+
+- **deps:** Bump ubuntu from `68ee220` to `fe81560` in /runner ([#635](https://github.com/DiluxOne/.github/pull/635))
+
 ## [7.13.2](https://github.com/DiluxOne/.github/releases/tag/v7.13.2) · 2026-11-04
 
 ### Fixes
@@ -9,6 +19,10 @@ Every version of the engine (the workflows, scripts, policy and kinds other repo
 - the release lane's callers tokens cannot read the checks' runs ([#649](https://github.com/DiluxOne/.github/pull/649))
 - an answer after a stop is hidden by the board's mention ([#648](https://github.com/DiluxOne/.github/pull/648))
 - the bug reproduced from #641 ([#643](https://github.com/DiluxOne/.github/pull/643))
+
+### Maintenance
+
+- release v7.13.2 ([#646](https://github.com/DiluxOne/.github/pull/646))
 
 ## [7.13.1](https://github.com/DiluxOne/.github/releases/tag/v7.13.1) · 2026-11-03
 
