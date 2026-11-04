@@ -104,7 +104,7 @@ def test_a_maintainers_answer_after_a_stop_brings_the_autopilot_back():
     ap = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(ap)
     assert f'"{ap.STOP}"*|"{ap.SILENT}"*) ;; *) exit 0 ;;' in run
-    assert "select(.user.login == env.DX_BOT_LOGIN)" in run
+    assert 'select(.user.login == env.DX_BOT_LOGIN and (.body | contains("<!-- dx-mention ") | not))' in run
     assert '*,needs-human,*) ;; *) exit 0 ;;' in run and '*,autopilot,*) ;; *) exit 0 ;;' in run
     off = run.index('labels/needs-human" >/dev/null')
     assert off < run.index('--add-label "autopilot:continue" >/dev/null', off)
