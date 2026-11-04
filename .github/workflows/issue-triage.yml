@@ -358,6 +358,13 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
           github_token: ${{ github.token }}
+          # The author may be anyone, a reader too (#658): the action refuses
+          # an actor without write permission otherwise. Safe here: this
+          # job's token reads contents and nothing else of the repository
+          # but issues, and the model has Read, Glob and Grep alone, no tool
+          # to write or call GitHub with; its answer is a schema's JSON that
+          # the steps after it filter.
+          allowed_non_write_users: '*'
           # Never in the step summary or the log: this run may have read the
           # paid add-on's roadmap. Both are the action's defaults; set here so
           # a new version cannot change them under us.
