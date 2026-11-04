@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 647,
+  "prd_sha256": "5ea43b13ae035dd7c9f13a88421122987001edfe7866b566d3e8d954aa47b0ba",
+  "prd": "### Problem\n\nThe answer job looks for the stop or silent marker in dilux-bot's last comment only, and the board's mention always comes after it.\n\n### Scope\n\n- `.github/workflows/review-reply.yml`: the stop or silent end is dilux-bot's last comment that is not a mention (its body carries the `dx-mention` marker), so the mention never hides it.\n- A test holds it.\n\n### Out of scope\n\n- Where or when the board mentions a person.\n\n### Acceptance criteria\n\n- C1: Given an issue labelled `needs-human` whose dilux-bot comments end with a silent end followed by the board's mention, when a maintainer comments an answer, then `needs-human` comes off and `autopilot:continue` is added.\n- C2: Given an issue labelled `needs-human` whose last dilux-bot comment other than mentions is not a stop or silent end, when a maintainer comments, then nothing changes.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-04T00:43:23Z",
+  "policy": "DiluxOne/.github@e61fad37f7f1f4163660941d1741acd231309798",
+  "how": "own-bug"
+}
