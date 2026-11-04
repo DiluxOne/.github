@@ -89,6 +89,38 @@ autopilot:
   - "The changelog: this change's line in a file of its own, `changelog.d/<the issue's number>.md`, one bullet (`* …`); never in CHANGELOG.md itself, which the release writes. None for a change no user sees (tests, tooling, CI)."
   - "The manifests: every tool's manifest the plugin ships (kinds/ai-agent-plugin/tools.yml: .claude-plugin/plugin.json, .codex-plugin/plugin.json, .cursor-plugin/plugin.json, plugin.json, gemini-extension.json) keeps the same name, version and description: a change to one (a version bumped, a description reworded) is made to every one of them in the same commit (scripts/agent-manifests.py check fails the pull request otherwise)."
 
+# How a bug is reproduced, by the layer the triage says it lives in (#352,
+# #653, scripts/repro-ways.py, which says what each key means): a pytest
+# test, as policy/repro-stacks.yml's python-pytest way, with PyYAML for the
+# hooks' and manifests' YAML. A repository of the kind with no Python tests
+# switches it off in its .github/review-policy.yml
+# (`repro: {ways: {unit: false}}`) and declares its own. No browser way: a
+# plugin has no page.
+repro:
+  ways:
+    unit:
+      layer: [logic, cli]
+      noun: Python test
+      test: tests/repro/test_issue_{n}.py
+      needs: [tests/]
+      setup:
+        - python3 -m pip install --quiet --disable-pip-version-check --target build/dx-py pytest==9.1.1 PyYAML==6.0.3
+        - if [ -f requirements.txt ]; then python3 -m pip install --quiet --disable-pip-version-check --target build/dx-py -r requirements.txt; fi
+      # xunit1 writes each test's file, which the verdict reads.
+      run: PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=build/dx-py:. python3 -m pytest -p no:cacheprovider --rootdir=. -o junit_family=xunit1 --junitxml=build/repro.xml {test}
+      junit: build/repro.xml
+      minutes: 10
+      list: ["tests/**/*.py", "hooks/**", "scripts/**"]
+      example: "tests/**/test_*.py"
+      guide: |
+        A pytest test, one or two functions named after the expectation, of the hook, script or
+        command the report names: import it, or run it as a command with `subprocess.run` (without
+        `check`, asserting on its `returncode` and output), from the repository's root
+        (`Path(__file__).resolve().parents[2]`). Feed it what the report describes (its input on
+        stdin, an environment through `monkeypatch.setenv` or `env=`, a file in `tmp_path`) and
+        assert what the reporter expected, so it FAILS while the bug is there. No network, no
+        secrets, no coding agent, nothing outside the repository.
+
 # How a version of this kind is released (#82; kinds/README.md). A person
 # accepts the issue "Release X.Y.Z"; the release pull request is then this
 # `prepare` command run on the default branch (every tool's manifest at the
