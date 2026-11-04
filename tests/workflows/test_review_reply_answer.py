@@ -62,3 +62,17 @@ def test_a_mention_does_not_hide_the_stop(tmp_path):
         assert "gh api -X DELETE repos/o/r/issues/7/labels/needs-human" in calls, end
         assert "gh issue edit 7 --repo o/r --add-label autopilot:continue" in calls, end
 
+
+def test_no_stop_no_continue(tmp_path):
+    # The last of dilux-bot's comments but the mentions is no stop: nothing
+    # changes, with a mention after it or without one, and a stop before it
+    # is over.
+    for i, comments in enumerate((
+            [(BOT, "<!-- dx-autopilot-stop -->\nStopped."), (BOT, "<!-- dx-board -->\nThe board"), (BOT, MENTION)],
+            [(BOT, "<!-- dx-autopilot-silent -->\nSilent."), (BOT, "A question")],
+            [(BOT, MENTION)],
+            [("someone", "<!-- dx-autopilot-stop -->\nA quote"), (BOT, MENTION)])):
+        run = tmp_path / str(i)
+        run.mkdir()
+        calls = answer(run, comments)
+        assert "labels/needs-human" not in calls and "autopilot:continue" not in calls, comments
