@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 658,
+  "prd_sha256": "237246268d4c08312768b4f4ec176048b9caa1ad6a6884f5433aefcdf80f8294",
+  "prd": "### Problem\n\nThe action allows only actors with write permission unless told otherwise, and the triage, the reply and the spike are meant to run on anyone's issue. A failure of the model's step is not reported anywhere.\n\n### Scope\n\n- `.github/workflows/issue-triage.yml`: `allowed_non_write_users: '*'` on each use of `anthropics/claude-code-action` that runs on a stranger's issue or comment, each with a comment saying why it is safe there (its token's permissions and the tools the model has); a use whose token can write where a stranger's text could steer it keeps the default, and the issue says so.\n- `.github/workflows/issue-repro.yml`: the same for the test writer when a stranger's report started it, if the action refuses that actor too.\n- When the `Classify` step fails, the issue gets one comment saying the triage could not run, with the run's link, and the label a maintainer can use to try again, instead of silence.\n- A test holds both.\n\n### Out of scope\n\n- What the triage classifies or replies.\n- The reproduction's sandbox.\n\n### Acceptance criteria\n\n- C1: Given an issue opened by an account with read permission only, when `issue-triage.yml`'s `triage` job runs, then the `Classify` step reaches the model and the issue gets the triage's reply and labels.\n- C2: Given every use of `anthropics/claude-code-action` in `issue-triage.yml` and `issue-repro.yml` that runs on a stranger's text, when the workflows are read, then each passes `allowed_non_write_users: '*'` and its job's token cannot write contents.\n- C3: Given the `Classify` step fails, when the `triage` job ends, then the issue has one comment that says the triage could not run, with the run's link.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-04T23:16:13Z",
+  "policy": "DiluxOne/.github@9263f9ce9775bf99a122be75ea1dfe873d427dd4",
+  "how": "own-bug"
+}
