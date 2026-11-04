@@ -3569,6 +3569,8 @@ def ai_plugin_drift_test(check, conf, labels, block):
             return Out(json.dumps([{"name": n, "type": "file"} for n in tree["root"]]))
         if joined.startswith(f"{base}/contents/Makefile?ref="):
             return Out(state["makefile"])
+        if joined.startswith(f"{base}/contents/.github/review-policy.yml?ref=") and state["policy"] is not None:
+            return Out(state["policy"])
         if joined.startswith(f"{base}/contents/{pre_pr.FRAGMENT}?ref=") and state["dx.mk"] is not None:
             return Out(state["dx.mk"])
         if joined.startswith(f"{base}/contents/{DEPENDABOT}?ref="):
@@ -3594,12 +3596,12 @@ def ai_plugin_drift_test(check, conf, labels, block):
             return Out(json.dumps(settings))
         return Out("", 1, "HTTP 404")
 
-    def lines_for(name, cfg, dx=True, drop=None):
+    def lines_for(name, cfg, dx=True, drop=None, policy=None):
         global ORG, ORG_RULESETS
         tree = trees[name]
         repo = {"name": name, "defaultBranchRef": {"name": "main"}, "visibility": "PUBLIC"}
         callers = {p: t for p, t in new_callers({}, cfg, tree["kind"], "main", name=name).items() if p != drop}
-        state.update(name=name, files=callers, makefile=makefile if tree["kind"] else ".PHONY: pre-pr\npre-pr:\n\ttrue\n",
+        state.update(name=name, files=callers, policy=policy, makefile=makefile if tree["kind"] else ".PHONY: pre-pr\npre-pr:\n\ttrue\n",
                      **{"dx.mk": pre_pr.render_kind(tree["kind"]) if dx else None})
         saved_gh, saved_org, saved_rs = globals()["gh"], ORG, ORG_RULESETS
         globals()["gh"], ORG, ORG_RULESETS = fake, "o", None
@@ -3619,7 +3621,10 @@ def ai_plugin_drift_test(check, conf, labels, block):
     check("C9 (#552): repos.yml keeps the catalog's no way by design, and needs no pre-pr exception for it",
           (repos_conf.value(conf, "diluxone-plugins-ai", "repro"), "pre-pr" in repos_conf.entry(conf, "diluxone-plugins-ai")), (False, False))
     got = lines_for("diluxone-mermaid", {**adopted, "repro": {}})
-    check("C9 (#552): a plugin of the kind with no way in repos.yml `repro:` is listed (its pack declares none)",
+    check("#653: a plugin of the kind with no way in repos.yml `repro:` is not listed (its pack declares one)",
+          not any("declares no way to reproduce a bug" in l for l in got), got)
+    got = lines_for("diluxone-mermaid", {**adopted, "repro": {}}, policy="repro:\n  ways:\n    unit: false\n")
+    check("C9 (#552): a plugin of the kind that switches its pack's way off and declares none is listed",
           any("declares no way to reproduce a bug" in l for l in got), got)
     got = lines_for("dilux-agentic-workflow", adopted, drop=".github/workflows/issues.yml")
     check("C9 (#552): one without the triage's caller is listed", any("workflow-templates/issues.yml" in l for l in got), got)
