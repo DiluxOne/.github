@@ -2,15 +2,30 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [7.13.4](https://github.com/DiluxOne/.github/releases/tag/v7.13.4) · 2026-11-05
+
+### Fixes
+
+- an answer after a stop on the autopilot's PR fails with 403 ([#661](https://github.com/DiluxOne/.github/pull/661))
+- the triage never answers a reporter who cannot write ([#659](https://github.com/DiluxOne/.github/pull/659))
+
 ## [7.13.3](https://github.com/DiluxOne/.github/releases/tag/v7.13.3) · 2026-11-04
 
 ### Fixes
 
 - the ai-agent-plugin pack declares no way to reproduce a bug ([#654](https://github.com/DiluxOne/.github/pull/654))
 
+### Documentation
+
+- **review:** weekly review lessons 2026-11-02 ([#637](https://github.com/DiluxOne/.github/pull/637))
+
 ### Build and dependencies
 
 - **deps:** Bump ubuntu from `68ee220` to `fe81560` in /runner ([#635](https://github.com/DiluxOne/.github/pull/635))
+
+### Maintenance
+
+- release v7.13.3 ([#657](https://github.com/DiluxOne/.github/pull/657))
 
 ## [7.13.2](https://github.com/DiluxOne/.github/releases/tag/v7.13.2) · 2026-11-04
 
