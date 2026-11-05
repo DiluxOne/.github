@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 660,
+  "prd_sha256": "e8c290e8752b05952923807902d6d31f3eb81090ffb501ddb63c13fbb9762862",
+  "prd": "### Problem\n\nThe answer job's App token cannot write a pull request's labels, and the stop it answers is on the pull request.\n\n### Scope\n\n- `.github/workflows/review-reply.yml`: the answer job's dilux-bot token can change the stopped pull request's labels (`permission-pull-requests: write`), and every caller template and caller-contract entry that gives the job its permissions is kept in step.\n- A test holds it.\n\n### Out of scope\n\n- The question path, and who may answer.\n\n### Acceptance criteria\n\n- C1: Given an autopilot pull request labelled `needs-human` after a stop, when a maintainer answers on it, then `needs-human` comes off the pull request and its issue gets `autopilot:continue`.\n- C2: Given the workflows, when the answer job's token is read, then it asks for pull requests write, and the callers' `reply` job gives it (`scripts/caller-contract.py check` passes).\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-05T01:38:24Z",
+  "policy": "DiluxOne/.github@9263f9ce9775bf99a122be75ea1dfe873d427dd4",
+  "how": "own-bug"
+}
