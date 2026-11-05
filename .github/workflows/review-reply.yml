@@ -106,7 +106,8 @@ jobs:
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }}
           permission-issues: write
-          permission-pull-requests: read
+          # needs-human comes off a stopped pull request (#660).
+          permission-pull-requests: write
           permission-contents: read # CODEOWNERS and the seal, for who decides (#588)
 
       # Who decides (#588): scripts/deciders.py, at the engine's ref.
