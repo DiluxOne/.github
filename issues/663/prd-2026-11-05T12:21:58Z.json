@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 663,
+  "prd_sha256": "7867ea15524e12c8c37c728a5a051f6b485c37214ba5c325f82def7d33948989",
+  "prd": "### Problem\n\n#659 (the triage answers a reporter who cannot write, #658) and #661 (an answer after a stop on the autopilot's pull request, #660) are merged and not in a version. Until v7 carries them, a stranger's bug report gets no triage nor reproduction (DiluxOne/diluxone-users-wordpress), and the autopilot cannot be brought back after a stop on its pull request (DiluxOne/dilux-agentic-workflow#70 and #71 wait on it). The release lane cannot make it: its scenarios fail in the test repository (#655), so this release is made by hand.\n\n### Scope\n\n- Rebuild CHANGELOG.md with v7.13.4 (`scripts/changelog.py build --next v7.13.4`); a patch: two fixes (#659, #661). #661 asks for `pull-requests: write` on a token the callers' `reply` job already grants, and #659 changes no caller's `permissions:`.\n- Before moving `v7`, `scripts/caller-contract.py check` passes; tag v7.13.4 on the merge commit, move v7 to it (lightweight), and watch the adopted repositories for runs that end in `startup_failure` for 30 minutes.\n\n### Out of scope\n\n- #655, the release lane's scenarios.\n\n### Acceptance criteria\n\n- C1: Given the release pull request merged, when v7.13.4 is tagged, then v7 points at it, its GitHub Release lists #659 and #661, and no adopted repository's run ends in `startup_failure` in the next 30 minutes.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-05T12:21:58Z",
+  "policy": "DiluxOne/.github@ba65a65cd3cf"
+}
