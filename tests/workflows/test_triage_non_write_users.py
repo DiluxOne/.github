@@ -63,3 +63,57 @@ def test_every_strangers_use_allows_non_write_users_with_no_write_token():
             if line.strip().startswith("allowed_non_write_users:"):
                 assert lines[i - 1].strip().startswith("#"), f"{name}:{i + 1}: no comment says why it is safe"
     assert seen == 6, "a new use of the action here: check its token and its tools, then count it"
+
+
+def run_said(tmp_path, comments, read_fails=False):
+    """Runs the step's script with a stand-in gh; returns the comments it posted."""
+    import os
+    import subprocess
+
+    script = step_named(workflow("issue-triage.yml")["jobs"]["triage"], "Say the triage could not run")["run"]
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True)
+    posted = tmp_path / "posted"
+    (tmp_path / "said").write_text(comments, encoding="utf-8")
+    gh = bin_dir / "gh"
+    gh.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$1 $2" in\n'
+        f'  "api repos/"*) {"exit 1" if read_fails else "cat " + str(tmp_path / "said")} ;;\n'
+        '  "issue comment") while [ $# -gt 0 ]; do [ "$1" = --body ] && { printf "%s\\0" "$2" >> ' + str(posted) + "; }; shift; done ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    gh.chmod(0o755)
+    env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", NUMBER="7", GITHUB_REPOSITORY="o/r",
+               GITHUB_SERVER_URL="https://github.com", GITHUB_RUN_ID="42", DX_BOT_LOGIN="dilux-bot[bot]")
+    subprocess.run(["bash", "-c", script], env=env, check=True, capture_output=True)
+    return [b for b in posted.read_text(encoding="utf-8").split("\0") if b] if posted.exists() else []
+
+
+def step_named(job, name):
+    return next(s for s in job["steps"] if s.get("name") == name)
+
+
+def test_a_failed_classify_leaves_a_comment(tmp_path):
+    triage = workflow("issue-triage.yml")["jobs"]["triage"]
+    names = [s.get("name") for s in triage["steps"]]
+    said = step_named(triage, "Say the triage could not run")
+    # It runs when the job ends, on Classify's failure (which continue-on-error hides from the job).
+    assert names.index(said["name"]) == len(names) - 1
+    assert step(triage, "claude").get("continue-on-error") is True
+    assert "steps.claude.outcome == 'failure'" in said["if"] and "!cancelled()" in said["if"]
+    assert said["env"]["GH_TOKEN"] == "${{ steps.bot.outputs.token }}"
+    # One comment, with the run's link, and the existing label, no new one.
+    first = run_said(tmp_path / "a", "")
+    assert len(first) == 1
+    assert "The triage could not run" in first[0]
+    assert "https://github.com/o/r/actions/runs/42" in first[0]
+    assert first[0].startswith("<!-- dx-triage-failed -->")
+    assert "needs-triage" in first[0] and "AI-generated" in first[0]
+    assert "--add-label needs-triage" in said["run"]
+    assert "autopilot:" not in said["run"] and "repro:run" not in said["run"]
+    # A re-run that fails again says nothing more.
+    assert run_said(tmp_path / "b", "earlier\n" + first[0]) == []
+    # Comments that cannot be read: a second comment beats silence.
+    assert len(run_said(tmp_path / "c", "", read_fails=True)) == 1
