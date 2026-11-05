@@ -98,3 +98,19 @@ def test_an_answer_after_a_stop_on_the_pr_clears_needs_human(tmp_path):
     assert "gh api -X DELETE repos/o/r/issues/9/labels/needs-human" in calls
     assert "gh issue edit 7 --repo o/r --add-label autopilot:continue" in calls
     assert token("answer")["permission-pull-requests"] == "write"
+
+
+def test_the_answer_token_writes_pull_requests():
+    # #660: the answer job's token may write the stopped pull request's
+    # labels, and every caller's `reply` job grants it, so the job's own
+    # permissions stay within the caller's (caller-contract.py).
+    assert token("answer")["permission-pull-requests"] == "write"
+    doc = yaml.safe_load((ROOT / ".github/workflows/review-reply.yml").read_text(encoding="utf-8"))
+    assert doc["jobs"]["answer"].get("permissions", doc["permissions"])["pull-requests"] == "write"
+    for caller in ("workflow-templates/pull-request-comments.yml", ".github/workflows/pull-request-comments.yml"):
+        reply = yaml.safe_load((ROOT / caller).read_text(encoding="utf-8"))["jobs"]["reply"]
+        assert "review-reply.yml" in reply["uses"], caller
+        assert reply["permissions"]["pull-requests"] == "write", caller
+    done = subprocess.run(["python3", str(ROOT / "scripts/caller-contract.py"), "check"],
+                          capture_output=True, text=True, timeout=120, cwd=ROOT)
+    assert done.returncode == 0, done.stdout + done.stderr
