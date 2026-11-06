@@ -78,3 +78,24 @@ def test_a_catch_up_run_is_counted_free():
     assert 'index("autopilot:catchup") != null' in count["run"]
     assert '--remove-label "autopilot:catchup"' in count["run"]
     assert 'CATCHUP="$catchup" python3 .dx-central/scripts/autopilot.py run-label' in count["run"]
+
+
+def test_the_hourly_sweep_still_covers_every_repository():
+    """#669 C3: a merge whose sweep never ran (a caller not in step yet, or
+    one that closes no issue) is still brought in step within the hour: the
+    schedule passes no `repo`, so the sweep searches the whole organisation
+    with the organisation's token, and it can still be run by hand."""
+    sweep = yaml.safe_load((FLOWS / "autopilot-sweep.yml").read_text(encoding="utf-8"))
+    on = sweep.get("on", sweep.get(True))
+    assert on["schedule"] == [{"cron": "7 * * * *"}]
+    assert on["workflow_dispatch"]["inputs"]["repo"]["default"] == ""
+    assert on["workflow_call"]["inputs"]["repo"]["default"] == ""
+    steps = sweep["jobs"]["sweep"]["steps"]
+    run = steps[-1]["run"]
+    assert 'else where=(--owner "$OWNER"); fi' in run
+    assert steps[-1]["env"]["OWNER"] == "${{ github.repository_owner }}"
+    # No repo, no name: the App token stays the organisation's.
+    where = next(s for s in steps if s.get("id") == "where")
+    assert 'echo "name=${REPO#*/}"' in where["run"]
+    assert next(s for s in steps if s.get("id") == "bot")["with"]["owner"] == "${{ github.repository_owner }}"
+    assert sweep["concurrency"]["group"] == "autopilot-sweep-${{ inputs.repo || 'all' }}"
