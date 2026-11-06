@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 671,
+  "prd_sha256": "51928fdc1a930a797d40e74fbd2501eefdba484a2f28c51edaf21bae7e07501e",
+  "prd": "### Problem\n\nThe sync that keeps every repository in step writes broken workflows with template placeholders into repositories that never had them, so its pull requests cannot be merged and a maintainer has to sort each one by hand.\n\n### Scope\n\n`scripts/sync-repos.py callers` (and `check`, which reports a missing caller the same way): which callers it adds to a repository, and a guard against placeholders in what it writes, with its `--test`.\n\n### Out of scope\n\nThe callers a repository already has, which the sync keeps updating as now. Opening the sync pull requests on its own from the daily drift check.\n\n### Acceptance criteria\n\nC1: Given a repository whose repos.yml entry gives no slug and that is not published on wordpress.org, when `callers` runs for it, then it writes no `release-wp.yml`.\nC2: Given any template file that would be written with a placeholder of its template (`my-plugin`, \"Fill in\"), when `callers` runs, then it writes none of it and names the repository and the missing value.\nC3: Given a repository whose only drift is an old `issues.yml`, when `callers` runs, then the pull request changes `issues.yml` alone.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-06T23:46:53Z",
+  "policy": "DiluxOne/.github@83f8a0d2700ee089af71a2ce3712ac4db0c48dd5",
+  "how": "own-bug"
+}
