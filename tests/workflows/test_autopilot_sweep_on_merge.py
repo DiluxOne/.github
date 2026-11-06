@@ -69,3 +69,16 @@ def test_a_conflict_continues_its_issue_free():
     run = step("Bring each one in step")["run"]
     cont = run[run.index("continue)"):run.index("esac")]
     assert 'gh issue edit "$issue" --repo "$repo" --add-label "autopilot:catchup" --add-label "autopilot:continue"' in cont
+
+
+def test_one_only_behind_main_gets_main_merged_in_at_its_head():
+    """C2: on `update` (autopilot.py sweep --test covers the verdict for a
+    pull request only behind main), the same merge-triggered sweep merges
+    main into it with GitHub's update-branch, at the head it read."""
+    run = step("Bring each one in step")["run"]
+    update = run[run.index("update)"):run.index("continue)")]
+    assert 'gh api -X PUT "repos/$repo/pulls/$n/update-branch" -f expected_head_sha="$(jq -r .headRefOid <<<"$pr")"' in update
+    assert "headRefOid" in run[:run.index("update)")]
+    # A token that may merge main in: contents write, on that repository.
+    token = step("App token")["with"]
+    assert token["permission-contents"] == "write" and token["repositories"] == "${{ steps.where.outputs.name }}"
