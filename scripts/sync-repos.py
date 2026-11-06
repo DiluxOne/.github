@@ -2711,7 +2711,12 @@ def callers_test(check, conf):
     old = issues[:start] + issues[issues.index("  # When a person accepts"):]
     old = old.replace("https://example.com/support", "https://wordpress.org/support/plugin/mine/")
     old = old.replace("name: Issues\n", "name: Issues\n\n# Mine: this header stays.\n")
-    old += "    with:\n      workflow: Pull request\n\n  mine:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo mine\n"
+    # The input on the `accepted` job, as this repository's own mirror has
+    # it: never on whatever job comes last, which may pass a `with:` of its
+    # own (autopilot-sweep's `repo`, #669).
+    accepted = old.index("    uses: DiluxOne/.github/.github/workflows/issue-accepted.yml@v7\n") + len("    uses: DiluxOne/.github/.github/workflows/issue-accepted.yml@v7\n")
+    old = old[:accepted] + "    with:\n      workflow: Pull request\n" + old[accepted:]
+    old += "\n  mine:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo mine\n"
     files = {".github/workflows/issues.yml": old, ".github/workflows/pull-request-comments.yml": comments}
     got = callers_drift(files, conf)
     check("C1 (#150): a caller without the template's repro-triaged is out of step, with the job",
