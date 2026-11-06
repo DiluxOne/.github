@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 669,
+  "prd_sha256": "ec850a55f4134fb5988253a4cd1fbafdf86b88a252d116197964cffb4bfb6f40",
+  "prd": "### Problem\n\nA merge into main outside DiluxOne/.github brings the autopilot pull requests it leaves in conflict back in step only within the hour, so a ready pull request sits idle up to an hour for a fix round nobody needs to ask for.\n\n### Scope\n\nThe sweep (`autopilot-sweep.yml`) runs for the one repository where a pull request merged, within minutes of the merge, in every repository that runs the organisation's workflows. The hourly run stays.\n\n### Out of scope\n\nKeeping two autopilot pull requests that touch the same files from running at once. Any change to how the fix round resolves a conflict.\n\n### Acceptance criteria\n\nC1: Given a ready autopilot pull request in a repository other than DiluxOne/.github, when another pull request merges into main and leaves it in conflict, then within 10 minutes the sweep for that repository answers `continue` and its issue gets `autopilot:catchup` and `autopilot:continue`, with no hourly run in between.\nC2: Given a ready autopilot pull request only behind main, with no conflict, when another pull request merges, then within 10 minutes the bot updates its branch.\nC3: Given a merge into main with no issue closed, when the hour comes, then the hourly sweep still brings the open autopilot pull requests in step.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-06T23:19:35Z",
+  "policy": "DiluxOne/.github@83f8a0d2700ee089af71a2ce3712ac4db0c48dd5",
+  "how": "own-bug"
+}
