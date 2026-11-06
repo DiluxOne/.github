@@ -1,8 +1,8 @@
 name: Autopilot in step with main
 
-# Reusable, and run here every hour. A merge into main brings every open autopilot pull request
-# it leaves behind or in conflict back in step on its own (#561, #556,
-# #549), with no label a person adds: for each one,
+# Reusable, and run here every hour. A merge into main brings every open
+# autopilot pull request it leaves behind or in conflict back in step on its
+# own (#561, #556, #549), with no label a person adds: for each one,
 # scripts/autopilot.py sweep (next-step's own answer) says `update`, and the
 # bot merges main into it (GitHub's update-branch), or `continue`, and
 # dilux-bot adds `autopilot:continue` to its issue, whose run merges main
