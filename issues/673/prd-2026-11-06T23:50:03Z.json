@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 673,
+  "prd_sha256": "9e94064fad91c3cfd2509b33574bdd6ff664090ce5eb4432f3cfa6374cca5482",
+  "prd": "### Problem\n\nA repository whose full check is longer than the agent's step can never finish an autopilot pull request: the step times out in `make pre-pr`, and the issue stops for a person who has nothing to decide.\n\n### Scope\n\n`.github/workflows/autopilot.yml` and `scripts/autopilot.py`: where `make pre-pr` runs at the end of a run, its time limit, and how its result reaches the agent and the pull request; the docs and header comments that describe it.\n\n### Out of scope\n\nMaking any repository's own `make pre-pr` faster. The checks the pull request and the merge queue run.\n\n### Acceptance criteria\n\nC1: Given a run whose agent ticked every criterion and whose `make pre-pr` takes 90 minutes, when the run ends, then `make pre-pr` runs whole and the pull request moves on with no `needs-human` from a timeout.\nC2: Given `make pre-pr` failing at the end of a run, when it fails, then the agent gets a fix round with the failing output, not counted as a paid run.\nC3: Given a repository whose `make pre-pr` takes 5 minutes, when a run ends, then the run takes no longer than today.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-06T23:50:03Z",
+  "policy": "DiluxOne/.github@83f8a0d2700ee089af71a2ce3712ac4db0c48dd5",
+  "how": "own-bug"
+}
