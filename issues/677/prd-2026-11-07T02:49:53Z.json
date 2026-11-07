@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 677,
+  "prd_sha256": "bde8dd6eb60370874e3b6fc59ce2786586f473e1a5c10ac18c60a1fd0fad7fa1",
+  "prd": "### Problem\n\n#670 (a merge outside .github leaves autopilot pull requests in conflict for up to an hour, #669) and #675 (the autopilot times out in `make pre-pr` on a repository with a long suite, #673) are merged and not in a version. Until v7 carries #675, DiluxOne/diluxone-users-wordpress cannot finish #242 and #243, which hold its 1.0.0 release: each continue run is cut at 75 minutes in `make pre-pr`. The release lane cannot make it: its scenarios fail in the test repository (#655), so this release is made by hand.\n\n### Scope\n\n- Rebuild CHANGELOG.md with v7.13.5 (`scripts/changelog.py build --next v7.13.5`); a patch: two fixes (#670, #675). `python3 scripts/caller-contract.py check` passes: no caller has to give anything new. The `autopilot-sweep` job #670 adds to the issues.yml template reaches each repository with its callers sync; until then the hourly sweep covers it.\n- Tag v7.13.5 on the merge commit, move v7 to it (lightweight), and watch the adopted repositories for runs that end in `startup_failure` for 30 minutes.\n\n### Out of scope\n\n- #655, the release lane's scenarios.\n- #674 and #676, still in review.\n\n### Acceptance criteria\n\n- C1: Given the release pull request merged, when v7.13.5 is tagged, then v7 points at it, its GitHub Release lists #670 and #675, and no adopted repository's run ends in `startup_failure` in the next 30 minutes.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-07T02:49:53Z",
+  "policy": "DiluxOne/.github@c2dfd08512d8"
+}
