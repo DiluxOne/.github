@@ -89,7 +89,7 @@ What a level may do: `any` value; `lower-only`; `stricter` (switch off, narrow, 
 |---|---|---|---|---|---|---|
 | `name`: The kind's name. | each one's own, in `kinds/*/pack.yml` | `any` | `never` | the kind's name for people | [`detect.py`](../scripts/detect.py) | #191 |
 | `aliases`: Other names of the kind. | each one's own, in `kinds/*/pack.yml` | `any` | `never` | names a profile may still use | [`policy.py`](../scripts/policy.py) | #191 |
-| `workflows`: The workflows that make up the kind's battery. | each one's own, in `kinds/*/pack.yml` | `any` | `never` | reusable workflows of the engine | [`sync-repos.py`](../scripts/sync-repos.py) | #191 |
+| `workflows`: The workflows that make up the kind's [battery](../kinds/README.md#the-battery). | each one's own, in `kinds/*/pack.yml` | `any` | `never` | reusable workflows of the engine | [`sync-repos.py`](../scripts/sync-repos.py) | #191 |
 | `own-checks`: What a repository of the kind requires of its own jobs. | each one's own, in `kinds/*/pack.yml` | `any` | `never` | a ruleset that exists is never rewritten | [`sync-repos.py`](../scripts/sync-repos.py) | #552 |
 | `pre-pr`: What a repository of the kind's `make pre-pr` runs, in words. | each one's own, in `kinds/*/pack.yml` | `any` | `never` | every check the pull request and the merge queue run | [`pre-pr.py`](../scripts/pre-pr.py) | #479 |
 | `pre-pr-make`: How `make pre-pr` runs them (dx.mk). | each one's own, in `kinds/*/pack.yml` | `any` | `never` | bash, one command a line | [`pre-pr.py`](../scripts/pre-pr.py), [`sync-repos.py`](../scripts/sync-repos.py) | #479 |

@@ -470,7 +470,7 @@ files:
       limit: reusable workflows of the engine
       read-by: [scripts/sync-repos.py]
       issue: "#191"
-      says: The workflows that make up the kind's battery.
+      says: The workflows that make up the kind's [battery](../kinds/README.md#the-battery).
     - key: own-checks
       org: any
       repo: never
