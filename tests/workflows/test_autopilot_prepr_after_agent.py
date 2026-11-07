@@ -414,7 +414,8 @@ def test_a_command_the_runner_lacks_is_an_engine_failure_from_verify_to_the_end(
     comments = [c for c in calls if c[:2] == ["pr", "comment"]]
     assert len(comments) == 1
     body = comments[0][comments[0].index("--body") + 1]
-    assert body.startswith(ap.PREPR_MARK) and "the runner lacks `dx-no-such-tool-682`" in body
+    # A stop first, so a maintainer's answer brings it back (review-reply.yml).
+    assert body.startswith(ap.STOP + "\n" + ap.PREPR_MARK) and "the runner lacks `dx-no-such-tool-682`" in body
     assert "engine failure" in body and "starts no fix round" in body
     # No fix round, a person has it, and the run is free.
     assert not any("autopilot:continue" in c for c in calls)
@@ -461,9 +462,12 @@ def test_a_fix_round_that_fails_as_the_round_before_stops_and_says_so(tmp_path, 
     out, calls = end_after(ap, tmp_path, monkeypatch, before, now)
     assert "verdict=stopped" in out
     body = next(c for c in calls if c[:2] == ["pr", "comment"])[-1]
-    assert body.startswith(ap.PREPR_MARK) and "same failure as the round before" in body and "stops rather than start another" in body
+    assert body.startswith(ap.STOP + "\n" + ap.PREPR_MARK) and "same failure as the round before" in body and "stops rather than start another" in body
     assert not any("autopilot:continue" in c for c in calls)
     assert ["pr", "edit", "8", "--repo", "o/r", "--add-label", "needs-human"] in calls
+    # review-reply.yml resumes on an answer after a comment whose first line is the stop's.
+    reply = (ROOT / ".github/workflows/review-reply.yml").read_text(encoding="utf-8")
+    assert f'"{ap.STOP}"*' in reply and body.split("\n")[0] == ap.STOP
 
 
 def test_a_fix_round_that_fails_another_way_continues(tmp_path, monkeypatch):

@@ -1342,6 +1342,8 @@ def missing_command(text):
     none. Pure."""
     m = NOT_FOUND.search(text or "")
     return (m.group(1) or m.group(2)) if m else ""
+
+
 # The autopilot's own comments that end a run: the last of them says what
 # the next run reads.
 RUN_ENDS = (PREPR_MARK, STOP, ASK, SILENT, UNFINISHED)
@@ -1363,7 +1365,9 @@ def prepr_comment(verdict, tail, run_url, continues, repeated=False):
     step (#673): what happened, what comes next, and the output's excerpt
     (what failed, then its tail, #679) in a fence nothing in it can close,
     and its failure's signature, hidden (#682). `repeated`: a fix round that
-    failed as the round before, which stops. Pure."""
+    failed as the round before, which stops. A comment that stops (that, or
+    an `engine` verdict) is a stop comment first (STOP), so a maintainer's
+    answer brings it back as after any stop (review-reply.yml). Pure."""
     tail = shown_tail(tail)
     fence = code_fence(tail)
     how = PREPR_HOW.get(verdict, "failed")
@@ -1379,7 +1383,8 @@ def prepr_comment(verdict, tail, run_url, continues, repeated=False):
     elif repeated:
         nxt = ("This fix round failed with the same failure as the round before, so the autopilot stops rather than start another. "
                "A person takes it from here (`needs-human`): a maintainer's answer here, a hint in words, brings it back, or they take it over.")
-    return (f"{PREPR_MARK}\n<!-- {SIG_MARK} {failure_signature(tail)} -->\n**`make pre-pr` {how}**, run in full after the agent's step, so the pull request stays a draft. "
+    mark = f"{STOP}\n{PREPR_MARK}" if verdict == ENGINE or repeated else PREPR_MARK
+    return (f"{mark}\n<!-- {SIG_MARK} {failure_signature(tail)} -->\n**`make pre-pr` {how}**, run in full after the agent's step, so the pull request stays a draft. "
             f"{nxt} What it did is in [the run]({run_url}).\n\nWhat failed, and the last lines of its output:\n\n{fence}text\n{tail}\n{fence}\n\n{AI_LINE}")
 
 
@@ -2353,8 +2358,8 @@ A class on html.
            end_verdict("continue", "8", True, False, 1, 3, True, 2, 5, frees=1, prepr_failed=True, engine=True)),
           ("stopped", "stopped", "stopped"))
     eng = prepr_comment(ENGINE, "/x/plugin-i18n.sh: line 35: msgcat: command not found\nmake: *** [dx.mk:9: pre-pr] Error 1", "u", False)
-    check("#682 C2: its comment says the runner lacks the command, an engine failure, no fix round, and keeps the output",
-          (eng.startswith(PREPR_MARK), "the runner lacks `msgcat`" in eng, "engine failure" in eng, "starts no fix round" in eng,
+    check("#682 C2: its comment says the runner lacks the command, an engine failure, no fix round, and keeps the output; it is a stop, which an answer brings back",
+          (eng.startswith(STOP + "\n" + PREPR_MARK), "the runner lacks `msgcat`" in eng, "engine failure" in eng, "starts no fix round" in eng,
            "pre-pr-tools" in eng, "needs-human" in eng, "autopilot:continue" in eng, "msgcat: command not found" in eng,
            "free fix rounds are spent" in eng),
           (True, True, True, True, True, True, False, True, False))
@@ -2382,10 +2387,10 @@ A class on html.
            end_verdict("continue", "8", True, False, 3, 3, False, 2, 5, nudged=True, frees=6, prepr_failed=True, repeated=False)),
           ("stopped", "continue", "silent"))
     again = prepr_comment("fail", run_b, "u", False, repeated=True)
-    check("#682 C3: its comment says it failed as the round before and the autopilot stops rather than start another, a person takes it",
-          ("same failure as the round before" in again, "stops rather than start another" in again, "needs-human" in again,
+    check("#682 C3: its comment says it failed as the round before and the autopilot stops rather than start another, a person takes it; a stop",
+          (again.startswith(STOP + "\n" + PREPR_MARK) and not first.startswith(STOP), "same failure as the round before" in again, "stops rather than start another" in again, "needs-human" in again,
            "autopilot:continue" in again, "free fix rounds are spent" in again, f"<!-- {SIG_MARK} {sig_a} -->" in again),
-          (True, True, True, False, False, True))
+          (True, True, True, True, False, False, True))
     pw_fix = prompt_work("o/r", "7", "8", "feat/7-x", "x", [], True, prepr_failed=True)
     check("#673 C2: the prompt after a failed make pre-pr asks to fix it first, from .dx-io/pre-pr.md; without one it does not",
           (f"{IO_DIR}/{PREPR_NOTE}" in pw_fix, pw_fix.index(PREPR_NOTE) < pw_fix.index("The criteria left"),

@@ -1151,7 +1151,7 @@ jobs:
           packages=$(python3 .dx-central/scripts/pre-pr.py tools .)
           if [ -z "$packages" ]; then echo "make pre-pr needs nothing the runner lacks."; exit 0; fi
           sudo=""; if command -v sudo > /dev/null 2>&1; then sudo=sudo; fi
-          echo "Installing what make pre-pr needs: $(echo $packages)"
+          echo "Installing what make pre-pr needs: ${packages//$'\n'/ }"
           $sudo apt-get update -qq
           # One package a line, each checked by pre-pr.py against apt's names.
           # shellcheck disable=SC2086
@@ -1374,7 +1374,7 @@ jobs:
           packages=$(python3 .dx-central/scripts/pre-pr.py tools .)
           if [ -z "$packages" ]; then echo "make pre-pr needs nothing the runner lacks."; exit 0; fi
           sudo=""; if command -v sudo > /dev/null 2>&1; then sudo=sudo; fi
-          echo "Installing what make pre-pr needs: $(echo $packages)"
+          echo "Installing what make pre-pr needs: ${packages//$'\n'/ }"
           $sudo apt-get update -qq
           # One package a line, each checked by pre-pr.py against apt's names.
           # shellcheck disable=SC2086
