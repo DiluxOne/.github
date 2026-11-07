@@ -96,7 +96,10 @@ archived and not excluded in repos.yml:
             at an older major migrates first (docs/migrating.md), unless
             repos.yml names that major in `callers: migrates-from`: then it
             moves every call to the current major in the same pull request
-            (#320). Not in
+            (#320). Only a repository repos.yml lists: one it does not gets
+            its callers with its adoption. The daily drift check runs it
+            for every repository (org-drift.yml, #672); one whose callers
+            pull request is open is skipped. Not in
             `all`: a template change is a pull request in every repository.
   merge-queue  the merge queue (#451), from org.yml `merge-queue` (auto, on
             or off; auto when unset) and a repository's exception in
@@ -937,6 +940,11 @@ def sync_callers(repo, conf, dry):
     full = f"{ORG}/{repo['name']}"
     if repo["name"] == ".github":
         print("  this repository's own callers change in a pull request here, by hand")
+        return
+    # The daily drift check runs this for every repository (#672): one not
+    # adopted gets its callers with its adoption ("Adopt <repository>", #562).
+    if listed(repo["name"]) is None:
+        print("  repos.yml does not list it: its callers come with its adoption (docs/adopting.md); skipped")
         return
     files = workflow_files(full)
     branch = (repo.get("defaultBranchRef") or {}).get("name") or "main"
@@ -3108,6 +3116,95 @@ def callers_test(check, conf):
     check("#320 migrates-from: a major not named there migrates by hand first, and nothing is opened", "migrate it first" in said and not opened, (said, opened))
 
 
+def daily_callers_test(check, conf):
+    """#672: the daily drift check's `callers` run, from a merged commit,
+    against a stand-in for gh: an org-sync issue and pull request for a
+    listed repository behind its templates, nothing for one repos.yml does
+    not list."""
+    import contextlib
+    import io
+
+    class Out:
+        def __init__(self, stdout="", returncode=0, stderr=""):
+            self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
+
+    current = max(int(v) for t in templates().values() for v in USES_RE.findall(t[0]))
+    sha = "f" * 40
+
+    def run(name, files, open_prs=()):
+        calls = []
+
+        def fake(*args, check=True, input_text=None):
+            joined = " ".join(args)
+            calls.append(args)
+            if joined == f"api repos/o/{name}/contents/.github/workflows":
+                return Out(json.dumps([{"name": p.rsplit("/", 1)[1], "path": p} for p in files]))
+            for p in files:
+                if joined.startswith(f"api repos/o/{name}/contents/{p} "):
+                    return Out(files[p])
+            if "matching-refs/tags/v" in joined:
+                return Out(json.dumps([[{"ref": f"refs/tags/v{current}"}]]))
+            if args[:2] == ("pr", "list"):
+                return Out(json.dumps([{"headRefName": b} for b in open_prs]))
+            if args[:2] == ("issue", "list"):
+                return Out("[]")
+            if args[:2] == ("issue", "create"):
+                return Out(f"https://github.com/o/{name}/issues/9\n")
+            if args[:2] == ("pr", "create"):
+                return Out(f"https://github.com/o/{name}/pull/10\n")
+            if "ref/heads/main" in joined:
+                return Out(json.dumps({"object": {"sha": "abc"}}))
+            if joined.startswith("api -X"):
+                return Out("{}")
+            return Out("", 1, "HTTP 404")
+        saved = {n: globals()[n] for n in ("gh", "ORG", "listed", "org_commit")}
+        out = io.StringIO()
+        try:
+            globals().update(gh=fake, ORG="o", listed=lambda n: {} if n == "mine" else None, org_commit=lambda: (sha, None))
+            with contextlib.redirect_stdout(out):
+                sync_callers({"name": name, "defaultBranchRef": {"name": "main"}}, conf, False)
+        finally:
+            globals().update(saved)
+        return calls, out.getvalue()
+
+    def opened(calls):
+        """The issues, pull requests and contents writes a run made."""
+        return [a for a in calls if a[:2] in (("issue", "create"), ("pr", "create"))
+                or (a[:2] == ("api", "-X") and a[2] in ("PUT", "POST", "DELETE"))]
+
+    # A repository in step: the callers it would be given whole.
+    in_step = new_callers({}, conf, None, "main", name="mine")
+    issues = in_step[".github/workflows/issues.yml"]
+    start = issues.index("  repro-triaged:")
+    behind = {**in_step, ".github/workflows/issues.yml": issues[:start] + issues[issues.index("\n  ", start + 1) + 1:]}
+    check("#672: the fixture's issues.yml lacks a job of its template",
+          any(p == ".github/workflows/issues.yml" for _, p, _ in callers_drift(behind, conf)), callers_drift(behind, conf))
+    calls, said = run("mine", behind)
+    created = [a for a in calls if a[:2] == ("issue", "create")]
+    prs = [a for a in calls if a[:2] == ("pr", "create")]
+    issue_body = created[0][created[0].index("--body") + 1] if len(created) == 1 else ""
+    pr_body = prs[0][prs[0].index("--body") + 1] if len(prs) == 1 else ""
+    check("#672 C1: a listed repository behind its templates gets one issue, with the org-sync marker",
+          len(created) == 1 and issue_body.startswith(f"<!-- dx-lane: {LANE} sync: callers org: {sha} files: "), (created, said))
+    check("#672 C1: its Type is Task and it carries the lane's label",
+          ("api", "-X", "PATCH", "repos/o/mine/issues/9", "-f", "type=Task") in calls
+          and ("issue", "edit", "9", "--repo", "o/mine", "--add-label", f"lane:{LANE}") in calls, calls)
+    check("#672 C1: one pull request from ci/9-org-workflow-callers that closes it",
+          len(prs) == 1 and prs[0][prs[0].index("--head") + 1] == "ci/9-org-workflow-callers" and "Closes #9" in pr_body, prs)
+    check("#672 C1: the pull request writes the issues.yml its template has",
+          any(a[:4] == ("api", "-X", "PUT", "repos/o/mine/contents/.github/workflows/issues.yml") for a in calls), calls)
+    calls, said = run("other", behind)
+    check("#672 C1: a repository repos.yml does not list gets nothing, and is told so",
+          opened(calls) == [] and "does not list it" in said, (opened(calls), said))
+    calls, said = run("mine", behind, open_prs=["ci/9-org-workflow-callers"])
+    check("#672 C2: one with its callers pull request open gets no issue, no pull request and no write",
+          opened(calls) == [] and "already open" in said, (opened(calls), said))
+    check("#672 C3: the fixture's callers all match their templates", callers_drift(in_step, conf) == [], callers_drift(in_step, conf))
+    calls, said = run("mine", in_step)
+    check("#672 C3: a listed repository in step gets no issue, no pull request and no write",
+          opened(calls) == [] and "callers in step" in said, (opened(calls), said))
+
+
 def drift_or_reason(repo, conf, labels, block, current=0):
     """drift(), or why the repository could not be checked: one repository
     that cannot be read, or whose template cannot be written, does not stop
@@ -4096,7 +4193,14 @@ def self_test():
     signed_test(check)
     permissions_test(check)
     triggers_test(check)
-    callers_test(check, conf)
+    # Its fixtures are of a repository "r" repos.yml stands in as listing.
+    real_listed = globals()["listed"]
+    globals()["listed"] = lambda n: {} if n == "r" else real_listed(n)
+    try:
+        callers_test(check, conf)
+    finally:
+        globals()["listed"] = real_listed
+    daily_callers_test(check, conf)
     dependabot_test(check, conf, labels, block_file)
     ai_plugin_drift_test(check, conf, labels, block_file)
     adopt_test(check, conf, labels, block_file)
@@ -4407,7 +4511,7 @@ def main(argv):
         return 0
     if what == "check":
         report = [f"# Repositories out of step with {ORG}/.github", "",
-                  "What differs from `labels.yml`, `repos.yml`, `agents-block.md`, the Dependabot templates (`kinds/<kind>/dependabot.yml`, `policy/dependabot.default.yml`) and `workflow-templates/`. Labels and settings: `python3 scripts/sync-repos.py all`; files: the pull requests it opens; Dependabot: the pull requests `sync-repos.py dependabot` opens; workflow callers: `python3 scripts/sync-repos.py callers --repo NAME`, a pull request each.", ""]
+                  "What differs from `labels.yml`, `repos.yml`, `agents-block.md`, the Dependabot templates (`kinds/<kind>/dependabot.yml`, `policy/dependabot.default.yml`) and `workflow-templates/`. Labels and settings: `python3 scripts/sync-repos.py all`; files: the pull requests it opens; Dependabot: the pull requests `sync-repos.py dependabot` opens; workflow callers: the pull requests the daily run opens (`sync-repos.py callers`), one for each repository behind.", ""]
         dirty = 0
         current = current_major()
         for repo in repos:
