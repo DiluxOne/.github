@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 688,
+  "prd_sha256": "546d7aff38087b37cc7124382975f51110b12bb79028abe1a24bac5d0176dc0b",
+  "prd": "### Problem\n\nA word that only the people who wrote the engine understand makes the autopilot's questions, the drift report and the docs unreadable to everyone else, the maintainer included, and an answer given without understanding the question is a decision taken blind.\n\n### Scope\n\n`kinds/README.md`, `docs/configuration.md`, `docs/adopting.md`, `docs/maintaining.md`, and `docs/model.md` only if it has a glossary. Words only: no workflow, script or pack changes.\n\n### Out of scope\n\nWhat \"ready for the battery\" checks and where it is read from, which #681 decides. Renaming the term.\n\n### Acceptance criteria\n\nC1: Given `kinds/README.md`, when a reader looks for what a battery is, then one paragraph defines it, names the pack key it comes from (`workflows`), gives the wordpress-plugin example, and says how it differs from the workflows every repository gets and how a repository runs it (its callers).\nC2: Given `docs/configuration.md`, `docs/adopting.md` and `docs/maintaining.md`, when they say \"battery\", then the first mention on each page links to that definition.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-07T14:22:29Z",
+  "policy": "DiluxOne/.github@b3ff1add3a4f"
+}
