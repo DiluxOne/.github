@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 672,
+  "prd_sha256": "b659918411e6f7fc837656a36f953fa543d215ccf68d193dc3587a3571e88081",
+  "prd": "### Problem\n\nThe daily drift check (\"Repositories in step\") finds every repository whose workflow callers fell behind the templates, but nothing brings them in step: someone has to run `sync-repos.py callers` by hand. Until then, features the engine at v7 already has do not work there. On 2026-11-06, 17 repositories had an `issues.yml` without `/claim`, without the answers in issue comments and without the \"what waits on whom\" board, while all of them called `@v7`.\n\n### Scope\n\nThe daily drift check runs the `callers` sync for each repository it finds behind, from the merged main, so its issues and pull requests take the `org-sync` lane (accepted by the policy, merged with no person once green), and it does not open a second pull request for a repository that already has an open one.\n\n### Out of scope\n\nWhat `callers` writes (#671, the placeholder bug, which must be fixed first: this issue depends on it). Labels, settings, Dependabot and the other drift the check reports.\n\n### Acceptance criteria\n\nC1: Given a repository whose `issues.yml` lacks a job of its template, when the daily drift check runs, then it opens one org-sync issue and pull request for that repository with the update.\nC2: Given a repository that already has an open org-sync callers pull request, when the drift check runs again, then it opens none.\nC3: Given every repository in step, when the drift check runs, then it opens nothing.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-07T01:26:20Z",
+  "policy": "DiluxOne/.github@83f8a0d2700e"
+}
