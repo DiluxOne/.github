@@ -12,8 +12,12 @@ name: Repositories in step
 # maintainer's `accepted` is the only step, org-adopt.yml does the rest),
 # and opens "Release X.Y.Z" where a version milestone X.Y.Z closed
 # (scripts/milestones.py open; accepting it stays a person's decision).
+# Then the workflow callers of every repository repos.yml lists, against
+# workflow-templates/, each repository's as an issue and a pull request of
+# the org-sync lane, never a second while one is open (scripts/sync-repos.py
+# callers, #672), with a token of their own that may write workflows.
 # What a run cannot do on its own
-# (settings, rulesets, the Dependabot file, the workflow callers) stays a
+# (settings, rulesets, the Dependabot file) stays a
 # maintainer's run (`sync-repos.py adopt` for a new one), and the check below
 # reports it.
 #
@@ -90,6 +94,36 @@ jobs:
           python3 scripts/detect.py adopt-issues || rc=1
           python3 scripts/milestones.py open || rc=1
           exit "$rc"
+
+      # The workflow callers (#672): GitHub refuses an App's write under
+      # .github/workflows/ without `workflows`, so only this step's token
+      # holds it, as org-adopt.yml's does.
+      - name: App token (callers, every repository)
+        id: callers
+        if: github.ref == 'refs/heads/main'
+        continue-on-error: true # without it the check below still runs
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+          permission-workflows: write
+          permission-metadata: read
+
+      # After the labels (lane:org-sync must exist there) and before the
+      # check (which then lists only what is left). Each repository repos.yml
+      # lists and whose callers fell behind gets one issue and one pull
+      # request of the org-sync lane; one with its callers pull request open
+      # is skipped. A failure in one is printed and the others go on.
+      - name: Sync (workflow callers)
+        if: github.ref == 'refs/heads/main' && steps.callers.outputs.token != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.callers.outputs.token }}
+        run: python3 scripts/sync-repos.py callers
 
       # Every repository the App is installed on, read-only, for the check.
       - name: App token (read, every repository)
