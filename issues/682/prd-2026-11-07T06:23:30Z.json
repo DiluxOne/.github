@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 682,
+  "prd_sha256": "0790657e2a6ff95075410f57a512cb280081179a259fe1a35267841438ed3100",
+  "prd": "### Problem\n\nA tool missing on the runner fails every plugin's pull request whose repository has translations, and the autopilot spends fix rounds without end on something its agent cannot change.\n\n### Scope\n\n`.github/workflows/autopilot.yml` (the pre-pr job), `scripts/autopilot.py` (how a pre-pr failure is read, when a fix round starts), the kinds' packs (the tools their pre-pr needs), their tests and docs.\n\n### Out of scope\n\nAny repository's `make pre-pr` or .po files. The excerpt of the failure (#679).\n\n### Acceptance criteria\n\nC1: Given a wordpress-plugin repository with .po files in the form that merges, when the pre-pr job runs, then `i18n-form` passes.\nC2: Given a pre-pr log with `command not found`, when the autopilot reads it, then it reports an engine failure and starts no fix round.\nC3: Given a fix round whose pre-pr fails with the same failure as the round before, when it ends, then the autopilot stops and says so on the pull request instead of starting another round.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-07T06:23:30Z",
+  "policy": "DiluxOne/.github@0e30df911de3dec5ad346c4e0b8dfc5189f85779",
+  "how": "own-bug"
+}
