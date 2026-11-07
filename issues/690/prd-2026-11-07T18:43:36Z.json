@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 690,
+  "prd_sha256": "f46f7ae6431eb043eb4e9fdba2211213f283aa021b227e061290df1d7513a109",
+  "prd": "### Problem\n\nThe release lane has not released anything since the test token was fixed, and it fails without telling anyone, so every fix waits on a person to tag it by hand.\n\n### Scope\n\n`.github/workflows/release-lane.yml` (the scenarios job's timeouts, the decision job's condition), `scripts/release-lane.py` if the decision needs to read a cancelled scenarios job, their tests, and docs/versioning.md where it describes the lane.\n\n### Out of scope\n\nMaking the scenarios faster or running them in parallel. Closing diluxone-test#207 and #208 by hand.\n\n### Acceptance criteria\n\nC1: Given the release lane's workflow, when its scenarios job is read, then its timeout is at least 300 minutes and the scenarios step has a timeout of its own shorter than the job's.\nC2: Given a scenarios job that ended `cancelled` while the workflow was not cancelled, when the lane decides, then \"Release, bug or issue\" runs and opens a bug naming the timeout, and nothing is tagged.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-07T18:43:36Z",
+  "policy": "DiluxOne/.github@bea3700106cb22ac95a8231c08effc753c2757e5",
+  "how": "own-bug"
+}
