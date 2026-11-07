@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 679,
+  "prd_sha256": "e492a7c559e7906fa1a27ddf2a2616ec23e37d13298c71cb3b4a16e6303f0c1c",
+  "prd": "### Problem\n\nWhen `make pre-pr` fails after the agent, neither the maintainer nor the fix round sees what failed, so the fix round guesses and may spend runs on the wrong thing.\n\n### Scope\n\n`scripts/autopilot.py` (the excerpt `verify` keeps and posts, and what the fix round reads) and its tests; the docs that describe the comment.\n\n### Out of scope\n\nAny repository's `make pre-pr`. Where and how long `make pre-pr` runs (#675).\n\n### Acceptance criteria\n\nC1: Given a `make pre-pr` log in which one parallel target fails early and another writes for long after, when the excerpt is built, then it holds the failing target's `make: ***` line and the error lines before it.\nC2: Given a log larger than the excerpt's limit with its error near the start, when the excerpt is built, then the error is still in it.\nC3: Given a passing `make pre-pr`, when it ends, then nothing changes from today.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-07T04:06:09Z",
+  "policy": "DiluxOne/.github@0e30df911de3dec5ad346c4e0b8dfc5189f85779",
+  "how": "own-bug"
+}
