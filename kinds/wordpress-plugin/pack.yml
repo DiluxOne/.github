@@ -73,8 +73,10 @@ pre-pr-make:
 # `make pre-pr`. scripts/plugin-i18n.sh checks the catalogues' form with
 # msgcat and compiles them with msgfmt, both from gettext.
 pre-pr-tools:
-  - {command: msgcat, package: gettext}
-  - {command: msgfmt, package: gettext}
+  - command: msgcat
+    package: gettext
+  - command: msgfmt
+    package: gettext
 
 # What a repository of this kind requires of its own jobs, beside the
 # organisation's pipeline: a repository ruleset named "own checks"
