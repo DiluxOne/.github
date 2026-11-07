@@ -88,3 +88,16 @@ def test_a_failed_scenario_reaches_the_decision(tmp_path):
     # Every job succeeded and every scenario passed: released.
     d = run_act_step(tmp_path / "d", done, every)
     assert d["do"] == "release"
+
+
+def test_every_out_directory_is_made_in_its_job_before_it_is_written():
+    """#693: back wrote into $RUNNER_TEMP/back/, which no step made."""
+    import re
+    for name, job in jobs().items():
+        made = set()
+        for step in job.get("steps", []):
+            run = step.get("run", "")
+            for line in run.splitlines():
+                made.update(re.findall(r'mkdir -p "\$RUNNER_TEMP/([^"/]+)"', line))
+                for d in re.findall(r'--out "\$RUNNER_TEMP/([^"/]+)/[^"]+"', line):
+                    assert d in made, f"{name}: --out into $RUNNER_TEMP/{d}/ before any mkdir of it"

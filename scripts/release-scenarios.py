@@ -754,6 +754,8 @@ def write_results(results, out):
     text = table(results)
     sys.stdout.write(text)
     if out:
+        # The job's --out may name a directory no step made (#693).
+        os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
         with open(out, "w", encoding="utf-8") as fh:
             fh.write(text)
             fh.write(f"\n<!-- dx-scenarios {json.dumps(results)} -->\n")
@@ -1228,6 +1230,11 @@ def self_test():
         check("#622: back reads the run's results and adds its row to them",
               read_results(out) + [{"id": "callers", "ok": False, "why": ["x"], "run": ""}], [{"id": "a", "ok": True, "why": [], "run": ""}, {"id": "callers", "ok": False, "why": ["x"], "run": ""}])
         check("#622: no results file reads as none", read_results(os.path.join(d, "none.md")), [])
+        nested = os.path.join(d, "back", "results.md")
+        with contextlib.redirect_stdout(io.StringIO()):
+            write_results([{"id": "callers", "ok": True, "why": [], "run": ""}], nested)
+        check("#693: results are written into a directory nothing made yet",
+              read_results(nested), [{"id": "callers", "ok": True, "why": [], "run": ""}])
         path = os.path.join(d, "moved.json")
         st, fake = repo_fake()
         seen = []

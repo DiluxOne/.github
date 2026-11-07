@@ -308,6 +308,7 @@ jobs:
           TEST_REPO: ${{ steps.test.outputs.repo }}
         run: |
           set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/back"
           python3 scripts/release-scenarios.py back --repo "$OWNER/$TEST_REPO" --ref v7-next --moved "$RUNNER_TEMP/move/moved.json" --out "$RUNNER_TEMP/back/results.md"
           # A callers row that fails is the act job's to read, like a scenario's.
           exit 0
