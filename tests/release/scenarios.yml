@@ -215,7 +215,7 @@ scenarios:
     opens: {pull: {title: "docs: a greeting from a fork", body: pull, fork: true}}
     expect: {check: {conventions: success}, merged: false}
   - id: merge-queue
-    covers: [runner-wake.yml:merge_group, next_step:queue]
+    covers: [runner-wake.yml:merge_group, next_step:queue, autopilot-sweep.yml:pull_request_target]
     opens: {pull: {title: "docs: a greeting, queued", body: pull}}
     steps: [{label: risk:low}]
     expect: {merged: true}

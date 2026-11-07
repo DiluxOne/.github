@@ -17,7 +17,9 @@ name: Issues
 # and the other commands in comments, the form's checkbox, a person's pull
 # request, and the daily reminders and releases; and on every event of an
 # issue or a pull request, whom it waits on (#564, waiting-update.yml), on
-# its board with one mention, and the "What waits" view. Most of this repository is a protected path
+# its board with one mention, and the "What waits" view; and when a pull
+# request merges into main, the open autopilot pull requests it leaves
+# behind or in conflict back in step (#669, autopilot-sweep.yml). Most of this repository is a protected path
 # of policy/autonomy.yml, and an autopilot pull request that touches one is
 # never merged by policy.
 
@@ -113,5 +115,20 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/waiting-update.yml
+    secrets:
+      DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+
+  # A pull request merged into the default branch (#669): the open autopilot
+  # pull requests it leaves behind or in conflict come back in step within
+  # minutes (autopilot-sweep.yml), for this repository alone: the bot merges
+  # main into one only behind, and continues one in conflict, whose fix
+  # round resolves it. Metadata only: no pull request's code is checked out.
+  autopilot-sweep:
+    if: github.event_name == 'pull_request_target' && github.event.action == 'closed' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == github.event.repository.default_branch
+    permissions:
+      contents: read
+    uses: ./.github/workflows/autopilot-sweep.yml
+    with:
+      repo: ${{ github.repository }}
     secrets:
       DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}

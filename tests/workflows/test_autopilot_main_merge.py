@@ -28,12 +28,11 @@ def test_the_work_merges_main_before_the_agent_and_leaves_a_conflict_to_it():
 
 
 def test_a_merge_into_main_sweeps_the_autopilot_pull_requests_with_no_persons_label():
+    # #669: the merge reaches it from issues.yml's `autopilot-sweep` job
+    # (tests/workflows/test_autopilot_sweep_on_merge.py), here as anywhere:
+    # no second sweep on the push.
     pipeline = yaml.safe_load((FLOWS / "pull-request.yml").read_text(encoding="utf-8"))
-    on = pipeline.get("on", pipeline.get(True))
-    assert on["push"]["branches"] == ["main"]
-    job = pipeline["jobs"]["autopilot-sweep"]
-    assert job["uses"] == "./.github/workflows/autopilot-sweep.yml"
-    assert "github.event_name == 'push'" in job["if"] and job["with"]["repo"] == "${{ github.repository }}"
+    assert "autopilot-sweep" not in pipeline["jobs"]
     sweep = yaml.safe_load((FLOWS / "autopilot-sweep.yml").read_text(encoding="utf-8"))
     on = sweep.get("on", sweep.get(True))
     assert {"schedule", "workflow_call", "workflow_dispatch"} <= set(on)
@@ -41,7 +40,7 @@ def test_a_merge_into_main_sweeps_the_autopilot_pull_requests_with_no_persons_la
     # next-step's own answer decides, through autopilot.py sweep; the bot
     # acts on it: update-branch for one behind, its own continue for one
     # in conflict, which the run's fix round merges and resolves.
-    assert "python3 scripts/autopilot.py sweep" in run
+    assert "python3 .dx-central/scripts/autopilot.py sweep" in run
     assert 'gh api -X PUT "repos/$repo/pulls/$n/update-branch"' in run
     # #563 C12: the run it starts only catches up with another merge: free.
     assert 'gh issue edit "$issue" --repo "$repo" --add-label "autopilot:catchup" --add-label "autopilot:continue"' in run
@@ -79,3 +78,24 @@ def test_a_catch_up_run_is_counted_free():
     assert 'index("autopilot:catchup") != null' in count["run"]
     assert '--remove-label "autopilot:catchup"' in count["run"]
     assert 'CATCHUP="$catchup" python3 .dx-central/scripts/autopilot.py run-label' in count["run"]
+
+
+def test_the_hourly_sweep_still_covers_every_repository():
+    """#669 C3: a merge whose sweep never ran (a caller not in step yet, or
+    one that closes no issue) is still brought in step within the hour: the
+    schedule passes no `repo`, so the sweep searches the whole organisation
+    with the organisation's token, and it can still be run by hand."""
+    sweep = yaml.safe_load((FLOWS / "autopilot-sweep.yml").read_text(encoding="utf-8"))
+    on = sweep.get("on", sweep.get(True))
+    assert on["schedule"] == [{"cron": "7 * * * *"}]
+    assert on["workflow_dispatch"]["inputs"]["repo"]["default"] == ""
+    assert on["workflow_call"]["inputs"]["repo"]["default"] == ""
+    steps = sweep["jobs"]["sweep"]["steps"]
+    run = steps[-1]["run"]
+    assert 'else where=(--owner "$OWNER"); fi' in run
+    assert steps[-1]["env"]["OWNER"] == "${{ github.repository_owner }}"
+    # No repo, no name: the App token stays the organisation's.
+    where = next(s for s in steps if s.get("id") == "where")
+    assert 'echo "name=${REPO#*/}"' in where["run"]
+    assert next(s for s in steps if s.get("id") == "bot")["with"]["owner"] == "${{ github.repository_owner }}"
+    assert sweep["concurrency"]["group"] == "autopilot-sweep-${{ inputs.repo || 'all' }}"

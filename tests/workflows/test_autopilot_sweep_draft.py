@@ -20,7 +20,7 @@ def test_the_sweep_reads_drafts_too_and_leaves_the_choice_to_autopilot_py():
     # behind.
     assert "gh search prs" in run and "--draft" not in run
     assert "isDraft" in run and "select(.isDraft" not in run
-    assert "python3 scripts/autopilot.py sweep" in run
+    assert "python3 .dx-central/scripts/autopilot.py sweep" in run
 
 
 def test_update_is_github_s_update_branch_with_no_model_and_no_run():
