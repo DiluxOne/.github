@@ -3,7 +3,7 @@
 The organisation's workflows and scripts know nothing about WordPress, or
 about any other stack. What is specific to a kind of project lives in a
 **pack**, a directory here, as data: its review profile, its rules, its
-settings, the list of workflows that make up its battery. A repository says
+settings, the list of workflows that make up its [battery](#the-battery). A repository says
 which kind it is, once, in its `.github/review-policy.yml`:
 
 ```yaml
@@ -35,7 +35,7 @@ kinds/<kind>/
 | --- | --- |
 | `name` | The kind's name for people. |
 | `aliases` | Other names a caller's `profile:` may use for this kind (one line, `[a, b]`). `plugin-wp` is the wordpress-plugin kind's: the name of its profile before packs existed, still accepted. |
-| `workflows` | The reusable workflows in `.github/workflows/` that make up the battery. |
+| `workflows` | The reusable workflows in `.github/workflows/` that make up the [battery](#the-battery). |
 | `pre-pr` | What the repository's `make pre-pr` must run (#479, [`scripts/pre-pr.py`](../scripts/pre-pr.py)), one item per line: every check its pull request and its merge queue run, one after the other, stopping at the first failure, starting and stopping what it needs (a plugin's wp-env sites) and relying on nothing started before it. `make pre-pr` is the one check before a pull request in every repository, whatever its stack: `dx check` runs it before the local review, and so does the autopilot before it marks a pull request ready. A repository of no kind lists what its own covers in its `.github/review-policy.yml` (`pre-pr:`). The daily drift check lists a repository whose Makefile has no `pre-pr` target, unless `repos.yml` says it has none by design (`pre-pr: {NAME: false}`); with org.yml `pre-pr: required`, the conventions check fails its pull requests. |
 | `pre-pr-make` | How the `make pre-pr` of the kind's repositories runs (#479, `scripts/pre-pr.py render`): `run`, bash lines from the checkout, run as one script that stops at the first failure, and `finally`, run after it either way (the wp-env sites it started). `scripts/sync-repos.py pre-pr` writes it into the repository's `dx.mk`, a managed file its Makefile includes (`include dx.mk`, last, so a bare `make` keeps running the repository's own first target), so the organisation owns `pre-pr` and the repository's own targets stay its own: it adds its own checks as prerequisites (`pre-pr: my-check`), never in `dx.mk`. A Makefile whose own `pre-pr` has a recipe is left as it is, and the pull request says to make it a prerequisite. `DX_CENTRAL` is the organisation's checkout (`dx check` sets it; the autopilot's `.dx-central` is the default). The daily drift check lists a repository whose `dx.mk` is missing or differs. A kind with none: its repositories write their own `pre-pr`. |
 | `pre-pr-tools` | The commands the kind's `pre-pr-make` runs that a bare runner may not have, and the apt package of each (#682, `scripts/pre-pr.py tools`): each a block map, `command:` and `package:` (`- command: msgcat` and `package: gettext` under it; the PHP reader takes no flow maps), `[]` for none. The autopilot's `work` job (before the agent, so its own `check` runs on them) and its `verify` job (before `make pre-pr` in full) install the packages of the commands not on the runner's PATH, with `sudo apt-get install` when sudo is there; an install that fails fails the job, and `verify` then reads as `lost`, not as the agent's failure. A command `make pre-pr` still does not find makes its failure an engine failure, which starts no fix round: a maintainer adds it here (or to the runner's image) and continues the issue. |
@@ -62,6 +62,10 @@ kind-settings:
   plugin-check:
     ignore-codes: [some_code_this_plugin_cannot_avoid]   # added to the pack's list
 ```
+
+## The battery
+
+A kind's **battery** is the set of reusable workflows in `.github/workflows/` that check, test, release and publish a repository of that kind, the ones its pack lists under its `workflows` key: for wordpress-plugin, `plugin-checks-wp.yml`, `plugin-tests-wp.yml`, `plugin-release-wp.yml` and `plugin-publish-wp.yml`. It differs from the workflows every repository gets whatever its kind (`repos.yml` `callers: every-repository`, `issues.yml` and `pull-request-comments.yml`, and `org-pull-request.yml`, which the organisation's ruleset requires) in that only a repository of that kind gets it. A repository runs it through its callers: the files from [`workflow-templates/`](../workflow-templates/) that `scripts/sync-repos.py callers` writes into its `.github/workflows/` (`plugin-checks-wp.yml` and `release-wp.yml` for a plugin) and that name the battery's workflows, since GitHub cannot pick a reusable workflow from data ("What a pack cannot do", below).
 
 ## How the pieces find the pack
 
