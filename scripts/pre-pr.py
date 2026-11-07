@@ -29,6 +29,11 @@ What it must cover is data: a kind's pack says it (kinds/<kind>/pack.yml
   pre-pr.py render KIND        the dx.mk of a repository of KIND, from its
                                pack's `pre-pr-make` (nothing, exit 1, when
                                the pack has none)
+  pre-pr.py tools [DIR]        the packages DIR's `make pre-pr` needs that
+                               the runner lacks (#682): its kind's pack
+                               `pre-pr-tools`, the package of each command
+                               not on PATH, one per line (none for a
+                               repository of no kind)
   pre-pr.py --test             self-test
 """
 import json
@@ -159,6 +164,44 @@ def covers(directory):
         pack = policy.load_yaml(policy.pack_path(str(kind)))
         return [str(x) for x in (pack.get("pre-pr") or [])]
     return [str(x) for x in (own.get("pre-pr") or [])]
+
+
+# A package name as apt takes it (#682): the pack's, never the repository's,
+# and checked all the same before it reaches apt-get.
+PACKAGE_RE = re.compile(r"^[a-z0-9][a-z0-9+.-]*$")
+
+
+def tools_of(pack):
+    """[(command, package)] from a pack's `pre-pr-tools` (#682): each
+    command its `pre-pr-make` runs that a bare runner may not have, and the
+    apt package that provides it. Raises ValueError on an entry that is not
+    one. Pure."""
+    out = []
+    for entry in (pack or {}).get("pre-pr-tools") or []:
+        command = str((entry or {}).get("command") or "") if isinstance(entry, dict) else ""
+        package = str((entry or {}).get("package") or "") if isinstance(entry, dict) else ""
+        if not re.fullmatch(r"[A-Za-z0-9_.+-]+", command) or not PACKAGE_RE.match(package):
+            raise ValueError(f"`pre-pr-tools` entry {entry!r}: {{command: <name>, package: <apt package>}}")
+        out.append((command, package))
+    return out
+
+
+def tools(directory, have=None):
+    """The packages DIR's `make pre-pr` needs that the runner lacks (#682):
+    those of its kind's `pre-pr-tools` whose command is not on PATH (`have`,
+    shutil.which by default), each once, in the pack's order; [] for a
+    repository of no kind, or of a kind with no pack."""
+    import shutil
+    have = have or shutil.which
+    own = policy.load_yaml(os.path.join(directory, ".github", "review-policy.yml"))
+    kind = (own if isinstance(own, dict) else {}).get("kind")
+    if not kind or not os.path.isfile(policy.pack_path(str(kind))):
+        return []
+    out = []
+    for command, package in tools_of(policy.load_yaml(policy.pack_path(str(kind)))):
+        if not have(command) and package not in out:
+            out.append(package)
+    return out
 
 
 def required(name, org_conf, repos_conf):
@@ -305,6 +348,28 @@ def self_test():
                     json.dump(manifest, fh)
                 third = subprocess.run(["make", "-s", "pre-pr"], cwd=d, env=env, capture_output=True, text=True)
                 check("C4 and with everything in step it passes, the rules run last", (third.returncode, "0 error(s)" in third.stdout), (0, True))
+    # #682 C1: what a kind's `make pre-pr` needs on the runner.
+    wp_tools = tools_of(policy.load_yaml(policy.pack_path("wordpress-plugin")))
+    check("C1 the wordpress-plugin pack lists msgcat and msgfmt, from gettext", sorted(wp_tools), [("msgcat", "gettext"), ("msgfmt", "gettext")])
+    check("C1 ai-agent-plugin and engine-test need none", (tools_of(policy.load_yaml(policy.pack_path("ai-agent-plugin"))),
+                                                          tools_of(policy.load_yaml(policy.pack_path("engine-test")))), ([], []))
+    for bad in ([{"command": "x; rm -rf /", "package": "p"}], [{"command": "x", "package": "p q"}], ["msgcat"], [{"command": "x"}]):
+        try:
+            tools_of({"pre-pr-tools": bad})
+            check(f"C1 a pre-pr-tools entry that is not one is refused: {bad!r}", "passed", "raised")
+        except ValueError:
+            check(f"C1 a pre-pr-tools entry that is not one is refused: {bad!r}", "raised", "raised")
+    with tempfile.TemporaryDirectory() as d:
+        os.makedirs(os.path.join(d, ".github"))
+        check("C1 a repository with no policy needs no tools", tools(d, have=lambda c: None), [])
+        with open(os.path.join(d, ".github", "review-policy.yml"), "w") as fh:
+            fh.write("kind: wordpress-plugin\n")
+        check("C1 tools lists the package of each missing command, once", tools(d, have=lambda c: None), ["gettext"])
+        check("C1 and nothing that is there", tools(d, have=lambda c: "/usr/bin/" + c), [])
+        check("C1 one command missing still needs its package", tools(d, have=lambda c: None if c == "msgfmt" else "/usr/bin/" + c), ["gettext"])
+        with open(os.path.join(d, ".github", "review-policy.yml"), "w") as fh:
+            fh.write("kind: no-such-kind\n")
+        check("C1 a kind with no pack needs none", tools(d, have=lambda c: None), [])
     print("all tests passed" if not fails else f"{len(fails)} failed")
     return 1 if fails else 0
 
@@ -332,6 +397,10 @@ def main(argv):
         print(f"::error::{argv[1]} has no `pre-pr` target in its Makefile. {CONTRACT}. "
               "A repository that has none by design is listed in DiluxOne/.github repos.yml `pre-pr`.")
         return 1
+    if argv[:1] == ["tools"] and len(argv) <= 2:
+        for package in tools(argv[1] if len(argv) == 2 else "."):
+            print(package)
+        return 0
     if argv[:1] == ["render"] and len(argv) == 2:
         text = render_kind(argv[1])
         if text is None:
