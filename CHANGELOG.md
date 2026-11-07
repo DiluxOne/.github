@@ -2,12 +2,23 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [7.13.5](https://github.com/DiluxOne/.github/releases/tag/v7.13.5) · 2026-11-07
+
+### Fixes
+
+- run make pre-pr after the agent, in a job of its own ([#675](https://github.com/DiluxOne/.github/pull/675))
+- a merge outside .github leaves autopilot PRs in conflict for up to an hour ([#670](https://github.com/DiluxOne/.github/pull/670))
+
 ## [7.13.4](https://github.com/DiluxOne/.github/releases/tag/v7.13.4) · 2026-11-05
 
 ### Fixes
 
 - an answer after a stop on the autopilot's PR fails with 403 ([#661](https://github.com/DiluxOne/.github/pull/661))
 - the triage never answers a reporter who cannot write ([#659](https://github.com/DiluxOne/.github/pull/659))
+
+### Maintenance
+
+- release v7.13.4 ([#664](https://github.com/DiluxOne/.github/pull/664))
 
 ## [7.13.3](https://github.com/DiluxOne/.github/releases/tag/v7.13.3) · 2026-11-04
 
