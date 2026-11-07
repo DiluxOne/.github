@@ -10,6 +10,7 @@ Every version of the engine (the workflows, scripts, policy and kinds other repo
 
 ### Fixes
 
+- the callers sync opens pull requests that cannot merge ([#684](https://github.com/DiluxOne/.github/pull/684))
 - the pre-pr job has no gettext and loops fix rounds on it ([#685](https://github.com/DiluxOne/.github/pull/685))
 - the pre-pr failure excerpt shows the log's tail, not the error ([#680](https://github.com/DiluxOne/.github/pull/680))
 - sync-repos callers adds new callers with template placeholders ([#676](https://github.com/DiluxOne/.github/pull/676))
