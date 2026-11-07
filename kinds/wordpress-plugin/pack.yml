@@ -103,6 +103,13 @@ detect:
     glob: "*.php"
     pattern: '(?m)^[ \t/*#@]*Plugin Name:'
 
+# What the battery needs at a repository's root beside what `detect` asks
+# for (#681): plugin-checks-wp.yml runs composer's scripts. The callers run
+# (scripts/sync-repos.py callers) writes no caller of the battery to a
+# repository whose root lacks one of these or does not meet `detect`, and
+# says what it lacks.
+battery-needs: [composer.json]
+
 # The engines this kind's checks run, and the language adapter of each.
 adapters:
   - engine: scripts/review-rules.php

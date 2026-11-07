@@ -84,7 +84,13 @@ archived and not excluded in repos.yml:
             `release.stable`, release-wp.yml) only when its entry gives its
             `slug` or that place publishes it (#671), and no caller that
             would still hold a placeholder, or a new one saying "Fill in":
-            that file is left out, named with the input, the others go in. Each template job must be there with the
+            that file is left out, named with the input, the others go in.
+            Nor, for a kind whose pack has `battery-needs` (#681), a
+            caller of its battery to a repository whose root does not meet
+            the pack's `detect` or lacks one of those files (a plugin with
+            no readme.txt, main plugin file or composer.json gets no
+            plugin-checks-wp.yml): the run says what it lacks; one it
+            has is kept. Each template job must be there with the
             same `uses:`, `needs` (its own jobs may join them), `if`,
             `permissions`, `secrets` handling and inputs, but the inputs the
             template says to fill in (`repository-owned`). Inputs and jobs of
@@ -951,7 +957,8 @@ def sync_callers(repo, conf, dry):
     # The callers it lacks, written whole from their templates (#552): those
     # every repository has, and those of its kind's battery.
     held = []
-    added = new_callers(files, conf, repo_kind(full, branch), branch, name=repo["name"], notes=held)
+    kind = repo_kind(full, branch)
+    added = new_callers(files, conf, kind, branch, name=repo["name"], notes=held, root=root_of(full, branch) if kind_battery(kind) else None)
     values = repos_conf.caller_values(conf, repo["name"])
     if not any(CALLS_RE.search(t) for t in files.values()) and not added:
         for note in held:
@@ -1339,6 +1346,54 @@ def kind_battery(kind):
     return set(load_yaml(pack).get("workflows") or []) if os.path.isfile(pack) else set()
 
 
+def battery_unready(kind, root):
+    """What a repository's root lacks for its kind's battery to run (#681),
+    one phrase each ("no composer.json"); [] when it lacks nothing, when
+    its kind's pack has no `battery-needs`, or when `root` is None (not
+    read). `root` is (names, head(name)), as scripts/detect.py remote()
+    reads it. Read from the pack: its `detect` (detect.matches()) and
+    `battery-needs`, files at the root."""
+    if not kind or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", str(kind)) or root is None:
+        return []
+    path = os.path.join(CENTRAL, "kinds", kind, "pack.yml")
+    pack = load_yaml(path) if os.path.isfile(path) else {}
+    if "battery-needs" not in pack:
+        return []
+    names, head = root
+    rule = pack.get("detect") or {}
+    missing = []
+    if rule:
+        matches = _script("detect", "detect.py").matches
+        if not matches(rule, names, head):
+            missing += [f"no {f}" for f in rule.get("files") or [] if not matches({"files": [f]}, names, head)]
+            header = rule.get("header")
+            if header and not matches({"header": header}, names, head):
+                missing.append(f"no main file (a root {header['glob']} with the header of kinds/{kind}/pack.yml `detect`)")
+            if rule.get("any-files") and not matches({"any-files": rule["any-files"]}, names, head):
+                missing.append(f"none of {', '.join(rule['any-files'])}")
+    return missing + [f"no {f}" for f in pack.get("battery-needs") or [] if f not in names]
+
+
+def root_of(full, default):
+    """(names, head(name)) of a repository's root on `default`, as
+    scripts/detect.py remote() reads it (#681): the names of its files,
+    and the first bytes of one, read once. An empty repository has none."""
+    out = gh("api", f"repos/{full}/contents/?ref={default}", check=False)
+    if out.returncode != 0:
+        if "404" in out.stderr:
+            return set(), lambda name: ""
+        raise RuntimeError(f"could not list its root: {out.stderr.strip()[:200]}")
+    names = {e["name"] for e in json.loads(out.stdout or "[]") if isinstance(e, dict) and e.get("type", "file") == "file"}
+    read, size = {}, _script("detect", "detect.py").HEAD_BYTES
+
+    def head(name):
+        if name not in read:
+            got = gh("api", f"repos/{full}/contents/{name}?ref={default}", "-H", "Accept: application/vnd.github.raw", check=False)
+            read[name] = got.stdout[:size] if got.returncode == 0 else ""
+        return read[name]
+    return names, head
+
+
 def yaml_scalar(value):
     """A value as a caller's input line writes it."""
     if isinstance(value, bool):
@@ -1470,7 +1525,7 @@ def release_caller_wanted(data, kind, conf, name, opener=None):
     return True, None
 
 
-def new_callers(files, conf, kind, default="main", major=None, name=None, notes=None, opener=None):
+def new_callers(files, conf, kind, default="main", major=None, name=None, notes=None, opener=None, root=None):
     """{path: text} of the callers a repository lacks, written whole from their
     templates (#552): those of `every-repository` (the triage and the
     autopilot start from issues.yml) and those that call a workflow of its
@@ -1479,10 +1534,14 @@ def new_callers(files, conf, kind, default="main", major=None, name=None, notes=
     repository that calls none of them yet (one being adopted) gets them all
     this way, but the caller of its kind's release when it gives no slug and
     is not published (release_caller_wanted(), #671; why it cannot tell is
-    appended to `notes`). Pure but for reading the templates and the pack,
+    appended to `notes`). Nor, when `root` (its root, as root_of() reads
+    it) lacks what its kind's battery needs (battery_unready(), #681), any
+    caller of that battery but those of `every-repository`: the note says
+    what it lacks. Pure but for reading the templates and the pack, `root`,
     and the place its kind publishes to."""
     spec = conf.get("callers") or {}
     every, battery = set(spec.get("every-repository") or []), kind_battery(kind)
+    unready = battery_unready(kind, root) if battery else []
     owned, values = spec.get("repository-owned") or {}, repos_conf.caller_values(conf, name or "")
     parsed = {p: (t, parse_yaml(t)) for p, t in files.items()}
     out = {}
@@ -1491,6 +1550,12 @@ def new_callers(files, conf, kind, default="main", major=None, name=None, notes=
             continue
         path = f".github/workflows/{tname}"
         if path in files or caller_for(dict(data, _name=tname), parsed) is not None:
+            continue
+        if unready and tname not in every:
+            if notes is not None:
+                lacks = ", ".join(unready[:-1]) + " and " + unready[-1] if len(unready) > 1 else unready[0]
+                notes.append(f"{path}: not written: the repository has {lacks}, which {tname} needs; "
+                             f"add {'them' if len(unready) > 1 else 'it'} first")
             continue
         wanted, why = release_caller_wanted(data, kind, conf, name, opener)
         if why and notes is not None:
@@ -2648,8 +2713,10 @@ def drift(repo, conf, labels, block, current=0):
                     # file name a workflow of its own takes, which `callers`
                     # does not write, is still listed here.
                     drifted = [d for d in drifted if d[1] or f".github/workflows/{d[0]}" in files]
+                    kind = repo_kind(full, default)
                     found += [f"lacks `{p}` (workflow-templates/{os.path.basename(p)}): `sync-repos.py callers` adds it"
-                              for p in new_callers(files, conf, repo_kind(full, default), default or "main", name=repo["name"])]
+                              for p in new_callers(files, conf, kind, default or "main", name=repo["name"],
+                                                   root=root_of(full, default or "main") if kind_battery(kind) else None)]
                 found += caller_lines(drifted, central)
                 found += placeholder_lines(files, conf, repo["name"], central)
             except ValueError as exc:  # a workflow that does not parse is reported, not skipped
@@ -3890,11 +3957,16 @@ def stand_in_place(answer):
     return opener
 
 
-def callers_run(conf, name, files, kind, answer):
+PLUGIN_ROOT = {"readme.txt": "=== Mine ===\n", "mine.php": "<?php\n/**\n * Plugin Name: Mine\n */\n", "composer.json": "{}\n"}
+
+
+def callers_run(conf, name, files, kind, answer, root=None):
     """sync_callers() for repository `name` (of `kind`, with the workflow
-    files `files`) against a stand-in for gh and for its kind's place
-    answering `answer`: ({path: text} written, [the pull requests' gh
-    arguments], what it printed)."""
+    files `files` and the root files `root`, {name: text}, a plugin's that
+    is ready for its battery by default) against a stand-in for gh and for
+    its kind's place answering `answer`: ({path: text} written, [the pull
+    requests' gh arguments], what it printed)."""
+    root = PLUGIN_ROOT if root is None else root
     import contextlib
     import io
 
@@ -3913,6 +3985,11 @@ def callers_run(conf, name, files, kind, answer):
         for p in files:
             if joined.startswith(f"{base}/contents/{p} "):
                 return Out(files[p])
+        if joined == f"{base}/contents/?ref=main":
+            return Out(json.dumps([{"name": n, "type": "file"} for n in root]))
+        for n in root:
+            if joined.startswith(f"{base}/contents/{n}?ref=main "):
+                return Out(root[n])
         if "matching-refs/tags/v" in joined:
             return Out(json.dumps([[{"ref": f"refs/tags/v{current}"}]]))
         if args[:2] in (("pr", "list"), ("issue", "list")):
@@ -3979,6 +4056,55 @@ def release_caller_test(check, conf):
     written, prs, said = callers_run(bare, name, have, "wordpress-plugin", 404)
     check("#671 C3: an old issues.yml alone out of step: one pull request that writes issues.yml alone",
           (sorted(written), len(prs)) == ([".github/workflows/issues.yml"], 1) and "  repro-triaged:" in written[".github/workflows/issues.yml"], (sorted(written), said))
+
+
+def battery_ready_test(check, conf):
+    """#681 C1: a wordpress-plugin repository whose root lacks readme.txt,
+    its main plugin file or composer.json gets no plugin-checks-wp.yml (nor
+    another caller of the battery), the callers every repository has still,
+    and a note naming what it lacks; one with all three gets it."""
+    name, checks = "diluxone-new-wordpress", ".github/workflows/plugin-checks-wp.yml"
+    every = {".github/workflows/issues.yml", ".github/workflows/pull-request-comments.yml"}
+    slugged = {**conf, "repos": {**(conf.get("repos") or {}), name: {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"]}], "callers": {"slug": "new-one"}}}}
+
+    def stub(files):
+        return set(files), lambda n: files.get(n, "")
+
+    def run(files):
+        notes = []
+        return new_callers({}, slugged, "wordpress-plugin", "main", name=name, notes=notes, opener=stand_in_place(404), root=stub(files)), notes
+    got, notes = run({"README.md": "# Mine\n"})
+    said = [n for n in notes if n.startswith(f"{checks}: not written")]
+    check("#681 C1: new_callers() writes no plugin-checks-wp.yml for a plugin with no readme.txt, main plugin file or composer.json",
+          checks not in got and every <= set(got), sorted(got))
+    check("#681 C1: nor another caller of the battery", not any(p.endswith("-wp.yml") for p in got), sorted(got))
+    check("#681 C1: and a note names the three",
+          len(said) == 1 and all(w in said[0] for w in ("no readme.txt", "no main file", "*.php", "no composer.json", "add them first")), notes)
+    without = lambda gone: {n: t for n, t in PLUGIN_ROOT.items() if n != gone}  # noqa: E731
+    for gone, root, words in (("readme.txt", without("readme.txt"), "no readme.txt"),
+                              ("the plugin header", {**PLUGIN_ROOT, "mine.php": "<?php\n// No header.\n"}, "no main file"),
+                              ("composer.json", without("composer.json"), "no composer.json")):
+        got, notes = run(root)
+        said = [n for n in notes if n.startswith(f"{checks}: not written")]
+        check(f"#681 C1: none either with only {gone} missing, and the note names it alone",
+              checks not in got and every <= set(got) and len(said) == 1 and words in said[0] and "add it first" in said[0]
+              and [w for w in ("no readme.txt", "no main file", "no composer.json") if w in said[0]] == [words], (sorted(got), notes))
+    got, notes = run(PLUGIN_ROOT)
+    check("#681 C1: a plugin with all three gets plugin-checks-wp.yml, and no note on it",
+          checks in got and every <= set(got) and not any("not written" in n for n in notes), (sorted(got), notes))
+    got, notes = run({})
+    check("#681 C1: an empty root lacks all three", checks not in got and any("no readme.txt" in n and "no composer.json" in n for n in notes), notes)
+    check("#681 C1: a root not read (None) is not checked",
+          checks in new_callers({}, slugged, "wordpress-plugin", "main", name=name, opener=stand_in_place(404)), "")
+    check("#681 C1: a kind with no `battery-needs` gets its battery whatever its root holds",
+          ".github/workflows/plugin-checks-ai.yml" in new_callers({}, conf, "ai-agent-plugin", "main", root=stub({})), "")
+    have = new_callers({}, slugged, "wordpress-plugin", "main", name=name, opener=stand_in_place(404))
+    check("#681 C1: a caller the repository has is never taken out", new_callers(have, slugged, "wordpress-plugin", "main", name=name, root=stub({})) == {}, "")
+    written, prs, said = callers_run(slugged, name, {}, "wordpress-plugin", 404, root={"README.md": "# Mine\n"})
+    check("#681 C1: sync_callers() reads the root, writes the callers every repository has, not plugin-checks-wp.yml, and says why",
+          checks not in written and every <= set(written) and len(prs) == 1 and f"{checks}: not written: the repository has no readme.txt" in said, (sorted(written), said))
+    written, prs, said = callers_run(slugged, name, {}, "wordpress-plugin", 404)
+    check("#681 C1: and writes it for a plugin that has all three", checks in written, (sorted(written), said))
 
 
 def placeholder_guard_test(check, conf):
@@ -4208,6 +4334,7 @@ def self_test():
     conventions_test(check, block_file)
     release_caller_test(check, conf)
     placeholder_guard_test(check, conf)
+    battery_ready_test(check, conf)
     # The org-sync lane (#155): a run from a merged commit marks its issue,
     # and labels it only once its Type is Task; the lane reads it back.
     policy = load_yaml(os.path.join(CENTRAL, "policy", "autonomy.yml"))
