@@ -26,6 +26,20 @@ def test_the_callers_tokens_may_read_the_checks_workflow_runs():
         assert w["permission-actions"] == "read"
 
 
+def test_the_scenarios_have_time_and_the_play_step_stops_first():
+    play = jobs()["play"]
+    # Five hours for each play job, and its play step stops before it, so
+    # the results are still uploaded (#690).
+    assert play["timeout-minutes"] >= 300
+    step = next(s for s in play["steps"] if s.get("id") == "play")
+    assert step["name"] == "Play the group's scenarios at v7-next"
+    assert 0 < step["timeout-minutes"] < play["timeout-minutes"]
+    # The bug names the numbers the workflow uses, never others.
+    env = next(s for s in jobs()["act"]["steps"] if s.get("id") == "act")["env"]
+    assert int(env["SCENARIOS_TIMEOUT"]) == play["timeout-minutes"]
+    assert int(env["PLAY_TIMEOUT"]) == step["timeout-minutes"]
+
+
 GROUPS = [{"id": "serial", "scenarios": ["s1", "s2"]}, {"id": "s3", "scenarios": ["s3"]}]
 
 
@@ -45,6 +59,7 @@ def run_act_step(tmp_path, results, written):
                 f"| table |\n\n<!-- dx-scenarios {json.dumps(rows)} -->\n", encoding="utf-8")
     plan = {"release": True, "version": "7.14.0", "major": "v7"}
     env = dict(os.environ, RUNNER_TEMP=str(tmp_path), PLAN=json.dumps(plan), SCENARIO_GROUPS=json.dumps(GROUPS),
+               SCENARIOS_TIMEOUT=str(step["env"]["SCENARIOS_TIMEOUT"]), PLAY_TIMEOUT=str(step["env"]["PLAY_TIMEOUT"]),
                GITHUB_STEP_SUMMARY=str(tmp_path / "summary.md"),
                RUN_URL="https://github.com/DiluxOne/.github/actions/runs/1", **results)
     script += f'\npython3 {ROOT}/scripts/release-lane.py decide --plan "$RUNNER_TEMP/plan.json" --results "$results"\n'
@@ -101,3 +116,19 @@ def test_every_out_directory_is_made_in_its_job_before_it_is_written():
                 made.update(re.findall(r'mkdir -p "\$RUNNER_TEMP/([^"/]+)"', line))
                 for d in re.findall(r'--out "\$RUNNER_TEMP/([^"/]+)/[^"]+"', line):
                     assert d in made, f"{name}: --out into $RUNNER_TEMP/{d}/ before any mkdir of it"
+
+
+def test_a_timed_out_play_job_reaches_the_decision(tmp_path):
+    # GitHub cancels a job past its timeout-minutes without cancelling the
+    # run: the decision still runs, and a person's cancel still stops it (#690).
+    cond = jobs()["act"]["if"]
+    assert "!cancelled()" in cond and "always()" not in cond
+    assert "needs.move.result == 'cancelled'" in cond
+    done = {"MOVE": "success", "PLAY": "success", "BACK": "success"}
+    every = {"move": [], "serial": ok("s1", "s2"), "s3": ok("s3"), "back": []}
+    # A play job cancelled at its timeout, with no results: a bug.
+    d = run_act_step(tmp_path / "a", dict(done, PLAY="cancelled"), dict(every, serial=None))
+    assert d["do"] == "bug" and "actions/runs/1" in d["body"]
+    # Cancelled after every row it wrote passed: still a bug, never a release.
+    d = run_act_step(tmp_path / "b", dict(done, PLAY="cancelled"), every)
+    assert d["do"] == "bug" and d["scenario"] == "play"
