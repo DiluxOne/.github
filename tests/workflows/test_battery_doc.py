@@ -51,3 +51,24 @@ def test_it_says_a_repository_runs_it_through_its_callers():
     assert "through its callers" in text
     assert "workflow-templates/" in text
     assert "sync-repos.py callers" in text
+
+
+LINK = re.compile(r"\[battery\]\(\.\./kinds/README\.md#the-battery\)")
+
+
+def test_the_heading_gives_the_anchor_the_links_use():
+    assert "\n## The battery\n" in KINDS.read_text(encoding="utf-8")
+
+
+def test_the_first_battery_of_each_page_links_to_the_definition():
+    for page in ("configuration.md", "adopting.md", "maintaining.md"):
+        text = (ROOT / "docs" / page).read_text(encoding="utf-8")
+        first = re.search(r"battery", text, re.IGNORECASE)
+        assert first, page
+        link = LINK.search(text)
+        assert link and link.start() == first.start() - 1, page
+
+
+def test_the_configuration_link_comes_from_the_schema():
+    schema = (ROOT / "policy" / "settings-schema.yml").read_text(encoding="utf-8")
+    assert LINK.search(schema)
