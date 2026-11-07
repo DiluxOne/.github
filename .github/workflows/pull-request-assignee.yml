@@ -25,7 +25,7 @@ name: Issue assignee
 #   jobs:
 #     assignee:
 #       permissions: {}
-#       uses: DiluxOne/.github/.github/workflows/pull-request-assignee.yml@v7
+#       uses: DiluxOne/.github/.github/workflows/pull-request-assignee.yml@v7-next
 #       secrets:
 #         DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
 

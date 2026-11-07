@@ -25,7 +25,7 @@ name: Publish to the catalog of plugins for coding agents
 #   jobs:
 #     publish:
 #       if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-#       uses: DiluxOne/.github/.github/workflows/plugin-publish-ai.yml@v7
+#       uses: DiluxOne/.github/.github/workflows/plugin-publish-ai.yml@v7-next
 #       with:
 #         tag: ${{ inputs.tag || '' }}
 #       secrets:
