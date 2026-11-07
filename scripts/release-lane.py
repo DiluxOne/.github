@@ -154,6 +154,29 @@ def decide(p, results):
     return {"do": "release", "version": p["version"]}
 
 
+def job_row(result, run, minutes, play, play_minutes=0):
+    """The failing `scenarios` row for a scenarios job that did not succeed
+    (#644), saying when it ran out of time (#690): GitHub cancels a job past
+    its timeout-minutes without cancelling the run, and stops a step past its
+    own as a failure (the play step otherwise ends with `exit 0`). Pure."""
+    if result == "cancelled":
+        why = f"the scenarios job ran past its timeout of {minutes} minutes and was cancelled (timeout-minutes in release-lane.yml)"
+    elif result == "failure" and play == "failure":
+        why = f"the scenarios step ran past its timeout of {play_minutes} minutes (timeout-minutes in release-lane.yml)"
+    else:
+        why = f"the scenarios job ended in {result}"
+    return {"id": "scenarios", "ok": False, "why": [why], "run": run}
+
+
+def add_row(text, row):
+    """The results' text with `row` added to its dx-scenarios rows."""
+    m = re.search(r"<!-- dx-scenarios (.*) -->", text)
+    rows = json.loads(m.group(1)) if m else []
+    rows.append(row)
+    text = re.sub(r"\n?<!-- dx-scenarios .* -->\n?", "", text)
+    return f"{text}\n<!-- dx-scenarios {json.dumps(rows)} -->\n"
+
+
 def release(p, repo, run=sh, sleep=time.sleep, minutes=60, root="."):
     """The release pull request, merged, the tag, the move and the Release,
     of the commit the scenarios tried (the plan's `sha`) and nothing else:
@@ -525,6 +548,23 @@ def self_test():
         check("C5: nothing tagged, v7 not moved, nothing released", [c for c in fake.calls if c[:1] == ("git",) or c[:2] in (("gh", "release"), ("gh", "pr"))], [])
         check("C5: the bug names the scenario and its run", bool(bug) and "spec-to-draft" in " ".join(bug[0]) and "https://github.com/o/t/actions/runs/9" in " ".join(bug[0]), True)
         check("C5: no result at all is a failure", decide(p, [])["do"], "bug")
+        # #690: a scenarios job that ran out of time is a bug naming it.
+        lane = "https://github.com/O/.github/actions/runs/1"
+        row = job_row("cancelled", lane, 300, "", 240)
+        check("job_row: a cancelled job ran past its timeout, with its minutes and this run",
+              (row["id"], row["ok"], row["run"], "timeout of 300 minutes and was cancelled" in row["why"][0]), ("scenarios", False, lane, True))
+        check("job_row: a play step that failed ran past its own timeout",
+              "the scenarios step ran past its timeout of 240 minutes" in job_row("failure", lane, 300, "failure", 240)["why"][0], True)
+        check("job_row: any other failure says the job failed", job_row("failure", lane, 300, "success", 240)["why"], ["the scenarios job ended in failure"])
+        check("job_row: added to what the scenarios wrote, once",
+              re.findall(r"<!-- dx-scenarios (.*) -->", add_row("| t |\n\n<!-- dx-scenarios [{\"id\": \"s1\", \"ok\": true}] -->\n", row)),
+              [json.dumps([{"id": "s1", "ok": True}, row])])
+        fake = Fake()
+        d = act(p, passed + [row], "O/.github", run=fake, root=root, lane_run=lane)
+        made = [c for c in fake.calls if c[:3] == ("gh", "issue", "create")]
+        check("a cancelled scenarios job → a bug naming its timeout", (d["do"], d["scenario"], bool(made) and "timeout of 300 minutes" in " ".join(made[0])), ("bug", "scenarios", True))
+        check("a cancelled scenarios job: nothing tagged, nothing released",
+              [c for c in fake.calls if c[:1] == ("git",) or c[:2] in (("gh", "release"), ("gh", "pr"))], [])
         # C7: a `!`, the scenarios pass.
         fake = Fake()
         pb = plan(dict(nxt, bump="minor", next="7.11.0"), ["feat(autopilot)!: a required input"])
@@ -596,7 +636,7 @@ def main(argv):
         return self_test()
     import argparse
     ap = argparse.ArgumentParser(prog="release-lane.py")
-    ap.add_argument("mode", choices=("plan", "candidate", "decide", "act", "watch"))
+    ap.add_argument("mode", choices=("plan", "candidate", "decide", "act", "job-row", "watch"))
     ap.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""))
     ap.add_argument("--central", default="")
     ap.add_argument("--plan", default="")
@@ -607,6 +647,9 @@ def main(argv):
     ap.add_argument("--since", default="")
     ap.add_argument("--minutes", type=int, default=30)
     ap.add_argument("--every", type=int, default=120)
+    ap.add_argument("--result", default="")
+    ap.add_argument("--play", default="")
+    ap.add_argument("--play-minutes", type=int, default=0)
     ap.add_argument("--org", default="")
     ap.add_argument("--property", default="")
     a = ap.parse_args(argv)
@@ -633,6 +676,11 @@ def main(argv):
         return 0
     if a.mode == "decide":
         print(json.dumps(decide(load(a.plan), results_of(a.results))))
+        return 0
+    if a.mode == "job-row":
+        text = open(a.results, encoding="utf-8").read() if os.path.exists(a.results) else ""
+        with open(a.results, "w", encoding="utf-8") as fh:
+            fh.write(add_row(text, job_row(a.result, a.run, a.minutes, a.play, a.play_minutes)))
         return 0
     if a.mode == "act":
         d = act(load(a.plan), results_of(a.results), a.repo, lane_run=a.run)

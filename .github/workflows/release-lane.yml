@@ -17,7 +17,9 @@ name: Release lane
 # token has `workflows`: its commit rewrites workflow files, and it makes
 # that commit through the API (scripts/api-commit.py), so GitHub signs it,
 # as the organisation's ruleset requires on every branch. A scenario that fails: nothing is tagged, `v7` stays, and a
-# bug names the scenario and its run. A breaking change (`!`): the scenarios
+# bug names the scenario and its run; so does a scenarios job that runs out
+# of time (the play step at 240 minutes, the job at 300), whose bug names
+# the timeout (#690): only a run a person cancelled stays silent. A breaking change (`!`): the scenarios
 # run, then the release issue opens for a person. After `v7` moves, the
 # watch reads every adopted repository's runs for 30 minutes (a read-only
 # token; its write token is this repository's alone) and, on the first that
@@ -236,8 +238,11 @@ jobs:
     name: Release, bug or issue
     needs: [plan, scenarios]
     # A scenarios job that failed is a bug to open, never a lane that stops
-    # with none (#644): this job runs when it ended, failed or not.
-    if: ${{ !cancelled() && needs.plan.outputs.release == 'true' && (needs.scenarios.result == 'success' || needs.scenarios.result == 'failure') }}
+    # with none (#644): this job runs when it ended, failed or not. One that
+    # ran past its timeout-minutes ends `cancelled` with the run going on: a
+    # bug naming the timeout (#690). `!cancelled()` is the run's: a person
+    # who cancels it releases nothing and opens nothing.
+    if: ${{ !cancelled() && needs.plan.outputs.release == 'true' && (needs.scenarios.result == 'success' || needs.scenarios.result == 'failure' || needs.scenarios.result == 'cancelled') }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     environment: release
@@ -299,20 +304,8 @@ jobs:
           results="$RUNNER_TEMP/scenarios/results.md"
           if [ "$SCENARIOS" != success ]; then
             mkdir -p "$RUNNER_TEMP/scenarios"
-            python3 - "$results" "$SCENARIOS" "$RUN_URL" <<'PY'
-          import json, re, sys
-          path, result, run = sys.argv[1:]
-          try:
-              text = open(path, encoding="utf-8").read()
-          except OSError:
-              text = ""
-          m = re.search(r"<!-- dx-scenarios (.*) -->", text)
-          rows = json.loads(m.group(1)) if m else []
-          rows.append({"id": "scenarios", "ok": False, "why": [f"the scenarios job ended in {result}"], "run": run})
-          text = re.sub(r"\n?<!-- dx-scenarios .* -->\n?", "", text)
-          with open(path, "w", encoding="utf-8") as fh:
-              fh.write(f"{text}\n<!-- dx-scenarios {json.dumps(rows)} -->\n")
-          PY
+            python3 scripts/release-lane.py job-row --results "$results" --result "$SCENARIOS" --run "$RUN_URL" \
+              --minutes "$SCENARIOS_TIMEOUT" --play "$PLAY" --play-minutes "$PLAY_TIMEOUT"
           fi
           # Exit 1 with its JSON when v7 moved but the Release failed: the
           # outputs are written first, so the watch still runs.
