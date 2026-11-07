@@ -2235,6 +2235,10 @@ A class on html.
           (got.index("FAIL test_a") < got.index("make: *** [Makefile:3: a]") < got.index("b 4999"), "ghp_" in got,
            got.startswith(skipped(12)), excerpt_text(["ok", "make: *** [x] Error 1"]), excerpt_text(early[:-4999]), excerpt_text([f"b {i}" for i in range(5000)])),
           (True, False, True, "", "", ""))
+    big = excerpt_text(["E: broken", "make: *** [Makefile:1: a] Error 1"] + ["z" * 5000] * 400, chars=20000)
+    check("#679 C2: an early error in a log far past the limit is kept, and the excerpt stays within it",
+          (big.startswith("E: broken\nmake: *** [Makefile:1: a] Error 1\n"), len(big) <= 20000,
+           len(excerpt_text(["x" * 50000, "make: *** [a] Error 1"] + ["z"] * 400, chars=1000)) <= 1000), (True, True, True))
     check("#673 C2: a draft whose make pre-pr failed after the agent continues, free, while its free runs stay within the cap",
           (end_verdict("continue", "8", True, False, 3, 3, False, 2, 5, nudged=True, frees=1, prepr_failed=True),
            end_verdict("start", "8", True, False, 3, 3, False, 0, 5, frees=1, prepr_failed=True),

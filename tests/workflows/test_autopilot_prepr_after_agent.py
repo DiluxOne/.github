@@ -306,3 +306,29 @@ def test_a_target_that_failed_early_is_in_the_excerpt_however_long_another_write
     assert re.search(r"^make(\[\d+\])?: \*\*\* \[.*Makefile:\d+: a\] Error 1$", kept, re.M), kept[:2000]
     assert kept.index("FAIL test_a") < kept.index("Makefile:4: a] Error 1") < kept.index("b writes line 3000")
     assert len(kept) <= ap.VERIFY_CHARS + 1
+
+
+def test_an_early_error_in_a_log_past_the_limit_is_still_in_the_excerpt(tmp_path, monkeypatch):
+    # #679 C2: past read_end's window, the error in the first lines is read
+    # all the same, and the excerpt stays within VERIFY_CHARS.
+    ap = autopilot()
+    repo, _ = a_repo(tmp_path, "true")
+    monkeypatch.chdir(repo)
+    out_dir = tmp_path / "verify"
+    out_dir.mkdir()
+    head = ap.git_out("rev-parse", "HEAD")
+    (out_dir / ap.VERIFY_RESULT).write_text(json.dumps({"head": head, "rc": 2}))
+    filler = "".join(f"line {i} " + "y" * 200 + "\n" for i in range(ap.VERIFY_CHARS * 4 // 200 + 100))
+    log = out_dir / ap.VERIFY_LOG
+    log.write_text("lint: checking\nscripts/x.py:3: E999 SyntaxError\nmake: *** [Makefile:7: lint] Error 1\n" + filler)
+    assert log.stat().st_size > ap.VERIFY_CHARS * 4
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "gh-output"))
+    with quiet():
+        assert ap.main(["verify", "result", str(out_dir)]) == 0
+    kept = (out_dir / ap.VERIFY_TAIL).read_text()
+    assert "verdict=fail" in (tmp_path / "gh-output").read_text()
+    assert kept.startswith("lint: checking\nscripts/x.py:3: E999 SyntaxError\nmake: *** [Makefile:7: lint] Error 1\n… (")
+    assert len(kept.rstrip("\n")) <= ap.VERIFY_CHARS
+    assert kept.rstrip("\n").endswith(filler.splitlines()[-1])
+    # And the comment keeps it whole.
+    assert "E999 SyntaxError" in ap.prepr_comment("fail", kept, "u", True)
