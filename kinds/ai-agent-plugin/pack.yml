@@ -58,6 +58,10 @@ pre-pr-make:
     - python3 "$central/scripts/agent-manifests.py" check .
     - php "$central/scripts/review-rules.php" --kind ai-agent-plugin --repo .
 
+# The commands `pre-pr-make` runs that a bare runner may not have (#682,
+# scripts/pre-pr.py tools): none, python3 and php are on it.
+pre-pr-tools: []
+
 # How detection recognises a repository of this kind (#191,
 # scripts/detect.py): one of `any-files`, the manifests of tools.yml, from
 # the repository's root. Detection only proposes: repos.yml says what a

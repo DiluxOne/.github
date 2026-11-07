@@ -91,7 +91,10 @@ name: Autopilot
 # failure lines and those before them, wherever they are in the log, #679)
 # and the output's last lines (dx-autopilot-prepr), the run is labelled `autopilot:free-N`, and the
 # continue's agent reads them in .dx-io/pre-pr.md and fixes them first, while
-# its free runs stay within the cap (scripts/autopilot.py end_verdict). The
+# its free runs stay within the cap (scripts/autopilot.py end_verdict).
+# Before the agent, and before `verify`'s `make pre-pr`, both jobs install
+# the tools the kind's pre-pr needs that the runner lacks (#682, the pack's
+# `pre-pr-tools`, scripts/pre-pr.py tools). The
 # questions it needs answered are asked while it writes the Spec.
 #   mode: fix       called from org-pull-request.yml, and in the
 #                   organisation's own repository from its
@@ -1132,6 +1135,24 @@ jobs:
           name: autopilot-in-work
           path: .dx-io
 
+      # #682: the tools the kind's `make pre-pr` needs that the runner
+      # lacks (its pack's `pre-pr-tools`, scripts/pre-pr.py tools), so the
+      # agent's own `check` runs on what `verify` runs on. From the
+      # runner's apt mirror, before any of the repository's code runs; an
+      # install that fails fails the job.
+      - name: The tools make pre-pr needs
+        id: tools
+        run: |
+          set -euo pipefail
+          packages=$(python3 .dx-central/scripts/pre-pr.py tools .)
+          if [ -z "$packages" ]; then echo "make pre-pr needs nothing the runner lacks."; exit 0; fi
+          sudo=""; if command -v sudo > /dev/null 2>&1; then sudo=sudo; fi
+          echo "Installing what make pre-pr needs: $(echo $packages)"
+          $sudo apt-get update -qq
+          # One package a line, each checked by pre-pr.py against apt's names.
+          # shellcheck disable=SC2086
+          $sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $packages
+
       - name: The work's task
         id: task
         env:
@@ -1337,6 +1358,24 @@ jobs:
           fi
           [ "$(git rev-parse HEAD)" = "$WANT" ] || { echo "::error::The working tree is at $(git rev-parse HEAD), not at the agent's head $WANT."; exit 1; }
 
+      # #682: the tools the kind's `make pre-pr` needs that the runner
+      # lacks (its pack's `pre-pr-tools`, scripts/pre-pr.py tools), before
+      # `make pre-pr`, as in `work`. From the runner's apt mirror; an
+      # install that fails fails the job, and its verdict is then `lost`
+      # (none), not the agent's failure.
+      - name: The tools make pre-pr needs
+        id: tools
+        run: |
+          set -euo pipefail
+          packages=$(python3 .dx-central/scripts/pre-pr.py tools .)
+          if [ -z "$packages" ]; then echo "make pre-pr needs nothing the runner lacks."; exit 0; fi
+          sudo=""; if command -v sudo > /dev/null 2>&1; then sudo=sudo; fi
+          echo "Installing what make pre-pr needs: $(echo $packages)"
+          $sudo apt-get update -qq
+          # One package a line, each checked by pre-pr.py against apt's names.
+          # shellcheck disable=SC2086
+          $sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $packages
+
       # Once, whole, up to its own deadline (just under the step's limit,
       # itself just under GitHub's six hours): its result is marked a
       # time-out first, so a step killed on its limit still reads as one.
@@ -1355,7 +1394,7 @@ jobs:
 
       - name: Its verdict
         id: result
-        if: always()
+        if: always() && steps.tools.outcome != 'failure'
         run: python3 .dx-central/scripts/autopilot.py verify result .dx-verify
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

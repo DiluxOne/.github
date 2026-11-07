@@ -93,7 +93,9 @@ def test_verify_runs_make_pre_pr_whole_for_at_least_90_minutes_with_no_key():
     assert int(m.group(1)) == run["timeout-minutes"] and 90 <= int(m.group(1)) - int(m.group(2))
     assert "verify run" in run["run"] and run["env"]["DX_PULLS"].endswith("/.dx-io/pulls.json")
     assert set(job["needs"]) >= {"work"} and "verify" in wf["jobs"]["apply"]["needs"]
-    assert step("verify", step_id="result")["if"] == "always()"
+    # #682: always, but after a failed install of the tools, when no
+    # verdict is the `lost` apply reads.
+    assert step("verify", step_id="result")["if"] == "always() && steps.tools.outcome != 'failure'"
 
 
 def test_verify_runs_it_whole_and_says_pass_or_fail(tmp_path, monkeypatch):
