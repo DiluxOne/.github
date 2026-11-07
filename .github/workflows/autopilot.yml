@@ -96,7 +96,9 @@ name: Autopilot
 # the tools the kind's pre-pr needs that the runner lacks (#682, the pack's
 # `pre-pr-tools`, scripts/pre-pr.py tools). A failure whose output says a
 # command is not found is `verify`'s `engine` verdict: the run is free, the
-# comment says what the runner lacks, and it stops with no fix round. The
+# comment says what the runner lacks, and it stops with no fix round. A
+# fix round that fails as the round before did (the comment's hidden
+# `dx-prepr-sig:`) stops too, rather than start another. The
 # questions it needs answered are asked while it writes the Spec.
 #   mode: fix       called from org-pull-request.yml, and in the
 #                   organisation's own repository from its

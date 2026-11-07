@@ -420,3 +420,57 @@ def test_a_command_the_runner_lacks_is_an_engine_failure_from_verify_to_the_end(
     assert not any("autopilot:continue" in c for c in calls)
     assert ["pr", "edit", "8", "--repo", "o/r", "--add-label", "needs-human"] in calls
     assert ["pr", "edit", "8", "--repo", "o/r", "--remove-label", "autopilot:run-2", "--add-label", "autopilot:free-2"] in calls
+
+
+def end_after(ap, tmp_path, monkeypatch, before_tail, tail_text_now):
+    """`end` of a fix round whose `make pre-pr` failed with tail_text_now,
+    after a run whose comment showed before_tail: the verdict and the calls."""
+    tail = tmp_path / "tail.txt"
+    tail.write_text(tail_text_now)
+    earlier = {"author": {"login": ap.BOT}, "body": ap.prepr_comment("fail", before_tail, "u", True), "createdAt": "2026-01-01T00:00:00Z"}
+    calls = []
+
+    def fake_gh(*args, input_text=None):
+        calls.append(list(args))
+        return json.dumps({"comments": [earlier]}) if args[1] == "view" else ""
+
+    monkeypatch.setattr(ap, "gh", fake_gh)
+    monkeypatch.setattr(ap, "pr_json", lambda repo, pr, fields: {"body": CHECKLIST, "isDraft": True, "headRefOid": "abc",
+                                                                 "labels": [{"name": l} for l in ("autopilot", "autopilot:run-1", "autopilot:free-2", "autopilot:run-3")]})
+    monkeypatch.setattr(ap, "refresh_board", lambda repo, number: None)
+    monkeypatch.setattr(ap.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "", ""))
+    monkeypatch.setattr(ap.autonomy, "policy_in_force", lambda: {"autopilot-runs": 5})
+    gh_out = tmp_path / "gh-output"
+    gh_out.write_text("")
+    for k, v in {"MODE": "continue", "NUMBER": "7", "PR": "8", "RUNS": "3", "PREPR": "fail", "PREPR_TAIL": str(tail),
+                 "GITHUB_REPOSITORY": "o/r", "STARTED": "2026-01-01T02:00:00Z", "WORK_RESULT": "success", "AGENT_OUTCOME": "success",
+                 "WORK_OUTCOME": "success", "WORK_LOG": str(tmp_path / "none.json"), "GITHUB_OUTPUT": str(gh_out)}.items():
+        monkeypatch.setenv(k, v)
+    for k in ("HEAD_BEFORE", "WHY", "FAILED", "HELD", "CORE"):
+        monkeypatch.delenv(k, raising=False)
+    with quiet():
+        assert ap.main(["end"]) == 0
+    return gh_out.read_text(), calls
+
+
+def test_a_fix_round_that_fails_as_the_round_before_stops_and_says_so(tmp_path, monkeypatch):
+    # #682 C3, through `end`: the same failing lines, other timings and paths.
+    ap = autopilot()
+    before = "FAILED tests/test_x.py::test_it in 1.2s - /tmp/pytest-1/x != y\nmake: *** [Makefile:4: test] Error 1\n"
+    now = "FAILED tests/test_x.py::test_it in 7.9s - /tmp/pytest-88/x != y\nmake: *** [Makefile:4: test] Error 1\n"
+    out, calls = end_after(ap, tmp_path, monkeypatch, before, now)
+    assert "verdict=stopped" in out
+    body = next(c for c in calls if c[:2] == ["pr", "comment"])[-1]
+    assert body.startswith(ap.PREPR_MARK) and "same failure as the round before" in body and "stops rather than start another" in body
+    assert not any("autopilot:continue" in c for c in calls)
+    assert ["pr", "edit", "8", "--repo", "o/r", "--add-label", "needs-human"] in calls
+
+
+def test_a_fix_round_that_fails_another_way_continues(tmp_path, monkeypatch):
+    ap = autopilot()
+    before = "FAILED tests/test_x.py::test_it - AssertionError\nmake: *** [Makefile:4: test] Error 1\n"
+    now = "FAILED tests/test_y.py::test_other - KeyError\nmake: *** [Makefile:4: test] Error 1\n"
+    out, calls = end_after(ap, tmp_path, monkeypatch, before, now)
+    assert "verdict=continue" in out
+    assert ["issue", "edit", "7", "--repo", "o/r", "--add-label", "autopilot:continue"] in calls
+    assert not any("needs-human" in c for c in calls)

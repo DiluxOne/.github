@@ -74,7 +74,9 @@
                              the output's tail and a free fix round; on an
                              `engine` verdict (#682: the runner lacks a
                              command), the comment says so and the run
-                             stops, with no fix round
+                             stops, with no fix round; a fix round that
+                             fails as the round before did (#682: the same
+                             signature) stops too
   autopilot.py prepr-note    #673, with the key, in prep: the output of the
                              last run's failed `make pre-pr`, from dilux-bot's
                              own comment, into DX_IO/pre-pr.md for the agent
@@ -821,7 +823,7 @@ def continue_as(is_draft, record, head, conflicts=False):
 
 
 def end_verdict(mode, pr, draft_, stopped, done, total, limit_hit, runs, cap, pushed=False, asked=False, nudged=False, lost=False, frees=0,
-                prepr_failed=False, engine=False):
+                prepr_failed=False, engine=False, repeated=False):
     """ready | stopped | asked | continue | silent. A run never ends without
     one of the first four: silent is the workflow saying so for the agent.
     A draft with every box ticked that ended without `finish` continues once
@@ -831,12 +833,14 @@ def end_verdict(mode, pr, draft_, stopped, done, total, limit_hit, runs, cap, pu
     step (#673, `prepr_failed`: a fix round with its output), continues,
     uncounted, while its free runs (`frees`, this one included) stay within
     the cap too. One whose `make pre-pr` failed on a command the runner
-    lacks (#682, `engine`) stops: no fix round can install it."""
+    lacks (#682, `engine`) stops: no fix round can install it; so does a
+    fix round that failed as the round before it (`repeated`), rather than
+    start another."""
     if stopped:
         return "stopped"
     if asked:
         return "asked"
-    if engine:
+    if engine or repeated:
         return "stopped"
     if (lost or prepr_failed) and mode != "fix" and pr and draft_ and frees <= cap and runs < cap:
         return "continue"
@@ -1289,6 +1293,50 @@ ENGINE = "engine"
 NOT_FOUND = re.compile(r"^(?:\S+: )?(?:line \d+: )?([\w.+-]+): command not found\s*$|^\S+: \d+: ([\w.+-]+): not found\s*$", re.M)
 
 
+# #682: the failure a `make pre-pr` comment carries, as a hash, hidden in
+# it: the next run's end compares its own with it, and a fix round that
+# failed the same way stops. Taken over the failing lines, with what
+# changes from run to run (temporary paths, hex ids, durations, numbers)
+# replaced; the last lines when there is no failing line.
+SIG_MARK = "dx-prepr-sig:"
+SIG_RE = re.compile(r"<!-- dx-prepr-sig: ([0-9a-f]{16}) -->")
+FAILING = re.compile(r"::error|\bFAIL|\bError\b|\berror:|^make(\[\d+\])?: \*\*\*|command not found|: not found\s*$", re.I | re.M)
+SIG_SUBS = ((re.compile(r"(?:/tmp|/var/folders|/home/runner/work/_temp|/private/var)/\S*"), "<tmp>"),
+            (re.compile(r"\btmp[\w.-]*"), "<tmp>"),
+            (re.compile(r"\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,}\b"), "<hex>"),
+            (re.compile(r"\b\d+(?:[.,]\d+)?\s*(?:ms|µs|us|ns|s|sec|secs|seconds?|m|min|mins|minutes?|h)\b"), "<t>"),
+            (re.compile(r"\d+"), "<n>"))
+
+
+def failure_signature(tail):
+    """The signature of a failing `make pre-pr`'s output (#682): 16 hex
+    digits, the same for two runs that failed on the same lines, whatever
+    their timings and temporary paths. Pure."""
+    lines = [l.strip() for l in (tail or "").splitlines() if l.strip()]
+    failing = [l for l in lines if FAILING.search(l)] or lines[-20:]
+    seen = []
+    for line in failing:
+        for pattern, by in SIG_SUBS:
+            line = pattern.sub(by, line)
+        if line not in seen:
+            seen.append(line)
+    return hashlib.sha256("\n".join(seen).encode("utf-8")).hexdigest()[:16]
+
+
+def previous_signature(comments, started):
+    """The signature of the `make pre-pr` comment this run's fix round came
+    from (#682): the last of dilux-bot's comments that end a run, as
+    prepr_note finds it, written before this run started; "" when that is
+    not a `make pre-pr` comment, or carries none. Pure."""
+    own = [c for c in comments or [] if (c.get("author") or {}).get("login") in BOT_LOGINS and str(c.get("body", "")).startswith(RUN_ENDS)
+           and c.get("createdAt", "") < (started or "~")]
+    last = max(own, key=lambda c: c.get("createdAt", ""), default=None)
+    if not last or not last["body"].startswith(PREPR_MARK):
+        return ""
+    m = SIG_RE.search(last["body"])
+    return m.group(1) if m else ""
+
+
 def missing_command(text):
     """The first command a `make pre-pr` output says is not found, "" when
     none. Pure."""
@@ -1304,12 +1352,19 @@ def code_fence(text):
     return "`" * max(3, max((len(m) for m in re.findall(r"`+", text or "")), default=0) + 1)
 
 
-def prepr_comment(verdict, tail, run_url, continues):
+def shown_tail(tail):
+    """The output as a `make pre-pr` comment shows it, scrubbed and within
+    VERIFY_CHARS. Pure."""
+    return scrub(tail or "").strip("\n")[-VERIFY_CHARS:] or "(no output was kept: the run's log says why)"
+
+
+def prepr_comment(verdict, tail, run_url, continues, repeated=False):
     """The comment of a `make pre-pr` that did not pass after the agent's
     step (#673): what happened, what comes next, and the output's excerpt
-    (what failed, then its tail, #679) in a fence nothing in it can close.
-    Pure."""
-    tail = scrub(tail or "").strip("\n")[-VERIFY_CHARS:] or "(no output was kept: the run's log says why)"
+    (what failed, then its tail, #679) in a fence nothing in it can close,
+    and its failure's signature, hidden (#682). `repeated`: a fix round that
+    failed as the round before, which stops. Pure."""
+    tail = shown_tail(tail)
     fence = code_fence(tail)
     how = PREPR_HOW.get(verdict, "failed")
     nxt = ("The autopilot continues with a fix round from this output, a run that does not count towards its cap (`autopilot:continue`)."
@@ -1321,7 +1376,10 @@ def prepr_comment(verdict, tail, run_url, continues):
         nxt = ("This is an engine failure, which the autopilot cannot fix, so it starts no fix round and the run does not count towards its cap. "
                "A person takes it from here (`needs-human`): a maintainer adds the tool to the kind's `pre-pr-tools` (kinds/<kind>/pack.yml) "
                "or to the runner's image, then brings it back with an answer here.")
-    return (f"{PREPR_MARK}\n**`make pre-pr` {how}**, run in full after the agent's step, so the pull request stays a draft. "
+    elif repeated:
+        nxt = ("This fix round failed with the same failure as the round before, so the autopilot stops rather than start another. "
+               "A person takes it from here (`needs-human`): a maintainer's answer here, a hint in words, brings it back, or they take it over.")
+    return (f"{PREPR_MARK}\n<!-- {SIG_MARK} {failure_signature(tail)} -->\n**`make pre-pr` {how}**, run in full after the agent's step, so the pull request stays a draft. "
             f"{nxt} What it did is in [the run]({run_url}).\n\nWhat failed, and the last lines of its output:\n\n{fence}text\n{tail}\n{fence}\n\n{AI_LINE}")
 
 
@@ -2300,6 +2358,34 @@ A class on html.
            "pre-pr-tools" in eng, "needs-human" in eng, "autopilot:continue" in eng, "msgcat: command not found" in eng,
            "free fix rounds are spent" in eng),
           (True, True, True, True, True, True, False, True, False))
+    # #682 C3: the same failure twice stops.
+    run_a = ("tests/test_x.py::test_it FAILED in 1.23s\nAssertionError: /tmp/pytest-of-runner/pytest-12/test_it0/out.json != expected\n"
+             "make: *** [Makefile:4: test] Error 1\nfinished at 2026-11-07T10:00:01Z, 312 tests, 0.52 seconds, run 3f9c2ab71\n")
+    run_b = ("tests/test_x.py::test_it FAILED in 9.87s\nAssertionError: /tmp/pytest-of-runner/pytest-40/test_it0/out.json != expected\n"
+             "make: *** [Makefile:4: test] Error 1\nfinished at 2026-11-08T23:59:59Z, 313 tests, 1.5 seconds, run e01d77c4a\n")
+    run_c = "tests/test_y.py::test_other FAILED in 1.23s\nKeyError: 'name'\nmake: *** [Makefile:4: test] Error 1\n"
+    sig_a = failure_signature(run_a)
+    check("#682 C3: two outputs that fail on the same lines, differing only in timings, paths and ids, have one signature; another failure another",
+          (sig_a == failure_signature(run_b), sig_a == failure_signature(run_c), re.fullmatch(r"[0-9a-f]{16}", sig_a) is not None,
+           failure_signature("a\nb\nc") == failure_signature("a\nb\nc"), failure_signature("a\nb\nc") == failure_signature("a\nb\nd")),
+          (True, False, True, True, False))
+    first = prepr_comment("fail", run_a, "u", True)
+    ended = [bot_c(STOP + "\nstopped", "2026-01-01T00:00:00Z"), bot_c(first, "2026-01-02T00:00:00Z"), bot_c("thanks", "2026-01-02T01:00:00Z")]
+    check("#682 C3: the comment carries its signature, hidden, and the next run finds it in the last end of a run before it started",
+          (f"<!-- {SIG_MARK} {sig_a} -->" in first, first.startswith(PREPR_MARK), prepr_note([bot_c(first, "2")]) == shown_tail(run_a) + "\n",
+           previous_signature(ended, "2026-01-03T00:00:00Z"), previous_signature(ended + [bot_c(STOP + "\nx", "2026-01-02T02:00:00Z")], "2026-01-03T00:00:00Z"),
+           previous_signature([{**ended[1], "author": {"login": "someone"}}], "2026-01-03T00:00:00Z"), previous_signature(ended, "2026-01-01T12:00:00Z")),
+          (True, True, True, sig_a, "", "", ""))
+    check("#682 C3: the fix round after one with the same failure stops; a different failure continues, within the free-round cap",
+          (end_verdict("continue", "8", True, False, 3, 3, False, 2, 5, nudged=True, frees=2, prepr_failed=True, repeated=True),
+           end_verdict("continue", "8", True, False, 3, 3, False, 2, 5, nudged=True, frees=2, prepr_failed=True, repeated=False),
+           end_verdict("continue", "8", True, False, 3, 3, False, 2, 5, nudged=True, frees=6, prepr_failed=True, repeated=False)),
+          ("stopped", "continue", "silent"))
+    again = prepr_comment("fail", run_b, "u", False, repeated=True)
+    check("#682 C3: its comment says it failed as the round before and the autopilot stops rather than start another, a person takes it",
+          ("same failure as the round before" in again, "stops rather than start another" in again, "needs-human" in again,
+           "autopilot:continue" in again, "free fix rounds are spent" in again, f"<!-- {SIG_MARK} {sig_a} -->" in again),
+          (True, True, True, False, False, True))
     pw_fix = prompt_work("o/r", "7", "8", "feat/7-x", "x", [], True, prepr_failed=True)
     check("#673 C2: the prompt after a failed make pre-pr asks to fix it first, from .dx-io/pre-pr.md; without one it does not",
           (f"{IO_DIR}/{PREPR_NOTE}" in pw_fix, pw_fix.index(PREPR_NOTE) < pw_fix.index("The criteria left"),
@@ -4423,17 +4509,24 @@ def main(argv):
                 runs, frees = run_numbers(names)[1], free_runs(names)
         nudged = bool(pr) and nudged_before(comments)
         engine = held_back and prepr_verdict == ENGINE
-        v = end_verdict(mode, pr, draft_, stopped, done, total, limit, runs, cap, pushed, asked, nudged, lost, frees, held_back, engine)
+        tail_file = os.environ.get("PREPR_TAIL", "")
+        tail = open(tail_file, encoding="utf-8", errors="replace").read() if held_back and tail_file and os.path.exists(tail_file) else ""
+        # #682: a fix round that came from a `make pre-pr` comment and
+        # failed the same way stops instead of starting another.
+        before = previous_signature(comments, started) if held_back and prepr_verdict in ("fail", TIMEOUT) else ""
+        repeated = bool(before) and before == failure_signature(shown_tail(tail))
+        v = end_verdict(mode, pr, draft_, stopped, done, total, limit, runs, cap, pushed, asked, nudged, lost, frees, held_back, engine, repeated)
         if lost:
             print("Its runner was lost: the run does not count towards the cap (#479).")
         if held_back:
             print(f"`make pre-pr` after the agent's step: {prepr_verdict}. The run does not count towards the cap (#673).")
-            tail_file = os.environ.get("PREPR_TAIL", "")
-            tail = open(tail_file, encoding="utf-8", errors="replace").read() if tail_file and os.path.exists(tail_file) else ""
+            if repeated:
+                print("It failed with the same failure as the round before: the autopilot stops (#682).")
             # Before the continue: the next run's prep reads this comment.
-            gh("pr", "comment", str(pr), "--repo", repo, "--body", prepr_comment(prepr_verdict, tail, run_url, v == "continue"))
-            if engine:
-                # #682: an engine failure stops the run; a person has it.
+            gh("pr", "comment", str(pr), "--repo", repo, "--body", prepr_comment(prepr_verdict, tail, run_url, v == "continue", repeated))
+            if engine or repeated:
+                # #682: an engine failure, or the same failure twice, stops
+                # the run; a person has it.
                 gh("pr", "edit", str(pr), "--repo", repo, "--add-label", "needs-human")
             if not os.environ.get("WHY"):
                 os.environ["WHY"] = "`make pre-pr` did not pass after the agent's step, and its free fix rounds are spent."
