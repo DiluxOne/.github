@@ -401,6 +401,14 @@ def check_workflow(check, path=os.path.join(ROOT, ".github", "workflows", "relea
           [(t or {}).get("repositories") for t in used], ["${{ steps.test.outputs.repo }}"] * 2)
     check("workflow: every App token of the scenarios job asks for checks: read and statuses: read (#627)",
           bool(minted) and all(t.get("permission-checks") == "read" and t.get("permission-statuses") == "read" for t in minted.values()), True)
+    # The scenarios job has five hours, its play step stops before it, and
+    # the bug names those two numbers (#690).
+    sc = jobs.get("scenarios", {})
+    play = next((st for st in sc.get("steps") or [] if st.get("id") == "play"), {})
+    env = next((st.get("env") or {} for st in jobs.get("act", {}).get("steps") or [] if st.get("id") == "act"), {})
+    job_t, play_t = sc.get("timeout-minutes") or 0, play.get("timeout-minutes") or 0
+    check("workflow: the scenarios job has 300 minutes, its play step fewer, and the bug names both (#690)",
+          (job_t >= 300, 0 < play_t < job_t, str(env.get("SCENARIOS_TIMEOUT")), str(env.get("PLAY_TIMEOUT"))), (True, True, str(job_t), str(play_t)))
 
 
 class Fake:

@@ -26,6 +26,22 @@ def test_the_callers_tokens_may_read_the_checks_workflow_runs():
         assert w["permission-actions"] == "read"
 
 
+def test_the_scenarios_have_time_and_the_play_step_stops_first():
+    scenarios = jobs()["scenarios"]
+    # Five hours for the job, and the play step stops before it, so the
+    # callers still go back and the results are uploaded (#690).
+    assert scenarios["timeout-minutes"] >= 300
+    play = next(s for s in scenarios["steps"] if s.get("id") == "play")
+    assert play["name"] == "Play every scenario at v7-next"
+    assert 0 < play["timeout-minutes"] < scenarios["timeout-minutes"]
+    assert scenarios["outputs"]["play"] == "${{ steps.play.outcome }}"
+    # The bug names the numbers the workflow uses, never others.
+    env = next(s for s in jobs()["act"]["steps"] if s.get("id") == "act")["env"]
+    assert int(env["SCENARIOS_TIMEOUT"]) == scenarios["timeout-minutes"]
+    assert int(env["PLAY_TIMEOUT"]) == play["timeout-minutes"]
+    assert env["PLAY"] == "${{ needs.scenarios.outputs.play }}"
+
+
 def run_act_step(tmp_path, scenarios, written):
     """The act step's shell up to the decision, with `release-lane.py act`
     replaced by `decide` (which writes nothing to GitHub)."""

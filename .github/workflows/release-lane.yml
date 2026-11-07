@@ -131,10 +131,18 @@ jobs:
     name: Scenarios in the test repository
     needs: [plan, candidate]
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # Past it GitHub cancels the job, not the run: the decision still reads
+    # it as a timeout and opens its bug (#690). The play step stops first
+    # (its own timeout-minutes), leaving an hour for the callers to go back
+    # and the results to be uploaded. The act step's SCENARIOS_TIMEOUT and
+    # PLAY_TIMEOUT name these two numbers in the bug.
+    timeout-minutes: 300
     environment: release
     permissions:
       contents: read
+    outputs:
+      # The play step ends with `exit 0`: a failure is its timeout.
+      play: ${{ steps.play.outcome }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -171,6 +179,8 @@ jobs:
           permission-actions: read
 
       - name: Play every scenario at v7-next
+        id: play
+        timeout-minutes: 240
         env:
           GH_TOKEN: ${{ secrets.DX_TEST_TOKEN }}
           DX_CALLERS_TOKEN: ${{ steps.app.outputs.token }}
@@ -271,6 +281,10 @@ jobs:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           PLAN: ${{ needs.plan.outputs.plan }}
           SCENARIOS: ${{ needs.scenarios.result }}
+          PLAY: ${{ needs.scenarios.outputs.play }}
+          # The scenarios job's timeout-minutes and its play step's.
+          SCENARIOS_TIMEOUT: 300
+          PLAY_TIMEOUT: 240
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN }}
           DX_BOT_ID: ${{ vars.DX_BOT_ID }}
