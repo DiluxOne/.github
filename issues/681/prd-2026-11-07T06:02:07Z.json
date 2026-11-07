@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 681,
+  "prd_sha256": "0aa160b9a115d31b060bf498f8770770ca09ba2bbd2644b3cf90b219ee428921",
+  "prd": "### Problem\n\nEvery callers run, the hourly drift check included, opens pull requests in these repositories that fail and wait for a person, so the org-sync lane never finishes on its own.\n\n### Scope\n\n`scripts/sync-repos.py` (the callers run: which callers a repository gets, which repositories it skips, the trailers of its commits), its `--test`, and its doc header.\n\n### Out of scope\n\nSetting up the battery in the repositories that cannot run it yet. The release caller (#671).\n\n### Acceptance criteria\n\nC1: Given a repository of kind wordpress-plugin with no main plugin file, readme.txt or composer.json, when the callers run computes what it wants, then plugin-checks-wp.yml is not in it and the run says why.\nC2: Given a repository listed under `no-workflows` in repos.yml, when the callers run goes over the organisation, then it opens no issue or pull request there.\nC3: Given any callers branch the run writes, when its commits are read, then each carries `AI-assisted: yes` and `Assisted-by:`, and passes dilux-agentic-workflow's check_commits.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-07T06:02:07Z",
+  "policy": "DiluxOne/.github@0e30df911de3dec5ad346c4e0b8dfc5189f85779",
+  "how": "own-bug"
+}
