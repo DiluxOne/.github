@@ -2,12 +2,28 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
-## [7.13.5](https://github.com/DiluxOne/.github/releases/tag/v7.13.5) · 2026-11-07
+## [7.14.0](https://github.com/DiluxOne/.github/releases/tag/v7.14.0) · 2026-11-07
+
+### Features
+
+- the daily drift check brings workflow callers in step by itself ([#674](https://github.com/DiluxOne/.github/pull/674))
+
+### Fixes
+
+- the pre-pr job has no gettext and loops fix rounds on it ([#685](https://github.com/DiluxOne/.github/pull/685))
+- the pre-pr failure excerpt shows the log's tail, not the error ([#680](https://github.com/DiluxOne/.github/pull/680))
+- sync-repos callers adds new callers with template placeholders ([#676](https://github.com/DiluxOne/.github/pull/676))
+
+## [7.13.5](https://github.com/DiluxOne/.github/releases/tag/v7.13.5) · 2026-11-06
 
 ### Fixes
 
 - run make pre-pr after the agent, in a job of its own ([#675](https://github.com/DiluxOne/.github/pull/675))
 - a merge outside .github leaves autopilot PRs in conflict for up to an hour ([#670](https://github.com/DiluxOne/.github/pull/670))
+
+### Maintenance
+
+- release v7.13.5 ([#678](https://github.com/DiluxOne/.github/pull/678))
 
 ## [7.13.4](https://github.com/DiluxOne/.github/releases/tag/v7.13.4) · 2026-11-05
 
