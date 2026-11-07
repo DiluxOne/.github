@@ -50,13 +50,15 @@ once, one job each, and every other scenario is a group of its own.
         test identity's token (GH_TOKEN) alone, the callers already at the
         ref; their table to FILE; exits 1 when one fails
   release-scenarios.py merge --dir DIR --groups JSON --job NAME=RESULT ...
-                             --out FILE [--run URL]
+                             --out FILE [--run URL] [--minutes N]
+                             [--play-minutes M]
         one table, to FILE (and stdout), from the scenarios-<name>/results.md
         under DIR (`move`, `back` and every group's): each group's rows of
         its own scenarios, and a failing row, with URL, for a group whose
         file is missing (its job failed, timed out or was cancelled), a
-        scenario with no row, and a job whose RESULT is not success; exits
-        1 when a row fails
+        scenario with no row, and a job whose RESULT is not success (a play
+        job's naming its timeout of N minutes, and its play step's of M,
+        #690); exits 1 when a row fails
   release-scenarios.py run --repo OWNER/NAME [--ref v7-next] [--only ID ...]
                            [--out FILE] [--minutes N]
         moves the test repository's callers to the ref through a pull
@@ -771,7 +773,7 @@ def read_results(path):
     return json.loads(m.group(1)) if m else []
 
 
-def merge(gs, files, jobs, run=""):
+def merge(gs, files, jobs, run="", minutes=0, play_minutes=0):
     """One table of every scenario's result, from what the lane's jobs
     wrote (`files`: {"move"|"back"|<group id>: rows, or None for a file
     that is missing}) and how they ended (`jobs`: {name: result}): the
@@ -780,8 +782,13 @@ def merge(gs, files, jobs, run=""):
     failing row, with `run`, for each group whose file is missing (its job
     failed before it wrote it, timed out or was cancelled), each scenario
     with no row in its group's file, a missing move or back file, no groups
-    at all, and each job whose result is not `success`. Pure."""
+    at all, and each job whose result is not `success`. `minutes` and
+    `play_minutes`, the play job's timeout-minutes and its play step's, are
+    named in the rows a timeout may explain (#690): GitHub cancels a job
+    past its own without cancelling the run, and fails a step past its own.
+    Pure."""
     rows = []
+    timeout = f" (its play step at {play_minutes} minutes, its job at {minutes}: timeout-minutes in release-lane.yml)" if minutes else ""
 
     def fail(rid, why):
         rows.append({"id": rid, "ok": False, "why": [why], "run": run})
@@ -799,7 +806,7 @@ def merge(gs, files, jobs, run=""):
         if got is None:
             # A play job that was skipped is its own failing row below.
             if jobs.get("play") != "skipped":
-                fail(g["id"], f"the group {g['id']} left no results: its play job failed before it wrote them, timed out or was cancelled")
+                fail(g["id"], f"the group {g['id']} left no results: its play job failed before it wrote them, timed out{timeout} or was cancelled")
             continue
         by_id = {}
         for r in got:
@@ -815,7 +822,13 @@ def merge(gs, files, jobs, run=""):
     else:
         rows += [own(r) for r in files["back"] if isinstance(r, dict)]
     for name, result in jobs.items():
-        if result != "success":
+        if result == "success":
+            continue
+        if name == "play" and minutes and result == "cancelled":
+            fail(name, f"a play job ran past its timeout of {minutes} minutes and was cancelled (timeout-minutes in release-lane.yml)")
+        elif name == "play" and play_minutes and result == "failure":
+            fail(name, f"a play job ended in failure: a step that broke, or its play step past its timeout of {play_minutes} minutes (timeout-minutes in release-lane.yml)")
+        else:
             fail(name, f"the {name} job ended in {result or 'nothing'}")
     return rows
 
@@ -833,14 +846,14 @@ def read_groups(text):
     return gs if ok else []
 
 
-def merge_dir(path, gs, jobs, run=""):
+def merge_dir(path, gs, jobs, run="", minutes=0, play_minutes=0):
     """`merge` of the artifacts downloaded under `path`, each in its own
     directory (`scenarios-<name>/results.md`)."""
     files = {}
     for name in ["move", "back"] + [g["id"] for g in gs]:
         f = os.path.join(path, f"scenarios-{name}", "results.md")
         files[name] = read_results(f) if os.path.exists(f) else None
-    return merge(gs, files, jobs, run)
+    return merge(gs, files, jobs, run, minutes, play_minutes)
 
 
 DEFAULTS = ("main", "master")
@@ -1309,6 +1322,15 @@ def self_test():
         check("C3: no groups to read is a failing row; a group id unfit for a directory reads as none",
               ([r["id"] for r in merge([], {"move": [], "back": []}, done) if not r["ok"]], read_groups('[{"id": "../x", "scenarios": []}]'), read_groups("not json"), read_groups(json.dumps(mgs))),
               (["groups"], [], [], mgs))
+        # #690: a play job past its timeout-minutes ends cancelled, a play
+        # step past its own fails it: the rows name the minutes.
+        why = lambda rows: {r["id"]: r["why"][0] for r in rows if not r["ok"]}
+        timed = why(merge(mgs, dict(every, b=None), dict(done, play="cancelled"), lane_run, minutes=300, play_minutes=240))
+        check("merge: a cancelled play job ran past its timeout, with its minutes",
+              ("timeout of 300 minutes and was cancelled" in timed["play"], "240 minutes" in timed["b"] and "300" in timed["b"]), (True, True))
+        check("merge: a failed play job may be its play step's timeout",
+              "its play step past its timeout of 240 minutes" in why(merge(mgs, every, dict(done, play="failure"), lane_run, minutes=300, play_minutes=240))["play"], True)
+        check("merge: with no minutes, a job's row says how it ended", why(merge(mgs, every, dict(done, back="cancelled"), lane_run))["back"], "the back job ended in cancelled")
         out = os.path.join(d, "merged.md")
         with contextlib.redirect_stdout(io.StringIO()):
             rc = main(["merge", "--dir", lay(dict(every, b=None)), "--groups", json.dumps(mgs), "--job", "move=success", "--job", "play=failure", "--job", "back=success", "--run", lane_run, "--out", out])
@@ -1380,9 +1402,11 @@ def main(argv):
         p.add_argument("--job", action="append", default=[])
         p.add_argument("--run", default="")
         p.add_argument("--out", required=True)
+        p.add_argument("--minutes", type=int, default=0)
+        p.add_argument("--play-minutes", type=int, default=0)
         a = p.parse_args(argv[1:])
         jobs = dict(j.split("=", 1) if "=" in j else (j, "") for j in a.job)
-        results = merge_dir(a.dir, read_groups(a.groups), jobs, a.run)
+        results = merge_dir(a.dir, read_groups(a.groups), jobs, a.run, a.minutes, a.play_minutes)
         write_results(results, a.out)
         return 0 if all(r["ok"] for r in results) else 1
     if argv[:1] == ["back"]:

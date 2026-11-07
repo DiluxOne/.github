@@ -129,6 +129,10 @@ def test_a_timed_out_play_job_reaches_the_decision(tmp_path):
     # A play job cancelled at its timeout, with no results: a bug.
     d = run_act_step(tmp_path / "a", dict(done, PLAY="cancelled"), dict(every, serial=None))
     assert d["do"] == "bug" and "actions/runs/1" in d["body"]
+    assert d["scenario"] == "serial" and "its play step at 240 minutes, its job at 300" in d["body"]
     # Cancelled after every row it wrote passed: still a bug, never a release.
     d = run_act_step(tmp_path / "b", dict(done, PLAY="cancelled"), every)
-    assert d["do"] == "bug" and d["scenario"] == "play"
+    assert d["do"] == "bug" and d["scenario"] == "play" and "timeout of 300 minutes and was cancelled" in d["body"]
+    # A play step stopped at its own timeout: the job failed, the bug says so.
+    d = run_act_step(tmp_path / "c", dict(done, PLAY="failure"), every)
+    assert d["do"] == "bug" and "its play step past its timeout of 240 minutes" in d["body"]
