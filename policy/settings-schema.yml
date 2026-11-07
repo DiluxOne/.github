@@ -499,6 +499,13 @@ files:
       read-by: [scripts/pre-pr.py]
       issue: "#682"
       says: The commands its `make pre-pr` runs that a bare runner may not have, which the autopilot installs.
+    - key: battery-needs
+      org: any
+      repo: never
+      limit: files at the root, beside what `detect` asks for; a caller a repository has is never removed
+      read-by: [scripts/sync-repos.py]
+      issue: "#681"
+      says: The files the battery needs; the callers run writes no caller of the battery to a repository that lacks one.
     - key: detect
       org: any
       repo: never
