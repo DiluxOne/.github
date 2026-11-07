@@ -3078,6 +3078,10 @@ def daily_callers_test(check, conf):
     calls, said = run("mine", behind, open_prs=["ci/9-org-workflow-callers"])
     check("#672 C2: one with its callers pull request open gets no issue, no pull request and no write",
           opened(calls) == [] and "already open" in said, (opened(calls), said))
+    check("#672 C3: the fixture's callers all match their templates", callers_drift(in_step, conf) == [], callers_drift(in_step, conf))
+    calls, said = run("mine", in_step)
+    check("#672 C3: a listed repository in step gets no issue, no pull request and no write",
+          opened(calls) == [] and "callers in step" in said, (opened(calls), said))
 
 
 def drift_or_reason(repo, conf, labels, block, current=0):
