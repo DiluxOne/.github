@@ -1029,13 +1029,16 @@ def sync_callers(repo, conf, dry):
     # The callers it lacked, whole, with the values repos.yml gives them.
     for path, text in added.items():
         wanted[path] = text
-        name = os.path.basename(path)
-        for key in sorted(set(owned.get(name) or []) - set(values)):
-            notes.append(f"{path}: new, from workflow-templates/{name}; repos.yml gives no `{key}`: set it in its entry's `callers`")
     for note in notes:
         print(f"  {note}")
+    # Nothing still holding a template's placeholder is written (#671): that
+    # file stays out, the others go in.
+    refused = refuse_placeholders(full, wanted, added, parsed_moved, owned, values, major)
+    if old and refused:
+        print(f"  the move to @v{current} waits: {', '.join(refused)} must be brought in step first")
+        return
     if not wanted:
-        print("  callers in step" if not notes else "  nothing this script can bring in step")
+        print("  callers in step" if not notes and not refused else "  nothing this script can bring in step")
         return
     changed = ", ".join(wanted)
     if dry:
@@ -1063,6 +1066,31 @@ def sync_callers(repo, conf, dry):
     open_change(repo, default, wanted, "Keep the workflow callers in step with the organisation's templates", body,
                 "ci/{}-org-workflow-callers", "ci: keep the workflow callers in step with the templates", pr_body,
                 "ci: keep {} in step with its template", mode="callers")
+
+
+def refuse_placeholders(full, wanted, added, parsed, owned, values, major):
+    """Takes out of `wanted` each caller placeholder_problems() refuses,
+    saying the repository, the path and why (#671): a file in `added` is
+    new, from its template; any other, the caller (in `parsed`) of the
+    templates it calls. The paths it took out, sorted."""
+    tpls = templates(major)
+    of = {}
+    for tname, (_, data) in tpls.items():
+        path = caller_for(dict(data, _name=tname), parsed, False)
+        if path:
+            of.setdefault(path, []).append(tname)
+    refused = []
+    for path in list(wanted):
+        whole = path in added
+        names = [os.path.basename(path)] if whole else of.get(path, [])
+        reasons = [r for n in names if n in tpls
+                   for r in placeholder_problems(path, wanted[path], tpls[n][0], set(owned.get(n) or []), values, whole)]
+        if reasons:
+            del wanted[path]
+            refused.append(path)
+            for reason in dict.fromkeys(reasons):
+                print(f"  {full}: {path} not written: {reason}")
+    return sorted(refused)
 
 
 USES_RE = re.compile(r"DiluxOne/\.github/\.github/workflows/[\w.-]+@v(\d+)\b")
@@ -1308,7 +1336,13 @@ def yaml_scalar(value):
 def owned_lines(text, owned):
     """{input: (line index, its value)} of the inputs in OWNED a caller's
     `with:` blocks set, the last of each."""
-    lines, out, inside = text.splitlines(keepends=True), {}, False
+    return {key: (i, value) for key, i, value in every_owned_line(text, owned)}
+
+
+def every_owned_line(text, owned):
+    """[(input, line index, its value)] of each line of a caller's `with:`
+    blocks that sets an input in OWNED, in order: one per job that sets it."""
+    lines, out, inside = text.splitlines(keepends=True), [], False
     for i, line in enumerate(lines):
         if re.match(r"^    with:\s*(#.*)?$", line):
             inside = True
@@ -1319,17 +1353,19 @@ def owned_lines(text, owned):
         if m and m.group(1) in owned:
             raw = line.split(":", 1)[1]
             value = parse_yaml(f"v: {raw.strip()}" if raw.strip() else "v:") or {}
-            out[m.group(1)] = (i, value.get("v"))
+            out.append((m.group(1), i, value.get("v")))
     return out
 
 
 def fill_inputs(text, owned, values, only=None):
     """The caller's text with each input in OWNED that VALUES gives written
-    with that value, its comment dropped (it said to fill it in); with
-    `only`, those inputs alone."""
-    lines = text.splitlines(keepends=True)
-    for key, (i, _) in owned_lines(text, owned).items():
-        if key in values and (only is None or key in only):
+    with that value in every job that sets it (#671), its comment dropped
+    (it said to fill it in); with `only`, those inputs alone, and only where
+    they hold the value the last job sets (the placeholder placeholders()
+    found), never another job's own value."""
+    lines, last = text.splitlines(keepends=True), owned_lines(text, owned)
+    for key, i, have in every_owned_line(text, owned):
+        if key in values and (only is None or (key in only and plain(have) == plain(last[key][1]))):
             lines[i] = f"      {key}: {yaml_scalar(values[key])}\n"
     return "".join(lines)
 
@@ -1344,6 +1380,28 @@ def placeholders(text, template_text, owned, values):
         if key in theirs and plain(have) == plain(theirs[key]) and (key not in values or plain(values[key]) != plain(have)):
             out[key] = theirs[key]
     return out
+
+
+FILL_IN = "Fill in"
+
+
+def placeholder_problems(path, text, template_text, owned, values, whole):
+    """Why the caller at `path` must not be written as `text` (#671), as
+    reasons, none when it may: an input in OWNED still at its template's
+    value with no other in repos.yml (placeholders()); and, for a file new
+    (`whole`, written from its template), a placeholder of its template
+    anywhere in it, or the template's "Fill in". Pure."""
+    found = placeholders(text, template_text, owned, values)
+    if whole:
+        for key, _, value in every_owned_line(template_text, owned):
+            given = key in values and plain(values[key]) == plain(value)
+            if not given and value not in (None, "") and str(value) in text and key not in found:
+                found[key] = value
+    reasons = [f"repos.yml gives no `{key}` (it would hold `{yaml_scalar(value)}`)" if key not in values
+               else f"it still holds `{yaml_scalar(value)}`, the template's `{key}`" for key, value in sorted(found.items())]
+    if whole and FILL_IN in text:
+        reasons.append(f"it still says \"{FILL_IN}\"")
+    return reasons
 
 
 def placeholder_lines(files, conf, name, central=False, major=None):
@@ -2952,7 +3010,7 @@ def callers_test(check, conf):
           (sorted(written), out.getvalue()))
     check("#562 C2: and writes each input of its own with repos.yml's value, never the template's placeholder",
           ("support-url: https://github.com/DiluxOne/.github/blob/main/SUPPORT.md\n" in written[".github/workflows/issues.yml"][1],
-           "example.com" in written[".github/workflows/issues.yml"][1], "fill in" in out.getvalue()), (True, False, False))
+           "example.com" in written[".github/workflows/issues.yml"][1], "fill in" in out.getvalue()) == (True, False, False), out.getvalue())
     # #562 C2: the callers' values come from the entry or the defaults.
     owned_all = (conf.get("callers") or {}).get("repository-owned") or {}
     plugin_conf = {**conf, "repos": {**conf["repos"], "diluxone-new-wordpress": {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"]}], "callers": {"slug": "new-one"}}}}
@@ -2962,12 +3020,12 @@ def callers_test(check, conf):
     check("#562 C2: every new caller of a plugin holds no template placeholder", {p: v for p, v in left.items() if v} == {}, left)
     release = fresh.get(".github/workflows/release-wp.yml", "")
     check("#562 C2: the entry's value wins over the default, and the default fills the rest",
-          ("slug: new-one\n" in release, "version-constant: DILUXONE_NEW_VERSION\n" in release, "dry-run: true\n" in release, "my-plugin" in release), (True, True, True, False))
+          ("slug: new-one\n" in release, "version-constant: DILUXONE_NEW_VERSION\n" in release, "dry-run: true\n" in release, "my-plugin" in release) == (True, True, True, False), release)
     # A release that rehearses is left rehearsing: nothing merged by policy makes it publish.
     rehearsing = templates()["release-wp.yml"][0].replace("my-plugin", "new-one").replace("MY_PLUGIN_VERSION", "DILUXONE_NEW_VERSION")
     check("#562 C2: a caller holding the template's `dry-run: true` is no placeholder, and is never rewritten to publish",
           ("dry-run" in placeholders(rehearsing, templates()["release-wp.yml"][0], {"dry-run"}, repos_conf.caller_values(plugin_conf, "diluxone-new-wordpress")),
-           "dry-run: false" in fill_inputs(rehearsing, {"dry-run"}, repos_conf.caller_values(plugin_conf, "diluxone-new-wordpress"))), (False, False))
+           "dry-run: false" in fill_inputs(rehearsing, {"dry-run"}, repos_conf.caller_values(plugin_conf, "diluxone-new-wordpress"))) == (False, False), "")
     raw_issues = templates()["issues.yml"][0].replace("$default-branch", "main")
     lines = placeholder_lines({".github/workflows/issues.yml": raw_issues}, conf, "diluxone-new-wordpress")
     check("#562 C2: the drift check lists a caller that still holds a template placeholder, with the value repos.yml gives",
@@ -2976,7 +3034,7 @@ def callers_test(check, conf):
     filled = fill_inputs(raw_issues, {"support-url"}, repos_conf.caller_values(conf, "x"))
     check("#562 C2: and none once it holds the value, nor one holding the repository's own",
           (placeholder_lines({".github/workflows/issues.yml": filled}, conf, "x"),
-           placeholder_lines({".github/workflows/issues.yml": raw_issues.replace("https://example.com/support", "https://mine.example")}, conf, "x")), ([], []))
+           placeholder_lines({".github/workflows/issues.yml": raw_issues.replace("https://example.com/support", "https://mine.example")}, conf, "x")) == ([], []), filled)
     # Its labels: every label of labels.yml, those the triage, the acceptance
     # and the autopilot set among them.
     labels = load_yaml(os.path.join(CENTRAL, "labels.yml"))
@@ -3784,6 +3842,52 @@ def release_caller_test(check, conf):
     check("#671 C1: and none, with the note, when wordpress.org cannot be read", release not in written and f"{release}: could not tell" in said, (sorted(written), said))
 
 
+def placeholder_guard_test(check, conf):
+    """#671 C2: a caller that would still hold a template's placeholder, or
+    a new one saying "Fill in", is not written; the others still are."""
+    name, release = "diluxone-new-wordpress", ".github/workflows/release-wp.yml"
+    issues, checks = ".github/workflows/issues.yml", ".github/workflows/plugin-checks-wp.yml"
+    owned = (conf.get("callers") or {}).get("repository-owned") or {}
+    tpl = {n: t for n, (t, _) in templates().items()}
+    check("#671 C2: no template under workflow-templates/ says \"Fill in\"", [n for n, t in tpl.items() if FILL_IN in t] == [], "")
+    got = placeholder_problems(release, tpl["release-wp.yml"], tpl["release-wp.yml"], set(owned["release-wp.yml"]), {"dry-run": True}, True)
+    check("#671 C2: a new release caller with no slug nor version-constant names both, not dry-run",
+          got == ["repos.yml gives no `slug` (it would hold `my-plugin`)", "repos.yml gives no `version-constant` (it would hold `MY_PLUGIN_VERSION`)"], got)
+    half = fill_inputs(tpl["release-wp.yml"], {"slug", "version-constant"}, {"slug": "mine", "version-constant": "MINE_VERSION"}).replace("slug: mine", "slug: my-plugin", 1)
+    got = placeholder_problems(release, half, tpl["release-wp.yml"], set(owned["release-wp.yml"]), {"slug": "mine", "version-constant": "MINE_VERSION", "dry-run": True}, True)
+    check("#671 C2: a new one holding the placeholder in one job of two is refused", got == ["it still holds `my-plugin`, the template's `slug`"], got)
+    filled = fill_inputs(tpl["release-wp.yml"], set(owned["release-wp.yml"]), {"slug": "mine", "version-constant": "MINE_VERSION", "dry-run": True})
+    check("#671 C2: every job of a new caller gets repos.yml's value, and then it passes",
+          ("my-plugin" in filled, placeholder_problems(release, filled, tpl["release-wp.yml"], set(owned["release-wp.yml"]), {"slug": "mine", "version-constant": "MINE_VERSION", "dry-run": True}, True)) == (False, []), filled)
+    got = placeholder_problems(issues, tpl["issues.yml"], tpl["issues.yml"], {"support-url"}, {}, False)
+    check("#671 C2: a caller it has that would hold example.com/support with no value is refused", got == ["repos.yml gives no `support-url` (it would hold `https://example.com/support`)"], got)
+    said = "# Fill in the profile.\n" + fill_inputs(tpl["pull-request-comments.yml"], {"profile"}, {"profile": "general"})
+    check("#671 C2: a new one saying \"Fill in\" is refused, one it has is not judged by its comments",
+          (placeholder_problems(".github/workflows/pull-request-comments.yml", said, tpl["pull-request-comments.yml"], {"profile"}, {"profile": "general"}, True),
+           placeholder_problems(".github/workflows/pull-request-comments.yml", said, tpl["pull-request-comments.yml"], {"profile"}, {"profile": "general"}, False))
+          == (["it still says \"Fill in\""], []), said)
+    # Through `callers`: no value for the plugin's slug, version constant nor
+    # support URL, published (so its release caller is wanted).
+    spec = conf.get("callers") or {}
+    bare = {**conf, "callers": {**spec, "defaults": {k: v for k, v in (spec.get("defaults") or {}).items() if k not in ("slug", "version-constant", "support-url")}},
+            "repos": {**(conf.get("repos") or {}), name: {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"]}]}}}
+    written, prs, said = callers_run(bare, name, {}, "wordpress-plugin", {"version": "1.2.0"})
+    check("#671 C2: `callers` writes none of the callers that would hold a placeholder", not {release, checks, issues} & set(written), sorted(written))
+    check("#671 C2: and the others still go in, in one pull request", ".github/workflows/pull-request-comments.yml" in written and len(prs) == 1, (sorted(written), said))
+    check("#671 C2: its output names the repository, the path and the input",
+          all(line in said for line in (f"o/{name}: {release} not written: repos.yml gives no `slug` (it would hold `my-plugin`)",
+                                       f"o/{name}: {release} not written: repos.yml gives no `version-constant` (it would hold `MY_PLUGIN_VERSION`)",
+                                       f"o/{name}: {issues} not written: repos.yml gives no `support-url` (it would hold `https://example.com/support`)")), said)
+    real = globals()["new_callers"]
+    globals()["new_callers"] = lambda *a, **k: {p: ("# Fill in the profile.\n" + t if p.endswith("pull-request-comments.yml") else t) for p, t in real(*a, **k).items()}
+    try:
+        written, prs, said = callers_run(bare, name, {}, "wordpress-plugin", {"version": "1.2.0"})
+    finally:
+        globals()["new_callers"] = real
+    check("#671 C2: a new caller saying \"Fill in\" is not written, and with nothing left no pull request is opened",
+          (written, prs, f"o/{name}: .github/workflows/pull-request-comments.yml not written: it still says \"Fill in\"" in said) == ({}, [], True), said)
+
+
 def self_test():
     failed = 0
     # The runs below write through a stand-in for gh, never a real clone:
@@ -3957,6 +4061,7 @@ def self_test():
     security_visibility_test(check)
     conventions_test(check, block_file)
     release_caller_test(check, conf)
+    placeholder_guard_test(check, conf)
     # The org-sync lane (#155): a run from a merged commit marks its issue,
     # and labels it only once its Type is Task; the lane reads it back.
     policy = load_yaml(os.path.join(CENTRAL, "policy", "autonomy.yml"))
