@@ -93,7 +93,9 @@ def test_verify_runs_make_pre_pr_whole_for_at_least_90_minutes_with_no_key():
     assert int(m.group(1)) == run["timeout-minutes"] and 90 <= int(m.group(1)) - int(m.group(2))
     assert "verify run" in run["run"] and run["env"]["DX_PULLS"].endswith("/.dx-io/pulls.json")
     assert set(job["needs"]) >= {"work"} and "verify" in wf["jobs"]["apply"]["needs"]
-    assert step("verify", step_id="result")["if"] == "always()"
+    # #682: always, but after a failed install of the tools, when no
+    # verdict is the `lost` apply reads.
+    assert step("verify", step_id="result")["if"] == "always() && steps.tools.outcome != 'failure'"
 
 
 def test_verify_runs_it_whole_and_says_pass_or_fail(tmp_path, monkeypatch):
@@ -354,3 +356,125 @@ def test_a_passing_run_keeps_the_tail_as_today(tmp_path, monkeypatch):
     today = ap.tail_text(ap.read_end(str(out_dir / ap.VERIFY_LOG)))
     assert (out_dir / ap.VERIFY_TAIL).read_text() == today + "\n"
     assert printed.getvalue().startswith(today + "\n") and "Error 1 (ignored)" not in today
+
+
+def test_a_command_the_runner_lacks_is_an_engine_failure_from_verify_to_the_end(tmp_path, monkeypatch):
+    # #682 C2: verify reads `not found` in the output and says `engine`;
+    # apply keeps the ready back with it, and the end stops, with no fix round.
+    ap = autopilot()
+    repo, _ = a_repo(tmp_path, "@echo checking; dx-no-such-tool-682 --check")
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("DX_DEADLINE", str(int(time.time()) + 600))
+    out_dir, gh_out = tmp_path / "verify", tmp_path / "gh-output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(gh_out))
+    with quiet():
+        ap.main(["verify", "run", str(out_dir)])
+        ap.main(["verify", "result", str(out_dir)])
+    assert "verdict=engine" in gh_out.read_text()
+    tail = out_dir / ap.VERIFY_TAIL
+    assert ap.missing_command(tail.read_text()) == "dx-no-such-tool-682"
+    # The verdict reaches apply as verify's output, and the end as apply's.
+    apply_env = step("apply", step_id="applied")["env"]["PREPR"]
+    assert "needs.verify.outputs.verdict" in apply_env
+    assert step("apply", step_id="end")["env"]["PREPR"] == "${{ steps.applied.outputs.prepr }}"
+    outbox = tmp_path / "outbox.jsonl"
+    outbox.write_text(json.dumps({"kind": "ready", "text": "Ran it.", "deferred": True}) + "\n")
+    finished = []
+    real_main = ap.main
+    monkeypatch.setattr(ap, "main", lambda argv: finished.append(argv) or 0)
+    monkeypatch.setenv("PREPR", "engine")
+    gh_out.write_text("")
+    with quiet():
+        assert ap.apply_outbox(str(outbox), "o/r", "7", "8") == 0
+    assert finished == [] and "prepr=engine" in gh_out.read_text()
+    monkeypatch.setattr(ap, "main", real_main)
+    labels = ["autopilot", "autopilot:run-1", "autopilot:run-2"]
+    calls = []
+
+    def fake_gh(*args, input_text=None):
+        calls.append(list(args))
+        return json.dumps({"comments": []}) if args[1] == "view" else ""
+
+    monkeypatch.setattr(ap, "gh", fake_gh)
+    monkeypatch.setattr(ap, "pr_json", lambda repo, pr, fields: {"body": CHECKLIST, "isDraft": True, "headRefOid": "abc",
+                                                                 "labels": [{"name": l} for l in labels]})
+    monkeypatch.setattr(ap, "refresh_board", lambda repo, number: None)
+    monkeypatch.setattr(ap.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "", ""))
+    monkeypatch.setattr(ap.autonomy, "policy_in_force", lambda: {"autopilot-runs": 5})
+    for k, v in {"MODE": "continue", "NUMBER": "7", "PR": "8", "RUNS": "2", "PREPR": "engine", "PREPR_TAIL": str(tail),
+                 "GITHUB_REPOSITORY": "o/r", "STARTED": "2026-01-01T00:00:00Z", "WORK_RESULT": "success", "AGENT_OUTCOME": "success",
+                 "WORK_OUTCOME": "success", "WORK_LOG": str(tmp_path / "none.json")}.items():
+        monkeypatch.setenv(k, v)
+    for k in ("HEAD_BEFORE", "WHY", "FAILED", "HELD", "CORE"):
+        monkeypatch.delenv(k, raising=False)
+    gh_out.write_text("")
+    with quiet():
+        assert ap.main(["end"]) == 0
+    assert "verdict=stopped" in gh_out.read_text()
+    comments = [c for c in calls if c[:2] == ["pr", "comment"]]
+    assert len(comments) == 1
+    body = comments[0][comments[0].index("--body") + 1]
+    # A stop first, so a maintainer's answer brings it back (review-reply.yml).
+    assert body.startswith(ap.STOP + "\n" + ap.PREPR_MARK) and "the runner lacks `dx-no-such-tool-682`" in body
+    assert "engine failure" in body and "starts no fix round" in body
+    # No fix round, a person has it, and the run is free.
+    assert not any("autopilot:continue" in c for c in calls)
+    assert ["pr", "edit", "8", "--repo", "o/r", "--add-label", "needs-human"] in calls
+    assert ["pr", "edit", "8", "--repo", "o/r", "--remove-label", "autopilot:run-2", "--add-label", "autopilot:free-2"] in calls
+
+
+def end_after(ap, tmp_path, monkeypatch, before_tail, tail_text_now):
+    """`end` of a fix round whose `make pre-pr` failed with tail_text_now,
+    after a run whose comment showed before_tail: the verdict and the calls."""
+    tail = tmp_path / "tail.txt"
+    tail.write_text(tail_text_now)
+    earlier = {"author": {"login": ap.BOT}, "body": ap.prepr_comment("fail", before_tail, "u", True), "createdAt": "2026-01-01T00:00:00Z"}
+    calls = []
+
+    def fake_gh(*args, input_text=None):
+        calls.append(list(args))
+        return json.dumps({"comments": [earlier]}) if args[1] == "view" else ""
+
+    monkeypatch.setattr(ap, "gh", fake_gh)
+    monkeypatch.setattr(ap, "pr_json", lambda repo, pr, fields: {"body": CHECKLIST, "isDraft": True, "headRefOid": "abc",
+                                                                 "labels": [{"name": l} for l in ("autopilot", "autopilot:run-1", "autopilot:free-2", "autopilot:run-3")]})
+    monkeypatch.setattr(ap, "refresh_board", lambda repo, number: None)
+    monkeypatch.setattr(ap.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "", ""))
+    monkeypatch.setattr(ap.autonomy, "policy_in_force", lambda: {"autopilot-runs": 5})
+    gh_out = tmp_path / "gh-output"
+    gh_out.write_text("")
+    for k, v in {"MODE": "continue", "NUMBER": "7", "PR": "8", "RUNS": "3", "PREPR": "fail", "PREPR_TAIL": str(tail),
+                 "GITHUB_REPOSITORY": "o/r", "STARTED": "2026-01-01T02:00:00Z", "WORK_RESULT": "success", "AGENT_OUTCOME": "success",
+                 "WORK_OUTCOME": "success", "WORK_LOG": str(tmp_path / "none.json"), "GITHUB_OUTPUT": str(gh_out)}.items():
+        monkeypatch.setenv(k, v)
+    for k in ("HEAD_BEFORE", "WHY", "FAILED", "HELD", "CORE"):
+        monkeypatch.delenv(k, raising=False)
+    with quiet():
+        assert ap.main(["end"]) == 0
+    return gh_out.read_text(), calls
+
+
+def test_a_fix_round_that_fails_as_the_round_before_stops_and_says_so(tmp_path, monkeypatch):
+    # #682 C3, through `end`: the same failing lines, other timings and paths.
+    ap = autopilot()
+    before = "FAILED tests/test_x.py::test_it in 1.2s - /tmp/pytest-1/x != y\nmake: *** [Makefile:4: test] Error 1\n"
+    now = "FAILED tests/test_x.py::test_it in 7.9s - /tmp/pytest-88/x != y\nmake: *** [Makefile:4: test] Error 1\n"
+    out, calls = end_after(ap, tmp_path, monkeypatch, before, now)
+    assert "verdict=stopped" in out
+    body = next(c for c in calls if c[:2] == ["pr", "comment"])[-1]
+    assert body.startswith(ap.STOP + "\n" + ap.PREPR_MARK) and "same failure as the round before" in body and "stops rather than start another" in body
+    assert not any("autopilot:continue" in c for c in calls)
+    assert ["pr", "edit", "8", "--repo", "o/r", "--add-label", "needs-human"] in calls
+    # review-reply.yml resumes on an answer after a comment whose first line is the stop's.
+    reply = (ROOT / ".github/workflows/review-reply.yml").read_text(encoding="utf-8")
+    assert f'"{ap.STOP}"*' in reply and body.split("\n")[0] == ap.STOP
+
+
+def test_a_fix_round_that_fails_another_way_continues(tmp_path, monkeypatch):
+    ap = autopilot()
+    before = "FAILED tests/test_x.py::test_it - AssertionError\nmake: *** [Makefile:4: test] Error 1\n"
+    now = "FAILED tests/test_y.py::test_other - KeyError\nmake: *** [Makefile:4: test] Error 1\n"
+    out, calls = end_after(ap, tmp_path, monkeypatch, before, now)
+    assert "verdict=continue" in out
+    assert ["issue", "edit", "7", "--repo", "o/r", "--add-label", "autopilot:continue"] in calls
+    assert not any("needs-human" in c for c in calls)

@@ -492,6 +492,13 @@ files:
       read-by: [scripts/pre-pr.py, scripts/sync-repos.py]
       issue: "#479"
       says: How `make pre-pr` runs them (dx.mk).
+    - key: pre-pr-tools
+      org: any
+      repo: never
+      limit: "`{command, package}` entries, plain names; apt packages from the runner's mirror"
+      read-by: [scripts/pre-pr.py]
+      issue: "#682"
+      says: The commands its `make pre-pr` runs that a bare runner may not have, which the autopilot installs.
     - key: detect
       org: any
       repo: never

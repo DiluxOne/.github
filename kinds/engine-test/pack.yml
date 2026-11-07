@@ -14,6 +14,10 @@ aliases: []
 # here.
 workflows: []
 
+# The commands its `make pre-pr` needs that a bare runner may not have
+# (#682, scripts/pre-pr.py tools): none.
+pre-pr-tools: []
+
 # The shipped callers (workflow-templates/) the test repository has, which
 # scripts/install.py writes there, beside org-pull-request.yml, the
 # organisation's required workflow. A scenario plays only what these wire (scripts/release-scenarios.py
