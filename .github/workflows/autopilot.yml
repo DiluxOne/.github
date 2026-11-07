@@ -79,8 +79,13 @@ name: Autopilot
 # and runs `autopilot.py check`, which runs `make pre-pr` at HEAD (every
 # check the pull request and the merge queue run, #479): `finish ready`
 # refuses a head where it did not pass in this run, where the Makefile has
-# the target. The questions it needs answered are asked while it writes the
-# Spec.
+# the target. A check longer than the agent's step (#673) is stopped at the
+# step's deadline (DX_DEADLINE: its start plus its limit, less 10 minutes),
+# and `finish ready` is deferred: the `verify` job, with no key, runs `make
+# pre-pr` once, whole, at the head the agent left (up to 350 minutes), and
+# `apply` marks the pull request ready only on its pass. When the agent's own
+# check passed at that head, `verify` is skipped. The questions it needs
+# answered are asked while it writes the Spec.
 #   mode: fix       called from org-pull-request.yml, and in the
 #                   organisation's own repository from its
 #                   pull-request.yml (#504), when the review of an
@@ -1070,6 +1075,11 @@ jobs:
       contents: read
     outputs:
       outcome: ${{ needs.prep.outputs.fixed == 'true' && steps.fixed.outcome || steps.work.outcome }}
+      # #673: whether `verify` runs `make pre-pr` in full after the agent's
+      # step, at the head the agent left (its commits' bundle).
+      verify: ${{ steps.left.outputs.verify }}
+      head: ${{ steps.left.outputs.head }}
+      base: ${{ steps.task.outputs.base }}
     steps:
       # The working tree, with the job's token, which only reads; nothing
       # keeps it. A reproduced bug's test was written from an outsider's
@@ -1133,6 +1143,10 @@ jobs:
             fi
           fi
           { echo "base=$(git merge-base HEAD "origin/$DEFAULT")"; echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } >> "$GITHUB_OUTPUT"
+          # The agent's step's deadline (#673): its start plus its limit
+          # (timeout-minutes of "Claude works") less a margin of 10 minutes,
+          # for the credits and the finish. `check` stops `make pre-pr` there.
+          echo "deadline=$(( $(date +%s) + (75 - 10) * 60 ))" >> "$GITHUB_OUTPUT"
           eof="DX_$(openssl rand -hex 16)"
           { echo "prompt<<$eof"; cat .dx-io/prompt.md; echo "$eof"; } >> "$GITHUB_OUTPUT"
 
@@ -1158,6 +1172,9 @@ jobs:
         env:
           DX_IO: ${{ github.workspace }}/.dx-io
           DX_BASE: ${{ steps.task.outputs.base }}
+          # #673: `check` stops a `make pre-pr` still running then, and
+          # `verify` runs it in full after this step.
+          DX_DEADLINE: ${{ steps.task.outputs.deadline }}
           # The pull requests prep or draft saved: next-version.py reads them
           # there in `make pre-pr`, since this job's token does not (#585).
           DX_PULLS: ${{ github.workspace }}/.dx-io/pulls.json
@@ -1172,7 +1189,8 @@ jobs:
           # Nothing runs in the background (#482): a run ends when the agent
           # stops, and nothing tells it a background task finished (FM
           # #227 left its suite running and never finished). And a command
-          # may run as long as the step does: `make pre-pr` runs whole.
+          # may run as long as the step does; `make pre-pr`, up to the
+          # deadline above, then whole in `verify` (#673).
           CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1"
           BASH_MAX_TIMEOUT_MS: "4500000"
           BASH_DEFAULT_TIMEOUT_MS: "600000"
@@ -1194,11 +1212,13 @@ jobs:
             --disallowedTools "Monitor"
 
       - name: What the agent left
+        id: left
         if: always()
         env:
           START: ${{ steps.task.outputs.start }}
           WORK_LOG: ${{ steps.work.outputs.execution_file }}
           WORK_STARTED: ${{ steps.task.outputs.at }}
+          DX_IO: ${{ github.workspace }}/.dx-io
         run: |
           mkdir -p .dx-out/transcript
           cp .dx-io/outbox.jsonl .dx-out/ 2>/dev/null || true
@@ -1206,6 +1226,12 @@ jobs:
           if [ -n "$START" ] && [ "$(git rev-parse HEAD)" != "$START" ]; then
             git bundle create -q .dx-out/work.bundle "$START..HEAD" || echo "::warning::The commits could not be bundled."
           fi
+          # #673: the agent finished ready, and its own `make pre-pr` did not
+          # pass at this head (it ran out of the step's time, or ran at an
+          # earlier head): `verify` runs it in full. Passed here, it is
+          # skipped, and the run takes no longer than before.
+          echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "verify=$(python3 .dx-central/scripts/autopilot.py verify need || echo false)" >> "$GITHUB_OUTPUT"
           # Best effort: the log wherever it is (the action's output, the
           # file it writes, or the CLI's session when the step was killed).
           WORK_LOG=$(python3 .dx-central/scripts/autopilot.py work-log) || WORK_LOG=""
@@ -1225,10 +1251,113 @@ jobs:
           overwrite: true
           retention-days: 30
 
+  # --- after the work: `make pre-pr` in full, with no key (#673) ------------
+  # A repository whose `make pre-pr` outlasts the agent's step: `check` stops
+  # it at the step's deadline and `finish ready` is deferred to this job,
+  # which runs it once, whole, at the head the agent left. It runs the
+  # repository's own code, so it holds what `work` holds and no more: the
+  # job's token, which only reads, and no secret. Skipped when the agent's
+  # own check passed at that head.
+  verify:
+    name: Autopilot · make pre-pr in full
+    needs: [where, prep, draft, work]
+    if: ${{ !cancelled() && needs.prep.outputs.go == 'true' && needs.work.outputs.verify == 'true' }}
+    runs-on: ${{ (vars.DX_RUNNER_HEAVY != '' && needs.where.outputs.github-hosted == 'false') && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    outputs:
+      verdict: ${{ steps.result.outputs.verdict }}
+    steps:
+      # The working tree as the work had it: a reproduced bug's test stays
+      # out of it (sparse checkout), and the agent's commits on top.
+      - name: The working tree
+        env:
+          TOKEN: ${{ github.token }}
+          BRANCH: ${{ needs.draft.outputs.branch || needs.prep.outputs.branch }}
+          DEFAULT: ${{ needs.prep.outputs.default }}
+          REPRO_TEST: ${{ needs.prep.outputs.repro-test }}
+        run: |
+          set -euo pipefail
+          git init -q .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          git -c "http.extraheader=$auth" fetch -q origin '+refs/heads/*:refs/remotes/origin/*'
+          if [ -n "$REPRO_TEST" ]; then git sparse-checkout set --no-cone '/*' "!/$REPRO_TEST"; fi
+          if [ -n "$BRANCH" ]; then git checkout -q -B "$BRANCH" "origin/$BRANCH"; else git checkout -q -B "$DEFAULT" "origin/$DEFAULT"; fi
+          git config user.name "$DX_BOT_LOGIN"
+          git config user.email "$DX_BOT_ID+$DX_BOT_LOGIN@users.noreply.github.com"
+
+      - name: The organisation's scripts and policy
+        id: central
+        env:
+          REF: ${{ inputs.central-ref || job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          git clone -q --depth 1 --branch "$REF" https://github.com/DiluxOne/.github .dx-central 2>/dev/null \
+            || { git clone -q https://github.com/DiluxOne/.github .dx-central && git -C .dx-central checkout -q "$REF"; }
+          test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+          echo "ref=$(git -C .dx-central rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+          if [ -d .git ]; then printf '%s\n' /.dx-central/ /.dx-io/ /.dx-out/ /.dx-verify/ >> .git/info/exclude; fi
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: autopilot-in-work
+          path: .dx-io
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: autopilot-out-work
+          path: .dx-out
+
+      - name: The agent's head
+        env:
+          BRANCH: ${{ needs.draft.outputs.branch || needs.prep.outputs.branch }}
+          WANT: ${{ needs.work.outputs.head }}
+        run: |
+          set -euo pipefail
+          if [ -f .dx-out/work.bundle ]; then
+            git fetch -q .dx-out/work.bundle HEAD
+            git checkout -q -B "$BRANCH" FETCH_HEAD
+          fi
+          [ "$(git rev-parse HEAD)" = "$WANT" ] || { echo "::error::The working tree is at $(git rev-parse HEAD), not at the agent's head $WANT."; exit 1; }
+
+      # Once, whole, up to its own deadline (just under the step's limit,
+      # itself just under GitHub's six hours): its result is marked a
+      # time-out first, so a step killed on its limit still reads as one.
+      - name: make pre-pr
+        timeout-minutes: 350
+        env:
+          DX_BASE: ${{ needs.work.outputs.base }}
+          DX_PULLS: ${{ github.workspace }}/.dx-io/pulls.json
+          NUMBER: ${{ needs.prep.outputs.issue }}
+          PR: ${{ needs.draft.outputs.pr || needs.prep.outputs.pr }}
+          BRANCH: ${{ needs.draft.outputs.branch || needs.prep.outputs.branch }}
+        run: |
+          set -euo pipefail
+          DX_DEADLINE=$(( $(date +%s) + (350 - 5) * 60 )); export DX_DEADLINE
+          python3 .dx-central/scripts/autopilot.py verify run .dx-verify
+
+      - name: Its verdict
+        id: result
+        if: always()
+        run: python3 .dx-central/scripts/autopilot.py verify result .dx-verify
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: autopilot-verify
+          path: |
+            .dx-verify/verify.json
+            .dx-verify/tail.txt
+          if-no-files-found: ignore
+          overwrite: true
+          retention-days: 30
+
   # --- every mode: the agent's work on GitHub, and the verdict --------------
   apply:
     name: Autopilot (${{ inputs.mode }}) · apply and end
-    needs: [prep, spec, draft, work]
+    needs: [prep, spec, draft, work, verify]
     if: ${{ always() && needs.prep.outputs.go == 'true' }}
     runs-on: ubuntu-latest # fresh: it holds the key beside an agent's work (#287)
     timeout-minutes: 30
@@ -1288,6 +1417,15 @@ jobs:
           name: autopilot-out-spec
           path: .dx-out-spec
 
+      # #673: what `verify` found, read as data: its verdict, and the last
+      # lines of the output, scrubbed, for the agent's next run.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.verify.result != 'skipped'
+        continue-on-error: true
+        with:
+          name: autopilot-verify
+          path: .dx-verify
+
       # The agent's commits, onto the branch as GitHub has it (never over
       # it), and never a workflow outside the organisation's own repository
       # (#498): pushed through the API, so GitHub signs them. Then each intent, through the checks a person's run uses.
@@ -1301,6 +1439,10 @@ jobs:
           BRANCH: ${{ needs.draft.outputs.branch || needs.prep.outputs.branch }}
           REPO_AUTONOMY: ${{ runner.temp }}/repo-autonomy.yml
           ENGINE: ${{ github.repository == format('{0}/.github', github.repository_owner) }}
+          # #673: `verify`'s verdict (pass, fail, timeout; lost when it ended
+          # without one), empty when it did not run. When it ran, `ready`
+          # goes through only on a pass; a deferred `ready` needs it.
+          PREPR: ${{ needs.verify.result != 'skipped' && (needs.verify.outputs.verdict || 'lost') || '' }}
         run: |
           set -euo pipefail
           git config user.name "$DX_BOT_LOGIN"

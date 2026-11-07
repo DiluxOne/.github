@@ -38,7 +38,16 @@
   autopilot.py check         `make pre-pr` at HEAD, as committed (#482; the
                              agent runs it): its head and exit code kept for
                              finish ready, which refuses a head where it did
-                             not pass, where the Makefile has the target
+                             not pass, where the Makefile has the target; up
+                             to DX_DEADLINE (#673), past which it is stopped
+                             and marked `timeout`, which finish ready takes,
+                             deferred to the `verify` job
+  autopilot.py verify need | run OUT | result OUT
+                             #673, with no key: whether `verify` runs `make
+                             pre-pr` in full after the agent's step (`need`,
+                             DX_IO), that run up to DX_DEADLINE (`run`), its
+                             verdict (pass, fail, timeout) and the output's
+                             last lines, scrubbed (`result`)
   autopilot.py finish ready FILE | stop WHY | ask QUESTION
   autopilot.py answers      what those who decide (#588) answered the
                             autopilot's last question, or hinted after its
@@ -145,8 +154,10 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -2129,6 +2140,30 @@ A class on html.
           (pre_pr_refusal(False, None, "abc"), bool(pre_pr_refusal(True, None, "abc")), bool(pre_pr_refusal(True, {"head": "old", "rc": 0}, "abc")),
            bool(pre_pr_refusal(True, {"head": "abc", "rc": 2}, "abc")), pre_pr_refusal(True, {"head": "abc", "rc": 0}, "abc"), bool(pre_pr_refusal(True, "x", "abc"))),
           ("", True, True, True, "", True))
+    check("#673 C1: a check that ran out of the step's time at HEAD is taken, deferred; at another head it is not",
+          (pre_pr_refusal(True, {"head": "abc", "rc": TIMEOUT}, "abc"), bool(pre_pr_refusal(True, {"head": "old", "rc": TIMEOUT}, "abc")),
+           time_left("1000", 400), time_left("1000", 2000), time_left("", 5), time_left("soon", 5)),
+          ("", True, 600, 0, None, None))
+    check("#673 C1: a deferred ready is kept as one; anything else in it is not",
+          (valid_intent({"kind": "ready", "text": "t", "deferred": True}), valid_intent({"kind": "ready", "text": "t", "deferred": "yes"}),
+           valid_intent({"kind": "tick", "id": "C1", "deferred": True})),
+          ({"kind": "ready", "text": "t", "deferred": True}, {"kind": "ready", "text": "t"}, {"kind": "tick", "id": "C1"}))
+    ready_i, passed_at = [{"kind": "ready", "text": "t"}], {"head": "abc", "rc": 0}
+    check("#673 C1/C3: verify runs only after a ready whose check did not pass at the head left, where the target is",
+          (verify_needed(ready_i, True, {"head": "abc", "rc": TIMEOUT}, "abc"), verify_needed(ready_i, True, passed_at, "abc"),
+           verify_needed(ready_i, True, passed_at, "def"), verify_needed(ready_i, False, None, "abc"), verify_needed([], True, None, "abc"),
+           verify_needed(ready_i + [{"kind": "stop", "text": "x"}], True, None, "abc")),
+          (True, False, True, False, False, False))
+    check("#673 C1: verify's verdict: a pass only at the head it checked; a time-out is one",
+          (verify_verdict(passed_at, "abc"), verify_verdict(passed_at, "def"), verify_verdict({"head": "abc", "rc": 2}, "abc"),
+           verify_verdict({"head": "abc", "rc": TIMEOUT}, "abc"), verify_verdict(None, "abc")),
+          ("pass", "fail", "fail", TIMEOUT, "fail"))
+    check("#673 C1: ready goes through on verify's pass, or, when it did not run, only when not deferred",
+          (ready_goes({"deferred": True}, "pass"), ready_goes({}, "fail"), ready_goes({}, TIMEOUT), ready_goes({"deferred": True}, "lost"),
+           ready_goes({}, ""), ready_goes({"deferred": True}, "")),
+          (True, False, False, False, True, False))
+    check("#673 C1: the output's tail is its last lines, scrubbed",
+          (tail_text("\n".join(str(i) for i in range(500))).splitlines()[0], tail_text("a\nghp_" + "x" * 30, 1)), ("200", "[redacted]"))
     pw = prompt_work("o/r", "7", "8", "feat/7-x", "x", [("C1", "a", None)], False, notes=("wordpress-plugin", ()))
     check("#482 C4: the work prompt runs make pre-pr through check and reviews its own diff, every blocker and major, before finish ready",
           (f"{HELPER} check" in pw, "make pre-pr" in pw, 'git diff "$DX_BASE"...HEAD' in pw, "every blocker and major" in pw,
@@ -3110,6 +3145,9 @@ def valid_intent(obj):
     if not isinstance(text, str) or not text.strip() or len(text) > INTENTS[kind]:
         return None
     out = {"kind": kind, "text": text}
+    if kind == "ready" and obj.get("deferred") is True:
+        # #673: `make pre-pr` ran out of the agent's step: `verify` runs it.
+        out["deferred"] = True
     if kind == "reply":
         cid = obj.get("comment")
         if not isinstance(cid, int) or isinstance(cid, bool) or cid <= 0:
@@ -3186,6 +3224,12 @@ def local_subjects(base):
 # What `check` leaves in the agent's IO directory (#482): the head `make
 # pre-pr` ran at and its exit code, which `finish ready` reads.
 PRE_PR_MARK = "pre-pr.json"
+# #673: the work step's deadline (DX_DEADLINE, epoch seconds: its start plus
+# its limit, less a margin). A `check` still running then is stopped, its
+# exit code this mark; `finish ready` takes it, deferred, and the `verify`
+# job runs `make pre-pr` whole after the agent's step.
+DEADLINE_ENV = "DX_DEADLINE"
+TIMEOUT = "timeout"
 
 
 def pre_pr_refusal(has_target, mark, head):
@@ -3201,6 +3245,9 @@ def pre_pr_refusal(has_target, mark, head):
     if mark.get("head") != head:
         return (f"Not ready: `make pre-pr` ran at {str(mark.get('head'))[:7]}, not at HEAD ({head[:7]}): you committed since. "
                 f"Run {run} again, then finish.")
+    if mark.get("rc") == TIMEOUT:
+        # #673: it ran out of the step's time, not failed: `verify` runs it.
+        return ""
     if mark.get("rc") != 0:
         return f"Not ready: `make pre-pr` failed at HEAD (exit {mark.get('rc')}). Fix what it found, commit, run {run} again, then finish."
     return ""
@@ -3210,9 +3257,55 @@ def git_out(*args):
     return subprocess.run(["git", *args], capture_output=True, text=True).stdout.strip()
 
 
+def time_left(deadline, now):
+    """The seconds left before a deadline in epoch seconds (DX_DEADLINE), at
+    least 0; None when there is none: no limit, as before #673. Pure."""
+    try:
+        return max(0, int(str(deadline).strip()) - int(now))
+    except ValueError:
+        return None
+
+
+def stop_group(proc, grace=20):
+    """Stop a process started in a session of its own, and everything it
+    started: TERM, then KILL after grace seconds."""
+    for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, 10)):
+        try:
+            os.killpg(proc.pid, sig)
+        except (ProcessLookupError, PermissionError):
+            return
+        try:
+            proc.wait(timeout=wait)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def make_pre_pr(left, log=None):
+    """`make pre-pr` in a process group of its own, its output to the
+    terminal or to the file log: its exit code, or TIMEOUT once it runs past
+    left seconds (None: no limit), its whole group then stopped (#673)."""
+    if left is not None and left <= 0:
+        return TIMEOUT
+    out = open(log, "w", encoding="utf-8") if log else None
+    try:
+        proc = subprocess.Popen(["make", "pre-pr"], stdout=out, stderr=subprocess.STDOUT if out else None, start_new_session=True)
+        try:
+            return proc.wait(timeout=left)
+        except subprocess.TimeoutExpired:
+            stop_group(proc)
+            return TIMEOUT
+    finally:
+        if out:
+            out.close()
+
+
 def run_pre_pr(io):
     """`check`: `make pre-pr` at HEAD, as committed, in the foreground; its
-    head and exit code kept for `finish ready`. Returns its exit code."""
+    head and exit code kept for `finish ready`. Up to the work step's
+    deadline (#673, DX_DEADLINE): past it, it is stopped and its mark reads
+    TIMEOUT, which `finish ready` takes, deferred to the `verify` job.
+    Returns its exit code (0 for a time-out: nothing failed)."""
     if not prepr.has_target(prepr.makefile(".")):
         print("This repository has no `make pre-pr` yet: run the tests and checks its AGENTS.md or CONTRIBUTING.md names, and fix what fails. "
               "`finish ready` does not ask for it here.")
@@ -3222,9 +3315,14 @@ def run_pre_pr(io):
         return 1
     head = git_out("rev-parse", "HEAD")
     print(f"Running `make pre-pr` at {head[:7]}: every check the pull request and the merge queue run. It can take long; wait for it.", flush=True)
-    rc = subprocess.run(["make", "pre-pr"]).returncode
+    rc = make_pre_pr(time_left(os.environ.get(DEADLINE_ENV, ""), time.time()))
     with open(os.path.join(io, PRE_PR_MARK), "w", encoding="utf-8") as fh:
         json.dump({"head": head, "rc": rc}, fh)
+    if rc == TIMEOUT:
+        print(f"`make pre-pr` did not finish at {head[:7]} before this step's time runs out, so it was stopped: it did not fail, and running it again "
+              "would not finish either. Go on to the credits and `finish ready` now, without new commits: the workflow runs `make pre-pr` in full "
+              "after your step and marks the pull request ready only if it passes; if it fails, the next run brings you its output.")
+        return 0
     print(f"`make pre-pr` passed at {head[:7]}." if rc == 0 else f"`make pre-pr` failed at {head[:7]} (exit {rc}): fix what it found, commit, and run check again.")
     return rc
 
@@ -3235,6 +3333,53 @@ def read_mark(io):
             return json.load(fh)
     except (OSError, ValueError):
         return None
+
+
+# The `verify` job (#673): `make pre-pr` in full after the agent's step,
+# with no key, its result and the last lines of its output kept for `apply`.
+VERIFY_RESULT = "verify.json"
+VERIFY_LOG = "pre-pr.log"
+VERIFY_TAIL = "tail.txt"
+VERIFY_LINES = 300
+VERIFY_CHARS = 60000
+VERDICTS = ("pass", "fail", TIMEOUT)
+
+
+def verify_needed(intents, has_target, mark, head):
+    """Whether `verify` runs `make pre-pr` whole after the agent's step
+    (#673): the agent finished ready (and did not stop or ask), where the
+    Makefile has the target, and its own check did not pass at the head it
+    left. A check that passed there (a quick one) needs no second run. Pure."""
+    kinds = [it.get("kind") for it in intents]
+    if not has_target or "ready" not in kinds or any(k in FINAL for k in kinds):
+        return False
+    return not (isinstance(mark, dict) and mark.get("head") == head and mark.get("rc") == 0)
+
+
+def verify_verdict(result, head):
+    """`pass`, `fail` or `timeout` from what `verify run` left: a pass only at
+    exactly the head it was asked to check. Pure."""
+    if not isinstance(result, dict) or result.get("head") != head:
+        return "fail"
+    if result.get("rc") == TIMEOUT:
+        return TIMEOUT
+    return "pass" if result.get("rc") == 0 else "fail"
+
+
+def tail_text(text, lines=VERIFY_LINES, chars=VERIFY_CHARS):
+    """The last lines of an output, scrubbed of tokens and keys, at most
+    chars long. Pure."""
+    return scrub("\n".join((text or "").splitlines()[-lines:]))[-chars:]
+
+
+def ready_goes(intent, prepr):
+    """Whether a `ready` intent is applied (#673): prepr is the `verify`
+    job's verdict (pass, fail, timeout, lost), "" when it did not run. When
+    it ran, only on a pass; when it did not, only a ready whose check passed
+    in the agent's step, never a deferred one. Pure."""
+    if prepr:
+        return prepr == "pass"
+    return not intent.get("deferred")
 
 
 NO_CREDITS = ("Not ready: the description has no Credits block. Write who proposed what you used into a file, one "
@@ -3380,6 +3525,11 @@ def agent_helper(argv, io):
                 if outcome != "passed":
                     print(f"Not ready: the reproduction test {test} does not pass in the sandbox at HEAD ({outcome or 'no verdict'}). Fix the code it exercises, commit, and finish again.")
                     return 1
+            if (read_mark(io) or {}).get("rc") == TIMEOUT and prepr.has_target(prepr.makefile(".")):
+                queue(io, {"kind": "ready", "text": text, "deferred": True})
+                print("Ready, once `make pre-pr` passes: the workflow runs it in full after your step, and marks the pull request ready for review "
+                      "only if it passes (if it fails, the next run brings you its output). End now.")
+                return 0
             queue(io, {"kind": "ready", "text": text})
             print("Ready: the workflow marks the pull request ready for review when you end. End now.")
             return 0
@@ -3454,6 +3604,16 @@ def apply_outbox(path, repo, number, pr, kinds=None):
             with open(tmp, "w", encoding="utf-8") as fh:
                 fh.write(text)
             argv = ["credits", tmp]
+        if kind == "ready" and not ready_goes(it, os.environ.get("PREPR", "")):
+            # #673: `make pre-pr` did not pass in full after the agent's
+            # step (or never ran there): the pull request stays a draft, and
+            # the end rule gives the agent a free fix round with its output.
+            held = os.environ.get("PREPR") or "lost"
+            print(f"Not ready: `make pre-pr` after the agent's step: {held}. The pull request stays a draft.")
+            if os.environ.get("GITHUB_OUTPUT"):
+                with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+                    fh.write(f"prepr={held}\n")
+            continue
         if kind == "ready":
             tmp = os.path.join(os.environ.get("RUNNER_TEMP", "/tmp"), "tested.md")
             with open(tmp, "w", encoding="utf-8") as fh:
@@ -3569,6 +3729,55 @@ def main(argv):
         return 64
     if os.environ.get(IO_ENV) and argv[:1] and argv[0] in AGENT_COMMANDS:
         return agent_helper(argv, os.environ[IO_ENV])
+    if argv[:1] == ["verify"]:
+        # #673, with no key. `verify need`, in the work job: `true` when the
+        # agent finished ready and its check did not pass at the head it
+        # left (DX_IO). `verify run OUT`, in the verify job: `make pre-pr`
+        # at HEAD up to DX_DEADLINE, its result and output in OUT (marked
+        # `timeout` first, so a step killed on its limit reads as one).
+        # `verify result OUT`: the verdict (GITHUB_OUTPUT `verdict`) and the
+        # output's last lines, scrubbed, in OUT/tail.txt.
+        sub = argv[1:2]
+        if sub == ["need"]:
+            io = os.environ.get(IO_ENV, "")
+            print("true" if verify_needed(read_outbox(os.path.join(io, OUTBOX))[0], prepr.has_target(prepr.makefile(".")), read_mark(io),
+                                          git_out("rev-parse", "HEAD")) else "false")
+            return 0
+        out = argv[2] if len(argv) > 2 else ""
+        if sub not in (["run"], ["result"]) or not out:
+            print("verify need | verify run OUT | verify result OUT", file=sys.stderr)
+            return 64
+        os.makedirs(out, exist_ok=True)
+        result_file, log = os.path.join(out, VERIFY_RESULT), os.path.join(out, VERIFY_LOG)
+        head = git_out("rev-parse", "HEAD")
+        if sub == ["run"]:
+            with open(result_file, "w", encoding="utf-8") as fh:
+                json.dump({"head": head, "rc": TIMEOUT}, fh)
+            if not prepr.has_target(prepr.makefile(".")):
+                rc = 0
+                with open(log, "w", encoding="utf-8") as fh:
+                    fh.write("This repository has no `make pre-pr`.\n")
+            else:
+                print(f"Running `make pre-pr` at {head[:7]} in full (#673).", flush=True)
+                rc = make_pre_pr(time_left(os.environ.get(DEADLINE_ENV, ""), time.time()), log)
+            with open(result_file, "w", encoding="utf-8") as fh:
+                json.dump({"head": head, "rc": rc}, fh)
+            return 0
+        try:
+            result = json.load(open(result_file, encoding="utf-8"))
+        except (OSError, ValueError):
+            result = None
+        verdict = verify_verdict(result, head)
+        text = open(log, encoding="utf-8", errors="replace").read() if os.path.exists(log) else "(no output was kept)"
+        tail = tail_text(text)
+        with open(os.path.join(out, VERIFY_TAIL), "w", encoding="utf-8") as fh:
+            fh.write(tail + "\n")
+        if os.environ.get("GITHUB_OUTPUT"):
+            with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+                fh.write(f"verdict={verdict}\n")
+        print(tail)
+        print(f"`make pre-pr` at {head[:7]}: {verdict}.")
+        return 0
     if argv[:1] == ["apply"]:
         # The agent's outbox, applied with the key (#287): its commits are
         # pushed first, by the workflow.
