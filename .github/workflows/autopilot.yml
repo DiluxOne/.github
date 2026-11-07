@@ -39,7 +39,9 @@ name: Autopilot
 #                   every box ticked and still a draft, only runs the checks
 #                   and finishes), up to `autopilot-runs` runs per issue (5);
 #                   a run an answer to its question started, or whose
-#                   runner was lost, is free and does not count (#479).
+#                   runner was lost, is free and does not count (#479), and
+#                   so is one whose `make pre-pr` failed after the agent's
+#                   step (#673).
 #                   A maintainer's answer after a stop or a silent end
 #                   brings it back the same way: review-reply.yml takes
 #                   `needs-human` off and dilux-bot adds the continue (#561).
@@ -84,7 +86,11 @@ name: Autopilot
 # and `finish ready` is deferred: the `verify` job, with no key, runs `make
 # pre-pr` once, whole, at the head the agent left (up to 350 minutes), and
 # `apply` marks the pull request ready only on its pass. When the agent's own
-# check passed at that head, `verify` is skipped. The questions it needs
+# check passed at that head, `verify` is skipped. On a failure or a time-out
+# the pull request stays a draft: dilux-bot comments the output's last lines
+# (dx-autopilot-prepr), the run is labelled `autopilot:free-N`, and the
+# continue's agent reads them in .dx-io/pre-pr.md and fixes them first, while
+# its free runs stay within the cap (scripts/autopilot.py end_verdict). The questions it needs
 # answered are asked while it writes the Spec.
 #   mode: fix       called from org-pull-request.yml, and in the
 #                   organisation's own repository from its
@@ -631,7 +637,8 @@ jobs:
       # free: labelled autopilot:free-N, it does not count (#479); so is one
       # that only catches up with another merge (autopilot-sweep.yml adds
       # autopilot:catchup beside its continue on a conflict, #563). The end
-      # rule frees a run whose runner was lost.
+      # rule frees a run whose runner was lost, or whose `make pre-pr` did not
+# pass in full after the agent's step (#673).
       - name: Count the round or the run
         if: steps.may.outputs.go == 'true' && steps.what.outputs.mode != 'start'
         env:
@@ -727,6 +734,10 @@ jobs:
           jq -r '.[].author.login' "$RUNNER_TEMP/comments.json" | sort -u \
             | python3 .dx-central/scripts/deciders.py list answer > "$RUNNER_TEMP/deciders.txt" || : > "$RUNNER_TEMP/deciders.txt"
           COMMENTS="$RUNNER_TEMP/comments.json" DECIDERS="$RUNNER_TEMP/deciders.txt" python3 .dx-central/scripts/autopilot.py answers > "$RUNNER_TEMP/answers.md"
+          # #673: the last run's `make pre-pr` did not pass in full after its
+          # step: the output's tail, from dilux-bot's own comment, in
+          # .dx-io/pre-pr.md, which the prompt asks the agent to fix first.
+          python3 .dx-central/scripts/autopilot.py prepr-note
           # An answer that drops or changes a criterion (`drop C3`,
           # `change C3: <new text>`) is applied to the checklist here, by the bot,
           # and logged in the Decisions (#561): the work and the finish
@@ -1526,6 +1537,10 @@ jobs:
           # #563: it waits for another pull request on the core.
           CORE: ${{ needs.draft.outputs.core }}
           WORK_LOG: .dx-out/transcript/2-work.json
+          # #673: `apply` kept `ready` back on `verify`'s verdict: a comment
+          # with the output's tail, the run free, and a fix round.
+          PREPR: ${{ steps.applied.outputs.prepr }}
+          PREPR_TAIL: .dx-verify/tail.txt
           RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
           REPO_AUTONOMY: ${{ runner.temp }}/repo-autonomy.yml
         run: |

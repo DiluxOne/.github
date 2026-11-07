@@ -138,3 +138,79 @@ def test_a_pass_lets_ready_through_and_the_run_ends_ready(tmp_path, monkeypatch)
         with quiet():
             ap.apply_outbox(str(outbox), "o/r", "7", "8")
         assert calls == [], prepr
+
+
+CHECKLIST = "<!-- dx-checklist -->\n- [x] **C1** a\n- [x] **C2** b\n<!-- /dx-checklist -->\n"
+
+
+def test_a_failing_verify_keeps_the_draft_and_brings_a_free_fix_round_with_its_output(tmp_path, monkeypatch):
+    ap = autopilot()
+    # apply: verify failed, so the ready is kept back and the end rule told.
+    outbox, gh_out = tmp_path / "outbox.jsonl", tmp_path / "gh-output"
+    outbox.write_text(json.dumps({"kind": "ready", "text": "Ran it.", "deferred": True}) + "\n")
+    finished = []
+    real_main = ap.main
+    monkeypatch.setattr(ap, "main", lambda argv: finished.append(argv) or 0)
+    monkeypatch.setenv("GITHUB_OUTPUT", str(gh_out))
+    monkeypatch.setenv("PREPR", "fail")
+    with quiet():
+        assert ap.apply_outbox(str(outbox), "o/r", "7", "8") == 0
+    assert finished == [] and "prepr=fail" in gh_out.read_text()
+    monkeypatch.setattr(ap, "main", real_main)
+    # end: the marked comment with the output's tail, the run's label free,
+    # and the continue, on a pull request that is still a draft.
+    tail = tmp_path / "tail.txt"
+    tail.write_text("FAILED tests/test_x.py::test_it - AssertionError\n")
+    labels = ["autopilot", "autopilot:run-1", "autopilot:run-2"]
+    calls = []
+
+    def fake_gh(*args, input_text=None):
+        calls.append(list(args))
+        return json.dumps({"comments": []}) if args[1] == "view" else ""
+
+    monkeypatch.setattr(ap, "gh", fake_gh)
+    monkeypatch.setattr(ap, "pr_json", lambda repo, pr, fields: {"body": CHECKLIST, "isDraft": True, "headRefOid": "abc",
+                                                                 "labels": [{"name": l} for l in labels]})
+    monkeypatch.setattr(ap, "refresh_board", lambda repo, number: None)
+    monkeypatch.setattr(ap.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "", ""))
+    monkeypatch.setattr(ap.autonomy, "policy_in_force", lambda: {"autopilot-runs": 5})
+    for k, v in {"MODE": "continue", "NUMBER": "7", "PR": "8", "RUNS": "2", "PREPR": "fail", "PREPR_TAIL": str(tail),
+                 "GITHUB_REPOSITORY": "o/r", "STARTED": "2026-01-01T00:00:00Z", "WORK_RESULT": "success", "AGENT_OUTCOME": "success",
+                 "WORK_OUTCOME": "success", "WORK_LOG": str(tmp_path / "none.json")}.items():
+        monkeypatch.setenv(k, v)
+    for k in ("HEAD_BEFORE", "WHY", "FAILED", "HELD", "CORE"):
+        monkeypatch.delenv(k, raising=False)
+    gh_out.write_text("")
+    with quiet():
+        assert ap.main(["end"]) == 0
+    assert "verdict=continue" in gh_out.read_text()
+    comments = [c for c in calls if c[:2] == ["pr", "comment"]]
+    assert len(comments) == 1
+    body = comments[0][comments[0].index("--body") + 1]
+    assert body.startswith(ap.PREPR_MARK) and "FAILED tests/test_x.py::test_it" in body
+    assert ["pr", "edit", "8", "--repo", "o/r", "--remove-label", "autopilot:run-2", "--add-label", "autopilot:free-2"] in calls
+    assert ["issue", "edit", "7", "--repo", "o/r", "--add-label", "autopilot:continue"] in calls
+    # Not ready, and no needs-human.
+    assert not any("ready" in c[:2] for c in calls) and not any("needs-human" in c for c in calls)
+    # The free label is not counted by the runs cap.
+    assert ap.run_numbers(["autopilot:run-1", "autopilot:free-2"]) == (3, 1)
+    # The next run's prep writes that comment's tail for the agent, and its
+    # prompt asks to fix it first.
+    io_dir = tmp_path / "io"
+    io_dir.mkdir()
+    monkeypatch.setenv("DX_IO", str(io_dir))
+    monkeypatch.setattr(ap, "pr_json", lambda repo, pr, fields: {"comments": [{"author": {"login": ap.BOT}, "body": body,
+                                                                               "createdAt": "2026-01-01T01:00:00Z"}]})
+    with quiet():
+        assert ap.main(["prepr-note"]) == 0
+    assert (io_dir / ap.PREPR_NOTE).read_text() == "FAILED tests/test_x.py::test_it - AssertionError\n"
+    prompt = ap.prompt_work("o/r", "7", "8", "fix/7-x", "x", [], True, prepr_failed=True)
+    assert f".dx-io/{ap.PREPR_NOTE}" in prompt and "Fix what it reported first" in prompt
+
+
+def test_the_workflow_wires_the_verdict_to_the_end_and_the_note_to_the_prompt():
+    end = step("apply", step_id="end")
+    assert end["env"]["PREPR"] == "${{ steps.applied.outputs.prepr }}"
+    assert end["env"]["PREPR_TAIL"] == ".dx-verify/tail.txt"
+    task = step("prep", step_id="task")["run"]
+    assert task.index("autopilot.py prepr-note") < task.index("autopilot.py prompt work")
