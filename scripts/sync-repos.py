@@ -79,7 +79,12 @@ archived and not excluded in repos.yml:
             the values repos.yml gives (its entry's `callers`, else `callers:
             defaults`, #562), so none is a placeholder: a repository being
             adopted, with no caller yet, gets them all (#552), and a caller
-            still holding a template's placeholder gets the value. Each template job must be there with the
+            still holding a template's placeholder gets the value. But the
+            caller of its kind's release (one whose pack has
+            `release.stable`, release-wp.yml) only when its entry gives its
+            `slug` or that place publishes it (#671), and no caller that
+            would still hold a placeholder, or a new one saying "Fill in":
+            that file is left out, named with the input, the others go in. Each template job must be there with the
             same `uses:`, `needs` (its own jobs may join them), `if`,
             `permissions`, `secrets` handling and inputs, but the inputs the
             template says to fill in (`repository-owned`). Inputs and jobs of
@@ -117,7 +122,8 @@ archived and not excluded in repos.yml:
             property), files, callers, pre-pr, dependabot, own-checks,
             merge-queue and project, in that order. Needs --repo.
   check     changes nothing: lists, as Markdown, what differs in each
-            repository, its callers and its Dependabot configuration
+            repository, its callers (and each caller `callers` would add
+            to it, #671) and its Dependabot configuration
             included (the daily drift check posts it as an issue), a
             repository whose `design-system` in
             repos.yml names no system of design-systems/, or is `local` with
@@ -2627,7 +2633,14 @@ def drift(repo, conf, labels, block, current=0):
             # once it is on the current one.
             try:
                 central = repo["name"] == ".github"
-                found += caller_lines(callers_drift(files, conf, central, default=default or "main"), central)
+                drifted = callers_drift(files, conf, central, default=default or "main")
+                if not central:
+                    # A caller it lacks is listed as `callers` adds it, from
+                    # the same rule (new_callers(), #671), once.
+                    drifted = [d for d in drifted if d[1]]
+                    found += [f"lacks `{p}` (workflow-templates/{os.path.basename(p)}): `sync-repos.py callers` adds it"
+                              for p in new_callers(files, conf, repo_kind(full, default), default or "main", name=repo["name"])]
+                found += caller_lines(drifted, central)
                 found += placeholder_lines(files, conf, repo["name"], central)
             except ValueError as exc:  # a workflow that does not parse is reported, not skipped
                 found.append(f"its workflow callers could not be compared: {str(exc)[:200]}")
@@ -3707,11 +3720,12 @@ def ai_plugin_drift_test(check, conf, labels, block):
             return Out(json.dumps(settings))
         return Out("", 1, "HTTP 404")
 
-    def lines_for(name, cfg, dx=True, drop=None, policy=None):
+    def lines_for(name, cfg, dx=True, drop=None, policy=None, edit=None):
         global ORG, ORG_RULESETS
         tree = trees[name]
         repo = {"name": name, "defaultBranchRef": {"name": "main"}, "visibility": "PUBLIC"}
         callers = {p: t for p, t in new_callers({}, cfg, tree["kind"], "main", name=name).items() if p != drop}
+        callers.update(edit(callers) if edit else {})
         state.update(name=name, files=callers, policy=policy, makefile=makefile if tree["kind"] else ".PHONY: pre-pr\npre-pr:\n\ttrue\n",
                      **{"dx.mk": pre_pr.render_kind(tree["kind"]) if dx else None})
         saved_gh, saved_org, saved_rs = globals()["gh"], ORG, ORG_RULESETS
@@ -3739,6 +3753,20 @@ def ai_plugin_drift_test(check, conf, labels, block):
           any("declares no way to reproduce a bug" in l for l in got), got)
     got = lines_for("dilux-agentic-workflow", adopted, drop=".github/workflows/issues.yml")
     check("C9 (#552): one without the triage's caller is listed", any("workflow-templates/issues.yml" in l for l in got), got)
+    check("#671: once, as `callers` adds it", [l for l in got if "issues.yml" in l]
+          == ["lacks `.github/workflows/issues.yml` (workflow-templates/issues.yml): `sync-repos.py callers` adds it"], got)
+    got = lines_for("dilux-agentic-workflow", adopted, drop=".github/workflows/plugin-checks-ai.yml")
+    check("#671: and so is one without its kind's battery caller", any("lacks `.github/workflows/plugin-checks-ai.yml`" in l for l in got), got)
+    # #671 C3: a plugin repos.yml gives no slug, not on wordpress.org (the
+    # stand-in's 404), whose issues.yml is out of step and which lacks only
+    # its release caller: the drift check lists issues.yml and no missing caller.
+    trees["diluxone-help-wordpress"] = {"kind": "wordpress-plugin", "root": ["Makefile", "dx.mk", "composer.json"]}
+    unstep = lambda files: {p: t[:t.index("  repro-triaged:")] + t[t.index("  # When a person accepts"):] for p, t in files.items() if p.endswith("/issues.yml")}  # noqa: E731
+    got = lines_for("diluxone-help-wordpress", adopted, edit=unstep)
+    check("#671 C3: the drift check lists the old issues.yml and nothing about a missing caller",
+          ([l for l in got if "workflows/" in l or "workflow-templates/" in l]
+           == ["`.github/workflows/issues.yml` lacks the job `repro-triaged` of `workflow-templates/issues.yml` (`sync-repos.py callers`)"]
+           and not any("lacks `" in l or "has no caller" in l or "release-wp" in l for l in got)), got)
     got = lines_for("dilux-agentic-workflow", adopted, dx=False)
     check("C9 (#552): one with no dx.mk, the kind's `make pre-pr`, is listed", got == [f"`{pre_pr.FRAGMENT}` is missing: it is its kind's `pre-pr-make`, the `make pre-pr` its Makefile includes (`sync-repos.py pre-pr`)"], got)
 
@@ -3840,6 +3868,14 @@ def release_caller_test(check, conf):
     check("#671 C1: and one for a published plugin", release in written, (sorted(written), said))
     written, prs, said = callers_run(bare, name, {}, "wordpress-plugin", 503)
     check("#671 C1: and none, with the note, when wordpress.org cannot be read", release not in written and f"{release}: could not tell" in said, (sorted(written), said))
+    # C3: an old issues.yml, every other caller in step, only the release
+    # caller lacking, with no slug and not published: issues.yml alone.
+    have = new_callers({}, bare, "wordpress-plugin", "main", name=name, opener=stand_in_place(404))
+    t = have[".github/workflows/issues.yml"]
+    have[".github/workflows/issues.yml"] = t[:t.index("  repro-triaged:")] + t[t.index("  # When a person accepts"):]
+    written, prs, said = callers_run(bare, name, have, "wordpress-plugin", 404)
+    check("#671 C3: an old issues.yml alone out of step: one pull request that writes issues.yml alone",
+          (sorted(written), len(prs)) == ([".github/workflows/issues.yml"], 1) and "  repro-triaged:" in written[".github/workflows/issues.yml"], (sorted(written), said))
 
 
 def placeholder_guard_test(check, conf):
