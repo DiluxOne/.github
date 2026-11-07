@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 692,
+  "prd_sha256": "920202dbf80d6a3e83cb2e4f7e78038ca91f66b00e20ce18cf9a19ee7a224c90",
+  "prd": "### Problem\n\nThe release lane takes about four hours per release because the scenarios play one at a time, so fixes reach the repositories late and the organisation's runners are not used.\n\n### Scope\n\n`.github/workflows/release-lane.yml` (the scenarios job split into move, play and back), `scripts/release-scenarios.py` (the groups, merging the results of every play job), `tests/release/scenarios.yml` (the key that marks a serial scenario), their tests, and docs/versioning.md.\n\n### Out of scope\n\nThe timeout and the silent failure, which #690 fixes. Changing what any scenario checks.\n\n### Acceptance criteria\n\nC1: Given the release lane's workflow, when the scenarios play, then each group runs in a job of its own on `DX_RUNNER_HEAVY` (or `ubuntu-latest` when it is not set), all at once, after the callers moved and before they move back.\nC2: Given `tests/release/scenarios.yml`, when `release-scenarios.py coverage` runs, then it fails for a scenario in no group or in two, and the scenarios marked serial are in one group that plays them one after the other.\nC3: Given every play job finished, when the lane decides, then it reads one table with every scenario's result, and a play job that failed or timed out is a failing row, so nothing is tagged.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-07T19:55:14Z",
+  "policy": "DiluxOne/.github@bea3700106cb"
+}
