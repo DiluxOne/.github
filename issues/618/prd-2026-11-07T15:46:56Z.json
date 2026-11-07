@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 618,
+  "prd_sha256": "a07f1db15dd109b0b123c59ebf713f87ef444f07f20e9a1a456c3211059fd408",
+  "prd": "### Problem\n\nCounters and intermediate steps of the flow still live in labels (`autopilot:run-N`, `autopilot:free-N`, `autopilot:waiting`, `autopilot:answered`, `lane:*`, `layer:*`, `bug:*`, `repro:*` among them), so every issue and pull request carries a dozen labels a person cannot act on, and a person sees steps they should never touch. #564 left this part out to land on its own, in steps (decided on #606), now that the board's state block exists.\n\n### Scope\n\n- About eight labels a person sees (`accepted`, `awaiting-acceptance`/`incomplete`, `autopilot`, `needs-human`, `claimed`, `security`, `risk:*`); counters and the steps in between live on the issue's board (`scripts/receipts.py` state), not in labels; unused labels are removed after their state is migrated.\n- Done as sub-issues, one pull request each, one at a time in the core: the reproduction's labels; the autopilot's counters and continue; the triage's verdicts and the unused labels; the lanes and policy labels with their proof; then the retired list and the migration.\n- The bot's own trigger labels (`autopilot:continue`, `repro:run`, `repro:again`) stay, removed by the receiving workflow as soon as it reads them (1B on #606), and the classification labels (`type:*`, `complexity:*`, `version:*`, Dependabot's) stay.\n\n### Out of scope\n\n- The board's state block itself (#564).\n\n### Acceptance criteria\n\n- C1: Given any issue or pull request of the organisation, when its labels are read, then none is a counter or an intermediate step.\n- C2: Given an open pull request whose run count lived in labels, when the migration runs, then its count is on its board before any label is deleted.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-07T15:46:56Z",
+  "policy": "DiluxOne/.github@d9b6b6160e81"
+}
