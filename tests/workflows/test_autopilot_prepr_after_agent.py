@@ -278,3 +278,79 @@ def test_verify_result_reads_only_the_end_of_a_long_log(tmp_path, monkeypatch):
     end = ap.read_end(str(log))
     assert len(end) <= ap.VERIFY_CHARS * 4 and end.endswith("the last line\n")
     assert ap.tail_text(end).endswith("the last line")
+
+
+def test_a_target_that_failed_early_is_in_the_excerpt_however_long_another_writes(tmp_path, monkeypatch):
+    # #679 C1: make -j, where target a fails at once and b writes for long
+    # after: a's error and its make line are what verify result keeps.
+    ap = autopilot()
+    script = tmp_path / "b.sh"
+    script.write_text("for i in $(seq 1 3000); do echo \"b writes line $i\"; done\n")
+    repo, _ = a_repo(tmp_path, "true")
+    (repo / "Makefile").write_text(f"MAKEFLAGS += -j2\npre-pr: a b\na:\n\t@echo 'FAIL test_a - AssertionError: 1 != 2'; exit 1\nb:\n\t@sleep 1; sh {script}\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "fix: parallel")
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("DX_DEADLINE", str(int(time.time()) + 600))
+    out_dir, gh_out = tmp_path / "verify", tmp_path / "gh-output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(gh_out))
+    with quiet():
+        ap.main(["verify", "run", str(out_dir)])
+        ap.main(["verify", "result", str(out_dir)])
+    assert "verdict=fail" in gh_out.read_text()
+    log = (out_dir / ap.VERIFY_LOG).read_text()
+    assert "b writes line 3000" in log
+    # Today's tail would have lost it.
+    assert "FAIL test_a" not in ap.tail_text(ap.read_end(str(out_dir / ap.VERIFY_LOG)))
+    kept = (out_dir / ap.VERIFY_TAIL).read_text()
+    assert re.search(r"^make(\[\d+\])?: \*\*\* \[.*Makefile:\d+: a\] Error 1$", kept, re.M), kept[:2000]
+    assert kept.index("FAIL test_a") < kept.index("Makefile:4: a] Error 1") < kept.index("b writes line 3000")
+    assert len(kept) <= ap.VERIFY_CHARS + 1
+
+
+def test_an_early_error_in_a_log_past_the_limit_is_still_in_the_excerpt(tmp_path, monkeypatch):
+    # #679 C2: past read_end's window, the error in the first lines is read
+    # all the same, and the excerpt stays within VERIFY_CHARS.
+    ap = autopilot()
+    repo, _ = a_repo(tmp_path, "true")
+    monkeypatch.chdir(repo)
+    out_dir = tmp_path / "verify"
+    out_dir.mkdir()
+    head = ap.git_out("rev-parse", "HEAD")
+    (out_dir / ap.VERIFY_RESULT).write_text(json.dumps({"head": head, "rc": 2}))
+    filler = "".join(f"line {i} " + "y" * 200 + "\n" for i in range(ap.VERIFY_CHARS * 4 // 200 + 100))
+    log = out_dir / ap.VERIFY_LOG
+    log.write_text("lint: checking\nscripts/x.py:3: E999 SyntaxError\nmake: *** [Makefile:7: lint] Error 1\n" + filler)
+    assert log.stat().st_size > ap.VERIFY_CHARS * 4
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "gh-output"))
+    with quiet():
+        assert ap.main(["verify", "result", str(out_dir)]) == 0
+    kept = (out_dir / ap.VERIFY_TAIL).read_text()
+    assert "verdict=fail" in (tmp_path / "gh-output").read_text()
+    assert kept.startswith("lint: checking\nscripts/x.py:3: E999 SyntaxError\nmake: *** [Makefile:7: lint] Error 1\n… (")
+    assert len(kept.rstrip("\n")) <= ap.VERIFY_CHARS
+    assert kept.rstrip("\n").endswith(filler.splitlines()[-1])
+    # And the comment keeps it whole.
+    assert "E999 SyntaxError" in ap.prepr_comment("fail", kept, "u", True)
+
+
+def test_a_passing_run_keeps_the_tail_as_today(tmp_path, monkeypatch):
+    # #679 C3: on a pass, even a log with a make failure line in it (a
+    # target that is allowed to fail) gives today's tail, and nothing more.
+    ap = autopilot()
+    script = tmp_path / "out.sh"
+    script.write_text("echo 'make: *** [Makefile:9: optional] Error 1 (ignored)'\nfor i in $(seq 1 1000); do echo \"line $i\"; done\n")
+    repo, _ = a_repo(tmp_path, f"@sh {script}")
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("DX_DEADLINE", str(int(time.time()) + 600))
+    out_dir, gh_out = tmp_path / "verify", tmp_path / "gh-output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(gh_out))
+    printed = io.StringIO()
+    with quiet():
+        ap.main(["verify", "run", str(out_dir)])
+    with contextlib.redirect_stdout(printed):
+        ap.main(["verify", "result", str(out_dir)])
+    assert "verdict=pass" in gh_out.read_text()
+    today = ap.tail_text(ap.read_end(str(out_dir / ap.VERIFY_LOG)))
+    assert (out_dir / ap.VERIFY_TAIL).read_text() == today + "\n"
+    assert printed.getvalue().startswith(today + "\n") and "Error 1 (ignored)" not in today
