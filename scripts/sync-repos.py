@@ -102,7 +102,9 @@ archived and not excluded in repos.yml:
             at an older major migrates first (docs/migrating.md), unless
             repos.yml names that major in `callers: migrates-from`: then it
             moves every call to the current major in the same pull request
-            (#320). Only a repository repos.yml lists: one it does not gets
+            (#320). Each commit ends with `AI-assisted: yes` and the
+            Assisted-by line, as dilux-agentic-workflow's check_commits asks
+            (#681). Only a repository repos.yml lists: one it does not gets
             its callers with its adoption. The daily drift check runs it
             for every repository (org-drift.yml, #672); one whose callers
             pull request is open is skipped, and one repos.yml lists under
@@ -761,6 +763,20 @@ def run_git(*args, cwd=None):
     return out.stdout
 
 
+def commit_message(message_form, path):
+    """A commit's message for `path`: message_form with {} the path and
+    {name} its file name."""
+    return message_form.format(path, name=os.path.basename(path))
+
+
+def assisted_form(header_form):
+    """A message form whose commits say AI took part (#681), as
+    dilux-agentic-workflow's check_commits asks: the header, a blank line,
+    `AI-assisted: yes` and the Assisted-by line scripts/autopilot.py writes."""
+    assisted = _script("autopilot", "autopilot.py").ASSISTED
+    return f"{header_form}\n\nAI-assisted: yes\n" + assisted.replace("{", "{{").replace("}", "}}")
+
+
 def git_branch(full, default, branch, wanted, message_form, git=run_git, workdir=None):
     """`wanted` ({path: content}) on branch, one commit per file signed with
     the person's own key (`git commit -S`), pushed; the branch as it is
@@ -788,7 +804,7 @@ def git_branch(full, default, branch, wanted, message_form, git=run_git, workdir
                 git("add", "--", path, cwd=work)
             # Already so on a branch an earlier run left: nothing to commit.
             if git("status", "--porcelain", "--", path, cwd=work).strip():
-                git("commit", "-q", "-S", "-m", message_form.format(path), cwd=work)
+                git("commit", "-q", "-S", "-m", commit_message(message_form, path), cwd=work)
         git("push", "-q", "origin", f"HEAD:refs/heads/{branch}", cwd=work)
     finally:
         if not workdir:
@@ -798,7 +814,7 @@ def git_branch(full, default, branch, wanted, message_form, git=run_git, workdir
 def open_change(repo, default, wanted, title, body, branch_form, pr_title, pr_body, message_form, mode=None):
     """An issue (Type Task) and a pull request that closes it, writing
     `wanted` ({path: content}) on the branch branch_form.format(<issue>),
-    one commit per file (message_form.format(<path>)). A run that failed
+    one commit per file (commit_message(message_form, <path>)). A run that failed
     half way left its issue (and maybe its branch): they are reused instead
     of opening a second one. With `mode` (a kind of run of the org-sync
     lane: files, callers), a new issue carries the run's marker and, once
@@ -853,9 +869,9 @@ def api_branch(full, default, branch, wanted, message_form):
             # A file the change removes (#452), when it is still there.
             if current.returncode == 0 and current.stdout.strip():
                 gh("api", "-X", "DELETE", f"repos/{full}/contents/{path}", "--input", "-",
-                   input_text=json.dumps({"message": message_form.format(path), "branch": branch, "sha": current.stdout.strip()}))
+                   input_text=json.dumps({"message": commit_message(message_form, path), "branch": branch, "sha": current.stdout.strip()}))
             continue
-        payload = {"message": message_form.format(path), "branch": branch,
+        payload = {"message": commit_message(message_form, path), "branch": branch,
                    "content": base64.b64encode(content.encode()).decode()}
         if current.returncode == 0 and current.stdout.strip():
             payload["sha"] = current.stdout.strip()
@@ -933,6 +949,12 @@ def sync_i18n(repo, dry):
     open_change(repo, default, wanted, "Keep the translations in the form that merges", body,
                 "chore/{}-org-i18n", "chore: keep the translations in the form that merges", pr_body,
                 "chore: {} in the form that merges")
+
+
+# The callers run's commit headers (#681): the file's name, not its path,
+# so that every one stays within 72 characters.
+CALLERS_KEEP = "ci: keep {name} in step with its template"
+CALLERS_MOVE = "ci: move {{name}} to {to}"
 
 
 def sync_callers(repo, conf, dry):
@@ -1087,11 +1109,11 @@ def sync_callers(repo, conf, dry):
     if old:
         open_change(repo, default, wanted, f"Move the workflow callers to {to} of the shared workflows", body,
                     "ci/{}-org-workflow-callers", f"ci: move the workflow callers to {to}", pr_body,
-                    f"ci: move {{}} to {to}", mode="callers")
+                    assisted_form(CALLERS_MOVE.format(to=to)), mode="callers")
         return
     open_change(repo, default, wanted, "Keep the workflow callers in step with the organisation's templates", body,
                 "ci/{}-org-workflow-callers", "ci: keep the workflow callers in step with the templates", pr_body,
-                "ci: keep {} in step with its template", mode="callers")
+                assisted_form(CALLERS_KEEP), mode="callers")
 
 
 def refuse_placeholders(full, wanted, added, parsed, owned, values, major):
@@ -3975,6 +3997,7 @@ def callers_run(conf, name, files, kind, answer, root=None):
     its kind's place answering `answer`: ({path: text} written, [the pull
     requests' gh arguments], what it printed)."""
     root = PLUGIN_ROOT if root is None else root
+    callers_run.messages = []  # the commits' messages, for #681 C3
     import contextlib
     import io
 
@@ -4010,6 +4033,7 @@ def callers_run(conf, name, files, kind, answer, root=None):
             return Out(json.dumps({"object": {"sha": "abc"}}))
         if joined.startswith(f"api -X PUT repos/o/{name}/contents/"):
             written[args[3].split("/contents/", 1)[1]] = base64.b64decode(json.loads(input_text)["content"]).decode()
+            callers_run.messages.append(json.loads(input_text)["message"])
             return Out("{}")
         if joined.startswith("api -X"):
             return Out("{}")
@@ -4113,6 +4137,9 @@ def battery_ready_test(check, conf):
           checks not in written and every <= set(written) and len(prs) == 1 and f"{checks}: not written: the repository has no readme.txt" in said, (sorted(written), said))
     written, prs, said = callers_run(slugged, name, {}, "wordpress-plugin", 404)
     check("#681 C1: and writes it for a plugin that has all three", checks in written, (sorted(written), said))
+    check("#681 C3: sync_callers() writes each commit with the trailers",
+          len(callers_run.messages) == len(written) and all(m == assisted_form(CALLERS_KEEP).format(name=os.path.basename(p)) and m.endswith("\nAI-assisted: yes\n" + _script("autopilot", "autopilot.py").ASSISTED)
+                                                            for m, p in zip(callers_run.messages, written)), callers_run.messages[:2])
 
 
 def no_workflows_test(check, conf):
@@ -4142,6 +4169,53 @@ def no_workflows_test(check, conf):
     check("#681 C2: the check lists no caller to add there", new_callers({}, cfg, "wordpress-plugin", "main", name=name) == {}, "")
     check("#681 C2: another repository still gets its callers", bool(new_callers({}, cfg, "wordpress-plugin", "main", name="another")), "")
     check("#681 C2: repos.yml lists diluxone-wp-test under `no-workflows`", name in (conf.get("no-workflows") or []), conf.get("no-workflows"))
+
+
+def callers_commits_test(check):
+    """#681 C3: every commit the callers run writes, through git
+    (git_branch()) or the API (api_branch()), has a Conventional Commit
+    header of 72 characters or fewer and ends with `AI-assisted: yes` and
+    the Assisted-by line; credits.py finds no model named as a co-author."""
+    import tempfile
+    credits = _script("credits", "credits.py")
+    assisted = _script("autopilot", "autopilot.py").ASSISTED
+    wanted = {f".github/workflows/{n}": "on: push\n" for n in templates()}
+    forms = (assisted_form(CALLERS_KEEP), assisted_form(CALLERS_MOVE.format(to="@v12")))
+    messages = []
+
+    def git(*args, cwd=None):
+        if args[0] == "commit":
+            messages.append(args[args.index("-m") + 1])
+        return " M x\n" if args[0] == "status" else ""
+
+    class Out:
+        def __init__(self, stdout="", returncode=0, stderr=""):
+            self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
+
+    def fake(*args, check=True, input_text=None):
+        if args[:3] == ("api", "-X", "PUT"):
+            messages.append(json.loads(input_text)["message"])
+        if "ref/heads/main" in " ".join(args):
+            return Out(json.dumps({"object": {"sha": "abc"}}))
+        return Out("", 1, "HTTP 404") if "contents/" in " ".join(args) or "ref/heads/" in " ".join(args) else Out("{}")
+    saved = globals()["gh"]
+    globals()["gh"] = fake
+    try:
+        for form in forms:
+            with tempfile.TemporaryDirectory() as work:
+                git_branch("o/r", "main", "ci/7-org-workflow-callers", wanted, form, git=git, workdir=work)
+            api_branch("o/r", "main", "ci/7-org-workflow-callers", wanted, form)
+    finally:
+        globals()["gh"] = saved
+    header = re.compile(r"(feat|fix|docs|chore|refactor|perf|test|build|ci|style|revert)(\([^)]+\))?!?: \S.*")
+    bad = [m for m in messages if not header.fullmatch(m.split("\n", 1)[0]) or len(m.split("\n", 1)[0]) > 72
+           or m.split("\n")[1] != "" or m.rstrip("\n").split("\n")[-2:] != ["AI-assisted: yes", assisted]]
+    check("#681 C3: every commit of the callers run, by git and by the API, for every template, keep or move",
+          len(messages) == 4 * len(wanted) and not bad, bad[:3] or len(messages))
+    check("#681 C3: ends with `AI-assisted: yes` and `Assisted-by: Claude Opus 5.5 (Anthropic)`",
+          messages[:1] and messages[0].endswith("\n\nAI-assisted: yes\nAssisted-by: Claude Opus 5.5 (Anthropic)"), messages[:1])
+    check("#681 C3: names the file, not its path", "ci: keep pull-request-comments.yml in step with its template" in [m.split("\n")[0] for m in messages], "")
+    check("#681 C3: credits.py models() finds no model named as a co-author (C8's reference)", not any(credits.models(m) for m in messages), "")
 
 
 def placeholder_guard_test(check, conf):
@@ -4373,6 +4447,7 @@ def self_test():
     placeholder_guard_test(check, conf)
     battery_ready_test(check, conf)
     no_workflows_test(check, conf)
+    callers_commits_test(check)
     # The org-sync lane (#155): a run from a merged commit marks its issue,
     # and labels it only once its Type is Task; the lane reads it back.
     policy = load_yaml(os.path.join(CENTRAL, "policy", "autonomy.yml"))
