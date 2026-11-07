@@ -214,3 +214,30 @@ def test_the_workflow_wires_the_verdict_to_the_end_and_the_note_to_the_prompt():
     assert end["env"]["PREPR_TAIL"] == ".dx-verify/tail.txt"
     task = step("prep", step_id="task")["run"]
     assert task.index("autopilot.py prepr-note") < task.index("autopilot.py prompt work")
+
+
+def test_a_quick_check_that_passed_at_the_head_skips_verify_and_the_work_keeps_its_limits(tmp_path, monkeypatch):
+    ap = autopilot()
+    repo, io_dir = a_repo(tmp_path, "@true")
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("DX_DEADLINE", str(int(time.time()) + 3600))
+    with quiet():
+        assert ap.run_pre_pr(str(io_dir)) == 0
+    assert ap.read_mark(str(io_dir))["rc"] == 0
+    (io_dir / ap.OUTBOX).write_text(json.dumps({"kind": "ready", "text": "Ran it."}) + "\n")
+    monkeypatch.setenv("DX_IO", str(io_dir))
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        ap.main(["verify", "need"])
+    assert out.getvalue().strip() == "false"
+    # verify runs only on that answer, which the work's last step writes at
+    # the head it bundles; skipped, the ready goes through as before.
+    wf = workflow()
+    assert "needs.work.outputs.verify == 'true'" in wf["jobs"]["verify"]["if"]
+    left = step("work", step_id="left")
+    assert left["if"] == "always()" and "autopilot.py verify need" in left["run"]
+    assert wf["jobs"]["work"]["outputs"]["verify"] == "${{ steps.left.outputs.verify }}"
+    assert ap.ready_goes({"kind": "ready", "text": "Ran it."}, "")
+    # The work's limits are what they were before #673.
+    work = step("work", step_id="work")
+    assert (wf["jobs"]["work"]["timeout-minutes"], work["timeout-minutes"], work["env"]["BASH_MAX_TIMEOUT_MS"]) == (90, 75, "4500000")
