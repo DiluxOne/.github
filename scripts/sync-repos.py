@@ -105,7 +105,8 @@ archived and not excluded in repos.yml:
             (#320). Only a repository repos.yml lists: one it does not gets
             its callers with its adoption. The daily drift check runs it
             for every repository (org-drift.yml, #672); one whose callers
-            pull request is open is skipped. Not in
+            pull request is open is skipped, and one repos.yml lists under
+            `no-workflows` gets nothing, nor any call to GitHub (#681). Not in
             `all`: a template change is a pull request in every repository.
   merge-queue  the merge queue (#451), from org.yml `merge-queue` (auto, on
             or off; auto when unset) and a repository's exception in
@@ -944,6 +945,10 @@ def sync_callers(repo, conf, dry):
     of is said, and added by hand). DiluxOne/.github changes its own
     callers by hand."""
     full = f"{ORG}/{repo['name']}"
+    # One with no workflows by design gets none (#681): before any call to gh.
+    if repo["name"] in (conf.get("no-workflows") or []):
+        print("  repos.yml `no-workflows`: no workflows by design; skipped")
+        return
     if repo["name"] == ".github":
         print("  this repository's own callers change in a pull request here, by hand")
         return
@@ -1537,8 +1542,11 @@ def new_callers(files, conf, kind, default="main", major=None, name=None, notes=
     appended to `notes`). Nor, when `root` (its root, as root_of() reads
     it) lacks what its kind's battery needs (battery_unready(), #681), any
     caller of that battery but those of `every-repository`: the note says
-    what it lacks. Pure but for reading the templates and the pack, `root`,
-    and the place its kind publishes to."""
+    what it lacks. None for one repos.yml lists under `no-workflows`. Pure
+    but for reading the templates and the pack, `root`, and the place its
+    kind publishes to."""
+    if name is not None and name in (conf.get("no-workflows") or []):
+        return {}
     spec = conf.get("callers") or {}
     every, battery = set(spec.get("every-repository") or []), kind_battery(kind)
     unready = battery_unready(kind, root) if battery else []
@@ -4107,6 +4115,35 @@ def battery_ready_test(check, conf):
     check("#681 C1: and writes it for a plugin that has all three", checks in written, (sorted(written), said))
 
 
+def no_workflows_test(check, conf):
+    """#681 C2: a repository repos.yml lists under `no-workflows` gets no
+    issue or pull request from the callers run: no call to gh at all."""
+    import contextlib
+    import io
+    name = "diluxone-wp-test"
+    cfg = {**conf, "no-workflows": [name], "repos": {**(conf.get("repos") or {}), name: {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"]}]}}}
+    calls = []
+
+    def fake(*args, check=True, input_text=None):
+        calls.append(args)
+        raise AssertionError("no call to gh")
+    saved = {n: globals()[n] for n in ("gh", "ORG", "listed")}
+    globals().update(gh=fake, ORG="o", listed=lambda n: cfg["repos"].get(n))
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out):
+            sync_callers({"name": name, "defaultBranchRef": {"name": "main"}}, cfg, False)
+    except AssertionError:
+        pass
+    finally:
+        globals().update(saved)
+    check("#681 C2: sync_callers() makes no gh call (no issue, no pull request) for a repository in `no-workflows`", calls == [], calls)
+    check("#681 C2: and says why", "repos.yml `no-workflows`: no workflows by design; skipped" in out.getvalue(), out.getvalue())
+    check("#681 C2: the check lists no caller to add there", new_callers({}, cfg, "wordpress-plugin", "main", name=name) == {}, "")
+    check("#681 C2: another repository still gets its callers", bool(new_callers({}, cfg, "wordpress-plugin", "main", name="another")), "")
+    check("#681 C2: repos.yml lists diluxone-wp-test under `no-workflows`", name in (conf.get("no-workflows") or []), conf.get("no-workflows"))
+
+
 def placeholder_guard_test(check, conf):
     """#671 C2: a caller that would still hold a template's placeholder, or
     a new one saying "Fill in", is not written; the others still are."""
@@ -4335,6 +4372,7 @@ def self_test():
     release_caller_test(check, conf)
     placeholder_guard_test(check, conf)
     battery_ready_test(check, conf)
+    no_workflows_test(check, conf)
     # The org-sync lane (#155): a run from a merged commit marks its issue,
     # and labels it only once its Type is Task; the lane reads it back.
     policy = load_yaml(os.path.join(CENTRAL, "policy", "autonomy.yml"))
