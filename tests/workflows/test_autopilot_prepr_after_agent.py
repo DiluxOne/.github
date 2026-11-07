@@ -278,3 +278,31 @@ def test_verify_result_reads_only_the_end_of_a_long_log(tmp_path, monkeypatch):
     end = ap.read_end(str(log))
     assert len(end) <= ap.VERIFY_CHARS * 4 and end.endswith("the last line\n")
     assert ap.tail_text(end).endswith("the last line")
+
+
+def test_a_target_that_failed_early_is_in_the_excerpt_however_long_another_writes(tmp_path, monkeypatch):
+    # #679 C1: make -j, where target a fails at once and b writes for long
+    # after: a's error and its make line are what verify result keeps.
+    ap = autopilot()
+    script = tmp_path / "b.sh"
+    script.write_text("for i in $(seq 1 3000); do echo \"b writes line $i\"; done\n")
+    repo, _ = a_repo(tmp_path, "true")
+    (repo / "Makefile").write_text(f"MAKEFLAGS += -j2\npre-pr: a b\na:\n\t@echo 'FAIL test_a - AssertionError: 1 != 2'; exit 1\nb:\n\t@sleep 1; sh {script}\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "fix: parallel")
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("DX_DEADLINE", str(int(time.time()) + 600))
+    out_dir, gh_out = tmp_path / "verify", tmp_path / "gh-output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(gh_out))
+    with quiet():
+        ap.main(["verify", "run", str(out_dir)])
+        ap.main(["verify", "result", str(out_dir)])
+    assert "verdict=fail" in gh_out.read_text()
+    log = (out_dir / ap.VERIFY_LOG).read_text()
+    assert "b writes line 3000" in log
+    # Today's tail would have lost it.
+    assert "FAIL test_a" not in ap.tail_text(ap.read_end(str(out_dir / ap.VERIFY_LOG)))
+    kept = (out_dir / ap.VERIFY_TAIL).read_text()
+    assert re.search(r"^make(\[\d+\])?: \*\*\* \[.*Makefile:\d+: a\] Error 1$", kept, re.M), kept[:2000]
+    assert kept.index("FAIL test_a") < kept.index("Makefile:4: a] Error 1") < kept.index("b writes line 3000")
+    assert len(kept) <= ap.VERIFY_CHARS + 1

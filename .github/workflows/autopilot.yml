@@ -87,8 +87,9 @@ name: Autopilot
 # pre-pr` once, whole, at the head the agent left (up to 350 minutes), and
 # `apply` marks the pull request ready only on its pass. When the agent's own
 # check passed at that head, `verify` is skipped. On a failure or a time-out
-# the pull request stays a draft: dilux-bot comments the output's last lines
-# (dx-autopilot-prepr), the run is labelled `autopilot:free-N`, and the
+# the pull request stays a draft: dilux-bot comments what failed (make's
+# failure lines and those before them, wherever they are in the log, #679)
+# and the output's last lines (dx-autopilot-prepr), the run is labelled `autopilot:free-N`, and the
 # continue's agent reads them in .dx-io/pre-pr.md and fixes them first, while
 # its free runs stay within the cap (scripts/autopilot.py end_verdict). The
 # questions it needs answered are asked while it writes the Spec.
