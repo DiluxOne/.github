@@ -71,7 +71,10 @@
                              silent (a comment, `needs-human`, exit 1); with
                              PREPR (#673: `apply` kept `ready` back on that
                              `verify` verdict) and PREPR_TAIL, a comment with
-                             the output's tail and a free fix round
+                             the output's tail and a free fix round; on an
+                             `engine` verdict (#682: the runner lacks a
+                             command), the comment says so and the run
+                             stops, with no fix round
   autopilot.py prepr-note    #673, with the key, in prep: the output of the
                              last run's failed `make pre-pr`, from dilux-bot's
                              own comment, into DX_IO/pre-pr.md for the agent
@@ -818,7 +821,7 @@ def continue_as(is_draft, record, head, conflicts=False):
 
 
 def end_verdict(mode, pr, draft_, stopped, done, total, limit_hit, runs, cap, pushed=False, asked=False, nudged=False, lost=False, frees=0,
-                prepr_failed=False):
+                prepr_failed=False, engine=False):
     """ready | stopped | asked | continue | silent. A run never ends without
     one of the first four: silent is the workflow saying so for the agent.
     A draft with every box ticked that ended without `finish` continues once
@@ -827,11 +830,14 @@ def end_verdict(mode, pr, draft_, stopped, done, total, limit_hit, runs, cap, pu
     `lost`), or whose `make pre-pr` did not pass in full after the agent's
     step (#673, `prepr_failed`: a fix round with its output), continues,
     uncounted, while its free runs (`frees`, this one included) stay within
-    the cap too."""
+    the cap too. One whose `make pre-pr` failed on a command the runner
+    lacks (#682, `engine`) stops: no fix round can install it."""
     if stopped:
         return "stopped"
     if asked:
         return "asked"
+    if engine:
+        return "stopped"
     if (lost or prepr_failed) and mode != "fix" and pr and draft_ and frees <= cap and runs < cap:
         return "continue"
     if mode == "fix":
@@ -1276,6 +1282,18 @@ PREPR_MARK = "<!-- dx-autopilot-prepr -->"
 PREPR_NOTE = "pre-pr.md"
 PREPR_HOW = {"fail": "failed", "timeout": "did not finish within the `verify` job's limit",
              "lost": "gave no verdict (its job ended without one, or did not run)"}
+# #682: a failing `make pre-pr` whose output says a command is not there
+# (bash's `X: command not found`, sh's `sh: 1: X: not found`) failed on the
+# runner, not on the change: `verify result` calls it `engine`.
+ENGINE = "engine"
+NOT_FOUND = re.compile(r"^(?:\S+: )?(?:line \d+: )?([\w.+-]+): command not found\s*$|^\S+: \d+: ([\w.+-]+): not found\s*$", re.M)
+
+
+def missing_command(text):
+    """The first command a `make pre-pr` output says is not found, "" when
+    none. Pure."""
+    m = NOT_FOUND.search(text or "")
+    return (m.group(1) or m.group(2)) if m else ""
 # The autopilot's own comments that end a run: the last of them says what
 # the next run reads.
 RUN_ENDS = (PREPR_MARK, STOP, ASK, SILENT, UNFINISHED)
@@ -1293,9 +1311,17 @@ def prepr_comment(verdict, tail, run_url, continues):
     Pure."""
     tail = scrub(tail or "").strip("\n")[-VERIFY_CHARS:] or "(no output was kept: the run's log says why)"
     fence = code_fence(tail)
+    how = PREPR_HOW.get(verdict, "failed")
     nxt = ("The autopilot continues with a fix round from this output, a run that does not count towards its cap (`autopilot:continue`)."
            if continues else "Its free fix rounds are spent, so a person takes it from here.")
-    return (f"{PREPR_MARK}\n**`make pre-pr` {PREPR_HOW.get(verdict, 'failed')}**, run in full after the agent's step, so the pull request stays a draft. "
+    if verdict == ENGINE:
+        # #682: the change did not cause it, and no fix round can mend it.
+        what = missing_command(tail)
+        how = f"failed because the runner lacks `{what}`" if what else "failed because the runner lacks a command it runs"
+        nxt = ("This is an engine failure, which the autopilot cannot fix, so it starts no fix round and the run does not count towards its cap. "
+               "A person takes it from here (`needs-human`): a maintainer adds the tool to the kind's `pre-pr-tools` (kinds/<kind>/pack.yml) "
+               "or to the runner's image, then brings it back with an answer here.")
+    return (f"{PREPR_MARK}\n**`make pre-pr` {how}**, run in full after the agent's step, so the pull request stays a draft. "
             f"{nxt} What it did is in [the run]({run_url}).\n\nWhat failed, and the last lines of its output:\n\n{fence}text\n{tail}\n{fence}\n\n{AI_LINE}")
 
 
@@ -2254,6 +2280,26 @@ A class on html.
            prepr_note([{**bot_c(said, "2"), "author": {"login": "someone"}}]), prepr_note([bot_c(said, "2"), bot_c(STOP + "\nstopped", "3")]),
            prepr_note([bot_c(STOP + "\nstopped", "1"), bot_c(said, "2"), bot_c("thanks", "3")]), "free fix rounds are spent" in prepr_comment(TIMEOUT, "", "u", False)),
           (True, True, "FAIL test_x\n```\n<!-- dx-autopilot-stop -->\n", "", "", "FAIL test_x\n```\n<!-- dx-autopilot-stop -->\n", True))
+    # #682 C2: a command the runner lacks is the engine's failure, not the agent's.
+    check("#682 C2: a tail with `command not found` names the missing command, bash's and sh's; any other failure names none",
+          (missing_command("checking\n/x/scripts/plugin-i18n.sh: line 35: msgcat: command not found\nmake: *** [dx.mk:9: pre-pr] Error 1"),
+           missing_command("bash: msgfmt: command not found"), missing_command("bash: line 3: composer: command not found"),
+           missing_command("sh: 1: wp-env: not found"), missing_command("FAIL test_x - AssertionError"),
+           missing_command("error: the page was not found"), missing_command("")),
+          ("msgcat", "msgfmt", "composer", "wp-env", "", "", ""))
+    check("#682 C2: `engine` is a verdict of verify's own",
+          (verdict_of("engine"), ENGINE), ("engine", "engine"))
+    check("#682 C2: an engine failure never continues: it stops, whatever its free runs and the cap",
+          (end_verdict("continue", "8", True, False, 3, 3, False, 2, 5, nudged=True, frees=1, prepr_failed=True, engine=True),
+           end_verdict("start", "8", True, False, 3, 3, False, 0, 5, frees=1, prepr_failed=True, engine=True),
+           end_verdict("continue", "8", True, False, 1, 3, True, 2, 5, frees=1, prepr_failed=True, engine=True)),
+          ("stopped", "stopped", "stopped"))
+    eng = prepr_comment(ENGINE, "/x/plugin-i18n.sh: line 35: msgcat: command not found\nmake: *** [dx.mk:9: pre-pr] Error 1", "u", False)
+    check("#682 C2: its comment says the runner lacks the command, an engine failure, no fix round, and keeps the output",
+          (eng.startswith(PREPR_MARK), "the runner lacks `msgcat`" in eng, "engine failure" in eng, "starts no fix round" in eng,
+           "pre-pr-tools" in eng, "needs-human" in eng, "autopilot:continue" in eng, "msgcat: command not found" in eng,
+           "free fix rounds are spent" in eng),
+          (True, True, True, True, True, True, False, True, False))
     pw_fix = prompt_work("o/r", "7", "8", "feat/7-x", "x", [], True, prepr_failed=True)
     check("#673 C2: the prompt after a failed make pre-pr asks to fix it first, from .dx-io/pre-pr.md; without one it does not",
           (f"{IO_DIR}/{PREPR_NOTE}" in pw_fix, pw_fix.index(PREPR_NOTE) < pw_fix.index("The criteria left"),
@@ -3567,10 +3613,11 @@ def read_end(path, size=VERIFY_CHARS * 4):
 
 def verdict_of(value):
     """`verify`'s verdict as the jobs with the key take it (#673): it comes
-    from a job that ran the repository's code, so only pass, fail, timeout
-    or lost, "" when it did not run, and anything else a fail. Pure."""
+    from a job that ran the repository's code, so only pass, fail, timeout,
+    engine (#682) or lost, "" when it did not run, and anything else a
+    fail. Pure."""
     value = (value or "").strip()
-    return value if value in VERDICTS + ("lost", "") else "fail"
+    return value if value in VERDICTS + (ENGINE, "lost", "") else "fail"
 
 
 def ready_goes(intent, verdict):
@@ -3974,13 +4021,17 @@ def main(argv):
         if verdict != "pass" and os.path.exists(log):
             # #679: what failed first, wherever it is in the log.
             tail = read_failures(log) or tail
+        missing = missing_command(tail) if verdict != "pass" else ""
+        if missing:
+            # #682: a command the runner lacks, which the agent cannot fix.
+            verdict = ENGINE
         with open(os.path.join(out, VERIFY_TAIL), "w", encoding="utf-8") as fh:
             fh.write(tail + "\n")
         if os.environ.get("GITHUB_OUTPUT"):
             with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
                 fh.write(f"verdict={verdict}\n")
         print(tail)
-        print(f"`make pre-pr` at {head[:7]}: {verdict}.")
+        print(f"`make pre-pr` at {head[:7]}: {verdict}" + (f" (the runner lacks `{missing}`)." if missing else "."))
         return 0
     if argv[:1] == ["apply"]:
         # The agent's outbox, applied with the key (#287): its commits are
@@ -4371,7 +4422,8 @@ def main(argv):
             if any(n.startswith((RUN_PREFIX, FREE_PREFIX)) for n in names):
                 runs, frees = run_numbers(names)[1], free_runs(names)
         nudged = bool(pr) and nudged_before(comments)
-        v = end_verdict(mode, pr, draft_, stopped, done, total, limit, runs, cap, pushed, asked, nudged, lost, frees, held_back)
+        engine = held_back and prepr_verdict == ENGINE
+        v = end_verdict(mode, pr, draft_, stopped, done, total, limit, runs, cap, pushed, asked, nudged, lost, frees, held_back, engine)
         if lost:
             print("Its runner was lost: the run does not count towards the cap (#479).")
         if held_back:
@@ -4380,6 +4432,9 @@ def main(argv):
             tail = open(tail_file, encoding="utf-8", errors="replace").read() if tail_file and os.path.exists(tail_file) else ""
             # Before the continue: the next run's prep reads this comment.
             gh("pr", "comment", str(pr), "--repo", repo, "--body", prepr_comment(prepr_verdict, tail, run_url, v == "continue"))
+            if engine:
+                # #682: an engine failure stops the run; a person has it.
+                gh("pr", "edit", str(pr), "--repo", repo, "--add-label", "needs-human")
             if not os.environ.get("WHY"):
                 os.environ["WHY"] = "`make pre-pr` did not pass after the agent's step, and its free fix rounds are spent."
         print(v)

@@ -94,7 +94,9 @@ name: Autopilot
 # its free runs stay within the cap (scripts/autopilot.py end_verdict).
 # Before the agent, and before `verify`'s `make pre-pr`, both jobs install
 # the tools the kind's pre-pr needs that the runner lacks (#682, the pack's
-# `pre-pr-tools`, scripts/pre-pr.py tools). The
+# `pre-pr-tools`, scripts/pre-pr.py tools). A failure whose output says a
+# command is not found is `verify`'s `engine` verdict: the run is free, the
+# comment says what the runner lacks, and it stops with no fix round. The
 # questions it needs answered are asked while it writes the Spec.
 #   mode: fix       called from org-pull-request.yml, and in the
 #                   organisation's own repository from its
