@@ -26,51 +26,65 @@ def test_the_callers_tokens_may_read_the_checks_workflow_runs():
         assert w["permission-actions"] == "read"
 
 
-def run_act_step(tmp_path, scenarios, written):
+GROUPS = [{"id": "serial", "scenarios": ["s1", "s2"]}, {"id": "s3", "scenarios": ["s3"]}]
+
+
+def run_act_step(tmp_path, results, written):
     """The act step's shell up to the decision, with `release-lane.py act`
-    replaced by `decide` (which writes nothing to GitHub)."""
+    replaced by `decide` (which writes nothing to GitHub). `written`: the
+    rows each artifact (`move`, `back`, a group's id) holds, None for one
+    its job left none of."""
     step = next(s for s in jobs()["act"]["steps"] if s.get("id") == "act")
     script = step["run"].split("# Exit 1")[0]
     script = "\n".join(l for l in script.splitlines() if not l.startswith("git config"))
     tmp_path.mkdir()
-    if written is not None:
-        (tmp_path / "scenarios").mkdir()
-        (tmp_path / "scenarios" / "results.md").write_text(
-            f"| table |\n\n<!-- dx-scenarios {json.dumps(written)} -->\n", encoding="utf-8")
+    for name, rows in written.items():
+        if rows is not None:
+            (tmp_path / "scenarios" / f"scenarios-{name}").mkdir(parents=True)
+            (tmp_path / "scenarios" / f"scenarios-{name}" / "results.md").write_text(
+                f"| table |\n\n<!-- dx-scenarios {json.dumps(rows)} -->\n", encoding="utf-8")
     plan = {"release": True, "version": "7.14.0", "major": "v7"}
-    env = dict(os.environ, RUNNER_TEMP=str(tmp_path), PLAN=json.dumps(plan), SCENARIOS=scenarios,
-               RUN_URL="https://github.com/DiluxOne/.github/actions/runs/1")
+    env = dict(os.environ, RUNNER_TEMP=str(tmp_path), PLAN=json.dumps(plan), GROUPS=json.dumps(GROUPS),
+               GITHUB_STEP_SUMMARY=str(tmp_path / "summary.md"),
+               RUN_URL="https://github.com/DiluxOne/.github/actions/runs/1", **results)
     script += f'\npython3 {ROOT}/scripts/release-lane.py decide --plan "$RUNNER_TEMP/plan.json" --results "$results"\n'
-    out = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, check=True)
+    out = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, check=True, cwd=ROOT)
     return json.loads(out.stdout)
+
+
+def ok(*ids):
+    return [{"id": i, "ok": True, "run": ""} for i in ids]
 
 
 def test_a_failed_scenario_reaches_the_decision(tmp_path):
     act = jobs()["act"]
-    # The decision runs when the scenarios job failed, never when the plan
-    # releases nothing or the run was cancelled.
+    # The decision runs when the move ended, failed or not, never when the
+    # plan releases nothing or the run was cancelled.
     cond = act["if"]
     assert "!cancelled()" in cond and "needs.plan.outputs.release == 'true'" in cond
-    assert "needs.scenarios.result == 'failure'" in cond and "always()" not in cond
-    upload = next(s for s in jobs()["scenarios"]["steps"] if "upload-artifact" in s.get("uses", ""))
-    assert upload["if"] == "${{ !cancelled() }}"
+    assert "needs.move.result == 'failure'" in cond and "always()" not in cond
+    for job in ("play", "back"):
+        upload = next(s for s in jobs()[job]["steps"] if "upload-artifact" in s.get("uses", ""))
+        assert upload["if"] == "${{ !cancelled() }}"
     download = next(s for s in act["steps"] if "download-artifact" in s.get("uses", ""))
-    assert download["continue-on-error"] is True
+    assert download["continue-on-error"] is True and download["with"]["pattern"] == "scenarios-*"
     step = next(s for s in act["steps"] if s.get("id") == "act")
-    assert step["env"]["SCENARIOS"] == "${{ needs.scenarios.result }}"
+    assert {step["env"][k] for k in ("MOVE", "PLAY", "BACK")} == {f"${{{{ needs.{j}.result }}}}" for j in ("move", "play", "back")}
 
+    done = {"MOVE": "success", "PLAY": "success", "BACK": "success"}
+    every = {"move": [], "serial": ok("s1", "s2"), "s3": ok("s3"), "back": []}
     failed = {"id": "callers", "ok": False, "why": ["checks unreadable"], "run": "https://github.com/x/t/actions/runs/9"}
-    # A failed scenario is the bug, with its run.
-    d = run_act_step(tmp_path / "a", "failure", [{"id": "s1", "ok": True, "run": ""}, failed])
+    # A failed row is the bug, with its run.
+    d = run_act_step(tmp_path / "a", done, dict(every, back=[failed]))
     assert d["do"] == "bug" and d["scenario"] == "callers" and d["run"] == failed["run"]
     assert "`callers`" in d["body"] and failed["run"] in d["body"]
-    # Every row passed but the job failed: still a bug, never a release.
-    d = run_act_step(tmp_path / "b", "failure", [{"id": "s1", "ok": True, "run": ""}])
-    assert d["do"] == "bug" and d["scenario"] == "scenarios"
+    # Every row passed but a play job failed: still a bug, never a release.
+    d = run_act_step(tmp_path / "b", dict(done, PLAY="failure"), every)
+    assert d["do"] == "bug" and d["scenario"] == "play"
     assert d["run"] == "https://github.com/DiluxOne/.github/actions/runs/1"
-    # No results at all: a bug naming the job and this run.
-    d = run_act_step(tmp_path / "c", "failure", None)
-    assert d["do"] == "bug" and d["scenario"] == "scenarios" and "actions/runs/1" in d["body"]
-    # A job that succeeded is read as it wrote.
-    d = run_act_step(tmp_path / "d", "success", [{"id": "s1", "ok": True, "run": ""}])
+    # A group that timed out left no results: a bug naming it and this run.
+    d = run_act_step(tmp_path / "c", dict(done, PLAY="failure"), dict(every, s3=None))
+    assert d["do"] == "bug" and d["scenario"] == "s3" and "actions/runs/1" in d["body"]
+    # Every job succeeded and every scenario passed: released.
+    d = run_act_step(tmp_path / "d", done, every)
     assert d["do"] == "release"
