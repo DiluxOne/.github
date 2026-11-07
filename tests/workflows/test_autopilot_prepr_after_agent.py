@@ -332,3 +332,25 @@ def test_an_early_error_in_a_log_past_the_limit_is_still_in_the_excerpt(tmp_path
     assert kept.rstrip("\n").endswith(filler.splitlines()[-1])
     # And the comment keeps it whole.
     assert "E999 SyntaxError" in ap.prepr_comment("fail", kept, "u", True)
+
+
+def test_a_passing_run_keeps_the_tail_as_today(tmp_path, monkeypatch):
+    # #679 C3: on a pass, even a log with a make failure line in it (a
+    # target that is allowed to fail) gives today's tail, and nothing more.
+    ap = autopilot()
+    script = tmp_path / "out.sh"
+    script.write_text("echo 'make: *** [Makefile:9: optional] Error 1 (ignored)'\nfor i in $(seq 1 1000); do echo \"line $i\"; done\n")
+    repo, _ = a_repo(tmp_path, f"@sh {script}")
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("DX_DEADLINE", str(int(time.time()) + 600))
+    out_dir, gh_out = tmp_path / "verify", tmp_path / "gh-output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(gh_out))
+    printed = io.StringIO()
+    with quiet():
+        ap.main(["verify", "run", str(out_dir)])
+    with contextlib.redirect_stdout(printed):
+        ap.main(["verify", "result", str(out_dir)])
+    assert "verdict=pass" in gh_out.read_text()
+    today = ap.tail_text(ap.read_end(str(out_dir / ap.VERIFY_LOG)))
+    assert (out_dir / ap.VERIFY_TAIL).read_text() == today + "\n"
+    assert printed.getvalue().startswith(today + "\n") and "Error 1 (ignored)" not in today
