@@ -1,7 +1,9 @@
 """The autopilot's agent runs nothing in the background (#482): a run ends
 when the agent stops and nothing tells it a background task finished, so
 both of its steps leave out Monitor and background runs, and the work step
-lets a command (`make pre-pr`) run as long as the step does."""
+lets a command (`make pre-pr`) run as long as the step does, up to its
+deadline (#673), which sits inside the step's limit."""
+import re
 from pathlib import Path
 
 import yaml
@@ -24,3 +26,14 @@ def test_no_monitor_and_no_background_runs_in_either_agent_step():
 def test_a_command_in_the_work_may_run_as_long_as_the_step():
     step = agent_step("work", "work")
     assert int(step["env"]["BASH_MAX_TIMEOUT_MS"]) >= int(step["timeout-minutes"]) * 60_000
+
+
+def test_the_deadline_of_the_work_sits_inside_the_step_s_limit():
+    # #673: `check` stops `make pre-pr` there, before the step is killed.
+    wf = yaml.safe_load((ROOT / ".github/workflows/autopilot.yml").read_text(encoding="utf-8"))
+    task = next(s for s in wf["jobs"]["work"]["steps"] if s.get("id") == "task")
+    step = agent_step("work", "work")
+    m = re.search(r'deadline=\$\(\( \$\(date \+%s\) \+ \((\d+) - (\d+)\) \* 60 \)\)', task["run"])
+    assert m, "the task step writes the deadline"
+    assert int(m.group(1)) == step["timeout-minutes"] and int(m.group(2)) > 0
+    assert step["env"]["DX_DEADLINE"] == "${{ steps.task.outputs.deadline }}"
