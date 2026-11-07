@@ -21,7 +21,9 @@ complete feature), `steps` (each one of
 `comment`, `label`, `unlabel`, `edit`, `push`, `dispatch`, `wait`) and
 `expect` (`labels`, `absent`, `comments` (markers), `pull` (`closes`,
 `branch`, `title`, patterns), `check` (name: conclusion), `merged`,
-`waiting`).
+`waiting`), and `serial: true` for one that plays in the one `serial`
+group, after the one before it (`groups`): the lane plays the groups at
+once, one job each, and every other scenario is a group of its own.
 
   release-scenarios.py coverage [ROOT]
         fails naming every pair and transition with no scenario, every
@@ -29,7 +31,24 @@ complete feature), `steps` (each one of
         `expect` cannot hold against its own setup (`preconditions`: a
         dispatch of a workflow the test repository cannot run on demand
         among them). Every other pair a shipped caller wires is held to the
-        engine statically, by scripts/caller-contract.py check
+        engine statically, by scripts/caller-contract.py check; and
+        what is wrong with the groups (`partition`): a scenario in no
+        group or in two, a serial one outside the serial group or out of
+        the file's order, a group id unfit for an artifact name
+  release-scenarios.py groups
+        prints the groups, [{id, scenarios}] as JSON, the release lane's
+        `play` matrix; exits 1 naming what `partition` finds
+  release-scenarios.py move --repo OWNER/NAME --moved MOVED --out FILE
+                            [--ref v7-next] [--minutes N]
+        the callers moved to the ref, as `run` does (with
+        DX_CALLERS_TOKEN), what moved written to MOVED as soon as the
+        pointing is over, and to FILE the failing `callers` row when they
+        did not reach it (exits 1 then: no group plays)
+  release-scenarios.py play --repo OWNER/NAME --group ID --out FILE
+                            [--ref v7-next] [--minutes N]
+        the group's scenarios, one after another in its order, with the
+        test identity's token (GH_TOKEN) alone, the callers already at the
+        ref; their table to FILE; exits 1 when one fails
   release-scenarios.py run --repo OWNER/NAME [--ref v7-next] [--only ID ...]
                            [--out FILE] [--minutes N]
         moves the test repository's callers to the ref through a pull
@@ -612,6 +631,86 @@ def read_moved(path, ref):
         return [], [{"id": "callers", "ok": False, "why": [f"could not read what moved to {ref}, the callers may be left there: {e}"], "run": ""}]
 
 
+def move_callers(repo, ref, callers=gh, central=None, sleep=time.sleep, minutes=20, record=None):
+    """The test repository's callers moved to `ref` (`point_callers`):
+    (what moved, []) once they are, else ([], one failing `callers` row that
+    says why). `record`, when given, is called with what moved as soon as
+    the pointing is over ([] when it failed cleanly)."""
+    try:
+        moved = point_callers(repo, ref, callers, central, sleep=sleep, minutes=minutes)
+    except (RuntimeError, ValueError) as e:
+        if record:
+            record([])
+        return [], [{"id": "callers", "ok": False, "why": [f"the callers did not reach {ref}: {e}"], "run": ""}]
+    if record:
+        record(moved)
+    return moved, []
+
+
+SERIAL = "serial"
+GROUP_ID = re.compile(r"[a-z0-9-]+")
+# The artifacts the lane names after them besides the groups' (scenarios-*).
+NOT_GROUPS = ("move", "back")
+
+
+def groups(scenarios):
+    """The groups the lane plays at once, one job each (release-lane.yml
+    `play`): every scenario marked `serial: true` in one, `serial`, in the
+    file's order, which plays them one after another; every other scenario
+    in its own, named by its id. [{id, scenarios}]. Pure."""
+    serial = [s.get("id") for s in scenarios if s.get("serial")]
+    return ([{"id": SERIAL, "scenarios": serial}] if serial else []) + [
+        {"id": s.get("id"), "scenarios": [s.get("id")]} for s in scenarios if not s.get("serial")]
+
+
+def partition(scenarios, gs):
+    """What is wrong with the groups `gs` of `scenarios`: a scenario in no
+    group or in two, a group that plays no scenario of the file, a serial
+    scenario outside the serial group, a serial group that is not the serial
+    scenarios in the file's order, and a group id unfit for an artifact name
+    (`^[a-z0-9-]+$`, nor `move` or `back`) or used twice. Pure."""
+    out, where, ids = [], {}, [s.get("id") or "?" for s in scenarios]
+    seen = set()
+    for g in gs:
+        gid = str(g.get("id"))
+        if not GROUP_ID.fullmatch(gid) or gid in NOT_GROUPS:
+            out.append(f"group {gid}: its id is unfit for an artifact name (^[a-z0-9-]+$, nor {' or '.join(NOT_GROUPS)})")
+        if gid in seen:
+            out.append(f"group {gid}: its id is used twice")
+        seen.add(gid)
+        for sid in g.get("scenarios") or []:
+            where.setdefault(sid, []).append(gid)
+    for sid in ids:
+        if not where.get(sid):
+            out.append(f"scenario {sid}: in no group")
+        elif len(where[sid]) > 1:
+            out.append(f"scenario {sid}: in {len(where[sid])} groups ({', '.join(where[sid])})")
+    for sid in where:
+        if sid not in ids:
+            out.append(f"group {', '.join(where[sid])}: plays {sid}, which is no scenario of {SCENARIOS}")
+    serial = [s.get("id") or "?" for s in scenarios if s.get("serial")]
+    for sid in serial:
+        if where.get(sid) and where[sid] != [SERIAL]:
+            out.append(f"scenario {sid}: serial, but played in {', '.join(where[sid])}, not in the {SERIAL} group alone")
+    one = [g.get("scenarios") or [] for g in gs if str(g.get("id")) == SERIAL]
+    if one and one[0] != serial:
+        out.append(f"group {SERIAL}: plays {', '.join(one[0]) or 'nothing'}, not the serial scenarios in the file's order ({', '.join(serial) or 'none'})")
+    return out
+
+
+def play_group(conf, gid, repo, ref, run=gh, sleep=time.sleep, minutes=20):
+    """The scenarios of the group `gid`, one after another in its order, at
+    `ref` (the callers already there), with the test identity's token (the
+    ambient GH_TOKEN): their rows, or one failing row when `gid` is no
+    group."""
+    scenarios = conf.get("scenarios") or []
+    group = next((g for g in groups(scenarios) if g["id"] == gid), None)
+    if group is None:
+        return [{"id": gid, "ok": False, "why": [f"{gid} is no group of {SCENARIOS}"], "run": ""}]
+    by_id = {s.get("id"): s for s in scenarios}
+    return [play(by_id[sid], repo, ref, conf.get("bodies") or {}, run, sleep, minutes) for sid in group["scenarios"]]
+
+
 def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20, central=None, callers=None, moved_out=None, record=None):
     """Every scenario at `ref`: the callers moved there first (a merged pull
     request, or no scenario plays and one failing `callers` row says why),
@@ -625,14 +724,9 @@ def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20, cent
     plays: a run killed after that still leaves the record `back` reads."""
     bodies = conf.get("bodies") or {}
     callers = callers or (callers_gh() if run is gh else run)
-    try:
-        moved = point_callers(repo, ref, callers, central, sleep=sleep, minutes=minutes)
-    except (RuntimeError, ValueError) as e:
-        if record:
-            record([])
-        return [{"id": "callers", "ok": False, "why": [f"the callers did not reach {ref}: {e}"], "run": ""}]
-    if record:
-        record(moved)
+    moved, rows = move_callers(repo, ref, callers, central, sleep, minutes, record)
+    if rows:
+        return rows
     if moved_out is not None:
         moved_out.extend(moved)
     results = []
@@ -723,10 +817,13 @@ def schema_passes(root=ROOT):
 
 def problems(conf, root=ROOT):
     """What `coverage` names: every played pair and transition with no
-    scenario, and every scenario its setup cannot make hold."""
+    scenario, every scenario its setup cannot make hold, and what is wrong
+    with the groups (`partition`)."""
     pack = test_pack(root)
-    return (coverage(conf.get("scenarios") or [], played(root, pack) | transitions(root))
-            + preconditions(conf.get("scenarios") or [], conf.get("bodies") or {}, pack, dispatchable(root, pack), schema_passes(root)))
+    scenarios = conf.get("scenarios") or []
+    return (coverage(scenarios, played(root, pack) | transitions(root))
+            + preconditions(scenarios, conf.get("bodies") or {}, pack, dispatchable(root, pack), schema_passes(root))
+            + partition(scenarios, groups(scenarios)))
 
 
 def self_test():
@@ -763,6 +860,41 @@ def self_test():
         check("C2: a scenario covering what nothing wires is named", coverage(some, wanted), ["scenario s1: covers gone.yml:push, which no caller wires and no transition is"])
     real = load_yaml(os.path.join(ROOT, SCENARIOS))
     check("C2: every pair the test repository plays, and every transition, has its scenario; every scenario can hold", problems(real), [])
+    fx = [{"id": "a", "serial": True}, {"id": "b"}, {"id": "c", "serial": True}, {"id": "d"}]
+    gs = groups(fx)
+    check("C2: groups: the serial scenarios in one group, in the file's order, every other one alone",
+          gs, [{"id": "serial", "scenarios": ["a", "c"]}, {"id": "b", "scenarios": ["b"]}, {"id": "d", "scenarios": ["d"]}])
+    check("C2: groups with nothing serial: every scenario alone", groups([{"id": "b"}]), [{"id": "b", "scenarios": ["b"]}])
+    check("C2: partition: the groups of groups() are a partition", partition(fx, gs), [])
+    for how, bad, want in (
+            ("a scenario in no group", [gs[0], gs[1]], ["scenario d: in no group"]),
+            ("a scenario in two", gs + [{"id": "e", "scenarios": ["b"]}], ["scenario b: in 2 groups (b, e)"]),
+            ("a serial one outside the serial group", [{"id": "serial", "scenarios": ["a"]}, {"id": "c", "scenarios": ["c"]}] + gs[1:],
+             ["scenario c: serial, but played in c, not in the serial group alone", "group serial: plays a, not the serial scenarios in the file's order (a, c)"]),
+            ("the serial group out of order", [{"id": "serial", "scenarios": ["c", "a"]}] + gs[1:], ["group serial: plays c, a, not the serial scenarios in the file's order (a, c)"]),
+            ("a group that plays no scenario", gs + [{"id": "x", "scenarios": ["gone"]}], [f"group x: plays gone, which is no scenario of {SCENARIOS}"])):
+        check(f"C2: partition fails for {how}", partition(fx, bad), want)
+    check("C2: partition fails for a group id unfit for an artifact name, or the move's or the back's, or used twice",
+          [len(partition([{"id": i}], groups([{"id": i}]))) for i in ("Has Space", "move", "back", "ok-1")] + [len(partition([{"id": "serial"}, {"id": "a", "serial": True}], groups([{"id": "serial"}, {"id": "a", "serial": True}])))],
+          [1, 1, 1, 0, 1])
+    real_groups = groups(real["scenarios"])
+    check("C2: the real file's serial group: every scenario that drafts, merges or pushes to main, in order",
+          real_groups[0], {"id": "serial", "scenarios": ["accepted-spec", "spec-to-draft", "core-one-at-a-time", "prd-edited-after-acceptance", "decision-sub-issues",
+                                                         "claim-and-release", "claim-pull-request", "bug-reproduced", "question-answered", "stop-hint-continue",
+                                                         "draft-in-conflict", "ready-behind-main", "merge-queue", "low-risk-merges", "release-issue"]})
+    check("C2: the real file's other scenarios each play alone", [g["scenarios"] == [g["id"]] for g in real_groups[1:]] == [True] * (len(real["scenarios"]) - 15), True)
+    titles = []
+
+    def ordered(*a, input=None):
+        if a[:2] == ("issue", "create"):
+            titles.append(a[a.index("--title") + 1])
+            return "https://github.com/o/t/issues/9\n"
+        return "{}" if a[:2] == ("issue", "view") else "[]"
+    conf3 = {"scenarios": [{"id": "a", "serial": True, "opens": {"issue": {"title": "a"}}, "expect": {}}, {"id": "b", "opens": {"issue": {"title": "b"}}, "expect": {}},
+                           {"id": "c", "serial": True, "opens": {"issue": {"title": "c"}}, "expect": {}}]}
+    rows = play_group(conf3, "serial", "o/t", "v7-next", ordered, lambda s: None, 1)
+    check("C2: play_group plays its group's scenarios one after another, in order, and no other", ([r["id"] for r in rows], titles), (["a", "c"], ["a", "c"]))
+    check("C2: play_group on no group is one failing row", [(r["id"], r["ok"]) for r in play_group(conf3, "gone", "o/t", "v7-next", ordered, lambda s: None, 1)], [("gone", False)])
     rpack = test_pack()
     check("#563: the test repository's callers are shipped ones", all(os.path.exists(os.path.join(ROOT, "workflow-templates", c)) for c in rpack["callers"]) and rpack["callers"] != [], True)
     check("#563: a pair no caller of the test repository wires is not played, nor a scheduled one: caller-contract.py holds them",
@@ -1080,6 +1212,33 @@ def main(argv):
         moved = [] if a.moved else None
         record = (lambda m: write_moved(m, a.moved)) if a.moved else None
         results = run_all(load_yaml(os.path.join(ROOT, SCENARIOS)), a.repo, a.ref, a.only, minutes=a.minutes, moved_out=moved, record=record)
+        write_results(results, a.out)
+        return 0 if all(r["ok"] for r in results) else 1
+    if argv[:1] == ["groups"] and len(argv) == 1:
+        scenarios = load_yaml(os.path.join(ROOT, SCENARIOS)).get("scenarios") or []
+        gs, wrong = groups(scenarios), partition(scenarios, groups(scenarios))
+        for line in wrong:
+            print(line, file=sys.stderr)
+        if wrong:
+            return 1
+        print(json.dumps(gs, separators=(",", ":")))
+        return 0
+    if argv[:1] in (["move"], ["play"]):
+        import argparse
+        p = argparse.ArgumentParser(prog=f"release-scenarios.py {argv[0]}")
+        p.add_argument("--repo", required=True)
+        p.add_argument("--ref", default="v7-next")
+        p.add_argument("--out", default="")
+        p.add_argument("--minutes", type=int, default=20)
+        if argv[0] == "move":
+            p.add_argument("--moved", required=True)
+        else:
+            p.add_argument("--group", required=True)
+        a = p.parse_args(argv[1:])
+        if argv[0] == "move":
+            results = move_callers(a.repo, a.ref, callers_gh(), minutes=a.minutes, record=lambda m: write_moved(m, a.moved))[1]
+        else:
+            results = play_group(load_yaml(os.path.join(ROOT, SCENARIOS)), a.group, a.repo, a.ref, minutes=a.minutes)
         write_results(results, a.out)
         return 0 if all(r["ok"] for r in results) else 1
     if argv[:1] == ["back"]:
