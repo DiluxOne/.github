@@ -17,7 +17,7 @@ def jobs():
 
 
 def test_the_callers_tokens_may_read_the_checks_workflow_runs():
-    tokens = [s for s in jobs()["scenarios"]["steps"] if "create-github-app-token" in s.get("uses", "")]
+    tokens = [s for job in ("move", "play", "back") for s in jobs()[job]["steps"] if "create-github-app-token" in s.get("uses", "")]
     assert [t["id"] for t in tokens] == ["app", "back"]
     for t in tokens:
         w = t["with"]

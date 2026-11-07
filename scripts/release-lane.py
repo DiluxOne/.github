@@ -388,20 +388,38 @@ def check_workflow(check, path=os.path.join(ROOT, ".github", "workflows", "relea
     wide = [t for t in watch_tokens if not t.get("repositories")]
     check("workflow: the watch's installation-wide token only reads", bool(wide) and all(v in ("read",) for t in wide for k, v in t.items() if k.startswith("permission-")), True)
     check("workflow: the watch runs once v7 moved, even when act failed after", "always()" in str(jobs.get("watch", {}).get("if")), True)
-    # The scenarios job waits on the callers pull request's checks with the
-    # token it passes as DX_CALLERS_TOKEN: that token reads them (#627).
-    steps = jobs.get("scenarios", {}).get("steps") or []
-    minted = {st.get("id"): st.get("with") or {} for st in steps if "create-github-app-token" in str(st.get("uses"))}
-    waits = [(st.get("env") or {}).get("DX_CALLERS_TOKEN") for st in steps if re.search(r"release-scenarios\.py (run|back)\b", str(st.get("run")))]
-    used = [minted.get(m.group(1)) if (m := re.fullmatch(r"\$\{\{ steps\.([\w-]+)\.outputs\.token \}\}", str(w))) else None for w in waits]
-    check("workflow: both waits on the callers pull request use a token of the scenarios job (#627)", len(used) == 2 and all(t is not None for t in used), True)
+    # The move and back jobs wait on the callers pull request's checks with
+    # the token each passes as DX_CALLERS_TOKEN: that token reads them (#627).
+    used, minted = [], []
+    for job in ("move", "back"):
+        steps = jobs.get(job, {}).get("steps") or []
+        mine = {st.get("id"): st.get("with") or {} for st in steps if "create-github-app-token" in str(st.get("uses"))}
+        minted += list(mine.values()) or [{}]
+        waits = [(st.get("env") or {}).get("DX_CALLERS_TOKEN") for st in steps if re.search(r"release-scenarios\.py (move|back)\b", str(st.get("run")))]
+        used += [mine.get(m.group(1)) if (m := re.fullmatch(r"\$\{\{ steps\.([\w-]+)\.outputs\.token \}\}", str(w))) else None for w in waits] or [None]
+    check("workflow: the waits on the callers pull request, move's and back's, each use a token of its own job (#627)", len(used) == 2 and all(t is not None for t in used), True)
     check("workflow: the waits' tokens read the checks and the statuses (#627)",
           [(t or {}).get("permission-checks") == "read" and (t or {}).get("permission-statuses") == "read" for t in used], [True, True])
     check("workflow: the waits' tokens are the test repository's alone (#627)",
           [(t or {}).get("repositories") for t in used], ["${{ steps.test.outputs.repo }}"] * 2)
-    check("workflow: every App token of the scenarios job asks for checks: read and statuses: read (#627)",
-          bool(minted) and all(t.get("permission-checks") == "read" and t.get("permission-statuses") == "read" for t in minted.values()), True)
-
+    check("workflow: every App token of the move and back jobs asks for checks: read and statuses: read (#627)",
+          all(t.get("permission-checks") == "read" and t.get("permission-statuses") == "read" for t in minted), True)
+    # The groups play at once, each in its job, between the move and the back.
+    play = jobs.get("play", {})
+    check("workflow: play is a matrix over the move job's groups, and one group's failure cancels no other's",
+          ((play.get("strategy") or {}).get("matrix"), (play.get("strategy") or {}).get("fail-fast")),
+          ({"group": "${{ fromJSON(needs.move.outputs.groups) }}"}, False))
+    check("workflow: play runs on DX_RUNNER_HEAVY, or ubuntu-latest when it is not set",
+          play.get("runs-on"), "${{ vars.DX_RUNNER_HEAVY != '' && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}")
+    needs = lambda job: [jobs.get(job, {}).get("needs")] if isinstance(jobs.get(job, {}).get("needs"), str) else jobs.get(job, {}).get("needs") or []
+    check("workflow: play needs move, and plays only once the callers moved", ("move" in needs("play"), play.get("if")), (True, "needs.move.outputs.moved == 'true'"))
+    psteps = play.get("steps") or []
+    check("workflow: play mints no App token: the test identity's token alone",
+          ([st for st in psteps if "create-github-app-token" in str(st.get("uses"))], [v for st in psteps for k, v in (st.get("env") or {}).items() if "token" in str(v).lower() or "TOKEN" in k]),
+          ([], ["${{ secrets.DX_TEST_TOKEN }}"]))
+    check("workflow: back needs play and runs under always(), so the callers come back whatever the groups did",
+          ("play" in needs("back"), "always()" in str(jobs.get("back", {}).get("if"))), (True, True))
+    check("workflow: act reads the move, the play and the back jobs", {"move", "play", "back"} <= set(needs("act")), True)
 
 class Fake:
     """A fake `gh` and `git` that records every command."""
@@ -579,6 +597,34 @@ def self_test():
         fake = Fake({"properties/values": props, "repos/O/a/actions/runs?": json.dumps(runs[:1])})
         check("C6: a quiet half hour moves nothing", (watch(moved_p, "O/.github", central, "O", "dx-adopted", since, run=fake, sleep=lambda s: None, every=600, root=root), fake.has("git")), (None, False))
     check_workflow(check)
+    import copy
+    import yaml
+    real = yaml.safe_load(open(os.path.join(ROOT, ".github", "workflows", "release-lane.yml"), encoding="utf-8"))
+
+    def broken(change):
+        """The names check_workflow fails on a copy of release-lane.yml
+        that `change` broke."""
+        wf = copy.deepcopy(real)
+        change(wf["jobs"])
+        names = []
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "release-lane.yml")
+            with open(path, "w", encoding="utf-8") as fh:
+                yaml.safe_dump(wf, fh)
+            check_workflow(lambda name, got, want=True: names.append(name) if got != want else None, path)
+        return names
+    app = {"uses": "actions/create-github-app-token@x", "id": "app", "with": {}}
+    for how, change, word in (
+            ("fail-fast", lambda j: j["play"]["strategy"].update({"fail-fast": True}), "matrix"),
+            ("one runner for every group", lambda j: j["play"].update({"runs-on": "self-hosted"}), "DX_RUNNER_HEAVY"),
+            ("play before the move", lambda j: j["play"].update({"needs": ["plan"]}), "play needs move"),
+            ("an App token in play", lambda j: j["play"]["steps"].insert(0, app), "no App token"),
+            ("back only when play passed", lambda j: j["back"].update({"if": "needs.move.result != 'skipped'"}), "always()"),
+            ("back before play", lambda j: j["back"].update({"needs": ["plan", "move"]}), "back needs play"),
+            ("back's token without statuses", lambda j: next(s for s in j["back"]["steps"] if s.get("id") == "back")["with"].pop("permission-statuses"), "statuses"),
+            ("move's token for every repository", lambda j: next(s for s in j["move"]["steps"] if s.get("id") == "app")["with"].pop("repositories"), "alone")):
+        names = broken(change)
+        check(f"C1: check_workflow fails a release-lane.yml with {how}", any(word in n for n in names), True)
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
