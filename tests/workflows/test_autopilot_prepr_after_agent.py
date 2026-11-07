@@ -241,3 +241,40 @@ def test_a_quick_check_that_passed_at_the_head_skips_verify_and_the_work_keeps_i
     # The work's limits are what they were before #673.
     work = step("work", step_id="work")
     assert (wf["jobs"]["work"]["timeout-minutes"], work["timeout-minutes"], work["env"]["BASH_MAX_TIMEOUT_MS"]) == (90, 75, "4500000")
+
+
+def test_the_verdict_and_the_output_reach_apply_through_the_artifact():
+    # .dx-verify is hidden: upload-artifact drops it unless told not to, and
+    # the fix round would get no output (review of #675).
+    wf = workflow()
+    up = next(s for s in wf["jobs"]["verify"]["steps"] if "upload-artifact" in s.get("uses", ""))
+    assert up["with"]["name"] == "autopilot-verify"
+    paths = up["with"]["path"].split()
+    assert sorted(paths) == [".dx-verify/tail.txt", ".dx-verify/verify.json"]
+    assert up["with"].get("include-hidden-files") is True
+    down = next(s for s in wf["jobs"]["apply"]["steps"] if s.get("with", {}).get("name") == "autopilot-verify")
+    assert down["with"]["path"] == ".dx-verify"
+    assert step("apply", step_id="end")["env"]["PREPR_TAIL"].startswith(down["with"]["path"] + "/")
+
+
+def test_a_check_stopped_in_a_fix_round_says_reply_and_end_not_finish_ready(tmp_path, monkeypatch):
+    ap = autopilot()
+    repo, io_dir = a_repo(tmp_path, "@sleep 30")
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("DX_DEADLINE", str(int(time.time()) - 1))
+    for mode, says, never in (("fix", "Reply in each thread", "finish ready"), ("start", "finish ready", "Reply in each thread")):
+        monkeypatch.setenv("MODE", mode)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            assert ap.run_pre_pr(str(io_dir)) == 0
+        assert says in out.getvalue() and never not in out.getvalue()
+    assert step("work", step_id="work")["env"]["MODE"] == "${{ needs.prep.outputs.mode }}"
+
+
+def test_verify_result_reads_only_the_end_of_a_long_log(tmp_path, monkeypatch):
+    ap = autopilot()
+    log = tmp_path / "pre-pr.log"
+    log.write_text("x" * (ap.VERIFY_CHARS * 10) + "\nthe last line\n")
+    end = ap.read_end(str(log))
+    assert len(end) <= ap.VERIFY_CHARS * 4 and end.endswith("the last line\n")
+    assert ap.tail_text(end).endswith("the last line")

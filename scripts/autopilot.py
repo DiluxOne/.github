@@ -3379,6 +3379,19 @@ def make_pre_pr(left, log=None):
             out.close()
 
 
+def timeout_note(head, mode):
+    """What `check` tells the agent when `make pre-pr` ran past the step's
+    deadline (#673): in a fix round, which has no `finish ready`, to reply
+    and end, the pull request's own checks running it in full. Pure."""
+    first = (f"`make pre-pr` did not finish at {head[:7]} before this step's time runs out, so it was stopped: it did not fail, and running it again "
+             "would not finish either. ")
+    if mode == "fix":
+        return first + ("Reply in each thread with what you changed and end now, without new commits: the pull request's own checks run "
+                        "everything `make pre-pr` runs once your commits are pushed, and the review sees what they report.")
+    return first + ("Go on to the credits and `finish ready` now, without new commits: the workflow runs `make pre-pr` in full "
+                    "after your step and marks the pull request ready only if it passes; if it fails, the next run brings you its output.")
+
+
 def run_pre_pr(io):
     """`check`: `make pre-pr` at HEAD, as committed, in the foreground; its
     head and exit code kept for `finish ready`. Up to the work step's
@@ -3398,9 +3411,7 @@ def run_pre_pr(io):
     with open(os.path.join(io, PRE_PR_MARK), "w", encoding="utf-8") as fh:
         json.dump({"head": head, "rc": rc}, fh)
     if rc == TIMEOUT:
-        print(f"`make pre-pr` did not finish at {head[:7]} before this step's time runs out, so it was stopped: it did not fail, and running it again "
-              "would not finish either. Go on to the credits and `finish ready` now, without new commits: the workflow runs `make pre-pr` in full "
-              "after your step and marks the pull request ready only if it passes; if it fails, the next run brings you its output.")
+        print(timeout_note(head, os.environ.get("MODE", "")))
         return 0
     print(f"`make pre-pr` passed at {head[:7]}." if rc == 0 else f"`make pre-pr` failed at {head[:7]} (exit {rc}): fix what it found, commit, and run check again.")
     return rc
@@ -3449,6 +3460,15 @@ def tail_text(text, lines=VERIFY_LINES, chars=VERIFY_CHARS):
     """The last lines of an output, scrubbed of tokens and keys, at most
     chars long. Pure."""
     return scrub("\n".join((text or "").splitlines()[-lines:]))[-chars:]
+
+
+def read_end(path, size=VERIFY_CHARS * 4):
+    """The last size bytes of a file, as text: a check of hours can leave a
+    log too large to read whole, and only its tail is kept."""
+    with open(path, "rb") as fh:
+        fh.seek(0, os.SEEK_END)
+        fh.seek(max(0, fh.tell() - size))
+        return fh.read().decode("utf-8", errors="replace")
 
 
 def verdict_of(value):
@@ -3855,8 +3875,7 @@ def main(argv):
         except (OSError, ValueError):
             result = None
         verdict = verify_verdict(result, head)
-        text = open(log, encoding="utf-8", errors="replace").read() if os.path.exists(log) else "(no output was kept)"
-        tail = tail_text(text)
+        tail = tail_text(read_end(log) if os.path.exists(log) else "(no output was kept)")
         with open(os.path.join(out, VERIFY_TAIL), "w", encoding="utf-8") as fh:
             fh.write(tail + "\n")
         if os.environ.get("GITHUB_OUTPUT"):

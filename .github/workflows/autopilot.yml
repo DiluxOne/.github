@@ -1186,6 +1186,9 @@ jobs:
           # #673: `check` stops a `make pre-pr` still running then, and
           # `verify` runs it in full after this step.
           DX_DEADLINE: ${{ steps.task.outputs.deadline }}
+          # Which run this is: a fix round has no `finish ready`, so a
+          # stopped `check` tells it to reply and end instead.
+          MODE: ${{ needs.prep.outputs.mode }}
           # The pull requests prep or draft saved: next-version.py reads them
           # there in `make pre-pr`, since this job's token does not (#585).
           DX_PULLS: ${{ github.workspace }}/.dx-io/pulls.json
@@ -1361,6 +1364,7 @@ jobs:
           path: |
             .dx-verify/verify.json
             .dx-verify/tail.txt
+          include-hidden-files: true
           if-no-files-found: ignore
           overwrite: true
           retention-days: 30
