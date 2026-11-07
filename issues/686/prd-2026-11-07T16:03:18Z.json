@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 686,
+  "prd_sha256": "bac2a467e4e36aa9f09a98c968cc4c6a0222b26ccd0f59dd5b6f96e912b02d37",
+  "prd": "### Problem\n\n#674 (the daily drift check brings workflow callers in step by itself, #672), #676 (sync-repos callers adds new callers with template placeholders, #671), #680 (the pre-pr failure excerpt shows the log's tail, #679) and #685 (the pre-pr job has no gettext and loops fix rounds on it, #682) are merged and not in a version. Until v7 carries #685, DiluxOne/diluxone-users-wordpress cannot finish #242, which holds its 1.0.0 release: its pre-pr job fails in `i18n-form` with `msgcat: command not found` and starts fix rounds without end. The release lane cannot make it (#655), so this release is made by hand.\n\n### Scope\n\n- Rebuild CHANGELOG.md with v7.14.0 (`scripts/changelog.py build --next v7.14.0`); a minor: one feature (#674) and three fixes (#676, #680, #685). `python3 scripts/caller-contract.py check` passes: no caller has to give anything new.\n- Tag v7.14.0 on the merge commit, move v7 to it (lightweight), and watch the adopted repositories for runs that end in `startup_failure` for 30 minutes.\n\n### Out of scope\n\n- #655, the release lane's scenarios.\n- #681 (#684), still being written.\n\n### Acceptance criteria\n\n- C1: Given the release pull request merged, when v7.14.0 is tagged, then v7 points at it, its GitHub Release lists #674, #676, #680 and #685, and no adopted repository's run ends in `startup_failure` in the next 30 minutes.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-07T16:03:18Z",
+  "policy": "DiluxOne/.github@d9b6b6160e81"
+}
