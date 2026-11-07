@@ -3075,6 +3075,9 @@ def daily_callers_test(check, conf):
     calls, said = run("other", behind)
     check("#672 C1: a repository repos.yml does not list gets nothing, and is told so",
           opened(calls) == [] and "does not list it" in said, (opened(calls), said))
+    calls, said = run("mine", behind, open_prs=["ci/9-org-workflow-callers"])
+    check("#672 C2: one with its callers pull request open gets no issue, no pull request and no write",
+          opened(calls) == [] and "already open" in said, (opened(calls), said))
 
 
 def drift_or_reason(repo, conf, labels, block, current=0):
