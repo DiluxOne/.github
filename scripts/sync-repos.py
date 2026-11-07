@@ -2636,8 +2636,10 @@ def drift(repo, conf, labels, block, current=0):
                 drifted = callers_drift(files, conf, central, default=default or "main")
                 if not central:
                     # A caller it lacks is listed as `callers` adds it, from
-                    # the same rule (new_callers(), #671), once.
-                    drifted = [d for d in drifted if d[1]]
+                    # the same rule (new_callers(), #671), once; one whose
+                    # file name a workflow of its own takes, which `callers`
+                    # does not write, is still listed here.
+                    drifted = [d for d in drifted if d[1] or f".github/workflows/{d[0]}" in files]
                     found += [f"lacks `{p}` (workflow-templates/{os.path.basename(p)}): `sync-repos.py callers` adds it"
                               for p in new_callers(files, conf, repo_kind(full, default), default or "main", name=repo["name"])]
                 found += caller_lines(drifted, central)
@@ -3755,6 +3757,10 @@ def ai_plugin_drift_test(check, conf, labels, block):
     check("C9 (#552): one without the triage's caller is listed", any("workflow-templates/issues.yml" in l for l in got), got)
     check("#671: once, as `callers` adds it", [l for l in got if "issues.yml" in l]
           == ["lacks `.github/workflows/issues.yml` (workflow-templates/issues.yml): `sync-repos.py callers` adds it"], got)
+    own = "name: Issues\non: issues\njobs:\n  mine:\n    runs-on: ubuntu-latest\n    steps:\n      - run: true\n"
+    got = lines_for("dilux-agentic-workflow", adopted, edit=lambda files: {".github/workflows/issues.yml": own})
+    check("#671: one whose issues.yml calls no shared workflow is still listed as lacking the triage's caller",
+          [l for l in got if "issues.yml" in l] == ["has no caller of `workflow-templates/issues.yml`: add it from the template (docs/adopting.md)"], got)
     got = lines_for("dilux-agentic-workflow", adopted, drop=".github/workflows/plugin-checks-ai.yml")
     check("#671: and so is one without its kind's battery caller", any("lacks `.github/workflows/plugin-checks-ai.yml`" in l for l in got), got)
     # #671 C3: a plugin repos.yml gives no slug, not on wordpress.org (the
