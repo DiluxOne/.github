@@ -79,7 +79,12 @@ archived and not excluded in repos.yml:
             the values repos.yml gives (its entry's `callers`, else `callers:
             defaults`, #562), so none is a placeholder: a repository being
             adopted, with no caller yet, gets them all (#552), and a caller
-            still holding a template's placeholder gets the value. Each template job must be there with the
+            still holding a template's placeholder gets the value. But the
+            caller of its kind's release (one whose pack has
+            `release.stable`, release-wp.yml) only when its entry gives its
+            `slug` or that place publishes it (#671), and no caller that
+            would still hold a placeholder, or a new one saying "Fill in":
+            that file is left out, named with the input, the others go in. Each template job must be there with the
             same `uses:`, `needs` (its own jobs may join them), `if`,
             `permissions`, `secrets` handling and inputs, but the inputs the
             template says to fill in (`repository-owned`). Inputs and jobs of
@@ -117,7 +122,8 @@ archived and not excluded in repos.yml:
             property), files, callers, pre-pr, dependabot, own-checks,
             merge-queue and project, in that order. Needs --repo.
   check     changes nothing: lists, as Markdown, what differs in each
-            repository, its callers and its Dependabot configuration
+            repository, its callers (and each caller `callers` would add
+            to it, #671) and its Dependabot configuration
             included (the daily drift check posts it as an issue), a
             repository whose `design-system` in
             repos.yml names no system of design-systems/, or is `local` with
@@ -936,9 +942,12 @@ def sync_callers(repo, conf, dry):
     branch = (repo.get("defaultBranchRef") or {}).get("name") or "main"
     # The callers it lacks, written whole from their templates (#552): those
     # every repository has, and those of its kind's battery.
-    added = new_callers(files, conf, repo_kind(full, branch), branch, name=repo["name"])
+    held = []
+    added = new_callers(files, conf, repo_kind(full, branch), branch, name=repo["name"], notes=held)
     values = repos_conf.caller_values(conf, repo["name"])
     if not any(CALLS_RE.search(t) for t in files.values()) and not added:
+        for note in held:
+            print(f"  {note}")
         print("  calls none of the shared workflows: nothing to compare (docs/adopting.md)")
         return
     current = current_major()
@@ -962,7 +971,7 @@ def sync_callers(repo, conf, dry):
         print("  a pull request for the workflow callers is already open; skipped")
         return
     owned = (conf.get("callers") or {}).get("repository-owned") or {}
-    wanted, notes, stuck = {}, [], set()
+    wanted, notes, stuck = {}, list(held), set()
     for name, path, found in callers_drift(moved, conf, major=major, default=branch):
         if not path:
             if f".github/workflows/{name}" not in added:
@@ -1026,13 +1035,16 @@ def sync_callers(repo, conf, dry):
     # The callers it lacked, whole, with the values repos.yml gives them.
     for path, text in added.items():
         wanted[path] = text
-        name = os.path.basename(path)
-        for key in sorted(set(owned.get(name) or []) - set(values)):
-            notes.append(f"{path}: new, from workflow-templates/{name}; repos.yml gives no `{key}`: set it in its entry's `callers`")
     for note in notes:
         print(f"  {note}")
+    # Nothing still holding a template's placeholder is written (#671): that
+    # file stays out, the others go in.
+    refused = refuse_placeholders(full, wanted, added, parsed_moved, owned, values, major)
+    if old and refused:
+        print(f"  the move to @v{current} waits: {', '.join(refused)} must be brought in step first")
+        return
     if not wanted:
-        print("  callers in step" if not notes else "  nothing this script can bring in step")
+        print("  callers in step" if not notes and not refused else "  nothing this script can bring in step")
         return
     changed = ", ".join(wanted)
     if dry:
@@ -1060,6 +1072,31 @@ def sync_callers(repo, conf, dry):
     open_change(repo, default, wanted, "Keep the workflow callers in step with the organisation's templates", body,
                 "ci/{}-org-workflow-callers", "ci: keep the workflow callers in step with the templates", pr_body,
                 "ci: keep {} in step with its template", mode="callers")
+
+
+def refuse_placeholders(full, wanted, added, parsed, owned, values, major):
+    """Takes out of `wanted` each caller placeholder_problems() refuses,
+    saying the repository, the path and why (#671): a file in `added` is
+    new, from its template; any other, the caller (in `parsed`) of the
+    templates it calls. The paths it took out, sorted."""
+    tpls = templates(major)
+    of = {}
+    for tname, (_, data) in tpls.items():
+        path = caller_for(dict(data, _name=tname), parsed, False)
+        if path:
+            of.setdefault(path, []).append(tname)
+    refused = []
+    for path in list(wanted):
+        whole = path in added
+        names = [os.path.basename(path)] if whole else of.get(path, [])
+        reasons = [r for n in names if n in tpls
+                   for r in placeholder_problems(path, wanted[path], tpls[n][0], set(owned.get(n) or []), values, whole)]
+        if reasons:
+            del wanted[path]
+            refused.append(path)
+            for reason in dict.fromkeys(reasons):
+                print(f"  {full}: {path} not written: {reason}")
+    return sorted(refused)
 
 
 USES_RE = re.compile(r"DiluxOne/\.github/\.github/workflows/[\w.-]+@v(\d+)\b")
@@ -1305,7 +1342,13 @@ def yaml_scalar(value):
 def owned_lines(text, owned):
     """{input: (line index, its value)} of the inputs in OWNED a caller's
     `with:` blocks set, the last of each."""
-    lines, out, inside = text.splitlines(keepends=True), {}, False
+    return {key: (i, value) for key, i, value in every_owned_line(text, owned)}
+
+
+def every_owned_line(text, owned):
+    """[(input, line index, its value)] of each line of a caller's `with:`
+    blocks that sets an input in OWNED, in order: one per job that sets it."""
+    lines, out, inside = text.splitlines(keepends=True), [], False
     for i, line in enumerate(lines):
         if re.match(r"^    with:\s*(#.*)?$", line):
             inside = True
@@ -1316,17 +1359,19 @@ def owned_lines(text, owned):
         if m and m.group(1) in owned:
             raw = line.split(":", 1)[1]
             value = parse_yaml(f"v: {raw.strip()}" if raw.strip() else "v:") or {}
-            out[m.group(1)] = (i, value.get("v"))
+            out.append((m.group(1), i, value.get("v")))
     return out
 
 
 def fill_inputs(text, owned, values, only=None):
     """The caller's text with each input in OWNED that VALUES gives written
-    with that value, its comment dropped (it said to fill it in); with
-    `only`, those inputs alone."""
-    lines = text.splitlines(keepends=True)
-    for key, (i, _) in owned_lines(text, owned).items():
-        if key in values and (only is None or key in only):
+    with that value in every job that sets it (#671), its comment dropped
+    (it said to fill it in); with `only`, those inputs alone, and only where
+    they hold the value the last job sets (the placeholder placeholders()
+    found), never another job's own value."""
+    lines, last = text.splitlines(keepends=True), owned_lines(text, owned)
+    for key, i, have in every_owned_line(text, owned):
+        if key in values and (only is None or (key in only and plain(have) == plain(last[key][1]))):
             lines[i] = f"      {key}: {yaml_scalar(values[key])}\n"
     return "".join(lines)
 
@@ -1341,6 +1386,28 @@ def placeholders(text, template_text, owned, values):
         if key in theirs and plain(have) == plain(theirs[key]) and (key not in values or plain(values[key]) != plain(have)):
             out[key] = theirs[key]
     return out
+
+
+FILL_IN = "Fill in"
+
+
+def placeholder_problems(path, text, template_text, owned, values, whole):
+    """Why the caller at `path` must not be written as `text` (#671), as
+    reasons, none when it may: an input in OWNED still at its template's
+    value with no other in repos.yml (placeholders()); and, for a file new
+    (`whole`, written from its template), a placeholder of its template
+    anywhere in it, or the template's "Fill in". Pure."""
+    found = placeholders(text, template_text, owned, values)
+    if whole:
+        for key, _, value in every_owned_line(template_text, owned):
+            given = key in values and plain(values[key]) == plain(value)
+            if not given and value not in (None, "") and str(value) in text and key not in found:
+                found[key] = value
+    reasons = [f"repos.yml gives no `{key}` (it would hold `{yaml_scalar(value)}`)" if key not in values
+               else f"it still holds `{yaml_scalar(value)}`, the template's `{key}`" for key, value in sorted(found.items())]
+    if whole and FILL_IN in text:
+        reasons.append(f"it still says \"{FILL_IN}\"")
+    return reasons
 
 
 def placeholder_lines(files, conf, name, central=False, major=None):
@@ -1358,14 +1425,54 @@ def placeholder_lines(files, conf, name, central=False, major=None):
     return out
 
 
-def new_callers(files, conf, kind, default="main", major=None, name=None):
+# What reads a kind's `release.stable` place (#671): urllib's when None, a
+# stand-in in --test.
+STABLE_OPENER = None
+
+
+def release_caller_wanted(data, kind, conf, name, opener=None):
+    """(whether to write it, a note or None) for a new caller of the
+    template `data` (#671). A caller of the kind's release (its pack's
+    `release.workflow` or `release.publish`, when the pack has
+    `release.stable`) is written only when the repository's entry in
+    repos.yml gives its `slug`, or when that place says it is published at
+    its default slug (production-version.py fetch_stable()): not published
+    (a 404, "not found") writes none; an answer it cannot read writes none
+    and says why, never a guess. Any other caller is written."""
+    release = (pack_of(kind).get("release") or {}) if kind and re.fullmatch(r"[a-z0-9][a-z0-9-]*", str(kind)) else {}
+    release = release if isinstance(release, dict) else {}
+    ends = {release.get("workflow"), release.get("publish")} - {None}
+    if not release.get("stable") or not (shared_calls(data) & ends):
+        return True, None
+    own = repos_conf.value(conf, name or "", "callers")
+    if isinstance(own, dict) and own.get("slug"):
+        return True, None
+    slug, where = repos_conf.slug_of(name or ""), release.get("publishes-to") or "its kind's place"
+    opener = opener or STABLE_OPENER
+    try:
+        got = _script("production_version", "production-version.py").fetch_stable(release["stable"], slug, *([opener] if opener else []))
+    except (OSError, ValueError) as exc:
+        return False, (f"could not tell whether it is published on {where} as `{slug}` ({str(exc)[:120]}): no release caller written; "
+                       "set `callers: {slug: …}` in its entry in repos.yml to add it")
+    if got is None:
+        return False, None
+    if got == "":
+        return False, (f"{where} answers for `{slug}` with no version: no release caller written; "
+                       "set `callers: {slug: …}` in its entry in repos.yml to add it")
+    return True, None
+
+
+def new_callers(files, conf, kind, default="main", major=None, name=None, notes=None, opener=None):
     """{path: text} of the callers a repository lacks, written whole from their
     templates (#552): those of `every-repository` (the triage and the
     autopilot start from issues.yml) and those that call a workflow of its
     kind's battery, each at .github/workflows/<template>, unless a file of its
     already calls that template's shared workflows or has that name. A
     repository that calls none of them yet (one being adopted) gets them all
-    this way. Pure but for reading the templates and the pack."""
+    this way, but the caller of its kind's release when it gives no slug and
+    is not published (release_caller_wanted(), #671; why it cannot tell is
+    appended to `notes`). Pure but for reading the templates and the pack,
+    and the place its kind publishes to."""
     spec = conf.get("callers") or {}
     every, battery = set(spec.get("every-repository") or []), kind_battery(kind)
     owned, values = spec.get("repository-owned") or {}, repos_conf.caller_values(conf, name or "")
@@ -1376,6 +1483,11 @@ def new_callers(files, conf, kind, default="main", major=None, name=None):
             continue
         path = f".github/workflows/{tname}"
         if path in files or caller_for(dict(data, _name=tname), parsed) is not None:
+            continue
+        wanted, why = release_caller_wanted(data, kind, conf, name, opener)
+        if why and notes is not None:
+            notes.append(f"{path}: {why}")
+        if not wanted:
             continue
         text = text.replace("$default-branch", default)
         # Written with the repository's values (#562): never a placeholder.
@@ -2521,7 +2633,16 @@ def drift(repo, conf, labels, block, current=0):
             # once it is on the current one.
             try:
                 central = repo["name"] == ".github"
-                found += caller_lines(callers_drift(files, conf, central, default=default or "main"), central)
+                drifted = callers_drift(files, conf, central, default=default or "main")
+                if not central:
+                    # A caller it lacks is listed as `callers` adds it, from
+                    # the same rule (new_callers(), #671), once; one whose
+                    # file name a workflow of its own takes, which `callers`
+                    # does not write, is still listed here.
+                    drifted = [d for d in drifted if d[1] or f".github/workflows/{d[0]}" in files]
+                    found += [f"lacks `{p}` (workflow-templates/{os.path.basename(p)}): `sync-repos.py callers` adds it"
+                              for p in new_callers(files, conf, repo_kind(full, default), default or "main", name=repo["name"])]
+                found += caller_lines(drifted, central)
                 found += placeholder_lines(files, conf, repo["name"], central)
             except ValueError as exc:  # a workflow that does not parse is reported, not skipped
                 found.append(f"its workflow callers could not be compared: {str(exc)[:200]}")
@@ -2904,7 +3025,7 @@ def callers_test(check, conf):
           (sorted(written), out.getvalue()))
     check("#562 C2: and writes each input of its own with repos.yml's value, never the template's placeholder",
           ("support-url: https://github.com/DiluxOne/.github/blob/main/SUPPORT.md\n" in written[".github/workflows/issues.yml"][1],
-           "example.com" in written[".github/workflows/issues.yml"][1], "fill in" in out.getvalue()), (True, False, False))
+           "example.com" in written[".github/workflows/issues.yml"][1], "fill in" in out.getvalue()) == (True, False, False), out.getvalue())
     # #562 C2: the callers' values come from the entry or the defaults.
     owned_all = (conf.get("callers") or {}).get("repository-owned") or {}
     plugin_conf = {**conf, "repos": {**conf["repos"], "diluxone-new-wordpress": {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"]}], "callers": {"slug": "new-one"}}}}
@@ -2914,12 +3035,12 @@ def callers_test(check, conf):
     check("#562 C2: every new caller of a plugin holds no template placeholder", {p: v for p, v in left.items() if v} == {}, left)
     release = fresh.get(".github/workflows/release-wp.yml", "")
     check("#562 C2: the entry's value wins over the default, and the default fills the rest",
-          ("slug: new-one\n" in release, "version-constant: DILUXONE_NEW_VERSION\n" in release, "dry-run: true\n" in release, "my-plugin" in release), (True, True, True, False))
+          ("slug: new-one\n" in release, "version-constant: DILUXONE_NEW_VERSION\n" in release, "dry-run: true\n" in release, "my-plugin" in release) == (True, True, True, False), release)
     # A release that rehearses is left rehearsing: nothing merged by policy makes it publish.
     rehearsing = templates()["release-wp.yml"][0].replace("my-plugin", "new-one").replace("MY_PLUGIN_VERSION", "DILUXONE_NEW_VERSION")
     check("#562 C2: a caller holding the template's `dry-run: true` is no placeholder, and is never rewritten to publish",
           ("dry-run" in placeholders(rehearsing, templates()["release-wp.yml"][0], {"dry-run"}, repos_conf.caller_values(plugin_conf, "diluxone-new-wordpress")),
-           "dry-run: false" in fill_inputs(rehearsing, {"dry-run"}, repos_conf.caller_values(plugin_conf, "diluxone-new-wordpress"))), (False, False))
+           "dry-run: false" in fill_inputs(rehearsing, {"dry-run"}, repos_conf.caller_values(plugin_conf, "diluxone-new-wordpress"))) == (False, False), "")
     raw_issues = templates()["issues.yml"][0].replace("$default-branch", "main")
     lines = placeholder_lines({".github/workflows/issues.yml": raw_issues}, conf, "diluxone-new-wordpress")
     check("#562 C2: the drift check lists a caller that still holds a template placeholder, with the value repos.yml gives",
@@ -2928,7 +3049,7 @@ def callers_test(check, conf):
     filled = fill_inputs(raw_issues, {"support-url"}, repos_conf.caller_values(conf, "x"))
     check("#562 C2: and none once it holds the value, nor one holding the repository's own",
           (placeholder_lines({".github/workflows/issues.yml": filled}, conf, "x"),
-           placeholder_lines({".github/workflows/issues.yml": raw_issues.replace("https://example.com/support", "https://mine.example")}, conf, "x")), ([], []))
+           placeholder_lines({".github/workflows/issues.yml": raw_issues.replace("https://example.com/support", "https://mine.example")}, conf, "x")) == ([], []), filled)
     # Its labels: every label of labels.yml, those the triage, the acceptance
     # and the autopilot set among them.
     labels = load_yaml(os.path.join(CENTRAL, "labels.yml"))
@@ -3601,11 +3722,12 @@ def ai_plugin_drift_test(check, conf, labels, block):
             return Out(json.dumps(settings))
         return Out("", 1, "HTTP 404")
 
-    def lines_for(name, cfg, dx=True, drop=None, policy=None):
+    def lines_for(name, cfg, dx=True, drop=None, policy=None, edit=None):
         global ORG, ORG_RULESETS
         tree = trees[name]
         repo = {"name": name, "defaultBranchRef": {"name": "main"}, "visibility": "PUBLIC"}
         callers = {p: t for p, t in new_callers({}, cfg, tree["kind"], "main", name=name).items() if p != drop}
+        callers.update(edit(callers) if edit else {})
         state.update(name=name, files=callers, policy=policy, makefile=makefile if tree["kind"] else ".PHONY: pre-pr\npre-pr:\n\ttrue\n",
                      **{"dx.mk": pre_pr.render_kind(tree["kind"]) if dx else None})
         saved_gh, saved_org, saved_rs = globals()["gh"], ORG, ORG_RULESETS
@@ -3633,8 +3755,179 @@ def ai_plugin_drift_test(check, conf, labels, block):
           any("declares no way to reproduce a bug" in l for l in got), got)
     got = lines_for("dilux-agentic-workflow", adopted, drop=".github/workflows/issues.yml")
     check("C9 (#552): one without the triage's caller is listed", any("workflow-templates/issues.yml" in l for l in got), got)
+    check("#671: once, as `callers` adds it", [l for l in got if "issues.yml" in l]
+          == ["lacks `.github/workflows/issues.yml` (workflow-templates/issues.yml): `sync-repos.py callers` adds it"], got)
+    own = "name: Issues\non: issues\njobs:\n  mine:\n    runs-on: ubuntu-latest\n    steps:\n      - run: true\n"
+    got = lines_for("dilux-agentic-workflow", adopted, edit=lambda files: {".github/workflows/issues.yml": own})
+    check("#671: one whose issues.yml calls no shared workflow is still listed as lacking the triage's caller",
+          [l for l in got if "issues.yml" in l] == ["has no caller of `workflow-templates/issues.yml`: add it from the template (docs/adopting.md)"], got)
+    got = lines_for("dilux-agentic-workflow", adopted, drop=".github/workflows/plugin-checks-ai.yml")
+    check("#671: and so is one without its kind's battery caller", any("lacks `.github/workflows/plugin-checks-ai.yml`" in l for l in got), got)
+    # #671 C3: a plugin repos.yml gives no slug, not on wordpress.org (the
+    # stand-in's 404), whose issues.yml is out of step and which lacks only
+    # its release caller: the drift check lists issues.yml and no missing caller.
+    trees["diluxone-help-wordpress"] = {"kind": "wordpress-plugin", "root": ["Makefile", "dx.mk", "composer.json"]}
+    unstep = lambda files: {p: t[:t.index("  repro-triaged:")] + t[t.index("  # When a person accepts"):] for p, t in files.items() if p.endswith("/issues.yml")}  # noqa: E731
+    got = lines_for("diluxone-help-wordpress", adopted, edit=unstep)
+    check("#671 C3: the drift check lists the old issues.yml and nothing about a missing caller",
+          ([l for l in got if "workflows/" in l or "workflow-templates/" in l]
+           == ["`.github/workflows/issues.yml` lacks the job `repro-triaged` of `workflow-templates/issues.yml` (`sync-repos.py callers`)"]
+           and not any("lacks `" in l or "has no caller" in l or "release-wp" in l for l in got)), got)
     got = lines_for("dilux-agentic-workflow", adopted, dx=False)
     check("C9 (#552): one with no dx.mk, the kind's `make pre-pr`, is listed", got == [f"`{pre_pr.FRAGMENT}` is missing: it is its kind's `pre-pr-make`, the `make pre-pr` its Makefile includes (`sync-repos.py pre-pr`)"], got)
+
+
+def stand_in_place(answer):
+    """An opener for production-version.py fetch_stable() (#671) that
+    answers `answer`: an int, that HTTP error; an exception, raised; else
+    that answer, as JSON."""
+    import io
+    import urllib.error
+
+    def opener(url, timeout=None):
+        if isinstance(answer, int):
+            raise urllib.error.HTTPError(url, answer, "stand-in", {}, None)
+        if isinstance(answer, Exception):
+            raise answer
+        return io.BytesIO(json.dumps(answer).encode())
+    return opener
+
+
+def callers_run(conf, name, files, kind, answer):
+    """sync_callers() for repository `name` (of `kind`, with the workflow
+    files `files`) against a stand-in for gh and for its kind's place
+    answering `answer`: ({path: text} written, [the pull requests' gh
+    arguments], what it printed)."""
+    import contextlib
+    import io
+
+    class Out:
+        def __init__(self, stdout="", returncode=0, stderr=""):
+            self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
+    calls, written = [], {}
+    current = max(int(v) for t in templates().values() for v in USES_RE.findall(t[0]))
+    base = f"api repos/o/{name}"
+
+    def fake(*args, check=True, input_text=None):
+        joined = " ".join(args)
+        calls.append(args)
+        if joined == f"{base}/contents/.github/workflows":
+            return Out(json.dumps([{"name": p.rsplit("/", 1)[1], "path": p} for p in files]))
+        for p in files:
+            if joined.startswith(f"{base}/contents/{p} "):
+                return Out(files[p])
+        if "matching-refs/tags/v" in joined:
+            return Out(json.dumps([[{"ref": f"refs/tags/v{current}"}]]))
+        if args[:2] in (("pr", "list"), ("issue", "list")):
+            return Out("[]")
+        if args[:2] == ("issue", "create"):
+            return Out(f"https://github.com/o/{name}/issues/7\n")
+        if args[:2] == ("pr", "create"):
+            return Out(f"https://github.com/o/{name}/pull/8\n")
+        if "ref/heads/main" in joined:
+            return Out(json.dumps({"object": {"sha": "abc"}}))
+        if joined.startswith(f"api -X PUT repos/o/{name}/contents/"):
+            written[args[3].split("/contents/", 1)[1]] = base64.b64decode(json.loads(input_text)["content"]).decode()
+            return Out("{}")
+        if joined.startswith("api -X"):
+            return Out("{}")
+        return Out("", 1, "HTTP 404")
+    global ORG
+    saved = {n: globals()[n] for n in ("gh", "ORG", "listed", "STABLE_OPENER")}
+    globals().update(gh=fake, ORG="o", STABLE_OPENER=stand_in_place(answer),
+                     listed=lambda n: {"kinds": [{"kind": kind, "paths": ["**"]}]} if n == name else None)
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out):
+            sync_callers({"name": name, "defaultBranchRef": {"name": "main"}}, conf, False)
+    finally:
+        globals().update(saved)
+    return written, [a for a in calls if a[:2] == ("pr", "create")], out.getvalue()
+
+
+def release_caller_test(check, conf):
+    """#671: the caller of a kind's release is added only to a repository
+    whose entry gives its slug or that its kind's place publishes."""
+    name, release = "diluxone-new-wordpress", ".github/workflows/release-wp.yml"
+    bare = {**conf, "repos": {**(conf.get("repos") or {}), name: {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"]}]}}}
+    slugged = {**bare, "repos": {**bare["repos"], name: {**bare["repos"][name], "callers": {"slug": "new-one"}}}}
+    for label, answer in (("a 404", 404), ("\"Plugin not found.\"", {"error": "Plugin not found."})):
+        notes = []
+        got = new_callers({}, bare, "wordpress-plugin", "main", name=name, notes=notes, opener=stand_in_place(answer))
+        check(f"#671 C1: new_callers() writes no release-wp.yml for a plugin with no slug that wordpress.org answers {label}",
+              release not in got and ".github/workflows/plugin-checks-wp.yml" in got and notes == [], (sorted(got), notes))
+    got = new_callers({}, slugged, "wordpress-plugin", "main", name=name, opener=stand_in_place(404))
+    check("#671 C1: one when its entry gives a slug", "slug: new-one\n" in got.get(release, ""), sorted(got))
+    got = new_callers({}, bare, "wordpress-plugin", "main", name=name, opener=stand_in_place({"version": "1.2.0"}))
+    check("#671 C1: one when wordpress.org answers a version", release in got, sorted(got))
+    for label, answer in (("an error", 500), ("another error answer", {"error": "Plugin closed."}), ("no answer", OSError("timed out"))):
+        notes = []
+        got = new_callers({}, bare, "wordpress-plugin", "main", name=name, notes=notes, opener=stand_in_place(answer))
+        check(f"#671 C1: none on {label}, and a note saying why",
+              release not in got and len(notes) == 1 and notes[0].startswith(release) and "repos.yml" in notes[0], (sorted(got), notes))
+    got = new_callers({}, conf, "ai-agent-plugin", "main", name="dilux-agentic-workflow", opener=stand_in_place(OSError("never asked")))
+    check("#671 C1: a kind with no `stable` gets its release caller as before", ".github/workflows/release-ai.yml" in got, sorted(got))
+    written, prs, said = callers_run(bare, name, {}, "wordpress-plugin", 404)
+    check("#671 C1: sync_callers() writes no release-wp.yml for an unpublished plugin with no slug, the others it lacks still",
+          release not in written and ".github/workflows/plugin-checks-wp.yml" in written and len(prs) == 1, (sorted(written), said))
+    written, prs, said = callers_run(bare, name, {}, "wordpress-plugin", {"version": "1.2.0"})
+    check("#671 C1: and one for a published plugin", release in written, (sorted(written), said))
+    written, prs, said = callers_run(bare, name, {}, "wordpress-plugin", 503)
+    check("#671 C1: and none, with the note, when wordpress.org cannot be read", release not in written and f"{release}: could not tell" in said, (sorted(written), said))
+    # C3: an old issues.yml, every other caller in step, only the release
+    # caller lacking, with no slug and not published: issues.yml alone.
+    have = new_callers({}, bare, "wordpress-plugin", "main", name=name, opener=stand_in_place(404))
+    t = have[".github/workflows/issues.yml"]
+    have[".github/workflows/issues.yml"] = t[:t.index("  repro-triaged:")] + t[t.index("  # When a person accepts"):]
+    written, prs, said = callers_run(bare, name, have, "wordpress-plugin", 404)
+    check("#671 C3: an old issues.yml alone out of step: one pull request that writes issues.yml alone",
+          (sorted(written), len(prs)) == ([".github/workflows/issues.yml"], 1) and "  repro-triaged:" in written[".github/workflows/issues.yml"], (sorted(written), said))
+
+
+def placeholder_guard_test(check, conf):
+    """#671 C2: a caller that would still hold a template's placeholder, or
+    a new one saying "Fill in", is not written; the others still are."""
+    name, release = "diluxone-new-wordpress", ".github/workflows/release-wp.yml"
+    issues, checks = ".github/workflows/issues.yml", ".github/workflows/plugin-checks-wp.yml"
+    owned = (conf.get("callers") or {}).get("repository-owned") or {}
+    tpl = {n: t for n, (t, _) in templates().items()}
+    check("#671 C2: no template under workflow-templates/ says \"Fill in\"", [n for n, t in tpl.items() if FILL_IN in t] == [], "")
+    got = placeholder_problems(release, tpl["release-wp.yml"], tpl["release-wp.yml"], set(owned["release-wp.yml"]), {"dry-run": True}, True)
+    check("#671 C2: a new release caller with no slug nor version-constant names both, not dry-run",
+          got == ["repos.yml gives no `slug` (it would hold `my-plugin`)", "repos.yml gives no `version-constant` (it would hold `MY_PLUGIN_VERSION`)"], got)
+    half = fill_inputs(tpl["release-wp.yml"], {"slug", "version-constant"}, {"slug": "mine", "version-constant": "MINE_VERSION"}).replace("slug: mine", "slug: my-plugin", 1)
+    got = placeholder_problems(release, half, tpl["release-wp.yml"], set(owned["release-wp.yml"]), {"slug": "mine", "version-constant": "MINE_VERSION", "dry-run": True}, True)
+    check("#671 C2: a new one holding the placeholder in one job of two is refused", got == ["it still holds `my-plugin`, the template's `slug`"], got)
+    filled = fill_inputs(tpl["release-wp.yml"], set(owned["release-wp.yml"]), {"slug": "mine", "version-constant": "MINE_VERSION", "dry-run": True})
+    check("#671 C2: every job of a new caller gets repos.yml's value, and then it passes",
+          ("my-plugin" in filled, placeholder_problems(release, filled, tpl["release-wp.yml"], set(owned["release-wp.yml"]), {"slug": "mine", "version-constant": "MINE_VERSION", "dry-run": True}, True)) == (False, []), filled)
+    got = placeholder_problems(issues, tpl["issues.yml"], tpl["issues.yml"], {"support-url"}, {}, False)
+    check("#671 C2: a caller it has that would hold example.com/support with no value is refused", got == ["repos.yml gives no `support-url` (it would hold `https://example.com/support`)"], got)
+    said = "# Fill in the profile.\n" + fill_inputs(tpl["pull-request-comments.yml"], {"profile"}, {"profile": "general"})
+    check("#671 C2: a new one saying \"Fill in\" is refused, one it has is not judged by its comments",
+          (placeholder_problems(".github/workflows/pull-request-comments.yml", said, tpl["pull-request-comments.yml"], {"profile"}, {"profile": "general"}, True),
+           placeholder_problems(".github/workflows/pull-request-comments.yml", said, tpl["pull-request-comments.yml"], {"profile"}, {"profile": "general"}, False))
+          == (["it still says \"Fill in\""], []), said)
+    # Through `callers`: no value for the plugin's slug, version constant nor
+    # support URL, published (so its release caller is wanted).
+    spec = conf.get("callers") or {}
+    bare = {**conf, "callers": {**spec, "defaults": {k: v for k, v in (spec.get("defaults") or {}).items() if k not in ("slug", "version-constant", "support-url")}},
+            "repos": {**(conf.get("repos") or {}), name: {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"]}]}}}
+    written, prs, said = callers_run(bare, name, {}, "wordpress-plugin", {"version": "1.2.0"})
+    check("#671 C2: `callers` writes none of the callers that would hold a placeholder", not {release, checks, issues} & set(written), sorted(written))
+    check("#671 C2: and the others still go in, in one pull request", ".github/workflows/pull-request-comments.yml" in written and len(prs) == 1, (sorted(written), said))
+    check("#671 C2: its output names the repository, the path and the input",
+          all(line in said for line in (f"o/{name}: {release} not written: repos.yml gives no `slug` (it would hold `my-plugin`)",
+                                       f"o/{name}: {release} not written: repos.yml gives no `version-constant` (it would hold `MY_PLUGIN_VERSION`)",
+                                       f"o/{name}: {issues} not written: repos.yml gives no `support-url` (it would hold `https://example.com/support`)")), said)
+    real = globals()["new_callers"]
+    globals()["new_callers"] = lambda *a, **k: {p: ("# Fill in the profile.\n" + t if p.endswith("pull-request-comments.yml") else t) for p, t in real(*a, **k).items()}
+    try:
+        written, prs, said = callers_run(bare, name, {}, "wordpress-plugin", {"version": "1.2.0"})
+    finally:
+        globals()["new_callers"] = real
+    check("#671 C2: a new caller saying \"Fill in\" is not written, and with nothing left no pull request is opened",
+          (written, prs, f"o/{name}: .github/workflows/pull-request-comments.yml not written: it still says \"Fill in\"" in said) == ({}, [], True), said)
 
 
 def self_test():
@@ -3643,6 +3936,8 @@ def self_test():
     # as dilux-bot's would, unless a test names the environment (#327).
     real_by_git = globals()["by_git"]
     globals()["by_git"] = lambda env=None: False if env is None else real_by_git(env)
+    # Nor wordpress.org (#671): a plugin the tests name is not published there.
+    globals()["STABLE_OPENER"] = stand_in_place(404)
 
     def check(name, ok, detail=""):
         nonlocal failed
@@ -3807,6 +4102,8 @@ def self_test():
     adopt_test(check, conf, labels, block_file)
     security_visibility_test(check)
     conventions_test(check, block_file)
+    release_caller_test(check, conf)
+    placeholder_guard_test(check, conf)
     # The org-sync lane (#155): a run from a merged commit marks its issue,
     # and labels it only once its Type is Task; the lane reads it back.
     policy = load_yaml(os.path.join(CENTRAL, "policy", "autonomy.yml"))
