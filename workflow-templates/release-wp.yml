@@ -22,8 +22,9 @@ name: Release
 # are written as the changes merge. Every push to main also publishes a
 # development build (the shipped tree stamped <next>-dev.<N>) as the one
 # "Development build" pre-release on the moving tag `dev`, replaced each
-# time. Fill in slug and version-constant: the release pull request reads
-# them from here.
+# time. slug and version-constant are the plugin's own: `sync-repos.py
+# callers` writes them from repos.yml; set them when you copy this by hand.
+# The release pull request reads them from here.
 #
 # The environment holds the SVN credentials and the release App's key
 # (DILUX_RELEASE_PRIVATE_KEY, with the variable DILUX_RELEASE_CLIENT_ID).

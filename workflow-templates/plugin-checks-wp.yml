@@ -6,8 +6,10 @@ name: Plugin checks
 # suites run in the queue's group instead, #451), on a push to the default
 # branch, once a week and by hand. The conventions, the accepted-issue gate, the Claude review and the
 # auto-merge decision are the organisation's (org-pull-request.yml, required
-# by its ruleset): nothing of them here. Fill in slug and version-constant,
-# and declare the kind in .github/review-policy.yml (`kind: wordpress-plugin`).
+# by its ruleset): nothing of them here. slug and version-constant are the
+# plugin's own: `sync-repos.py callers` writes them from repos.yml; set them
+# when you copy this by hand, and declare the kind in .github/review-policy.yml
+# (`kind: wordpress-plugin`).
 # The PHP versions are the kind's, not the caller's: every tool on the
 # latest, the code held to the pack's minimum (kinds/wordpress-plugin/pack.yml).
 
