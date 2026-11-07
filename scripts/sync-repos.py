@@ -936,9 +936,12 @@ def sync_callers(repo, conf, dry):
     branch = (repo.get("defaultBranchRef") or {}).get("name") or "main"
     # The callers it lacks, written whole from their templates (#552): those
     # every repository has, and those of its kind's battery.
-    added = new_callers(files, conf, repo_kind(full, branch), branch, name=repo["name"])
+    held = []
+    added = new_callers(files, conf, repo_kind(full, branch), branch, name=repo["name"], notes=held)
     values = repos_conf.caller_values(conf, repo["name"])
     if not any(CALLS_RE.search(t) for t in files.values()) and not added:
+        for note in held:
+            print(f"  {note}")
         print("  calls none of the shared workflows: nothing to compare (docs/adopting.md)")
         return
     current = current_major()
@@ -962,7 +965,7 @@ def sync_callers(repo, conf, dry):
         print("  a pull request for the workflow callers is already open; skipped")
         return
     owned = (conf.get("callers") or {}).get("repository-owned") or {}
-    wanted, notes, stuck = {}, [], set()
+    wanted, notes, stuck = {}, list(held), set()
     for name, path, found in callers_drift(moved, conf, major=major, default=branch):
         if not path:
             if f".github/workflows/{name}" not in added:
@@ -1358,14 +1361,54 @@ def placeholder_lines(files, conf, name, central=False, major=None):
     return out
 
 
-def new_callers(files, conf, kind, default="main", major=None, name=None):
+# What reads a kind's `release.stable` place (#671): urllib's when None, a
+# stand-in in --test.
+STABLE_OPENER = None
+
+
+def release_caller_wanted(data, kind, conf, name, opener=None):
+    """(whether to write it, a note or None) for a new caller of the
+    template `data` (#671). A caller of the kind's release (its pack's
+    `release.workflow` or `release.publish`, when the pack has
+    `release.stable`) is written only when the repository's entry in
+    repos.yml gives its `slug`, or when that place says it is published at
+    its default slug (production-version.py fetch_stable()): not published
+    (a 404, "not found") writes none; an answer it cannot read writes none
+    and says why, never a guess. Any other caller is written."""
+    release = (pack_of(kind).get("release") or {}) if kind and re.fullmatch(r"[a-z0-9][a-z0-9-]*", str(kind)) else {}
+    release = release if isinstance(release, dict) else {}
+    ends = {release.get("workflow"), release.get("publish")} - {None}
+    if not release.get("stable") or not (shared_calls(data) & ends):
+        return True, None
+    own = repos_conf.value(conf, name or "", "callers")
+    if isinstance(own, dict) and own.get("slug"):
+        return True, None
+    slug, where = repos_conf.slug_of(name or ""), release.get("publishes-to") or "its kind's place"
+    opener = opener or STABLE_OPENER
+    try:
+        got = _script("production_version", "production-version.py").fetch_stable(release["stable"], slug, *([opener] if opener else []))
+    except (OSError, ValueError) as exc:
+        return False, (f"could not tell whether it is published on {where} as `{slug}` ({str(exc)[:120]}): no release caller written; "
+                       "set `callers: {slug: …}` in its entry in repos.yml to add it")
+    if got is None:
+        return False, None
+    if got == "":
+        return False, (f"{where} answers for `{slug}` with no version: no release caller written; "
+                       "set `callers: {slug: …}` in its entry in repos.yml to add it")
+    return True, None
+
+
+def new_callers(files, conf, kind, default="main", major=None, name=None, notes=None, opener=None):
     """{path: text} of the callers a repository lacks, written whole from their
     templates (#552): those of `every-repository` (the triage and the
     autopilot start from issues.yml) and those that call a workflow of its
     kind's battery, each at .github/workflows/<template>, unless a file of its
     already calls that template's shared workflows or has that name. A
     repository that calls none of them yet (one being adopted) gets them all
-    this way. Pure but for reading the templates and the pack."""
+    this way, but the caller of its kind's release when it gives no slug and
+    is not published (release_caller_wanted(), #671; why it cannot tell is
+    appended to `notes`). Pure but for reading the templates and the pack,
+    and the place its kind publishes to."""
     spec = conf.get("callers") or {}
     every, battery = set(spec.get("every-repository") or []), kind_battery(kind)
     owned, values = spec.get("repository-owned") or {}, repos_conf.caller_values(conf, name or "")
@@ -1376,6 +1419,11 @@ def new_callers(files, conf, kind, default="main", major=None, name=None):
             continue
         path = f".github/workflows/{tname}"
         if path in files or caller_for(dict(data, _name=tname), parsed) is not None:
+            continue
+        wanted, why = release_caller_wanted(data, kind, conf, name, opener)
+        if why and notes is not None:
+            notes.append(f"{path}: {why}")
+        if not wanted:
             continue
         text = text.replace("$default-branch", default)
         # Written with the repository's values (#562): never a placeholder.
@@ -3637,12 +3685,113 @@ def ai_plugin_drift_test(check, conf, labels, block):
     check("C9 (#552): one with no dx.mk, the kind's `make pre-pr`, is listed", got == [f"`{pre_pr.FRAGMENT}` is missing: it is its kind's `pre-pr-make`, the `make pre-pr` its Makefile includes (`sync-repos.py pre-pr`)"], got)
 
 
+def stand_in_place(answer):
+    """An opener for production-version.py fetch_stable() (#671) that
+    answers `answer`: an int, that HTTP error; an exception, raised; else
+    that answer, as JSON."""
+    import io
+    import urllib.error
+
+    def opener(url, timeout=None):
+        if isinstance(answer, int):
+            raise urllib.error.HTTPError(url, answer, "stand-in", {}, None)
+        if isinstance(answer, Exception):
+            raise answer
+        return io.BytesIO(json.dumps(answer).encode())
+    return opener
+
+
+def callers_run(conf, name, files, kind, answer):
+    """sync_callers() for repository `name` (of `kind`, with the workflow
+    files `files`) against a stand-in for gh and for its kind's place
+    answering `answer`: ({path: text} written, [the pull requests' gh
+    arguments], what it printed)."""
+    import contextlib
+    import io
+
+    class Out:
+        def __init__(self, stdout="", returncode=0, stderr=""):
+            self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
+    calls, written = [], {}
+    current = max(int(v) for t in templates().values() for v in USES_RE.findall(t[0]))
+    base = f"api repos/o/{name}"
+
+    def fake(*args, check=True, input_text=None):
+        joined = " ".join(args)
+        calls.append(args)
+        if joined == f"{base}/contents/.github/workflows":
+            return Out(json.dumps([{"name": p.rsplit("/", 1)[1], "path": p} for p in files]))
+        for p in files:
+            if joined.startswith(f"{base}/contents/{p} "):
+                return Out(files[p])
+        if "matching-refs/tags/v" in joined:
+            return Out(json.dumps([[{"ref": f"refs/tags/v{current}"}]]))
+        if args[:2] in (("pr", "list"), ("issue", "list")):
+            return Out("[]")
+        if args[:2] == ("issue", "create"):
+            return Out(f"https://github.com/o/{name}/issues/7\n")
+        if args[:2] == ("pr", "create"):
+            return Out(f"https://github.com/o/{name}/pull/8\n")
+        if "ref/heads/main" in joined:
+            return Out(json.dumps({"object": {"sha": "abc"}}))
+        if joined.startswith(f"api -X PUT repos/o/{name}/contents/"):
+            written[args[3].split("/contents/", 1)[1]] = base64.b64decode(json.loads(input_text)["content"]).decode()
+            return Out("{}")
+        if joined.startswith("api -X"):
+            return Out("{}")
+        return Out("", 1, "HTTP 404")
+    global ORG
+    saved = {n: globals()[n] for n in ("gh", "ORG", "listed", "STABLE_OPENER")}
+    globals().update(gh=fake, ORG="o", STABLE_OPENER=stand_in_place(answer),
+                     listed=lambda n: {"kinds": [{"kind": kind, "paths": ["**"]}]} if n == name else None)
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out):
+            sync_callers({"name": name, "defaultBranchRef": {"name": "main"}}, conf, False)
+    finally:
+        globals().update(saved)
+    return written, [a for a in calls if a[:2] == ("pr", "create")], out.getvalue()
+
+
+def release_caller_test(check, conf):
+    """#671: the caller of a kind's release is added only to a repository
+    whose entry gives its slug or that its kind's place publishes."""
+    name, release = "diluxone-new-wordpress", ".github/workflows/release-wp.yml"
+    bare = {**conf, "repos": {**(conf.get("repos") or {}), name: {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"]}]}}}
+    slugged = {**bare, "repos": {**bare["repos"], name: {**bare["repos"][name], "callers": {"slug": "new-one"}}}}
+    for label, answer in (("a 404", 404), ("\"Plugin not found.\"", {"error": "Plugin not found."})):
+        notes = []
+        got = new_callers({}, bare, "wordpress-plugin", "main", name=name, notes=notes, opener=stand_in_place(answer))
+        check(f"#671 C1: new_callers() writes no release-wp.yml for a plugin with no slug that wordpress.org answers {label}",
+              release not in got and ".github/workflows/plugin-checks-wp.yml" in got and notes == [], (sorted(got), notes))
+    got = new_callers({}, slugged, "wordpress-plugin", "main", name=name, opener=stand_in_place(404))
+    check("#671 C1: one when its entry gives a slug", "slug: new-one\n" in got.get(release, ""), sorted(got))
+    got = new_callers({}, bare, "wordpress-plugin", "main", name=name, opener=stand_in_place({"version": "1.2.0"}))
+    check("#671 C1: one when wordpress.org answers a version", release in got, sorted(got))
+    for label, answer in (("an error", 500), ("another error answer", {"error": "Plugin closed."}), ("no answer", OSError("timed out"))):
+        notes = []
+        got = new_callers({}, bare, "wordpress-plugin", "main", name=name, notes=notes, opener=stand_in_place(answer))
+        check(f"#671 C1: none on {label}, and a note saying why",
+              release not in got and len(notes) == 1 and notes[0].startswith(release) and "repos.yml" in notes[0], (sorted(got), notes))
+    got = new_callers({}, conf, "ai-agent-plugin", "main", name="dilux-agentic-workflow", opener=stand_in_place(OSError("never asked")))
+    check("#671 C1: a kind with no `stable` gets its release caller as before", ".github/workflows/release-ai.yml" in got, sorted(got))
+    written, prs, said = callers_run(bare, name, {}, "wordpress-plugin", 404)
+    check("#671 C1: sync_callers() writes no release-wp.yml for an unpublished plugin with no slug, the others it lacks still",
+          release not in written and ".github/workflows/plugin-checks-wp.yml" in written and len(prs) == 1, (sorted(written), said))
+    written, prs, said = callers_run(bare, name, {}, "wordpress-plugin", {"version": "1.2.0"})
+    check("#671 C1: and one for a published plugin", release in written, (sorted(written), said))
+    written, prs, said = callers_run(bare, name, {}, "wordpress-plugin", 503)
+    check("#671 C1: and none, with the note, when wordpress.org cannot be read", release not in written and f"{release}: could not tell" in said, (sorted(written), said))
+
+
 def self_test():
     failed = 0
     # The runs below write through a stand-in for gh, never a real clone:
     # as dilux-bot's would, unless a test names the environment (#327).
     real_by_git = globals()["by_git"]
     globals()["by_git"] = lambda env=None: False if env is None else real_by_git(env)
+    # Nor wordpress.org (#671): a plugin the tests name is not published there.
+    globals()["STABLE_OPENER"] = stand_in_place(404)
 
     def check(name, ok, detail=""):
         nonlocal failed
@@ -3807,6 +3956,7 @@ def self_test():
     adopt_test(check, conf, labels, block_file)
     security_visibility_test(check)
     conventions_test(check, block_file)
+    release_caller_test(check, conf)
     # The org-sync lane (#155): a run from a merged commit marks its issue,
     # and labels it only once its Type is Task; the lane reads it back.
     policy = load_yaml(os.path.join(CENTRAL, "policy", "autonomy.yml"))
