@@ -90,8 +90,8 @@ name: Autopilot
 # the pull request stays a draft: dilux-bot comments the output's last lines
 # (dx-autopilot-prepr), the run is labelled `autopilot:free-N`, and the
 # continue's agent reads them in .dx-io/pre-pr.md and fixes them first, while
-# its free runs stay within the cap (scripts/autopilot.py end_verdict). The questions it needs
-# answered are asked while it writes the Spec.
+# its free runs stay within the cap (scripts/autopilot.py end_verdict). The
+# questions it needs answered are asked while it writes the Spec.
 #   mode: fix       called from org-pull-request.yml, and in the
 #                   organisation's own repository from its
 #                   pull-request.yml (#504), when the review of an
@@ -638,7 +638,7 @@ jobs:
       # that only catches up with another merge (autopilot-sweep.yml adds
       # autopilot:catchup beside its continue on a conflict, #563). The end
       # rule frees a run whose runner was lost, or whose `make pre-pr` did not
-# pass in full after the agent's step (#673).
+      # pass in full after the agent's step (#673).
       - name: Count the round or the run
         if: steps.may.outputs.go == 'true' && steps.what.outputs.mode != 'start'
         env:
@@ -737,7 +737,7 @@ jobs:
           # #673: the last run's `make pre-pr` did not pass in full after its
           # step: the output's tail, from dilux-bot's own comment, in
           # .dx-io/pre-pr.md, which the prompt asks the agent to fix first.
-          python3 .dx-central/scripts/autopilot.py prepr-note
+          python3 .dx-central/scripts/autopilot.py prepr-note || echo "::warning::The last run's make pre-pr output could not be read for the agent."
           # An answer that drops or changes a criterion (`drop C3`,
           # `change C3: <new text>`) is applied to the checklist here, by the bot,
           # and logged in the Decisions (#561): the work and the finish

@@ -2219,6 +2219,9 @@ A class on html.
           (ready_goes({"deferred": True}, "pass"), ready_goes({}, "fail"), ready_goes({}, TIMEOUT), ready_goes({"deferred": True}, "lost"),
            ready_goes({}, ""), ready_goes({"deferred": True}, "")),
           (True, False, False, False, True, False))
+    check("#673 C1: a verdict from the job that ran the repository's code is one of its own, or a fail",
+          (verdict_of("pass"), verdict_of(""), verdict_of(None), verdict_of("lost"), verdict_of("pass\nheld=x"), verdict_of("ok")),
+          ("pass", "", "", "lost", "fail", "fail"))
     check("#673 C1: the output's tail is its last lines, scrubbed",
           (tail_text("\n".join(str(i) for i in range(500))).splitlines()[0], tail_text("a\nghp_" + "x" * 30, 1)), ("200", "[redacted]"))
     check("#673 C2: a draft whose make pre-pr failed after the agent continues, free, while its free runs stay within the cap",
@@ -3448,6 +3451,14 @@ def tail_text(text, lines=VERIFY_LINES, chars=VERIFY_CHARS):
     return scrub("\n".join((text or "").splitlines()[-lines:]))[-chars:]
 
 
+def verdict_of(value):
+    """`verify`'s verdict as the jobs with the key take it (#673): it comes
+    from a job that ran the repository's code, so only pass, fail, timeout
+    or lost, "" when it did not run, and anything else a fail. Pure."""
+    value = (value or "").strip()
+    return value if value in VERDICTS + ("lost", "") else "fail"
+
+
 def ready_goes(intent, verdict):
     """Whether a `ready` intent is applied (#673): verdict is the `verify`
     job's verdict (pass, fail, timeout, lost), "" when it did not run. When
@@ -3680,11 +3691,11 @@ def apply_outbox(path, repo, number, pr, kinds=None):
             with open(tmp, "w", encoding="utf-8") as fh:
                 fh.write(text)
             argv = ["credits", tmp]
-        if kind == "ready" and not ready_goes(it, os.environ.get("PREPR", "")):
+        if kind == "ready" and not ready_goes(it, verdict_of(os.environ.get("PREPR"))):
             # #673: `make pre-pr` did not pass in full after the agent's
             # step (or never ran there): the pull request stays a draft, and
             # the end rule gives the agent a free fix round with its output.
-            held = os.environ.get("PREPR") or "lost"
+            held = verdict_of(os.environ.get("PREPR")) or "lost"
             print(f"Not ready: `make pre-pr` after the agent's step: {held}. The pull request stays a draft.")
             if os.environ.get("GITHUB_OUTPUT"):
                 with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
@@ -4222,7 +4233,7 @@ def main(argv):
         asked = asked_since(comments, started)
         draft_, done, total, pushed = True, 0, 0, False
         lost, frees, held_back = False, 0, False
-        prepr_verdict = os.environ.get("PREPR", "")
+        prepr_verdict = verdict_of(os.environ.get("PREPR"))
         if pr:
             info = pr_json(repo, pr, "body,isDraft,headRefOid,labels")
             draft_ = info["isDraft"]
