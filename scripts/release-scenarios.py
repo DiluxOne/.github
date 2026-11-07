@@ -21,7 +21,9 @@ complete feature), `steps` (each one of
 `comment`, `label`, `unlabel`, `edit`, `push`, `dispatch`, `wait`) and
 `expect` (`labels`, `absent`, `comments` (markers), `pull` (`closes`,
 `branch`, `title`, patterns), `check` (name: conclusion), `merged`,
-`waiting`).
+`waiting`), and `serial: true` for one that plays in the one `serial`
+group, after the one before it (`groups`): the lane plays the groups at
+once, one job each, and every other scenario is a group of its own.
 
   release-scenarios.py coverage [ROOT]
         fails naming every pair and transition with no scenario, every
@@ -29,7 +31,34 @@ complete feature), `steps` (each one of
         `expect` cannot hold against its own setup (`preconditions`: a
         dispatch of a workflow the test repository cannot run on demand
         among them). Every other pair a shipped caller wires is held to the
-        engine statically, by scripts/caller-contract.py check
+        engine statically, by scripts/caller-contract.py check; and
+        what is wrong with the groups (`partition`): a scenario in no
+        group or in two, a serial one outside the serial group or out of
+        the file's order, a group id unfit for an artifact name
+  release-scenarios.py groups
+        prints the groups, [{id, scenarios}] as JSON, the release lane's
+        `play` matrix; exits 1 naming what `partition` finds
+  release-scenarios.py move --repo OWNER/NAME --moved MOVED --out FILE
+                            [--ref v7-next] [--minutes N]
+        the callers moved to the ref, as `run` does (with
+        DX_CALLERS_TOKEN), what moved written to MOVED as soon as the
+        pointing is over, and to FILE the failing `callers` row when they
+        did not reach it (exits 1 then: no group plays)
+  release-scenarios.py play --repo OWNER/NAME --group ID --out FILE
+                            [--ref v7-next] [--minutes N]
+        the group's scenarios, one after another in its order, with the
+        test identity's token (GH_TOKEN) alone, the callers already at the
+        ref; their table to FILE; exits 1 when one fails
+  release-scenarios.py merge --dir DIR --groups JSON --job NAME=RESULT ...
+                             --out FILE [--run URL] [--minutes N]
+                             [--play-minutes M]
+        one table, to FILE (and stdout), from the scenarios-<name>/results.md
+        under DIR (`move`, `back` and every group's): each group's rows of
+        its own scenarios, and a failing row, with URL, for a group whose
+        file is missing (its job failed, timed out or was cancelled), a
+        scenario with no row, and a job whose RESULT is not success (a play
+        job's naming its timeout of N minutes, and its play step's of M,
+        #690); exits 1 when a row fails
   release-scenarios.py run --repo OWNER/NAME [--ref v7-next] [--only ID ...]
                            [--out FILE] [--minutes N]
         moves the test repository's callers to the ref through a pull
@@ -612,6 +641,86 @@ def read_moved(path, ref):
         return [], [{"id": "callers", "ok": False, "why": [f"could not read what moved to {ref}, the callers may be left there: {e}"], "run": ""}]
 
 
+def move_callers(repo, ref, callers=gh, central=None, sleep=time.sleep, minutes=20, record=None):
+    """The test repository's callers moved to `ref` (`point_callers`):
+    (what moved, []) once they are, else ([], one failing `callers` row that
+    says why). `record`, when given, is called with what moved as soon as
+    the pointing is over ([] when it failed cleanly)."""
+    try:
+        moved = point_callers(repo, ref, callers, central, sleep=sleep, minutes=minutes)
+    except (RuntimeError, ValueError) as e:
+        if record:
+            record([])
+        return [], [{"id": "callers", "ok": False, "why": [f"the callers did not reach {ref}: {e}"], "run": ""}]
+    if record:
+        record(moved)
+    return moved, []
+
+
+SERIAL = "serial"
+GROUP_ID = re.compile(r"[a-z0-9-]+")
+# The artifacts the lane names after them besides the groups' (scenarios-*).
+NOT_GROUPS = ("move", "back")
+
+
+def groups(scenarios):
+    """The groups the lane plays at once, one job each (release-lane.yml
+    `play`): every scenario marked `serial: true` in one, `serial`, in the
+    file's order, which plays them one after another; every other scenario
+    in its own, named by its id. [{id, scenarios}]. Pure."""
+    serial = [s.get("id") for s in scenarios if s.get("serial")]
+    return ([{"id": SERIAL, "scenarios": serial}] if serial else []) + [
+        {"id": s.get("id"), "scenarios": [s.get("id")]} for s in scenarios if not s.get("serial")]
+
+
+def partition(scenarios, gs):
+    """What is wrong with the groups `gs` of `scenarios`: a scenario in no
+    group or in two, a group that plays no scenario of the file, a serial
+    scenario outside the serial group, a serial group that is not the serial
+    scenarios in the file's order, and a group id unfit for an artifact name
+    (`^[a-z0-9-]+$`, nor `move` or `back`) or used twice. Pure."""
+    out, where, ids = [], {}, [s.get("id") or "?" for s in scenarios]
+    seen = set()
+    for g in gs:
+        gid = str(g.get("id"))
+        if not GROUP_ID.fullmatch(gid) or gid in NOT_GROUPS:
+            out.append(f"group {gid}: its id is unfit for an artifact name (^[a-z0-9-]+$, nor {' or '.join(NOT_GROUPS)})")
+        if gid in seen:
+            out.append(f"group {gid}: its id is used twice")
+        seen.add(gid)
+        for sid in g.get("scenarios") or []:
+            where.setdefault(sid, []).append(gid)
+    for sid in ids:
+        if not where.get(sid):
+            out.append(f"scenario {sid}: in no group")
+        elif len(where[sid]) > 1:
+            out.append(f"scenario {sid}: in {len(where[sid])} groups ({', '.join(where[sid])})")
+    for sid in where:
+        if sid not in ids:
+            out.append(f"group {', '.join(where[sid])}: plays {sid}, which is no scenario of {SCENARIOS}")
+    serial = [s.get("id") or "?" for s in scenarios if s.get("serial")]
+    for sid in serial:
+        if where.get(sid) and where[sid] != [SERIAL]:
+            out.append(f"scenario {sid}: serial, but played in {', '.join(where[sid])}, not in the {SERIAL} group alone")
+    one = [g.get("scenarios") or [] for g in gs if str(g.get("id")) == SERIAL]
+    if one and one[0] != serial:
+        out.append(f"group {SERIAL}: plays {', '.join(one[0]) or 'nothing'}, not the serial scenarios in the file's order ({', '.join(serial) or 'none'})")
+    return out
+
+
+def play_group(conf, gid, repo, ref, run=gh, sleep=time.sleep, minutes=20):
+    """The scenarios of the group `gid`, one after another in its order, at
+    `ref` (the callers already there), with the test identity's token (the
+    ambient GH_TOKEN): their rows, or one failing row when `gid` is no
+    group."""
+    scenarios = conf.get("scenarios") or []
+    group = next((g for g in groups(scenarios) if g["id"] == gid), None)
+    if group is None:
+        return [{"id": gid, "ok": False, "why": [f"{gid} is no group of {SCENARIOS}"], "run": ""}]
+    by_id = {s.get("id"): s for s in scenarios}
+    return [play(by_id[sid], repo, ref, conf.get("bodies") or {}, run, sleep, minutes) for sid in group["scenarios"]]
+
+
 def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20, central=None, callers=None, moved_out=None, record=None):
     """Every scenario at `ref`: the callers moved there first (a merged pull
     request, or no scenario plays and one failing `callers` row says why),
@@ -625,14 +734,9 @@ def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20, cent
     plays: a run killed after that still leaves the record `back` reads."""
     bodies = conf.get("bodies") or {}
     callers = callers or (callers_gh() if run is gh else run)
-    try:
-        moved = point_callers(repo, ref, callers, central, sleep=sleep, minutes=minutes)
-    except (RuntimeError, ValueError) as e:
-        if record:
-            record([])
-        return [{"id": "callers", "ok": False, "why": [f"the callers did not reach {ref}: {e}"], "run": ""}]
-    if record:
-        record(moved)
+    moved, rows = move_callers(repo, ref, callers, central, sleep, minutes, record)
+    if rows:
+        return rows
     if moved_out is not None:
         moved_out.extend(moved)
     results = []
@@ -652,6 +756,8 @@ def write_results(results, out):
     text = table(results)
     sys.stdout.write(text)
     if out:
+        # The job's --out may name a directory no step made (#693).
+        os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
         with open(out, "w", encoding="utf-8") as fh:
             fh.write(text)
             fh.write(f"\n<!-- dx-scenarios {json.dumps(results)} -->\n")
@@ -665,6 +771,89 @@ def read_results(path):
         return []
     m = re.search(r"<!-- dx-scenarios (.*) -->", text)
     return json.loads(m.group(1)) if m else []
+
+
+def merge(gs, files, jobs, run="", minutes=0, play_minutes=0):
+    """One table of every scenario's result, from what the lane's jobs
+    wrote (`files`: {"move"|"back"|<group id>: rows, or None for a file
+    that is missing}) and how they ended (`jobs`: {name: result}): the
+    move's rows, each group's rows of its own scenarios in its order (a row
+    for a scenario of another group is ignored), the back's rows, then a
+    failing row, with `run`, for each group whose file is missing (its job
+    failed before it wrote it, timed out or was cancelled), each scenario
+    with no row in its group's file, a missing move or back file, no groups
+    at all, and each job whose result is not `success`. `minutes` and
+    `play_minutes`, the play job's timeout-minutes and its play step's, are
+    named in the rows a timeout may explain (#690): GitHub cancels a job
+    past its own without cancelling the run, and fails a step past its own.
+    Pure."""
+    rows = []
+    timeout = f" (its play step at {play_minutes} minutes, its job at {minutes}: timeout-minutes in release-lane.yml)" if minutes else ""
+
+    def fail(rid, why):
+        rows.append({"id": rid, "ok": False, "why": [why], "run": run})
+
+    def own(r):
+        return {"id": str(r.get("id")), "ok": r.get("ok") is True, "why": [str(w) for w in r.get("why") or []], "run": str(r.get("run") or "")}
+    if files.get("move") is None:
+        fail("move", "the move job left no results")
+    else:
+        rows += [own(r) for r in files["move"] if isinstance(r, dict)]
+    if not gs:
+        fail("groups", "no groups of scenarios to read: none played")
+    for g in gs:
+        got = files.get(g["id"])
+        if got is None:
+            # A play job that was skipped is its own failing row below.
+            if jobs.get("play") != "skipped":
+                fail(g["id"], f"the group {g['id']} left no results: its play job failed before it wrote them, timed out{timeout} or was cancelled")
+            continue
+        by_id = {}
+        for r in got:
+            if isinstance(r, dict) and r.get("id") in g["scenarios"]:
+                by_id.setdefault(r["id"], own(r))
+        for sid in g["scenarios"]:
+            if sid in by_id:
+                rows.append(by_id[sid])
+            else:
+                fail(sid, f"no result in the results of its group {g['id']}")
+    if files.get("back") is None:
+        fail("back", "the back job left no results: the callers may be left at the ref")
+    else:
+        rows += [own(r) for r in files["back"] if isinstance(r, dict)]
+    for name, result in jobs.items():
+        if result == "success":
+            continue
+        if name == "play" and minutes and result == "cancelled":
+            fail(name, f"a play job ran past its timeout of {minutes} minutes and was cancelled (timeout-minutes in release-lane.yml)")
+        elif name == "play" and play_minutes and result == "failure":
+            fail(name, f"a play job ended in failure: a step that broke, or its play step past its timeout of {play_minutes} minutes (timeout-minutes in release-lane.yml)")
+        else:
+            fail(name, f"the {name} job ended in {result or 'nothing'}")
+    return rows
+
+
+def read_groups(text):
+    """The groups the move job printed (`groups`), or [] when they cannot
+    be read or a group id is unfit for an artifact name (it names a
+    directory)."""
+    try:
+        gs = json.loads(text or "")
+    except ValueError:
+        return []
+    ok = isinstance(gs, list) and all(isinstance(g, dict) and isinstance(g.get("id"), str) and GROUP_ID.fullmatch(g["id"]) and g["id"] not in NOT_GROUPS
+                                     and isinstance(g.get("scenarios"), list) for g in gs)
+    return gs if ok else []
+
+
+def merge_dir(path, gs, jobs, run="", minutes=0, play_minutes=0):
+    """`merge` of the artifacts downloaded under `path`, each in its own
+    directory (`scenarios-<name>/results.md`)."""
+    files = {}
+    for name in ["move", "back"] + [g["id"] for g in gs]:
+        f = os.path.join(path, f"scenarios-{name}", "results.md")
+        files[name] = read_results(f) if os.path.exists(f) else None
+    return merge(gs, files, jobs, run, minutes, play_minutes)
 
 
 DEFAULTS = ("main", "master")
@@ -723,10 +912,13 @@ def schema_passes(root=ROOT):
 
 def problems(conf, root=ROOT):
     """What `coverage` names: every played pair and transition with no
-    scenario, and every scenario its setup cannot make hold."""
+    scenario, every scenario its setup cannot make hold, and what is wrong
+    with the groups (`partition`)."""
     pack = test_pack(root)
-    return (coverage(conf.get("scenarios") or [], played(root, pack) | transitions(root))
-            + preconditions(conf.get("scenarios") or [], conf.get("bodies") or {}, pack, dispatchable(root, pack), schema_passes(root)))
+    scenarios = conf.get("scenarios") or []
+    return (coverage(scenarios, played(root, pack) | transitions(root))
+            + preconditions(scenarios, conf.get("bodies") or {}, pack, dispatchable(root, pack), schema_passes(root))
+            + partition(scenarios, groups(scenarios)))
 
 
 def self_test():
@@ -763,6 +955,41 @@ def self_test():
         check("C2: a scenario covering what nothing wires is named", coverage(some, wanted), ["scenario s1: covers gone.yml:push, which no caller wires and no transition is"])
     real = load_yaml(os.path.join(ROOT, SCENARIOS))
     check("C2: every pair the test repository plays, and every transition, has its scenario; every scenario can hold", problems(real), [])
+    fx = [{"id": "a", "serial": True}, {"id": "b"}, {"id": "c", "serial": True}, {"id": "d"}]
+    gs = groups(fx)
+    check("C2: groups: the serial scenarios in one group, in the file's order, every other one alone",
+          gs, [{"id": "serial", "scenarios": ["a", "c"]}, {"id": "b", "scenarios": ["b"]}, {"id": "d", "scenarios": ["d"]}])
+    check("C2: groups with nothing serial: every scenario alone", groups([{"id": "b"}]), [{"id": "b", "scenarios": ["b"]}])
+    check("C2: partition: the groups of groups() are a partition", partition(fx, gs), [])
+    for how, bad, want in (
+            ("a scenario in no group", [gs[0], gs[1]], ["scenario d: in no group"]),
+            ("a scenario in two", gs + [{"id": "e", "scenarios": ["b"]}], ["scenario b: in 2 groups (b, e)"]),
+            ("a serial one outside the serial group", [{"id": "serial", "scenarios": ["a"]}, {"id": "c", "scenarios": ["c"]}] + gs[1:],
+             ["scenario c: serial, but played in c, not in the serial group alone", "group serial: plays a, not the serial scenarios in the file's order (a, c)"]),
+            ("the serial group out of order", [{"id": "serial", "scenarios": ["c", "a"]}] + gs[1:], ["group serial: plays c, a, not the serial scenarios in the file's order (a, c)"]),
+            ("a group that plays no scenario", gs + [{"id": "x", "scenarios": ["gone"]}], [f"group x: plays gone, which is no scenario of {SCENARIOS}"])):
+        check(f"C2: partition fails for {how}", partition(fx, bad), want)
+    check("C2: partition fails for a group id unfit for an artifact name, or the move's or the back's, or used twice",
+          [len(partition([{"id": i}], groups([{"id": i}]))) for i in ("Has Space", "move", "back", "ok-1")] + [len(partition([{"id": "serial"}, {"id": "a", "serial": True}], groups([{"id": "serial"}, {"id": "a", "serial": True}])))],
+          [1, 1, 1, 0, 1])
+    real_groups = groups(real["scenarios"])
+    check("C2: the real file's serial group: every scenario that drafts, merges or pushes to main, in order",
+          real_groups[0], {"id": "serial", "scenarios": ["accepted-spec", "spec-to-draft", "core-one-at-a-time", "prd-edited-after-acceptance", "decision-sub-issues",
+                                                         "claim-and-release", "claim-pull-request", "bug-reproduced", "question-answered", "stop-hint-continue",
+                                                         "draft-in-conflict", "ready-behind-main", "merge-queue", "low-risk-merges", "release-issue"]})
+    check("C2: the real file's other scenarios each play alone", [g["scenarios"] == [g["id"]] for g in real_groups[1:]] == [True] * (len(real["scenarios"]) - 15), True)
+    titles = []
+
+    def ordered(*a, input=None):
+        if a[:2] == ("issue", "create"):
+            titles.append(a[a.index("--title") + 1])
+            return "https://github.com/o/t/issues/9\n"
+        return "{}" if a[:2] == ("issue", "view") else "[]"
+    conf3 = {"scenarios": [{"id": "a", "serial": True, "opens": {"issue": {"title": "a"}}, "expect": {}}, {"id": "b", "opens": {"issue": {"title": "b"}}, "expect": {}},
+                           {"id": "c", "serial": True, "opens": {"issue": {"title": "c"}}, "expect": {}}]}
+    rows = play_group(conf3, "serial", "o/t", "v7-next", ordered, lambda s: None, 1)
+    check("C2: play_group plays its group's scenarios one after another, in order, and no other", ([r["id"] for r in rows], titles), (["a", "c"], ["a", "c"]))
+    check("C2: play_group on no group is one failing row", [(r["id"], r["ok"]) for r in play_group(conf3, "gone", "o/t", "v7-next", ordered, lambda s: None, 1)], [("gone", False)])
     rpack = test_pack()
     check("#563: the test repository's callers are shipped ones", all(os.path.exists(os.path.join(ROOT, "workflow-templates", c)) for c in rpack["callers"]) and rpack["callers"] != [], True)
     check("#563: a pair no caller of the test repository wires is not played, nor a scheduled one: caller-contract.py holds them",
@@ -1016,6 +1243,11 @@ def self_test():
         check("#622: back reads the run's results and adds its row to them",
               read_results(out) + [{"id": "callers", "ok": False, "why": ["x"], "run": ""}], [{"id": "a", "ok": True, "why": [], "run": ""}, {"id": "callers", "ok": False, "why": ["x"], "run": ""}])
         check("#622: no results file reads as none", read_results(os.path.join(d, "none.md")), [])
+        nested = os.path.join(d, "back", "results.md")
+        with contextlib.redirect_stdout(io.StringIO()):
+            write_results([{"id": "callers", "ok": True, "why": [], "run": ""}], nested)
+        check("#693: results are written into a directory nothing made yet",
+              read_results(nested), [{"id": "callers", "ok": True, "why": [], "run": ""}])
         path = os.path.join(d, "moved.json")
         st, fake = repo_fake()
         seen = []
@@ -1051,6 +1283,59 @@ def self_test():
     check("C2: a recorded PUT on main is named", len(put_default([("api", "-X", "PUT", "repos/o/t/contents/x", "-f", "branch=main"), ("api", "-X", "PUT", "repos/o/t/contents/y")])), 2)
     check("callers_gh: the ambient token when DX_CALLERS_TOKEN is not set", callers_gh() is gh if not os.environ.get("DX_CALLERS_TOKEN") else True, True)
     check("run: the table names each scenario, its result and its run", table(res).splitlines()[2], "| `a` | pass | https://github.com/o/t/actions/runs/1 |")
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("release_lane", os.path.join(HERE, "release-lane.py"))
+    lane = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(lane)
+    plan = {"release": True, "version": "v7.15.0", "major": "v7"}
+    lane_run = "https://github.com/O/.github/actions/runs/1"
+    mgs = [{"id": "serial", "scenarios": ["a", "c"]}, {"id": "b", "scenarios": ["b"]}]
+    passed = lambda *ids: [{"id": i, "ok": True, "why": [], "run": f"r-{i}"} for i in ids]
+    done = {"move": "success", "play": "success", "back": "success"}
+    with tempfile.TemporaryDirectory() as d:
+        def lay(files):
+            """The artifacts as act downloads them, under a fresh directory."""
+            root = tempfile.mkdtemp(dir=d)
+            for name, rows in files.items():
+                if rows is not None:
+                    os.makedirs(os.path.join(root, f"scenarios-{name}"))
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        write_results(rows, os.path.join(root, f"scenarios-{name}", "results.md"))
+            return root
+        every = {"move": [], "serial": passed("a", "c"), "b": passed("b"), "back": []}
+        whole = merge_dir(lay(every), mgs, done, lane_run)
+        check("C3: every group passing is one passing table, every scenario's row in the groups' order",
+              ([(r["id"], r["ok"]) for r in whole], lane.decide(plan, whole)["do"]), ([("a", True), ("c", True), ("b", True)], "release"))
+        for how, files, jobs, want in (
+                ("a group's missing file (its job timed out)", dict(every, b=None), dict(done, play="failure"), {"b", "play"}),
+                ("a play job that ended in failure with all rows passing", every, dict(done, play="failure"), {"play"}),
+                ("a missing scenario row", dict(every, serial=passed("a")), done, {"c"}),
+                ("a row from another group in place of its own", dict(every, b=passed("a")), done, {"b"}),
+                ("a back job that left nothing", dict(every, back=None), dict(done, back="cancelled"), {"back"}),
+                ("a move that failed, and no group played", {"move": [{"id": "callers", "ok": False, "why": ["x"], "run": ""}]}, dict(done, play="skipped", back="success"), {"callers", "play", "back"})):
+            rows = merge_dir(lay(files), mgs, jobs, lane_run)
+            bad = {r["id"] for r in rows if not r["ok"]}
+            check(f"C3: merge gives a failing row for {how}, with the lane's run, and decide releases nothing",
+                  (bad, all(r["run"] == lane_run for r in rows if not r["ok"] and r["id"] != "callers"), lane.decide(plan, rows)["do"]), (want, True, "bug"))
+        mixed = merge(mgs, {"move": [], "serial": passed("a", "c") + [{"id": "b", "ok": False, "why": ["planted"], "run": ""}], "b": passed("b"), "back": []}, done)
+        check("C3: merge ignores a row a group wrote for another group's scenario", [(r["id"], r["ok"]) for r in mixed], [("a", True), ("c", True), ("b", True)])
+        check("C3: no groups to read is a failing row; a group id unfit for a directory reads as none",
+              ([r["id"] for r in merge([], {"move": [], "back": []}, done) if not r["ok"]], read_groups('[{"id": "../x", "scenarios": []}]'), read_groups("not json"), read_groups(json.dumps(mgs))),
+              (["groups"], [], [], mgs))
+        # #690: a play job past its timeout-minutes ends cancelled, a play
+        # step past its own fails it: the rows name the minutes.
+        why = lambda rows: {r["id"]: r["why"][0] for r in rows if not r["ok"]}
+        timed = why(merge(mgs, dict(every, b=None), dict(done, play="cancelled"), lane_run, minutes=300, play_minutes=240))
+        check("merge: a cancelled play job ran past its timeout, with its minutes",
+              ("timeout of 300 minutes and was cancelled" in timed["play"], "240 minutes" in timed["b"] and "300" in timed["b"]), (True, True))
+        check("merge: a failed play job may be its play step's timeout",
+              "its play step past its timeout of 240 minutes" in why(merge(mgs, every, dict(done, play="failure"), lane_run, minutes=300, play_minutes=240))["play"], True)
+        check("merge: with no minutes, a job's row says how it ended", why(merge(mgs, every, dict(done, back="cancelled"), lane_run))["back"], "the back job ended in cancelled")
+        out = os.path.join(d, "merged.md")
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = main(["merge", "--dir", lay(dict(every, b=None)), "--groups", json.dumps(mgs), "--job", "move=success", "--job", "play=failure", "--job", "back=success", "--run", lane_run, "--out", out])
+        check("C3: merge's command writes the table release-lane.py reads, and exits 1 on a failing row",
+              (rc, [r["id"] for r in read_results(out) if not r["ok"]], lane.decide(plan, read_results(out))["scenario"]), (1, ["b", "play"], "b"))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
@@ -1080,6 +1365,48 @@ def main(argv):
         moved = [] if a.moved else None
         record = (lambda m: write_moved(m, a.moved)) if a.moved else None
         results = run_all(load_yaml(os.path.join(ROOT, SCENARIOS)), a.repo, a.ref, a.only, minutes=a.minutes, moved_out=moved, record=record)
+        write_results(results, a.out)
+        return 0 if all(r["ok"] for r in results) else 1
+    if argv[:1] == ["groups"] and len(argv) == 1:
+        scenarios = load_yaml(os.path.join(ROOT, SCENARIOS)).get("scenarios") or []
+        gs, wrong = groups(scenarios), partition(scenarios, groups(scenarios))
+        for line in wrong:
+            print(line, file=sys.stderr)
+        if wrong:
+            return 1
+        print(json.dumps(gs, separators=(",", ":")))
+        return 0
+    if argv[:1] in (["move"], ["play"]):
+        import argparse
+        p = argparse.ArgumentParser(prog=f"release-scenarios.py {argv[0]}")
+        p.add_argument("--repo", required=True)
+        p.add_argument("--ref", default="v7-next")
+        p.add_argument("--out", default="")
+        p.add_argument("--minutes", type=int, default=20)
+        if argv[0] == "move":
+            p.add_argument("--moved", required=True)
+        else:
+            p.add_argument("--group", required=True)
+        a = p.parse_args(argv[1:])
+        if argv[0] == "move":
+            results = move_callers(a.repo, a.ref, callers_gh(), minutes=a.minutes, record=lambda m: write_moved(m, a.moved))[1]
+        else:
+            results = play_group(load_yaml(os.path.join(ROOT, SCENARIOS)), a.group, a.repo, a.ref, minutes=a.minutes)
+        write_results(results, a.out)
+        return 0 if all(r["ok"] for r in results) else 1
+    if argv[:1] == ["merge"]:
+        import argparse
+        p = argparse.ArgumentParser(prog="release-scenarios.py merge")
+        p.add_argument("--dir", required=True)
+        p.add_argument("--groups", default="")
+        p.add_argument("--job", action="append", default=[])
+        p.add_argument("--run", default="")
+        p.add_argument("--out", required=True)
+        p.add_argument("--minutes", type=int, default=0)
+        p.add_argument("--play-minutes", type=int, default=0)
+        a = p.parse_args(argv[1:])
+        jobs = dict(j.split("=", 1) if "=" in j else (j, "") for j in a.job)
+        results = merge_dir(a.dir, read_groups(a.groups), jobs, a.run, a.minutes, a.play_minutes)
         write_results(results, a.out)
         return 0 if all(r["ok"] for r in results) else 1
     if argv[:1] == ["back"]:

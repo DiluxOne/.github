@@ -17,7 +17,7 @@ def jobs():
 
 
 def test_the_callers_tokens_may_read_the_checks_workflow_runs():
-    tokens = [s for s in jobs()["scenarios"]["steps"] if "create-github-app-token" in s.get("uses", "")]
+    tokens = [s for job in ("move", "play", "back") for s in jobs()[job]["steps"] if "create-github-app-token" in s.get("uses", "")]
     assert [t["id"] for t in tokens] == ["app", "back"]
     for t in tokens:
         w = t["with"]
@@ -27,85 +27,112 @@ def test_the_callers_tokens_may_read_the_checks_workflow_runs():
 
 
 def test_the_scenarios_have_time_and_the_play_step_stops_first():
-    scenarios = jobs()["scenarios"]
-    # Five hours for the job, and the play step stops before it, so the
-    # callers still go back and the results are uploaded (#690).
-    assert scenarios["timeout-minutes"] >= 300
-    play = next(s for s in scenarios["steps"] if s.get("id") == "play")
-    assert play["name"] == "Play every scenario at v7-next"
-    assert 0 < play["timeout-minutes"] < scenarios["timeout-minutes"]
-    assert scenarios["outputs"]["play"] == "${{ steps.play.outcome }}"
+    play = jobs()["play"]
+    # Five hours for each play job, and its play step stops before it, so
+    # the results are still uploaded (#690).
+    assert play["timeout-minutes"] >= 300
+    step = next(s for s in play["steps"] if s.get("id") == "play")
+    assert step["name"] == "Play the group's scenarios at v7-next"
+    assert 0 < step["timeout-minutes"] < play["timeout-minutes"]
     # The bug names the numbers the workflow uses, never others.
     env = next(s for s in jobs()["act"]["steps"] if s.get("id") == "act")["env"]
-    assert int(env["SCENARIOS_TIMEOUT"]) == scenarios["timeout-minutes"]
-    assert int(env["PLAY_TIMEOUT"]) == play["timeout-minutes"]
-    assert env["PLAY"] == "${{ needs.scenarios.outputs.play }}"
+    assert int(env["SCENARIOS_TIMEOUT"]) == play["timeout-minutes"]
+    assert int(env["PLAY_TIMEOUT"]) == step["timeout-minutes"]
 
 
-def run_act_step(tmp_path, scenarios, written, play="success"):
+GROUPS = [{"id": "serial", "scenarios": ["s1", "s2"]}, {"id": "s3", "scenarios": ["s3"]}]
+
+
+def run_act_step(tmp_path, results, written):
     """The act step's shell up to the decision, with `release-lane.py act`
-    replaced by `decide` (which writes nothing to GitHub)."""
+    replaced by `decide` (which writes nothing to GitHub). `written`: the
+    rows each artifact (`move`, `back`, a group's id) holds, None for one
+    its job left none of."""
     step = next(s for s in jobs()["act"]["steps"] if s.get("id") == "act")
     script = step["run"].split("# Exit 1")[0]
     script = "\n".join(l for l in script.splitlines() if not l.startswith("git config"))
     tmp_path.mkdir()
-    if written is not None:
-        (tmp_path / "scenarios").mkdir()
-        (tmp_path / "scenarios" / "results.md").write_text(
-            f"| table |\n\n<!-- dx-scenarios {json.dumps(written)} -->\n", encoding="utf-8")
+    for name, rows in written.items():
+        if rows is not None:
+            (tmp_path / "scenarios" / f"scenarios-{name}").mkdir(parents=True)
+            (tmp_path / "scenarios" / f"scenarios-{name}" / "results.md").write_text(
+                f"| table |\n\n<!-- dx-scenarios {json.dumps(rows)} -->\n", encoding="utf-8")
     plan = {"release": True, "version": "7.14.0", "major": "v7"}
-    env = dict(os.environ, RUNNER_TEMP=str(tmp_path), PLAN=json.dumps(plan), SCENARIOS=scenarios, PLAY=play,
+    env = dict(os.environ, RUNNER_TEMP=str(tmp_path), PLAN=json.dumps(plan), SCENARIO_GROUPS=json.dumps(GROUPS),
                SCENARIOS_TIMEOUT=str(step["env"]["SCENARIOS_TIMEOUT"]), PLAY_TIMEOUT=str(step["env"]["PLAY_TIMEOUT"]),
-               RUN_URL="https://github.com/DiluxOne/.github/actions/runs/1")
+               GITHUB_STEP_SUMMARY=str(tmp_path / "summary.md"),
+               RUN_URL="https://github.com/DiluxOne/.github/actions/runs/1", **results)
     script += f'\npython3 {ROOT}/scripts/release-lane.py decide --plan "$RUNNER_TEMP/plan.json" --results "$results"\n'
-    out = subprocess.run(["bash", "-c", script], env=env, cwd=ROOT, capture_output=True, text=True, check=True)
+    out = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, check=True, cwd=ROOT)
     return json.loads(out.stdout)
+
+
+def ok(*ids):
+    return [{"id": i, "ok": True, "run": ""} for i in ids]
 
 
 def test_a_failed_scenario_reaches_the_decision(tmp_path):
     act = jobs()["act"]
-    # The decision runs when the scenarios job failed, never when the plan
-    # releases nothing or the run was cancelled.
+    # The decision runs when the move ended, failed or not, never when the
+    # plan releases nothing or the run was cancelled.
     cond = act["if"]
     assert "!cancelled()" in cond and "needs.plan.outputs.release == 'true'" in cond
-    assert "needs.scenarios.result == 'failure'" in cond and "always()" not in cond
-    upload = next(s for s in jobs()["scenarios"]["steps"] if "upload-artifact" in s.get("uses", ""))
-    assert upload["if"] == "${{ !cancelled() }}"
+    assert "needs.move.result == 'failure'" in cond and "always()" not in cond
+    for job in ("play", "back"):
+        upload = next(s for s in jobs()[job]["steps"] if "upload-artifact" in s.get("uses", ""))
+        assert upload["if"] == "${{ !cancelled() }}"
     download = next(s for s in act["steps"] if "download-artifact" in s.get("uses", ""))
-    assert download["continue-on-error"] is True
+    assert download["continue-on-error"] is True and download["with"]["pattern"] == "scenarios-*"
     step = next(s for s in act["steps"] if s.get("id") == "act")
-    assert step["env"]["SCENARIOS"] == "${{ needs.scenarios.result }}"
+    assert {step["env"][k] for k in ("MOVE", "PLAY", "BACK")} == {f"${{{{ needs.{j}.result }}}}" for j in ("move", "play", "back")}
 
+    done = {"MOVE": "success", "PLAY": "success", "BACK": "success"}
+    every = {"move": [], "serial": ok("s1", "s2"), "s3": ok("s3"), "back": []}
     failed = {"id": "callers", "ok": False, "why": ["checks unreadable"], "run": "https://github.com/x/t/actions/runs/9"}
-    # A failed scenario is the bug, with its run.
-    d = run_act_step(tmp_path / "a", "failure", [{"id": "s1", "ok": True, "run": ""}, failed])
+    # A failed row is the bug, with its run.
+    d = run_act_step(tmp_path / "a", done, dict(every, back=[failed]))
     assert d["do"] == "bug" and d["scenario"] == "callers" and d["run"] == failed["run"]
     assert "`callers`" in d["body"] and failed["run"] in d["body"]
-    # Every row passed but the job failed: still a bug, never a release.
-    d = run_act_step(tmp_path / "b", "failure", [{"id": "s1", "ok": True, "run": ""}])
-    assert d["do"] == "bug" and d["scenario"] == "scenarios"
+    # Every row passed but a play job failed: still a bug, never a release.
+    d = run_act_step(tmp_path / "b", dict(done, PLAY="failure"), every)
+    assert d["do"] == "bug" and d["scenario"] == "play"
     assert d["run"] == "https://github.com/DiluxOne/.github/actions/runs/1"
-    # No results at all: a bug naming the job and this run.
-    d = run_act_step(tmp_path / "c", "failure", None)
-    assert d["do"] == "bug" and d["scenario"] == "scenarios" and "actions/runs/1" in d["body"]
-    # A job that succeeded is read as it wrote.
-    d = run_act_step(tmp_path / "d", "success", [{"id": "s1", "ok": True, "run": ""}])
+    # A group that timed out left no results: a bug naming it and this run.
+    d = run_act_step(tmp_path / "c", dict(done, PLAY="failure"), dict(every, s3=None))
+    assert d["do"] == "bug" and d["scenario"] == "s3" and "actions/runs/1" in d["body"]
+    # Every job succeeded and every scenario passed: released.
+    d = run_act_step(tmp_path / "d", done, every)
     assert d["do"] == "release"
 
 
-def test_a_timed_out_scenarios_job_reaches_the_decision(tmp_path):
+def test_every_out_directory_is_made_in_its_job_before_it_is_written():
+    """#693: back wrote into $RUNNER_TEMP/back/, which no step made."""
+    import re
+    for name, job in jobs().items():
+        made = set()
+        for step in job.get("steps", []):
+            run = step.get("run", "")
+            for line in run.splitlines():
+                made.update(re.findall(r'mkdir -p "\$RUNNER_TEMP/([^"/]+)"', line))
+                for d in re.findall(r'--out "\$RUNNER_TEMP/([^"/]+)/[^"]+"', line):
+                    assert d in made, f"{name}: --out into $RUNNER_TEMP/{d}/ before any mkdir of it"
+
+
+def test_a_timed_out_play_job_reaches_the_decision(tmp_path):
     # GitHub cancels a job past its timeout-minutes without cancelling the
     # run: the decision still runs, and a person's cancel still stops it (#690).
     cond = jobs()["act"]["if"]
     assert "!cancelled()" in cond and "always()" not in cond
-    assert "needs.scenarios.result == 'cancelled'" in cond
-    # Cancelled, with no results: a bug naming the timeout and its minutes.
-    d = run_act_step(tmp_path / "a", "cancelled", None)
-    assert d["do"] == "bug" and d["scenario"] == "scenarios"
-    assert "timeout of 300 minutes and was cancelled" in d["body"] and "actions/runs/1" in d["body"]
+    assert "needs.move.result == 'cancelled'" in cond
+    done = {"MOVE": "success", "PLAY": "success", "BACK": "success"}
+    every = {"move": [], "serial": ok("s1", "s2"), "s3": ok("s3"), "back": []}
+    # A play job cancelled at its timeout, with no results: a bug.
+    d = run_act_step(tmp_path / "a", dict(done, PLAY="cancelled"), dict(every, serial=None))
+    assert d["do"] == "bug" and "actions/runs/1" in d["body"]
+    assert d["scenario"] == "serial" and "its play step at 240 minutes, its job at 300" in d["body"]
     # Cancelled after every row it wrote passed: still a bug, never a release.
-    d = run_act_step(tmp_path / "b", "cancelled", [{"id": "s1", "ok": True, "run": ""}])
-    assert d["do"] == "bug" and d["scenario"] == "scenarios"
-    # The play step stopped at its own timeout: the job failed, the bug says so.
-    d = run_act_step(tmp_path / "c", "failure", None, play="failure")
-    assert d["do"] == "bug" and "the scenarios step ran past its timeout of 240 minutes" in d["body"]
+    d = run_act_step(tmp_path / "b", dict(done, PLAY="cancelled"), every)
+    assert d["do"] == "bug" and d["scenario"] == "play" and "timeout of 300 minutes and was cancelled" in d["body"]
+    # A play step stopped at its own timeout: the job failed, the bug says so.
+    d = run_act_step(tmp_path / "c", dict(done, PLAY="failure"), every)
+    assert d["do"] == "bug" and "its play step past its timeout of 240 minutes" in d["body"]

@@ -10,8 +10,13 @@ name: Release lane
 # through pull requests the bot opens there and queues itself once their
 # checks pass, after checking that they change nothing but the engine's ref:
 # the auto-merge decision never merges a change to .github/workflows; never
-# a write to its main) with the test identity's token, and only when all
-# pass, and main is still the commit they tried, merges the release pull request, tags vX.Y.Z at its merge
+# a write to its main) with the test identity's token, in groups that play
+# at once, one job each (`move`, then `play`, a matrix on DX_RUNNER_HEAVY or
+# ubuntu-latest, then `back`: release-scenarios.py groups; the `serial`
+# scenarios one after another in one group), and only when all rows of the
+# one table `act` merges from them pass (a group that left no results, a
+# scenario with no row or a job that did not succeed is a failing row),
+# and main is still the commit they tried, merges the release pull request, tags vX.Y.Z at its merge
 # commit, moves `v7` (lightweight) and publishes the Release (or edits it
 # when engine-release.yml, on the tag's push, made it first). The candidate's
 # token has `workflows`: its commit rewrites workflow files, and it makes
@@ -129,22 +134,19 @@ jobs:
           printf '%s' "$PLAN" > "$RUNNER_TEMP/plan.json"
           python3 scripts/release-lane.py candidate --plan "$RUNNER_TEMP/plan.json"
 
-  scenarios:
-    name: Scenarios in the test repository
+  # The callers move to v7-next once, the groups of scenarios play at once
+  # (one job each), and the callers come back once every group ended.
+  move:
+    name: Callers to v7-next in the test repository
     needs: [plan, candidate]
     runs-on: ubuntu-latest
-    # Past it GitHub cancels the job, not the run: the decision still reads
-    # it as a timeout and opens its bug (#690). The play step stops first
-    # (its own timeout-minutes), leaving an hour for the callers to go back
-    # and the results to be uploaded. The act step's SCENARIOS_TIMEOUT and
-    # PLAY_TIMEOUT name these two numbers in the bug.
-    timeout-minutes: 300
+    timeout-minutes: 120
     environment: release
     permissions:
       contents: read
     outputs:
-      # The play step ends with `exit 0`: a failure is its timeout.
-      play: ${{ steps.play.outcome }}
+      groups: ${{ steps.groups.outputs.groups }}
+      moved: ${{ steps.move.outputs.moved }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -154,6 +156,12 @@ jobs:
       - name: The test repository
         id: test
         run: echo "repo=$(python3 scripts/org.py test-repo)" >> "$GITHUB_OUTPUT"
+
+      # The groups of tests/release/scenarios.yml: the `serial` ones in one,
+      # every other scenario in its own (release-scenarios.py groups).
+      - name: The groups of scenarios
+        id: groups
+        run: echo "groups=$(python3 scripts/release-scenarios.py groups)" >> "$GITHUB_OUTPUT"
 
       # The callers move to v7-next, and back, through a pull request in the
       # test repository that goes through its merge queue: its rulesets
@@ -180,25 +188,115 @@ jobs:
           permission-statuses: read
           permission-actions: read
 
-      - name: Play every scenario at v7-next
-        id: play
-        timeout-minutes: 240
+      # No scenario plays unless the callers reached v7-next (`moved`); one
+      # that did not is a failing `callers` row the decision reads.
+      - name: The callers at v7-next
+        id: move
         env:
-          GH_TOKEN: ${{ secrets.DX_TEST_TOKEN }}
           DX_CALLERS_TOKEN: ${{ steps.app.outputs.token }}
           OWNER: ${{ github.repository_owner }}
           TEST_REPO: ${{ steps.test.outputs.repo }}
         run: |
           set -uo pipefail
-          python3 scripts/release-scenarios.py run --repo "$OWNER/$TEST_REPO" --ref v7-next --out "$RUNNER_TEMP/results.md" --moved "$RUNNER_TEMP/moved.json"
-          # The decision is the next job's: a failed scenario is a bug, not a red lane.
+          mkdir -p "$RUNNER_TEMP/move"
+          if python3 scripts/release-scenarios.py move --repo "$OWNER/$TEST_REPO" --ref v7-next --moved "$RUNNER_TEMP/move/moved.json" --out "$RUNNER_TEMP/move/results.md"; then
+            echo "moved=true" >> "$GITHUB_OUTPUT"
+          fi
           exit 0
+
+      # Even when cancelled: what moved is what `back` puts back.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: scenarios-move
+          path: ${{ runner.temp }}/move/
+          if-no-files-found: warn
+
+  play:
+    name: Scenarios ${{ matrix.group.id }}
+    needs: [plan, move]
+    if: needs.move.outputs.moved == 'true'
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    # Past it GitHub cancels the job, not the run: the decision still reads
+    # it as a timeout and opens its bug (#690). The play step stops first
+    # (its own timeout-minutes), leaving an hour for the results to be
+    # uploaded. The act step's SCENARIOS_TIMEOUT and PLAY_TIMEOUT name these
+    # two numbers in the bug.
+    timeout-minutes: 300
+    environment: release
+    permissions:
+      contents: read
+    strategy:
+      # One group's failure never cancels another's results.
+      fail-fast: false
+      matrix:
+        group: ${{ fromJSON(needs.move.outputs.groups) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+
+      - name: The test repository
+        id: test
+        run: echo "repo=$(python3 scripts/org.py test-repo)" >> "$GITHUB_OUTPUT"
+
+      # The test identity's token alone: no App token is minted here.
+      - name: Play the group's scenarios at v7-next
+        id: play
+        timeout-minutes: 240
+        env:
+          GH_TOKEN: ${{ secrets.DX_TEST_TOKEN }}
+          GROUP: ${{ matrix.group.id }}
+          OWNER: ${{ github.repository_owner }}
+          TEST_REPO: ${{ steps.test.outputs.repo }}
+        run: |
+          set -uo pipefail
+          python3 scripts/release-scenarios.py play --repo "$OWNER/$TEST_REPO" --ref v7-next --group "$GROUP" --out "$RUNNER_TEMP/results.md"
+          # The decision is the act job's: a failed scenario is a bug, not a red lane.
+          exit 0
+
+      # A group that leaves no file (failed before it, timed out, cancelled)
+      # is a failing row in the merged table (release-scenarios.py merge).
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: scenarios-${{ matrix.group.id }}
+          path: ${{ runner.temp }}/results.md
+          if-no-files-found: error
+
+  back:
+    name: Callers back from v7-next
+    needs: [plan, move, play]
+    # always(): the callers come back even when every group failed.
+    if: ${{ always() && needs.move.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+
+      - name: The test repository
+        id: test
+        run: echo "repo=$(python3 scripts/org.py test-repo)" >> "$GITHUB_OUTPUT"
+
+      # A missing record of what moved is "could not tell", a failing
+      # `callers` row (release-scenarios.py read_moved), never "nothing".
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: scenarios-move
+          path: ${{ runner.temp }}/move
 
       # An App token lasts an hour and the scenarios can take longer: the
       # callers are put back with one minted after them.
       - name: App token (the same, to put the callers back)
         id: back
-        if: always()
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
@@ -213,36 +311,34 @@ jobs:
           permission-actions: read
 
       - name: The callers back from v7-next
-        if: always()
         env:
           DX_CALLERS_TOKEN: ${{ steps.back.outputs.token }}
           OWNER: ${{ github.repository_owner }}
           TEST_REPO: ${{ steps.test.outputs.repo }}
         run: |
           set -uo pipefail
-          python3 scripts/release-scenarios.py back --repo "$OWNER/$TEST_REPO" --ref v7-next --moved "$RUNNER_TEMP/moved.json" --out "$RUNNER_TEMP/results.md"
-          cat "$RUNNER_TEMP/results.md" >> "$GITHUB_STEP_SUMMARY"
-          # A callers row that fails is the next job's to read, like a scenario's.
+          mkdir -p "$RUNNER_TEMP/back"
+          python3 scripts/release-scenarios.py back --repo "$OWNER/$TEST_REPO" --ref v7-next --moved "$RUNNER_TEMP/move/moved.json" --out "$RUNNER_TEMP/back/results.md"
+          # A callers row that fails is the act job's to read, like a scenario's.
           exit 0
 
-      # Even when a step above failed: what the scenarios wrote is the next
-      # job's to read (#644).
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}
         with:
-          name: scenarios
-          path: ${{ runner.temp }}/results.md
+          name: scenarios-back
+          path: ${{ runner.temp }}/back/results.md
           if-no-files-found: error
 
   act:
     name: Release, bug or issue
-    needs: [plan, scenarios]
-    # A scenarios job that failed is a bug to open, never a lane that stops
-    # with none (#644): this job runs when it ended, failed or not. One that
+    needs: [plan, move, play, back]
+    # A job of the scenarios that failed is a bug to open, never a lane that
+    # stops with none (#644): this job runs once the callers' move ended,
+    # failed or not, and whatever the play and back jobs ended in. One that
     # ran past its timeout-minutes ends `cancelled` with the run going on: a
     # bug naming the timeout (#690). `!cancelled()` is the run's: a person
     # who cancels it releases nothing and opens nothing.
-    if: ${{ !cancelled() && needs.plan.outputs.release == 'true' && (needs.scenarios.result == 'success' || needs.scenarios.result == 'failure' || needs.scenarios.result == 'cancelled') }}
+    if: ${{ !cancelled() && needs.plan.outputs.release == 'true' && (needs.move.result == 'success' || needs.move.result == 'failure' || needs.move.result == 'cancelled') }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     environment: release
@@ -272,12 +368,13 @@ jobs:
           fetch-depth: 0
           token: ${{ steps.app.outputs.token }}
 
-      # A scenarios job that failed before it wrote its results leaves none:
-      # the next step reads that as a failure, never as a pass.
+      # Every scenarios-* artifact, each in its own directory. A job that
+      # failed before it wrote its results leaves none: the merge reads that
+      # as a failing row, never as a pass.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
         with:
-          name: scenarios
+          pattern: scenarios-*
           path: ${{ runner.temp }}/scenarios
 
       - name: What the scenarios say
@@ -285,9 +382,11 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           PLAN: ${{ needs.plan.outputs.plan }}
-          SCENARIOS: ${{ needs.scenarios.result }}
-          PLAY: ${{ needs.scenarios.outputs.play }}
-          # The scenarios job's timeout-minutes and its play step's.
+          SCENARIO_GROUPS: ${{ needs.move.outputs.groups }}
+          MOVE: ${{ needs.move.result }}
+          PLAY: ${{ needs.play.result }}
+          BACK: ${{ needs.back.result }}
+          # The play job's timeout-minutes and its play step's.
           SCENARIOS_TIMEOUT: 300
           PLAY_TIMEOUT: 240
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -298,15 +397,12 @@ jobs:
           git config user.name "$DX_BOT_LOGIN"
           git config user.email "$DX_BOT_ID+$DX_BOT_LOGIN@users.noreply.github.com"
           printf '%s' "$PLAN" > "$RUNNER_TEMP/plan.json"
-          # A scenarios job that did not succeed adds a failing `scenarios`
-          # row with this run, so it opens a bug and releases nothing, even
-          # when every row it wrote passed (#644).
-          results="$RUNNER_TEMP/scenarios/results.md"
-          if [ "$SCENARIOS" != success ]; then
-            mkdir -p "$RUNNER_TEMP/scenarios"
-            python3 scripts/release-lane.py job-row --results "$results" --result "$SCENARIOS" --run "$RUN_URL" \
-              --minutes "$SCENARIOS_TIMEOUT" --play "$PLAY" --play-minutes "$PLAY_TIMEOUT"
-          fi
+          # One table: every group's rows, the move's and the back's, and a
+          # failing row for a group with no file, a scenario with no row, or
+          # a job that did not succeed, with this run (#644).
+          results="$RUNNER_TEMP/results.md"
+          python3 scripts/release-scenarios.py merge --dir "$RUNNER_TEMP/scenarios" --groups "$SCENARIO_GROUPS" --job "move=$MOVE" --job "play=$PLAY" --job "back=$BACK" --run "$RUN_URL" --out "$results" \
+            --minutes "$SCENARIOS_TIMEOUT" --play-minutes "$PLAY_TIMEOUT" >> "$GITHUB_STEP_SUMMARY" || true
           # Exit 1 with its JSON when v7 moved but the Release failed: the
           # outputs are written first, so the watch still runs.
           status=0
