@@ -420,6 +420,12 @@ def check_workflow(check, path=os.path.join(ROOT, ".github", "workflows", "relea
     check("workflow: back needs play and runs under always(), so the callers come back whatever the groups did",
           ("play" in needs("back"), "always()" in str(jobs.get("back", {}).get("if"))), (True, True))
     check("workflow: act reads the move, the play and the back jobs", {"move", "play", "back"} <= set(needs("act")), True)
+    # bash sets these itself: a step's `env:` of one of them reaches its
+    # script as bash's value, never the workflow's (GROUPS is the user's
+    # group ids).
+    special = {"GROUPS", "UID", "EUID", "PPID", "BASHPID", "RANDOM", "SECONDS", "LINENO", "HOSTNAME", "PWD", "OLDPWD", "SHELLOPTS", "BASH_VERSION"}
+    check("workflow: no step's env names a variable bash sets itself",
+          sorted({k for job in jobs.values() for st in job.get("steps") or [] for k in st.get("env") or {} if k in special}), [])
 
 class Fake:
     """A fake `gh` and `git` that records every command."""
@@ -622,7 +628,8 @@ def self_test():
             ("back only when play passed", lambda j: j["back"].update({"if": "needs.move.result != 'skipped'"}), "always()"),
             ("back before play", lambda j: j["back"].update({"needs": ["plan", "move"]}), "back needs play"),
             ("back's token without statuses", lambda j: next(s for s in j["back"]["steps"] if s.get("id") == "back")["with"].pop("permission-statuses"), "statuses"),
-            ("move's token for every repository", lambda j: next(s for s in j["move"]["steps"] if s.get("id") == "app")["with"].pop("repositories"), "alone")):
+            ("move's token for every repository", lambda j: next(s for s in j["move"]["steps"] if s.get("id") == "app")["with"].pop("repositories"), "alone"),
+            ("act's groups in bash's GROUPS", lambda j: next(s for s in j["act"]["steps"] if s.get("id") == "act")["env"].update({"GROUPS": "x"}), "bash sets")):
         names = broken(change)
         check(f"C1: check_workflow fails a release-lane.yml with {how}", any(word in n for n in names), True)
     print("all tests passed" if not failed else "some tests failed")

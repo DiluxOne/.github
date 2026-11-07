@@ -44,7 +44,7 @@ def run_act_step(tmp_path, results, written):
             (tmp_path / "scenarios" / f"scenarios-{name}" / "results.md").write_text(
                 f"| table |\n\n<!-- dx-scenarios {json.dumps(rows)} -->\n", encoding="utf-8")
     plan = {"release": True, "version": "7.14.0", "major": "v7"}
-    env = dict(os.environ, RUNNER_TEMP=str(tmp_path), PLAN=json.dumps(plan), GROUPS=json.dumps(GROUPS),
+    env = dict(os.environ, RUNNER_TEMP=str(tmp_path), PLAN=json.dumps(plan), SCENARIO_GROUPS=json.dumps(GROUPS),
                GITHUB_STEP_SUMMARY=str(tmp_path / "summary.md"),
                RUN_URL="https://github.com/DiluxOne/.github/actions/runs/1", **results)
     script += f'\npython3 {ROOT}/scripts/release-lane.py decide --plan "$RUNNER_TEMP/plan.json" --results "$results"\n'

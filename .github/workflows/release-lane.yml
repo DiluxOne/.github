@@ -369,7 +369,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           PLAN: ${{ needs.plan.outputs.plan }}
-          GROUPS: ${{ needs.move.outputs.groups }}
+          SCENARIO_GROUPS: ${{ needs.move.outputs.groups }}
           MOVE: ${{ needs.move.result }}
           PLAY: ${{ needs.play.result }}
           BACK: ${{ needs.back.result }}
@@ -385,7 +385,7 @@ jobs:
           # failing row for a group with no file, a scenario with no row, or
           # a job that did not succeed, with this run (#644).
           results="$RUNNER_TEMP/results.md"
-          python3 scripts/release-scenarios.py merge --dir "$RUNNER_TEMP/scenarios" --groups "$GROUPS" --job "move=$MOVE" --job "play=$PLAY" --job "back=$BACK" --run "$RUN_URL" --out "$results" >> "$GITHUB_STEP_SUMMARY" || true
+          python3 scripts/release-scenarios.py merge --dir "$RUNNER_TEMP/scenarios" --groups "$SCENARIO_GROUPS" --job "move=$MOVE" --job "play=$PLAY" --job "back=$BACK" --run "$RUN_URL" --out "$results" >> "$GITHUB_STEP_SUMMARY" || true
           # Exit 1 with its JSON when v7 moved but the Release failed: the
           # outputs are written first, so the watch still runs.
           status=0
