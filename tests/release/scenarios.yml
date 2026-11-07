@@ -16,6 +16,17 @@
 # `autopilot: fixed-change`), the test identity may accept (its pack's
 # `identity`), and every issue and pull request a scenario opens is closed
 # after it (`cleanup: after-run`).
+#
+# The lane plays them in groups, at once, one job each (release-lane.yml
+# `play`; release-scenarios.py groups). `serial: true` puts a scenario in
+# the one `serial` group, which plays them one after another in this file's
+# order: every scenario that makes the autopilot draft (its fixed change
+# writes under scenarios/, the test repository's core, which takes one change
+# at a time: kinds/engine-test/pack.yml), or that merges or pushes to the
+# test repository's main, since played at once they would wait on one
+# another's core or go behind main. Every other scenario is a group of its
+# own, named by its id. A scenario that fails only beside others is marked
+# serial in its fix.
 
 # The bodies the scenarios open and edit with, by name.
 bodies:
@@ -126,11 +137,13 @@ scenarios:
     expect: {labels: [incomplete], absent: [awaiting-acceptance]}
   # Accepted, sealed, and the autopilot starting.
   - id: accepted-spec
+    serial: true
     covers: [next_step:wait:accept, next_step:spec]
     opens: {issue: {title: "feat: a greeting", body: complete-feature}}
     steps: [{label: accepted}]
     expect: {labels: [accepted, autopilot], comments: ["<!-- dx-prd-seal -->"]}
   - id: spec-to-draft
+    serial: true
     covers: [next_step:draft, next_step:work, next_step:finish, pr-screenshots.yml:pull_request]
     opens: {issue: {title: "feat: a greeting, drafted", body: complete-feature}}
     steps: [{label: accepted}]
@@ -139,34 +152,40 @@ scenarios:
   # repository's core: kinds/engine-test/pack.yml `core`) stays open while
   # the second is accepted, so the second waits for it.
   - id: core-one-at-a-time
+    serial: true
     covers: [next_step:wait:core]
     before: [{issue: {title: "feat: a greeting on the core, first", body: complete-feature, labels: [accepted]}}]
     opens: {issue: {title: "feat: a greeting on the core, second", body: complete-feature}}
     steps: [{wait: 300}, {label: accepted}]
     expect: {comments: ["<!-- dx-autopilot-core -->"], labels: [autopilot:core-wait]}
   - id: prd-edited-after-acceptance
+    serial: true
     covers: [next_step:wait:answer]
     opens: {issue: {title: "feat: a greeting, then edited", body: complete-feature}}
     steps: [{label: accepted}, {wait: 60}, {edit: edited-feature}]
     expect: {absent: [accepted], waiting: true}
   - id: decision-sub-issues
+    serial: true
     covers: []
     opens: {issue: {title: "Decision: a greeting and a farewell", body: decision, labels: [accepted]}}
     expect: {labels: [accepted], comments: ["sub-issue"]}
 
   # Claims.
   - id: claim-and-release
+    serial: true
     covers: [issue-claim.yml:issue_comment, next_step:wait:claim]
     opens: {issue: {title: "feat: a greeting, claimed", body: complete-feature, labels: [accepted]}}
     steps: [{comment: "/claim"}, {wait: 60}, {comment: "/unclaim"}]
     expect: {absent: [claim:long]}
   - id: claim-pull-request
+    serial: true
     covers: [issue-claim.yml:pull_request_target, waiting-update.yml:pull_request_target]
     opens: {pull: {title: "feat: a greeting by hand", body: pull, issue: {title: "feat: a greeting, claimed for a hand", body: complete-feature, labels: [accepted]}}}
     expect: {pull: {closes: true}}
 
   # Bugs.
   - id: bug-reproduced
+    serial: true
     covers: [next_step:fix]
     opens: {issue: {title: "fix: the greeting says helo", body: bug}}
     expect: {labels: [bug:confirmed], pull: {closes: true, branch: "^fix/[0-9]+-", title: "^fix(\\(.+\\))?: "}}
@@ -177,11 +196,13 @@ scenarios:
 
   # The autopilot's questions, stops and hints.
   - id: question-answered
+    serial: true
     covers: []
     opens: {issue: {title: "feat: a greeting, asked", body: complete-feature, labels: [accepted]}}
     steps: [{wait: 300}, {comment: "Option 1."}]
     expect: {absent: [autopilot:waiting, autopilot:continue], pull: {closes: true}}
   - id: stop-hint-continue
+    serial: true
     covers: []
     opens: {issue: {title: "feat: a greeting, stopped", body: complete-feature, labels: [accepted]}}
     steps: [{wait: 300}, {comment: "Hint: write it in scenarios/."}, {label: autopilot:continue}]
@@ -189,11 +210,13 @@ scenarios:
 
   # The autopilot's pull request and main.
   - id: draft-in-conflict
+    serial: true
     covers: [next_step:merge-main, next_step:merge-main:conflicted, sweep_step:continue]
     opens: {issue: {title: "feat: a greeting, in conflict", body: complete-feature, labels: [accepted]}}
     steps: [{wait: 300}, {push: conflict}]
     expect: {pull: {closes: true}, absent: [needs-human]}
   - id: ready-behind-main
+    serial: true
     covers: [next_step:merge-main:clean, sweep_step:update]
     opens: {issue: {title: "feat: a greeting, behind", body: complete-feature, labels: [accepted]}}
     steps: [{wait: 600}, {push: behind}]
@@ -215,11 +238,13 @@ scenarios:
     opens: {pull: {title: "docs: a greeting from a fork", body: pull, fork: true}}
     expect: {check: {conventions: success}, merged: false}
   - id: merge-queue
+    serial: true
     covers: [runner-wake.yml:merge_group, next_step:queue, autopilot-sweep.yml:pull_request_target]
     opens: {pull: {title: "docs: a greeting, queued", body: pull}}
     steps: [{label: risk:low}]
     expect: {merged: true}
   - id: low-risk-merges
+    serial: true
     covers: [auto-merge.yml:pull_request, next_step:wait:merge]
     opens: {pull: {title: "docs: a greeting, low risk", body: pull}}
     expect: {merged: true}
@@ -230,6 +255,7 @@ scenarios:
 
   # A release, the drift check and adopting.
   - id: release-issue
+    serial: true
     covers: []
     opens: {issue: {title: "Release 0.0.1", body: release, labels: [accepted]}}
     expect: {pull: {title: "^chore: release"}}

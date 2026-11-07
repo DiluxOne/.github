@@ -154,29 +154,6 @@ def decide(p, results):
     return {"do": "release", "version": p["version"]}
 
 
-def job_row(result, run, minutes, play, play_minutes=0):
-    """The failing `scenarios` row for a scenarios job that did not succeed
-    (#644), saying when it ran out of time (#690): GitHub cancels a job past
-    its timeout-minutes without cancelling the run, and stops a step past its
-    own as a failure (the play step otherwise ends with `exit 0`). Pure."""
-    if result == "cancelled":
-        why = f"the scenarios job ran past its timeout of {minutes} minutes and was cancelled (timeout-minutes in release-lane.yml)"
-    elif result == "failure" and play == "failure":
-        why = f"the scenarios step ran past its timeout of {play_minutes} minutes (timeout-minutes in release-lane.yml)"
-    else:
-        why = f"the scenarios job ended in {result}"
-    return {"id": "scenarios", "ok": False, "why": [why], "run": run}
-
-
-def add_row(text, row):
-    """The results' text with `row` added to its dx-scenarios rows."""
-    m = re.search(r"<!-- dx-scenarios (.*) -->", text)
-    rows = json.loads(m.group(1)) if m else []
-    rows.append(row)
-    text = re.sub(r"\n?<!-- dx-scenarios .* -->\n?", "", text)
-    return f"{text}\n<!-- dx-scenarios {json.dumps(rows)} -->\n"
-
-
 def release(p, repo, run=sh, sleep=time.sleep, minutes=60, root="."):
     """The release pull request, merged, the tag, the move and the Release,
     of the commit the scenarios tried (the plan's `sha`) and nothing else:
@@ -411,28 +388,51 @@ def check_workflow(check, path=os.path.join(ROOT, ".github", "workflows", "relea
     wide = [t for t in watch_tokens if not t.get("repositories")]
     check("workflow: the watch's installation-wide token only reads", bool(wide) and all(v in ("read",) for t in wide for k, v in t.items() if k.startswith("permission-")), True)
     check("workflow: the watch runs once v7 moved, even when act failed after", "always()" in str(jobs.get("watch", {}).get("if")), True)
-    # The scenarios job waits on the callers pull request's checks with the
-    # token it passes as DX_CALLERS_TOKEN: that token reads them (#627).
-    steps = jobs.get("scenarios", {}).get("steps") or []
-    minted = {st.get("id"): st.get("with") or {} for st in steps if "create-github-app-token" in str(st.get("uses"))}
-    waits = [(st.get("env") or {}).get("DX_CALLERS_TOKEN") for st in steps if re.search(r"release-scenarios\.py (run|back)\b", str(st.get("run")))]
-    used = [minted.get(m.group(1)) if (m := re.fullmatch(r"\$\{\{ steps\.([\w-]+)\.outputs\.token \}\}", str(w))) else None for w in waits]
-    check("workflow: both waits on the callers pull request use a token of the scenarios job (#627)", len(used) == 2 and all(t is not None for t in used), True)
+    # The move and back jobs wait on the callers pull request's checks with
+    # the token each passes as DX_CALLERS_TOKEN: that token reads them (#627).
+    used, minted = [], []
+    for job in ("move", "back"):
+        steps = jobs.get(job, {}).get("steps") or []
+        mine = {st.get("id"): st.get("with") or {} for st in steps if "create-github-app-token" in str(st.get("uses"))}
+        minted += list(mine.values()) or [{}]
+        waits = [(st.get("env") or {}).get("DX_CALLERS_TOKEN") for st in steps if re.search(r"release-scenarios\.py (move|back)\b", str(st.get("run")))]
+        used += [mine.get(m.group(1)) if (m := re.fullmatch(r"\$\{\{ steps\.([\w-]+)\.outputs\.token \}\}", str(w))) else None for w in waits] or [None]
+    check("workflow: the waits on the callers pull request, move's and back's, each use a token of its own job (#627)", len(used) == 2 and all(t is not None for t in used), True)
     check("workflow: the waits' tokens read the checks and the statuses (#627)",
           [(t or {}).get("permission-checks") == "read" and (t or {}).get("permission-statuses") == "read" for t in used], [True, True])
     check("workflow: the waits' tokens are the test repository's alone (#627)",
           [(t or {}).get("repositories") for t in used], ["${{ steps.test.outputs.repo }}"] * 2)
-    check("workflow: every App token of the scenarios job asks for checks: read and statuses: read (#627)",
-          bool(minted) and all(t.get("permission-checks") == "read" and t.get("permission-statuses") == "read" for t in minted.values()), True)
-    # The scenarios job has five hours, its play step stops before it, and
-    # the bug names those two numbers (#690).
-    sc = jobs.get("scenarios", {})
-    play = next((st for st in sc.get("steps") or [] if st.get("id") == "play"), {})
+    check("workflow: every App token of the move and back jobs asks for checks: read and statuses: read (#627)",
+          all(t.get("permission-checks") == "read" and t.get("permission-statuses") == "read" for t in minted), True)
+    # The groups play at once, each in its job, between the move and the back.
+    play = jobs.get("play", {})
+    check("workflow: play is a matrix over the move job's groups, and one group's failure cancels no other's",
+          ((play.get("strategy") or {}).get("matrix"), (play.get("strategy") or {}).get("fail-fast")),
+          ({"group": "${{ fromJSON(needs.move.outputs.groups) }}"}, False))
+    check("workflow: play runs on DX_RUNNER_HEAVY, or ubuntu-latest when it is not set",
+          play.get("runs-on"), "${{ vars.DX_RUNNER_HEAVY != '' && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}")
+    needs = lambda job: [jobs.get(job, {}).get("needs")] if isinstance(jobs.get(job, {}).get("needs"), str) else jobs.get(job, {}).get("needs") or []
+    check("workflow: play needs move, and plays only once the callers moved", ("move" in needs("play"), play.get("if")), (True, "needs.move.outputs.moved == 'true'"))
+    psteps = play.get("steps") or []
+    check("workflow: play mints no App token: the test identity's token alone",
+          ([st for st in psteps if "create-github-app-token" in str(st.get("uses"))], [v for st in psteps for k, v in (st.get("env") or {}).items() if "token" in str(v).lower() or "TOKEN" in k]),
+          ([], ["${{ secrets.DX_TEST_TOKEN }}"]))
+    check("workflow: back needs play and runs under always(), so the callers come back whatever the groups did",
+          ("play" in needs("back"), "always()" in str(jobs.get("back", {}).get("if"))), (True, True))
+    check("workflow: act reads the move, the play and the back jobs", {"move", "play", "back"} <= set(needs("act")), True)
+    # bash sets these itself: a step's `env:` of one of them reaches its
+    # script as bash's value, never the workflow's (GROUPS is the user's
+    # group ids).
+    special = {"GROUPS", "UID", "EUID", "PPID", "BASHPID", "RANDOM", "SECONDS", "LINENO", "HOSTNAME", "PWD", "OLDPWD", "SHELLOPTS", "BASH_VERSION"}
+    check("workflow: no step's env names a variable bash sets itself",
+          sorted({k for job in jobs.values() for st in job.get("steps") or [] for k in st.get("env") or {} if k in special}), [])
+    # The play job has five hours, its play step stops before it, and the
+    # bug names those two numbers (#690).
+    play_step = next((st for st in psteps if st.get("id") == "play"), {})
     env = next((st.get("env") or {} for st in jobs.get("act", {}).get("steps") or [] if st.get("id") == "act"), {})
-    job_t, play_t = sc.get("timeout-minutes") or 0, play.get("timeout-minutes") or 0
-    check("workflow: the scenarios job has 300 minutes, its play step fewer, and the bug names both (#690)",
+    job_t, play_t = play.get("timeout-minutes") or 0, play_step.get("timeout-minutes") or 0
+    check("workflow: the play job has 300 minutes, its play step fewer, and the bug names both (#690)",
           (job_t >= 300, 0 < play_t < job_t, str(env.get("SCENARIOS_TIMEOUT")), str(env.get("PLAY_TIMEOUT"))), (True, True, str(job_t), str(play_t)))
-
 
 class Fake:
     """A fake `gh` and `git` that records every command."""
@@ -548,23 +548,6 @@ def self_test():
         check("C5: nothing tagged, v7 not moved, nothing released", [c for c in fake.calls if c[:1] == ("git",) or c[:2] in (("gh", "release"), ("gh", "pr"))], [])
         check("C5: the bug names the scenario and its run", bool(bug) and "spec-to-draft" in " ".join(bug[0]) and "https://github.com/o/t/actions/runs/9" in " ".join(bug[0]), True)
         check("C5: no result at all is a failure", decide(p, [])["do"], "bug")
-        # #690: a scenarios job that ran out of time is a bug naming it.
-        lane = "https://github.com/O/.github/actions/runs/1"
-        row = job_row("cancelled", lane, 300, "", 240)
-        check("job_row: a cancelled job ran past its timeout, with its minutes and this run",
-              (row["id"], row["ok"], row["run"], "timeout of 300 minutes and was cancelled" in row["why"][0]), ("scenarios", False, lane, True))
-        check("job_row: a play step that failed ran past its own timeout",
-              "the scenarios step ran past its timeout of 240 minutes" in job_row("failure", lane, 300, "failure", 240)["why"][0], True)
-        check("job_row: any other failure says the job failed", job_row("failure", lane, 300, "success", 240)["why"], ["the scenarios job ended in failure"])
-        check("job_row: added to what the scenarios wrote, once",
-              re.findall(r"<!-- dx-scenarios (.*) -->", add_row("| t |\n\n<!-- dx-scenarios [{\"id\": \"s1\", \"ok\": true}] -->\n", row)),
-              [json.dumps([{"id": "s1", "ok": True}, row])])
-        fake = Fake()
-        d = act(p, passed + [row], "O/.github", run=fake, root=root, lane_run=lane)
-        made = [c for c in fake.calls if c[:3] == ("gh", "issue", "create")]
-        check("a cancelled scenarios job → a bug naming its timeout", (d["do"], d["scenario"], bool(made) and "timeout of 300 minutes" in " ".join(made[0])), ("bug", "scenarios", True))
-        check("a cancelled scenarios job: nothing tagged, nothing released",
-              [c for c in fake.calls if c[:1] == ("git",) or c[:2] in (("gh", "release"), ("gh", "pr"))], [])
         # C7: a `!`, the scenarios pass.
         fake = Fake()
         pb = plan(dict(nxt, bump="minor", next="7.11.0"), ["feat(autopilot)!: a required input"])
@@ -627,6 +610,35 @@ def self_test():
         fake = Fake({"properties/values": props, "repos/O/a/actions/runs?": json.dumps(runs[:1])})
         check("C6: a quiet half hour moves nothing", (watch(moved_p, "O/.github", central, "O", "dx-adopted", since, run=fake, sleep=lambda s: None, every=600, root=root), fake.has("git")), (None, False))
     check_workflow(check)
+    import copy
+    import yaml
+    real = yaml.safe_load(open(os.path.join(ROOT, ".github", "workflows", "release-lane.yml"), encoding="utf-8"))
+
+    def broken(change):
+        """The names check_workflow fails on a copy of release-lane.yml
+        that `change` broke."""
+        wf = copy.deepcopy(real)
+        change(wf["jobs"])
+        names = []
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "release-lane.yml")
+            with open(path, "w", encoding="utf-8") as fh:
+                yaml.safe_dump(wf, fh)
+            check_workflow(lambda name, got, want=True: names.append(name) if got != want else None, path)
+        return names
+    app = {"uses": "actions/create-github-app-token@x", "id": "app", "with": {}}
+    for how, change, word in (
+            ("fail-fast", lambda j: j["play"]["strategy"].update({"fail-fast": True}), "matrix"),
+            ("one runner for every group", lambda j: j["play"].update({"runs-on": "self-hosted"}), "DX_RUNNER_HEAVY"),
+            ("play before the move", lambda j: j["play"].update({"needs": ["plan"]}), "play needs move"),
+            ("an App token in play", lambda j: j["play"]["steps"].insert(0, app), "no App token"),
+            ("back only when play passed", lambda j: j["back"].update({"if": "needs.move.result != 'skipped'"}), "always()"),
+            ("back before play", lambda j: j["back"].update({"needs": ["plan", "move"]}), "back needs play"),
+            ("back's token without statuses", lambda j: next(s for s in j["back"]["steps"] if s.get("id") == "back")["with"].pop("permission-statuses"), "statuses"),
+            ("move's token for every repository", lambda j: next(s for s in j["move"]["steps"] if s.get("id") == "app")["with"].pop("repositories"), "alone"),
+            ("act's groups in bash's GROUPS", lambda j: next(s for s in j["act"]["steps"] if s.get("id") == "act")["env"].update({"GROUPS": "x"}), "bash sets")):
+        names = broken(change)
+        check(f"C1: check_workflow fails a release-lane.yml with {how}", any(word in n for n in names), True)
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
@@ -636,7 +648,7 @@ def main(argv):
         return self_test()
     import argparse
     ap = argparse.ArgumentParser(prog="release-lane.py")
-    ap.add_argument("mode", choices=("plan", "candidate", "decide", "act", "job-row", "watch"))
+    ap.add_argument("mode", choices=("plan", "candidate", "decide", "act", "watch"))
     ap.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""))
     ap.add_argument("--central", default="")
     ap.add_argument("--plan", default="")
@@ -647,9 +659,6 @@ def main(argv):
     ap.add_argument("--since", default="")
     ap.add_argument("--minutes", type=int, default=30)
     ap.add_argument("--every", type=int, default=120)
-    ap.add_argument("--result", default="")
-    ap.add_argument("--play", default="")
-    ap.add_argument("--play-minutes", type=int, default=0)
     ap.add_argument("--org", default="")
     ap.add_argument("--property", default="")
     a = ap.parse_args(argv)
@@ -676,11 +685,6 @@ def main(argv):
         return 0
     if a.mode == "decide":
         print(json.dumps(decide(load(a.plan), results_of(a.results))))
-        return 0
-    if a.mode == "job-row":
-        text = open(a.results, encoding="utf-8").read() if os.path.exists(a.results) else ""
-        with open(a.results, "w", encoding="utf-8") as fh:
-            fh.write(add_row(text, job_row(a.result, a.run, a.minutes, a.play, a.play_minutes)))
         return 0
     if a.mode == "act":
         d = act(load(a.plan), results_of(a.results), a.repo, lane_run=a.run)
