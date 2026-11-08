@@ -141,11 +141,50 @@ bodies:
     ### Notes
 
     None.
-  # `{issue}`: the issue the scenario opens for its pull request first.
+  # A maintenance task's (the Task and Docs forms' PRD), for a pull request
+  # titled docs or ci.
+  task: |
+    ### Problem
+
+    The scenarios' directory has no note.
+
+    ### Scope
+
+    - A note under the scenario's directory.
+
+    ### Out of scope
+
+    - Anything else.
+
+    ### Acceptance criteria
+
+    - C1: Given the repository, when the scenario's directory is read, then it has a note.
+
+    ### Criticality
+
+    Normal
+  # `{issue}`: the issue the scenario opens for its pull request first. The
+  # template's sections, which the conventions check asks of a person's.
   pull: |
+    ## 📝 What changes
+
     A change of the scenarios.
 
+    ## 💡 Why
+
     Closes #{issue}
+
+# The Type each body's form gives its issue (.github/ISSUE_TEMPLATE/*.yml
+# `type:`), which `gh issue create` does not: the accepted-issue gate needs
+# a Feature for a feat pull request and a Bug for a fix, and the autopilot
+# names its draft after it. An issue's own `type:` overrides it.
+types:
+  complete-feature: Feature
+  edited-feature: Feature
+  bug: Bug
+  bug-not-reproduced: Bug
+  task: Task
+  release: Task
 
 scenarios:
   # Issues, before acceptance.
@@ -199,7 +238,9 @@ scenarios:
     expect: {absent: [claim:long]}
   - id: claim-pull-request
     covers: [issue-claim.yml:pull_request_target, waiting-update.yml:pull_request_target]
-    opens: {pull: {title: "feat: a greeting by hand", body: pull, issue: {title: "feat: a greeting, claimed for a hand", body: complete-feature, labels: [accepted]}}}
+    # Claimed before it is accepted (`comments` go first), so the autopilot
+    # steps aside and the hand-written pull request is the claimant's.
+    opens: {pull: {title: "feat: a greeting by hand", body: pull, issue: {title: "feat: a greeting, claimed for a hand", body: complete-feature, labels: [accepted], comments: ["/claim"]}}}
     expect: {pull: {closes: true}}
 
   # Bugs.
@@ -225,13 +266,19 @@ scenarios:
     expect: {absent: [needs-human], pull: {closes: true}}
 
   # The autopilot's pull request and main.
+  # A `push` writes to the head branch of the pull request it observes;
+  # `conflict` then lands the same file, otherwise, on main, and `behind`
+  # lands a file of its own there: through a second pull request of the
+  # scenario that merges (the rulesets refuse a write to main).
   - id: draft-in-conflict
     covers: [next_step:merge-main, next_step:merge-main:conflicted, sweep_step:continue]
+    minutes: 15
     opens: {issue: {title: "feat: a greeting, in conflict", body: complete-feature, labels: [accepted]}}
     steps: [{until: {pull: {closes: true}}}, {push: conflict}]
     expect: {pull: {closes: true}, absent: [needs-human]}
   - id: ready-behind-main
     covers: [next_step:merge-main:clean, sweep_step:update]
+    minutes: 15
     opens: {issue: {title: "feat: a greeting, behind", body: complete-feature, labels: [accepted]}}
     steps: [{until: {pull: {closes: true, body: "\\[x\\] \\*\\*C1\\*\\*"}}}, {push: behind}]
     expect: {pull: {closes: true}}
@@ -239,30 +286,30 @@ scenarios:
   # The review, the required checks and the merge queue.
   - id: review-changes-asked
     covers: [conventions.yml:pull_request, claude-review.yml:pull_request, autopilot.yml:pull_request, pull-request-assignee.yml:pull_request, runner-wake.yml:pull_request, waiting-update.yml:pull_request]
-    opens: {pull: {title: "feat: a greeting with a secret", body: pull}}
+    opens: {pull: {title: "feat: a greeting with a secret", body: pull, issue: {title: "feat: a greeting with a secret", body: complete-feature, labels: [accepted]}}}
     steps: [{push: secret}]
     expect: {check: {conventions: success}}
   - id: review-replied
     covers: [review-reply.yml:issue_comment, review-reply.yml:pull_request_review_comment]
-    opens: {pull: {title: "docs: a greeting", body: pull}}
+    opens: {pull: {title: "docs: a greeting", body: pull, issue: {title: "docs: a greeting", body: task, labels: [accepted]}}}
     steps: [{comment: "@dilux-bot why?"}]
     expect: {comments: ["<!-- dx-review"]}
   - id: fork-without-secrets
     covers: []
-    opens: {pull: {title: "docs: a greeting from a fork", body: pull, fork: true}}
+    opens: {pull: {title: "docs: a greeting from a fork", body: pull, fork: true, issue: {title: "docs: a greeting from a fork", body: task, labels: [accepted]}}}
     expect: {check: {conventions: success}, merged: false}
   - id: merge-queue
     covers: [runner-wake.yml:merge_group, next_step:queue, autopilot-sweep.yml:pull_request_target]
-    opens: {pull: {title: "docs: a greeting, queued", body: pull}}
+    opens: {pull: {title: "docs: a greeting, queued", body: pull, issue: {title: "docs: a greeting, queued", body: task, labels: [accepted]}}}
     steps: [{label: risk:low}]
     expect: {merged: true}
   - id: low-risk-merges
     covers: [auto-merge.yml:pull_request, next_step:wait:merge]
-    opens: {pull: {title: "docs: a greeting, low risk", body: pull}}
+    opens: {pull: {title: "docs: a greeting, low risk", body: pull, issue: {title: "docs: a greeting, low risk", body: task, labels: [accepted]}}}
     expect: {merged: true}
   - id: high-risk-waits
     covers: []
-    opens: {pull: {title: "ci: a greeting in a workflow", body: pull}}
+    opens: {pull: {title: "ci: a greeting in a workflow", body: pull, issue: {title: "ci: a greeting in a workflow", body: task, labels: [accepted]}}}
     expect: {merged: false, labels: [risk:high]}
 
   # A release, the drift check and adopting.
