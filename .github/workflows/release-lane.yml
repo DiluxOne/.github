@@ -138,7 +138,9 @@ jobs:
   # (one job each), and the callers come back once every group ended.
   move:
     name: Callers to v7-next in the test repository
-    needs: [plan, candidate]
+    needs:
+      - plan
+      - candidate  # order: the callers move to v7-next once the candidate's tag is there.
     runs-on: ubuntu-latest
     timeout-minutes: 120
     environment: release
@@ -268,7 +270,10 @@ jobs:
 
   back:
     name: Callers back from v7-next
-    needs: [plan, move, play]
+    needs:
+      - plan
+      - move
+      - play  # order: the callers come back once every group of scenarios ended.
     # always(): the callers come back even when every group failed.
     if: ${{ always() && needs.move.result != 'skipped' }}
     runs-on: ubuntu-latest

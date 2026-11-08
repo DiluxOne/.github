@@ -36,6 +36,8 @@ jobs:
       DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
 
   review:
+    # order: the conventions gate passes first, so no review is paid for a
+    # pull request it refuses.
     needs: [conventions]
     permissions:
       contents: read
