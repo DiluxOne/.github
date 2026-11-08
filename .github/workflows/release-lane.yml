@@ -34,8 +34,9 @@ name: Release lane
 #
 # It runs on main's own code, never a fork's: workflow_run of a push to main,
 # or a maintainer's dispatch. The jobs that push tags and hold the test
-# identity's token (DX_TEST_TOKEN) run in the `release` environment, which
-# only main may use.
+# identity's tokens (DX_TEST_TOKEN, and DX_TEST_FORK_TOKEN, which may fork
+# the test repository, #694) run in the `release` environment, which only
+# main may use.
 
 on:
   workflow_run:
@@ -250,6 +251,9 @@ jobs:
         timeout-minutes: 20
         env:
           GH_TOKEN: ${{ secrets.DX_TEST_TOKEN }}
+          # The test identity's token that may fork the test repository,
+          # for the scenario from a fork alone (#694).
+          DX_TEST_FORK_TOKEN: ${{ secrets.DX_TEST_FORK_TOKEN }}
           GROUP: ${{ matrix.group.id }}
           OWNER: ${{ github.repository_owner }}
           TEST_REPO: ${{ steps.test.outputs.repo }}

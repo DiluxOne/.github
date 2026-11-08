@@ -489,9 +489,9 @@ def check_workflow(check, path=os.path.join(ROOT, ".github", "workflows", "relea
     needs = lambda job: [jobs.get(job, {}).get("needs")] if isinstance(jobs.get(job, {}).get("needs"), str) else jobs.get(job, {}).get("needs") or []
     check("workflow: play needs move, and plays only once the callers moved", ("move" in needs("play"), play.get("if")), (True, "needs.move.outputs.moved == 'true'"))
     psteps = play.get("steps") or []
-    check("workflow: play mints no App token: the test identity's token alone",
+    check("workflow: play mints no App token: the test identity's tokens alone (#694: its fork token, for the scenario from a fork)",
           ([st for st in psteps if "create-github-app-token" in str(st.get("uses"))], [v for st in psteps for k, v in (st.get("env") or {}).items() if "token" in str(v).lower() or "TOKEN" in k]),
-          ([], ["${{ secrets.DX_TEST_TOKEN }}"]))
+          ([], ["${{ secrets.DX_TEST_TOKEN }}", "${{ secrets.DX_TEST_FORK_TOKEN }}"]))
     check("workflow: back needs play and runs under always(), so the callers come back whatever the groups did",
           ("play" in needs("back"), "always()" in str(jobs.get("back", {}).get("if"))), (True, True))
     check("workflow: act reads the move, the play and the back jobs", {"move", "play", "back"} <= set(needs("act")), True)

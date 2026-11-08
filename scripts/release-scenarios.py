@@ -471,7 +471,23 @@ def clear(repo, sid, run=gh, branch=None):
                 pass
 
 
-def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20):
+# What `fork-without-secrets` needs (#694): the test identity's own token
+# that may create its fork (DX_TEST_TOKEN is scoped to the test repository
+# alone, so GitHub answers its fork with 403).
+FORK_SECRET = "DX_TEST_FORK_TOKEN"
+FORK_NEEDS = (f"a scenario from a fork needs {FORK_SECRET}, a token of the test identity that may fork the test repository: a fine-grained token "
+              "with Administration and Contents read and write on the test identity's own repositories (or a classic one with public_repo), "
+              "a secret of the `release` environment")
+
+
+def fork_gh():
+    """The runner a fork's calls go through: the test identity's fork token
+    (FORK_SECRET), or None when it is not set."""
+    token = os.environ.get(FORK_SECRET)
+    return (lambda *args, input=None: gh(*args, input=input, token=token)) if token else None
+
+
+def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None):
     """One scenario in `repo`: clears what an earlier run of it left
     (`clear`), opens what it opens (its `before` first), takes its steps,
     polls until its `expect` holds or `minutes` pass, then cleans up and
@@ -515,12 +531,18 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20):
                 made.append(("issue", closes))
                 text = text.replace("{issue}", closes)
             branch, target = own, repo
+            writes = run
             if spec.get("fork"):
-                # From the test identity's fork, which runs with no secrets.
-                run("repo", "fork", repo, "--clone=false", "--default-branch-only")
-                target = f"{run('api', 'user', '--jq', '.login').strip()}/{repo.split('/', 1)[1]}"
-            fresh_branch(target, branch, run)
-            run("api", "-X", "PUT", f"repos/{target}/contents/scenarios/{sid}/pull.md", "-f", f"message=test: the scenario {sid}",
+                # From the test identity's fork, which runs with no secrets,
+                # made and written with its fork token (#694).
+                # `fork`: its runner, False for none; None reads FORK_SECRET.
+                writes = fork_gh() if fork is None else (fork or None)
+                if writes is None:
+                    raise RuntimeError(FORK_NEEDS)
+                writes("repo", "fork", repo, "--clone=false", "--default-branch-only")
+                target = f"{writes('api', 'user', '--jq', '.login').strip()}/{repo.split('/', 1)[1]}"
+            fresh_branch(target, branch, writes)
+            writes("api", "-X", "PUT", f"repos/{target}/contents/scenarios/{sid}/pull.md", "-f", f"message=test: the scenario {sid}",
                 "-f", f"branch={branch}", "-f", f"content={__import__('base64').b64encode(sid.encode()).decode()}")
             head = f"{target.split('/', 1)[0]}:{branch}" if target != repo else branch
             url = run("pr", "create", "--repo", repo, "--head", head, "--title", spec.get("title", f"test: {sid}"),
@@ -722,8 +744,8 @@ def merge_when_checked(repo, number, url, head, run=gh, sleep=time.sleep, minute
                 why = f"its check {pending[0]} did not finish" if pending else "it reported no check"
         if waited >= minutes * 60:
             raise RuntimeError(f"the pull request {url} that moves them did not merge in {minutes} minutes: {why}")
-        sleep(30)
-        waited += 30
+        sleep(POLL)
+        waited += POLL
 
 
 def point_callers(repo, ref, run=gh, central=None, back=None, sleep=time.sleep, minutes=20):
@@ -1281,6 +1303,23 @@ def self_test():
     st, fake = polled([{"labels": []}])
     got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "steps": [{"wait": 300}], "expect": {}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 1)
     check("C3: a fixed wait is never slept", (got["ok"], st["sleeps"]), (False, []))
+    forked = []
+    got = play({"id": "f", "opens": {"pull": {"title": "docs: x", "body": "b", "fork": True}}, "expect": {}}, "o/t", "v7-next", {"b": "x"},
+               lambda *a, input=None: forked.append(("test",) + a) or ("https://github.com/o/t/pull/3\n" if a[:2] == ("pr", "create") else "{}" if a[:2] == ("pr", "view") else "[]"),
+               lambda s: None, 1, fork=lambda *a, input=None: forked.append(("fork",) + a) or ("me\n" if a[-1] == ".login" else "s\n"))
+    check("C9: a scenario from a fork forks and writes its fork with the fork token, and opens its pull request with the test identity's",
+          (got["ok"], [c[0] for c in forked if c[1:3] == ("repo", "fork")], [c[0] for c in forked if c[1:3] == ("pr", "create")],
+           all(c[0] == "fork" for c in forked if c[1:4] == ("api", "-X", "PUT"))), (True, ["fork"], ["test"], True))
+    forked = []
+    got = play({"id": "f", "opens": {"pull": {"title": "docs: x", "body": "b", "fork": True}}, "expect": {}}, "o/t", "v7-next", {"b": "x"},
+               lambda *a, input=None: forked.append(a) or "[]", lambda s: None, 1, fork=False)
+    check("C9: with no fork token, the fork's scenario fails at once naming the permission it lacks, and never forks",
+          (got["ok"], got["why"], [c for c in forked if c[:2] == ("repo", "fork")]), (False, [FORK_NEEDS], []))
+    lane = load_yaml(os.path.join(ROOT, ".github", "workflows", "release-lane.yml"))["jobs"]
+    pstep = next(st for st in lane["play"]["steps"] if st.get("id") == "play")
+    check("C9: the limits the 20-minute run relies on: every scenario at once, each under the play step's 20 minutes, polled every 15 seconds",
+          ("max-parallel" in (lane["play"].get("strategy") or {}), max(limit(s) for s in real["scenarios"]) < pstep["timeout-minutes"] <= 20, POLL,
+           pstep["env"].get(FORK_SECRET)), (False, True, 15, "${{ secrets.DX_TEST_FORK_TOKEN }}"))
     titles = []
 
     def ordered(*a, input=None):
