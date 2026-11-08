@@ -116,7 +116,8 @@ def test_c1_may_it_start_runs_the_starts_gates_on_what_prep_decided():
     assert may["env"]["AS"] == "${{ steps.what.outputs.mode }}"
     run = may["run"]
     # The lane's retry, the Bug's Type, and no open pull request linked.
-    assert '{ [ "$AS" != start ] || ! { sleep 20;' in run
+    # #694: polled every 15 seconds, never a fixed wait.
+    assert '{ [ "$AS" != start ] || ! lane_again; }' in run and "sleep 15" in run and "sleep 20" not in run
     assert 'if [ "$AS" = start ]; then\n  ISSUE_TYPE=$(gh api' in run
     assert '(#577).\n  open_prs=$(gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json closedByPullRequestsReferences --jq \'.closedByPullRequestsReferences | length\')' in run
     assert "linked:issue" not in run

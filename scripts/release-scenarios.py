@@ -18,12 +18,15 @@ opens first and keeps open until it ends, each `{issue: {...}}`), `opens`
 text), `labels`, and `fork: true` for one from a fork; a pull's `{issue}` in
 its body is the number of the issue it opens first, its `issue:` or a
 complete feature), `steps` (each one of
-`comment`, `label`, `unlabel`, `edit`, `push`, `dispatch`, `wait`) and
+`comment`, `label`, `unlabel`, `edit`, `push`, `dispatch`, and `until`,
+an `expect` polled every 15 seconds on its issue or pull request, or with
+`of: before` on its first `before` issue, never a fixed wait: #694),
+`minutes` (its limit, 10 by default, 15 at most) and
 `expect` (`labels`, `absent`, `comments` (markers), `pull` (`closes`,
 `branch`, `title`, patterns), `check` (name: conclusion), `merged`,
-`waiting`), and `serial: true` for one that plays in the one `serial`
-group, after the one before it (`groups`): the lane plays the groups at
-once, one job each, and every other scenario is a group of its own.
+`waiting`). Every scenario is a group of its own (`groups`, #694), and
+the lane plays the groups at once, one job each: each writes only under
+its own directory of the test repository's core, scenarios/<id>/.
 
   release-scenarios.py coverage [ROOT]
         fails naming every pair and transition with no scenario, every
@@ -33,8 +36,13 @@ once, one job each, and every other scenario is a group of its own.
         among them). Every other pair a shipped caller wires is held to the
         engine statically, by scripts/caller-contract.py check; and
         what is wrong with the groups (`partition`): a scenario in no
-        group or in two, a serial one outside the serial group or out of
-        the file's order, a group id unfit for an artifact name
+        group or in two, two scenarios that could write to the same
+        part of the test repository's core, a group id unfit for an
+        artifact name
+  release-scenarios.py plan
+        prints each scenario's limit in minutes and how often it polls,
+        [{id, minutes, poll}] as JSON; exits 1 naming a fixed wait or a
+        limit past 15 minutes (#694)
   release-scenarios.py groups
         prints the groups, [{id, scenarios}] as JSON, the release lane's
         `play` matrix; exits 1 naming what `partition` finds
@@ -48,7 +56,10 @@ once, one job each, and every other scenario is a group of its own.
                             [--ref v7-next] [--minutes N]
         the group's scenarios, one after another in its order, with the
         test identity's token (GH_TOKEN) alone, the callers already at the
-        ref; their table to FILE; exits 1 when one fails
+        ref, each one first deleting its leftover `scenario/<id>` branch
+        and closing the issues and pull requests an earlier run of it left
+        (the `dx-scenario: <id>` mark first in every body it opens), and
+        again after (#694); their table to FILE; exits 1 when one fails
   release-scenarios.py merge --dir DIR --groups JSON --job NAME=RESULT ...
                              --out FILE [--run URL] [--minutes N]
                              [--play-minutes M]
@@ -248,7 +259,7 @@ def preconditions(scenarios, bodies, pack, can_dispatch=(), passes=None):
             first = [b.get("issue") or {} for b in s.get("before") or []]
             if not any("accepted" in (i.get("labels") or []) for i in first):
                 out.append(f"scenario {sid}: expects a wait on the core, but opens no accepted issue before it whose pull request stays open")
-            fixed = str((pack.get("fixed-change") or {}).get("file") or "").replace("{n}", "1").replace("{id}", "c1")
+            fixed = str((pack.get("fixed-change") or {}).get("file") or "").replace("{n}", "1").replace("{id}", "c1").replace("{scenario}", sid)
             if not any(fnmatch.fnmatchcase(fixed, g) for g in pack.get("core") or []):
                 out.append(f"scenario {sid}: expects a wait on the core, but the test repository's fixed change ({fixed or 'none'}) touches no core of its pack")
     return out
@@ -295,6 +306,67 @@ def holds(expect, seen):
     return out
 
 
+# Every wait polls its state (#694): never a fixed sleep.
+POLL = 15
+# A scenario's limit, in minutes: its own `minutes`, or LIMIT; none past
+# MAX_LIMIT, which the play step's timeout-minutes in release-lane.yml
+# (20) stays above.
+LIMIT, MAX_LIMIT = 10, 15
+RUNNING = ("queued", "in_progress", "waiting", "requested", "pending")
+
+
+def hopeless(expect, seen, settled=False):
+    """What of `expect` can no longer hold in `seen` (#694), so the
+    scenario stops at once instead of waiting out its limit: a pull request
+    merged that should not be, or closed unmerged that should merge, a check
+    that ended with another conclusion and, once the test repository has
+    settled (`settled`: no run queued or in progress on two polls in a row,
+    so the job that would remove it has finished), an `absent` label still
+    there. [] when it still may hold. Pure."""
+    out = []
+    if "merged" in expect:
+        if not expect["merged"] and seen.get("merged"):
+            out.append("it merged")
+        elif expect["merged"] and not seen.get("merged") and str(seen.get("state") or "").upper() == "CLOSED":
+            out.append("it closed unmerged")
+    for name, conclusion in (expect.get("check") or {}).items():
+        got = (seen.get("checks") or {}).get(name)
+        if got and got != conclusion:
+            out.append(f"check {name} ended {got}, not {conclusion}")
+    if settled:
+        labels = set(seen.get("labels") or [])
+        out += [f"label {label} stays, with nothing left running" for label in expect.get("absent") or [] if label in labels]
+    return out
+
+
+def limit(s):
+    """The scenario's limit in minutes (its `minutes`, or LIMIT). Pure."""
+    return int(s.get("minutes") or LIMIT)
+
+
+def scenario_plan(scenarios):
+    """What the lane plays (#694): each scenario's id, its limit in minutes
+    and how often it polls, [{id, minutes, poll}]. Pure."""
+    return [{"id": s.get("id"), "minutes": limit(s), "poll": POLL} for s in scenarios]
+
+
+def timing(scenarios):
+    """What is wrong with the plan's waits (#694): a fixed `wait` step
+    (every wait is an `until` that polls its state), an `until` that names
+    no expectation, and a limit past MAX_LIMIT minutes. Pure."""
+    out = []
+    for s in scenarios:
+        sid = s.get("id") or "?"
+        for step in s.get("steps") or []:
+            if isinstance(step, dict) and "wait" in step:
+                out.append(f"scenario {sid}: waits a fixed {step['wait']} seconds; wait `until` the state it waits for, polled every {POLL} seconds")
+            if isinstance(step, dict) and "until" in step and not {k: v for k, v in (step["until"] or {}).items() if k != "of"}:
+                out.append(f"scenario {sid}: an `until` with no expectation")
+        if limit(s) > MAX_LIMIT:
+            out.append(f"scenario {sid}: its limit is {limit(s)} minutes, past {MAX_LIMIT}")
+    return out
+
+
 def table(results):
     """The Markdown table of results. Pure."""
     lines = ["| Scenario | Result | Run |", "| --- | --- | --- |"]
@@ -321,41 +393,160 @@ def gh(*args, input=None, token=None):
     return out.stdout
 
 
-def open_issue(repo, spec, bodies, default, run=gh):
+def scenario_mark(sid):
+    """The mark every body a scenario opens carries (#694), so a later run
+    finds and closes what this one left behind. Pure."""
+    return f"<!-- dx-scenario: {sid} -->"
+
+
+def marked(text, sid):
+    """`text` with the scenario's mark first: before the first section, where
+    the issue schema reads an organisation's marker (scripts/issue-schema.py
+    MARKER). Pure."""
+    return f"{scenario_mark(sid)}\n{text}"
+
+
+def open_issue(repo, spec, bodies, default, run=gh, sid=None):
+    text = body_of(spec.get("body"), bodies)
     url = run("issue", "create", "--repo", repo, "--title", spec.get("title", default), "--body-file", "-",
-              *sum((["--label", l] for l in spec.get("labels") or []), []), input=body_of(spec.get("body"), bodies)).strip()
+              *sum((["--label", l] for l in spec.get("labels") or []), []), input=marked(text, sid) if sid else text).strip()
     return url.rstrip("/").rsplit("/", 1)[-1]
 
 
-def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20):
-    """One scenario in `repo`: opens what it opens (its `before` first),
-    takes its steps, polls until its `expect` holds or `minutes` pass, then
-    cleans up. Returns {id, ok, why, run}."""
+def fresh_branch(target, branch, run=gh):
+    """`branch` in `target` made anew from its head (#694): a leftover of an
+    earlier run deleted first (none is a 404, which is fine), so creating it
+    never fails with 422 "Reference already exists"."""
+    try:
+        run("api", "-X", "DELETE", f"repos/{target}/git/refs/heads/{branch}")
+    except RuntimeError:
+        pass
+    run("api", f"repos/{target}/git/refs", "-f", f"ref=refs/heads/{branch}", "-f", f"sha={run('api', f'repos/{target}/commits/HEAD', '--jq', '.sha').strip()}")
+
+
+def branch_of(s):
+    """The branch a scenario pushes to (#694): `<type>/scenario-<id>`, its
+    title's type (the conventions check refuses any other branch), `test`
+    for a title with none. Pure."""
+    spec = (s.get("opens") or {}).get("pull") or (s.get("opens") or {}).get("issue") or {}
+    m = re.match(r"^([a-z]+)(\([^)]*\))?!?: ", str(spec.get("title") or ""))
+    return f"{m.group(1) if m else 'test'}/scenario-{s.get('id')}"
+
+
+def has_branch(target, branch, run=gh):
+    try:
+        run("api", f"repos/{target}/git/ref/heads/{branch}", "--jq", ".ref")
+        return True
+    except RuntimeError:
+        return False
+
+
+def clear(repo, sid, run=gh, branch=None):
+    """What scenario `sid` left in `repo`, before it plays and after (#694):
+    its branches deleted (`scenario/<id>`, which earlier runs left, and
+    `branch`, its own now), and every open issue and pull request whose body
+    carries its mark closed. A failure here never stops a scenario: what it
+    cannot clear, the next run clears."""
+    for name in dict.fromkeys([f"scenario/{sid}"] + ([branch] if branch else [])):
+        try:
+            run("api", "-X", "DELETE", f"repos/{repo}/git/refs/heads/{name}")
+        except RuntimeError:
+            pass  # none left: a 404
+    mark = scenario_mark(sid)
+    for what in ("issue", "pr"):
+        try:
+            found = json.loads(run(what, "list", "--repo", repo, "--state", "open", "--search", f'"dx-scenario: {sid}" in:body',
+                                   "--json", "number,body", "--limit", "50") or "[]")
+        except (RuntimeError, ValueError):
+            continue
+        for item in found:
+            if mark not in str(item.get("body") or ""):
+                continue  # the search matched another scenario's, or none
+            try:
+                if what == "issue":
+                    run("issue", "close", str(item["number"]), "--repo", repo)
+                else:
+                    run("pr", "close", str(item["number"]), "--repo", repo, "--delete-branch")
+            except RuntimeError:
+                pass
+
+
+# What `fork-without-secrets` needs (#694): the test identity's own token
+# that may create its fork (DX_TEST_TOKEN is scoped to the test repository
+# alone, so GitHub answers its fork with 403).
+FORK_SECRET = "DX_TEST_FORK_TOKEN"
+FORK_NEEDS = (f"a scenario from a fork needs {FORK_SECRET}, a token of the test identity that may fork the test repository: a fine-grained token "
+              "with Administration and Contents read and write on the test identity's own repositories (or a classic one with public_repo), "
+              "a secret of the `release` environment")
+
+
+def fork_gh():
+    """The runner a fork's calls go through: the test identity's fork token
+    (FORK_SECRET), or None when it is not set."""
+    token = os.environ.get(FORK_SECRET)
+    return (lambda *args, input=None: gh(*args, input=input, token=token)) if token else None
+
+
+def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None):
+    """One scenario in `repo`: clears what an earlier run of it left
+    (`clear`), opens what it opens (its `before` first), takes its steps,
+    polls until its `expect` holds or `minutes` pass, then cleans up and
+    clears again. Returns {id, ok, why, run}."""
     opens, made, closes = s.get("opens") or {}, [], None
     what = "pr" if "pull" in opens else "issue"
     spec = opens.get("pull") or opens.get("issue") or {}
+    sid, own = s["id"], branch_of(s)
+    left = [min(minutes, limit(s)) * 60]
+
+    def poll(expect, on, closes):
+        """`on` (what, number) observed every POLL seconds until `expect`
+        holds ([]), can no longer hold (#694: `hopeless`), or the
+        scenario's time is up: (what was seen, why not)."""
+        idle = False
+        while True:
+            seen = observe(repo, on[0], on[1], run)
+            if closes:
+                seen["closes"] = closes
+            why = holds(expect, seen)
+            if not why:
+                return seen, []
+            lost = hopeless(expect, seen, idle and seen.get("idle"))
+            if lost:
+                return seen, why + [f"it can no longer hold: {'; '.join(lost)}"]
+            if left[0] <= 0:
+                return seen, why
+            idle = seen.get("idle")
+            sleep(POLL)
+            left[0] -= POLL
     try:
+        clear(repo, sid, run, own)
         for first in s.get("before") or []:
-            made.append(("issue", open_issue(repo, first.get("issue") or {}, bodies, f"{s['id']}: before", run)))
+            made.append(("issue", open_issue(repo, first.get("issue") or {}, bodies, f"{sid}: before", run, sid)))
         if what == "issue":
-            url = open_issue(repo, spec, bodies, s["id"], run)
+            url = open_issue(repo, spec, bodies, sid, run, sid)
         else:
             text = body_of(spec.get("body"), bodies)
             if "{issue}" in text:
-                closes = open_issue(repo, spec.get("issue") or {"title": spec.get("title", s["id"]), "body": "complete-feature"}, bodies, s["id"], run)
+                closes = open_issue(repo, spec.get("issue") or {"title": spec.get("title", sid), "body": "complete-feature"}, bodies, sid, run, sid)
                 made.append(("issue", closes))
                 text = text.replace("{issue}", closes)
-            branch, target = f"scenario/{s['id']}", repo
+            branch, target = own, repo
+            writes = run
             if spec.get("fork"):
-                # From the test identity's fork, which runs with no secrets.
-                run("repo", "fork", repo, "--clone=false", "--default-branch-only")
-                target = f"{run('api', 'user', '--jq', '.login').strip()}/{repo.split('/', 1)[1]}"
-            run("api", f"repos/{target}/git/refs", "-f", f"ref=refs/heads/{branch}", "-f", f"sha={run('api', f'repos/{target}/commits/HEAD', '--jq', '.sha').strip()}")
-            run("api", "-X", "PUT", f"repos/{target}/contents/scenarios/{s['id']}.md", "-f", f"message=test: scenario {s['id']}",
-                "-f", f"branch={branch}", "-f", f"content={__import__('base64').b64encode(s['id'].encode()).decode()}")
+                # From the test identity's fork, which runs with no secrets,
+                # made and written with its fork token (#694).
+                # `fork`: its runner, False for none; None reads FORK_SECRET.
+                writes = fork_gh() if fork is None else (fork or None)
+                if writes is None:
+                    raise RuntimeError(FORK_NEEDS)
+                writes("repo", "fork", repo, "--clone=false", "--default-branch-only")
+                target = f"{writes('api', 'user', '--jq', '.login').strip()}/{repo.split('/', 1)[1]}"
+            fresh_branch(target, branch, writes)
+            writes("api", "-X", "PUT", f"repos/{target}/contents/scenarios/{sid}/pull.md", "-f", f"message=test: the scenario {sid}",
+                "-f", f"branch={branch}", "-f", f"content={__import__('base64').b64encode(sid.encode()).decode()}")
             head = f"{target.split('/', 1)[0]}:{branch}" if target != repo else branch
-            url = run("pr", "create", "--repo", repo, "--head", head, "--title", spec.get("title", f"test: {s['id']}"),
-                      "--body-file", "-", input=text).strip()
+            url = run("pr", "create", "--repo", repo, "--head", head, "--title", spec.get("title", f"test: {sid}"),
+                      "--body-file", "-", input=marked(text, sid)).strip()
         number = url.rstrip("/").rsplit("/", 1)[-1]
         made.append((what, number))
         for step in s.get("steps") or []:
@@ -365,36 +556,42 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20):
             elif verb in ("label", "unlabel"):
                 run(what, "edit", number, "--repo", repo, f"--{'add' if verb == 'label' else 'remove'}-label", str(arg))
             elif verb == "edit":
-                run(what, "edit", number, "--repo", repo, "--body-file", "-", input=body_of(arg, bodies))
+                run(what, "edit", number, "--repo", repo, "--body-file", "-", input=marked(body_of(arg, bodies), sid))
             elif verb == "dispatch":
                 run("workflow", "run", str(arg), "--repo", repo, "--ref", "main")
             elif verb == "push":
-                run("api", "-X", "PUT", f"repos/{repo}/contents/scenarios/{s['id']}-{arg}.md", "-f", f"message=test: {arg}",
-                    "-f", f"branch=scenario/{s['id']}", "-f", "content=eA==")
+                # An issue's scenario has no branch of its own yet: it makes
+                # it, never assumes it (#694: the 404s).
+                if not has_branch(repo, own, run):
+                    fresh_branch(repo, own, run)
+                run("api", "-X", "PUT", f"repos/{repo}/contents/scenarios/{sid}/{arg}.md", "-f", f"message=test: {arg}",
+                    "-f", f"branch={own}", "-f", "content=eA==")
+            elif verb == "until":
+                # #694: polled every POLL seconds, never a fixed wait: on
+                # the scenario's own issue or pull request, or with `of:
+                # before` on the first issue it opened before it.
+                want = {k: v for k, v in (arg or {}).items() if k != "of"}
+                on = (("issue", made[0][1]) if (arg or {}).get("of") == "before" and made[0][0] == "issue" else (what, number))
+                seen, why = poll(want, on, None if on[1] != number else closes)
+                if why:
+                    return {"id": sid, "ok": False, "why": [f"until {json.dumps(want, sort_keys=True)}: {w}" for w in why], "run": seen.get("run", "")}
             elif verb == "wait":
-                sleep(int(arg))
-        deadline, why = minutes * 60, ["not played"]
-        while True:
-            seen = observe(repo, what, number, run)
-            if closes:
-                seen["closes"] = closes
-            why = holds(s.get("expect") or {}, seen)
-            if not why or deadline <= 0:
-                break
-            sleep(30)
-            deadline -= 30
-        return {"id": s["id"], "ok": not why, "why": why, "run": seen.get("run", "")}
+                # Refused by `timing`; never slept.
+                raise ValueError(f"a fixed wait of {arg} seconds: wait `until` a state")
+        seen, why = poll(s.get("expect") or {}, (what, number), closes)
+        return {"id": sid, "ok": not why, "why": why, "run": seen.get("run", "")}
     except (RuntimeError, ValueError) as e:
-        return {"id": s["id"], "ok": False, "why": [str(e)], "run": ""}
+        return {"id": sid, "ok": False, "why": [str(e)], "run": ""}
     finally:
         cleanup(repo, made, run)
+        clear(repo, sid, run, own)
 
 
 def observe(repo, what, number, run=gh):
     fields = "labels,comments,body,state" + (",mergedAt,statusCheckRollup,headRefName,title" if what == "pr" else ",closedByPullRequestsReferences")
     view = json.loads(run(what, "view", number, "--repo", repo, "--json", fields) or "{}")
     seen = {"number": number, "labels": [l.get("name") for l in view.get("labels") or []],
-            "comments": [c.get("body", "") for c in view.get("comments") or []]}
+            "comments": [c.get("body", "") for c in view.get("comments") or []], "state": view.get("state")}
     if what == "pr":
         seen["pull"] = {"body": view.get("body"), "branch": view.get("headRefName"), "title": view.get("title")}
         seen["merged"] = bool(view.get("mergedAt"))
@@ -404,8 +601,10 @@ def observe(repo, what, number, run=gh):
         if pulls:
             seen["pull"] = {"body": pulls[0].get("body"), "branch": pulls[0].get("headRefName"), "title": pulls[0].get("title")}
     seen["waiting"] = any(l in seen["labels"] for l in ("needs-human", "autopilot:waiting", "awaiting-acceptance"))
-    runs = json.loads(run("run", "list", "--repo", repo, "--limit", "1", "--json", "url") or "[]")
+    runs = json.loads(run("run", "list", "--repo", repo, "--limit", "20", "--json", "url,status") or "[]")
     seen["run"] = runs[0]["url"] if runs else ""
+    # Nothing queued or in progress in the test repository (#694: `hopeless`).
+    seen["idle"] = not any(str(r.get("status") or "").lower() in RUNNING for r in runs)
     return seen
 
 
@@ -545,8 +744,8 @@ def merge_when_checked(repo, number, url, head, run=gh, sleep=time.sleep, minute
                 why = f"its check {pending[0]} did not finish" if pending else "it reported no check"
         if waited >= minutes * 60:
             raise RuntimeError(f"the pull request {url} that moves them did not merge in {minutes} minutes: {why}")
-        sleep(30)
-        waited += 30
+        sleep(POLL)
+        waited += POLL
 
 
 def point_callers(repo, ref, run=gh, central=None, back=None, sleep=time.sleep, minutes=20):
@@ -657,7 +856,6 @@ def move_callers(repo, ref, callers=gh, central=None, sleep=time.sleep, minutes=
     return moved, []
 
 
-SERIAL = "serial"
 GROUP_ID = re.compile(r"[a-z0-9-]+")
 # The artifacts the lane names after them besides the groups' (scenarios-*).
 NOT_GROUPS = ("move", "back")
@@ -665,20 +863,29 @@ NOT_GROUPS = ("move", "back")
 
 def groups(scenarios):
     """The groups the lane plays at once, one job each (release-lane.yml
-    `play`): every scenario marked `serial: true` in one, `serial`, in the
-    file's order, which plays them one after another; every other scenario
-    in its own, named by its id. [{id, scenarios}]. Pure."""
-    serial = [s.get("id") for s in scenarios if s.get("serial")]
-    return ([{"id": SERIAL, "scenarios": serial}] if serial else []) + [
-        {"id": s.get("id"), "scenarios": [s.get("id")]} for s in scenarios if not s.get("serial")]
+    `play`): every scenario in its own, named by its id (#694: each writes
+    to its own core, `writes`, so none waits on another). [{id,
+    scenarios}]. Pure."""
+    return [{"id": s.get("id"), "scenarios": [s.get("id")]} for s in scenarios]
 
 
-def partition(scenarios, gs):
+def core_writes(s, pack):
+    """The core paths scenario `s` can write in the test repository: its
+    fixed change's file (`{scenario}` its id), its pull request's file and
+    its pushes, as globs of their directory. Pure."""
+    sid = s.get("id") or "?"
+    fixed = str((pack.get("fixed-change") or {}).get("file") or "")
+    out = {fixed.replace("{scenario}", sid).replace("{n}", "*").replace("{id}", "*")} if fixed else set()
+    return out | {f"scenarios/{sid}/*"}
+
+
+def partition(scenarios, gs, pack=None):
     """What is wrong with the groups `gs` of `scenarios`: a scenario in no
-    group or in two, a group that plays no scenario of the file, a serial
-    scenario outside the serial group, a serial group that is not the serial
-    scenarios in the file's order, and a group id unfit for an artifact name
-    (`^[a-z0-9-]+$`, nor `move` or `back`) or used twice. Pure."""
+    group or in two, a group that plays no scenario of the file, a group id
+    unfit for an artifact name (`^[a-z0-9-]+$`, nor `move` or `back`) or used
+    twice, and (#694) two scenarios that could write to the same part of the
+    test repository's core (`pack`'s, scripts/org.py core_key), which would
+    wait on each other's change. Pure."""
     out, where, ids = [], {}, [s.get("id") or "?" for s in scenarios]
     seen = set()
     for g in gs:
@@ -698,18 +905,23 @@ def partition(scenarios, gs):
     for sid in where:
         if sid not in ids:
             out.append(f"group {', '.join(where[sid])}: plays {sid}, which is no scenario of {SCENARIOS}")
-    serial = [s.get("id") or "?" for s in scenarios if s.get("serial")]
-    for sid in serial:
-        if where.get(sid) and where[sid] != [SERIAL]:
-            out.append(f"scenario {sid}: serial, but played in {', '.join(where[sid])}, not in the {SERIAL} group alone")
-    one = [g.get("scenarios") or [] for g in gs if str(g.get("id")) == SERIAL]
-    if one and one[0] != serial:
-        out.append(f"group {SERIAL}: plays {', '.join(one[0]) or 'nothing'}, not the serial scenarios in the file's order ({', '.join(serial) or 'none'})")
+    if pack is not None:
+        owner = {}
+        for s in scenarios:
+            sid = s.get("id") or "?"
+            for path in sorted(core_writes(s, pack)):
+                key = org_key(path, pack)
+                if key is None:
+                    continue
+                if key in owner and owner[key] != sid:
+                    out.append(f"scenario {sid}: writes {path}, on the core {key or 'of the test repository'} scenario {owner[key]} writes too, so one would wait on the other")
+                    break
+                owner.setdefault(key, sid)
     return out
 
 
 def play_group(conf, gid, repo, ref, run=gh, sleep=time.sleep, minutes=20):
-    """The scenarios of the group `gid`, one after another in its order, at
+    """The scenarios of the group `gid` (one, #694), in its order, at
     `ref` (the callers already there), with the test identity's token (the
     ambient GH_TOKEN): their rows, or one failing row when `gid` is no
     group."""
@@ -894,6 +1106,14 @@ def put_default(calls):
             and not any(str(x).startswith("branch=") and str(x)[7:] not in DEFAULTS for x in c[4:])]
 
 
+def org_key(path, pack):
+    """The part of the test repository's core `path` touches
+    (scripts/org.py core_key)."""
+    sys.path.insert(0, HERE)
+    import org
+    return org.core_key(path, pack.get("core") or [])
+
+
 def test_pack(root=ROOT):
     sys.path.insert(0, os.path.join(root, "scripts"))
     import org
@@ -910,6 +1130,57 @@ def schema_passes(root=ROOT):
     return lambda body: bool(mod.check(body, "prd")["ok"])
 
 
+def fixture_problems(conf, issue_check, pull_check, release_check=None):
+    """What a person's check would find wrong with the scenarios' own
+    fixtures (#694, scripts/engine-post.py): every issue body a scenario
+    opens or edits to that should await acceptance, as G1 reads it
+    (`issue_check(body)`), and every pull request it opens, its title, its
+    branch and its `Closes #` as the conventions check reads them
+    (`pull_check(title, branch, body, closes)`), and a release issue's
+    title and label (`release_check(title, labels)`). Pure but for the
+    checks."""
+    bodies, out = conf.get("bodies") or {}, []
+    known = {b for b in bodies if b not in ("incomplete", "decision", "release")}
+    for s in conf.get("scenarios") or []:
+        sid, opens = s.get("id") or "?", s.get("opens") or {}
+        specs = [b.get("issue") or {} for b in s.get("before") or []] + ([opens["issue"]] if "issue" in opens else [])
+        if "pull" in opens:
+            specs.append((opens["pull"].get("issue") or {"body": "complete-feature"}))
+            text = body_of(opens["pull"].get("body"), bodies).replace("{issue}", "1")
+            for wrong in pull_check(opens["pull"].get("title", f"test: {sid}"), branch_of(s), marked(text, sid), "1" if "{issue}" in body_of(opens["pull"].get("body"), bodies) else None):
+                out.append(f"scenario {sid}: its pull request: {wrong}")
+        specs += [{"body": st["edit"]} for st in s.get("steps") or [] if isinstance(st, dict) and "edit" in st]
+        for spec in specs:
+            name = spec.get("body")
+            if name == "release" and release_check:
+                for wrong in release_check(spec.get("title", ""), spec.get("labels") or []):
+                    out.append(f"scenario {sid}: its release issue: {wrong}")
+            if name in known:
+                for wrong in issue_check(marked(body_of(name, bodies), sid)):
+                    out.append(f"scenario {sid}: its body `{name}`: {wrong}")
+    return out
+
+
+def passes_mark(body, root=ROOT):
+    """Whether `body` with a scenario's mark first passes the issue schema
+    (#694: the mark is one of its markers)."""
+    sys.path.insert(0, os.path.join(root, "scripts"))
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("issue_schema", os.path.join(root, "scripts", "issue-schema.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    good = load_yaml(os.path.join(root, SCENARIOS))["bodies"]["complete-feature"]
+    return bool(mod.check(marked(good, "p"), "prd")["ok"]) and bool(body)
+
+
+def engine_post(root=ROOT):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("engine_post", os.path.join(root, "scripts", "engine-post.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def problems(conf, root=ROOT):
     """What `coverage` names: every played pair and transition with no
     scenario, every scenario its setup cannot make hold, and what is wrong
@@ -918,7 +1189,9 @@ def problems(conf, root=ROOT):
     scenarios = conf.get("scenarios") or []
     return (coverage(scenarios, played(root, pack) | transitions(root))
             + preconditions(scenarios, conf.get("bodies") or {}, pack, dispatchable(root, pack), schema_passes(root))
-            + partition(scenarios, groups(scenarios)))
+            + partition(scenarios, groups(scenarios), pack)
+            + timing(scenarios)
+            + fixture_problems(conf, engine_post(root).issue, engine_post(root).pull, engine_post(root).release))
 
 
 def self_test():
@@ -955,29 +1228,98 @@ def self_test():
         check("C2: a scenario covering what nothing wires is named", coverage(some, wanted), ["scenario s1: covers gone.yml:push, which no caller wires and no transition is"])
     real = load_yaml(os.path.join(ROOT, SCENARIOS))
     check("C2: every pair the test repository plays, and every transition, has its scenario; every scenario can hold", problems(real), [])
-    fx = [{"id": "a", "serial": True}, {"id": "b"}, {"id": "c", "serial": True}, {"id": "d"}]
+    fx = [{"id": "a"}, {"id": "b"}, {"id": "c"}, {"id": "d"}]
     gs = groups(fx)
-    check("C2: groups: the serial scenarios in one group, in the file's order, every other one alone",
-          gs, [{"id": "serial", "scenarios": ["a", "c"]}, {"id": "b", "scenarios": ["b"]}, {"id": "d", "scenarios": ["d"]}])
-    check("C2: groups with nothing serial: every scenario alone", groups([{"id": "b"}]), [{"id": "b", "scenarios": ["b"]}])
+    check("C2: groups: every scenario is its own group, named by its id, in the file's order",
+          gs, [{"id": i, "scenarios": [i]} for i in "abcd"])
     check("C2: partition: the groups of groups() are a partition", partition(fx, gs), [])
     for how, bad, want in (
-            ("a scenario in no group", [gs[0], gs[1]], ["scenario d: in no group"]),
+            ("a scenario in no group", gs[:3], ["scenario d: in no group"]),
             ("a scenario in two", gs + [{"id": "e", "scenarios": ["b"]}], ["scenario b: in 2 groups (b, e)"]),
-            ("a serial one outside the serial group", [{"id": "serial", "scenarios": ["a"]}, {"id": "c", "scenarios": ["c"]}] + gs[1:],
-             ["scenario c: serial, but played in c, not in the serial group alone", "group serial: plays a, not the serial scenarios in the file's order (a, c)"]),
-            ("the serial group out of order", [{"id": "serial", "scenarios": ["c", "a"]}] + gs[1:], ["group serial: plays c, a, not the serial scenarios in the file's order (a, c)"]),
             ("a group that plays no scenario", gs + [{"id": "x", "scenarios": ["gone"]}], [f"group x: plays gone, which is no scenario of {SCENARIOS}"])):
         check(f"C2: partition fails for {how}", partition(fx, bad), want)
     check("C2: partition fails for a group id unfit for an artifact name, or the move's or the back's, or used twice",
-          [len(partition([{"id": i}], groups([{"id": i}]))) for i in ("Has Space", "move", "back", "ok-1")] + [len(partition([{"id": "serial"}, {"id": "a", "serial": True}], groups([{"id": "serial"}, {"id": "a", "serial": True}])))],
+          [len(partition([{"id": i}], groups([{"id": i}]))) for i in ("Has Space", "move", "back", "ok-1")] + [len(partition([{"id": "a"}], [{"id": "a", "scenarios": ["a"]}, {"id": "a", "scenarios": []}]))],
           [1, 1, 1, 0, 1])
     real_groups = groups(real["scenarios"])
-    check("C2: the real file's serial group: every scenario that drafts, merges or pushes to main, in order",
-          real_groups[0], {"id": "serial", "scenarios": ["accepted-spec", "spec-to-draft", "core-one-at-a-time", "prd-edited-after-acceptance", "decision-sub-issues",
-                                                         "claim-and-release", "claim-pull-request", "bug-reproduced", "question-answered", "stop-hint-continue",
-                                                         "draft-in-conflict", "ready-behind-main", "merge-queue", "low-risk-merges", "release-issue"]})
-    check("C2: the real file's other scenarios each play alone", [g["scenarios"] == [g["id"]] for g in real_groups[1:]] == [True] * (len(real["scenarios"]) - 15), True)
+    rpack = test_pack()
+    check("C2: the real file: every scenario is its own group, and none says serial",
+          ([g["scenarios"] for g in real_groups] == [[s["id"]] for s in real["scenarios"]], [s["id"] for s in real["scenarios"] if "serial" in s]), (True, []))
+    check("C2: the real file: no two scenarios write to the same core path of the test repository", partition(real["scenarios"], real_groups, rpack), [])
+    check("C2: each scenario writes under its own directory of the core, its fixed change too",
+          (sorted(core_writes({"id": "x"}, rpack)), {org_key(p, rpack) for p in core_writes({"id": "x"}, rpack)}), (["scenarios/x/*", "scenarios/x/*.md"], {"scenarios/x"}))
+    shared = {"fixed-change": {"file": "scenarios/{n}.md"}, "core": ["scenarios/*"]}
+    check("C2: partition fails when two scenarios could write to the same core path (a fixed change outside their own directory)",
+          partition([{"id": "a"}, {"id": "b"}], groups([{"id": "a"}, {"id": "b"}]), shared),
+          ["scenario b: writes scenarios/*.md, on the core of the test repository scenario a writes too, so one would wait on the other"])
+    plan_real = scenario_plan(real["scenarios"])
+    check("C3: the real plan: no fixed wait, every wait an `until`, polling every 15 seconds, each limit 15 minutes or less",
+          (timing(real["scenarios"]), {p["poll"] for p in plan_real}, max(p["minutes"] for p in plan_real) <= 15, len(plan_real) == len(real["scenarios"]),
+           [st for s in real["scenarios"] for st in s.get("steps") or [] if "wait" in st]), ([], {15}, True, True, []))
+    check("C3: timing names a fixed wait, an empty `until` and a limit past 15 minutes",
+          timing([{"id": "w", "steps": [{"wait": 60}, {"until": {"of": "before"}}], "minutes": 16}]),
+          ["scenario w: waits a fixed 60 seconds; wait `until` the state it waits for, polled every 15 seconds", "scenario w: an `until` with no expectation",
+           "scenario w: its limit is 16 minutes, past 15"])
+    check("C3: the play step's 20 minutes stay above every scenario's limit", MAX_LIMIT < 20, True)
+    check("C3: hopeless: merged when it should not, closed unmerged, a check that ended otherwise, an absent label once settled",
+          (hopeless({"merged": False}, {"merged": True}), hopeless({"merged": True}, {"merged": False, "state": "CLOSED"}), hopeless({"merged": True}, {"state": "OPEN"}),
+           hopeless({"check": {"c": "success"}}, {"checks": {"c": "failure"}}), hopeless({"check": {"c": "success"}}, {"checks": {"c": ""}}),
+           hopeless({"absent": ["incomplete"]}, {"labels": ["incomplete"]}), hopeless({"absent": ["incomplete"]}, {"labels": ["incomplete"]}, True)),
+          (["it merged"], ["it closed unmerged"], [], ["check c ended failure, not success"], [], [], ["label incomplete stays, with nothing left running"]))
+
+    def polled(views, runs=lambda n: [{"url": "u", "status": "in_progress"}]):
+        """A test repository whose issue 9 shows `views[i]` on its i-th
+        view (the last one after), and the sleeps play takes."""
+        st = {"views": 0, "sleeps": [], "calls": []}
+
+        def fake(*a, input=None):
+            st["calls"].append(a)
+            if a[:2] == ("issue", "create"):
+                return "https://github.com/o/t/issues/9\n"
+            if a[:2] == ("issue", "view"):
+                st["views"] += 1
+                return json.dumps(views[min(st["views"], len(views)) - 1])
+            if a[:2] == ("run", "list"):
+                return json.dumps(runs(st["views"]))
+            return "[]"
+        return st, fake
+    st, fake = polled([{"labels": []}, {"labels": []}, {"labels": [{"name": "claimed"}]}, {"labels": [{"name": "done"}]}])
+    got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "steps": [{"until": {"labels": ["claimed"]}}, {"comment": "/unclaim"}], "expect": {"labels": ["done"]}},
+               "o/t", "v7-next", {}, fake, st["sleeps"].append, 10)
+    comment = st["calls"].index(next(c for c in st["calls"] if c[:2] == ("issue", "comment")))
+    check("C3: an `until` polls every 15 seconds until its state holds, then the next step goes on",
+          (got["ok"], st["sleeps"], comment > [i for i, c in enumerate(st["calls"]) if c[:2] == ("issue", "view")][2]), (True, [15, 15], True))
+    st, fake = polled([{"labels": []}])
+    got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "steps": [{"until": {"labels": ["claimed"]}}, {"comment": "x"}], "expect": {}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 1)
+    check("C3: an `until` that never holds fails at the scenario's limit, named, and takes no further step",
+          (got["ok"], got["why"], len(st["sleeps"]), any(c[:2] == ("issue", "comment") for c in st["calls"])), (False, ['until {"labels": ["claimed"]}: no label claimed'], 4, False))
+    st, fake = polled([{"labels": [{"name": "incomplete"}]}], runs=lambda n: [{"url": "u", "status": "completed"}])
+    got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "expect": {"labels": ["awaiting-acceptance"], "absent": ["incomplete"]}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 15)
+    check("C3: a scenario stops as soon as its expectation can no longer hold, not at its limit",
+          (got["ok"], st["sleeps"], got["why"][-1]), (False, [15], "it can no longer hold: label incomplete stays, with nothing left running"))
+    st, fake = polled([{"labels": []}])
+    got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "minutes": 2, "expect": {"labels": ["x"]}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 20)
+    check("C3: a scenario's own limit bounds its polls (2 minutes: 8 polls of 15 seconds)", (got["ok"], len(st["sleeps"]), set(st["sleeps"])), (False, 8, {15}))
+    st, fake = polled([{"labels": []}])
+    got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "steps": [{"wait": 300}], "expect": {}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 1)
+    check("C3: a fixed wait is never slept", (got["ok"], st["sleeps"]), (False, []))
+    forked = []
+    got = play({"id": "f", "opens": {"pull": {"title": "docs: x", "body": "b", "fork": True}}, "expect": {}}, "o/t", "v7-next", {"b": "x"},
+               lambda *a, input=None: forked.append(("test",) + a) or ("https://github.com/o/t/pull/3\n" if a[:2] == ("pr", "create") else "{}" if a[:2] == ("pr", "view") else "[]"),
+               lambda s: None, 1, fork=lambda *a, input=None: forked.append(("fork",) + a) or ("me\n" if a[-1] == ".login" else "s\n"))
+    check("C9: a scenario from a fork forks and writes its fork with the fork token, and opens its pull request with the test identity's",
+          (got["ok"], [c[0] for c in forked if c[1:3] == ("repo", "fork")], [c[0] for c in forked if c[1:3] == ("pr", "create")],
+           all(c[0] == "fork" for c in forked if c[1:4] == ("api", "-X", "PUT"))), (True, ["fork"], ["test"], True))
+    forked = []
+    got = play({"id": "f", "opens": {"pull": {"title": "docs: x", "body": "b", "fork": True}}, "expect": {}}, "o/t", "v7-next", {"b": "x"},
+               lambda *a, input=None: forked.append(a) or "[]", lambda s: None, 1, fork=False)
+    check("C9: with no fork token, the fork's scenario fails at once naming the permission it lacks, and never forks",
+          (got["ok"], got["why"], [c for c in forked if c[:2] == ("repo", "fork")]), (False, [FORK_NEEDS], []))
+    lane = load_yaml(os.path.join(ROOT, ".github", "workflows", "release-lane.yml"))["jobs"]
+    pstep = next(st for st in lane["play"]["steps"] if st.get("id") == "play")
+    check("C9: the limits the 20-minute run relies on: every scenario at once, each under the play step's 20 minutes, polled every 15 seconds",
+          ("max-parallel" in (lane["play"].get("strategy") or {}), max(limit(s) for s in real["scenarios"]) < pstep["timeout-minutes"] <= 20, POLL,
+           pstep["env"].get(FORK_SECRET)), (False, True, 15, "${{ secrets.DX_TEST_FORK_TOKEN }}"))
     titles = []
 
     def ordered(*a, input=None):
@@ -985,10 +1327,9 @@ def self_test():
             titles.append(a[a.index("--title") + 1])
             return "https://github.com/o/t/issues/9\n"
         return "{}" if a[:2] == ("issue", "view") else "[]"
-    conf3 = {"scenarios": [{"id": "a", "serial": True, "opens": {"issue": {"title": "a"}}, "expect": {}}, {"id": "b", "opens": {"issue": {"title": "b"}}, "expect": {}},
-                           {"id": "c", "serial": True, "opens": {"issue": {"title": "c"}}, "expect": {}}]}
-    rows = play_group(conf3, "serial", "o/t", "v7-next", ordered, lambda s: None, 1)
-    check("C2: play_group plays its group's scenarios one after another, in order, and no other", ([r["id"] for r in rows], titles), (["a", "c"], ["a", "c"]))
+    conf3 = {"scenarios": [{"id": "a", "opens": {"issue": {"title": "a"}}, "expect": {}}, {"id": "b", "opens": {"issue": {"title": "b"}}, "expect": {}}]}
+    rows = play_group(conf3, "b", "o/t", "v7-next", ordered, lambda s: None, 1)
+    check("C2: play_group plays its group's one scenario, and no other", ([r["id"] for r in rows], titles), (["b"], ["b"]))
     check("C2: play_group on no group is one failing row", [(r["id"], r["ok"]) for r in play_group(conf3, "gone", "o/t", "v7-next", ordered, lambda s: None, 1)], [("gone", False)])
     rpack = test_pack()
     check("#563: the test repository's callers are shipped ones", all(os.path.exists(os.path.join(ROOT, "workflow-templates", c)) for c in rpack["callers"]) and rpack["callers"] != [], True)
@@ -1050,7 +1391,67 @@ def self_test():
             return "s\n"
         return "[]"
     got = play({"id": "p", "opens": {"pull": {"title": "feat: x", "body": "pull"}}, "expect": {"pull": {"closes": True}}}, "o/t", "v7-next", {"pull": "Closes #{issue}", "complete-feature": "f"}, prfake, lambda s: None, 1)
-    check("run: a pull scenario opens the issue its pull request closes, and passes on it", (got["ok"], [a[:2] for a, _ in pcalls_][:1], ("issue", "close", "11", "--repo", "o/t") in [a for a, _ in pcalls_]), (True, [("issue", "create")], True))
+    check("run: a pull scenario opens the issue its pull request closes, and passes on it",
+          (got["ok"], [a[:2] for a, _ in pcalls_ if a[0] in ("issue", "pr") and a[1] == "create"][:1], ("issue", "close", "11", "--repo", "o/t") in [a for a, _ in pcalls_]), (True, [("issue", "create")], True))
+    check("#694: every body a scenario opens carries its mark first, and still passes the issue schema",
+          ([i.startswith(scenario_mark("p") + "\n") for a, i in pcalls_ if a[1:2] == ("create",)], passes_mark("f")), ([True, True], True))
+
+    def leftover(state):
+        """A test repository where an earlier run left `scenario/p` and one
+        open issue with p's mark (and one with another's): creating a ref
+        that exists is the 422 GitHub answers."""
+        def fake(*a, input=None):
+            state["calls"].append(a)
+            if a[:3] == ("api", "-X", "DELETE"):
+                ref = a[3].split("/git/refs/heads/", 1)[1]
+                if ref not in state["branches"]:
+                    raise GhError("gh api: HTTP 404: Not Found", 1, "", "HTTP 404")
+                state["branches"].discard(ref)
+                return ""
+            if a[:2] == ("api", "repos/o/t/git/refs"):
+                ref = a[3].split("refs/heads/", 1)[1]
+                if ref in state["branches"]:
+                    raise GhError("gh api: HTTP 422: Reference already exists", 1, "", "HTTP 422")
+                state["branches"].add(ref)
+                return "{}"
+            if a[0] == "api" and "/git/ref/heads/" in a[1]:
+                if a[1].split("/git/ref/heads/", 1)[1] not in state["branches"]:
+                    raise GhError("gh api: HTTP 404: Not Found", 1, "", "HTTP 404")
+                return "refs/heads/x\n"
+            if a[:2] == ("issue", "view"):
+                return "{}"
+            if a[:2] == ("issue", "list"):
+                return json.dumps([{"number": 3, "body": scenario_mark("p") + "\nold"}, {"number": 4, "body": scenario_mark("p-2") + "\nother"}])
+            if a[:2] == ("issue", "create"):
+                return "https://github.com/o/t/issues/11\n"
+            if a[:2] == ("pr", "create"):
+                return "https://github.com/o/t/pull/12\n"
+            if a[:2] == ("pr", "view"):
+                return json.dumps({"body": "Closes #11"})
+            if a[-1:] == (".sha",):
+                return "s\n"
+            return "[]"
+        return fake
+    st694 = {"calls": [], "branches": {"scenario/p"}}
+    got = play({"id": "p", "opens": {"pull": {"title": "feat: x", "body": "pull"}}, "expect": {"pull": {"closes": True}}}, "o/t", "v7-next",
+               {"pull": "Closes #{issue}", "complete-feature": "f"}, leftover(st694), lambda s: None, 1)
+    calls694 = st694["calls"]
+    delete = ("api", "-X", "DELETE", "repos/o/t/git/refs/heads/scenario/p")
+    create = next(c for c in calls694 if c[:2] == ("api", "repos/o/t/git/refs"))
+    check("C1: play deletes a leftover scenario branch before it makes it, and no 422 happens",
+          (calls694.index(delete) < calls694.index(create), got["ok"], got["why"], "scenario/p" in st694["branches"]), (True, True, [], False))
+    check("C1: play closes the open issue an earlier run of it left (its mark), before it opens anything, and no other scenario's",
+          (calls694.index(("issue", "close", "3", "--repo", "o/t")) < calls694.index(next(c for c in calls694 if c[:2] == ("issue", "create"))),
+           ("issue", "close", "4", "--repo", "o/t") in calls694), (True, False))
+    check("C1: after it plays, its branch is deleted again and its leftovers looked for again",
+          (calls694[-1][:2], sum(1 for c in calls694 if c == delete) >= 2), (("pr", "list"), True))
+    st694 = {"calls": [], "branches": set()}
+    got = play({"id": "p", "opens": {"issue": {"title": "feat: x", "body": "f"}}, "steps": [{"push": "behind"}], "expect": {}}, "o/t", "v7-next", {"f": "f"}, leftover(st694), lambda s: None, 1)
+    check("C1: a push of an issue's scenario makes its branch first, never assumes it (no 404)",
+          (got["ok"], [c[3] for c in st694["calls"] if c[:2] == ("api", "repos/o/t/git/refs")], [c[3] for c in st694["calls"] if c[:3] == ("api", "-X", "PUT")]),
+          (True, ["ref=refs/heads/feat/scenario-p"], ["repos/o/t/contents/scenarios/p/behind.md"]))
+    check("#694: a scenario's branch is its title's type, so the conventions check takes it; one with no type is test/",
+          (branch_of({"id": "p", "opens": {"pull": {"title": "docs(x): a"}}}), branch_of({"id": "q", "opens": {"issue": {"title": "something"}}})), ("docs/scenario-p", "test/scenario-q"))
     first = []
     play({"id": "c", "before": [{"issue": {"title": "first", "labels": ["accepted"]}}], "opens": {"issue": {"title": "second"}}, "expect": {}},
          "o/t", "v7-next", {}, lambda *a, input=None: first.append(a) or ("https://github.com/o/t/issues/9\n" if a[:2] == ("issue", "create") else "{}" if a[:2] == ("issue", "view") else "[]"), lambda s: None, 1)
@@ -1367,9 +1768,16 @@ def main(argv):
         results = run_all(load_yaml(os.path.join(ROOT, SCENARIOS)), a.repo, a.ref, a.only, minutes=a.minutes, moved_out=moved, record=record)
         write_results(results, a.out)
         return 0 if all(r["ok"] for r in results) else 1
+    if argv[:1] == ["plan"] and len(argv) == 1:
+        scenarios = load_yaml(os.path.join(ROOT, SCENARIOS)).get("scenarios") or []
+        wrong = timing(scenarios)
+        for line in wrong:
+            print(line, file=sys.stderr)
+        print(json.dumps(scenario_plan(scenarios), separators=(",", ":")))
+        return 1 if wrong else 0
     if argv[:1] == ["groups"] and len(argv) == 1:
         scenarios = load_yaml(os.path.join(ROOT, SCENARIOS)).get("scenarios") or []
-        gs, wrong = groups(scenarios), partition(scenarios, groups(scenarios))
+        gs, wrong = groups(scenarios), partition(scenarios, groups(scenarios), test_pack())
         for line in wrong:
             print(line, file=sys.stderr)
         if wrong:
