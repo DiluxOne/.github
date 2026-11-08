@@ -280,10 +280,14 @@ def now():
 
 
 def open_bug(repo, title, body, run=sh):
-    """A bug the lane opens itself, checked first (scripts/engine-post.py,
-    #694: it passes G1, never `incomplete`)."""
+    """A bug the lane opens itself (#694), checked first (scripts/engine-
+    post.py: it passes G1, never `incomplete`), with the Type Bug and its
+    mark first, so the triage and the reproduction take it as a person's
+    bug (issue-triage.yml `nightly`, issue-repro.yml NIGHTLY)."""
     engine_post().refuse("issue", body)
-    run("gh", "issue", "create", "--repo", repo, "--title", title, "--body", body)
+    if not body.startswith(MARK):
+        raise RuntimeError("the lane's bug does not start with its mark: the triage would never see it")
+    run("gh", "api", f"repos/{repo}/issues", "-f", f"title={title}", "-f", f"body={body}", "-f", "type=Bug", "--jq", ".html_url")
 
 
 def act(p, results, repo, run=sh, sleep=time.sleep, root=".", lane_run=""):
@@ -445,6 +449,14 @@ def check_workflow(check, path=os.path.join(ROOT, ".github", "workflows", "relea
     check("workflow: the candidate's token may push the workflow files it rewrites", [t.get("permission-workflows") for t in cand], ["write"])
     envs = [st.get("env") or {} for st in jobs.get("candidate", {}).get("steps") or [] if "release-lane.py candidate" in str(st.get("run"))]
     check("workflow: the candidate's commit is made with the App's token (#610)", [e.get("GH_TOKEN") for e in envs], ["${{ steps.app.outputs.token }}"])
+    # C8 (#694): the triage and the reproduction take the lane's bug (its
+    # mark first, the bot's) as they take the nightly review's.
+    triage = yaml.safe_load(open(os.path.join(ROOT, ".github", "workflows", "issue-triage.yml"), encoding="utf-8"))["jobs"]
+    repro = yaml.safe_load(open(os.path.join(ROOT, ".github", "workflows", "issue-repro.yml"), encoding="utf-8"))["jobs"]
+    nightly_env = [st.get("env", {}).get("NIGHTLY", "") for job in repro.values() for st in job.get("steps") or [] if "NIGHTLY" in (st.get("env") or {})]
+    check("C8: workflow: the triage's bot-bug job and the reproduction take an issue that starts with the lane's mark",
+          (f"startsWith(github.event.issue.body, '{MARK[:-4].strip()}')" in str(triage["nightly"]["if"]), len(nightly_env) > 0 and all(f"startsWith(github.event.issue.body, '{MARK[:-4].strip()}')" in e for e in nightly_env),
+           "vars.DX_BOT_LOGIN" in str(triage["nightly"]["if"])), (True, True, True))
     watch_tokens = tokens("watch")
     writes = [t for t in watch_tokens if any(v == "write" for k, v in t.items() if k.startswith("permission-"))]
     check("workflow: the watch's write token is this repository's alone", bool(writes) and all(t.get("repositories") for t in writes), True)
@@ -612,6 +624,9 @@ def self_test():
         check("C5: nothing tagged, v7 not moved, nothing released", [c for c in fake.calls if c[:1] == ("git",) or c[:2] in (("gh", "release"), ("gh", "pr"))], [])
         check("C5: the bug names the scenario and its run", bool(bug) and "spec-to-draft" in " ".join(bug[0]) and "https://github.com/o/t/actions/runs/9" in " ".join(bug[0]), True)
         check("C5: no result at all is a failure", decide(p, [])["do"], "bug")
+        opened = [c for c in fake.calls if c[:3] == ("gh", "api", "repos/O/.github/issues")]
+        check("C8: the bug is opened with the Type Bug and starts with its mark",
+              (len(opened), "type=Bug" in opened[0], next(a for a in opened[0] if a.startswith("body=")).startswith("body=" + MARK + "\n")), (1, True, True))
         refused = Fake()
         err = _raises(lambda: open_bug("O/.github", "fix: x", "Not the schema's.", refused))
         check("C7: a bug the schema would refuse is never posted, and says why", (refused.has("gh", "issue", "create"), "would not pass its own checks" in str(err)), (False, True))
@@ -659,8 +674,8 @@ def self_test():
         check("C6: the other repositories are only read, with the read token; every write is this repository's",
               (all(c[:2] == ("gh", "api") and "-X" not in c for c in reader.calls), all("repos/O/a" not in " ".join(c) for c in fake.calls)), (True, True))
         check("C6: v7 points at the previous release again", (fake.has("git", "-C", root, "tag", "-f", "v7", "v7.10.0^{commit}"), fake.has("git", "-C", root, "push", "-f", "origin", "refs/tags/v7")), (True, True))
-        made = [c for c in fake.calls if c[:3] == ("gh", "issue", "create")]
-        check("C6: a bug with the run's link", bool(made) and "https://github.com/O/a/actions/runs/2" in " ".join(made[0]), True)
+        made = [c for c in fake.calls if c[:3] == ("gh", "api", "repos/O/.github/issues")]
+        check("C6: a bug with the run's link, of Type Bug", bool(made) and "https://github.com/O/a/actions/runs/2" in " ".join(made[0]) and "type=Bug" in made[0], True)
         edit = [c for c in fake.calls if c[:3] == ("gh", "release", "edit")]
         check("C6: the release says so", bool(edit) and "moved back to v7.10.0" in " ".join(edit[0]) and bad["id"] == 2, True)
         two = (json.dumps([{"repository_full_name": "O/a", "properties": [{"property_name": "dx-adopted", "value": "true"}]}]) + "\n"

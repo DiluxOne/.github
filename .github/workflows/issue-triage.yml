@@ -595,8 +595,10 @@ jobs:
 
   # The bot's own Bug issues (#247), opened by the organisation's App with
   # a marker on the first line: the nightly review's finding, rated blocker
-  # or major and not about security (scripts/nightly-review.py), and the
-  # test setup that blocks a reproduction (issue-repro.yml). It
+  # or major and not about security (scripts/nightly-review.py), the test
+  # setup that blocks a reproduction (issue-repro.yml), and the release
+  # lane's bug, a scenario that failed or a release the watch moved back
+  # (#694, scripts/release-lane.py, Type Bug). It
   # is already a classified bug report, so no classifier runs: it gets
   # `bug:unconfirmed`, and the reproduction starts on it as on any bug the
   # triage finds. Any other issue a bot opens is never triaged.
@@ -604,7 +606,7 @@ jobs:
     name: A nightly review's bug
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 5
-    if: github.event_name == 'issues' && github.event.action == 'opened' && github.event.issue.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.issue.body, '<!-- dx-nightly-finding') || startsWith(github.event.issue.body, '<!-- dx-repro-blocker'))
+    if: github.event_name == 'issues' && github.event.action == 'opened' && github.event.issue.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.issue.body, '<!-- dx-nightly-finding') || startsWith(github.event.issue.body, '<!-- dx-repro-blocker') || startsWith(github.event.issue.body, '<!-- dx-release-lane'))
     outputs:
       bug: ${{ steps.mark.outputs.bug }}
     steps:

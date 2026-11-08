@@ -299,9 +299,9 @@ jobs:
           SENDER_TYPE: ${{ github.event.sender.type }}
           ROLE: ${{ steps.who.outputs.role }}
           TRIAGE_BUG: ${{ inputs.triage-bug }}
-          # The nightly review's own Bug issue (#247): opened by the App,
-          # with its marker on the first line.
-          NIGHTLY: ${{ github.event.issue.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.issue.body, '<!-- dx-nightly-finding') || startsWith(github.event.issue.body, '<!-- dx-repro-blocker')) }}
+          # The nightly review's own Bug issue (#247), and the release
+          # lane's (#694): opened by the App, with its marker on the first line.
+          NIGHTLY: ${{ github.event.issue.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.issue.body, '<!-- dx-nightly-finding') || startsWith(github.event.issue.body, '<!-- dx-repro-blocker') || startsWith(github.event.issue.body, '<!-- dx-release-lane')) }}
           SENDER_LOGIN: ${{ github.event.sender.login }}
         run: bash .dx-central/scripts/repro-trigger.sh decide
 
