@@ -18,7 +18,10 @@ opens first and keeps open until it ends, each `{issue: {...}}`), `opens`
 text), `labels`, and `fork: true` for one from a fork; a pull's `{issue}` in
 its body is the number of the issue it opens first, its `issue:` or a
 complete feature), `steps` (each one of
-`comment`, `label`, `unlabel`, `edit`, `push`, `dispatch`, `wait`) and
+`comment`, `label`, `unlabel`, `edit`, `push`, `dispatch`, and `until`,
+an `expect` polled every 15 seconds on its issue or pull request, or with
+`of: before` on its first `before` issue, never a fixed wait: #694),
+`minutes` (its limit, 10 by default, 15 at most) and
 `expect` (`labels`, `absent`, `comments` (markers), `pull` (`closes`,
 `branch`, `title`, patterns), `check` (name: conclusion), `merged`,
 `waiting`). Every scenario is a group of its own (`groups`, #694), and
@@ -36,6 +39,10 @@ its own directory of the test repository's core, scenarios/<id>/.
         group or in two, two scenarios that could write to the same
         part of the test repository's core, a group id unfit for an
         artifact name
+  release-scenarios.py plan
+        prints each scenario's limit in minutes and how often it polls,
+        [{id, minutes, poll}] as JSON; exits 1 naming a fixed wait or a
+        limit past 15 minutes (#694)
   release-scenarios.py groups
         prints the groups, [{id, scenarios}] as JSON, the release lane's
         `play` matrix; exits 1 naming what `partition` finds
@@ -299,6 +306,67 @@ def holds(expect, seen):
     return out
 
 
+# Every wait polls its state (#694): never a fixed sleep.
+POLL = 15
+# A scenario's limit, in minutes: its own `minutes`, or LIMIT; none past
+# MAX_LIMIT, which the play step's timeout-minutes in release-lane.yml
+# (20) stays above.
+LIMIT, MAX_LIMIT = 10, 15
+RUNNING = ("queued", "in_progress", "waiting", "requested", "pending")
+
+
+def hopeless(expect, seen, settled=False):
+    """What of `expect` can no longer hold in `seen` (#694), so the
+    scenario stops at once instead of waiting out its limit: a pull request
+    merged that should not be, or closed unmerged that should merge, a check
+    that ended with another conclusion and, once the test repository has
+    settled (`settled`: no run queued or in progress on two polls in a row,
+    so the job that would remove it has finished), an `absent` label still
+    there. [] when it still may hold. Pure."""
+    out = []
+    if "merged" in expect:
+        if not expect["merged"] and seen.get("merged"):
+            out.append("it merged")
+        elif expect["merged"] and not seen.get("merged") and str(seen.get("state") or "").upper() == "CLOSED":
+            out.append("it closed unmerged")
+    for name, conclusion in (expect.get("check") or {}).items():
+        got = (seen.get("checks") or {}).get(name)
+        if got and got != conclusion:
+            out.append(f"check {name} ended {got}, not {conclusion}")
+    if settled:
+        labels = set(seen.get("labels") or [])
+        out += [f"label {label} stays, with nothing left running" for label in expect.get("absent") or [] if label in labels]
+    return out
+
+
+def limit(s):
+    """The scenario's limit in minutes (its `minutes`, or LIMIT). Pure."""
+    return int(s.get("minutes") or LIMIT)
+
+
+def scenario_plan(scenarios):
+    """What the lane plays (#694): each scenario's id, its limit in minutes
+    and how often it polls, [{id, minutes, poll}]. Pure."""
+    return [{"id": s.get("id"), "minutes": limit(s), "poll": POLL} for s in scenarios]
+
+
+def timing(scenarios):
+    """What is wrong with the plan's waits (#694): a fixed `wait` step
+    (every wait is an `until` that polls its state), an `until` that names
+    no expectation, and a limit past MAX_LIMIT minutes. Pure."""
+    out = []
+    for s in scenarios:
+        sid = s.get("id") or "?"
+        for step in s.get("steps") or []:
+            if isinstance(step, dict) and "wait" in step:
+                out.append(f"scenario {sid}: waits a fixed {step['wait']} seconds; wait `until` the state it waits for, polled every {POLL} seconds")
+            if isinstance(step, dict) and "until" in step and not {k: v for k, v in (step["until"] or {}).items() if k != "of"}:
+                out.append(f"scenario {sid}: an `until` with no expectation")
+        if limit(s) > MAX_LIMIT:
+            out.append(f"scenario {sid}: its limit is {limit(s)} minutes, past {MAX_LIMIT}")
+    return out
+
+
 def table(results):
     """The Markdown table of results. Pure."""
     lines = ["| Scenario | Result | Run |", "| --- | --- | --- |"]
@@ -401,6 +469,28 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20):
     what = "pr" if "pull" in opens else "issue"
     spec = opens.get("pull") or opens.get("issue") or {}
     sid = s["id"]
+    left = [min(minutes, limit(s)) * 60]
+
+    def poll(expect, on, closes):
+        """`on` (what, number) observed every POLL seconds until `expect`
+        holds ([]), can no longer hold (#694: `hopeless`), or the
+        scenario's time is up: (what was seen, why not)."""
+        idle = False
+        while True:
+            seen = observe(repo, on[0], on[1], run)
+            if closes:
+                seen["closes"] = closes
+            why = holds(expect, seen)
+            if not why:
+                return seen, []
+            lost = hopeless(expect, seen, idle and seen.get("idle"))
+            if lost:
+                return seen, why + [f"it can no longer hold: {'; '.join(lost)}"]
+            if left[0] <= 0:
+                return seen, why
+            idle = seen.get("idle")
+            sleep(POLL)
+            left[0] -= POLL
     try:
         clear(repo, sid, run)
         for first in s.get("before") or []:
@@ -443,18 +533,19 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20):
                     fresh_branch(repo, f"scenario/{sid}", run)
                 run("api", "-X", "PUT", f"repos/{repo}/contents/scenarios/{sid}/{arg}.md", "-f", f"message=test: {arg}",
                     "-f", f"branch=scenario/{sid}", "-f", "content=eA==")
+            elif verb == "until":
+                # #694: polled every POLL seconds, never a fixed wait: on
+                # the scenario's own issue or pull request, or with `of:
+                # before` on the first issue it opened before it.
+                want = {k: v for k, v in (arg or {}).items() if k != "of"}
+                on = (("issue", made[0][1]) if (arg or {}).get("of") == "before" and made[0][0] == "issue" else (what, number))
+                seen, why = poll(want, on, None if on[1] != number else closes)
+                if why:
+                    return {"id": sid, "ok": False, "why": [f"until {json.dumps(want, sort_keys=True)}: {w}" for w in why], "run": seen.get("run", "")}
             elif verb == "wait":
-                sleep(int(arg))
-        deadline, why = minutes * 60, ["not played"]
-        while True:
-            seen = observe(repo, what, number, run)
-            if closes:
-                seen["closes"] = closes
-            why = holds(s.get("expect") or {}, seen)
-            if not why or deadline <= 0:
-                break
-            sleep(30)
-            deadline -= 30
+                # Refused by `timing`; never slept.
+                raise ValueError(f"a fixed wait of {arg} seconds: wait `until` a state")
+        seen, why = poll(s.get("expect") or {}, (what, number), closes)
         return {"id": sid, "ok": not why, "why": why, "run": seen.get("run", "")}
     except (RuntimeError, ValueError) as e:
         return {"id": sid, "ok": False, "why": [str(e)], "run": ""}
@@ -467,7 +558,7 @@ def observe(repo, what, number, run=gh):
     fields = "labels,comments,body,state" + (",mergedAt,statusCheckRollup,headRefName,title" if what == "pr" else ",closedByPullRequestsReferences")
     view = json.loads(run(what, "view", number, "--repo", repo, "--json", fields) or "{}")
     seen = {"number": number, "labels": [l.get("name") for l in view.get("labels") or []],
-            "comments": [c.get("body", "") for c in view.get("comments") or []]}
+            "comments": [c.get("body", "") for c in view.get("comments") or []], "state": view.get("state")}
     if what == "pr":
         seen["pull"] = {"body": view.get("body"), "branch": view.get("headRefName"), "title": view.get("title")}
         seen["merged"] = bool(view.get("mergedAt"))
@@ -477,8 +568,10 @@ def observe(repo, what, number, run=gh):
         if pulls:
             seen["pull"] = {"body": pulls[0].get("body"), "branch": pulls[0].get("headRefName"), "title": pulls[0].get("title")}
     seen["waiting"] = any(l in seen["labels"] for l in ("needs-human", "autopilot:waiting", "awaiting-acceptance"))
-    runs = json.loads(run("run", "list", "--repo", repo, "--limit", "1", "--json", "url") or "[]")
+    runs = json.loads(run("run", "list", "--repo", repo, "--limit", "20", "--json", "url,status") or "[]")
     seen["run"] = runs[0]["url"] if runs else ""
+    # Nothing queued or in progress in the test repository (#694: `hopeless`).
+    seen["idle"] = not any(str(r.get("status") or "").lower() in RUNNING for r in runs)
     return seen
 
 
@@ -1024,7 +1117,8 @@ def problems(conf, root=ROOT):
     scenarios = conf.get("scenarios") or []
     return (coverage(scenarios, played(root, pack) | transitions(root))
             + preconditions(scenarios, conf.get("bodies") or {}, pack, dispatchable(root, pack), schema_passes(root))
-            + partition(scenarios, groups(scenarios), pack))
+            + partition(scenarios, groups(scenarios), pack)
+            + timing(scenarios))
 
 
 def self_test():
@@ -1085,6 +1179,57 @@ def self_test():
     check("C2: partition fails when two scenarios could write to the same core path (a fixed change outside their own directory)",
           partition([{"id": "a"}, {"id": "b"}], groups([{"id": "a"}, {"id": "b"}]), shared),
           ["scenario b: writes scenarios/*.md, on the core of the test repository scenario a writes too, so one would wait on the other"])
+    plan_real = scenario_plan(real["scenarios"])
+    check("C3: the real plan: no fixed wait, every wait an `until`, polling every 15 seconds, each limit 15 minutes or less",
+          (timing(real["scenarios"]), {p["poll"] for p in plan_real}, max(p["minutes"] for p in plan_real) <= 15, len(plan_real) == len(real["scenarios"]),
+           [st for s in real["scenarios"] for st in s.get("steps") or [] if "wait" in st]), ([], {15}, True, True, []))
+    check("C3: timing names a fixed wait, an empty `until` and a limit past 15 minutes",
+          timing([{"id": "w", "steps": [{"wait": 60}, {"until": {"of": "before"}}], "minutes": 16}]),
+          ["scenario w: waits a fixed 60 seconds; wait `until` the state it waits for, polled every 15 seconds", "scenario w: an `until` with no expectation",
+           "scenario w: its limit is 16 minutes, past 15"])
+    check("C3: the play step's 20 minutes stay above every scenario's limit", MAX_LIMIT < 20, True)
+    check("C3: hopeless: merged when it should not, closed unmerged, a check that ended otherwise, an absent label once settled",
+          (hopeless({"merged": False}, {"merged": True}), hopeless({"merged": True}, {"merged": False, "state": "CLOSED"}), hopeless({"merged": True}, {"state": "OPEN"}),
+           hopeless({"check": {"c": "success"}}, {"checks": {"c": "failure"}}), hopeless({"check": {"c": "success"}}, {"checks": {"c": ""}}),
+           hopeless({"absent": ["incomplete"]}, {"labels": ["incomplete"]}), hopeless({"absent": ["incomplete"]}, {"labels": ["incomplete"]}, True)),
+          (["it merged"], ["it closed unmerged"], [], ["check c ended failure, not success"], [], [], ["label incomplete stays, with nothing left running"]))
+
+    def polled(views, runs=lambda n: [{"url": "u", "status": "in_progress"}]):
+        """A test repository whose issue 9 shows `views[i]` on its i-th
+        view (the last one after), and the sleeps play takes."""
+        st = {"views": 0, "sleeps": [], "calls": []}
+
+        def fake(*a, input=None):
+            st["calls"].append(a)
+            if a[:2] == ("issue", "create"):
+                return "https://github.com/o/t/issues/9\n"
+            if a[:2] == ("issue", "view"):
+                st["views"] += 1
+                return json.dumps(views[min(st["views"], len(views)) - 1])
+            if a[:2] == ("run", "list"):
+                return json.dumps(runs(st["views"]))
+            return "[]"
+        return st, fake
+    st, fake = polled([{"labels": []}, {"labels": []}, {"labels": [{"name": "claimed"}]}, {"labels": [{"name": "done"}]}])
+    got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "steps": [{"until": {"labels": ["claimed"]}}, {"comment": "/unclaim"}], "expect": {"labels": ["done"]}},
+               "o/t", "v7-next", {}, fake, st["sleeps"].append, 10)
+    comment = st["calls"].index(next(c for c in st["calls"] if c[:2] == ("issue", "comment")))
+    check("C3: an `until` polls every 15 seconds until its state holds, then the next step goes on",
+          (got["ok"], st["sleeps"], comment > [i for i, c in enumerate(st["calls"]) if c[:2] == ("issue", "view")][2]), (True, [15, 15], True))
+    st, fake = polled([{"labels": []}])
+    got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "steps": [{"until": {"labels": ["claimed"]}}, {"comment": "x"}], "expect": {}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 1)
+    check("C3: an `until` that never holds fails at the scenario's limit, named, and takes no further step",
+          (got["ok"], got["why"], len(st["sleeps"]), any(c[:2] == ("issue", "comment") for c in st["calls"])), (False, ['until {"labels": ["claimed"]}: no label claimed'], 4, False))
+    st, fake = polled([{"labels": [{"name": "incomplete"}]}], runs=lambda n: [{"url": "u", "status": "completed"}])
+    got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "expect": {"labels": ["awaiting-acceptance"], "absent": ["incomplete"]}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 15)
+    check("C3: a scenario stops as soon as its expectation can no longer hold, not at its limit",
+          (got["ok"], st["sleeps"], got["why"][-1]), (False, [15], "it can no longer hold: label incomplete stays, with nothing left running"))
+    st, fake = polled([{"labels": []}])
+    got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "minutes": 2, "expect": {"labels": ["x"]}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 20)
+    check("C3: a scenario's own limit bounds its polls (2 minutes: 8 polls of 15 seconds)", (got["ok"], len(st["sleeps"]), set(st["sleeps"])), (False, 8, {15}))
+    st, fake = polled([{"labels": []}])
+    got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "steps": [{"wait": 300}], "expect": {}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 1)
+    check("C3: a fixed wait is never slept", (got["ok"], st["sleeps"]), (False, []))
     titles = []
 
     def ordered(*a, input=None):
@@ -1531,6 +1676,13 @@ def main(argv):
         results = run_all(load_yaml(os.path.join(ROOT, SCENARIOS)), a.repo, a.ref, a.only, minutes=a.minutes, moved_out=moved, record=record)
         write_results(results, a.out)
         return 0 if all(r["ok"] for r in results) else 1
+    if argv[:1] == ["plan"] and len(argv) == 1:
+        scenarios = load_yaml(os.path.join(ROOT, SCENARIOS)).get("scenarios") or []
+        wrong = timing(scenarios)
+        for line in wrong:
+            print(line, file=sys.stderr)
+        print(json.dumps(scenario_plan(scenarios), separators=(",", ":")))
+        return 1 if wrong else 0
     if argv[:1] == ["groups"] and len(argv) == 1:
         scenarios = load_yaml(os.path.join(ROOT, SCENARIOS)).get("scenarios") or []
         gs, wrong = groups(scenarios), partition(scenarios, groups(scenarios), test_pack())

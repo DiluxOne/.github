@@ -28,12 +28,13 @@ def test_the_callers_tokens_may_read_the_checks_workflow_runs():
 
 def test_the_scenarios_have_time_and_the_play_step_stops_first():
     play = jobs()["play"]
-    # Five hours for each play job, and its play step stops before it, so
-    # the results are still uploaded (#690).
-    assert play["timeout-minutes"] >= 300
+    # Half an hour for each play job, and its play step stops before it, so
+    # the results are still uploaded (#690); the step outlasts every
+    # scenario's limit (#694: 15 minutes or less, release-scenarios.py plan).
+    assert play["timeout-minutes"] == 30
     step = next(s for s in play["steps"] if s.get("id") == "play")
     assert step["name"] == "Play the group's scenarios at v7-next"
-    assert 0 < step["timeout-minutes"] < play["timeout-minutes"]
+    assert 15 < step["timeout-minutes"] == 20 < play["timeout-minutes"]
     # The bug names the numbers the workflow uses, never others.
     env = next(s for s in jobs()["act"]["steps"] if s.get("id") == "act")["env"]
     assert int(env["SCENARIOS_TIMEOUT"]) == play["timeout-minutes"]
@@ -129,10 +130,10 @@ def test_a_timed_out_play_job_reaches_the_decision(tmp_path):
     # A play job cancelled at its timeout, with no results: a bug.
     d = run_act_step(tmp_path / "a", dict(done, PLAY="cancelled"), dict(every, serial=None))
     assert d["do"] == "bug" and "actions/runs/1" in d["body"]
-    assert d["scenario"] == "serial" and "its play step at 240 minutes, its job at 300" in d["body"]
+    assert d["scenario"] == "serial" and "its play step at 20 minutes, its job at 30" in d["body"]
     # Cancelled after every row it wrote passed: still a bug, never a release.
     d = run_act_step(tmp_path / "b", dict(done, PLAY="cancelled"), every)
-    assert d["do"] == "bug" and d["scenario"] == "play" and "timeout of 300 minutes and was cancelled" in d["body"]
+    assert d["do"] == "bug" and d["scenario"] == "play" and "timeout of 30 minutes and was cancelled" in d["body"]
     # A play step stopped at its own timeout: the job failed, the bug says so.
     d = run_act_step(tmp_path / "c", dict(done, PLAY="failure"), every)
-    assert d["do"] == "bug" and "its play step past its timeout of 240 minutes" in d["body"]
+    assert d["do"] == "bug" and "its play step past its timeout of 20 minutes" in d["body"]

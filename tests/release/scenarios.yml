@@ -150,12 +150,14 @@ scenarios:
     covers: [next_step:wait:core]
     before: [{issue: {title: "feat: a greeting on the core, first", body: complete-feature, labels: [accepted]}}]
     opens: {issue: {title: "feat: a greeting on the core, second", body: complete-feature}}
-    steps: [{wait: 300}, {label: accepted}]
+    # #694: until the first one's fixed change is on its pull request (its
+    # box ticked), polled every 15 seconds.
+    steps: [{until: {of: before, pull: {closes: true, body: "\\[x\\] \\*\\*C1\\*\\*"}}}, {label: accepted}]
     expect: {comments: ["<!-- dx-autopilot-core -->"], labels: [autopilot:core-wait]}
   - id: prd-edited-after-acceptance
     covers: [next_step:wait:answer]
     opens: {issue: {title: "feat: a greeting, then edited", body: complete-feature}}
-    steps: [{label: accepted}, {wait: 60}, {edit: edited-feature}]
+    steps: [{label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}}, {edit: edited-feature}]
     expect: {absent: [accepted], waiting: true}
   - id: decision-sub-issues
     covers: []
@@ -166,7 +168,7 @@ scenarios:
   - id: claim-and-release
     covers: [issue-claim.yml:issue_comment, next_step:wait:claim]
     opens: {issue: {title: "feat: a greeting, claimed", body: complete-feature, labels: [accepted]}}
-    steps: [{comment: "/claim"}, {wait: 60}, {comment: "/unclaim"}]
+    steps: [{comment: "/claim"}, {until: {labels: [claimed]}}, {comment: "/unclaim"}]
     expect: {absent: [claim:long]}
   - id: claim-pull-request
     covers: [issue-claim.yml:pull_request_target, waiting-update.yml:pull_request_target]
@@ -187,24 +189,24 @@ scenarios:
   - id: question-answered
     covers: []
     opens: {issue: {title: "feat: a greeting, asked", body: complete-feature, labels: [accepted]}}
-    steps: [{wait: 300}, {comment: "Option 1."}]
+    steps: [{until: {pull: {closes: true}}}, {comment: "Option 1."}]
     expect: {absent: [autopilot:waiting, autopilot:continue], pull: {closes: true}}
   - id: stop-hint-continue
     covers: []
     opens: {issue: {title: "feat: a greeting, stopped", body: complete-feature, labels: [accepted]}}
-    steps: [{wait: 300}, {comment: "Hint: write it in scenarios/."}, {label: autopilot:continue}]
+    steps: [{until: {pull: {closes: true}}}, {comment: "Hint: write it in scenarios/."}, {label: autopilot:continue}]
     expect: {absent: [needs-human], pull: {closes: true}}
 
   # The autopilot's pull request and main.
   - id: draft-in-conflict
     covers: [next_step:merge-main, next_step:merge-main:conflicted, sweep_step:continue]
     opens: {issue: {title: "feat: a greeting, in conflict", body: complete-feature, labels: [accepted]}}
-    steps: [{wait: 300}, {push: conflict}]
+    steps: [{until: {pull: {closes: true}}}, {push: conflict}]
     expect: {pull: {closes: true}, absent: [needs-human]}
   - id: ready-behind-main
     covers: [next_step:merge-main:clean, sweep_step:update]
     opens: {issue: {title: "feat: a greeting, behind", body: complete-feature, labels: [accepted]}}
-    steps: [{wait: 600}, {push: behind}]
+    steps: [{until: {pull: {closes: true, body: "\\[x\\] \\*\\*C1\\*\\*"}}}, {push: behind}]
     expect: {pull: {closes: true}}
 
   # The review, the required checks and the merge queue.

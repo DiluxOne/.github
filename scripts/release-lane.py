@@ -426,13 +426,14 @@ def check_workflow(check, path=os.path.join(ROOT, ".github", "workflows", "relea
     special = {"GROUPS", "UID", "EUID", "PPID", "BASHPID", "RANDOM", "SECONDS", "LINENO", "HOSTNAME", "PWD", "OLDPWD", "SHELLOPTS", "BASH_VERSION"}
     check("workflow: no step's env names a variable bash sets itself",
           sorted({k for job in jobs.values() for st in job.get("steps") or [] for k in st.get("env") or {} if k in special}), [])
-    # The play job has five hours, its play step stops before it, and the
-    # bug names those two numbers (#690).
+    # The play job has half an hour, its play step (20 minutes, above every
+    # scenario's limit of 15: #694) stops before it, and the bug names those
+    # two numbers (#690).
     play_step = next((st for st in psteps if st.get("id") == "play"), {})
     env = next((st.get("env") or {} for st in jobs.get("act", {}).get("steps") or [] if st.get("id") == "act"), {})
     job_t, play_t = play.get("timeout-minutes") or 0, play_step.get("timeout-minutes") or 0
-    check("workflow: the play job has 300 minutes, its play step fewer, and the bug names both (#690)",
-          (job_t >= 300, 0 < play_t < job_t, str(env.get("SCENARIOS_TIMEOUT")), str(env.get("PLAY_TIMEOUT"))), (True, True, str(job_t), str(play_t)))
+    check("C3: workflow: the play job has 30 minutes, its play step 20, and the bug names both (#690, #694)",
+          (job_t == 30, play_t == 20, str(env.get("SCENARIOS_TIMEOUT")), str(env.get("PLAY_TIMEOUT"))), (True, True, str(job_t), str(play_t)))
 
 class Fake:
     """A fake `gh` and `git` that records every command."""
