@@ -1623,6 +1623,8 @@ jobs:
 
       - name: The run's account
         if: always()
+        env:
+          STARTED: ${{ needs.prep.outputs.started }}
         run: |
           found=false
           for f in .dx-out-spec/transcript/*.json .dx-out/transcript/*.json; do
@@ -1632,3 +1634,12 @@ jobs:
             python3 .dx-central/scripts/autopilot.py account "$f" "$t" >> "$GITHUB_STEP_SUMMARY"
           done
           [ "$found" = true ] || printf '## The autopilot'"'"'s run\n\nThe agent did not run.\n' >> "$GITHUB_STEP_SUMMARY"
+          # What the run spent (#694): its minutes since it started and the
+          # agent's tokens, from the same transcripts.
+          if [ -f .dx-central/scripts/model-cache.py ]; then
+            args=()
+            for f in .dx-out-spec/transcript/*.json .dx-out/transcript/*.json; do
+              [ -f "$f" ] && args+=(--log "$(basename "$f" .json)=$f")
+            done
+            python3 .dx-central/scripts/model-cache.py summary --title "The autopilot's cost" --started "$STARTED" "${args[@]}" >> "$GITHUB_STEP_SUMMARY" || true
+          fi

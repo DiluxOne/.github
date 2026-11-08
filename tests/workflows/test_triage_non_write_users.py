@@ -99,8 +99,9 @@ def test_a_failed_classify_leaves_a_comment(tmp_path):
     triage = workflow("issue-triage.yml")["jobs"]["triage"]
     names = [s.get("name") for s in triage["steps"]]
     said = step_named(triage, "Say the triage could not run")
-    # It runs when the job ends, on Classify's failure (which continue-on-error hides from the job).
-    assert names.index(said["name"]) == len(names) - 1
+    # It runs when the job ends, on Classify's failure (which continue-on-error hides from the job),
+    # with only the run's cost after it (#694).
+    assert names.index(said["name"]) == len(names) - 2 and names[-1] == "The run's cost"
     assert step(triage, "claude").get("continue-on-error") is True
     assert "steps.claude.outcome == 'failure'" in said["if"] and "!cancelled()" in said["if"]
     assert said["env"]["GH_TOKEN"] == "${{ steps.bot.outputs.token }}"
