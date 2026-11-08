@@ -599,7 +599,7 @@ def write_file(target, branch, path, content, run=gh):
 
 # A `gh` that failed for a while, not for good (#698): a rate limit (the
 # primary's 403 or 429, the secondary's), or GitHub's own 5xx.
-TRANSIENT = re.compile(r"rate limit|HTTP 429|HTTP 5\d\d|abuse detection|secondary|timed out|connection reset|EOF", re.I)
+TRANSIENT = re.compile(r"rate limit|HTTP 429|HTTP 5\d\d|abuse detection|timed out|connection reset|unexpected EOF", re.I)
 
 
 def transient(e):
@@ -786,7 +786,7 @@ def observe(repo, what, number, run=gh):
         # references (the newest), never a search per poll: the search API
         # allows 30 a minute, which every scenario at once shares.
         refs = [r.get("number") for r in view.get("closedByPullRequestsReferences") or []
-                if not (r.get("repository") or {}).get("nameWithOwner") or str((r.get("repository") or {}).get("nameWithOwner")).lower() == repo.lower()]
+                if f"github.com/{repo}/pull/".lower() in str(r.get("url") or f"github.com/{repo}/pull/").lower()]
         refs = [r for r in refs if isinstance(r, int)]
         if refs:
             pull = json.loads(run("pr", "view", str(max(refs)), "--repo", repo, "--json", "number,body,headRefName,title") or "{}")
@@ -1721,14 +1721,14 @@ def self_test():
                 if st["fails"]:
                     st["fails"] -= 1
                     raise GhError("gh issue view 9: HTTP 403: API rate limit exceeded for user", 1, "", f"HTTP 403: API rate limit exceeded\n{retry}")
-                return json.dumps({"labels": [], "closedByPullRequestsReferences": [{"number": 11}, {"number": 12}]})
+                return json.dumps({"labels": [], "closedByPullRequestsReferences": [{"number": 11}, {"number": 12}, {"number": 30, "url": "https://github.com/x/y/pull/30"}]})
             if a[:3] == ("pr", "view", "12"):
                 return json.dumps({"number": 12, "body": "Closes #9", "headRefName": "feat/9-x", "title": "feat: x"})
             return "[]"
         return st, fake
     st, fake = searchless()
     got = play({"id": "s", "opens": {"issue": {"title": "feat: x", "body": "f"}}, "expect": {"pull": {"closes": True, "branch": "^feat/"}}}, "o/t", "v7-next", {"f": "f"}, fake, st["sleeps"].append, 1)
-    check("#698: observe finds the issue's pull request from its references (the newest), with no search per poll",
+    check("#698: observe finds the issue's pull request from its references (the newest of its repository), with no search per poll",
           (got["ok"], [c for c in st["calls"] if c[:2] == ("pr", "list") and "Closes" in " ".join(map(str, c))], ("pr", "view", "12", "--repo", "o/t", "--json", "number,body,headRefName,title") in st["calls"]),
           (True, [], True))
     st, fake = searchless(fail=2)
