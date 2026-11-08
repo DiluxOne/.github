@@ -18,10 +18,11 @@ in the test repository; a breaking change waits on a person.
         nothing else, made through the API with GH_TOKEN (scripts/api-
         commit.py, so GitHub signs it: never `git commit` and a push from
         the runner, #610), and the lightweight `vN-next` tag moved to it
-  release-lane.py decide --plan F --results F
+  release-lane.py decide --plan F --results F [--run URL]
         from the plan and the scenarios' results (scripts/release-scenarios.py
         run): `release`, `bug` (one failed: nothing tagged, nothing moved,
-        a bug naming the scenario and its run) or `issue` (a `!`: the
+        a bug naming the scenario and its run, in the issue schema's
+        sections so G1 passes it, #694) or `issue` (a `!`: the
         release issue for a person, nothing tagged); JSON
   release-lane.py act --plan F --results F --repo R [--run URL]
         does what `decide` says. A release, only while main is still the
@@ -136,8 +137,27 @@ def candidate(central, major, root=".", run=sh):
 
 # The decision.
 
-def decide(p, results):
-    """What the lane does, from its plan and the scenarios' results. Pure."""
+def visible(text):
+    """`text` with its HTML comments shown, never hidden: a scenario's why
+    may quote a marker. Pure."""
+    return str(text).replace("<!--", "&lt;!--")
+
+
+def bug_body(happened, reproduce, problem, scope, criterion, criticality="Critical"):
+    """A bug the lane opens itself (#694), in the issue schema's sections
+    (policy/issue-schema.yml): its mark first, the report's (What happened?,
+    Steps to reproduce), then the PRD's (Problem, Scope, Out of scope,
+    Acceptance criteria, Criticality), so G1 passes it and it goes the
+    reproduced-bug way, never `incomplete`. Pure."""
+    return (f"{MARK}\n### What happened?\n\n{happened}\n\n### Steps to reproduce\n\n{reproduce}\n\n### Problem\n\n{problem}\n\n### Scope\n\n"
+            + "".join(f"- {item}\n" for item in scope)
+            + "\n### Out of scope\n\n- Changing the gates or what they check.\n\n### Acceptance criteria\n\n"
+            + f"- C1: {criterion}\n\n### Criticality\n\n{criticality}\n")
+
+
+def decide(p, results, lane_run=""):
+    """What the lane does, from its plan and the scenarios' results, and the
+    lane's run (`lane_run`) a bug names. Pure."""
     if not p.get("release"):
         return {"do": "none", "why": p.get("why", "")}
     failed = [r for r in results if not r.get("ok")]
@@ -145,10 +165,18 @@ def decide(p, results):
         failed = [{"id": "(none ran)", "why": ["no scenario result"], "run": ""}]
     if failed:
         first = failed[0]
-        lines = [f"- `{r['id']}`: {'; '.join(r.get('why') or []) or 'failed'} ({r.get('run') or 'no run'})" for r in failed]
+        lines = [f"- `{r['id']}`: {visible('; '.join(r.get('why') or []) or 'failed')} ({r.get('run') or 'no run'})" for r in failed]
+        ids = ", ".join(f"`{r['id']}`" for r in failed)
         return {"do": "bug", "scenario": first["id"], "run": first.get("run", ""),
                 "title": f"fix: release candidate {p['version']} fails scenario {first['id']}",
-                "body": f"{MARK}\nThe release lane tried {p['version']} at `{p['major']}-next` in the test repository, and a scenario failed. Nothing was tagged and `{p['major']}` did not move.\n\n" + "\n".join(lines) + "\n"}
+                "body": bug_body(
+                    f"The release lane tried {p['version']} at `{p['major']}-next` in the test repository, and a scenario failed. Nothing was tagged and `{p['major']}` did not move.\n\n"
+                    + "\n".join(lines) + (f"\n\nThe lane's run: {lane_run}" if lane_run else ""),
+                    f"Run the release lane (.github/workflows/release-lane.yml) on {p['version']}'s candidate: it plays every scenario of tests/release/scenarios.yml "
+                    f"in the test repository at `{p['major']}-next` (scripts/release-scenarios.py play).",
+                    f"The release candidate {p['version']} fails the release scenarios {ids}, so the lane releases nothing and `{p['major']}` stays where it is.",
+                    [f"The cause of each failing scenario above ({ids}), in the engine or in the scenario's fixtures, fixed with a test that would have caught it."],
+                    f"Given {p['version']}'s candidate with the fix, when the release lane plays {ids} in the test repository, then each passes and the lane releases it.")}
     if p.get("breaking"):
         return {"do": "issue", "why": p.get("why", "")}
     return {"do": "release", "version": p["version"]}
@@ -235,10 +263,9 @@ def now():
 
 
 def act(p, results, repo, run=sh, sleep=time.sleep, root=".", lane_run=""):
-    d = decide(p, results)
+    d = decide(p, results, lane_run)
     if d["do"] == "bug":
-        body = d["body"] + (f"\nThe lane's run: {lane_run}\n" if lane_run else "")
-        run("gh", "issue", "create", "--repo", repo, "--title", d["title"], "--body", body)
+        run("gh", "issue", "create", "--repo", repo, "--title", d["title"], "--body", d["body"])
     elif d["do"] == "issue":
         ri = release_issue(p["version"][1:], d["why"], lane_run)
         run("gh", "issue", "create", "--repo", repo, "--title", ri["title"], "--body", ri["body"], *sum((["--label", l] for l in ri["labels"]), []))
@@ -549,6 +576,14 @@ def self_test():
         check("C5: nothing tagged, v7 not moved, nothing released", [c for c in fake.calls if c[:1] == ("git",) or c[:2] in (("gh", "release"), ("gh", "pr"))], [])
         check("C5: the bug names the scenario and its run", bool(bug) and "spec-to-draft" in " ".join(bug[0]) and "https://github.com/o/t/actions/runs/9" in " ".join(bug[0]), True)
         check("C5: no result at all is a failure", decide(p, [])["do"], "bug")
+        schema = lambda body: subprocess.run([sys.executable, os.path.join(HERE, "issue-schema.py"), "check"], input=body, capture_output=True, text=True)
+        quoting = failing + [{"id": "issue-complete", "ok": False, "why": ["no comment with <!-- dx-board -->"], "run": ""}]
+        for how, d in (("with the lane's run", decide(p, quoting, "https://github.com/O/.github/actions/runs/7")), ("with none", decide(p, failing)), ("of no result", decide(p, []))):
+            got = schema(d["body"])
+            check(f"C4: the bug's body, {how}, passes issue-schema.py check", (got.returncode, got.stdout if got.returncode else ""), (0, ""))
+        d = decide(p, quoting, "https://github.com/O/.github/actions/runs/7")
+        check("C4: the bug starts with its mark, names every failing scenario and the lane's run, and hides no marker it quotes",
+              (d["body"].startswith(MARK + "\n"), "`spec-to-draft`" in d["body"] and "`issue-complete`" in d["body"], "actions/runs/7" in d["body"], d["body"].count("<!--")), (True, True, True, 1))
         # C7: a `!`, the scenarios pass.
         fake = Fake()
         pb = plan(dict(nxt, bump="minor", next="7.11.0"), ["feat(autopilot)!: a required input"])
@@ -685,7 +720,7 @@ def main(argv):
         print(candidate(central, load(a.plan)["major"] if a.plan else "v7"))
         return 0
     if a.mode == "decide":
-        print(json.dumps(decide(load(a.plan), results_of(a.results))))
+        print(json.dumps(decide(load(a.plan), results_of(a.results), a.run)))
         return 0
     if a.mode == "act":
         d = act(load(a.plan), results_of(a.results), a.repo, lane_run=a.run)
