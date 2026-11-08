@@ -140,7 +140,7 @@ def candidate(central, major, root=".", run=sh):
 def visible(text):
     """`text` with its HTML comments shown, never hidden: a scenario's why
     may quote a marker. Pure."""
-    return str(text).replace("<!--", "&lt;!--")
+    return str(text).replace("<!--", "&lt;!--").replace("-->", "--&gt;")
 
 
 def bug_body(happened, reproduce, problem, scope, criterion, criticality="Critical"):
@@ -197,15 +197,16 @@ def release(p, repo, run=sh, sleep=time.sleep, minutes=60, root="."):
     head = run("git", "-C", root, "rev-parse", "origin/main").strip()
     if head != planned:
         return {"do": "none", "why": f"main moved past {planned[:12]}, the commit the scenarios tried: its own green run plans it again"}
-    branch = f"chore/release-{version}"
+    pr = release_pull(p)
+    engine_post().refuse("pull", pr["title"], pr["branch"], pr["body"])
+    branch = pr["branch"]
     run("git", "-C", root, "checkout", "-B", branch, planned)
     log = run("python3", os.path.join(HERE, "changelog.py"), "build", "--next", version, "--head", planned)
     with open(os.path.join(root, "CHANGELOG.md"), "w", encoding="utf-8") as fh:
         fh.write(log)
     run("git", "-C", root, "commit", "-qam", f"chore: release {version}")
     run("git", "-C", root, "push", "-f", "origin", f"HEAD:refs/heads/{branch}")
-    url = run("gh", "pr", "create", "--repo", repo, "--base", "main", "--head", branch, "--title", f"chore: release {version}",
-              "--body", f"{MARK}\nThe release lane's release of {version}: every release scenario passed at `{major}-next`.\n").strip()
+    url = run("gh", "pr", "create", "--repo", repo, "--base", "main", "--head", branch, "--title", pr["title"], "--body", pr["body"]).strip()
     number = url.rstrip("/").rsplit("/", 1)[-1]
     run("gh", "pr", "merge", number, "--repo", repo, "--squash", "--auto")
     sha, waited = "", 0
@@ -235,6 +236,22 @@ def release(p, repo, run=sh, sleep=time.sleep, minutes=60, root="."):
     return out
 
 
+def release_pull(p):
+    """The release pull request's title, branch and body. Pure."""
+    version, major = p["version"], p["major"]
+    return {"title": f"chore: release {version}", "branch": f"chore/release-{version}",
+            "body": f"{MARK}\nThe release lane's release of {version}: every release scenario passed at `{major}-next`.\n"}
+
+
+def engine_post():
+    """scripts/engine-post.py (#694): what the engine posts is checked first."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("engine_post", os.path.join(HERE, "engine-post.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def publish(version, notes, repo, run=sh):
     """The GitHub Release of `version`: engine-release.yml also makes it on
     the tag's push, so the one that exists is edited, and a create that
@@ -262,12 +279,20 @@ def now():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def open_bug(repo, title, body, run=sh):
+    """A bug the lane opens itself, checked first (scripts/engine-post.py,
+    #694: it passes G1, never `incomplete`)."""
+    engine_post().refuse("issue", body)
+    run("gh", "issue", "create", "--repo", repo, "--title", title, "--body", body)
+
+
 def act(p, results, repo, run=sh, sleep=time.sleep, root=".", lane_run=""):
     d = decide(p, results, lane_run)
     if d["do"] == "bug":
-        run("gh", "issue", "create", "--repo", repo, "--title", d["title"], "--body", d["body"])
+        open_bug(repo, d["title"], d["body"], run)
     elif d["do"] == "issue":
         ri = release_issue(p["version"][1:], d["why"], lane_run)
+        engine_post().refuse("release", ri["title"], ri["labels"])
         run("gh", "issue", "create", "--repo", repo, "--title", ri["title"], "--body", ri["body"], *sum((["--label", l] for l in ri["labels"]), []))
     elif d["do"] == "release":
         d.update(release(p, repo, run, sleep, root=root))
@@ -355,11 +380,22 @@ def rollback(p, failure, repo, run=sh, root="."):
     the release says so."""
     major, link = p["major"], failure.get("html_url", "")
     move(major, p["previous"], run, root)
-    run("gh", "issue", "create", "--repo", repo, "--title", f"fix: {p['version']} failed in a repository; {major} is back at {p['previous']}",
-        "--body", f"{MARK}\nWithin 30 minutes of `{major}` moving to {p['version']}, a run failed on the engine: {link}\n\n`{major}` points at {p['previous']} again.\n")
+    bug = rollback_bug(p, link)
+    open_bug(repo, bug["title"], bug["body"], run)
     body = json.loads(run("gh", "release", "view", p["version"], "--repo", repo, "--json", "body") or "{}").get("body", "")
     run("gh", "release", "edit", p["version"], "--repo", repo, "--notes",
         f"> {major} moved back to {p['previous']}: this release failed in a repository ({link}).\n\n{body}")
+
+
+def rollback_bug(p, link):
+    """The watch's bug, in the issue schema's sections (#694). Pure."""
+    major, version, previous = p["major"], p["version"], p["previous"]
+    return {"title": f"fix: {version} failed in a repository; {major} is back at {previous}",
+            "body": bug_body(f"Within 30 minutes of `{major}` moving to {version}, a run failed on the engine: {link}\n\n`{major}` points at {previous} again.",
+                             f"Read the run {link}: it failed in one of the engine's own steps of an engine job (scripts/release-lane.py ENGINE_STEPS), or never started.",
+                             f"{version} fails in an adopted repository, so the release lane moved `{major}` back to {previous} and every repository runs the previous release.",
+                             [f"The cause of the failure in {link}, in the engine, fixed with a test that would have caught it, so the next release does not fail there."],
+                             f"Given the fix, when the next release reaches the adopted repositories, then no run fails in the engine's own steps and `{major}` stays.")}
 
 
 def watch(p, repo, central, org_name, prop, since, run=sh, sleep=time.sleep, minutes=30, every=120, root=".", read=None):
@@ -576,6 +612,9 @@ def self_test():
         check("C5: nothing tagged, v7 not moved, nothing released", [c for c in fake.calls if c[:1] == ("git",) or c[:2] in (("gh", "release"), ("gh", "pr"))], [])
         check("C5: the bug names the scenario and its run", bool(bug) and "spec-to-draft" in " ".join(bug[0]) and "https://github.com/o/t/actions/runs/9" in " ".join(bug[0]), True)
         check("C5: no result at all is a failure", decide(p, [])["do"], "bug")
+        refused = Fake()
+        err = _raises(lambda: open_bug("O/.github", "fix: x", "Not the schema's.", refused))
+        check("C7: a bug the schema would refuse is never posted, and says why", (refused.has("gh", "issue", "create"), "would not pass its own checks" in str(err)), (False, True))
         schema = lambda body: subprocess.run([sys.executable, os.path.join(HERE, "issue-schema.py"), "check"], input=body, capture_output=True, text=True)
         quoting = failing + [{"id": "issue-complete", "ok": False, "why": ["no comment with <!-- dx-board -->"], "run": ""}]
         for how, d in (("with the lane's run", decide(p, quoting, "https://github.com/O/.github/actions/runs/7")), ("with none", decide(p, failing)), ("of no result", decide(p, []))):

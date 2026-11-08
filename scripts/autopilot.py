@@ -2641,6 +2641,10 @@ A class on html.
               "- C1: Given it, when read, then it greets.\n\n### Criticality\n\nNormal\n\n" + fspec)
     g3 = subprocess.run([sys.executable, os.path.join(HERE, "issue-schema.py"), "check", "--stage", "spec", "--type", "Feature"], input=prd563, capture_output=True, text=True)
     check("#563: the fixed Spec passes G3 for a Feature", (g3.returncode, g3.stdout if g3.returncode else ""), (0, ""))
+    post694 = _load("engine_post", "engine-post.py")
+    d694 = draft(12, "Bug", "fix(core): the greeting says helo", prd563)
+    check("C7: the draft pull request passes the conventions check a person's does, and closes its issue (engine-post.py)",
+          post694.pull(d694["title"], d694["branch"], d694["body"], 12), [])
     check("#563: the checklist reads the fixed Spec's tests", criteria(prd563)[0][2], "scenarios/core-one/12.md")
     import tempfile as _tf563, contextlib as _cl563, io as _io563
     with _tf563.TemporaryDirectory() as tree, _tf563.TemporaryDirectory() as io563:
@@ -4323,8 +4327,12 @@ def main(argv):
     if argv[:1] == ["draft"]:
         body = open(os.environ["BODY"], encoding="utf-8").read()
         try:
-            print(json.dumps(draft(number, os.environ.get("ISSUE_TYPE", ""), os.environ.get("TITLE", ""), body)))
-        except ValueError as err:
+            d = draft(number, os.environ.get("ISSUE_TYPE", ""), os.environ.get("TITLE", ""), body)
+            # #694: held to the conventions check a person's pull request is
+            # held to, and closing its issue, before it is opened.
+            _load("engine_post", "engine-post.py").refuse("pull", d["title"], d["branch"], d["body"], number)
+            print(json.dumps(d))
+        except (ValueError, RuntimeError) as err:
             print(err, file=sys.stderr)
             return 1
         return 0

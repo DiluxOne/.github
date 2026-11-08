@@ -424,6 +424,15 @@ def fresh_branch(target, branch, run=gh):
     run("api", f"repos/{target}/git/refs", "-f", f"ref=refs/heads/{branch}", "-f", f"sha={run('api', f'repos/{target}/commits/HEAD', '--jq', '.sha').strip()}")
 
 
+def branch_of(s):
+    """The branch a scenario pushes to (#694): `<type>/scenario-<id>`, its
+    title's type (the conventions check refuses any other branch), `test`
+    for a title with none. Pure."""
+    spec = (s.get("opens") or {}).get("pull") or (s.get("opens") or {}).get("issue") or {}
+    m = re.match(r"^([a-z]+)(\([^)]*\))?!?: ", str(spec.get("title") or ""))
+    return f"{m.group(1) if m else 'test'}/scenario-{s.get('id')}"
+
+
 def has_branch(target, branch, run=gh):
     try:
         run("api", f"repos/{target}/git/ref/heads/{branch}", "--jq", ".ref")
@@ -432,15 +441,17 @@ def has_branch(target, branch, run=gh):
         return False
 
 
-def clear(repo, sid, run=gh):
+def clear(repo, sid, run=gh, branch=None):
     """What scenario `sid` left in `repo`, before it plays and after (#694):
-    its `scenario/<id>` branch deleted, and every open issue and pull request
-    whose body carries its mark closed. A failure here never stops a
-    scenario: what it cannot clear, the next run clears."""
-    try:
-        run("api", "-X", "DELETE", f"repos/{repo}/git/refs/heads/scenario/{sid}")
-    except RuntimeError:
-        pass  # none left: a 404
+    its branches deleted (`scenario/<id>`, which earlier runs left, and
+    `branch`, its own now), and every open issue and pull request whose body
+    carries its mark closed. A failure here never stops a scenario: what it
+    cannot clear, the next run clears."""
+    for name in dict.fromkeys([f"scenario/{sid}"] + ([branch] if branch else [])):
+        try:
+            run("api", "-X", "DELETE", f"repos/{repo}/git/refs/heads/{name}")
+        except RuntimeError:
+            pass  # none left: a 404
     mark = scenario_mark(sid)
     for what in ("issue", "pr"):
         try:
@@ -468,7 +479,7 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20):
     opens, made, closes = s.get("opens") or {}, [], None
     what = "pr" if "pull" in opens else "issue"
     spec = opens.get("pull") or opens.get("issue") or {}
-    sid = s["id"]
+    sid, own = s["id"], branch_of(s)
     left = [min(minutes, limit(s)) * 60]
 
     def poll(expect, on, closes):
@@ -492,7 +503,7 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20):
             sleep(POLL)
             left[0] -= POLL
     try:
-        clear(repo, sid, run)
+        clear(repo, sid, run, own)
         for first in s.get("before") or []:
             made.append(("issue", open_issue(repo, first.get("issue") or {}, bodies, f"{sid}: before", run, sid)))
         if what == "issue":
@@ -503,13 +514,13 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20):
                 closes = open_issue(repo, spec.get("issue") or {"title": spec.get("title", sid), "body": "complete-feature"}, bodies, sid, run, sid)
                 made.append(("issue", closes))
                 text = text.replace("{issue}", closes)
-            branch, target = f"scenario/{sid}", repo
+            branch, target = own, repo
             if spec.get("fork"):
                 # From the test identity's fork, which runs with no secrets.
                 run("repo", "fork", repo, "--clone=false", "--default-branch-only")
                 target = f"{run('api', 'user', '--jq', '.login').strip()}/{repo.split('/', 1)[1]}"
             fresh_branch(target, branch, run)
-            run("api", "-X", "PUT", f"repos/{target}/contents/scenarios/{sid}/pull.md", "-f", f"message=test: scenario {sid}",
+            run("api", "-X", "PUT", f"repos/{target}/contents/scenarios/{sid}/pull.md", "-f", f"message=test: the scenario {sid}",
                 "-f", f"branch={branch}", "-f", f"content={__import__('base64').b64encode(sid.encode()).decode()}")
             head = f"{target.split('/', 1)[0]}:{branch}" if target != repo else branch
             url = run("pr", "create", "--repo", repo, "--head", head, "--title", spec.get("title", f"test: {sid}"),
@@ -529,10 +540,10 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20):
             elif verb == "push":
                 # An issue's scenario has no branch of its own yet: it makes
                 # it, never assumes it (#694: the 404s).
-                if not has_branch(repo, f"scenario/{sid}", run):
-                    fresh_branch(repo, f"scenario/{sid}", run)
+                if not has_branch(repo, own, run):
+                    fresh_branch(repo, own, run)
                 run("api", "-X", "PUT", f"repos/{repo}/contents/scenarios/{sid}/{arg}.md", "-f", f"message=test: {arg}",
-                    "-f", f"branch=scenario/{sid}", "-f", "content=eA==")
+                    "-f", f"branch={own}", "-f", "content=eA==")
             elif verb == "until":
                 # #694: polled every POLL seconds, never a fixed wait: on
                 # the scenario's own issue or pull request, or with `of:
@@ -551,7 +562,7 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20):
         return {"id": sid, "ok": False, "why": [str(e)], "run": ""}
     finally:
         cleanup(repo, made, run)
-        clear(repo, sid, run)
+        clear(repo, sid, run, own)
 
 
 def observe(repo, what, number, run=gh):
@@ -1097,6 +1108,37 @@ def schema_passes(root=ROOT):
     return lambda body: bool(mod.check(body, "prd")["ok"])
 
 
+def fixture_problems(conf, issue_check, pull_check, release_check=None):
+    """What a person's check would find wrong with the scenarios' own
+    fixtures (#694, scripts/engine-post.py): every issue body a scenario
+    opens or edits to that should await acceptance, as G1 reads it
+    (`issue_check(body)`), and every pull request it opens, its title, its
+    branch and its `Closes #` as the conventions check reads them
+    (`pull_check(title, branch, body, closes)`), and a release issue's
+    title and label (`release_check(title, labels)`). Pure but for the
+    checks."""
+    bodies, out = conf.get("bodies") or {}, []
+    known = {b for b in bodies if b not in ("incomplete", "decision", "release")}
+    for s in conf.get("scenarios") or []:
+        sid, opens = s.get("id") or "?", s.get("opens") or {}
+        specs = [b.get("issue") or {} for b in s.get("before") or []] + ([opens["issue"]] if "issue" in opens else [])
+        if "pull" in opens:
+            specs.append((opens["pull"].get("issue") or {"body": "complete-feature"}))
+            text = body_of(opens["pull"].get("body"), bodies).replace("{issue}", "1")
+            for wrong in pull_check(opens["pull"].get("title", f"test: {sid}"), branch_of(s), marked(text, sid), "1" if "{issue}" in body_of(opens["pull"].get("body"), bodies) else None):
+                out.append(f"scenario {sid}: its pull request: {wrong}")
+        specs += [{"body": st["edit"]} for st in s.get("steps") or [] if isinstance(st, dict) and "edit" in st]
+        for spec in specs:
+            name = spec.get("body")
+            if name == "release" and release_check:
+                for wrong in release_check(spec.get("title", ""), spec.get("labels") or []):
+                    out.append(f"scenario {sid}: its release issue: {wrong}")
+            if name in known:
+                for wrong in issue_check(marked(body_of(name, bodies), sid)):
+                    out.append(f"scenario {sid}: its body `{name}`: {wrong}")
+    return out
+
+
 def passes_mark(body, root=ROOT):
     """Whether `body` with a scenario's mark first passes the issue schema
     (#694: the mark is one of its markers)."""
@@ -1109,6 +1151,14 @@ def passes_mark(body, root=ROOT):
     return bool(mod.check(marked(good, "p"), "prd")["ok"]) and bool(body)
 
 
+def engine_post(root=ROOT):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("engine_post", os.path.join(root, "scripts", "engine-post.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def problems(conf, root=ROOT):
     """What `coverage` names: every played pair and transition with no
     scenario, every scenario its setup cannot make hold, and what is wrong
@@ -1118,7 +1168,8 @@ def problems(conf, root=ROOT):
     return (coverage(scenarios, played(root, pack) | transitions(root))
             + preconditions(scenarios, conf.get("bodies") or {}, pack, dispatchable(root, pack), schema_passes(root))
             + partition(scenarios, groups(scenarios), pack)
-            + timing(scenarios))
+            + timing(scenarios)
+            + fixture_problems(conf, engine_post(root).issue, engine_post(root).pull, engine_post(root).release))
 
 
 def self_test():
@@ -1359,7 +1410,9 @@ def self_test():
     got = play({"id": "p", "opens": {"issue": {"title": "feat: x", "body": "f"}}, "steps": [{"push": "behind"}], "expect": {}}, "o/t", "v7-next", {"f": "f"}, leftover(st694), lambda s: None, 1)
     check("C1: a push of an issue's scenario makes its branch first, never assumes it (no 404)",
           (got["ok"], [c[3] for c in st694["calls"] if c[:2] == ("api", "repos/o/t/git/refs")], [c[3] for c in st694["calls"] if c[:3] == ("api", "-X", "PUT")]),
-          (True, ["ref=refs/heads/scenario/p"], ["repos/o/t/contents/scenarios/p/behind.md"]))
+          (True, ["ref=refs/heads/feat/scenario-p"], ["repos/o/t/contents/scenarios/p/behind.md"]))
+    check("#694: a scenario's branch is its title's type, so the conventions check takes it; one with no type is test/",
+          (branch_of({"id": "p", "opens": {"pull": {"title": "docs(x): a"}}}), branch_of({"id": "q", "opens": {"issue": {"title": "something"}}})), ("docs/scenario-p", "test/scenario-q"))
     first = []
     play({"id": "c", "before": [{"issue": {"title": "first", "labels": ["accepted"]}}], "opens": {"issue": {"title": "second"}}, "expect": {}},
          "o/t", "v7-next", {}, lambda *a, input=None: first.append(a) or ("https://github.com/o/t/issues/9\n" if a[:2] == ("issue", "create") else "{}" if a[:2] == ("issue", "view") else "[]"), lambda s: None, 1)

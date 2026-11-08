@@ -69,34 +69,60 @@ bodies:
     Normal
   incomplete: |
     Something should be better.
+  # A bug in the report's sections, then the PRD's (#694: the bug form's
+  # and the schema's), so the triage takes it as a person's.
   bug: |
-    ### What happened
+    ### What happened?
 
     `scenarios/greeting.md` says "helo".
 
-    ### What should happen
-
-    It says "hello".
-
-    ### How to reproduce
+    ### Steps to reproduce
 
     Read `scenarios/greeting.md`.
+
+    ### Problem
+
+    The greeting says "helo" instead of "hello".
+
+    ### Scope
+
+    - The greeting's word.
+
+    ### Out of scope
+
+    - Anything else.
+
+    ### Acceptance criteria
+
+    - C1: Given the repository, when `scenarios/greeting.md` is read, then it says "hello".
 
     ### Criticality
 
     Normal
   bug-not-reproduced: |
-    ### What happened
+    ### What happened?
 
     Something failed once, nobody knows where.
 
-    ### What should happen
-
-    It does not fail.
-
-    ### How to reproduce
+    ### Steps to reproduce
 
     Unknown.
+
+    ### Problem
+
+    Something failed once.
+
+    ### Scope
+
+    - Whatever failed.
+
+    ### Out of scope
+
+    - Anything else.
+
+    ### Acceptance criteria
+
+    - C1: Given the repository, when it runs, then nothing fails.
 
     ### Criticality
 
@@ -110,10 +136,11 @@ bodies:
 
     - A greeting file.
     - A farewell file.
+  # The Release form's (#694): its one section, and its label below.
   release: |
-    ### Version
+    ### Notes
 
-    Next.
+    None.
   # `{issue}`: the issue the scenario opens for its pull request first.
   pull: |
     A change of the scenarios.
@@ -241,7 +268,7 @@ scenarios:
   # A release, the drift check and adopting.
   - id: release-issue
     covers: []
-    opens: {issue: {title: "Release 0.0.1", body: release, labels: [accepted]}}
+    opens: {issue: {title: "Release 0.0.1", body: release, labels: [lane:release, accepted]}}
     expect: {pull: {title: "^chore: release"}}
   - id: drift-and-adopt
     covers: []

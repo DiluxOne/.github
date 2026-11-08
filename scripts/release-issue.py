@@ -669,6 +669,10 @@ def self_test():
         fh_.write("planned-release: auto\n")
     check("#287: DX_AUTOPILOT=off makes a planned release confirm", (planned_mode(fh_.name, "OFF"), planned_mode(fh_.name, ""), planned_mode(fh_.name, "on")), ("confirm", "auto", "auto"))
     os.unlink(fh_.name)
+    post = importlib.util.module_from_spec(spec_ := importlib.util.spec_from_file_location("engine_post", os.path.join(HERE, "engine-post.py")))
+    spec_.loader.exec_module(post)
+    ri = engine_issue("7.15.0", "feat!: x", "https://github.com/O/.github/actions/runs/1")
+    check("C7: the release issue the lane opens has the Release form's title and label (engine-post.py)", post.release(ri["title"], ri["labels"]), [])
     print("all tests passed" if not failed else f"{failed} failed")
     return 1 if failed else 0
 

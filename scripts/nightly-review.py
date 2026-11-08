@@ -51,6 +51,8 @@ MARK = "<!-- dx-nightly-review: {repo} -->"
 CLOSED = re.compile(r"^<!-- dx-nightly-closed: (\[.*\]) -->$")
 MAX_CLOSED = 500
 AI = "🤖 AI-generated · Claude Opus 5.5 (Anthropic), the nightly review"
+# The AI line the issue schema reads, alone on the bug's last line (#694).
+BUG_AI = "🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
 ITEM = re.compile(r"^- \[( |x|X)\] (~~)?\*\*(blocker|major|minor)\*\* `([^`]+)`: (.*?)( → (https://\S+))?(~~)?( _\(since [^)]+\)_)?$")
 SEVERITY = ("blocker", "major", "minor")
 MAX_ITEMS = 60
@@ -197,10 +199,15 @@ def bugs(previous, findings, repo):
             continue
         where = f"{f['file']}{':' + str(f['line']) if isinstance(f.get('line'), int) else ''}"
         title = str(f["title"]).replace("\n", " ")[:120]
-        body = "\n".join([BUG_MARK.format(repo=repo), "", "### What happens", "", str(f.get("detail") or f["title"])[:3000], "",
-                           "### Where", "", f"`{where}`", "",
-                           "Found by the nightly review of the existing code (DiluxOne/.github#247). It goes through the usual bug path: a reproduction with a failing test, then the fix; one that is not reproduced waits for a maintainer.",
-                           "", AI])
+        # #694: in the issue schema's sections, so G1 passes it.
+        detail = str(f.get("detail") or f["title"])[:3000].replace("<!--", "&lt;!--").replace("-->", "--&gt;")
+        body = "\n".join([BUG_MARK.format(repo=repo), "### What happened?", "", detail, "",
+                           f"Found by the nightly review of the existing code (DiluxOne/.github#247), in `{where}`. It goes through the usual bug path: a reproduction with a failing test, then the fix; one that is not reproduced waits for a maintainer.",
+                           "", "### Steps to reproduce", "", f"Read `{where}` as the detail above says.", "",
+                           "### Problem", "", title.replace("<!--", "&lt;!--").replace("-->", "--&gt;"), "", "### Scope", "", f"- The defect in `{where}`, fixed with a test that fails without the fix.", "",
+                           "### Out of scope", "", "- Anything else the nightly review did not find there.", "",
+                           "### Acceptance criteria", "", f"- C1: Given `{where}`, when the case the detail above describes runs, then the defect no longer happens.", "",
+                           "### Criticality", "", "Normal", "", BUG_AI])
         out.append({**f, "where": where, "issue_title": title, "issue_body": body})
         known.append((k, ln))
     return out
@@ -321,6 +328,13 @@ def self_test():
           ([c["where"] for c in keep_safe(cands, {"verdicts": [{"i": 0, "safe": True}, {"i": 1, "safe": False}]})], keep_safe(cands, None), keep_safe(cands, {"verdicts": [{"i": 0, "safe": "yes"}]})),
           (["a.php:3"], [], []))
     check("keep_safe: a second verdict that is not safe vetoes it", keep_safe(cands, {"verdicts": [{"i": 0, "safe": True}, {"i": 0, "safe": False}]}), [])
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("engine_post", os.path.join(HERE, "engine-post.py"))
+    post = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(post)
+    found = bugs([], [{"severity": "blocker", "security": False, "file": "a.php", "line": 3, "title": "It breaks <!-- x -->", "detail": "Steps <!-- hidden -->"}], "o/r")
+    check("C7: the bug it opens passes the issue schema, as a person's (engine-post.py), and hides nothing it quotes",
+          (post.issue(found[0]["issue_body"]), found[0]["issue_body"].count("<!--")), ([], 1))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
