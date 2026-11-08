@@ -21,9 +21,9 @@ complete feature), `steps` (each one of
 `comment`, `label`, `unlabel`, `edit`, `push`, `dispatch`, `wait`) and
 `expect` (`labels`, `absent`, `comments` (markers), `pull` (`closes`,
 `branch`, `title`, patterns), `check` (name: conclusion), `merged`,
-`waiting`), and `serial: true` for one that plays in the one `serial`
-group, after the one before it (`groups`): the lane plays the groups at
-once, one job each, and every other scenario is a group of its own.
+`waiting`). Every scenario is a group of its own (`groups`, #694), and
+the lane plays the groups at once, one job each: each writes only under
+its own directory of the test repository's core, scenarios/<id>/.
 
   release-scenarios.py coverage [ROOT]
         fails naming every pair and transition with no scenario, every
@@ -33,8 +33,9 @@ once, one job each, and every other scenario is a group of its own.
         among them). Every other pair a shipped caller wires is held to the
         engine statically, by scripts/caller-contract.py check; and
         what is wrong with the groups (`partition`): a scenario in no
-        group or in two, a serial one outside the serial group or out of
-        the file's order, a group id unfit for an artifact name
+        group or in two, two scenarios that could write to the same
+        part of the test repository's core, a group id unfit for an
+        artifact name
   release-scenarios.py groups
         prints the groups, [{id, scenarios}] as JSON, the release lane's
         `play` matrix; exits 1 naming what `partition` finds
@@ -251,7 +252,7 @@ def preconditions(scenarios, bodies, pack, can_dispatch=(), passes=None):
             first = [b.get("issue") or {} for b in s.get("before") or []]
             if not any("accepted" in (i.get("labels") or []) for i in first):
                 out.append(f"scenario {sid}: expects a wait on the core, but opens no accepted issue before it whose pull request stays open")
-            fixed = str((pack.get("fixed-change") or {}).get("file") or "").replace("{n}", "1").replace("{id}", "c1")
+            fixed = str((pack.get("fixed-change") or {}).get("file") or "").replace("{n}", "1").replace("{id}", "c1").replace("{scenario}", sid)
             if not any(fnmatch.fnmatchcase(fixed, g) for g in pack.get("core") or []):
                 out.append(f"scenario {sid}: expects a wait on the core, but the test repository's fixed change ({fixed or 'none'}) touches no core of its pack")
     return out
@@ -729,7 +730,6 @@ def move_callers(repo, ref, callers=gh, central=None, sleep=time.sleep, minutes=
     return moved, []
 
 
-SERIAL = "serial"
 GROUP_ID = re.compile(r"[a-z0-9-]+")
 # The artifacts the lane names after them besides the groups' (scenarios-*).
 NOT_GROUPS = ("move", "back")
@@ -737,20 +737,29 @@ NOT_GROUPS = ("move", "back")
 
 def groups(scenarios):
     """The groups the lane plays at once, one job each (release-lane.yml
-    `play`): every scenario marked `serial: true` in one, `serial`, in the
-    file's order, which plays them one after another; every other scenario
-    in its own, named by its id. [{id, scenarios}]. Pure."""
-    serial = [s.get("id") for s in scenarios if s.get("serial")]
-    return ([{"id": SERIAL, "scenarios": serial}] if serial else []) + [
-        {"id": s.get("id"), "scenarios": [s.get("id")]} for s in scenarios if not s.get("serial")]
+    `play`): every scenario in its own, named by its id (#694: each writes
+    to its own core, `writes`, so none waits on another). [{id,
+    scenarios}]. Pure."""
+    return [{"id": s.get("id"), "scenarios": [s.get("id")]} for s in scenarios]
 
 
-def partition(scenarios, gs):
+def core_writes(s, pack):
+    """The core paths scenario `s` can write in the test repository: its
+    fixed change's file (`{scenario}` its id), its pull request's file and
+    its pushes, as globs of their directory. Pure."""
+    sid = s.get("id") or "?"
+    fixed = str((pack.get("fixed-change") or {}).get("file") or "")
+    out = {fixed.replace("{scenario}", sid).replace("{n}", "*").replace("{id}", "*")} if fixed else set()
+    return out | {f"scenarios/{sid}/*"}
+
+
+def partition(scenarios, gs, pack=None):
     """What is wrong with the groups `gs` of `scenarios`: a scenario in no
-    group or in two, a group that plays no scenario of the file, a serial
-    scenario outside the serial group, a serial group that is not the serial
-    scenarios in the file's order, and a group id unfit for an artifact name
-    (`^[a-z0-9-]+$`, nor `move` or `back`) or used twice. Pure."""
+    group or in two, a group that plays no scenario of the file, a group id
+    unfit for an artifact name (`^[a-z0-9-]+$`, nor `move` or `back`) or used
+    twice, and (#694) two scenarios that could write to the same part of the
+    test repository's core (`pack`'s, scripts/org.py core_key), which would
+    wait on each other's change. Pure."""
     out, where, ids = [], {}, [s.get("id") or "?" for s in scenarios]
     seen = set()
     for g in gs:
@@ -770,18 +779,23 @@ def partition(scenarios, gs):
     for sid in where:
         if sid not in ids:
             out.append(f"group {', '.join(where[sid])}: plays {sid}, which is no scenario of {SCENARIOS}")
-    serial = [s.get("id") or "?" for s in scenarios if s.get("serial")]
-    for sid in serial:
-        if where.get(sid) and where[sid] != [SERIAL]:
-            out.append(f"scenario {sid}: serial, but played in {', '.join(where[sid])}, not in the {SERIAL} group alone")
-    one = [g.get("scenarios") or [] for g in gs if str(g.get("id")) == SERIAL]
-    if one and one[0] != serial:
-        out.append(f"group {SERIAL}: plays {', '.join(one[0]) or 'nothing'}, not the serial scenarios in the file's order ({', '.join(serial) or 'none'})")
+    if pack is not None:
+        owner = {}
+        for s in scenarios:
+            sid = s.get("id") or "?"
+            for path in sorted(core_writes(s, pack)):
+                key = org_key(path, pack)
+                if key is None:
+                    continue
+                if key in owner and owner[key] != sid:
+                    out.append(f"scenario {sid}: writes {path}, on the core {key or 'of the test repository'} scenario {owner[key]} writes too, so one would wait on the other")
+                    break
+                owner.setdefault(key, sid)
     return out
 
 
 def play_group(conf, gid, repo, ref, run=gh, sleep=time.sleep, minutes=20):
-    """The scenarios of the group `gid`, one after another in its order, at
+    """The scenarios of the group `gid` (one, #694), in its order, at
     `ref` (the callers already there), with the test identity's token (the
     ambient GH_TOKEN): their rows, or one failing row when `gid` is no
     group."""
@@ -966,6 +980,14 @@ def put_default(calls):
             and not any(str(x).startswith("branch=") and str(x)[7:] not in DEFAULTS for x in c[4:])]
 
 
+def org_key(path, pack):
+    """The part of the test repository's core `path` touches
+    (scripts/org.py core_key)."""
+    sys.path.insert(0, HERE)
+    import org
+    return org.core_key(path, pack.get("core") or [])
+
+
 def test_pack(root=ROOT):
     sys.path.insert(0, os.path.join(root, "scripts"))
     import org
@@ -1002,7 +1024,7 @@ def problems(conf, root=ROOT):
     scenarios = conf.get("scenarios") or []
     return (coverage(scenarios, played(root, pack) | transitions(root))
             + preconditions(scenarios, conf.get("bodies") or {}, pack, dispatchable(root, pack), schema_passes(root))
-            + partition(scenarios, groups(scenarios)))
+            + partition(scenarios, groups(scenarios), pack))
 
 
 def self_test():
@@ -1039,29 +1061,30 @@ def self_test():
         check("C2: a scenario covering what nothing wires is named", coverage(some, wanted), ["scenario s1: covers gone.yml:push, which no caller wires and no transition is"])
     real = load_yaml(os.path.join(ROOT, SCENARIOS))
     check("C2: every pair the test repository plays, and every transition, has its scenario; every scenario can hold", problems(real), [])
-    fx = [{"id": "a", "serial": True}, {"id": "b"}, {"id": "c", "serial": True}, {"id": "d"}]
+    fx = [{"id": "a"}, {"id": "b"}, {"id": "c"}, {"id": "d"}]
     gs = groups(fx)
-    check("C2: groups: the serial scenarios in one group, in the file's order, every other one alone",
-          gs, [{"id": "serial", "scenarios": ["a", "c"]}, {"id": "b", "scenarios": ["b"]}, {"id": "d", "scenarios": ["d"]}])
-    check("C2: groups with nothing serial: every scenario alone", groups([{"id": "b"}]), [{"id": "b", "scenarios": ["b"]}])
+    check("C2: groups: every scenario is its own group, named by its id, in the file's order",
+          gs, [{"id": i, "scenarios": [i]} for i in "abcd"])
     check("C2: partition: the groups of groups() are a partition", partition(fx, gs), [])
     for how, bad, want in (
-            ("a scenario in no group", [gs[0], gs[1]], ["scenario d: in no group"]),
+            ("a scenario in no group", gs[:3], ["scenario d: in no group"]),
             ("a scenario in two", gs + [{"id": "e", "scenarios": ["b"]}], ["scenario b: in 2 groups (b, e)"]),
-            ("a serial one outside the serial group", [{"id": "serial", "scenarios": ["a"]}, {"id": "c", "scenarios": ["c"]}] + gs[1:],
-             ["scenario c: serial, but played in c, not in the serial group alone", "group serial: plays a, not the serial scenarios in the file's order (a, c)"]),
-            ("the serial group out of order", [{"id": "serial", "scenarios": ["c", "a"]}] + gs[1:], ["group serial: plays c, a, not the serial scenarios in the file's order (a, c)"]),
             ("a group that plays no scenario", gs + [{"id": "x", "scenarios": ["gone"]}], [f"group x: plays gone, which is no scenario of {SCENARIOS}"])):
         check(f"C2: partition fails for {how}", partition(fx, bad), want)
     check("C2: partition fails for a group id unfit for an artifact name, or the move's or the back's, or used twice",
-          [len(partition([{"id": i}], groups([{"id": i}]))) for i in ("Has Space", "move", "back", "ok-1")] + [len(partition([{"id": "serial"}, {"id": "a", "serial": True}], groups([{"id": "serial"}, {"id": "a", "serial": True}])))],
+          [len(partition([{"id": i}], groups([{"id": i}]))) for i in ("Has Space", "move", "back", "ok-1")] + [len(partition([{"id": "a"}], [{"id": "a", "scenarios": ["a"]}, {"id": "a", "scenarios": []}]))],
           [1, 1, 1, 0, 1])
     real_groups = groups(real["scenarios"])
-    check("C2: the real file's serial group: every scenario that drafts, merges or pushes to main, in order",
-          real_groups[0], {"id": "serial", "scenarios": ["accepted-spec", "spec-to-draft", "core-one-at-a-time", "prd-edited-after-acceptance", "decision-sub-issues",
-                                                         "claim-and-release", "claim-pull-request", "bug-reproduced", "question-answered", "stop-hint-continue",
-                                                         "draft-in-conflict", "ready-behind-main", "merge-queue", "low-risk-merges", "release-issue"]})
-    check("C2: the real file's other scenarios each play alone", [g["scenarios"] == [g["id"]] for g in real_groups[1:]] == [True] * (len(real["scenarios"]) - 15), True)
+    rpack = test_pack()
+    check("C2: the real file: every scenario is its own group, and none says serial",
+          ([g["scenarios"] for g in real_groups] == [[s["id"]] for s in real["scenarios"]], [s["id"] for s in real["scenarios"] if "serial" in s]), (True, []))
+    check("C2: the real file: no two scenarios write to the same core path of the test repository", partition(real["scenarios"], real_groups, rpack), [])
+    check("C2: each scenario writes under its own directory of the core, its fixed change too",
+          (sorted(core_writes({"id": "x"}, rpack)), {org_key(p, rpack) for p in core_writes({"id": "x"}, rpack)}), (["scenarios/x/*", "scenarios/x/*.md"], {"scenarios/x"}))
+    shared = {"fixed-change": {"file": "scenarios/{n}.md"}, "core": ["scenarios/*"]}
+    check("C2: partition fails when two scenarios could write to the same core path (a fixed change outside their own directory)",
+          partition([{"id": "a"}, {"id": "b"}], groups([{"id": "a"}, {"id": "b"}]), shared),
+          ["scenario b: writes scenarios/*.md, on the core of the test repository scenario a writes too, so one would wait on the other"])
     titles = []
 
     def ordered(*a, input=None):
@@ -1069,10 +1092,9 @@ def self_test():
             titles.append(a[a.index("--title") + 1])
             return "https://github.com/o/t/issues/9\n"
         return "{}" if a[:2] == ("issue", "view") else "[]"
-    conf3 = {"scenarios": [{"id": "a", "serial": True, "opens": {"issue": {"title": "a"}}, "expect": {}}, {"id": "b", "opens": {"issue": {"title": "b"}}, "expect": {}},
-                           {"id": "c", "serial": True, "opens": {"issue": {"title": "c"}}, "expect": {}}]}
-    rows = play_group(conf3, "serial", "o/t", "v7-next", ordered, lambda s: None, 1)
-    check("C2: play_group plays its group's scenarios one after another, in order, and no other", ([r["id"] for r in rows], titles), (["a", "c"], ["a", "c"]))
+    conf3 = {"scenarios": [{"id": "a", "opens": {"issue": {"title": "a"}}, "expect": {}}, {"id": "b", "opens": {"issue": {"title": "b"}}, "expect": {}}]}
+    rows = play_group(conf3, "b", "o/t", "v7-next", ordered, lambda s: None, 1)
+    check("C2: play_group plays its group's one scenario, and no other", ([r["id"] for r in rows], titles), (["b"], ["b"]))
     check("C2: play_group on no group is one failing row", [(r["id"], r["ok"]) for r in play_group(conf3, "gone", "o/t", "v7-next", ordered, lambda s: None, 1)], [("gone", False)])
     rpack = test_pack()
     check("#563: the test repository's callers are shipped ones", all(os.path.exists(os.path.join(ROOT, "workflow-templates", c)) for c in rpack["callers"]) and rpack["callers"] != [], True)
@@ -1511,7 +1533,7 @@ def main(argv):
         return 0 if all(r["ok"] for r in results) else 1
     if argv[:1] == ["groups"] and len(argv) == 1:
         scenarios = load_yaml(os.path.join(ROOT, SCENARIOS)).get("scenarios") or []
-        gs, wrong = groups(scenarios), partition(scenarios, groups(scenarios))
+        gs, wrong = groups(scenarios), partition(scenarios, groups(scenarios), test_pack())
         for line in wrong:
             print(line, file=sys.stderr)
         if wrong:

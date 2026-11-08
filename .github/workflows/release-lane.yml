@@ -12,8 +12,8 @@ name: Release lane
 # the auto-merge decision never merges a change to .github/workflows; never
 # a write to its main) with the test identity's token, in groups that play
 # at once, one job each (`move`, then `play`, a matrix on DX_RUNNER_HEAVY or
-# ubuntu-latest, then `back`: release-scenarios.py groups; the `serial`
-# scenarios one after another in one group), and only when all rows of the
+# ubuntu-latest, then `back`: release-scenarios.py groups; every scenario
+# in its own, on its own core, #694), and only when all rows of the
 # one table `act` merges from them pass (a group that left no results, a
 # scenario with no row or a job that did not succeed is a failing row),
 # and main is still the commit they tried, merges the release pull request, tags vX.Y.Z at its merge
@@ -157,8 +157,8 @@ jobs:
         id: test
         run: echo "repo=$(python3 scripts/org.py test-repo)" >> "$GITHUB_OUTPUT"
 
-      # The groups of tests/release/scenarios.yml: the `serial` ones in one,
-      # every other scenario in its own (release-scenarios.py groups).
+      # The groups of tests/release/scenarios.yml: every scenario in its own
+      # (release-scenarios.py groups, #694).
       - name: The groups of scenarios
         id: groups
         run: echo "groups=$(python3 scripts/release-scenarios.py groups)" >> "$GITHUB_OUTPUT"
