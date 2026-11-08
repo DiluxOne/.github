@@ -48,7 +48,10 @@ once, one job each, and every other scenario is a group of its own.
                             [--ref v7-next] [--minutes N]
         the group's scenarios, one after another in its order, with the
         test identity's token (GH_TOKEN) alone, the callers already at the
-        ref; their table to FILE; exits 1 when one fails
+        ref, each one first deleting its leftover `scenario/<id>` branch
+        and closing the issues and pull requests an earlier run of it left
+        (the `dx-scenario: <id>` mark first in every body it opens), and
+        again after (#694); their table to FILE; exits 1 when one fails
   release-scenarios.py merge --dir DIR --groups JSON --job NAME=RESULT ...
                              --out FILE [--run URL] [--minutes N]
                              [--play-minutes M]
@@ -321,41 +324,105 @@ def gh(*args, input=None, token=None):
     return out.stdout
 
 
-def open_issue(repo, spec, bodies, default, run=gh):
+def scenario_mark(sid):
+    """The mark every body a scenario opens carries (#694), so a later run
+    finds and closes what this one left behind. Pure."""
+    return f"<!-- dx-scenario: {sid} -->"
+
+
+def marked(text, sid):
+    """`text` with the scenario's mark first: before the first section, where
+    the issue schema reads an organisation's marker (scripts/issue-schema.py
+    MARKER). Pure."""
+    return f"{scenario_mark(sid)}\n{text}"
+
+
+def open_issue(repo, spec, bodies, default, run=gh, sid=None):
+    text = body_of(spec.get("body"), bodies)
     url = run("issue", "create", "--repo", repo, "--title", spec.get("title", default), "--body-file", "-",
-              *sum((["--label", l] for l in spec.get("labels") or []), []), input=body_of(spec.get("body"), bodies)).strip()
+              *sum((["--label", l] for l in spec.get("labels") or []), []), input=marked(text, sid) if sid else text).strip()
     return url.rstrip("/").rsplit("/", 1)[-1]
 
 
+def fresh_branch(target, branch, run=gh):
+    """`branch` in `target` made anew from its head (#694): a leftover of an
+    earlier run deleted first (none is a 404, which is fine), so creating it
+    never fails with 422 "Reference already exists"."""
+    try:
+        run("api", "-X", "DELETE", f"repos/{target}/git/refs/heads/{branch}")
+    except RuntimeError:
+        pass
+    run("api", f"repos/{target}/git/refs", "-f", f"ref=refs/heads/{branch}", "-f", f"sha={run('api', f'repos/{target}/commits/HEAD', '--jq', '.sha').strip()}")
+
+
+def has_branch(target, branch, run=gh):
+    try:
+        run("api", f"repos/{target}/git/ref/heads/{branch}", "--jq", ".ref")
+        return True
+    except RuntimeError:
+        return False
+
+
+def clear(repo, sid, run=gh):
+    """What scenario `sid` left in `repo`, before it plays and after (#694):
+    its `scenario/<id>` branch deleted, and every open issue and pull request
+    whose body carries its mark closed. A failure here never stops a
+    scenario: what it cannot clear, the next run clears."""
+    try:
+        run("api", "-X", "DELETE", f"repos/{repo}/git/refs/heads/scenario/{sid}")
+    except RuntimeError:
+        pass  # none left: a 404
+    mark = scenario_mark(sid)
+    for what in ("issue", "pr"):
+        try:
+            found = json.loads(run(what, "list", "--repo", repo, "--state", "open", "--search", f'"dx-scenario: {sid}" in:body',
+                                   "--json", "number,body", "--limit", "50") or "[]")
+        except (RuntimeError, ValueError):
+            continue
+        for item in found:
+            if mark not in str(item.get("body") or ""):
+                continue  # the search matched another scenario's, or none
+            try:
+                if what == "issue":
+                    run("issue", "close", str(item["number"]), "--repo", repo)
+                else:
+                    run("pr", "close", str(item["number"]), "--repo", repo, "--delete-branch")
+            except RuntimeError:
+                pass
+
+
 def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20):
-    """One scenario in `repo`: opens what it opens (its `before` first),
-    takes its steps, polls until its `expect` holds or `minutes` pass, then
-    cleans up. Returns {id, ok, why, run}."""
+    """One scenario in `repo`: clears what an earlier run of it left
+    (`clear`), opens what it opens (its `before` first), takes its steps,
+    polls until its `expect` holds or `minutes` pass, then cleans up and
+    clears again. Returns {id, ok, why, run}."""
     opens, made, closes = s.get("opens") or {}, [], None
     what = "pr" if "pull" in opens else "issue"
     spec = opens.get("pull") or opens.get("issue") or {}
+    sid = s["id"]
     try:
+        clear(repo, sid, run)
         for first in s.get("before") or []:
-            made.append(("issue", open_issue(repo, first.get("issue") or {}, bodies, f"{s['id']}: before", run)))
+            made.append(("issue", open_issue(repo, first.get("issue") or {}, bodies, f"{sid}: before", run, sid)))
         if what == "issue":
-            url = open_issue(repo, spec, bodies, s["id"], run)
+            url = open_issue(repo, spec, bodies, sid, run, sid)
         else:
             text = body_of(spec.get("body"), bodies)
             if "{issue}" in text:
-                closes = open_issue(repo, spec.get("issue") or {"title": spec.get("title", s["id"]), "body": "complete-feature"}, bodies, s["id"], run)
+                closes = open_issue(repo, spec.get("issue") or {"title": spec.get("title", sid), "body": "complete-feature"}, bodies, sid, run, sid)
                 made.append(("issue", closes))
                 text = text.replace("{issue}", closes)
-            branch, target = f"scenario/{s['id']}", repo
+            branch, target = f"scenario/{sid}", repo
             if spec.get("fork"):
                 # From the test identity's fork, which runs with no secrets.
                 run("repo", "fork", repo, "--clone=false", "--default-branch-only")
                 target = f"{run('api', 'user', '--jq', '.login').strip()}/{repo.split('/', 1)[1]}"
-            run("api", f"repos/{target}/git/refs", "-f", f"ref=refs/heads/{branch}", "-f", f"sha={run('api', f'repos/{target}/commits/HEAD', '--jq', '.sha').strip()}")
-            run("api", "-X", "PUT", f"repos/{target}/contents/scenarios/{s['id']}.md", "-f", f"message=test: scenario {s['id']}",
-                "-f", f"branch={branch}", "-f", f"content={__import__('base64').b64encode(s['id'].encode()).decode()}")
+            fresh_branch(target, branch, run)
+            run("api", "-X", "PUT", f"repos/{target}/contents/scenarios/{sid}/pull.md", "-f", f"message=test: scenario {sid}",
+                "-f", f"branch={branch}", "-f", f"content={__import__('base64').b64encode(sid.encode()).decode()}")
             head = f"{target.split('/', 1)[0]}:{branch}" if target != repo else branch
-            url = run("pr", "create", "--repo", repo, "--head", head, "--title", spec.get("title", f"test: {s['id']}"),
-                      "--body-file", "-", input=text).strip()
+            url = run("pr", "create", "--repo", repo, "--head", head, "--title", spec.get("title", f"test: {sid}"),
+                      "--body-file", "-", input=marked(text, sid)).strip()
         number = url.rstrip("/").rsplit("/", 1)[-1]
         made.append((what, number))
         for step in s.get("steps") or []:
@@ -365,12 +432,16 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20):
             elif verb in ("label", "unlabel"):
                 run(what, "edit", number, "--repo", repo, f"--{'add' if verb == 'label' else 'remove'}-label", str(arg))
             elif verb == "edit":
-                run(what, "edit", number, "--repo", repo, "--body-file", "-", input=body_of(arg, bodies))
+                run(what, "edit", number, "--repo", repo, "--body-file", "-", input=marked(body_of(arg, bodies), sid))
             elif verb == "dispatch":
                 run("workflow", "run", str(arg), "--repo", repo, "--ref", "main")
             elif verb == "push":
-                run("api", "-X", "PUT", f"repos/{repo}/contents/scenarios/{s['id']}-{arg}.md", "-f", f"message=test: {arg}",
-                    "-f", f"branch=scenario/{s['id']}", "-f", "content=eA==")
+                # An issue's scenario has no branch of its own yet: it makes
+                # it, never assumes it (#694: the 404s).
+                if not has_branch(repo, f"scenario/{sid}", run):
+                    fresh_branch(repo, f"scenario/{sid}", run)
+                run("api", "-X", "PUT", f"repos/{repo}/contents/scenarios/{sid}/{arg}.md", "-f", f"message=test: {arg}",
+                    "-f", f"branch=scenario/{sid}", "-f", "content=eA==")
             elif verb == "wait":
                 sleep(int(arg))
         deadline, why = minutes * 60, ["not played"]
@@ -383,11 +454,12 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20):
                 break
             sleep(30)
             deadline -= 30
-        return {"id": s["id"], "ok": not why, "why": why, "run": seen.get("run", "")}
+        return {"id": sid, "ok": not why, "why": why, "run": seen.get("run", "")}
     except (RuntimeError, ValueError) as e:
-        return {"id": s["id"], "ok": False, "why": [str(e)], "run": ""}
+        return {"id": sid, "ok": False, "why": [str(e)], "run": ""}
     finally:
         cleanup(repo, made, run)
+        clear(repo, sid, run)
 
 
 def observe(repo, what, number, run=gh):
@@ -910,6 +982,18 @@ def schema_passes(root=ROOT):
     return lambda body: bool(mod.check(body, "prd")["ok"])
 
 
+def passes_mark(body, root=ROOT):
+    """Whether `body` with a scenario's mark first passes the issue schema
+    (#694: the mark is one of its markers)."""
+    sys.path.insert(0, os.path.join(root, "scripts"))
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("issue_schema", os.path.join(root, "scripts", "issue-schema.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    good = load_yaml(os.path.join(root, SCENARIOS))["bodies"]["complete-feature"]
+    return bool(mod.check(marked(good, "p"), "prd")["ok"]) and bool(body)
+
+
 def problems(conf, root=ROOT):
     """What `coverage` names: every played pair and transition with no
     scenario, every scenario its setup cannot make hold, and what is wrong
@@ -1050,7 +1134,65 @@ def self_test():
             return "s\n"
         return "[]"
     got = play({"id": "p", "opens": {"pull": {"title": "feat: x", "body": "pull"}}, "expect": {"pull": {"closes": True}}}, "o/t", "v7-next", {"pull": "Closes #{issue}", "complete-feature": "f"}, prfake, lambda s: None, 1)
-    check("run: a pull scenario opens the issue its pull request closes, and passes on it", (got["ok"], [a[:2] for a, _ in pcalls_][:1], ("issue", "close", "11", "--repo", "o/t") in [a for a, _ in pcalls_]), (True, [("issue", "create")], True))
+    check("run: a pull scenario opens the issue its pull request closes, and passes on it",
+          (got["ok"], [a[:2] for a, _ in pcalls_ if a[0] in ("issue", "pr") and a[1] == "create"][:1], ("issue", "close", "11", "--repo", "o/t") in [a for a, _ in pcalls_]), (True, [("issue", "create")], True))
+    check("#694: every body a scenario opens carries its mark first, and still passes the issue schema",
+          ([i.startswith(scenario_mark("p") + "\n") for a, i in pcalls_ if a[1:2] == ("create",)], passes_mark("f")), ([True, True], True))
+
+    def leftover(state):
+        """A test repository where an earlier run left `scenario/p` and one
+        open issue with p's mark (and one with another's): creating a ref
+        that exists is the 422 GitHub answers."""
+        def fake(*a, input=None):
+            state["calls"].append(a)
+            if a[:3] == ("api", "-X", "DELETE"):
+                ref = a[3].split("/git/refs/heads/", 1)[1]
+                if ref not in state["branches"]:
+                    raise GhError("gh api: HTTP 404: Not Found", 1, "", "HTTP 404")
+                state["branches"].discard(ref)
+                return ""
+            if a[:2] == ("api", "repos/o/t/git/refs"):
+                ref = a[3].split("refs/heads/", 1)[1]
+                if ref in state["branches"]:
+                    raise GhError("gh api: HTTP 422: Reference already exists", 1, "", "HTTP 422")
+                state["branches"].add(ref)
+                return "{}"
+            if a[0] == "api" and "/git/ref/heads/" in a[1]:
+                if a[1].split("/git/ref/heads/", 1)[1] not in state["branches"]:
+                    raise GhError("gh api: HTTP 404: Not Found", 1, "", "HTTP 404")
+                return "refs/heads/x\n"
+            if a[:2] == ("issue", "view"):
+                return "{}"
+            if a[:2] == ("issue", "list"):
+                return json.dumps([{"number": 3, "body": scenario_mark("p") + "\nold"}, {"number": 4, "body": scenario_mark("p-2") + "\nother"}])
+            if a[:2] == ("issue", "create"):
+                return "https://github.com/o/t/issues/11\n"
+            if a[:2] == ("pr", "create"):
+                return "https://github.com/o/t/pull/12\n"
+            if a[:2] == ("pr", "view"):
+                return json.dumps({"body": "Closes #11"})
+            if a[-1:] == (".sha",):
+                return "s\n"
+            return "[]"
+        return fake
+    st694 = {"calls": [], "branches": {"scenario/p"}}
+    got = play({"id": "p", "opens": {"pull": {"title": "feat: x", "body": "pull"}}, "expect": {"pull": {"closes": True}}}, "o/t", "v7-next",
+               {"pull": "Closes #{issue}", "complete-feature": "f"}, leftover(st694), lambda s: None, 1)
+    calls694 = st694["calls"]
+    delete = ("api", "-X", "DELETE", "repos/o/t/git/refs/heads/scenario/p")
+    create = next(c for c in calls694 if c[:2] == ("api", "repos/o/t/git/refs"))
+    check("C1: play deletes a leftover scenario branch before it makes it, and no 422 happens",
+          (calls694.index(delete) < calls694.index(create), got["ok"], got["why"], "scenario/p" in st694["branches"]), (True, True, [], False))
+    check("C1: play closes the open issue an earlier run of it left (its mark), before it opens anything, and no other scenario's",
+          (calls694.index(("issue", "close", "3", "--repo", "o/t")) < calls694.index(next(c for c in calls694 if c[:2] == ("issue", "create"))),
+           ("issue", "close", "4", "--repo", "o/t") in calls694), (True, False))
+    check("C1: after it plays, its branch is deleted again and its leftovers looked for again",
+          (calls694[-1][:2], sum(1 for c in calls694 if c == delete) >= 2), (("pr", "list"), True))
+    st694 = {"calls": [], "branches": set()}
+    got = play({"id": "p", "opens": {"issue": {"title": "feat: x", "body": "f"}}, "steps": [{"push": "behind"}], "expect": {}}, "o/t", "v7-next", {"f": "f"}, leftover(st694), lambda s: None, 1)
+    check("C1: a push of an issue's scenario makes its branch first, never assumes it (no 404)",
+          (got["ok"], [c[3] for c in st694["calls"] if c[:2] == ("api", "repos/o/t/git/refs")], [c[3] for c in st694["calls"] if c[:3] == ("api", "-X", "PUT")]),
+          (True, ["ref=refs/heads/scenario/p"], ["repos/o/t/contents/scenarios/p/behind.md"]))
     first = []
     play({"id": "c", "before": [{"issue": {"title": "first", "labels": ["accepted"]}}], "opens": {"issue": {"title": "second"}}, "expect": {}},
          "o/t", "v7-next", {}, lambda *a, input=None: first.append(a) or ("https://github.com/o/t/issues/9\n" if a[:2] == ("issue", "create") else "{}" if a[:2] == ("issue", "view") else "[]"), lambda s: None, 1)
