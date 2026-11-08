@@ -44,7 +44,7 @@ Then, what no pull request can do (the installer prints it with each URL):
 1. Organisation secrets: `DILUX_BOT_PRIVATE_KEY` (its App's key) and the Claude token.
 2. Organisation variables: `DILUX_BOT_CLIENT_ID` (its App's client ID), and `DX_BOT_LOGIN`, `DX_BOT_APP` and `DX_BOT_ID` (its App's login, slug and bot user id), so the workflows recognise its App; no workflow names one, and a workflow that reads them stops while one is unset ([workflows](workflows.md#organisation-secrets-and-variables)).
 3. An organisation ruleset requiring `<Org>/.github/.github/workflows/org-pull-request.yml` on every repository's default branch.
-4. The test identity (#563): a machine user (`<org>-test-bot`, the `engine-test` pack's `identity`), whose fine-grained token, with write on the test repository only, is the one secret the organisation provides for it: `DX_TEST_TOKEN`, in the `release` environment of `<Org>/.github` (main only).
+4. The test identity (#563): a machine user (`<org>-test-bot`, the `engine-test` pack's `identity`), whose fine-grained token, with write on the test repository only, is the secret the organisation provides for it: `DX_TEST_TOKEN`, in the `release` environment of `<Org>/.github` (main only); and, for the one scenario from a fork (`fork-without-secrets`, #694), `DX_TEST_FORK_TOKEN` there too, a token of the same identity that may fork the test repository (a fine-grained token with Administration and Contents read and write on its own repositories, or a classic one with `public_repo`): without it that scenario fails, naming it.
 
 ### The test repository
 

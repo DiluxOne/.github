@@ -259,7 +259,9 @@ jobs:
   # (nothing of this repository's other fixes is in reach) and no key.
   build:
     name: Build ${{ matrix.p.ghsa }}
-    needs: [plan, fetch]
+    needs:
+      - plan
+      - fetch  # order: it builds from the in-<ghsa> artifact the fetch job uploads.
     # Each leg on its own: one fetch that failed leaves the others to build.
     if: ${{ !cancelled() && needs.plan.outputs.todo != '' && needs.plan.outputs.todo != '[]' }}
     runs-on: ubuntu-latest
@@ -363,7 +365,10 @@ jobs:
   # whether it only closes a weakness, adding nothing else.
   review:
     name: Review ${{ matrix.p.ghsa }}
-    needs: [plan, fetch, build]
+    needs:
+      - plan
+      - fetch  # order: it reads the in-<ghsa> artifact the fetch job uploads.
+      - build  # order: it reviews the fix the build job made.
     if: ${{ !cancelled() && needs.plan.outputs.todo != '' && needs.plan.outputs.todo != '[]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -447,7 +452,10 @@ jobs:
 
   act:
     name: ${{ matrix.p.act }} ${{ matrix.p.ghsa }}
-    needs: [plan, fetch, build, review]
+    needs:
+      - plan
+      - build  # order: it applies the patch-<ghsa> artifact the build job uploads.
+      - review  # order: it acts on the review-<ghsa> artifact the review job uploads.
     if: always() && needs.plan.outputs.todo != '' && needs.plan.outputs.todo != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 20

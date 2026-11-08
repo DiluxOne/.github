@@ -140,6 +140,10 @@ jobs:
       description-ok: ${{ steps.verdict.outputs.description_ok }}
       auto-merge: ${{ steps.policy.outputs.auto_merge }}
     steps:
+      # For the run's cost in its summary (#694, scripts/model-cache.py).
+      - name: The job's start
+        run: echo "DX_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+
       - name: App token
         id: bot
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -245,9 +249,10 @@ jobs:
             # compared with the one the review read), and fails when none
             # comes: a green check without a verdict would replace the push
             # run's own under the same name.
-            # Up to 50 minutes: longer than a push's review job (30) can run.
-            for _ in $(seq 1 100); do
-              sleep 30
+            # Up to 50 minutes: longer than a push's review job (30) can run,
+            # polled every 15 seconds (#694).
+            for _ in $(seq 1 200); do
+              sleep 15
               record=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
                 | jq -r --arg bot "$BOT" '.[] | select(.user.login == $bot and (.body | startswith("<!-- dx-review -->"))) | .body' \
                 | grep -oP '<!-- dx-review-record \K.*(?= -->)' | tail -1 || true)
@@ -332,9 +337,45 @@ jobs:
             PREVIOUS_JSON="$RUNNER_TEMP/previous.json" OPEN_THREADS="$RUNNER_TEMP/open-threads.json" SETTLED_THREADS="$RUNNER_TEMP/settled-threads.json" \
             bash .dx-central/scripts/review-brief.sh
 
+      # #694: an automatic re-run of this run (a later attempt the bot
+      # started, never a person's) on the same head, brief and policy
+      # reuses the answers the first attempt kept, and calls no model. A
+      # `central-ref` older than scripts/model-cache.py keeps nothing.
+      - name: An automatic re-run's key
+        id: cached
+        if: steps.scope.outputs.mode == 'full' || steps.scope.outputs.mode == 'incremental'
+        env:
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          MODEL: ${{ steps.scope.outputs.model }}
+          EFFORT: ${{ steps.scope.outputs.effort }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          SENDER: ${{ github.event.sender.login }}
+        run: |
+          set -euo pipefail
+          [ -f .dx-central/scripts/model-cache.py ] || { echo "No model-cache.py at this central-ref."; exit 0; }
+          python3 .dx-central/scripts/model-cache.py key --input "$HEAD" --prompt .dx-central/brief.md --policy "$MODEL/$EFFORT" >> "$GITHUB_OUTPUT"
+          python3 .dx-central/scripts/model-cache.py automatic >> "$GITHUB_OUTPUT"
+
+      - name: The first attempt's answers
+        if: steps.cached.outputs.automatic == 'true'
+        continue-on-error: true # none kept: the models are called
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: model-answer-*-${{ steps.cached.outputs.key }}
+          path: ${{ runner.temp }}/model-cache
+
+      - name: The review's answer, reused
+        id: reuse
+        if: steps.cached.outputs.automatic == 'true'
+        run: |
+          python3 .dx-central/scripts/model-cache.py reuse --dir "$RUNNER_TEMP/model-cache/model-answer-review-$KEY" >> "$GITHUB_OUTPUT"
+        env:
+          KEY: ${{ steps.cached.outputs.key }}
+
       - name: Review
         id: claude
-        if: steps.scope.outputs.mode == 'full' || steps.scope.outputs.mode == 'incremental'
+        if: (steps.scope.outputs.mode == 'full' || steps.scope.outputs.mode == 'incremental') && steps.reuse.outputs.hit != 'true'
         # A review that does not finish (turn limit, API error) must still
         # leave a comment saying so; the verdict step fails the job for it.
         continue-on-error: true
@@ -407,12 +448,30 @@ jobs:
       # One it rejects stays in the summary as a minor marked not confirmed,
       # and in the record; one it confirms is posted inline by the verdict.
       # No answer rejects nothing (scripts/review-verify.py).
+      # Kept for an automatic re-run of this run (#694).
+      - name: Keep the review's answer for an automatic re-run
+        id: keep
+        if: steps.cached.outputs.key != '' && steps.claude.outputs.structured_output != ''
+        continue-on-error: true
+        env:
+          ANSWER: ${{ steps.claude.outputs.structured_output }}
+        run: python3 .dx-central/scripts/model-cache.py save --dir "$RUNNER_TEMP/model-answer-review"
+
+      - name: The review's answer, kept
+        if: steps.keep.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: model-answer-review-${{ steps.cached.outputs.key }}
+          path: ${{ runner.temp }}/model-answer-review
+          retention-days: 7
+
       - name: The verifier's task
         id: verify-task
-        if: steps.claude.outcome == 'success' && steps.claude.outputs.structured_output != ''
+        if: (steps.claude.outcome == 'success' && steps.claude.outputs.structured_output != '') || steps.reuse.outputs.hit == 'true'
         continue-on-error: true # the verdict runs whatever happens here
         env:
-          OUT: ${{ steps.claude.outputs.structured_output }}
+          OUT: ${{ steps.claude.outputs.structured_output || steps.reuse.outputs.answer }}
         run: |
           set -euo pipefail
           printf '%s' "$OUT" > "$RUNNER_TEMP/review.json"
@@ -425,9 +484,17 @@ jobs:
             { echo "prompt<<$eof"; cat "$RUNNER_TEMP/verify-prompt.md"; echo "$eof"; } >> "$GITHUB_OUTPUT"
           fi
 
+      - name: The verifier's answer, reused
+        id: reuse-verify
+        if: steps.cached.outputs.automatic == 'true' && steps.verify-task.outputs.prompt != ''
+        run: |
+          python3 .dx-central/scripts/model-cache.py reuse --dir "$RUNNER_TEMP/model-cache/model-answer-verify-$KEY" >> "$GITHUB_OUTPUT"
+        env:
+          KEY: ${{ steps.cached.outputs.key }}
+
       - name: Verify the blockers and majors
         id: verify
-        if: steps.verify-task.outputs.prompt != ''
+        if: steps.verify-task.outputs.prompt != '' && steps.reuse-verify.outputs.hit != 'true'
         continue-on-error: true # no answer rejects nothing
         timeout-minutes: 15
         uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1.0.264
@@ -445,12 +512,29 @@ jobs:
             --allowedTools "Read,Glob,Grep"
             --json-schema '{"type":"object","additionalProperties":false,"required":["verdicts"],"properties":{"verdicts":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["i","real","why"],"properties":{"i":{"type":"integer"},"real":{"type":"boolean"},"why":{"type":"string","maxLength":300}}}}}}'
 
+      - name: Keep the verifier's answer for an automatic re-run
+        id: keep-verify
+        if: steps.cached.outputs.key != '' && steps.verify.outputs.structured_output != ''
+        continue-on-error: true
+        env:
+          ANSWER: ${{ steps.verify.outputs.structured_output }}
+        run: python3 .dx-central/scripts/model-cache.py save --dir "$RUNNER_TEMP/model-answer-verify"
+
+      - name: The verifier's answer, kept
+        if: steps.keep-verify.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: model-answer-verify-${{ steps.cached.outputs.key }}
+          path: ${{ runner.temp }}/model-answer-verify
+          retention-days: 7
+
       - name: Apply the verification
         id: verified
         if: steps.verify-task.outcome == 'success'
         continue-on-error: true # without it, the verdict posts what the review found
         env:
-          VERIFIED: ${{ steps.verify.outputs.structured_output }}
+          VERIFIED: ${{ steps.verify.outputs.structured_output || steps.reuse-verify.outputs.answer }}
         run: |
           set -euo pipefail
           printf '%s' "${VERIFIED:-}" > "$RUNNER_TEMP/verdicts.json"
@@ -464,7 +548,7 @@ jobs:
           BODY: ${{ github.event.pull_request.body }}
           BOT: ${{ steps.bot.outputs.app-slug }}[bot]
           PR: ${{ github.event.pull_request.number }}
-          OUT: ${{ steps.claude.outputs.structured_output }}
+          OUT: ${{ steps.claude.outputs.structured_output || steps.reuse.outputs.answer }}
           EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
           VERIFY_EXECUTION_FILE: ${{ steps.verify.outputs.execution_file }}
           FLOOR: ${{ steps.policy.outputs.floor }}
@@ -732,3 +816,19 @@ jobs:
             gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --title "$retitled" >/dev/null
             echo "Title corrected to \"$retitled\"."
           fi
+
+      # What this run spent (#694): its runner minutes and the models'
+      # tokens. A `central-ref` older than scripts/model-cache.py says none.
+      - name: The run's cost
+        if: always()
+        env:
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+          VERIFY_EXECUTION_FILE: ${{ steps.verify.outputs.execution_file }}
+          REUSED: ${{ steps.reuse.outputs.hit }}
+        run: |
+          [ -f .dx-central/scripts/model-cache.py ] || exit 0
+          args=()
+          [ -z "$EXECUTION_FILE" ] || args+=(--log "Review=$EXECUTION_FILE")
+          [ -z "$VERIFY_EXECUTION_FILE" ] || args+=(--log "Verify=$VERIFY_EXECUTION_FILE")
+          [ "$REUSED" != true ] || args+=(--reused)
+          python3 .dx-central/scripts/model-cache.py summary --title "The review's cost" --started "${DX_STARTED:-}" "${args[@]}" >> "$GITHUB_STEP_SUMMARY" || true

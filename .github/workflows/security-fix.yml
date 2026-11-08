@@ -271,7 +271,9 @@ jobs:
 
   record:
     name: Record ${{ matrix.fix.ghsa }}
-    needs: [plan, fix]
+    needs:
+      - plan
+      - fix  # order: it records the fix-<ghsa> artifact the fix job uploads.
     if: always() && needs.plan.outputs.fixes != '' && needs.plan.outputs.fixes != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 15

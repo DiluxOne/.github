@@ -206,6 +206,8 @@ def open_child(full, number, parent, repo):
     if found:
         n = str(found[0]["number"])
     else:
+        # #694: checked as a person's issue is, before it is posted.
+        module("engine_post", "engine-post.py").refuse("issue", body)
         url = gh("issue", "create", "--repo", f"{org}/{repo}", "--title", parent["title"], "--body-file", "-", input_text=body).strip()
         n = url.rsplit("/", 1)[-1]
     if parent.get("type"):
@@ -354,6 +356,8 @@ def self_test():
     check("carry out: a repository that cannot be read is reported, the rest go on", (got, calls["open"]), (["broken"], [("offload", "Task")]))
     check("carry out: the comment lists the unread one as failed", "| broken | ✗ failed" in calls["comment"][-1], True)
 
+    post = module("engine_post", "engine-post.py")
+    check("C7: the sub-issue it opens passes the issue schema, as a person's (engine-post.py)", post.issue(child_body(prd, "O/.github#5", "app")), [])
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 

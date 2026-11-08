@@ -493,9 +493,18 @@ jobs:
           # lane, with its caps; one a person accepted, under human-issue.
           # A decision's sub-issue starts when it opens, and decision.py links
           # it to its parent a moment later (#415): a start that finds no lane
-          # asks once more.
+          # asks again, every 15 seconds for half a minute (#694: polled,
+          # never a fixed wait).
+          lane_again() {
+            local _
+            for _ in 1 2; do
+              sleep 15
+              LANE=$(NUMBER="$ISSUE" python3 .dx-central/scripts/autopilot.py lane) && return 0
+            done
+            return 1
+          }
           if ! LANE=$(NUMBER="$ISSUE" python3 .dx-central/scripts/autopilot.py lane) \
-            && { [ "$AS" != start ] || ! { sleep 20; LANE=$(NUMBER="$ISSUE" python3 .dx-central/scripts/autopilot.py lane); }; }; then
+            && { [ "$AS" != start ] || ! lane_again; }; then
             echo "The autopilot does not start: $LANE"
             echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
@@ -1614,6 +1623,8 @@ jobs:
 
       - name: The run's account
         if: always()
+        env:
+          STARTED: ${{ needs.prep.outputs.started }}
         run: |
           found=false
           for f in .dx-out-spec/transcript/*.json .dx-out/transcript/*.json; do
@@ -1623,3 +1634,12 @@ jobs:
             python3 .dx-central/scripts/autopilot.py account "$f" "$t" >> "$GITHUB_STEP_SUMMARY"
           done
           [ "$found" = true ] || printf '## The autopilot'"'"'s run\n\nThe agent did not run.\n' >> "$GITHUB_STEP_SUMMARY"
+          # What the run spent (#694): its minutes since it started and the
+          # agent's tokens, from the same transcripts.
+          if [ -f .dx-central/scripts/model-cache.py ]; then
+            args=()
+            for f in .dx-out-spec/transcript/*.json .dx-out/transcript/*.json; do
+              [ -f "$f" ] && args+=(--log "$(basename "$f" .json)=$f")
+            done
+            python3 .dx-central/scripts/model-cache.py summary --title "The autopilot's cost" --started "$STARTED" "${args[@]}" >> "$GITHUB_STEP_SUMMARY" || true
+          fi

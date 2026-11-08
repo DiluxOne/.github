@@ -86,6 +86,8 @@ jobs:
       DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
 
   review:
+    # order: the conventions gate passes first, so no review is paid for a
+    # pull request it refuses.
     needs: [conventions]
     if: github.event_name == 'pull_request' && github.event.action != 'dequeued' && github.repository != 'DiluxOne/.github'
     permissions:
@@ -124,6 +126,7 @@ jobs:
   # fork's pull request has no secrets here: issues.yml covers it, by its
   # metadata only.
   waiting:
+    # order: after the review, whose verdict and labels the board shows.
     needs: review
     if: always() && github.event_name == 'pull_request' && github.repository != 'DiluxOne/.github' && github.event.pull_request.head.repo.full_name == github.repository
     permissions:

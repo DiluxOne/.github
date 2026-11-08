@@ -12,8 +12,8 @@ name: Release lane
 # the auto-merge decision never merges a change to .github/workflows; never
 # a write to its main) with the test identity's token, in groups that play
 # at once, one job each (`move`, then `play`, a matrix on DX_RUNNER_HEAVY or
-# ubuntu-latest, then `back`: release-scenarios.py groups; the `serial`
-# scenarios one after another in one group), and only when all rows of the
+# ubuntu-latest, then `back`: release-scenarios.py groups; every scenario
+# in its own, on its own core, #694), and only when all rows of the
 # one table `act` merges from them pass (a group that left no results, a
 # scenario with no row or a job that did not succeed is a failing row),
 # and main is still the commit they tried, merges the release pull request, tags vX.Y.Z at its merge
@@ -23,7 +23,7 @@ name: Release lane
 # that commit through the API (scripts/api-commit.py), so GitHub signs it,
 # as the organisation's ruleset requires on every branch. A scenario that fails: nothing is tagged, `v7` stays, and a
 # bug names the scenario and its run; so does a scenarios job that runs out
-# of time (the play step at 240 minutes, the job at 300), whose bug names
+# of time (the play step at 20 minutes, the job at 30), whose bug names
 # the timeout (#690): only a run a person cancelled stays silent. A breaking change (`!`): the scenarios
 # run, then the release issue opens for a person. After `v7` moves, the
 # watch reads every adopted repository's runs for 30 minutes (a read-only
@@ -34,8 +34,9 @@ name: Release lane
 #
 # It runs on main's own code, never a fork's: workflow_run of a push to main,
 # or a maintainer's dispatch. The jobs that push tags and hold the test
-# identity's token (DX_TEST_TOKEN) run in the `release` environment, which
-# only main may use.
+# identity's tokens (DX_TEST_TOKEN, and DX_TEST_FORK_TOKEN, which may fork
+# the test repository, #694) run in the `release` environment, which only
+# main may use.
 
 on:
   workflow_run:
@@ -138,7 +139,9 @@ jobs:
   # (one job each), and the callers come back once every group ended.
   move:
     name: Callers to v7-next in the test repository
-    needs: [plan, candidate]
+    needs:
+      - plan
+      - candidate  # order: the callers move to v7-next once the candidate's tag is there.
     runs-on: ubuntu-latest
     timeout-minutes: 120
     environment: release
@@ -157,8 +160,8 @@ jobs:
         id: test
         run: echo "repo=$(python3 scripts/org.py test-repo)" >> "$GITHUB_OUTPUT"
 
-      # The groups of tests/release/scenarios.yml: the `serial` ones in one,
-      # every other scenario in its own (release-scenarios.py groups).
+      # The groups of tests/release/scenarios.yml: every scenario in its own
+      # (release-scenarios.py groups, #694).
       - name: The groups of scenarios
         id: groups
         run: echo "groups=$(python3 scripts/release-scenarios.py groups)" >> "$GITHUB_OUTPUT"
@@ -219,10 +222,11 @@ jobs:
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     # Past it GitHub cancels the job, not the run: the decision still reads
     # it as a timeout and opens its bug (#690). The play step stops first
-    # (its own timeout-minutes), leaving an hour for the results to be
-    # uploaded. The act step's SCENARIOS_TIMEOUT and PLAY_TIMEOUT name these
-    # two numbers in the bug.
-    timeout-minutes: 300
+    # (its own timeout-minutes, above every scenario's limit of 15 minutes
+    # or less: release-scenarios.py plan, #694), leaving ten minutes for
+    # the results to be uploaded. The act step's SCENARIOS_TIMEOUT and
+    # PLAY_TIMEOUT name these two numbers in the bug.
+    timeout-minutes: 30
     environment: release
     permissions:
       contents: read
@@ -244,9 +248,12 @@ jobs:
       # The test identity's token alone: no App token is minted here.
       - name: Play the group's scenarios at v7-next
         id: play
-        timeout-minutes: 240
+        timeout-minutes: 20
         env:
           GH_TOKEN: ${{ secrets.DX_TEST_TOKEN }}
+          # The test identity's token that may fork the test repository,
+          # for the scenario from a fork alone (#694).
+          DX_TEST_FORK_TOKEN: ${{ secrets.DX_TEST_FORK_TOKEN }}
           GROUP: ${{ matrix.group.id }}
           OWNER: ${{ github.repository_owner }}
           TEST_REPO: ${{ steps.test.outputs.repo }}
@@ -267,7 +274,10 @@ jobs:
 
   back:
     name: Callers back from v7-next
-    needs: [plan, move, play]
+    needs:
+      - plan
+      - move
+      - play  # order: the callers come back once every group of scenarios ended.
     # always(): the callers come back even when every group failed.
     if: ${{ always() && needs.move.result != 'skipped' }}
     runs-on: ubuntu-latest
@@ -387,8 +397,8 @@ jobs:
           PLAY: ${{ needs.play.result }}
           BACK: ${{ needs.back.result }}
           # The play job's timeout-minutes and its play step's.
-          SCENARIOS_TIMEOUT: 300
-          PLAY_TIMEOUT: 240
+          SCENARIOS_TIMEOUT: 30
+          PLAY_TIMEOUT: 20
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN }}
           DX_BOT_ID: ${{ vars.DX_BOT_ID }}

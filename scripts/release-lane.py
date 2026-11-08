@@ -18,10 +18,11 @@ in the test repository; a breaking change waits on a person.
         nothing else, made through the API with GH_TOKEN (scripts/api-
         commit.py, so GitHub signs it: never `git commit` and a push from
         the runner, #610), and the lightweight `vN-next` tag moved to it
-  release-lane.py decide --plan F --results F
+  release-lane.py decide --plan F --results F [--run URL]
         from the plan and the scenarios' results (scripts/release-scenarios.py
         run): `release`, `bug` (one failed: nothing tagged, nothing moved,
-        a bug naming the scenario and its run) or `issue` (a `!`: the
+        a bug naming the scenario and its run, in the issue schema's
+        sections so G1 passes it, #694) or `issue` (a `!`: the
         release issue for a person, nothing tagged); JSON
   release-lane.py act --plan F --results F --repo R [--run URL]
         does what `decide` says. A release, only while main is still the
@@ -136,8 +137,27 @@ def candidate(central, major, root=".", run=sh):
 
 # The decision.
 
-def decide(p, results):
-    """What the lane does, from its plan and the scenarios' results. Pure."""
+def visible(text):
+    """`text` with its HTML comments shown, never hidden: a scenario's why
+    may quote a marker. Pure."""
+    return str(text).replace("<!--", "&lt;!--").replace("-->", "--&gt;")
+
+
+def bug_body(happened, reproduce, problem, scope, criterion, criticality="Critical"):
+    """A bug the lane opens itself (#694), in the issue schema's sections
+    (policy/issue-schema.yml): its mark first, the report's (What happened?,
+    Steps to reproduce), then the PRD's (Problem, Scope, Out of scope,
+    Acceptance criteria, Criticality), so G1 passes it and it goes the
+    reproduced-bug way, never `incomplete`. Pure."""
+    return (f"{MARK}\n### What happened?\n\n{happened}\n\n### Steps to reproduce\n\n{reproduce}\n\n### Problem\n\n{problem}\n\n### Scope\n\n"
+            + "".join(f"- {item}\n" for item in scope)
+            + "\n### Out of scope\n\n- Changing the gates or what they check.\n\n### Acceptance criteria\n\n"
+            + f"- C1: {criterion}\n\n### Criticality\n\n{criticality}\n")
+
+
+def decide(p, results, lane_run=""):
+    """What the lane does, from its plan and the scenarios' results, and the
+    lane's run (`lane_run`) a bug names. Pure."""
     if not p.get("release"):
         return {"do": "none", "why": p.get("why", "")}
     failed = [r for r in results if not r.get("ok")]
@@ -145,10 +165,18 @@ def decide(p, results):
         failed = [{"id": "(none ran)", "why": ["no scenario result"], "run": ""}]
     if failed:
         first = failed[0]
-        lines = [f"- `{r['id']}`: {'; '.join(r.get('why') or []) or 'failed'} ({r.get('run') or 'no run'})" for r in failed]
+        lines = [f"- `{r['id']}`: {visible('; '.join(r.get('why') or []) or 'failed')} ({r.get('run') or 'no run'})" for r in failed]
+        ids = ", ".join(f"`{r['id']}`" for r in failed)
         return {"do": "bug", "scenario": first["id"], "run": first.get("run", ""),
                 "title": f"fix: release candidate {p['version']} fails scenario {first['id']}",
-                "body": f"{MARK}\nThe release lane tried {p['version']} at `{p['major']}-next` in the test repository, and a scenario failed. Nothing was tagged and `{p['major']}` did not move.\n\n" + "\n".join(lines) + "\n"}
+                "body": bug_body(
+                    f"The release lane tried {p['version']} at `{p['major']}-next` in the test repository, and a scenario failed. Nothing was tagged and `{p['major']}` did not move.\n\n"
+                    + "\n".join(lines) + (f"\n\nThe lane's run: {lane_run}" if lane_run else ""),
+                    f"Run the release lane (.github/workflows/release-lane.yml) on {p['version']}'s candidate: it plays every scenario of tests/release/scenarios.yml "
+                    f"in the test repository at `{p['major']}-next` (scripts/release-scenarios.py play).",
+                    f"The release candidate {p['version']} fails the release scenarios {ids}, so the lane releases nothing and `{p['major']}` stays where it is.",
+                    [f"The cause of each failing scenario above ({ids}), in the engine or in the scenario's fixtures, fixed with a test that would have caught it."],
+                    f"Given {p['version']}'s candidate with the fix, when the release lane plays {ids} in the test repository, then each passes and the lane releases it.")}
     if p.get("breaking"):
         return {"do": "issue", "why": p.get("why", "")}
     return {"do": "release", "version": p["version"]}
@@ -169,15 +197,16 @@ def release(p, repo, run=sh, sleep=time.sleep, minutes=60, root="."):
     head = run("git", "-C", root, "rev-parse", "origin/main").strip()
     if head != planned:
         return {"do": "none", "why": f"main moved past {planned[:12]}, the commit the scenarios tried: its own green run plans it again"}
-    branch = f"chore/release-{version}"
+    pr = release_pull(p)
+    engine_post().refuse("pull", pr["title"], pr["branch"], pr["body"])
+    branch = pr["branch"]
     run("git", "-C", root, "checkout", "-B", branch, planned)
     log = run("python3", os.path.join(HERE, "changelog.py"), "build", "--next", version, "--head", planned)
     with open(os.path.join(root, "CHANGELOG.md"), "w", encoding="utf-8") as fh:
         fh.write(log)
     run("git", "-C", root, "commit", "-qam", f"chore: release {version}")
     run("git", "-C", root, "push", "-f", "origin", f"HEAD:refs/heads/{branch}")
-    url = run("gh", "pr", "create", "--repo", repo, "--base", "main", "--head", branch, "--title", f"chore: release {version}",
-              "--body", f"{MARK}\nThe release lane's release of {version}: every release scenario passed at `{major}-next`.\n").strip()
+    url = run("gh", "pr", "create", "--repo", repo, "--base", "main", "--head", branch, "--title", pr["title"], "--body", pr["body"]).strip()
     number = url.rstrip("/").rsplit("/", 1)[-1]
     run("gh", "pr", "merge", number, "--repo", repo, "--squash", "--auto")
     sha, waited = "", 0
@@ -207,6 +236,22 @@ def release(p, repo, run=sh, sleep=time.sleep, minutes=60, root="."):
     return out
 
 
+def release_pull(p):
+    """The release pull request's title, branch and body. Pure."""
+    version, major = p["version"], p["major"]
+    return {"title": f"chore: release {version}", "branch": f"chore/release-{version}",
+            "body": f"{MARK}\nThe release lane's release of {version}: every release scenario passed at `{major}-next`.\n"}
+
+
+def engine_post():
+    """scripts/engine-post.py (#694): what the engine posts is checked first."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("engine_post", os.path.join(HERE, "engine-post.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def publish(version, notes, repo, run=sh):
     """The GitHub Release of `version`: engine-release.yml also makes it on
     the tag's push, so the one that exists is edited, and a create that
@@ -234,13 +279,24 @@ def now():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def open_bug(repo, title, body, run=sh):
+    """A bug the lane opens itself (#694), checked first (scripts/engine-
+    post.py: it passes G1, never `incomplete`), with the Type Bug and its
+    mark first, so the triage and the reproduction take it as a person's
+    bug (issue-triage.yml `nightly`, issue-repro.yml NIGHTLY)."""
+    engine_post().refuse("issue", body)
+    if not body.startswith(MARK):
+        raise RuntimeError("the lane's bug does not start with its mark: the triage would never see it")
+    run("gh", "api", f"repos/{repo}/issues", "-f", f"title={title}", "-f", f"body={body}", "-f", "type=Bug", "--jq", ".html_url")
+
+
 def act(p, results, repo, run=sh, sleep=time.sleep, root=".", lane_run=""):
-    d = decide(p, results)
+    d = decide(p, results, lane_run)
     if d["do"] == "bug":
-        body = d["body"] + (f"\nThe lane's run: {lane_run}\n" if lane_run else "")
-        run("gh", "issue", "create", "--repo", repo, "--title", d["title"], "--body", body)
+        open_bug(repo, d["title"], d["body"], run)
     elif d["do"] == "issue":
         ri = release_issue(p["version"][1:], d["why"], lane_run)
+        engine_post().refuse("release", ri["title"], ri["labels"])
         run("gh", "issue", "create", "--repo", repo, "--title", ri["title"], "--body", ri["body"], *sum((["--label", l] for l in ri["labels"]), []))
     elif d["do"] == "release":
         d.update(release(p, repo, run, sleep, root=root))
@@ -328,11 +384,22 @@ def rollback(p, failure, repo, run=sh, root="."):
     the release says so."""
     major, link = p["major"], failure.get("html_url", "")
     move(major, p["previous"], run, root)
-    run("gh", "issue", "create", "--repo", repo, "--title", f"fix: {p['version']} failed in a repository; {major} is back at {p['previous']}",
-        "--body", f"{MARK}\nWithin 30 minutes of `{major}` moving to {p['version']}, a run failed on the engine: {link}\n\n`{major}` points at {p['previous']} again.\n")
+    bug = rollback_bug(p, link)
+    open_bug(repo, bug["title"], bug["body"], run)
     body = json.loads(run("gh", "release", "view", p["version"], "--repo", repo, "--json", "body") or "{}").get("body", "")
     run("gh", "release", "edit", p["version"], "--repo", repo, "--notes",
         f"> {major} moved back to {p['previous']}: this release failed in a repository ({link}).\n\n{body}")
+
+
+def rollback_bug(p, link):
+    """The watch's bug, in the issue schema's sections (#694). Pure."""
+    major, version, previous = p["major"], p["version"], p["previous"]
+    return {"title": f"fix: {version} failed in a repository; {major} is back at {previous}",
+            "body": bug_body(f"Within 30 minutes of `{major}` moving to {version}, a run failed on the engine: {link}\n\n`{major}` points at {previous} again.",
+                             f"Read the run {link}: it failed in one of the engine's own steps of an engine job (scripts/release-lane.py ENGINE_STEPS), or never started.",
+                             f"{version} fails in an adopted repository, so the release lane moved `{major}` back to {previous} and every repository runs the previous release.",
+                             [f"The cause of the failure in {link}, in the engine, fixed with a test that would have caught it, so the next release does not fail there."],
+                             f"Given the fix, when the next release reaches the adopted repositories, then no run fails in the engine's own steps and `{major}` stays.")}
 
 
 def watch(p, repo, central, org_name, prop, since, run=sh, sleep=time.sleep, minutes=30, every=120, root=".", read=None):
@@ -382,6 +449,14 @@ def check_workflow(check, path=os.path.join(ROOT, ".github", "workflows", "relea
     check("workflow: the candidate's token may push the workflow files it rewrites", [t.get("permission-workflows") for t in cand], ["write"])
     envs = [st.get("env") or {} for st in jobs.get("candidate", {}).get("steps") or [] if "release-lane.py candidate" in str(st.get("run"))]
     check("workflow: the candidate's commit is made with the App's token (#610)", [e.get("GH_TOKEN") for e in envs], ["${{ steps.app.outputs.token }}"])
+    # C8 (#694): the triage and the reproduction take the lane's bug (its
+    # mark first, the bot's) as they take the nightly review's.
+    triage = yaml.safe_load(open(os.path.join(ROOT, ".github", "workflows", "issue-triage.yml"), encoding="utf-8"))["jobs"]
+    repro = yaml.safe_load(open(os.path.join(ROOT, ".github", "workflows", "issue-repro.yml"), encoding="utf-8"))["jobs"]
+    nightly_env = [st.get("env", {}).get("NIGHTLY", "") for job in repro.values() for st in job.get("steps") or [] if "NIGHTLY" in (st.get("env") or {})]
+    check("C8: workflow: the triage's bot-bug job and the reproduction take an issue that starts with the lane's mark",
+          (f"startsWith(github.event.issue.body, '{MARK[:-4].strip()}')" in str(triage["nightly"]["if"]), len(nightly_env) > 0 and all(f"startsWith(github.event.issue.body, '{MARK[:-4].strip()}')" in e for e in nightly_env),
+           "vars.DX_BOT_LOGIN" in str(triage["nightly"]["if"])), (True, True, True))
     watch_tokens = tokens("watch")
     writes = [t for t in watch_tokens if any(v == "write" for k, v in t.items() if k.startswith("permission-"))]
     check("workflow: the watch's write token is this repository's alone", bool(writes) and all(t.get("repositories") for t in writes), True)
@@ -414,9 +489,9 @@ def check_workflow(check, path=os.path.join(ROOT, ".github", "workflows", "relea
     needs = lambda job: [jobs.get(job, {}).get("needs")] if isinstance(jobs.get(job, {}).get("needs"), str) else jobs.get(job, {}).get("needs") or []
     check("workflow: play needs move, and plays only once the callers moved", ("move" in needs("play"), play.get("if")), (True, "needs.move.outputs.moved == 'true'"))
     psteps = play.get("steps") or []
-    check("workflow: play mints no App token: the test identity's token alone",
+    check("workflow: play mints no App token: the test identity's tokens alone (#694: its fork token, for the scenario from a fork)",
           ([st for st in psteps if "create-github-app-token" in str(st.get("uses"))], [v for st in psteps for k, v in (st.get("env") or {}).items() if "token" in str(v).lower() or "TOKEN" in k]),
-          ([], ["${{ secrets.DX_TEST_TOKEN }}"]))
+          ([], ["${{ secrets.DX_TEST_TOKEN }}", "${{ secrets.DX_TEST_FORK_TOKEN }}"]))
     check("workflow: back needs play and runs under always(), so the callers come back whatever the groups did",
           ("play" in needs("back"), "always()" in str(jobs.get("back", {}).get("if"))), (True, True))
     check("workflow: act reads the move, the play and the back jobs", {"move", "play", "back"} <= set(needs("act")), True)
@@ -426,13 +501,14 @@ def check_workflow(check, path=os.path.join(ROOT, ".github", "workflows", "relea
     special = {"GROUPS", "UID", "EUID", "PPID", "BASHPID", "RANDOM", "SECONDS", "LINENO", "HOSTNAME", "PWD", "OLDPWD", "SHELLOPTS", "BASH_VERSION"}
     check("workflow: no step's env names a variable bash sets itself",
           sorted({k for job in jobs.values() for st in job.get("steps") or [] for k in st.get("env") or {} if k in special}), [])
-    # The play job has five hours, its play step stops before it, and the
-    # bug names those two numbers (#690).
+    # The play job has half an hour, its play step (20 minutes, above every
+    # scenario's limit of 15: #694) stops before it, and the bug names those
+    # two numbers (#690).
     play_step = next((st for st in psteps if st.get("id") == "play"), {})
     env = next((st.get("env") or {} for st in jobs.get("act", {}).get("steps") or [] if st.get("id") == "act"), {})
     job_t, play_t = play.get("timeout-minutes") or 0, play_step.get("timeout-minutes") or 0
-    check("workflow: the play job has 300 minutes, its play step fewer, and the bug names both (#690)",
-          (job_t >= 300, 0 < play_t < job_t, str(env.get("SCENARIOS_TIMEOUT")), str(env.get("PLAY_TIMEOUT"))), (True, True, str(job_t), str(play_t)))
+    check("C3: workflow: the play job has 30 minutes, its play step 20, and the bug names both (#690, #694)",
+          (job_t == 30, play_t == 20, str(env.get("SCENARIOS_TIMEOUT")), str(env.get("PLAY_TIMEOUT"))), (True, True, str(job_t), str(play_t)))
 
 class Fake:
     """A fake `gh` and `git` that records every command."""
@@ -548,6 +624,20 @@ def self_test():
         check("C5: nothing tagged, v7 not moved, nothing released", [c for c in fake.calls if c[:1] == ("git",) or c[:2] in (("gh", "release"), ("gh", "pr"))], [])
         check("C5: the bug names the scenario and its run", bool(bug) and "spec-to-draft" in " ".join(bug[0]) and "https://github.com/o/t/actions/runs/9" in " ".join(bug[0]), True)
         check("C5: no result at all is a failure", decide(p, [])["do"], "bug")
+        opened = [c for c in fake.calls if c[:3] == ("gh", "api", "repos/O/.github/issues")]
+        check("C8: the bug is opened with the Type Bug and starts with its mark",
+              (len(opened), "type=Bug" in opened[0], next(a for a in opened[0] if a.startswith("body=")).startswith("body=" + MARK + "\n")), (1, True, True))
+        refused = Fake()
+        err = _raises(lambda: open_bug("O/.github", "fix: x", "Not the schema's.", refused))
+        check("C7: a bug the schema would refuse is never posted, and says why", (refused.has("gh", "issue", "create"), "would not pass its own checks" in str(err)), (False, True))
+        schema = lambda body: subprocess.run([sys.executable, os.path.join(HERE, "issue-schema.py"), "check"], input=body, capture_output=True, text=True)
+        quoting = failing + [{"id": "issue-complete", "ok": False, "why": ["no comment with <!-- dx-board -->"], "run": ""}]
+        for how, d in (("with the lane's run", decide(p, quoting, "https://github.com/O/.github/actions/runs/7")), ("with none", decide(p, failing)), ("of no result", decide(p, []))):
+            got = schema(d["body"])
+            check(f"C4: the bug's body, {how}, passes issue-schema.py check", (got.returncode, got.stdout if got.returncode else ""), (0, ""))
+        d = decide(p, quoting, "https://github.com/O/.github/actions/runs/7")
+        check("C4: the bug starts with its mark, names every failing scenario and the lane's run, and hides no marker it quotes",
+              (d["body"].startswith(MARK + "\n"), "`spec-to-draft`" in d["body"] and "`issue-complete`" in d["body"], "actions/runs/7" in d["body"], d["body"].count("<!--")), (True, True, True, 1))
         # C7: a `!`, the scenarios pass.
         fake = Fake()
         pb = plan(dict(nxt, bump="minor", next="7.11.0"), ["feat(autopilot)!: a required input"])
@@ -584,8 +674,8 @@ def self_test():
         check("C6: the other repositories are only read, with the read token; every write is this repository's",
               (all(c[:2] == ("gh", "api") and "-X" not in c for c in reader.calls), all("repos/O/a" not in " ".join(c) for c in fake.calls)), (True, True))
         check("C6: v7 points at the previous release again", (fake.has("git", "-C", root, "tag", "-f", "v7", "v7.10.0^{commit}"), fake.has("git", "-C", root, "push", "-f", "origin", "refs/tags/v7")), (True, True))
-        made = [c for c in fake.calls if c[:3] == ("gh", "issue", "create")]
-        check("C6: a bug with the run's link", bool(made) and "https://github.com/O/a/actions/runs/2" in " ".join(made[0]), True)
+        made = [c for c in fake.calls if c[:3] == ("gh", "api", "repos/O/.github/issues")]
+        check("C6: a bug with the run's link, of Type Bug", bool(made) and "https://github.com/O/a/actions/runs/2" in " ".join(made[0]) and "type=Bug" in made[0], True)
         edit = [c for c in fake.calls if c[:3] == ("gh", "release", "edit")]
         check("C6: the release says so", bool(edit) and "moved back to v7.10.0" in " ".join(edit[0]) and bad["id"] == 2, True)
         two = (json.dumps([{"repository_full_name": "O/a", "properties": [{"property_name": "dx-adopted", "value": "true"}]}]) + "\n"
@@ -684,7 +774,7 @@ def main(argv):
         print(candidate(central, load(a.plan)["major"] if a.plan else "v7"))
         return 0
     if a.mode == "decide":
-        print(json.dumps(decide(load(a.plan), results_of(a.results))))
+        print(json.dumps(decide(load(a.plan), results_of(a.results), a.run)))
         return 0
     if a.mode == "act":
         d = act(load(a.plan), results_of(a.results), a.repo, lane_run=a.run)

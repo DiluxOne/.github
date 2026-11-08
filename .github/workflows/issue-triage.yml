@@ -232,6 +232,10 @@ jobs:
       cost: ${{ steps.verdict.outputs.cost }}
       model: ${{ steps.policy.outputs.model }}
     steps:
+      # For the run's cost in its summary (#694, scripts/model-cache.py).
+      - name: The job's start
+        run: echo "DX_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+
       - name: App token
         id: bot
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -344,12 +348,48 @@ jobs:
             echo "file=.dx-central/brief.md" >> "$GITHUB_OUTPUT"
           fi
 
+      # #694: an automatic re-run of this run (a later attempt the bot
+      # started, never a person's) on the same body, brief and policy
+      # reuses the answer the first attempt kept, and calls no model. A run
+      # that read the paid roadmap keeps nothing.
+      - name: An automatic re-run's key
+        id: cached
+        if: steps.cap.outputs.over != 'true' && steps.brief.outputs.paid != 'true'
+        env:
+          BODY: ${{ github.event.issue.body }}
+          MODEL: ${{ steps.policy.outputs.model }}
+          EFFORT: ${{ steps.policy.outputs.effort }}
+          BRIEF: ${{ steps.brief.outputs.file }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          SENDER: ${{ github.event.sender.login }}
+        run: |
+          set -euo pipefail
+          # A `central-ref` older than scripts/model-cache.py keeps nothing.
+          [ -f .dx-central/scripts/model-cache.py ] || { echo "No model-cache.py at this central-ref."; exit 0; }
+          printf '%s' "$BODY" > "$RUNNER_TEMP/issue-body.md"
+          python3 .dx-central/scripts/model-cache.py key --input-file "$RUNNER_TEMP/issue-body.md" --prompt "$BRIEF" --policy "$MODEL/$EFFORT" >> "$GITHUB_OUTPUT"
+          python3 .dx-central/scripts/model-cache.py automatic >> "$GITHUB_OUTPUT"
+
+      - name: The first attempt's answer
+        if: steps.cached.outputs.automatic == 'true'
+        continue-on-error: true # none kept: the model is called
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: model-answer-triage-${{ steps.cached.outputs.key }}
+          path: ${{ runner.temp }}/model-cache
+
+      - name: The answer, reused
+        id: reuse
+        if: steps.cached.outputs.automatic == 'true'
+        run: python3 .dx-central/scripts/model-cache.py reuse --dir "$RUNNER_TEMP/model-cache" >> "$GITHUB_OUTPUT"
+
       # With the paid roadmap in its brief, this run answers with labels and
       # numbers only: no free text of a run that read the roadmap exists, not
       # in a reply, not in a summary, not in a step's logged environment.
       - name: Classify
         id: claude
-        if: steps.cap.outputs.over != 'true'
+        if: steps.cap.outputs.over != 'true' && steps.reuse.outputs.hit != 'true'
         continue-on-error: true
         timeout-minutes: 8
         env:
@@ -433,12 +473,31 @@ jobs:
             --allowedTools "Read,Glob,Grep"
             --json-schema '${{ steps.brief.outputs.paid == 'true' && env.DX_PAID_SCHEMA || env.DX_FULL_SCHEMA }}'
 
+      # Kept for an automatic re-run of this run (#694), never when the
+      # model read the paid roadmap (no key then).
+      - name: Keep the answer for an automatic re-run
+        id: keep
+        if: steps.cached.outputs.key != '' && steps.claude.outputs.structured_output != ''
+        continue-on-error: true
+        env:
+          ANSWER: ${{ steps.claude.outputs.structured_output }}
+        run: python3 .dx-central/scripts/model-cache.py save --dir "$RUNNER_TEMP/model-answer"
+
+      - name: The answer, kept
+        if: steps.keep.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: model-answer-triage-${{ steps.cached.outputs.key }}
+          path: ${{ runner.temp }}/model-answer
+          retention-days: 7
+
       - name: The verdict, as labels and numbers
         id: verdict
         if: steps.cap.outputs.over != 'true'
         env:
           PAID: ${{ steps.brief.outputs.paid }}
-          OUT: ${{ steps.claude.outputs.structured_output }}
+          OUT: ${{ steps.claude.outputs.structured_output || steps.reuse.outputs.answer }}
           EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
         run: |
           set -euo pipefail
@@ -482,7 +541,7 @@ jobs:
           AUTHOR: ${{ github.event.issue.user.login }}
           SECURITY_REPO: ${{ steps.sec.outputs.repo }}
           SECURITY_TOKEN: ${{ steps.sectoken.outputs.token }}
-          OUT: ${{ steps.claude.outputs.structured_output }}
+          OUT: ${{ steps.claude.outputs.structured_output || steps.reuse.outputs.answer }}
           NUMBER: ${{ github.event.issue.number }}
           MAINTAINER: ${{ inputs.maintainer }}
           PRIVATE: ${{ github.event.repository.private }}
@@ -520,10 +579,26 @@ jobs:
           BT='`'
           gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '%s\n**The triage could not run** on this issue, so it has no answer yet and waits as %s. A maintainer can re-run the job or triage it by hand; the run is in %s.\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)' "$marker" "${BT}needs-triage${BT}" "$run")" >/dev/null
 
+      # What this run spent (#694): its runner minutes and the model's
+      # tokens, numbers only (this run may have read the paid roadmap).
+      - name: The run's cost
+        if: always()
+        env:
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+          REUSED: ${{ steps.reuse.outputs.hit }}
+        run: |
+          [ -f .dx-central/scripts/model-cache.py ] || exit 0
+          args=()
+          [ -z "$EXECUTION_FILE" ] || args+=(--log "Classify=$EXECUTION_FILE")
+          [ "$REUSED" != true ] || args+=(--reused)
+          python3 .dx-central/scripts/model-cache.py summary --title "The triage's cost" --started "${DX_STARTED:-}" "${args[@]}" >> "$GITHUB_STEP_SUMMARY" || true
+
   # The bot's own Bug issues (#247), opened by the organisation's App with
   # a marker on the first line: the nightly review's finding, rated blocker
-  # or major and not about security (scripts/nightly-review.py), and the
-  # test setup that blocks a reproduction (issue-repro.yml). It
+  # or major and not about security (scripts/nightly-review.py), the test
+  # setup that blocks a reproduction (issue-repro.yml), and the release
+  # lane's bug, a scenario that failed or a release the watch moved back
+  # (#694, scripts/release-lane.py, Type Bug). It
   # is already a classified bug report, so no classifier runs: it gets
   # `bug:unconfirmed`, and the reproduction starts on it as on any bug the
   # triage finds. Any other issue a bot opens is never triaged.
@@ -531,7 +606,7 @@ jobs:
     name: A nightly review's bug
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 5
-    if: github.event_name == 'issues' && github.event.action == 'opened' && github.event.issue.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.issue.body, '<!-- dx-nightly-finding') || startsWith(github.event.issue.body, '<!-- dx-repro-blocker'))
+    if: github.event_name == 'issues' && github.event.action == 'opened' && github.event.issue.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.issue.body, '<!-- dx-nightly-finding') || startsWith(github.event.issue.body, '<!-- dx-repro-blocker') || startsWith(github.event.issue.body, '<!-- dx-release-lane'))
     outputs:
       bug: ${{ steps.mark.outputs.bug }}
     steps:

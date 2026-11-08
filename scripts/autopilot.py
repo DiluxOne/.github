@@ -875,14 +875,15 @@ def core_busy(spec_files, core, others, mine=0):
     """The open autopilot pull request an issue waits for (#563): when the
     Spec's files touch the core (globs), the lowest-numbered other one
     (`others`: [{number, files}]) whose diff touches it; 0 when none. Pure."""
-    import fnmatch
-
-    def touches(files):
-        return any(fnmatch.fnmatchcase(str(f), g) for f in files or [] for g in core or [])
-    if not core or not touches(spec_files):
+    def keys(files):
+        # #694: the part of the core each file touches (org.core_key): the
+        # test repository's is one directory per scenario.
+        return {k for k in (org.core_key(f, core) for f in files or []) if k is not None}
+    mine_keys = keys(spec_files)
+    if not core or not mine_keys:
         return 0
     for other in sorted(others or [], key=lambda o: int(o.get("number") or 0)):
-        if int(other.get("number") or 0) != int(mine or 0) and touches(other.get("files")):
+        if int(other.get("number") or 0) != int(mine or 0) and mine_keys & keys(other.get("files")):
             return int(other["number"])
     return 0
 
@@ -909,16 +910,28 @@ def fixed_file(conf, repo, pack=None):
     return str((pack.get("fixed-change") or {}).get("file") or "")
 
 
-def fixed_path(pattern, number, cid):
+SCENARIO = re.compile(r"^\s*<!--\s*dx-scenario:\s*([a-z0-9-]+)\s*-->", re.M)
+
+
+def scenario_of(body):
+    """The release scenario that opened an issue (#694): its `dx-scenario`
+    mark, or "". Pure."""
+    m = SCENARIO.search(body or "")
+    return m.group(1) if m else ""
+
+
+def fixed_path(pattern, number, cid, scenario=""):
     """The fixed change's file for a criterion: `{n}` the issue's number,
-    `{id}` the criterion's, lowercased. Pure."""
-    return pattern.replace("{n}", str(number)).replace("{id}", cid.lower())
+    `{id}` the criterion's, lowercased, `{scenario}` the scenario that
+    opened the issue (#694: its own core), or the issue's number for one no
+    scenario opened. Pure."""
+    return pattern.replace("{n}", str(number)).replace("{id}", cid.lower()).replace("{scenario}", scenario or str(number))
 
 
-def fixed_spec(pattern, number, ids):
+def fixed_spec(pattern, number, ids, scenario=""):
     """The Spec of the fixed change, with a Feature's phases, so G3 passes
     whatever the issue's Type. Pure."""
-    files = [fixed_path(pattern, number, cid) for cid in ids]
+    files = [fixed_path(pattern, number, cid, scenario) for cid in ids]
     return ("### Spec: approach\n\nThe test repository's fixed change (kinds/engine-test/pack.yml): one file per criterion, written with no model.\n\n"
             "### Spec: files\n\n" + "".join(f"- `{f}`\n" for f in files) +
             "\n### Spec: tests\n\n" + "".join(f"- {cid} → {f}\n" for cid, f in zip(ids, files)) +
@@ -936,10 +949,16 @@ def fixed_work(io, pattern, number, mode):
         return agent_helper(["finish", "stop", "The test repository's fixed change does not answer a review: a person reads it."], io)
     pr_file = os.path.join(io, "pr.md")
     pr_body = open(pr_file, encoding="utf-8").read() if os.path.exists(pr_file) else ""
+    # The files the fixed Spec named (#694: under its scenario's directory),
+    # from its tests, `- C1 → path`.
+    spec_file = os.path.join(io, "spec.md")
+    named = dict(re.findall(r"^- (C\d+) → (\S+)$", open(spec_file, encoding="utf-8").read(), re.M)) if os.path.exists(spec_file) else {}
     for cid, ticked in boxes(pr_body).items():
         if ticked:
             continue
-        path = fixed_path(pattern, number, cid)
+        path = named.get(cid, "")
+        if not path or path.startswith("/") or ".." in path.split("/"):
+            path = fixed_path(pattern, number, cid)
         if os.path.dirname(path):
             os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as fh:
@@ -2605,21 +2624,28 @@ A class on html.
     check("C11: its own pull request is not another", core_busy(["scripts/autopilot.py"], core, [{"number": 7, "files": ["scripts/autopilot.py"]}], mine=7), 0)
     check("C11: the comment names the pull request it waits for, once (its marker)", (core_comment(7).startswith(CORE_MARK), "#7 merges or closes" in core_comment(7)), (True, True))
     # #563: the test repository's fixed change, no model.
-    tpack = {"autopilot": "fixed-change", "fixed-change": {"file": "scenarios/{n}-{id}.md"}, "core": ["scenarios/*"]}
+    tpack = {"autopilot": "fixed-change", "fixed-change": {"file": "scenarios/{scenario}/{n}.md"}, "core": ["scenarios/*/**"]}
     check("#563: the test repository's autopilot has a fixed change; any other repository's calls a model",
           (fixed_file({"org": "Acme"}, "Acme/acme-test", tpack), fixed_file({"org": "Acme"}, "Acme/plugin", tpack),
-           fixed_file({"org": "Acme"}, "Acme/acme-test", dict(tpack, autopilot="model"))), ("scenarios/{n}-{id}.md", "", ""))
-    check("#563: the real pack's fixed change", fixed_file({"org": "Acme"}, "Acme/acme-test"), "scenarios/{n}-{id}.md")
-    fspec = fixed_spec("scenarios/{n}-{id}.md", 12, ["C1", "C2"])
+           fixed_file({"org": "Acme"}, "Acme/acme-test", dict(tpack, autopilot="model"))), ("scenarios/{scenario}/{n}.md", "", ""))
+    check("#694: the real pack's fixed change, under its scenario's own directory", fixed_file({"org": "Acme"}, "Acme/acme-test"), "scenarios/{scenario}/{n}.md")
+    fspec = fixed_spec("scenarios/{scenario}/{n}.md", 12, ["C1"], scenario_of("<!-- dx-scenario: core-one -->\n### Problem\n"))
     import deciders as _dec563
-    check("#563: the fixed Spec names each criterion's file, on the test repository's core, and the agent's helper takes it",
-          (_dec563.spec_files(fspec), spec_problem(fspec), core_busy(_dec563.spec_files(fspec), tpack["core"], [{"number": 7, "files": ["scenarios/11-c1.md"]}])),
-          (["scenarios/12-c1.md", "scenarios/12-c2.md"], "", 7))
+    check("#694: the fixed Spec names its file under the scenario of the issue's mark, and the agent's helper takes it",
+          (_dec563.spec_files(fspec), spec_problem(fspec), scenario_of("no mark"), fixed_path("scenarios/{scenario}/{n}.md", 12, "C1")),
+          (["scenarios/core-one/12.md"], "", "", "scenarios/12/12.md"))
+    check("#694: only an open pull request on the same scenario's core is waited for, never another scenario's",
+          (core_busy(_dec563.spec_files(fspec), tpack["core"], [{"number": 7, "files": ["scenarios/other/7.md"]}, {"number": 9, "files": ["scenarios/core-one/11.md"]}]),
+           core_busy(_dec563.spec_files(fspec), tpack["core"], [{"number": 7, "files": ["scenarios/other/7.md"]}])), (9, 0))
     prd563 = ("### Problem\n\nNo greeting.\n\n### Scope\n\n- A greeting.\n\n### Out of scope\n\n- Else.\n\n### Acceptance criteria\n\n"
               "- C1: Given it, when read, then it greets.\n\n### Criticality\n\nNormal\n\n" + fspec)
     g3 = subprocess.run([sys.executable, os.path.join(HERE, "issue-schema.py"), "check", "--stage", "spec", "--type", "Feature"], input=prd563, capture_output=True, text=True)
     check("#563: the fixed Spec passes G3 for a Feature", (g3.returncode, g3.stdout if g3.returncode else ""), (0, ""))
-    check("#563: the checklist reads the fixed Spec's tests", criteria(prd563)[0][2], "scenarios/12-c1.md")
+    post694 = _load("engine_post", "engine-post.py")
+    d694 = draft(12, "Bug", "fix(core): the greeting says helo", prd563)
+    check("C7: the draft pull request passes the conventions check a person's does, and closes its issue (engine-post.py)",
+          post694.pull(d694["title"], d694["branch"], d694["body"], 12), [])
+    check("#563: the checklist reads the fixed Spec's tests", criteria(prd563)[0][2], "scenarios/core-one/12.md")
     import tempfile as _tf563, contextlib as _cl563, io as _io563
     with _tf563.TemporaryDirectory() as tree, _tf563.TemporaryDirectory() as io563:
         here563, io_env = os.getcwd(), os.environ.pop(IO_ENV, None)
@@ -2629,13 +2655,14 @@ A class on html.
                 subprocess.run(["git", *args], check=True, capture_output=True)
             base563 = git_out("rev-parse", "HEAD")
             os.environ["DX_BASE"] = base563
+            open(os.path.join(io563, "spec.md"), "w").write("### Spec: tests\n\n- C1 → scenarios/s/12-c1.md\n- C3 → ../out.md\n")
             open(os.path.join(io563, "pr.md"), "w").write(CHECKLIST_START + "\n- [ ] **C1** a\n- [x] **C2** b\n- [ ] **C3** c\n" + CHECKLIST_END + "\n" + credits.START + "\n" + credits.END + "\n")
             with _cl563.redirect_stdout(_io563.StringIO()):
                 rc = fixed_work(io563, "scenarios/{n}-{id}.md", 12, "work")
             intents = read_outbox(os.path.join(io563, OUTBOX))[0]
-            check("#563: the fixed work writes and commits each unticked criterion's file, with no model",
-                  (rc, sorted(os.listdir("scenarios")), local_subjects(base563)),
-                  (0, ["12-c1.md", "12-c3.md"], ["test(scenarios): C3 of #12, the fixed change", "test(scenarios): C1 of #12, the fixed change"]))
+            check("#563 #694: the fixed work writes and commits each unticked criterion's file, the Spec's (never out of the tree), with no model",
+                  (rc, sorted(os.listdir("scenarios")), os.listdir("scenarios/s"), local_subjects(base563)),
+                  (0, ["12-c3.md", "s"], ["12-c1.md"], ["test(scenarios): C3 of #12, the fixed change", "test(scenarios): C1 of #12, the fixed change"]))
             check("#563: then ticks them and finishes ready, through the agent's own intents",
                   [i["kind"] + (":" + i["id"] if i["kind"] == "tick" else "") for i in intents], ["tick:C1", "tick:C3", "credits", "ready"])
             open(os.path.join(io563, OUTBOX), "w").close()
@@ -4061,7 +4088,7 @@ def main(argv):
             ids = [cid for cid, _, _ in criteria(body)]
             if not ids:
                 return agent_helper(["finish", "stop", "The PRD has no criterion the fixed change can write."], io)
-            queue(io, {"kind": "spec", "text": fixed_spec(pattern, number, ids)})
+            queue(io, {"kind": "spec", "text": fixed_spec(pattern, number, ids, scenario_of(body))})
             return 0
         if argv[1:] == ["work"]:
             return fixed_work(io, pattern, number, os.environ.get("MODE", ""))
@@ -4300,8 +4327,12 @@ def main(argv):
     if argv[:1] == ["draft"]:
         body = open(os.environ["BODY"], encoding="utf-8").read()
         try:
-            print(json.dumps(draft(number, os.environ.get("ISSUE_TYPE", ""), os.environ.get("TITLE", ""), body)))
-        except ValueError as err:
+            d = draft(number, os.environ.get("ISSUE_TYPE", ""), os.environ.get("TITLE", ""), body)
+            # #694: held to the conventions check a person's pull request is
+            # held to, and closing its issue, before it is opened.
+            _load("engine_post", "engine-post.py").refuse("pull", d["title"], d["branch"], d["body"], number)
+            print(json.dumps(d))
+        except (ValueError, RuntimeError) as err:
             print(err, file=sys.stderr)
             return 1
         return 0

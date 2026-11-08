@@ -103,7 +103,7 @@ Pull requests from **forks** are not reviewed automatically: the review runs wit
 
 ## How a change becomes a version
 
-The engine itself (this repository, `vX.Y.Z` and the moving `v7`) releases itself: once `main` is green, the release lane plays every release scenario in the organisation's test repository and, when all pass, tags the version and moves `v7`, with no person's step; a breaking change waits on a person's release issue ([docs/versioning.md](docs/versioning.md#how-a-version-is-made), #563). What follows is the products'.
+The engine itself (this repository, `vX.Y.Z` and the moving `v7`) releases itself: once `main` is green, the release lane plays every release scenario in the organisation's test repository and, when all pass, tags the version and moves `v7`, with no person's step; a breaking change waits on a person's release issue ([docs/versioning.md](docs/versioning.md#how-a-version-is-made), #563). Every scenario plays at once, each in its own job and on its own part of the test repository's core, polling its state every 15 seconds and stopping as soon as it can no longer pass, within 15 minutes; a failed one opens a Bug in the issue schema's sections, which the triage and the reproduction take as a person's (#694). Every job's `needs` is either read or says the order it keeps (`# order: <why>`, `scripts/needs-chain.py`), and every run of the triage, the review and the autopilot says in its summary the runner minutes and the model's tokens it spent (`scripts/model-cache.py`). What follows is the products'.
 
 Every DiluxOne repository numbers its versions `X.Y.Z`, always three numbers, no suffix, by what a change means to the people who use it:
 
