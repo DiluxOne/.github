@@ -96,7 +96,7 @@ def ordered(lines):
             continue
         if inside and re.match(r"^      -\s", line):
             name = line.split("-", 1)[1].split("#", 1)[0].strip()
-            if above or ORDER.search(line) or "*" in out:
+            if above or ORDER.search(line):
                 out.add(name)
             above = False
             continue
