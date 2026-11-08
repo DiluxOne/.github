@@ -541,7 +541,7 @@ jobs:
           AUTHOR: ${{ github.event.issue.user.login }}
           SECURITY_REPO: ${{ steps.sec.outputs.repo }}
           SECURITY_TOKEN: ${{ steps.sectoken.outputs.token }}
-          OUT: ${{ steps.claude.outputs.structured_output }}
+          OUT: ${{ steps.claude.outputs.structured_output || steps.reuse.outputs.answer }}
           NUMBER: ${{ github.event.issue.number }}
           MAINTAINER: ${{ inputs.maintainer }}
           PRIVATE: ${{ github.event.repository.private }}

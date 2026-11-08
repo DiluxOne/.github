@@ -157,6 +157,33 @@ def output(name, value):
     return f"{name}<<{eof}\n{value}\n{eof}\n"
 
 
+def without_fallback(workflow):
+    """The `job/step/variable` of each step that reads a model step's answer
+    (`steps.<id>.outputs.structured_output`) without its reused answer
+    (`steps.<reuse>.outputs.answer`): on an automatic re-run that reuses,
+    the model step is skipped and that value comes out empty. The step that
+    keeps the model's own answer (`model-cache.py save`) is the one that
+    reads it alone. A model step is one skipped on its reuse step's hit."""
+    import re
+    missing = []
+    for job_name, job in ((workflow or {}).get("jobs") or {}).items():
+        steps = job.get("steps") or []
+        reuses = {s["id"] for s in steps if s.get("id") and "model-cache.py reuse" in str(s.get("run", ""))}
+        models = {}
+        for s in steps:
+            for r in reuses:
+                if s.get("id") and re.search(rf"steps\.{re.escape(r)}\.outputs\.hit != 'true'", str(s.get("if", ""))):
+                    models[s["id"]] = r
+        for s in steps:
+            if "model-cache.py save" in str(s.get("run", "")):
+                continue
+            for key, value in {**(s.get("env") or {}), **(s.get("with") or {})}.items():
+                for model, r in models.items():
+                    if f"steps.{model}.outputs.structured_output" in str(value) and f"steps.{r}.outputs.answer" not in str(value):
+                        missing.append(f"{job_name}/{s.get('name') or s.get('id')}/{key}")
+    return missing
+
+
 def self_test():
     failed = 0
 
@@ -215,6 +242,17 @@ def self_test():
                       ("autopilot.yml", ("model-cache.py summary",))):
         text = open(os.path.join(root, ".github", "workflows", wf), encoding="utf-8").read()
         check(f"C6: {wf} runs {', '.join(steps)}", [s for s in steps if s not in text], [])
+        import yaml
+        check(f"C6: every step of {wf} that reads a model's answer reads the reused one too", without_fallback(yaml.safe_load(text)), [])
+    reuse_step = {"id": "reuse", "run": "python3 model-cache.py reuse --dir d"}
+    model_step = {"id": "claude", "if": "steps.reuse.outputs.hit != 'true'"}
+    keep_step = {"name": "Keep", "env": {"ANSWER": "${{ steps.claude.outputs.structured_output }}"}, "run": "python3 model-cache.py save --dir d"}
+    act = {"name": "Act", "env": {"OUT": "${{ steps.claude.outputs.structured_output }}"}}
+    check("C6: a step that reads the model's answer with no reused one is found (the triage's Act, #695)",
+          without_fallback({"jobs": {"t": {"steps": [reuse_step, model_step, keep_step, act]}}}), ["t/Act/OUT"])
+    act["env"]["OUT"] = "${{ steps.claude.outputs.structured_output || steps.reuse.outputs.answer }}"
+    check("C6: with the reused answer as its fallback, and the keeping step alone, nothing is found",
+          without_fallback({"jobs": {"t": {"steps": [reuse_step, model_step, keep_step, act]}}}), [])
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
