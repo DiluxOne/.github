@@ -300,6 +300,9 @@ scenarios:
     opens: {pull: {title: "docs: a greeting", body: pull, issue: {title: "docs: a greeting", body: task, labels: [accepted]}}}
     steps: [{comment: "@dilux-bot why?"}]
     expect: {comments: ["<!-- dx-review"]}
+  # #709: its conventions check reports as "conventions / Conventions
+  # (branch, title, commits)" (`check_named`); a run GitHub holds for a
+  # maintainer's approval of a fork's fails it at once, named.
   - id: fork-without-secrets
     covers: []
     opens: {pull: {title: "docs: a greeting from a fork", body: pull, fork: true, issue: {title: "docs: a greeting from a fork", body: task, labels: [accepted]}}}

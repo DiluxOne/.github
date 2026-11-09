@@ -29,7 +29,8 @@ then lands that file, otherwise, on main, `behind` only a file of its own
 there, through a docs pull request of the scenario that merges: #698),
 `minutes` (its limit, 10 by default, 15 at most) and
 `expect` (`labels`, `absent`, `comments` (markers), `pull` (`closes`,
-`branch`, `title`, patterns), `check` (name: conclusion), `merged`,
+`branch`, `title`, patterns), `check` (name: conclusion, the name a
+check run's caller's job or its own: `check_named`, #709), `merged`,
 `waiting`). Every scenario is a group of its own (`groups`, #694), and
 the lane plays the groups at once, one job each: each writes only under
 its own directory of the test repository, scenarios/<id>/, and only
@@ -346,6 +347,27 @@ def body_of(value, bodies):
     return bodies.get(value, value) if isinstance(value, str) else ""
 
 
+def check_named(name, checks):
+    """The conclusion of the check run `name` names among `checks` ({check
+    run name: conclusion}, "" while it runs), None when none matches (#709):
+    GitHub names a reusable workflow's check after its caller's job and its
+    own, "conventions / Conventions (branch, title, commits)", so `name`
+    matches a check named exactly that, else one whose own name (after the
+    last ` / `) is it or starts with it and ` (`, else one whose caller's
+    job (before it) is it, case aside: the closest kind that matches, its
+    first that ended. Pure."""
+    want, ranked = str(name).lower(), {}
+    for got, conclusion in (checks or {}).items():
+        full = str(got or "").lower()
+        caller, _, job = full.rpartition(" / ")
+        rank = 0 if full == want else 1 if job == want or job.startswith(want + " (") else 2 if caller == want else None
+        if rank is not None:
+            ranked.setdefault(rank, []).append(conclusion or "")
+    for rank in sorted(ranked):
+        return next((c for c in ranked[rank] if c), "")
+    return None
+
+
 def holds(expect, seen):
     """What of `expect` does not hold in `seen` (labels, comments, pull,
     checks, merged, waiting): [] when it all does. Pure."""
@@ -372,9 +394,11 @@ def holds(expect, seen):
         elif not re.search(str(pattern), str(pull.get(key) or "")):
             out.append(f"the pull request's {key} is not {pattern}")
     for name, conclusion in (expect.get("check") or {}).items():
-        got = (seen.get("checks") or {}).get(name)
-        if got != conclusion:
-            out.append(f"check {name} is {got or 'missing'}, not {conclusion}")
+        got = check_named(name, seen.get("checks"))
+        if got is None:
+            out.append(f"check {name} is missing, not {conclusion} (its checks: {', '.join(sorted(seen.get('checks') or {})) or 'none'})")
+        elif got != conclusion:
+            out.append(f"check {name} is {got or 'still running'}, not {conclusion}")
     for key in ("merged", "waiting"):
         if key in expect and bool(seen.get(key)) != bool(expect[key]):
             out.append(f"{key} is {bool(seen.get(key))}")
@@ -397,7 +421,10 @@ def hopeless(expect, seen, settled=False):
     that ended with another conclusion and, once the test repository has
     settled (`settled`: no run queued or in progress on two polls in a row,
     so the job that would remove it has finished), an `absent` label still
-    there. [] when it still may hold. Pure."""
+    there, and (#709) a check expected of a pull request whose run GitHub
+    holds for a maintainer's approval (`held`: a fork's, `action_required`),
+    which nothing in the scenario can release. [] when it still may hold.
+    Pure."""
     out = []
     if "merged" in expect:
         if not expect["merged"] and seen.get("merged"):
@@ -405,9 +432,11 @@ def hopeless(expect, seen, settled=False):
         elif expect["merged"] and not seen.get("merged") and str(seen.get("state") or "").upper() == "CLOSED":
             out.append("it closed unmerged")
     for name, conclusion in (expect.get("check") or {}).items():
-        got = (seen.get("checks") or {}).get(name)
+        got = check_named(name, seen.get("checks"))
         if got and got != conclusion:
             out.append(f"check {name} ended {got}, not {conclusion}")
+    if expect.get("check") and seen.get("held"):
+        out.append(f"the fork's run waits for approval to run workflows from forks ({', '.join(seen['held'])})")
     if settled:
         labels = set(seen.get("labels") or [])
         out += [f"label {label} stays, with nothing left running" for label in expect.get("absent") or [] if label in labels]
@@ -832,7 +861,7 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
 
 
 def observe(repo, what, number, run=gh):
-    fields = "labels,comments,body,state" + (",mergedAt,statusCheckRollup,headRefName,title" if what == "pr" else ",closedByPullRequestsReferences")
+    fields = "labels,comments,body,state" + (",mergedAt,statusCheckRollup,headRefName,headRefOid,title" if what == "pr" else ",closedByPullRequestsReferences")
     # A `gh` that fails raises GhError; `play` retries a transient one.
     view = json.loads(run(what, "view", number, "--repo", repo, "--json", fields) or "{}")
     seen = {"number": number, "labels": [l.get("name") for l in view.get("labels") or []],
@@ -841,6 +870,12 @@ def observe(repo, what, number, run=gh):
         seen["pull"] = {"body": view.get("body"), "branch": view.get("headRefName"), "title": view.get("title")}
         seen["merged"] = bool(view.get("mergedAt"))
         seen["checks"] = {c.get("name"): (c.get("conclusion") or "").lower() for c in view.get("statusCheckRollup") or []}
+        # #709: a run on its head that GitHub holds for a maintainer's
+        # approval (a fork's): it never reports until a person allows it.
+        seen["held"] = []
+        if view.get("headRefOid"):
+            head = json.loads(run("run", "list", "--repo", repo, "--commit", str(view["headRefOid"]), "--json", "url,status,conclusion") or "[]")
+            seen["held"] = [str(r.get("url") or "") for r in head if "action_required" in (str(r.get("status") or "").lower(), str(r.get("conclusion") or "").lower())]
     else:
         # #698: the pull request that closes it, from the issue's own
         # references (the newest), never a search per poll: the search API
@@ -1584,6 +1619,27 @@ def self_test():
            hopeless({"check": {"c": "success"}}, {"checks": {"c": "failure"}}), hopeless({"check": {"c": "success"}}, {"checks": {"c": ""}}),
            hopeless({"absent": ["incomplete"]}, {"labels": ["incomplete"]}), hopeless({"absent": ["incomplete"]}, {"labels": ["incomplete"]}, True)),
           (["it merged"], ["it closed unmerged"], [], ["check c ended failure, not success"], [], [], ["label incomplete stays, with nothing left running"]))
+    rollup709 = {"conventions / Docs (links and names)": "failure", "conventions / Conventions (branch, title, commits)": "success", "review / Claude review": ""}
+    check("#709 C4: `conventions` names the reusable workflow's check, by its caller's job or its own name, never its sibling's",
+          (check_named("conventions", rollup709), check_named("Conventions", {"Conventions (branch, title, commits)": "success"}), check_named("review", rollup709),
+           check_named("conventions", {"conventions": "failure", "conventions / Conventions (x)": "success"}), check_named("docs", {"conventions / Docs (links and names)": "failure"}),
+           check_named("conventions", {"other / Lint": "success"})), ("success", "success", "", "failure", "failure", None))
+    check("#709 C4: holds sees the conventions check report under its real name; a missing one names the checks it saw",
+          (holds({"check": {"conventions": "success"}}, {"checks": rollup709}), holds({"check": {"conventions": "success"}}, {"checks": {"other / Lint": "success"}})),
+          ([], ["check conventions is missing, not success (its checks: other / Lint)"]))
+    check("#709 C4: a fork's run held for approval (action_required) is named by hopeless at once",
+          (hopeless({"check": {"conventions": "success"}, "merged": False}, {"checks": {}, "held": ["https://github.com/o/t/actions/runs/5"]}), hopeless({"merged": False}, {"held": ["u"]})),
+          (["the fork's run waits for approval to run workflows from forks (https://github.com/o/t/actions/runs/5)"], []))
+
+    def held_fake(*a, input=None):
+        if a[:3] == ("pr", "view", "3"):
+            return json.dumps({"headRefOid": "abc", "statusCheckRollup": [{"name": "conventions / Conventions (branch, title, commits)", "conclusion": None}]})
+        if a[:2] == ("run", "list") and "--commit" in a:
+            return json.dumps([{"url": "https://github.com/o/t/actions/runs/5", "status": "completed", "conclusion": "action_required"}] if a[a.index("--commit") + 1] == "abc" else [])
+        return "[]"
+    seen709 = observe("o/t", "pr", "3", held_fake)
+    check("#709 C4: observe records the run on the pull request's head GitHub holds for approval", (seen709["held"], seen709["checks"]),
+          (["https://github.com/o/t/actions/runs/5"], {"conventions / Conventions (branch, title, commits)": ""}))
 
     def polled(views, runs=lambda n: [{"url": "u", "status": "in_progress"}]):
         """A test repository whose issue 9 shows `views[i]` on its i-th
