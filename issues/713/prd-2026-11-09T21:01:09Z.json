@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 713,
+  "prd_sha256": "b1950a1e89d9654e23cadc3917614fcd4e76c7b9692952a3ec6ad4703d26237c",
+  "prd": "### Problem\n\nThe release candidate v7.14.0 fails the release scenarios `accepted-spec`, `spec-to-draft`, `core-one-at-a-time`, `prd-edited-after-acceptance`, `decision-sub-issues`, `claim-and-release`, `bug-reproduced`, `bug-not-reproduced`, `stop-hint-continue`, `draft-in-conflict`, `ready-behind-main`, `merge-queue`, `low-risk-merges`, `high-risk-waits`, `release-issue`, `play`, so the lane releases nothing and `v7` stays where it is.\n\n### Scope\n\n- The cause of each failing scenario above (`accepted-spec`, `spec-to-draft`, `core-one-at-a-time`, `prd-edited-after-acceptance`, `decision-sub-issues`, `claim-and-release`, `bug-reproduced`, `bug-not-reproduced`, `stop-hint-continue`, `draft-in-conflict`, `ready-behind-main`, `merge-queue`, `low-risk-merges`, `high-risk-waits`, `release-issue`, `play`), in the engine or in the scenario's fixtures, fixed with a test that would have caught it.\n\n### Out of scope\n\n- Changing the gates or what they check.\n\n### Acceptance criteria\n\n- C1: Given v7.14.0's candidate with the fix, when the release lane plays `accepted-spec`, `spec-to-draft`, `core-one-at-a-time`, `prd-edited-after-acceptance`, `decision-sub-issues`, `claim-and-release`, `bug-reproduced`, `bug-not-reproduced`, `stop-hint-continue`, `draft-in-conflict`, `ready-behind-main`, `merge-queue`, `low-risk-merges`, `high-risk-waits`, `release-issue`, `play` in the test repository, then each passes and the lane releases it.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-09T21:01:09Z",
+  "policy": "DiluxOne/.github@33002d5c5356"
+}
