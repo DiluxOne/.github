@@ -70,15 +70,17 @@ bodies:
   incomplete: |
     Something should be better.
   # A bug in the report's sections, then the PRD's (#694: the bug form's
-  # and the schema's), so the triage takes it as a person's.
+  # and the schema's), so the triage takes it as a person's. Its file is
+  # the one `bug-reproduced` lands on main first, which the test
+  # repository's fixed reproduction reads (#707).
   bug: |
     ### What happened?
 
-    `scenarios/greeting.md` says "helo".
+    `scenarios/bug-reproduced/greeting.md` says "helo".
 
     ### Steps to reproduce
 
-    Read `scenarios/greeting.md`.
+    Read `scenarios/bug-reproduced/greeting.md`.
 
     ### Problem
 
@@ -244,14 +246,21 @@ scenarios:
     expect: {pull: {closes: true}}
 
   # Bugs.
+  # The test repository's fixed reproduction (#707, its pack's `repro`)
+  # fails while scenarios/<scenario>/greeting.md says "helo": this one
+  # lands it on main before its issue opens; the other lands none. The fix
+  # of a confirmed bug closes the lane's own issue, never the report, so
+  # the report's verdict is what it expects.
   - id: bug-reproduced
     covers: [next_step:fix]
+    minutes: 15
+    before: [{lands: greeting, says: helo}]
     opens: {issue: {title: "fix: the greeting says helo", body: bug}}
-    expect: {labels: [bug:confirmed], pull: {closes: true, branch: "^fix/[0-9]+-", title: "^fix(\\(.+\\))?: "}}
+    expect: {labels: [bug:confirmed], absent: [repro:no-way]}
   - id: bug-not-reproduced
     covers: []
     opens: {issue: {title: "fix: something failed once", body: bug-not-reproduced}}
-    expect: {labels: [bug:unconfirmed], absent: [bug:confirmed]}
+    expect: {labels: [bug:unconfirmed, could-not-reproduce], absent: [bug:confirmed, repro:no-way]}
 
   # The autopilot's questions, stops and hints.
   - id: question-answered
