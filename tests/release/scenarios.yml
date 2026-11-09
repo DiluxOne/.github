@@ -371,7 +371,10 @@ scenarios:
   - id: release-issue
     covers: []
     opens: {issue: {title: "Release 0.0.1", body: release, labels: [lane:release, accepted]}}
-    expect: {pull: {title: "^chore: release"}}
+    # #713: the test identity has the write role, and only admin or
+    # maintain approves a release: it gets the refusal
+    # (issue-accepted.yml's "No release pull request"), and no pull request.
+    expect: {comments: ["**No release pull request:**"], pull: false}
   - id: drift-and-adopt
     covers: []
     opens: {issue: {title: "chore: the drift check and adopting", body: complete-feature}}

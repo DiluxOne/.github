@@ -35,7 +35,7 @@ then lands that file, otherwise, on main, `behind` only a file of its own
 there, through a docs pull request of the scenario that merges: #698),
 `minutes` (its limit, 10 by default, 15 at most) and
 `expect` (`labels`, `absent`, `comments` (markers), `pull` (`closes`,
-`branch`, `title`, patterns), `check` (name: conclusion, the name a
+`branch`, `title`, patterns; `false` for none that closes it, #713), `check` (name: conclusion, the name a
 check run's caller's job or its own: `check_named`, #709), `merged`,
 `waiting`). Every scenario is a group of its own (`groups`, #694), and
 the lane plays the groups at once, one job each, on GitHub's runners,
@@ -442,6 +442,8 @@ def holds(expect, seen):
         if marker not in text:
             out.append(f"no comment with {marker}")
     pull = seen.get("pull") or {}
+    if expect.get("pull") is False and pull:
+        out.append(f"a pull request closes it ({pull.get('number') or pull.get('branch') or '?'})")
     for key, pattern in (expect.get("pull") or {}).items():
         if key == "closes":
             # The issue it should close: the one a pull scenario opened for
@@ -2684,6 +2686,15 @@ def self_test():
           [p.split(": ", 1)[1][:30] for p in autopilot_problems([dict(claim, steps=[{"label": "accepted"}, {"comment": "/claim"}]),
                                                                dict(claim, opens={"issue": dict(claim["opens"]["issue"], labels=["accepted"])})])],
           ["comments /claim on its issue a"] * 2)
+    # #713 C4: a writer's release is refused, in issue-accepted.yml's words.
+    rel = by713["release-issue"]["expect"]
+    with open(os.path.join(ROOT, ".github", "workflows", "issue-accepted.yml"), encoding="utf-8") as fh:
+        refusal = [l for l in fh if "only a person with the admin or maintain role approves a release" in l]
+    check("#713 C4: release-issue expects the refusal a writer gets, the very words issue-accepted.yml says, and no pull request",
+          (rel.get("pull"), [m for m in rel.get("comments") or [] if not (refusal and m in refusal[0])], len(refusal)), (False, [], 1))
+    seen713 = {"labels": ["accepted", "lane:release"], "comments": ["**No release pull request:** x accepted this issue with the role write on the repository"]}
+    check("#713 C4: holds: the refusal and no pull request pass; a pull request that closes it fails, named",
+          (holds(rel, seen713), holds(rel, dict(seen713, pull={"number": 5, "title": "chore: release 0.0.1"}))[0]), ([], "a pull request closes it (5)"))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
