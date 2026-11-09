@@ -10,10 +10,14 @@ org-pull-request.yml, the organisation's required workflow), but a
 transition of the autopilot's state machine (scripts/autopilot.py:
 `next_step`'s BOT_ACTIONS, its waits on PERSON_DECISIONS and BOT_WAITS, the
 MERGE_HOWS of `merge-main`, and what `sweep_step` returns), has a scenario
-that covers it. A scenario: `id`, `covers` (pairs `<workflow>:<event>`,
+that covers it, but a transition the file's `statically:` names with the
+test that holds it, which no scenario can cause there (#707). A scenario: `id`, `covers` (pairs `<workflow>:<event>`,
 transitions `next_step:<action>`, `next_step:wait:<for>`,
 `next_step:merge-main:<how>`, `sweep_step:<what>`), `before` (issues it
-opens first and keeps open until it ends, each `{issue: {...}}`), `opens`
+opens first and keeps open until it ends, each `{issue: {...}}`, and files
+of its own it lands on main first, each `{lands: <name>, says: <text>}`:
+scenarios/<id>/<name>.md, through a docs pull request of the scenario that
+merges, unless main says it already: #707), `opens`
 (an `issue` or a `pull` with its `title`, `body` (a name of `bodies:` or the
 text), `labels`, and `fork: true` for one from a fork; a pull's `{issue}` in
 its body is the number of the issue it opens first, its `issue:` or a
@@ -33,7 +37,9 @@ there, through a docs pull request of the scenario that merges: #698),
 `branch`, `title`, patterns), `check` (name: conclusion, the name a
 check run's caller's job or its own: `check_named`, #709), `merged`,
 `waiting`). Every scenario is a group of its own (`groups`, #694), and
-the lane plays the groups at once, one job each: each writes only under
+the lane plays the groups at once, one job each, on GitHub's runners,
+never DX_RUNNER_HEAVY, where the test repository's own jobs run
+(`lane_problems`, #707): each writes only under
 its own directory of the test repository, scenarios/<id>/, and only
 core-one-at-a-time's is its core (#709: `core_problems`). A poll
 finds an issue's pull request from the issue's own references, never a
@@ -46,7 +52,9 @@ after GitHub's back-off within the scenario's limit, then named.
         scenario that covers what is neither, and every scenario whose
         `expect` cannot hold against its own setup (`preconditions`: a
         dispatch of a workflow the test repository cannot run on demand
-        among them). Every other pair a shipped caller wires is held to the
+        among them; #707: a bug's verdict in a test repository with no way
+        to reproduce it, and the lane's `play` job on DX_RUNNER_HEAVY).
+        Every other pair a shipped caller wires is held to the
         engine statically, by scripts/caller-contract.py check; and
         what is wrong with the groups (`partition`): a scenario in no
         group or in two, two scenarios that could write to the same
@@ -220,10 +228,19 @@ def transitions(root=ROOT):
     return out
 
 
-def coverage(scenarios, wanted):
+def coverage(scenarios, wanted, statically=None):
     """What has no scenario, and what a scenario covers that is not wanted:
-    ["... has no scenario"]. Pure."""
+    ["... has no scenario"]. `statically` (the file's `statically:`, #707)
+    names each transition no scenario can cause in the test repository,
+    with what holds it instead: it is covered by that, never by a scenario
+    as well, and must be a transition with its reason. Pure."""
     covered, out, seen = set(), [], set()
+    statically = statically or {}
+    for w, why in sorted(statically.items()):
+        if not str(w).startswith(("next_step:", "sweep_step:")) or w not in wanted:
+            out.append(f"statically: {w} is no transition of the state machine")
+        elif not str(why or "").strip():
+            out.append(f"statically: {w} says no test that holds it")
     for s in scenarios:
         sid = s.get("id") or "?"
         if sid in seen:
@@ -238,7 +255,9 @@ def coverage(scenarios, wanted):
             covered.add(c)
             if c not in wanted:
                 out.append(f"scenario {sid}: covers {c}, which no caller wires and no transition is")
-    for w in sorted(wanted - covered):
+            elif c in statically:
+                out.append(f"scenario {sid}: covers {c}, which `statically:` says no scenario can cause")
+    for w in sorted(wanted - covered - set(statically)):
         kind = "the transition" if w.startswith(("next_step:", "sweep_step:")) else "the pair"
         out.append(f"{kind} {w} has no scenario in {SCENARIOS}")
     return out
@@ -291,7 +310,10 @@ def empty_sections(body, sections=SECTIONS):
 DRAFT_KINDS = {"Bug": "fix", "Feature": "feat", "Docs": "docs"}
 
 
-def preconditions(scenarios, bodies, pack, can_dispatch=(), passes=None, types=None):
+BUG_VERDICTS = ("bug:confirmed", "bug:unconfirmed")
+
+
+def preconditions(scenarios, bodies, pack, can_dispatch=(), passes=None, types=None, repro=None):
     """Every scenario whose `expect` its own setup can never make hold
     (#563): a pull's `closes` with no `{issue}` in its body (a fixed number
     is another object's), a wait on the core with no open issue before it
@@ -303,11 +325,24 @@ def preconditions(scenarios, bodies, pack, can_dispatch=(), passes=None, types=N
     an issue it does not open accepted, whose body leaves a template section
     empty, or whose title's type the closed issue's Type refuses (`types`,
     each body's form's), and an issue whose Type makes the autopilot name
-    its draft otherwise than its `expect` (scripts/autopilot.py TYPES). Pure."""
+    its draft otherwise than its `expect` (scripts/autopilot.py TYPES), and
+    (#707) a bug's verdict (`bug:confirmed`, `bug:unconfirmed`) expected in a
+    test repository with no way to reproduce it (`repro` False: repos.yml
+    and its pack declare none, so the bug gets `repro:no-way`), or a
+    confirmed bug's issue expected to have a pull request that closes it
+    (the reproduction's fix closes the lane's own issue, never the
+    report). Pure."""
     import fnmatch
     out = []
     for s in scenarios:
         sid, expect, opens = s.get("id") or "?", s.get("expect") or {}, s.get("opens") or {}
+        verdicts = [v for v in BUG_VERDICTS if v in (expect.get("labels") or [])]
+        if verdicts and repro is False:
+            out.append(f"scenario {sid}: expects {', '.join(verdicts)}, but the test repository has no way to reproduce a bug "
+                       f"(repos.yml and its pack declare none), so it gets repro:no-way")
+        if "bug:confirmed" in verdicts and "issue" in opens and (expect.get("pull") or {}).get("closes"):
+            out.append(f"scenario {sid}: expects bug:confirmed and a pull request that closes its issue, but the reproduction's fix closes "
+                       f"the issue the bugfix-reproduced lane opens, never the report")
         if "pull" in opens and "{issue}" in body_of(opens["pull"].get("body"), bodies):
             pull, closed = opens["pull"], opens["pull"].get("issue") or {}
             if "accepted" not in (closed.get("labels") or []):
@@ -369,9 +404,25 @@ def check_named(name, checks):
     return None
 
 
+def saw(seen):
+    """What a row that fails saw (#707), so the lane's bug names the cause
+    (a seal refused, a label taken off) and not only what was missing: its
+    labels, and the first line of the newest comment of the bot's that is
+    not a marker. Table-safe: no `|`, no backtick. Pure."""
+    labels = ", ".join(sorted(seen.get("labels") or [])) or "none"
+    line = ""
+    for text in reversed(seen.get("said") or []):
+        line = next((x.strip() for x in str(text).split("\n") if x.strip() and not re.fullmatch(r"\s*<!--.*?-->\s*", x)), "")
+        if line:
+            break
+    line = re.sub(r"[|`]", "'", line)[:160]
+    return f"saw labels {labels}; the bot's newest comment: {line or 'none'}"
+
+
 def holds(expect, seen):
     """What of `expect` does not hold in `seen` (labels, comments, pull,
-    checks, merged, waiting): [] when it all does. Pure."""
+    checks, merged, waiting): [] when it all does, else ending with what it
+    saw (`saw`, #707). Pure."""
     out = []
     labels = set(seen.get("labels") or [])
     for label in expect.get("labels") or []:
@@ -403,7 +454,7 @@ def holds(expect, seen):
     for key in ("merged", "waiting"):
         if key in expect and bool(seen.get(key)) != bool(expect[key]):
             out.append(f"{key} is {bool(seen.get(key))}")
-    return out
+    return out + [saw(seen)] if out else out
 
 
 # Every wait polls its state (#694): never a fixed sleep.
@@ -605,19 +656,47 @@ def has_branch(target, branch, run=gh):
         return False
 
 
-def clear(repo, sid, run=gh, branch=None):
+# The bugfix-reproduced lane's issue for a confirmed report (scripts/
+# repro-lane.py), which the App opens with no scenario's mark (#707).
+LANE_ISSUE = re.compile(r"^The bug reproduced from #(\d+)$")
+
+
+def lane_leftovers(repo, mark, run=gh):
+    """Every open bugfix-reproduced lane issue in `repo` whose report
+    carries `mark` closed (#707: a confirmed bug's, which `clear`'s search
+    of the mark cannot find). A failure here never stops a scenario."""
+    try:
+        found = json.loads(run("issue", "list", "--repo", repo, "--state", "open", "--label", "lane:bugfix-reproduced",
+                               "--json", "number,title", "--limit", "50") or "[]")
+    except (RuntimeError, ValueError):
+        return
+    for item in found:
+        m = LANE_ISSUE.match(str(item.get("title") or ""))
+        if not m:
+            continue
+        try:
+            if mark in str(json.loads(run("issue", "view", m.group(1), "--repo", repo, "--json", "body") or "{}").get("body") or ""):
+                run("issue", "close", str(item["number"]), "--repo", repo)
+        except (RuntimeError, ValueError):
+            pass
+
+
+def clear(repo, sid, run=gh, branch=None, lands=()):
     """What scenario `sid` left in `repo`, before it plays and after (#694):
     its branches deleted (`scenario/<id>`, which earlier runs left,
-    `branch`, its own now, and those of the pull requests its pushes land
-    on main through, `landing`), and every open issue and pull request whose
-    body carries its mark closed. A failure here never stops a scenario:
-    what it cannot clear, the next run clears."""
-    for name in dict.fromkeys([f"scenario/{sid}"] + ([branch] if branch else []) + [landing(sid, a) for a in LANDS]):
+    `branch`, its own now, and those of the pull requests its pushes and
+    its `before`'s `lands` put on main through, `landing`), and every open
+    issue and pull request whose body carries its mark closed. A failure
+    here never stops a scenario: what it cannot clear, the next run
+    clears. A confirmed bug's lane issue, whose report carries the mark, is
+    closed too (`lane_leftovers`, #707)."""
+    for name in dict.fromkeys([f"scenario/{sid}"] + ([branch] if branch else []) + [landing(sid, a) for a in (*LANDS, *lands)]):
         try:
             run("api", "-X", "DELETE", f"repos/{repo}/git/refs/heads/{name}")
         except RuntimeError:
             pass  # none left: a 404
     mark = scenario_mark(sid)
+    lane_leftovers(repo, mark, run)
     for what in ("issue", "pr"):
         try:
             found = json.loads(run(what, "list", "--repo", repo, "--state", "open", "--search", f'"dx-scenario: {sid}" in:body',
@@ -767,26 +846,44 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
             sleep(POLL)
             left[0] -= POLL
 
-    def land(arg, path):
+    def land(arg, path, content=None):
         """`path` landed on main (#698), with other content than any push
-        wrote on the head: an accepted, claimed Docs issue of the scenario
-        and a docs pull request that closes it, polled until it merged (the
-        auto-merge of a low-risk change). [] once it did, else why not."""
+        wrote on the head (or `content`, #707): an accepted, claimed Docs
+        issue of the scenario and a docs pull request that closes it, polled
+        until it merged (the auto-merge of a low-risk change). [] once it
+        did, else why not."""
         n = open_issue(repo, land_issue(sid, arg), bodies, sid, run, sid, types)
         made.append(("issue", n))
         branch = landing(sid, arg)
         fresh_branch(repo, branch, run)
-        write_file(repo, branch, path, f"{arg} on main\n", run)
+        write_file(repo, branch, path, f"{arg} on main\n" if content is None else content, run)
         body = body_of("pull", bodies).replace("{issue}", n) if "{issue}" in body_of("pull", bodies) else f"Closes #{n}"
         got = run("pr", "create", "--repo", repo, "--head", branch, "--title", f"docs: the scenario {sid} lands {arg} on main",
                   "--body-file", "-", input=marked(body, sid)).strip()
         made.append(("pr", got.rstrip("/").rsplit("/", 1)[-1]))
         seen, why = poll({"merged": True}, ("pr", made[-1][1]), None)
         return [f"push {arg}: its pull request to main {got}: {w}" for w in why]
+    lands = [str(b["lands"]) for b in s.get("before") or [] if "lands" in b]
+    befores = []
     try:
-        clear(repo, sid, run, own)
+        clear(repo, sid, run, own, lands)
         for first in s.get("before") or []:
-            made.append(("issue", open_issue(repo, first.get("issue") or {}, bodies, f"{sid}: before", run, sid, types)))
+            if "lands" in first:
+                # #707: a file of the scenario's own on main before its issue
+                # opens (the greeting a bug's reproduction reads), landed
+                # only when main does not say it already.
+                path, content = f"scenarios/{sid}/{first['lands']}.md", f"{first.get('says', '')}\n"
+                try:
+                    there = text_at(repo, path, "main", run)
+                except (RuntimeError, ValueError):
+                    there = None  # not there yet: a 404
+                if there != content:
+                    why = land(str(first["lands"]), path, content)
+                    if why:
+                        return {"id": sid, "ok": False, "why": [w.replace("push ", "before: lands ", 1) for w in why], "run": ""}
+                continue
+            befores.append(open_issue(repo, first.get("issue") or {}, bodies, f"{sid}: before", run, sid, types))
+            made.append(("issue", befores[-1]))
         if what == "issue":
             url = f"/{open_issue(repo, spec, bodies, sid, run, sid, types)}"
         else:
@@ -845,7 +942,7 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
                 # the scenario's own issue or pull request, or with `of:
                 # before` on the first issue it opened before it.
                 want = {k: v for k, v in (arg or {}).items() if k != "of"}
-                on = (("issue", made[0][1]) if (arg or {}).get("of") == "before" and made[0][0] == "issue" else (what, number))
+                on = (("issue", befores[0]) if (arg or {}).get("of") == "before" and befores else (what, number))
                 seen, why = poll(want, on, None if on[1] != number else closes)
                 if why:
                     return {"id": sid, "ok": False, "why": [f"until {json.dumps(want, sort_keys=True)}: {w}" for w in why], "run": seen.get("run", "")}
@@ -858,7 +955,17 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
         return {"id": sid, "ok": False, "why": [str(e)], "run": ""}
     finally:
         cleanup(repo, made, run)
-        clear(repo, sid, run, own)
+        clear(repo, sid, run, own, lands)
+
+
+def bot_login(login):
+    """Whether `login` is the organisation's App, as either API names it
+    (dilux-bot, dilux-bot[bot], app/dilux-bot)."""
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    import org
+    name = str(login or "").removeprefix("app/").removesuffix("[bot]")
+    return bool(name) and name in {str(org.APP), str(org.BOT).removesuffix("[bot]")}
 
 
 def observe(repo, what, number, run=gh):
@@ -866,7 +973,9 @@ def observe(repo, what, number, run=gh):
     # A `gh` that fails raises GhError; `play` retries a transient one.
     view = json.loads(run(what, "view", number, "--repo", repo, "--json", fields) or "{}")
     seen = {"number": number, "labels": [l.get("name") for l in view.get("labels") or []],
-            "comments": [c.get("body", "") for c in view.get("comments") or []], "state": view.get("state")}
+            "comments": [c.get("body", "") for c in view.get("comments") or []], "state": view.get("state"),
+            # The bot's own comments, oldest first (#707: `saw`).
+            "said": [c.get("body", "") for c in view.get("comments") or [] if bot_login((c.get("author") or {}).get("login"))]}
     if what == "pr":
         seen["pull"] = {"body": view.get("body"), "branch": view.get("headRefName"), "title": view.get("title")}
         seen["merged"] = bool(view.get("mergedAt"))
@@ -1518,14 +1627,48 @@ def engine_post(root=ROOT):
     return mod
 
 
+def test_repro(root=ROOT):
+    """Whether the test repository has a way to reproduce a `logic` bug
+    (#707): its pack's, or repos.yml's for it (scripts/repro-ways.py
+    declares), unless repos.yml says `repro: false`."""
+    import importlib.util
+    sys.path.insert(0, os.path.join(root, "scripts"))
+    import org
+    spec = importlib.util.spec_from_file_location("repro_ways", os.path.join(root, "scripts", "repro-ways.py"))
+    ways = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ways)
+    conf = ways.read(os.path.join(root, "repos.yml"))
+    name = org.test_repo(org.load(os.path.join(root, "org.yml")))
+    return not ways.by_design(conf, name) and bool(ways.declares(conf, name, {}, os.path.join(root, "kinds")))
+
+
+LANE = os.path.join(".github", "workflows", "release-lane.yml")
+
+
+def lane_problems(lane):
+    """What is wrong with the release lane's jobs (`lane`, release-lane.yml
+    read; #707): a `play` job whose `runs-on` can name DX_RUNNER_HEAVY (or
+    any self-hosted runner), where the test repository's own jobs run, so
+    the play jobs that wait for them hold the runners they need. Pure."""
+    play = ((lane or {}).get("jobs") or {}).get("play") or {}
+    runs = json.dumps(play.get("runs-on"))
+    if "DX_RUNNER_HEAVY" in runs or "self-hosted" in runs:
+        return [f"{LANE}: the `play` job runs on {play.get('runs-on')}, where the test repository's own jobs run: "
+                "its jobs that wait for them would hold those runners; it runs on ubuntu-latest"]
+    return []
+
+
 def problems(conf, root=ROOT):
     """What `coverage` names: every played pair and transition with no
-    scenario, every scenario its setup cannot make hold, and what is wrong
-    with the groups (`partition`)."""
+    scenario, every scenario its setup cannot make hold, what is wrong
+    with the groups (`partition`), and with the lane's `play` job
+    (`lane_problems`, #707)."""
     pack = test_pack(root)
     scenarios = conf.get("scenarios") or []
-    return (coverage(scenarios, played(root, pack) | transitions(root))
-            + preconditions(scenarios, conf.get("bodies") or {}, pack, dispatchable(root, pack), schema_passes(root), conf.get("types") or {})
+    return (coverage(scenarios, played(root, pack) | transitions(root), conf.get("statically") or {})
+            + preconditions(scenarios, conf.get("bodies") or {}, pack, dispatchable(root, pack), schema_passes(root), conf.get("types") or {},
+                            test_repro(root))
+            + lane_problems(load_yaml(os.path.join(root, LANE)))
             + partition(scenarios, groups(scenarios), pack)
             + timing(scenarios)
             + fixture_problems(conf, engine_post(root).issue, engine_post(root).pull, engine_post(root).release))
@@ -1533,6 +1676,7 @@ def problems(conf, root=ROOT):
 
 def self_test():
     failed = 0
+    NONE = "saw labels none; the bot's newest comment: none"
 
     def check(name, got, want=True):
         nonlocal failed
@@ -1563,7 +1707,20 @@ def self_test():
         check("C2: a pair with no scenario fails, named", coverage(some, wanted), [f"the pair claim.yml:schedule has no scenario in {SCENARIOS}"])
         some[0]["covers"] += ["claim.yml:schedule", "gone.yml:push"]
         check("C2: a scenario covering what nothing wires is named", coverage(some, wanted), ["scenario s1: covers gone.yml:push, which no caller wires and no transition is"])
+        some[0]["covers"].remove("gone.yml:push")
+        check("#707: a transition `statically:` holds needs no scenario", coverage([{**some[0], "covers": [c for c in some[0]["covers"] if c != "next_step:draft"]}], wanted, {"next_step:draft": "autopilot.py --test"}), [])
+        check("#707: `statically:` names only transitions, each with what holds it, and none a scenario covers too",
+              coverage(some, wanted, {"next_step:draft": "autopilot.py --test", "next_step:gone": "x", "claim.yml:schedule": "x", "next_step:spec": " "}),
+              ["statically: claim.yml:schedule is no transition of the state machine", "statically: next_step:gone is no transition of the state machine",
+               "statically: next_step:spec says no test that holds it", "scenario s1: covers next_step:spec, which `statically:` says no scenario can cause",
+               "scenario s1: covers next_step:draft, which `statically:` says no scenario can cause",
+               "scenario s1: covers claim.yml:schedule, which `statically:` says no scenario can cause"])
+    sys.path[:] = [p for p in sys.path if p != HERE]
+    bot_login("x"), bot_login("y")
+    check("#707: bot_login puts the scripts' directory on sys.path once, however often it is called", sys.path.count(HERE), 1)
     real = load_yaml(os.path.join(ROOT, SCENARIOS))
+    check("#707: next_step:fix, the review's fix round, is held statically: no scenario claims it by name",
+          ("next_step:fix" in (real.get("statically") or {}), [s["id"] for s in real.get("scenarios") or [] if "next_step:fix" in (s.get("covers") or [])]), (True, []))
     check("C2: every pair the test repository plays, and every transition, has its scenario; every scenario can hold", problems(real), [])
     fx = [{"id": "a"}, {"id": "b"}, {"id": "c"}, {"id": "d"}]
     gs = groups(fx)
@@ -1682,7 +1839,7 @@ def self_test():
     st, fake = polled([{"labels": []}])
     got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "steps": [{"until": {"labels": ["claimed"]}}, {"comment": "x"}], "expect": {}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 1)
     check("C3: an `until` that never holds fails at the scenario's limit, named, and takes no further step",
-          (got["ok"], got["why"], len(st["sleeps"]), any(c[:2] == ("issue", "comment") for c in st["calls"])), (False, ['until {"labels": ["claimed"]}: no label claimed'], 4, False))
+          (got["ok"], got["why"], len(st["sleeps"]), any(c[:2] == ("issue", "comment") for c in st["calls"])), (False, ['until {"labels": ["claimed"]}: no label claimed', f'until {{"labels": ["claimed"]}}: {NONE}'], 4, False))
     st, fake = polled([{"labels": [{"name": "incomplete"}]}], runs=lambda n: [{"url": "u", "status": "completed"}])
     got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "expect": {"labels": ["awaiting-acceptance"], "absent": ["incomplete"]}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 15)
     check("C3: a scenario stops as soon as its expectation can no longer hold, not at its limit",
@@ -1761,13 +1918,38 @@ def self_test():
            preconditions([dict(core_alone, before=[{"issue": {"labels": ["accepted"]}}])], {}, pack)), (1, 1, []))
     check("holds: a pull scenario's closes is the issue it opened, never its own number",
           (holds({"pull": {"closes": True}}, {"number": "12", "closes": "11", "pull": {"body": "Closes #11"}}),
-           holds({"pull": {"closes": True}}, {"number": "12", "closes": "1", "pull": {"body": "Closes #11"}})), ([], ["the pull request does not say Closes #1"]))
+           holds({"pull": {"closes": True}}, {"number": "12", "closes": "1", "pull": {"body": "Closes #11"}})), ([], ["the pull request does not say Closes #1", NONE]))
+    # #707: what v7.14.0's candidate failed on, each refused from now on.
+    lane_doc = load_yaml(os.path.join(ROOT, LANE))
+    heavy = {"jobs": {"play": {"runs-on": "${{ vars.DX_RUNNER_HEAVY != '' && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}"}}}
+    check("#707: the play job never runs on DX_RUNNER_HEAVY (nor self-hosted), where the test repository's jobs it waits for run",
+          (lane_problems(lane_doc), lane_doc["jobs"]["play"]["runs-on"], len(lane_problems(heavy)), len(lane_problems({"jobs": {"play": {"runs-on": ["self-hosted", "linux"]}}}))),
+          ([], "ubuntu-latest", 1, 1))
+    bugs = [s for s in real["scenarios"] if s["id"] in ("bug-reproduced", "bug-not-reproduced")]
+    check("#707: a bug scenario's verdict is refused in a test repository with no way to reproduce it, and holds with one",
+          ([p.split(":")[0] for p in preconditions(bugs, real["bodies"], rpack, repro=False)], preconditions(bugs, real["bodies"], rpack, repro=True), test_repro()),
+          (["scenario bug-reproduced", "scenario bug-not-reproduced"], [], True))
+    check("#707: a confirmed bug's issue expected to have a pull request that closes it is refused: the lane's fix closes its own issue",
+          preconditions([{"id": "b", "opens": {"issue": {"body": "bug"}}, "expect": {"labels": ["bug:confirmed"], "pull": {"closes": True}}}], {}, rpack, repro=True),
+          ["scenario b: expects bug:confirmed and a pull request that closes its issue, but the reproduction's fix closes the issue the bugfix-reproduced lane opens, never the report"])
+    check("#707: the bug that reproduces lands the greeting its fixed test reads, under its own directory, and its body names it",
+          ([b for b in bugs[0].get("before") or [] if "lands" in b], "scenarios/bug-reproduced/greeting.md" in real["bodies"][bugs[0]["opens"]["issue"]["body"]],
+           [b for b in bugs[1].get("before") or [] if "lands" in b]), ([{"lands": "greeting", "says": "helo"}], True, []))
+    check("#707 saw: a failing row names its labels and the bot's newest comment's first line that is no marker, table-safe",
+          (saw({"labels": ["b", "a"], "said": ["old", "<!-- dx-board -->\n\nThe seal | was `refused`.\nmore"]}), saw({})),
+          ("saw labels a, b; the bot's newest comment: The seal ' was 'refused'.", NONE))
+    bot = str(sys.modules["org"].APP)
+    viewed = lambda *a, input=None: json.dumps({"labels": [], "comments": [{"author": {"login": bot}, "body": "<!-- m -->\nMine."}, {"author": {"login": "someone"}, "body": "Theirs."},
+                                                                           {"author": {"login": f"app/{bot}"}, "body": "Mine too."}]}) if a[:2] == ("issue", "view") else "[]"
+    check("#707 observe: the bot's comments are its own, as either API names the App, never a person's",
+          observe("o/t", "issue", "3", viewed)["said"], ["<!-- m -->\nMine.", "Mine too."])
     covered = {c for s in real.get("scenarios") or [] for c in s.get("covers") or []}
     check("#585: a caller that does not grant what the engine asks has its scenario", any(s["id"] == "caller-permission-585" for s in real["scenarios"]), True)
     check("the pairs are read from the real callers", {"issue-triage.yml:issues", "claude-review.yml:pull_request", "autopilot.yml:pull_request"} <= covered, True)
     seen = {"number": "4", "labels": ["autopilot", "awaiting-acceptance"], "comments": ["<!-- dx-x -->"], "pull": {"body": "Closes #4", "branch": "feat/4-x", "title": "feat: x"}, "checks": {"g": "success"}, "merged": False}
     check("holds: what holds is nothing", holds({"labels": ["autopilot"], "comments": ["<!-- dx-x -->"], "pull": {"closes": True, "branch": "^feat/4-"}, "check": {"g": "success"}, "merged": False}, seen), [])
-    check("holds: what does not is named", holds({"labels": ["accepted"], "absent": ["autopilot"], "merged": True}, seen), ["no label accepted", "label autopilot still there", "merged is False"])
+    check("holds: what does not is named, and what it saw (#707)", holds({"labels": ["accepted"], "absent": ["autopilot"], "merged": True}, seen),
+          ["no label accepted", "label autopilot still there", "merged is False", "saw labels autopilot, awaiting-acceptance; the bot's newest comment: none"])
     calls = []
 
     def fake(*args, input=None):
@@ -1782,7 +1964,7 @@ def self_test():
     scen = {"scenarios": [{"id": "a", "covers": [], "opens": {"issue": {"title": "t", "body": "b"}}, "steps": [{"label": "x"}], "expect": {"labels": ["awaiting-acceptance"]}},
                           {"id": "b", "covers": [], "opens": {"issue": {"title": "t"}}, "expect": {"labels": ["accepted"]}}], "bodies": {"b": "body"}}
     res = run_all(scen, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=1, central="O/.github")
-    check("run: a scenario whose expect holds passes, one whose does not fails, named", [(r["id"], r["ok"], r["why"]) for r in res], [("a", True, []), ("b", False, ["no label accepted"])])
+    check("run: a scenario whose expect holds passes, one whose does not fails, named", [(r["id"], r["ok"], r["why"]) for r in res], [("a", True, []), ("b", False, ["no label accepted", "saw labels awaiting-acceptance; the bot's newest comment: none"])])
     check("run: its issues are closed and locked after it", sum(1 for c in calls if c[:2] in (("issue", "close"), ("issue", "lock"))), 4)
     pcalls_ = []
 
@@ -1852,6 +2034,24 @@ def self_test():
            ("issue", "close", "4", "--repo", "o/t") in calls694), (True, False))
     check("C1: after it plays, its branch is deleted again and its leftovers looked for again",
           (calls694[-1][:2], sum(1 for c in calls694 if c == delete) >= 2), (("pr", "list"), True))
+    lcalls = []
+
+    def lanefake(*a, input=None):
+        lcalls.append(a)
+        if a[:2] == ("issue", "list"):
+            return json.dumps([{"number": 20, "title": "The bug reproduced from #5"}, {"number": 21, "title": "The bug reproduced from #6"},
+                               {"number": 22, "title": "fix: the bug reproduced from #5"}])
+        if a[:3] == ("issue", "view", "5"):
+            return json.dumps({"body": scenario_mark("bug-reproduced") + "\nthe report"})
+        if a[:3] == ("issue", "view", "6"):
+            return json.dumps({"body": scenario_mark("bug-reproduced-2") + "\nanother's"})
+        return ""
+    lane_leftovers("o/t", scenario_mark("bug-reproduced"), lanefake)
+    check("#707: clear closes the open lane issue a confirmed bug of the scenario opened (its report's mark), and no other",
+          [c[2] for c in lcalls if c[:2] == ("issue", "close")], ["20"])
+    check("#707: the lane issues are listed by their label, open, never searched",
+          [c for c in lcalls if c[:2] == ("issue", "list")][0][3:9], ("o/t", "--state", "open", "--label", "lane:bugfix-reproduced", "--json"))
+
     def pushed(merges=True, pull=True):
         """A test repository whose issue 9 is closed by the autopilot's pull
         request 12 (head `feat/9-x`, unless `pull` is False), and whose
@@ -1896,8 +2096,31 @@ def self_test():
     st, fake = pushed(merges=False)
     got = play({"id": "p", "opens": {"issue": {"title": "feat: x", "body": "f"}}, "steps": [{"push": "behind"}], "expect": {}}, "o/t", "v7-next",
                {"f": "f", "task": "t", "pull": "Closes #{issue}"}, fake, lambda s: None, 1)
-    check("#698: a pull request to main that does not merge fails the scenario, named", (got["ok"], got["why"][-1]),
+    check("#698: a pull request to main that does not merge fails the scenario, named", (got["ok"], got["why"][-2]),
           (False, "push behind: its pull request to main https://github.com/o/t/pull/14: merged is False"))
+    # #707: a `before` that lands a file of the scenario's own on main.
+    st, fake = pushed()
+    lander = {"id": "bug-x", "before": [{"lands": "greeting", "says": "helo"}], "opens": {"issue": {"title": "fix: x", "body": "f"}}, "expect": {}}
+    got = play(lander, "o/t", "v7-next", {"f": "f", "task": "t", "pull": "## Why\n\nCloses #{issue}"}, fake, lambda s: None, 1)
+    landed = [c for c in st["calls"] if c[:3] == ("api", "-X", "PUT")]
+    check("#707: a `before` lands its file on main, with what it says, through a docs pull request that merged, before the scenario's issue opens",
+          (got["ok"], puts(st), __import__("base64").b64decode(next(x for x in landed[0] if str(x).startswith("content="))[8:]).decode(),
+           st["calls"].index(next(c for c in st["calls"] if c[:2] == ("pr", "create"))) < [i for i, c in enumerate(st["calls"]) if c[:2] == ("issue", "create")][1],
+           sum(1 for c in st["calls"] if c == ("api", "-X", "DELETE", "repos/o/t/git/refs/heads/docs/scenario-bug-x-greeting")) >= 2),
+          (True, [("repos/o/t/contents/scenarios/bug-x/greeting.md", "branch=docs/scenario-bug-x-greeting")], "helo\n", True, True))
+    st, fake = pushed()
+
+    def already(*a, input=None):
+        if a[0] == "api" and a[1] == "repos/o/t/contents/scenarios/bug-x/greeting.md?ref=main":
+            return json.dumps({"content": __import__("base64").b64encode(b"helo\n").decode()})
+        return fake(*a, input=input)
+    got = play(lander, "o/t", "v7-next", {"f": "f"}, already, lambda s: None, 1)
+    check("#707: a `before` whose file main says already lands nothing", (got["ok"], puts(st), [c for c in st["calls"] if c[:2] == ("pr", "create")]), (True, [], []))
+    st, fake = pushed(merges=False)
+    got = play(lander, "o/t", "v7-next", {"f": "f", "task": "t", "pull": "Closes #{issue}"}, fake, lambda s: None, 1)
+    check("#707: a `before` whose pull request never merges fails the scenario, named, and opens no issue of its own",
+          (got["ok"], got["why"][0], sum(1 for c in st["calls"] if c[:2] == ("issue", "create"))),
+          (False, "before: lands greeting: its pull request to main https://github.com/o/t/pull/14: merged is False", 1))
     st, fake = pushed(pull=False)
     got = play({"id": "p", "opens": {"issue": {"title": "feat: x", "body": "f"}}, "steps": [{"push": "conflict"}], "expect": {}}, "o/t", "v7-next", {"f": "f"}, fake, lambda s: None, 1)
     check("#698: a push with no pull request to push to fails, named, and writes nothing", (got["ok"], got["why"], puts(st)), (False, ["push conflict: no pull request closes #9 to push to"], []))

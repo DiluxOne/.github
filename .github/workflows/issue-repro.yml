@@ -15,6 +15,9 @@ name: Issue reproduction
 # builds nothing, before any model runs: `bug:unconfirmed` becomes
 # `repro:no-way`, and the comment says why and how to declare a way, with
 # the way the repository's stack proposes (policy/repro-stacks.yml, #377).
+# A way may name a fixed test instead (`fixed`, #707): the engine's test
+# repository's, which calls no model; it is copied in place of the writer's
+# and run as any command way's.
 # Once it decided to run, a step of its own that fails leaves a comment with
 # the run and `needs-human`, never silence (#393). The rest of this header
 # names the unit way's files; another way's are its own.
@@ -453,7 +456,7 @@ jobs:
 
       - name: Write the test
         id: claude
-        if: steps.cap.outputs.run == 'true' && steps.way.outputs.sandbox == 'php-unit'
+        if: steps.cap.outputs.run == 'true' && steps.way.outputs.sandbox == 'php-unit' && steps.way.outputs.fixed == ''
         continue-on-error: true
         timeout-minutes: 15
         uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1.0.264
@@ -512,7 +515,7 @@ jobs:
       # the way asks for (its guide, its files, an example).
       - name: Write the test (the repository's way)
         id: claude_way
-        if: steps.cap.outputs.run == 'true' && steps.way.outputs.sandbox != 'php-unit'
+        if: steps.cap.outputs.run == 'true' && steps.way.outputs.sandbox != 'php-unit' && steps.way.outputs.fixed == ''
         continue-on-error: true
         timeout-minutes: 15
         uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1.0.264
@@ -555,13 +558,27 @@ jobs:
             --allowedTools "Read,Glob,Grep,Write(${{ steps.way.outputs.dir }}/**),Edit(${{ steps.way.outputs.dir }}/**)"
             --json-schema '{"type":"object","additionalProperties":false,"required":["wrote_test","summary","needs_from_reporter"],"properties":{"wrote_test":{"type":"boolean"},"summary":{"type":"string","maxLength":1200},"needs_from_reporter":{"type":"string","maxLength":600},"reported_version":{"type":"string","maxLength":40},"theme":{"type":"string","maxLength":60}}}'
 
+      # A way whose test no model writes (#707, repro-ways.py `fixed`: the
+      # engine's test repository, whose pack calls no model): its fixed test
+      # is copied in place, `{n}` the issue's number and `{scenario}` its
+      # release scenario's mark, and runs as any command way's.
+      - name: Write the test (the way's fixed test, no model)
+        id: fixed
+        if: steps.cap.outputs.run == 'true' && steps.way.outputs.fixed != ''
+        env:
+          FIXED: ${{ steps.way.outputs.fixed }}
+          TEST: ${{ steps.way.outputs.test }}
+          NUMBER: ${{ github.event.issue.number }}
+          BODY: ${{ github.event.issue.body }}
+        run: python3 .dx-central/scripts/repro-ways.py fixed
+
       - name: Collect the test
         id: collect
         if: steps.cap.outputs.run == 'true'
         env:
           OUT: ${{ steps.claude.outputs.structured_output || steps.claude_way.outputs.structured_output }}
           EXECUTION_FILE: ${{ steps.claude.outputs.execution_file || steps.claude_way.outputs.execution_file }}
-          AGENT: ${{ steps.way.outputs.sandbox == 'php-unit' && steps.claude.outcome || steps.claude_way.outcome }}
+          AGENT: ${{ steps.way.outputs.fixed != '' && steps.fixed.outcome || steps.way.outputs.sandbox == 'php-unit' && steps.claude.outcome || steps.claude_way.outcome }}
           NUMBER: ${{ github.event.issue.number }}
           TEST: ${{ steps.way.outputs.test }}
           CENTRAL: .dx-central
