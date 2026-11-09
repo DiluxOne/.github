@@ -600,10 +600,11 @@ def land_issue(sid, arg):
 
 def opened_issues(s, bodies):
     """Every issue scenario `s` opens, as (spec, default title), in the order
-    `play` opens them: its `before`, its own or its pull request's, and one
-    per `push` that lands on main. Pure."""
+    `play` opens them: its `before` (a `lands`, #707, the Docs issue of its
+    pull request to main), its own or its pull request's, and one per `push`
+    that lands on main. Pure."""
     sid, opens = s.get("id") or "?", s.get("opens") or {}
-    out = [(b.get("issue") or {}, f"{sid}: before") for b in s.get("before") or []]
+    out = [(land_issue(sid, b["lands"]), sid) if "lands" in b else (b.get("issue") or {}, f"{sid}: before") for b in s.get("before") or []]
     if "issue" in opens:
         out.append((opens["issue"], sid))
     elif "pull" in opens and "{issue}" in body_of(opens["pull"].get("body"), bodies):
@@ -753,13 +754,25 @@ def commit_files(target, branch, files, headline, run=gh):
     """`files` ({path: text}) written on `branch` of `target` in one commit,
     through the GraphQL mutation `createCommitOnBranch` (#709): GitHub signs
     it, so the signed-commits ruleset takes it, and no file's sha is needed.
-    The branch's head is read first, its `expectedHeadOid`."""
+    The branch's head is read first, its `expectedHeadOid`; a branch that
+    moved in between (the autopilot pushed on it) is read again and the
+    commit made on its new head, up to `MOVED` times."""
     import base64
-    head = run("api", f"repos/{target}/git/ref/heads/{branch}", "--jq", ".object.sha").strip()
-    query = {"query": COMMIT, "variables": {"input": {
-        "branch": {"repositoryNameWithOwner": target, "branchName": branch}, "expectedHeadOid": head, "message": {"headline": headline},
-        "fileChanges": {"additions": [{"path": path, "contents": base64.b64encode(text.encode()).decode()} for path, text in files.items()]}}}}
-    run("api", "graphql", "--input", "-", input=json.dumps(query))
+    for left in range(MOVED, 0, -1):
+        head = run("api", f"repos/{target}/git/ref/heads/{branch}", "--jq", ".object.sha").strip()
+        query = {"query": COMMIT, "variables": {"input": {
+            "branch": {"repositoryNameWithOwner": target, "branchName": branch}, "expectedHeadOid": head, "message": {"headline": headline},
+            "fileChanges": {"additions": [{"path": path, "contents": base64.b64encode(text.encode()).decode()} for path, text in files.items()]}}}}
+        try:
+            run("api", "graphql", "--input", "-", input=json.dumps(query))
+            return
+        except RuntimeError as e:
+            if left == 1 or not re.search(r"expected branch to point to", str(e), re.I):
+                raise
+
+
+# How many times `commit_files` reads a branch that moved under it again.
+MOVED = 3
 
 
 def write_file(target, branch, path, content, run=gh):
@@ -1784,7 +1797,7 @@ def self_test():
            check_named("conventions", {"other / Lint": "success"})), ("success", "success", "", "failure", "failure", None))
     check("#709 C4: holds sees the conventions check report under its real name; a missing one names the checks it saw",
           (holds({"check": {"conventions": "success"}}, {"checks": rollup709}), holds({"check": {"conventions": "success"}}, {"checks": {"other / Lint": "success"}})),
-          ([], ["check conventions is missing, not success (its checks: other / Lint)"]))
+          ([], ["check conventions is missing, not success (its checks: other / Lint)", "saw labels none; the bot's newest comment: none"]))
     check("#709 C4: a fork's run held for approval (action_required) is named by hopeless at once",
           (hopeless({"check": {"conventions": "success"}, "merged": False}, {"checks": {}, "held": ["https://github.com/o/t/actions/runs/5"]}), hopeless({"merged": False}, {"held": ["u"]})),
           (["the fork's run waits for approval to run workflows from forks (https://github.com/o/t/actions/runs/5)"], []))
@@ -2102,12 +2115,12 @@ def self_test():
     st, fake = pushed()
     lander = {"id": "bug-x", "before": [{"lands": "greeting", "says": "helo"}], "opens": {"issue": {"title": "fix: x", "body": "f"}}, "expect": {}}
     got = play(lander, "o/t", "v7-next", {"f": "f", "task": "t", "pull": "## Why\n\nCloses #{issue}"}, fake, lambda s: None, 1)
-    landed = [c for c in st["calls"] if c[:3] == ("api", "-X", "PUT")]
+    landed = commits(st["io"])
     check("#707: a `before` lands its file on main, with what it says, through a docs pull request that merged, before the scenario's issue opens",
-          (got["ok"], puts(st), __import__("base64").b64decode(next(x for x in landed[0] if str(x).startswith("content="))[8:]).decode(),
+          (got["ok"], puts(st), landed[0][3].get("scenarios/bug-x/greeting.md") if landed else None,
            st["calls"].index(next(c for c in st["calls"] if c[:2] == ("pr", "create"))) < [i for i, c in enumerate(st["calls"]) if c[:2] == ("issue", "create")][1],
            sum(1 for c in st["calls"] if c == ("api", "-X", "DELETE", "repos/o/t/git/refs/heads/docs/scenario-bug-x-greeting")) >= 2),
-          (True, [("repos/o/t/contents/scenarios/bug-x/greeting.md", "branch=docs/scenario-bug-x-greeting")], "helo\n", True, True))
+          (True, [("docs/scenario-bug-x-greeting", "scenarios/bug-x/greeting.md")], "helo\n", True, True))
     st, fake = pushed()
 
     def already(*a, input=None):
@@ -2185,6 +2198,9 @@ def self_test():
     play({"id": "c", "before": [{"issue": {"title": "first", "labels": ["accepted"]}}], "opens": {"issue": {"title": "second"}}, "expect": {}},
          "o/t", "v7-next", {}, lambda *a, input=None: first.append(a) or ("https://github.com/o/t/issues/9\n" if a[:2] == ("issue", "create") else "{}" if a[:2] == ("issue", "view") else "[]"), lambda s: None, 1)
     check("run: `before` opens its issue first and closes it only after", ([a[5] for a in first if a[:2] == ("issue", "create")], first.index(("issue", "close", "9", "--repo", "o/t")) > 2), (["first [c]", "second [c]"], True))
+    check("#709 C2: a `before` that lands a file opens the Docs issue of its pull request to main, never an empty one",
+          issue_text(*opened_issues(lander, {})[0][:1], {"task": "t"}, opened_issues(lander, {})[0][1], "bug-x")[0],
+          issue_text(land_issue("bug-x", "greeting"), {"task": "t"}, "bug-x", "bug-x")[0])
     texts709 = [(s["id"],) + issue_text(spec, real["bodies"], default, s["id"]) for s in real["scenarios"] for spec, default in opened_issues(s, real["bodies"])]
     check("#709 C2: every issue a scenario opens names its scenario in its title (but the Release form's, the version alone) and in its body",
           ([sid for sid, title, body in texts709 if not (title.endswith(f" [{sid}]") or FIXED_TITLE.match(title)) or f"\nScenario: {sid}.\n" not in body + "\n"],
@@ -2430,6 +2446,30 @@ def self_test():
           ([c[1] for c in commits(recorded)], wrong_writes(recorded), [a for a, _ in recorded if a[:3] == ("api", "-X", "PUT")],
            len(commits(recorded)) == sum(1 for a, _ in recorded if a[:2] == ("api", "graphql"))),
           (["ci/callers-v7-next", "test/scenario-p", "test/scenario-p", "ci/callers-v7-next-back"], [], [], True))
+    heads, tries = iter(["h1", "h2", "h3"]), []
+
+    def racing(*a, input=None):
+        if a[:2] == ("api", "graphql"):
+            tries.append(json.loads(input)["variables"]["input"]["expectedHeadOid"])
+            if len(tries) == 1:
+                raise RuntimeError('gh api graphql: Expected branch to point to "h1" but it did not. Pull and try again.')
+            return "{}"
+        return next(heads) + "\n"
+    commit_files("o/t", "feat/9-x", {"a.md": "a"}, "test: a", racing)
+    check("#709: a branch that moved between reading its head and committing is read again, and the commit made on its new head", tries, ["h1", "h2"])
+
+    def broken(*a, input=None):
+        if a[:2] == ("api", "graphql"):
+            tries.append(input)
+            raise RuntimeError("gh api graphql: HTTP 422: something else")
+        return "h1\n"
+    tries = []
+    try:
+        commit_files("o/t", "feat/9-x", {"a.md": "a"}, "test: a", broken)
+        raised = None
+    except RuntimeError as e:
+        raised = str(e)
+    check("#709: any other failure of the commit is raised at once, not retried", (raised, len(tries)), ("gh api graphql: HTTP 422: something else", 1))
     check("#709 C3: a recorded contents PUT, a commit on main and one with no branch are named",
           len(wrong_writes([(("api", "-X", "PUT", "repos/o/t/contents/x", "-f", "branch=b"), None),
                             (("api", "graphql", "--input", "-"), json.dumps({"variables": {"input": {"branch": dict(branchName="main")}}})),
