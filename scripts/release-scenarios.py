@@ -27,18 +27,21 @@ complete feature; an issue's `type`, else the Type its body's form gives,
 `comment`, `label`, `unlabel`, `edit`, `push`, `dispatch`, and `until`,
 an `expect` polled every 15 seconds on its issue or pull request, or with
 `of: before` on its first `before` issue, never a fixed wait: #694; a
+file is written in a commit GitHub signs, `createCommitOnBranch` (#709); a
 `push: <name>` writes scenarios/<id>/<name>.md on the head branch of the
 pull request it observes, the autopilot's for an issue, and `conflict`
 then lands that file, otherwise, on main, `behind` only a file of its own
 there, through a docs pull request of the scenario that merges: #698),
 `minutes` (its limit, 10 by default, 15 at most) and
 `expect` (`labels`, `absent`, `comments` (markers), `pull` (`closes`,
-`branch`, `title`, patterns), `check` (name: conclusion), `merged`,
+`branch`, `title`, patterns), `check` (name: conclusion, the name a
+check run's caller's job or its own: `check_named`, #709), `merged`,
 `waiting`). Every scenario is a group of its own (`groups`, #694), and
 the lane plays the groups at once, one job each, on GitHub's runners,
 never DX_RUNNER_HEAVY, where the test repository's own jobs run
 (`lane_problems`, #707): each writes only under
-its own directory of the test repository's core, scenarios/<id>/. A poll
+its own directory of the test repository, scenarios/<id>/, and only
+core-one-at-a-time's is its core (#709: `core_problems`). A poll
 finds an issue's pull request from the issue's own references, never a
 search (#698: the search API's 30 a minute, shared by every scenario at
 once), and a `gh` that fails for a while (a rate limit, a 5xx) is retried
@@ -55,7 +58,8 @@ after GitHub's back-off within the scenario's limit, then named.
         engine statically, by scripts/caller-contract.py check; and
         what is wrong with the groups (`partition`): a scenario in no
         group or in two, two scenarios that could write to the same
-        part of the test repository's core, a group id unfit for an
+        part of the test repository's core, a scenario that writes under
+        it but expects no wait on it (#709), a group id unfit for an
         artifact name
   release-scenarios.py plan
         prints each scenario's limit in minutes and how often it polls,
@@ -363,7 +367,7 @@ def preconditions(scenarios, bodies, pack, can_dispatch=(), passes=None, types=N
         if "pull" in opens and (expect.get("pull") or {}).get("closes"):
             if "{issue}" not in body_of(opens["pull"].get("body"), bodies):
                 out.append(f"scenario {sid}: expects its pull request to close an issue, but its body names no `{{issue}}` it opens")
-        if CORE_LABEL in (expect.get("labels") or []) or CORE_MARK in (expect.get("comments") or []):
+        if waits_on_core(s):
             first = [b.get("issue") or {} for b in s.get("before") or []]
             if not any("accepted" in (i.get("labels") or []) for i in first):
                 out.append(f"scenario {sid}: expects a wait on the core, but opens no accepted issue before it whose pull request stays open")
@@ -377,6 +381,27 @@ def preconditions(scenarios, bodies, pack, can_dispatch=(), passes=None, types=N
 
 def body_of(value, bodies):
     return bodies.get(value, value) if isinstance(value, str) else ""
+
+
+def check_named(name, checks):
+    """The conclusion of the check run `name` names among `checks` ({check
+    run name: conclusion}, "" while it runs), None when none matches (#709):
+    GitHub names a reusable workflow's check after its caller's job and its
+    own, "conventions / Conventions (branch, title, commits)", so `name`
+    matches a check named exactly that, else one whose own name (after the
+    last ` / `) is it or starts with it and ` (`, else one whose caller's
+    job (before it) is it, case aside: the closest kind that matches, its
+    first that ended. Pure."""
+    want, ranked = str(name).lower(), {}
+    for got, conclusion in (checks or {}).items():
+        full = str(got or "").lower()
+        caller, _, job = full.rpartition(" / ")
+        rank = 0 if full == want else 1 if job == want or job.startswith(want + " (") else 2 if caller == want else None
+        if rank is not None:
+            ranked.setdefault(rank, []).append(conclusion or "")
+    for rank in sorted(ranked):
+        return next((c for c in ranked[rank] if c), "")
+    return None
 
 
 def saw(seen):
@@ -421,9 +446,11 @@ def holds(expect, seen):
         elif not re.search(str(pattern), str(pull.get(key) or "")):
             out.append(f"the pull request's {key} is not {pattern}")
     for name, conclusion in (expect.get("check") or {}).items():
-        got = (seen.get("checks") or {}).get(name)
-        if got != conclusion:
-            out.append(f"check {name} is {got or 'missing'}, not {conclusion}")
+        got = check_named(name, seen.get("checks"))
+        if got is None:
+            out.append(f"check {name} is missing, not {conclusion} (its checks: {', '.join(sorted(seen.get('checks') or {})) or 'none'})")
+        elif got != conclusion:
+            out.append(f"check {name} is {got or 'still running'}, not {conclusion}")
     for key in ("merged", "waiting"):
         if key in expect and bool(seen.get(key)) != bool(expect[key]):
             out.append(f"{key} is {bool(seen.get(key))}")
@@ -446,7 +473,10 @@ def hopeless(expect, seen, settled=False):
     that ended with another conclusion and, once the test repository has
     settled (`settled`: no run queued or in progress on two polls in a row,
     so the job that would remove it has finished), an `absent` label still
-    there. [] when it still may hold. Pure."""
+    there, and (#709) a check expected of a pull request whose run GitHub
+    holds for a maintainer's approval (`held`: a fork's, `action_required`),
+    which nothing in the scenario can release. [] when it still may hold.
+    Pure."""
     out = []
     if "merged" in expect:
         if not expect["merged"] and seen.get("merged"):
@@ -454,9 +484,11 @@ def hopeless(expect, seen, settled=False):
         elif expect["merged"] and not seen.get("merged") and str(seen.get("state") or "").upper() == "CLOSED":
             out.append("it closed unmerged")
     for name, conclusion in (expect.get("check") or {}).items():
-        got = (seen.get("checks") or {}).get(name)
+        got = check_named(name, seen.get("checks"))
         if got and got != conclusion:
             out.append(f"check {name} ended {got}, not {conclusion}")
+    if expect.get("check") and seen.get("held"):
+        out.append(f"the fork's run waits for approval to run workflows from forks ({', '.join(seen['held'])})")
     if settled:
         labels = set(seen.get("labels") or [])
         out += [f"label {label} stays, with nothing left running" for label in expect.get("absent") or [] if label in labels]
@@ -526,18 +558,69 @@ def scenario_mark(sid):
 def marked(text, sid):
     """`text` with the scenario's mark first: before the first section, where
     the issue schema reads an organisation's marker (scripts/issue-schema.py
-    MARKER). Pure."""
-    return f"{scenario_mark(sid)}\n{text}"
+    MARKER), and a line that names the scenario (#709: the mark is a
+    comment, which the triage does not see, so two scenarios' issues with the
+    same text would read as duplicates): the first line of its first `### `
+    section, since the schema refuses any other text before it, else right
+    after the mark. Pure."""
+    line = f"Scenario: {sid}."
+    m = re.search(r"^### .*\n", text, re.M)
+    if m:
+        return f"{scenario_mark(sid)}\n{text[:m.end()]}\n{line}\n{text[m.end():]}"
+    return f"{scenario_mark(sid)}\n{line}\n{text}"
+
+
+# A title its form fixes, which a suffix would break (#709): the Release
+# form's, the version alone (scripts/engine-post.py RELEASE_TITLE).
+FIXED_TITLE = re.compile(r"^Release \d+\.\d+\.\d+$")
+
+
+def issue_text(spec, bodies, default, sid=None):
+    """The title and body the issue `spec` opens with: with `sid`, its title
+    ends with `[<sid>]` (a suffix: the `type:` before it is what the
+    conventions check and `needed_type` read), but a title its form fixes
+    (`FIXED_TITLE`), and its body is `marked` (#709). Pure."""
+    title, text = str(spec.get("title", default)), body_of(spec.get("body"), bodies)
+    if not sid:
+        return title, text
+    return (title if FIXED_TITLE.match(title) else f"{title} [{sid}]"), marked(text, sid)
+
+
+def pull_issue(spec, sid):
+    """The issue a pull request `spec` of scenario `sid` closes, opened first:
+    its `issue:`, else a complete feature with its title. Pure."""
+    return spec.get("issue") or {"title": spec.get("title", sid), "body": "complete-feature"}
+
+
+def land_issue(sid, arg):
+    """The accepted, claimed Docs issue the pull request that lands scenario
+    `sid`'s `push: arg` on main closes (#698). Pure."""
+    return {"title": f"docs: the scenario {sid} lands {arg} on main", "body": "task", "type": "Docs", "labels": ["accepted"], "comments": ["/claim"]}
+
+
+def opened_issues(s, bodies):
+    """Every issue scenario `s` opens, as (spec, default title), in the order
+    `play` opens them: its `before` (a `lands`, #707, the Docs issue of its
+    pull request to main), its own or its pull request's, and one per `push`
+    that lands on main. Pure."""
+    sid, opens = s.get("id") or "?", s.get("opens") or {}
+    out = [(land_issue(sid, b["lands"]), sid) if "lands" in b else (b.get("issue") or {}, f"{sid}: before") for b in s.get("before") or []]
+    if "issue" in opens:
+        out.append((opens["issue"], sid))
+    elif "pull" in opens and "{issue}" in body_of(opens["pull"].get("body"), bodies):
+        out.append((pull_issue(opens["pull"], sid), sid))
+    return out + [(land_issue(sid, st["push"]), sid) for st in s.get("steps") or [] if isinstance(st, dict) and st.get("push") in LANDS]
 
 
 def open_issue(repo, spec, bodies, default, run=gh, sid=None, types=None):
     """The issue `spec` opened, with the Type its form would give it
-    (`type_of`, #698): its number. Its `comments` (a `/claim`) are posted
-    before its labels, so a claim comes before its acceptance."""
-    text = body_of(spec.get("body"), bodies)
+    (`type_of`, #698), its title and body as `issue_text` writes them: its
+    number. Its `comments` (a `/claim`) are posted before its labels, so a
+    claim comes before its acceptance."""
+    title, text = issue_text(spec, bodies, default, sid)
     kind, labels, first = type_of(spec, types), spec.get("labels") or [], spec.get("comments") or []
-    url = run("issue", "create", "--repo", repo, "--title", spec.get("title", default), "--body-file", "-", *(["--type", kind] if kind else []),
-              *sum((["--label", l] for l in ([] if first else labels)), []), input=marked(text, sid) if sid else text).strip()
+    url = run("issue", "create", "--repo", repo, "--title", title, "--body-file", "-", *(["--type", kind] if kind else []),
+              *sum((["--label", l] for l in ([] if first else labels)), []), input=text).strip()
     number = url.rstrip("/").rsplit("/", 1)[-1]
     for c in first:
         run("issue", "comment", number, "--repo", repo, "--body", str(c))
@@ -663,17 +746,39 @@ def landing(sid, arg):
     return f"docs/scenario-{sid}-{arg}"
 
 
-def write_file(target, branch, path, content, run=gh):
-    """`path` written on `branch` of `target` with `content`, the file's
-    sha given when it is there already (the contents API refuses an update
-    without it)."""
+COMMIT = ("mutation($input: CreateCommitOnBranchInput!) "
+          "{ createCommitOnBranch(input: $input) { commit { oid } } }")
+
+
+def commit_files(target, branch, files, headline, run=gh):
+    """`files` ({path: text}) written on `branch` of `target` in one commit,
+    through the GraphQL mutation `createCommitOnBranch` (#709): GitHub signs
+    it, so the signed-commits ruleset takes it, and no file's sha is needed.
+    The branch's head is read first, its `expectedHeadOid`; a branch that
+    moved in between (the autopilot pushed on it) is read again and the
+    commit made on its new head, up to `MOVED` times."""
     import base64
-    try:
-        sha = run("api", f"repos/{target}/contents/{path}?ref={branch}", "--jq", ".sha").strip()
-    except RuntimeError:
-        sha = ""  # not there yet: a 404
-    run("api", "-X", "PUT", f"repos/{target}/contents/{path}", "-f", f"message=test: {path}", "-f", f"branch={branch}",
-        "-f", f"content={base64.b64encode(content.encode()).decode()}", *(["-f", f"sha={sha}"] if sha else []))
+    for left in range(MOVED, 0, -1):
+        head = run("api", f"repos/{target}/git/ref/heads/{branch}", "--jq", ".object.sha").strip()
+        query = {"query": COMMIT, "variables": {"input": {
+            "branch": {"repositoryNameWithOwner": target, "branchName": branch}, "expectedHeadOid": head, "message": {"headline": headline},
+            "fileChanges": {"additions": [{"path": path, "contents": base64.b64encode(text.encode()).decode()} for path, text in files.items()]}}}}
+        try:
+            run("api", "graphql", "--input", "-", input=json.dumps(query))
+            return
+        except RuntimeError as e:
+            if left == 1 or not re.search(r"expected branch to point to", str(e), re.I):
+                raise
+
+
+# How many times `commit_files` reads a branch that moved under it again.
+MOVED = 3
+
+
+def write_file(target, branch, path, content, run=gh):
+    """`path` written on `branch` of `target` with `content`, in a commit of
+    its own (`commit_files`)."""
+    commit_files(target, branch, {path: content}, f"test: {path}", run)
 
 
 # A `gh` that failed for a while, not for good (#698): a rate limit (the
@@ -760,8 +865,7 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
         issue of the scenario and a docs pull request that closes it, polled
         until it merged (the auto-merge of a low-risk change). [] once it
         did, else why not."""
-        n = open_issue(repo, {"title": f"docs: the scenario {sid} lands {arg} on main", "body": "task", "type": "Docs", "labels": ["accepted"],
-                              "comments": ["/claim"]}, bodies, sid, run, sid, types)
+        n = open_issue(repo, land_issue(sid, arg), bodies, sid, run, sid, types)
         made.append(("issue", n))
         branch = landing(sid, arg)
         fresh_branch(repo, branch, run)
@@ -798,7 +902,7 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
         else:
             text = body_of(spec.get("body"), bodies)
             if "{issue}" in text:
-                closes = open_issue(repo, spec.get("issue") or {"title": spec.get("title", sid), "body": "complete-feature"}, bodies, sid, run, sid, types)
+                closes = open_issue(repo, pull_issue(spec, sid), bodies, sid, run, sid, types)
                 made.append(("issue", closes))
                 text = text.replace("{issue}", closes)
             branch, target = own, repo
@@ -813,8 +917,7 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
                 writes("repo", "fork", repo, "--clone=false", "--default-branch-only")
                 target = f"{writes('api', 'user', '--jq', '.login').strip()}/{repo.split('/', 1)[1]}"
             fresh_branch(target, branch, writes)
-            writes("api", "-X", "PUT", f"repos/{target}/contents/scenarios/{sid}/pull.md", "-f", f"message=test: the scenario {sid}",
-                "-f", f"branch={branch}", "-f", f"content={__import__('base64').b64encode(sid.encode()).decode()}")
+            write_file(target, branch, f"scenarios/{sid}/pull.md", sid, writes)
             head = f"{target.split('/', 1)[0]}:{branch}" if target != repo else branch
             url = run("pr", "create", "--repo", repo, "--head", head, "--title", spec.get("title", f"test: {sid}"),
                       "--body-file", "-", input=marked(text, sid)).strip()
@@ -879,7 +982,7 @@ def bot_login(login):
 
 
 def observe(repo, what, number, run=gh):
-    fields = "labels,comments,body,state" + (",mergedAt,statusCheckRollup,headRefName,title" if what == "pr" else ",closedByPullRequestsReferences")
+    fields = "labels,comments,body,state" + (",mergedAt,statusCheckRollup,headRefName,headRefOid,title" if what == "pr" else ",closedByPullRequestsReferences")
     # A `gh` that fails raises GhError; `play` retries a transient one.
     view = json.loads(run(what, "view", number, "--repo", repo, "--json", fields) or "{}")
     seen = {"number": number, "labels": [l.get("name") for l in view.get("labels") or []],
@@ -890,6 +993,12 @@ def observe(repo, what, number, run=gh):
         seen["pull"] = {"body": view.get("body"), "branch": view.get("headRefName"), "title": view.get("title")}
         seen["merged"] = bool(view.get("mergedAt"))
         seen["checks"] = {c.get("name"): (c.get("conclusion") or "").lower() for c in view.get("statusCheckRollup") or []}
+        # #709: a run on its head that GitHub holds for a maintainer's
+        # approval (a fork's): it never reports until a person allows it.
+        seen["held"] = []
+        if view.get("headRefOid"):
+            head = json.loads(run("run", "list", "--repo", repo, "--commit", str(view["headRefOid"]), "--json", "url,status,conclusion") or "[]")
+            seen["held"] = [str(r.get("url") or "") for r in head if "action_required" in (str(r.get("status") or "").lower(), str(r.get("conclusion") or "").lower())]
     else:
         # #698: the pull request that closes it, from the issue's own
         # references (the newest), never a search per poll: the search API
@@ -1072,7 +1181,7 @@ def point_callers(repo, ref, run=gh, central=None, back=None, sleep=time.sleep, 
         text = base64.b64decode(got.get("content") or "").decode()
         new = back[name] if back is not None else at_ref(text, central, ref)
         if new != text:
-            changes.append((name, text, new, got.get("sha", "")))
+            changes.append((name, text, new))
     if not changes:
         return []
     base = run("api", f"repos/{repo}", "--jq", ".default_branch").strip()
@@ -1084,16 +1193,14 @@ def point_callers(repo, ref, run=gh, central=None, back=None, sleep=time.sleep, 
     head = run("api", f"repos/{repo}/git/ref/heads/{base}", "--jq", ".object.sha").strip()
     run("api", f"repos/{repo}/git/refs", "-f", f"ref=refs/heads/{branch}", "-f", f"sha={head}")
     title = f"ci: the engine's callers {'back from' if back is not None else 'at'} {ref}"
-    for name, _, new, sha in changes:
-        run("api", "-X", "PUT", f"repos/{repo}/contents/.github/workflows/{name}", "-f", f"message={title}",
-            "-f", f"branch={branch}", "-f", f"content={base64.b64encode(new.encode()).decode()}", "-f", f"sha={sha}")
+    commit_files(repo, branch, {f".github/workflows/{name}": new for name, _, new in changes}, title, run)
     url = run("pr", "create", "--repo", repo, "--base", base, "--head", branch, "--title", title, "--body-file", "-",
               input=f"The release lane's scenarios (scripts/release-scenarios.py): {title[4:]}.\n").strip()
     number = url.rstrip("/").rsplit("/", 1)[-1]
     try:
         pull = json.loads(run("api", f"repos/{repo}/pulls/{number}") or "{}")
         base_sha, head = pull["base"]["sha"], pull["head"]["sha"]
-        differs = not_only_ref(repo, number, base_sha, head, [name for name, _, _, _ in changes], central, run)
+        differs = not_only_ref(repo, number, base_sha, head, [name for name, _, _ in changes], central, run)
         if differs:
             raise RuntimeError(f"the pull request {url} that moves them changes more than the engine's ref, so the lane does not merge it: {differs}")
         merge_when_checked(repo, number, url, head, run, sleep, minutes)
@@ -1103,7 +1210,7 @@ def point_callers(repo, ref, run=gh, central=None, back=None, sleep=time.sleep, 
         except RuntimeError:
             pass
         raise
-    return [{"name": name, "before": text} for name, text, _, _ in changes]
+    return [{"name": name, "before": text} for name, text, _ in changes]
 
 
 def put_back(repo, ref, moved, callers=gh, central=None, sleep=time.sleep, minutes=20):
@@ -1164,7 +1271,7 @@ NOT_GROUPS = ("move", "back")
 def groups(scenarios):
     """The groups the lane plays at once, one job each (release-lane.yml
     `play`): every scenario in its own, named by its id (#694: each writes
-    to its own core, `writes`, so none waits on another). [{id,
+    under its own directory, `core_writes`, so none waits on another). [{id,
     scenarios}]. Pure."""
     return [{"id": s.get("id"), "scenarios": [s.get("id")]} for s in scenarios]
 
@@ -1185,7 +1292,8 @@ def partition(scenarios, gs, pack=None):
     unfit for an artifact name (`^[a-z0-9-]+$`, nor `move` or `back`) or used
     twice, and (#694) two scenarios that could write to the same part of the
     test repository's core (`pack`'s, scripts/org.py core_key), which would
-    wait on each other's change. Pure."""
+    wait on each other's change, and (#709) any that writes under it but
+    expects no wait on it (`core_problems`). Pure."""
     out, where, ids = [], {}, [s.get("id") or "?" for s in scenarios]
     seen = set()
     for g in gs:
@@ -1217,6 +1325,32 @@ def partition(scenarios, gs, pack=None):
                     out.append(f"scenario {sid}: writes {path}, on the core {key or 'of the test repository'} scenario {owner[key]} writes too, so one would wait on the other")
                     break
                 owner.setdefault(key, sid)
+        out += core_problems(scenarios, pack)
+    return out
+
+
+def waits_on_core(s):
+    """Whether scenario `s` expects to wait on the core (`autopilot:core-wait`
+    or its comment's mark). Pure."""
+    expect = s.get("expect") or {}
+    return CORE_LABEL in (expect.get("labels") or []) or CORE_MARK in (expect.get("comments") or [])
+
+
+def core_problems(scenarios, pack):
+    """Every scenario that writes under the test repository's core (`pack`'s
+    `core`) but expects no wait on it (#709): its fixed change would make its
+    issue wait on another's open pull request (scripts/autopilot.py
+    core_busy), so only the one scenario that expects `autopilot:core-wait`
+    writes there. Pure."""
+    out = []
+    for s in scenarios:
+        if waits_on_core(s):
+            continue
+        for path in sorted(core_writes(s, pack)):
+            if org_key(path, pack) is not None:
+                out.append(f"scenario {s.get('id') or '?'}: writes {path}, under the test repository's core ({', '.join(pack.get('core') or [])}), "
+                           f"but expects no wait on it, so its issue could wait on another's change")
+                break
     return out
 
 
@@ -1381,29 +1515,54 @@ def _lead(node):
     return None
 
 
-def default_writes(source):
-    """Every `PUT` to a `contents/` path in `source` that does not name a
-    branch other than the default (`branch=` missing, or `branch=main`):
-    ["line N: ..."]. A default branch is protected by its rulesets, so
-    nothing here writes one. Pure."""
+def default_commits(source):
+    """What in `source` writes a file otherwise than `createCommitOnBranch`
+    on a branch of its own (#709): any `PUT` to a `contents/` path (the
+    contents API's commits are unsigned, and the signed-commits ruleset
+    refuses them), and any `branchName` that is not a variable (a literal
+    names a fixed branch, the default one among them, which its rulesets
+    protect): ["line N: ..."]. Pure."""
     out = []
     for node in ast.walk(ast.parse(source)):
-        if not isinstance(node, ast.Call):
-            continue
-        texts = [_lead(a) for a in node.args]
-        if "PUT" not in texts or not any(t and "contents/" in t for t in texts):
-            continue
-        branches = [t.split("=", 1)[1] for t in texts if t and t.startswith("branch=")]
-        if not branches or any(b in DEFAULTS for b in branches):
-            out.append(f"line {node.lineno}: a PUT to contents/ that writes the default branch ({'branch=' + branches[0] if branches else 'no branch='})")
+        if isinstance(node, ast.Call):
+            texts = [_lead(a) for a in node.args]
+            if "PUT" in texts and any(t and "contents/" in t for t in texts):
+                out.append(f"line {node.lineno}: a PUT to contents/, not createCommitOnBranch")
+        if isinstance(node, ast.Dict):
+            for k, v in zip(node.keys, node.values):
+                if isinstance(k, ast.Constant) and k.value == "branchName" and not isinstance(v, ast.Name):
+                    out.append(f"line {node.lineno}: a createCommitOnBranch whose branchName is not a branch variable ({ast.unparse(v)})")
     return out
 
 
-def put_default(calls):
-    """The recorded `gh` calls that write a contents path on the default
-    branch. Pure."""
-    return [c for c in calls if tuple(c[:3]) == ("api", "-X", "PUT") and "/contents/" in str(c[3])
-            and not any(str(x).startswith("branch=") and str(x)[7:] not in DEFAULTS for x in c[4:])]
+def wrong_writes(calls):
+    """The recorded `gh` calls (args, input) that write a file otherwise
+    than `createCommitOnBranch` on a named branch other than the default:
+    a contents `PUT`, or a commit with no branch or the default one.
+    Pure."""
+    out = []
+    for args, given in calls:
+        if tuple(args[:3]) == ("api", "-X", "PUT") and "/contents/" in str(args[3]):
+            out.append(args)
+        elif tuple(args[:2]) == ("api", "graphql"):
+            branch = ((json.loads(given or "{}").get("variables") or {}).get("input") or {}).get("branch") or {}
+            if not branch.get("branchName") or branch["branchName"] in DEFAULTS:
+                out.append(args)
+    return out
+
+
+def commits(calls):
+    """The commits among recorded `gh` calls (args, input): [(repository,
+    branch, [paths], {path: text})]. Pure."""
+    import base64
+    out = []
+    for args, given in calls:
+        if tuple(args[:2]) == ("api", "graphql") and "createCommitOnBranch" in str(given):
+            got = json.loads(given)["variables"]["input"]
+            adds = got["fileChanges"]["additions"]
+            out.append((got["branch"]["repositoryNameWithOwner"], got["branch"]["branchName"], [a["path"] for a in adds],
+                        {a["path"]: base64.b64decode(a["contents"]).decode() for a in adds}))
+    return out
 
 
 def org_key(path, pack):
@@ -1594,12 +1753,29 @@ def self_test():
     check("C2: the real file: every scenario is its own group, and none says serial",
           ([g["scenarios"] for g in real_groups] == [[s["id"]] for s in real["scenarios"]], [s["id"] for s in real["scenarios"] if "serial" in s]), (True, []))
     check("C2: the real file: no two scenarios write to the same core path of the test repository", partition(real["scenarios"], real_groups, rpack), [])
-    check("C2: each scenario writes under its own directory of the core, its fixed change too",
-          (sorted(core_writes({"id": "x"}, rpack)), {org_key(p, rpack) for p in core_writes({"id": "x"}, rpack)}), (["scenarios/x/*", "scenarios/x/*.md"], {"scenarios/x"}))
+    check("C2: each scenario writes under its own directory, its fixed change too, and only core-one-at-a-time's is the core (#709)",
+          (sorted(core_writes({"id": "x"}, rpack)), {org_key(p, rpack) for p in core_writes({"id": "x"}, rpack)}, {org_key(p, rpack) for p in core_writes({"id": "core-one-at-a-time"}, rpack)}),
+          (["scenarios/x/*", "scenarios/x/*.md"], {None}, {""}))
     shared = {"fixed-change": {"file": "scenarios/{n}.md"}, "core": ["scenarios/*"]}
     check("C2: partition fails when two scenarios could write to the same core path (a fixed change outside their own directory)",
-          partition([{"id": "a"}, {"id": "b"}], groups([{"id": "a"}, {"id": "b"}]), shared),
+          partition([{"id": "a", "expect": {"labels": [CORE_LABEL]}}, {"id": "b", "expect": {"labels": [CORE_LABEL]}}], groups([{"id": "a"}, {"id": "b"}]), shared),
           ["scenario b: writes scenarios/*.md, on the core of the test repository scenario a writes too, so one would wait on the other"])
+    per_dir = {"fixed-change": {"file": "scenarios/{scenario}/{n}.md"}, "core": ["scenarios/*/**"]}
+    check("#709 C1: core_problems names a scenario that writes under the core but expects no wait on it, and partition with it",
+          (core_problems([{"id": "a", "expect": {}}, {"id": "w", "expect": {"labels": [CORE_LABEL]}}], per_dir), partition([{"id": "a"}], groups([{"id": "a"}]), per_dir),
+           core_problems(real["scenarios"], rpack)),
+          (["scenario a: writes scenarios/a/*, under the test repository's core (scenarios/*/**), but expects no wait on it, so its issue could wait on another's change"],
+           ["scenario a: writes scenarios/a/*, under the test repository's core (scenarios/*/**), but expects no wait on it, so its issue could wait on another's change"], []))
+    sys.path.insert(0, HERE)
+    import autopilot as _ap
+    fixed709 = rpack["fixed-change"]["file"]
+    issues709, n709 = [], 100
+    for s in real["scenarios"]:
+        for _ in (s.get("before") or []) + [s.get("opens")]:
+            n709 += 1
+            issues709.append((s["id"], n709, fixed709.replace("{scenario}", s["id"]).replace("{n}", str(n709)).replace("{id}", "C1")))
+    busy709 = {sid for sid, n, path in issues709 if _ap.core_busy([path], rpack["core"], [{"number": m, "files": [q]} for _, m, q in issues709 if m != n], mine=n)}
+    check("#709 C1: from the real pack, with every scenario's fixed change open at once, only core-one-at-a-time can wait on the core", busy709, {"core-one-at-a-time"})
     plan_real = scenario_plan(real["scenarios"])
     check("C3: the real plan: no fixed wait, every wait an `until`, polling every 15 seconds, each limit 15 minutes or less",
           (timing(real["scenarios"]), {p["poll"] for p in plan_real}, max(p["minutes"] for p in plan_real) <= 15, len(plan_real) == len(real["scenarios"]),
@@ -1614,6 +1790,42 @@ def self_test():
            hopeless({"check": {"c": "success"}}, {"checks": {"c": "failure"}}), hopeless({"check": {"c": "success"}}, {"checks": {"c": ""}}),
            hopeless({"absent": ["incomplete"]}, {"labels": ["incomplete"]}), hopeless({"absent": ["incomplete"]}, {"labels": ["incomplete"]}, True)),
           (["it merged"], ["it closed unmerged"], [], ["check c ended failure, not success"], [], [], ["label incomplete stays, with nothing left running"]))
+    rollup709 = {"conventions / Docs (links and names)": "failure", "conventions / Conventions (branch, title, commits)": "success", "review / Claude review": ""}
+    check("#709 C4: `conventions` names the reusable workflow's check, by its caller's job or its own name, never its sibling's",
+          (check_named("conventions", rollup709), check_named("Conventions", {"Conventions (branch, title, commits)": "success"}), check_named("review", rollup709),
+           check_named("conventions", {"conventions": "failure", "conventions / Conventions (x)": "success"}), check_named("docs", {"conventions / Docs (links and names)": "failure"}),
+           check_named("conventions", {"other / Lint": "success"})), ("success", "success", "", "failure", "failure", None))
+    check("#709 C4: holds sees the conventions check report under its real name; a missing one names the checks it saw",
+          (holds({"check": {"conventions": "success"}}, {"checks": rollup709}), holds({"check": {"conventions": "success"}}, {"checks": {"other / Lint": "success"}})),
+          ([], ["check conventions is missing, not success (its checks: other / Lint)", "saw labels none; the bot's newest comment: none"]))
+    check("#709 C4: a fork's run held for approval (action_required) is named by hopeless at once",
+          (hopeless({"check": {"conventions": "success"}, "merged": False}, {"checks": {}, "held": ["https://github.com/o/t/actions/runs/5"]}), hopeless({"merged": False}, {"held": ["u"]})),
+          (["the fork's run waits for approval to run workflows from forks (https://github.com/o/t/actions/runs/5)"], []))
+
+    def held_fake(*a, input=None):
+        if a[:3] == ("pr", "view", "3"):
+            return json.dumps({"headRefOid": "abc", "statusCheckRollup": [{"name": "conventions / Conventions (branch, title, commits)", "conclusion": None}]})
+        if a[:2] == ("run", "list") and "--commit" in a:
+            return json.dumps([{"url": "https://github.com/o/t/actions/runs/5", "status": "completed", "conclusion": "action_required"}] if a[a.index("--commit") + 1] == "abc" else [])
+        return "[]"
+    def lane709(*a, input=None):
+        """The test repository as the candidate meets it: every check under
+        its real name, the reusable workflow's after its caller's job."""
+        if a[:2] == ("issue", "create"):
+            return "https://github.com/o/t/issues/11\n"
+        if a[:2] == ("pr", "create"):
+            return "https://github.com/o/t/pull/12\n"
+        if a[:3] == ("pr", "view", "12"):
+            return json.dumps({"state": "OPEN", "headRefOid": "h", "body": "Closes #11", "statusCheckRollup": [
+                {"name": "conventions / Conventions (branch, title, commits)", "conclusion": "SUCCESS"}, {"name": "conventions / Docs (links and names)", "conclusion": "SUCCESS"}]})
+        return "me\n" if a[-1:] == (".login",) else "h\n" if a[-1:] in ((".sha",), (".object.sha",)) else "[]"
+    by709 = {s["id"]: s for s in real["scenarios"]}
+    got709 = [play(by709[i], "o/t", "v7-next", real["bodies"], lane709, lambda s: None, 1, fork=lane709, types=real["types"]) for i in ("fork-without-secrets", "review-changes-asked")]
+    check("#709 C5: the real fork-without-secrets and review-changes-asked pass once the conventions check reports under its real name",
+          [(r["id"], r["ok"], r["why"]) for r in got709], [("fork-without-secrets", True, []), ("review-changes-asked", True, [])])
+    seen709 = observe("o/t", "pr", "3", held_fake)
+    check("#709 C4: observe records the run on the pull request's head GitHub holds for approval", (seen709["held"], seen709["checks"]),
+          (["https://github.com/o/t/actions/runs/5"], {"conventions / Conventions (branch, title, commits)": ""}))
 
     def polled(views, runs=lambda n: [{"url": "u", "status": "in_progress"}]):
         """A test repository whose issue 9 shows `views[i]` on its i-th
@@ -1651,13 +1863,13 @@ def self_test():
     st, fake = polled([{"labels": []}])
     got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "steps": [{"wait": 300}], "expect": {}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 1)
     check("C3: a fixed wait is never slept", (got["ok"], st["sleeps"]), (False, []))
-    forked = []
+    forked, fork_in = [], []
     got = play({"id": "f", "opens": {"pull": {"title": "docs: x", "body": "b", "fork": True}}, "expect": {}}, "o/t", "v7-next", {"b": "x"},
                lambda *a, input=None: forked.append(("test",) + a) or ("https://github.com/o/t/pull/3\n" if a[:2] == ("pr", "create") else "{}" if a[:2] == ("pr", "view") else "[]"),
-               lambda s: None, 1, fork=lambda *a, input=None: forked.append(("fork",) + a) or ("me\n" if a[-1] == ".login" else "s\n"))
+               lambda s: None, 1, fork=lambda *a, input=None: forked.append(("fork",) + a) or fork_in.append((a, input)) or ("me\n" if a[-1] == ".login" else "s\n"))
     check("C9: a scenario from a fork forks and writes its fork with the fork token, and opens its pull request with the test identity's",
           (got["ok"], [c[0] for c in forked if c[1:3] == ("repo", "fork")], [c[0] for c in forked if c[1:3] == ("pr", "create")],
-           all(c[0] == "fork" for c in forked if c[1:4] == ("api", "-X", "PUT"))), (True, ["fork"], ["test"], True))
+           [c[0] for c in forked if c[1:3] == ("api", "graphql")], [c[:3] for c in commits(fork_in)]), (True, ["fork"], ["test"], ["fork"], [("me/t", "docs/scenario-f", ["scenarios/f/pull.md"])]))
     forked = []
     got = play({"id": "f", "opens": {"pull": {"title": "docs: x", "body": "b", "fork": True}}, "expect": {}}, "o/t", "v7-next", {"b": "x"},
                lambda *a, input=None: forked.append(a) or "[]", lambda s: None, 1, fork=False)
@@ -1677,7 +1889,7 @@ def self_test():
         return "{}" if a[:2] == ("issue", "view") else "[]"
     conf3 = {"scenarios": [{"id": "a", "opens": {"issue": {"title": "a"}}, "expect": {}}, {"id": "b", "opens": {"issue": {"title": "b"}}, "expect": {}}]}
     rows = play_group(conf3, "b", "o/t", "v7-next", ordered, lambda s: None, 1)
-    check("C2: play_group plays its group's one scenario, and no other", ([r["id"] for r in rows], titles), (["b"], ["b"]))
+    check("C2: play_group plays its group's one scenario, and no other", ([r["id"] for r in rows], titles), (["b"], ["b [b]"]))
     check("C2: play_group on no group is one failing row", [(r["id"], r["ok"]) for r in play_group(conf3, "gone", "o/t", "v7-next", ordered, lambda s: None, 1)], [("gone", False)])
     rpack = test_pack()
     check("#563: the test repository's callers are shipped ones", all(os.path.exists(os.path.join(ROOT, "workflow-templates", c)) for c in rpack["callers"]) and rpack["callers"] != [], True)
@@ -1857,10 +2069,11 @@ def self_test():
         """A test repository whose issue 9 is closed by the autopilot's pull
         request 12 (head `feat/9-x`, unless `pull` is False), and whose
         scenario pull request 14 to main merges (or never, `merges`)."""
-        st = {"calls": []}
+        st = {"calls": [], "io": []}
 
         def fake(*a, input=None):
             st["calls"].append(a)
+            st["io"].append((a, input))
             if a[:2] == ("issue", "create"):
                 return f"https://github.com/o/t/issues/{9 if sum(1 for c in st['calls'] if c[:2] == ('issue', 'create')) == 1 else 13}\n"
             if a[:2] == ("issue", "view"):
@@ -1877,13 +2090,13 @@ def self_test():
                 return "s\n"
             return "[]"
         return st, fake
-    puts = lambda st: [(c[3], next(x for x in c if str(x).startswith("branch="))) for c in st["calls"] if c[:3] == ("api", "-X", "PUT")]
+    puts = lambda st: [(c[1], c[2][0]) for c in commits(st["io"])]
     st, fake = pushed()
     got = play({"id": "p", "opens": {"issue": {"title": "feat: x", "body": "f"}}, "steps": [{"push": "conflict"}], "expect": {}}, "o/t", "v7-next",
                {"f": "f", "task": "t", "pull": "## Why\n\nCloses #{issue}"}, fake, lambda s: None, 1)
     check("#698: a push lands on the head branch of the pull request it observes, then the same file lands on main through a scenario pull request that merged",
           (got["ok"], got["why"], puts(st)),
-          (True, [], [("repos/o/t/contents/scenarios/p/conflict.md", "branch=feat/9-x"), ("repos/o/t/contents/scenarios/p/conflict.md", "branch=docs/scenario-p-conflict")]))
+          (True, [], [("feat/9-x", "scenarios/p/conflict.md"), ("docs/scenario-p-conflict", "scenarios/p/conflict.md")]))
     created = [c for c in st["calls"] if c[:2] == ("issue", "create")][1]
     claim = st["calls"].index(("issue", "comment", "13", "--repo", "o/t", "--body", "/claim"))
     check("#698: the pull request to main closes a Docs issue it claims before it accepts it, and lands from a docs branch",
@@ -1892,7 +2105,7 @@ def self_test():
     st, fake = pushed()
     got = play({"id": "p", "opens": {"issue": {"title": "feat: x", "body": "f"}}, "steps": [{"push": "behind"}], "expect": {}}, "o/t", "v7-next",
                {"f": "f", "task": "t", "pull": "Closes #{issue}"}, fake, lambda s: None, 1)
-    check("#698: `behind` writes nothing on the head, only its own file on main", (got["ok"], puts(st)), (True, [("repos/o/t/contents/scenarios/p/behind.md", "branch=docs/scenario-p-behind")]))
+    check("#698: `behind` writes nothing on the head, only its own file on main", (got["ok"], puts(st)), (True, [("docs/scenario-p-behind", "scenarios/p/behind.md")]))
     st, fake = pushed(merges=False)
     got = play({"id": "p", "opens": {"issue": {"title": "feat: x", "body": "f"}}, "steps": [{"push": "behind"}], "expect": {}}, "o/t", "v7-next",
                {"f": "f", "task": "t", "pull": "Closes #{issue}"}, fake, lambda s: None, 1)
@@ -1902,12 +2115,12 @@ def self_test():
     st, fake = pushed()
     lander = {"id": "bug-x", "before": [{"lands": "greeting", "says": "helo"}], "opens": {"issue": {"title": "fix: x", "body": "f"}}, "expect": {}}
     got = play(lander, "o/t", "v7-next", {"f": "f", "task": "t", "pull": "## Why\n\nCloses #{issue}"}, fake, lambda s: None, 1)
-    landed = [c for c in st["calls"] if c[:3] == ("api", "-X", "PUT")]
+    landed = commits(st["io"])
     check("#707: a `before` lands its file on main, with what it says, through a docs pull request that merged, before the scenario's issue opens",
-          (got["ok"], puts(st), __import__("base64").b64decode(next(x for x in landed[0] if str(x).startswith("content="))[8:]).decode(),
+          (got["ok"], puts(st), landed[0][3].get("scenarios/bug-x/greeting.md") if landed else None,
            st["calls"].index(next(c for c in st["calls"] if c[:2] == ("pr", "create"))) < [i for i, c in enumerate(st["calls"]) if c[:2] == ("issue", "create")][1],
            sum(1 for c in st["calls"] if c == ("api", "-X", "DELETE", "repos/o/t/git/refs/heads/docs/scenario-bug-x-greeting")) >= 2),
-          (True, [("repos/o/t/contents/scenarios/bug-x/greeting.md", "branch=docs/scenario-bug-x-greeting")], "helo\n", True, True))
+          (True, [("docs/scenario-bug-x-greeting", "scenarios/bug-x/greeting.md")], "helo\n", True, True))
     st, fake = pushed()
 
     def already(*a, input=None):
@@ -1927,7 +2140,7 @@ def self_test():
     st, fake = pushed()
     got = play({"id": "p", "opens": {"pull": {"title": "feat: x", "body": "pull", "issue": {"body": "f"}}}, "steps": [{"push": "secret"}], "expect": {}}, "o/t", "v7-next",
                {"f": "f", "pull": "Closes #{issue}"}, fake, lambda s: None, 1)
-    check("#698: a pull scenario's push lands on its own pull request's head", puts(st)[-1], ("repos/o/t/contents/scenarios/p/secret.md", "branch=feat/scenario-p"))
+    check("#698: a pull scenario's push lands on its own pull request's head", puts(st)[-1], ("feat/scenario-p", "scenarios/p/secret.md"))
 
     def searchless(fail=0, retry="retry-after: 30"):
         """Issue 9, closed by pull request 12, whose view fails `fail`
@@ -1984,7 +2197,25 @@ def self_test():
     first = []
     play({"id": "c", "before": [{"issue": {"title": "first", "labels": ["accepted"]}}], "opens": {"issue": {"title": "second"}}, "expect": {}},
          "o/t", "v7-next", {}, lambda *a, input=None: first.append(a) or ("https://github.com/o/t/issues/9\n" if a[:2] == ("issue", "create") else "{}" if a[:2] == ("issue", "view") else "[]"), lambda s: None, 1)
-    check("run: `before` opens its issue first and closes it only after", ([a[5] for a in first if a[:2] == ("issue", "create")], first.index(("issue", "close", "9", "--repo", "o/t")) > 2), (["first", "second"], True))
+    check("run: `before` opens its issue first and closes it only after", ([a[5] for a in first if a[:2] == ("issue", "create")], first.index(("issue", "close", "9", "--repo", "o/t")) > 2), (["first [c]", "second [c]"], True))
+    check("#709 C2: a `before` that lands a file opens the Docs issue of its pull request to main, never an empty one",
+          issue_text(*opened_issues(lander, {})[0][:1], {"task": "t"}, opened_issues(lander, {})[0][1], "bug-x")[0],
+          issue_text(land_issue("bug-x", "greeting"), {"task": "t"}, "bug-x", "bug-x")[0])
+    texts709 = [(s["id"],) + issue_text(spec, real["bodies"], default, s["id"]) for s in real["scenarios"] for spec, default in opened_issues(s, real["bodies"])]
+    check("#709 C2: every issue a scenario opens names its scenario in its title (but the Release form's, the version alone) and in its body",
+          ([sid for sid, title, body in texts709 if not (title.endswith(f" [{sid}]") or FIXED_TITLE.match(title)) or f"\nScenario: {sid}.\n" not in body + "\n"],
+           [title for sid, title, _ in texts709 if FIXED_TITLE.match(title)], len(texts709) > len(real["scenarios"])), ([], ["Release 0.0.1"], True))
+    check("#709 C2: no two scenarios open an issue with the same title or the same body",
+          [(a[0], b[0]) for i, a in enumerate(texts709) for b in texts709[i + 1:] if a[0] != b[0] and (a[1] == b[1] or a[2] == b[2])], [])
+    check("#709 C2: the scenarios that shared a title and body before, now differ in both",
+          [(t, b) for sid, t, b in texts709 if sid == "issue-complete"] != [(t, b) for sid, t, b in texts709 if sid == "accepted-spec"], True)
+    check("#709 C2: the id is a suffix, so the title's type still reads, and the autopilot's title from it still matches its scenario's pattern",
+          (needed_type(issue_text({"title": "feat: a greeting"}, {}, "x", "accepted-spec")[0]), bool(re.search(r"^feat(\(.+\))?: ", issue_text({"title": "feat: x"}, {}, "x", "s")[0]))), ("Feature", True))
+    made709 = []
+    open_issue("o/t", {"title": "feat: x", "body": "f"}, {"f": "text"}, "d", lambda *a, input=None: made709.append((a, input)) or "https://github.com/o/t/issues/5\n", "s")
+    check("#709 C2: open_issue opens what issue_text writes", (made709[0][0][made709[0][0].index("--title") + 1], made709[0][1]), ("feat: x [s]", f"{scenario_mark('s')}\nScenario: s.\ntext"))
+    check("#709 C2: in a body with sections, the scenario's line opens the first one, where the issue schema takes it",
+          marked("### Problem\n\nNone.\n", "s"), f"{scenario_mark('s')}\n### Problem\n\nScenario: s.\n\nNone.\n")
     import base64
     caller = "jobs:\n  t:\n    uses: O/.github/.github/workflows/issue-triage.yml@abc123 # v7\n"
     check("at_ref: a pinned call moves to the ref tried", at_ref(caller, "O/.github", "v7-next"), "jobs:\n  t:\n    uses: O/.github/.github/workflows/issue-triage.yml@v7-next\n")
@@ -1997,7 +2228,7 @@ def self_test():
         view after the lane queues them, or close unmerged (`merges` False),
         or never merge (None). `tamper(st, branch)`, when given, changes the
         branch after the lane wrote it, before the pull request opens."""
-        st = {"main": {"issues.yml": caller}, "branches": {}, "prs": {}, "polls": {}, "queued": set(), "calls": [], "files": None}
+        st = {"main": {"issues.yml": caller}, "branches": {}, "prs": {}, "polls": {}, "queued": set(), "calls": [], "io": [], "files": None}
 
         def at(number, side):
             pr = st["prs"][number]
@@ -2005,6 +2236,7 @@ def self_test():
 
         def fake(*args, input=None):
             st["calls"].append(args)
+            st["io"].append((args, input))
             path = str(args[-1])
             if path == "repos/o/t/contents/.github/workflows":
                 return json.dumps([{"name": n} for n in st["main"]])
@@ -2020,9 +2252,9 @@ def self_test():
                 return "h1\n"
             if args[:3] == ("api", "repos/o/t/git/refs", "-f"):
                 st["branches"][args[3].split("refs/heads/", 1)[1]] = dict(st["main"])
-            if args[:3] == ("api", "-X", "PUT") and "/contents/.github/workflows/" in args[3]:
-                f = dict(x.split("=", 1) for x in args[4:] if "=" in x)
-                st["branches"][f["branch"]][args[3].rsplit("/", 1)[1]] = base64.b64decode(f["content"]).decode()
+            for _, branch, _, files in commits([(args, input)]):
+                for name, text in files.items():
+                    st["branches"][branch][name.rsplit("/", 1)[1]] = text
             if args[:2] == ("pr", "create"):
                 n = str(20 + len(st["prs"]))
                 head = args[args.index("--head") + 1]
@@ -2066,11 +2298,13 @@ def self_test():
     st, fake = repo_fake()
     got = run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=1, central="O/.github")
     calls = st["calls"]
-    writes = [c for c in calls if c[:3] == ("api", "-X", "PUT")]
+    writes = commits(st["io"])
     check("C1: the callers move on ci/callers-v7-next, created from main's head",
           ("api", "repos/o/t/git/refs", "-f", "ref=refs/heads/ci/callers-v7-next", "-f", "sha=h1") in calls, True)
-    check("C1: @v7-next is written there, not on main",
-          ("branch=ci/callers-v7-next" in writes[0], "issue-triage.yml@v7-next\n" in base64.b64decode(next(x for x in writes[0] if x.startswith("content=")).split("=", 1)[1]).decode()), (True, True))
+    check("C1: @v7-next is written there, not on main, in one commit made on the branch's head",
+          (writes[0][:3], "issue-triage.yml@v7-next\n" in writes[0][3][".github/workflows/issues.yml"],
+           json.loads(next(i for a, i in st["io"] if a[:2] == ("api", "graphql")))["variables"]["input"]["expectedHeadOid"]),
+          (("o/t", "ci/callers-v7-next", [".github/workflows/issues.yml"]), True, "h1"))
     queue = ("pr", "merge", "20", "--repo", "o/t", "--squash", "--match-head-commit", "head-20")
     check("#623 C1: a pull request is opened, and the lane enables no auto-merge",
           (calls.index(next(c for c in calls if c[:2] == ("pr", "create"))) < calls.index(queue), [c for c in calls if "--auto" in c]), (True, []))
@@ -2080,7 +2314,7 @@ def self_test():
     check("C1: the first scenario plays only after the pull request merged",
           (calls.index(("merged", "20")) < calls.index(next(c for c in calls if c[:2] == ("issue", "create"))), [r["id"] for r in got], got[0]["ok"]), (True, ["a"], True))
     check("C1: the callers are put back, pin and comment, through a second merged pull request",
-          (st["main"]["issues.yml"], ("merged", "21") in calls, "branch=ci/callers-v7-next-back" in writes[1]), (caller, True, True))
+          (st["main"]["issues.yml"], ("merged", "21") in calls, writes[1][1] == "ci/callers-v7-next-back"), (caller, True, True))
     check("#623 C1: on the way back too, it waits for the checks and queues it itself, with no auto-merge",
           (calls.index(next(c for c in calls if c[:3] == ("pr", "checks", "21"))) < calls.index(("pr", "merge", "21", "--repo", "o/t", "--squash", "--match-head-commit", "head-21"))
            < calls.index(("merged", "21")), [c for c in calls if "--auto" in c]), (True, []))
@@ -2200,17 +2434,46 @@ def self_test():
             check(f"#622: an unreadable moved file ({bad}) is one failing callers row",
                   [(r["id"], r["ok"]) for r in read_moved(path, "v7-next")[1]], [("callers", False)])
     own = open(os.path.abspath(__file__), encoding="utf-8").read()
-    check("C2: nothing in this script writes a default branch through the contents API", default_writes(own), [])
-    check("C2: a PUT to contents/ on main, or with no branch, is named",
-          default_writes('run("api", "-X", "PUT", f"repos/{r}/contents/x", "-f", "branch=main")\nrun("api", "-X", "PUT", f"repos/{r}/contents/{p}", "-f", "content=x")\n'),
-          ["line 1: a PUT to contents/ that writes the default branch (branch=main)", "line 2: a PUT to contents/ that writes the default branch (no branch=)"])
+    check("#709 C3: no PUT to contents/ is left in this script, and every createCommitOnBranch names its branch from a variable", default_commits(own), [])
+    check("#709 C3: a PUT to contents/, and a commit on a fixed branch, are named",
+          default_commits('run("api", "-X", "PUT", f"repos/{r}/contents/x", "-f", f"branch={b}")\nq = {"branchName": "main"}\nq = {"branchName": branch}\n'),
+          ["line 1: a PUT to contents/, not createCommitOnBranch", "line 2: a createCommitOnBranch whose branchName is not a branch variable ('main')"])
     st, fake = repo_fake()
     recorded = []
     run_all({"scenarios": [{"id": "p", "opens": {"pull": {"title": "t", "body": "x"}}, "steps": [{"push": "more"}], "expect": {}}]}, "o/t", "v7-next",
-            run=lambda *a, input=None: recorded.append(a) or fake(*a, input=input), sleep=lambda s: None, minutes=1, central="O/.github")
-    check("C2: every contents PUT run_all, play and point_callers make names a branch, never main",
-          (len([c for c in recorded if c[:3] == ("api", "-X", "PUT")]) >= 4, put_default(recorded)), (True, []))
-    check("C2: a recorded PUT on main is named", len(put_default([("api", "-X", "PUT", "repos/o/t/contents/x", "-f", "branch=main"), ("api", "-X", "PUT", "repos/o/t/contents/y")])), 2)
+            run=lambda *a, input=None: recorded.append((a, input)) or fake(*a, input=input), sleep=lambda s: None, minutes=1, central="O/.github")
+    check("#709 C3: every write run_all, play and point_callers make is a createCommitOnBranch on a named branch, never main, and none a contents PUT",
+          ([c[1] for c in commits(recorded)], wrong_writes(recorded), [a for a, _ in recorded if a[:3] == ("api", "-X", "PUT")],
+           len(commits(recorded)) == sum(1 for a, _ in recorded if a[:2] == ("api", "graphql"))),
+          (["ci/callers-v7-next", "test/scenario-p", "test/scenario-p", "ci/callers-v7-next-back"], [], [], True))
+    heads, tries = iter(["h1", "h2", "h3"]), []
+
+    def racing(*a, input=None):
+        if a[:2] == ("api", "graphql"):
+            tries.append(json.loads(input)["variables"]["input"]["expectedHeadOid"])
+            if len(tries) == 1:
+                raise RuntimeError('gh api graphql: Expected branch to point to "h1" but it did not. Pull and try again.')
+            return "{}"
+        return next(heads) + "\n"
+    commit_files("o/t", "feat/9-x", {"a.md": "a"}, "test: a", racing)
+    check("#709: a branch that moved between reading its head and committing is read again, and the commit made on its new head", tries, ["h1", "h2"])
+
+    def broken(*a, input=None):
+        if a[:2] == ("api", "graphql"):
+            tries.append(input)
+            raise RuntimeError("gh api graphql: HTTP 422: something else")
+        return "h1\n"
+    tries = []
+    try:
+        commit_files("o/t", "feat/9-x", {"a.md": "a"}, "test: a", broken)
+        raised = None
+    except RuntimeError as e:
+        raised = str(e)
+    check("#709: any other failure of the commit is raised at once, not retried", (raised, len(tries)), ("gh api graphql: HTTP 422: something else", 1))
+    check("#709 C3: a recorded contents PUT, a commit on main and one with no branch are named",
+          len(wrong_writes([(("api", "-X", "PUT", "repos/o/t/contents/x", "-f", "branch=b"), None),
+                            (("api", "graphql", "--input", "-"), json.dumps({"variables": {"input": {"branch": dict(branchName="main")}}})),
+                            (("api", "graphql", "--input", "-"), json.dumps({"variables": {"input": {}}}))])), 3)
     check("callers_gh: the ambient token when DX_CALLERS_TOKEN is not set", callers_gh() is gh if not os.environ.get("DX_CALLERS_TOKEN") else True, True)
     check("run: the table names each scenario, its result and its run", table(res).splitlines()[2], "| `a` | pass | https://github.com/o/t/actions/runs/1 |")
     import importlib.util

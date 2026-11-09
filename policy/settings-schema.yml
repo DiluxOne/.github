@@ -551,7 +551,7 @@ files:
     - key: core
       org: any
       repo: never
-      limit: "engine-test only: globs in place of org.yml `core`, so its fixed change touches a core"
+      limit: "engine-test only: globs in place of org.yml `core`, `scenarios/core-one-at-a-time/**`, so only that scenario's fixed change touches a core and waits (#709)"
       read-by: [scripts/org.py, scripts/autopilot.py]
       issue: "#563"
       says: The test repository's own core.

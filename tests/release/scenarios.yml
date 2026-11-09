@@ -20,11 +20,17 @@
 #
 # The lane plays every scenario at once, each in its own job
 # (release-lane.yml `play`; release-scenarios.py groups, #694). Each writes
-# only under its own directory of the test repository's core,
-# scenarios/<id>/ (its fixed change too: kinds/engine-test/pack.yml), so
-# none waits on another's change; `partition` fails when two could write to
-# the same part of the core. Every body a scenario opens carries its
-# `dx-scenario: <id>` mark first, so its next run closes what it left.
+# only under its own directory of the test repository, scenarios/<id>/ (its
+# fixed change too), and only core-one-at-a-time's is the core
+# (kinds/engine-test/pack.yml, #709), so none waits on another's change;
+# `partition` fails when two could write to the same part of the core, or
+# another scenario writes under it (`core_problems`). Every body a scenario
+# opens carries its `dx-scenario: <id>` mark first, so its next run closes
+# what it left, and
+# names its scenario where the triage reads it (#709): `Scenario: <id>.` as
+# the first line of its first section, and an issue's title ends with
+# `[<id>]` (but a release issue's, the version alone), so no two scenarios'
+# issues read as duplicates.
 
 # The bodies the scenarios open and edit with, by name.
 bodies:
@@ -318,6 +324,9 @@ scenarios:
     opens: {pull: {title: "docs: a greeting", body: pull, issue: {title: "docs: a greeting", body: task, labels: [accepted]}}}
     steps: [{comment: "@dilux-bot why?"}]
     expect: {comments: ["<!-- dx-review"]}
+  # #709: its conventions check reports as "conventions / Conventions
+  # (branch, title, commits)" (`check_named`); a run GitHub holds for a
+  # maintainer's approval of a fork's fails it at once, named.
   - id: fork-without-secrets
     covers: []
     opens: {pull: {title: "docs: a greeting from a fork", body: pull, fork: true, issue: {title: "docs: a greeting from a fork", body: task, labels: [accepted]}}}
