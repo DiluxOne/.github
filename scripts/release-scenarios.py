@@ -27,6 +27,7 @@ complete feature; an issue's `type`, else the Type its body's form gives,
 `comment`, `label`, `unlabel`, `edit`, `push`, `dispatch`, and `until`,
 an `expect` polled every 15 seconds on its issue or pull request, or with
 `of: before` on its first `before` issue, never a fixed wait: #694; a
+`comment` or a `label` with `of: before` acts on that issue too, #713; a
 file is written in a commit GitHub signs, `createCommitOnBranch` (#709); a
 `push: <name>` writes scenarios/<id>/<name>.md on the head branch of the
 pull request it observes, the autopilot's for an issue, and `conflict`
@@ -53,7 +54,11 @@ after GitHub's back-off within the scenario's limit, then named.
         `expect` cannot hold against its own setup (`preconditions`: a
         dispatch of a workflow the test repository cannot run on demand
         among them; #707: a bug's verdict in a test repository with no way
-        to reproduce it, and the lane's `play` job on DX_RUNNER_HEAVY).
+        to reproduce it, and the lane's `play` job on DX_RUNNER_HEAVY;
+        #713: one that reads the autopilot's result on an issue it opens
+        accepted, accepts before the triage's verdict or waits for no
+        seal after it,
+        `autopilot_problems`).
         Every other pair a shipped caller wires is held to the
         engine statically, by scripts/caller-contract.py check; and
         what is wrong with the groups (`partition`): a scenario in no
@@ -369,7 +374,8 @@ def preconditions(scenarios, bodies, pack, can_dispatch=(), passes=None, types=N
                 out.append(f"scenario {sid}: expects its pull request to close an issue, but its body names no `{{issue}}` it opens")
         if waits_on_core(s):
             first = [b.get("issue") or {} for b in s.get("before") or []]
-            if not any("accepted" in (i.get("labels") or []) for i in first):
+            later = any(isinstance(st, dict) and st.get("of") == "before" and st.get("label") == "accepted" for st in s.get("steps") or [])
+            if not (later and first) and not any("accepted" in (i.get("labels") or []) for i in first):
                 out.append(f"scenario {sid}: expects a wait on the core, but opens no accepted issue before it whose pull request stays open")
             fixed = str((pack.get("fixed-change") or {}).get("file") or "").replace("{n}", "1").replace("{id}", "c1").replace("{scenario}", sid)
             if not any(fnmatch.fnmatchcase(fixed, g) for g in pack.get("core") or []):
@@ -924,11 +930,14 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
         number = url.rstrip("/").rsplit("/", 1)[-1]
         made.append((what, number))
         for step in s.get("steps") or []:
-            (verb, arg), = step.items()
+            (verb, arg), = ((k, v) for k, v in step.items() if k != "of")
+            # #713: `of: before` takes a comment or a label on the first
+            # issue it opened before it (its acceptance after its triage).
+            kind, target = ("issue", befores[0]) if step.get("of") == "before" and befores else (what, number)
             if verb == "comment":
-                run(what, "comment", number, "--repo", repo, "--body", str(arg))
+                run(kind, "comment", target, "--repo", repo, "--body", str(arg))
             elif verb in ("label", "unlabel"):
-                run(what, "edit", number, "--repo", repo, f"--{'add' if verb == 'label' else 'remove'}-label", str(arg))
+                run(kind, "edit", target, "--repo", repo, f"--{'add' if verb == 'label' else 'remove'}-label", str(arg))
             elif verb == "edit":
                 run(what, "edit", number, "--repo", repo, "--body-file", "-", input=marked(body_of(arg, bodies), sid))
             elif verb == "dispatch":
@@ -1336,6 +1345,57 @@ def waits_on_core(s):
     return CORE_LABEL in (expect.get("labels") or []) or CORE_MARK in (expect.get("comments") or [])
 
 
+SEAL = "<!-- dx-prd-seal -->"
+
+
+def needs_autopilot(want):
+    """Whether the expectation `want`, on an issue, needs the autopilot's
+    result (#713): its seal, the `autopilot` or core-wait label, its comment
+    on the core, or its pull request. Pure."""
+    want = want or {}
+    return (any(m in (want.get("comments") or []) for m in (SEAL, CORE_MARK))
+            or any(l in (want.get("labels") or []) for l in ("autopilot", CORE_LABEL)) or bool(want.get("pull")))
+
+
+def autopilot_problems(scenarios):
+    """Every scenario that reads the autopilot's result on an issue (its own,
+    or with `of: before` its first `before` one: `needs_autopilot`; a
+    release issue's pull request is the release's) too
+    early (#713): one that opens that issue `accepted` (the autopilot then
+    reads a body the triage had not answered, unsealed), takes no `label:
+    accepted` step, takes it before an `until` the triage's verdict
+    (`awaiting-acceptance`), or waits for no seal (`until` the
+    `dx-prd-seal` comment) after it, before its expectation. Pure."""
+    out = []
+    for s in scenarios:
+        sid, opens, steps = s.get("id") or "?", s.get("opens") or {}, [st for st in s.get("steps") or [] if isinstance(st, dict)]
+        if "issue" not in opens:
+            continue
+        first = ((s.get("before") or [{}])[0] or {}).get("issue")
+        for of, spec in (("own", opens["issue"]), ("before", first)):
+            # A release issue's pull request is the release's (issue-accepted.yml), never the autopilot's.
+            if spec is None or "lane:release" in (spec.get("labels") or []):
+                continue
+            on = [st for st in steps if ((st.get("until") or {}).get("of") if "until" in st else st.get("of")) == ("before" if of == "before" else None)]
+            wants = [st["until"] for st in on if "until" in st] + ([s.get("expect")] if of == "own" else [])
+            name = "its issue" if of == "own" else "its `before` issue"
+            accepted = next((i for i, st in enumerate(on) if st.get("label") == "accepted"), None)
+            if not any(needs_autopilot(w) for w in wants):
+                continue
+            if "accepted" in (spec.get("labels") or []):
+                out.append(f"scenario {sid}: opens {name} accepted, before the triage answered it, so the autopilot reads it unsealed; "
+                           f"open it plain, wait `until` awaiting-acceptance, then take `label: accepted`")
+                continue
+            if accepted is None:
+                out.append(f"scenario {sid}: expects the autopilot's result on {name}, which it never accepts (`label: accepted`)")
+                continue
+            if not any("awaiting-acceptance" in ((st.get("until") or {}).get("labels") or []) for st in on[:accepted]):
+                out.append(f"scenario {sid}: accepts {name} before the triage's verdict (no `until` awaiting-acceptance before its `label: accepted`)")
+            if not any(SEAL in ((st.get("until") or {}).get("comments") or []) for st in on[accepted + 1:]):
+                out.append(f"scenario {sid}: reads the autopilot's result on {name} with no `until` its seal ({SEAL}) after its `label: accepted`")
+    return out
+
+
 def core_problems(scenarios, pack):
     """Every scenario that writes under the test repository's core (`pack`'s
     `core`) but expects no wait on it (#709): its fixed change would make its
@@ -1684,6 +1744,7 @@ def problems(conf, root=ROOT):
             + lane_problems(load_yaml(os.path.join(root, LANE)))
             + partition(scenarios, groups(scenarios), pack)
             + timing(scenarios)
+            + autopilot_problems(scenarios)
             + fixture_problems(conf, engine_post(root).issue, engine_post(root).pull, engine_post(root).release))
 
 
@@ -2529,6 +2590,79 @@ def self_test():
             rc = main(["merge", "--dir", lay(dict(every, b=None)), "--groups", json.dumps(mgs), "--job", "move=success", "--job", "play=failure", "--job", "back=success", "--run", lane_run, "--out", out])
         check("C3: merge's command writes the table release-lane.py reads, and exits 1 on a failing row",
               (rc, [r["id"] for r in read_results(out) if not r["ok"]], lane.decide(plan, read_results(out))["scenario"]), (1, ["b", "play"], "b"))
+    # #713: the autopilot's result read once it is there.
+    def sealing():
+        """A test repository whose triage answers issue 9 on its second view
+        (`awaiting-acceptance`), whose acceptance after that seals it a view
+        later and has the autopilot label it two views after the seal, and
+        an acceptance before the triage never seals (the autopilot calls it
+        unsealed); a `/claim` before the acceptance claims it, after it is
+        refused."""
+        st = {"labels": [], "comments": [], "views": 0, "calls": [], "at": None}
+
+        def fake(*a, input=None):
+            st["calls"].append(a)
+            if a[:2] == ("issue", "create"):
+                st["labels"] += [a[i + 1] for i, x in enumerate(a) if x == "--label"]
+                if "accepted" in st["labels"]:
+                    st["at"] = "early"
+                return "https://github.com/o/t/issues/9\n"
+            if a[:2] == ("issue", "edit") and "--add-label" in a:
+                label = a[a.index("--add-label") + 1]
+                st["labels"].append(label)
+                if label == "accepted":
+                    st["at"] = st["views"] if "awaiting-acceptance" in st["labels"] else "early"
+                return ""
+            if a[:2] == ("issue", "comment"):
+                text = a[a.index("--body") + 1]
+                if text == "/claim":
+                    if "accepted" in st["labels"]:
+                        st["comments"].append("the claim is refused: the autopilot is already on it")
+                    else:
+                        st["labels"].append("claimed")
+                elif text == "/unclaim" and "claimed" in st["labels"]:
+                    st["labels"].remove("claimed")
+                return ""
+            if a[:2] == ("issue", "view"):
+                st["views"] += 1
+                if st["views"] == 2 and "awaiting-acceptance" not in st["labels"]:
+                    st["labels"].append("awaiting-acceptance")
+                    if st["at"] == "early":
+                        st["comments"].append("The autopilot did not run: the issue's PRD is not the one sealed when it was accepted (unsealed).")
+                if isinstance(st["at"], int) and st["views"] == st["at"] + 1:
+                    st["comments"].append(f"{SEAL}\nsealed")
+                if isinstance(st["at"], int) and st["views"] == st["at"] + 3:
+                    st["labels"].append("autopilot")
+                return json.dumps({"labels": [{"name": l} for l in st["labels"]], "comments": [{"body": c, "author": {"login": "dilux-bot"}} for c in st["comments"]]})
+            return "[]"
+        return st, fake
+    by713 = {s["id"]: s for s in real["scenarios"]}
+    st, fake = sealing()
+    got = play(by713["accepted-spec"], "o/t", "v7-next", real["bodies"], fake, lambda s: None, 15, types=real["types"])
+    check("#713 C2: the real accepted-spec, against a repository that seals only after the triage, passes once the autopilot labels it",
+          (got["ok"], got["why"], st["at"] >= 2, "autopilot" in st["labels"]), (True, [], True, True))
+    st, fake = sealing()
+    early = dict(by713["accepted-spec"], steps=[{"label": "accepted"}], minutes=1)
+    got = play(early, "o/t", "v7-next", real["bodies"], fake, lambda s: None, 1, types=real["types"])
+    check("#713 C2: accepted before the triage, as it was, it is never sealed and fails", (got["ok"], st["at"], any(SEAL in c for c in st["comments"])), (False, "early", False))
+    check("#713 C2: and autopilot_problems names it, as every scenario that reads the autopilot's result too early",
+          [p.split(": ", 1)[1].split(" (")[0].split(",")[0] for p in autopilot_problems([
+              early,
+              dict(by713["spec-to-draft"], opens={"issue": dict(by713["spec-to-draft"]["opens"]["issue"], labels=["accepted"])}),
+              dict(by713["ready-behind-main"], steps=[{"until": {"labels": ["awaiting-acceptance"]}}, {"label": "accepted"}, {"until": {"pull": {"closes": True}}}]),
+              dict(by713["core-one-at-a-time"], before=[{"issue": {"title": "t", "body": "complete-feature", "labels": ["accepted"]}}]),
+              dict(by713["stop-hint-continue"], steps=[{"until": {"pull": {"closes": True}}}])])],
+          ["accepts its issue before the triage's verdict", "reads the autopilot's result on its issue with no `until` its seal",
+           "opens its issue accepted", "reads the autopilot's result on its issue with no `until` its seal",
+           "opens its `before` issue accepted", "expects the autopilot's result on its issue"])
+    reads = [s["id"] for s in real["scenarios"] if "issue" in (s.get("opens") or {}) and "lane:release" not in (s["opens"]["issue"].get("labels") or [])
+             and any(needs_autopilot(w) for w in [s.get("expect")] + [st_["until"] for st_ in s.get("steps") or [] if "until" in st_])]
+    check("#713 C2: the real file: every scenario that reads the autopilot's result waits for it, each within 15 minutes",
+          (autopilot_problems(real["scenarios"]), sorted(reads), {limit(by713[i]) for i in reads}),
+          ([], sorted(["accepted-spec", "spec-to-draft", "core-one-at-a-time", "prd-edited-after-acceptance", "question-answered", "stop-hint-continue", "draft-in-conflict", "ready-behind-main"]), {15}))
+    check("#713 C2: core-one-at-a-time accepts its `before` issue after its triage, and waits for its seal",
+          (by713["core-one-at-a-time"]["before"][0]["issue"].get("labels"), [p for p in autopilot_problems([by713["core-one-at-a-time"]])],
+           preconditions([by713["core-one-at-a-time"]], real["bodies"], rpack)), (None, [], []))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 

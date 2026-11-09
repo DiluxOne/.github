@@ -31,6 +31,14 @@
 # the first line of its first section, and an issue's title ends with
 # `[<id>]` (but a release issue's, the version alone), so no two scenarios'
 # issues read as duplicates.
+#
+# A scenario that reads the autopilot's result on an issue (its seal, the
+# `autopilot` or core-wait label, its pull request) opens that issue plain,
+# waits `until` the triage's verdict (`awaiting-acceptance`), accepts it
+# then, so the acceptance seals the triaged body as a maintainer's would,
+# and waits `until` the seal before the autopilot's result (#713:
+# release-scenarios.py autopilot_problems). A step with `of: before`
+# acts on its first `before` issue.
 
 # The bodies the scenarios open and edit with, by name.
 bodies:
@@ -221,29 +229,36 @@ scenarios:
   # Accepted, sealed, and the autopilot starting.
   - id: accepted-spec
     covers: [next_step:wait:accept, next_step:spec]
+    minutes: 15
     opens: {issue: {title: "feat: a greeting", body: complete-feature}}
-    steps: [{label: accepted}]
+    steps: [{until: {labels: [awaiting-acceptance]}}, {label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}}]
     expect: {labels: [accepted, autopilot], comments: ["<!-- dx-prd-seal -->"]}
   - id: spec-to-draft
     covers: [next_step:draft, next_step:work, next_step:finish, pr-screenshots.yml:pull_request]
+    minutes: 15
     opens: {issue: {title: "feat: a greeting, drafted", body: complete-feature}}
-    steps: [{label: accepted}]
+    steps: [{until: {labels: [awaiting-acceptance]}}, {label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}}]
     expect: {pull: {closes: true, branch: "^feat/[0-9]+-", title: "^feat(\\(.+\\))?: "}, comments: ["<!-- dx-prd-seal -->"]}
   # The first issue's draft (its fixed change under scenarios/, the test
   # repository's core: kinds/engine-test/pack.yml `core`) stays open while
-  # the second is accepted, so the second waits for it.
+  # the second is accepted, so the second waits for it. Each is accepted
+  # after its triage (#713).
   - id: core-one-at-a-time
     covers: [next_step:wait:core]
-    before: [{issue: {title: "feat: a greeting on the core, first", body: complete-feature, labels: [accepted]}}]
+    minutes: 15
+    before: [{issue: {title: "feat: a greeting on the core, first", body: complete-feature}}]
     opens: {issue: {title: "feat: a greeting on the core, second", body: complete-feature}}
     # #694: until the first one's fixed change is on its pull request (its
     # box ticked), polled every 15 seconds.
-    steps: [{until: {of: before, pull: {closes: true, body: "\\[x\\] \\*\\*C1\\*\\*"}}}, {label: accepted}]
+    steps: [{until: {of: before, labels: [awaiting-acceptance]}}, {label: accepted, of: before}, {until: {of: before, comments: ["<!-- dx-prd-seal -->"]}},
+            {until: {of: before, pull: {closes: true, body: "\\[x\\] \\*\\*C1\\*\\*"}}},
+            {until: {labels: [awaiting-acceptance]}}, {label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}}]
     expect: {comments: ["<!-- dx-autopilot-core -->"], labels: [autopilot:core-wait]}
   - id: prd-edited-after-acceptance
     covers: [next_step:wait:answer]
+    minutes: 15
     opens: {issue: {title: "feat: a greeting, then edited", body: complete-feature}}
-    steps: [{label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}}, {edit: edited-feature}]
+    steps: [{until: {labels: [awaiting-acceptance]}}, {label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}}, {edit: edited-feature}]
     expect: {absent: [accepted], waiting: true}
   - id: decision-sub-issues
     covers: []
@@ -286,13 +301,17 @@ scenarios:
   # The autopilot's questions, stops and hints.
   - id: question-answered
     covers: []
-    opens: {issue: {title: "feat: a greeting, asked", body: complete-feature, labels: [accepted]}}
-    steps: [{until: {pull: {closes: true}}}, {comment: "Option 1."}]
+    minutes: 15
+    opens: {issue: {title: "feat: a greeting, asked", body: complete-feature}}
+    steps: [{until: {labels: [awaiting-acceptance]}}, {label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}},
+            {until: {pull: {closes: true}}}, {comment: "Option 1."}]
     expect: {absent: [autopilot:waiting, autopilot:continue], pull: {closes: true}}
   - id: stop-hint-continue
     covers: []
-    opens: {issue: {title: "feat: a greeting, stopped", body: complete-feature, labels: [accepted]}}
-    steps: [{until: {pull: {closes: true}}}, {comment: "Hint: write it in scenarios/."}, {label: autopilot:continue}]
+    minutes: 15
+    opens: {issue: {title: "feat: a greeting, stopped", body: complete-feature}}
+    steps: [{until: {labels: [awaiting-acceptance]}}, {label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}},
+            {until: {pull: {closes: true}}}, {comment: "Hint: write it in scenarios/."}, {label: autopilot:continue}]
     expect: {absent: [needs-human], pull: {closes: true}}
 
   # The autopilot's pull request and main.
@@ -303,14 +322,16 @@ scenarios:
   - id: draft-in-conflict
     covers: [next_step:merge-main, next_step:merge-main:conflicted, sweep_step:continue]
     minutes: 15
-    opens: {issue: {title: "feat: a greeting, in conflict", body: complete-feature, labels: [accepted]}}
-    steps: [{until: {pull: {closes: true}}}, {push: conflict}]
+    opens: {issue: {title: "feat: a greeting, in conflict", body: complete-feature}}
+    steps: [{until: {labels: [awaiting-acceptance]}}, {label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}},
+            {until: {pull: {closes: true}}}, {push: conflict}]
     expect: {pull: {closes: true}, absent: [needs-human]}
   - id: ready-behind-main
     covers: [next_step:merge-main:clean, sweep_step:update]
     minutes: 15
-    opens: {issue: {title: "feat: a greeting, behind", body: complete-feature, labels: [accepted]}}
-    steps: [{until: {pull: {closes: true, body: "\\[x\\] \\*\\*C1\\*\\*"}}}, {push: behind}]
+    opens: {issue: {title: "feat: a greeting, behind", body: complete-feature}}
+    steps: [{until: {labels: [awaiting-acceptance]}}, {label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}},
+            {until: {pull: {closes: true, body: "\\[x\\] \\*\\*C1\\*\\*"}}}, {push: behind}]
     expect: {pull: {closes: true}}
 
   # The review, the required checks and the merge queue.
