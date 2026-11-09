@@ -484,8 +484,8 @@ def check_workflow(check, path=os.path.join(ROOT, ".github", "workflows", "relea
     check("workflow: play is a matrix over the move job's groups, and one group's failure cancels no other's",
           ((play.get("strategy") or {}).get("matrix"), (play.get("strategy") or {}).get("fail-fast")),
           ({"group": "${{ fromJSON(needs.move.outputs.groups) }}"}, False))
-    check("workflow: play runs on DX_RUNNER_HEAVY, or ubuntu-latest when it is not set",
-          play.get("runs-on"), "${{ vars.DX_RUNNER_HEAVY != '' && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}")
+    check("#707 workflow: play runs on GitHub's runners, never DX_RUNNER_HEAVY, where the test repository's jobs it waits for run",
+          play.get("runs-on"), "ubuntu-latest")
     needs = lambda job: [jobs.get(job, {}).get("needs")] if isinstance(jobs.get(job, {}).get("needs"), str) else jobs.get(job, {}).get("needs") or []
     check("workflow: play needs move, and plays only once the callers moved", ("move" in needs("play"), play.get("if")), (True, "needs.move.outputs.moved == 'true'"))
     psteps = play.get("steps") or []
