@@ -57,7 +57,7 @@ after GitHub's back-off within the scenario's limit, then named.
         to reproduce it, and the lane's `play` job on DX_RUNNER_HEAVY;
         #713: one that reads the autopilot's result on an issue it opens
         accepted, accepts before the triage's verdict or waits for no
-        seal after it,
+        seal after it, or comments /claim after the acceptance,
         `autopilot_problems`).
         Every other pair a shipped caller wires is held to the
         engine statically, by scripts/caller-contract.py check; and
@@ -1365,7 +1365,9 @@ def autopilot_problems(scenarios):
     reads a body the triage had not answered, unsealed), takes no `label:
     accepted` step, takes it before an `until` the triage's verdict
     (`awaiting-acceptance`), or waits for no seal (`until` the
-    `dx-prd-seal` comment) after it, before its expectation. Pure."""
+    `dx-prd-seal` comment) after it, before its expectation. And every
+    scenario whose `/claim` comes after its issue's acceptance (the
+    autopilot has started then, and the claim is refused). Pure."""
     out = []
     for s in scenarios:
         sid, opens, steps = s.get("id") or "?", s.get("opens") or {}, [st for st in s.get("steps") or [] if isinstance(st, dict)]
@@ -1380,6 +1382,9 @@ def autopilot_problems(scenarios):
             wants = [st["until"] for st in on if "until" in st] + ([s.get("expect")] if of == "own" else [])
             name = "its issue" if of == "own" else "its `before` issue"
             accepted = next((i for i, st in enumerate(on) if st.get("label") == "accepted"), None)
+            claim = next((i for i, st in enumerate(on) if str(st.get("comment") or "").startswith("/claim")), None)
+            if claim is not None and ("accepted" in (spec.get("labels") or []) or (accepted is not None and accepted < claim)):
+                out.append(f"scenario {sid}: comments /claim on {name} after it is accepted, when the autopilot has started and the claim is refused")
             if not any(needs_autopilot(w) for w in wants):
                 continue
             if "accepted" in (spec.get("labels") or []):
@@ -2663,6 +2668,22 @@ def self_test():
     check("#713 C2: core-one-at-a-time accepts its `before` issue after its triage, and waits for its seal",
           (by713["core-one-at-a-time"]["before"][0]["issue"].get("labels"), [p for p in autopilot_problems([by713["core-one-at-a-time"]])],
            preconditions([by713["core-one-at-a-time"]], real["bodies"], rpack)), (None, [], []))
+    # #713 C3: the claim before the acceptance.
+    claim = by713["claim-and-release"]
+    order = [next(iter(k for k in st_ if k != "of")) + ":" + str(next(v for k, v in st_.items() if k != "of")) for st_ in claim["steps"]]
+    check("#713 C3: the real claim-and-release opens its issue plain and comments /claim before it is accepted, still covering the wait on a claim",
+          ("accepted" in (claim["opens"]["issue"].get("labels") or []), order.index("comment:/claim") < order.index("label:accepted"), "next_step:wait:claim" in claim["covers"]),
+          (False, True, True))
+    st, fake = sealing()
+    got = play(claim, "o/t", "v7-next", real["bodies"], fake, lambda s: None, 15, types=real["types"])
+    acts = [c[c.index("--body") + 1] if c[1] == "comment" else c[c.index("--add-label") + 1] for c in st["calls"]
+            if c[:2] == ("issue", "comment") or (c[:2] == ("issue", "edit") and "--add-label" in c)]
+    check("#713 C3: played, /claim goes before accepted, and the claim is not refused", (got["ok"], acts, any("refused" in c for c in st["comments"])),
+          (True, ["/claim", "accepted", "/unclaim"], False))
+    check("#713 C3: autopilot_problems refuses a /claim after the acceptance",
+          [p.split(": ", 1)[1][:30] for p in autopilot_problems([dict(claim, steps=[{"label": "accepted"}, {"comment": "/claim"}]),
+                                                               dict(claim, opens={"issue": dict(claim["opens"]["issue"], labels=["accepted"])})])],
+          ["comments /claim on its issue a"] * 2)
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 

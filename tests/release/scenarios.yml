@@ -37,8 +37,8 @@
 # waits `until` the triage's verdict (`awaiting-acceptance`), accepts it
 # then, so the acceptance seals the triaged body as a maintainer's would,
 # and waits `until` the seal before the autopilot's result (#713:
-# release-scenarios.py autopilot_problems). A step with `of: before`
-# acts on its first `before` issue.
+# release-scenarios.py autopilot_problems); a `/claim` comes before the
+# acceptance. A step with `of: before` acts on its first `before` issue.
 
 # The bodies the scenarios open and edit with, by name.
 bodies:
@@ -268,8 +268,9 @@ scenarios:
   # Claims.
   - id: claim-and-release
     covers: [issue-claim.yml:issue_comment, next_step:wait:claim]
-    opens: {issue: {title: "feat: a greeting, claimed", body: complete-feature, labels: [accepted]}}
-    steps: [{comment: "/claim"}, {until: {labels: [claimed]}}, {comment: "/unclaim"}]
+    # #713: claimed before it is accepted, so the autopilot steps aside.
+    opens: {issue: {title: "feat: a greeting, claimed", body: complete-feature}}
+    steps: [{comment: "/claim"}, {until: {labels: [claimed]}}, {label: accepted}, {comment: "/unclaim"}]
     expect: {absent: [claim:long]}
   - id: claim-pull-request
     covers: [issue-claim.yml:pull_request_target, waiting-update.yml:pull_request_target]
