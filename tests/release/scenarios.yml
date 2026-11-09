@@ -19,10 +19,11 @@
 #
 # The lane plays every scenario at once, each in its own job
 # (release-lane.yml `play`; release-scenarios.py groups, #694). Each writes
-# only under its own directory of the test repository's core,
-# scenarios/<id>/ (its fixed change too: kinds/engine-test/pack.yml), so
-# none waits on another's change; `partition` fails when two could write to
-# the same part of the core. Every body a scenario opens carries its
+# only under its own directory of the test repository, scenarios/<id>/ (its
+# fixed change too), and only core-one-at-a-time's is the core
+# (kinds/engine-test/pack.yml, #709), so none waits on another's change;
+# `partition` fails when two could write to the same part of the core, or
+# another scenario writes under it (`core_problems`). Every body a scenario opens carries its
 # `dx-scenario: <id>` mark first, so its next run closes what it left.
 
 # The bodies the scenarios open and edit with, by name.

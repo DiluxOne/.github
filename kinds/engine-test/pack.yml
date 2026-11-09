@@ -56,12 +56,13 @@ fixed-change:
   file: "scenarios/{scenario}/{n}.md"
 
 # Its own core (org.yml `core` names the engine's paths, which no change
-# here touches), one directory per scenario (#694): a fixed change writes
-# under scenarios/<its scenario>/, so only two issues of one scenario wait
-# on each other (`core-one-at-a-time`), and every other scenario plays at
-# once (scripts/org.py core_key, core_of).
+# here touches): the directory of `core-one-at-a-time` alone (#709). A fixed
+# change writes under scenarios/<its scenario>/, so only that scenario's two
+# issues touch the core and wait on each other, and every other scenario's
+# Spec touches none, so it never waits (scripts/autopilot.py core_busy) and
+# plays at once (scripts/release-scenarios.py core_problems).
 core:
-  - "scenarios/*/**"
+  - "scenarios/core-one-at-a-time/**"
 
 # After each run of the scenarios, its issues are closed and locked, its pull
 # requests closed and their branches deleted (scripts/release-scenarios.py

@@ -32,7 +32,8 @@ there, through a docs pull request of the scenario that merges: #698),
 `branch`, `title`, patterns), `check` (name: conclusion), `merged`,
 `waiting`). Every scenario is a group of its own (`groups`, #694), and
 the lane plays the groups at once, one job each: each writes only under
-its own directory of the test repository's core, scenarios/<id>/. A poll
+its own directory of the test repository, scenarios/<id>/, and only
+core-one-at-a-time's is its core (#709: `core_problems`). A poll
 finds an issue's pull request from the issue's own references, never a
 search (#698: the search API's 30 a minute, shared by every scenario at
 once), and a `gh` that fails for a while (a rate limit, a 5xx) is retried
@@ -47,7 +48,8 @@ after GitHub's back-off within the scenario's limit, then named.
         engine statically, by scripts/caller-contract.py check; and
         what is wrong with the groups (`partition`): a scenario in no
         group or in two, two scenarios that could write to the same
-        part of the test repository's core, a group id unfit for an
+        part of the test repository's core, a scenario that writes under
+        it but expects no wait on it (#709), a group id unfit for an
         artifact name
   release-scenarios.py plan
         prints each scenario's limit in minutes and how often it polls,
@@ -328,7 +330,7 @@ def preconditions(scenarios, bodies, pack, can_dispatch=(), passes=None, types=N
         if "pull" in opens and (expect.get("pull") or {}).get("closes"):
             if "{issue}" not in body_of(opens["pull"].get("body"), bodies):
                 out.append(f"scenario {sid}: expects its pull request to close an issue, but its body names no `{{issue}}` it opens")
-        if CORE_LABEL in (expect.get("labels") or []) or CORE_MARK in (expect.get("comments") or []):
+        if waits_on_core(s):
             first = [b.get("issue") or {} for b in s.get("before") or []]
             if not any("accepted" in (i.get("labels") or []) for i in first):
                 out.append(f"scenario {sid}: expects a wait on the core, but opens no accepted issue before it whose pull request stays open")
@@ -1055,7 +1057,7 @@ NOT_GROUPS = ("move", "back")
 def groups(scenarios):
     """The groups the lane plays at once, one job each (release-lane.yml
     `play`): every scenario in its own, named by its id (#694: each writes
-    to its own core, `writes`, so none waits on another). [{id,
+    under its own directory, `core_writes`, so none waits on another). [{id,
     scenarios}]. Pure."""
     return [{"id": s.get("id"), "scenarios": [s.get("id")]} for s in scenarios]
 
@@ -1076,7 +1078,8 @@ def partition(scenarios, gs, pack=None):
     unfit for an artifact name (`^[a-z0-9-]+$`, nor `move` or `back`) or used
     twice, and (#694) two scenarios that could write to the same part of the
     test repository's core (`pack`'s, scripts/org.py core_key), which would
-    wait on each other's change. Pure."""
+    wait on each other's change, and (#709) any that writes under it but
+    expects no wait on it (`core_problems`). Pure."""
     out, where, ids = [], {}, [s.get("id") or "?" for s in scenarios]
     seen = set()
     for g in gs:
@@ -1108,6 +1111,32 @@ def partition(scenarios, gs, pack=None):
                     out.append(f"scenario {sid}: writes {path}, on the core {key or 'of the test repository'} scenario {owner[key]} writes too, so one would wait on the other")
                     break
                 owner.setdefault(key, sid)
+        out += core_problems(scenarios, pack)
+    return out
+
+
+def waits_on_core(s):
+    """Whether scenario `s` expects to wait on the core (`autopilot:core-wait`
+    or its comment's mark). Pure."""
+    expect = s.get("expect") or {}
+    return CORE_LABEL in (expect.get("labels") or []) or CORE_MARK in (expect.get("comments") or [])
+
+
+def core_problems(scenarios, pack):
+    """Every scenario that writes under the test repository's core (`pack`'s
+    `core`) but expects no wait on it (#709): its fixed change would make its
+    issue wait on another's open pull request (scripts/autopilot.py
+    core_busy), so only the one scenario that expects `autopilot:core-wait`
+    writes there. Pure."""
+    out = []
+    for s in scenarios:
+        if waits_on_core(s):
+            continue
+        for path in sorted(core_writes(s, pack)):
+            if org_key(path, pack) is not None:
+                out.append(f"scenario {s.get('id') or '?'}: writes {path}, under the test repository's core ({', '.join(pack.get('core') or [])}), "
+                           f"but expects no wait on it, so its issue could wait on another's change")
+                break
     return out
 
 
@@ -1437,12 +1466,29 @@ def self_test():
     check("C2: the real file: every scenario is its own group, and none says serial",
           ([g["scenarios"] for g in real_groups] == [[s["id"]] for s in real["scenarios"]], [s["id"] for s in real["scenarios"] if "serial" in s]), (True, []))
     check("C2: the real file: no two scenarios write to the same core path of the test repository", partition(real["scenarios"], real_groups, rpack), [])
-    check("C2: each scenario writes under its own directory of the core, its fixed change too",
-          (sorted(core_writes({"id": "x"}, rpack)), {org_key(p, rpack) for p in core_writes({"id": "x"}, rpack)}), (["scenarios/x/*", "scenarios/x/*.md"], {"scenarios/x"}))
+    check("C2: each scenario writes under its own directory, its fixed change too, and only core-one-at-a-time's is the core (#709)",
+          (sorted(core_writes({"id": "x"}, rpack)), {org_key(p, rpack) for p in core_writes({"id": "x"}, rpack)}, {org_key(p, rpack) for p in core_writes({"id": "core-one-at-a-time"}, rpack)}),
+          (["scenarios/x/*", "scenarios/x/*.md"], {None}, {""}))
     shared = {"fixed-change": {"file": "scenarios/{n}.md"}, "core": ["scenarios/*"]}
     check("C2: partition fails when two scenarios could write to the same core path (a fixed change outside their own directory)",
-          partition([{"id": "a"}, {"id": "b"}], groups([{"id": "a"}, {"id": "b"}]), shared),
+          partition([{"id": "a", "expect": {"labels": [CORE_LABEL]}}, {"id": "b", "expect": {"labels": [CORE_LABEL]}}], groups([{"id": "a"}, {"id": "b"}]), shared),
           ["scenario b: writes scenarios/*.md, on the core of the test repository scenario a writes too, so one would wait on the other"])
+    per_dir = {"fixed-change": {"file": "scenarios/{scenario}/{n}.md"}, "core": ["scenarios/*/**"]}
+    check("#709 C1: core_problems names a scenario that writes under the core but expects no wait on it, and partition with it",
+          (core_problems([{"id": "a", "expect": {}}, {"id": "w", "expect": {"labels": [CORE_LABEL]}}], per_dir), partition([{"id": "a"}], groups([{"id": "a"}]), per_dir),
+           core_problems(real["scenarios"], rpack)),
+          (["scenario a: writes scenarios/a/*, under the test repository's core (scenarios/*/**), but expects no wait on it, so its issue could wait on another's change"],
+           ["scenario a: writes scenarios/a/*, under the test repository's core (scenarios/*/**), but expects no wait on it, so its issue could wait on another's change"], []))
+    sys.path.insert(0, HERE)
+    import autopilot as _ap
+    fixed709 = rpack["fixed-change"]["file"]
+    issues709, n709 = [], 100
+    for s in real["scenarios"]:
+        for _ in (s.get("before") or []) + [s.get("opens")]:
+            n709 += 1
+            issues709.append((s["id"], n709, fixed709.replace("{scenario}", s["id"]).replace("{n}", str(n709)).replace("{id}", "C1")))
+    busy709 = {sid for sid, n, path in issues709 if _ap.core_busy([path], rpack["core"], [{"number": m, "files": [q]} for _, m, q in issues709 if m != n], mine=n)}
+    check("#709 C1: from the real pack, with every scenario's fixed change open at once, only core-one-at-a-time can wait on the core", busy709, {"core-one-at-a-time"})
     plan_real = scenario_plan(real["scenarios"])
     check("C3: the real plan: no fixed wait, every wait an `until`, polling every 15 seconds, each limit 15 minutes or less",
           (timing(real["scenarios"]), {p["poll"] for p in plan_real}, max(p["minutes"] for p in plan_real) <= 15, len(plan_real) == len(real["scenarios"]),

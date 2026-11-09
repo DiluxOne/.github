@@ -164,7 +164,7 @@ def core_of(conf, repo, pack=None):
 def core_key(path, globs):
     """Which part of the core `path` touches (#694), so two changes wait on
     each other only when they share it: under a glob of one directory per
-    owner (`scenarios/*/**`, the test repository's, one per scenario) that
+    owner (`scenarios/*/**`, one per scenario) that
     directory (`scenarios/<id>`); under any other glob the whole core (""),
     as before; None when it touches no core. Pure."""
     import fnmatch
@@ -258,7 +258,7 @@ def self_test():
     check("#694: under a glob of one directory each, the core a path touches is its directory; under any other, the whole core",
           (core_key("scenarios/a/1.md", ["scenarios/*/**"]), core_key("scenarios/b/2.md", ["scenarios/*/**"]), core_key("scenarios/x.md", ["scenarios/*/**"]),
            core_key("scripts/autopilot.py", ["scripts/autopilot.py"]), core_key("README.md", ["scripts/*"])), ("scenarios/a", "scenarios/b", None, "", None))
-    check("#694: the test repository's core is one directory per scenario", test_pack({"org": "Acme"})["core"], ["scenarios/*/**"])
+    check("#709: the test repository's core is the directory of core-one-at-a-time alone", test_pack({"org": "Acme"})["core"], ["scenarios/core-one-at-a-time/**"])
     check("#563: any other repository's core is org.yml's", core_of({"org": "Acme", "core": ["scripts/autopilot.py"]}, "Acme/app", {"core": ["scenarios/*"]}), ["scripts/autopilot.py"])
     check("#568: {catalog} is the kind's catalog", publishes_to("{catalog}", "k", {"k": "acme-plugins"}), "acme-plugins")
     check("#568: no catalog for the kind publishes nowhere", publishes_to("{catalog}", "k", {}), "")
