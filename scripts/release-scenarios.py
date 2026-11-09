@@ -477,18 +477,68 @@ def scenario_mark(sid):
 def marked(text, sid):
     """`text` with the scenario's mark first: before the first section, where
     the issue schema reads an organisation's marker (scripts/issue-schema.py
-    MARKER). Pure."""
-    return f"{scenario_mark(sid)}\n{text}"
+    MARKER), and a line that names the scenario (#709: the mark is a
+    comment, which the triage does not see, so two scenarios' issues with the
+    same text would read as duplicates): the first line of its first `### `
+    section, since the schema refuses any other text before it, else right
+    after the mark. Pure."""
+    line = f"Scenario: {sid}."
+    m = re.search(r"^### .*\n", text, re.M)
+    if m:
+        return f"{scenario_mark(sid)}\n{text[:m.end()]}\n{line}\n{text[m.end():]}"
+    return f"{scenario_mark(sid)}\n{line}\n{text}"
+
+
+# A title its form fixes, which a suffix would break (#709): the Release
+# form's, the version alone (scripts/engine-post.py RELEASE_TITLE).
+FIXED_TITLE = re.compile(r"^Release \d+\.\d+\.\d+$")
+
+
+def issue_text(spec, bodies, default, sid=None):
+    """The title and body the issue `spec` opens with: with `sid`, its title
+    ends with `[<sid>]` (a suffix: the `type:` before it is what the
+    conventions check and `needed_type` read), but a title its form fixes
+    (`FIXED_TITLE`), and its body is `marked` (#709). Pure."""
+    title, text = str(spec.get("title", default)), body_of(spec.get("body"), bodies)
+    if not sid:
+        return title, text
+    return (title if FIXED_TITLE.match(title) else f"{title} [{sid}]"), marked(text, sid)
+
+
+def pull_issue(spec, sid):
+    """The issue a pull request `spec` of scenario `sid` closes, opened first:
+    its `issue:`, else a complete feature with its title. Pure."""
+    return spec.get("issue") or {"title": spec.get("title", sid), "body": "complete-feature"}
+
+
+def land_issue(sid, arg):
+    """The accepted, claimed Docs issue the pull request that lands scenario
+    `sid`'s `push: arg` on main closes (#698). Pure."""
+    return {"title": f"docs: the scenario {sid} lands {arg} on main", "body": "task", "type": "Docs", "labels": ["accepted"], "comments": ["/claim"]}
+
+
+def opened_issues(s, bodies):
+    """Every issue scenario `s` opens, as (spec, default title), in the order
+    `play` opens them: its `before`, its own or its pull request's, and one
+    per `push` that lands on main. Pure."""
+    sid, opens = s.get("id") or "?", s.get("opens") or {}
+    out = [(b.get("issue") or {}, f"{sid}: before") for b in s.get("before") or []]
+    if "issue" in opens:
+        out.append((opens["issue"], sid))
+    elif "pull" in opens and "{issue}" in body_of(opens["pull"].get("body"), bodies):
+        out.append((pull_issue(opens["pull"], sid), sid))
+    return out + [(land_issue(sid, st["push"]), sid) for st in s.get("steps") or [] if isinstance(st, dict) and st.get("push") in LANDS]
 
 
 def open_issue(repo, spec, bodies, default, run=gh, sid=None, types=None):
     """The issue `spec` opened, with the Type its form would give it
-    (`type_of`, #698): its number. Its `comments` (a `/claim`) are posted
-    before its labels, so a claim comes before its acceptance."""
-    text = body_of(spec.get("body"), bodies)
+    (`type_of`, #698), its title and body as `issue_text` writes them: its
+    number. Its `comments` (a `/claim`) are posted before its labels, so a
+    claim comes before its acceptance."""
+    title, text = issue_text(spec, bodies, default, sid)
     kind, labels, first = type_of(spec, types), spec.get("labels") or [], spec.get("comments") or []
-    url = run("issue", "create", "--repo", repo, "--title", spec.get("title", default), "--body-file", "-", *(["--type", kind] if kind else []),
-              *sum((["--label", l] for l in ([] if first else labels)), []), input=marked(text, sid) if sid else text).strip()
+    url = run("issue", "create", "--repo", repo, "--title", title, "--body-file", "-", *(["--type", kind] if kind else []),
+              *sum((["--label", l] for l in ([] if first else labels)), []), input=text).strip()
     number = url.rstrip("/").rsplit("/", 1)[-1]
     for c in first:
         run("issue", "comment", number, "--repo", repo, "--body", str(c))
@@ -682,8 +732,7 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
         wrote on the head: an accepted, claimed Docs issue of the scenario
         and a docs pull request that closes it, polled until it merged (the
         auto-merge of a low-risk change). [] once it did, else why not."""
-        n = open_issue(repo, {"title": f"docs: the scenario {sid} lands {arg} on main", "body": "task", "type": "Docs", "labels": ["accepted"],
-                              "comments": ["/claim"]}, bodies, sid, run, sid, types)
+        n = open_issue(repo, land_issue(sid, arg), bodies, sid, run, sid, types)
         made.append(("issue", n))
         branch = landing(sid, arg)
         fresh_branch(repo, branch, run)
@@ -703,7 +752,7 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
         else:
             text = body_of(spec.get("body"), bodies)
             if "{issue}" in text:
-                closes = open_issue(repo, spec.get("issue") or {"title": spec.get("title", sid), "body": "complete-feature"}, bodies, sid, run, sid, types)
+                closes = open_issue(repo, pull_issue(spec, sid), bodies, sid, run, sid, types)
                 made.append(("issue", closes))
                 text = text.replace("{issue}", closes)
             branch, target = own, repo
@@ -1566,7 +1615,7 @@ def self_test():
         return "{}" if a[:2] == ("issue", "view") else "[]"
     conf3 = {"scenarios": [{"id": "a", "opens": {"issue": {"title": "a"}}, "expect": {}}, {"id": "b", "opens": {"issue": {"title": "b"}}, "expect": {}}]}
     rows = play_group(conf3, "b", "o/t", "v7-next", ordered, lambda s: None, 1)
-    check("C2: play_group plays its group's one scenario, and no other", ([r["id"] for r in rows], titles), (["b"], ["b"]))
+    check("C2: play_group plays its group's one scenario, and no other", ([r["id"] for r in rows], titles), (["b"], ["b [b]"]))
     check("C2: play_group on no group is one failing row", [(r["id"], r["ok"]) for r in play_group(conf3, "gone", "o/t", "v7-next", ordered, lambda s: None, 1)], [("gone", False)])
     rpack = test_pack()
     check("#563: the test repository's callers are shipped ones", all(os.path.exists(os.path.join(ROOT, "workflow-templates", c)) for c in rpack["callers"]) and rpack["callers"] != [], True)
@@ -1807,7 +1856,22 @@ def self_test():
     first = []
     play({"id": "c", "before": [{"issue": {"title": "first", "labels": ["accepted"]}}], "opens": {"issue": {"title": "second"}}, "expect": {}},
          "o/t", "v7-next", {}, lambda *a, input=None: first.append(a) or ("https://github.com/o/t/issues/9\n" if a[:2] == ("issue", "create") else "{}" if a[:2] == ("issue", "view") else "[]"), lambda s: None, 1)
-    check("run: `before` opens its issue first and closes it only after", ([a[5] for a in first if a[:2] == ("issue", "create")], first.index(("issue", "close", "9", "--repo", "o/t")) > 2), (["first", "second"], True))
+    check("run: `before` opens its issue first and closes it only after", ([a[5] for a in first if a[:2] == ("issue", "create")], first.index(("issue", "close", "9", "--repo", "o/t")) > 2), (["first [c]", "second [c]"], True))
+    texts709 = [(s["id"],) + issue_text(spec, real["bodies"], default, s["id"]) for s in real["scenarios"] for spec, default in opened_issues(s, real["bodies"])]
+    check("#709 C2: every issue a scenario opens names its scenario in its title (but the Release form's, the version alone) and in its body",
+          ([sid for sid, title, body in texts709 if not (title.endswith(f" [{sid}]") or FIXED_TITLE.match(title)) or f"\nScenario: {sid}.\n" not in body + "\n"],
+           [title for sid, title, _ in texts709 if FIXED_TITLE.match(title)], len(texts709) > len(real["scenarios"])), ([], ["Release 0.0.1"], True))
+    check("#709 C2: no two scenarios open an issue with the same title or the same body",
+          [(a[0], b[0]) for i, a in enumerate(texts709) for b in texts709[i + 1:] if a[0] != b[0] and (a[1] == b[1] or a[2] == b[2])], [])
+    check("#709 C2: the scenarios that shared a title and body before, now differ in both",
+          [(t, b) for sid, t, b in texts709 if sid == "issue-complete"] != [(t, b) for sid, t, b in texts709 if sid == "accepted-spec"], True)
+    check("#709 C2: the id is a suffix, so the title's type still reads, and the autopilot's title from it still matches its scenario's pattern",
+          (needed_type(issue_text({"title": "feat: a greeting"}, {}, "x", "accepted-spec")[0]), bool(re.search(r"^feat(\(.+\))?: ", issue_text({"title": "feat: x"}, {}, "x", "s")[0]))), ("Feature", True))
+    made709 = []
+    open_issue("o/t", {"title": "feat: x", "body": "f"}, {"f": "text"}, "d", lambda *a, input=None: made709.append((a, input)) or "https://github.com/o/t/issues/5\n", "s")
+    check("#709 C2: open_issue opens what issue_text writes", (made709[0][0][made709[0][0].index("--title") + 1], made709[0][1]), ("feat: x [s]", f"{scenario_mark('s')}\nScenario: s.\ntext"))
+    check("#709 C2: in a body with sections, the scenario's line opens the first one, where the issue schema takes it",
+          marked("### Problem\n\nNone.\n", "s"), f"{scenario_mark('s')}\n### Problem\n\nScenario: s.\n\nNone.\n")
     import base64
     caller = "jobs:\n  t:\n    uses: O/.github/.github/workflows/issue-triage.yml@abc123 # v7\n"
     check("at_ref: a pinned call moves to the ref tried", at_ref(caller, "O/.github", "v7-next"), "jobs:\n  t:\n    uses: O/.github/.github/workflows/issue-triage.yml@v7-next\n")

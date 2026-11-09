@@ -23,8 +23,13 @@
 # fixed change too), and only core-one-at-a-time's is the core
 # (kinds/engine-test/pack.yml, #709), so none waits on another's change;
 # `partition` fails when two could write to the same part of the core, or
-# another scenario writes under it (`core_problems`). Every body a scenario opens carries its
-# `dx-scenario: <id>` mark first, so its next run closes what it left.
+# another scenario writes under it (`core_problems`). Every body a scenario
+# opens carries its `dx-scenario: <id>` mark first, so its next run closes
+# what it left, and
+# names its scenario where the triage reads it (#709): `Scenario: <id>.` as
+# the first line of its first section, and an issue's title ends with
+# `[<id>]` (but a release issue's, the version alone), so no two scenarios'
+# issues read as duplicates.
 
 # The bodies the scenarios open and edit with, by name.
 bodies:
