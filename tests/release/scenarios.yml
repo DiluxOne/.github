@@ -97,6 +97,10 @@ bodies:
 
     Read `scenarios/bug-reproduced/greeting.md`.
 
+    ### Version
+
+    The test repository's `main`.
+
     ### Problem
 
     The greeting says "helo" instead of "hello".
@@ -119,19 +123,24 @@ bodies:
   bug-not-reproduced: |
     ### What happened?
 
-    Something failed once, nobody knows where.
+    `scenarios/bug-not-reproduced/greeting.md` said "helo" once, in a run nobody kept.
 
     ### Steps to reproduce
 
-    Unknown.
+    1. Read `scenarios/bug-not-reproduced/greeting.md` on `main`.
+    2. See whether it says "helo" instead of "hello".
+
+    ### Version
+
+    The test repository's `main`.
 
     ### Problem
 
-    Something failed once.
+    The greeting said "helo" instead of "hello" once.
 
     ### Scope
 
-    - Whatever failed.
+    - The greeting's word.
 
     ### Out of scope
 
@@ -139,20 +148,38 @@ bodies:
 
     ### Acceptance criteria
 
-    - C1: Given the repository, when it runs, then nothing fails.
+    - C1: Given the repository, when `scenarios/bug-not-reproduced/greeting.md` is read, then it says "hello".
 
     ### Criticality
 
     Normal
+  # A decision's PRD (#713: the schema's, with its Repositories), naming
+  # only the test repository, so it reaches no other.
   decision: |
-    ### Decision
+    ### Problem
 
-    The greeting and the farewell are two sub-issues of this one.
+    The test repository has neither a greeting nor a farewell.
 
-    ### Sub-issues
+    ### Scope
 
     - A greeting file.
     - A farewell file.
+
+    ### Out of scope
+
+    - Anything else.
+
+    ### Acceptance criteria
+
+    - C1: Given the repository, when it is read, then it has a greeting and a farewell.
+
+    ### Criticality
+
+    Normal
+
+    ### Repositories
+
+    name: diluxone-test
   # The Release form's (#694): its one section, and its label below.
   release: |
     ### Notes
@@ -262,7 +289,8 @@ scenarios:
     expect: {absent: [accepted], waiting: true}
   - id: decision-sub-issues
     covers: []
-    opens: {issue: {title: "Decision: a greeting and a farewell", body: decision, labels: [accepted]}}
+    opens: {issue: {title: "Decision: a greeting and a farewell", body: decision}}
+    steps: [{until: {labels: [awaiting-acceptance]}}, {label: accepted}]
     expect: {labels: [accepted], comments: ["sub-issue"]}
 
   # Claims.

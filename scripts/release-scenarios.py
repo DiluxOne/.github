@@ -58,7 +58,8 @@ after GitHub's back-off within the scenario's limit, then named.
         #713: one that reads the autopilot's result on an issue it opens
         accepted, accepts before the triage's verdict or waits for no
         seal after it, or comments /claim after the acceptance,
-        `autopilot_problems`).
+        `autopilot_problems`; a body the schema refuses, a decision's
+        too, or a Bug's without a field bug_report.yml requires).
         Every other pair a shipped caller wires is held to the
         engine statically, by scripts/caller-contract.py check; and
         what is wrong with the groups (`partition`): a scenario in no
@@ -1656,17 +1657,41 @@ def schema_passes(root=ROOT):
     return lambda body: bool(mod.check(body, "prd")["ok"])
 
 
-def fixture_problems(conf, issue_check, pull_check, release_check=None):
+BUG_FORM = os.path.join(".github", "ISSUE_TEMPLATE", "bug_report.yml")
+
+
+def form_required(form):
+    """The labels of the fields an issue form (`form`, read) requires: the
+    `### ` sections a body opened from it has. Pure."""
+    return [str((f.get("attributes") or {}).get("label")) for f in (form or {}).get("body") or []
+            if isinstance(f, dict) and f.get("type") != "markdown" and (f.get("validations") or {}).get("required")]
+
+
+def missing_fields(body, fields):
+    """The `fields` (### headings) `body` leaves missing or empty. Pure."""
+    found, on = {}, None
+    for line in str(body or "").split("\n"):
+        if line.startswith("### "):
+            on = line[4:].strip()
+            found.setdefault(on, "")
+        elif on is not None:
+            found[on] += line
+    return [f for f in fields if not re.sub(r"<!--.*?-->|\s", "", found.get(f, ""))]
+
+
+def fixture_problems(conf, issue_check, pull_check, release_check=None, bug_fields=()):
     """What a person's check would find wrong with the scenarios' own
     fixtures (#694, scripts/engine-post.py): every issue body a scenario
     opens or edits to that should await acceptance, as G1 reads it
-    (`issue_check(body)`), and every pull request it opens, its title, its
-    branch and its `Closes #` as the conventions check reads them
-    (`pull_check(title, branch, body, closes)`), and a release issue's
-    title and label (`release_check(title, labels)`). Pure but for the
-    checks."""
+    (`issue_check(body)`), a decision's too (#713), and every pull request
+    it opens, its title, its branch and its `Closes #` as the conventions
+    check reads them (`pull_check(title, branch, body, closes)`), a release
+    issue's title and label (`release_check(title, labels)`), and (#713) a
+    Bug's body that leaves out a field the bug report form requires
+    (`bug_fields`, `form_required` of bug_report.yml), which the triage
+    asks for (`needs-info`). Pure but for the checks."""
     bodies, out = conf.get("bodies") or {}, []
-    known = {b for b in bodies if b not in ("incomplete", "decision", "release")}
+    known = {b for b in bodies if b not in ("incomplete", "release")}
     for s in conf.get("scenarios") or []:
         sid, opens = s.get("id") or "?", s.get("opens") or {}
         specs = [b.get("issue") or {} for b in s.get("before") or []] + ([opens["issue"]] if "issue" in opens else [])
@@ -1684,6 +1709,9 @@ def fixture_problems(conf, issue_check, pull_check, release_check=None):
             if name in known:
                 for wrong in issue_check(marked(body_of(name, bodies), sid)):
                     out.append(f"scenario {sid}: its body `{name}`: {wrong}")
+            if type_of(spec, conf.get("types") or {}) == "Bug":
+                for field in missing_fields(body_of(name, bodies), bug_fields):
+                    out.append(f"scenario {sid}: its Bug body `{name}` has no `{field}`, which the bug report form requires")
     return out
 
 
@@ -1752,7 +1780,8 @@ def problems(conf, root=ROOT):
             + partition(scenarios, groups(scenarios), pack)
             + timing(scenarios)
             + autopilot_problems(scenarios)
-            + fixture_problems(conf, engine_post(root).issue, engine_post(root).pull, engine_post(root).release))
+            + fixture_problems(conf, engine_post(root).issue, engine_post(root).pull, engine_post(root).release,
+                               form_required(load_yaml(os.path.join(root, BUG_FORM)))))
 
 
 def self_test():
@@ -2695,6 +2724,24 @@ def self_test():
     seen713 = {"labels": ["accepted", "lane:release"], "comments": ["**No release pull request:** x accepted this issue with the role write on the repository"]}
     check("#713 C4: holds: the refusal and no pull request pass; a pull request that closes it fails, named",
           (holds(rel, seen713), holds(rel, dict(seen713, pull={"number": 5, "title": "chore: release 0.0.1"}))[0]), ([], "a pull request closes it (5)"))
+    # #713 C5: the bodies the triage would refuse or ask about.
+    post = engine_post()
+    fields = form_required(load_yaml(os.path.join(ROOT, BUG_FORM)))
+    check("#713 C5: the bug report form's required fields, read from bug_report.yml", fields, ["What happened?", "Steps to reproduce", "Version"])
+    check("#713 C5: the decision and bug bodies pass issue-schema.py, and each bug body has every field the form requires",
+          ({n: post.issue(marked(real["bodies"][n], n)) for n in ("decision", "bug", "bug-not-reproduced")},
+           {n: missing_fields(real["bodies"][n], fields) for n in ("bug", "bug-not-reproduced")}),
+          ({n: [] for n in ("decision", "bug", "bug-not-reproduced")}, {n: [] for n in ("bug", "bug-not-reproduced")}))
+    check("#713 C5: the decision names only the test repository", "### Repositories\n\nname: diluxone-test\n" in real["bodies"]["decision"], True)
+    old = dict(real, bodies=dict(real["bodies"], decision="### Decision\n\nTwo.\n", **{"bug-not-reproduced": real["bodies"]["bug-not-reproduced"].split("### Version")[0] + "### Problem" + real["bodies"]["bug-not-reproduced"].split("### Problem", 1)[1]}))
+    got = fixture_problems(old, post.issue, post.pull, post.release, fields)
+    check("#713 C5: fixture_problems names a decision the schema refuses, and a Bug body without the form's Version",
+          (any(p.startswith("scenario decision-sub-issues: its body `decision`:") for p in got),
+           "scenario bug-not-reproduced: its Bug body `bug-not-reproduced` has no `Version`, which the bug report form requires" in got),
+          (True, True))
+    dec = by713["decision-sub-issues"]
+    check("#713 C5: decision-sub-issues opens its decision plain and accepts it after its triage",
+          (dec["opens"]["issue"].get("labels"), dec["steps"][:2]), (None, [{"until": {"labels": ["awaiting-acceptance"]}}, {"label": "accepted"}]))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
