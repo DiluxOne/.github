@@ -36,7 +36,8 @@ its own directory of the test repository's core, scenarios/<id>/. A poll
 finds an issue's pull request from the issue's own references, never a
 search (#698: the search API's 30 a minute, shared by every scenario at
 once), and a `gh` that fails for a while (a rate limit, a 5xx) is retried
-after GitHub's back-off within the scenario's limit, then named.
+after GitHub's back-off within the scenario's limit, then named: a write
+(an issue, a comment, a pull request, a push) as an observation is (#704).
 
   release-scenarios.py coverage [ROOT]
         fails naming every pair and transition with no scenario, every
@@ -631,16 +632,17 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
     spec = opens.get("pull") or opens.get("issue") or {}
     sid, own = s["id"], branch_of(s)
     left = [min(minutes, limit(s)) * 60]
+    bare = run
 
-    def look(on):
-        """`on` observed, a transient `gh` error (#698: a rate limit, a
-        5xx) retried after its back-off within the scenario's time, never a
-        failure at once: (what was seen, None), or (None, why) once its time
-        ran out with `gh` still failing."""
+    def again(call):
+        """`call()`, a transient `gh` error (#698: a rate limit, a 5xx)
+        retried after its back-off within the scenario's time, never a
+        failure at once: (what it returned, None), or (None, why) once its
+        time ran out with `gh` still failing. Any other error raises."""
         tries = 0
         while True:
             try:
-                return observe(repo, on[0], on[1], run), None
+                return call(), None
             except GhError as e:
                 if not transient(e):
                     raise
@@ -650,6 +652,22 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
                 sleep(wait)
                 left[0] -= wait
                 tries += 1
+
+    def retried(runner):
+        """`runner`, its writes retried as an observation is (#704): a
+        transient error once the scenario's time ran out fails the
+        scenario, named."""
+        def call(*a, input=None):
+            got, why = again(lambda: runner(*a, input=input))
+            if why:
+                raise RuntimeError(why)
+            return got
+        return call
+    run = retried(bare)
+
+    def look(on):
+        """`on` observed (`again`): (what was seen, None), or (None, why)."""
+        return again(lambda: observe(repo, on[0], on[1], bare))
 
     def poll(expect, on, closes):
         """`on` (what, number) observed every POLL seconds until `expect`
@@ -693,7 +711,7 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
         seen, why = poll({"merged": True}, ("pr", made[-1][1]), None)
         return [f"push {arg}: its pull request to main {got}: {w}" for w in why]
     try:
-        clear(repo, sid, run, own)
+        clear(repo, sid, bare, own)
         for first in s.get("before") or []:
             made.append(("issue", open_issue(repo, first.get("issue") or {}, bodies, f"{sid}: before", run, sid, types)))
         if what == "issue":
@@ -713,6 +731,7 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
                 writes = fork_gh() if fork is None else (fork or None)
                 if writes is None:
                     raise RuntimeError(FORK_NEEDS)
+                writes = retried(writes)
                 writes("repo", "fork", repo, "--clone=false", "--default-branch-only")
                 target = f"{writes('api', 'user', '--jq', '.login').strip()}/{repo.split('/', 1)[1]}"
             fresh_branch(target, branch, writes)
@@ -767,8 +786,8 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
     except (RuntimeError, ValueError) as e:
         return {"id": sid, "ok": False, "why": [str(e)], "run": ""}
     finally:
-        cleanup(repo, made, run)
-        clear(repo, sid, run, own)
+        cleanup(repo, made, bare)
+        clear(repo, sid, bare, own)
 
 
 def observe(repo, what, number, run=gh):
@@ -1746,6 +1765,31 @@ def self_test():
         return "https://github.com/o/t/issues/9\n" if a[:2] == ("issue", "create") else "[]"
     got = play({"id": "s", "opens": {"issue": {"title": "t"}}, "expect": {"labels": ["x"]}}, "o/t", "v7-next", {}, broken, lambda s: st.__setitem__("n", st["n"] + 1), 1)
     check("#698: a `gh` error that is not transient still fails at once", (got["ok"], st["n"]), (False, 0))
+
+    def creating(fails):
+        """A test repository whose `gh issue create` is rate limited the
+        first `fails` times (#704)."""
+        st = {"creates": 0, "sleeps": []}
+
+        def fake(*a, input=None):
+            if a[:2] == ("issue", "create"):
+                st["creates"] += 1
+                if st["creates"] <= fails:
+                    raise GhError("gh issue create --repo: GraphQL: API rate limit already exceeded for user ID 1.", 1, "", "GraphQL: API rate limit already exceeded for user ID 1.")
+                return "https://github.com/o/t/issues/9\n"
+            if a[:2] == ("issue", "view"):
+                return json.dumps({"labels": [{"name": "x"}], "closedByPullRequestsReferences": []})
+            return "[]"
+        return st, fake
+    st, fake = creating(2)
+    got = play({"id": "s", "opens": {"issue": {"title": "t"}}, "expect": {"labels": ["x"]}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 20)
+    check("#704: a rate-limited `gh issue create` is retried after its back-off, as an observation is, then the scenario holds",
+          (got["ok"], st["creates"], st["sleeps"]), (True, 3, [15, 30]))
+    st, fake = creating(99)
+    got = play({"id": "s", "minutes": 2, "opens": {"issue": {"title": "t"}}, "expect": {"labels": ["x"]}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 20)
+    check("#704: a `gh issue create` rate limited until the scenario's time runs out fails then, naming it",
+          (got["ok"], got["why"], sum(st["sleeps"])),
+          (False, ["gh issue create --repo rate limited or failing at GitHub until the scenario's time ran out: GraphQL: API rate limit already exceeded for user ID 1."], 120))
     check("#698 backoff: retry-after, then the reset, then POLL doubled up to 120",
           (backoff(GhError("x", stderr="Retry-After: 7"), 0), backoff(GhError("x", stderr="x-ratelimit-reset: 1060"), 0, now=1000), backoff(GhError("x"), 0), backoff(GhError("x"), 5)),
           (7, 60, 15, 120))
