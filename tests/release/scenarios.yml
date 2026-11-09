@@ -4,7 +4,8 @@
 # scripts/release-scenarios.py reads this file: `coverage` (in the scripts
 # job) fails naming each pair of a reusable workflow and an event the test
 # repository's callers wire (its pack's `callers`, and org-pull-request.yml;
-# a `schedule` aside), and each transition of the autopilot's state machine,
+# a `schedule` aside), and each transition of the autopilot's state machine
+# (but those `statically:` holds, below),
 # that no scenario covers, and each scenario that dispatches a workflow the
 # test repository cannot run on demand; `run` plays them. Every other
 # shipped caller (the products' batteries, the nightly and security runs)
@@ -188,6 +189,17 @@ types:
   task: Task
   release: Task
 
+# The transitions no scenario can cause in the test repository, each with
+# the test that holds it instead (#707), as `schedule` is for the pairs:
+# `coverage` counts them covered and refuses a scenario that claims one.
+# `next_step:fix` is the fix round of a ready pull request whose review
+# blocks at its head: the test repository's review is a model's, so no
+# scenario can make it block on time, and its fixed change answers that
+# round with a stop for a person (never a bug's fix, which the
+# bugfix-reproduced lane writes through spec, draft and work).
+statically:
+  next_step:fix: "scripts/autopilot.py --test: next_step's case 'ready, the review blocks at its head' (fix), and '#563: a review round on the fixed change stops for a person'"
+
 scenarios:
   # Issues, before acceptance.
   - id: issue-complete
@@ -250,9 +262,12 @@ scenarios:
   # fails while scenarios/<scenario>/greeting.md says "helo": this one
   # lands it on main before its issue opens; the other lands none. The fix
   # of a confirmed bug closes the lane's own issue, never the report, so
-  # the report's verdict is what it expects.
+  # the report's verdict is what it expects; it causes no transition of its
+  # own (`next_step:fix` is the review's round: `statically:`). That lane
+  # issue carries no mark of its own: `clear` closes it from its report's
+  # (release-scenarios.py lane_leftovers).
   - id: bug-reproduced
-    covers: [next_step:fix]
+    covers: []
     minutes: 15
     before: [{lands: greeting, says: helo}]
     opens: {issue: {title: "fix: the greeting says helo", body: bug}}
