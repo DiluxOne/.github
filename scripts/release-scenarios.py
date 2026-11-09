@@ -23,6 +23,7 @@ complete feature; an issue's `type`, else the Type its body's form gives,
 `comment`, `label`, `unlabel`, `edit`, `push`, `dispatch`, and `until`,
 an `expect` polled every 15 seconds on its issue or pull request, or with
 `of: before` on its first `before` issue, never a fixed wait: #694; a
+file is written in a commit GitHub signs, `createCommitOnBranch` (#709); a
 `push: <name>` writes scenarios/<id>/<name>.md on the head branch of the
 pull request it observes, the autopilot's for an issue, and `conflict`
 then lands that file, otherwise, on main, `behind` only a file of its own
