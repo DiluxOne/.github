@@ -55,6 +55,25 @@ autopilot: fixed-change
 fixed-change:
   file: "scenarios/{scenario}/{n}.md"
 
+# Its bugs reproduced with a fixed test that calls no model either (#707,
+# scripts/repro-ways.py `fixed`): issue-repro.yml copies repro-fixed.py,
+# `{n}` the issue's number and `{scenario}` its release scenario, where the
+# writer would run, and runs it as any command way. It fails while
+# scenarios/<scenario>/greeting.md says "helo" (what `bug-reproduced` lands
+# on main first), so `bug-reproduced` gets `bug:confirmed` and
+# `bug-not-reproduced`, which lands none, stays `bug:unconfirmed`. One way
+# for every layer: whatever the triage labels, a bug here never lacks one.
+repro:
+  ways:
+    fixed:
+      layer: [logic, browser, cli, api, workflow]
+      noun: fixed test
+      test: "tests/repro/test_issue_{n}.py"
+      fixed: "{kind}/repro-fixed.py"
+      run: "python3 {test}"
+      junit: "build/repro-{n}.xml"
+      minutes: 5
+
 # Its own core (org.yml `core` names the engine's paths, which no change
 # here touches), one directory per scenario (#694): a fixed change writes
 # under scenarios/<its scenario>/, so only two issues of one scenario wait

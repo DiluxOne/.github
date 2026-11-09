@@ -11,8 +11,10 @@ name: Release lane
 # checks pass, after checking that they change nothing but the engine's ref:
 # the auto-merge decision never merges a change to .github/workflows; never
 # a write to its main) with the test identity's token, in groups that play
-# at once, one job each (`move`, then `play`, a matrix on DX_RUNNER_HEAVY or
-# ubuntu-latest, then `back`: release-scenarios.py groups; every scenario
+# at once, one job each (`move`, then `play`, a matrix on ubuntu-latest,
+# never DX_RUNNER_HEAVY: the test repository's own jobs run on those
+# runners, and a play job that waits for them there would hold the runner
+# they need, #707; then `back`: release-scenarios.py groups; every scenario
 # in its own, on its own core, #694), and only when all rows of the
 # one table `act` merges from them pass (a group that left no results, a
 # scenario with no row or a job that did not succeed is a failing row),
@@ -219,7 +221,12 @@ jobs:
     name: Scenarios ${{ matrix.group.id }}
     needs: [plan, move]
     if: needs.move.outputs.moved == 'true'
-    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    # GitHub's runners, never the organisation's (#707): a play job only
+    # runs `gh` and polls, while the test repository's jobs it waits for run
+    # on DX_RUNNER_HEAVY; up to 25 play jobs there left those jobs queued
+    # behind them until every scenario but the first triage's ran out of
+    # time (release-scenarios.py lane_problems).
+    runs-on: ubuntu-latest
     # Past it GitHub cancels the job, not the run: the decision still reads
     # it as a timeout and opens its bug (#690). The play step stops first
     # (its own timeout-minutes, above every scenario's limit of 15 minutes

@@ -47,6 +47,11 @@ A way is one entry of `repro.ways`:
   shots     for a browser way, the command that runs a pull request's
             affected specs ({tests}) through the screenshot configuration
             (scripts/screenshots.py, #564)
+  fixed     a test no model writes (#707): the file (`{kind}` its pack's
+            folder) the reproduction copies to `test` instead of calling the
+            writer, `{n}` the issue's number and `{scenario}` its release
+            scenario (`dx-scenario` mark, else the number) filled; a command
+            way's, as the engine's test repository has (kinds/engine-test/)
 `repro.affected` maps paths to the tests a pull request that touches them
 runs (`{paths: [globs], tests: [paths]}`), instead of the whole suite.
 `repro.smoke` (#479) lists the few specs a pull request runs beside the
@@ -72,6 +77,9 @@ LEVEL=pr): the pack's, then the repository's.
   repro-ways.py propose   the stack recognised in the repository at DIR and
                           the way it proposes (#377), as `repro:` takes it;
                           exit 1 when no stack is recognised
+  repro-ways.py fixed     the way's `fixed` test (FIXED, from resolve),
+                          filled for issue NUMBER whose body is BODY, written
+                          to TEST (#707); exit 1 when the way has none
   repro-ways.py missing   exit 1, saying which way to declare (the one its
                           stack proposes, or the keys to write), when the
                           repository at DIR declares no way for `logic`:
@@ -99,7 +107,7 @@ sys.path.insert(0, HERE)
 import repos_conf  # noqa: E402  repos.yml's one entry per repository (#562)
 LAYERS = ("logic", "browser", "cli", "api", "workflow")
 KEYS = {"layer", "noun", "test", "needs", "sandbox", "setup", "theme", "run", "junit", "case", "assertion", "teardown",
-        "minutes", "context", "list", "example", "guide", "shots"}
+        "minutes", "context", "list", "example", "guide", "shots", "fixed"}
 SANDBOXES = ("php-unit",)
 # How the comments say each layer is reproduced.
 WHERE = {"logic": "with a test of the code's logic", "browser": "in a browser", "cli": "through a command's output",
@@ -181,6 +189,12 @@ def problems(conf):
                 out.append(f"repro.ways.{name}.assertion: a regular expression")
         if way.get("sandbox") is None and not (way.get("run") and way.get("junit")):
             out.append(f"repro.ways.{name}: a command way needs `run` and `junit`")
+        if way.get("fixed") is not None:
+            fixed = str(way["fixed"])
+            if not fixed or fixed.startswith("/") or ".." in fixed.split("/"):
+                out.append(f"repro.ways.{name}.fixed: a relative path, or {{kind}}/<file>")
+            if way.get("sandbox") is not None:
+                out.append(f"repro.ways.{name}.fixed: a command way's, never a sandbox's")
     return out
 
 
@@ -348,6 +362,8 @@ def resolve(root, central, layer, number):
         "dir": os.path.dirname(test),
         "noun": str(way.get("noun") or "test"),
         "sandbox": str(way.get("sandbox") or ""),
+        # #707: a test no model writes, copied as it is (`fixed`).
+        "fixed": fill(way["fixed"], number, central, kind) if way.get("fixed") else "",
         "minutes": str(int(way.get("minutes") or 15)),
         "ready": "yes" if is_ready else "no",
         "why": "" if is_ready else (f"its `{name}` way needs {', '.join(str(x) for x in way.get('needs') or [])}, "
@@ -358,6 +374,27 @@ def resolve(root, central, layer, number):
                             for k, v in way.items() if k in ("setup", "theme", "run", "junit", "case", "assertion", "teardown", "minutes", "test")}, separators=(",", ":")),
     })
     return out
+
+
+SCENARIO = re.compile(r"^\s*<!--\s*dx-scenario:\s*([a-z0-9-]+)\s*-->", re.M)
+
+
+def fixed_test(text, number, body):
+    """A way's `fixed` test for issue NUMBER (#707): `{n}` its number,
+    `{scenario}` the release scenario its BODY's `dx-scenario` mark names
+    (scripts/autopilot.py scenario_of), else its number. Nothing else of the
+    report reaches it. Pure."""
+    m = SCENARIO.search(body or "")
+    return str(text).replace("{n}", str(int(number))).replace("{scenario}", m.group(1) if m else str(int(number)))
+
+
+def write_fixed(src, dest, number, body):
+    """The `fixed` test at SRC written to DEST for issue NUMBER."""
+    with open(src, encoding="utf-8") as fh:
+        text = fixed_test(fh.read(), number, body)
+    os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+    with open(dest, "w", encoding="utf-8") as fh:
+        fh.write(text)
 
 
 def brief(root, central, layer, number):
@@ -820,6 +857,43 @@ def self_test():
               ["repro.ways.go.assertion: a regular expression"])
         os.symlink("/etc/hostname", os.path.join(d, "pytest.ini"))
         check("#377 a symbolic link is never read nor matched", propose(d), None)
+        # #707 option A: the test repository reproduces a bug with a fixed
+        # test, no model, as its pack's change calls none.
+        org = _load("org", "org.py")
+        test_repo = org.test_repo(org.load(os.path.join(central, "org.yml")))
+        conf = read(os.path.join(central, "repos.yml"))
+        check("#707 the test repository has a way to reproduce a bug: repos.yml says no `repro: false` for it, and its pack declares one",
+              (by_design(conf, test_repo), declares(conf, test_repo, {}, os.path.join(central, "kinds")) != []), (False, True))
+        repo("")
+        os.environ["REPO"] = test_repo
+        try:
+            r = resolve(d, central, "logic", 41)
+            spec = json.loads(r["spec"])
+        finally:
+            os.environ["REPO"] = "Acme/none-such"
+        check("#707 its way is ready, a command's, with a fixed test of its pack (no model writes it)",
+              (r["ready"], r["sandbox"], r["fixed"] == os.path.join(central, "kinds", "engine-test", "repro-fixed.py"), os.path.isfile(r["fixed"]), "{n}" in r["test"] + spec["run"]),
+              ("yes", "", True, True, False))
+        check("#707 every layer reproduces with it there (the triage's label never leaves it with no way)",
+              {layer: bool(pick(config(d, central, test_repo)[1], layer)[1]) for layer in LAYERS}, {layer: True for layer in LAYERS})
+        check("#707 fixed_test: {n} the issue's, {scenario} its mark's, else its number; nothing else of the report",
+              (fixed_test("{scenario}/{n} {test}", 7, "<!-- dx-scenario: bug-reproduced -->\n### What happened?"), fixed_test("{scenario}", 7, "says <!-- dx-scenario: x y -->")),
+              ("bug-reproduced/7 {test}", "7"))
+        check("#707 problems: a fixed test is a relative path, and a command way's", (
+              problems({"ways": {"f": {"layer": "logic", "test": "t/{n}", "run": "x", "junit": "j", "fixed": "../x"}}}),
+              problems({"ways": {"f": {"layer": "logic", "test": "t/{n}", "sandbox": "php-unit", "fixed": "{kind}/x"}}})),
+              (["repro.ways.f.fixed: a relative path, or {kind}/<file>"], ["repro.ways.f.fixed: a command way's, never a sandbox's"]))
+        import subprocess
+        got = []
+        for greeting in ("helo\n", "hello\n", None):
+            repo("", [] if greeting is None else ["scenarios/bug-reproduced/greeting.md"])
+            if greeting is not None:
+                open(os.path.join(d, "scenarios", "bug-reproduced", "greeting.md"), "w").write(greeting)
+            write_fixed(r["fixed"], os.path.join(d, spec["test"]), 41, "<!-- dx-scenario: bug-reproduced -->\n")
+            rc = subprocess.run(["bash", "-c", spec["run"]], cwd=d, capture_output=True).returncode
+            got.append((rc, verdict(os.path.join(d, spec["junit"]), os.path.basename(spec["test"]), spec.get("assertion"))))
+        check("#707 the fixed test reproduces while the scenario's greeting says helo, and passes when it does not or there is none",
+              got, [(1, "reproduced"), (0, "passed"), (0, "passed")])
     print(f"{'all tests passed' if not failed else f'{failed} failed'}")
     return 1 if failed else 0
 
@@ -856,6 +930,14 @@ def main():
             print("no stack of policy/repro-stacks.yml is recognised here")
             return 1
         print(f"# {found[0]}\n{way_yaml(found)}", end="")
+        return 0
+    if args == ["fixed"]:
+        src, dest = os.environ.get("FIXED") or "", os.environ.get("TEST") or ""
+        if not src or not dest or not os.path.isfile(src):
+            print(f"the way has no fixed test to write ({src or 'none'})", file=sys.stderr)
+            return 1
+        write_fixed(src, dest, number, os.environ.get("BODY") or "")
+        print(f"wrote {dest} from {src}")
         return 0
     if args == ["missing"]:
         why = missing(root, central)
