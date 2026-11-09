@@ -1637,6 +1637,21 @@ def self_test():
         if a[:2] == ("run", "list") and "--commit" in a:
             return json.dumps([{"url": "https://github.com/o/t/actions/runs/5", "status": "completed", "conclusion": "action_required"}] if a[a.index("--commit") + 1] == "abc" else [])
         return "[]"
+    def lane709(*a, input=None):
+        """The test repository as the candidate meets it: every check under
+        its real name, the reusable workflow's after its caller's job."""
+        if a[:2] == ("issue", "create"):
+            return "https://github.com/o/t/issues/11\n"
+        if a[:2] == ("pr", "create"):
+            return "https://github.com/o/t/pull/12\n"
+        if a[:3] == ("pr", "view", "12"):
+            return json.dumps({"state": "OPEN", "headRefOid": "h", "body": "Closes #11", "statusCheckRollup": [
+                {"name": "conventions / Conventions (branch, title, commits)", "conclusion": "SUCCESS"}, {"name": "conventions / Docs (links and names)", "conclusion": "SUCCESS"}]})
+        return "me\n" if a[-1:] == (".login",) else "h\n" if a[-1:] in ((".sha",), (".object.sha",)) else "[]"
+    by709 = {s["id"]: s for s in real["scenarios"]}
+    got709 = [play(by709[i], "o/t", "v7-next", real["bodies"], lane709, lambda s: None, 1, fork=lane709, types=real["types"]) for i in ("fork-without-secrets", "review-changes-asked")]
+    check("#709 C5: the real fork-without-secrets and review-changes-asked pass once the conventions check reports under its real name",
+          [(r["id"], r["ok"], r["why"]) for r in got709], [("fork-without-secrets", True, []), ("review-changes-asked", True, [])])
     seen709 = observe("o/t", "pr", "3", held_fake)
     check("#709 C4: observe records the run on the pull request's head GitHub holds for approval", (seen709["held"], seen709["checks"]),
           (["https://github.com/o/t/actions/runs/5"], {"conventions / Conventions (branch, title, commits)": ""}))
