@@ -14,6 +14,9 @@ What blocks a pull request, read from GitHub, the first that applies:
   an acceptance        an issue it closes is not `accepted`   the maintainer
   a failed check       a check of its head failed             its author (the
                                                               autopilot for its own)
+                       (a cancelled check run is not a failed one, #713:
+                       its concurrency group superseded it, or a person
+                       stopped it; failed_checks)
   unresolved threads   a review conversation is open          its author
   the autopilot's work an autopilot draft                     the autopilot
   a draft              someone else's draft                   its author
@@ -81,7 +84,9 @@ FIELDS = """__typename
         repository { name nameWithOwner isPrivate }
         labels(first: 30) { nodes { name } }
         reviewThreads(first: 100) { nodes { isResolved } }
-        commits(last: 1) { nodes { commit { oid statusCheckRollup { state } } } }
+        commits(last: 1) { nodes { commit { oid statusCheckRollup { state contexts(first: 100) {
+          pageInfo { hasNextPage }
+          nodes { __typename ... on CheckRun { name conclusion status } ... on StatusContext { context state } } } } } } }
         closingIssuesReferences(first: 10) { nodes { number labels(first: 30) { nodes { name } } } }
       }"""
 QUERY = """query($q: String!, $after: String) {
@@ -103,6 +108,51 @@ def is_pr(item):
     return item.get("__typename") == "PullRequest" or "isDraft" in item
 
 
+# A check run that failed (scripts/needed-a-person.py reads them the same
+# way): a CANCELLED one is none (#713), superseded by a newer run of its
+# concurrency group (the "What waits" view's own, for one) or stopped by a
+# person, though GitHub folds it into the rollup's FAILURE.
+FAILED_RUN = {"FAILURE", "TIMED_OUT", "STARTUP_FAILURE"}
+FAILED_STATUS = {"FAILURE", "ERROR"}
+
+
+def failed_checks(rollup):
+    """The names of the head's checks that failed, from the rollup's
+    contexts: a check run concluded FAILURE, TIMED_OUT or STARTUP_FAILURE,
+    or a commit status FAILURE or ERROR; never a cancelled run. Pure."""
+    out = []
+    for c in ((rollup or {}).get("contexts") or {}).get("nodes") or []:
+        if not c:
+            continue
+        if c.get("__typename") == "StatusContext" or "context" in c:
+            if (c.get("state") or "").upper() in FAILED_STATUS:
+                out.append(c.get("context") or "")
+        elif (c.get("conclusion") or "").upper() in FAILED_RUN:
+            out.append(c.get("name") or "")
+    return out
+
+
+def checks_state(rollup):
+    """The head's checks as one state, FAILURE only for a check that failed
+    (failed_checks): when GitHub's rollup says FAILURE or ERROR and no
+    context failed, it is PENDING while one still runs, else SUCCESS. A
+    rollup without its contexts, or with more than were read, keeps
+    GitHub's state. Pure."""
+    rollup = rollup or {}
+    state = rollup.get("state") or ""
+    contexts = rollup.get("contexts")
+    if state not in ("FAILURE", "ERROR") or not isinstance(contexts, dict) or not contexts.get("nodes"):
+        return state
+    if failed_checks(rollup):
+        return "FAILURE"
+    if (contexts.get("pageInfo") or {}).get("hasNextPage"):
+        return state
+    running = [c for c in contexts["nodes"] if c and (
+        (c.get("state") or "").upper() in ("PENDING", "EXPECTED") if (c.get("__typename") == "StatusContext" or "context" in c)
+        else (c.get("status") or "COMPLETED").upper() != "COMPLETED")]
+    return "PENDING" if running else "SUCCESS"
+
+
 def blocker(pr):
     """(what blocks it, on whom it waits) for one pull request. Pure."""
     labels = names(pr.get("labels"))
@@ -116,7 +166,7 @@ def blocker(pr):
     if any("accepted" not in names(i.get("labels")) for i in issues):
         return "an acceptance", MAINTAINER
     commits = (pr.get("commits") or {}).get("nodes") or []
-    state = (((commits[-1] if commits else {}).get("commit") or {}).get("statusCheckRollup") or {}).get("state") or ""
+    state = checks_state(((commits[-1] if commits else {}).get("commit") or {}).get("statusCheckRollup"))
     if state in ("FAILURE", "ERROR"):
         return "a failed check", AUTOPILOT if autopilot else AUTHOR
     open_threads = sum(1 for t in ((pr.get("reviewThreads") or {}).get("nodes") or []) if not t.get("isResolved"))
@@ -366,6 +416,19 @@ def self_test():
     items = fx["prs"] + fx["issues"]
     for p in fx["prs"]:
         check(f"C7 {p['title']}: {p['want'][0]}, waits on {p['want'][1]}", blocker(p), tuple(p["want"]))
+    # #713 C1: the view's own run, cancelled by its concurrency group, is no failed check.
+    lone = next(p for p in fx["prs"] if p["title"] == "the autopilot's, only the view cancelled")
+    roll = lone["commits"]["nodes"][0]["commit"]["statusCheckRollup"]
+    check("C1 (#713) a cancelled check run is not a failed one", (failed_checks(roll), checks_state(roll)), ([], "SUCCESS"))
+    check("C1 (#713) its board does not say fix the failed check", waits_of(lone, boss)["what"], "review it and merge it")
+    check("C1 (#713) a failed run, a timed-out one and an erroring status still fail",
+          failed_checks({"contexts": {"nodes": [{"__typename": "CheckRun", "name": "a", "conclusion": "FAILURE"}, {"__typename": "CheckRun", "name": "b", "conclusion": "TIMED_OUT"},
+                                                 {"__typename": "StatusContext", "context": "c", "state": "ERROR"}, {"__typename": "CheckRun", "name": "d", "conclusion": "CANCELLED"}]}}),
+          ["a", "b", "c"])
+    check("C1 (#713) a rollup without its contexts, or with more than were read, keeps GitHub's state",
+          (checks_state({"state": "FAILURE"}), checks_state({"state": "FAILURE", "contexts": {"pageInfo": {"hasNextPage": True}, "nodes": [roll["contexts"]["nodes"][2]]}})),
+          ("FAILURE", "FAILURE"))
+    check("C1 (#713) the query reads the head's check runs and statuses", ("... on CheckRun { name conclusion status }" in FIELDS, "... on StatusContext { context state }" in FIELDS, FIELDS in ONE), (True, True, True))
     for i in fx["issues"]:
         check(f"C3 issue {i['title']}: {i['want']}", list(issue_blocker(i) or []) or None, i["want"])
     body = render(items, now, boss)
