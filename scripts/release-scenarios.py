@@ -2695,7 +2695,7 @@ def self_test():
              and any(needs_autopilot(w) for w in [s.get("expect")] + [st_["until"] for st_ in s.get("steps") or [] if "until" in st_])]
     check("#713 C2: the real file: every scenario that reads the autopilot's result waits for it, each within 15 minutes",
           (autopilot_problems(real["scenarios"]), sorted(reads), {limit(by713[i]) for i in reads}),
-          ([], sorted(["accepted-spec", "spec-to-draft", "core-one-at-a-time", "prd-edited-after-acceptance", "question-answered", "stop-hint-continue", "draft-in-conflict", "ready-behind-main"]), {15}))
+          ([], sorted(["accepted-spec", "spec-to-draft", "core-one-at-a-time", "decision-sub-issues", "prd-edited-after-acceptance", "question-answered", "stop-hint-continue", "draft-in-conflict", "ready-behind-main"]), {15}))
     check("#713 C2: core-one-at-a-time accepts its `before` issue after its triage, and waits for its seal",
           (by713["core-one-at-a-time"]["before"][0]["issue"].get("labels"), [p for p in autopilot_problems([by713["core-one-at-a-time"]])],
            preconditions([by713["core-one-at-a-time"]], real["bodies"], rpack)), (None, [], []))
@@ -2742,6 +2742,8 @@ def self_test():
     dec = by713["decision-sub-issues"]
     check("#713 C5: decision-sub-issues opens its decision plain and accepts it after its triage",
           (dec["opens"]["issue"].get("labels"), dec["steps"][:2]), (None, [{"until": {"labels": ["awaiting-acceptance"]}}, {"label": "accepted"}]))
+    check("#713 C5: decision-sub-issues expects what a decision gets in the test repository, accepted and sealed, waiting until its seal",
+          (dec["steps"][2:], dec["expect"]), ([{"until": {"comments": [SEAL]}}], {"labels": ["accepted"], "comments": [SEAL]}))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 

@@ -287,11 +287,14 @@ scenarios:
     opens: {issue: {title: "feat: a greeting, then edited", body: complete-feature}}
     steps: [{until: {labels: [awaiting-acceptance]}}, {label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}}, {edit: edited-feature}]
     expect: {absent: [accepted], waiting: true}
+  # #713: what a decision gets in the test repository, the only one it
+  # names: accepted and sealed, no sub-issue of another repository.
   - id: decision-sub-issues
     covers: []
+    minutes: 15
     opens: {issue: {title: "Decision: a greeting and a farewell", body: decision}}
-    steps: [{until: {labels: [awaiting-acceptance]}}, {label: accepted}]
-    expect: {labels: [accepted], comments: ["sub-issue"]}
+    steps: [{until: {labels: [awaiting-acceptance]}}, {label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}}]
+    expect: {labels: [accepted], comments: ["<!-- dx-prd-seal -->"]}
 
   # Claims.
   - id: claim-and-release
