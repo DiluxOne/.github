@@ -567,6 +567,228 @@
     "a person's merge",
     "the maintainer"
    ]
+  },
+  {
+   "number": 12,
+   "title": "the autopilot's, only the view cancelled",
+   "url": "https://github.com/DiluxOne/diluxone-test/pull/12",
+   "createdAt": "2026-10-21T08:00:00Z",
+   "isDraft": false,
+   "author": {
+    "login": "dilux-bot[bot]"
+   },
+   "repository": {
+    "name": "diluxone-test",
+    "isPrivate": false
+   },
+   "labels": {
+    "nodes": [
+     {
+      "name": "autopilot"
+     }
+    ]
+   },
+   "reviewThreads": {
+    "nodes": []
+   },
+   "commits": {
+    "nodes": [
+     {
+      "commit": {
+       "oid": "head12",
+       "statusCheckRollup": {
+        "state": "FAILURE",
+        "contexts": {
+         "pageInfo": {
+          "hasNextPage": false
+         },
+         "nodes": [
+          {
+           "__typename": "CheckRun",
+           "name": "gates / G1",
+           "status": "COMPLETED",
+           "conclusion": "SUCCESS"
+          },
+          {
+           "__typename": "CheckRun",
+           "name": "review / Claude review",
+           "status": "COMPLETED",
+           "conclusion": "SUCCESS"
+          },
+          {
+           "__typename": "CheckRun",
+           "name": "waiting / The \"What waits\" view",
+           "status": "COMPLETED",
+           "conclusion": "CANCELLED"
+          },
+          {
+           "__typename": "StatusContext",
+           "context": "ci/legacy",
+           "state": "SUCCESS"
+          }
+         ]
+        }
+       }
+      }
+     }
+    ]
+   },
+   "closingIssuesReferences": {
+    "nodes": [
+     {
+      "number": 109,
+      "labels": {
+       "nodes": [
+        {
+         "name": "accepted"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "want": [
+    "a person's merge",
+    "the maintainer"
+   ]
+  },
+  {
+   "number": 13,
+   "title": "the view cancelled, a check still running",
+   "url": "https://github.com/DiluxOne/diluxone-test/pull/13",
+   "createdAt": "2026-10-21T08:00:00Z",
+   "isDraft": false,
+   "author": {
+    "login": "someone"
+   },
+   "repository": {
+    "name": "diluxone-test",
+    "isPrivate": false
+   },
+   "labels": {
+    "nodes": []
+   },
+   "reviewThreads": {
+    "nodes": []
+   },
+   "commits": {
+    "nodes": [
+     {
+      "commit": {
+       "oid": "head13",
+       "statusCheckRollup": {
+        "state": "FAILURE",
+        "contexts": {
+         "pageInfo": {
+          "hasNextPage": false
+         },
+         "nodes": [
+          {
+           "__typename": "CheckRun",
+           "name": "waiting / The \"What waits\" view",
+           "status": "COMPLETED",
+           "conclusion": "CANCELLED"
+          },
+          {
+           "__typename": "CheckRun",
+           "name": "gates / G2",
+           "status": "IN_PROGRESS",
+           "conclusion": null
+          }
+         ]
+        }
+       }
+      }
+     }
+    ]
+   },
+   "closingIssuesReferences": {
+    "nodes": [
+     {
+      "number": 109,
+      "labels": {
+       "nodes": [
+        {
+         "name": "accepted"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "want": [
+    "checks running",
+    "the checks"
+   ]
+  },
+  {
+   "number": 14,
+   "title": "the view cancelled and a check failed",
+   "url": "https://github.com/DiluxOne/diluxone-test/pull/14",
+   "createdAt": "2026-10-21T08:00:00Z",
+   "isDraft": false,
+   "author": {
+    "login": "someone"
+   },
+   "repository": {
+    "name": "diluxone-test",
+    "isPrivate": false
+   },
+   "labels": {
+    "nodes": []
+   },
+   "reviewThreads": {
+    "nodes": []
+   },
+   "commits": {
+    "nodes": [
+     {
+      "commit": {
+       "oid": "head14",
+       "statusCheckRollup": {
+        "state": "FAILURE",
+        "contexts": {
+         "pageInfo": {
+          "hasNextPage": false
+         },
+         "nodes": [
+          {
+           "__typename": "CheckRun",
+           "name": "waiting / The \"What waits\" view",
+           "status": "COMPLETED",
+           "conclusion": "CANCELLED"
+          },
+          {
+           "__typename": "CheckRun",
+           "name": "gates / G2",
+           "status": "COMPLETED",
+           "conclusion": "FAILURE"
+          }
+         ]
+        }
+       }
+      }
+     }
+    ]
+   },
+   "closingIssuesReferences": {
+    "nodes": [
+     {
+      "number": 109,
+      "labels": {
+       "nodes": [
+        {
+         "name": "accepted"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "want": [
+    "a failed check",
+    "its author"
+   ]
   }
  ],
  "issues": [
