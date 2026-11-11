@@ -1825,6 +1825,11 @@ def self_test():
                "statically: next_step:spec says no test that holds it", "scenario s1: covers next_step:spec, which `statically:` says no scenario can cause",
                "scenario s1: covers next_step:draft, which `statically:` says no scenario can cause",
                "scenario s1: covers claim.yml:schedule, which `statically:` says no scenario can cause"])
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("receipts_seal", os.path.join(HERE, "receipts.py"))
+    receipts = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(receipts)
+    check("#715: the seal the scenarios wait for is the mark the board carries", SEAL, receipts.SEAL_MARK)
     sys.path[:] = [p for p in sys.path if p != HERE]
     bot_login("x"), bot_login("y")
     check("#707: bot_login puts the scripts' directory on sys.path once, however often it is called", sys.path.count(HERE), 1)
