@@ -66,6 +66,10 @@ stands (whom it waits on, who was mentioned for which step), with a
 SHA-256 of its content. It is read only from dilux-bot's own board comment;
 a block whose hash does not match was edited by hand and reads as the most
 restrictive state: nothing is set on it and nobody is mentioned from it.
+
+The board's marks: it starts with `<!-- dx-board -->`, by which it is found;
+once the issue's acceptance is sealed, its second line is `<!-- dx-prd-seal -->`
+(#715), the mark the release scenarios wait for after `accepted`.
 """
 import base64
 import datetime
@@ -88,6 +92,9 @@ _spec.loader.exec_module(schema_mod)
 
 BRANCH = "receipts"
 BOARD = "<!-- dx-board -->"
+# The hidden mark of a sealed acceptance (#715): the board's second line once
+# the issue's acceptance is sealed, which the release scenarios wait for.
+SEAL_MARK = "<!-- dx-prd-seal -->"
 AI = "🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
 
 
@@ -364,7 +371,8 @@ def board_text(number, ready, last_seal, merged, autopilot=None, labels=(), held
     # The state block, hidden (#564): carried as it was when it was edited
     # by hand, so a person's edit is never given a valid hash.
     block = raw_state if not intact else (state_block(state) if state else "")
-    return f"{BOARD}\n**The issue's board**\n\n" + "\n".join(rows) + f"\n\n{AI}" + (f"\n{block}" if block else "")
+    mark = f"{SEAL_MARK}\n" if last_seal else ""
+    return f"{BOARD}\n{mark}**The issue's board**\n\n" + "\n".join(rows) + f"\n\n{AI}" + (f"\n{block}" if block else "")
 
 
 def pr_board_text(state=None, intact=True, raw_state=""):
@@ -663,6 +671,8 @@ Normal
     b = board_text(7, True, s, r)
     check("the board starts with its marker", b.startswith(BOARD), True)
     check("the board shows the seal", "PRD sealed" in b and s["prd_sha256"][:12] in b, True)
+    check("#715: a sealed board carries the seal's mark, after the board's", b.startswith(f"{BOARD}\n{SEAL_MARK}\n"), True)
+    check("#715: an unsealed board carries no seal mark", SEAL_MARK in board_text(7, True, None, None, None, ["lane:platform", "accepted-by:policy"]), False)
     a = {"pr": 12, "url": "https://github.com/o/r/pull/12", "draft": True, "state": "OPEN", "done": 1, "total": 3, "run": "https://github.com/o/r/actions/runs/9"}
     ab = board_text(7, True, s, None, a)
     check("C6: the board links the pull request and the run, with the progress", ("[#12](https://github.com/o/r/pull/12)" in ab, "[the run](https://github.com/o/r/actions/runs/9)" in ab, "1 of 3 criteria" in ab), (True, True, True))
