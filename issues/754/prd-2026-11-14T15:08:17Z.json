@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 754,
+  "prd_sha256": "2164de4f98081811b8ad0b2c65c5872c5cbb1fa101832c00dd09e2516fa31423",
+  "prd": "### Problem\n\nThe release lane cannot pass, because the test repository's required check fails on every pull request for a reason that is not the pull request's.\n\n### Scope\n\nworkflow-templates/test-pull-request.yml's `pipeline` job, the test repository's caller written from it, the list of blocking jobs it reads, its tests, and docs/workflows.md.\n\n### Out of scope\n\nThe \"What waits\" view's own concurrency. Every repository but the test repository.\n\n### Acceptance criteria\n\nC1: Given a test-repository pull request whose blocking jobs pass and whose `waiting` view is cancelled, when `pipeline` runs, then it passes.\nC2: Given a blocking job (conventions, review or auto-merge) that fails, when `pipeline` runs, then it fails and names the job.\nC3: Given the jobs `pipeline` decides on, when they are compared with the checks the organisation's required workflow makes required, then they are the same list, read from one place.\nC4: Given docs/workflows.md, when a reader looks for what the test repository's `pipeline` check decides on, then it says which jobs and why.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-14T15:08:17Z",
+  "policy": "DiluxOne/.github@4622926a53d6e9bf5fa3dd58551ff1d7b2a1f76e",
+  "how": "own-bug"
+}
