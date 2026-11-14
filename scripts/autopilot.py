@@ -3383,7 +3383,7 @@ Clamp the value in Sum::add.
         check("#504 C1: this repository's autopilot-fix runs the round here, after its review, with the organisation's guards but the repository",
               (here_fix.get("uses"), "review" in here_fix.get("needs"), (here_fix.get("with") or {}).get("mode"), (here_fix.get("with") or {}).get("central-ref"),
                here_fix.get("permissions"), here_fix.get("secrets"), mine in cond(here_fix),
-               [g for g in guards(here_fix) if g != "!github.event.pull_request.draft"] == [g.replace(theirs, mine) for g in guards(org_fix)]),
+               guards(here_fix) == [g.replace(theirs, mine) for g in guards(org_fix)]),
               ("./.github/workflows/autopilot.yml", True, "fix", "main", {"contents": "read"}, "inherit", True, True))
         clauses = ["github.event_name == 'pull_request'", "needs.review.outputs.blocking == 'true'", "contains(github.event.pull_request.labels.*.name, 'autopilot')",
                    "github.event.pull_request.user.login == vars.DX_BOT_LOGIN", "github.event.action != 'edited'"]
@@ -3429,11 +3429,22 @@ Clamp the value in Sum::add.
         check("#741 C3: past the cap on the queue's round, its checks still fail", (out, "its checks still fail" in calls), ("go=false\n", True))
         rc, calls, out = gate(cap, failing)
         check("#741 C3: within the cap, the round starts", (rc, out, "needs-human" in calls), (0, "go=true\n", False))
-        check("#504 C3: every other repository's round is as it was, and never runs here",
-              (theirs in cond(org_fix), mine in cond(org_fix), org_fix.get("needs"), bool(re.fullmatch(r"DiluxOne/\.github/\.github/workflows/autopilot\.yml@v\d+", str(org_fix.get("uses")))),
+        org_trigger = trigger(org_fix).strip("()").split(" || ")
+        gate_clause = lambda gate: f"needs.{gate}.result == 'failure'"
+        check("#504 C3: every other repository's round never runs here, and is called as it was",
+              (theirs in cond(org_fix), mine in cond(org_fix), "review" in org_fix.get("needs"), bool(re.fullmatch(r"DiluxOne/\.github/\.github/workflows/autopilot\.yml@v\d+", str(org_fix.get("uses")))),
                org_fix.get("with"), org_fix.get("permissions"), org_fix.get("secrets"),
-               cond(org_fix) == "always() && " + " && ".join([clauses[0], theirs] + clauses[1:])),
-              (True, False, "review", True, {"mode": "fix", "pr": "${{ format('{0}', github.event.pull_request.number) }}"}, {"contents": "read"}, "inherit", True))
+               guards(org_fix) == ["always()", clauses[0], theirs, "!github.event.pull_request.draft"] + clauses[2:]),
+              (True, False, True, True, {"mode": "fix", "pr": "${{ format('{0}', github.event.pull_request.number) }}"}, {"contents": "read"}, "inherit", True))
+        org_jobs = yaml.safe_load(open(os.path.join(HERE, "..", ".github", "workflows", "org-pull-request.yml"), encoding="utf-8"))["jobs"]
+        check("#741 C5: every other repository's round waits for the conventions and the review, and starts on either failing or a blocking review, on a ready pull request",
+              (org_fix.get("needs"), org_trigger, sorted(org_fix.get("needs")) == sorted(org_jobs["review"]["needs"] + ["review"]), "!github.event.pull_request.draft" in guards(org_fix)),
+              (["conventions", "review"], ["needs.review.outputs.blocking == 'true'", "needs.review.result == 'failure'", gate_clause("conventions")], True, True))
+        check("#741 C5: the two triggers are the same apart from the gate list, which is each pipeline's own",
+              ([c for c in here_trigger if c not in [gate_clause(g) for g in here_fix.get("needs") if g != "review"]],
+               [c for c in org_trigger if c not in [gate_clause(g) for g in org_fix.get("needs") if g != "review"]],
+               sorted(here_trigger) == sorted(org_trigger + [gate_clause(g) for g in ("actionlint", "scripts")])),
+              (["needs.review.outputs.blocking == 'true'", "needs.review.result == 'failure'"], ["needs.review.outputs.blocking == 'true'", "needs.review.result == 'failure'"], True))
     # #488: a person's claim holds the issue; the autopilot does not start.
     check("C1 held_by: `claimed` holds it; an accepted issue nobody holds does not",
           (held_by({"labels": ["accepted", "claimed"]}, []), held_by({"labels": ["accepted"]}, [])), ("a person claimed it (`claimed`)", ""))
