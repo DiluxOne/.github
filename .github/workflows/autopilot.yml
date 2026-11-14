@@ -104,7 +104,11 @@ name: Autopilot
 #                   organisation's own repository from its
 #                   pull-request.yml (#504), when the review of an
 #                   `autopilot` pull request blocks: one round of fixes,
-#                   pushed to its branch, which runs the pipeline again. After
+#                   pushed to its branch, which runs the pipeline again;
+#                   or when a check of the pipeline failed at its head (a
+#                   gate, or a review without a verdict, #741): a check
+#                   round, from the failed jobs' log (`autopilot.py
+#                   checks-failed`, .dx-io/checks.md). After
 #                   `autopilot-rounds` rounds (5) it hands the pull request to
 #                   a person (`needs-human`, with a summary).
 #                   Called on `dequeued` (#479, org-pull-request.yml's
@@ -606,6 +610,27 @@ jobs:
             fi
           fi
           if [ "$MODE" = fix ]; then
+            # #741: a check of the pipeline that failed at the head (a gate,
+            # which skips the review) makes a check round, from the failed
+            # jobs' log; none, the review's own round. The jobs unread, no
+            # round starts and a person has it, so the board never waits
+            # on a round nothing runs.
+            checks=false
+            if [ "${QUEUE:-}" != true ]; then
+              rc=0; why=$(python3 .dx-central/scripts/autopilot.py checks-failed) || rc=$?
+              case $rc in
+                0) checks=true; echo "A check of #$PR failed: $why" ;;
+                1) echo "#$PR: $why" ;;
+                *)
+                  echo "::error::$why"
+                  gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label needs-human >/dev/null || true
+                  gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "The autopilot could not read which checks failed ($why), so no fix round starts: a person takes it from here.
+
+          🤖 AI-generated · Claude Opus 5.5 (Anthropic)" >/dev/null
+                  echo "go=false" >> "$GITHUB_OUTPUT"; exit 0 ;;
+              esac
+            fi
+            echo "checks=$checks" >> "$GITHUB_OUTPUT"
             max=$(python3 .dx-central/scripts/autonomy.py policy | jq -r '."autopilot-rounds" // 3')
             if [ "$ROUND" -gt "$max" ]; then
               gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label needs-human >/dev/null || true
@@ -706,6 +731,8 @@ jobs:
           # #479: a round for a pull request the queue dropped reads the
           # failed jobs' log instead of the review.
           QUEUE: ${{ github.event_name == 'pull_request' && github.event.action == 'dequeued' }}
+          # #741: a check round reads the failed jobs' log instead too.
+          CHECKS: ${{ steps.may.outputs.checks }}
           RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
         run: |
           set -euo pipefail
