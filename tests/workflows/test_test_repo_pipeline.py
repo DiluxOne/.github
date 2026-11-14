@@ -65,3 +65,15 @@ def test_the_pipeline_job_fails_on_a_failed_or_cancelled_job_only():
     for results, code in (("success skipped success", 0), ("skipped skipped", 0), ("success failure", 1), ("cancelled success", 1)):
         got = subprocess.run(["bash", "-c", run], env={"RESULTS": results, "PATH": "/usr/bin:/bin"}, capture_output=True, text=True)
         assert got.returncode == code, (results, got.stdout)
+
+
+def test_the_docs_say_the_test_repository_runs_the_candidates_pipeline_and_why():
+    for doc in ("docs/versioning.md", "docs/workflows.md"):
+        text = (ROOT / doc).read_text(encoding="utf-8")
+        paragraphs = [p for p in text.split("\n") if "test-pull-request.yml" in p]
+        assert paragraphs, doc
+        said = " ".join(paragraphs)
+        # What: the test repository runs its own caller at the candidate.
+        assert "@v7-next" in said, doc
+        # Why: the required workflow runs at `v7`, its calls hard-wired.
+        assert "required workflow" in said and "at `v7`" in said and "hard-wired" in said, doc

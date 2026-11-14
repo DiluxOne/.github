@@ -1,8 +1,14 @@
 name: Pull request (organisation)
 
-# The pull request pipeline of every DiluxOne repository, in one place. An
-# organisation ruleset requires this workflow on every repository's default
-# branch, so it runs on each pull request with no file in the repository:
+# The pull request pipeline of every DiluxOne repository, in one place. The
+# organisation ruleset "org: required workflow" requires this workflow, at
+# `v7`, on every adopted repository's default branch, so it runs on each pull
+# request with no file in the repository, in every one but the test
+# repository (org.yml `test-repo`, #748): there the same jobs run from its own
+# caller, workflow-templates/test-pull-request.yml, which the release lane
+# moves to `@v7-next`, since this workflow is read at `v7` with its calls
+# hard-wired to `@v7` and so could never try a candidate. Keep its `on:` and
+# jobs and that template's in step (tests/workflows/test_test_repo_pipeline.py):
 # the conventions with the accepted-issue gate, then the Claude review and
 # the auto-merge decision; beside them, the issues it closes go to its
 # author when a member of the organisation (pull-request-assignee.yml, #73);
