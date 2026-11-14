@@ -2830,11 +2830,14 @@ def org_drift(conf):
     """What differs in the organisation itself, as lines: an org ruleset
     still naming its repositories, a code security configuration missing."""
     found = []
-    for r in org_rulesets() or []:
+    rulesets = org_rulesets() or []
+    for r in rulesets:
         if r.get("name") in ORG_RULESET_NAMES and not by_property(r):
             found.append(f"the ruleset \"{r['name']}\" names its repositories instead of covering those with `{ADOPTED}=true` (`sync-repos.py rulesets`)")
-    # The required workflow, out of the test repository (#748).
-    found += required_drift(org_rulesets() or [], current_major())
+    # The required workflow, out of the test repository (#748): the major
+    # is asked of GitHub only when there is a ruleset to hold it against.
+    if rulesets:
+        found += required_drift(rulesets, current_major())
     # The test repository and the test identity (#563).
     packs = {k: pack_of(k) for k in os.listdir(os.path.join(HERE, "..", "kinds")) if os.path.isfile(os.path.join(HERE, "..", "kinds", k, "pack.yml"))}
     login = org.test_identity()
@@ -4717,13 +4720,26 @@ def self_test():
           len(got) == 1 and got[0].startswith("the test identity is unknown: DX_TEST_LOGIN"), got)
     check("C4 (#739): with no test repository, no test identity is missed", test_repo_drift({"repos": {"plugin": {"kinds": [{"kind": "wordpress-plugin"}]}}}, {}, packs, "", {}) == [], "")
     import unittest.mock as um
-    with um.patch.dict(os.environ, {"DX_TEST_LOGIN": "Someone-Else"}), um.patch(__name__ + ".org_rulesets", lambda: []), \
+
+    def no_github(*args, **kwargs):
+        raise AssertionError(f"the self-test asked GitHub: gh {' '.join(map(str, args))}")
+    # #748: with gh refused, a call org_drift makes that the test does not
+    # stand in for fails here, not only on a runner with no token.
+    with um.patch.dict(os.environ, {"DX_TEST_LOGIN": "Someone-Else"}), um.patch(__name__ + ".gh", no_github), um.patch(__name__ + ".org_rulesets", lambda: []), \
             um.patch(__name__ + ".org_drift_security", lambda conf: []), um.patch(__name__ + ".test_identity_permissions", lambda names, login: {n: "write" for n in names} if login == "someone-else" else {}):
         got = org_drift(tconf)
     check("C4 (#739): the drift check asks GitHub about DX_TEST_LOGIN's login, and names it",
           got == ["the test identity someone-else has `write` on plugin: it may accept only in the test repository; take it back to read"], got)
+    stale = {"name": MAIN_RULESET, "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"]}, **property_condition()},
+             "rules": [{"type": "workflows", "parameters": {"workflows": [{"path": ".github/workflows/x.yml", "ref": "refs/tags/v6"}]}}]}
+    with um.patch.dict(os.environ, {"DX_TEST_LOGIN": ""}), um.patch(__name__ + ".gh", no_github), um.patch(__name__ + ".org_rulesets", lambda: [stale]), \
+            um.patch(__name__ + ".current_major", lambda: 7), um.patch(__name__ + ".org_drift_security", lambda conf: []), \
+            um.patch(__name__ + ".test_identity_permissions", lambda names, login: {}):
+        got = org_drift({"repos": {}})
+    check("#748: the drift check holds the org's rulesets against the current major",
+          any("still holds the `workflows` rule" in l for l in got) and any("not `v7`" in l for l in got), got)
 
-    block = f"{START} (x) -->\nRULES\n{END}\n"
+    block =f"{START} (x) -->\nRULES\n{END}\n"
     plain = "# AGENTS.md\n\nIntro.\n\n## Mine\n"
     once = with_block(plain, block)
     check("the block goes right after the first heading", once.startswith("# AGENTS.md\n\n" + START) and once.endswith("Intro.\n\n## Mine\n"), once)
