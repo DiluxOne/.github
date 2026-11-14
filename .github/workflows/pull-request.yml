@@ -289,7 +289,7 @@ jobs:
     # Only dilux-bot's own pull requests, and only for a new commit (an edit
     # of the description keeps the review's verdict and must not spend a
     # round).
-    if: always() && github.event_name == 'pull_request' && github.repository == 'DiluxOne/.github' && (needs.review.outputs.blocking == 'true' || needs.conventions.result == 'failure' || needs.actionlint.result == 'failure' || needs.scripts.result == 'failure') && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && github.event.action != 'edited'
+    if: always() && github.event_name == 'pull_request' && github.repository == 'DiluxOne/.github' && (needs.review.outputs.blocking == 'true' || needs.review.result == 'failure' || needs.conventions.result == 'failure' || needs.actionlint.result == 'failure' || needs.scripts.result == 'failure') && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && github.event.action != 'edited'
     # The agent's jobs read the repository with the job's own token (#287).
     permissions:
       contents: read

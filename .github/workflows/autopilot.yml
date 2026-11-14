@@ -611,7 +611,8 @@ jobs:
           fi
           if [ "$MODE" = fix ]; then
             # #741: a check of the pipeline that failed at the head (a gate,
-            # which skips the review) makes a check round, from the failed
+            # which skips the review, or a review job that ended with no
+            # verdict at the head) makes a check round, from the failed
             # jobs' log; none, the review's own round. The jobs unread, no
             # round starts and a person has it, so the board never waits
             # on a round nothing runs.

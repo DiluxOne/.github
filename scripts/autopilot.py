@@ -1998,11 +1998,15 @@ def fixed_check(name):
 def checks_failed(jobs, record, head):
     """The failed jobs of the pipeline's run a fix round answers with their
     log (#741), from the API's list of the run's jobs: a gate that failed
-    (conventions, actionlint, scripts). Empty: a review round, as before.
+    (conventions, actionlint, scripts), or the review's job when it failed
+    with no verdict at the head (its "did not finish" record carries no
+    sha; a job that died before its verdict step left none at the head,
+    #723). Empty: a review round, as before, on the verdict at the head.
     `record` is the review's last dx-review-record, `head` the pull
     request's head. Pure."""
-    return [j for j in jobs or [] if fixed_check(j.get("name")) and not str(j.get("name")).startswith("review / ")
-            and str(j.get("conclusion") or "").lower() in FAILED_JOB]
+    verdict = isinstance(record, dict) and bool(head) and record.get("sha") == head
+    return [j for j in jobs or [] if fixed_check(j.get("name")) and str(j.get("conclusion") or "").lower() in FAILED_JOB
+            and not (verdict and str(j.get("name")).startswith("review / "))]
 
 
 def checks_log_text(pr, logs):
@@ -2375,6 +2379,13 @@ A class on html.
           ([j["id"] for j in checks_failed(cjobs, None, "h")], checks_failed(cjobs[1:2] + cjobs[3:], None, "h"), checks_failed([], None, "h"),
            [fixed_check(n) for n in ("review / Claude review", "conventions / Docs (links and names)", "actionlint", "Scripts (self-tests)", "Plugin tests", "review")]),
           ([11, 13], [], [], [True, True, True, True, False, False]))
+    rjob = {"id": 21, "name": "review / Claude review", "conclusion": "failure", "html_url": "j21"}
+    unfinished = {"count": 2, "findings": []}
+    check("#741 C2: a review job that failed with no verdict at the head is a check round; one with a verdict there, the review's round",
+          ([j["id"] for j in checks_failed([rjob], None, "h")], [j["id"] for j in checks_failed([rjob], unfinished, "h")],
+           [j["id"] for j in checks_failed([rjob], {"sha": "old", "blocking": True}, "h")], checks_failed([rjob], {"sha": "h", "blocking": True}, "h"),
+           [j["id"] for j in checks_failed([rjob, cjobs[0]], {"sha": "h", "blocking": True}, "h")], checks_failed([dict(rjob, conclusion="success")], None, "h")),
+          ([21], [21], [21], [], [11], []))
     clog = checks_log_text(8, [(cjobs[0], "\n".join(f"line {i}" for i in range(1000)) + "\nghp_" + "a" * 30 + "\n```")])
     check("#741 C1: the agent reads the failed jobs' log: the job, its link, the end of the log, scrubbed, no fence broken; the queue's text is as it was",
           ("## Scripts (self-tests) (j11)" in clog, "line 999" in clog, "line 1\n" in clog, "ghp_" in clog, clog.count("```"), len(clog) < QUEUE_CHARS + 2000,
@@ -3311,6 +3322,8 @@ Clamp the value in Sum::add.
                    "github.event.pull_request.user.login == vars.DX_BOT_LOGIN", "github.event.action != 'edited'"]
         check("#504 C2: no round here for another author's pull request, one without the label, a review that does not block, or an edit",
               ([c for c in clauses if c not in cond(here_fix)], [c for c in clauses if c not in cond(org_fix)], " || " in guards(here_fix)), ([], [], False))
+        check("#741 C2: the round also starts when the review's job failed (no verdict, or a job that died before it), and on a blocking review",
+              ("needs.review.result == 'failure'" in trigger(here_fix), "needs.review.outputs.blocking == 'true'" in trigger(here_fix)), (True, True))
         review_jobs = (yaml.safe_load(open(os.path.join(HERE, "..", ".github", "workflows", "pull-request.yml"), encoding="utf-8"))["jobs"]["review"]).get("needs")
         check("#741 C1: the round here waits on every gate the review waits on, and starts when one of them failed or the review blocks",
               (here_fix.get("needs")[:-1] == review_jobs, trigger(here_fix)[0], [f"needs.{g}.result == 'failure'" in trigger(here_fix) for g in review_jobs],
