@@ -1855,8 +1855,8 @@ def guided_work(mode, env, answered):
 
 # #696: the answers of those who decide, read with the PRD; neither prompt
 # asks again what they settle.
-SETTLES = ("Their answers settle what they answer: do not ask again about it. Where an answer and the PRD differ, the PRD wins, "
-           "since it was sealed later.")
+SETTLES = ("Their answers settle what they answer: do not ask again about it. Where an answer given before the PRD was last accepted "
+           "differs from it, the PRD wins, since it was sealed later.")
 
 
 def answered_block(answered, intro):

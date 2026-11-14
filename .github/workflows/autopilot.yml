@@ -53,7 +53,8 @@ name: Autopilot
 #                   with no `autopilot:continue` from anyone. The Spec reads
 #                   with the PRD what those who decide said in the comments
 #                   since the first acceptance (autopilot.py settled), and
-#                   does not ask it again; where they differ, the PRD wins.
+#                   does not ask it again; where one given before the last
+#                   acceptance differs from the PRD, the PRD wins.
 #                   A maintainer's answer that drops or changes a
 #                   criterion (`drop C3`, `change C3: <new text>`) is applied to
 #                   the checklist by the bot before the work (#561,
@@ -600,7 +601,8 @@ jobs:
             }
             if unstop issue "$ISSUE"; then echo "#$ISSUE: accepted again after a stop, needs-human is off."; fi
             for n in $(gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json closedByPullRequestsReferences --jq '.closedByPullRequestsReferences[].number'); do
-              read -r open_ap author < <(gh pr view "$n" --repo "$GITHUB_REPOSITORY" --json state,labels,author --jq '"\(.state == "OPEN" and ([.labels[].name] | index("autopilot") != null)) \(.author.login)"')
+              open_ap=false author=""
+              read -r open_ap author < <(gh pr view "$n" --repo "$GITHUB_REPOSITORY" --json state,labels,author --jq '"\(.state == "OPEN" and ([.labels[].name] | index("autopilot") != null)) \(.author.login)"') || true
               if [ "$open_ap" = true ] && is_bot "$author" && unstop pr "$n"; then
                 gh label create "autopilot:continue" --repo "$GITHUB_REPOSITORY" --color 1D76DB --force --description "On an issue: the autopilot continues its draft pull request, or starts it" >/dev/null 2>&1 || true
                 gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --add-label "autopilot:continue" >/dev/null
