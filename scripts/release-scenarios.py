@@ -3036,6 +3036,16 @@ def self_test():
           [p for p in preconditions(real["scenarios"], real["bodies"], rpack, dispatchable(ROOT, rpack), types=real.get("types") or {}) if "{files}" in p or "does not name" in p], [])
     check("#760 C2: coverage fails on a scenario whose pull request's description would name no change, naming it",
           any(p.startswith("scenario bare-760:") and "{files}" in p for p in problems(dict(real, scenarios=real["scenarios"] + [bare], bodies=dict(real["bodies"], pull=nofiles)))), True)
+    diffs760 = {}
+    for s in ({"id": "secret-760", "opens": {"pull": {"title": "feat: x", "body": "pull"}}, "steps": [{"push": "secret"}], "expect": {}},
+              {"id": "plain-760", "opens": {"pull": {"title": "docs: x", "body": "pull"}}, "expect": {}}):
+        io = []
+        play(s, "o/t", "v7-next", real["bodies"], described(io), lambda _: None, 1)
+        diff = [p for _, branch, paths, _ in commits(io) if branch == branch_of(s) for p in paths]
+        made = [i for a, i in io if a[:2] == ("pr", "create")]
+        diffs760[s["id"]] = (diff, unnamed(made[0] if made else "", diff))
+    check("#760 C3: every path the faked createCommitOnBranch writes on the pull request's head, its diff, is named in the description its pr create received",
+          diffs760, {"secret-760": (["scenarios/secret-760/pull.md", "scenarios/secret-760/secret.md"], []), "plain-760": (["scenarios/plain-760/pull.md"], [])})
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
