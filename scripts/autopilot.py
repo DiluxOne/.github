@@ -2396,6 +2396,20 @@ A class on html.
     check("#741 C1: the check round reads that log, not the review, counts as a round, runs make pre-pr, and stops when the change is not the cause",
           (f"{IO_DIR}/{CHECKS_LOG}" in pc, "review.md" in pc, "round 2 of 5" in pc, "make pre-pr" in pc, "finish stop" in pc, f"{IO_DIR}/{CHECKS_LOG}" in prompt_fix("o/r", "8", 2, 5)),
           (True, False, True, True, True, False))
+    # #741 C2: a review that ended without a verdict at the head is a check
+    # round too; one that blocks with its verdict stays a review round.
+    rjob = {"id": 21, "name": "review / Claude review", "conclusion": "failure", "html_url": "j21"}
+    summary = lambda record, title="### Claude review", who=BOT: {"user": {"login": who}, "body": f"{REVIEW_MARK}\n{title}\n\ntext\n<!-- dx-review-record {json.dumps(record)} -->"}
+    at_head = {"sha": "h1", "blocking": True, "findings": [{"severity": "major", "file": "a", "title": "t"}]}
+    check("#741 C2: a failed review job with no verdict at the head (none, `did not finish`, an older head's, a stranger's, unreadable) is a check round; one with its verdict, a review round",
+          [[j["id"] for j in checks_failed([rjob], c, "h1")] for c in
+           ([], [summary({"count": 1, "findings": []}, "### Claude review · did not finish")], [summary({**at_head, "sha": "h0"})], [summary(at_head, who="stranger")],
+            [{"user": {"login": BOT}, "body": f"{REVIEW_MARK}\n<!-- dx-review-record {{bad -->"}], [summary(at_head)], [summary({**at_head, "sha": "h0"}), summary(at_head)],
+            [summary(at_head), summary({"count": 1}, "### Claude review · did not finish")])],
+          [[21], [21], [21], [21], [21], [], [], [21]])
+    check("#741 C2: review_verdict reads the bot's last summary at the head only",
+          (review_verdict([summary(at_head)], "h1"), review_verdict([summary(at_head)], ""), review_verdict([summary(at_head)], "h2"), review_verdict([], "h1")),
+          (True, False, False, False))
     def fix_inputs(jobs, comments, run="5"):
         # `inputs fix` as prep runs it, with a gh that answers as GitHub would.
         with tempfile.TemporaryDirectory() as d:
@@ -2415,6 +2429,10 @@ A class on html.
     rc, clog, rmd, rids, cprompt = fix_inputs(cjobs, [])
     check("#741 C1: a fix round on a failed scripts job writes that job's log for the agent, no review and no review ids, and its prompt points at it",
           (rc, "the log of job 11" in (clog or ""), "the log of job 13" in (clog or ""), "job 14" in (clog or ""), rmd, rids, cprompt), (0, True, True, False, None, "", True))
+    rc, clog, rmd, rids, cprompt = fix_inputs([rjob], [])
+    check("#741 C2: a fix round on a review that died with no verdict reads the review job's log", (rc, "the log of job 21" in (clog or ""), rmd, cprompt), (0, True, None, True))
+    rc, clog, rmd, rids, cprompt = fix_inputs([rjob], [summary(at_head)])
+    check("#741 C2: a fix round on a review that blocks with its verdict reads the review, as before", (rc, clog, rmd is not None, cprompt), (0, None, True, False))
     rc, clog, rmd, rids, cprompt = fix_inputs(cjobs[1:2], [])
     check("#741 C1: with no failed gate it is a review round, as before", (rc, clog, rmd is not None, cprompt), (0, None, True, False))
     # #479 C5: what counts towards the cap.
@@ -3351,6 +3369,9 @@ Clamp the value in Sum::add.
         check("#504 C2: no round here for another author's pull request, one without the label, a review that does not block, or an edit",
               ([c for c in clauses if c not in cond(here_fix)], [c for c in clauses if c not in cond(org_fix)], " || " in " && ".join(guards(here_fix))), ([], [], False))
         here_trigger = trigger(here_fix).strip("()").split(" || ")
+        check("#741 C2: this repository's round starts on a review that failed (it died before its verdict) as on one that blocks",
+              ("needs.review.result == 'failure'" in here_trigger, "needs.review.outputs.blocking == 'true'" in here_trigger, here_trigger[:2]),
+              (True, True, ["needs.review.outputs.blocking == 'true'", "needs.review.result == 'failure'"]))
         check("#741 C1: this repository's round waits for every gate the review waits on, and starts when one of them failed, on a ready pull request only",
               (here_fix.get("needs"), "needs.scripts.result == 'failure'" in here_trigger, [f"needs.{g}.result == 'failure'" in here_trigger for g in ("conventions", "actionlint")],
                "needs.review.outputs.blocking == 'true'" in here_trigger, trigger(here_fix).startswith("("), "!github.event.pull_request.draft" in guards(here_fix),
