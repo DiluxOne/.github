@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 757,
+  "prd_sha256": "a6e87549e70715c6bf2f7b10c99707dc4b0201c876a8e05d4bdcb8cac5ed14f8",
+  "prd": "### Problem\n\nA change to a template job's `needs` never reaches the repositories, so a fix like #755 has no effect and nothing says so.\n\n### Scope\n\nThe `needs` comparison in scripts/sync-repos.py (callers_drift and what it calls), its `--test` cases, and the `callers` help text.\n\n### Out of scope\n\nAny other field the comparison checks. The test repository's caller, which the next sync rewrites.\n\n### Acceptance criteria\n\nC1: Given a template job whose `needs` lists fewer jobs than the caller's, where an extra one is a job of the template, when the callers are compared, then the caller differs and the sync rewrites that job.\nC2: Given a caller job whose `needs` adds only jobs the template does not define (the repository's own), when the callers are compared, then it is in step.\nC3: Given DiluxOne/diluxone-test's caller as it is today, when `sync-repos.py callers --repo diluxone-test --dry-run` runs, then it lists the `pipeline` job of test-pull-request.yml as differing.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-14T16:19:36Z",
+  "policy": "DiluxOne/.github@249f2515eb76012b639c7def870def1952b43a5c",
+  "how": "own-bug"
+}
