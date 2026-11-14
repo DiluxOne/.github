@@ -10,7 +10,13 @@ name: Release lane
 # through pull requests the bot opens there and queues itself once their
 # checks pass, after checking that they change nothing but the engine's ref:
 # the auto-merge decision never merges a change to .github/workflows; never
-# a write to its main) with the test identity's token (whose owner must be
+# a write to its main; its pull-request pipeline among them,
+# test-pull-request.yml, since the required workflow, org-pull-request.yml,
+# runs at `v7` with its calls hard-wired and leaves the test repository out,
+# so the scenarios' reviews, auto-merge decisions and fix rounds run the
+# candidate; `move` plays nothing while the test repository still requires
+# org-pull-request.yml or a caller there calls the engine off `@v7-next`,
+# #748) with the test identity's token (whose owner must be
 # the organisation variable DX_TEST_LOGIN, or the lane stops before the
 # callers move, naming the value to set and its URL, #739), in groups that play
 # at once, one job each (`move`, then `play`, a matrix on ubuntu-latest,

@@ -572,7 +572,9 @@ def self_test():
     import base64 as b64
     issues_caller = b64.b64decode(next(x for x in written[0] if x.startswith("content=")).split("=", 1)[1]).decode()
     check("C9: its callers are written, the engine pinned at its commit for another organisation",
-          (len(written), f"issue-triage.yml@0123abcd # v7" in issues_caller, "@v7\n" in issues_caller), (2, True, False))
+          (len(written), f"issue-triage.yml@0123abcd # v7" in issues_caller, "@v7\n" in issues_caller), (len(TEST_CALLERS), True, False))
+    check("#748: test-pull-request.yml, its pull-request pipeline, is among them",
+          any("/contents/.github/workflows/test-pull-request.yml" in a[3] for a in written), True)
     check("C9: it is adopted", any(c[2:5] == ["adopt", "--repo", "acme-test"] for c in tcmds), True)
     check("C9: the test identity gets write there", ("api", "-X", "PUT", "repos/Acme/acme-test/collaborators/someone-else", "-f", "permission=push") in tcalls, True)
     check("C9: every scenario runs there once", sum(1 for c in tcmds if "release-scenarios.py" in c[1] and c[2:6] == ["run", "--repo", "Acme/acme-test", "--ref"]), 1)

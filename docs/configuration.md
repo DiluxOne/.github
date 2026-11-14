@@ -27,6 +27,7 @@ What a level may do: `any` value; `lower-only`; `stricter` (switch off, narrow, 
 | `test-repo`: The test repository, where the release lane plays every scenario before `v7` moves. | the organisation's own, never the engine's | `any` | `never` | a repository of the organisation of kind `engine-test`, and no product | [`org.py`](../scripts/org.py) | #563 |
 | `core`: The engine's core files; while an open autopilot pull request touches one, no other issue whose Spec touches one starts. | `[]` | `any` | `never` | globs of the engine's files | [`org.py`](../scripts/org.py) | #563, #568 |
 | `adopted-property`: The custom property that says a repository is adopted, which the organisation's rulesets cover. | `"dx-adopted"` | `any` | `never` | a custom property of the organisation | [`sync-repos.py`](../scripts/sync-repos.py) | #562 |
+| `test-property`: The custom property, true on the test repository alone, that the required workflow's ruleset excludes, so the test repository runs the candidate's pipeline from its own caller. | `"dx-engine-test"` | `any` | `never` | a custom property of the organisation | [`org.py`](../scripts/org.py), [`sync-repos.py`](../scripts/sync-repos.py) | #748 |
 | `conventions-contradictions`: A repository's own commit rules that contradict the organisation's, which the daily drift check lists. | the patterns in org.yml | `any` | `never` | each pattern with the lines it must find and must not | [`sync-repos.py`](../scripts/sync-repos.py) | #562 |
 
 ## `repos.yml`

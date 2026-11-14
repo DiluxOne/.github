@@ -4,8 +4,9 @@ repository (org.yml `test-repo`, kind engine-test) at `v7-next` before `v7`
 moves, as data in tests/release/scenarios.yml.
 
 Every pair of a reusable workflow and an event the test repository's
-callers wire (its pack's `callers` among workflow-templates/*.yml, and
-org-pull-request.yml, the organisation's required workflow), but a
+callers wire (its pack's `callers` among workflow-templates/*.yml, its
+pull-request pipeline test-pull-request.yml among them: the required
+workflow, org-pull-request.yml, runs at `v7` everywhere else, #748), but a
 `schedule` no scenario can cause, and every
 transition of the autopilot's state machine (scripts/autopilot.py:
 `next_step`'s BOT_ACTIONS, its waits on PERSON_DECISIONS and BOT_WAITS, the
@@ -67,7 +68,10 @@ after GitHub's back-off within the scenario's limit, then named.
         group or in two, two scenarios that could write to the same
         part of the test repository's core, a scenario that writes under
         it but expects no wait on it (#709), a group id unfit for an
-        artifact name
+        artifact name; and (#748, `pipeline_problems`) a pack with no
+        caller that wires the pull-request pipeline's jobs on
+        pull_request and merge_group, org-pull-request.yml among its
+        callers, and an engine call in one of them the lane cannot move
   release-scenarios.py plan
         prints each scenario's limit in minutes and how often it polls,
         [{id, minutes, poll}] as JSON; exits 1 naming a fixed wait or a
@@ -80,7 +84,11 @@ after GitHub's back-off within the scenario's limit, then named.
         the callers moved to the ref, as `run` does (with
         DX_CALLERS_TOKEN), what moved written to MOVED as soon as the
         pointing is over, and to FILE the failing `callers` row when they
-        did not reach it (exits 1 then: no group plays)
+        did not reach it, or (#748, `at_candidate`) one for each pipeline
+        there that would still run off the ref: its default branch still
+        requiring org-pull-request.yml (a `workflows` rule), or a
+        .github/workflows/*.yml calling the engine off the ref (exits 1
+        then: no group plays, and `back` puts back what moved)
   release-scenarios.py play --repo OWNER/NAME --group ID --out FILE
                             [--ref v7-next] [--minutes N]
         the group's scenarios, one after another in its order, with the
@@ -192,10 +200,61 @@ def pairs(root=ROOT, callers=CALLERS):
 UNPLAYABLE = ("schedule",)
 
 
+REQUIRED = ".github/workflows/org-pull-request.yml"
+
+
 def test_callers(pack):
     """The test repository's callers, as globs: its pack's `callers` among
-    the shipped ones, and org-pull-request.yml, which runs everywhere."""
-    return tuple(f"workflow-templates/{c}" for c in pack.get("callers") or []) + (".github/workflows/org-pull-request.yml",)
+    the shipped ones. The required workflow, org-pull-request.yml, runs
+    everywhere else, at `v7`: there, its pipeline is test-pull-request.yml's
+    (#748), which the lane moves to the candidate."""
+    return tuple(f"workflow-templates/{c}" for c in pack.get("callers") or [])
+
+
+def engine_calls(text, central):
+    """The lines of a caller that call the engine (`uses:` of a workflow of
+    `central`), as (number, line). Pure."""
+    pat = re.compile(r"^\s*-?\s*uses:\s*['\"]?" + re.escape(central) + r"/\.github/workflows/")
+    return [(i, line) for i, line in enumerate(text.split("\n"), 1) if pat.match(line)]
+
+
+def unmovable(text, central):
+    """The engine calls of a caller `at_ref` would not move (one that does
+    not match USES: quoted, with no ref, a step's), as "line N: ...". Pure."""
+    uses = re.compile(USES.format(re.escape(central)))
+    return [f"line {i}: {line.strip()!r}" for i, line in engine_calls(text, central) if not uses.match(line)]
+
+
+def off_ref(text, central, ref):
+    """The engine calls of a caller not at `ref`, as "line N: ...". Pure."""
+    uses = re.compile(USES.format(re.escape(central)))
+    return [f"line {i}: {line.strip()!r}" for i, line in engine_calls(text, central) if not ((m := uses.match(line)) and m.group(2) == ref)]
+
+
+def pipeline_problems(root, pack, central):
+    """What would leave a pipeline of the test repository at `v7` while the
+    lane plays the candidate (#748), statically: no caller of its pack's
+    that wires the pull-request pipeline's jobs on `pull_request` and
+    `merge_group` (every pair org-pull-request.yml wires), org-pull-request.yml
+    among its callers (the required workflow, whose calls are hard-wired to
+    `@v7`), and an engine call in one of its callers `at_ref` would not move.
+    Each names the file. Pure but for reading the files."""
+    out, callers = [], test_callers(pack)
+    named = [c for c in pack.get("callers") or [] if os.path.basename(str(c)) == os.path.basename(REQUIRED)]
+    if named:
+        out.append(f"kinds/engine-test/pack.yml `callers` names {named[0]}, the required workflow, which runs at `v7` with its calls hard-wired: "
+                   "the test repository runs the pipeline from test-pull-request.yml, which the lane moves")
+    want, have = pairs(root, (REQUIRED,)), pairs(root, callers)
+    events = {e for pattern in callers for path in glob.glob(os.path.join(root, pattern)) for e in caller_events(load_yaml(path))}
+    gaps = sorted(want - have) + [f"`{e}`" for e in ("pull_request", "merge_group") if e not in events]
+    if gaps:
+        out.append(f"kinds/engine-test/pack.yml `callers` has no caller that wires the pull-request pipeline ({', '.join(gaps[:4])}"
+                   f"{', …' if len(gaps) > 4 else ''}): its pull requests would run no candidate's pipeline; add test-pull-request.yml")
+    for pattern in callers:
+        for path in sorted(glob.glob(os.path.join(root, pattern))):
+            for line in unmovable(open(path, encoding="utf-8").read(), central):
+                out.append(f"{os.path.relpath(path, root)} {line}: an engine call the lane cannot move to the candidate (`uses: {central}/.github/workflows/<name>.yml@<ref>`)")
+    return out
 
 
 def played(root, pack):
@@ -210,7 +269,7 @@ def dispatchable(root, pack):
     """The test repository's callers a scenario can dispatch: its own, with
     `workflow_dispatch`."""
     out = set()
-    for pattern in test_callers(pack)[:-1]:
+    for pattern in test_callers(pack):
         for path in glob.glob(os.path.join(root, pattern)):
             if "workflow_dispatch" in caller_events(load_yaml(path)):
                 out.add(os.path.basename(path))
@@ -1274,11 +1333,42 @@ def read_moved(path, ref):
         return [], [{"id": "callers", "ok": False, "why": [f"could not read what moved to {ref}, the callers may be left there: {e}"], "run": ""}]
 
 
+def at_candidate(repo, ref, run=gh, central=None):
+    """What would still run a pipeline of the test repository off `ref` once
+    its callers moved (#748), as failing `callers` rows, each naming it: its
+    default branch's rules (`repos/{repo}/rules/branches/{default}`) still
+    carrying a `workflows` rule for org-pull-request.yml (the required
+    workflow, at `v7` with its calls hard-wired), and any
+    .github/workflows/*.yml there that still calls the engine off `ref`."""
+    import base64
+    if central is None:
+        central = central_of()
+    why = []
+    base = run("api", f"repos/{repo}", "--jq", ".default_branch").strip()
+    pages = json.loads(run("api", "--paginate", "--slurp", f"repos/{repo}/rules/branches/{base}?per_page=100") or "[]")
+    rules = [r for page in pages for r in (page if isinstance(page, list) else [page])] if isinstance(pages, list) else []
+    for r in rules:
+        for w in ((r.get("parameters") or {}).get("workflows") or []) if r.get("type") == "workflows" else []:
+            if os.path.basename(str(w.get("path") or "")) == os.path.basename(REQUIRED):
+                why.append(f"{repo}'s {base} still requires {REQUIRED} (a `workflows` rule of {r.get('ruleset_source') or 'a ruleset'}): its pull requests "
+                           f"run the pipeline at `v7`, not {ref}; `sync-repos.py rulesets` leaves it out once it has test-pull-request.yml")
+    for f in json.loads(run("api", f"repos/{repo}/contents/.github/workflows") or "[]"):
+        name = str(f.get("name", ""))
+        if not name.endswith(".yml"):
+            continue
+        got = json.loads(run("api", f"repos/{repo}/contents/.github/workflows/{name}") or "{}")
+        for line in off_ref(base64.b64decode(got.get("content") or "").decode(), central, ref):
+            why.append(f".github/workflows/{name} {line}: calls the engine off {ref} after the move")
+    return [{"id": "callers", "ok": False, "why": [w], "run": ""} for w in why]
+
+
 def move_callers(repo, ref, callers=gh, central=None, sleep=time.sleep, minutes=20, record=None):
     """The test repository's callers moved to `ref` (`point_callers`):
-    (what moved, []) once they are, else ([], one failing `callers` row that
-    says why). `record`, when given, is called with what moved as soon as
-    the pointing is over ([] when it failed cleanly)."""
+    (what moved, []) once they are and nothing would run a pipeline there
+    off `ref` (`at_candidate`, #748), else (what moved, the failing
+    `callers` rows that say why; [] moved when the pointing failed).
+    `record`, when given, is called with what moved as soon as the
+    pointing is over ([] when it failed cleanly)."""
     try:
         moved = point_callers(repo, ref, callers, central, sleep=sleep, minutes=minutes)
     except (RuntimeError, ValueError) as e:
@@ -1287,7 +1377,10 @@ def move_callers(repo, ref, callers=gh, central=None, sleep=time.sleep, minutes=
         return [], [{"id": "callers", "ok": False, "why": [f"the callers did not reach {ref}: {e}"], "run": ""}]
     if record:
         record(moved)
-    return moved, []
+    try:
+        return moved, at_candidate(repo, ref, callers, central)
+    except (RuntimeError, ValueError) as e:
+        return moved, [{"id": "callers", "ok": False, "why": [f"could not tell whether every pipeline of {repo} runs at {ref}: {e}"], "run": ""}]
 
 
 GROUP_ID = re.compile(r"[a-z0-9-]+")
@@ -1465,7 +1558,12 @@ def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20, cent
     callers = callers or (callers_gh() if run is gh else run)
     moved, rows = move_callers(repo, ref, callers, central, sleep, minutes, record)
     if rows:
-        return rows
+        # What moved still goes back (#748: a pipeline off the ref plays no
+        # scenario, but the callers did move).
+        if moved_out is not None:
+            moved_out.extend(moved)
+            return rows
+        return rows + put_back(repo, ref, moved, callers, central, sleep, minutes)
     if moved_out is not None:
         moved_out.extend(moved)
     results = []
@@ -1781,17 +1879,25 @@ def lane_problems(lane):
     return []
 
 
+def central_of():
+    sys.path.insert(0, HERE)
+    import org
+    return org.CENTRAL
+
+
 def problems(conf, root=ROOT):
     """What `coverage` names: every played pair and transition with no
     scenario, every scenario its setup cannot make hold, what is wrong
-    with the groups (`partition`), and with the lane's `play` job
-    (`lane_problems`, #707)."""
+    with the groups (`partition`), with the lane's `play` job
+    (`lane_problems`, #707), and with the test repository's pipeline
+    (`pipeline_problems`, #748)."""
     pack = test_pack(root)
     scenarios = conf.get("scenarios") or []
     return (coverage(scenarios, played(root, pack) | transitions(root), conf.get("statically") or {})
             + preconditions(scenarios, conf.get("bodies") or {}, pack, dispatchable(root, pack), schema_passes(root), conf.get("types") or {},
                             test_repro(root))
             + lane_problems(load_yaml(os.path.join(root, LANE)))
+            + pipeline_problems(root, pack, central_of())
             + partition(scenarios, groups(scenarios), pack)
             + timing(scenarios)
             + autopilot_problems(scenarios)
@@ -2510,6 +2616,76 @@ def self_test():
           ([c for c in fresh if c[:2] == ("pr", "merge")], [c for c in fresh if "--auto" in c], any(c[:2] == ("pr", "checks") for c in fresh)),
           ([("pr", "merge", "21", "--repo", "o/t", "--squash", "--match-head-commit", "head-21")], [], True))
     check("#622: put_back with nothing moved does nothing", put_back("o/t", "v7-next", [], lambda *a, input=None: 1 / 0), [])
+    # #748 C1: the test repository's pull-request caller, the shipped
+    # template as it is, moves with the others.
+    import yaml
+    shipped = open(os.path.join(ROOT, "workflow-templates", "test-pull-request.yml"), encoding="utf-8").read()
+    shipped = shipped.replace("DiluxOne/.github/", "O/.github/")
+    st, fake = repo_fake()
+    st["main"]["test-pull-request.yml"] = shipped
+    moved, rows = move_callers("o/t", "v7-next", fake, "O/.github", lambda s: None, 3)
+    jobs = yaml.safe_load(st["main"]["test-pull-request.yml"])["jobs"]
+    check("#748 C1: after point_callers, every engine call of test-pull-request.yml's review, auto-merge and autopilot-fix jobs is at @v7-next",
+          (rows, sorted(m["name"] for m in moved), {j: jobs[j]["uses"].rsplit("@", 1)[1] for j in ("review", "auto-merge", "autopilot-fix")}),
+          ([], ["issues.yml", "test-pull-request.yml"], {"review": "v7-next", "auto-merge": "v7-next", "autopilot-fix": "v7-next"}))
+    check("#748 C3: and put back after, as it was, with the others",
+          (put_back("o/t", "v7-next", moved, fake, "O/.github", lambda s: None, 3), st["main"]["test-pull-request.yml"] == shipped, st["main"]["issues.yml"] == caller),
+          ([], True, True))
+    # #748 C4: what would leave a pipeline there at v7, refused and named.
+    def rules_fake(rules, tamper=None):
+        st, fake = repo_fake()
+        st["main"]["test-pull-request.yml"] = shipped
+
+        def with_rules(*a, input=None):
+            if a[:3] == ("api", "--paginate", "--slurp") and a[3].startswith("repos/o/t/rules/branches/main"):
+                return json.dumps([rules])
+            got = fake(*a, input=input)
+            if tamper and a[:2] == ("pr", "view") and st["main"].get("test-pull-request.yml", "").count("@v7-next") > 0:
+                tamper(st)
+            return got
+        return st, with_rules
+    required_rule = {"type": "workflows", "ruleset_source_type": "Organization", "ruleset_source": "DiluxOne", "ruleset_id": 3,
+                     "parameters": {"workflows": [{"path": ".github/workflows/org-pull-request.yml", "repository_id": 1, "ref": "refs/tags/v7"}]}}
+    st, fake = rules_fake([{"type": "pull_request"}, required_rule])
+    got = run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=3, central="O/.github")
+    check("#748 C4: move refuses a test repository whose default branch still requires org-pull-request.yml, naming the rule, plays nothing, and puts the callers back",
+          ([(r["id"], r["ok"]) for r in got], "org-pull-request.yml" in got[0]["why"][0] and "`workflows` rule" in got[0]["why"][0],
+           any(c[:2] == ("issue", "create") for c in st["calls"]), st["main"]["test-pull-request.yml"] == shipped),
+          ([("callers", False)], True, False, True))
+
+    def left_behind(st):
+        st["main"]["test-pull-request.yml"] = st["main"]["test-pull-request.yml"].replace("claude-review.yml@v7-next", "claude-review.yml@v7", 1)
+    st, fake = rules_fake([{"type": "pull_request"}], left_behind)
+    moved_rows = move_callers("o/t", "v7-next", fake, "O/.github", lambda s: None, 3)
+    check("#748 C4: move refuses a caller still off the ref after the move, naming the file and the line",
+          ([m["name"] for m in moved_rows[0]], [r["why"] for r in moved_rows[1]]),
+          (["issues.yml", "test-pull-request.yml"],
+           [[".github/workflows/test-pull-request.yml line " + str(st["main"]["test-pull-request.yml"].split("\n").index("    uses: O/.github/.github/workflows/claude-review.yml@v7") + 1)
+             + ": 'uses: O/.github/.github/workflows/claude-review.yml@v7': calls the engine off v7-next after the move"]]))
+    st, fake = rules_fake([{"type": "pull_request"}, dict(required_rule, parameters={"workflows": [{"path": ".github/workflows/other.yml"}]})])
+    check("#748 C4: every caller at the ref and no required pull-request workflow left: move passes",
+          move_callers("o/t", "v7-next", fake, "O/.github", lambda s: None, 3)[1], [])
+    with tempfile.TemporaryDirectory() as root:
+        os.makedirs(os.path.join(root, "workflow-templates"))
+        os.makedirs(os.path.join(root, ".github", "workflows"))
+        open(os.path.join(root, REQUIRED), "w").write(
+            "on:\n  pull_request:\n  merge_group:\njobs:\n  review:\n    if: github.event_name == 'pull_request'\n    uses: O/.github/.github/workflows/claude-review.yml@v7\n")
+        open(os.path.join(root, "workflow-templates", "issues.yml"), "w").write("on:\n  issues:\njobs:\n  t:\n    uses: O/.github/.github/workflows/issue-triage.yml@v7\n")
+        open(os.path.join(root, "workflow-templates", "test-pull-request.yml"), "w").write(open(os.path.join(root, REQUIRED)).read())
+        open(os.path.join(root, "workflow-templates", "quoted.yml"), "w").write(
+            "on:\n  issues:\njobs:\n  t:\n    uses: \"O/.github/.github/workflows/issue-triage.yml@v7\"\n")
+        check("#748 C4: the pack's callers with test-pull-request.yml pass", pipeline_problems(root, {"callers": ["issues.yml", "test-pull-request.yml"]}, "O/.github"), [])
+        got = pipeline_problems(root, {"callers": ["issues.yml"]}, "O/.github")
+        check("#748 C4: a pack with no caller that wires the pull-request pipeline is refused, naming what it lacks",
+              (len(got), "no caller that wires the pull-request pipeline" in got[0], "claude-review.yml:pull_request" in got[0], "`merge_group`" in got[0]), (1, True, True, True))
+        got = pipeline_problems(root, {"callers": ["issues.yml", "test-pull-request.yml", "org-pull-request.yml"]}, "O/.github")
+        check("#748 C4: org-pull-request.yml among the test repository's callers is refused, named", [l.split(",")[0] for l in got],
+              ["kinds/engine-test/pack.yml `callers` names org-pull-request.yml"])
+        got = pipeline_problems(root, {"callers": ["quoted.yml", "test-pull-request.yml"]}, "O/.github")
+        check("#748 C4: an engine call the lane cannot move is refused, naming the file and the line",
+              got, ["workflow-templates/quoted.yml line 5: 'uses: \"O/.github/.github/workflows/issue-triage.yml@v7\"': an engine call the lane cannot move to the candidate "
+                    "(`uses: O/.github/.github/workflows/<name>.yml@<ref>`)"])
+    check("#748 C4: the shipped pack passes", pipeline_problems(ROOT, test_pack(), central_of()), [])
     st, fake = repo_fake()
     moved = []
     run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=3, central="O/.github", moved_out=moved)
