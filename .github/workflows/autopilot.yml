@@ -112,6 +112,12 @@ name: Autopilot
 #                   dropped: one round, within the same cap, only when a
 #                   check failed in its last merge group, from the failed
 #                   jobs' log (`autopilot.py queue-failed`, .dx-io/queue.md).
+#                   Called too when a gate of the pipeline failed at the
+#                   head, or the review ended without a verdict (#741): a
+#                   check round, within the same cap, from the failed jobs'
+#                   log of the calling run (`autopilot.py checks-failed`,
+#                   .dx-io/checks.md); a review that blocks with its verdict
+#                   is a review round, from its threads.
 #
 # The agent holds no key (#287). A shell in a job that holds a secret can
 # read it out of the runner's memory, whatever the token's scope, so the
@@ -707,7 +713,10 @@ jobs:
           # The default branch as GitHub says it, whatever the event (#585).
           BASE: ${{ steps.when.outputs.default }}
           # #479: a round for a pull request the queue dropped reads the
-          # failed jobs' log instead of the review.
+          # failed jobs' log instead of the review; so does one for a gate
+          # of the pipeline that failed at the head, or a review that ended
+          # without a verdict (#741: `inputs fix` reads the calling run's
+          # jobs, and writes checks.md, which `prompt fix` points at).
           QUEUE: ${{ github.event_name == 'pull_request' && github.event.action == 'dequeued' }}
           RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
         run: |
