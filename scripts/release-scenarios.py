@@ -2510,6 +2510,18 @@ def self_test():
           ([c for c in fresh if c[:2] == ("pr", "merge")], [c for c in fresh if "--auto" in c], any(c[:2] == ("pr", "checks") for c in fresh)),
           ([("pr", "merge", "21", "--repo", "o/t", "--squash", "--match-head-commit", "head-21")], [], True))
     check("#622: put_back with nothing moved does nothing", put_back("o/t", "v7-next", [], lambda *a, input=None: 1 / 0), [])
+    # #748 C1: the test repository's pull-request caller, the shipped
+    # template as it is, moves with the others.
+    import yaml
+    shipped = open(os.path.join(ROOT, "workflow-templates", "test-pull-request.yml"), encoding="utf-8").read()
+    shipped = shipped.replace("DiluxOne/.github/", "O/.github/")
+    st, fake = repo_fake()
+    st["main"]["test-pull-request.yml"] = shipped
+    moved, rows = move_callers("o/t", "v7-next", fake, "O/.github", lambda s: None, 3)
+    jobs = yaml.safe_load(st["main"]["test-pull-request.yml"])["jobs"]
+    check("#748 C1: after point_callers, every engine call of test-pull-request.yml's review, auto-merge and autopilot-fix jobs is at @v7-next",
+          (rows, sorted(m["name"] for m in moved), {j: jobs[j]["uses"].rsplit("@", 1)[1] for j in ("review", "auto-merge", "autopilot-fix")}),
+          ([], ["issues.yml", "test-pull-request.yml"], {"review": "v7-next", "auto-merge": "v7-next", "autopilot-fix": "v7-next"}))
     st, fake = repo_fake()
     moved = []
     run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=3, central="O/.github", moved_out=moved)

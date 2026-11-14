@@ -1,0 +1,193 @@
+name: Pull request (test repository)
+
+# The organisation's pull request pipeline in its test repository alone
+# (org.yml `test-repo`, kinds/engine-test/pack.yml `callers`, #748). Every
+# other repository runs it as the required workflow, org-pull-request.yml,
+# which the organisation ruleset "org: required workflow" reads at `v7` with
+# its calls hard-wired to `@v7`; that ruleset leaves the test repository out
+# (scripts/sync-repos.py rulesets), and this caller runs the same jobs there,
+# job for job (the same ids and `uses:`, so the same check names). Its calls
+# are the repository's own, so while the release lane tries a candidate
+# they move to `@v7-next` with its other callers and back after
+# (scripts/release-scenarios.py point_callers): a scenario's review,
+# auto-merge decision and fix rounds run the candidate's engine, not `v7`.
+# The `pipeline` job is the whole run's result as one check, which the
+# test repository's ruleset "required pipeline" requires on its default
+# branch, on the pull request and in the merge queue: the gate the required
+# workflow gives everywhere else. Do not add this caller to any other
+# repository: there the required workflow already runs it.
+
+on:
+  pull_request:
+    # `dequeued` (#479): the merge queue dropped it; only autopilot-queue
+    # runs then.
+    types: [opened, synchronize, reopened, ready_for_review, edited, dequeued]
+  # In a repository with a merge queue (#451), the group the queue builds
+  # runs this workflow too, which its ruleset requires there as well: the
+  # pull request's jobs (its conventions, its review, its merge) were done
+  # on the pull request, so only `queue` runs, and the queue waits for it.
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+jobs:
+  conventions:
+    if: github.event_name == 'pull_request' && github.event.action != 'dequeued' && github.repository != 'DiluxOne/.github'
+    permissions:
+      contents: read
+      pull-requests: read # the pull request's timeline, for the base-branch check on `edited`
+      issues: read # the issues it closes, for the accepted-issue gate
+      actions: read # the run that opened a lane's issue (policy/autonomy.yml)
+    uses: DiluxOne/.github/.github/workflows/conventions.yml@v7
+
+  # The issues it closes go to its author, when a member of the
+  # organisation (#73); on open, reopen, ready and a changed description.
+  assignee:
+    if: github.event_name == 'pull_request' && github.event.action != 'dequeued' && github.repository != 'DiluxOne/.github'
+    permissions: {}
+    uses: DiluxOne/.github/.github/workflows/pull-request-assignee.yml@v7
+    secrets:
+      DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+
+  # The VM the private repositories' jobs run on is off while idle: start it
+  # now (#154). On GitHub's runner, a few seconds; skipped where
+  # DX_RUNNER_HEAVY names no self-hosted runner, so in every public repository. Not on `edited`: an
+  # edit queues only the conventions, mostly right after the push or the
+  # review that already woke the VM, and the schedule covers the rest, so
+  # edits spend no minutes on it.
+  wake-vm:
+    if: github.repository != 'DiluxOne/.github' && github.event.action != 'edited' && github.event.action != 'dequeued'
+    permissions: {}
+    uses: DiluxOne/.github/.github/workflows/runner-wake.yml@v7
+    secrets:
+      DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+
+  review:
+    # order: the conventions gate passes first, so no review is paid for a
+    # pull request it refuses.
+    needs: [conventions]
+    if: github.event_name == 'pull_request' && github.event.action != 'dequeued' && github.repository != 'DiluxOne/.github'
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    uses: DiluxOne/.github/.github/workflows/claude-review.yml@v7
+    with:
+      # The repository's kind (kind: in .github/review-policy.yml) adds its
+      # own profile to the general one.
+      profile: general
+    secrets: inherit
+
+  auto-merge:
+    needs: review
+    if: always() && github.event_name == 'pull_request' && github.repository != 'DiluxOne/.github' && needs.review.result != 'skipped'
+    # Its `repro` job reads the lane issue a reproduced bug's fix closes (#397).
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    uses: DiluxOne/.github/.github/workflows/auto-merge.yml@v7
+    with:
+      risk: ${{ needs.review.outputs.risk }}
+      complexity: ${{ needs.review.outputs.complexity }}
+      floor: ${{ needs.review.outputs.floor }}
+      trusted: ${{ needs.review.outputs.trusted }}
+      blocking: ${{ needs.review.outputs.blocking }}
+      description-ok: ${{ needs.review.outputs.description-ok }}
+      enabled: ${{ needs.review.outputs.auto-merge }}
+    secrets: inherit
+
+  # What waits on whom (#564, waiting-update.yml), after the review: whom
+  # the pull request waits on now (a failed check, a thread, a person's
+  # merge), on its board with one mention, and the organisation's view. A
+  # fork's pull request has no secrets here: issues.yml covers it, by its
+  # metadata only.
+  waiting:
+    # order: after the review, whose verdict and labels the board shows.
+    needs: review
+    if: always() && github.event_name == 'pull_request' && github.repository != 'DiluxOne/.github' && github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+    uses: DiluxOne/.github/.github/workflows/waiting-update.yml@v7
+    secrets:
+      DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+
+  # The before and after screenshots of an autopilot pull request that
+  # changes the browser layer, when it is marked ready (#564,
+  # pr-screenshots.yml): only dilux-bot's own branch here, never a fork's.
+  screenshots:
+    if: github.event_name == 'pull_request' && github.repository != 'DiluxOne/.github' && github.event.action == 'ready_for_review' && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+    uses: DiluxOne/.github/.github/workflows/pr-screenshots.yml@v7
+    secrets:
+      DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+
+  # An autopilot pull request whose review blocks: one round of fixes by the
+  # autopilot (#83), which pushes and so runs this pipeline again; after its
+  # rounds it hands the pull request to a person.
+  autopilot-fix:
+    needs: review
+    # Only dilux-bot's own pull requests, and only for a new commit (an edit
+    # of the description keeps the review's verdict and must not spend a
+    # round).
+    if: always() && github.event_name == 'pull_request' && github.repository != 'DiluxOne/.github' && needs.review.outputs.blocking == 'true' && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && github.event.action != 'edited'
+    # The agent's jobs read the repository with the job's own token (#287).
+    permissions:
+      contents: read
+    uses: DiluxOne/.github/.github/workflows/autopilot.yml@v7
+    with:
+      mode: fix
+      pr: ${{ format('{0}', github.event.pull_request.number) }}
+    secrets: inherit
+
+  # An autopilot pull request the merge queue dropped (#479): one round of
+  # fixes, with the failed jobs' log of its last merge group, within the
+  # rounds cap. autopilot.yml knows it from the event (`dequeued`), and runs
+  # it only when a check failed there (not for a conflict, nor for a person
+  # who took it out of the queue).
+  autopilot-queue:
+    if: github.event_name == 'pull_request' && github.event.action == 'dequeued' && github.repository != 'DiluxOne/.github' && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN
+    # The agent's jobs read the repository with the job's own token (#287).
+    permissions:
+      contents: read
+    uses: DiluxOne/.github/.github/workflows/autopilot.yml@v7
+    with:
+      mode: fix
+      pr: ${{ format('{0}', github.event.pull_request.number) }}
+    secrets: inherit
+
+  # The merge queue's group (#451): what this pipeline decides was decided
+  # on each pull request in it, so the group only has to see this workflow
+  # pass. Nothing is checked out and no secret is read.
+  queue:
+    if: github.event_name == 'merge_group' && github.repository != 'DiluxOne/.github'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: The pull requests in the group passed this pipeline
+        env:
+          HEAD_REF: ${{ github.event.merge_group.head_ref }}
+        run: |
+          echo "Merge group $HEAD_REF: conventions, review and the merge decision ran on each pull request."
+
+  # The whole run as one check (#748): what the required workflow's ruleset
+  # requires elsewhere, a run that succeeds. It needs every other job and
+  # fails when one of them failed or was cancelled; a skipped one is fine.
+  # It runs on the pull request and in the merge queue's group alike.
+  pipeline:
+    needs: [conventions, assignee, wake-vm, review, auto-merge, waiting, screenshots, autopilot-fix, autopilot-queue, queue]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Every job of the pipeline passed or was skipped
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "The pipeline's jobs: $RESULTS"
+          case " $RESULTS " in
+            *" failure "*|*" cancelled "*) echo "::error::a job of the pipeline failed or was cancelled"; exit 1 ;;
+          esac

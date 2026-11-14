@@ -32,6 +32,7 @@ pre-pr-tools: []
 callers:
   - issues.yml
   - pull-request-comments.yml
+  - test-pull-request.yml
 
 # No checks of its own to run, so no engines.
 adapters: []

@@ -1007,14 +1007,14 @@ def sync_callers(repo, conf, dry):
     behind = old_versions(added.values(), current)
     added = {p: to_major(t, behind, current) for p, t in added.items()} if behind else added
     parsed_moved = {p: (t, parse_yaml(t)) for p, t in moved.items()}
-    shared = shared_callers([(n, d, caller_for(dict(d, _name=n), parsed_moved, False)) for n, (_, d) in templates(major).items()])
+    shared = shared_callers([(n, d, caller_for(dict(d, _name=n), parsed_moved, False)) for n, (_, d) in templates_for(kind, conf, major).items()])
     open_prs = json.loads(gh("pr", "list", "--repo", full, "--state", "open", "--limit", "500", "--json", "headRefName").stdout)
     if any(p["headRefName"].endswith("-org-workflow-callers") for p in open_prs):
         print("  a pull request for the workflow callers is already open; skipped")
         return
     owned = (conf.get("callers") or {}).get("repository-owned") or {}
     wanted, notes, stuck = {}, list(held), set()
-    for name, path, found in callers_drift(moved, conf, major=major, default=branch):
+    for name, path, found in callers_drift(moved, conf, major=major, default=branch, kind=kind):
         if not path:
             if f".github/workflows/{name}" not in added:
                 notes.append(f"no caller of workflow-templates/{name}: add it from the template by hand (docs/adopting.md)")
@@ -1042,7 +1042,7 @@ def sync_callers(repo, conf, dry):
                 stuck.add(path)
                 continue
             new = granted
-        left = [f for n, p, f in callers_drift({**moved, path: new}, conf, major=major, default=branch) if p == path and n == name] if new else []
+        left = [f for n, p, f in callers_drift({**moved, path: new}, conf, major=major, default=branch, kind=kind) if p == path and n == name] if new else []
         if new is None:
             notes.append(f"{path}: no job of the repository gives {', '.join(missing)}; bring it in step by hand")
             stuck.add(path)
@@ -1064,7 +1064,7 @@ def sync_callers(repo, conf, dry):
             wanted[path] = text
     # A caller in step but for a template's placeholder (#562): the value
     # repos.yml gives it, its entry's or the organisation's default.
-    for tname, (ttext, data) in templates(major).items():
+    for tname, (ttext, data) in templates_for(kind, conf, major).items():
         path = caller_for(dict(data, _name=tname), parsed_moved, False)
         if path is None or path in stuck:
             continue
@@ -1081,7 +1081,7 @@ def sync_callers(repo, conf, dry):
         print(f"  {note}")
     # Nothing still holding a template's placeholder is written (#671): that
     # file stays out, the others go in.
-    refused = refuse_placeholders(full, wanted, added, parsed_moved, owned, values, major)
+    refused = refuse_placeholders(full, wanted, added, parsed_moved, owned, values, major, kind, conf)
     if old and refused:
         print(f"  the move to @v{current} waits: {', '.join(refused)} must be brought in step first")
         return
@@ -1096,7 +1096,7 @@ def sync_callers(repo, conf, dry):
             sys.stdout.writelines("    " + l for l in difflib.unified_diff(files.get(path, "").splitlines(True), new.splitlines(True), path, path))
         return
     default = (repo.get("defaultBranchRef") or {}).get("name") or "main"
-    templates_named = ", ".join(sorted({f"workflow-templates/{n}" for n, p, _ in callers_drift(moved, conf, major=major, default=branch) if p in wanted})) or "the templates"
+    templates_named = ", ".join(sorted({f"workflow-templates/{n}" for n, p, _ in callers_drift(moved, conf, major=major, default=branch, kind=kind) if p in wanted})) or "the templates"
     to = f"@v{current}"
     move = (f" It also moves every call of the shared workflows from {', '.join('@v' + str(v) for v in old)} to {to}, the repository's own jobs too: "
             f"that major asks a repository for nothing but its callers (docs/migrating.md)." if old else "")
@@ -1116,12 +1116,12 @@ def sync_callers(repo, conf, dry):
                 assisted_form(CALLERS_KEEP), mode="callers")
 
 
-def refuse_placeholders(full, wanted, added, parsed, owned, values, major):
+def refuse_placeholders(full, wanted, added, parsed, owned, values, major, kind=None, conf=None):
     """Takes out of `wanted` each caller placeholder_problems() refuses,
     saying the repository, the path and why (#671): a file in `added` is
     new, from its template; any other, the caller (in `parsed`) of the
     templates it calls. The paths it took out, sorted."""
-    tpls = templates(major)
+    tpls = templates_for(kind, conf, major) if conf is not None else templates(major)
     of = {}
     for tname, (_, data) in tpls.items():
         path = caller_for(dict(data, _name=tname), parsed, False)
@@ -1236,6 +1236,30 @@ def templates(major=None):
     return found
 
 
+def kinds_only(conf, root=None):
+    """{template: the kinds whose packs list it}, for the templates a pack's
+    `callers` lists that `callers: every-repository` does not (#748): those
+    belong to the repositories of those kinds alone (test-pull-request.yml to
+    the test repository), and are never compared with, nor written to, any
+    other."""
+    every = set((conf.get("callers") or {}).get("every-repository") or [])
+    root = root or CENTRAL
+    out = {}
+    for kind in sorted(os.listdir(os.path.join(root, "kinds"))):
+        for name in pack_of(kind, root).get("callers") or []:
+            if name not in every:
+                out.setdefault(str(name), set()).add(kind)
+    return out
+
+
+def templates_for(kind, conf, major=None):
+    """templates(major), less those of other kinds alone (kinds_only()). One
+    of this kind alone is marked `_own`: its caller is the file of its name,
+    never another that calls some of the same workflows (caller_for())."""
+    only = kinds_only(conf)
+    return {n: (t, dict(d, _own=True) if n in only else d) for n, (t, d) in templates(major).items() if n not in only or kind in only[n]}
+
+
 def split_uses(uses, central=False):
     """(shared workflow, ref) for a call of a shared workflow, else None. In
     DiluxOne/.github itself a local call (./.github/workflows/x.yml) is the
@@ -1262,7 +1286,10 @@ def shared_calls(data, central=False):
 def caller_for(template, files, central=False):
     """The repository's workflow file that calls this template's shared
     workflows: the one calling most of them, the template's own name first
-    on a tie. None when no file calls any."""
+    on a tie. None when no file calls any. A template of some kinds alone
+    (`_own`, templates_for()) has only the file of its own name (#748)."""
+    if template.get("_own"):
+        return next((p for p in sorted(files) if os.path.basename(p) == template.get("_name")), None)
     wanted = shared_calls(template)
     best = None
     for path in sorted(files):
@@ -1328,16 +1355,18 @@ def shared_callers(found_for):
     return {p for p in paths if paths.count(p) > 1}
 
 
-def callers_drift(files, conf, central=False, major=None, default="main"):
+def callers_drift(files, conf, central=False, major=None, default="main", kind=None):
     """What differs in a repository's callers from the templates that apply
     to it, as [(template, caller path or None, [phrases])], only those that
     differ. `files` is {path: text}; major, as templates() takes it; default,
-    the repository's default branch (a template's `$default-branch`)."""
+    the repository's default branch (a template's `$default-branch`); kind,
+    the repository's (a template of a kind alone applies to that kind only,
+    kinds_only())."""
     spec = conf.get("callers") or {}
     every, owned = set(spec.get("every-repository") or []), spec.get("repository-owned") or {}
     parsed = {p: (t, parse_yaml(t)) for p, t in files.items()}
     out = []
-    found_for = [(name, data, caller_for(dict(data, _name=name), parsed, central)) for name, (_, data) in templates(major).items()]
+    found_for = [(name, data, caller_for(dict(data, _name=name), parsed, central)) for name, (_, data) in templates_for(kind, conf, major).items()]
     shared = shared_callers(found_for)
     for name, data, path in found_for:
         data = dict(data, _name=name)
@@ -1500,12 +1529,12 @@ def placeholder_problems(path, text, template_text, owned, values, whole):
     return reasons
 
 
-def placeholder_lines(files, conf, name, central=False, major=None):
+def placeholder_lines(files, conf, name, central=False, major=None, kind=None):
     """The drift lines of the callers that hold a template's placeholder."""
     owned, values = (conf.get("callers") or {}).get("repository-owned") or {}, repos_conf.caller_values(conf, name)
     parsed = {p: (t, parse_yaml(t)) for p, t in files.items()}
     out = []
-    for tname, (ttext, data) in templates(major).items():
+    for tname, (ttext, data) in templates_for(kind, conf, major).items():
         path = caller_for(dict(data, _name=tname), parsed, central)
         if path is None:
             continue
@@ -2740,19 +2769,19 @@ def drift(repo, conf, labels, block, current=0):
             # once it is on the current one.
             try:
                 central = repo["name"] == ".github"
-                drifted = callers_drift(files, conf, central, default=default or "main")
+                kind = repo_kind(full, default)
+                drifted = callers_drift(files, conf, central, default=default or "main", kind=kind)
                 if not central:
                     # A caller it lacks is listed as `callers` adds it, from
                     # the same rule (new_callers(), #671), once; one whose
                     # file name a workflow of its own takes, which `callers`
                     # does not write, is still listed here.
                     drifted = [d for d in drifted if d[1] or f".github/workflows/{d[0]}" in files]
-                    kind = repo_kind(full, default)
                     found += [f"lacks `{p}` (workflow-templates/{os.path.basename(p)}): `sync-repos.py callers` adds it"
                               for p in new_callers(files, conf, kind, default or "main", name=repo["name"],
                                                    root=root_of(full, default or "main") if kind_battery(kind) else None)]
                 found += caller_lines(drifted, central)
-                found += placeholder_lines(files, conf, repo["name"], central)
+                found += placeholder_lines(files, conf, repo["name"], central, kind=kind)
             except ValueError as exc:  # a workflow that does not parse is reported, not skipped
                 found.append(f"its workflow callers could not be compared: {str(exc)[:200]}")
         for w, r in pinned_calls(texts):
@@ -2970,6 +2999,16 @@ def callers_test(check, conf):
     commented = {**c2, ".github/workflows/issues.yml": before, ".github/workflows/pull-request-comments.yml": old_profile}
     check("C2 (#170): a caller whose comments differ from the template's is in step",
           before != same and old_profile != comments and callers_drift(commented, conf) == [], callers_drift(commented, conf))
+    tpr = tpl["test-pull-request.yml"]
+    got = (kinds_only(conf), [n for n, _, _ in callers_drift(c2, conf)], [n for n, _, _ in callers_drift({**c2, ".github/workflows/test-pull-request.yml": tpr}, conf, kind="wordpress-plugin")])
+    check("#748: test-pull-request.yml, a template of the test repository's kind alone, is compared nowhere else, not even with a caller that calls its workflows",
+          got == ({"test-pull-request.yml": {"engine-test"}}, [], []), got)
+    got = ([n for n, _, _ in callers_drift(c2, conf, kind="engine-test")],
+           callers_drift({**c2, ".github/workflows/test-pull-request.yml": tpr}, conf, kind="engine-test"),
+           callers_drift({**c2, ".github/workflows/test-pull-request.yml": tpr.replace("    needs: [conventions, assignee", "    needs: [assignee")}, conf, kind="engine-test"))
+    check("#748: in the test repository its caller is the file of its name alone: none is compared with issues.yml, and the template is held job for job",
+          got[:2] == ([], []) and [(n, p) for n, p, _ in got[2]] == [("test-pull-request.yml", ".github/workflows/test-pull-request.yml")]
+          and got[2][0][2][0].startswith("job `pipeline` needs"), got)
     check("callers: a template whose workflows the repository does not call does not apply",
           not any(n == "release-wp.yml" for n, _, _ in callers_drift(files, conf)), callers_drift(files, conf))
     check("callers: a repository with no caller of an every-repository template is told so",
