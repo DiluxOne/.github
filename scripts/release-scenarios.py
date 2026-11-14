@@ -1572,7 +1572,8 @@ def path_floor(path, high, low):
     """The floor scripts/policy.py gives a pull request that changes `path`
     alone: high when it matches `high`, low when it matches `low`, medium
     otherwise, with policy.py's own `matches` (#764). Pure."""
-    sys.path.insert(0, HERE)
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
     import policy
     return "high" if policy.matches(path, high) else "low" if policy.matches(path, low) else "medium"
 
