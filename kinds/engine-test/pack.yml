@@ -67,7 +67,8 @@ fixed-change:
 # writer would run, and runs it as any command way. It fails while
 # scenarios/<scenario>/greeting.md says "helo" (what `bug-reproduced` lands
 # on main first), so `bug-reproduced` gets `bug:confirmed` and
-# `bug-not-reproduced`, which lands none, stays `bug:unconfirmed`. One way
+# `bug-not-reproduced`, which lands its own saying "hello" (#764), stays
+# `bug:unconfirmed`. One way
 # for every layer: whatever the triage labels, a bug here never lacks one.
 repro:
   ways:

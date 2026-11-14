@@ -5,7 +5,7 @@ change. scripts/repro-ways.py fixed copies it in place of the writer's test,
 `{n}` the issue's number and `{scenario}` the release scenario of its
 `dx-scenario` mark. It fails while scenarios/{scenario}/greeting.md says
 "helo" (the file `bug-reproduced` lands on main first) and passes otherwise
-(`bug-not-reproduced` lands none), and writes the JUnit report the way's
+(`bug-not-reproduced` lands its own saying "hello", #764), and writes the JUnit report the way's
 `junit` names, which gives the verdict (scripts/repro-run.sh)."""
 import os
 import re

@@ -2261,8 +2261,32 @@ def self_test():
           preconditions([{"id": "b", "opens": {"issue": {"body": "bug"}}, "expect": {"labels": ["bug:confirmed"], "pull": {"closes": True}}}], {}, rpack, repro=True),
           ["scenario b: expects bug:confirmed and a pull request that closes its issue, but the reproduction's fix closes the issue the bugfix-reproduced lane opens, never the report"])
     check("#707: the bug that reproduces lands the greeting its fixed test reads, under its own directory, and its body names it",
-          ([b for b in bugs[0].get("before") or [] if "lands" in b], "scenarios/bug-reproduced/greeting.md" in real["bodies"][bugs[0]["opens"]["issue"]["body"]],
-           [b for b in bugs[1].get("before") or [] if "lands" in b]), ([{"lands": "greeting", "says": "helo"}], True, []))
+          ([b for b in bugs[0].get("before") or [] if "lands" in b], "scenarios/bug-reproduced/greeting.md" in real["bodies"][bugs[0]["opens"]["issue"]["body"]]),
+          ([{"lands": "greeting", "says": "helo"}], True))
+    # #764 C3: the bug that does not reproduce lands its greeting right, and
+    # its report's steps read it; the fixed reproduction passes on it.
+    import importlib.util
+    import tempfile
+    ways_spec = importlib.util.spec_from_file_location("repro_ways", os.path.join(HERE, "repro-ways.py"))
+    ways = importlib.util.module_from_spec(ways_spec)
+    ways_spec.loader.exec_module(ways)
+
+    def repro_on(sid, says):
+        """kinds/engine-test/repro-fixed.py, as issue 7 of scenario `sid`
+        gets it, run where scenarios/<sid>/greeting.md says `says`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "scenarios", sid))
+            with open(os.path.join(tmp, "scenarios", sid, "greeting.md"), "w", encoding="utf-8") as fh:
+                fh.write(f"{says}\n")
+            ways.write_fixed(os.path.join(ROOT, "kinds", "engine-test", "repro-fixed.py"), os.path.join(tmp, "tests", "repro", "test_issue_7.py"), 7, scenario_mark(sid))
+            return subprocess.run([sys.executable, "-I", os.path.join("tests", "repro", "test_issue_7.py")], cwd=tmp, capture_output=True, text=True).returncode
+    lands = [b for b in bugs[1].get("before") or [] if "lands" in b]
+    steps = real["bodies"][bugs[1]["opens"]["issue"]["body"]].split("### Steps to reproduce", 1)[1].split("###", 1)[0]
+    check("#764 C3: the real bug-not-reproduced lands its greeting saying something other than helo, its steps read it on main, and the fixed reproduction passes on it",
+          ([b["lands"] for b in lands], [b["says"] for b in lands if "helo" not in str(b["says"]).split()], "`scenarios/bug-not-reproduced/greeting.md` on `main`" in steps,
+           [repro_on("bug-not-reproduced", b["says"]) for b in lands]),
+          (["greeting"], [lands[0]["says"]] if lands else ["?"], True, [0]))
+    check("#764 C3: and the same reproduction fails where it says helo, as bug-reproduced lands it", repro_on("bug-reproduced", "helo"), 1)
     check("#707 saw: a failing row names its labels and the bot's newest comment's first line that is no marker, table-safe",
           (saw({"labels": ["b", "a"], "said": ["old", "<!-- dx-board -->\n\nThe seal | was `refused`.\nmore"]}), saw({})),
           ("saw labels a, b; the bot's newest comment: The seal ' was 'refused'.", NONE))

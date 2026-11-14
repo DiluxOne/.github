@@ -321,7 +321,9 @@ scenarios:
   # Bugs.
   # The test repository's fixed reproduction (#707, its pack's `repro`)
   # fails while scenarios/<scenario>/greeting.md says "helo": this one
-  # lands it on main before its issue opens; the other lands none. The fix
+  # lands it on main before its issue opens; the other lands its own saying
+  # "hello" (#764), so the steps its report gives run and do not show the
+  # bug. The fix
   # of a confirmed bug closes the lane's own issue, never the report, so
   # the report's verdict is what it expects; it causes no transition of its
   # own (`next_step:fix` is the review's round: `statically:`). That lane
@@ -335,6 +337,8 @@ scenarios:
     expect: {labels: [bug:confirmed], absent: [repro:no-way]}
   - id: bug-not-reproduced
     covers: []
+    minutes: 15
+    before: [{lands: greeting, says: hello}]
     opens: {issue: {title: "fix: something failed once", body: bug-not-reproduced}}
     expect: {labels: [bug:unconfirmed, could-not-reproduce], absent: [bug:confirmed, repro:no-way]}
 
