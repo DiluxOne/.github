@@ -102,7 +102,9 @@ archived and not excluded in repos.yml:
             no readme.txt, main plugin file or composer.json gets no
             plugin-checks-wp.yml): the run says what it lacks; one it
             has is kept. Each template job must be there with the
-            same `uses:`, `needs` (its own jobs may join them), `if`,
+            same `uses:`, `needs` (only the repository's own jobs may
+            join them: a job of the template the template's job does not
+            wait for differs, #757), `if`,
             `permissions`, `secrets` handling and inputs, but the inputs the
             template says to fill in (`repository-owned`). Inputs and jobs of
             the repository's own are never compared. Like `files`, it opens
@@ -195,6 +197,7 @@ import os
 import re
 import subprocess
 import sys
+import textwrap
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -1549,16 +1552,28 @@ def needs_of(job):
     return sorted([needs] if isinstance(needs, str) else needs)
 
 
-def job_differences(name, want, have, owned, central=False):
-    """What a caller's job does other than its template's, as phrases."""
+def own_needs(have, template_jobs):
+    """The jobs a caller's job waits for that its template does not define
+    (the repository's own), in the caller's order. Pure."""
+    needs = have.get("needs") or []
+    return [n for n in ([needs] if isinstance(needs, str) else needs) if n not in template_jobs]
+
+
+def job_differences(name, want, have, owned, central=False, template_jobs=None):
+    """What a caller's job does other than its template's, as phrases.
+    template_jobs, the template's job ids: what the caller waits for that
+    is none of them is its own; None reads as the template job's `needs`."""
     found = []
     w, h = split_uses(want.get("uses")), split_uses(have.get("uses"), central)
     if (not w or not h) and want.get("uses") != have.get("uses") or \
             w and h and (h[0] != w[0] or (h[1] is not None and h[1] != w[1])):
         found.append(f"calls `{have.get('uses')}`, not `{want.get('uses')}`")
     # A job of the repository's own may join what a template's job waits
-    # for (a suite of its own whose failure the weekly issue reports too).
-    if not set(needs_of(want)) <= set(needs_of(have)):
+    # for (a suite of its own whose failure the weekly issue reports too);
+    # a job of the template's that the template's job does not wait for
+    # may not (#757: a narrower `needs` would never reach the callers).
+    template_jobs = set(needs_of(want)) if template_jobs is None else set(template_jobs)
+    if set(needs_of(have)) & template_jobs != set(needs_of(want)):
         found.append(f"needs `{', '.join(needs_of(have)) or 'nothing'}`, not `{', '.join(needs_of(want)) or 'nothing'}`")
     if plain(want.get("if", "")) != plain(have.get("if", "")):
         found.append(f"runs `if: {plain(have.get('if', '')) or 'always'}`, not `if: {plain(want.get('if', '')) or 'always'}`")
@@ -1608,6 +1623,7 @@ def callers_drift(files, conf, central=False, major=None, default="main", kind=N
                 out.append((name, None, [f"has no caller of `workflow-templates/{name}`"]))
             continue
         mine = jobs_of(parsed[path][1])
+        ids = set(jobs_of(data))
         found = []
         # Its triggers too (#324), unless the file is the caller of two
         # templates: then they are the union of both.
@@ -1620,7 +1636,7 @@ def callers_drift(files, conf, central=False, major=None, default="main", kind=N
             if job not in mine:
                 found.append(f"lacks the job `{job}`")
             else:
-                found += job_differences(job, want, mine[job] or {}, set(owned.get(name) or []), central)
+                found += job_differences(job, want, mine[job] or {}, set(owned.get(name) or []), central, ids)
         if found:
             out.append((name, path, found))
     return out
@@ -2045,23 +2061,25 @@ def keyed(lines, key_re, indent):
     return {k: tuple(v) for k, v in keys.items()}
 
 
-def merged_job(template_lines, have_lines, owned, fallback, keep_needs=False):
+def merged_job(template_lines, have_lines, owned, fallback, own=()):
     """The template's job with the repository's values: its inputs the
     template says to fill in (from this job, else `fallback`, {input: lines}
     from its other jobs), the inputs and keys it adds, its secrets where the
-    template passes none or names them while it inherits, and its `needs`
-    when they add its own jobs to the template's (keep_needs). None when an
-    input to fill in has no value of the repository's."""
+    template passes none or names them while it inherits, and the jobs of
+    its own it waits for (own, #757) after the template's `needs`. None when
+    an input to fill in has no value of the repository's."""
     out = list(template_lines)
     have_keys = keyed(have_lines, KEY_RE, 4)
     keys = keyed(out, KEY_RE, 4)
-    if keep_needs and "needs" in have_keys:
-        a, b = have_keys["needs"]
+    if own:
+        theirs = []
         if "needs" in keys:
             s, e = keys["needs"]
+            theirs = (parse_yaml(textwrap.dedent("".join(out[s:e]))) or {}).get("needs") or []
+            theirs = [theirs] if isinstance(theirs, str) else list(theirs)
         else:  # the template's job waits for nothing: the repository's own go right under its name
             s = e = next(i for i, l in enumerate(out) if JOB_RE.match(l)) + 1
-        out[s:e] = have_lines[a:b]
+        out[s:e] = [f"    needs: [{', '.join(theirs + [n for n in own if n not in theirs])}]\n"]
     have_inputs = {}
     if "with" in have_keys:
         a, b = have_keys["with"]
@@ -2119,10 +2137,10 @@ def rewrite_caller(text, template_text, owned):
                 fallback.setdefault(k, sub[s:e])
     replaced, missing = {}, []
     for job, lines in theirs:
-        if job in have and not job_differences(job, data_theirs[job], data_mine.get(job) or {}, owned):
+        if job in have and not job_differences(job, data_theirs[job], data_mine.get(job) or {}, owned, template_jobs=set(data_theirs)):
             continue
-        keep = job in have and set(needs_of(data_theirs[job])) <= set(needs_of(data_mine.get(job) or {}))
-        new = merged_job(lines, have.get(job, []), owned, fallback, keep)
+        own = own_needs(data_mine.get(job) or {}, set(data_theirs)) if job in have else []
+        new = merged_job(lines, have.get(job, []), owned, fallback, own)
         if new is None:
             given = (data_mine.get(job) or {}).get("with") or {}
             missing += [k for k in owned if k in (data_theirs[job].get("with") or {}) and k not in given and k not in fallback]
@@ -3267,6 +3285,22 @@ def callers_test(check, conf):
     check("#748: in the test repository its caller is the file of its name alone: none is compared with issues.yml, and the template is held job for job",
           got[:2] == ([], []) and [(n, p) for n, p, _ in got[2]] == [("test-pull-request.yml", ".github/workflows/test-pull-request.yml")]
           and got[2][0][2][0].startswith("job `pipeline` needs"), got)
+    # #757 C1: a `needs` that waits on a job of the template the template's
+    # job does not wait for differs, with an own job of the repository's
+    # or without, and the rewrite takes the template's, the own job kept.
+    mine_job = "\n  mine:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo mine\n"
+    stale = {n: tpr.replace("  auto-merge:\n    needs: review\n", f"  auto-merge:\n    needs: {n}\n") + mine_job
+             for n in ("[review, conventions]", "[review, conventions, mine]")}
+    got = {n: callers_drift({**c2, ".github/workflows/test-pull-request.yml": t}, conf, kind="engine-test") for n, t in stale.items()}
+    check("#757 C1: a caller job waiting on a job of the template its template's job does not wait for differs, own job or not",
+          all(g and [(x, y) for x, y, _ in g] == [("test-pull-request.yml", ".github/workflows/test-pull-request.yml")]
+              and g[0][2] == [f"job `auto-merge` needs `{', '.join(sorted(n.strip('[]').split(', ')))}`, not `review`"] for n, g in got.items()), got)
+    fixed = {n: rewrite_caller(t, tpr, set(owned.get("test-pull-request.yml") or []))[0] for n, t in stale.items()}
+    check("#757 C1: the rewrite gives the template's `needs`, the repository's own job after it, and comes out in step",
+          all(f is not None for f in fixed.values())
+          and "  auto-merge:\n    needs: review\n" in fixed["[review, conventions]"]
+          and "  auto-merge:\n    needs: [review, mine]\n" in fixed["[review, conventions, mine]"]
+          and all(callers_drift({**c2, ".github/workflows/test-pull-request.yml": f}, conf, kind="engine-test") == [] for f in fixed.values()), fixed)
     check("callers: a template whose workflows the repository does not call does not apply",
           not any(n == "release-wp.yml" for n, _, _ in callers_drift(files, conf)), callers_drift(files, conf))
     check("callers: a repository with no caller of an every-repository template is told so",
