@@ -646,6 +646,7 @@ def settings_tests():
     import settings  # the schema's reader
     schema = {s["key"]: s.get("repo") for s in settings.entries(settings.schema(), "policy/review-policy.default.yml")}
     check("#568: the schema's repo level of each review-policy key is policy.py's", schema == rules, {k: (schema.get(k), rules.get(k)) for k in set(schema) | set(rules) if schema.get(k) != rules.get(k)})
+    check("C4 (#768): the schema covers files-wait, the organisation's only", schema.get("files-wait") == "never" and isinstance(defaults.get("files-wait"), dict), (schema.get("files-wait"), defaults.get("files-wait")))
     check("#568: the own bot is org.yml's App when DX_BOT_LOGIN is unset", own_bot({"PR_AUTHOR": f"{org_conf()['bot']['app']}[bot]", "PR_AUTHOR_TYPE": "Bot", "HEAD_IN_REPO": "true"}))
 
     code, out = run_case(os.path.join(CENTRAL, "policy", "review-policy.default.yml"), "kind: wordpress-plugin\nkind-settings:\n  plugin-check:\n    ignore-codes: [one_more_code]\n    strict: false\n", [], POLICY_MODE="kind")

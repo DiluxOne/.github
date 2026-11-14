@@ -95,11 +95,12 @@ def names(files):
     return out
 
 
-def read(api, attempts, interval, sleep=time.sleep, base="", head=""):
+def read(api, attempts, interval, sleep=None, base="", head=""):
     """(state, files, reads): ("empty", [], 0) when the diff is really
     empty, else the list once it is not empty and its count is
     the pull request's total, read up to `attempts` times. Raises
     RuntimeError when a list that is not empty still differs from the total."""
+    sleep = sleep or time.sleep
     if api.compare_empty(base, head):
         return "empty", [], 0
     files, total = [], 0
@@ -200,26 +201,50 @@ def self_test():
     import contextlib
     import io
     import tempfile
-    real = GitHub
+
+    def run_main(policy, fake):
+        """main() with this policy file and API: (exit, printed, list, sleeps)."""
+        global GitHub
+        real, real_sleep, sleeps = GitHub, time.sleep, []
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "files")
+            GitHub = lambda repo, pr: fake  # noqa: E731
+            time.sleep = sleeps.append
+            saved = dict(os.environ)
+            os.environ.update({"DEFAULT_POLICY": policy, "GITHUB_REPOSITORY": "o/r", "PR": "1"})
+            try:
+                printed = io.StringIO()
+                with contextlib.redirect_stdout(printed):
+                    code = main([out])
+            finally:
+                os.environ.clear()
+                os.environ.update(saved)
+                GitHub, time.sleep = real, real_sleep
+            listed = open(out, encoding="utf-8").read() if os.path.exists(out) else None
+        return code, printed.getvalue().strip(), listed, sleeps
+
     with tempfile.TemporaryDirectory() as tmp:
-        policy, out = os.path.join(tmp, "policy.yml"), os.path.join(tmp, "files")
-        with open(policy, "w", encoding="utf-8") as fh:
-            fh.write("files-wait:\n  attempts: 4\n  interval-seconds: 0\n")
-        fake = Fake([[], added])
-        GitHub = lambda repo, pr: fake  # noqa: E731
-        saved = dict(os.environ)
-        os.environ.update({"DEFAULT_POLICY": policy, "GITHUB_REPOSITORY": "o/r", "PR": "1"})
-        try:
-            printed = io.StringIO()
-            with contextlib.redirect_stdout(printed):
-                code = main([out])
-        finally:
-            os.environ.clear()
-            os.environ.update(saved)
-            GitHub = real
-        with open(out, encoding="utf-8") as fh:
-            listed = fh.read()
-        check("C1: main writes the list and says it was listed", code == 0 and listed == "docs/new.md\n" and printed.getvalue().strip() == "listed", (code, listed, printed.getvalue()))
+        fixture = os.path.join(tmp, "policy.yml")
+        with open(fixture, "w", encoding="utf-8") as fh:
+            fh.write("files-wait:\n  attempts: 4\n  interval-seconds: 3\n")
+        got = run_main(fixture, Fake([[], added]))
+        check("C1: main writes the list and says it was listed", got[:3] == (0, "listed", "docs/new.md\n"), got)
+        default = os.path.join(HERE, "..", "policy", "review-policy.default.yml")
+        wait = (defaults.get("files-wait") or {})
+        fake = Fake([[]])
+        got = run_main(default, fake)
+        check("C4: the bound is review-policy.default.yml's files-wait", got[1] == "unlisted" and fake.calls == wait.get("attempts") and got[3] == [wait.get("interval-seconds")] * (fake.calls - 1), (got, fake.calls, wait))
+        fake = Fake([[]])
+        got = run_main(fixture, fake)
+        check("C4: a fixture with another value changes the number of reads", got[1] == "unlisted" and fake.calls == 4 and got[3] == [3, 3, 3], (got, fake.calls))
+        with open(fixture, "w", encoding="utf-8") as fh:
+            fh.write("budget-usd: 3\n")
+        got = run_main(fixture, Fake([[]]))
+        check("C4: no files-wait in the policy fails, with no bound of its own", got[0] == 1 and got[2] is None, got)
+    with open(os.path.join(HERE, "..", ".github", "workflows", "claude-review.yml"), encoding="utf-8") as fh:
+        workflow = fh.read()
+    step = workflow[workflow.index("- name: Policy floor (deterministic)"):workflow.index("- name: Scope (previous verdict")]
+    check("C4: the policy step reads the files through pr-files.py, with no bound of its own", "scripts/pr-files.py" in step and "sleep" not in step and "files-wait:" not in step, step)
     if not failed:
         print("all tests passed")
     return 1 if failed else 0
