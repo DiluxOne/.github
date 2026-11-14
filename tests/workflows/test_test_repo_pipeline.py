@@ -91,6 +91,25 @@ def test_c2_a_failed_or_cancelled_gate_fails_the_pipeline_naming_it():
     assert "::error::the job conventions failed" in got.stdout and "::error::the job auto-merge was cancelled" in got.stdout
 
 
+def org_module():
+    spec = importlib.util.spec_from_file_location("org", ROOT / "scripts" / "org.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_c3_the_pipeline_needs_the_gates_of_org_yml_each_a_job_of_the_required_workflow():
+    mod = org_module()
+    gates = mod.pipeline_gates(mod.load(str(ROOT / "org.yml")))
+    # One place: org.yml `pipeline-gates`; a workflow cannot read it before
+    # its jobs are planned, so this test holds `needs` to it.
+    assert load(TEMPLATE)["jobs"]["pipeline"]["needs"] == gates
+    assert gates == list(GATES)
+    # The required workflow's checks: each gate is one of its jobs.
+    required = load(REQUIRED)["jobs"]
+    assert all(gate in required for gate in gates), (gates, sorted(required))
+
+
 def test_the_docs_say_the_test_repository_runs_the_candidates_pipeline_and_why():
     for doc in ("docs/versioning.md", "docs/workflows.md"):
         text = (ROOT / doc).read_text(encoding="utf-8")

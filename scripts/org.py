@@ -35,6 +35,12 @@
                        exit 1 naming the value to set and its URL when
                        DX_TEST_LOGIN is not that owner (the release lane,
                        before it plays)
+  org.py pipeline-gates
+                       the jobs of the pull request pipeline that decide
+                       on a pull request (#754), one per line: org.yml
+                       `pipeline-gates`, else conventions, review and
+                       auto-merge; the test repository's `pipeline` check
+                       needs these alone
   org.py core          the engine's core files (#563, #568), globs, one per
                        line: while an open autopilot pull request touches
                        one, the autopilot starts no other issue whose Spec
@@ -144,6 +150,22 @@ def test_property(conf):
     if not all(c.isalnum() or c in "-_" for c in value):
         raise ValueError(f"org.yml `test-property` is `{value}`: a custom property's name")
     return value
+
+
+PIPELINE_GATES = ["conventions", "review", "auto-merge"]
+
+
+def pipeline_gates(conf):
+    """org.yml `pipeline-gates` (#754): the jobs of the required workflow
+    (org-pull-request.yml) that decide on a pull request, which the test
+    repository's `pipeline` check needs alone; absent, conventions, review
+    and auto-merge. Anything but a list of job ids is an error."""
+    value = conf.get("pipeline-gates")
+    if value is None:
+        return list(PIPELINE_GATES)
+    if not isinstance(value, list) or not value or not all(isinstance(j, str) and j and all(c.isalnum() or c in "-_" for c in j) for j in value):
+        raise ValueError(f"org.yml `pipeline-gates` is `{value}`: a list of the required workflow's job ids")
+    return [str(j) for j in value]
 
 
 def test_identity(env=os.environ):
@@ -304,6 +326,15 @@ def self_test():
         check("#748: a test-property that is no property's name fails", "no error", "ValueError")
     except ValueError:
         check("#748: a test-property that is no property's name fails", "ValueError", "ValueError")
+    check("C3 (#754): no pipeline-gates is conventions, review and auto-merge; org.yml's are those; a list of its own is read",
+          (pipeline_gates({}), pipeline_gates(_conf), pipeline_gates({"pipeline-gates": ["conventions", "review"]})),
+          (["conventions", "review", "auto-merge"], ["conventions", "review", "auto-merge"], ["conventions", "review"]))
+    for bad in ("review", [], ["a b"], [1]):
+        try:
+            pipeline_gates({"pipeline-gates": bad})
+            check(f"C3 (#754): a pipeline-gates of {bad!r} fails", "no error", "ValueError")
+        except ValueError:
+            check(f"C3 (#754): a pipeline-gates of {bad!r} fails", "ValueError", "ValueError")
     pack = test_pack({"org": "Acme"})
     check("C1 (#739): the pack names the test identity's token, and no login", pack["identity"], {"secret": "DX_TEST_TOKEN"})
     check("C1, C4 (#739): the test identity is DX_TEST_LOGIN, whoever owns the token, lowercased; none when it is unset",
@@ -385,6 +416,9 @@ if __name__ == "__main__":
         problem = identity_problem(owner, os.environ.get("DX_TEST_LOGIN"))
         print(problem or f"DX_TEST_LOGIN is the owner of DX_TEST_TOKEN, {test_identity()}", file=sys.stderr if problem else sys.stdout)
         sys.exit(1 if problem else 0)
+    if sys.argv[1:] == ["pipeline-gates"]:
+        print("\n".join(pipeline_gates(_conf)))
+        sys.exit(0)
     if sys.argv[1:] == ["core"]:
         print("\n".join(core(_conf)))
         sys.exit(0)

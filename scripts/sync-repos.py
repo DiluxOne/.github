@@ -2271,6 +2271,12 @@ def pipeline_jobs():
     return set(re.findall(r"^  ([A-Za-z0-9_-]+):\s*$", jobs, re.M))
 
 
+def pipeline_gates():
+    """The jobs of that pipeline that decide on a pull request (#754):
+    org.yml `pipeline-gates`, read by org.py."""
+    return org.pipeline_gates(org.load())
+
+
 def own_contexts(names, spec):
     """The check names "own checks" requires: those of the pack's jobs, but
     the ones it skips, once each, sorted."""
@@ -4848,7 +4854,7 @@ def self_test():
     check("pipeline: the organisation's required jobs", {"conventions", "review"} <= pipeline_jobs(), pipeline_jobs())
     check("kind: plain, quoted and with a comment", [policy_kind("kind: wordpress-plugin\n"), policy_kind('kind: "wordpress-plugin"\n'), policy_kind("a: b\nkind: 'x-y'  # mine\n"), policy_kind("other: 1\n")] == ["wordpress-plugin", "wordpress-plugin", "x-y", None])
     tag_rules = [{"type": "deletion"}, {"type": "update"}]
-    pipe = {"conventions", "review", "auto-merge"}
+    pipe = set(pipeline_gates())
     org = [{"name": "org: main", "target": "branch", "enforcement": "active", "conditions": {"repository_name": {"include": ["r"]}, "ref_name": {"include": ["~DEFAULT_BRANCH"]}}, "rules": [{"type": "pull_request"}, {"type": "deletion"}, {"type": "workflows"}]},
            {"name": "org: release tags", "target": "tag", "enforcement": "active", "conditions": {"repository_name": {"include": ["r"]}, "ref_name": {"include": ["refs/tags/*.*.*"]}}, "rules": tag_rules}]
 
