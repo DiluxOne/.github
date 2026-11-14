@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 760,
+  "prd_sha256": "2c8c5fd61eff686474f97ce83fa7b58d1ace56fe05b372f57af3f2e89bf373d1",
+  "prd": "### Problem\n\nThe release lane cannot pass: a pull request whose description says nothing true about its diff is, rightly, never merged by policy, so no scenario that waits on a merge can pass.\n\n### Scope\n\ntests/release/scenarios.yml's `pull` body and the fields it reads, scripts/release-scenarios.py's writing of each scenario pull request's description and its check in `coverage`/`plan`, and their `--test`.\n\n### Out of scope\n\nThe review's description check itself. The scenarios' expectations.\n\n### Acceptance criteria\n\nC1: Given any scenario of tests/release/scenarios.yml that opens a pull request, when release-scenarios.py writes its description, then it names each file the pull request adds, edits or removes.\nC2: Given a scenario whose pull request's description would name no change, when `release-scenarios.py coverage` runs, then it fails and names the scenario.\nC3: Given the description and the diff of a scenario pull request, when they are compared by `--test` on fixtures, then every file of the diff is named in the description.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-14T17:17:09Z",
+  "policy": "DiluxOne/.github@367dd60744d9dc8befdeaa8e29c42e0c9d80456b",
+  "how": "own-bug"
+}
