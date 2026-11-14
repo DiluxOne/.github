@@ -1172,9 +1172,9 @@ jobs:
 
   decision:
     name: The decision's sub-issues
-    # After the seal: what is carried out is the PRD a person accepted.
-    # order: after the ready job's seal of the accepted PRD.
-    needs: ready
+    # After the seal (the seal job, or seal-again, #763): what is carried
+    # out is the PRD a person accepted; never after a seal that failed.
+    needs: [ready, seal, seal-again]
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 15
     # When a person accepts an issue of DiluxOne/.github whose PRD names
@@ -1183,7 +1183,7 @@ jobs:
     # and one comment on it listing them (scripts/decision.py open). A
     # repository that matches later gets its own from the daily sync
     # (org-drift.yml). Nothing anywhere else.
-    if: github.repository == 'DiluxOne/.github' && github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == inputs.label && github.event.sender.type != 'Bot'
+    if: "!cancelled() && needs.ready.result == 'success' && needs.seal.result != 'failure' && needs.seal-again.result != 'failure' && github.repository == 'DiluxOne/.github' && github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == inputs.label && github.event.sender.type != 'Bot'"
     permissions: {}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

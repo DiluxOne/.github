@@ -1055,7 +1055,9 @@ jobs:
   spec-seal:
     name: Autopilot · the Spec's seal (G3)
     needs: [prep, spec, seal, seal-again]
-    if: ${{ !cancelled() && needs.prep.outputs.go == 'true' && needs.prep.outputs.mode == 'start' && (needs.prep.outputs.seal != 'prd' || needs.seal.result == 'success' || needs.seal-again.result == 'success') && (needs.spec.outputs.outcome == 'success' || (needs.prep.outputs.spec == 'present' && needs.spec.result == 'skipped')) }}
+    # The agent's Spec, or its stop, applies whatever the Spec job's outcome,
+    # as it did in the draft job; only a written Spec is sealed.
+    if: ${{ !cancelled() && needs.prep.outputs.go == 'true' && needs.prep.outputs.mode == 'start' && (needs.prep.outputs.seal != 'prd' || needs.seal.result == 'success' || needs.seal-again.result == 'success') }}
     runs-on: ubuntu-latest # fresh: it holds the key beside an agent's work (#287)
     timeout-minutes: 15
     concurrency:
@@ -1118,6 +1120,8 @@ jobs:
       # passes G3; the draft job checks it before it opens the draft.
       - name: Seal the Spec (G3)
         id: seal
+        # The Spec the agent wrote, or the one already on the issue (#535).
+        if: needs.spec.outputs.outcome == 'success' || (needs.prep.outputs.spec == 'present' && needs.spec.result == 'skipped')
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           NUMBER: ${{ needs.prep.outputs.issue }}
@@ -1207,6 +1211,8 @@ jobs:
       # passes G3; the draft job checks it before it opens the draft.
       - name: Seal the Spec (G3)
         id: seal
+        # The Spec the agent wrote, or the one already on the issue (#535).
+        if: needs.spec.outputs.outcome == 'success' || (needs.prep.outputs.spec == 'present' && needs.spec.result == 'skipped')
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           NUMBER: ${{ needs.prep.outputs.issue }}
