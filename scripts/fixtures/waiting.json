@@ -224,6 +224,9 @@
     "nodes": [
      {
       "name": "autopilot"
+     },
+     {
+      "name": "autopilot:round-1"
      }
     ]
    },
@@ -234,8 +237,28 @@
     "nodes": [
      {
       "commit": {
+       "oid": "head5",
        "statusCheckRollup": {
-        "state": "FAILURE"
+        "state": "FAILURE",
+        "contexts": {
+         "pageInfo": {
+          "hasNextPage": false
+         },
+         "nodes": [
+          {
+           "__typename": "CheckRun",
+           "name": "Scripts (self-tests)",
+           "status": "COMPLETED",
+           "conclusion": "FAILURE"
+          },
+          {
+           "__typename": "CheckRun",
+           "name": "actionlint",
+           "status": "COMPLETED",
+           "conclusion": "SUCCESS"
+          }
+         ]
+        }
        }
       }
      }
@@ -256,8 +279,300 @@
     ]
    },
    "want": [
-    "a failed check",
+    "the autopilot's fix round",
     "the autopilot"
+   ]
+  },
+  {
+   "number": 15,
+   "title": "the autopilot's review ended without a verdict",
+   "url": "https://github.com/DiluxOne/diluxone-users-wordpress/pull/15",
+   "createdAt": "2026-10-26T08:00:00Z",
+   "isDraft": false,
+   "author": {
+    "login": "dilux-bot[bot]"
+   },
+   "repository": {
+    "name": "diluxone-users-wordpress",
+    "isPrivate": false
+   },
+   "labels": {
+    "nodes": [
+     {
+      "name": "autopilot"
+     }
+    ]
+   },
+   "reviewThreads": {
+    "nodes": []
+   },
+   "commits": {
+    "nodes": [
+     {
+      "commit": {
+       "oid": "head15",
+       "statusCheckRollup": {
+        "state": "FAILURE",
+        "contexts": {
+         "pageInfo": {
+          "hasNextPage": false
+         },
+         "nodes": [
+          {
+           "__typename": "CheckRun",
+           "name": "conventions / Conventions (branch, title, commits)",
+           "status": "COMPLETED",
+           "conclusion": "SUCCESS"
+          },
+          {
+           "__typename": "CheckRun",
+           "name": "review / Claude review",
+           "status": "COMPLETED",
+           "conclusion": "FAILURE"
+          }
+         ]
+        }
+       }
+      }
+     }
+    ]
+   },
+   "closingIssuesReferences": {
+    "nodes": [
+     {
+      "number": 105,
+      "labels": {
+       "nodes": [
+        {
+         "name": "accepted"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "want": [
+    "the autopilot's fix round",
+    "the autopilot"
+   ]
+  },
+  {
+   "number": 16,
+   "title": "the autopilot's conventions failed, a round left",
+   "url": "https://github.com/DiluxOne/diluxone-users-wordpress/pull/16",
+   "createdAt": "2026-10-26T08:00:00Z",
+   "isDraft": false,
+   "author": {
+    "login": "dilux-bot[bot]"
+   },
+   "repository": {
+    "name": "diluxone-users-wordpress",
+    "isPrivate": false
+   },
+   "labels": {
+    "nodes": [
+     {
+      "name": "autopilot"
+     },
+     {
+      "name": "autopilot:round-4"
+     }
+    ]
+   },
+   "reviewThreads": {
+    "nodes": []
+   },
+   "commits": {
+    "nodes": [
+     {
+      "commit": {
+       "oid": "head16",
+       "statusCheckRollup": {
+        "state": "FAILURE",
+        "contexts": {
+         "pageInfo": {
+          "hasNextPage": false
+         },
+         "nodes": [
+          {
+           "__typename": "CheckRun",
+           "name": "conventions / Conventions (branch, title, commits)",
+           "status": "COMPLETED",
+           "conclusion": "FAILURE"
+          }
+         ]
+        }
+       }
+      }
+     }
+    ]
+   },
+   "closingIssuesReferences": {
+    "nodes": [
+     {
+      "number": 105,
+      "labels": {
+       "nodes": [
+        {
+         "name": "accepted"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "want": [
+    "the autopilot's fix round",
+    "the autopilot"
+   ]
+  },
+  {
+   "number": 17,
+   "title": "the autopilot's scripts failed at the rounds cap",
+   "url": "https://github.com/DiluxOne/diluxone-users-wordpress/pull/17",
+   "createdAt": "2026-10-26T08:00:00Z",
+   "isDraft": false,
+   "author": {
+    "login": "dilux-bot[bot]"
+   },
+   "repository": {
+    "name": "diluxone-users-wordpress",
+    "isPrivate": false
+   },
+   "labels": {
+    "nodes": [
+     {
+      "name": "autopilot"
+     },
+     {
+      "name": "autopilot:round-4"
+     },
+     {
+      "name": "autopilot:round-5"
+     }
+    ]
+   },
+   "reviewThreads": {
+    "nodes": []
+   },
+   "commits": {
+    "nodes": [
+     {
+      "commit": {
+       "oid": "head17",
+       "statusCheckRollup": {
+        "state": "FAILURE",
+        "contexts": {
+         "pageInfo": {
+          "hasNextPage": false
+         },
+         "nodes": [
+          {
+           "__typename": "CheckRun",
+           "name": "Scripts (self-tests)",
+           "status": "COMPLETED",
+           "conclusion": "FAILURE"
+          }
+         ]
+        }
+       }
+      }
+     }
+    ]
+   },
+   "closingIssuesReferences": {
+    "nodes": [
+     {
+      "number": 105,
+      "labels": {
+       "nodes": [
+        {
+         "name": "accepted"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "want": [
+    "its checks fail after its rounds",
+    "the maintainer"
+   ]
+  },
+  {
+   "number": 18,
+   "title": "the autopilot's, only the repository's own check failed",
+   "url": "https://github.com/DiluxOne/diluxone-users-wordpress/pull/18",
+   "createdAt": "2026-10-26T08:00:00Z",
+   "isDraft": false,
+   "author": {
+    "login": "dilux-bot[bot]"
+   },
+   "repository": {
+    "name": "diluxone-users-wordpress",
+    "isPrivate": false
+   },
+   "labels": {
+    "nodes": [
+     {
+      "name": "autopilot"
+     },
+     {
+      "name": "autopilot:round-1"
+     }
+    ]
+   },
+   "reviewThreads": {
+    "nodes": []
+   },
+   "commits": {
+    "nodes": [
+     {
+      "commit": {
+       "oid": "head18",
+       "statusCheckRollup": {
+        "state": "FAILURE",
+        "contexts": {
+         "pageInfo": {
+          "hasNextPage": false
+         },
+         "nodes": [
+          {
+           "__typename": "CheckRun",
+           "name": "Plugin tests / PHP 8.3",
+           "status": "COMPLETED",
+           "conclusion": "FAILURE"
+          },
+          {
+           "__typename": "CheckRun",
+           "name": "review / Claude review",
+           "status": "COMPLETED",
+           "conclusion": "SUCCESS"
+          }
+         ]
+        }
+       }
+      }
+     }
+    ]
+   },
+   "closingIssuesReferences": {
+    "nodes": [
+     {
+      "number": 105,
+      "labels": {
+       "nodes": [
+        {
+         "name": "accepted"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "want": [
+    "a check no fix round runs again",
+    "the maintainer"
    ]
   },
   {
