@@ -142,6 +142,7 @@
                              `prompt fix` with CHECKS=true then read the
                              failed jobs' log, .dx-io/checks.md), 1 for
                              the review's round, 2 when unread
+  autopilot.py rounds-spent  the comment at the rounds cap (MAX, CHECKS)
   autopilot.py --test        self-test
 
 With DX_IO set (the agent's job, which holds no key, #287), push, decision,
@@ -1000,7 +1001,8 @@ def next_step(state):
     accepted it, "" for nobody), may_start [ok, why], seal ("match" or why
     not), spec (the Spec is on the issue), pr (the autopilot's open pull
     request, or null: number, author_is_bot, draft, body, labels, merge
-    (clean, behind, dirty, unknown), head, record, dequeued, queue_failed),
+    (clean, behind, dirty, unknown), head, record, dequeued, queue_failed,
+    checks_failed: a check of the pipeline failed at its head, #741),
     runs, cap, round, rounds. Returns {action, why} and, by action, `as`
     (the mode autopilot.yml runs), `left`, `how`, `who`, `for`."""
     issue = state.get("issue") or {}
@@ -1070,6 +1072,11 @@ def next_step(state):
         if rnd > rounds:
             return wait("claim", "anyone", f"the merge queue dropped it and the autopilot spent its {rounds} rounds")
         return {"action": "queue", "as": "fix", "why": "the merge queue dropped it on a failed check: one round from the failed jobs' log"}
+    if pr.get("checks_failed"):
+        # #741: as the pipeline's autopilot-fix runs it, within the rounds.
+        if rnd > rounds:
+            return wait("claim", "anyone", f"its checks still fail and the autopilot spent its {rounds} rounds")
+        return {"action": "fix", "as": "fix", "why": "a check of the pipeline failed at its head: one round from the failed jobs' log"}
     if continue_as(False, pr.get("record"), pr.get("head") or "") == "fix":
         if rnd > rounds:
             return wait("claim", "anyone", f"the review still blocks and the autopilot spent its {rounds} rounds")
@@ -2009,6 +2016,14 @@ def checks_failed(jobs, record, head):
             and not (verdict and str(j.get("name")).startswith("review / "))]
 
 
+def rounds_spent(max_rounds, checks):
+    """The comment on a pull request whose fix rounds reached the cap
+    (#741): `needs-human` goes on with it, so a person takes it. Pure."""
+    why = ("its checks still fail: a person takes it from here. The failed jobs are in its checks, each with its log"
+           if checks else "the review still blocks: a person takes it from here. The review's open threads say what is left")
+    return f"The autopilot spent its {max_rounds} rounds and {why}.\n\n{AI_LINE}"
+
+
 def checks_log_text(pr, logs):
     """What a check round's agent reads (#741): each failed job's name,
     link and the end of its log, as queue_log_text cuts it. Pure."""
@@ -2680,6 +2695,8 @@ A class on html.
         ("dropped by the queue on a failed check", nsa(pr={**rpr, "dequeued": True, "queue_failed": True}), ("queue", "fix")),
         ("dropped by the queue on no check", nsa(pr={**rpr, "dequeued": True}), ("none", None)),
         ("dropped by the queue past the rounds", nsa(pr={**rpr, "dequeued": True, "queue_failed": True}, round=4), ("wait", "claim")),
+        ("ready, a check of the pipeline failed at its head", nsa(pr={**rpr, "checks_failed": True}), ("fix", "fix")),
+        ("ready, a check failed past the rounds", nsa(pr={**rpr, "checks_failed": True}, round=4), ("wait", "claim")),
         ("ready, the review blocks at its head", nsa(pr={**rpr, "record": blk("h")}), ("fix", "fix")),
         ("ready, the review blocks past the rounds", nsa(pr={**rpr, "record": blk("h")}, round=4), ("wait", "claim")),
         ("ready, the review passed at its head", nsa(pr={**rpr, "record": {"sha": "h", "blocking": False, "findings": []}}), ("wait", "merge")),
@@ -2687,6 +2704,14 @@ A class on html.
     ]
     for name, got, want in table:
         check(f"#561 C1: next-step, {name}", got, want)
+    check("#741 C3: a failed check below the cap is one fix round; at the cap, or with needs-human, a person's",
+          (ns(pr={**rpr, "checks_failed": True}, round=3)["as"], ns(pr={**rpr, "checks_failed": True}, round=4)["who"],
+           "its checks still fail" in ns(pr={**rpr, "checks_failed": True}, round=4)["why"],
+           nsa(pr={**rpr, "checks_failed": True, "labels": ["autopilot", "needs-human"]}, round=4)), ("fix", "anyone", True, ("wait", "answer")))
+    check("#741 C3: the comment at the cap says what still fails, and that a person has it",
+          ([w in rounds_spent(5, True) for w in ("spent its 5 rounds", "its checks still fail", "a person takes it", "review still blocks", AI_LINE)],
+           [w in rounds_spent(3, False) for w in ("spent its 3 rounds", "its checks still fail", "review still blocks", "open threads")]),
+          ([True, True, True, False, True], [True, False, True, True]))
     # #561 C7: every state's action is one the bot runs, a wait on a
     # person's decision, or nothing; and none of their words tells anyone to
     # add or remove a flow label.
@@ -2697,6 +2722,7 @@ A class on html.
         {"pr": {**dpr, "merge": "dirty"}}, {"pr": {**dpr, "body": all2}}, {"pr": {**rpr, "merge": "dirty"}}, {"pr": {**rpr, "merge": "dirty"}, "runs": 5},
         {"pr": {**rpr, "merge": "behind"}}, {"pr": {**rpr, "dequeued": True, "queue_failed": True}}, {"pr": {**rpr, "dequeued": True}},
         {"pr": {**rpr, "dequeued": True, "queue_failed": True}, "round": 4}, {"pr": {**rpr, "record": blk("h")}}, {"pr": {**rpr, "record": blk("h")}, "round": 4},
+        {"pr": {**rpr, "checks_failed": True}}, {"pr": {**rpr, "checks_failed": True}, "round": 4},
         {"pr": {**rpr, "record": {"sha": "h", "blocking": False, "findings": []}}}, {"pr": {**rpr, "record": blk("old")}})]
     check("#561 C7: every state next-step reads is in the table",
           sorted(set((s["action"], s.get("how") or s.get("for") or s.get("as")) for s in steps7)), sorted(set(w for _, _, w in table)))
@@ -3331,6 +3357,33 @@ Clamp the value in Sum::add.
               (True, "needs.review.outputs.blocking == 'true'", [True] * len(review_jobs), True))
         may_run = steps("prep")[sid("prep", "may")]["run"]
         task_env = next(st for st in steps("prep") if st.get("name") == "The agent's task")["env"]
+        # #741 C3: the fix branch of "May it start" run, with a gh that logs
+        # what it is asked and the check round's answer stubbed.
+        fix_block = may_run[may_run.rindex("\n", 0, may_run.index("checks=false\n")) + 1:may_run.index("# #479: a round for a pull request the merge queue dropped runs")]
+
+        def may_fix(rnd, rc):
+            with tempfile.TemporaryDirectory() as d:
+                os.makedirs(os.path.join(d, ".dx-central", "scripts"))
+                stubs = {"gh": "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$GH_LOG\"\n",
+                         ".dx-central/scripts/autonomy.py": "print('{\"autopilot-rounds\": 3}')\n",
+                         ".dx-central/scripts/autopilot.py": f"import os, subprocess, sys\nif sys.argv[1] == 'checks-failed':\n    print('Scripts (self-tests) (u)'); sys.exit({rc})\n"
+                                                             f"sys.exit(subprocess.run([sys.executable, {os.path.join(HERE, 'autopilot.py')!r}] + sys.argv[1:]).returncode)\n"}
+                for name, text in stubs.items():
+                    with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                        fh.write(text)
+                os.chmod(os.path.join(d, "gh"), 0o755)
+                out, log = os.path.join(d, "out"), os.path.join(d, "gh.log")
+                open(log, "w").close()
+                r = subprocess.run(["bash", "-c", "set -euo pipefail\n" + fix_block], cwd=d, capture_output=True, text=True,
+                                   env={"PATH": d + os.pathsep + os.environ.get("PATH", ""), "PR": "8", "ROUND": str(rnd), "GITHUB_REPOSITORY": "o/r",
+                                        "GITHUB_OUTPUT": out, "GH_LOG": log, "ISSUE": "7", "OPEN_TO_CLAIM": "open"})
+                return r.returncode, open(out).read() if os.path.exists(out) else "", open(log).read()
+        below, at, unread = may_fix(3, 0), may_fix(4, 0), may_fix(2, 2)
+        check("#741 C3: a check round below the cap starts; at the cap no round starts, needs-human goes on and the comment says the checks still fail; unread jobs, a person too",
+              (below[0], "checks=true" in below[1], "go=false" in below[1], "needs-human" in below[2],
+               at[0], "go=false" in at[1], "--add-label needs-human" in at[2], "its checks still fail" in at[2], "issue comment 7" in at[2],
+               "go=false" in unread[1], "--add-label needs-human" in unread[2]),
+              (0, True, False, False, 0, True, True, True, True, True, True))
         check("#741 C1: a fix round asks checks-failed whether it is a check round, which the agent's task reads; unread, a person has it",
               ("autopilot.py checks-failed" in may_run, 'echo "checks=$checks" >> "$GITHUB_OUTPUT"' in may_run, task_env.get("CHECKS"),
                "could not read which checks failed" in may_run),
@@ -4538,6 +4591,11 @@ def main(argv):
             return 2
         print(", ".join(f"{j.get('name')} ({j.get('html_url')})" for j in failed) or "no check of the pipeline failed but the review's verdict")
         return 0 if failed else 1
+    if argv[:1] == ["rounds-spent"]:
+        # MAX, the rounds cap; CHECKS, true for a check round (#741): the
+        # comment on a pull request handed to a person at the cap.
+        print(rounds_spent(os.environ.get("MAX", "3"), os.environ.get("CHECKS") == "true"))
+        return 0
     if argv[:1] == ["next-run"]:
         # LABELS: the pull request's labels, comma-separated (#479): the
         # next run's number, after every run, counted or free.
