@@ -231,6 +231,9 @@ concurrency:
 # every organisation sets (#568): config-overlay.sh stops the run without them.
 env:
   DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN }}
+  # The test identity, its token's owner (#739, scripts/org.py test_identity):
+  # it decides, and is trusted, in the test repository only.
+  DX_TEST_LOGIN: ${{ vars.DX_TEST_LOGIN }}
   DX_BOT_APP: ${{ vars.DX_BOT_APP }}
   DX_BOT_ID: ${{ vars.DX_BOT_ID }}
 
