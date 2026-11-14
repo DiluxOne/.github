@@ -23,7 +23,7 @@ kinds/<kind>/
   pack.yml            the manifest: name, aliases, workflows, adapters, settings
   rules.yml           what this kind's reviewers send back, as rules the engine checks
   review-profile.md   what the Claude review reads for this kind, on top of review-profiles/general.md
-  surface.yml         its public surface, and its documentation paths (optional; "Public surface" below)
+  surface.yml         its public surface, its documentation paths and its high-risk paths (optional; "Public surface" below)
   dependabot.yml      the .github/dependabot.yml of its repositories (optional; "Dependabot" below)
   tools.yml           ai-agent-plugin only: the coding agents, their manifests and how each installs ("The tools of a plugin for coding agents" below)
   *.md                anything a repository of this kind needs to know (wordpress-plugin/suppressions.md)
@@ -215,6 +215,7 @@ request executed. A kind without `surface.yml` has no surface check.
 | Key | What |
 | --- | --- |
 | `docs-paths` | Shell `case` globs (`*` crosses directories) a `docs` pull request may change, added to the organisation's `docs-paths` in [`policy/review-policy.default.yml`](../policy/review-policy.default.yml) (all a repository without a kind gets). wordpress-plugin adds `readme.txt`. |
+| `high-risk` | Globs (`**` crosses directories, `*` does not) that raise the review's floor to high, added to the organisation's `high-risk` and the repository's when [`scripts/policy.py`](../scripts/policy.py) computes it (#764; each list only adds). engine-test adds `scenarios/high-risk-waits/**`, the directory of the release scenario that expects `risk:high` from its path (`release-scenarios.py coverage`, `risk_problems`). |
 | `files`, `exclude` | Globs (`**` crosses directories, `*` does not) of the files the surface is read in, and of those never read (wordpress-plugin: dependencies at any depth; tests and hidden folders at the root only, so the same names deeper in cannot hide surface). |
 | `surface` | The entries: `id`, `what` (how the message names it), `pattern` (a Python regular expression over a whole file, so a call may span lines), optionally `files` of its own, and `fixtures`. |
 | `sensitive` | Security-sensitive code (#287): entries (`id`, `what`, `pattern` over one line, `when`: `changed`, the default, for a line added or removed, or `removed`, for what only weakens when it goes, such as an escape, counted per call so one moved to another line is not taken out; and `fixtures`). An autopilot's change that adds or removes a line one matches is merged by a person, whatever its issue's Type and the review's risk (`surface.py --sensitive`, read by the auto-merge decision; not knowing counts as touching, except for a kind with no list, which has nothing sensitive). wordpress-plugin lists permissions and capabilities, nonces, `$wpdb`, authentication, code that runs commands or writes files, and an escape or a sanitiser taken out. |

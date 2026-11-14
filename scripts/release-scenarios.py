@@ -1561,6 +1561,45 @@ def autopilot_problems(scenarios):
     return out
 
 
+RISKS = ("low", "medium", "high")
+
+
+def path_floor(path, high, low):
+    """The floor scripts/policy.py gives a pull request that changes `path`
+    alone: high when it matches `high`, low when it matches `low`, medium
+    otherwise, with policy.py's own `matches` (#764). Pure."""
+    sys.path.insert(0, HERE)
+    import policy
+    return "high" if policy.matches(path, high) else "low" if policy.matches(path, low) else "medium"
+
+
+def risk_patterns(root=ROOT):
+    """The high-risk and low-risk-eligible patterns a pull request of the
+    test repository is weighed with (#764): the organisation's, and the
+    kind engine-test's `high-risk` (kinds/engine-test/surface.yml)."""
+    org = load_yaml(os.path.join(root, "policy", "review-policy.default.yml"))
+    kind = load_yaml(os.path.join(root, "kinds", "engine-test", "surface.yml"))
+    return (list(org.get("high-risk") or []) + list(kind.get("high-risk") or []), list(org.get("low-risk-eligible") or []))
+
+
+def risk_problems(scenarios, high, low):
+    """Every scenario that expects a `risk:<level>` label that no path it
+    changes (`pull_files`) gets as its floor (`path_floor`, #764): the
+    review's floor comes from the paths, so the label could never come from
+    them. Pure."""
+    out = []
+    for s in scenarios:
+        wants = [str(l).split(":", 1)[1] for l in ((s.get("expect") or {}).get("labels") or []) if str(l).startswith("risk:") and str(l).split(":", 1)[1] in RISKS]
+        files = pull_files(s)
+        floors = {f: path_floor(f, high, low) for f in files}
+        for level in wants:
+            if level not in floors.values():
+                shown = ", ".join(f"{f} ({v})" for f, v in floors.items()) or "none"
+                out.append(f"scenario {s.get('id') or '?'}: expects risk:{level}, but no path it changes has that floor for kind engine-test (its paths: {shown}); "
+                           f"add the path to kinds/engine-test/surface.yml `high-risk`, or change the expectation")
+    return out
+
+
 def core_problems(scenarios, pack):
     """Every scenario that writes under the test repository's core (`pack`'s
     `core`) but expects no wait on it (#709): its fixed change would make its
@@ -2954,6 +2993,12 @@ def self_test():
     check("#713 C2: the real file: every scenario that reads the autopilot's result waits for it, each within 15 minutes",
           (autopilot_problems(real["scenarios"]), sorted(reads), {limit(by713[i]) for i in reads}),
           ([], sorted(["accepted-spec", "spec-to-draft", "core-one-at-a-time", "decision-sub-issues", "prd-edited-after-acceptance", "question-answered", "stop-hint-continue", "draft-in-conflict", "ready-behind-main"]), {15}))
+    # #764 C2: high-risk-waits's floor is high from the path it changes.
+    hrw = by713["high-risk-waits"]
+    rhigh, rlow = risk_patterns()
+    check("#764 C2: the real high-risk-waits expects risk:high and no merge, and its path gets the high floor",
+          ("risk:high" in hrw["expect"].get("labels", []), hrw["expect"].get("merged"), pull_files(hrw), [path_floor(f, rhigh, rlow) for f in pull_files(hrw)], risk_problems([hrw], rhigh, rlow)),
+          (True, False, ["scenarios/high-risk-waits/pull.md"], ["high"], []))
     check("#713 C2: core-one-at-a-time accepts its `before` issue after its triage, and waits for its seal",
           (by713["core-one-at-a-time"]["before"][0]["issue"].get("labels"), [p for p in autopilot_problems([by713["core-one-at-a-time"]])],
            preconditions([by713["core-one-at-a-time"]], real["bodies"], rpack)), (None, [], []))

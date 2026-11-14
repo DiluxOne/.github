@@ -401,6 +401,9 @@ scenarios:
     covers: [auto-merge.yml:pull_request, next_step:wait:merge]
     opens: {pull: {title: "docs: a greeting, low risk", body: pull, issue: {title: "docs: a greeting, low risk", body: task, labels: [accepted]}}}
     expect: {merged: true}
+  # #764: its one path, scenarios/high-risk-waits/pull.md, is high risk
+  # for kind engine-test (kinds/engine-test/surface.yml `high-risk`), so
+  # the review's floor is high from the path (`coverage`: risk_problems).
   - id: high-risk-waits
     covers: []
     opens: {pull: {title: "ci: a greeting in a workflow", body: pull, issue: {title: "ci: a greeting in a workflow", body: task, labels: [accepted]}}}

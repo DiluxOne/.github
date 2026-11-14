@@ -80,7 +80,9 @@ Every review setting lives in these two files and nowhere else: `review:`
 repository's value wins key by key; what it leaves out stays as the default.
 
 Rules, in order:
-  1. Any changed file matching a `high-risk` pattern  -> floor high.
+  1. Any changed file matching a `high-risk` pattern  -> floor high (the
+     organisation's, the declared kind's in kinds/<kind>/surface.yml, #764,
+     and the repository's: each only adds).
   2. Every changed file matching a `low-risk-eligible` pattern -> floor low.
   3. Anything else -> floor medium.
 
@@ -132,6 +134,13 @@ def check_kind(kind):
         print(f"::error::kind '{kind}' is not a kind of project this organisation knows ({', '.join(known) or 'none'}); see kinds/README.md.")
         return None
     return kind
+
+
+def kind_high_risk(kind):
+    """The high-risk paths the kind's surface.yml adds (#764), [] for none."""
+    if not kind:
+        return []
+    return list(load_yaml(os.path.join(CENTRAL, "kinds", kind, "surface.yml")).get("high-risk") or [])
 
 
 def merge_settings(pack, repo, where="kind-settings"):
@@ -373,7 +382,7 @@ def main():
         print(f"::error::POLICY_LEVEL '{forced}' is not low, medium or high.")
         return 1
 
-    high = defaults.get("high-risk", []) + repo.get("high-risk", [])
+    high = defaults.get("high-risk", []) + kind_high_risk(kind) + repo.get("high-risk", [])
     low = defaults.get("low-risk-eligible", []) + repo.get("low-risk-eligible", [])
     trusted_authors = trusted_authors_of(defaults, repo, repository=os.environ.get("GITHUB_REPOSITORY", ""))
 
@@ -489,6 +498,9 @@ def self_test():
         ("a rename out of a high-risk path is high", default, "", ["docs/old-workflow.yml", ".github/workflows/old.yml"], {}, {"floor": "high"}, 0),
         ("no listed files is high", default, "", [], {}, {"floor": "high"}, 0),
         ("the repository adds a high-risk path", default, "high-risk:\n  - \"includes/providers/**\"\n", ["includes/providers/a.php"], {}, {"floor": "high"}, 0),
+        ("#764 C2: the kind engine-test's high-risk path is high", default, "kind: engine-test\n", ["scenarios/high-risk-waits/pull.md"], {}, {"floor": "high"}, 0),
+        ("#764 C2: another path of the same kind is not", default, "kind: engine-test\n", ["scenarios/low-risk-merges/pull.md"], {}, {"floor": "low"}, 0),
+        ("#764 C2: nor is the kind's path in a repository of no kind", default, "", ["scenarios/high-risk-waits/pull.md"], {}, {"floor": "low"}, 0),
         ("the repository widens low risk", default, "low-risk-eligible:\n  - \"examples/**\"\n", ["examples/a.php"], {}, {"floor": "low"}, 0),
         ("a trusted author", default, "", ["docs/a.md"], {"PR_AUTHOR": "soydiloreto"}, {"trusted": "true"}, 0),
         ("anyone else is not trusted", default, "", ["docs/a.md"], {"PR_AUTHOR": "someone"}, {"trusted": "false"}, 0),
