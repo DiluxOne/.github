@@ -15,6 +15,9 @@ What counts lives in the kind's pack, as data: kinds/<kind>/surface.yml.
               `docs` pull request may change, added to the organisation's
               own list (`docs-paths:` in policy/review-policy.default.yml,
               which is all a repository with no kind gets)
+  high-risk   globs (`**` crosses directories, `*` does not) that raise the
+              review's floor to high, added to the organisation's and the
+              repository's (#764); scripts/policy.py reads them
   files       globs (`**` crosses directories, `*` does not) of the files
               the surface is read in; `exclude` the ones never read
   surface     the entries: `id`, `what` (how the message names it),
@@ -292,6 +295,8 @@ def self_test():
             continue
         pack = load_pack(kind)
         ok(f"{kind}: docs-paths is a list", isinstance(pack.get("docs-paths", []), list))
+        high = pack.get("high-risk", [])
+        ok(f"{kind}: high-risk is a list of globs", isinstance(high, list) and all(isinstance(g, str) and g.strip() for g in high))
         for entry in pack.get("surface") or []:
             eid = entry.get("id", "?")
             fx = entry.get("fixtures") or {}
