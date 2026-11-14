@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 739,
+  "prd_sha256": "4b455455523e32eff1854fb7039ae62ebc1ddea1ecd0527aa587c7b8819ef15d",
+  "prd": "### Problem\n\nThe release lane cannot pass while the engine recognises the test identity by a login written in the pack instead of the login of the token it actually uses, so v7.14.0 cannot be tagged.\n\n### Scope\n\nReading the test identity's login from its token's owner where the lane runs, and using that one value in scripts/org.py, scripts/policy.py, scripts/deciders.py and scripts/sync-repos.py; kinds/engine-test/pack.yml keeps only `secret`; the self-tests and docs/configuration.md.\n\n### Out of scope\n\nReplacing the token's account with a GitHub App. The triage marking a scenario issue as a duplicate (#740's `bug-not-reproduced`).\n\n### Acceptance criteria\n\nC1: Given a `DX_TEST_TOKEN` whose owner is any login, when the lane works out the test identity, then its login is that owner's, read from GitHub, and no login is written in the pack.\nC2: Given a scenario pull request in the test repository authored by the token's owner, when the auto-merge decision runs, then it is a trusted author there and nowhere else.\nC3: Given an `accepted` added by the token's owner in the test repository, when the deciders are worked out, then it counts there and is refused in any other repository.\nC4: Given the self-tests of org.py, policy.py, deciders.py and sync-repos.py, when they run, then they cover a token owner that is not `{org}-test-bot`.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-14T02:57:16Z",
+  "policy": "DiluxOne/.github@b0922da2e35c"
+}
