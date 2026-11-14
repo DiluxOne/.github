@@ -84,7 +84,11 @@ jobs:
   # silent (#561): on its pull request still labelled `autopilot` (or on
   # the issue, with none), labelled `needs-human` and whose last comment of
   # dilux-bot's but its mentions (#647) is that stop or silent end, the comment takes `needs-human`
-  # off and brings it back, a run that counts. A maintainer who takes it
+  # off and brings it back, a run that counts. So does a hint on an
+  # autopilot pull request with no `needs-human` that waits on the
+  # autopilot (#699: a failed check, its open threads, its draft, as its
+  # board says, scripts/waiting.py who): it starts the continue, stopped or
+  # not, the comment its hint (autopilot.py answers). A maintainer who takes it
   # over removes `autopilot` first; a stop for the runs or rounds cap ends
   # in another comment, and stays with a person.
   answer:
@@ -109,6 +113,10 @@ jobs:
           # needs-human comes off a stopped pull request (#660).
           permission-pull-requests: write
           permission-contents: read # CODEOWNERS and the seal, for who decides (#588)
+          # #699: whom an autopilot pull request waits on reads its head's
+          # checks and statuses (scripts/waiting.py who).
+          permission-checks: read
+          permission-statuses: read
 
       # Who decides (#588): scripts/deciders.py, at the engine's ref.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -149,12 +157,26 @@ jobs:
             fi
             if [ -n "$pr" ]; then kind="pr"; stopped=$pr; else kind="issue"; stopped=$issue; fi
             labels=$(gh "$kind" view "$stopped" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | join(",")')
-            case ",$labels," in *,needs-human,*) ;; *) exit 0 ;; esac
             if [ "$kind" = pr ]; then case ",$labels," in *,autopilot,*) ;; *) exit 0 ;; esac; fi
-            # The board's mention (its dx-mention marker) always comes
-            # after the stop: it never hides it (#647).
-            last=$(gh api "repos/$GITHUB_REPOSITORY/issues/$stopped/comments" --paginate --jq '.[] | select(.user.login == env.DX_BOT_LOGIN and (.body | contains("<!-- dx-mention ") | not)) | .body | split("\n")[0]' | tail -n 1)
-            case $last in "<!-- dx-autopilot-stop -->"*|"<!-- dx-autopilot-silent -->"*) ;; *) exit 0 ;; esac
+            hint=false
+            case ",$labels," in
+              *,needs-human,*) ;;
+              *)
+                # #699 C4: no stop, but the autopilot's pull request waits on
+                # the autopilot (a failed check, its open threads, its draft:
+                # scripts/waiting.py, whom its board names): a decider's
+                # comment is a hint that brings it back, stopped or not.
+                [ "$kind" = pr ] || exit 0
+                on=$(NUMBER="$pr" python3 .dx-central/scripts/waiting.py who | jq -r '.who // ""')
+                [ "$on" = "the autopilot" ] || exit 0
+                hint=true ;;
+            esac
+            if [ "$hint" != true ]; then
+              # The board's mention (its dx-mention marker) always comes
+              # after the stop: it never hides it (#647).
+              last=$(gh api "repos/$GITHUB_REPOSITORY/issues/$stopped/comments" --paginate --jq '.[] | select(.user.login == env.DX_BOT_LOGIN and (.body | contains("<!-- dx-mention ") | not)) | .body | split("\n")[0]' | tail -n 1)
+              case $last in "<!-- dx-autopilot-stop -->"*|"<!-- dx-autopilot-silent -->"*) ;; *) exit 0 ;; esac
+            fi
           fi
           # Only those `who-decides` allows answer (#588,
           # scripts/deciders.py); anyone else, the issue's author included,
@@ -175,10 +197,11 @@ jobs:
           gh label create "autopilot:answered" --repo "$GITHUB_REPOSITORY" --color 1D76DB --force --description "On an issue: a maintainer answered the autopilot's question; the run it starts does not count" >/dev/null 2>&1 || true
           if [ -n "$stopped" ]; then
             # needs-human first: the continue's run stays out of a pull
-            # request that still carries it.
-            gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/$stopped/labels/needs-human" >/dev/null
+            # request that still carries it. A hint with no stop (#699 C4)
+            # has none to take off.
+            [ "${hint:-false}" = true ] || gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/$stopped/labels/needs-human" >/dev/null
             gh issue edit "$issue" --repo "$GITHUB_REPOSITORY" --add-label "autopilot:continue" >/dev/null
-            echo "$LOGIN answered the stop; the autopilot goes on with #$issue."
+            echo "$LOGIN answered the stop, or hinted where it waits on the autopilot; the autopilot goes on with #$issue."
             exit 0
           fi
           gh issue edit "$issue" --repo "$GITHUB_REPOSITORY" --add-label "autopilot:answered" --add-label "autopilot:continue" --remove-label "autopilot:waiting" >/dev/null

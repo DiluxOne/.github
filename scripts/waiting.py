@@ -49,6 +49,11 @@ blocks them, never named.
                           defaults to now)
   waiting.py update       one item (GITHUB_REPOSITORY, NUMBER): whom it
                           waits on now, on its board, with one mention
+  waiting.py who          one item (GITHUB_REPOSITORY, NUMBER): what blocks
+                          it and whom it waits on now, as JSON {what, who}
+                          (#699: review-reply.yml takes a decider's comment
+                          on an autopilot pull request that waits on the
+                          autopilot for a hint)
   waiting.py publish      the view rewritten in the pinned issue of
                           VIEW_REPO (org.yml's central repository), created
                           and pinned when there is none
@@ -499,6 +504,13 @@ def main(argv):
         return 0
     if argv == ["update"]:
         update(os.environ["GITHUB_REPOSITORY"], int(os.environ["NUMBER"]), maintainers)
+        return 0
+    if argv == ["who"]:
+        repo, number = os.environ["GITHUB_REPOSITORY"], int(os.environ["NUMBER"])
+        owner, name = repo.split("/", 1)
+        item = json.loads(gh("api", "graphql", "-f", f"query={ONE}", "-F", f"o={owner}", "-F", f"n={name}", "-F", f"i={number}"))["data"]["repository"]["issueOrPullRequest"]
+        got = (item_blocker(item) if item and item.get("state") == "OPEN" else None) or ("", "")
+        print(json.dumps({"what": got[0], "who": got[1]}))
         return 0
     if argv == ["publish"]:
         publish(render(fetch(os.environ.get("OWNER", "DiluxOne")), now_(), maintainers), os.environ.get("VIEW_REPO") or org.CENTRAL)
