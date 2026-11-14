@@ -3301,6 +3301,18 @@ def callers_test(check, conf):
           and "  auto-merge:\n    needs: review\n" in fixed["[review, conventions]"]
           and "  auto-merge:\n    needs: [review, mine]\n" in fixed["[review, conventions, mine]"]
           and all(callers_drift({**c2, ".github/workflows/test-pull-request.yml": f}, conf, kind="engine-test") == [] for f in fixed.values()), fixed)
+    # #757 C3: diluxone-test's caller as it is today, the template with the
+    # `pipeline` job still waiting on every other job, as before #755.
+    before_755 = tpr.replace("    needs: [conventions, review, auto-merge]\n",
+                             "    needs: [conventions, assignee, wake-vm, review, auto-merge, waiting, screenshots, autopilot-fix, autopilot-queue, queue]\n")
+    got = callers_drift({**c2, ".github/workflows/test-pull-request.yml": before_755}, conf, kind="engine-test")
+    fixed, _ = rewrite_caller(before_755, tpr, set(owned.get("test-pull-request.yml") or []))
+    check("#757 C3: diluxone-test's caller of today differs in the `pipeline` job's `needs`, and the rewrite gives the template's",
+          before_755 != tpr and [(n, p) for n, p, _ in got] == [("test-pull-request.yml", ".github/workflows/test-pull-request.yml")]
+          and [f for f in got[0][2] if f.startswith("job `pipeline` needs ")] == got[0][2] == [
+              "job `pipeline` needs `assignee, auto-merge, autopilot-fix, autopilot-queue, conventions, queue, review, screenshots, waiting, wake-vm`, not `auto-merge, conventions, review`"]
+          and fixed is not None and "  pipeline:\n    needs: [conventions, review, auto-merge]\n" in fixed
+          and callers_drift({**c2, ".github/workflows/test-pull-request.yml": fixed}, conf, kind="engine-test") == [], (got, fixed))
     check("callers: a template whose workflows the repository does not call does not apply",
           not any(n == "release-wp.yml" for n, _, _ in callers_drift(files, conf)), callers_drift(files, conf))
     check("callers: a repository with no caller of an every-repository template is told so",
