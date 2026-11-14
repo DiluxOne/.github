@@ -2522,6 +2522,9 @@ def self_test():
     check("#748 C1: after point_callers, every engine call of test-pull-request.yml's review, auto-merge and autopilot-fix jobs is at @v7-next",
           (rows, sorted(m["name"] for m in moved), {j: jobs[j]["uses"].rsplit("@", 1)[1] for j in ("review", "auto-merge", "autopilot-fix")}),
           ([], ["issues.yml", "test-pull-request.yml"], {"review": "v7-next", "auto-merge": "v7-next", "autopilot-fix": "v7-next"}))
+    check("#748 C3: and put back after, as it was, with the others",
+          (put_back("o/t", "v7-next", moved, fake, "O/.github", lambda s: None, 3), st["main"]["test-pull-request.yml"] == shipped, st["main"]["issues.yml"] == caller),
+          ([], True, True))
     st, fake = repo_fake()
     moved = []
     run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=3, central="O/.github", moved_out=moved)

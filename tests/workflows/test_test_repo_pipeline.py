@@ -37,3 +37,31 @@ def test_the_review_auto_merge_and_fix_rounds_run_the_candidate_once_moved():
 def test_the_pack_gives_the_test_repository_the_caller():
     pack = load(ROOT / "kinds" / "engine-test" / "pack.yml")
     assert "test-pull-request.yml" in pack["callers"]
+
+
+def test_the_template_is_the_required_workflow_job_for_job_plus_pipeline():
+    template, required = load(TEMPLATE), load(REQUIRED)
+    assert template[True] == required[True]
+    assert template["permissions"] == required["permissions"]
+    jobs = dict(template["jobs"])
+    pipeline = jobs.pop("pipeline")
+    # The same ids, `uses:`, `if:`, `needs`, permissions, inputs and secrets,
+    # so the same check names.
+    assert jobs == required["jobs"]
+    # The whole run as one check: it waits for every other job, runs on the
+    # pull request and in the merge queue alike, and fails when one failed
+    # or was cancelled.
+    assert sorted(pipeline["needs"]) == sorted(required["jobs"])
+    assert pipeline["if"] == "always()"
+    assert pipeline["permissions"] == {}
+    step = pipeline["steps"][-1]
+    assert step["env"]["RESULTS"] == "${{ join(needs.*.result, ' ') }}"
+    assert '*" failure "*|*" cancelled "*' in step["run"] and "exit 1" in step["run"]
+
+
+def test_the_pipeline_job_fails_on_a_failed_or_cancelled_job_only():
+    import subprocess
+    run = load(TEMPLATE)["jobs"]["pipeline"]["steps"][-1]["run"]
+    for results, code in (("success skipped success", 0), ("skipped skipped", 0), ("success failure", 1), ("cancelled success", 1)):
+        got = subprocess.run(["bash", "-c", run], env={"RESULTS": results, "PATH": "/usr/bin:/bin"}, capture_output=True, text=True)
+        assert got.returncode == code, (results, got.stdout)
