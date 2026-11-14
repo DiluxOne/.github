@@ -81,8 +81,9 @@ repository's value wins key by key; what it leaves out stays as the default.
 
 Rules, in order:
   1. Any changed file matching a `high-risk` pattern  -> floor high (the
-     organisation's, the declared kind's in kinds/<kind>/surface.yml, #764,
-     and the repository's: each only adds).
+     organisation's, the repository's kinds' in kinds/<kind>/surface.yml,
+     #764: the one its policy declares and those repos.yml gives
+     GITHUB_REPOSITORY, and the repository's own: each only adds).
   2. Every changed file matching a `low-risk-eligible` pattern -> floor low.
   3. Anything else -> floor medium.
 
@@ -136,11 +137,25 @@ def check_kind(kind):
     return kind
 
 
-def kind_high_risk(kind):
-    """The high-risk paths the kind's surface.yml adds (#764), [] for none."""
-    if not kind:
-        return []
-    return list(load_yaml(os.path.join(CENTRAL, "kinds", kind, "surface.yml")).get("high-risk") or [])
+def repo_kinds(repository):
+    """The kinds repos.yml (DX_REPOS_YML, else the one beside the policy)
+    gives the repository OWNER/NAME, where a kind is declared (#562); [] for
+    none or one it does not list."""
+    conf = load_yaml(os.environ.get("DX_REPOS_YML") or os.path.join(CENTRAL, "repos.yml"))
+    entry = ((conf.get("repos") or {}).get(str(repository).split("/")[-1]) or {}) if repository else {}
+    return [str(k.get("kind")) for k in entry.get("kinds") or [] if isinstance(k, dict) and k.get("kind")]
+
+
+def kind_high_risk(kind, repository=""):
+    """The high-risk paths the kinds' surface.yml add (#764): the kind the
+    policy declares and every kind repos.yml gives the repository, each
+    only adding; [] for none. A kind with no pack adds nothing here
+    (check_kind names the policy's)."""
+    out = []
+    for k in dict.fromkeys(([kind] if kind else []) + repo_kinds(repository)):
+        if KIND_RE.fullmatch(k) and os.path.isfile(pack_path(k)):
+            out += [p for p in load_yaml(os.path.join(CENTRAL, "kinds", k, "surface.yml")).get("high-risk") or [] if p not in out]
+    return out
 
 
 def merge_settings(pack, repo, where="kind-settings"):
@@ -382,7 +397,7 @@ def main():
         print(f"::error::POLICY_LEVEL '{forced}' is not low, medium or high.")
         return 1
 
-    high = defaults.get("high-risk", []) + kind_high_risk(kind) + repo.get("high-risk", [])
+    high = defaults.get("high-risk", []) + kind_high_risk(kind, os.environ.get("GITHUB_REPOSITORY", "")) + repo.get("high-risk", [])
     low = defaults.get("low-risk-eligible", []) + repo.get("low-risk-eligible", [])
     trusted_authors = trusted_authors_of(defaults, repo, repository=os.environ.get("GITHUB_REPOSITORY", ""))
 
@@ -450,7 +465,7 @@ def run_case(defaults_path, repo_text, files, **env):
         open(out_path, "w").close()
         saved = dict(os.environ)
         os.environ.update({"DEFAULT_POLICY": defaults_path, "REPO_POLICY": repo_path, "CHANGED_FILES": "\n".join(files), "GITHUB_OUTPUT": out_path})
-        for key in ("PR_AUTHOR", "POLICY_LEVEL", "POLICY_MODE", "KIND_DEFAULT", "PR_AUTHOR_TYPE", "HEAD_IN_REPO", "PR_LABELS", "HEAD_AUTHOR", "HEAD_COMMITTER", "NEEDS_HUMAN_BY", "DX_BOT_LOGIN", "DX_TEST_LOGIN", "GITHUB_REPOSITORY"):
+        for key in ("PR_AUTHOR", "POLICY_LEVEL", "POLICY_MODE", "KIND_DEFAULT", "PR_AUTHOR_TYPE", "HEAD_IN_REPO", "PR_LABELS", "HEAD_AUTHOR", "HEAD_COMMITTER", "NEEDS_HUMAN_BY", "DX_BOT_LOGIN", "DX_TEST_LOGIN", "GITHUB_REPOSITORY", "DX_REPOS_YML"):
             os.environ.pop(key, None)
         os.environ.update(env)
         try:
@@ -501,6 +516,8 @@ def self_test():
         ("#764 C2: the kind engine-test's high-risk path is high", default, "kind: engine-test\n", ["scenarios/high-risk-waits/pull.md"], {}, {"floor": "high"}, 0),
         ("#764 C2: another path of the same kind is not", default, "kind: engine-test\n", ["scenarios/low-risk-merges/pull.md"], {}, {"floor": "low"}, 0),
         ("#764 C2: nor is the kind's path in a repository of no kind", default, "", ["scenarios/high-risk-waits/pull.md"], {}, {"floor": "low"}, 0),
+        ("#764 C2: the kind repos.yml gives the repository counts too (#562)", default, "", ["scenarios/high-risk-waits/pull.md"], {"GITHUB_REPOSITORY": "DiluxOne/diluxone-test"}, {"floor": "high", "kind": ""}, 0),
+        ("#764 C2: and not in a repository repos.yml gives another kind", default, "", ["scenarios/high-risk-waits/pull.md"], {"GITHUB_REPOSITORY": "DiluxOne/diluxone-wp-test"}, {"floor": "low"}, 0),
         ("the repository widens low risk", default, "low-risk-eligible:\n  - \"examples/**\"\n", ["examples/a.php"], {}, {"floor": "low"}, 0),
         ("a trusted author", default, "", ["docs/a.md"], {"PR_AUTHOR": "soydiloreto"}, {"trusted": "true"}, 0),
         ("anyone else is not trusted", default, "", ["docs/a.md"], {"PR_AUTHOR": "someone"}, {"trusted": "false"}, 0),
