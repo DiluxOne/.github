@@ -972,11 +972,75 @@ Normal
                 unsaid.append(step_name)
         check("C2 (#763) every sealing step guards the seal, says a failed one (board --seal-failed, or why=), and exits 1",
               (len(sealing_steps()) >= 4, sorted(set(unguarded)), unsaid), (True, [], []))
+        # C3 (#763): the jobs that write receipts are queued in one group per
+        # repository, never cancelling one another; a slot a third arrival
+        # took is written by the fallback, through put()'s retry.
+        writers = writing_jobs()
+        check("C3 (#763) every job that writes receipts is in receipts-<repository>, cancel-in-progress false, or its fallback",
+              (queue_problems(writers), sorted(writers)),
+              ([], ["autopilot.yml:seal", "autopilot.yml:seal-again", "autopilot.yml:spec-seal", "autopilot.yml:spec-seal-again",
+                    "issue-accepted.yml:receipt", "issue-accepted.yml:receipt-again", "issue-accepted.yml:seal", "issue-accepted.yml:seal-again",
+                    "issue-repro.yml:seal", "issue-repro.yml:seal-again"]))
+        q = {"group": QUEUE, "cancel-in-progress": False}
+        st = [{"run": "receipts.py seal-prd"}]
+        check("C3 (#763) the queue's check: a job outside it, one that cancels, a fallback with other steps, a queued job with none",
+              [len(queue_problems(j)) for j in (
+                  {"w:a": {"steps": st}, "w:b": {"concurrency": q, "steps": st}},
+                  {"w:a": {"concurrency": dict(q, **{"cancel-in-progress": True}), "steps": st}},
+                  {"w:a": {"concurrency": q, "steps": st}, "w:b": {"if": "always() && needs.a.result == 'cancelled'", "steps": st + st}},
+                  {"w:a": {"concurrency": q, "steps": st}, "w:b": {"if": "always() && needs.a.result == 'cancelled'", "steps": st}})],
+              [2, 2, 2, 0])
     except ImportError:
         print("skip the workflow's wiring (no PyYAML here)")
     if not failed:
         print("all tests passed")
     return failed
+
+
+QUEUE = "receipts-${{ github.repository }}"
+
+
+def writing_jobs():
+    """Every job of this repository's workflows that writes to the receipts
+    branch (a step that runs receipts.py seal-prd, seal-spec or merged), as
+    {"<file>:<job>": job}."""
+    import yaml
+    wfdir = os.path.join(HERE, "..", ".github", "workflows")
+    out = {}
+    for f in sorted(os.listdir(wfdir)):
+        if not f.endswith((".yml", ".yaml")):
+            continue
+        wf = yaml.safe_load(open(os.path.join(wfdir, f), encoding="utf-8")) or {}
+        for name, job in (wf.get("jobs") or {}).items():
+            if any(re.search(r"receipts\.py\"? (seal-prd|seal-spec|merged)\b", st.get("run") or "") for st in job.get("steps") or []):
+                out[f"{f}:{name}"] = job
+    return out
+
+
+def queue_problems(jobs):
+    """What keeps the writing jobs from one queue per repository (#763):
+    each is in the group receipts-<repository> with cancel-in-progress
+    false, or is the fallback of one that is: it runs only when that one
+    was cancelled (GitHub cancels a group's pending job when a third
+    arrives), with the very same steps; and every queued job has one."""
+    out, fallbacks = [], {}
+    for key, job in jobs.items():
+        group = job.get("concurrency") or {}
+        if isinstance(group, dict) and group.get("group") == QUEUE and group.get("cancel-in-progress") is False:
+            continue
+        m = re.search(r"needs\.([\w-]+)\.result == 'cancelled'", str(job.get("if") or ""))
+        of = f"{key.split(':')[0]}:{m.group(1)}" if m else ""
+        queued = jobs.get(of) or {}
+        if not m or (queued.get("concurrency") or {}).get("group") != QUEUE:
+            out.append(f"{key}: not in {QUEUE} with cancel-in-progress false, nor the fallback of a job that is")
+        elif queued.get("steps") != job.get("steps"):
+            out.append(f"{key}: its steps are not those of {of}, whose fallback it is")
+        else:
+            fallbacks[of] = key
+    for key, job in jobs.items():
+        if (job.get("concurrency") or {}).get("group") == QUEUE and key not in fallbacks:
+            out.append(f"{key}: no fallback for when a later write cancels it in the queue")
+    return out
 
 
 def sealing_steps():

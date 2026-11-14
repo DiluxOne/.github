@@ -3281,7 +3281,7 @@ Clamp the value in Sum::add.
                agent_env.get("DX_PULLS")],
               [True, True, "${{ github.workspace }}/.dx-io/pulls.json"])
         check("#287: the jobs with the key run no agent, on GitHub's fresh runners",
-              (sorted(keyed), {jobs[j]["runs-on"] for j in keyed if j != "where"}), (["apply", "draft", "prep", "where"], {"ubuntu-latest"}))
+              (sorted(keyed), {jobs[j]["runs-on"] for j in keyed if j != "where"}), (["apply", "draft", "prep", "seal", "seal-again", "spec-seal", "spec-seal-again", "where"], {"ubuntu-latest"}))
         steps = lambda job: jobs[job]["steps"]
         sid = lambda job, key: next(i for i, st in enumerate(steps(job)) if st.get("id") == key)
         tree = lambda job: next(st for st in steps(job) if st.get("name") == "The working tree")["run"]
@@ -3311,7 +3311,8 @@ Clamp the value in Sum::add.
         here = "github.repository == format('{0}/.github', github.repository_owner)"
         check("#498 ENGINE and the workflows permission name only the organisation's repository, empty elsewhere",
               (here in str(applied["env"].get("ENGINE", "")), str(token.get("permission-workflows", "")).replace(" ", "") == ("${{" + here + "&&'write'||''}}").replace(" ", "")), (True, True))
-        spec_apply = next(st for st in steps("draft") if st.get("name") == "The agent's Spec")["run"]
+        # The Spec is applied where it is sealed (#763), in the receipts queue.
+        spec_apply = next(st for st in steps("spec-seal") if st.get("name") == "The agent's Spec")["run"]
         check("#287: before a draft exists, only the Spec or a stop applies", "apply .dx-out/outbox.jsonl spec,stop" in spec_apply, True)
         end, last, fresh = sid("apply", "end"), sid("apply", "last-resort"), sid("apply", "bot-end")
         check("C1 (#126): a fresh token after the work, however it ended, before the end rule, and the last resort after it",

@@ -22,8 +22,11 @@ def test_accepted_is_guarded_before_the_check_the_assignee_and_the_seal():
     for s in steps[guard + 1:]:
         if s.get("id") == "check" or s.get("name", "").startswith("Assign it"):
             assert "steps.guard.outputs.refused != 'true'" in s["if"], s.get("name")
-    seal = next(s for s in steps if s.get("name", "").startswith("Seal the PRD"))
-    assert "steps.check.outputs.ready == 'true'" in seal["if"]
+    # The seal is a job of its own (#763), only on a check that passed.
+    jobs = workflow("issue-accepted.yml")["jobs"]
+    assert "steps.check.outputs.ready == 'true'" in jobs["ready"]["outputs"]["seal"]
+    assert jobs["seal"]["if"] == "needs.ready.outputs.seal == 'true'"
+    assert any(s.get("name", "").startswith("Seal the PRD") for s in jobs["seal"]["steps"])
 
 
 def test_continue_is_guarded_before_the_autopilot_starts():

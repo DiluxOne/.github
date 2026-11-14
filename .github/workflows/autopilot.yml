@@ -25,7 +25,10 @@ name: Autopilot
 #                   may-start), or the issue says which way to declare.
 #                   First the agent writes the Spec, which this
 #                   workflow appends to the issue (G3, sealed on the
-#                   receipts branch). Then it opens the draft pull request,
+#                   receipts branch by the `spec-seal` job, in the
+#                   repository's receipts queue, #763; a delegated
+#                   sub-issue's PRD by the `seal` job, the same way).
+#                   Then it opens the draft pull request,
 #                   labelled `autopilot`: the Spec as a checklist, one box per
 #                   criterion. Then the agent works the criteria in order,
 #                   one commit each, each box ticked only once a commit names
@@ -302,6 +305,10 @@ jobs:
       # it (#535): `present`, and the Spec is not written again.
       spec: ${{ steps.what.outputs.spec }}
       lane: ${{ steps.may.outputs.lane }}
+      # A delegated sub-issue with no seal (#575): `prd`, and the seal job
+      # seals the body prep read (its SHA-256), in the receipts queue (#763).
+      seal: ${{ steps.may.outputs.seal }}
+      seal-sha: ${{ steps.may.outputs.seal-sha }}
       repro-test: ${{ steps.may.outputs.repro-test }}
       repro-sha: ${{ steps.may.outputs.repro-sha }}
       repro-branch: ${{ steps.may.outputs.repro-branch }}
@@ -567,22 +574,13 @@ jobs:
           # policy accepted it, so no person's label ran issue-accepted.yml
           # and nothing sealed it. The lane, read above, already checked that
           # a person accepted its parent and that its text was not edited
-          # since it was linked: an unsealed one is sealed as it stands, here,
-          # and read again. Any other lane, or a changed one, is refused below;
-          # so is one whose sealing failed, which then still reads unsealed.
+          # since it was linked: an unsealed one is sealed as it stands, by
+          # the seal job (#763, in the receipts queue), before anything else
+          # starts. Any other lane, or a changed one, is refused below.
           if [ "$v" = unsealed ] && [ "$LANE" = delegated ]; then
-            POLICY_REF=$(git -C .dx-central rev-parse --short=12 HEAD)
-            # A seal that could not be written (#763): said on the board,
-            # and the job fails, never left to read as unsealed.
-            if ! NUMBER="$ISSUE" POLICY_REF="$POLICY_REF" ACCEPTED_BY="policy (lane delegated)" python3 .dx-central/scripts/receipts.py seal-prd >/dev/null; then
-              failed=--seal-failed
-              board=$(NUMBER="$ISSUE" python3 .dx-central/scripts/receipts.py board ${failed:+"$failed"})
-              id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE/comments" --paginate --jq '.[] | select(.user.type == "Bot" and (.user.login | startswith(env.DX_BOT_APP)) and (.body | startswith("<!-- dx-board -->"))) | .id' | tail -1)
-              if [ -n "$id" ]; then gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$board" >/dev/null
-              else gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$board" >/dev/null; fi
-              echo "::error::The seal of #$ISSUE's PRD could not be written; the board says so."; exit 1
-            fi
-            v=$(NUMBER="$ISSUE" python3 .dx-central/scripts/receipts.py verify-prd --wait 12 || true)
+            echo "#$ISSUE is sealed as it stands by the seal job, before the work starts."
+            { echo "seal=prd"; echo "seal-sha=$(sha256sum < "$BODY" | cut -c1-64)"; } >> "$GITHUB_OUTPUT"
+            v=match
           fi
           if [ "$v" != match ]; then
             msg="The autopilot did not run: the issue's PRD is not the one sealed when it was accepted ($v). A maintainer accepts it again (remove and add \`accepted\`) to seal the text as it stands."
@@ -796,10 +794,150 @@ jobs:
           retention-days: 3
 
   # --- start: the Spec, by the agent, with no key ---------------------------
+  # A delegated sub-issue's seal (#575), in a job of its own (#763): every
+  # job that writes to the receipts branch is in one queue per repository,
+  # receipts-<repository>, so writers never race on its head; only these
+  # few seconds are queued, not the autopilot. GitHub keeps one job running
+  # and one pending in a group, and a third arrival cancels the pending
+  # one: then `seal-again` writes it, outside the queue, through put()'s
+  # retry (scripts/receipts.py). Nothing after it starts unsealed.
+  seal:
+    name: Autopilot · the PRD's seal
+    needs: prep
+    if: ${{ !cancelled() && needs.prep.outputs.go == 'true' && needs.prep.outputs.seal == 'prd' }}
+    runs-on: ubuntu-latest # fresh: it holds the key beside an agent's work (#287)
+    timeout-minutes: 15
+    concurrency:
+      group: receipts-${{ github.repository }}
+      cancel-in-progress: false
+    permissions: {}
+    steps:
+      - name: App token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write # the receipts branch
+          permission-issues: write # the board, the Spec
+      - name: The organisation's scripts and policy
+        id: central
+        env:
+          REF: ${{ inputs.central-ref || job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          git clone -q --depth 1 --branch "$REF" https://github.com/DiluxOne/.github .dx-central 2>/dev/null \
+            || { git clone -q https://github.com/DiluxOne/.github .dx-central && git -C .dx-central checkout -q "$REF"; }
+          test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+          echo "ref=$(git -C .dx-central rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Seal the PRD
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          ISSUE: ${{ needs.prep.outputs.issue }}
+          POLICY_REF: ${{ steps.central.outputs.ref }}
+          SEAL_SHA: ${{ needs.prep.outputs.seal-sha }}
+        run: |
+          set -euo pipefail
+          gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/body.md"
+          export BODY="$RUNNER_TEMP/body.md"
+          refuse() {
+            echo "$1"
+            gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$1
+
+          🤖 AI-generated · Claude Opus 5.5 (Anthropic)" >/dev/null || true
+            exit 1
+          }
+          # Only the body prep read and the lane checked: an edit since is
+          # not sealed, and goes back to a maintainer.
+          if [ "$(sha256sum < "$BODY" | cut -c1-64)" != "$SEAL_SHA" ]; then
+            refuse "The autopilot did not run: the issue was edited after its lane accepted it, so its PRD is not sealed. A maintainer accepts it again (remove and add \`accepted\`) to seal the text as it stands."
+          fi
+          # A seal that could not be written (#763): said on the board,
+          # and the job fails, never left to read as unsealed.
+          if ! NUMBER="$ISSUE" ACCEPTED_BY="policy (lane delegated)" python3 .dx-central/scripts/receipts.py seal-prd >/dev/null; then
+            failed=--seal-failed
+            board=$(NUMBER="$ISSUE" python3 .dx-central/scripts/receipts.py board ${failed:+"$failed"})
+            id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE/comments" --paginate --jq '.[] | select(.user.type == "Bot" and (.user.login | startswith(env.DX_BOT_APP)) and (.body | startswith("<!-- dx-board -->"))) | .id' | tail -1)
+            if [ -n "$id" ]; then gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$board" >/dev/null
+            else gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$board" >/dev/null; fi
+            echo "::error::The seal of #$ISSUE's PRD could not be written; the board says so."; exit 1
+          fi
+          v=$(NUMBER="$ISSUE" python3 .dx-central/scripts/receipts.py verify-prd --wait 12 || true)
+          if [ "$v" != match ]; then
+            refuse "The autopilot did not run: the issue's PRD is not the one sealed when it was accepted ($v). A maintainer accepts it again (remove and add \`accepted\`) to seal the text as it stands."
+          fi
+
+  # The seal's queue slot was taken by a later write (#763): the same steps,
+  # outside the queue; put() retries a moved head until its time bound.
+  seal-again:
+    name: Autopilot · the PRD's seal, again
+    needs: [prep, seal]
+    if: ${{ always() && needs.seal.result == 'cancelled' }}
+    runs-on: ubuntu-latest # fresh: it holds the key beside an agent's work (#287)
+    timeout-minutes: 15
+    permissions: {}
+    steps:
+      - name: App token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write # the receipts branch
+          permission-issues: write # the board, the Spec
+      - name: The organisation's scripts and policy
+        id: central
+        env:
+          REF: ${{ inputs.central-ref || job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          git clone -q --depth 1 --branch "$REF" https://github.com/DiluxOne/.github .dx-central 2>/dev/null \
+            || { git clone -q https://github.com/DiluxOne/.github .dx-central && git -C .dx-central checkout -q "$REF"; }
+          test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+          echo "ref=$(git -C .dx-central rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Seal the PRD
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          ISSUE: ${{ needs.prep.outputs.issue }}
+          POLICY_REF: ${{ steps.central.outputs.ref }}
+          SEAL_SHA: ${{ needs.prep.outputs.seal-sha }}
+        run: |
+          set -euo pipefail
+          gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/body.md"
+          export BODY="$RUNNER_TEMP/body.md"
+          refuse() {
+            echo "$1"
+            gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$1
+
+          🤖 AI-generated · Claude Opus 5.5 (Anthropic)" >/dev/null || true
+            exit 1
+          }
+          # Only the body prep read and the lane checked: an edit since is
+          # not sealed, and goes back to a maintainer.
+          if [ "$(sha256sum < "$BODY" | cut -c1-64)" != "$SEAL_SHA" ]; then
+            refuse "The autopilot did not run: the issue was edited after its lane accepted it, so its PRD is not sealed. A maintainer accepts it again (remove and add \`accepted\`) to seal the text as it stands."
+          fi
+          # A seal that could not be written (#763): said on the board,
+          # and the job fails, never left to read as unsealed.
+          if ! NUMBER="$ISSUE" ACCEPTED_BY="policy (lane delegated)" python3 .dx-central/scripts/receipts.py seal-prd >/dev/null; then
+            failed=--seal-failed
+            board=$(NUMBER="$ISSUE" python3 .dx-central/scripts/receipts.py board ${failed:+"$failed"})
+            id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE/comments" --paginate --jq '.[] | select(.user.type == "Bot" and (.user.login | startswith(env.DX_BOT_APP)) and (.body | startswith("<!-- dx-board -->"))) | .id' | tail -1)
+            if [ -n "$id" ]; then gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$board" >/dev/null
+            else gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$board" >/dev/null; fi
+            echo "::error::The seal of #$ISSUE's PRD could not be written; the board says so."; exit 1
+          fi
+          v=$(NUMBER="$ISSUE" python3 .dx-central/scripts/receipts.py verify-prd --wait 12 || true)
+          if [ "$v" != match ]; then
+            refuse "The autopilot did not run: the issue's PRD is not the one sealed when it was accepted ($v). A maintainer accepts it again (remove and add \`accepted\`) to seal the text as it stands."
+          fi
+
   spec:
     name: Autopilot · the Spec
-    needs: [where, prep]
-    if: ${{ !cancelled() && needs.prep.outputs.go == 'true' && needs.prep.outputs.mode == 'start' && needs.prep.outputs.spec != 'present' }}
+    needs: [where, prep, seal, seal-again]
+    if: ${{ !cancelled() && needs.prep.outputs.go == 'true' && needs.prep.outputs.mode == 'start' && needs.prep.outputs.spec != 'present' && (needs.prep.outputs.seal != 'prd' || needs.seal.result == 'success' || needs.seal-again.result == 'success') }}
     runs-on: ${{ (vars.DX_RUNNER_HEAVY != '' && needs.where.outputs.github-hosted == 'false') && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 30
     permissions:
@@ -911,10 +1049,192 @@ jobs:
           retention-days: 30
 
   # --- start: the Spec on the issue, and the draft, with the key ------------
+  # The Spec, applied to the issue and sealed (G3), in a job of its own
+  # (#763), in the receipts queue as the PRD's seal is; `spec-seal-again`
+  # writes it when a later write took its queue slot.
+  spec-seal:
+    name: Autopilot · the Spec's seal (G3)
+    needs: [prep, spec, seal, seal-again]
+    if: ${{ !cancelled() && needs.prep.outputs.go == 'true' && needs.prep.outputs.mode == 'start' && (needs.prep.outputs.seal != 'prd' || needs.seal.result == 'success' || needs.seal-again.result == 'success') && (needs.spec.outputs.outcome == 'success' || (needs.prep.outputs.spec == 'present' && needs.spec.result == 'skipped')) }}
+    runs-on: ubuntu-latest # fresh: it holds the key beside an agent's work (#287)
+    timeout-minutes: 15
+    concurrency:
+      group: receipts-${{ github.repository }}
+      cancel-in-progress: false
+    permissions: {}
+    outputs:
+      why: ${{ steps.seal.outputs.why }}
+    steps:
+      - name: App token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write # the receipts branch
+          permission-issues: write # the board, the Spec
+
+      # A git directory for the Spec's apply, which sets the bot's name.
+      - name: A working directory
+        run: git init -q .
+
+      - name: The organisation's scripts and policy
+        id: central
+        env:
+          REF: ${{ inputs.central-ref || job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          git clone -q --depth 1 --branch "$REF" https://github.com/DiluxOne/.github .dx-central 2>/dev/null \
+            || { git clone -q https://github.com/DiluxOne/.github .dx-central && git -C .dx-central checkout -q "$REF"; }
+          test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+          echo "ref=$(git -C .dx-central rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: The repository's own policy
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/contents/.github/autonomy.yml" --jq .content 2>/dev/null | base64 -d > "$RUNNER_TEMP/repo-autonomy.yml" || : > "$RUNNER_TEMP/repo-autonomy.yml"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: autopilot-out-spec
+          path: .dx-out
+
+      # The Spec the agent wrote (only "### Spec: " sections, appended), or
+      # its stop: nothing else of its outbox applies before a draft exists.
+      - name: The agent's Spec
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          NUMBER: ${{ needs.prep.outputs.issue }}
+          REPO_AUTONOMY: ${{ runner.temp }}/repo-autonomy.yml
+        run: |
+          git config user.name "$DX_BOT_LOGIN"
+          git config user.email "$DX_BOT_ID+$DX_BOT_LOGIN@users.noreply.github.com"
+          python3 .dx-central/scripts/autopilot.py apply .dx-out/outbox.jsonl spec,stop || true
+
+      # G3's seal (#81): the Spec's SHA-256 on the receipts branch, once it
+      # passes G3; the draft job checks it before it opens the draft.
+      - name: Seal the Spec (G3)
+        id: seal
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          NUMBER: ${{ needs.prep.outputs.issue }}
+          POLICY_REF: ${{ steps.central.outputs.ref }}
+          STARTED: ${{ needs.prep.outputs.started }}
+        run: |
+          set -euo pipefail
+          gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/body.md"
+          # The agent stopped, or the Spec does not pass G3: nothing is
+          # sealed, and the draft job says why.
+          stopped=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json comments --jq '[.comments[] | select((.body | startswith("<!-- dx-autopilot-stop -->")) and (.author.login | test("^(app/)?" + env.DX_BOT_APP + "(\\[bot\\])?$")) and .createdAt >= env.STARTED)] | length')
+          if [ "$stopped" != 0 ]; then echo "The agent stopped after the Spec: nothing to seal."; exit 0; fi
+          if ! type=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" --jq '.type.name // ""') \
+            || ! python3 .dx-central/scripts/issue-schema.py check --stage spec --type "$type" < "$RUNNER_TEMP/body.md" > /dev/null; then
+            echo "The Spec does not pass G3 (or its Type could not be read): nothing to seal."; exit 0
+          fi
+          # A Spec seal that could not be written (#763): the end rule says
+          # so on the issue (why=), and the job fails.
+          if ! BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/receipts.py seal-spec; then
+            echo "why=The Spec's seal could not be written (the receipts branch kept moving); the draft pull request is not opened." >> "$GITHUB_OUTPUT"
+            echo "::error::The seal of #$NUMBER's Spec could not be written."; exit 1
+          fi
+
+  # The Spec seal's queue slot was taken by a later write (#763): the same
+  # steps, outside the queue; put() retries a moved head until its bound.
+  spec-seal-again:
+    name: Autopilot · the Spec's seal (G3), again
+    # order: after the Spec and the PRD's seal, as spec-seal, whose steps it runs.
+    needs: [prep, spec, seal, seal-again, spec-seal]
+    if: ${{ always() && needs.spec-seal.result == 'cancelled' }}
+    runs-on: ubuntu-latest # fresh: it holds the key beside an agent's work (#287)
+    timeout-minutes: 15
+    permissions: {}
+    outputs:
+      why: ${{ steps.seal.outputs.why }}
+    steps:
+      - name: App token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write # the receipts branch
+          permission-issues: write # the board, the Spec
+
+      # A git directory for the Spec's apply, which sets the bot's name.
+      - name: A working directory
+        run: git init -q .
+
+      - name: The organisation's scripts and policy
+        id: central
+        env:
+          REF: ${{ inputs.central-ref || job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          git clone -q --depth 1 --branch "$REF" https://github.com/DiluxOne/.github .dx-central 2>/dev/null \
+            || { git clone -q https://github.com/DiluxOne/.github .dx-central && git -C .dx-central checkout -q "$REF"; }
+          test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+          echo "ref=$(git -C .dx-central rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: The repository's own policy
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/contents/.github/autonomy.yml" --jq .content 2>/dev/null | base64 -d > "$RUNNER_TEMP/repo-autonomy.yml" || : > "$RUNNER_TEMP/repo-autonomy.yml"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: autopilot-out-spec
+          path: .dx-out
+
+      # The Spec the agent wrote (only "### Spec: " sections, appended), or
+      # its stop: nothing else of its outbox applies before a draft exists.
+      - name: The agent's Spec
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          NUMBER: ${{ needs.prep.outputs.issue }}
+          REPO_AUTONOMY: ${{ runner.temp }}/repo-autonomy.yml
+        run: |
+          git config user.name "$DX_BOT_LOGIN"
+          git config user.email "$DX_BOT_ID+$DX_BOT_LOGIN@users.noreply.github.com"
+          python3 .dx-central/scripts/autopilot.py apply .dx-out/outbox.jsonl spec,stop || true
+
+      # G3's seal (#81): the Spec's SHA-256 on the receipts branch, once it
+      # passes G3; the draft job checks it before it opens the draft.
+      - name: Seal the Spec (G3)
+        id: seal
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          NUMBER: ${{ needs.prep.outputs.issue }}
+          POLICY_REF: ${{ steps.central.outputs.ref }}
+          STARTED: ${{ needs.prep.outputs.started }}
+        run: |
+          set -euo pipefail
+          gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/body.md"
+          # The agent stopped, or the Spec does not pass G3: nothing is
+          # sealed, and the draft job says why.
+          stopped=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json comments --jq '[.comments[] | select((.body | startswith("<!-- dx-autopilot-stop -->")) and (.author.login | test("^(app/)?" + env.DX_BOT_APP + "(\\[bot\\])?$")) and .createdAt >= env.STARTED)] | length')
+          if [ "$stopped" != 0 ]; then echo "The agent stopped after the Spec: nothing to seal."; exit 0; fi
+          if ! type=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" --jq '.type.name // ""') \
+            || ! python3 .dx-central/scripts/issue-schema.py check --stage spec --type "$type" < "$RUNNER_TEMP/body.md" > /dev/null; then
+            echo "The Spec does not pass G3 (or its Type could not be read): nothing to seal."; exit 0
+          fi
+          # A Spec seal that could not be written (#763): the end rule says
+          # so on the issue (why=), and the job fails.
+          if ! BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/receipts.py seal-spec; then
+            echo "why=The Spec's seal could not be written (the receipts branch kept moving); the draft pull request is not opened." >> "$GITHUB_OUTPUT"
+            echo "::error::The seal of #$NUMBER's Spec could not be written."; exit 1
+          fi
+
   draft:
     name: Autopilot · the draft
-    needs: [prep, spec]
-    if: ${{ !cancelled() && needs.prep.outputs.go == 'true' && needs.prep.outputs.mode == 'start' }}
+    needs: [prep, spec, spec-seal, spec-seal-again]
+    # Once the Spec's job ran, in the queue or again (#763).
+    if: ${{ !cancelled() && needs.prep.outputs.go == 'true' && needs.prep.outputs.mode == 'start' && (needs.spec-seal.result == 'success' || needs.spec-seal-again.result == 'success') }}
     runs-on: ubuntu-latest # fresh: it holds the key beside an agent's work (#287)
     timeout-minutes: 15
     permissions: {}
@@ -961,25 +1281,7 @@ jobs:
         run: |
           gh api "repos/$GITHUB_REPOSITORY/contents/.github/autonomy.yml" --jq .content 2>/dev/null | base64 -d > "$RUNNER_TEMP/repo-autonomy.yml" || : > "$RUNNER_TEMP/repo-autonomy.yml"
 
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        continue-on-error: true
-        with:
-          name: autopilot-out-spec
-          path: .dx-out
-
-      # The Spec the agent wrote (only "### Spec: " sections, appended), or
-      # its stop: nothing else of its outbox applies before a draft exists.
-      - name: The agent's Spec
-        env:
-          GH_TOKEN: ${{ steps.bot.outputs.token }}
-          NUMBER: ${{ needs.prep.outputs.issue }}
-          REPO_AUTONOMY: ${{ runner.temp }}/repo-autonomy.yml
-        run: |
-          git config user.name "$DX_BOT_LOGIN"
-          git config user.email "$DX_BOT_ID+$DX_BOT_LOGIN@users.noreply.github.com"
-          python3 .dx-central/scripts/autopilot.py apply .dx-out/outbox.jsonl spec,stop || true
-
-      - name: The Spec (G3), sealed, and the draft pull request
+      - name: The Spec (G3), its seal, and the draft pull request
         id: draft
         # The Spec the agent wrote, or the one already on the issue (#535).
         if: needs.spec.outputs.outcome == 'success' || (needs.prep.outputs.spec == 'present' && needs.spec.result == 'skipped')
@@ -1023,11 +1325,10 @@ jobs:
             echo "why=The open autopilot pull requests could not be read, so the core could not be checked; the draft pull request is not opened." >> "$GITHUB_OUTPUT"; exit 0
           fi
           if [ -n "$core" ]; then echo "The autopilot waits for #$core, which already changes the core."; echo "core=$core" >> "$GITHUB_OUTPUT"; exit 0; fi
-          # A Spec seal that could not be written (#763): the end rule says
-          # so on the issue (why=), and the job fails.
-          if ! BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/receipts.py seal-spec; then
-            echo "why=The Spec's seal could not be written (the receipts branch kept moving); the draft pull request is not opened." >> "$GITHUB_OUTPUT"
-            echo "::error::The seal of #$NUMBER's Spec could not be written."; exit 1
+          # The Spec as the spec-seal job sealed it (#763): an edit since,
+          # or a seal that is not there, opens nothing.
+          if [ "$(BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/receipts.py verify-spec || true)" != match ]; then
+            echo "why=The Spec on the issue is not the one sealed at G3; the draft pull request is not opened." >> "$GITHUB_OUTPUT"; exit 0
           fi
           title=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json title --jq .title)
           # No checklist, no draft: the end rule then stops the run with a
@@ -1120,8 +1421,8 @@ jobs:
   # --- the work, by the agent, with no key ----------------------------------
   work:
     name: Autopilot (${{ inputs.mode }}) · the work
-    needs: [where, prep, draft]
-    if: ${{ !cancelled() && needs.prep.outputs.go == 'true' && (needs.prep.outputs.mode != 'start' || needs.draft.outputs.pr != '') }}
+    needs: [where, prep, seal, seal-again, draft]
+    if: ${{ !cancelled() && needs.prep.outputs.go == 'true' && (needs.prep.outputs.seal != 'prd' || needs.seal.result == 'success' || needs.seal-again.result == 'success') && (needs.prep.outputs.mode != 'start' || needs.draft.outputs.pr != '') }}
     runs-on: ${{ (vars.DX_RUNNER_HEAVY != '' && needs.where.outputs.github-hosted == 'false') && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 90
     # It reads the repository and writes nothing; the pull requests
@@ -1453,7 +1754,7 @@ jobs:
   # --- every mode: the agent's work on GitHub, and the verdict --------------
   apply:
     name: Autopilot (${{ inputs.mode }}) · apply and end
-    needs: [prep, spec, draft, work, verify]
+    needs: [prep, seal, seal-again, spec, spec-seal, spec-seal-again, draft, work, verify]
     if: ${{ always() && needs.prep.outputs.go == 'true' }}
     runs-on: ubuntu-latest # fresh: it holds the key beside an agent's work (#287)
     timeout-minutes: 30
@@ -1615,9 +1916,9 @@ jobs:
           # A Spec already on the issue is not written again (#535): no
           # outcome to report.
           SPEC_OUTCOME: ${{ needs.prep.outputs.spec != 'present' && (needs.spec.outputs.outcome || needs.spec.result) || '' }}
-          WHY: ${{ needs.draft.outputs.why }}
+          WHY: ${{ needs.draft.outputs.why || needs.spec-seal.outputs.why || needs.spec-seal-again.outputs.why }}
           # A job that failed is reported as itself (#561), not as silence.
-          FAILED: ${{ needs.spec.result == 'failure' && 'spec' || needs.draft.result == 'failure' && 'draft' || (needs.work.result == 'failure' && needs.work.outputs.outcome != '') && 'work' || '' }}
+          FAILED: ${{ (needs.seal.result == 'failure' || needs.seal-again.result == 'failure') && 'seal' || needs.spec.result == 'failure' && 'spec' || (needs.spec-seal.result == 'failure' || needs.spec-seal-again.result == 'failure') && 'spec-seal' || needs.draft.result == 'failure' && 'draft' || (needs.work.result == 'failure' && needs.work.outputs.outcome != '') && 'work' || '' }}
           HELD: ${{ needs.draft.outputs.held || steps.applied.outputs.held }}
           # #563: it waits for another pull request on the core.
           CORE: ${{ needs.draft.outputs.core }}
