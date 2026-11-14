@@ -534,35 +534,47 @@ def write(repo, path, obj, message):
     put(repo, path, obj, message)
 
 
-# Two writers at once (two issues accepted together, #561): the second
-# write's commit meets a branch head that just moved, and GitHub answers
-# 409, or 422 on a stale head. Each try reads the head anew; a path that
-# already exists is never written again.
-WRITE_TRIES = 5
+# Two writers at once (two issues accepted together, #561), or twenty (#763):
+# a write's commit meets a branch head that just moved, and GitHub answers
+# 409, or 422 on a stale head. Each try reads the head anew, until a time
+# bound, with an exponential back-off and full jitter so the writers do not
+# retry in step; a path that already exists is never written again.
+WRITE_LIMITS = {"write-seconds": 300, "backoff-base-seconds": 0.5, "backoff-max-seconds": 20}
 
 
-def put(repo, path, obj, message, api=None, nap=None):
-    """Write one receipt on the branch, retrying when the branch moved under
-    it (HTTP 409, or 422 on a sha or a conflict) up to WRITE_TRIES times
-    with a short back-off; never an overwrite: without a sha the API
+def put(repo, path, obj, message, api=None, nap=None, clock=None, rand=None, limits=None):
+    """Write one receipt on the branch, retrying while the branch moved
+    under it (HTTP 409, or 422 on a sha or a conflict) until `write-seconds`
+    have passed, sleeping a random time up to base * 2^n (at most
+    `backoff-max-seconds`); never an overwrite: without a sha the API
     refuses a path that exists, and a 422 for a path that exists ends
-    there. api and nap are for the self-test."""
+    there. Past the bound it raises "the seal could not be written".
+    api, nap, clock and rand are for the self-test."""
+    import random
     api = api or gh
     nap = nap or time.sleep
+    clock = clock or time.monotonic
+    rand = rand or random.random
+    cfg = dict(WRITE_LIMITS, **(limits or {}))
+    start = clock()
     # Never an overwrite: without a sha, the API refuses a path that exists.
     payload = {"message": message, "branch": BRANCH, "content": base64.b64encode((json.dumps(obj, indent=2) + "\n").encode()).decode()}
-    for n in range(1, WRITE_TRIES + 1):
+    n = 0
+    while True:
         try:
             return api("-X", "PUT", f"repos/{repo}/contents/{path}", "--input", "-", data=payload)
         except RuntimeError as e:
             text = str(e)
             moved = "409" in text or ("422" in text and re.search(r"(?i)\bsha\b|conflict", text))
-            if not moved or n == WRITE_TRIES:
+            if not moved:
                 raise
             if "422" in text and exists(repo, path, api):
                 raise RuntimeError(f"{path} exists; a receipt is never overwritten") from e
-            nap(0.5 * 2 ** (n - 1))
-    return None
+            spent = clock() - start
+            if spent >= cfg["write-seconds"]:
+                raise RuntimeError(f"the seal could not be written: the receipts branch kept moving for {int(spent)} s ({text})") from e
+            nap(rand() * min(cfg["backoff-max-seconds"], cfg["backoff-base-seconds"] * 2 ** n))
+            n += 1
 
 
 def exists(repo, path, api=None):
@@ -837,13 +849,59 @@ Normal
         again = str(e)
     check("#561 C5: a path that exists is never written again", ("never overwritten" in again, json.loads(base64.b64decode(branch_files["issues/8/prd-1.json"]))),
           (True, {"issue": 8}))
+    # C1 (#763): twenty writers at once on one branch, whose head moves on
+    # every other write; a fake clock and nap, so no time passes.
+    import threading
+    lock, heads, puts20, slept20 = threading.Lock(), {"n": 0}, [], []
+
+    def crowded_api(*args, data=None):
+        url = next(a for a in args if a.startswith("repos/"))
+        path = url.split("/contents/", 1)[1].split("?", 1)[0]
+        with lock:
+            if args[:2] != ("-X", "PUT"):
+                if path in branch20:
+                    return {"path": path}
+                raise RuntimeError("gh: Not Found (HTTP 404)")
+            heads["n"] += 1
+            if heads["n"] % 2:
+                raise RuntimeError("gh: is at abc but expected def (HTTP 409)")
+            if path in branch20:
+                raise RuntimeError('gh: Invalid request. "sha" wasn\'t supplied. (HTTP 422)')
+            branch20[path] = branch20.get(path, 0) + 1
+            puts20.append(path)
+            return {"content": {"path": path}}
+    branch20, errors20 = {}, []
+
+    def writer(i):
+        try:
+            put("o/r", f"issues/{i}/prd-1.json", {"issue": i}, f"seal #{i}", api=crowded_api, nap=slept20.append, clock=lambda: 0.0, rand=lambda: 0.5)
+        except RuntimeError as e:  # noqa: PERF203
+            errors20.append(str(e))
+    threads = [threading.Thread(target=writer, args=(i,)) for i in range(1, 21)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    check("C1 (#763): twenty writers at once, the head moving on every other write: every receipt is written, none twice",
+          (errors20, sorted(branch20) == sorted(f"issues/{i}/prd-1.json" for i in range(1, 21)), set(branch20.values()), len(puts20)), ([], True, {1}, 20))
+    check("C1 (#763): the back-off is jittered and capped", (all(0 <= x <= WRITE_LIMITS["backoff-max-seconds"] for x in slept20), bool(slept20)), (True, True))
+    sleeps = []
+    t0 = [0.0]
+
+    def tick():
+        return t0[0]
+
+    def nap_tick(x):
+        sleeps.append(x)
+        t0[0] += 1
     always = lambda *a, data=None: (_ for _ in ()).throw(RuntimeError("gh: conflict (HTTP 409)"))
     try:
-        put("o/r", "issues/10/prd-1.json", {}, "x", api=always, nap=lambda s: None)
+        put("o/r", "issues/10/prd-1.json", {}, "x", api=always, nap=nap_tick, clock=tick, rand=lambda: 1.0)
         capped = "written"
     except RuntimeError as e:
         capped = str(e)
-    check("#561 C5: a branch that keeps moving fails after the tries, said", "409" in capped, True)
+    check("C1 (#763): a branch that keeps moving is retried until the time bound, not a count of tries",
+          (capped.startswith("the seal could not be written"), "409" in capped, len(sleeps), max(sleeps)),
+          (True, True, WRITE_LIMITS["write-seconds"], WRITE_LIMITS["backoff-max-seconds"]))
+    check("C1 (#763): the back-off grows from its base", sleeps[:3], [0.5, 1.0, 2.0])
     try:
         put("o/r", "issues/11/prd-1.json", {}, "x", api=lambda *a, data=None: (_ for _ in ()).throw(RuntimeError("gh: Bad credentials (HTTP 401)")), nap=lambda s: 1 / 0)
         other = "written"
