@@ -35,7 +35,7 @@ name: Claude review reply
 #   jobs:
 #     reply:
 #       permissions: { contents: read, pull-requests: write, issues: write }
-#       uses: DiluxOne/.github/.github/workflows/review-reply.yml@v7
+#       uses: DiluxOne/.github/.github/workflows/review-reply.yml@v7-next
 #       with:
 #         profile: plugin-wp   # optional: `kind: wordpress-plugin` in the policy does the same
 #       secrets: inherit

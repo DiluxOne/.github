@@ -31,7 +31,7 @@ name: Plugin release for coding agents
 #   jobs:
 #     release:
 #       if: github.event_name == 'push'
-#       uses: DiluxOne/.github/.github/workflows/plugin-release-ai.yml@v7
+#       uses: DiluxOne/.github/.github/workflows/plugin-release-ai.yml@v7-next
 #       secrets: inherit
 #
 # (workflow-templates/release-ai.yml.)
