@@ -3301,6 +3301,12 @@ def callers_test(check, conf):
           and "  auto-merge:\n    needs: review\n" in fixed["[review, conventions]"]
           and "  auto-merge:\n    needs: [review, mine]\n" in fixed["[review, conventions, mine]"]
           and all(callers_drift({**c2, ".github/workflows/test-pull-request.yml": f}, conf, kind="engine-test") == [] for f in fixed.values()), fixed)
+    fix_own = tpr.replace("    needs: [conventions, review]\n    # Only", "    needs: [conventions, review, mine]\n    # Only").replace("      mode: fix\n      pr: ${{ format('{0}', github.event.pull_request.number) }}\n    secrets: inherit\n\n  # An autopilot pull request the merge", "      mode: other\n      pr: ${{ format('{0}', github.event.pull_request.number) }}\n    secrets: inherit\n\n  # An autopilot pull request the merge") + mine_job
+    fixed, _ = rewrite_caller(fix_own, tpr, set(owned.get("test-pull-request.yml") or []))
+    check("#757 C1: the rewrite keeps the template's comments under its `needs` when it adds the repository's own",
+          "mode: other" in fix_own and fixed is not None and "mode: other" not in fixed
+          and "    needs: [conventions, review, mine]\n    # Only dilux-bot's own pull requests" in fixed
+          and callers_drift({**c2, ".github/workflows/test-pull-request.yml": fixed}, conf, kind="engine-test") == [], fixed)
     # #757 C3: diluxone-test's caller as it is today, the template with the
     # `pipeline` job still waiting on every other job, as before #755.
     before_755 = tpr.replace("    needs: [conventions, review, auto-merge]\n",
