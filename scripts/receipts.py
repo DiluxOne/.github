@@ -1066,7 +1066,16 @@ Normal
               (queue_problems(writers), sorted(writers)),
               ([], ["autopilot.yml:seal", "autopilot.yml:seal-again", "autopilot.yml:spec-seal", "autopilot.yml:spec-seal-again",
                     "issue-accepted.yml:receipt", "issue-accepted.yml:receipt-again", "issue-accepted.yml:seal", "issue-accepted.yml:seal-again",
-                    "issue-repro.yml:seal", "issue-repro.yml:seal-again"]))
+                    "issue-claim.yml:seal", "issue-claim.yml:seal-again",
+                    "issue-repro.yml:seal", "issue-repro.yml:seal-again",
+                    "issue-triage.yml:own", "issue-triage.yml:own-again"]))
+        # C3 (#763): a script that seals itself makes the job that runs it a
+        # writer; each such script is in WRAPPERS, so the check above sees
+        # its jobs (claim.py hands its lane issues to a queued job instead).
+        check("C3 (#763) every script that runs receipts.py's writing modes is a known wrapper, its jobs checked above",
+              (sorted(wrapper_scripts()), WRITES.search('subprocess.run([sys.executable, os.path.join(HERE, "receipts.py"), "seal-prd"])') is not None,
+               WRITES.search('python3 "$here/receipts.py" seal-prd') is not None, WRITES.search("receipts.py board") is None),
+              (sorted(WRAPPERS), True, True, True))
         q = {"group": QUEUE, "cancel-in-progress": False}
         st = [{"run": "receipts.py seal-prd"}]
         check("C3 (#763) the queue's check: a job outside it, one that cancels, a fallback with other steps, a queued job with none",
@@ -1099,10 +1108,35 @@ def _yaml_loader():
 QUEUE = "receipts-${{ github.repository }}"
 
 
+# The scripts that write to the receipts branch by running receipts.py
+# seal-prd, seal-spec or merged themselves, with the mode that does (#763):
+# a job that runs one so is a writer too. wrapper_scripts() finds them in
+# scripts/, so a new one fails the self-test until it is listed here.
+WRAPPERS = {"triage-act.sh": r"own-bug"}
+# Scripts that run those modes only in their own self-test, on a fixture.
+TEST_ONLY = {"issue-gate.sh", "repro-lane.py"}
+WRITES = re.compile(r"receipts\.py[^\w\n]{0,8}(seal-prd|seal-spec|merged)\b")
+
+
+def wrapper_scripts():
+    """The scripts of scripts/ (receipts.py and TEST_ONLY aside) with a line
+    of code, not a comment, that runs receipts.py seal-prd, seal-spec or
+    merged."""
+    out = set()
+    for f in sorted(os.listdir(HERE)):
+        path = os.path.join(HERE, f)
+        if f == "receipts.py" or f in TEST_ONLY or not f.endswith((".py", ".sh")) or not os.path.isfile(path):
+            continue
+        for line in open(path, encoding="utf-8"):
+            if not line.lstrip().startswith("#") and WRITES.search(line):
+                out.add(f)
+    return out
+
+
 def writing_jobs():
     """Every job of this repository's workflows that writes to the receipts
-    branch (a step that runs receipts.py seal-prd, seal-spec or merged), as
-    {"<file>:<job>": job}."""
+    branch (a step that runs receipts.py seal-prd, seal-spec or merged, or a
+    WRAPPERS script in its writing mode), as {"<file>:<job>": job}."""
     import yaml
     wfdir = os.path.join(HERE, "..", ".github", "workflows")
     out = {}
@@ -1111,7 +1145,9 @@ def writing_jobs():
             continue
         wf = yaml.safe_load(open(os.path.join(wfdir, f), encoding="utf-8")) or {}
         for name, job in (wf.get("jobs") or {}).items():
-            if any(re.search(r"receipts\.py\"? (seal-prd|seal-spec|merged)\b", st.get("run") or "") for st in job.get("steps") or []):
+            runs = [st.get("run") or "" for st in job.get("steps") or []]
+            if any(re.search(r"receipts\.py\"? (seal-prd|seal-spec|merged)\b", r) for r in runs) or \
+                    any(re.search(re.escape(w) + r"\"? " + mode + r"(?![\w-])", r) for r in runs for w, mode in WRAPPERS.items()):
                 out[f"{f}:{name}"] = job
     return out
 

@@ -180,6 +180,57 @@ jobs:
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 5
     if: github.event_name == 'issues' && github.event.action == 'opened' && github.event.issue.user.type != 'Bot' && !contains(github.event.issue.labels.*.name, 'lane:release')
+    # Its seal writes the receipts branch (#763): in the queue of its
+    # writers, receipts-<repository>, so it never races another on its head.
+    # GitHub keeps one job running and one pending in a group, and a third
+    # arrival cancels the pending one: then `own-again` does it, outside the
+    # queue, through put()'s retry (scripts/receipts.py).
+    concurrency:
+      group: receipts-${{ github.repository }}
+      cancel-in-progress: false
+    outputs:
+      own: ${{ steps.own.outputs.own }}
+      accepted: ${{ steps.own.outputs.accepted }}
+    steps:
+      - name: App token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write # the receipts branch, for the seal
+          permission-issues: write
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
+          path: .dx-central
+          persist-credentials: false
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+      - name: Accept it with its writing, when it is one
+        id: own
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          SEAL_TOKEN: ${{ steps.bot.outputs.token }}
+          BODY_TEXT: ${{ github.event.issue.body }}
+          AUTHOR: ${{ github.event.issue.user.login }}
+          NUMBER: ${{ github.event.issue.number }}
+          POLICY_REF: ${{ inputs.central-ref || job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$BODY_TEXT" > "$RUNNER_TEMP/body.md"
+          BODY="$RUNNER_TEMP/body.md" bash .dx-central/scripts/triage-act.sh own-bug
+
+  # Its queue slot was taken by a later write (#763): the same steps,
+  # outside the queue; put() retries a moved head until its time bound.
+  own-again:
+    name: A maintainer's own Bug, again
+    needs: own
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    if: always() && needs.own.result == 'cancelled'
     outputs:
       own: ${{ steps.own.outputs.own }}
       accepted: ${{ steps.own.outputs.accepted }}
@@ -217,14 +268,14 @@ jobs:
 
   triage:
     name: Triage
-    needs: own
+    needs: [own, own-again]
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 10
     # Not a release issue (#82, `lane:release`): it asks for no answer, only
     # a person's acceptance (issue-accepted.yml).
     # Not a maintainer's own Bug (#564, the `own` job); one whose check
     # failed is triaged as any other.
-    if: always() && needs.own.outputs.own != 'true' && github.event_name == 'issues' && github.event.action == 'opened' && github.event.issue.user.type != 'Bot' && !contains(github.event.issue.labels.*.name, 'lane:release')
+    if: always() && needs.own.outputs.own != 'true' && needs.own-again.outputs.own != 'true' && github.event_name == 'issues' && github.event.action == 'opened' && github.event.issue.user.type != 'Bot' && !contains(github.event.issue.labels.*.name, 'lane:release')
     outputs:
       # Labels and numbers only: what a run that read the paid roadmap
       # produced, handed to the job that writes the public reply.
@@ -1030,11 +1081,11 @@ jobs:
           gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '**The autopilot does not continue:** `%s` was taken off. %s\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)' "$LABEL" "$why")" >/dev/null
 
   autopilot:
-    needs: [steer, own]
+    needs: [steer, own, own-again]
     if: >-
       !cancelled() && (needs.steer.result == 'skipped' || needs.steer.outputs.ok == 'true') &&
       github.event_name == 'issues' && !contains(github.event.issue.labels.*.name, 'lane:release') && (
-        (github.event.action == 'opened' && needs.own.outputs.accepted == 'true') ||
+        (github.event.action == 'opened' && (needs.own.outputs.accepted == 'true' || needs.own-again.outputs.accepted == 'true')) ||
         (github.event.action == 'labeled' && github.event.label.name == 'accepted' && github.event.sender.type != 'Bot') ||
         (github.event.action == 'labeled' && github.event.label.name == 'autopilot:continue' && (github.event.sender.type != 'Bot' || github.event.sender.login == vars.DX_BOT_LOGIN)) ||
         (github.event.action == 'opened' && github.event.sender.login == vars.DX_BOT_LOGIN && toJSON(github.event.issue.labels) == '[]' && !startsWith(github.event.issue.title, 'The bug reproduced from ')))
