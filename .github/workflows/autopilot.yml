@@ -572,8 +572,16 @@ jobs:
           # so is one whose sealing failed, which then still reads unsealed.
           if [ "$v" = unsealed ] && [ "$LANE" = delegated ]; then
             POLICY_REF=$(git -C .dx-central rev-parse --short=12 HEAD)
-            NUMBER="$ISSUE" POLICY_REF="$POLICY_REF" ACCEPTED_BY="policy (lane delegated)" python3 .dx-central/scripts/receipts.py seal-prd >/dev/null \
-              || echo "::warning::Sealing the PRD of #$ISSUE failed."
+            # A seal that could not be written (#763): said on the board,
+            # and the job fails, never left to read as unsealed.
+            if ! NUMBER="$ISSUE" POLICY_REF="$POLICY_REF" ACCEPTED_BY="policy (lane delegated)" python3 .dx-central/scripts/receipts.py seal-prd >/dev/null; then
+              failed=--seal-failed
+              board=$(NUMBER="$ISSUE" python3 .dx-central/scripts/receipts.py board ${failed:+"$failed"})
+              id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE/comments" --paginate --jq '.[] | select(.user.type == "Bot" and (.user.login | startswith(env.DX_BOT_APP)) and (.body | startswith("<!-- dx-board -->"))) | .id' | tail -1)
+              if [ -n "$id" ]; then gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$board" >/dev/null
+              else gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$board" >/dev/null; fi
+              echo "::error::The seal of #$ISSUE's PRD could not be written; the board says so."; exit 1
+            fi
             v=$(NUMBER="$ISSUE" python3 .dx-central/scripts/receipts.py verify-prd --wait 12 || true)
           fi
           if [ "$v" != match ]; then
@@ -1015,7 +1023,12 @@ jobs:
             echo "why=The open autopilot pull requests could not be read, so the core could not be checked; the draft pull request is not opened." >> "$GITHUB_OUTPUT"; exit 0
           fi
           if [ -n "$core" ]; then echo "The autopilot waits for #$core, which already changes the core."; echo "core=$core" >> "$GITHUB_OUTPUT"; exit 0; fi
-          BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/receipts.py seal-spec
+          # A Spec seal that could not be written (#763): the end rule says
+          # so on the issue (why=), and the job fails.
+          if ! BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/receipts.py seal-spec; then
+            echo "why=The Spec's seal could not be written (the receipts branch kept moving); the draft pull request is not opened." >> "$GITHUB_OUTPUT"
+            echo "::error::The seal of #$NUMBER's Spec could not be written."; exit 1
+          fi
           title=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json title --jq .title)
           # No checklist, no draft: the end rule then stops the run with a
           # comment and `needs-human`, as it does when G3 fails.

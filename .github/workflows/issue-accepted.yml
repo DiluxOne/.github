@@ -410,11 +410,15 @@ jobs:
           printf '%s' "$BODY_TEXT" > "$RUNNER_TEMP/body.md"
           # A person accepted it, so it was looked at: needs-triage goes.
           gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label needs-triage >/dev/null 2>&1 || true
-          BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/receipts.py seal-prd
-          board=$(BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/receipts.py board)
+          # A seal that could not be written (#763) is said on the board,
+          # and fails the job: the acceptance never stays silently unsealed.
+          failed=""
+          BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/receipts.py seal-prd || failed=--seal-failed
+          board=$(BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/receipts.py board ${failed:+"$failed"})
           id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '.[] | select(.user.type == "Bot" and (.user.login | startswith(env.DX_BOT_APP)) and (.body | startswith("<!-- dx-board -->"))) | .id' | tail -1)
           if [ -n "$id" ]; then gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$board" >/dev/null
           else gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$board" >/dev/null; fi
+          if [ -n "$failed" ]; then echo "::error::The seal of #$NUMBER's PRD could not be written; the board says so."; exit 1; fi
 
   # An accepted issue edited after its seal (#588): its PRD is no longer the
   # one accepted, so the acceptance does not stand. `accepted` comes off,

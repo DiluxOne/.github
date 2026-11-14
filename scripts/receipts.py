@@ -38,7 +38,9 @@ signed by GitHub and show as Verified.
                            sealed one; exit 0 when it did, 1 when not, 2
                            when the seal could not be read
   receipts.py board        the issue's board: one bot comment, kept up to date;
-                           its hidden state block (#564) carried forward
+                           its hidden state block (#564) carried forward. With
+                           --seal-failed (#763): the acceptance's seal could
+                           not be written, and its G2 row says so
   receipts.py state get [KEY]
                            the board's state (#564), or one key of it, as
                            JSON; exit 3 when the block was edited by hand
@@ -335,7 +337,7 @@ def rule_link(policy):
     return f"[the rule](https://github.com/DiluxOne/.github/blob/{ref}/policy/autonomy.yml)"
 
 
-def board_text(number, ready, last_seal, merged, autopilot=None, labels=(), held="", state=None, intact=True, raw_state=""):
+def board_text(number, ready, last_seal, merged, autopilot=None, labels=(), held="", state=None, intact=True, raw_state="", seal_failed=False):
     rows = ["| Gate | State |", "| --- | --- |"]
     rows.append(f"| G1 Issue ready | {'✓ the PRD follows the schema' if ready else '✗ see the G1 comment'} |")
     # A person holds it (#488, #561): a claim, an assignment, their own
@@ -343,7 +345,11 @@ def board_text(number, ready, last_seal, merged, autopilot=None, labels=(), held
     if held and not autopilot:
         rows.append(f"| Held | 🙋 {held}: the autopilot does not start |")
     lane = next((l[5:] for l in labels if l.startswith("lane:")), None)
-    if last_seal:
+    if seal_failed:
+        # The seal of this acceptance could not be written (#763): an older
+        # seal, if any, is not this acceptance's, so it is not shown as one.
+        rows.append("| G2 Accepted | ✗ accepted, but the seal could not be written; a maintainer accepts it again (remove and add `accepted`) |")
+    elif last_seal:
         by = last_seal.get("accepted_by") or ""
         # A lane seals as "policy (lane <name>)": it links the rule it followed (#188).
         if by.startswith("policy (lane "):
@@ -371,7 +377,7 @@ def board_text(number, ready, last_seal, merged, autopilot=None, labels=(), held
     # The state block, hidden (#564): carried as it was when it was edited
     # by hand, so a person's edit is never given a valid hash.
     block = raw_state if not intact else (state_block(state) if state else "")
-    mark = f"{SEAL_MARK}\n" if last_seal else ""
+    mark = f"{SEAL_MARK}\n" if last_seal and not seal_failed else ""
     return f"{BOARD}\n{mark}**The issue's board**\n\n" + "\n".join(rows) + f"\n\n{AI}" + (f"\n{block}" if block else "")
 
 
@@ -788,6 +794,11 @@ Normal
         check("cli: merged writes a receipt", run("merged").returncode, 0)
         check("cli: the board shows the receipt", "G7 Merged" in run("board").stdout, True)
         check("cli: verify-spec with no Spec seal fails", run("verify-spec").returncode, 1)
+        # C2 (#763): a seal that could not be written, on the board.
+        failed_board = run("board", "--seal-failed").stdout
+        check("C2 (#763) cli: board --seal-failed shows the ✗ G2 row, and no seal's mark",
+              ("| G2 Accepted | ✗ accepted, but the seal could not be written; a maintainer accepts it again (remove and add `accepted`) |" in failed_board,
+               SEAL_MARK in failed_board, SEAL_MARK in run("board").stdout), (True, False, True))
         # C5 (#564): whom it waits on, on the board, and one mention.
         wenv = dict(env, NUMBER="12", HELD="", WAITS_JSON=json.dumps({"who": "alice", "what": "complete the issue: the G1 comment says what is missing", "url": "https://github.com/o/r/issues/12"}))
         wrun = lambda *a, **kw: sp.run([sys.executable, os.path.abspath(__file__)] + list(a), env=dict(wenv, **kw), capture_output=True, text=True)
@@ -902,6 +913,28 @@ Normal
           (capped.startswith("the seal could not be written"), "409" in capped, len(sleeps), max(sleeps)),
           (True, True, WRITE_LIMITS["write-seconds"], WRITE_LIMITS["backoff-max-seconds"]))
     check("C1 (#763): the back-off grows from its base", sleeps[:3], [0.5, 1.0, 2.0])
+    # C2 (#763): the cli, its write always meeting a moved head and its
+    # clock past the bound, exits non-zero with the reason in one line.
+    import io
+    import types
+    fake = {"t": 0.0}
+    saved = {k: globals()[k] for k in ("gh", "ensure_branch", "time")}
+    globals().update(gh=always, ensure_branch=lambda repo: None,
+                     time=types.SimpleNamespace(monotonic=lambda: fake["t"], sleep=lambda x: fake.update(t=fake["t"] + 400)))
+    err, env_saved = io.StringIO(), {k: os.environ.get(k) for k in ("RECEIPTS_FIXTURE", "GITHUB_REPOSITORY", "NUMBER", "BODY")}
+    os.environ.pop("RECEIPTS_FIXTURE", None)
+    os.environ.pop("BODY", None)
+    os.environ.update(GITHUB_REPOSITORY="o/r", NUMBER="13")
+    stderr, sys.stderr = sys.stderr, err
+    try:
+        rc = {m: main([m]) for m in ("seal-prd", "seal-spec")}
+    finally:
+        sys.stderr = stderr
+        globals().update(saved)
+        for k, v in env_saved.items():
+            os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+    check("C2 (#763) cli: a seal that keeps meeting a moved head past the bound exits 1, and says the seal could not be written",
+          (rc, err.getvalue().count("error: the seal could not be written")), ({"seal-prd": 1, "seal-spec": 1}, 2))
     try:
         put("o/r", "issues/11/prd-1.json", {}, "x", api=lambda *a, data=None: (_ for _ in ()).throw(RuntimeError("gh: Bad credentials (HTTP 401)")), nap=lambda s: 1 / 0)
         other = "written"
@@ -923,11 +956,44 @@ Normal
               (issues_wf["jobs"]["waiting"]["uses"], any("waiting.py update" in (st.get("run") or "") for st in upd["jobs"]["update"]["steps"]),
                "receipts.py\"), \"waits\"" in open(os.path.join(HERE, "waiting.py"), encoding="utf-8").read()),
               ("./.github/workflows/waiting-update.yml", True, True))
+        # C2 (#763): every step that seals fails loudly on a seal that could
+        # not be written: a PRD's seal writes the board with --seal-failed,
+        # a Spec's says it in the step's why= (the end rule posts it); both
+        # exit 1. The call itself is guarded, so `set -e` cannot end the
+        # step before the board.
+        unguarded, unsaid = [], []
+        for step_name, step in sealing_steps():
+            text = step.get("run") or ""
+            for line in (l.strip() for l in text.splitlines()):
+                if re.search(r"receipts\.py (seal-prd|seal-spec)\b", line) and not (line.startswith("if ! ") or "|| failed=--seal-failed" in line):
+                    unguarded.append(step_name)
+            said = ('board ${failed:+"$failed"}' in text and "--seal-failed" in text) if "seal-prd" in text else "why=" in text
+            if not (said and re.search(r"exit 1\b", text)):
+                unsaid.append(step_name)
+        check("C2 (#763) every sealing step guards the seal, says a failed one (board --seal-failed, or why=), and exits 1",
+              (len(sealing_steps()) >= 4, sorted(set(unguarded)), unsaid), (True, [], []))
     except ImportError:
         print("skip the workflow's wiring (no PyYAML here)")
     if not failed:
         print("all tests passed")
     return failed
+
+
+def sealing_steps():
+    """Every step of this repository's workflows that writes a seal or a
+    receipt (receipts.py seal-prd, seal-spec or merged), as (where, step)."""
+    import yaml
+    wfdir = os.path.join(HERE, "..", ".github", "workflows")
+    out = []
+    for f in sorted(os.listdir(wfdir)):
+        if not f.endswith((".yml", ".yaml")):
+            continue
+        wf = yaml.safe_load(open(os.path.join(wfdir, f), encoding="utf-8")) or {}
+        for job_name, job in (wf.get("jobs") or {}).items():
+            for i, step in enumerate(job.get("steps") or []):
+                if re.search(r"receipts\.py\"? (seal-prd|seal-spec)\b", step.get("run") or ""):
+                    out.append((f"{f}:{job_name}:{step.get('name') or i}", step))
+    return out
 
 
 def main(argv):
@@ -938,6 +1004,18 @@ def main(argv):
     number = int(os.environ.get("NUMBER", "0") or 0)
     body = open(os.environ["BODY"], encoding="utf-8").read() if os.environ.get("BODY") else ""
     policy_ref = os.environ.get("POLICY_REF")
+    try:
+        return act(mode, argv, repo, number, body, policy_ref)
+    except RuntimeError as e:
+        # A seal or a receipt that could not be written (#763) fails the
+        # job, said in one line; the step then writes the board that says so.
+        if mode not in ("seal-prd", "seal-spec", "merged"):
+            raise
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+
+def act(mode, argv, repo, number, body, policy_ref):
     if mode == "seal-prd":
         at = now()
         s = seal(number, body, os.environ.get("ACCEPTED_BY", "?"), policy_ref, at, os.environ.get("ACCEPTED_HOW") or None)
@@ -1014,7 +1092,7 @@ def main(argv):
             names = [n for n in list_dir(repo, f"issues/{number}") if n.startswith("merged-")]
             merged = read(repo, f"issues/{number}/{names[-1]}") if names else None
             return board_text(number, schema_mod.check(body)["ok"], last_seal(repo, number), merged, autopilot_state(repo, number),
-                              issue_labels(repo, number), holder(repo, number), st, intact, raw)
+                              issue_labels(repo, number), holder(repo, number), st, intact, raw, "--seal-failed" in argv[1:])
         if mode == "board":
             print(render(state))
             return 0

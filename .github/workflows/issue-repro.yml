@@ -1185,9 +1185,13 @@ jobs:
             gh issue view "$lane" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/sealed.md"
             POLICY_REF=$(git -C .dx-central rev-parse --short=12 HEAD)
             export POLICY_REF
-            NUMBER=$lane BODY="$RUNNER_TEMP/sealed.md" ACCEPTED_BY="policy (lane bugfix-reproduced)" python3 .dx-central/scripts/receipts.py seal-prd
-            board=$(NUMBER=$lane BODY="$RUNNER_TEMP/sealed.md" python3 .dx-central/scripts/receipts.py board)
+            # A seal that could not be written (#763): said on the lane
+            # issue's board, and the job fails.
+            failed=""
+            NUMBER=$lane BODY="$RUNNER_TEMP/sealed.md" ACCEPTED_BY="policy (lane bugfix-reproduced)" python3 .dx-central/scripts/receipts.py seal-prd || failed=--seal-failed
+            board=$(NUMBER=$lane BODY="$RUNNER_TEMP/sealed.md" python3 .dx-central/scripts/receipts.py board ${failed:+"$failed"})
             gh issue comment "$lane" --repo "$GITHUB_REPOSITORY" --body "$board" >/dev/null
+            if [ -n "$failed" ]; then echo "::error::The seal of #$lane's PRD could not be written; the board says so."; exit 1; fi
             next="The fix is #$lane: the ${BT}bugfix-reproduced${BT} lane of the autonomy policy accepted it, and the autopilot works it in the open. It must make this test pass, exactly as written, and go through every check and the review."
             echo "issue=$lane" >> "$GITHUB_OUTPUT"
             echo "#$lane: $why"
