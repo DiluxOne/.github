@@ -235,20 +235,31 @@ def merge(org, repo, where=""):
             warn(f"claims.{key}: a repository can only lower it; kept {claims[key]}.")
     if claims:
         out["claims"] = claims
+    # A receipt's write, its time bound and back-off (#763): lower only.
+    mine = repo.get("receipts") if isinstance(repo.get("receipts"), dict) else {}
+    receipts = dict(org.get("receipts") or {})
+    for key, value in mine.items():
+        if key in receipts and isinstance(value, (int, float)) and not isinstance(value, bool) and 0 < value < receipts[key]:
+            receipts[key] = value
+        elif key in receipts and value != receipts[key]:
+            warn(f"receipts.{key}: a repository can only lower it; kept {receipts[key]}.")
+    if receipts:
+        out["receipts"] = receipts
     for name, lane in out["lanes"].items():
         lane.setdefault("enabled", True)
     return out
 
 
-TOP_KEYS = {"claims", "autopilot", "autopilot-rounds", "autopilot-runs", "autopilot-mode", "budgets-usd", "constitution", "person-merges", "planned-release", "security-patch", "lanes"}
+TOP_KEYS = {"claims", "receipts", "autopilot", "autopilot-rounds", "autopilot-runs", "autopilot-mode", "budgets-usd", "constitution", "person-merges", "planned-release", "security-patch", "lanes"}
 BUDGETS = ("autopilot-spec", "autopilot-work", "autopilot-fix", "security-fix")
+RECEIPTS = ("write-seconds", "backoff-base-seconds", "backoff-max-seconds")
 CLAIMS = ("remind-days", "release-days", "cap-days", "pr-remind-days", "pr-close-days", "newcomer-claims", "contributor-claims", "open-prs")
 MODES = ("guided", "full")
 # What merge() lets a repository's own file do with each key, as
 # policy/settings-schema.yml says it (#568, its `repo:`); any other key is
 # never a repository's. The self-test holds the two together.
 REPO_RULES = {"autopilot": "stricter", "autopilot-mode": "up-to-ceiling", "budgets-usd.*": "lower-only",
-              "claims.*": "lower-only", "constitution": "add-only", "person-merges": "add-only",
+              "claims.*": "lower-only", "receipts.*": "lower-only", "constitution": "add-only", "person-merges": "add-only",
               "lanes.*.enabled": "stricter", "lanes.*.accept": "stricter", "lanes.*.repositories": "stricter",
               "lanes.*.merge": "up-to-ceiling"}
 LANE_KEYS = {"description", "accept", "type", "origin", "repositories", "evidence", "merge", "ceiling", "constitution-merge", "enabled"}
@@ -272,6 +283,9 @@ def problems(policy):
     c = policy.get("claims", {})
     if not isinstance(c, dict) or set(c) - set(CLAIMS) or not all(isinstance(v, int) and not isinstance(v, bool) and 0 < v <= 365 for v in c.values()):
         out.append(f"claims: {', '.join(CLAIMS)}, each a whole number from 1 to 365")
+    r = policy.get("receipts", {})
+    if not isinstance(r, dict) or set(r) - set(RECEIPTS) or not all(isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v <= 3600 for v in r.values()):
+        out.append(f"receipts: {', '.join(RECEIPTS)}, each a number of seconds above 0 and at most 3600")
     for key in ("autopilot-rounds", "autopilot-runs"):
         if key in policy and not (isinstance(policy[key], int) and not isinstance(policy[key], bool) and policy[key] > 0):
             out.append(f"{key}: a whole number above 0")
@@ -1468,6 +1482,10 @@ def self_test():
     check("#191: the lane job fetches what autonomy.py imports from here, and org.yml", (all(f"scripts/{m}.py" in fetched for m in local), "org.yml" in fetched), (True, True))
     check("#488 claims: a repository lowers a limit, never raises it",
           [merge(org, {"claims": {"release-days": 5}})["claims"]["release-days"], merge(org, {"claims": {"release-days": 50}})["claims"]["release-days"]], [5, 10])
+    check("#763 receipts: a repository lowers the bound and the back-off, never raises them",
+          [merge(org, {"receipts": {"write-seconds": 60}})["receipts"]["write-seconds"], merge(org, {"receipts": {"write-seconds": 900, "backoff-max-seconds": 5}})["receipts"]],
+          [60, {**org["receipts"], "backoff-max-seconds": 5}])
+    check("#763 receipts: an unknown key, or a number of seconds that is not one", [problems({**org, "receipts": {"x": 1}}) != [], problems({**org, "receipts": {"write-seconds": "300"}}) != [], problems({**org, "receipts": {"write-seconds": 0}}) != [], problems(org)], [True, True, True, []])
     check("#488 claims: an unknown key or a day count that is not a number", [problems({**org, "claims": {"x": 1}}) != [], problems({**org, "claims": {"remind-days": "7"}}) != []], [True, True])
     check("the organisation's policy has the eight lanes", sorted(org.get("lanes", {})), ["adopt", "bugfix-reproduced", "delegated", "human-issue", "org-sync", "platform", "release", "security-carry"])
     # The security-carry lane (#287).

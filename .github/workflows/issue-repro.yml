@@ -830,7 +830,7 @@ jobs:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }}
-          permission-contents: write # the test's branch, and the seal on the receipts branch
+          permission-contents: write # the test's branch
           permission-pull-requests: write
           permission-issues: write
           permission-actions: read # this run, as the lane's origin
@@ -1142,9 +1142,9 @@ jobs:
       # its specification. The lane accepts it only as GitHub's history
       # shows it (scripts/autonomy.py lane-accept: opened and labelled by
       # dilux-bot, from this run of issue-repro.yml), never on the label
-      # alone. Then it gets `accepted-by:policy`, its PRD is sealed on the
-      # receipts branch as accepted by the policy, and the autopilot job
-      # below takes it. If the lane refuses, the issue waits for a person's
+      # alone. Then it gets `accepted-by:policy`, the seal job below seals
+      # its PRD on the receipts branch as accepted by the policy, and the
+      # autopilot job takes it. If the lane refuses, the issue waits for a person's
       # `accepted`, like any other.
       - name: Hand it to the bugfix-reproduced lane
         id: lane
@@ -1182,12 +1182,7 @@ jobs:
           gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/$lane" -f type=Bug >/dev/null 2>&1 || echo "::warning::Could not set #$lane's Type to Bug."
           if why=$(NUMBER=$lane python3 .dx-central/scripts/autonomy.py lane-accept); then
             gh issue edit "$lane" --repo "$GITHUB_REPOSITORY" --add-label accepted-by:policy >/dev/null
-            gh issue view "$lane" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/sealed.md"
-            POLICY_REF=$(git -C .dx-central rev-parse --short=12 HEAD)
-            export POLICY_REF
-            NUMBER=$lane BODY="$RUNNER_TEMP/sealed.md" ACCEPTED_BY="policy (lane bugfix-reproduced)" python3 .dx-central/scripts/receipts.py seal-prd
-            board=$(NUMBER=$lane BODY="$RUNNER_TEMP/sealed.md" python3 .dx-central/scripts/receipts.py board)
-            gh issue comment "$lane" --repo "$GITHUB_REPOSITORY" --body "$board" >/dev/null
+            # Its PRD is sealed by the seal job (#763), in the receipts queue.
             next="The fix is #$lane: the ${BT}bugfix-reproduced${BT} lane of the autonomy policy accepted it, and the autopilot works it in the open. It must make this test pass, exactly as written, and go through every check and the review."
             echo "issue=$lane" >> "$GITHUB_OUTPUT"
             echo "#$lane: $why"
@@ -1219,15 +1214,113 @@ jobs:
           gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label needs-human >/dev/null || true
           gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '%s\n\nThe failing test is on the branch %s. Handing the fix to the autopilot failed part-way (%s), so a maintainer takes it from here.\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)' "$(cat "$RUNNER_TEMP/reproduced.md" 2>/dev/null || echo Reproduced.)" "$BRANCH" "$RUN_URL")" >/dev/null
 
+  # The lane issue's seal (#84), in a job of its own (#763): every job that
+  # writes to the receipts branch is in one queue per repository,
+  # receipts-<repository>, so writers never race on its head. GitHub keeps
+  # one job running and one pending in a group, and a third arrival cancels
+  # the pending one: then `seal-again` writes it, outside the queue,
+  # through put()'s retry (scripts/receipts.py).
+  seal:
+    name: The lane issue's seal
+    needs: report
+    if: "!cancelled() && needs.report.result == 'success' && needs.report.outputs.lane-issue != ''"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: receipts-${{ github.repository }}
+      cancel-in-progress: false
+    permissions: {}
+    steps:
+      - name: App token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write # the seal on the receipts branch
+          permission-issues: write # the board
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
+          path: .dx-central
+          persist-credentials: false
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+      - name: Seal the lane issue's PRD
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          LANE_ISSUE: ${{ needs.report.outputs.lane-issue }}
+        run: |
+          set -euo pipefail
+          lane=$LANE_ISSUE
+          gh issue view "$lane" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/sealed.md"
+          POLICY_REF=$(git -C .dx-central rev-parse --short=12 HEAD)
+          export POLICY_REF
+          # A seal that could not be written (#763): said on the lane
+          # issue's board, and the job fails.
+          failed=""
+          NUMBER=$lane BODY="$RUNNER_TEMP/sealed.md" ACCEPTED_BY="policy (lane bugfix-reproduced)" python3 .dx-central/scripts/receipts.py seal-prd || failed=--seal-failed
+          board=$(NUMBER=$lane BODY="$RUNNER_TEMP/sealed.md" python3 .dx-central/scripts/receipts.py board ${failed:+"$failed"})
+          gh issue comment "$lane" --repo "$GITHUB_REPOSITORY" --body "$board" >/dev/null
+          if [ -n "$failed" ]; then echo "::error::The seal of #$lane's PRD could not be written; the board says so."; exit 1; fi
+
+  # The seal's queue slot was taken by a later write (#763): the same steps,
+  # outside the queue; put() retries a moved head until its time bound.
+  seal-again:
+    name: The lane issue's seal, again
+    needs: [report, seal]
+    if: always() && needs.seal.result == 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions: {}
+    steps:
+      - name: App token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write # the seal on the receipts branch
+          permission-issues: write # the board
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
+          path: .dx-central
+          persist-credentials: false
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+      - name: Seal the lane issue's PRD
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          LANE_ISSUE: ${{ needs.report.outputs.lane-issue }}
+        run: |
+          set -euo pipefail
+          lane=$LANE_ISSUE
+          gh issue view "$lane" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/sealed.md"
+          POLICY_REF=$(git -C .dx-central rev-parse --short=12 HEAD)
+          export POLICY_REF
+          # A seal that could not be written (#763): said on the lane
+          # issue's board, and the job fails.
+          failed=""
+          NUMBER=$lane BODY="$RUNNER_TEMP/sealed.md" ACCEPTED_BY="policy (lane bugfix-reproduced)" python3 .dx-central/scripts/receipts.py seal-prd || failed=--seal-failed
+          board=$(NUMBER=$lane BODY="$RUNNER_TEMP/sealed.md" python3 .dx-central/scripts/receipts.py board ${failed:+"$failed"})
+          gh issue comment "$lane" --repo "$GITHUB_REPOSITORY" --body "$board" >/dev/null
+          if [ -n "$failed" ]; then echo "::error::The seal of #$lane's PRD could not be written; the board says so."; exit 1; fi
+
   # The fix of a reproduced bug the lane accepted: the autopilot, as when a
   # person accepts an issue (it reads the lane from GitHub again, and works
   # under the lane's caps). Same run, so nothing waits on a label event.
   autopilot:
     name: Autopilot
-    needs: report
+    needs: [report, seal, seal-again]
     # `report` runs after the optional `diagnose`; without a status function
-    # this job would be skipped with it (#257, scripts/needs-chain.py).
-    if: "!cancelled() && needs.report.result == 'success' && needs.report.outputs.lane-issue != ''"
+    # this job would be skipped with it (#257, scripts/needs-chain.py). Only
+    # once the PRD is sealed, by the seal job or by seal-again (#763).
+    if: "!cancelled() && needs.report.result == 'success' && needs.report.outputs.lane-issue != '' && (needs.seal.result == 'success' || needs.seal-again.result == 'success')"
     # The agent's jobs read the repository with the job's own token (#287).
     permissions:
       contents: read
