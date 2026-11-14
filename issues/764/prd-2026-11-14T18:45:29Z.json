@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 764,
+  "prd_sha256": "5f27ad39d5632ac4b8f42117e67c2104713a17bec3a50b7bad4290167cba36b8",
+  "prd": "### Problem\n\nThe release lane fails on scenarios whose fixtures contradict their own expectations, so a correct candidate cannot be released.\n\n### Scope\n\ntests/release/scenarios.yml (the three scenarios and the files they open), kind engine-test's surface for the high-risk path, release-scenarios.py's `coverage` check for expected risks, and their `--test`.\n\n### Out of scope\n\nThe engine's labelling, the triage's prompt and the review. Moving model-judgment scenarios to the evaluation sets (a later issue).\n\n### Acceptance criteria\n\nC1: Given `accepted-spec`, when the lane plays it on a candidate whose autopilot opens its pull request, then it passes without a label on the issue.\nC2: Given `high-risk-waits`, when its pull request is reviewed, then the policy floor is high from the path it changes, and the scenario expects `risk:high` and no merge.\nC3: Given `bug-not-reproduced`, when the triage reads its report, then the report has steps that run and do not show the bug.\nC4: Given a scenario that expects a risk label, when `release-scenarios.py coverage` runs, then it fails if no path the scenario changes has that floor for kind engine-test.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-14T18:45:29Z",
+  "policy": "DiluxOne/.github@cfebd0c698c3c0a99f844989cae4ff61d4fa5e7a",
+  "how": "own-bug"
+}
