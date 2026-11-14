@@ -25,7 +25,7 @@ complete feature; an issue's `type`, else the Type its body's form gives,
 `types:` of the file, and its `comments`, posted before its labels: a
 `/claim` before `accepted`), `steps` (each one of
 `comment`, `label`, `unlabel`, `edit`, `push`, `dispatch`, and `until`,
-an `expect` polled every 60 seconds (#726: every scenario at once shares
+an `expect` polled every 50 seconds (#726: every scenario at once shares
 the test identity's 5000 requests an hour) on its issue or pull request, or with
 `of: before` on its first `before` issue, never a fixed wait: #694; a
 `comment` or a `label` with `of: before` acts on that issue too, #713; a
@@ -470,7 +470,7 @@ def holds(expect, seen):
 # Every wait polls its state (#694): never a fixed sleep. Every scenario
 # polls at once with the test identity's token (#726), which GitHub allows
 # RATE_LIMIT requests an hour: `poll_budget` stays under it.
-POLL = 60
+POLL = 50
 RATE_LIMIT = 5000
 # A scenario's limit, in minutes: its own `minutes`, or LIMIT; none past
 # MAX_LIMIT, which the play step's timeout-minutes in release-lane.yml
@@ -1894,16 +1894,16 @@ def self_test():
     busy709 = {sid for sid, n, path in issues709 if _ap.core_busy([path], rpack["core"], [{"number": m, "files": [q]} for _, m, q in issues709 if m != n], mine=n)}
     check("#709 C1: from the real pack, with every scenario's fixed change open at once, only core-one-at-a-time can wait on the core", busy709, {"core-one-at-a-time"})
     plan_real = scenario_plan(real["scenarios"])
-    check("C3: the real plan: no fixed wait, every wait an `until`, polling every 60 seconds, each limit 15 minutes or less",
+    check("C3: the real plan: no fixed wait, every wait an `until`, polling every 50 seconds, each limit 15 minutes or less",
           (timing(real["scenarios"]), {p["poll"] for p in plan_real}, max(p["minutes"] for p in plan_real) <= 15, len(plan_real) == len(real["scenarios"]),
-           [st for s in real["scenarios"] for st in s.get("steps") or [] if "wait" in st]), ([], {60}, True, True, []))
+           [st for s in real["scenarios"] for st in s.get("steps") or [] if "wait" in st]), ([], {50}, True, True, []))
     check("#726: the real plan, every scenario polling at once, stays under the test identity's rate limit; a plan of many scenarios is refused",
           (poll_budget(real["scenarios"]) < RATE_LIMIT, poll_budget([{"opens": {"issue": {}}}, {"opens": {"pull": {}}}]),
            timing([{"id": f"s{i}", "opens": {"pull": {}}} for i in range(30)])),
-          (True, 300, ["the plan's 30 scenarios poll GitHub 5400 times an hour, every 60 seconds, past the test identity's 5000"]))
+          (True, 360, ["the plan's 30 scenarios poll GitHub 6480 times an hour, every 50 seconds, past the test identity's 5000"]))
     check("C3: timing names a fixed wait, an empty `until` and a limit past 15 minutes",
           timing([{"id": "w", "steps": [{"wait": 60}, {"until": {"of": "before"}}], "minutes": 16}]),
-          ["scenario w: waits a fixed 60 seconds; wait `until` the state it waits for, polled every 60 seconds", "scenario w: an `until` with no expectation",
+          ["scenario w: waits a fixed 60 seconds; wait `until` the state it waits for, polled every 50 seconds", "scenario w: an `until` with no expectation",
            "scenario w: its limit is 16 minutes, past 15"])
     check("C3: the play step's 20 minutes stay above every scenario's limit", MAX_LIMIT < 20, True)
     check("C3: hopeless: merged when it should not, closed unmerged, a check that ended otherwise, an absent label once settled",
@@ -1968,19 +1968,19 @@ def self_test():
     got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "steps": [{"until": {"labels": ["claimed"]}}, {"comment": "/unclaim"}], "expect": {"labels": ["done"]}},
                "o/t", "v7-next", {}, fake, st["sleeps"].append, 10)
     comment = st["calls"].index(next(c for c in st["calls"] if c[:2] == ("issue", "comment")))
-    check("C3: an `until` polls every 60 seconds until its state holds, then the next step goes on",
-          (got["ok"], st["sleeps"], comment > [i for i, c in enumerate(st["calls"]) if c[:2] == ("issue", "view")][2]), (True, [60, 60], True))
+    check("C3: an `until` polls every 50 seconds until its state holds, then the next step goes on",
+          (got["ok"], st["sleeps"], comment > [i for i, c in enumerate(st["calls"]) if c[:2] == ("issue", "view")][2]), (True, [50, 50], True))
     st, fake = polled([{"labels": []}])
     got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "steps": [{"until": {"labels": ["claimed"]}}, {"comment": "x"}], "expect": {}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 1)
     check("C3: an `until` that never holds fails at the scenario's limit, named, and takes no further step",
-          (got["ok"], got["why"], len(st["sleeps"]), any(c[:2] == ("issue", "comment") for c in st["calls"])), (False, ['until {"labels": ["claimed"]}: no label claimed', f'until {{"labels": ["claimed"]}}: {NONE}'], 1, False))
+          (got["ok"], got["why"], len(st["sleeps"]), any(c[:2] == ("issue", "comment") for c in st["calls"])), (False, ['until {"labels": ["claimed"]}: no label claimed', f'until {{"labels": ["claimed"]}}: {NONE}'], 2, False))
     st, fake = polled([{"labels": [{"name": "incomplete"}]}], runs=lambda n: [{"url": "u", "status": "completed"}])
     got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "expect": {"labels": ["awaiting-acceptance"], "absent": ["incomplete"]}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 15)
     check("C3: a scenario stops as soon as its expectation can no longer hold, not at its limit",
-          (got["ok"], st["sleeps"], got["why"][-1]), (False, [60], "it can no longer hold: label incomplete stays, with nothing left running"))
+          (got["ok"], st["sleeps"], got["why"][-1]), (False, [50], "it can no longer hold: label incomplete stays, with nothing left running"))
     st, fake = polled([{"labels": []}])
     got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "minutes": 2, "expect": {"labels": ["x"]}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 20)
-    check("C3: a scenario's own limit bounds its polls (2 minutes: 2 polls of 60 seconds)", (got["ok"], len(st["sleeps"]), set(st["sleeps"])), (False, 2, {60}))
+    check("C3: a scenario's own limit bounds its polls (2 minutes: 3 polls of 50 seconds)", (got["ok"], len(st["sleeps"]), set(st["sleeps"])), (False, 3, {50}))
     st, fake = polled([{"labels": []}])
     got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "steps": [{"wait": 300}], "expect": {}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 1)
     check("C3: a fixed wait is never slept", (got["ok"], st["sleeps"]), (False, []))
@@ -1998,9 +1998,9 @@ def self_test():
           (got["ok"], got["why"], [c for c in forked if c[:2] == ("repo", "fork")]), (False, [FORK_NEEDS], []))
     lane = load_yaml(os.path.join(ROOT, ".github", "workflows", "release-lane.yml"))["jobs"]
     pstep = next(st for st in lane["play"]["steps"] if st.get("id") == "play")
-    check("C9: the limits the 20-minute run relies on: every scenario at once, each under the play step's 20 minutes, polled every 60 seconds",
+    check("C9: the limits the 20-minute run relies on: every scenario at once, each under the play step's 20 minutes, polled every 50 seconds",
           ("max-parallel" in (lane["play"].get("strategy") or {}), max(limit(s) for s in real["scenarios"]) < pstep["timeout-minutes"] <= 20, POLL,
-           pstep["env"].get(FORK_SECRET)), (False, True, 60, "${{ secrets.DX_TEST_FORK_TOKEN }}"))
+           pstep["env"].get(FORK_SECRET)), (False, True, 50, "${{ secrets.DX_TEST_FORK_TOKEN }}"))
     titles = []
 
     def ordered(*a, input=None):
@@ -2294,7 +2294,7 @@ def self_test():
     st, fake = searchless(fail=99, retry="")
     got = play({"id": "s", "minutes": 2, "opens": {"issue": {"title": "feat: x", "body": "f"}}, "expect": {"pull": {"closes": True}}}, "o/t", "v7-next", {"f": "f"}, fake, st["sleeps"].append, 20)
     check("#698: one rate-limited until the scenario's time runs out fails then, naming it, backing off within its limit",
-          (got["ok"], got["why"][0].startswith("gh issue view 9 rate limited"), sum(st["sleeps"]), st["sleeps"][:3]), (False, True, 120, [60, 60]))
+          (got["ok"], got["why"][0].startswith("gh issue view 9 rate limited"), sum(st["sleeps"]), st["sleeps"][:3]), (False, True, 120, [50, 70]))
     st = {"n": 0}
 
     def broken(*a, input=None):
@@ -2305,7 +2305,7 @@ def self_test():
     check("#698: a `gh` error that is not transient still fails at once", (got["ok"], st["n"]), (False, 0))
     check("#698 backoff: retry-after, then the reset, then POLL doubled up to 120",
           (backoff(GhError("x", stderr="Retry-After: 7"), 0), backoff(GhError("x", stderr="x-ratelimit-reset: 1060"), 0, now=1000), backoff(GhError("x"), 0), backoff(GhError("x"), 5)),
-          (7, 60, 60, 120))
+          (7, 60, 50, 120))
     check("#698 transient: a rate limit, a secondary one, a 5xx; not a 404",
           [transient(GhError(m)) for m in ("gh api: HTTP 429", "You have exceeded a secondary rate limit", "gh api: HTTP 502: Bad Gateway", "gh api: HTTP 404: Not Found")] + [transient(RuntimeError("rate limit"))],
           [True, True, True, False, False])

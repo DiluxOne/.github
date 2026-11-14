@@ -276,7 +276,7 @@ scenarios:
     before: [{issue: {title: "feat: a greeting on the core, first", body: complete-feature}}]
     opens: {issue: {title: "feat: a greeting on the core, second", body: complete-feature}}
     # #694: until the first one's fixed change is on its pull request (its
-    # box ticked), polled every 60 seconds (#726).
+    # box ticked), polled every 50 seconds (#726).
     steps: [{until: {of: before, labels: [awaiting-acceptance]}}, {label: accepted, of: before}, {until: {of: before, comments: ["<!-- dx-prd-seal -->"]}},
             {until: {of: before, pull: {closes: true, body: "\\[x\\] \\*\\*C1\\*\\*"}}},
             {until: {labels: [awaiting-acceptance]}}, {label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}}]
