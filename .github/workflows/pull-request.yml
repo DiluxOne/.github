@@ -107,6 +107,7 @@ jobs:
       - run: bash scripts/plugin-i18n.sh --test
       - run: bash scripts/conventions.sh --test
       - run: python3 scripts/credits.py --test
+      - run: python3 scripts/review-settled.py --test
       - run: bash scripts/issue-gate.sh --test
       - run: bash scripts/issue-assignee.sh --test
       - run: bash scripts/weekly-failure.sh --test

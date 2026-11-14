@@ -17,7 +17,10 @@ name: Claude review
 #      request meets it (G6, #193; kept in its record, read by G7).
 #   2. If the head commit was already reviewed (the description was edited, a
 #      check was re-run), the previous verdict is reused and Claude is not
-#      called at all.
+#      called at all; but not on a re-run after someone who decides settled
+#      one of its findings outside the code (#699, review-reply.yml's
+#      dx-settled mark, scripts/review-settled.py): the review runs again,
+#      with the settled findings beside the settled threads.
 #   3. On a new push, Claude gets one brief file with everything: the diff
 #      since the last reviewed commit (or the whole PR the first time, or
 #      after a force-push, a rebase or a merge), the review profiles, the
@@ -272,6 +275,20 @@ jobs:
                && [ -z "$(git rev-list --merges "$last..$HEAD")" ]; then
             mode=incremental; range="$last..$HEAD"
           fi
+          # #699 C5: a finding someone who decides settled outside the code,
+          # at this head, after the verdict (dilux-bot's dx-settled mark, not
+          # in the record's `settled`): the verdict is not reused, the review
+          # runs again, and the settled findings go to it with the settled
+          # threads. A read that fails settles nothing.
+          { gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate; gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/comments" --paginate; } \
+            | jq -s 'add // [] | [.[] | {id, user: {login: .user.login}, body}]' > "$RUNNER_TEMP/settle-comments.json" 2>/dev/null || echo '[]' > "$RUNNER_TEMP/settle-comments.json"
+          COMMENTS="$RUNNER_TEMP/settle-comments.json" RECORD="$RUNNER_TEMP/previous.json" python3 .dx-central/scripts/review-settled.py read "$HEAD" > "$RUNNER_TEMP/settled.json" \
+            || echo '{"ids": [], "newer": false, "threads": []}' > "$RUNNER_TEMP/settled.json"
+          if [ "$mode" = reuse ] && [ "$ACTION" != edited ] && [ "$(jq -r .newer "$RUNNER_TEMP/settled.json")" = true ]; then
+            echo "A finding was settled at ${HEAD:0:7} after its verdict: the review runs again."
+            mode=full
+          fi
+          echo "settled=$(jq -c .ids "$RUNNER_TEMP/settled.json")" >> "$GITHUB_OUTPUT"
           model=$MODEL; effort=$EFFORT
           if [ -z "$model" ]; then echo "::warning::The policy at central-ref gave no model; using the default."; model=claude-sonnet-5-5; fi
           if [ -z "$effort" ]; then effort=medium; fi
@@ -299,7 +316,8 @@ jobs:
                   | {id, isResolved, path, line, finding: .comments.nodes[0].body, replies: [.comments.nodes[1:][] | {author: .author.login, body}]}' \
             | jq -s . > "$RUNNER_TEMP/threads.json"
           jq '[.[] | select(.isResolved | not) | del(.isResolved)]' "$RUNNER_TEMP/threads.json" > "$RUNNER_TEMP/open-threads.json"
-          jq '[.[] | select(.isResolved) | del(.isResolved, .id)]' "$RUNNER_TEMP/threads.json" > "$RUNNER_TEMP/settled-threads.json"
+          # #699 C5: with the findings settled outside the code, at this head.
+          jq -s '[.[0][] | select(.isResolved) | del(.isResolved, .id)] + (.[1].threads // [])' "$RUNNER_TEMP/threads.json" "$RUNNER_TEMP/settled.json" > "$RUNNER_TEMP/settled-threads.json"
           echo "Bot threads: $(jq length "$RUNNER_TEMP/open-threads.json") open, $(jq length "$RUNNER_TEMP/settled-threads.json") settled."
 
       - name: Brief (one file with everything the reviewer needs)
@@ -560,6 +578,8 @@ jobs:
           COUNT: ${{ steps.scope.outputs.count }}
           MODEL: ${{ steps.scope.outputs.model }}
           MAX_AUTO: ${{ inputs.max-auto-reviews }}
+          # #699 C5: the settlements this verdict read.
+          SETTLED: ${{ steps.scope.outputs.settled || '[]' }}
         run: |
           set -euo pipefail
           # The review's output after its verification, when it ran.
@@ -702,8 +722,8 @@ jobs:
           files=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json files --jq '[.files[].path] | .[:300]' 2>/dev/null || echo '[]')
           # `max` lets the conventions tell a capped review (no new reading
           # will come) from one still to run on a new commit.
-          record=$(jq -c --arg risk "$risk" --arg floor "$FLOOR" --arg sha "$SHA" --arg model "$MODEL" --arg mode "$MODE" --argjson count "$count" --argjson max "${MAX_AUTO:-5}" --arg cost "${cost:-}" --argjson files "$files" --arg type "$type" --arg text "$text" \
-            '{risk:$risk, model_risk:.risk, floor:$floor, complexity, blocking, type:$type, description_matches:.description_matches, text:$text, lessons, findings:[.findings[] | del(.detail)], verification:(.verification // null), criteria:(.criteria // []), sha:$sha, model:$model, mode:$mode, count:$count, max:$max, cost:$cost, files:$files}' <<<"$OUT")
+          record=$(jq -c --arg risk "$risk" --arg floor "$FLOOR" --arg sha "$SHA" --arg model "$MODEL" --arg mode "$MODE" --argjson count "$count" --argjson max "${MAX_AUTO:-5}" --arg cost "${cost:-}" --argjson files "$files" --arg type "$type" --arg text "$text" --argjson settled "$SETTLED" \
+            '{risk:$risk, model_risk:.risk, floor:$floor, complexity, blocking, type:$type, description_matches:.description_matches, text:$text, lessons, findings:[.findings[] | del(.detail)], verification:(.verification // null), criteria:(.criteria // []), sha:$sha, model:$model, mode:$mode, count:$count, max:$max, cost:$cost, files:$files, settled:$settled}' <<<"$OUT")
           body=$(cat <<EOF
           <!-- dx-review -->
           ### Claude review · risk **$risk** · complexity **$complexity** · type **$type**$blk
