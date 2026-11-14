@@ -336,9 +336,9 @@ files:
     - key: trusted-authors
       org: any
       repo: any
-      limit: "org.yml `maintainers` are always added; the test identity counts in a repository of kind engine-test only, even when a list names it"
+      limit: "org.yml `maintainers` are always added; the test identity (`DX_TEST_LOGIN`, its token's owner) counts in the test repository only, even when a list names it"
       read-by: [scripts/policy.py]
-      issue: "#78, #568, #727"
+      issue: "#78, #568, #727, #739"
       says: Who may have a pull request merged without a person.
     - key: issue-gate.required
       org: any

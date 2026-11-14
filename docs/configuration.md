@@ -66,7 +66,7 @@ What a level may do: `any` value; `lower-only`; `stricter` (switch off, narrow, 
 
 | Setting | Default | org | repo | Limit | Read by | Issue |
 |---|---|---|---|---|---|---|
-| `trusted-authors`: Who may have a pull request merged without a person. | `["dependabot[bot]"]` | `any` | `any` | org.yml `maintainers` are always added; the test identity counts in a repository of kind engine-test only, even when a list names it | [`policy.py`](../scripts/policy.py) | #78, #568, #727 |
+| `trusted-authors`: Who may have a pull request merged without a person. | `["dependabot[bot]"]` | `any` | `any` | org.yml `maintainers` are always added; the test identity (`DX_TEST_LOGIN`, its token's owner) counts in the test repository only, even when a list names it | [`policy.py`](../scripts/policy.py) | #78, #568, #727, #739 |
 | `issue-gate.required`: Every pull request closes an accepted issue. | `true` | `any` | `stricter` | a repository turns it off only when `optional` is true | [`policy.py`](../scripts/policy.py) | #78 |
 | `issue-gate.label`: The label that accepts an issue. | `"accepted"` | `any` | `never` | the label a person adds | [`policy.py`](../scripts/policy.py) | #78 |
 | `issue-gate.optional`: Whether a repository may turn the issue gate off. | `false` | `any` | `never` | true lets a repository turn the gate off | [`policy.py`](../scripts/policy.py) | #78 |
