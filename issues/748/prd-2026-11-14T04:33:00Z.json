@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 748,
+  "prd_sha256": "1fa7a846586bf2faeee7706f351b23cc1784c3a42b40dc1af59e3d169eee897d",
+  "prd": "### Problem\n\nA release that fixes how pull requests are reviewed or merged cannot pass the release lane, so the engine cannot ship those fixes at all and every repository stays on the old version.\n\n### Scope\n\nThe required-workflow ruleset's repository conditions (via scripts/sync-repos.py, from org.yml `test-repo`), the test repository's pull-request caller and its template, release-lane.yml's move of the callers to `v7-next` and back, the check in release-scenarios.py, their self-tests, and docs/versioning.md and docs/workflows.md.\n\n### Out of scope\n\nThe scenarios' own expectations. Any other repository's pipeline, which keeps the required workflow at `v7`.\n\n### Acceptance criteria\n\nC1: Given the release lane playing a candidate, when a scenario pull request in the test repository runs its pipeline, then its review, auto-merge decision and fix rounds check out the candidate's engine (`v7-next`), not `v7`.\nC2: Given the organisation's rulesets after the sync, when they are read, then the required-workflow ruleset covers every adopted repository except org.yml `test-repo`, its `conditions` are complete (ref and repository conditions), and every other repository keeps the required workflow at `v7`.\nC3: Given the test repository, when its callers are synced, then it has a pull-request caller with the same required checks the required workflow gives, and the lane moves it to `@v7-next` and back with the others.\nC4: Given a release plan in which a pipeline of the test repository would not run at the candidate, when release-scenarios.py checks the plan, then it refuses it and says which one.\nC5: Given docs/versioning.md and docs/workflows.md, when a reader looks for how the lane tests the pull-request path, then they say the test repository runs the candidate's pipeline and why.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-14T04:33:00Z",
+  "policy": "DiluxOne/.github@24dea17a3351be9af76d2affd6a47b1a084f3f56",
+  "how": "own-bug"
+}
