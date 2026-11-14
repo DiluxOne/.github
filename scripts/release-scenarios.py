@@ -68,7 +68,9 @@ after GitHub's back-off within the scenario's limit, then named.
         group or in two, two scenarios that could write to the same
         part of the test repository's core, a scenario that writes under
         it but expects no wait on it (#709), a group id unfit for an
-        artifact name
+        artifact name; and (#696, `paths`) every path of docs/model.md
+        and setting that changes one with no row in docs/paths.md, a row
+        that names no scenario, and a scenario it names that is none
   release-scenarios.py plan
         prints each scenario's limit in minutes and how often it polls,
         [{id, minutes, poll}] as JSON; exits 1 naming a fixed wait or a
@@ -1801,11 +1803,57 @@ def lane_problems(lane):
     return []
 
 
+# The table of paths (#696): every path docs/model.md describes, and every
+# setting that changes one, each a row of docs/paths.md that names the
+# scenarios that play it.
+PATHS_DOC = os.path.join("docs", "paths.md")
+PATHS = ("a person's bug to its merge", "a reproduced bug merged by policy", "a feature accepted and built", "a claim and its release",
+         "a stop answered", "an edit after acceptance and the new acceptance", "the release and its watch",
+         "acceptance by policy", "`who-decides`", "a claim", "merge on its own or by a person", "its `ceiling`")
+
+
+def path_rows(text):
+    """The table's rows, [(path or setting, its scenarios' cell)], the header
+    and its rule aside. Pure."""
+    rows = []
+    for line in str(text or "").split("\n"):
+        cells = [c.strip() for c in line.strip().strip("|").split("|")] if line.strip().startswith("|") else []
+        if len(cells) < 2 or set(cells[0]) <= set("-: ") or cells[0] == "Path or setting":
+            continue
+        rows.append((cells[0], cells[1]))
+    return rows
+
+
+def paths(table_text, scenario_ids, required=PATHS):
+    """What is wrong with the table of paths (#696, docs/paths.md) against
+    the scenarios' ids: a path or setting of `required` with no row, a row
+    that names no scenario (each in backticks), and a scenario it names
+    that does not exist. Pure."""
+    out, rows, ids = [], path_rows(table_text), set(scenario_ids)
+    named = {r for r, _ in rows}
+    out += [f"{PATHS_DOC}: the path or setting {r} has no row" for r in required if r not in named]
+    for row, cell in rows:
+        listed = re.findall(r"`([^`]+)`", cell)
+        if not listed:
+            out.append(f"{PATHS_DOC}: the row {row} names no scenario")
+        out += [f"{PATHS_DOC}: the row {row} names {i}, which is no scenario of {SCENARIOS}" for i in listed if i not in ids]
+    return out
+
+
+def paths_problems(conf, root=ROOT):
+    """`paths` on the repository's own table, or its absence."""
+    try:
+        text = open(os.path.join(root, PATHS_DOC), encoding="utf-8").read()
+    except OSError:
+        return [f"{PATHS_DOC} is missing: the table of paths and their scenarios"]
+    return paths(text, [s.get("id") for s in conf.get("scenarios") or []])
+
+
 def problems(conf, root=ROOT):
     """What `coverage` names: every played pair and transition with no
     scenario, every scenario its setup cannot make hold, what is wrong
-    with the groups (`partition`), and with the lane's `play` job
-    (`lane_problems`, #707)."""
+    with the groups (`partition`), with the lane's `play` job
+    (`lane_problems`, #707), and with the table of paths (`paths`, #696)."""
     pack = test_pack(root)
     scenarios = conf.get("scenarios") or []
     return (coverage(scenarios, played(root, pack) | transitions(root), conf.get("statically") or {})
@@ -1815,6 +1863,7 @@ def problems(conf, root=ROOT):
             + partition(scenarios, groups(scenarios), pack)
             + timing(scenarios)
             + autopilot_problems(scenarios)
+            + paths_problems(conf, root)
             + fixture_problems(conf, engine_post(root).issue, engine_post(root).pull, engine_post(root).release,
                                form_required(load_yaml(os.path.join(root, BUG_FORM)))))
 
@@ -2789,6 +2838,22 @@ def self_test():
           (dec["opens"]["issue"].get("labels"), dec["steps"][:2]), (None, [{"until": {"labels": ["awaiting-acceptance"]}}, {"label": "accepted"}]))
     check("#713 C5: decision-sub-issues expects what a decision gets in the test repository, accepted and sealed, waiting until its seal",
           (dec["steps"][2:], dec["expect"]), ([{"until": {"comments": [SEAL]}}], {"labels": ["accepted"], "comments": [SEAL]}))
+    # #696 C2: the table of paths against the scenarios.
+    ids = [x["id"] for x in real["scenarios"]]
+    paths_md = open(os.path.join(ROOT, PATHS_DOC), encoding="utf-8").read()
+    check("#696 C2: docs/paths.md has a row for every path and setting, and each names scenarios that exist", paths(paths_md, ids), [])
+    check("#696 C2: and the coverage the scripts job runs holds it", paths_problems(real), [])
+    rows = dict(path_rows(paths_md))
+    check("#696 C2: the real table's rows are the required ones, C1's scenario playing the edit and the new acceptance",
+          (sorted(rows) == sorted(PATHS), "`stop-edited-reaccepted-answered`" in rows["an edit after acceptance and the new acceptance"]), (True, True))
+    head = "| Path or setting | Scenarios | How |\n| --- | --- | --- |\n"
+    good = head + "".join(f"| {p_} | `issue-complete` | x |\n" for p_ in PATHS)
+    check("#696 C2: a table with every row, each naming a scenario, passes", paths(good, ids), [])
+    check("#696 C2: a missing row is named", paths(good.replace("| a claim | `issue-complete` | x |\n", ""), ids), [f"{PATHS_DOC}: the path or setting a claim has no row"])
+    check("#696 C2: an unknown scenario is named", paths(good.replace("| a claim | `issue-complete` |", "| a claim | `issue-complete`, `gone` |"), ids),
+          [f"{PATHS_DOC}: the row a claim names gone, which is no scenario of {SCENARIOS}"])
+    check("#696 C2: an empty cell is named", paths(good.replace("| a claim | `issue-complete` |", "| a claim |  |"), ids), [f"{PATHS_DOC}: the row a claim names no scenario"])
+    check("#696 C2: a missing table is named", paths_problems(real, "/nonexistent"), [f"{PATHS_DOC} is missing: the table of paths and their scenarios"])
     # #696: `count`, a marker's comments counted exactly.
     stop = "<!-- dx-autopilot-stop -->"
     once = {"count": {stop: 1}}

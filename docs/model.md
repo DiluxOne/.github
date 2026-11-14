@@ -4,6 +4,8 @@ How work moves from an issue to a release in an organisation that runs on these 
 
 Not all of it is built yet. What is, and in which order the rest comes, is the work plan: [docs/plans/autonomy.md](plans/autonomy.md).
 
+Every path below, and every setting that changes one, is played whole by a release scenario before a release moves: which one is [docs/paths.md](paths.md).
+
 ## In one paragraph
 
 For a normal change, the only human decision is accepting a well-formed issue; from there it travels on its own to the merge, through gates that leave a record. A person still decides four things: accepting an issue, accepting an organisation decision (once, for every repository), merging what the policy leaves to a person (high risk, Critical, a security fix, the autonomy policy and the rules) and publishing a version.
