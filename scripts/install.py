@@ -319,12 +319,13 @@ def at_ref(text, ref):
     return re.sub(r"^(\s+uses: " + re.escape(org.CENTRAL) + r"/\.github/workflows/[\w.-]+\.yml)@v7[ \t]*$", rf"\1@{ref}{note}", text, flags=re.M)
 
 
-def test_repository(owner, run=run_gh, cmd=run_cmd, ref=None):
+def test_repository(owner, run=run_gh, cmd=run_cmd, ref=None, login=None):
     """The test repository (#563): (exit code, what it says, its table of
-    results last)."""
+    results last). The test identity is `login`, else DX_TEST_LOGIN
+    (scripts/org.py test_identity, #739): none, and nobody gets write."""
     import base64
     conf = org._conf if owner == org.ORG else {"org": owner}
-    name, login = org.test_repo(conf), org.test_pack(conf)["identity"].get("login", "")
+    name, login = org.test_repo(conf), org.test_identity() if login is None else login
     full, ref, said = f"{owner}/{name}", ref or engine_ref(owner), []
     rc, _, _ = run("repo", "view", full, "--json", "name")
     if rc != 0:
@@ -376,7 +377,7 @@ def steps(owner, app):
 2. Organisation secrets: DILUX_BOT_PRIVATE_KEY (the App's private key), CLAUDE_CODE_OAUTH_TOKEN (`claude setup-token`) or ANTHROPIC_API_KEY. https://github.com/organizations/{owner}/settings/secrets/actions
 3. Organisation variables: DILUX_BOT_CLIENT_ID (the App's client ID), DX_BOT_LOGIN ({app}[bot]), DX_BOT_APP ({app}), DX_BOT_ID (the App's bot user id: gh api users/{app}%5Bbot%5D --jq .id). https://github.com/organizations/{owner}/settings/variables/actions
 4. An organisation ruleset on every repository's default branch that requires the workflow {owner}/.github/.github/workflows/org-pull-request.yml (GitHub Team; on Free, each repository adds a copy of it as .github/workflows/pull-request.yml). https://github.com/organizations/{owner}/settings/rules
-5. The test identity (#563): a machine user, {org.test_pack({"org": owner})["identity"].get("login", "")}, whose fine-grained token (write on the test repository only) is the secret {org.test_pack({"org": owner})["identity"].get("secret", "DX_TEST_TOKEN")} of the `release` environment of {owner}/.github, which only main may use; then `install.py test-repo --org {owner}` plays every release scenario once more. https://github.com/{owner}/.github/settings/environments
+5. The test identity (#563): a machine user, its login the owner of its token (#739: written nowhere, DX_TEST_LOGIN carries it), whose fine-grained token (write on the test repository only) is the secret {org.test_pack({"org": owner})["identity"].get("secret", "DX_TEST_TOKEN")} of the `release` environment of {owner}/.github, which only main may use; then `install.py test-repo --org {owner}` plays every release scenario once more. https://github.com/{owner}/.github/settings/environments
 """
 
 
@@ -565,7 +566,7 @@ def self_test():
         if "release-scenarios.py" in argv[1]:
             return 0, "| Scenario | Result | Run |\n| --- | --- | --- |\n| `issue-complete` | pass | https://github.com/Acme/acme-test/actions/runs/1 |\n", ""
         return 0, "", ""
-    rc, out = test_repository("Acme", run=tgh, cmd=tcmd, ref="0123abcd")
+    rc, out = test_repository("Acme", run=tgh, cmd=tcmd, ref="0123abcd", login="someone-else")
     check("C9: the test repository is created, private on a plan that allows it", ("repo", "create", "Acme/acme-test", "--private") == tcalls[2][:4], True)
     written = [a for a in tcalls if a[:3] == ("api", "-X", "PUT") and "/contents/.github/workflows/" in a[3]]
     import base64 as b64
@@ -573,7 +574,7 @@ def self_test():
     check("C9: its callers are written, the engine pinned at its commit for another organisation",
           (len(written), f"issue-triage.yml@0123abcd # v7" in issues_caller, "@v7\n" in issues_caller), (2, True, False))
     check("C9: it is adopted", any(c[2:5] == ["adopt", "--repo", "acme-test"] for c in tcmds), True)
-    check("C9: the test identity gets write there", ("api", "-X", "PUT", "repos/Acme/acme-test/collaborators/acme-test-bot", "-f", "permission=push") in tcalls, True)
+    check("C9: the test identity gets write there", ("api", "-X", "PUT", "repos/Acme/acme-test/collaborators/someone-else", "-f", "permission=push") in tcalls, True)
     check("C9: every scenario runs there once", sum(1 for c in tcmds if "release-scenarios.py" in c[1] and c[2:6] == ["run", "--repo", "Acme/acme-test", "--ref"]), 1)
     check("C9: and the result table is shown", (rc, "| `issue-complete` | pass |" in out, out.index("created") < out.index("adopted") < out.index("gave") < out.index("Every release scenario")), (0, True, True))
     check("C9: apply ends with the test repository", apply("Acme", "acme-bot", 7, {}, lambda n: [], run=lambda *a: (1, "", "no") if a[:2] == ("repo", "view") else (1, "", "no"), test_repo=lambda: (0, "TABLE"))[0], 1)
