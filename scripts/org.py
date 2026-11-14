@@ -133,6 +133,19 @@ def test_repo(conf):
 TEST_KIND = "engine-test"
 
 
+def test_property(conf):
+    """org.yml `test-property` (#748): the custom property of the
+    organisation, true on the test repository alone, that the
+    required-workflow ruleset excludes (scripts/sync-repos.py rulesets);
+    absent, `dx-engine-test`."""
+    value = str(conf.get("test-property") or "").strip()
+    if not value:
+        return "dx-engine-test"
+    if not all(c.isalnum() or c in "-_" for c in value):
+        raise ValueError(f"org.yml `test-property` is `{value}`: a custom property's name")
+    return value
+
+
 def test_identity(env=os.environ):
     """The test identity's login (#739): DX_TEST_LOGIN, the owner of its
     token as the release lane read it from GitHub, lowercased; "" when it is
@@ -284,6 +297,13 @@ def self_test():
         check("C1 (#563): a test-repo with an owner fails", "no error", "ValueError")
     except ValueError:
         check("C1 (#563): a test-repo with an owner fails", "ValueError", "ValueError")
+    check("#748: no test-property is dx-engine-test; org.yml's is its own",
+          (test_property({}), test_property({"test-property": "acme-test"}), test_property(_conf)), ("dx-engine-test", "acme-test", "dx-engine-test"))
+    try:
+        test_property({"test-property": "a b"})
+        check("#748: a test-property that is no property's name fails", "no error", "ValueError")
+    except ValueError:
+        check("#748: a test-property that is no property's name fails", "ValueError", "ValueError")
     pack = test_pack({"org": "Acme"})
     check("C1 (#739): the pack names the test identity's token, and no login", pack["identity"], {"secret": "DX_TEST_TOKEN"})
     check("C1, C4 (#739): the test identity is DX_TEST_LOGIN, whoever owns the token, lowercased; none when it is unset",

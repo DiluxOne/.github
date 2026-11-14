@@ -27,6 +27,17 @@ archived and not excluded in repos.yml:
             names to the repositories with the property, only after every
             adopted one holds it, and never while that list covers a
             repository repos.yml does not list or excludes (it names them).
+            Then (#748) the required workflow in a ruleset of its own, "org:
+            required workflow": created first with "org: main"'s `workflows`
+            rule as it is (org-pull-request.yml at `v7`), its target, bypass
+            actors and `ref_name`, and only then that rule taken out of "org:
+            main", which keeps its other rules everywhere. It leaves out the
+            test repository (org.yml `test-repo`) by a second custom property,
+            org.yml `test-property` (dx-engine-test), true there alone, once
+            that repository has its own pull-request caller
+            (workflow-templates/test-pull-request.yml) on its default branch;
+            until then it covers it, and says so. A ruleset whose conditions
+            would lack `ref_name` or `repository_property` is never written.
   pending   the repositories repos.yml lists that do not hold that
             property yet, one per line (#562): what org-adopt.yml adopts,
             read from the organisation rather than from a push, so a run
@@ -156,7 +167,10 @@ archived and not excluded in repos.yml:
             not run on merge_group, and its own commit rules (commit-msg
             hook, commitlint, AGENTS.md, CONTRIBUTING.md) that match org.yml
             `conventions-contradictions`; for the organisation, a ruleset
-            still naming its repositories.
+            still naming its repositories, and (#748) a `workflows` rule
+            still in "org: main", "org: required workflow" covering the test
+            repository, an organisation ruleset with no `ref_name`, and a
+            required workflow at a ref other than the current major.
 
   i18n      a WordPress plugin's translations in the form that merges
             (#452, scripts/plugin-i18n.sh): languages/*.pot and *.po with
@@ -404,11 +418,34 @@ def configuration_defaults():
 # says they are adopted (#562), never a list of names that each adoption
 # has to extend by hand.
 ADOPTED = str(sys.modules["org"].load().get("adopted-property") or "dx-adopted")
-ORG_RULESET_NAMES = ("org: main", "org: release tag creation", "org: release tags")
+# The required workflow (#748) is a ruleset of its own, "org: required
+# workflow", split out of "org: main": GitHub takes one repository condition
+# per org ruleset, so it leaves the test repository out by a second
+# property, org.yml `test-property`, true there alone. The test repository
+# keeps "org: main"'s other rules, and runs the same pipeline from its own
+# caller (workflow-templates/test-pull-request.yml), which the release lane
+# moves to `v7-next`.
+TEST_PROPERTY = sys.modules["org"].test_property(sys.modules["org"].load())
+TEST_REPO = sys.modules["org"].test_repo(sys.modules["org"].load())
+TEST_CALLER = ".github/workflows/test-pull-request.yml"
+MAIN_RULESET, REQUIRED_RULESET = "org: main", "org: required workflow"
+ORG_RULESET_NAMES = (MAIN_RULESET, REQUIRED_RULESET, "org: release tag creation", "org: release tags")
 
 
-def property_condition():
-    return {"repository_property": {"include": [{"name": ADOPTED, "property_values": ["true"], "source": "custom"}], "exclude": []}}
+def property_condition(exclude=()):
+    return {"repository_property": {"include": [{"name": ADOPTED, "property_values": ["true"], "source": "custom"}], "exclude": list(exclude)}}
+
+
+def test_exclusion():
+    """The repository_property exclusion of the test repository (#748)."""
+    return {"name": TEST_PROPERTY, "property_values": ["true"], "source": "custom"}
+
+
+def excludes_test(ruleset):
+    """Whether an org ruleset leaves out the repositories with the test
+    property (#748)."""
+    cond = (ruleset.get("conditions") or {}).get("repository_property") or {}
+    return any(p.get("name") == TEST_PROPERTY and "true" in (p.get("property_values") or []) for p in cond.get("exclude") or [])
 
 
 def by_property(ruleset):
@@ -418,14 +455,85 @@ def by_property(ruleset):
                for p in ((cond.get("repository_property") or {}).get("include") or [])) and "repository_name" not in cond
 
 
-def with_property_condition(ruleset):
+def complete(body):
+    """A ruleset's PUT or POST body, once its conditions are complete
+    (#748): both `ref_name` and `repository_property`, since GitHub reads a
+    ruleset with no `ref_name` as covering no branch. Raises naming the
+    ruleset, never writes one that would cover nothing."""
+    cond = body.get("conditions") or {}
+    for key in ("ref_name", "repository_property"):
+        if not cond.get(key):
+            raise RuntimeError(f"the ruleset \"{body.get('name')}\" would have no `{key}` condition: nothing was written")
+    return body
+
+
+def with_property_condition(ruleset, exclude=None):
     """The ruleset as the PUT takes it, its every field as the GET gave it
-    but its repositories, now those with the property."""
+    but its repositories, now those with the property, less what it
+    excluded by property (`exclude`, when given, in its place)."""
     body = {k: v for k, v in ruleset.items() if k not in ("id", "source", "source_type", "node_id", "_links",
                                                             "created_at", "updated_at", "current_user_can_bypass")}
     cond = {k: v for k, v in (ruleset.get("conditions") or {}).items() if k not in ("repository_name", "repository_id")}
-    body["conditions"] = {**cond, **property_condition()}
+    kept = ((ruleset.get("conditions") or {}).get("repository_property") or {}).get("exclude") or []
+    body["conditions"] = {**cond, **property_condition(kept if exclude is None else exclude)}
+    return complete(body)
+
+
+def workflows_rules(ruleset):
+    """The ruleset's `workflows` rules: the required workflow."""
+    return [r for r in (ruleset or {}).get("rules") or [] if r.get("type") == "workflows"]
+
+
+def required_ruleset(main, exclude_test):
+    """The body of "org: required workflow" (#748), from "org: main": its
+    `workflows` rule unchanged, its target, enforcement, bypass actors and
+    `ref_name`, over the repositories with the property, less the test
+    repository's when `exclude_test`. Pure."""
+    return complete({"name": REQUIRED_RULESET, "target": main.get("target") or "branch", "enforcement": main.get("enforcement") or "active",
+                     "bypass_actors": main.get("bypass_actors") or [],
+                     "conditions": {"ref_name": (main.get("conditions") or {}).get("ref_name"),
+                                    **property_condition([test_exclusion()] if exclude_test else [])},
+                     "rules": workflows_rules(main)})
+
+
+def without_workflows(main):
+    """The body of "org: main" with its `workflows` rule taken out (#748):
+    its pull request, deletion and signed commits rules stay, on the test
+    repository too. Pure."""
+    body = with_property_condition(main)
+    body["rules"] = [r for r in body.get("rules") or [] if r.get("type") != "workflows"]
     return body
+
+
+def ref_of(workflow):
+    """A required workflow's ref, without refs/tags/ or refs/heads/."""
+    return re.sub(r"^refs/(tags|heads)/", "", str((workflow or {}).get("ref") or ""))
+
+
+def required_drift(org_rs, major):
+    """What is wrong with the required workflow's rulesets (#748), as
+    lines: a `workflows` rule still in "org: main", "org: required
+    workflow" covering the test repository, an organisation ruleset with no
+    `ref_name`, and a required workflow at a ref other than `v<major>`.
+    Pure."""
+    found = []
+    for r in org_rs or []:
+        if r.get("name") not in ORG_RULESET_NAMES:
+            continue
+        if r.get("name") == MAIN_RULESET and workflows_rules(r):
+            found.append(f"the ruleset \"{MAIN_RULESET}\" still holds the `workflows` rule (the required workflow): it belongs to \"{REQUIRED_RULESET}\", "
+                         f"which leaves the test repository {TEST_REPO} out (`sync-repos.py rulesets`)")
+        if r.get("name") == REQUIRED_RULESET and not excludes_test(r):
+            found.append(f"the ruleset \"{REQUIRED_RULESET}\" covers the test repository {TEST_REPO}: it does not exclude `{TEST_PROPERTY}=true`, so "
+                         f"its pull requests run the pipeline at `v{major}`, not the candidate's (`sync-repos.py rulesets`, once it has {TEST_CALLER})")
+        if not ((r.get("conditions") or {}).get("ref_name") or {}).get("include"):
+            found.append(f"the ruleset \"{r['name']}\" has no `ref_name` condition: it covers no branch or tag (`sync-repos.py rulesets`)")
+        for rule in workflows_rules(r):
+            for w in (rule.get("parameters") or {}).get("workflows") or []:
+                if ref_of(w) != f"v{major}":
+                    found.append(f"the ruleset \"{r['name']}\" runs `{w.get('path')}` at `{ref_of(w) or 'no ref'}`, not `v{major}`: every repository but the test "
+                                 f"repository keeps the required workflow at `v{major}`")
+    return found
 
 
 def org_repo_names():
@@ -458,9 +566,10 @@ def would_drop(moving, every):
     return {r["name"]: sorted(named_coverage(r, names) - adopted) for r in moving if named_coverage(r, names) - adopted}
 
 
-def property_values(names):
-    """{repository: its value of the property}, for these names; None when
-    they could not be read."""
+def property_values(names, prop=None):
+    """{repository: its value of the property (`prop`, else the adopted
+    one)}, for these names; None when they could not be read."""
+    prop = prop or ADOPTED
     got = gh("api", "--paginate", "--slurp", f"orgs/{ORG}/properties/values?per_page=100", check=False)
     if got.returncode != 0:
         return None
@@ -469,7 +578,7 @@ def property_values(names):
     for page in rows if rows and isinstance(rows[0], list) else [rows]:
         for r in page:
             if r.get("repository_name") in names:
-                out[r["repository_name"]] = next((str(p.get("value")) for p in r.get("properties") or [] if p.get("property_name") == ADOPTED), None)
+                out[r["repository_name"]] = next((str(p.get("value")) for p in r.get("properties") or [] if p.get("property_name") == prop), None)
     return out
 
 
@@ -516,6 +625,95 @@ def sync_rulesets(repos, every, dry):
         gh("api", "-X", "PUT", f"orgs/{ORG}/rulesets/{r['id']}", "--input", "-", input_text=json.dumps(with_property_condition(r)))
         print(f"  \"{r['name']}\" covers the repositories with {ADOPTED}=true")
     if moving and not dry:
+        ORG_RULESETS = None
+    # The rulesets as read before the move: it changed their repositories
+    # alone, which the split writes again.
+    split_required(every, dry, org_rs)
+
+
+def has_test_caller(name):
+    """Whether the test repository has its pull-request caller on its
+    default branch (#748)."""
+    return gh("api", f"repos/{ORG}/{name}/contents/{TEST_CALLER}", check=False).returncode == 0
+
+
+def sync_test_property(name, dry):
+    """The test property (org.yml `test-property`, a true_false custom
+    property of the organisation) created, and set to true on the test
+    repository (#748)."""
+    if gh("api", f"orgs/{ORG}/properties/schema/{TEST_PROPERTY}", check=False).returncode != 0:
+        if dry:
+            print(f"  would create the custom property `{TEST_PROPERTY}`")
+        else:
+            gh("api", "-X", "PUT", f"orgs/{ORG}/properties/schema/{TEST_PROPERTY}", "--input", "-", input_text=json.dumps(
+                {"value_type": "true_false", "required": False,
+                 "description": "The organisation's test repository (DiluxOne/.github org.yml test-repo): the required workflow's ruleset leaves it out."}))
+    have = property_values({name}, TEST_PROPERTY)
+    if have is None:
+        raise RuntimeError(f"the values of {TEST_PROPERTY} could not be read")
+    if have.get(name) == "true":
+        return
+    if dry:
+        print(f"  would set {TEST_PROPERTY}=true on {name}")
+        return
+    gh("api", "-X", "PATCH", f"orgs/{ORG}/properties/values", "--input", "-", input_text=json.dumps(
+        {"repository_names": [name], "properties": [{"property_name": TEST_PROPERTY, "value": "true"}]}))
+    print(f"  {TEST_PROPERTY}=true on {name}")
+
+
+def split_required(every, dry, org_rs=None):
+    """The required workflow in a ruleset of its own (#748): "org: required
+    workflow" created first, with "org: main"'s `workflows` rule as it is,
+    and only then that rule taken out of "org: main", so no repository is
+    ever without it. It leaves out the test repository (the test property,
+    set on it first) once that repository has its pull-request caller on its
+    default branch; until then it covers it, and says so, for otherwise its
+    pull requests would run no pipeline."""
+    global ORG_RULESETS
+    org_rs = org_rulesets() or [] if org_rs is None else org_rs
+    main = next((r for r in org_rs if r.get("name") == MAIN_RULESET), None)
+    required = next((r for r in org_rs if r.get("name") == REQUIRED_RULESET), None)
+    rules = workflows_rules(main)
+    if required is None and not rules:
+        return
+    test = TEST_REPO if TEST_REPO in {r["name"] for r in every} else None
+    ready = False
+    if test:
+        sync_test_property(test, dry)
+        ready = has_test_caller(test)
+        if not ready:
+            print(f"  {test} has no {TEST_CALLER} on its default branch yet: \"{REQUIRED_RULESET}\" still covers it, "
+                  "so its pull requests run a pipeline (`sync-repos.py callers` writes it)")
+    changed = False
+    if required is None:
+        body = required_ruleset(main, ready)
+        if dry:
+            print(f"  would create \"{REQUIRED_RULESET}\" with the `workflows` rule of \"{MAIN_RULESET}\"" + (f", leaving out {test}" if ready else ""))
+        else:
+            gh("api", "-X", "POST", f"orgs/{ORG}/rulesets", "--input", "-", input_text=json.dumps(body))
+            print(f"  \"{REQUIRED_RULESET}\" created" + (f", leaving out {test}" if ready else ""))
+            changed = True
+        carries = bool(body["rules"])
+    else:
+        carries = bool(workflows_rules(required))
+        if ready and not excludes_test(required):
+            if dry:
+                print(f"  would make \"{REQUIRED_RULESET}\" leave out {test} ({TEST_PROPERTY}=true)")
+            else:
+                exclude = [p for p in ((required.get("conditions") or {}).get("repository_property") or {}).get("exclude") or []] + [test_exclusion()]
+                gh("api", "-X", "PUT", f"orgs/{ORG}/rulesets/{required['id']}", "--input", "-", input_text=json.dumps(with_property_condition(required, exclude)))
+                print(f"  \"{REQUIRED_RULESET}\" leaves out {test}")
+                changed = True
+    if rules and carries:
+        if dry:
+            print(f"  would take the `workflows` rule out of \"{MAIN_RULESET}\"")
+        else:
+            gh("api", "-X", "PUT", f"orgs/{ORG}/rulesets/{main['id']}", "--input", "-", input_text=json.dumps(without_workflows(main)))
+            print(f"  \"{MAIN_RULESET}\" keeps its other rules; the required workflow is \"{REQUIRED_RULESET}\"'s")
+            changed = True
+    elif rules:
+        print(f"  \"{REQUIRED_RULESET}\" has no `workflows` rule: \"{MAIN_RULESET}\" keeps it")
+    if changed:
         ORG_RULESETS = None
 
 
@@ -2054,6 +2252,8 @@ def covers(org_rs, name, adopted=None):
     if org_rs.get("enforcement") != "active":
         return False
     if by_property(org_rs):
+        if name == TEST_REPO and excludes_test(org_rs):
+            return False
         return listed(name) is not None if adopted is None else adopted
     cond = ((org_rs.get("conditions") or {}).get("repository_name") or {})
     include, exclude = cond.get("include") or [], cond.get("exclude") or []
@@ -2594,6 +2794,8 @@ def org_drift(conf):
     for r in org_rulesets() or []:
         if r.get("name") in ORG_RULESET_NAMES and not by_property(r):
             found.append(f"the ruleset \"{r['name']}\" names its repositories instead of covering those with `{ADOPTED}=true` (`sync-repos.py rulesets`)")
+    # The required workflow, out of the test repository (#748).
+    found += required_drift(org_rulesets() or [], current_major())
     # The test repository and the test identity (#563).
     packs = {k: pack_of(k) for k in os.listdir(os.path.join(HERE, "..", "kinds")) if os.path.isfile(os.path.join(HERE, "..", "kinds", k, "pack.yml"))}
     login = org.test_identity()
@@ -3832,6 +4034,112 @@ def adopt_test(check, conf, labels, block):
           "no Project" in _said(lambda: sync_project({"name": "x"}, {"repos": {"x": {"kinds": []}}}, False)))
 
 
+def required_split_test(check):
+    """#748 C2: the required workflow split out of "org: main" into "org:
+    required workflow", which leaves the test repository out by the test
+    property once it has its own pull-request caller, against a stand-in for
+    gh; and the drift check's four findings."""
+    def eq(name, got, want):
+        check(name, got == want, got)
+
+    class Out:
+        def __init__(self, stdout="", returncode=0, stderr=""):
+            self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
+    flow = {"type": "workflows", "parameters": {"do_not_enforce_on_create": True, "workflows": [
+        {"path": ".github/workflows/org-pull-request.yml", "repository_id": 1, "ref": "refs/tags/v7"}]}}
+    refs = {"include": ["~DEFAULT_BRANCH"], "exclude": []}
+    bypass = [{"actor_id": 333187390, "actor_type": "Integration", "bypass_mode": "always"}]
+    main = {"id": 3, "name": MAIN_RULESET, "target": "branch", "enforcement": "active", "source_type": "Organization", "bypass_actors": bypass,
+            "conditions": {"ref_name": refs, **property_condition()},
+            "rules": [{"type": "pull_request"}, {"type": "deletion"}, {"type": "required_signatures"}, flow]}
+    every = [{"name": "old"}, {"name": TEST_REPO}]
+
+    def run(rulesets, caller=True, values=None):
+        state = {"values": dict(values or {}), "calls": [], "bodies": []}
+
+        def fake(*args, check=True, input_text=None):
+            joined = " ".join(args)
+            state["calls"].append(joined)
+            if input_text is not None:
+                state["bodies"].append((joined, json.loads(input_text)))
+            if joined.startswith("api orgs/o/properties/schema/"):
+                return Out("{}")
+            if joined.startswith("api --paginate --slurp orgs/o/properties/values"):
+                return Out(json.dumps([[{"repository_name": n, "properties": [{"property_name": ADOPTED, "value": "true"}]
+                                         + ([{"property_name": TEST_PROPERTY, "value": state["values"][n]}] if n in state["values"] else [])} for n in ("old", TEST_REPO)]]))
+            if joined == "api -X PATCH orgs/o/properties/values --input -":
+                body = json.loads(input_text)
+                for n in body["repository_names"]:
+                    state["values"][n] = body["properties"][0]["value"]
+                return Out("")
+            if joined == f"api repos/o/{TEST_REPO}/contents/{TEST_CALLER}":
+                return Out("{}") if caller else Out("", 1, "HTTP 404")
+            return Out("{}")
+        saved = {n: globals()[n] for n in ("gh", "ORG", "ORG_RULESETS", "listed")}
+        import contextlib
+        import io
+        try:
+            globals().update(gh=fake, ORG="o", ORG_RULESETS=rulesets, listed=lambda n: {"kinds": []})
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                sync_rulesets(every, every, False)
+        finally:
+            globals().update(saved)
+        state["out"] = out.getvalue()
+        return state
+    st = run([main])
+    posts = [b for c, b in st["bodies"] if c == "api -X POST orgs/o/rulesets --input -"]
+    puts = [b for c, b in st["bodies"] if c == "api -X PUT orgs/o/rulesets/3 --input -"]
+    eq("#748 C2: the required workflow's ruleset is created with ref_name and repository_property, the test property excluded",
+       [(b["name"], b["conditions"]["ref_name"], b["conditions"]["repository_property"]) for b in posts],
+       [(REQUIRED_RULESET, refs, {"include": [{"name": ADOPTED, "property_values": ["true"], "source": "custom"}], "exclude": [test_exclusion()]})])
+    eq("#748 C2: it carries \"org: main\"'s workflows rule unchanged, at v7, with its target, enforcement and bypass actors",
+       [(b["rules"], b["target"], b["enforcement"], b["bypass_actors"]) for b in posts], [([flow], "branch", "active", bypass)])
+    eq("#748 C2: \"org: main\" keeps its other rules, complete conditions and all, for the test repository too",
+       [([r["type"] for r in b["rules"]], b["conditions"]["ref_name"], b["conditions"]["repository_property"]["exclude"]) for b in puts],
+       [(["pull_request", "deletion", "required_signatures"], refs, [])])
+    eq("#748 C2: it is created before the rule is taken out of \"org: main\"",
+       st["calls"].index("api -X POST orgs/o/rulesets --input -") < st["calls"].index("api -X PUT orgs/o/rulesets/3 --input -"), True)
+    eq("#748 C2: the test property is set to true on the test repository alone, before the ruleset excludes it",
+       (st["values"], [b["repository_names"] for c, b in st["bodies"] if "PATCH" in c],
+        st["calls"].index("api -X PATCH orgs/o/properties/values --input -") < st["calls"].index("api -X POST orgs/o/rulesets --input -")),
+       ({TEST_REPO: "true"}, [[TEST_REPO]], True))
+    required = dict(posts[0], id=8, source_type="Organization")
+    kept = dict(main, rules=puts[0]["rules"])
+    eq("#748 C2: the required workflow covers every adopted repository but the test repository, which \"org: main\" still covers",
+       (covers(required, "old", True), covers(required, TEST_REPO, True), covers(kept, TEST_REPO, True)), (True, False, True))
+    st = run([main], caller=False)
+    posts = [b for c, b in st["bodies"] if c == "api -X POST orgs/o/rulesets --input -"]
+    eq("#748 C2: with no pull-request caller in the test repository yet, the ruleset still covers it, and the sync says so",
+       ([b["conditions"]["repository_property"]["exclude"] for b in posts], TEST_CALLER in st["out"], any("rulesets/3" in c for c in st["calls"])), ([[]], True, True))
+    st = run([dict(posts[0], id=8), kept], values={TEST_REPO: "true"})
+    eq("#748 C2: once it has its caller, a later run excludes it, conditions complete, the rest unchanged, and nothing else is written",
+       ([(c, b["conditions"]["ref_name"], b["conditions"]["repository_property"]["exclude"], b["rules"]) for c, b in st["bodies"]], [c for c in st["calls"] if " -X " in c]),
+       ([("api -X PUT orgs/o/rulesets/8 --input -", refs, [test_exclusion()], [flow])], ["api -X PUT orgs/o/rulesets/8 --input -"]))
+    st = run([required, kept], values={TEST_REPO: "true"})
+    eq("#748 C2: in step, it only reads", [c for c in st["calls"] if " -X " in c], [])
+    st = run([dict(required, rules=[]), main], values={TEST_REPO: "true"})
+    eq("#748 C2: a required-workflow ruleset with no workflows rule leaves \"org: main\" its own", [c for c in st["calls"] if "rulesets/3" in c], [])
+    no_ref = dict(main, conditions=property_condition())
+    try:
+        with_property_condition(no_ref)
+        eq("#748 C2: a ruleset with no ref_name is never written", "written", "RuntimeError")
+    except RuntimeError as exc:
+        eq("#748 C2: a ruleset with no ref_name is never written", "`ref_name`" in str(exc), True)
+    seen = []
+    try:
+        seen.append(run([no_ref]))
+    except RuntimeError as exc:
+        seen.append(str(exc))
+    eq("#748 C2: nor split: the sync stops, naming it", seen, [f"the ruleset \"{REQUIRED_RULESET}\" would have no `ref_name` condition: nothing was written"])
+    got = required_drift([main, dict(required, conditions={"ref_name": refs, **property_condition()}),
+                          dict(required, name="org: release tags", conditions=property_condition(), rules=[]),
+                          dict(required, rules=[{"type": "workflows", "parameters": {"workflows": [dict(flow["parameters"]["workflows"][0], ref="refs/tags/v7-next")]}}])], 7)
+    eq("#748 C2: the drift check names a workflows rule left in \"org: main\", the test repository covered, a ruleset with no ref_name, and a ref other than v7",
+       [next(k for k in ("still holds the `workflows` rule", "covers the test repository", "no `ref_name`", "at `v7-next`, not `v7`") if k in line) for line in got],
+       ["still holds the `workflows` rule", "covers the test repository", "no `ref_name`", "at `v7-next`, not `v7`"])
+    eq("#748 C2: the split rulesets are in step", required_drift([required, kept], 7), [])
+
+
 def conventions_test(check, block):
     """#562, C4: a repository whose own commit rules contradict the
     organisation's is listed by the drift check; one in step is not."""
@@ -4498,6 +4806,7 @@ def self_test():
     dependabot_test(check, conf, labels, block_file)
     ai_plugin_drift_test(check, conf, labels, block_file)
     adopt_test(check, conf, labels, block_file)
+    required_split_test(check)
     security_visibility_test(check)
     conventions_test(check, block_file)
     release_caller_test(check, conf)

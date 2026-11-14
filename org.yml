@@ -85,6 +85,14 @@ core:
 # repos.yml lists, written by the sync, and the organisation's rulesets
 # cover the repositories that have it instead of a list of names.
 adopted-property: dx-adopted
+# The custom property that sets the test repository apart (#748,
+# scripts/sync-repos.py rulesets): `true` on org.yml `test-repo` alone,
+# written by the sync. The ruleset "org: required workflow", which runs
+# org-pull-request.yml at `v7` in every adopted repository, excludes the
+# repositories that have it: the test repository runs the same pipeline
+# from its own caller (workflow-templates/test-pull-request.yml), which the
+# release lane moves to `v7-next`. Absent, `dx-engine-test`.
+test-property: dx-engine-test
 # A repository's own commit rules that contradict the organisation's (#562,
 # scripts/sync-repos.py check): each pattern is matched against its
 # commit-msg hook (.githooks/, .husky/), its commitlint configuration, and
