@@ -3318,6 +3318,14 @@ def callers_test(check, conf):
     weekly = checks.replace("needs: [checks, tests, coverage]", "needs: [checks]")
     got = callers_drift({**c2, ".github/workflows/plugin-checks.yml": weekly}, conf)
     check("callers: a `needs` without one of the template's jobs differs", got and "job `weekly-failure` needs `checks`, not `checks, tests`" in got[0][2], got)
+    # #757 C2: what joins the template's `needs` and is no job of the
+    # template is the repository's own: in step, one or two of them.
+    two = checks.replace("needs: [checks, tests, coverage]", "needs: [checks, tests, coverage, lint]")
+    waits_two = comments.replace("  reply:\n", "  reply:\n    needs: [mine, lint]\n")
+    got = (callers_drift(c2, conf), callers_drift({**c2, ".github/workflows/plugin-checks.yml": two}, conf),
+           callers_drift({**c2, ".github/workflows/pull-request-comments.yml": waits_two}, conf))
+    check("#757 C2: a caller job whose `needs` adds only jobs of the repository's own, one or two, is in step",
+          two != checks and waits_two != comments and got == ([], [], []), got)
     local = comments.replace("DiluxOne/.github/.github/workflows/review-reply.yml@v7", "./.github/workflows/review-reply.yml")
     check("callers: in DiluxOne/.github a local call is the same workflow",
           callers_drift({**c2, ".github/workflows/pull-request-comments.yml": local}, conf, central=True) == [], "")
