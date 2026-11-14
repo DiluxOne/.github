@@ -64,7 +64,11 @@ after GitHub's back-off within the scenario's limit, then named.
         `autopilot_problems`; a body the schema refuses, a decision's
         too, or a Bug's without a field bug_report.yml requires; #760: a
         pull request whose description would not name every file of its
-        diff, its body with no `{files}`).
+        diff, its body with no `{files}`; #764: one that expects a
+        `risk:<level>` label no path it changes gets as its floor for kind
+        engine-test, the organisation's patterns and the kind's
+        surface.yml `high-risk` matched as scripts/policy.py matches them,
+        `risk_problems`).
         Every other pair a shipped caller wires is held to the
         engine statically, by scripts/caller-contract.py check; and
         what is wrong with the groups (`partition`): a scenario in no
@@ -1978,7 +1982,8 @@ def problems(conf, root=ROOT):
     scenario, every scenario its setup cannot make hold, what is wrong
     with the groups (`partition`), with the lane's `play` job
     (`lane_problems`, #707), and with the test repository's pipeline
-    (`pipeline_problems`, #748)."""
+    (`pipeline_problems`, #748), and every risk label the paths cannot
+    give (`risk_problems`, #764)."""
     pack = test_pack(root)
     scenarios = conf.get("scenarios") or []
     return (coverage(scenarios, played(root, pack) | transitions(root), conf.get("statically") or {})
@@ -1989,6 +1994,7 @@ def problems(conf, root=ROOT):
             + partition(scenarios, groups(scenarios), pack)
             + timing(scenarios)
             + autopilot_problems(scenarios)
+            + risk_problems(scenarios, *risk_patterns(root))
             + fixture_problems(conf, engine_post(root).issue, engine_post(root).pull, engine_post(root).release,
                                form_required(load_yaml(os.path.join(root, BUG_FORM)))))
 
@@ -3023,6 +3029,24 @@ def self_test():
     check("#764 C2: the real high-risk-waits expects risk:high and no merge, and its path gets the high floor",
           ("risk:high" in hrw["expect"].get("labels", []), hrw["expect"].get("merged"), pull_files(hrw), [path_floor(f, rhigh, rlow) for f in pull_files(hrw)], risk_problems([hrw], rhigh, rlow)),
           (True, False, ["scenarios/high-risk-waits/pull.md"], ["high"], []))
+    # #764 C4: a risk label the paths it changes cannot give is named.
+    def risky(sid, level, pushes=()):
+        return {"id": sid, "opens": {"pull": {"title": "docs: x", "body": "pull"}}, "steps": [{"push": p} for p in pushes], "expect": {"labels": [f"risk:{level}"]}}
+    fake_high, fake_low = ["kit/**", "scenarios/hot/**"], ["**/*.md"]
+    check("#764 C4: risk_problems names a scenario that expects risk:high with no high path, and passes one with a path in the kind's high-risk",
+          ([p.split(":")[0] for p in risk_problems([risky("cold", "high"), risky("hot", "high")], fake_high, fake_low)],
+           "scenarios/cold/pull.md (low)" in "".join(risk_problems([risky("cold", "high")], fake_high, fake_low))),
+          (["scenario cold"], True))
+    check("#764 C4: and the same for risk:low and risk:medium",
+          ([p.split(":")[0] for p in risk_problems([risky("hot", "low"), risky("cold", "low"), risky("cold", "medium"), risky("med", "medium")], fake_high, ["scenarios/cold/**"])],
+           risk_problems([risky("mixed", "medium", ["x"])], fake_high, ["scenarios/mixed/pull.md"])),
+          (["scenario hot", "scenario cold"], []))
+    check("#764 C4: a scenario that expects no risk label is never named, and one that expects one but changes no path always is",
+          [p.split(":")[0] for p in risk_problems([{"id": "a", "expect": {"labels": ["accepted"]}}, {"id": "b", "opens": {"issue": {}}, "expect": {"labels": ["risk:high"]}}], fake_high, fake_low)],
+          ["scenario b"])
+    check("#764 C4: the real file: problems() names nothing, and the kind engine-test's high-risk is what policy.py reads",
+          (problems(real), risk_patterns()[0][-1:], load_yaml(os.path.join(ROOT, "kinds", "engine-test", "surface.yml")).get("high-risk")),
+          ([], ["scenarios/high-risk-waits/**"], ["scenarios/high-risk-waits/**"]))
     check("#713 C2: core-one-at-a-time accepts its `before` issue after its triage, and waits for its seal",
           (by713["core-one-at-a-time"]["before"][0]["issue"].get("labels"), [p for p in autopilot_problems([by713["core-one-at-a-time"]])],
            preconditions([by713["core-one-at-a-time"]], real["bodies"], rpack)), (None, [], []))
