@@ -71,6 +71,16 @@ high-risk:
   - "composer.json"
   - "package.json"
 
+# How long the policy floor waits for a pull request's files list
+# (scripts/pr-files.py, #768): just after a pull request is opened, GitHub can
+# list no file for a while. The list is read up to `attempts` times,
+# `interval-seconds` apart, until it holds the pull request's files; still
+# empty past that, the floor is high and the review says the files could not
+# be listed. The organisation's only: a repository cannot shorten it.
+files-wait:
+  attempts: 12
+  interval-seconds: 10
+
 # Which reviewer each risk level gets: the model id as the API names it and
 # the reasoning effort (low, medium, high, xhigh, max). A repository overrides
 # any level, or any single key of a level, in its own .github/review-policy.yml;

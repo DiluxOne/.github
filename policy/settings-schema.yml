@@ -411,6 +411,13 @@ files:
       read-by: [scripts/policy.py]
       issue: "#78"
       says: Which reviewer each risk level gets.
+    - key: files-wait
+      org: any
+      repo: never
+      limit: "reads, `attempts` of them `interval-seconds` apart; attempts at least 1"
+      read-by: [scripts/pr-files.py]
+      issue: "#768"
+      says: How long the policy floor waits for a pull request's files list before it calls them unlisted.
     - key: budget-usd
       org: any
       repo: any

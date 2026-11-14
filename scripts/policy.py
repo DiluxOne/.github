@@ -465,7 +465,7 @@ def run_case(defaults_path, repo_text, files, **env):
         open(out_path, "w").close()
         saved = dict(os.environ)
         os.environ.update({"DEFAULT_POLICY": defaults_path, "REPO_POLICY": repo_path, "CHANGED_FILES": "\n".join(files), "GITHUB_OUTPUT": out_path})
-        for key in ("PR_AUTHOR", "POLICY_LEVEL", "POLICY_MODE", "KIND_DEFAULT", "PR_AUTHOR_TYPE", "HEAD_IN_REPO", "PR_LABELS", "HEAD_AUTHOR", "HEAD_COMMITTER", "NEEDS_HUMAN_BY", "DX_BOT_LOGIN", "DX_TEST_LOGIN", "GITHUB_REPOSITORY", "DX_REPOS_YML"):
+        for key in ("PR_AUTHOR", "POLICY_LEVEL", "POLICY_MODE", "KIND_DEFAULT", "PR_AUTHOR_TYPE", "HEAD_IN_REPO", "PR_LABELS", "HEAD_AUTHOR", "HEAD_COMMITTER", "NEEDS_HUMAN_BY", "DX_BOT_LOGIN", "DX_TEST_LOGIN", "GITHUB_REPOSITORY", "DX_REPOS_YML", "FILES_STATE"):
             os.environ.pop(key, None)
         os.environ.update(env)
         try:
@@ -512,6 +512,7 @@ def self_test():
         ("the Makefile is high", default, "", ["Makefile", "docs/a.md"], {}, {"floor": "high"}, 0),
         ("a rename out of a high-risk path is high", default, "", ["docs/old-workflow.yml", ".github/workflows/old.yml"], {}, {"floor": "high"}, 0),
         ("no listed files is high", default, "", [], {}, {"floor": "high"}, 0),
+        ("C1 (#768): the file pr-files.py listed once it was there gives the floor", default, "", ["docs/new.md"], {"FILES_STATE": "listed"}, {"floor": "low"}, 0),
         ("the repository adds a high-risk path", default, "high-risk:\n  - \"includes/providers/**\"\n", ["includes/providers/a.php"], {}, {"floor": "high"}, 0),
         ("#764 C2: the kind engine-test's high-risk path is high", default, "kind: engine-test\n", ["scenarios/high-risk-waits/pull.md"], {}, {"floor": "high"}, 0),
         ("#764 C2: another path of the same kind is not", default, "kind: engine-test\n", ["scenarios/low-risk-merges/pull.md"], {}, {"floor": "low"}, 0),
@@ -625,7 +626,7 @@ def settings_tests():
     # key is what policy/settings-schema.yml says of it (its `repo:`).
     rules = {"trusted-authors": "any", "issue-gate.required": "stricter", "issue-gate.label": "never", "issue-gate.optional": "never",
              "max-changed-lines-untrusted": "lower-only", "docs-paths": "never", "high-risk": "add-only", "review": "any",
-             "budget-usd": "any", "auto-merge": "stricter", "release": "stricter", "auto-allowed": "never",
+             "budget-usd": "any", "files-wait": "never", "auto-merge": "stricter", "release": "stricter", "auto-allowed": "never",
              "low-risk-eligible": "add-only", "code": "add-only", "plugin-check": "add-only", "kind-settings": "add-only"}
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import settings  # the schema's reader
