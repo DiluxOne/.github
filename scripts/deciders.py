@@ -36,7 +36,9 @@ widens it. An admin always decides: they can change the setting anyway.
 
 Environment: GH_TOKEN; GITHUB_REPOSITORY (owner/name); NUMBER (the issue);
 PR (its pull request, when the caller knows it; else the open one that
-closes the issue). DX_ORG_YML and DX_REPOS_YML stand in for org.yml and
+closes the issue); DX_TEST_LOGIN (the test identity, its token's owner,
+#739: it decides only in the test repository; unset, nobody is refused as
+it). DX_ORG_YML and DX_REPOS_YML stand in for org.yml and
 repos.yml, and DECIDERS_FIXTURE (a JSON file: roles, codeowners, files,
 acceptor) for GitHub, in the self-test. Exit 2 when what decides could not
 be read: the caller refuses, never takes it for yes.
@@ -250,9 +252,11 @@ TEST_KIND = "engine-test"
 
 
 def test_identity_refused(login, identity, kinds):
-    """#563: the test identity decides only in a repository of kind
-    `engine-test` (kinds: the repository's, from repos.yml): elsewhere,
-    why it may not; "" when it is another login or that repository. Pure."""
+    """#563: the test identity (`identity`: its token's owner,
+    DX_TEST_LOGIN, #739; "" none, and nobody is refused) decides only in a
+    repository of kind `engine-test` (kinds: the repository's, from
+    repos.yml): elsewhere, why it may not; "" when it is another login or
+    that repository. Pure."""
     if not identity or (login or "").lower() != identity.lower() or TEST_KIND in (kinds or []):
         return ""
     return f"@{login} is the test identity: it decides only in the test repository (kind `{TEST_KIND}`)."
@@ -396,6 +400,9 @@ def self_test():
     check("C8 (#563): the test identity decides nowhere but in the test repository",
           (bool(test_identity_refused("Acme-Test-Bot", "acme-test-bot", ["wordpress-plugin"])), test_identity_refused("acme-test-bot", "acme-test-bot", ["engine-test"]),
            test_identity_refused("ana", "acme-test-bot", [])), (True, "", ""))
+    check("C3, C4 (#739): a token owner that is not {org}-test-bot is the test identity, and with none nobody is refused",
+          (bool(test_identity_refused("Someone-Else", "someone-else", ["wordpress-plugin"])), test_identity_refused("someone-else", "someone-else", ["engine-test"]),
+           test_identity_refused("acme-test-bot", "someone-else", ["wordpress-plugin"]), test_identity_refused("someone-else", "", ["wordpress-plugin"])), (True, "", "", ""))
     check("codeowners: the last rule that matches wins", owners_of(rules, "scripts/deciders.py"), ["@scripter"])
     check("codeowners: the catch-all owns the rest", owners_of(rules, "README.md"), ["@boss"])
     check("codeowners: a directory rule covers what is under it", owners_of(rules, "docs/a/b.md"), ["@writer"])
@@ -437,14 +444,15 @@ def self_test():
     import subprocess as sp
     import tempfile
     with tempfile.TemporaryDirectory() as t:
-        def cli(args, fixture, org_yml="", repos_yml="", stdin=""):
+        def cli(args, fixture, org_yml="", repos_yml="", stdin="", test_login=""):
             fx, oy, ry = (os.path.join(t, n) for n in ("fx.json", "org.yml", "repos.yml"))
             with open(fx, "w", encoding="utf-8") as fh:
                 json.dump(fixture, fh)
             for p, text in ((oy, org_yml), (ry, repos_yml)):
                 with open(p, "w", encoding="utf-8") as fh:
                     fh.write(text or "{}\n")
-            env = dict(os.environ, DECIDERS_FIXTURE=fx, DX_ORG_YML=oy, DX_REPOS_YML=ry, GITHUB_REPOSITORY="o/r", NUMBER="7")
+            env = dict({k: v for k, v in os.environ.items() if k != "DX_TEST_LOGIN"}, DECIDERS_FIXTURE=fx, DX_ORG_YML=oy, DX_REPOS_YML=ry, GITHUB_REPOSITORY="o/r", NUMBER="7",
+                       **({"DX_TEST_LOGIN": test_login} if test_login else {}))
             out = sp.run([sys.executable, os.path.abspath(__file__), *args], input=stdin, capture_output=True, text=True, env=env)
             return out.returncode, out.stdout.strip()
         roles = {"boss": "admin", "dev": "write", "scripter": "write", "stranger": "read"}
@@ -477,6 +485,14 @@ def self_test():
         check("C4 cli: acceptor: before any acceptance, any writer gives the first", cli(["may", "accepted", "dev"], dict(acc, acceptor=""), "who-decides: acceptor\n")[0], 0)
         check("C4 (choice 4a): the credits keep their floor of maintain, whatever the value",
               (cli(["may", "credits", "dev"], acc, "who-decides: writers\n")[0], decide("writers", "credits", "m", "maintain")["ok"]), (1, True))
+        # C3 (#739): `accepted` by the token's owner, whoever it is.
+        tid = dict(base, codeowners=None, roles=dict(roles, **{"someone-else": "write"}))
+        in_test, elsewhere = "repos:\n  r:\n    kinds: [{kind: engine-test}]\n", "repos:\n  r:\n    kinds: [{kind: wordpress-plugin}]\n"
+        check("C3 cli: `accepted` by someone-else, DX_TEST_LOGIN=someone-else, counts in the test repository", cli(["may", "accepted", "someone-else"], tid, "", in_test, test_login="someone-else")[0], 0)
+        check("C3 cli: and is refused in any other repository, naming why", cli(["may", "accepted", "someone-else"], tid, "", elsewhere, test_login="Someone-Else"),
+              (1, "@someone-else is the test identity: it decides only in the test repository (kind `engine-test`)."))
+        check("C3 cli: the list leaves it out there", cli(["list", "accepted"], tid, "", elsewhere, stdin="someone-else\ndev", test_login="someone-else"), (0, "dev"))
+        check("C3 cli: with no DX_TEST_LOGIN, nobody is refused as the test identity", cli(["may", "accepted", "someone-else"], tid, "", elsewhere)[0], 0)
         check("C5 cli: who says who may accept again", cli(["who", "accepted"], dict(base, codeowners=None)), (0, "anyone with write access to the repository"))
         check("cli: someone the repository does not know has no access", cli(["may", "answer", "nobody"], base)[1].startswith("@nobody has no access here;"), True)
         check("cli: an unknown value is an error (exit 2), never a yes", cli(["may", "answer", "dev"], base, "who-decides: everyone\n")[0], 2)
@@ -582,7 +598,7 @@ def main(argv):
             codeowners, files, acceptor = context(live, value)
             sys.path.insert(0, HERE)
             import org
-            identity, kinds = org.test_pack()["identity"].get("login", ""), kinds_of(repo)
+            identity, kinds = org.test_identity(), kinds_of(repo)
             if argv[0] == "may" and len(argv) == 3:
                 refused = test_identity_refused(argv[2], identity, kinds)
                 if refused:
