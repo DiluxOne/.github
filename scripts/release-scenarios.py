@@ -2876,13 +2876,14 @@ def self_test():
         check("C3: merge's command writes the table release-lane.py reads, and exits 1 on a failing row",
               (rc, [r["id"] for r in read_results(out) if not r["ok"]], lane.decide(plan, read_results(out))["scenario"]), (1, ["b", "play"], "b"))
     # #713: the autopilot's result read once it is there.
-    def sealing():
+    def sealing(pull=True):
         """A test repository whose triage answers issue 9 on its second view
         (`awaiting-acceptance`), whose acceptance after that seals it a view
-        later and has the autopilot label it two views after the seal, and
-        an acceptance before the triage never seals (the autopilot calls it
-        unsealed); a `/claim` before the acceptance claims it, after it is
-        refused."""
+        later and, with `pull`, has the autopilot open its pull request 12
+        that closes it two views after the seal, never labelling the issue
+        `autopilot` (#764), and an acceptance before the triage never seals
+        (the autopilot calls it unsealed); a `/claim` before the acceptance
+        claims it, after it is refused."""
         st = {"labels": [], "comments": [], "views": 0, "calls": [], "at": None}
 
         def fake(*a, input=None):
@@ -2916,16 +2917,24 @@ def self_test():
                         st["comments"].append("The autopilot did not run: the issue's PRD is not the one sealed when it was accepted (unsealed).")
                 if isinstance(st["at"], int) and st["views"] == st["at"] + 1:
                     st["comments"].append(f"{SEAL}\nsealed")
-                if isinstance(st["at"], int) and st["views"] == st["at"] + 3:
-                    st["labels"].append("autopilot")
-                return json.dumps({"labels": [{"name": l} for l in st["labels"]], "comments": [{"body": c, "author": {"login": "dilux-bot"}} for c in st["comments"]]})
+                if pull and isinstance(st["at"], int) and st["views"] == st["at"] + 3:
+                    st["pull"] = 12
+                refs = [{"number": st["pull"], "url": f"https://github.com/o/t/pull/{st['pull']}"}] if st.get("pull") else []
+                return json.dumps({"labels": [{"name": l} for l in st["labels"]], "comments": [{"body": c, "author": {"login": "dilux-bot"}} for c in st["comments"]],
+                                   "closedByPullRequestsReferences": refs})
+            if a[:2] == ("pr", "view") and st.get("pull"):
+                return json.dumps({"number": st["pull"], "body": "Closes #9", "headRefName": "feat/9-a-greeting", "title": "feat: a greeting"})
             return "[]"
         return st, fake
     by713 = {s["id"]: s for s in real["scenarios"]}
     st, fake = sealing()
     got = play(by713["accepted-spec"], "o/t", "v7-next", real["bodies"], fake, lambda s: None, 15, types=real["types"])
-    check("#713 C2: the real accepted-spec, against a repository that seals only after the triage, passes once the autopilot labels it",
-          (got["ok"], got["why"], st["at"] >= 2, "autopilot" in st["labels"]), (True, [], True, True))
+    check("#764 C1: the real accepted-spec, against a repository that seals only after the triage, passes once the autopilot opens its pull request, with no `autopilot` label",
+          (got["ok"], got["why"], st["at"] >= 2, st.get("pull"), "autopilot" in st["labels"]), (True, [], True, 12, False))
+    st, fake = sealing(pull=False)
+    got = play(dict(by713["accepted-spec"], minutes=1), "o/t", "v7-next", real["bodies"], fake, lambda s: None, 1, types=real["types"])
+    check("#764 C1: the same repository whose autopilot opens no pull request fails it, named",
+          (got["ok"], any("does not say Closes #9" in w for w in got["why"]), any(SEAL in c for c in st["comments"])), (False, True, True))
     st, fake = sealing()
     early = dict(by713["accepted-spec"], steps=[{"label": "accepted"}], minutes=1)
     got = play(early, "o/t", "v7-next", real["bodies"], fake, lambda s: None, 1, types=real["types"])

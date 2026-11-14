@@ -264,7 +264,10 @@ scenarios:
     minutes: 15
     opens: {issue: {title: "feat: a greeting", body: complete-feature}}
     steps: [{until: {labels: [awaiting-acceptance]}}, {label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}}]
-    expect: {labels: [accepted, autopilot], comments: ["<!-- dx-prd-seal -->"]}
+    # #764: the seal and the pull request the autopilot opens, never its
+    # `autopilot` label, which a quick draft has moved past by the time the
+    # lane looks.
+    expect: {comments: ["<!-- dx-prd-seal -->"], pull: {closes: true}}
   - id: spec-to-draft
     covers: [next_step:draft, next_step:work, next_step:finish, pr-screenshots.yml:pull_request]
     minutes: 15
