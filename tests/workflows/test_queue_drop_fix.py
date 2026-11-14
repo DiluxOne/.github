@@ -43,9 +43,10 @@ def test_nothing_else_of_the_pipeline_runs_on_dequeued():
     jobs = workflow("org-pull-request.yml")["jobs"]
     for name in ("conventions", "assignee", "wake-vm", "review"):
         assert "github.event.action != 'dequeued'" in jobs[name]["if"], name
-    # Those wait for the review, which is skipped then.
+    # Those wait for the review, which is skipped then; the fix round for
+    # the conventions too (#699), which are skipped as well.
     for name in ("auto-merge", "autopilot-fix"):
-        assert jobs[name]["needs"] in ("review", ["review"]), name
+        assert jobs[name]["needs"] in ("review", ["review"], ["conventions", "review"]), name
 
 
 def prep_step(step_id):

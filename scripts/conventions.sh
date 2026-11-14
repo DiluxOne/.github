@@ -110,6 +110,20 @@ head_facts() { # repo pr sha dir
   gh api "repos/$repo/issues/$pr/labels" --jq '[.[].name] | join(",")' 2>/dev/null | tr -d '\n' > "$dir/labels" || : > "$dir/labels"
 }
 
+# The Conventional Commit types every header and branch is held to.
+CC_TYPES='feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert'
+
+# One header, as check() holds the title and each commit to it (#699): the
+# autopilot's `title` helper asks it before a title is set. Exit 1 with why.
+header_check() {
+  local re="^(${CC_TYPES})(\([a-z0-9._/-]+\))?!?: [^ ].*[^.]$" max=${MAX_HEADER:-100}
+  if ! [[ "$1" =~ $re ]]; then
+    echo "\"$1\" is not a Conventional Commit header (\"type(scope): subject\", type one of ${CC_TYPES//|/, }, no trailing period)"; return 1
+  elif (( ${#1} > max )); then
+    echo "\"$1\" is ${#1} characters; the limit is $max"; return 1
+  fi
+}
+
 check() {
   MAX_HEADER=${MAX_HEADER:-100}
   SECTIONS=${SECTIONS-What changes,Why}
@@ -121,13 +135,15 @@ check() {
   TAKEN_OVER=${TAKEN_OVER:-}
   KIND=${KIND:-}
   TRUSTED=${TRUSTED:-}
-  TYPES='feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert'
+  TYPES=$CC_TYPES
   HEADER_RE="^(${TYPES})(\([a-z0-9._/-]+\))?!?: [^ ].*[^.]$"
   BRANCH_RE="^((${TYPES})/[a-z0-9][a-z0-9._-]*|dependabot/.+)$"
   fail=0
   dependabot=false
   [ "$AUTHOR_TYPE" = Bot ] && [[ "$BRANCH" == dependabot/* ]] && dependabot=true
-  error() { echo "::error::$1"; fail=1; }
+  # Each error also goes, one per line, to CONVENTIONS_OUT when it is set
+  # (#699): the file conventions.yml keeps for the autopilot's fix round.
+  error() { echo "::error::$1"; [ -z "${CONVENTIONS_OUT:-}" ] || printf '%s\n' "${1//$'\n'/ }" >> "$CONVENTIONS_OUT"; fail=1; }
   # $3, the length the header is held to: MAX_HEADER, or none.
   check_header() {
     if ! [[ "$2" =~ $HEADER_RE ]]; then
@@ -280,6 +296,11 @@ test_case() {
 if [ "${1:-}" = "--dependabot-title" ]; then
   dependabot_title "${2:-}"
   exit 0
+fi
+
+if [ "${1:-}" = "--header" ]; then
+  header_check "${2:-}"
+  exit $?
 fi
 
 if [ "${1:-}" = "--head-facts" ]; then
@@ -480,6 +501,17 @@ if [ "${1:-}" = "--test" ]; then
   short "ci(deps): Bump the github-actions group across 2 directories with 3 updates" "ci(deps): Bump the github-actions group across 2 directories with 3 updates" || fail=1
   short "ci(deps): Bump actions/checkout from 6.0.0 to 7.0.1 in the github-actions group" "ci(deps): Bump actions/checkout to 7.0.1" 50 || fail=1
   short "ci(deps): Bump actions/checkout from 6.0.0 to 7.0.1 across 3 directories" "ci(deps): Bump actions/checkout" 35 || fail=1
+  # #699: one header alone, for the autopilot's `title`; and the errors,
+  # one per line, in CONVENTIONS_OUT for its fix round.
+  for h in "fix(sync): a thing|0" "fix(sync): a thing.|1" "Fixed a thing|1" "$long|1"; do
+    want=${h##*|}; got=0; bash "$here/conventions.sh" --header "${h%|*}" >/dev/null || got=$?
+    if [ "$got" = "$want" ]; then echo "ok   --header: \"${h%|*}\" exits $want"; else echo "FAIL --header: \"${h%|*}\" (want $want, got $got)"; fail=1; fi
+  done
+  out=$(mktemp); CONVENTIONS_OUT=$out test_case "#699: the errors go to CONVENTIONS_OUT too" 1 a-thing "fix(sync): a thing." "fix(sync): a thing" "$good" >/dev/null || true
+  if [ "$(wc -l < "$out")" = 2 ] && grep -q '^Branch "a-thing" must be' "$out" && grep -q '^The pull request title is not a Conventional Commit header' "$out"; then
+    echo "ok   #699: the errors go to CONVENTIONS_OUT, one per line"
+  else echo "FAIL #699: the errors in CONVENTIONS_OUT: $(cat "$out")"; fail=1; fi
+  rm -f "$out"
   [ "$fail" -eq 0 ] && echo "all tests passed"
   exit "$fail"
 fi

@@ -31,7 +31,9 @@ name: Conventions
 # in `Assisted-by:`, #491, scripts/credits.py): a warning while org.yml
 # `attribution` is `warn`, a failure once it is `required`.
 # The checks themselves are scripts/conventions.sh,
-# which scripts/local-review.sh runs before a pull request is opened. Plus a docs check whenever the caller runs (pull requests and
+# which scripts/local-review.sh runs before a pull request is opened. On an
+# autopilot pull request, its errors are kept as the `dx-conventions`
+# artifact, which the autopilot's fix round reads (#699). Plus a docs check whenever the caller runs (pull requests and
 # pushes to main): relative Markdown links resolve, and no retired product
 # name comes back.
 #
@@ -247,7 +249,23 @@ jobs:
           # org.yml `attribution` keeps it `warn` until the repositories
           # are in step.
           ATTRIBUTION: ${{ steps.attribution.outputs.mode }}
+          # Every error, one per line (#699), kept below for the autopilot's
+          # fix round.
+          CONVENTIONS_OUT: ${{ runner.temp }}/conventions.txt
         run: bash .dx-central/scripts/conventions.sh
+
+      # What failed, for the fix round of an autopilot pull request (#699):
+      # org-pull-request.yml's autopilot-fix runs on a failed conventions
+      # check, in this same run, and reads this artifact as data.
+      - name: Keep the errors for the autopilot
+        if: failure() && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && contains(github.event.pull_request.labels.*.name, 'autopilot')
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dx-conventions
+          path: ${{ runner.temp }}/conventions.txt
+          if-no-files-found: ignore
+          overwrite: true
+          retention-days: 3
 
   docs:
     name: Docs (links and names)

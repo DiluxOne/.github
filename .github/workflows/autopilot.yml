@@ -115,6 +115,15 @@ name: Autopilot
 #                   dropped: one round, within the same cap, only when a
 #                   check failed in its last merge group, from the failed
 #                   jobs' log (`autopilot.py queue-failed`, .dx-io/queue.md).
+#                   Called when the conventions check of an `autopilot`
+#                   pull request fails (#699, autopilot-fix): one round,
+#                   within the same cap, from the check's errors
+#                   (conventions.yml's `dx-conventions` artifact,
+#                   .dx-io/conventions.md): the agent sets the title
+#                   (`autopilot.py title`) or rewords its own commits,
+#                   pushed over the branch only when nothing but their
+#                   messages changed (`autopilot.py reworded`); the same
+#                   errors as before the last round stop it.
 #
 # The agent holds no key (#287). A shell in a job that holds a secret can
 # read it out of the runner's memory, whatever the token's scope, so the
@@ -309,6 +318,8 @@ jobs:
       # The test repository's fixed change (#563, kinds/engine-test/pack.yml
       # `autopilot: fixed-change`): `true`, and no model is called.
       fixed: ${{ steps.task.outputs.fixed }}
+      # #699 C3: `true` for a fix round on a failed conventions check.
+      conventions: ${{ steps.may.outputs.conventions }}
     steps:
       - name: App token
         id: bot
@@ -450,6 +461,16 @@ jobs:
             : > "$RUNNER_TEMP/repo-policy.yml"
           fi
           echo "go=true" >> "$GITHUB_OUTPUT"
+      # #699 C3: a fix round called on a failed conventions check, in the
+      # caller's run, reads the check's errors (conventions.yml keeps them).
+      # None, it is a round for the review, as before.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: steps.what.outputs.go == 'true' && inputs.mode == 'fix'
+        continue-on-error: true
+        with:
+          name: dx-conventions
+          path: ${{ runner.temp }}/dx-conventions
+
       - name: May it start
         id: may
         if: steps.what.outputs.go == 'true'
@@ -637,6 +658,27 @@ jobs:
               [ -z "${ISSUE:-}" ] || [ -z "${OPEN_TO_CLAIM:-}" ] || gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "${OPEN_TO_CLAIM:-}" >/dev/null || true
               echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
             fi
+            # #699 C3: a round for a failed conventions check, within the
+            # cap above: one for its errors; the same errors as before the
+            # last round stop it, with a comment and `needs-human`.
+            if [ "${QUEUE:-}" != true ] && [ -s "$RUNNER_TEMP/dx-conventions/conventions.txt" ]; then
+              export CONVENTIONS="$RUNNER_TEMP/dx-conventions/conventions.txt"
+              gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate --jq '[.[] | {user: {login: .user.login}, body, id}]' | jq -s 'add // []' > "$RUNNER_TEMP/pr-comments.json"
+              export COMMENTS="$RUNNER_TEMP/pr-comments.json"
+              rc=0; round=$(python3 .dx-central/scripts/autopilot.py conventions-round) || rc=$?
+              [ "$rc" -le 1 ] || { echo "::error::conventions-round failed (exit $rc)."; exit 1; }
+              sig=$(jq -r .sig <<<"$round"); echo "#$PR: $(jq -r .why <<<"$round")"
+              if [ -n "$sig" ]; then
+                stopped=$([ "$rc" = 0 ] && echo false || echo true)
+                body=$(SIG="$sig" STOPPED="$stopped" python3 .dx-central/scripts/autopilot.py conventions-comment)
+                id=$(jq -r --arg bot "$DX_BOT_LOGIN" '[.[] | select(.user.login == $bot and (.body | startswith("<!-- dx-conventions: ")))] | last | .id // empty' "$COMMENTS")
+                if [ -n "$id" ]; then gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$body" >/dev/null
+                else gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "$body" >/dev/null; fi
+                [ "$stopped" = false ] || gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label needs-human >/dev/null
+              fi
+              [ "$rc" = 0 ] || { echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; }
+              echo "conventions=true" >> "$GITHUB_OUTPUT"
+            fi
             # #479: a round for a pull request the merge queue dropped runs
             # only when a check failed in its last merge group (not for a
             # conflict, nor for a person who took it out), within the cap
@@ -728,6 +770,8 @@ jobs:
           # #479: a round for a pull request the queue dropped reads the
           # failed jobs' log instead of the review.
           QUEUE: ${{ github.event_name == 'pull_request' && github.event.action == 'dequeued' }}
+          # #699 C3: a round for a failed conventions check reads its errors.
+          CONVENTIONS_ROUND: ${{ steps.may.outputs.conventions }}
           RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
         run: |
           set -euo pipefail
@@ -755,6 +799,9 @@ jobs:
           python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$BASE" --save-pulls "$DX_IO/pulls.json" \
             || { rm -f "$DX_IO/pulls.json"; echo "::warning::The pull requests could not be saved for next-version.py: a make pre-pr that runs it will fail."; }
           if [ "$MODE" = fix ]; then
+            if [ "${CONVENTIONS_ROUND:-}" = true ]; then
+              { echo "# The conventions check's errors"; echo; sed 's/^/- /' "$RUNNER_TEMP/dx-conventions/conventions.txt"; } > "$DX_IO/conventions.md"
+            fi
             CONFLICTS="${CONFLICTS:-false}" python3 .dx-central/scripts/autopilot.py prompt fix > "$DX_IO/prompt.md"
             exit 0
           fi
@@ -1529,6 +1576,8 @@ jobs:
           BRANCH: ${{ needs.draft.outputs.branch || needs.prep.outputs.branch }}
           REPO_AUTONOMY: ${{ runner.temp }}/repo-autonomy.yml
           ENGINE: ${{ github.repository == format('{0}/.github', github.repository_owner) }}
+          # #699 C3: a conventions fix round, which may reword its commits.
+          CONVENTIONS_ROUND: ${{ needs.prep.outputs.conventions }}
           # #673: `verify`'s verdict (pass, fail, timeout; lost when it ended
           # without one), empty when it did not run. When it ran, `ready`
           # goes through only on a pass; a deferred `ready` needs it.
@@ -1547,8 +1596,19 @@ jobs:
           if [ -f .dx-out/work.bundle ]; then
             git fetch -q .dx-out/work.bundle HEAD
             new=$(git rev-parse FETCH_HEAD)
+            reword=false
             if ! git merge-base --is-ancestor "origin/$BRANCH" "$new"; then
-              echo "::error::The agent's commits do not build on $BRANCH as GitHub has it: nothing is pushed."; exit 1
+              # A conventions fix round (#699 C3) may reword the branch's own
+              # commits, and nothing else: as many commits, each with the
+              # same files and author, only its message changed. Pushed over
+              # the branch with a lease: only if GitHub still has it where
+              # this job read it.
+              base=$(git merge-base "origin/$BRANCH" "$new" || true)
+              if [ "$CONVENTIONS_ROUND" = true ] && [ -n "$base" ] && why=$(python3 .dx-central/scripts/autopilot.py reworded "$base" "origin/$BRANCH" "$new"); then
+                echo "A conventions fix round reworded the branch's commits: $why."; reword=true
+              else
+                echo "::error::The agent's commits do not build on $BRANCH as GitHub has it: nothing is pushed${why:+ ($why)}."; exit 1
+              fi
             fi
             # Read whole, then searched: a pipe into grep -q could end early
             # and, under pipefail, read as no match. What the agent's own
@@ -1560,7 +1620,14 @@ jobs:
               echo "::error::The agent's commits change .github/workflows: nothing is pushed."; exit 1
             fi
             git checkout -q -B "$BRANCH" "$new"
-            python3 .dx-central/scripts/autopilot.py push
+            if [ "$reword" = true ]; then
+              lease=$(git rev-parse "origin/$BRANCH")
+              now=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$BRANCH" --jq .object.sha)
+              [ "$now" = "$lease" ] || { echo "::error::$BRANCH moved on GitHub ($now) since $lease: the reworded commits are not pushed."; exit 1; }
+              python3 .dx-central/scripts/api-commit.py push "$BRANCH" --onto "$base" --force
+            else
+              python3 .dx-central/scripts/autopilot.py push
+            fi
             # The pull request shows a push a few seconds after the branch
             # moves; a tick read before then finds no commit (the sandbox's
             # first run, #287). Wait for it, a minute at most.

@@ -283,11 +283,18 @@ jobs:
   # the same). Only dilux-bot's own branch matches, never a fork's. The
   # scripts are read from main, like the review's.
   autopilot-fix:
-    needs: review
+    needs: [conventions, review]
     # Only dilux-bot's own pull requests, and only for a new commit (an edit
     # of the description keeps the review's verdict and must not spend a
-    # round).
-    if: always() && github.event_name == 'pull_request' && github.repository == 'DiluxOne/.github' && needs.review.outputs.blocking == 'true' && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && github.event.action != 'edited'
+    # round). A failed conventions check (#699 C3: the title's type, a
+    # commit's header), which skips the review, gets its round too, as any
+    # failed check does: autopilot.yml reads its errors, and runs none when
+    # they are not the check's own (another of its jobs failed).
+    if: >-
+      always() && github.event_name == 'pull_request' && github.repository == 'DiluxOne/.github' &&
+      (needs.review.outputs.blocking == 'true' || needs.conventions.result == 'failure') &&
+      contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN &&
+      github.event.pull_request.head.repo.full_name == github.repository && github.event.action != 'edited'
     # The agent's jobs read the repository with the job's own token (#287).
     permissions:
       contents: read
