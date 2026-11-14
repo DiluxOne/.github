@@ -6,7 +6,8 @@ name: Pull request
 # the policy and the brief script are read from main, so a pull request cannot
 # rewrite the rules that review it. The conventions script comes from the pull
 # request itself: it can change conventions.yml anyway. An autopilot pull
-# request whose review blocks gets its fix round here (autopilot-fix, #504),
+# request whose review blocks, whose gate fails or whose review ends with no
+# verdict (#741) gets its fix round here (autopilot-fix, #504),
 # as org-pull-request.yml gives it everywhere else. A merge into main
 # brings the open autopilot pull requests in step with it from issues.yml's
 # `autopilot-sweep` job, here as in every repository (#561, #669).
@@ -278,9 +279,10 @@ jobs:
 
   # An autopilot pull request here whose review blocks: one round of fixes
   # (#504), as org-pull-request.yml runs it in every other repository, with
-  # the same condition but the repository (that one excludes this one, so
-  # the round never runs twice; scripts/autopilot.py --test keeps the two
-  # the same). Only dilux-bot's own branch matches, never a fork's. The
+  # the same condition but the repository and the gates (that one excludes
+  # this one, so the round never runs twice; scripts/autopilot.py --test
+  # keeps the two the same). So does one whose gate failed or whose review
+  # ended with no verdict (#741): its round reads the failed jobs' log. Only dilux-bot's own branch matches, never a fork's. The
   # scripts are read from main, like the review's.
   autopilot-fix:
     # #741: after every gate the review waits on, so a gate that failed

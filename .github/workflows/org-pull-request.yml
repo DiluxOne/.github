@@ -148,13 +148,15 @@ jobs:
 
   # An autopilot pull request whose review blocks: one round of fixes by the
   # autopilot (#83), which pushes and so runs this pipeline again; after its
-  # rounds it hands the pull request to a person.
+  # rounds it hands the pull request to a person. So does one whose
+  # conventions failed (the review then skipped) or whose review ended with
+  # no verdict (#741): its round reads the failed jobs' log.
   autopilot-fix:
-    needs: review
+    needs: [conventions, review]
     # Only dilux-bot's own pull requests, and only for a new commit (an edit
     # of the description keeps the review's verdict and must not spend a
     # round).
-    if: always() && github.event_name == 'pull_request' && github.repository != 'DiluxOne/.github' && needs.review.outputs.blocking == 'true' && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && github.event.action != 'edited'
+    if: always() && github.event_name == 'pull_request' && github.repository != 'DiluxOne/.github' && (needs.review.outputs.blocking == 'true' || needs.review.result == 'failure' || needs.conventions.result == 'failure') && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && github.event.action != 'edited'
     # The agent's jobs read the repository with the job's own token (#287).
     permissions:
       contents: read

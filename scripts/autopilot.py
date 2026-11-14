@@ -3383,11 +3383,18 @@ Clamp the value in Sum::add.
               ("autopilot.py checks-failed" in may_run, 'echo "checks=$checks" >> "$GITHUB_OUTPUT"' in may_run, task_env.get("CHECKS"),
                "could not read which checks failed" in may_run),
               (True, True, "${{ steps.may.outputs.checks }}", True))
-        check("#504 C3: every other repository's round is as it was, and never runs here",
-              (theirs in cond(org_fix), mine in cond(org_fix), org_fix.get("needs"), bool(re.fullmatch(r"DiluxOne/\.github/\.github/workflows/autopilot\.yml@v\d+", str(org_fix.get("uses")))),
+        check("#504 C3: every other repository's round keeps its guards, and never runs here",
+              (theirs in cond(org_fix), mine in cond(org_fix), bool(re.fullmatch(r"DiluxOne/\.github/\.github/workflows/autopilot\.yml@v\d+", str(org_fix.get("uses")))),
                org_fix.get("with"), org_fix.get("permissions"), org_fix.get("secrets"),
-               cond(org_fix) == "always() && " + " && ".join([clauses[0], theirs] + clauses[1:])),
-              (True, False, "review", True, {"mode": "fix", "pr": "${{ format('{0}', github.event.pull_request.number) }}"}, {"contents": "read"}, "inherit", True))
+               guards(org_fix) == "always() && " + " && ".join([clauses[0], theirs, "TRIGGER"] + clauses[2:])),
+              (True, False, True, {"mode": "fix", "pr": "${{ format('{0}', github.event.pull_request.number) }}"}, {"contents": "read"}, "inherit", True))
+        org_jobs = yaml.safe_load(open(os.path.join(HERE, "..", ".github", "workflows", "org-pull-request.yml"), encoding="utf-8"))["jobs"]
+        org_gates = org_jobs["review"].get("needs")
+        gate_clause = lambda gates: [f"needs.{g}.result == 'failure'" for g in gates]
+        check("#741 C5: every other repository's round has this one's trigger but its gate list, the conventions, and waits on them and the review",
+              (org_gates, org_fix.get("needs"), trigger(org_fix), [t for t in trigger(here_fix) if t not in gate_clause(review_jobs)] + gate_clause(org_gates)),
+              (["conventions"], ["conventions", "review"], ["needs.review.outputs.blocking == 'true'", "needs.review.result == 'failure'", "needs.conventions.result == 'failure'"],
+               trigger(org_fix)))
     # #488: a person's claim holds the issue; the autopilot does not start.
     check("C1 held_by: `claimed` holds it; an accepted issue nobody holds does not",
           (held_by({"labels": ["accepted", "claimed"]}, []), held_by({"labels": ["accepted"]}, [])), ("a person claimed it (`claimed`)", ""))
