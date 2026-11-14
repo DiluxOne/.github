@@ -10,7 +10,9 @@ name: Release lane
 # through pull requests the bot opens there and queues itself once their
 # checks pass, after checking that they change nothing but the engine's ref:
 # the auto-merge decision never merges a change to .github/workflows; never
-# a write to its main) with the test identity's token, in groups that play
+# a write to its main) with the test identity's token (whose owner must be
+# the organisation variable DX_TEST_LOGIN, or the lane stops before the
+# callers move, naming the value to set and its URL, #739), in groups that play
 # at once, one job each (`move`, then `play`, a matrix on ubuntu-latest,
 # never DX_RUNNER_HEAVY: the test repository's own jobs run on those
 # runners, and a play job that waits for them there would hold the runner
@@ -167,6 +169,24 @@ jobs:
       - name: The groups of scenarios
         id: groups
         run: echo "groups=$(python3 scripts/release-scenarios.py groups)" >> "$GITHUB_OUTPUT"
+
+      # The test identity is its token's owner (#739, option B): the
+      # organisation variable DX_TEST_LOGIN, which the workflows that decide
+      # read, is checked against the owner GitHub names for DX_TEST_TOKEN.
+      # When it is unset or differs, the lane stops here, before the callers
+      # move and anything plays, naming the value to set and its URL.
+      - name: DX_TEST_LOGIN is the owner of DX_TEST_TOKEN
+        env:
+          GH_TOKEN: ${{ secrets.DX_TEST_TOKEN }}
+          DX_TEST_LOGIN: ${{ vars.DX_TEST_LOGIN }}
+        run: |
+          set -uo pipefail
+          if ! said=$(python3 scripts/org.py test-identity --check 2>&1); then
+            echo "::error::$said"
+            echo "$said" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "$said"
 
       # The callers move to v7-next, and back, through a pull request in the
       # test repository that goes through its merge queue: its rulesets

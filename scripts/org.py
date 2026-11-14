@@ -31,7 +31,10 @@
                        the test identity's login (#563, #739): DX_TEST_LOGIN,
                        lowercased, nothing when it is unset; with
                        --from-token, the owner of the token in GH_TOKEN,
-                       read from GitHub (`gh api user`)
+                       read from GitHub (`gh api user`); with --check,
+                       exit 1 naming the value to set and its URL when
+                       DX_TEST_LOGIN is not that owner (the release lane,
+                       before it plays)
   org.py core          the engine's core files (#563, #568), globs, one per
                        line: while an open autopilot pull request touches
                        one, the autopilot starts no other issue whose Spec
@@ -147,6 +150,20 @@ def token_owner(run=None):
         def run(argv):
             return subprocess.run(argv, check=True, capture_output=True, text=True).stdout
     return str(run(["gh", "api", "user", "--jq", ".login"]) or "").strip().lower()
+
+
+def identity_problem(owner, login, org=None):
+    """What stops the release lane before it plays (#739, the maintainer's
+    option B): "" when DX_TEST_LOGIN (`login`) is the token's owner
+    (`owner`, read from GitHub), else what to set and where. Pure."""
+    owner, login = str(owner or "").strip().lower(), str(login or "").strip().lower()
+    where = f"https://github.com/organizations/{org or ORG}/settings/variables/actions"
+    if not owner:
+        return "GitHub names no owner of DX_TEST_TOKEN: check the secret of the `release` environment"
+    if login == owner:
+        return ""
+    said = f"is {login!r}" if login else "is unset"
+    return f"DX_TEST_LOGIN {said}, but DX_TEST_TOKEN belongs to {owner!r}: set the organisation variable DX_TEST_LOGIN to {owner} at {where}"
 
 
 def test_pack(conf=None, root=os.path.join(HERE, "..")):
@@ -276,6 +293,14 @@ def self_test():
     check("C1, C4 (#739): --from-token is the token's owner as `gh api user` says it",
           (token_owner(lambda argv: asked.append(argv) or "Someone-Else\n"), asked, token_owner(lambda argv: "")),
           ("someone-else", [["gh", "api", "user", "--jq", ".login"]], ""))
+    check("#739: the lane plays when DX_TEST_LOGIN is the token's owner, whatever its case",
+          (identity_problem("Someone-Else", "someone-else", "Acme"), identity_problem("someone-else", " Someone-Else\n", "Acme")), ("", ""))
+    check("#739: a DX_TEST_LOGIN that differs stops the lane, naming the value to set and the URL",
+          identity_problem("someone-else", "acme-test-bot", "Acme"),
+          "DX_TEST_LOGIN is 'acme-test-bot', but DX_TEST_TOKEN belongs to 'someone-else': set the organisation variable DX_TEST_LOGIN to someone-else at https://github.com/organizations/Acme/settings/variables/actions")
+    check("#739: an unset DX_TEST_LOGIN stops it too, and so does a token GitHub names no owner of",
+          ("is unset" in identity_problem("someone-else", "", "Acme"), "someone-else at https://" in identity_problem("someone-else", "", "Acme"), "names no owner" in identity_problem("", "someone-else", "Acme")),
+          (True, True, True))
     check("#563: the test repository calls no model, is cleaned up and publishes nothing", (pack["autopilot"], pack["cleanup"], pack["publishes"]), ("fixed-change", "after-run", "never"))
     check("#563: no core is none", core({}), [])
     check("#563: org.yml names the engine's core", "scripts/autopilot.py" in core(_conf), True)
@@ -332,6 +357,14 @@ if __name__ == "__main__":
         login = token_owner()
         print(login)
         sys.exit(0 if login else 1)
+    if sys.argv[1:] == ["test-identity", "--check"]:
+        try:
+            owner = token_owner()
+        except Exception:  # a token GitHub refuses names no owner
+            owner = ""
+        problem = identity_problem(owner, os.environ.get("DX_TEST_LOGIN"))
+        print(problem or f"DX_TEST_LOGIN is the owner of DX_TEST_TOKEN, {test_identity()}", file=sys.stderr if problem else sys.stdout)
+        sys.exit(1 if problem else 0)
     if sys.argv[1:] == ["core"]:
         print("\n".join(core(_conf)))
         sys.exit(0)

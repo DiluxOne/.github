@@ -479,6 +479,15 @@ def check_workflow(check, path=os.path.join(ROOT, ".github", "workflows", "relea
           [(t or {}).get("repositories") for t in used], ["${{ steps.test.outputs.repo }}"] * 2)
     check("workflow: every App token of the move and back jobs asks for checks: read and statuses: read (#627)",
           all(t.get("permission-checks") == "read" and t.get("permission-statuses") == "read" for t in minted), True)
+    # The test identity (#739): the move job checks DX_TEST_LOGIN against
+    # its token's owner before the callers move, so nothing plays when it differs.
+    msteps = jobs.get("move", {}).get("steps") or []
+    at = lambda pattern: next((i for i, st in enumerate(msteps) if re.search(pattern, str(st.get("run")))), None)
+    guard, moving = at(r"org\.py test-identity --check"), at(r"release-scenarios\.py move\b")
+    genv = (msteps[guard].get("env") or {}) if guard is not None else {}
+    check("#739 workflow: move checks DX_TEST_LOGIN against DX_TEST_TOKEN's owner before the callers move",
+          (guard is not None and moving is not None and guard < moving, genv.get("GH_TOKEN"), genv.get("DX_TEST_LOGIN")),
+          (True, "${{ secrets.DX_TEST_TOKEN }}", "${{ vars.DX_TEST_LOGIN }}"))
     # The groups play at once, each in its job, between the move and the back.
     play = jobs.get("play", {})
     check("workflow: play is a matrix over the move job's groups, and one group's failure cancels no other's",
