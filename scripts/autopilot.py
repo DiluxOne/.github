@@ -1986,20 +1986,13 @@ def queue_log_text(pr, logs):
 
 
 # #741: the jobs of the organisation's pipeline (pull-request.yml,
-# org-pull-request.yml) a fix round answers, by their check-run names: the
-# conventions and the review (reusable workflows, `<job> / <name>`), and
-# here actionlint and the scripts. A repository's own workflow is none:
-# nothing re-runs it (scripts/waiting.py reads the same names).
+# org-pull-request.yml) a fix round answers, by their check-run names
+# (scripts/waiting.py's fixed_check, which the board reads too): the
+# conventions and the review, and here actionlint and the scripts. A
+# repository's own workflow is none: nothing re-runs it.
 CHECKS_LOG = "checks.md"
-FIXED_PREFIXES = ("conventions / ", "review / ")
-FIXED_NAMES = ("actionlint", "Scripts (self-tests)")
 FAILED_JOB = ("failure", "timed_out")
-
-
-def fixed_check(name):
-    """Whether a check run or job of that name is one a fix round answers."""
-    name = str(name or "")
-    return name.startswith(FIXED_PREFIXES) or name in FIXED_NAMES
+fixed_check = _load("waiting", "waiting.py").fixed_check
 
 
 def checks_failed(jobs, record, head):
@@ -3361,10 +3354,10 @@ Clamp the value in Sum::add.
         # what it is asked and the check round's answer stubbed.
         fix_block = may_run[may_run.rindex("\n", 0, may_run.index("checks=false\n")) + 1:may_run.index("# #479: a round for a pull request the merge queue dropped runs")]
 
-        def may_fix(rnd, rc):
+        def may_fix(rnd, rc, draft="false"):
             with tempfile.TemporaryDirectory() as d:
                 os.makedirs(os.path.join(d, ".dx-central", "scripts"))
-                stubs = {"gh": "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$GH_LOG\"\n",
+                stubs = {"gh": "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$GH_LOG\"\ncase \"$*\" in *isDraft*) echo \"$DRAFT\" ;; esac\n",
                          ".dx-central/scripts/autonomy.py": "print('{\"autopilot-rounds\": 3}')\n",
                          ".dx-central/scripts/autopilot.py": f"import os, subprocess, sys\nif sys.argv[1] == 'checks-failed':\n    print('Scripts (self-tests) (u)'); sys.exit({rc})\n"
                                                              f"sys.exit(subprocess.run([sys.executable, {os.path.join(HERE, 'autopilot.py')!r}] + sys.argv[1:]).returncode)\n"}
@@ -3376,14 +3369,16 @@ Clamp the value in Sum::add.
                 open(log, "w").close()
                 r = subprocess.run(["bash", "-c", "set -euo pipefail\n" + fix_block], cwd=d, capture_output=True, text=True,
                                    env={"PATH": d + os.pathsep + os.environ.get("PATH", ""), "PR": "8", "ROUND": str(rnd), "GITHUB_REPOSITORY": "o/r",
-                                        "GITHUB_OUTPUT": out, "GH_LOG": log, "ISSUE": "7", "OPEN_TO_CLAIM": "open"})
+                                        "GITHUB_OUTPUT": out, "GH_LOG": log, "ISSUE": "7", "OPEN_TO_CLAIM": "open", "DRAFT": draft})
                 return r.returncode, open(out).read() if os.path.exists(out) else "", open(log).read()
-        below, at, unread = may_fix(3, 0), may_fix(4, 0), may_fix(2, 2)
+        below, at, unread, draft741 = may_fix(3, 0), may_fix(4, 0), may_fix(2, 2), may_fix(2, 0, "true")
         check("#741 C3: a check round below the cap starts; at the cap no round starts, needs-human goes on and the comment says the checks still fail; unread jobs, a person too",
               (below[0], "checks=true" in below[1], "go=false" in below[1], "needs-human" in below[2],
                at[0], "go=false" in at[1], "--add-label needs-human" in at[2], "its checks still fail" in at[2], "issue comment 7" in at[2],
                "go=false" in unread[1], "--add-label needs-human" in unread[2]),
               (0, True, False, False, 0, True, True, True, True, True, True))
+        check("#741 C3: no fix round runs beside a draft's own run",
+              (draft741[0], "go=false" in draft741[1], "checks=" in draft741[1], "needs-human" in draft741[2]), (0, True, False, False))
         check("#741 C1: a fix round asks checks-failed whether it is a check round, which the agent's task reads; unread, a person has it",
               ("autopilot.py checks-failed" in may_run, 'echo "checks=$checks" >> "$GITHUB_OUTPUT"' in may_run, task_env.get("CHECKS"),
                "could not read which checks failed" in may_run),

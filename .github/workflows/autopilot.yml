@@ -618,6 +618,11 @@ jobs:
             # on a round nothing runs.
             checks=false
             if [ "${QUEUE:-}" != true ]; then
+              # A draft's checks are its own run's to make pass (its `make
+              # pre-pr` before it is ready): no round runs beside it.
+              if [ "$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true ]; then
+                echo "#$PR is a draft: its own run makes its checks pass, no fix round."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+              fi
               rc=0; why=$(python3 .dx-central/scripts/autopilot.py checks-failed) || rc=$?
               case $rc in
                 0) checks=true; echo "A check of #$PR failed: $why" ;;
