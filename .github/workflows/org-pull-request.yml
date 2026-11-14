@@ -154,13 +154,18 @@ jobs:
 
   # An autopilot pull request whose review blocks: one round of fixes by the
   # autopilot (#83), which pushes and so runs this pipeline again; after its
-  # rounds it hands the pull request to a person.
+  # rounds it hands the pull request to a person. So does one whose
+  # conventions fail, or whose review ends without a verdict (#741): a round
+  # from the failed jobs' log.
   autopilot-fix:
-    needs: review
-    # Only dilux-bot's own pull requests, and only for a new commit (an edit
-    # of the description keeps the review's verdict and must not spend a
-    # round).
-    if: always() && github.event_name == 'pull_request' && github.repository != 'DiluxOne/.github' && needs.review.outputs.blocking == 'true' && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && github.event.action != 'edited'
+    # #741: after the conventions too, so their failure (the review is then
+    # skipped) starts a round; and on a review that failed before its
+    # verdict (no outputs) as on one that blocks.
+    needs: [conventions, review]
+    # Only dilux-bot's own pull requests, only once ready (a draft's own run
+    # checks its work), and only for a new commit (an edit of the
+    # description keeps the review's verdict and must not spend a round).
+    if: always() && github.event_name == 'pull_request' && github.repository != 'DiluxOne/.github' && (needs.review.outputs.blocking == 'true' || needs.review.result == 'failure' || needs.conventions.result == 'failure') && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && github.event.action != 'edited'
     # The agent's jobs read the repository with the job's own token (#287).
     permissions:
       contents: read

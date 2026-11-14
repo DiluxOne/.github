@@ -7,7 +7,8 @@ name: Pull request
 # rewrite the rules that review it. The conventions script comes from the pull
 # request itself: it can change conventions.yml anyway. An autopilot pull
 # request whose review blocks gets its fix round here (autopilot-fix, #504),
-# as org-pull-request.yml gives it everywhere else. A merge into main
+# as org-pull-request.yml gives it everywhere else, and so does one whose
+# gate fails or whose review ends without a verdict (#741). A merge into main
 # brings the open autopilot pull requests in step with it from issues.yml's
 # `autopilot-sweep` job, here as in every repository (#561, #669).
 # After the review, whom the pull request waits on goes on its board, with
@@ -276,18 +277,23 @@ jobs:
       enabled: ${{ needs.review.outputs.auto-merge }}
     secrets: inherit
 
-  # An autopilot pull request here whose review blocks: one round of fixes
-  # (#504), as org-pull-request.yml runs it in every other repository, with
+  # An autopilot pull request here whose review blocks, or one of whose
+  # gates fails (#741): one round of fixes (#504), as org-pull-request.yml runs it in every other repository, with
   # the same condition but the repository (that one excludes this one, so
   # the round never runs twice; scripts/autopilot.py --test keeps the two
   # the same). Only dilux-bot's own branch matches, never a fork's. The
   # scripts are read from main, like the review's.
   autopilot-fix:
-    needs: review
-    # Only dilux-bot's own pull requests, and only for a new commit (an edit
-    # of the description keeps the review's verdict and must not spend a
-    # round).
-    if: always() && github.event_name == 'pull_request' && github.repository == 'DiluxOne/.github' && needs.review.outputs.blocking == 'true' && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && github.event.action != 'edited'
+    # #741: after every gate the review waits on, so a gate that fails (the
+    # review is then skipped) starts a check round too, from the failed
+    # jobs' log, rather than leave the pull request to stall; so does a
+    # review that ended without a verdict, whether its verdict step said so
+    # (blocking, "did not finish") or the job died before it (no outputs).
+    needs: [conventions, actionlint, scripts, review]
+    # Only dilux-bot's own pull requests, only once ready (a draft's own run
+    # checks its work), and only for a new commit (an edit of the
+    # description keeps the review's verdict and must not spend a round).
+    if: always() && github.event_name == 'pull_request' && github.repository == 'DiluxOne/.github' && (needs.review.outputs.blocking == 'true' || needs.review.result == 'failure' || needs.conventions.result == 'failure' || needs.actionlint.result == 'failure' || needs.scripts.result == 'failure') && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && github.event.action != 'edited'
     # The agent's jobs read the repository with the job's own token (#287).
     permissions:
       contents: read

@@ -12,11 +12,19 @@ What blocks a pull request, read from GitHub, the first that applies:
   its question         the autopilot asked (`autopilot:waiting` on the issue
                        it closes)                               the maintainer
   an acceptance        an issue it closes is not `accepted`   the maintainer
-  a failed check       a check of its head failed             its author (the
-                                                              autopilot for its own)
+  a failed check       a check of its head failed             its author
                        (a cancelled check run is not a failed one, #713:
                        its concurrency group superseded it, or a person
                        stopped it; failed_checks)
+                       on the autopilot's own (#741), ready (a draft's is
+                       its work's): a check the pipeline fixes failed
+                       (fix_check: actionlint and the scripts only in the
+                       central repository) and rounds are left
+                       (its autopilot:round-N below autopilot-rounds):
+                       the autopilot's fix round              the autopilot
+                       its rounds are spent                   the maintainer
+                       only a check no fix round re-runs (a
+                       repository's own workflow)             the maintainer
   unresolved threads   a review conversation is open          its author
   the autopilot's work an autopilot draft                     the autopilot
   a draft              someone else's draft                   its author
@@ -153,8 +161,37 @@ def checks_state(rollup):
     return "PENDING" if running else "SUCCESS"
 
 
-def blocker(pr):
-    """(what blocks it, on whom it waits) for one pull request. Pure."""
+# The checks a fix round starts on (#741, autopilot.py FIX_JOBS), as the
+# check runs are named: the conventions' and the review's jobs, and in the
+# central repository (its own pull-request.yml) actionlint and the scripts
+# too. A repository's own workflow is not among them: nothing re-runs it.
+FIX_CHECKS = ("conventions /", "review /", "actionlint", "Scripts (self-tests)")
+CENTRAL_ONLY = ("actionlint", "Scripts (self-tests)")
+FIX_ROUND, ROUNDS_SPENT, NOT_RERUN = "the autopilot's fix round", "its checks fail after its rounds", "a check no fix round runs again"
+
+
+def fix_check(name, repo=None):
+    """Whether a failed check of that name starts a fix round in `repo`
+    (OWNER/NAME; None, the central one's gates too). Pure."""
+    name = str(name or "")
+    gates = FIX_CHECKS if repo in (None, org.CENTRAL) else tuple(p for p in FIX_CHECKS if p not in CENTRAL_ONLY)
+    return any(name.startswith(p) if p.endswith(" /") else name == p for p in gates)
+
+
+def rounds_cap():
+    """policy/autonomy.yml's autopilot-rounds."""
+    import autonomy  # noqa: E402  only for a pull request of the autopilot's
+    return int(autonomy.load(os.path.join(HERE, "..", "policy", "autonomy.yml")).get("autopilot-rounds", 3))
+
+
+def rounds_spent(labels):
+    """The highest autopilot:round-N label: the fix rounds already run. Pure."""
+    return max([int(l.rsplit("-", 1)[1]) for l in labels if re.fullmatch(r"autopilot:round-\d+", l)] or [0])
+
+
+def blocker(pr, rounds=None):
+    """(what blocks it, on whom it waits) for one pull request; `rounds`,
+    autopilot-rounds (policy/autonomy.yml when None). Pure but for that."""
     labels = names(pr.get("labels"))
     author = ((pr.get("author") or {}).get("login") or "")
     autopilot = "autopilot" in labels and author in BOT_LOGINS
@@ -166,9 +203,22 @@ def blocker(pr):
     if any("accepted" not in names(i.get("labels")) for i in issues):
         return "an acceptance", MAINTAINER
     commits = (pr.get("commits") or {}).get("nodes") or []
-    state = checks_state(((commits[-1] if commits else {}).get("commit") or {}).get("statusCheckRollup"))
+    rollup = ((commits[-1] if commits else {}).get("commit") or {}).get("statusCheckRollup")
+    state = checks_state(rollup)
     if state in ("FAILURE", "ERROR"):
-        return "a failed check", AUTOPILOT if autopilot else AUTHOR
+        if not autopilot:
+            return "a failed check", AUTHOR
+        # #741: the autopilot's own waits on its fix round only when one
+        # starts: on a ready one, a check the pipeline fixes failed, and
+        # rounds are left. A draft's checks are its own run's work.
+        if pr.get("isDraft"):
+            return "the autopilot's work", AUTOPILOT
+        repo = (pr.get("repository") or {}).get("nameWithOwner") or None
+        if not any(fix_check(n, repo) for n in failed_checks(rollup)):
+            return NOT_RERUN, MAINTAINER
+        if rounds_spent(labels) >= (rounds_cap() if rounds is None else rounds):
+            return ROUNDS_SPENT, MAINTAINER
+        return FIX_ROUND, AUTOPILOT
     open_threads = sum(1 for t in ((pr.get("reviewThreads") or {}).get("nodes") or []) if not t.get("isResolved"))
     if open_threads:
         return f"{open_threads} unresolved thread{'s' if open_threads > 1 else ''}", AUTOPILOT if autopilot else AUTHOR
@@ -209,6 +259,8 @@ ACTIONS = {
     "its question": "answer the autopilot's question",
     "an acceptance": "accept it (the `accepted` label) or say why not",
     "a failed check": "fix the failed check",
+    ROUNDS_SPENT: "its checks still fail after the autopilot's rounds: read the failed check and decide (take it over, or close it)",
+    NOT_RERUN: "a check of the repository's own failed, which no fix round runs again: read it and decide (run it again, or take it over)",
     "a draft": "finish the draft and mark it ready",
     "a person's merge": "review it and merge it",
     "the claimed work": "open the pull request for the claimed issue",
@@ -429,6 +481,37 @@ def self_test():
           (checks_state({"state": "FAILURE"}), checks_state({"state": "FAILURE", "contexts": {"pageInfo": {"hasNextPage": True}, "nodes": [roll["contexts"]["nodes"][2]]}})),
           ("FAILURE", "FAILURE"))
     check("C1 (#713) the query reads the head's check runs and statuses", ("... on CheckRun { name conclusion status }" in FIELDS, "... on StatusContext { context state }" in FIELDS, FIELDS in ONE), (True, True, True))
+    # #741 C4: the autopilot's own failed check waits on its fix round only
+    # when one starts; else on the maintainer. Never "fix the failed check".
+    mine = [p for p in fx["prs"] if "autopilot" in names(p.get("labels")) and checks_state(p["commits"]["nodes"][-1]["commit"].get("statusCheckRollup")) == "FAILURE"]
+    check("C4 (#741) the autopilot's failed checks in the fixtures: its fix round, its rounds spent, a check no round runs",
+          sorted({blocker(p)[0] for p in mine}), sorted({FIX_ROUND, ROUNDS_SPENT, NOT_RERUN}))
+    check("C4 (#741) no board tells the autopilot to fix the failed check",
+          [p["title"] for p in mine if waits_of(p, boss)["what"] == "fix the failed check" or blocker(p) == ("a failed check", AUTOPILOT)], [])
+    scripts5 = next(p for p in fx["prs"] if p["title"] == "the autopilot's check failed")
+    ws = waits_of(scripts5, boss)
+    check("C4 (#741) with rounds left, the board names the fix round, and mentions nobody", (ws["what"], ws["role"], "who" in ws), (FIX_ROUND, AUTOPILOT, False))
+    at_cap = next(p for p in fx["prs"] if p["title"] == "the autopilot's scripts failed at the rounds cap")
+    wc = waits_of(at_cap, boss)
+    check("C4 (#741) at the cap, the maintainer, named, with the action to take it over", (wc["who"], wc["role"], "take it over" in wc["what"]), (["boss"], MAINTAINER, True))
+    check("C4 (#741) the cap is autopilot-rounds: the same labels, a lower cap, the maintainer",
+          (blocker(scripts5, rounds=1), blocker(scripts5, rounds=2), rounds_spent(["autopilot:round-2", "autopilot:round-10", "autopilot:round-x", "autopilot:run-12"])),
+          ((ROUNDS_SPENT, MAINTAINER), (FIX_ROUND, AUTOPILOT), 10))
+    own = next(p for p in fx["prs"] if p["title"] == "the autopilot's, only the repository's own check failed")
+    check("C4 (#741) only a repository's own check failed: the maintainer, with the action to take it over", (waits_of(own, boss)["who"], "take it over" in waits_of(own, boss)["what"]), (["boss"], True))
+    check("C4 (#741) someone else's failed check still waits on its author, to fix", waits_of(next(p for p in fx["prs"] if p["title"] == "a check failed"), boss)["what"], "fix the failed check")
+    check("C4 (#741) an autopilot draft whose check failed waits on its own work, never on a fix round that a draft does not get",
+          blocker(dict(scripts5, isDraft=True)), ("the autopilot's work", AUTOPILOT))
+    check("C4 (#741) actionlint and the scripts start a round only in the central repository, whose pipeline runs them",
+          ([fix_check("actionlint", r) for r in (org.CENTRAL, "DiluxOne/other", None)], fix_check("review / Claude review", "DiluxOne/other"),
+           blocker(dict(scripts5, repository=dict(scripts5["repository"], nameWithOwner="DiluxOne/other")))[0],
+           blocker(dict(scripts5, repository=dict(scripts5["repository"], nameWithOwner=org.CENTRAL)))[0]),
+          ([True, False, True], True, NOT_RERUN, FIX_ROUND))
+    ap = _module("autopilot", "autopilot.py")
+    check("C4 (#741) the checks the board waits on a round for are the ones a round starts on (autopilot.py FIX_JOBS)",
+          (FIX_CHECKS == ap.FIX_JOBS, [fix_check(n) for n in ("review / Claude review", "Scripts (self-tests)", "Scripts on macOS (the contributor's tools)", "gates / G2")]),
+          (True, [True, True, False, False]))
+    check("C4 (#741) the cap is policy/autonomy.yml's", rounds_cap(), int(_module("autonomy", "autonomy.py").load(os.path.join(HERE, "..", "policy", "autonomy.yml"))["autopilot-rounds"]))
     for i in fx["issues"]:
         check(f"C3 issue {i['title']}: {i['want']}", list(issue_blocker(i) or []) or None, i["want"])
     body = render(items, now, boss)
@@ -481,12 +564,16 @@ def self_test():
     return 1 if fails else 0
 
 
-def _receipts():
+def _module(name, file):
     import importlib.util
-    spec = importlib.util.spec_from_file_location("receipts", os.path.join(HERE, "receipts.py"))
+    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, file))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def _receipts():
+    return _module("receipts", "receipts.py")
 
 
 def main(argv):

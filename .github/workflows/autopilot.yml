@@ -112,6 +112,12 @@ name: Autopilot
 #                   dropped: one round, within the same cap, only when a
 #                   check failed in its last merge group, from the failed
 #                   jobs' log (`autopilot.py queue-failed`, .dx-io/queue.md).
+#                   Called too when a gate of the pipeline failed at the
+#                   head, or the review ended without a verdict (#741): a
+#                   check round, within the same cap, from the failed jobs'
+#                   log of the calling run (`autopilot.py checks-failed`,
+#                   .dx-io/checks.md); a review that blocks with its verdict
+#                   is a review round, from its threads.
 #
 # The agent holds no key (#287). A shell in a job that holds a secret can
 # read it out of the runner's memory, whatever the token's scope, so the
@@ -612,9 +618,12 @@ jobs:
             max=$(python3 .dx-central/scripts/autonomy.py policy | jq -r '."autopilot-rounds" // 3')
             if [ "$ROUND" -gt "$max" ]; then
               gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label needs-human >/dev/null || true
-              gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "The autopilot spent its $max rounds and the review still blocks: a person takes it from here. The review's open threads say what is left.
-
-          🤖 AI-generated · Claude Opus 5.5 (Anthropic)" >/dev/null
+              # #741: on a check round (a gate that failed at the head, a
+              # review with no verdict, the merge queue's checks) the
+              # comment says its checks still fail, not that the review blocks.
+              checks=true
+              [ "${QUEUE:-}" = true ] || python3 .dx-central/scripts/autopilot.py checks-failed >/dev/null || checks=false
+              gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "$(MAX="$max" CHECKS="$checks" python3 .dx-central/scripts/autopilot.py rounds-spent)" >/dev/null
               [ -z "${ISSUE:-}" ] || [ -z "${OPEN_TO_CLAIM:-}" ] || gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "${OPEN_TO_CLAIM:-}" >/dev/null || true
               echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
             fi
@@ -707,7 +716,10 @@ jobs:
           # The default branch as GitHub says it, whatever the event (#585).
           BASE: ${{ steps.when.outputs.default }}
           # #479: a round for a pull request the queue dropped reads the
-          # failed jobs' log instead of the review.
+          # failed jobs' log instead of the review; so does one for a gate
+          # of the pipeline that failed at the head, or a review that ended
+          # without a verdict (#741: `inputs fix` reads the calling run's
+          # jobs, and writes checks.md, which `prompt fix` points at).
           QUEUE: ${{ github.event_name == 'pull_request' && github.event.action == 'dequeued' }}
           RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
         run: |
