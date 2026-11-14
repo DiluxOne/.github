@@ -45,6 +45,15 @@ name: Autopilot
 #                   A maintainer's answer after a stop or a silent end
 #                   brings it back the same way: review-reply.yml takes
 #                   `needs-human` off and dilux-bot adds the continue (#561).
+#                   So does a new acceptance after a stop (#696): once the
+#                   seal matches, the start takes `needs-human` off the
+#                   issue and its open autopilot pull request where the
+#                   last run with a person ended in a stop or a silent end
+#                   (a cap end, `dx-autopilot-cap`, stays with a person),
+#                   with no `autopilot:continue` from anyone. The Spec reads
+#                   with the PRD what those who decide said in the comments
+#                   since the first acceptance (autopilot.py settled), and
+#                   does not ask it again; where they differ, the PRD wins.
 #                   A maintainer's answer that drops or changes a
 #                   criterion (`drop C3`, `change C3: <new text>`) is applied to
 #                   the checklist by the bot before the work (#561,
@@ -575,6 +584,30 @@ jobs:
           🤖 AI-generated · Claude Opus 5.5 (Anthropic)" >/dev/null || true
             echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
+          if [ "$MODE" = start ]; then
+            # A new acceptance after a stop (#696): the seal matches and
+            # the acceptor may accept, so `needs-human` comes off the issue,
+            # and off its open autopilot pull request, where the last run
+            # with a person ended in a stop or a silent end (a cap end stays
+            # with a person: scripts/autopilot.py unstop). Its draft then
+            # goes on as an answer's does: dilux-bot adds the continue.
+            is_bot() { case "$1" in "$DX_BOT_APP"|"$DX_BOT_LOGIN"|"app/$DX_BOT_APP") return 0 ;; *) return 1 ;; esac; }
+            unstop() {
+              local labels
+              labels=$(gh "$1" view "$2" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | join(",")')
+              gh api "repos/$GITHUB_REPOSITORY/issues/$2/comments" --paginate | LABELS="$labels" python3 .dx-central/scripts/autopilot.py unstop || return 1
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/$2/labels/needs-human" >/dev/null
+            }
+            if unstop issue "$ISSUE"; then echo "#$ISSUE: accepted again after a stop, needs-human is off."; fi
+            for n in $(gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json closedByPullRequestsReferences --jq '.closedByPullRequestsReferences[].number'); do
+              read -r open_ap author < <(gh pr view "$n" --repo "$GITHUB_REPOSITORY" --json state,labels,author --jq '"\(.state == "OPEN" and ([.labels[].name] | index("autopilot") != null)) \(.author.login)"')
+              if [ "$open_ap" = true ] && is_bot "$author" && unstop pr "$n"; then
+                gh label create "autopilot:continue" --repo "$GITHUB_REPOSITORY" --color 1D76DB --force --description "On an issue: the autopilot continues its draft pull request, or starts it" >/dev/null 2>&1 || true
+                gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --add-label "autopilot:continue" >/dev/null
+                echo "#$n: accepted again after a stop, needs-human is off and its draft goes on."
+              fi
+            done
+          fi
           if [ "$AS" = start ]; then
             # Only the open pull requests GitHub lists as closing the issue
             # (closed ones are left out), never a text search, which matches
@@ -597,7 +630,8 @@ jobs:
             # runs cap, never against the rounds cap: the label asked for it.
             if ! why=$(AS="$AS" python3 .dx-central/scripts/autopilot.py may-continue); then
               echo "No continue: $why"
-              [[ "$why" != *"cap is"* ]] || gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "The autopilot does not continue: $why. A person takes it from here.
+              [[ "$why" != *"cap is"* ]] || gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "<!-- dx-autopilot-cap -->
+          The autopilot does not continue: $why. A person takes it from here.
 
           🤖 AI-generated · Claude Opus 5.5 (Anthropic)" >/dev/null
               [[ "$why" != *"cap is"* ]] || gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label needs-human >/dev/null
@@ -609,7 +643,8 @@ jobs:
             max=$(python3 .dx-central/scripts/autonomy.py policy | jq -r '."autopilot-rounds" // 3')
             if [ "$ROUND" -gt "$max" ]; then
               gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label needs-human >/dev/null || true
-              gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "The autopilot spent its $max rounds and the review still blocks: a person takes it from here. The review's open threads say what is left.
+              gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "<!-- dx-autopilot-cap -->
+          The autopilot spent its $max rounds and the review still blocks: a person takes it from here. The review's open threads say what is left.
 
           🤖 AI-generated · Claude Opus 5.5 (Anthropic)" >/dev/null
               [ -z "${ISSUE:-}" ] || [ -z "${OPEN_TO_CLAIM:-}" ] || gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "${OPEN_TO_CLAIM:-}" >/dev/null || true
@@ -711,6 +746,23 @@ jobs:
           set -euo pipefail
           export BODY="$RUNNER_TEMP/body.md" REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml" DX_IO="$GITHUB_WORKSPACE/.dx-io"
           mkdir -p "$DX_IO"
+          : > "$RUNNER_TEMP/settled.md"
+          if [ "$MODE" = start ]; then
+            # What those who decide said since the issue was first accepted
+            # (#696, scripts/autopilot.py settled: on the issue and on its
+            # pull request, `/` commands aside), read with the PRD, so the
+            # Spec does not ask again what they settled. Who decides is
+            # read as for the work, below; a read that fails is no answer.
+            export ANSWERED="$RUNNER_TEMP/settled.md"
+            since=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/events" --paginate --jq '.[] | select(.event == "labeled" and .label.name == "accepted") | .created_at' | sort | head -n 1 || true)
+            { gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments'
+              [ -z "$PR" ] || gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments'; } \
+              | jq -s 'add | map({body, createdAt, author: {login: .author.login}})' > "$RUNNER_TEMP/comments.json" || echo '[]' > "$RUNNER_TEMP/comments.json"
+            jq -r '.[].author.login' "$RUNNER_TEMP/comments.json" | sort -u \
+              | python3 .dx-central/scripts/deciders.py list answer > "$RUNNER_TEMP/deciders.txt" || : > "$RUNNER_TEMP/deciders.txt"
+            COMMENTS="$RUNNER_TEMP/comments.json" DECIDERS="$RUNNER_TEMP/deciders.txt" SINCE="$since" python3 .dx-central/scripts/autopilot.py settled > "$ANSWERED" \
+              || : > "$ANSWERED"
+          fi
           # The test repository (#563): its Spec is the fixed change's,
           # queued here as the agent would have, and the work writes it.
           fixed=$(python3 .dx-central/scripts/autopilot.py fixed)

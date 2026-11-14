@@ -82,6 +82,49 @@ bodies:
     ### Criticality
 
     Normal
+  # #696: its PRD carries the test repository's fixed question (its pack's
+  # `fixed-change.ask`), so its fixed Spec stops until those who decide
+  # answer in a comment; its edited twin still carries it.
+  asking-feature: |
+    ### Problem
+
+    The test repository has no greeting.
+
+    ### Scope
+
+    - A greeting file, whose word is the one which a maintainer chooses.
+
+    ### Out of scope
+
+    - Anything else.
+
+    ### Acceptance criteria
+
+    - C1: Given the repository, when it is read, then it has a greeting.
+
+    ### Criticality
+
+    Normal
+  edited-asking-feature: |
+    ### Problem
+
+    The test repository has no greeting for who opens it.
+
+    ### Scope
+
+    - A greeting file, whose word is the one which a maintainer chooses.
+
+    ### Out of scope
+
+    - Anything else.
+
+    ### Acceptance criteria
+
+    - C1: Given the repository, when it is read, then it has a greeting.
+
+    ### Criticality
+
+    Normal
   incomplete: |
     Something should be better.
   # A bug in the report's sections, then the PRD's (#694: the bug form's
@@ -116,6 +159,41 @@ bodies:
     ### Acceptance criteria
 
     - C1: Given the repository, when `scenarios/greeting.md` is read, then it says "hello".
+
+    ### Criticality
+
+    Normal
+  # #696: a person's bug, never reproduced (its scenario lands no file),
+  # that a maintainer accepts.
+  person-bug: |
+    ### What happened?
+
+    `scenarios/bug-by-person-merges/greeting.md` is missing.
+
+    ### Steps to reproduce
+
+    1. Read `scenarios/bug-by-person-merges/greeting.md` on `main`.
+    2. See that it is not there.
+
+    ### Version
+
+    The test repository's `main`.
+
+    ### Problem
+
+    The scenario's greeting is missing.
+
+    ### Scope
+
+    - The greeting's file.
+
+    ### Out of scope
+
+    - Anything else.
+
+    ### Acceptance criteria
+
+    - C1: Given the repository, when `scenarios/bug-by-person-merges/greeting.md` is read, then it says "hello".
 
     ### Criticality
 
@@ -225,7 +303,10 @@ bodies:
 types:
   complete-feature: Feature
   edited-feature: Feature
+  asking-feature: Feature
+  edited-asking-feature: Feature
   bug: Bug
+  person-bug: Bug
   bug-not-reproduced: Bug
   task: Task
   release: Task
@@ -329,6 +410,15 @@ scenarios:
     covers: []
     opens: {issue: {title: "fix: something failed once", body: bug-not-reproduced}}
     expect: {labels: [bug:unconfirmed, could-not-reproduce], absent: [bug:confirmed, repro:no-way]}
+  # #696: a person's bug a maintainer accepts, worked by the autopilot to
+  # its pull request, every box ticked. Its merge is the review's and G7's
+  # (`low-risk-merges`, `merge-queue`; docs/paths.md).
+  - id: bug-by-person-merges
+    covers: []
+    minutes: 15
+    opens: {issue: {title: "fix: the scenario's greeting is missing", body: person-bug}}
+    steps: [{until: {labels: [awaiting-acceptance, bug:unconfirmed]}}, {label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}}]
+    expect: {pull: {closes: true, branch: "^fix/[0-9]+-", title: "^fix(\\(.+\\))?: ", body: "\\[x\\] \\*\\*C1\\*\\*"}}
 
   # The autopilot's questions, stops and hints.
   - id: question-answered
@@ -338,13 +428,35 @@ scenarios:
     steps: [{until: {labels: [awaiting-acceptance]}}, {label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}},
             {until: {pull: {closes: true}}}, {comment: "Option 1."}]
     expect: {absent: [autopilot:waiting, autopilot:continue], pull: {closes: true}}
+  # #696: its PRD asks (`asking-feature`), so its fixed Spec stops; a hint
+  # and the label bring it back.
   - id: stop-hint-continue
     covers: []
     minutes: 15
-    opens: {issue: {title: "feat: a greeting, stopped", body: complete-feature}}
+    opens: {issue: {title: "feat: a greeting, stopped", body: asking-feature}}
     steps: [{until: {labels: [awaiting-acceptance]}}, {label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}},
-            {until: {pull: {closes: true}}}, {comment: "Hint: write it in scenarios/."}, {label: autopilot:continue}]
+            {until: {comments: ["<!-- dx-autopilot-stop -->"]}}, {comment: "Hint: write it in scenarios/."}, {label: autopilot:continue}]
     expect: {absent: [needs-human], pull: {closes: true}}
+  # #696: a stop answered in a comment alone, with no label: the answer
+  # brings it back, and the Spec does not ask again (one stop).
+  - id: stop-answered
+    covers: []
+    minutes: 15
+    opens: {issue: {title: "feat: a greeting, stopped and answered", body: asking-feature}}
+    steps: [{until: {labels: [awaiting-acceptance]}}, {label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}},
+            {until: {comments: ["<!-- dx-autopilot-stop -->"]}}, {comment: "The greeting's word is hello."}]
+    expect: {absent: [needs-human, autopilot:continue], pull: {closes: true}, count: {"<!-- dx-autopilot-stop -->": 1}}
+  # #696 C1: stopped, its PRD edited (G2 withdraws the acceptance), a
+  # decider's answer in a comment, then accepted again: it goes on with no
+  # `autopilot:continue` from anyone, and does not ask again (one stop).
+  - id: stop-edited-reaccepted-answered
+    covers: []
+    minutes: 15
+    opens: {issue: {title: "feat: a greeting, stopped, edited and accepted again", body: asking-feature}}
+    steps: [{until: {labels: [awaiting-acceptance]}}, {label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}},
+            {until: {comments: ["<!-- dx-autopilot-stop -->"]}}, {edit: edited-asking-feature},
+            {until: {labels: [awaiting-acceptance], absent: [accepted]}}, {comment: "The greeting's word is hello."}, {label: accepted}]
+    expect: {absent: [needs-human, autopilot:continue], pull: {closes: true}, count: {"<!-- dx-autopilot-stop -->": 1}}
 
   # The autopilot's pull request and main.
   # A `push` writes to the head branch of the pull request it observes;

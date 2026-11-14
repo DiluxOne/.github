@@ -36,7 +36,8 @@ then lands that file, otherwise, on main, `behind` only a file of its own
 there, through a docs pull request of the scenario that merges: #698),
 `minutes` (its limit, 10 by default, 15 at most) and
 `expect` (`labels`, `absent`, `comments` (markers), `pull` (`closes`,
-`branch`, `title`, patterns; `false` for none that closes it, #713), `check` (name: conclusion, the name a
+`branch`, `title`, patterns; `false` for none that closes it, #713), `count` (#696: a
+marker: how many of its comments carry it, exactly), `check` (name: conclusion, the name a
 check run's caller's job or its own: `check_named`, #709), `merged`,
 `waiting`). Every scenario is a group of its own (`groups`, #694), and
 the lane plays the groups at once, one job each, on GitHub's runners,
@@ -338,7 +339,8 @@ def preconditions(scenarios, bodies, pack, can_dispatch=(), passes=None, types=N
     and its pack declare none, so the bug gets `repro:no-way`), or a
     confirmed bug's issue expected to have a pull request that closes it
     (the reproduction's fix closes the lane's own issue, never the
-    report). Pure."""
+    report), and (#696) a `count` that is no mapping of a marker to a
+    number. Pure."""
     import fnmatch
     out = []
     for s in scenarios:
@@ -364,6 +366,10 @@ def preconditions(scenarios, bodies, pack, can_dispatch=(), passes=None, types=N
             want = re.match(r"\^([a-z]+)", str(expect["pull"]["branch"]))
             if want and want.group(1) != kind:
                 out.append(f"scenario {sid}: expects the autopilot's branch {expect['pull']['branch']}, but its issue's Type ({type_of(opens['issue'], types) or 'none'}) makes it {kind}/")
+        count = expect.get("count")
+        if count is not None and (not isinstance(count, dict) or not count
+                                  or any(not isinstance(m, str) or not m or not isinstance(n, int) or isinstance(n, bool) or n < 0 for m, n in count.items())):
+            out.append(f"scenario {sid}: its `count` is no mapping of a comment's marker to how many of its comments carry it")
         for step in s.get("steps") or []:
             if isinstance(step, dict) and "dispatch" in step and str(step["dispatch"]) not in can_dispatch:
                 out.append(f"scenario {sid}: dispatches {step['dispatch']}, which the test repository has not, or not with workflow_dispatch "
@@ -427,6 +433,12 @@ def saw(seen):
     return f"saw labels {labels}; the bot's newest comment: {line or 'none'}"
 
 
+def counted(marker, seen):
+    """How many of the comments in `seen` carry `marker` (#696: `count`).
+    Pure."""
+    return sum(1 for c in seen.get("comments") or [] if marker in str(c))
+
+
 def holds(expect, seen):
     """What of `expect` does not hold in `seen` (labels, comments, pull,
     checks, merged, waiting): [] when it all does, else ending with what it
@@ -443,6 +455,10 @@ def holds(expect, seen):
     for marker in expect.get("comments") or []:
         if marker not in text:
             out.append(f"no comment with {marker}")
+    for marker, n in (expect.get("count") or {}).items():
+        got = counted(marker, seen)
+        if got != n:
+            out.append(f"{got} comments with {marker}, not {n}")
     pull = seen.get("pull") or {}
     if expect.get("pull") is False and pull:
         out.append(f"a pull request closes it ({pull.get('number') or pull.get('branch') or '?'})")
@@ -500,6 +516,10 @@ def hopeless(expect, seen, settled=False):
         got = check_named(name, seen.get("checks"))
         if got and got != conclusion:
             out.append(f"check {name} ended {got}, not {conclusion}")
+    # #696: a comment is never taken back, so a count already past its
+    # number cannot come down to it.
+    out += [f"{counted(m, seen)} comments with {m}, past {n}" for m, n in (expect.get("count") or {}).items()
+            if isinstance(n, int) and counted(m, seen) > n]
     if expect.get("check") and seen.get("held"):
         out.append(f"the fork's run waits for approval to run workflows from forks ({', '.join(seen['held'])})")
     if settled:
@@ -2719,7 +2739,8 @@ def self_test():
              and any(needs_autopilot(w) for w in [s.get("expect")] + [st_["until"] for st_ in s.get("steps") or [] if "until" in st_])]
     check("#713 C2: the real file: every scenario that reads the autopilot's result waits for it, each within 15 minutes",
           (autopilot_problems(real["scenarios"]), sorted(reads), {limit(by713[i]) for i in reads}),
-          ([], sorted(["accepted-spec", "spec-to-draft", "core-one-at-a-time", "decision-sub-issues", "prd-edited-after-acceptance", "question-answered", "stop-hint-continue", "draft-in-conflict", "ready-behind-main"]), {15}))
+          ([], sorted(["accepted-spec", "spec-to-draft", "core-one-at-a-time", "decision-sub-issues", "prd-edited-after-acceptance", "question-answered", "stop-hint-continue", "draft-in-conflict", "ready-behind-main",
+                  "bug-by-person-merges", "stop-answered", "stop-edited-reaccepted-answered"]), {15}))
     check("#713 C2: core-one-at-a-time accepts its `before` issue after its triage, and waits for its seal",
           (by713["core-one-at-a-time"]["before"][0]["issue"].get("labels"), [p for p in autopilot_problems([by713["core-one-at-a-time"]])],
            preconditions([by713["core-one-at-a-time"]], real["bodies"], rpack)), (None, [], []))
@@ -2768,6 +2789,28 @@ def self_test():
           (dec["opens"]["issue"].get("labels"), dec["steps"][:2]), (None, [{"until": {"labels": ["awaiting-acceptance"]}}, {"label": "accepted"}]))
     check("#713 C5: decision-sub-issues expects what a decision gets in the test repository, accepted and sealed, waiting until its seal",
           (dec["steps"][2:], dec["expect"]), ([{"until": {"comments": [SEAL]}}], {"labels": ["accepted"], "comments": [SEAL]}))
+    # #696: `count`, a marker's comments counted exactly.
+    stop = "<!-- dx-autopilot-stop -->"
+    once = {"count": {stop: 1}}
+    check("#696 C1: count holds at exactly its number, and names how many it saw otherwise",
+          (holds(once, {"comments": [f"{stop}\nstopped", "<!-- dx-board -->"]}), holds(once, {"comments": [f"{stop}\na", f"{stop}\nb"]})[0],
+           holds(once, {"comments": []})[0]),
+          ([], f"2 comments with {stop}, not 1", f"0 comments with {stop}, not 1"))
+    check("#696 C1: a count past its number is hopeless, one short of it is not",
+          (hopeless(once, {"comments": [stop, stop]}), hopeless(once, {"comments": []})), ([f"2 comments with {stop}, past 1"], []))
+    check("#696 C1: preconditions refuse a count that is no mapping of a marker to a number",
+          [len(preconditions([{"id": "c", "opens": {"issue": {}}, "expect": {"count": bad}}], {}, {})) for bad in ([stop], {stop: "1"}, {stop: -1}, {"": 1}, {stop: True}, {}, {stop: 0})],
+          [1, 1, 1, 1, 1, 1, 0])
+    c1 = by713["stop-edited-reaccepted-answered"]
+    verbs = [next(k for k in st if k != "of") for st in c1["steps"]]
+    check("#696 C1: stop-edited-reaccepted-answered stops, is edited, answered in a comment and accepted again, in that order, with no autopilot:continue",
+          (c1["opens"]["issue"]["body"], verbs, c1["steps"][3], [st.get("label") for st in c1["steps"] if "label" in st]),
+          ("asking-feature", ["until", "label", "until", "until", "edit", "until", "comment", "label"], {"until": {"comments": [stop]}}, ["accepted", "accepted"]))
+    check("#696 C1: and expects it goes on, with no needs-human nor continue, a pull request that closes it, and the one stop",
+          c1["expect"], {"absent": ["needs-human", "autopilot:continue"], "pull": {"closes": True}, "count": {stop: 1}})
+    ask = (rpack.get("fixed-change") or {}).get("ask") or ""
+    check("#696: the asking bodies carry the pack's fixed question, and no other body does",
+          sorted(k for k, v in real["bodies"].items() if ask and ask in v), ["asking-feature", "edited-asking-feature"])
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 

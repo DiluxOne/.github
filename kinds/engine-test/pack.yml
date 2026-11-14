@@ -51,9 +51,13 @@ identity:
 # one file (`file`, `{n}` the issue's number, `{id}` the criterion's,
 # `{scenario}` the scenario of the issue's `dx-scenario` mark) and one
 # ticked box, so the scenarios try the flow, never the model.
+# A PRD that carries `ask` (#696) stops at its fixed Spec, as a model that
+# asks would, until those who decide answer in a comment
+# (scripts/autopilot.py fixed_asks); every other PRD goes on as before.
 autopilot: fixed-change
 fixed-change:
   file: "scenarios/{scenario}/{n}.md"
+  ask: "which a maintainer chooses"
 
 # Its bugs reproduced with a fixed test that calls no model either (#707,
 # scripts/repro-ways.py `fixed`): issue-repro.yml copies repro-fixed.py,
