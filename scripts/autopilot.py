@@ -13,6 +13,11 @@
                              .github/review-policy.yml): exit 2 when it
                              declares none, printing the issue's comment,
                              which says which way to declare
+  autopilot.py edit-start    #699: whether an edit of an accepted issue its
+                             start refused for its shape starts it (the
+                             state on stdin, as next-step's); exit 0 when so
+  autopilot.py shape-comment the refusal's comment (WHY), which says an edit
+                             that makes it pass starts it (#699)
   autopilot.py prompt spec   the agent's first task on a new issue: the Spec
   autopilot.py prompt work   the agent's task on its draft pull request: the
                              unticked criteria, one commit each (a new issue,
@@ -322,6 +327,58 @@ def may_start(policy, body, autopilot_var, lane=LANE, no_way=""):
     if no_way:
         return False, no_way
     return True, f"ready: G1 passes and the autopilot is on (lane {lane})"
+
+
+# The autopilot's comment on an accepted issue its start refused for its
+# shape (#699 C2), one kept up to date: `refused` while it waits for an
+# edit, `started` once a start got past may-start. Once G1 and the start ask
+# the same function (C1) it is a safety net: an acceptance G1 lets stand
+# passes the start too.
+SHAPE_RE = re.compile(r"^<!-- dx-autopilot-shape: (refused|started) -->")
+SHAPE = "<!-- dx-autopilot-shape: {state} -->"
+
+
+def shape_comment(why):
+    """The refusal's comment: what does not pass, and that an edit which makes
+    it pass starts the autopilot, as an acceptance does. Each of G1's errors
+    goes in code, as the G1 check writes them: text the issue controls never
+    mentions anyone nor renders a link. Pure."""
+    head, _, errors = (why or "").partition("): ")
+    listed = "\n".join("- `" + e.replace("`", "'").replace("\n", " ").strip() + "`" for e in errors.split("; ") if e.strip())
+    return (SHAPE.format(state="refused") + "\n**The autopilot did not start:** " + (head + "):\n\n" + listed if listed else "the issue is not ready (G1).") + "\n\n"
+            "Edit the issue so it passes: an edit that makes it pass starts the autopilot, as the acceptance did, with no label. "
+            "An edit of the PRD's own words is not that: the acceptance comes off, and a maintainer accepts it again.\n\n" + AI_LINE)
+
+
+def shape_state(comments):
+    """`refused`, `started` or "": the last shape comment dilux-bot wrote on
+    the issue; anyone else's is never read. Pure."""
+    state = ""
+    for c in comments or []:
+        who = ((c.get("user") or c.get("author") or {}).get("login")) or ""
+        m = SHAPE_RE.match(c.get("body") or "")
+        if m and who in BOT_LOGINS:
+            state = m.group(1)
+    return state
+
+
+def edit_start(state):
+    """Whether an edit of an accepted issue starts the autopilot (#699 C2),
+    as an acceptance does: {start, why}. Only a person's edit, of an issue
+    whose start refused it for its shape (shape_state `refused`), and only
+    when next_step, from the issue as it is now (G1 in `may_start`, the seal
+    still matching, no pull request, nobody holding it), says to write the
+    Spec: a refused start never wrote one, so a Spec on the issue is
+    someone's edit and starts nothing. An edit of the sealed PRD reads
+    `changed` and waits for a new acceptance (G2). Pure."""
+    if state.get("sender_is_bot"):
+        return {"start": False, "why": "a bot's edit starts nothing"}
+    if shape_state(state.get("comments")) != "refused":
+        return {"start": False, "why": "the autopilot did not refuse it for its shape: the edit starts nothing"}
+    step = next_step(state)
+    if step["action"] == "spec" and step.get("as") == "start":
+        return {"start": True, "why": f"the edit makes it pass: {step['why']}"}
+    return {"start": False, "why": step_comment(step)}
 
 
 # What makes an issue a person's (#488): the autopilot does not start on it,
@@ -2603,6 +2660,23 @@ A class on html.
     check("#561 C1: next-step names who a wait is on",
           (ns(prs=[theirs561])["who"], ns(lane="")["who"], ns(pr=dpr, runs=5)["who"]), ("ana", "a maintainer", "anyone"))
     check("#561 C1: next-step lists the open criteria", ns(pr=dpr)["left"], ["C2"])
+    # #699 C2: an edit of an accepted issue its start refused for its shape.
+    refused699 = [{"user": {"login": BOT_LOGINS[1]}, "body": shape_comment("the issue is not ready (G1): text outside any section")}]
+    es = lambda **k: edit_start({**base, "comments": refused699, **k})
+    check("#699 C2: an edit that makes it pass starts it, as the acceptance does; never from a Spec someone wrote on it", (es()["start"], es(spec=True)["start"]), (True, False))
+    check("#699 C2: not when it still fails G1, nor when the PRD changed since its seal (G2), nor a bot's edit",
+          (es(may_start=[False, "the issue is not ready (G1): x"])["start"], es(seal="changed")["start"], es(sender_is_bot=True)["start"]), (False, False, False))
+    check("#699 C2: not when nothing refused it, nor once a start got past it, nor on anyone else's comment",
+          (es(comments=[])["start"], es(comments=refused699 + [{"user": {"login": BOT_LOGINS[1]}, "body": SHAPE.format(state="started")}])["start"],
+           es(comments=[{"user": {"login": "mallory"}, "body": refused699[0]["body"]}])["start"]), (False, False, False))
+    check("#699 C2: not with a pull request open, nor when a person holds it",
+          (es(pr=dpr)["start"], es(issue={"labels": ["accepted", "claimed"]})["start"]), (False, False))
+    check("#699 C2: the refusal says an edit that makes it pass starts it, and tells no one to add a label",
+          ("an edit that makes it pass starts the autopilot" in refused699[0]["body"], bool(told7.search(refused699[0]["body"])),
+           shape_state(refused699)), (True, False, "refused"))
+    esc = lambda st: subprocess.run([sys.executable, os.path.abspath(__file__), "edit-start"], input=json.dumps(st), capture_output=True, text=True)
+    check("#699 C2 cli: edit-start exits 0 when it starts, 1 when not",
+          (esc({**base, "comments": refused699}).returncode, esc({**base, "comments": []}).returncode), (0, 1))
     # #561 C9: a person's open pull request that closes the issue holds it:
     # the autopilot does not start, and the board names them.
     held9 = ns(prs=[theirs561], spec=True)
@@ -4392,6 +4466,23 @@ def main(argv):
         step = next_step(state if isinstance(state, dict) else {})
         print(step_comment(step), file=sys.stderr)
         print(json.dumps(step))
+        return 0
+    if argv[:1] == ["edit-start"]:
+        # #699 C2: an edit of an accepted issue, its state on stdin (JSON,
+        # next-step's and sender_is_bot, comments); {start, why} on stdout,
+        # exit 0 when it starts the autopilot, 1 when not.
+        try:
+            state = json.load(sys.stdin)
+        except ValueError as err:
+            print(f"edit-start needs a JSON state on stdin ({err})", file=sys.stderr)
+            return 64
+        got = edit_start(state if isinstance(state, dict) else {})
+        print(json.dumps(got))
+        return 0 if got["start"] else 1
+    if argv[:1] == ["shape-comment"]:
+        # #699 C2: the start's refusal for the issue's shape (WHY), as the
+        # comment kept up to date on the issue.
+        print(shape_comment(os.environ.get("WHY", "")))
         return 0
     if argv[:1] == ["criteria-edit"]:
         # With the key, in prep, before the work's prompt (#561 C3): a

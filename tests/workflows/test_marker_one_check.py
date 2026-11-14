@@ -135,7 +135,7 @@ NOT_LEADING = {
     "dx-claim-test", "dx-claim", "dx-autopilot-silent", "dx-autopilot-core", "dx-advisory-attempt", "dx-waiting",
     "dx-triage-failed", "dx-tested", "dx-screenshots", "dx-repro-broke", "dx-prepr-sig", "dx-nightly-review",
     "dx-flow-numbers", "dx-decision", "dx-autopilot-unfinished", "dx-autopilot-prepr", "dx-settled",
-    "dx-autopilot-hint", "dx-conventions",
+    "dx-autopilot-hint", "dx-conventions", "dx-autopilot-shape",
     # Made up by the tests, never written.
     "dx-x", "dx-anything",
 }

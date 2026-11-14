@@ -9,7 +9,10 @@ name: Autopilot
 #                   `accepted` or dilux-bot opens an accepted decision's
 #                   sub-issue (#415), and from issue-repro.yml when the
 #                   `bugfix-reproduced` lane accepted the issue it opened
-#                   for a reproduced bug (#84). Who accepted it is read
+#                   for a reproduced bug (#84), or when a person's edit
+#                   makes pass an accepted issue this start refused for
+#                   its shape (#699: its `dx-autopilot-shape` comment,
+#                   issue-triage.yml's `edited` job). Who accepted it is read
 #                   from GitHub (scripts/autopilot.py lane): a lane's own
 #                   issue is worked under that lane, with its caps; one a
 #                   person accepted, under `human-issue`, and so is a
@@ -520,15 +523,34 @@ jobs:
           fi
           rc=0
           why=$(ISSUE_TYPE="$ISSUE_TYPE" REPO_POLICY="$RUNNER_TEMP/repo-policy.yml" python3 .dx-central/scripts/autopilot.py may-start) || rc=$?
+          # The shape refusal's comment (#699 C2), one kept up to date by
+          # dilux-bot: `refused` says an edit that makes the issue pass
+          # starts it (issue-triage.yml's `edited` job), `started` once a
+          # start gets past this check.
+          shape() {
+            local id
+            id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE/comments" --paginate \
+              --jq '.[] | select(.user.login == env.DX_BOT_LOGIN and (.body | startswith("<!-- dx-autopilot-shape: "))) | .id' | tail -1) || return 0
+            if [ "$1" = refused ]; then
+              body=$(WHY="$2" python3 .dx-central/scripts/autopilot.py shape-comment)
+              if [ -n "$id" ]; then gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$body" >/dev/null || true
+              else gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$body" >/dev/null || true; fi
+            elif [ -n "$id" ]; then
+              gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$(printf '<!-- dx-autopilot-shape: started -->\nThe issue passes now, and the autopilot started on it.\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)')" >/dev/null || true
+            fi
+          }
           if [ "$rc" -ne 0 ]; then
             echo "The autopilot does not start: $why"
             if [ "$rc" -eq 2 ]; then
               gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$why
 
           <sub>🤖 Autopilot</sub>" >/dev/null || true
+            elif [ "$AS" = start ] && [[ "$why" == "the issue is not ready (G1)"* ]]; then
+              shape refused "$why"
             fi
             echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
+          [ "$AS" != start ] || shape started
           # A reproduced bug: the test that failed, its SHA-256 and the
           # branch that holds it, from the sealed PRD (scripts/repro-lane.py);
           # for a test of any way but the unit one, the way it runs in and

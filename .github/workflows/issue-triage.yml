@@ -3,7 +3,9 @@ name: Issue triage
 # Reusable. A person's `accepted` or `autopilot:continue` starts the
 # autopilot only when `who-decides` allows them (#588, the `steer` job,
 # scripts/deciders.py); anyone else's `autopilot:continue` comes off with a
-# comment that names who may add it.
+# comment that names who may add it. A person's edit that makes pass an
+# accepted issue the autopilot's start refused for its shape starts it too
+# (#699, the `edited` job), as the acceptance did, with no label.
 #
 # When an issue is opened, Claude reads it with the repository's
 # README, readme.txt, docs/roadmap.md and the open issues, classifies it and
@@ -1026,14 +1028,90 @@ jobs:
           # shellcheck disable=SC2016 # Markdown's backticks, not a command.
           gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '**The autopilot does not continue:** `%s` was taken off. %s\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)' "$LABEL" "$why")" >/dev/null
 
+  # An edit that makes an accepted issue pass (#699 C2): the autopilot's
+  # start refused it for its shape (its comment `dx-autopilot-shape:
+  # refused`), and a person's edit fixed it. The edit starts it, as the
+  # acceptance did, with no label: scripts/autopilot.py edit-start, from
+  # next-step's state read here (G1 now, the seal still matching, which is
+  # issue-accepted.yml's unseal job saying nothing changed, no pull request
+  # nor Spec, nobody holding it). An edit of the sealed PRD reads `changed`:
+  # the unseal job takes the acceptance off (G2) and nothing starts here.
+  # The last of a storm of edits decides; the autopilot's own concurrency
+  # group runs one start.
+  edited:
+    name: An edit that makes it pass starts the autopilot
+    if: >-
+      github.event_name == 'issues' && github.event.action == 'edited' && github.event.sender.type != 'Bot' &&
+      (contains(github.event.issue.labels.*.name, 'accepted') || contains(github.event.issue.labels.*.name, 'accepted-by:policy')) &&
+      !contains(github.event.issue.labels.*.name, 'lane:release')
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    concurrency:
+      group: edit-start-${{ github.repository }}-${{ github.event.issue.number }}
+      cancel-in-progress: true
+    outputs:
+      start: ${{ steps.step.outputs.start }}
+    steps:
+      - name: App token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: read # the seal
+          permission-issues: read
+          permission-pull-requests: read
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
+          path: .dx-central
+          persist-credentials: false
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+      - name: Whether the edit starts it
+        id: step
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json body --jq '.body // ""' > "$RUNNER_TEMP/body.md"
+          export BODY="$RUNNER_TEMP/body.md"
+          comments=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '[.[] | {user: {login: .user.login}, body}]' | jq -s 'add // []')
+          # A seal that cannot be read is never taken for a match.
+          seal=$(python3 .dx-central/scripts/receipts.py verify-prd | head -1) || true
+          [ -n "$seal" ] || seal=unread
+          rc=0; g1=$(python3 .dx-central/scripts/issue-schema.py g1 < "$BODY") || rc=$?
+          [ "$rc" -le 1 ] || { echo "::error::The G1 check itself failed (exit $rc)."; exit 1; }
+          spec=$(grep -q '^### Spec: ' "$BODY" && echo true || echo false)
+          # shellcheck disable=SC2016 # GraphQL variables, not shell ones.
+          issue=$(gh api graphql -F o="${GITHUB_REPOSITORY%/*}" -F n="${GITHUB_REPOSITORY#*/}" -F i="$NUMBER" \
+            -f query='query($o:String!,$n:String!,$i:Int!){repository(owner:$o,name:$n){issue(number:$i){state labels(first:50){nodes{name}} assignees(first:20){nodes{login}} closedByPullRequestsReferences(first:20,includeClosedPrs:false){nodes{number state createdAt author{__typename login} labels(first:30){nodes{name}}}}}}}' \
+            --jq '.data.repository.issue')
+          jq -n --argjson issue "$issue" --argjson comments "$comments" --argjson g1 "$g1" --arg seal "$seal" --argjson spec "$spec" \
+            '{issue: {state: $issue.state, labels: [$issue.labels.nodes[].name], assignees: [$issue.assignees.nodes[].login]},
+              prs: [$issue.closedByPullRequestsReferences.nodes[] | {number, state, created: .createdAt, author: .author.login,
+                    author_type: .author.__typename, labels: [.labels.nodes[].name]}],
+              lane: "accepted", may_start: [$g1.ok, ("the issue is not ready (G1): " + ($g1.errors | join("; ")))],
+              seal: $seal, spec: $spec, pr: null, sender_is_bot: false, comments: $comments}' > "$RUNNER_TEMP/state.json"
+          # An open pull request that closes it, the autopilot's or a person's,
+          # is next-step's own `none` or wait: nothing starts.
+          rc=0; got=$(python3 .dx-central/scripts/autopilot.py edit-start < "$RUNNER_TEMP/state.json") || rc=$?
+          [ "$rc" -le 1 ] || { echo "::error::edit-start failed (exit $rc)."; exit 1; }
+          echo "#$NUMBER: $(jq -r .why <<<"$got")"
+          echo "start=$(jq -r .start <<<"$got")" >> "$GITHUB_OUTPUT"
+
   autopilot:
-    needs: [steer, own]
+    needs: [steer, own, edited]
     if: >-
       !cancelled() && (needs.steer.result == 'skipped' || needs.steer.outputs.ok == 'true') &&
       github.event_name == 'issues' && !contains(github.event.issue.labels.*.name, 'lane:release') && (
         (github.event.action == 'opened' && needs.own.outputs.accepted == 'true') ||
         (github.event.action == 'labeled' && github.event.label.name == 'accepted' && github.event.sender.type != 'Bot') ||
         (github.event.action == 'labeled' && github.event.label.name == 'autopilot:continue' && (github.event.sender.type != 'Bot' || github.event.sender.login == vars.DX_BOT_LOGIN)) ||
+        (github.event.action == 'edited' && needs.edited.outputs.start == 'true') ||
         (github.event.action == 'opened' && github.event.sender.login == vars.DX_BOT_LOGIN && toJSON(github.event.issue.labels) == '[]' && !startsWith(github.event.issue.title, 'The bug reproduced from ')))
     # The agent's jobs read the repository with the job's own token (#287).
     permissions:
