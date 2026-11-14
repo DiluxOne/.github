@@ -207,12 +207,17 @@ bodies:
     ### Criticality
 
     Normal
-  # `{issue}`: the issue the scenario opens for its pull request first. The
-  # template's sections, which the conventions check asks of a person's.
+  # `{issue}`: the issue the scenario opens for its pull request first;
+  # `{files}`: one line per file its pull request adds or edits, its path
+  # in backticks after a dash (#760: release-scenarios.py pull_files), so
+  # its description says what its diff does. The template's sections, which the conventions check
+  # asks of a person's.
   pull: |
     ## 📝 What changes
 
-    A change of the scenarios.
+    Adds or edits, under the scenario's directory of the test repository:
+
+    {files}
 
     ## 💡 Why
 

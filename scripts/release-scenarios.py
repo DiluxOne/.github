@@ -22,7 +22,8 @@ merges, unless main says it already: #707), `opens`
 (an `issue` or a `pull` with its `title`, `body` (a name of `bodies:` or the
 text), `labels`, and `fork: true` for one from a fork; a pull's `{issue}` in
 its body is the number of the issue it opens first, its `issue:` or a
-complete feature; an issue's `type`, else the Type its body's form gives,
+complete feature, and its `{files}` the files of its diff, one
+`` - `path` `` line each (#760: `pull_files`); an issue's `type`, else the Type its body's form gives,
 `types:` of the file, and its `comments`, posted before its labels: a
 `/claim` before `accepted`), `steps` (each one of
 `comment`, `label`, `unlabel`, `edit`, `push`, `dispatch`, and `until`,
@@ -61,7 +62,9 @@ after GitHub's back-off within the scenario's limit, then named.
         accepted, accepts before the triage's verdict or waits for no
         seal after it, or comments /claim after the acceptance,
         `autopilot_problems`; a body the schema refuses, a decision's
-        too, or a Bug's without a field bug_report.yml requires).
+        too, or a Bug's without a field bug_report.yml requires; #760: a
+        pull request whose description would not name every file of its
+        diff, its body with no `{files}`).
         Every other pair a shipped caller wires is held to the
         engine statically, by scripts/caller-contract.py check; and
         what is wrong with the groups (`partition`): a scenario in no
@@ -397,7 +400,10 @@ def preconditions(scenarios, bodies, pack, can_dispatch=(), passes=None, types=N
     and its pack declare none, so the bug gets `repro:no-way`), or a
     confirmed bug's issue expected to have a pull request that closes it
     (the reproduction's fix closes the lane's own issue, never the
-    report). Pure."""
+    report), and (#760) a pull request whose description, `pull_text` of
+    its body, would not name every file of its diff (`pull_files`), its
+    body with no `{files}` among them, or the one it lands on main
+    through, of the `pull` body. Pure."""
     import fnmatch
     out = []
     for s in scenarios:
@@ -430,6 +436,18 @@ def preconditions(scenarios, bodies, pack, can_dispatch=(), passes=None, types=N
         if passes and "issue" in opens and ("awaiting-acceptance" in (expect.get("labels") or []) or "incomplete" in (expect.get("absent") or [])):
             if not passes(body_of(opens["issue"].get("body"), bodies)):
                 out.append(f"scenario {sid}: expects its issue to await acceptance, but its body does not pass the issue schema")
+        if "pull" in opens:
+            # #760: a description that names none of its diff is never merged by policy.
+            body = body_of(opens["pull"].get("body"), bodies)
+            if "{files}" not in body:
+                out.append(f"scenario {sid}: its pull request's body has no `{{files}}`, so its description names none of the files it changes")
+            else:
+                missing = unnamed(pull_text(body, "1", pull_files(s)), pull_files(s))
+                if missing:
+                    out.append(f"scenario {sid}: its pull request's description does not name {', '.join(missing)}, which it changes")
+        lands = any("lands" in b for b in s.get("before") or []) or any(isinstance(st, dict) and st.get("push") in LANDS for st in s.get("steps") or [])
+        if lands and "{issue}" in bodies.get("pull", "") and "{files}" not in bodies["pull"]:
+            out.append(f"scenario {sid}: the `pull` body has no `{{files}}`, so the pull request it lands on main through names none of the files it changes")
         if "pull" in opens and (expect.get("pull") or {}).get("closes"):
             if "{issue}" not in body_of(opens["pull"].get("body"), bodies):
                 out.append(f"scenario {sid}: expects its pull request to close an issue, but its body names no `{{issue}}` it opens")
@@ -448,6 +466,36 @@ def preconditions(scenarios, bodies, pack, can_dispatch=(), passes=None, types=N
 
 def body_of(value, bodies):
     return bodies.get(value, value) if isinstance(value, str) else ""
+
+
+def pull_files(s):
+    """The files the pull request scenario `s` opens adds or edits (#760),
+    its diff, in order and once each: scenarios/<id>/pull.md, written when
+    it opens, then scenarios/<id>/<name>.md for each `push: <name>` but
+    `behind`, written on its head. [] for a scenario that opens none.
+    Pure."""
+    if "pull" not in (s.get("opens") or {}):
+        return []
+    sid, out = s.get("id"), [f"scenarios/{s.get('id')}/pull.md"]
+    for step in s.get("steps") or []:
+        if isinstance(step, dict) and "push" in step and str(step["push"]) != "behind":
+            path = f"scenarios/{sid}/{step['push']}.md"
+            if path not in out:
+                out.append(path)
+    return out
+
+
+def pull_text(body, issue, files):
+    """A scenario pull request's description (#760): `body` with `{issue}`
+    the number of the issue it closes and `{files}` one `` - `path` `` line
+    per file of its diff. Pure."""
+    return body.replace("{issue}", str(issue)).replace("{files}", "\n".join(f"- `{f}`" for f in files))
+
+
+def unnamed(text, files):
+    """The files of `files` the description `text` does not name (as
+    `` `path` ``). Pure."""
+    return [f for f in files if f"`{f}`" not in text]
 
 
 def check_named(name, checks):
@@ -953,7 +1001,7 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
         branch = landing(sid, arg)
         fresh_branch(repo, branch, run)
         write_file(repo, branch, path, f"{arg} on main\n" if content is None else content, run)
-        body = body_of("pull", bodies).replace("{issue}", n) if "{issue}" in body_of("pull", bodies) else f"Closes #{n}"
+        body = pull_text(body_of("pull", bodies) if "{issue}" in body_of("pull", bodies) else "{files}\n\nCloses #{issue}", n, [path])
         got = run("pr", "create", "--repo", repo, "--head", branch, "--title", f"docs: the scenario {sid} lands {arg} on main",
                   "--body-file", "-", input=marked(body, sid)).strip()
         made.append(("pr", got.rstrip("/").rsplit("/", 1)[-1]))
@@ -987,7 +1035,8 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
             if "{issue}" in text:
                 closes = open_issue(repo, pull_issue(spec, sid), bodies, sid, run, sid, types)
                 made.append(("issue", closes))
-                text = text.replace("{issue}", closes)
+            # #760: its description names every file of its diff.
+            text = pull_text(text, closes, pull_files(s))
             branch, target = own, repo
             writes = run
             if spec.get("fork"):
@@ -1810,7 +1859,7 @@ def fixture_problems(conf, issue_check, pull_check, release_check=None, bug_fiel
         specs = [b.get("issue") or {} for b in s.get("before") or []] + ([opens["issue"]] if "issue" in opens else [])
         if "pull" in opens:
             specs.append((opens["pull"].get("issue") or {"body": "complete-feature"}))
-            text = body_of(opens["pull"].get("body"), bodies).replace("{issue}", "1")
+            text = pull_text(body_of(opens["pull"].get("body"), bodies), "1", pull_files(s))
             for wrong in pull_check(opens["pull"].get("title", f"test: {sid}"), branch_of(s), marked(text, sid), "1" if "{issue}" in body_of(opens["pull"].get("body"), bodies) else None):
                 out.append(f"scenario {sid}: its pull request: {wrong}")
         specs += [{"body": st["edit"]} for st in s.get("steps") or [] if isinstance(st, dict) and "edit" in st]
@@ -2134,12 +2183,12 @@ def self_test():
     pr_fixed = {"id": "p", "opens": {"pull": {"body": "pull"}}, "expect": {"pull": {"closes": True}}}
     core_alone = {"id": "c", "opens": {"issue": {"labels": ["accepted"]}}, "expect": {"labels": [CORE_LABEL]}}
     check("preconditions: a pull request that closes a fixed number never holds; one that closes the issue it opens does",
-          (preconditions([pr_fixed], {"pull": "Closes #1"}, pack),
-           preconditions([dict(pr_fixed, opens={"pull": {"body": "pull", "issue": {"body": "f", "labels": ["accepted"]}}})], {"pull": "## What changes\n\nX.\n\n## Why\n\nCloses #{issue}"}, pack)),
+          (preconditions([pr_fixed], {"pull": "{files}\n\nCloses #1"}, pack),
+           preconditions([dict(pr_fixed, opens={"pull": {"body": "pull", "issue": {"body": "f", "labels": ["accepted"]}}})], {"pull": "## What changes\n\n{files}\n\n## Why\n\nCloses #{issue}"}, pack)),
           (["scenario p: expects its pull request to close an issue, but its body names no `{issue}` it opens"], []))
     old_pull = {"id": "q", "opens": {"pull": {"title": "feat: x", "body": "pull"}}, "expect": {"pull": {"closes": True}}}
     check("#698 preconditions: a pull request that closes an issue it does not open accepted, a body without the template's sections, a title its issue's Type refuses",
-          preconditions([old_pull], {"pull": "A change.\n\nCloses #{issue}"}, pack, types={"complete-feature": "Task"}),
+          preconditions([old_pull], {"pull": "{files}\n\nCloses #{issue}"}, pack, types={"complete-feature": "Task"}),
           ["scenario q: its pull request closes an issue it does not open accepted (its `issue:` with `labels: [accepted]`), so the accepted-issue gate fails it",
            "scenario q: its pull request's body has no `What changes` section, which the conventions check asks of a person's",
            "scenario q: its pull request's body has no `Why` section, which the conventions check asks of a person's",
@@ -2944,6 +2993,61 @@ def self_test():
           (dec["opens"]["issue"].get("labels"), dec["steps"][:2]), (None, [{"until": {"labels": ["awaiting-acceptance"]}}, {"label": "accepted"}]))
     check("#713 C5: decision-sub-issues expects what a decision gets in the test repository, accepted and sealed, waiting until its seal",
           (dec["steps"][2:], dec["expect"]), ([{"until": {"comments": [SEAL]}}], {"labels": ["accepted"], "comments": [SEAL]}))
+    # #760: a scenario pull request's description names every file of its diff.
+
+    def described(io):
+        """A test repository that records every `gh` call (args, input)."""
+        def fake(*a, input=None):
+            io.append((a, input))
+            if a[:2] == ("issue", "create"):
+                return "https://github.com/o/t/issues/11\n"
+            if a[:2] == ("pr", "create"):
+                return "https://github.com/o/t/pull/12\n"
+            if a[:2] in (("pr", "view"), ("issue", "view")):
+                return "{}"
+            if a[-1:] in ((".sha",), (".login",)):
+                return "me\n"
+            return "[]"
+        return fake
+    pulls760 = [s for s in real["scenarios"] if "pull" in (s.get("opens") or {})]
+    gaps760 = {}
+    for s in pulls760:
+        io = []
+        play(s, "o/t", "v7-next", real["bodies"], described(io), lambda _: None, 1, fork=described(io), types=real.get("types") or {})
+        made = [i for a, i in io if a[:2] == ("pr", "create")]
+        gaps760[s["id"]] = unnamed(made[0] if made else "", pull_files(s)) or (not made and ["no pr create"]) or []
+    check("#760 C1: every real scenario that opens a pull request names each file of pull_files in the description play passes to pr create",
+          (len(pulls760) > 0, {k: v for k, v in gaps760.items() if v}), (True, {}))
+    check("#760 C1: pull_files is pull.md, then each push but behind, once",
+          (pull_files({"id": "p", "opens": {"pull": {}}, "steps": [{"push": "secret"}, {"push": "behind"}, {"push": "secret"}, {"label": "x"}]}),
+           pull_files({"id": "i", "opens": {"issue": {}}, "steps": [{"push": "conflict"}]})), (["scenarios/p/pull.md", "scenarios/p/secret.md"], []))
+    st, fake = pushed()
+    play({"id": "p", "opens": {"issue": {"title": "feat: x", "body": "f"}}, "steps": [{"push": "conflict"}], "expect": {}}, "o/t", "v7-next",
+         dict(real["bodies"], f="f"), fake, lambda s: None, 1)
+    landed = [i for a, i in st["io"] if a[:2] == ("pr", "create")]
+    check("#760 C1: the pull request land opens to main names the path it writes, with the real `pull` body",
+          (len(landed), unnamed(landed[0] if landed else "", ["scenarios/p/conflict.md"])), (1, []))
+    bare = {"id": "bare-760", "opens": {"pull": {"title": "docs: x", "body": "pull", "issue": {"body": "task", "labels": ["accepted"]}}}, "expect": {}}
+    nofiles = "## What changes\n\nA change of the scenarios.\n\n## Why\n\nCloses #{issue}"
+    lands760 = {"id": "lands-760", "opens": {"issue": {"body": "task"}}, "steps": [{"push": "behind"}], "expect": {}}
+    check("#760 C2: preconditions names a scenario whose pull request's body has no {files}, and one that lands through such a `pull` body",
+          (preconditions([bare], {"pull": nofiles}, rpack, types={}), preconditions([lands760], {"pull": nofiles}, rpack, types={})),
+          (["scenario bare-760: its pull request's body has no `{files}`, so its description names none of the files it changes"],
+           ["scenario lands-760: the `pull` body has no `{files}`, so the pull request it lands on main through names none of the files it changes"]))
+    check("#760 C2: the real file's scenarios' descriptions name their changes",
+          [p for p in preconditions(real["scenarios"], real["bodies"], rpack, dispatchable(ROOT, rpack), types=real.get("types") or {}) if "{files}" in p or "does not name" in p], [])
+    check("#760 C2: coverage fails on a scenario whose pull request's description would name no change, naming it",
+          any(p.startswith("scenario bare-760:") and "{files}" in p for p in problems(dict(real, scenarios=real["scenarios"] + [bare], bodies=dict(real["bodies"], pull=nofiles)))), True)
+    diffs760 = {}
+    for s in ({"id": "secret-760", "opens": {"pull": {"title": "feat: x", "body": "pull"}}, "steps": [{"push": "secret"}], "expect": {}},
+              {"id": "plain-760", "opens": {"pull": {"title": "docs: x", "body": "pull"}}, "expect": {}}):
+        io = []
+        play(s, "o/t", "v7-next", real["bodies"], described(io), lambda _: None, 1)
+        diff = [p for _, branch, paths, _ in commits(io) if branch == branch_of(s) for p in paths]
+        made = [i for a, i in io if a[:2] == ("pr", "create")]
+        diffs760[s["id"]] = (diff, unnamed(made[0] if made else "", diff))
+    check("#760 C3: every path the faked createCommitOnBranch writes on the pull request's head, its diff, is named in the description its pr create received",
+          diffs760, {"secret-760": (["scenarios/secret-760/pull.md", "scenarios/secret-760/secret.md"], []), "plain-760": (["scenarios/plain-760/pull.md"], [])})
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
