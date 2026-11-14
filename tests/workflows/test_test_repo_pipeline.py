@@ -120,3 +120,12 @@ def test_the_docs_say_the_test_repository_runs_the_candidates_pipeline_and_why()
         assert "@v7-next" in said, doc
         # Why: the required workflow runs at `v7`, its calls hard-wired.
         assert "required workflow" in said and "at `v7`" in said and "hard-wired" in said, doc
+
+
+def test_c4_the_docs_say_which_jobs_the_pipeline_decides_on_and_why():
+    text = (ROOT / "docs" / "workflows.md").read_text(encoding="utf-8")
+    said = " ".join(p for p in text.split("\n") if "test-pull-request.yml" in p and "`pipeline`" in p)
+    # Which: the three gates, from org.yml.
+    assert all(f"`{gate}`" in said for gate in GATES) and "`pipeline-gates`" in said, said
+    # Why the others do not count: side work, `waiting`'s view cancelled.
+    assert "do not count" in said and "side work" in said and "`waiting`" in said and "cancelled by its own concurrency group" in said, said
