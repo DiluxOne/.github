@@ -301,7 +301,7 @@ jobs:
           # Exit 1 is "not ready" with its reasons (each in code, so text the
           # issue controls cannot mention anyone or render a link); anything else is the
           # checker failing, which must fail this job, not blame the issue.
-          rc=0; result=$(printf '%s' "$BODY" | python3 .dx-central/scripts/issue-schema.py check) || rc=$?
+          rc=0; result=$(printf '%s' "$BODY" | python3 .dx-central/scripts/issue-schema.py g1) || rc=$?
           if [ "$rc" -gt 1 ] || ! jq -e 'has("ok")' <<<"$result" >/dev/null 2>&1; then
             echo "::error::The schema check itself failed (exit $rc); nothing said on the issue."; exit 1
           fi
@@ -465,7 +465,7 @@ jobs:
           if [ "$rc" -gt 1 ]; then echo "::error::The seal could not be read: $verdict"; exit 1; fi
           [ "$verdict" = changed ] || { echo "The PRD is the one sealed ($verdict): the acceptance stands."; exit 0; }
           ready=false; missing=""
-          if result=$(python3 .dx-central/scripts/issue-schema.py check < "$BODY"); then ready=true
+          if result=$(python3 .dx-central/scripts/issue-schema.py g1 < "$BODY"); then ready=true
           else missing=$(jq -r '.errors[] | "- `" + gsub("`"; "\u0027") + "`"' <<<"$result"); fi
           { read -r add; read -r remove; } < <(python3 .dx-central/scripts/issue-schema.py g1-labels unsealed "$ready" "$LABEL")
           IFS=',' read -ra rm <<<"$remove"
