@@ -48,23 +48,34 @@ def test_the_template_is_the_required_workflow_job_for_job_plus_pipeline():
     # The same ids, `uses:`, `if:`, `needs`, permissions, inputs and secrets,
     # so the same check names.
     assert jobs == required["jobs"]
-    # The whole run as one check: it waits for every other job, runs on the
-    # pull request and in the merge queue alike, and fails when one failed
-    # or was cancelled.
-    assert sorted(pipeline["needs"]) == sorted(required["jobs"])
+    # The pull request's verdict as one check (#754): it runs on the pull
+    # request and in the merge queue alike, and decides on the gates alone.
     assert pipeline["if"] == "always()"
     assert pipeline["permissions"] == {}
     step = pipeline["steps"][-1]
-    assert step["env"]["RESULTS"] == "${{ join(needs.*.result, ' ') }}"
-    assert '*" failure "*|*" cancelled "*' in step["run"] and "exit 1" in step["run"]
+    assert step["env"]["NEEDS"] == "${{ toJSON(needs) }}"
 
 
-def test_the_pipeline_job_fails_on_a_failed_or_cancelled_job_only():
+GATES = ("conventions", "review", "auto-merge")
+
+
+def pipeline_step(needs):
+    """The `pipeline` job's step, run with `needs` as GitHub gives it."""
+    import json
     import subprocess
     run = load(TEMPLATE)["jobs"]["pipeline"]["steps"][-1]["run"]
-    for results, code in (("success skipped success", 0), ("skipped skipped", 0), ("success failure", 1), ("cancelled success", 1)):
-        got = subprocess.run(["bash", "-c", run], env={"RESULTS": results, "PATH": "/usr/bin:/bin"}, capture_output=True, text=True)
-        assert got.returncode == code, (results, got.stdout)
+    env = {"NEEDS": json.dumps({job: {"result": result, "outputs": {}} for job, result in needs.items()}), "PATH": "/usr/bin:/bin"}
+    return subprocess.run(["bash", "-c", run], env=env, capture_output=True, text=True)
+
+
+def test_c1_the_pipeline_passes_when_its_gates_pass_whatever_waiting_did():
+    # `waiting`, whose view its own concurrency group cancels, is no gate:
+    # not in `needs`, so its result never reaches the step.
+    assert "waiting" not in load(TEMPLATE)["jobs"]["pipeline"]["needs"]
+    for results in (("success", "success", "success"), ("success", "success", "skipped"), ("skipped", "skipped", "skipped")):
+        got = pipeline_step(dict(zip(GATES, results)))
+        assert got.returncode == 0, (results, got.stdout, got.stderr)
+        assert "::error::" not in got.stdout, got.stdout
 
 
 def test_the_docs_say_the_test_repository_runs_the_candidates_pipeline_and_why():

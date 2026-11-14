@@ -3257,7 +3257,7 @@ def callers_test(check, conf):
           got == ({"test-pull-request.yml": {"engine-test"}}, [], []), got)
     got = ([n for n, _, _ in callers_drift(c2, conf, kind="engine-test")],
            callers_drift({**c2, ".github/workflows/test-pull-request.yml": tpr}, conf, kind="engine-test"),
-           callers_drift({**c2, ".github/workflows/test-pull-request.yml": tpr.replace("    needs: [conventions, assignee", "    needs: [assignee")}, conf, kind="engine-test"))
+           callers_drift({**c2, ".github/workflows/test-pull-request.yml": tpr.replace("    needs: [conventions, review, auto-merge]", "    needs: [review, auto-merge]")}, conf, kind="engine-test"))
     check("#748: in the test repository its caller is the file of its name alone: none is compared with issues.yml, and the template is held job for job",
           got[:2] == ([], []) and [(n, p) for n, p, _ in got[2]] == [("test-pull-request.yml", ".github/workflows/test-pull-request.yml")]
           and got[2][0][2][0].startswith("job `pipeline` needs"), got)
