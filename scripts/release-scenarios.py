@@ -25,7 +25,8 @@ complete feature; an issue's `type`, else the Type its body's form gives,
 `types:` of the file, and its `comments`, posted before its labels: a
 `/claim` before `accepted`), `steps` (each one of
 `comment`, `label`, `unlabel`, `edit`, `push`, `dispatch`, and `until`,
-an `expect` polled every 15 seconds on its issue or pull request, or with
+an `expect` polled every 60 seconds (#726: every scenario at once shares
+the test identity's 5000 requests an hour) on its issue or pull request, or with
 `of: before` on its first `before` issue, never a fixed wait: #694; a
 `comment` or a `label` with `of: before` acts on that issue too, #713; a
 file is written in a commit GitHub signs, `createCommitOnBranch` (#709); a
@@ -466,8 +467,11 @@ def holds(expect, seen):
     return out + [saw(seen)] if out else out
 
 
-# Every wait polls its state (#694): never a fixed sleep.
-POLL = 15
+# Every wait polls its state (#694): never a fixed sleep. Every scenario
+# polls at once with the test identity's token (#726), which GitHub allows
+# RATE_LIMIT requests an hour: `poll_budget` stays under it.
+POLL = 60
+RATE_LIMIT = 5000
 # A scenario's limit, in minutes: its own `minutes`, or LIMIT; none past
 # MAX_LIMIT, which the play step's timeout-minutes in release-lane.yml
 # (20) stays above.
@@ -515,10 +519,19 @@ def scenario_plan(scenarios):
     return [{"id": s.get("id"), "minutes": limit(s), "poll": POLL} for s in scenarios]
 
 
+def poll_budget(scenarios):
+    """The `gh` calls an hour every scenario polling at once makes (#726):
+    each one's calls a poll, as `observe` makes them (2 for an issue: its
+    view and the runs; 3 for a pull request: its view, the runs of its head
+    and the runs), every POLL seconds. Pure."""
+    return sum((3 if "pull" in (s.get("opens") or {}) else 2) * 3600 // POLL for s in scenarios)
+
+
 def timing(scenarios):
     """What is wrong with the plan's waits (#694): a fixed `wait` step
     (every wait is an `until` that polls its state), an `until` that names
-    no expectation, and a limit past MAX_LIMIT minutes. Pure."""
+    no expectation, a limit past MAX_LIMIT minutes, and (#726) polls that,
+    every scenario at once, pass the test identity's RATE_LIMIT. Pure."""
     out = []
     for s in scenarios:
         sid = s.get("id") or "?"
@@ -529,6 +542,8 @@ def timing(scenarios):
                 out.append(f"scenario {sid}: an `until` with no expectation")
         if limit(s) > MAX_LIMIT:
             out.append(f"scenario {sid}: its limit is {limit(s)} minutes, past {MAX_LIMIT}")
+    if poll_budget(scenarios) > RATE_LIMIT:
+        out.append(f"the plan's {len(scenarios)} scenarios poll GitHub {poll_budget(scenarios)} times an hour, every {POLL} seconds, past the test identity's {RATE_LIMIT}")
     return out
 
 
@@ -1879,12 +1894,16 @@ def self_test():
     busy709 = {sid for sid, n, path in issues709 if _ap.core_busy([path], rpack["core"], [{"number": m, "files": [q]} for _, m, q in issues709 if m != n], mine=n)}
     check("#709 C1: from the real pack, with every scenario's fixed change open at once, only core-one-at-a-time can wait on the core", busy709, {"core-one-at-a-time"})
     plan_real = scenario_plan(real["scenarios"])
-    check("C3: the real plan: no fixed wait, every wait an `until`, polling every 15 seconds, each limit 15 minutes or less",
+    check("C3: the real plan: no fixed wait, every wait an `until`, polling every 60 seconds, each limit 15 minutes or less",
           (timing(real["scenarios"]), {p["poll"] for p in plan_real}, max(p["minutes"] for p in plan_real) <= 15, len(plan_real) == len(real["scenarios"]),
-           [st for s in real["scenarios"] for st in s.get("steps") or [] if "wait" in st]), ([], {15}, True, True, []))
+           [st for s in real["scenarios"] for st in s.get("steps") or [] if "wait" in st]), ([], {60}, True, True, []))
+    check("#726: the real plan, every scenario polling at once, stays under the test identity's rate limit; a plan of many scenarios is refused",
+          (poll_budget(real["scenarios"]) < RATE_LIMIT, poll_budget([{"opens": {"issue": {}}}, {"opens": {"pull": {}}}]),
+           timing([{"id": f"s{i}", "opens": {"pull": {}}} for i in range(30)])),
+          (True, 300, ["the plan's 30 scenarios poll GitHub 5400 times an hour, every 60 seconds, past the test identity's 5000"]))
     check("C3: timing names a fixed wait, an empty `until` and a limit past 15 minutes",
           timing([{"id": "w", "steps": [{"wait": 60}, {"until": {"of": "before"}}], "minutes": 16}]),
-          ["scenario w: waits a fixed 60 seconds; wait `until` the state it waits for, polled every 15 seconds", "scenario w: an `until` with no expectation",
+          ["scenario w: waits a fixed 60 seconds; wait `until` the state it waits for, polled every 60 seconds", "scenario w: an `until` with no expectation",
            "scenario w: its limit is 16 minutes, past 15"])
     check("C3: the play step's 20 minutes stay above every scenario's limit", MAX_LIMIT < 20, True)
     check("C3: hopeless: merged when it should not, closed unmerged, a check that ended otherwise, an absent label once settled",
@@ -1949,19 +1968,19 @@ def self_test():
     got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "steps": [{"until": {"labels": ["claimed"]}}, {"comment": "/unclaim"}], "expect": {"labels": ["done"]}},
                "o/t", "v7-next", {}, fake, st["sleeps"].append, 10)
     comment = st["calls"].index(next(c for c in st["calls"] if c[:2] == ("issue", "comment")))
-    check("C3: an `until` polls every 15 seconds until its state holds, then the next step goes on",
-          (got["ok"], st["sleeps"], comment > [i for i, c in enumerate(st["calls"]) if c[:2] == ("issue", "view")][2]), (True, [15, 15], True))
+    check("C3: an `until` polls every 60 seconds until its state holds, then the next step goes on",
+          (got["ok"], st["sleeps"], comment > [i for i, c in enumerate(st["calls"]) if c[:2] == ("issue", "view")][2]), (True, [60, 60], True))
     st, fake = polled([{"labels": []}])
     got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "steps": [{"until": {"labels": ["claimed"]}}, {"comment": "x"}], "expect": {}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 1)
     check("C3: an `until` that never holds fails at the scenario's limit, named, and takes no further step",
-          (got["ok"], got["why"], len(st["sleeps"]), any(c[:2] == ("issue", "comment") for c in st["calls"])), (False, ['until {"labels": ["claimed"]}: no label claimed', f'until {{"labels": ["claimed"]}}: {NONE}'], 4, False))
+          (got["ok"], got["why"], len(st["sleeps"]), any(c[:2] == ("issue", "comment") for c in st["calls"])), (False, ['until {"labels": ["claimed"]}: no label claimed', f'until {{"labels": ["claimed"]}}: {NONE}'], 1, False))
     st, fake = polled([{"labels": [{"name": "incomplete"}]}], runs=lambda n: [{"url": "u", "status": "completed"}])
     got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "expect": {"labels": ["awaiting-acceptance"], "absent": ["incomplete"]}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 15)
     check("C3: a scenario stops as soon as its expectation can no longer hold, not at its limit",
-          (got["ok"], st["sleeps"], got["why"][-1]), (False, [15], "it can no longer hold: label incomplete stays, with nothing left running"))
+          (got["ok"], st["sleeps"], got["why"][-1]), (False, [60], "it can no longer hold: label incomplete stays, with nothing left running"))
     st, fake = polled([{"labels": []}])
     got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "minutes": 2, "expect": {"labels": ["x"]}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 20)
-    check("C3: a scenario's own limit bounds its polls (2 minutes: 8 polls of 15 seconds)", (got["ok"], len(st["sleeps"]), set(st["sleeps"])), (False, 8, {15}))
+    check("C3: a scenario's own limit bounds its polls (2 minutes: 2 polls of 60 seconds)", (got["ok"], len(st["sleeps"]), set(st["sleeps"])), (False, 2, {60}))
     st, fake = polled([{"labels": []}])
     got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "steps": [{"wait": 300}], "expect": {}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 1)
     check("C3: a fixed wait is never slept", (got["ok"], st["sleeps"]), (False, []))
@@ -1979,9 +1998,9 @@ def self_test():
           (got["ok"], got["why"], [c for c in forked if c[:2] == ("repo", "fork")]), (False, [FORK_NEEDS], []))
     lane = load_yaml(os.path.join(ROOT, ".github", "workflows", "release-lane.yml"))["jobs"]
     pstep = next(st for st in lane["play"]["steps"] if st.get("id") == "play")
-    check("C9: the limits the 20-minute run relies on: every scenario at once, each under the play step's 20 minutes, polled every 15 seconds",
+    check("C9: the limits the 20-minute run relies on: every scenario at once, each under the play step's 20 minutes, polled every 60 seconds",
           ("max-parallel" in (lane["play"].get("strategy") or {}), max(limit(s) for s in real["scenarios"]) < pstep["timeout-minutes"] <= 20, POLL,
-           pstep["env"].get(FORK_SECRET)), (False, True, 15, "${{ secrets.DX_TEST_FORK_TOKEN }}"))
+           pstep["env"].get(FORK_SECRET)), (False, True, 60, "${{ secrets.DX_TEST_FORK_TOKEN }}"))
     titles = []
 
     def ordered(*a, input=None):
@@ -2078,7 +2097,7 @@ def self_test():
         return "[]"
     scen = {"scenarios": [{"id": "a", "covers": [], "opens": {"issue": {"title": "t", "body": "b"}}, "steps": [{"label": "x"}], "expect": {"labels": ["awaiting-acceptance"]}},
                           {"id": "b", "covers": [], "opens": {"issue": {"title": "t"}}, "expect": {"labels": ["accepted"]}}], "bodies": {"b": "body"}}
-    res = run_all(scen, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=1, central="O/.github")
+    res = run_all(scen, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=3, central="O/.github")
     check("run: a scenario whose expect holds passes, one whose does not fails, named", [(r["id"], r["ok"], r["why"]) for r in res], [("a", True, []), ("b", False, ["no label accepted", "saw labels awaiting-acceptance; the bot's newest comment: none"])])
     check("run: its issues are closed and locked after it", sum(1 for c in calls if c[:2] in (("issue", "close"), ("issue", "lock"))), 4)
     pcalls_ = []
@@ -2275,7 +2294,7 @@ def self_test():
     st, fake = searchless(fail=99, retry="")
     got = play({"id": "s", "minutes": 2, "opens": {"issue": {"title": "feat: x", "body": "f"}}, "expect": {"pull": {"closes": True}}}, "o/t", "v7-next", {"f": "f"}, fake, st["sleeps"].append, 20)
     check("#698: one rate-limited until the scenario's time runs out fails then, naming it, backing off within its limit",
-          (got["ok"], got["why"][0].startswith("gh issue view 9 rate limited"), sum(st["sleeps"]), st["sleeps"][:3]), (False, True, 120, [15, 30, 60]))
+          (got["ok"], got["why"][0].startswith("gh issue view 9 rate limited"), sum(st["sleeps"]), st["sleeps"][:3]), (False, True, 120, [60, 60]))
     st = {"n": 0}
 
     def broken(*a, input=None):
@@ -2286,7 +2305,7 @@ def self_test():
     check("#698: a `gh` error that is not transient still fails at once", (got["ok"], st["n"]), (False, 0))
     check("#698 backoff: retry-after, then the reset, then POLL doubled up to 120",
           (backoff(GhError("x", stderr="Retry-After: 7"), 0), backoff(GhError("x", stderr="x-ratelimit-reset: 1060"), 0, now=1000), backoff(GhError("x"), 0), backoff(GhError("x"), 5)),
-          (7, 60, 15, 120))
+          (7, 60, 60, 120))
     check("#698 transient: a rate limit, a secondary one, a 5xx; not a 404",
           [transient(GhError(m)) for m in ("gh api: HTTP 429", "You have exceeded a secondary rate limit", "gh api: HTTP 502: Bad Gateway", "gh api: HTTP 404: Not Found")] + [transient(RuntimeError("rate limit"))],
           [True, True, True, False, False])
@@ -2398,7 +2417,7 @@ def self_test():
         return st, fake
     one = {"scenarios": [{"id": "a", "covers": [], "opens": {"issue": {"title": "t"}}, "expect": {"labels": ["awaiting-acceptance"]}}]}
     st, fake = repo_fake()
-    got = run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=1, central="O/.github")
+    got = run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=3, central="O/.github")
     calls = st["calls"]
     writes = commits(st["io"])
     check("C1: the callers move on ci/callers-v7-next, created from main's head",
@@ -2422,7 +2441,7 @@ def self_test():
            < calls.index(("merged", "21")), [c for c in calls if "--auto" in c]), (True, []))
     st, fake = repo_fake()
     st["main"]["issues.yml"] = at_ref(caller, "O/.github", "v7-next")
-    run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=1, central="O/.github")
+    run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=3, central="O/.github")
     check("C1: callers already at the ref open no pull request", any(c[:2] == ("pr", "create") for c in st["calls"]), False)
     moved_to = at_ref(caller, "O/.github", "v7-next")
     check("#623 C1: only_ref passes a change of the engine's ref and its pin's comment, both ways",
@@ -2449,19 +2468,19 @@ def self_test():
         st["files"] = [{"filename": ".github/workflows/issues.yml", "status": "renamed", "previous_filename": ".github/workflows/old.yml"}]
     for how, tamper in (("another line", another_line), ("an added file", another_file), ("a file the lane did not write", another_caller), ("a renamed file", renamed)):
         st, fake = repo_fake(tamper=tamper)
-        got = run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=1, central="O/.github")
+        got = run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=3, central="O/.github")
         check(f"#623 C2: a pull request with {how} under .github/workflows is never merged, plays no scenario, is closed, and is one failing callers row naming it",
               (any(c[:2] in (("pr", "merge"), ("issue", "create")) or c[0] == "merged" for c in st["calls"]), ("pr", "close", "20", "--repo", "o/t", "--delete-branch") in st["calls"],
                [(r["id"], r["ok"]) for r in got], "https://github.com/o/t/pull/20" in got[0]["why"][0], st["main"]["issues.yml"]),
               (False, True, [("callers", False)], True, caller))
     st, fake = repo_fake(tamper=another_line)
-    got = run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=1, central="O/.github")
+    got = run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=3, central="O/.github")
     check("#623 C2: the failing row names the file and the line that differ",
           got[0]["why"], ["the callers did not reach v7-next: the pull request https://github.com/o/t/pull/20 that moves them changes more than the engine's ref, "
                           "so the lane does not merge it: .github/workflows/issues.yml line 4: 'permissions: write-all'"])
     st, fake = repo_fake()
     failing = lambda *a, input=None: json.dumps([{"name": "gate", "bucket": "fail"}]) if a[:2] == ("pr", "checks") else fake(*a, input=input)
-    got = run_all(one, "o/t", "v7-next", run=failing, sleep=lambda s: None, minutes=1, central="O/.github")
+    got = run_all(one, "o/t", "v7-next", run=failing, sleep=lambda s: None, minutes=3, central="O/.github")
     check("#623 C1: a required check that fails is never queued, plays no scenario, and names the pull request and the check",
           (any(c[:2] in (("pr", "merge"), ("issue", "create")) for c in st["calls"]), [(r["id"], r["ok"]) for r in got],
            "https://github.com/o/t/pull/20" in got[0]["why"][0] and "gate" in got[0]["why"][0], ("pr", "close", "20", "--repo", "o/t", "--delete-branch") in st["calls"]),
@@ -2476,24 +2495,24 @@ def self_test():
           (required_checks("o/t", "20", pending8), required_checks("o/t", "20", none_yet)), ([{"name": "gate", "bucket": "pending"}], []))
     for how, merges in (("closes unmerged", False), ("never merges", None)):
         st, fake = repo_fake(merges)
-        got = run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=1, central="O/.github")
+        got = run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=3, central="O/.github")
         check(f"C1: a pull request that {how} plays no scenario and gives one failing callers row",
               (any(c[:2] == ("issue", "create") for c in st["calls"]), [(r["id"], r["ok"]) for r in got], st["main"]["issues.yml"]), (False, [("callers", False)], caller))
     st, fake = repo_fake()
     moved = []
-    got = run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=1, central="O/.github", moved_out=moved)
+    got = run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=3, central="O/.github", moved_out=moved)
     check("#622: with moved_out the scenarios play at the ref and the callers are left there for put_back",
           ([r["id"] for r in got], [m["name"] for m in moved], ("merged", "21") in st["calls"], "issue-triage.yml@v7-next\n" in st["main"]["issues.yml"]), (["a"], ["issues.yml"], False, True))
     fresh = []
     check("#622: put_back, with the runner given it (a token minted after the scenarios), puts them back",
-          (put_back("o/t", "v7-next", moved, lambda *a, input=None: fresh.append(a) or fake(*a, input=input), "O/.github", lambda s: None, 1), st["main"]["issues.yml"], any(c[:2] == ("pr", "create") for c in fresh)), ([], caller, True))
+          (put_back("o/t", "v7-next", moved, lambda *a, input=None: fresh.append(a) or fake(*a, input=input), "O/.github", lambda s: None, 3), st["main"]["issues.yml"], any(c[:2] == ("pr", "create") for c in fresh)), ([], caller, True))
     check("#623 C1: put_back queues its pull request itself, at its head, once its checks passed",
           ([c for c in fresh if c[:2] == ("pr", "merge")], [c for c in fresh if "--auto" in c], any(c[:2] == ("pr", "checks") for c in fresh)),
           ([("pr", "merge", "21", "--repo", "o/t", "--squash", "--match-head-commit", "head-21")], [], True))
     check("#622: put_back with nothing moved does nothing", put_back("o/t", "v7-next", [], lambda *a, input=None: 1 / 0), [])
     st, fake = repo_fake()
     moved = []
-    run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=1, central="O/.github", moved_out=moved)
+    run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=3, central="O/.github", moved_out=moved)
 
     def expired(*a, input=None):
         raise RuntimeError("gh api repos/o/t/contents/.github/workflows: HTTP 401: Bad credentials")
@@ -2522,11 +2541,11 @@ def self_test():
             if a[:2] == ("issue", "create") and not seen:
                 seen.append(read_moved(path, "v7-next"))
             return fake(*a, input=input)
-        run_all(one, "o/t", "v7-next", run=plays, sleep=lambda s: None, minutes=1, central="O/.github", moved_out=[], record=lambda m: write_moved(m, path))
+        run_all(one, "o/t", "v7-next", run=plays, sleep=lambda s: None, minutes=3, central="O/.github", moved_out=[], record=lambda m: write_moved(m, path))
         check("#622: what moved is written before the first scenario plays",
               [([m["name"] for m in got], rows) for got, rows in seen], [(["issues.yml"], [])])
         st, fake = repo_fake(False)
-        run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=1, central="O/.github", moved_out=[], record=lambda m: write_moved(m, path))
+        run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=3, central="O/.github", moved_out=[], record=lambda m: write_moved(m, path))
         check("#622: a pointing that fails cleanly writes nothing moved", read_moved(path, "v7-next"), ([], []))
         check("#622: a missing moved file is one failing callers row",
               [(r["id"], r["ok"]) for r in read_moved(os.path.join(d, "gone.json"), "v7-next")[1]], [("callers", False)])
@@ -2543,7 +2562,7 @@ def self_test():
     st, fake = repo_fake()
     recorded = []
     run_all({"scenarios": [{"id": "p", "opens": {"pull": {"title": "t", "body": "x"}}, "steps": [{"push": "more"}], "expect": {}}]}, "o/t", "v7-next",
-            run=lambda *a, input=None: recorded.append((a, input)) or fake(*a, input=input), sleep=lambda s: None, minutes=1, central="O/.github")
+            run=lambda *a, input=None: recorded.append((a, input)) or fake(*a, input=input), sleep=lambda s: None, minutes=3, central="O/.github")
     check("#709 C3: every write run_all, play and point_callers make is a createCommitOnBranch on a named branch, never main, and none a contents PUT",
           ([c[1] for c in commits(recorded)], wrong_writes(recorded), [a for a, _ in recorded if a[:3] == ("api", "-X", "PUT")],
            len(commits(recorded)) == sum(1 for a, _ in recorded if a[:2] == ("api", "graphql"))),
