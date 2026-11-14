@@ -64,7 +64,11 @@ after GitHub's back-off within the scenario's limit, then named.
         `autopilot_problems`; a body the schema refuses, a decision's
         too, or a Bug's without a field bug_report.yml requires; #760: a
         pull request whose description would not name every file of its
-        diff, its body with no `{files}`).
+        diff, its body with no `{files}`; #764: one that expects a
+        `risk:<level>` label no path it changes gets as its floor for kind
+        engine-test, the organisation's patterns and the kind's
+        surface.yml `high-risk` matched as scripts/policy.py matches them,
+        `risk_problems`).
         Every other pair a shipped caller wires is held to the
         engine statically, by scripts/caller-contract.py check; and
         what is wrong with the groups (`partition`): a scenario in no
@@ -1561,6 +1565,46 @@ def autopilot_problems(scenarios):
     return out
 
 
+RISKS = ("low", "medium", "high")
+
+
+def path_floor(path, high, low):
+    """The floor scripts/policy.py gives a pull request that changes `path`
+    alone: high when it matches `high`, low when it matches `low`, medium
+    otherwise, with policy.py's own `matches` (#764). Pure."""
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    import policy
+    return "high" if policy.matches(path, high) else "low" if policy.matches(path, low) else "medium"
+
+
+def risk_patterns(root=ROOT):
+    """The high-risk and low-risk-eligible patterns a pull request of the
+    test repository is weighed with (#764): the organisation's, and the
+    kind engine-test's `high-risk` (kinds/engine-test/surface.yml)."""
+    org = load_yaml(os.path.join(root, "policy", "review-policy.default.yml"))
+    kind = load_yaml(os.path.join(root, "kinds", "engine-test", "surface.yml"))
+    return (list(org.get("high-risk") or []) + list(kind.get("high-risk") or []), list(org.get("low-risk-eligible") or []))
+
+
+def risk_problems(scenarios, high, low):
+    """Every scenario that expects a `risk:<level>` label that no path it
+    changes (`pull_files`) gets as its floor (`path_floor`, #764): the
+    review's floor comes from the paths, so the label could never come from
+    them. Pure."""
+    out = []
+    for s in scenarios:
+        wants = [str(l).split(":", 1)[1] for l in ((s.get("expect") or {}).get("labels") or []) if str(l).startswith("risk:") and str(l).split(":", 1)[1] in RISKS]
+        files = pull_files(s)
+        floors = {f: path_floor(f, high, low) for f in files}
+        for level in wants:
+            if level not in floors.values():
+                shown = ", ".join(f"{f} ({v})" for f, v in floors.items()) or "none"
+                out.append(f"scenario {s.get('id') or '?'}: expects risk:{level}, but no path it changes has that floor for kind engine-test (its paths: {shown}); "
+                           f"add the path to kinds/engine-test/surface.yml `high-risk`, or change the expectation")
+    return out
+
+
 def core_problems(scenarios, pack):
     """Every scenario that writes under the test repository's core (`pack`'s
     `core`) but expects no wait on it (#709): its fixed change would make its
@@ -1939,7 +1983,8 @@ def problems(conf, root=ROOT):
     scenario, every scenario its setup cannot make hold, what is wrong
     with the groups (`partition`), with the lane's `play` job
     (`lane_problems`, #707), and with the test repository's pipeline
-    (`pipeline_problems`, #748)."""
+    (`pipeline_problems`, #748), and every risk label the paths cannot
+    give (`risk_problems`, #764)."""
     pack = test_pack(root)
     scenarios = conf.get("scenarios") or []
     return (coverage(scenarios, played(root, pack) | transitions(root), conf.get("statically") or {})
@@ -1950,6 +1995,7 @@ def problems(conf, root=ROOT):
             + partition(scenarios, groups(scenarios), pack)
             + timing(scenarios)
             + autopilot_problems(scenarios)
+            + risk_problems(scenarios, *risk_patterns(root))
             + fixture_problems(conf, engine_post(root).issue, engine_post(root).pull, engine_post(root).release,
                                form_required(load_yaml(os.path.join(root, BUG_FORM)))))
 
@@ -2222,8 +2268,32 @@ def self_test():
           preconditions([{"id": "b", "opens": {"issue": {"body": "bug"}}, "expect": {"labels": ["bug:confirmed"], "pull": {"closes": True}}}], {}, rpack, repro=True),
           ["scenario b: expects bug:confirmed and a pull request that closes its issue, but the reproduction's fix closes the issue the bugfix-reproduced lane opens, never the report"])
     check("#707: the bug that reproduces lands the greeting its fixed test reads, under its own directory, and its body names it",
-          ([b for b in bugs[0].get("before") or [] if "lands" in b], "scenarios/bug-reproduced/greeting.md" in real["bodies"][bugs[0]["opens"]["issue"]["body"]],
-           [b for b in bugs[1].get("before") or [] if "lands" in b]), ([{"lands": "greeting", "says": "helo"}], True, []))
+          ([b for b in bugs[0].get("before") or [] if "lands" in b], "scenarios/bug-reproduced/greeting.md" in real["bodies"][bugs[0]["opens"]["issue"]["body"]]),
+          ([{"lands": "greeting", "says": "helo"}], True))
+    # #764 C3: the bug that does not reproduce lands its greeting right, and
+    # its report's steps read it; the fixed reproduction passes on it.
+    import importlib.util
+    import tempfile
+    ways_spec = importlib.util.spec_from_file_location("repro_ways", os.path.join(HERE, "repro-ways.py"))
+    ways = importlib.util.module_from_spec(ways_spec)
+    ways_spec.loader.exec_module(ways)
+
+    def repro_on(sid, says):
+        """kinds/engine-test/repro-fixed.py, as issue 7 of scenario `sid`
+        gets it, run where scenarios/<sid>/greeting.md says `says`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "scenarios", sid))
+            with open(os.path.join(tmp, "scenarios", sid, "greeting.md"), "w", encoding="utf-8") as fh:
+                fh.write(f"{says}\n")
+            ways.write_fixed(os.path.join(ROOT, "kinds", "engine-test", "repro-fixed.py"), os.path.join(tmp, "tests", "repro", "test_issue_7.py"), 7, scenario_mark(sid))
+            return subprocess.run([sys.executable, "-I", os.path.join("tests", "repro", "test_issue_7.py")], cwd=tmp, capture_output=True, text=True).returncode
+    lands = [b for b in bugs[1].get("before") or [] if "lands" in b]
+    steps = real["bodies"][bugs[1]["opens"]["issue"]["body"]].split("### Steps to reproduce", 1)[1].split("###", 1)[0]
+    check("#764 C3: the real bug-not-reproduced lands its greeting saying something other than helo, its steps read it on main, and the fixed reproduction passes on it",
+          ([b["lands"] for b in lands], [b["says"] for b in lands if "helo" not in str(b["says"]).split()], "`scenarios/bug-not-reproduced/greeting.md` on `main`" in steps,
+           [repro_on("bug-not-reproduced", b["says"]) for b in lands]),
+          (["greeting"], [lands[0]["says"]] if lands else ["?"], True, [0]))
+    check("#764 C3: and the same reproduction fails where it says helo, as bug-reproduced lands it", repro_on("bug-reproduced", "helo"), 1)
     check("#707 saw: a failing row names its labels and the bot's newest comment's first line that is no marker, table-safe",
           (saw({"labels": ["b", "a"], "said": ["old", "<!-- dx-board -->\n\nThe seal | was `refused`.\nmore"]}), saw({})),
           ("saw labels a, b; the bot's newest comment: The seal ' was 'refused'.", NONE))
@@ -2876,13 +2946,14 @@ def self_test():
         check("C3: merge's command writes the table release-lane.py reads, and exits 1 on a failing row",
               (rc, [r["id"] for r in read_results(out) if not r["ok"]], lane.decide(plan, read_results(out))["scenario"]), (1, ["b", "play"], "b"))
     # #713: the autopilot's result read once it is there.
-    def sealing():
+    def sealing(pull=True):
         """A test repository whose triage answers issue 9 on its second view
         (`awaiting-acceptance`), whose acceptance after that seals it a view
-        later and has the autopilot label it two views after the seal, and
-        an acceptance before the triage never seals (the autopilot calls it
-        unsealed); a `/claim` before the acceptance claims it, after it is
-        refused."""
+        later and, with `pull`, has the autopilot open its pull request 12
+        that closes it two views after the seal, never labelling the issue
+        `autopilot` (#764), and an acceptance before the triage never seals
+        (the autopilot calls it unsealed); a `/claim` before the acceptance
+        claims it, after it is refused."""
         st = {"labels": [], "comments": [], "views": 0, "calls": [], "at": None}
 
         def fake(*a, input=None):
@@ -2916,16 +2987,24 @@ def self_test():
                         st["comments"].append("The autopilot did not run: the issue's PRD is not the one sealed when it was accepted (unsealed).")
                 if isinstance(st["at"], int) and st["views"] == st["at"] + 1:
                     st["comments"].append(f"{SEAL}\nsealed")
-                if isinstance(st["at"], int) and st["views"] == st["at"] + 3:
-                    st["labels"].append("autopilot")
-                return json.dumps({"labels": [{"name": l} for l in st["labels"]], "comments": [{"body": c, "author": {"login": "dilux-bot"}} for c in st["comments"]]})
+                if pull and isinstance(st["at"], int) and st["views"] == st["at"] + 3:
+                    st["pull"] = 12
+                refs = [{"number": st["pull"], "url": f"https://github.com/o/t/pull/{st['pull']}"}] if st.get("pull") else []
+                return json.dumps({"labels": [{"name": l} for l in st["labels"]], "comments": [{"body": c, "author": {"login": "dilux-bot"}} for c in st["comments"]],
+                                   "closedByPullRequestsReferences": refs})
+            if a[:2] == ("pr", "view") and st.get("pull"):
+                return json.dumps({"number": st["pull"], "body": "Closes #9", "headRefName": "feat/9-a-greeting", "title": "feat: a greeting"})
             return "[]"
         return st, fake
     by713 = {s["id"]: s for s in real["scenarios"]}
     st, fake = sealing()
     got = play(by713["accepted-spec"], "o/t", "v7-next", real["bodies"], fake, lambda s: None, 15, types=real["types"])
-    check("#713 C2: the real accepted-spec, against a repository that seals only after the triage, passes once the autopilot labels it",
-          (got["ok"], got["why"], st["at"] >= 2, "autopilot" in st["labels"]), (True, [], True, True))
+    check("#764 C1: the real accepted-spec, against a repository that seals only after the triage, passes once the autopilot opens its pull request, with no `autopilot` label",
+          (got["ok"], got["why"], st["at"] >= 2, st.get("pull"), "autopilot" in st["labels"]), (True, [], True, 12, False))
+    st, fake = sealing(pull=False)
+    got = play(dict(by713["accepted-spec"], minutes=1), "o/t", "v7-next", real["bodies"], fake, lambda s: None, 1, types=real["types"])
+    check("#764 C1: the same repository whose autopilot opens no pull request fails it, named",
+          (got["ok"], any("does not say Closes #9" in w for w in got["why"]), any(SEAL in c for c in st["comments"])), (False, True, True))
     st, fake = sealing()
     early = dict(by713["accepted-spec"], steps=[{"label": "accepted"}], minutes=1)
     got = play(early, "o/t", "v7-next", real["bodies"], fake, lambda s: None, 1, types=real["types"])
@@ -2945,6 +3024,30 @@ def self_test():
     check("#713 C2: the real file: every scenario that reads the autopilot's result waits for it, each within 15 minutes",
           (autopilot_problems(real["scenarios"]), sorted(reads), {limit(by713[i]) for i in reads}),
           ([], sorted(["accepted-spec", "spec-to-draft", "core-one-at-a-time", "decision-sub-issues", "prd-edited-after-acceptance", "question-answered", "stop-hint-continue", "draft-in-conflict", "ready-behind-main"]), {15}))
+    # #764 C2: high-risk-waits's floor is high from the path it changes.
+    hrw = by713["high-risk-waits"]
+    rhigh, rlow = risk_patterns()
+    check("#764 C2: the real high-risk-waits expects risk:high and no merge, and its path gets the high floor",
+          ("risk:high" in hrw["expect"].get("labels", []), hrw["expect"].get("merged"), pull_files(hrw), [path_floor(f, rhigh, rlow) for f in pull_files(hrw)], risk_problems([hrw], rhigh, rlow)),
+          (True, False, ["scenarios/high-risk-waits/pull.md"], ["high"], []))
+    # #764 C4: a risk label the paths it changes cannot give is named.
+    def risky(sid, level, pushes=()):
+        return {"id": sid, "opens": {"pull": {"title": "docs: x", "body": "pull"}}, "steps": [{"push": p} for p in pushes], "expect": {"labels": [f"risk:{level}"]}}
+    fake_high, fake_low = ["kit/**", "scenarios/hot/**"], ["**/*.md"]
+    check("#764 C4: risk_problems names a scenario that expects risk:high with no high path, and passes one with a path in the kind's high-risk",
+          ([p.split(":")[0] for p in risk_problems([risky("cold", "high"), risky("hot", "high")], fake_high, fake_low)],
+           "scenarios/cold/pull.md (low)" in "".join(risk_problems([risky("cold", "high")], fake_high, fake_low))),
+          (["scenario cold"], True))
+    check("#764 C4: and the same for risk:low and risk:medium",
+          ([p.split(":")[0] for p in risk_problems([risky("hot", "low"), risky("cold", "low"), risky("cold", "medium"), risky("med", "medium")], fake_high, ["scenarios/cold/**"])],
+           risk_problems([risky("mixed", "medium", ["x"])], fake_high, ["scenarios/mixed/pull.md"])),
+          (["scenario hot", "scenario cold"], []))
+    check("#764 C4: a scenario that expects no risk label is never named, and one that expects one but changes no path always is",
+          [p.split(":")[0] for p in risk_problems([{"id": "a", "expect": {"labels": ["accepted"]}}, {"id": "b", "opens": {"issue": {}}, "expect": {"labels": ["risk:high"]}}], fake_high, fake_low)],
+          ["scenario b"])
+    check("#764 C4: the real file: problems() names nothing, and the kind engine-test's high-risk is what policy.py reads",
+          (problems(real), risk_patterns()[0][-1:], load_yaml(os.path.join(ROOT, "kinds", "engine-test", "surface.yml")).get("high-risk")),
+          ([], ["scenarios/high-risk-waits/**"], ["scenarios/high-risk-waits/**"]))
     check("#713 C2: core-one-at-a-time accepts its `before` issue after its triage, and waits for its seal",
           (by713["core-one-at-a-time"]["before"][0]["issue"].get("labels"), [p for p in autopilot_problems([by713["core-one-at-a-time"]])],
            preconditions([by713["core-one-at-a-time"]], real["bodies"], rpack)), (None, [], []))
