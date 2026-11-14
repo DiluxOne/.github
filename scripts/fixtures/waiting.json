@@ -210,14 +210,15 @@
   {
    "number": 5,
    "title": "the autopilot's check failed",
-   "url": "https://github.com/DiluxOne/diluxone-users-wordpress/pull/5",
+   "url": "https://github.com/DiluxOne/.github/pull/5",
    "createdAt": "2026-10-26T08:00:00Z",
    "isDraft": false,
    "author": {
     "login": "dilux-bot[bot]"
    },
    "repository": {
-    "name": "diluxone-users-wordpress",
+    "name": ".github",
+    "nameWithOwner": "DiluxOne/.github",
     "isPrivate": false
    },
    "labels": {
@@ -294,6 +295,7 @@
    },
    "repository": {
     "name": "diluxone-users-wordpress",
+    "nameWithOwner": "DiluxOne/diluxone-users-wordpress",
     "isPrivate": false
    },
    "labels": {
@@ -367,6 +369,7 @@
    },
    "repository": {
     "name": "diluxone-users-wordpress",
+    "nameWithOwner": "DiluxOne/diluxone-users-wordpress",
     "isPrivate": false
    },
    "labels": {
@@ -429,14 +432,15 @@
   {
    "number": 17,
    "title": "the autopilot's scripts failed at the rounds cap",
-   "url": "https://github.com/DiluxOne/diluxone-users-wordpress/pull/17",
+   "url": "https://github.com/DiluxOne/.github/pull/17",
    "createdAt": "2026-10-26T08:00:00Z",
    "isDraft": false,
    "author": {
     "login": "dilux-bot[bot]"
    },
    "repository": {
-    "name": "diluxone-users-wordpress",
+    "name": ".github",
+    "nameWithOwner": "DiluxOne/.github",
     "isPrivate": false
    },
    "labels": {
@@ -510,6 +514,7 @@
    },
    "repository": {
     "name": "diluxone-users-wordpress",
+    "nameWithOwner": "DiluxOne/diluxone-users-wordpress",
     "isPrivate": false
    },
    "labels": {

@@ -16,8 +16,10 @@ What blocks a pull request, read from GitHub, the first that applies:
                        (a cancelled check run is not a failed one, #713:
                        its concurrency group superseded it, or a person
                        stopped it; failed_checks)
-                       on the autopilot's own (#741): a check the pipeline
-                       fixes failed (fix_check) and rounds are left
+                       on the autopilot's own (#741), ready (a draft's is
+                       its work's): a check the pipeline fixes failed
+                       (fix_check: actionlint and the scripts only in the
+                       central repository) and rounds are left
                        (its autopilot:round-N below autopilot-rounds):
                        the autopilot's fix round              the autopilot
                        its rounds are spent                   the maintainer
@@ -160,17 +162,20 @@ def checks_state(rollup):
 
 
 # The checks a fix round starts on (#741, autopilot.py FIX_JOBS), as the
-# check runs are named: the conventions' and the review's jobs, and in
-# DiluxOne/.github actionlint and the scripts. A repository's own workflow
-# is not among them: nothing re-runs it.
+# check runs are named: the conventions' and the review's jobs, and in the
+# central repository (its own pull-request.yml) actionlint and the scripts
+# too. A repository's own workflow is not among them: nothing re-runs it.
 FIX_CHECKS = ("conventions /", "review /", "actionlint", "Scripts (self-tests)")
+CENTRAL_ONLY = ("actionlint", "Scripts (self-tests)")
 FIX_ROUND, ROUNDS_SPENT, NOT_RERUN = "the autopilot's fix round", "its checks fail after its rounds", "a check no fix round runs again"
 
 
-def fix_check(name):
-    """Whether a failed check of that name starts a fix round. Pure."""
+def fix_check(name, repo=None):
+    """Whether a failed check of that name starts a fix round in `repo`
+    (OWNER/NAME; None, the central one's gates too). Pure."""
     name = str(name or "")
-    return any(name.startswith(p) if p.endswith(" /") else name == p for p in FIX_CHECKS)
+    gates = FIX_CHECKS if repo in (None, org.CENTRAL) else tuple(p for p in FIX_CHECKS if p not in CENTRAL_ONLY)
+    return any(name.startswith(p) if p.endswith(" /") else name == p for p in gates)
 
 
 def rounds_cap():
@@ -204,8 +209,12 @@ def blocker(pr, rounds=None):
         if not autopilot:
             return "a failed check", AUTHOR
         # #741: the autopilot's own waits on its fix round only when one
-        # starts: a check the pipeline fixes failed, and rounds are left.
-        if not any(fix_check(n) for n in failed_checks(rollup)):
+        # starts: on a ready one, a check the pipeline fixes failed, and
+        # rounds are left. A draft's checks are its own run's work.
+        if pr.get("isDraft"):
+            return "the autopilot's work", AUTOPILOT
+        repo = (pr.get("repository") or {}).get("nameWithOwner") or None
+        if not any(fix_check(n, repo) for n in failed_checks(rollup)):
             return NOT_RERUN, MAINTAINER
         if rounds_spent(labels) >= (rounds_cap() if rounds is None else rounds):
             return ROUNDS_SPENT, MAINTAINER
@@ -491,6 +500,13 @@ def self_test():
     own = next(p for p in fx["prs"] if p["title"] == "the autopilot's, only the repository's own check failed")
     check("C4 (#741) only a repository's own check failed: the maintainer, with the action to take it over", (waits_of(own, boss)["who"], "take it over" in waits_of(own, boss)["what"]), (["boss"], True))
     check("C4 (#741) someone else's failed check still waits on its author, to fix", waits_of(next(p for p in fx["prs"] if p["title"] == "a check failed"), boss)["what"], "fix the failed check")
+    check("C4 (#741) an autopilot draft whose check failed waits on its own work, never on a fix round that a draft does not get",
+          blocker(dict(scripts5, isDraft=True)), ("the autopilot's work", AUTOPILOT))
+    check("C4 (#741) actionlint and the scripts start a round only in the central repository, whose pipeline runs them",
+          ([fix_check("actionlint", r) for r in (org.CENTRAL, "DiluxOne/other", None)], fix_check("review / Claude review", "DiluxOne/other"),
+           blocker(dict(scripts5, repository=dict(scripts5["repository"], nameWithOwner="DiluxOne/other")))[0],
+           blocker(dict(scripts5, repository=dict(scripts5["repository"], nameWithOwner=org.CENTRAL)))[0]),
+          ([True, False, True], True, NOT_RERUN, FIX_ROUND))
     ap = _module("autopilot", "autopilot.py")
     check("C4 (#741) the checks the board waits on a round for are the ones a round starts on (autopilot.py FIX_JOBS)",
           (FIX_CHECKS == ap.FIX_JOBS, [fix_check(n) for n in ("review / Claude review", "Scripts (self-tests)", "Scripts on macOS (the contributor's tools)", "gates / G2")]),
