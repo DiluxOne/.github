@@ -6,9 +6,11 @@
                        out of a high-risk directory counts), and print how
                        they were read, FILES_STATE for scripts/policy.py:
                          listed    the list was read
+                         empty     the diff is really empty: nothing to wait for
   pr-files.py --test   self-test, without the network
 
-Environment: GITHUB_REPOSITORY, PR, DEFAULT_POLICY (the organisation's
+Environment: GITHUB_REPOSITORY, PR, BASE and HEAD (the pull request's
+commits), DEFAULT_POLICY (the organisation's
 review policy, whose `files-wait` is the bound) and GH_TOKEN for gh.
 
 The files API, not `gh pr diff --name-only`: GitHub refuses to render a diff
@@ -23,6 +25,10 @@ Just after a pull request is opened, its files list can be empty for a while
 `files-wait.attempts` reads `files-wait.interval-seconds` apart
 (policy/review-policy.default.yml, the organisation's only: a repository
 cannot shorten it), until it is not empty and its count is `changedFiles`.
+Before that, the compare API (computed from git when it is asked, so it does
+not lag) says whether the diff is really empty: then nothing is waited for.
+A compare that fails counts as not empty, so it can only lead to waiting,
+never to a lower floor.
 """
 import json
 import os
@@ -64,6 +70,17 @@ class GitHub:
         pages = json.loads(gh("api", f"repos/{self.repo}/pulls/{self.pr}/files", "--paginate", "--slurp") or "[]")
         return [f for page in pages for f in page]
 
+    def compare_empty(self, base, head):
+        """True only when the compare API answers that base...head changes no file."""
+        if not base or not head:
+            return False
+        try:
+            count = gh("api", f"repos/{self.repo}/compare/{base}...{head}", "--jq", '.files | if type == "array" then length else -1 end').strip()
+        except RuntimeError as err:
+            print(f"the compare API did not answer ({err}); the diff counts as not empty", file=sys.stderr)
+            return False
+        return count == "0"
+
     def total(self):
         return int(gh("pr", "view", str(self.pr), "--repo", self.repo, "--json", "changedFiles", "--jq", ".changedFiles").strip() or 0)
 
@@ -77,10 +94,13 @@ def names(files):
     return out
 
 
-def read(api, attempts, interval, sleep=time.sleep):
-    """(state, files, reads): the list once it is not empty and its count is
+def read(api, attempts, interval, sleep=time.sleep, base="", head=""):
+    """(state, files, reads): ("empty", [], 0) when the diff is really
+    empty, else the list once it is not empty and its count is
     the pull request's total, read up to `attempts` times. Raises
     RuntimeError when a list that is not empty still differs from the total."""
+    if api.compare_empty(base, head):
+        return "empty", [], 0
     files, total = [], 0
     for n in range(1, attempts + 1):
         files, total = api.files(), api.total()
@@ -103,7 +123,8 @@ def main(argv):
         print(f"::error::files-wait in {os.environ['DEFAULT_POLICY']} is not {{attempts: N >= 1, interval-seconds: N >= 0}}.")
         return 1
     try:
-        state, files, _ = read(GitHub(os.environ["GITHUB_REPOSITORY"], os.environ["PR"]), *wait)
+        state, files, _ = read(GitHub(os.environ["GITHUB_REPOSITORY"], os.environ["PR"]), *wait,
+                                base=os.environ.get("BASE", ""), head=os.environ.get("HEAD", ""))
     except RuntimeError as err:
         print(f"::error::{err}")
         return 1
@@ -116,10 +137,14 @@ def main(argv):
 class Fake:
     """A pull request whose files API answers each read from `reads` (the
     last one again once they run out), its total the list's length unless
-    `totals` says."""
+    `totals` says; its compare says the diff is empty when `empty` is True,
+    and fails when it is None."""
 
-    def __init__(self, reads, totals=None):
-        self.reads, self.totals, self.calls = reads, totals, 0
+    def __init__(self, reads, totals=None, empty=False):
+        self.reads, self.totals, self.empty, self.calls = reads, totals, empty, 0
+
+    def compare_empty(self, base, head):
+        return self.empty is True
 
     def files(self):
         self.calls += 1
@@ -132,6 +157,7 @@ class Fake:
 
 
 def self_test():
+    global GitHub
     failed = 0
 
     def check(name, ok, detail=""):
@@ -147,6 +173,13 @@ def self_test():
     check("C1: it waited the interval between the reads", slept == [10, 10], slept)
     api = Fake([added], totals=[0, 1])
     check("C1: a list whose total still lags is read again", read(api, 12, 0, sleep=lambda s: None) == ("listed", ["docs/new.md"], 2), api.calls)
+    api = Fake([[]], empty=True)
+    slept = []
+    got = read(api, 12, 10, sleep=slept.append, base="b", head="h")
+    check("C2: an empty compare does not wait: FILES_STATE=empty", got == ("empty", [], 0) and api.calls == 0 and not slept, (got, api.calls, slept))
+    api = Fake([[], added], empty=None)
+    check("C2: a compare that fails counts as not empty: the list is waited for", read(api, 12, 0, sleep=lambda s: None)[:2] == ("listed", ["docs/new.md"]), api.calls)
+    check("C2: no base or head is no empty diff", GitHub("o/r", "1").compare_empty("", "h") is False)
     renamed = [{"filename": "docs/a.md", "previous_filename": ".github/workflows/a.yml"}]
     check("a rename lists both its paths", read(Fake([renamed]), 1, 0)[1] == ["docs/a.md", ".github/workflows/a.yml"])
     try:
@@ -163,7 +196,6 @@ def self_test():
     import contextlib
     import io
     import tempfile
-    global GitHub
     real = GitHub
     with tempfile.TemporaryDirectory() as tmp:
         policy, out = os.path.join(tmp, "policy.yml"), os.path.join(tmp, "files")

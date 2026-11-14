@@ -404,6 +404,11 @@ def main():
     high_hits = [f for f in files if matches(f, high)]
     if forced:
         floor, reasons = forced, f"level {forced} requested by the caller"
+    elif os.environ.get("FILES_STATE", "") == "empty":
+        # Fails closed as before: a pull request that changes nothing has
+        # nothing to rate low (#768).
+        floor, reasons = "high", "the pull request's diff is empty"
+        print(f"::warning::Policy floor high: {reasons}.")
     elif not files:
         floor, reasons = "high", "no changed files could be listed"
     elif high_hits:
@@ -512,6 +517,7 @@ def self_test():
         ("the Makefile is high", default, "", ["Makefile", "docs/a.md"], {}, {"floor": "high"}, 0),
         ("a rename out of a high-risk path is high", default, "", ["docs/old-workflow.yml", ".github/workflows/old.yml"], {}, {"floor": "high"}, 0),
         ("no listed files is high", default, "", [], {}, {"floor": "high"}, 0),
+        ("C2 (#768): a diff that is really empty is high, and says so", default, "", [], {"FILES_STATE": "empty"}, {"floor": "high", "reasons": "the pull request's diff is empty"}, 0),
         ("C1 (#768): the file pr-files.py listed once it was there gives the floor", default, "", ["docs/new.md"], {"FILES_STATE": "listed"}, {"floor": "low"}, 0),
         ("the repository adds a high-risk path", default, "high-risk:\n  - \"includes/providers/**\"\n", ["includes/providers/a.php"], {}, {"floor": "high"}, 0),
         ("#764 C2: the kind engine-test's high-risk path is high", default, "kind: engine-test\n", ["scenarios/high-risk-waits/pull.md"], {}, {"floor": "high"}, 0),

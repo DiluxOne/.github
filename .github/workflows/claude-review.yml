@@ -183,6 +183,7 @@ jobs:
           DX_TEST_LOGIN: ${{ vars.DX_TEST_LOGIN }}
           DEFAULT_POLICY: .dx-central/policy/review-policy.default.yml
           BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           # The repository's policy is read from the base branch, never from
@@ -193,7 +194,8 @@ jobs:
           # The files, read by scripts/pr-files.py: the files API, its count
           # checked against the pull request's own total (the step fails
           # closed on a partial list), read again while GitHub has not
-          # listed them yet, up to the policy's `files-wait` (#768).
+          # listed them yet, up to the policy's `files-wait` (#768); not
+          # when the compare API says the diff is really empty.
           FILES_STATE="$(python3 .dx-central/scripts/pr-files.py "$RUNNER_TEMP/changed-files")"
           CHANGED_FILES="$(cat "$RUNNER_TEMP/changed-files")"
           export FILES_STATE CHANGED_FILES
