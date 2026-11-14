@@ -198,15 +198,30 @@ def org_conf():
     return load_yaml(os.path.join(CENTRAL, "org.yml")) or {}
 
 
-def trusted_authors_of(defaults, repo, conf=None):
+def org_module():
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import org
+    return org
+
+
+def trusted_authors_of(defaults, repo, conf=None, kind=""):
     """Who may have a pull request merged without a person: the
     repository's own list when it has one, else the default policy's with
-    the organisation's maintainers (org.yml `maintainers`, #568) added."""
+    the organisation's maintainers (org.yml `maintainers`, #568) added.
+    The test identity is trusted in a repository of kind `engine-test` and
+    nowhere else, even when a repository's own list names it (#727)."""
+    conf = conf if conf is not None else org_conf()
     if "trusted-authors" in repo:
-        return list(repo.get("trusted-authors") or [])
-    mine = list(defaults.get("trusted-authors") or [])
-    more = (conf if conf is not None else org_conf()).get("maintainers") or []
-    return mine + [m for m in more if m not in mine]
+        mine = list(repo.get("trusted-authors") or [])
+    else:
+        mine = list(defaults.get("trusted-authors") or [])
+        mine += [m for m in conf.get("maintainers") or [] if m not in mine]
+    org = org_module()
+    identity = str((org.test_pack(conf).get("identity") or {}).get("login") or "")
+    if not identity:
+        return mine
+    mine = [a for a in mine if str(a).lower() != identity.lower()]
+    return mine + [identity] if kind == org.TEST_KIND else mine
 
 
 def own_bot(env):
@@ -221,7 +236,7 @@ def own_bot(env):
             and env.get("HEAD_IN_REPO", "") == "true")
 
 
-def issue_gate(defaults, repo):
+def issue_gate(defaults, repo, kind=""):
     org = defaults.get("issue-gate") or {}
     mine = repo.get("issue-gate") or {}
     required = org.get("required", False) is True
@@ -236,7 +251,7 @@ def issue_gate(defaults, repo):
         return 1
     if "label" in mine and mine.get("label") != label:
         print("::warning::issue-gate.label is the organisation's; a repository cannot change it, ignored.")
-    trusted_authors = trusted_authors_of(defaults, repo)
+    trusted_authors = trusted_authors_of(defaults, repo, kind=kind)
     trusted = os.environ.get("PR_AUTHOR", "") in trusted_authors
     taken_over = taken_over_by(trusted_authors, os.environ)
     if taken_over:
@@ -342,7 +357,7 @@ def main():
     if os.environ.get("POLICY_MODE", "") == "changes":
         return changes(defaults, repo, files)
     if os.environ.get("POLICY_MODE", "") == "issue-gate":
-        return issue_gate(defaults, repo)
+        return issue_gate(defaults, repo, kind)
     author = os.environ.get("PR_AUTHOR", "")
     forced = os.environ.get("POLICY_LEVEL", "")
     if forced and forced not in ("low", "medium", "high"):
@@ -351,7 +366,7 @@ def main():
 
     high = defaults.get("high-risk", []) + repo.get("high-risk", [])
     low = defaults.get("low-risk-eligible", []) + repo.get("low-risk-eligible", [])
-    trusted_authors = trusted_authors_of(defaults, repo)
+    trusted_authors = trusted_authors_of(defaults, repo, kind=kind)
 
     high_hits = [f for f in files if matches(f, high)]
     if forced:
@@ -548,6 +563,19 @@ def settings_tests():
     check("#568: the default policy names no person", defaults.get("trusted-authors") == ["dependabot[bot]"], defaults.get("trusted-authors"))
     check("#568: the maintainers are added to it", trusted_authors_of(defaults, {}, {"maintainers": ["ana"]}) == ["dependabot[bot]", "ana"])
     check("#568: a repository's own list replaces it", trusted_authors_of(defaults, {"trusted-authors": ["bob"]}, {"maintainers": ["ana"]}) == ["bob"])
+    # #727: the test identity is trusted in the test repository only.
+    bot = org_module().test_pack()["identity"]["login"]
+    check("#727: the test identity is trusted in engine-test", trusted_authors_of(defaults, {}, kind="engine-test")[-1:] == [bot], bot)
+    check("#727: the test identity is not trusted in another kind", bot not in trusted_authors_of(defaults, {}, kind="wordpress-plugin"))
+    check("#727: nor with no kind", bot not in trusted_authors_of(defaults, {}))
+    check("#727: a repository's own list that names it does not trust it", trusted_authors_of(defaults, {"trusted-authors": ["bob", bot.upper()]}, kind="wordpress-plugin") == ["bob"])
+    big = os.path.join(CENTRAL, "policy", "review-policy.default.yml")
+    for kind, trusted in (("engine-test", "true"), ("wordpress-plugin", "false")):
+        _, out = run_case(big, f"kind: {kind}\n", ["docs/a.md"], PR_AUTHOR=bot)
+        check(f"#727: the test identity's pull request in {kind} is trusted={trusted}", out.get("trusted") == trusted, out)
+    _, test_out = run_case(big, "kind: engine-test\n", [], POLICY_MODE="issue-gate", PR_AUTHOR=bot)
+    _, else_out = run_case(big, "kind: wordpress-plugin\n", [], POLICY_MODE="issue-gate", PR_AUTHOR=bot)
+    check("#727: the size cap is lifted for the test identity in engine-test only", test_out.get("max_lines") == "" and else_out.get("max_lines", "") != "", (test_out, else_out))
     check("#568: DiluxOne trusts whom it did", sorted(trusted_authors_of(defaults, {})) == ["dependabot[bot]", "soydiloreto"], trusted_authors_of(defaults, {}))
     # #568: what main() and issue_gate() let a repository's file do with each
     # key is what policy/settings-schema.yml says of it (its `repo:`).
