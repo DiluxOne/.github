@@ -2567,7 +2567,7 @@ def org_drift(conf):
             found.append(f"the ruleset \"{r['name']}\" names its repositories instead of covering those with `{ADOPTED}=true` (`sync-repos.py rulesets`)")
     # The test repository and the test identity (#563).
     packs = {k: pack_of(k) for k in os.listdir(os.path.join(HERE, "..", "kinds")) if os.path.isfile(os.path.join(HERE, "..", "kinds", k, "pack.yml"))}
-    login = org.test_pack()["identity"].get("login", "")
+    login = org.test_identity()
     names = sorted(((conf or {}).get("repos") or {}))
     found += test_repo_drift(conf, org.CATALOGS, packs, login, test_identity_permissions(names, login) if login else {})
     found += org_drift_security(conf)
@@ -2609,7 +2609,9 @@ def test_repo_drift(conf, catalogs, packs, login, permissions):
     catalog of org.yml `catalogs`; and the test identity (`login`) with
     more than read on any repository of another kind (`permissions`, the
     repository's name to its permission for that login): it may accept
-    there only. Pure."""
+    there only. With no `login` (DX_TEST_LOGIN unset, #739) and a test
+    repository, it says the test identity is unknown, so the check of its
+    permissions is not skipped in silence. Pure."""
     found = []
     tests = set()
     for name, entry in sorted(((conf or {}).get("repos") or {}).items()):
@@ -2622,6 +2624,8 @@ def test_repo_drift(conf, catalogs, packs, login, permissions):
             found.append(f"{name} is of kind `{org.TEST_KIND}` and also of {', '.join(f'`{k}`' for k in products)}: the test repository is no product (repos.yml)")
         if name in set((catalogs or {}).values()):
             found.append(f"{name} is of kind `{org.TEST_KIND}` and a catalog in org.yml `catalogs`: the test repository publishes nothing")
+    if tests and not login:
+        found.append("the test identity is unknown: DX_TEST_LOGIN, its token's owner as the release lane reads it (`org.py test-identity --from-token`), is unset, so where it has more than read is not checked")
     for name, level in sorted((permissions or {}).items()):
         if name not in tests and level in ("write", "maintain", "admin", "triage"):
             found.append(f"the test identity {login} has `{level}` on {name}: it may accept only in the test repository; take it back to read")
@@ -4290,7 +4294,21 @@ def self_test():
     check("C8: a test repository that is only that, and an identity with write there only, are in step",
           test_repo_drift(tconf, {}, packs, "t-test-bot", {"t-test": "write", "plugin": "read"}) == [], "")
     check("C8: this organisation's repos.yml keeps its test repository a test",
-          test_repo_drift(sys.modules["org"].load(os.path.join(HERE, "..", "repos.yml")), sys.modules["org"].CATALOGS, {k: pack_of(k) for k in ("engine-test", "wordpress-plugin", "ai-agent-plugin")}, "", {}) == [], "")
+          test_repo_drift(sys.modules["org"].load(os.path.join(HERE, "..", "repos.yml")), sys.modules["org"].CATALOGS, {k: pack_of(k) for k in ("engine-test", "wordpress-plugin", "ai-agent-plugin")}, "someone-else", {}) == [], "")
+    # C4 (#739): the test identity is its token's owner, whoever it is.
+    got = test_repo_drift(tconf, {}, packs, "someone-else", {"t-test": "write", "plugin": "write"})
+    check("C4 (#739): a token owner that is not {org}-test-bot, with write outside the test repository, is named",
+          got == ["the test identity someone-else has `write` on plugin: it may accept only in the test repository; take it back to read"], got)
+    got = test_repo_drift(tconf, {}, packs, "", {})
+    check("C4 (#739): with no DX_TEST_LOGIN, the test identity is unknown, said, never skipped in silence",
+          len(got) == 1 and got[0].startswith("the test identity is unknown: DX_TEST_LOGIN"), got)
+    check("C4 (#739): with no test repository, no test identity is missed", test_repo_drift({"repos": {"plugin": {"kinds": [{"kind": "wordpress-plugin"}]}}}, {}, packs, "", {}) == [], "")
+    import unittest.mock as um
+    with um.patch.dict(os.environ, {"DX_TEST_LOGIN": "Someone-Else"}), um.patch(__name__ + ".org_rulesets", lambda: []), \
+            um.patch(__name__ + ".org_drift_security", lambda conf: []), um.patch(__name__ + ".test_identity_permissions", lambda names, login: {n: "write" for n in names} if login == "someone-else" else {}):
+        got = org_drift(tconf)
+    check("C4 (#739): the drift check asks GitHub about DX_TEST_LOGIN's login, and names it",
+          got == ["the test identity someone-else has `write` on plugin: it may accept only in the test repository; take it back to read"], got)
 
     block = f"{START} (x) -->\nRULES\n{END}\n"
     plain = "# AGENTS.md\n\nIntro.\n\n## Mine\n"

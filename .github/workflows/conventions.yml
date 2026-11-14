@@ -135,6 +135,9 @@ jobs:
           # The organisation's own bot, from a branch of this repository, has
           # no size cap (#361); another organisation names its App here.
           DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN }}
+          # The test identity, its token's owner, is trusted in the test
+          # repository only (#739, scripts/org.py test_identity).
+          DX_TEST_LOGIN: ${{ vars.DX_TEST_LOGIN }}
           PR: ${{ github.event.pull_request.number }}
           GH_TOKEN: ${{ github.token }}
         # Read from the base branch, never the pull request's own copy: a

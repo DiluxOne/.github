@@ -39,13 +39,15 @@ adapters: []
 # The test identity (#563, the Spec's option A): a machine user, an outside
 # collaborator with write on the test repository only, whose fine-grained
 # token is the secret `secret` of the `release` environment of the
-# organisation's `.github`. It may accept issues in a repository of this
-# kind and nowhere else: scripts/deciders.py counts it only here, and the
-# daily drift check fails when it has more than read anywhere else. `{org}`
-# is the organisation's login, lowercased.
+# organisation's `.github`. Its login is written nowhere (#739): it is the
+# token's owner, which the release lane reads from GitHub (scripts/org.py
+# test-identity --from-token) and every other script takes from
+# DX_TEST_LOGIN (scripts/org.py test_identity). It may accept issues in a
+# repository of this kind and nowhere else: scripts/deciders.py counts it
+# only here, and the daily drift check fails when it has more than read
+# anywhere else.
 identity:
   secret: DX_TEST_TOKEN
-  login: "{org}-test-bot"
 
 # The autopilot in a fixed change that calls no model: for each criterion,
 # one file (`file`, `{n}` the issue's number, `{id}` the criterion's,
