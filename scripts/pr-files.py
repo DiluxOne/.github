@@ -10,6 +10,9 @@
                          unlisted  still no file listed past the bound
   pr-files.py --test   self-test, without the network
 
+Only the state goes to stdout (the step reads it); what it says, errors
+included, goes to stderr.
+
 Environment: GITHUB_REPOSITORY, PR, BASE and HEAD (the pull request's
 commits), DEFAULT_POLICY (the organisation's
 review policy, whose `files-wait` is the bound) and GH_TOKEN for gh.
@@ -122,13 +125,13 @@ def main(argv):
         return 2
     wait = bound(load_yaml(os.environ["DEFAULT_POLICY"]))
     if wait is None:
-        print(f"::error::files-wait in {os.environ['DEFAULT_POLICY']} is not {{attempts: N >= 1, interval-seconds: N >= 0}}.")
+        print(f"::error::files-wait in {os.environ['DEFAULT_POLICY']} is not {{attempts: N >= 1, interval-seconds: N >= 0}}.", file=sys.stderr)
         return 1
     try:
         state, files, _ = read(GitHub(os.environ["GITHUB_REPOSITORY"], os.environ["PR"]), *wait,
                                 base=os.environ.get("BASE", ""), head=os.environ.get("HEAD", ""))
     except RuntimeError as err:
-        print(f"::error::{err}")
+        print(f"::error::{err}", file=sys.stderr)
         return 1
     with open(argv[0], "w", encoding="utf-8") as fh:
         fh.write("".join(f + "\n" for f in files))
@@ -241,6 +244,7 @@ def self_test():
             fh.write("budget-usd: 3\n")
         got = run_main(fixture, Fake([[]]))
         check("C4: no files-wait in the policy fails, with no bound of its own", got[0] == 1 and got[2] is None, got)
+        check("an error is not printed where the step reads the state", got[1] == "", got)
     with open(os.path.join(HERE, "..", ".github", "workflows", "claude-review.yml"), encoding="utf-8") as fh:
         workflow = fh.read()
     step = workflow[workflow.index("- name: Policy floor (deterministic)"):workflow.index("- name: Scope (previous verdict")]
