@@ -78,6 +78,19 @@ def test_c1_the_pipeline_passes_when_its_gates_pass_whatever_waiting_did():
         assert "::error::" not in got.stdout, got.stdout
 
 
+def test_c2_a_failed_or_cancelled_gate_fails_the_pipeline_naming_it():
+    for gate in GATES:
+        for result, said in (("failure", "failed"), ("cancelled", "was cancelled")):
+            got = pipeline_step({g: (result if g == gate else "success") for g in GATES})
+            assert got.returncode == 1, (gate, result, got.stdout)
+            errors = [line for line in got.stdout.splitlines() if line.startswith("::error::")]
+            assert errors == [f"::error::the job {gate} {said}"], (gate, result, got.stdout)
+    # Two that fail are both named.
+    got = pipeline_step({"conventions": "failure", "review": "skipped", "auto-merge": "cancelled"})
+    assert got.returncode == 1
+    assert "::error::the job conventions failed" in got.stdout and "::error::the job auto-merge was cancelled" in got.stdout
+
+
 def test_the_docs_say_the_test_repository_runs_the_candidates_pipeline_and_why():
     for doc in ("docs/versioning.md", "docs/workflows.md"):
         text = (ROOT / doc).read_text(encoding="utf-8")
