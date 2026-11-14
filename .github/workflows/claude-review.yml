@@ -421,8 +421,9 @@ jobs:
             `type`, the kind of change the diff really is, by the Conventional Commits meaning
             (breaking when a user or a caller must change something to keep working; feat when
             behaviour is added, however large, since size is not breakage; fix when wrong behaviour
-            is corrected, whatever the title says; docs, test, ci, build, chore, style, refactor,
-            perf, revert when that is all it is). When a feat looks like a new capability (a new
+            is corrected, whatever the title says; docs only when every changed file is documentation
+            (a doc and a test is not docs); test, ci, build, chore, style, refactor, perf, revert
+            when that is all it is). When a feat looks like a new capability (a new
             provider, a flow the product did not have), say so in one line of the summary as a
             suggestion of the version:major label; the maintainer decides it, never you. And
             `description_matches`, true only if the description's "What changes" and "Why"
@@ -563,6 +564,8 @@ jobs:
           COUNT: ${{ steps.scope.outputs.count }}
           MODEL: ${{ steps.scope.outputs.model }}
           MAX_AUTO: ${{ inputs.max-auto-reviews }}
+          KIND: ${{ steps.policy.outputs.kind }}
+          BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
           # The review's output after its verification, when it ran.
@@ -645,13 +648,14 @@ jobs:
 
           # The type of the change is the review's, read from the diff, unless a
           # person set a type:* label by hand: then theirs stands
-          # (scripts/review-type.sh). The bot only ever replaces a type:* label
-          # it set itself.
+          # (scripts/review-type.sh). The review's docs is bounded by the docs
+          # paths the conventions check holds a docs title to (#720). The bot
+          # only ever replaces a type:* label it set itself.
           gh api "repos/$GITHUB_REPOSITORY/issues/$PR/timeline" --paginate > "$RUNNER_TEMP/timeline.json"
           current=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(startswith("type:"))] | join(",")')
-          type=$(bash .dx-central/scripts/review-type.sh "$type" "$BOT" "$RUNNER_TEMP/timeline.json" "$current")
+          type=$(bash .dx-central/scripts/review-type.sh "$type" "$BOT" "$RUNNER_TEMP/timeline.json" "$current" --diff "$KIND" "$BASE" "$SHA")
           if [ "$type" != "$(jq -r '.type // "chore"' <<<"$OUT")" ]; then
-            echo "A person set type:$type; the review's reading ($(jq -r .type <<<"$OUT")) is recorded, the label stands."
+            echo "The type applied is $type (a person's type:* label, or the review's docs on files that are not documentation); the review's reading ($(jq -r .type <<<"$OUT")) is recorded."
           fi
           { echo "risk=$risk"; echo "complexity=$complexity"; echo "blocking=$blocking"; echo "type=$type"; echo "description_ok=$dmatch"; } >> "$GITHUB_OUTPUT"
 
@@ -785,7 +789,8 @@ jobs:
         # corrected. A Dependabot title past the limit is also shortened
         # (scripts/conventions.sh, which lets it through for this step to fix).
         # The labels are read again here: a person's type:* label, added since
-        # the verdict or over a reused one, wins (scripts/review-type.sh).
+        # the verdict or over a reused one, wins (scripts/review-type.sh),
+        # and the review's docs is bounded by the docs paths (#720).
         if: ${{ !cancelled() && steps.resolver.outcome == 'success' && steps.verdict.outputs.type != '' }}
         env:
           GH_TOKEN: ${{ steps.resolver.outputs.token }}
@@ -796,11 +801,14 @@ jobs:
           TIMELINE_TOKEN: ${{ steps.bot.outputs.token }}
           AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
           BRANCH: ${{ github.head_ref }}
+          KIND: ${{ steps.policy.outputs.kind }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           GH_TOKEN=$TIMELINE_TOKEN gh api "repos/$GITHUB_REPOSITORY/issues/$PR/timeline" --paginate > "$RUNNER_TEMP/timeline.json"
           labels=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(startswith("type:"))] | join(",")')
-          TYPE=$(bash .dx-central/scripts/review-type.sh "$REVIEW_TYPE" "$BOT" "$RUNNER_TEMP/timeline.json" "$labels")
+          TYPE=$(bash .dx-central/scripts/review-type.sh "$REVIEW_TYPE" "$BOT" "$RUNNER_TEMP/timeline.json" "$labels" --diff "$KIND" "$BASE" "$SHA")
           current=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json title --jq .title)
           title=$current
           if [ "$AUTHOR_TYPE" = Bot ] && [[ "$BRANCH" == dependabot/* ]]; then
