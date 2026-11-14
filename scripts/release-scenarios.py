@@ -62,7 +62,9 @@ after GitHub's back-off within the scenario's limit, then named.
         accepted, accepts before the triage's verdict or waits for no
         seal after it, or comments /claim after the acceptance,
         `autopilot_problems`; a body the schema refuses, a decision's
-        too, or a Bug's without a field bug_report.yml requires).
+        too, or a Bug's without a field bug_report.yml requires; #760: a
+        pull request whose description would not name every file of its
+        diff, its body with no `{files}`).
         Every other pair a shipped caller wires is held to the
         engine statically, by scripts/caller-contract.py check; and
         what is wrong with the groups (`partition`): a scenario in no
