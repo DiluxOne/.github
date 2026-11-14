@@ -58,7 +58,10 @@ signed by GitHub and show as Verified.
 Environment: GH_TOKEN; GITHUB_REPOSITORY (owner/name); NUMBER (the issue);
 BODY (a file holding the issue's body); ACCEPTED_BY and ACCEPTED_HOW
 (seal-prd; `own-bug` for a maintainer's own Bug, #564); AUTHOR (own-bug); POLICY_REF
-(the commit of DiluxOne/.github whose policy applied); RECEIPTS_FIXTURE (a
+(the commit of DiluxOne/.github whose policy applied); ORG_AUTONOMY and
+REPO_AUTONOMY (the policies whose `receipts:` bound a write's retry, #763:
+policy/autonomy.yml here, and the repository's .github/autonomy.yml, read
+from GitHub when REPO_AUTONOMY is not set); RECEIPTS_FIXTURE (a
 directory standing in for the branch, and for the board's comment and the
 mentions, under comments/<n>/, for the self-test).
 
@@ -544,8 +547,53 @@ def write(repo, path, obj, message):
 # a write's commit meets a branch head that just moved, and GitHub answers
 # 409, or 422 on a stale head. Each try reads the head anew, until a time
 # bound, with an exponential back-off and full jitter so the writers do not
-# retry in step; a path that already exists is never written again.
-WRITE_LIMITS = {"write-seconds": 300, "backoff-base-seconds": 0.5, "backoff-max-seconds": 20}
+# retry in step; a path that already exists is never written again. The
+# bound and the back-off are data (#763): policy/autonomy.yml `receipts:`,
+# which a repository's .github/autonomy.yml only lowers; these for a key
+# it leaves out.
+DEFAULTS = {"write-seconds": 300, "backoff-base-seconds": 0.5, "backoff-max-seconds": 20}
+
+
+def limits(policy):
+    """The write's bound and back-off: the policy's `receipts:`, the
+    defaults for a key it leaves out."""
+    got = dict(DEFAULTS)
+    got.update({k: v for k, v in ((policy or {}).get("receipts") or {}).items() if k in DEFAULTS})
+    return got
+
+
+def repo_autonomy(repo):
+    """The path of the repository's .github/autonomy.yml: REPO_AUTONOMY when
+    the job has it, else read from GitHub into a temporary file; None when
+    it has none, or it cannot be read (then the organisation's apply)."""
+    if os.environ.get("REPO_AUTONOMY") or not repo:
+        return os.environ.get("REPO_AUTONOMY") or None
+    import tempfile
+    try:
+        got = gh(f"repos/{repo}/contents/.github/autonomy.yml")
+    except RuntimeError as e:
+        if "404" not in str(e):
+            print(f"::warning::The repository's .github/autonomy.yml could not be read ({str(e)[:120]}); the organisation's receipts limits apply.", file=sys.stderr)
+        return None
+    with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False, encoding="utf-8") as fh:
+        fh.write(base64.b64decode(got.get("content") or "").decode("utf-8", "replace"))
+    return fh.name
+
+
+def write_limits(repo):
+    """The limits in force for a write in `repo`: the organisation's policy
+    (ORG_AUTONOMY, else policy/autonomy.yml beside this script) merged with
+    the repository's own (autonomy.py merge(): lower only)."""
+    spec = importlib.util.spec_from_file_location("autonomy", os.path.join(HERE, "autonomy.py"))
+    autonomy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(autonomy)
+    org_policy = autonomy.load(os.environ.get("ORG_AUTONOMY") or os.path.join(HERE, "..", "policy", "autonomy.yml"))
+    try:
+        mine = autonomy.load(repo_autonomy(repo))
+    except Exception as e:  # noqa: BLE001 — a repository's broken file never stops a seal
+        print(f"::warning::The repository's .github/autonomy.yml could not be read ({str(e)[:120]}); the organisation's receipts limits apply.", file=sys.stderr)
+        mine = {}
+    return limits(autonomy.merge(org_policy, mine if isinstance(mine, dict) else {}, repo))
 
 
 def put(repo, path, obj, message, api=None, nap=None, clock=None, rand=None, limits=None):
@@ -555,13 +603,14 @@ def put(repo, path, obj, message, api=None, nap=None, clock=None, rand=None, lim
     `backoff-max-seconds`); never an overwrite: without a sha the API
     refuses a path that exists, and a 422 for a path that exists ends
     there. Past the bound it raises "the seal could not be written".
-    api, nap, clock and rand are for the self-test."""
+    `limits` are write_limits(repo) unless given; api, nap, clock and rand
+    are for the self-test."""
     import random
     api = api or gh
     nap = nap or time.sleep
     clock = clock or time.monotonic
     rand = rand or random.random
-    cfg = dict(WRITE_LIMITS, **(limits or {}))
+    cfg = limits if limits is not None else write_limits(repo)
     start = clock()
     # Never an overwrite: without a sha, the API refuses a path that exists.
     payload = {"message": message, "branch": BRANCH, "content": base64.b64encode((json.dumps(obj, indent=2) + "\n").encode()).decode()}
@@ -625,6 +674,9 @@ def last_seal(repo, number):
 def self_test():
     import tempfile
     failed = 0
+    # No repository's own policy is read from GitHub here (#763): an empty one.
+    saved_repo_autonomy = os.environ.get("REPO_AUTONOMY")
+    os.environ["REPO_AUTONOMY"] = os.devnull
 
     def check(name, got, want):
         nonlocal failed
@@ -893,7 +945,7 @@ Normal
     [t.join() for t in threads]
     check("C1 (#763): twenty writers at once, the head moving on every other write: every receipt is written, none twice",
           (errors20, sorted(branch20) == sorted(f"issues/{i}/prd-1.json" for i in range(1, 21)), set(branch20.values()), len(puts20)), ([], True, {1}, 20))
-    check("C1 (#763): the back-off is jittered and capped", (all(0 <= x <= WRITE_LIMITS["backoff-max-seconds"] for x in slept20), bool(slept20)), (True, True))
+    check("C1 (#763): the back-off is jittered and capped", (all(0 <= x <= DEFAULTS["backoff-max-seconds"] for x in slept20), bool(slept20)), (True, True))
     sleeps = []
     t0 = [0.0]
 
@@ -911,8 +963,42 @@ Normal
         capped = str(e)
     check("C1 (#763): a branch that keeps moving is retried until the time bound, not a count of tries",
           (capped.startswith("the seal could not be written"), "409" in capped, len(sleeps), max(sleeps)),
-          (True, True, WRITE_LIMITS["write-seconds"], WRITE_LIMITS["backoff-max-seconds"]))
+          (True, True, DEFAULTS["write-seconds"], DEFAULTS["backoff-max-seconds"]))
     check("C1 (#763): the back-off grows from its base", sleeps[:3], [0.5, 1.0, 2.0])
+    # C4 (#763): the bound and the back-off are the policy's `receipts:`,
+    # lowered by a repository's own file; changing them changes when put()
+    # gives up. No count of tries is left in this script.
+    def gives_up(**env):
+        clock_, naps_ = [0.0], []
+        saved_env = {k: os.environ.get(k) for k in env}
+        os.environ.update(env)
+        try:
+            put("o/r", "issues/14/prd-1.json", {}, "x", api=always, nap=lambda x: (naps_.append(x), clock_.__setitem__(0, clock_[0] + 1)), clock=lambda: clock_[0], rand=lambda: 1.0)
+        except RuntimeError as e:
+            return (int(clock_[0]), max(naps_), str(e).startswith("the seal could not be written"))
+        finally:
+            for k, v in saved_env.items():
+                os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+        return None
+    yaml_load = _yaml_loader()
+    with tempfile.TemporaryDirectory() as pd:
+        org_file, repo_file = os.path.join(pd, "org.yml"), os.path.join(pd, "repo.yml")
+        with open(os.path.join(HERE, "..", "policy", "autonomy.yml"), encoding="utf-8") as fh:
+            org_text = fh.read()
+        with open(org_file, "w", encoding="utf-8") as fh:
+            fh.write(re.sub(r"(?m)^  write-seconds: \d+$", "  write-seconds: 40", re.sub(r"(?m)^  backoff-max-seconds: \d+$", "  backoff-max-seconds: 3", org_text)))
+        with open(repo_file, "w", encoding="utf-8") as fh:
+            fh.write("receipts:\n  write-seconds: 12\n  backoff-max-seconds: 50\n")
+        if yaml_load:
+            org_pol = yaml_load(org_text)
+            check("C4 (#763): put()'s limits are policy/autonomy.yml's `receipts:`", (write_limits("o/r"), org_pol.get("receipts")), (limits(org_pol), DEFAULTS))
+            check("C4 (#763): changing the policy's bound and back-off changes when put() gives up; a repository lowers the bound, never raises the back-off",
+                  (gives_up(ORG_AUTONOMY=org_file), gives_up(ORG_AUTONOMY=org_file, REPO_AUTONOMY=repo_file)), ((40, 3, True), (12, 3, True)))
+        else:
+            print("skip the policy's limits (no PyYAML here)")
+    check("C4 (#763): a key the policy leaves out takes its default", limits({"receipts": {"write-seconds": 7}}), dict(DEFAULTS, **{"write-seconds": 7}))
+    src = open(os.path.abspath(__file__), encoding="utf-8").read()
+    check("C4 (#763): no count of tries, nor a bound in a constant, is left in put()", ("WRITE_" + "TRIES" in src, "WRITE_" + "LIMITS" in src, "DEFAULTS[" in src.split("def put(", 1)[1].split("\ndef ", 1)[0]), (False, False, False))
     # C2 (#763): the cli, its write always meeting a moved head and its
     # clock past the bound, exits non-zero with the reason in one line.
     import io
@@ -992,9 +1078,22 @@ Normal
               [2, 2, 2, 0])
     except ImportError:
         print("skip the workflow's wiring (no PyYAML here)")
+    if saved_repo_autonomy is None:
+        os.environ.pop("REPO_AUTONOMY", None)
+    else:
+        os.environ["REPO_AUTONOMY"] = saved_repo_autonomy
     if not failed:
         print("all tests passed")
     return failed
+
+
+def _yaml_loader():
+    """PyYAML's safe_load, or None where it is not installed."""
+    try:
+        import yaml
+    except ImportError:
+        return None
+    return yaml.safe_load
 
 
 QUEUE = "receipts-${{ github.repository }}"
