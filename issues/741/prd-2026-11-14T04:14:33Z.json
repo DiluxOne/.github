@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 741,
+  "prd_sha256": "13fd4e90eee794366f7ca6a2d849f9f7d75b7fb6cdc1e432b43499103aaeaef6",
+  "prd": "### Problem\n\nAutopilot pull requests stall without anyone being told, for days, and one that touches the engine's core blocks every issue queued behind it.\n\n### Scope\n\nThe fix trigger in pull-request.yml and org-pull-request.yml (a failed required check, a review that ends without a verdict), autopilot.yml's fix mode reading the failed jobs' log, waiting.py's board for that state, their tests, and docs/workflows.md.\n\n### Out of scope\n\nWhy a given check failed. The review's own crash in #723 (#720).\n\n### Acceptance criteria\n\nC1: Given an autopilot pull request whose scripts job fails, when its checks complete, then a fix round starts with the failed jobs' log, without a person.\nC2: Given an autopilot pull request whose review ends without a verdict, when its checks complete, then a fix round starts the same way.\nC3: Given an autopilot pull request whose rounds reached `autopilot-rounds`, when a check fails again, then no round starts and it is handed to a person with `needs-human`.\nC4: Given either state, when the board is written, then it names the fix round that is running, or the person, never a fix nothing will start.\nC5: Given a repository of the organisation other than DiluxOne/.github, when the same happens there (org-pull-request.yml), then C1 to C4 hold too.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-14T04:14:33Z",
+  "policy": "DiluxOne/.github@24dea17a3351"
+}
