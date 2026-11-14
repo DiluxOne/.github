@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 768,
+  "prd_sha256": "75affedae69a22d9be669ab74d5bbe59420aeb8db73d9324e31187ec47b068c9",
+  "prd": "### Problem\n\nA correct low-risk pull request is held as high risk, and waits on a person, only because its review started too soon after it was opened.\n\n### Scope\n\nclaude-review.yml's \"Policy floor (deterministic)\" step (and any other step that reads a pull request's files to decide), the bound as data, its tests, and docs/pull-requests.md where the floor is described.\n\n### Out of scope\n\nThe high-risk paths themselves. The release scenarios.\n\n### Acceptance criteria\n\nC1: Given a pull request whose head adds a file and whose files API returns `[]` for the first reads, when the policy step runs, then it waits and computes the floor from the file once it is listed.\nC2: Given a pull request whose diff is really empty, when the policy step runs, then it fails closed as today and says so.\nC3: Given a files list that still cannot be read past the bound, when the policy step gives up, then the floor is high and the pull request's review says the files could not be listed.\nC4: Given the bound, when it is read, then it comes from data, not a constant in the workflow.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-14T20:03:59Z",
+  "policy": "DiluxOne/.github@5f5364de8099dfe2eccdea08e49023f9bdf78b6c",
+  "how": "own-bug"
+}
