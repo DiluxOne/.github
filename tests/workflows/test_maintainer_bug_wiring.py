@@ -30,15 +30,22 @@ def test_the_own_job_runs_first_and_accepts_with_a_token_that_seals():
 
 
 def test_the_triage_skips_a_maintainers_own_bug_and_runs_when_the_check_failed():
-    triage = jobs("issue-triage.yml")["triage"]
-    assert triage["needs"] == "own"
-    assert triage["if"].startswith("always() && needs.own.outputs.own != 'true' && ")
+    all_jobs = jobs("issue-triage.yml")
+    triage = all_jobs["triage"]
+    assert triage["needs"] == ["own", "own-again"]
+    assert triage["if"].startswith("always() && needs.own.outputs.own != 'true' && needs.own-again.outputs.own != 'true' && ")
+    # The own job is in the receipts queue (#763); its fallback runs only
+    # when the queue cancelled it, and says the same outputs.
+    assert all_jobs["own"]["concurrency"] == {"group": "receipts-${{ github.repository }}", "cancel-in-progress": False}
+    again = all_jobs["own-again"]
+    assert again["needs"] == "own" and again["if"] == "always() && needs.own.result == 'cancelled'"
+    assert "concurrency" not in again and again["outputs"] == all_jobs["own"]["outputs"]
 
 
 def test_the_autopilot_starts_on_the_acceptance_it_sealed():
     auto = jobs("issue-triage.yml")["autopilot"]
-    assert "own" in auto["needs"] and "steer" in auto["needs"]
-    assert "(github.event.action == 'opened' && needs.own.outputs.accepted == 'true')" in auto["if"]
+    assert {"own", "own-again", "steer"} <= set(auto["needs"])
+    assert "(github.event.action == 'opened' && (needs.own.outputs.accepted == 'true' || needs.own-again.outputs.accepted == 'true'))" in auto["if"]
     assert auto["with"]["mode"] == "${{ github.event.label.name == 'autopilot:continue' && 'continue' || 'start' }}"
 
 
