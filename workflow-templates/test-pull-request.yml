@@ -11,11 +11,13 @@ name: Pull request (test repository)
 # they move to `@v7-next` with its other callers and back after
 # (scripts/release-scenarios.py point_callers): a scenario's review,
 # auto-merge decision and fix rounds run the candidate's engine, not `v7`.
-# The `pipeline` job is the whole run's result as one check, which the
+# The `pipeline` job is the pull request's verdict as one check, which the
 # test repository's ruleset "required pipeline" requires on its default
 # branch, on the pull request and in the merge queue: the gate the required
-# workflow gives everywhere else. Do not add this caller to any other
-# repository: there the required workflow already runs it.
+# workflow gives everywhere else. It decides on the organisation's gates
+# alone, `conventions`, `review` and `auto-merge` (org.yml `pipeline-gates`,
+# #754), never on side work such as `waiting`. Do not add this caller to
+# any other repository: there the required workflow already runs it.
 
 on:
   pull_request:
@@ -178,21 +180,27 @@ jobs:
         run: |
           echo "Merge group $HEAD_REF: conventions, review and the merge decision ran on each pull request."
 
-  # The whole run as one check (#748): what the required workflow's ruleset
-  # requires elsewhere, a run that succeeds. It needs every other job and
-  # fails when one of them failed or was cancelled; a skipped one is fine.
-  # It runs on the pull request and in the merge queue's group alike.
+  # The pull request's verdict as one check (#748, #754): what the
+  # required workflow's ruleset requires elsewhere. It decides on the
+  # organisation's gates alone (org.yml `pipeline-gates`): `conventions`
+  # (the accepted issue and the conventions), `review` (its verdict) and
+  # `auto-merge` (the merge decision), and fails, naming it, on one that
+  # failed or was cancelled (a cancelled gate is no verdict); a skipped one
+  # is fine. The other jobs are side work whose outcome is not the pull
+  # request's: `waiting`'s view, for one, is cancelled by its own
+  # concurrency group on nearly every pull request. It runs on the pull
+  # request and in the merge queue's group alike, where the gates are
+  # skipped.
   pipeline:
-    needs: [conventions, assignee, wake-vm, review, auto-merge, waiting, screenshots, autopilot-fix, autopilot-queue, queue]
+    needs: [conventions, review, auto-merge]
     if: always()
     runs-on: ubuntu-latest
     permissions: {}
     steps:
-      - name: Every job of the pipeline passed or was skipped
+      - name: The pipeline's gates passed or were skipped
         env:
-          RESULTS: ${{ join(needs.*.result, ' ') }}
+          NEEDS: ${{ toJSON(needs) }}
         run: |
-          echo "The pipeline's jobs: $RESULTS"
-          case " $RESULTS " in
-            *" failure "*|*" cancelled "*) echo "::error::a job of the pipeline failed or was cancelled"; exit 1 ;;
-          esac
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          bad=$(jq -r 'to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | "::error::the job \(.key) \(if .value.result == "failure" then "failed" else "was cancelled" end)"' <<<"$NEEDS")
+          if [ -n "$bad" ]; then echo "$bad"; exit 1; fi

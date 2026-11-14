@@ -150,6 +150,14 @@ files:
       read-by: [scripts/org.py, scripts/sync-repos.py]
       issue: "#748"
       says: The custom property, true on the test repository alone, that the required workflow's ruleset excludes, so the test repository runs the candidate's pipeline from its own caller.
+    - key: pipeline-gates
+      default: conventions, review and auto-merge
+      org: any
+      repo: never
+      limit: a list of the required workflow's job ids, which the test repository's `pipeline` check needs alone
+      read-by: [scripts/org.py, scripts/sync-repos.py]
+      issue: "#754"
+      says: The jobs of the pull request pipeline that decide on a pull request, which the test repository's `pipeline` check decides on, never side work such as the "What waits" view.
     - key: conventions-contradictions
       default: the patterns in org.yml
       org: any

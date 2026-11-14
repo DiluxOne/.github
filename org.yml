@@ -93,6 +93,15 @@ adopted-property: dx-adopted
 # from its own caller (workflow-templates/test-pull-request.yml), which the
 # release lane moves to `v7-next`. Absent, `dx-engine-test`.
 test-property: dx-engine-test
+# The jobs of the organisation's pull request pipeline that decide on a pull
+# request (#754, scripts/org.py pipeline-gates): the accepted issue and the
+# conventions, the review's verdict and the merge decision, each a job of
+# the required workflow, org-pull-request.yml. The test repository's
+# `pipeline` check (workflow-templates/test-pull-request.yml) needs these
+# alone, never side work such as the "What waits" view, which its own
+# concurrency group cancels; tests/workflows/test_test_repo_pipeline.py
+# holds its `needs` to this list. Absent, the same three.
+pipeline-gates: [conventions, review, auto-merge]
 # A repository's own commit rules that contradict the organisation's (#562,
 # scripts/sync-repos.py check): each pattern is matched against its
 # commit-msg hook (.githooks/, .husky/), its commitlint configuration, and

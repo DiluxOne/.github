@@ -48,23 +48,66 @@ def test_the_template_is_the_required_workflow_job_for_job_plus_pipeline():
     # The same ids, `uses:`, `if:`, `needs`, permissions, inputs and secrets,
     # so the same check names.
     assert jobs == required["jobs"]
-    # The whole run as one check: it waits for every other job, runs on the
-    # pull request and in the merge queue alike, and fails when one failed
-    # or was cancelled.
-    assert sorted(pipeline["needs"]) == sorted(required["jobs"])
+    # The pull request's verdict as one check (#754): it runs on the pull
+    # request and in the merge queue alike, and decides on the gates alone.
     assert pipeline["if"] == "always()"
     assert pipeline["permissions"] == {}
     step = pipeline["steps"][-1]
-    assert step["env"]["RESULTS"] == "${{ join(needs.*.result, ' ') }}"
-    assert '*" failure "*|*" cancelled "*' in step["run"] and "exit 1" in step["run"]
+    assert step["env"]["NEEDS"] == "${{ toJSON(needs) }}"
 
 
-def test_the_pipeline_job_fails_on_a_failed_or_cancelled_job_only():
+GATES = ("conventions", "review", "auto-merge")
+
+
+def pipeline_step(needs):
+    """The `pipeline` job's step, run with `needs` as GitHub gives it."""
+    import json
     import subprocess
     run = load(TEMPLATE)["jobs"]["pipeline"]["steps"][-1]["run"]
-    for results, code in (("success skipped success", 0), ("skipped skipped", 0), ("success failure", 1), ("cancelled success", 1)):
-        got = subprocess.run(["bash", "-c", run], env={"RESULTS": results, "PATH": "/usr/bin:/bin"}, capture_output=True, text=True)
-        assert got.returncode == code, (results, got.stdout)
+    env = {"NEEDS": json.dumps({job: {"result": result, "outputs": {}} for job, result in needs.items()}), "PATH": "/usr/bin:/bin"}
+    return subprocess.run(["bash", "-c", run], env=env, capture_output=True, text=True)
+
+
+def test_c1_the_pipeline_passes_when_its_gates_pass_whatever_waiting_did():
+    # `waiting`, whose view its own concurrency group cancels, is no gate:
+    # not in `needs`, so its result never reaches the step.
+    assert "waiting" not in load(TEMPLATE)["jobs"]["pipeline"]["needs"]
+    for results in (("success", "success", "success"), ("success", "success", "skipped"), ("skipped", "skipped", "skipped")):
+        got = pipeline_step(dict(zip(GATES, results)))
+        assert got.returncode == 0, (results, got.stdout, got.stderr)
+        assert "::error::" not in got.stdout, got.stdout
+
+
+def test_c2_a_failed_or_cancelled_gate_fails_the_pipeline_naming_it():
+    for gate in GATES:
+        for result, said in (("failure", "failed"), ("cancelled", "was cancelled")):
+            got = pipeline_step({g: (result if g == gate else "success") for g in GATES})
+            assert got.returncode == 1, (gate, result, got.stdout)
+            errors = [line for line in got.stdout.splitlines() if line.startswith("::error::")]
+            assert errors == [f"::error::the job {gate} {said}"], (gate, result, got.stdout)
+    # Two that fail are both named.
+    got = pipeline_step({"conventions": "failure", "review": "skipped", "auto-merge": "cancelled"})
+    assert got.returncode == 1
+    assert "::error::the job conventions failed" in got.stdout and "::error::the job auto-merge was cancelled" in got.stdout
+
+
+def org_module():
+    spec = importlib.util.spec_from_file_location("org", ROOT / "scripts" / "org.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_c3_the_pipeline_needs_the_gates_of_org_yml_each_a_job_of_the_required_workflow():
+    mod = org_module()
+    gates = mod.pipeline_gates(mod.load(str(ROOT / "org.yml")))
+    # One place: org.yml `pipeline-gates`; a workflow cannot read it before
+    # its jobs are planned, so this test holds `needs` to it.
+    assert load(TEMPLATE)["jobs"]["pipeline"]["needs"] == gates
+    assert gates == list(GATES)
+    # The required workflow's checks: each gate is one of its jobs.
+    required = load(REQUIRED)["jobs"]
+    assert all(gate in required for gate in gates), (gates, sorted(required))
 
 
 def test_the_docs_say_the_test_repository_runs_the_candidates_pipeline_and_why():
@@ -77,3 +120,12 @@ def test_the_docs_say_the_test_repository_runs_the_candidates_pipeline_and_why()
         assert "@v7-next" in said, doc
         # Why: the required workflow runs at `v7`, its calls hard-wired.
         assert "required workflow" in said and "at `v7`" in said and "hard-wired" in said, doc
+
+
+def test_c4_the_docs_say_which_jobs_the_pipeline_decides_on_and_why():
+    text = (ROOT / "docs" / "workflows.md").read_text(encoding="utf-8")
+    said = " ".join(p for p in text.split("\n") if "test-pull-request.yml" in p and "`pipeline`" in p)
+    # Which: the three gates, from org.yml.
+    assert all(f"`{gate}`" in said for gate in GATES) and "`pipeline-gates`" in said, said
+    # Why the others do not count: side work, `waiting`'s view cancelled.
+    assert "do not count" in said and "side work" in said and "`waiting`" in said and "cancelled by its own concurrency group" in said, said
