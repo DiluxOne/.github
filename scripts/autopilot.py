@@ -1003,7 +1003,9 @@ def next_step(state):
     accepted it, "" for nobody), may_start [ok, why], seal ("match" or why
     not), spec (the Spec is on the issue), pr (the autopilot's open pull
     request, or null: number, author_is_bot, draft, body, labels, merge
-    (clean, behind, dirty, unknown), head, record, dequeued, queue_failed),
+    (clean, behind, dirty, unknown), head, record, dequeued, queue_failed,
+    checks_failed: a gate of the pipeline failed at the head, or the review
+    ended there without a verdict, #741),
     runs, cap, round, rounds. Returns {action, why} and, by action, `as`
     (the mode autopilot.yml runs), `left`, `how`, `who`, `for`."""
     issue = state.get("issue") or {}
@@ -1073,6 +1075,12 @@ def next_step(state):
         if rnd > rounds:
             return wait("claim", "anyone", f"the merge queue dropped it and the autopilot spent its {rounds} rounds")
         return {"action": "queue", "as": "fix", "why": "the merge queue dropped it on a failed check: one round from the failed jobs' log"}
+    if pr.get("checks_failed"):
+        # #741: a gate of the pipeline failed at its head, or the review
+        # ended there without a verdict: the same round the pipeline starts.
+        if rnd > rounds:
+            return wait("claim", "anyone", f"its checks still fail and the autopilot spent its {rounds} rounds")
+        return {"action": "fix", "as": "fix", "why": "a check of the pipeline failed at its head: one round from the failed jobs' log"}
     if continue_as(False, pr.get("record"), pr.get("head") or "") == "fix":
         if rnd > rounds:
             return wait("claim", "anyone", f"the review still blocks and the autopilot spent its {rounds} rounds")
@@ -2717,6 +2725,8 @@ A class on html.
         ("dropped by the queue past the rounds", nsa(pr={**rpr, "dequeued": True, "queue_failed": True}, round=4), ("wait", "claim")),
         ("ready, the review blocks at its head", nsa(pr={**rpr, "record": blk("h")}), ("fix", "fix")),
         ("ready, the review blocks past the rounds", nsa(pr={**rpr, "record": blk("h")}, round=4), ("wait", "claim")),
+        ("ready, a check failed at its head", nsa(pr={**rpr, "checks_failed": True, "record": blk("old")}), ("fix", "fix")),
+        ("ready, a check failed past the rounds", nsa(pr={**rpr, "checks_failed": True}, round=4), ("wait", "claim")),
         ("ready, the review passed at its head", nsa(pr={**rpr, "record": {"sha": "h", "blocking": False, "findings": []}}), ("wait", "merge")),
         ("ready, no review at its head yet", nsa(pr={**rpr, "record": blk("old")}), ("none", None)),
     ]
@@ -2732,7 +2742,8 @@ A class on html.
         {"pr": {**dpr, "merge": "dirty"}}, {"pr": {**dpr, "body": all2}}, {"pr": {**rpr, "merge": "dirty"}}, {"pr": {**rpr, "merge": "dirty"}, "runs": 5},
         {"pr": {**rpr, "merge": "behind"}}, {"pr": {**rpr, "dequeued": True, "queue_failed": True}}, {"pr": {**rpr, "dequeued": True}},
         {"pr": {**rpr, "dequeued": True, "queue_failed": True}, "round": 4}, {"pr": {**rpr, "record": blk("h")}}, {"pr": {**rpr, "record": blk("h")}, "round": 4},
-        {"pr": {**rpr, "record": {"sha": "h", "blocking": False, "findings": []}}}, {"pr": {**rpr, "record": blk("old")}})]
+        {"pr": {**rpr, "record": {"sha": "h", "blocking": False, "findings": []}}}, {"pr": {**rpr, "record": blk("old")}},
+        {"pr": {**rpr, "checks_failed": True, "record": blk("old")}}, {"pr": {**rpr, "checks_failed": True}, "round": 4})]
     check("#561 C7: every state next-step reads is in the table",
           sorted(set((s["action"], s.get("how") or s.get("for") or s.get("as")) for s in steps7)), sorted(set(w for _, _, w in table)))
     check("#561 C7: every action is the bot's, a wait on a person's decision, or nothing",
@@ -2747,6 +2758,16 @@ A class on html.
     check("#561 C1: next-step names who a wait is on",
           (ns(prs=[theirs561])["who"], ns(lane="")["who"], ns(pr=dpr, runs=5)["who"]), ("ana", "a maintainer", "anyone"))
     check("#561 C1: next-step lists the open criteria", ns(pr=dpr)["left"], ["C2"])
+    # #741 C3: past the rounds cap, a person; the words say what still fails.
+    past = ns(pr={**rpr, "checks_failed": True}, round=4)
+    check("#741 C3: a check that fails again past `autopilot-rounds` waits on a person, and says its checks still fail; within the rounds, one round",
+          (past["action"], past["for"], past["who"], "its checks still fail" in past["why"], "spent its 3 rounds" in past["why"],
+           ns(pr={**rpr, "checks_failed": True}, round=3)["action"], ns(pr={**rpr, "checks_failed": True, "labels": ["autopilot", "needs-human"]})["for"]),
+          ("wait", "claim", "anyone", True, True, "fix", "answer"))
+    check("#741 C3: the comment at the cap says the checks still fail on a check round, the review still blocks on a review round, with the AI line",
+          ("spent its 5 rounds and its checks still fail" in rounds_spent(5, True), "review" in rounds_spent(5, True),
+           "spent its 5 rounds and the review still blocks" in rounds_spent(5), rounds_spent(5).endswith(AI_LINE), rounds_spent(5, True).endswith(AI_LINE)),
+          (True, False, True, True, True))
     # #561 C9: a person's open pull request that closes the issue holds it:
     # the autopilot does not start, and the board names them.
     held9 = ns(prs=[theirs561], spec=True)
@@ -3377,6 +3398,37 @@ Clamp the value in Sum::add.
                "needs.review.outputs.blocking == 'true'" in here_trigger, trigger(here_fix).startswith("("), "!github.event.pull_request.draft" in guards(here_fix),
                sorted(here_fix.get("needs")) == sorted(yaml.safe_load(open(os.path.join(HERE, "..", ".github", "workflows", "pull-request.yml"), encoding="utf-8"))["jobs"]["review"]["needs"] + ["review"])),
               (["conventions", "actionlint", "scripts", "review"], True, [True, True], True, True, True, True))
+        # #741 C3: the fix branch of "May it start", run with gh stood in:
+        # past the cap, `needs-human` and the comment that says what fails.
+        may_run = steps("prep")[sid("prep", "may")]["run"]
+        fix_gate = "set -euo pipefail\n" + may_run[may_run.index('if [ "$MODE" = fix ]; then'):]
+        def gate(rnd, jobs, queue="false"):
+            with tempfile.TemporaryDirectory() as d:
+                with open(os.path.join(d, "gh"), "w", encoding="utf-8") as fh:
+                    fh.write("#!/bin/sh\nprintf '%s\\n' \"gh $*\" >> calls\ncase \"$1 $2\" in\n  'pr view') printf '%s' '{\"headRefOid\": \"h1\"}' ;;\n"
+                             "  api*) case \"$*\" in */jobs*) printf '%s' \"$JOBS\" ;; *) printf '%s' '[[]]' ;; esac ;;\nesac\n")
+                os.chmod(os.path.join(d, "gh"), 0o755)
+                os.makedirs(os.path.join(d, ".dx-central"))
+                os.symlink(os.path.join(HERE), os.path.join(d, ".dx-central", "scripts"))
+                out = os.path.join(d, "out")
+                env = {k: v for k, v in os.environ.items() if k not in ("REPO_AUTONOMY", "ORG_AUTONOMY", "DX_AUTOPILOT")}
+                env.update({"PATH": d + os.pathsep + os.environ.get("PATH", ""), "GITHUB_OUTPUT": out, "GITHUB_REPOSITORY": "o/r", "MODE": "fix", "ISSUE": "7",
+                            "PR": "8", "ROUND": str(rnd), "QUEUE": queue, "GITHUB_RUN_ID": "5", "JOBS": json.dumps([{"jobs": jobs}]), "OPEN_TO_CLAIM": "open"})
+                r = subprocess.run(["bash", "-c", fix_gate], cwd=d, capture_output=True, text=True, env=env)
+                read = lambda f: open(os.path.join(d, f), encoding="utf-8").read() if os.path.exists(os.path.join(d, f)) else ""
+                return r.returncode, read("calls"), read("out")
+        cap = int(autonomy.policy_in_force().get("autopilot-rounds", 3))
+        failing = [{"id": 11, "name": "Scripts (self-tests)", "conclusion": "failure"}]
+        rc, calls, out = gate(cap + 1, failing)
+        check("#741 C3: past `autopilot-rounds`, a check that fails again starts no round: `needs-human`, the comment that its checks still fail, the issue open to claims",
+              (rc, out, "gh pr edit 8 --repo o/r --add-label needs-human" in calls, f"spent its {cap} rounds and its checks still fail" in calls, "gh issue comment 7" in calls),
+              (0, "go=false\n", True, True, True))
+        rc, calls, out = gate(cap + 1, [])
+        check("#741 C3: past the cap on a review round, the comment says the review still blocks", (rc, out, "the review still blocks" in calls, "needs-human" in calls), (0, "go=false\n", True, True))
+        rc, calls, out = gate(cap + 1, [], queue="true")
+        check("#741 C3: past the cap on the queue's round, its checks still fail", (out, "its checks still fail" in calls), ("go=false\n", True))
+        rc, calls, out = gate(cap, failing)
+        check("#741 C3: within the cap, the round starts", (rc, out, "needs-human" in calls), (0, "go=true\n", False))
         check("#504 C3: every other repository's round is as it was, and never runs here",
               (theirs in cond(org_fix), mine in cond(org_fix), org_fix.get("needs"), bool(re.fullmatch(r"DiluxOne/\.github/\.github/workflows/autopilot\.yml@v\d+", str(org_fix.get("uses")))),
                org_fix.get("with"), org_fix.get("permissions"), org_fix.get("secrets"),

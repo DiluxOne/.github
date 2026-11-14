@@ -618,9 +618,12 @@ jobs:
             max=$(python3 .dx-central/scripts/autonomy.py policy | jq -r '."autopilot-rounds" // 3')
             if [ "$ROUND" -gt "$max" ]; then
               gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label needs-human >/dev/null || true
-              gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "The autopilot spent its $max rounds and the review still blocks: a person takes it from here. The review's open threads say what is left.
-
-          🤖 AI-generated · Claude Opus 5.5 (Anthropic)" >/dev/null
+              # #741: on a check round (a gate that failed at the head, a
+              # review with no verdict, the merge queue's checks) the
+              # comment says its checks still fail, not that the review blocks.
+              checks=true
+              [ "${QUEUE:-}" = true ] || python3 .dx-central/scripts/autopilot.py checks-failed >/dev/null || checks=false
+              gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "$(MAX="$max" CHECKS="$checks" python3 .dx-central/scripts/autopilot.py rounds-spent)" >/dev/null
               [ -z "${ISSUE:-}" ] || [ -z "${OPEN_TO_CLAIM:-}" ] || gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "${OPEN_TO_CLAIM:-}" >/dev/null || true
               echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
             fi
