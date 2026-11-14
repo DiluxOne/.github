@@ -43,9 +43,10 @@ def test_nothing_else_of_the_pipeline_runs_on_dequeued():
     jobs = workflow("org-pull-request.yml")["jobs"]
     for name in ("conventions", "assignee", "wake-vm", "review"):
         assert "github.event.action != 'dequeued'" in jobs[name]["if"], name
-    # Those wait for the review, which is skipped then.
+    # Those wait for the review (and the fix round for the conventions,
+    # #741), which are skipped then: none failed, nothing blocks.
     for name in ("auto-merge", "autopilot-fix"):
-        assert jobs[name]["needs"] in ("review", ["review"]), name
+        assert jobs[name]["needs"] in ("review", ["review"], ["conventions", "review"]), name
 
 
 def prep_step(step_id):
@@ -70,7 +71,7 @@ def gate(tmp_path, round_, queue, failed):
     (bin_dir / "python3").write_text(
         "#!/bin/bash\n"
         f'echo "python3 $*" >> "{log}"\n'
-        f"case \"$2\" in policy) echo '{policy}' ;; queue-failed) echo 'Plugin tests (u)'; exit {0 if failed else 1} ;; esac\n")
+        f"case \"$2\" in policy) echo '{policy}' ;; queue-failed) echo 'Plugin tests (u)'; exit {0 if failed else 1} ;; checks-failed) exit 1 ;; esac\n")
     (bin_dir / "gh").write_text(f'#!/bin/bash\necho "gh $*" >> "{log}"\nexit 0\n')
     for f in ("python3", "gh"):
         (bin_dir / f).chmod(0o755)
@@ -85,25 +86,25 @@ def gate(tmp_path, round_, queue, failed):
 
 def test_one_round_when_a_check_failed_in_the_group(tmp_path):
     calls, out = gate(tmp_path, 2, True, True)
-    assert out == "go=true\n" and "queue-failed" in calls
+    assert out == "checks=false\ngo=true\n" and "queue-failed" in calls and "checks-failed" not in calls
 
 
 def test_no_round_when_no_check_failed(tmp_path):
     calls, out = gate(tmp_path, 2, True, False)
-    assert out == "go=false\n" and "needs-human" not in calls
+    assert out == "checks=false\ngo=false\n" and "needs-human" not in calls
 
 
 @pytest.mark.parametrize("failed", [True, False])
 def test_refused_past_the_rounds_cap(tmp_path, failed):
     calls, out = gate(tmp_path, 6, True, failed)
-    assert out == "go=false\n"
+    assert out == "checks=false\ngo=false\n"
     assert "queue-failed" not in calls
     assert "--add-label needs-human" in calls
 
 
 def test_a_blocked_review_round_does_not_ask_the_queue(tmp_path):
     calls, out = gate(tmp_path, 2, False, False)
-    assert out == "go=true\n" and "queue-failed" not in calls
+    assert out == "checks=false\ngo=true\n" and "queue-failed" not in calls and "checks-failed" in calls
 
 
 def test_the_agent_gets_the_failed_jobs_log(tmp_path, monkeypatch):

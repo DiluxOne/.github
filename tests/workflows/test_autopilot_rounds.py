@@ -33,7 +33,7 @@ def run(tmp_path, round_):
     (bin_dir / "python3").write_text(
         "#!/bin/bash\n"
         f'echo "python3 $*" >> "{log}"\n'
-        f"case \"$2\" in policy) echo '{policy}' ;; esac\n")
+        f"case \"$2\" in policy) echo '{policy}' ;; checks-failed) exit 1 ;; rounds-spent) echo \"The autopilot spent its $MAX rounds\" ;; esac\n")
     (bin_dir / "gh").write_text(f'#!/bin/bash\necho "gh $*" >> "{log}"\nexit 0\n')
     for f in ("python3", "gh"):
         (bin_dir / f).chmod(0o755)
@@ -54,12 +54,12 @@ def test_the_policy_allows_five_rounds():
 def test_a_fourth_and_a_fifth_round_run(tmp_path, round_):
     calls, out = run(tmp_path, round_)
     assert "autonomy.py policy" in calls
-    assert out == "go=true\n"
+    assert out == "checks=false\ngo=true\n"
     assert "needs-human" not in calls
 
 
 def test_no_sixth_round(tmp_path):
     calls, out = run(tmp_path, 6)
-    assert out == "go=false\n"
+    assert out == "checks=false\ngo=false\n"
     assert "gh pr edit 9 --repo o/r --add-label needs-human" in calls
     assert "spent its 5 rounds" in calls
