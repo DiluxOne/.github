@@ -143,6 +143,13 @@ files:
       read-by: [scripts/sync-repos.py]
       issue: "#562"
       says: The custom property that says a repository is adopted, which the organisation's rulesets cover.
+    - key: test-property
+      org: any
+      repo: never
+      limit: a custom property of the organisation
+      read-by: [scripts/org.py, scripts/sync-repos.py]
+      issue: "#748"
+      says: The custom property, true on the test repository alone, that the required workflow's ruleset excludes, so the test repository runs the candidate's pipeline from its own caller.
     - key: conventions-contradictions
       default: the patterns in org.yml
       org: any
