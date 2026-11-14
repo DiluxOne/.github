@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 763,
+  "prd_sha256": "ffd829f7e8ca4923f3053666c8fd59f939d4d93ed7161c2e9403017d9e4dd1d9",
+  "prd": "### Problem\n\nAn accepted issue can be left unsealed, and its autopilot never starts, only because another issue was accepted at the same moment.\n\n### Scope\n\nscripts/receipts.py's `put()` retry and its limits as data, the concurrency of the workflows' jobs that write receipts (issue-accepted.yml and the others that call `receipts.py`), the board's message when a seal cannot be written, their self-tests, and docs/model.md where receipts are described.\n\n### Out of scope\n\nWhat a receipt holds. The scenarios' expectations.\n\n### Acceptance criteria\n\nC1: Given twenty writers that write different receipts on the same branch at once, when `put()` runs in each (the self-test's api double moves the head on every other write), then every receipt is written.\nC2: Given a write that keeps meeting a moved head past the time bound, when `put()` gives up, then the job fails and the issue's board says the seal could not be written.\nC3: Given the jobs that write receipts in one repository, when two run at once, then they are queued in one concurrency group and neither is cancelled.\nC4: Given the retry's bound and back-off, when they are read, then they come from data (policy or settings), not constants in the script.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-14T18:44:40Z",
+  "policy": "DiluxOne/.github@cfebd0c698c3c0a99f844989cae4ff61d4fa5e7a",
+  "how": "own-bug"
+}
