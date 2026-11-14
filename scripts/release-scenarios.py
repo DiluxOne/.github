@@ -22,7 +22,8 @@ merges, unless main says it already: #707), `opens`
 (an `issue` or a `pull` with its `title`, `body` (a name of `bodies:` or the
 text), `labels`, and `fork: true` for one from a fork; a pull's `{issue}` in
 its body is the number of the issue it opens first, its `issue:` or a
-complete feature; an issue's `type`, else the Type its body's form gives,
+complete feature, and its `{files}` the files of its diff, one
+`` - `path` `` line each (#760: `pull_files`); an issue's `type`, else the Type its body's form gives,
 `types:` of the file, and its `comments`, posted before its labels: a
 `/claim` before `accepted`), `steps` (each one of
 `comment`, `label`, `unlabel`, `edit`, `push`, `dispatch`, and `until`,
@@ -448,6 +449,36 @@ def preconditions(scenarios, bodies, pack, can_dispatch=(), passes=None, types=N
 
 def body_of(value, bodies):
     return bodies.get(value, value) if isinstance(value, str) else ""
+
+
+def pull_files(s):
+    """The files the pull request scenario `s` opens adds or edits (#760),
+    its diff, in order and once each: scenarios/<id>/pull.md, written when
+    it opens, then scenarios/<id>/<name>.md for each `push: <name>` but
+    `behind`, written on its head. [] for a scenario that opens none.
+    Pure."""
+    if "pull" not in (s.get("opens") or {}):
+        return []
+    sid, out = s.get("id"), [f"scenarios/{s.get('id')}/pull.md"]
+    for step in s.get("steps") or []:
+        if isinstance(step, dict) and "push" in step and str(step["push"]) != "behind":
+            path = f"scenarios/{sid}/{step['push']}.md"
+            if path not in out:
+                out.append(path)
+    return out
+
+
+def pull_text(body, issue, files):
+    """A scenario pull request's description (#760): `body` with `{issue}`
+    the number of the issue it closes and `{files}` one `` - `path` `` line
+    per file of its diff. Pure."""
+    return body.replace("{issue}", str(issue)).replace("{files}", "\n".join(f"- `{f}`" for f in files))
+
+
+def unnamed(text, files):
+    """The files of `files` the description `text` does not name (as
+    `` `path` ``). Pure."""
+    return [f for f in files if f"`{f}`" not in text]
 
 
 def check_named(name, checks):
@@ -953,7 +984,7 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
         branch = landing(sid, arg)
         fresh_branch(repo, branch, run)
         write_file(repo, branch, path, f"{arg} on main\n" if content is None else content, run)
-        body = body_of("pull", bodies).replace("{issue}", n) if "{issue}" in body_of("pull", bodies) else f"Closes #{n}"
+        body = pull_text(body_of("pull", bodies) if "{issue}" in body_of("pull", bodies) else "{files}\n\nCloses #{issue}", n, [path])
         got = run("pr", "create", "--repo", repo, "--head", branch, "--title", f"docs: the scenario {sid} lands {arg} on main",
                   "--body-file", "-", input=marked(body, sid)).strip()
         made.append(("pr", got.rstrip("/").rsplit("/", 1)[-1]))
@@ -987,7 +1018,8 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
             if "{issue}" in text:
                 closes = open_issue(repo, pull_issue(spec, sid), bodies, sid, run, sid, types)
                 made.append(("issue", closes))
-                text = text.replace("{issue}", closes)
+            # #760: its description names every file of its diff.
+            text = pull_text(text, closes, pull_files(s))
             branch, target = own, repo
             writes = run
             if spec.get("fork"):
@@ -2944,6 +2976,40 @@ def self_test():
           (dec["opens"]["issue"].get("labels"), dec["steps"][:2]), (None, [{"until": {"labels": ["awaiting-acceptance"]}}, {"label": "accepted"}]))
     check("#713 C5: decision-sub-issues expects what a decision gets in the test repository, accepted and sealed, waiting until its seal",
           (dec["steps"][2:], dec["expect"]), ([{"until": {"comments": [SEAL]}}], {"labels": ["accepted"], "comments": [SEAL]}))
+    # #760: a scenario pull request's description names every file of its diff.
+
+    def described(io):
+        """A test repository that records every `gh` call (args, input)."""
+        def fake(*a, input=None):
+            io.append((a, input))
+            if a[:2] == ("issue", "create"):
+                return "https://github.com/o/t/issues/11\n"
+            if a[:2] == ("pr", "create"):
+                return "https://github.com/o/t/pull/12\n"
+            if a[:2] in (("pr", "view"), ("issue", "view")):
+                return "{}"
+            if a[-1:] in ((".sha",), (".login",)):
+                return "me\n"
+            return "[]"
+        return fake
+    pulls760 = [s for s in real["scenarios"] if "pull" in (s.get("opens") or {})]
+    gaps760 = {}
+    for s in pulls760:
+        io = []
+        play(s, "o/t", "v7-next", real["bodies"], described(io), lambda _: None, 1, fork=described(io), types=real.get("types") or {})
+        made = [i for a, i in io if a[:2] == ("pr", "create")]
+        gaps760[s["id"]] = unnamed(made[0] if made else "", pull_files(s)) or (not made and ["no pr create"]) or []
+    check("#760 C1: every real scenario that opens a pull request names each file of pull_files in the description play passes to pr create",
+          (len(pulls760) > 0, {k: v for k, v in gaps760.items() if v}), (True, {}))
+    check("#760 C1: pull_files is pull.md, then each push but behind, once",
+          (pull_files({"id": "p", "opens": {"pull": {}}, "steps": [{"push": "secret"}, {"push": "behind"}, {"push": "secret"}, {"label": "x"}]}),
+           pull_files({"id": "i", "opens": {"issue": {}}, "steps": [{"push": "conflict"}]})), (["scenarios/p/pull.md", "scenarios/p/secret.md"], []))
+    st, fake = pushed()
+    play({"id": "p", "opens": {"issue": {"title": "feat: x", "body": "f"}}, "steps": [{"push": "conflict"}], "expect": {}}, "o/t", "v7-next",
+         dict(real["bodies"], f="f"), fake, lambda s: None, 1)
+    landed = [i for a, i in st["io"] if a[:2] == ("pr", "create")]
+    check("#760 C1: the pull request land opens to main names the path it writes, with the real `pull` body",
+          (len(landed), unnamed(landed[0] if landed else "", ["scenarios/p/conflict.md"])), (1, []))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
