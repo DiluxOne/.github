@@ -415,7 +415,7 @@ files:
       org: any
       repo: never
       limit: "reads, `attempts` of them `interval-seconds` apart; attempts at least 1"
-      read-by: [scripts/pr-files.py]
+      read-by: [scripts/pr-files.py, scripts/policy.py]
       issue: "#768"
       says: How long the policy floor waits for a pull request's files list before it calls them unlisted.
     - key: budget-usd

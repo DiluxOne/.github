@@ -80,6 +80,9 @@ Every review setting lives in these two files and nowhere else: `review:`
 repository's value wins key by key; what it leaves out stays as the default.
 
 Rules, in order:
+  0. FILES_STATE (scripts/pr-files.py, #768) `empty`, the diff is really
+     empty, or `unlisted`, no file listed after `files-wait.attempts`
+     reads -> floor high, saying which, as a warning too.
   1. Any changed file matching a `high-risk` pattern  -> floor high (the
      organisation's, the repository's kinds' in kinds/<kind>/surface.yml,
      #764: the one its policy declares and those repos.yml gives
@@ -409,6 +412,10 @@ def main():
         # nothing to rate low (#768).
         floor, reasons = "high", "the pull request's diff is empty"
         print(f"::warning::Policy floor high: {reasons}.")
+    elif os.environ.get("FILES_STATE", "") == "unlisted":
+        reads = (defaults.get("files-wait") or {}).get("attempts", "?")
+        floor, reasons = "high", f"the pull request's files could not be listed after {reads} reads"
+        print(f"::warning::Policy floor high: {reasons}.")
     elif not files:
         floor, reasons = "high", "no changed files could be listed"
     elif high_hits:
@@ -518,6 +525,7 @@ def self_test():
         ("a rename out of a high-risk path is high", default, "", ["docs/old-workflow.yml", ".github/workflows/old.yml"], {}, {"floor": "high"}, 0),
         ("no listed files is high", default, "", [], {}, {"floor": "high"}, 0),
         ("C2 (#768): a diff that is really empty is high, and says so", default, "", [], {"FILES_STATE": "empty"}, {"floor": "high", "reasons": "the pull request's diff is empty"}, 0),
+        ("C3 (#768): files still unlisted past the bound are high, and say so", default, "", [], {"FILES_STATE": "unlisted"}, {"floor": "high", "reasons": "the pull request's files could not be listed after 12 reads"}, 0),
         ("C1 (#768): the file pr-files.py listed once it was there gives the floor", default, "", ["docs/new.md"], {"FILES_STATE": "listed"}, {"floor": "low"}, 0),
         ("the repository adds a high-risk path", default, "high-risk:\n  - \"includes/providers/**\"\n", ["includes/providers/a.php"], {}, {"floor": "high"}, 0),
         ("#764 C2: the kind engine-test's high-risk path is high", default, "kind: engine-test\n", ["scenarios/high-risk-waits/pull.md"], {}, {"floor": "high"}, 0),

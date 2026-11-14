@@ -7,6 +7,7 @@
                        they were read, FILES_STATE for scripts/policy.py:
                          listed    the list was read
                          empty     the diff is really empty: nothing to wait for
+                         unlisted  still no file listed past the bound
   pr-files.py --test   self-test, without the network
 
 Environment: GITHUB_REPOSITORY, PR, BASE and HEAD (the pull request's
@@ -111,7 +112,7 @@ def read(api, attempts, interval, sleep=time.sleep, base="", head=""):
             sleep(interval)
     if files:
         raise RuntimeError(f"The files API listed {len(files)} of the pull request's {total} changed files after {attempts} reads; the policy is not computed on a partial list.")
-    return "listed", [], attempts
+    return "unlisted", [], attempts
 
 
 def main(argv):
@@ -182,6 +183,9 @@ def self_test():
     check("C2: no base or head is no empty diff", GitHub("o/r", "1").compare_empty("", "h") is False)
     renamed = [{"filename": "docs/a.md", "previous_filename": ".github/workflows/a.yml"}]
     check("a rename lists both its paths", read(Fake([renamed]), 1, 0)[1] == ["docs/a.md", ".github/workflows/a.yml"])
+    api, slept = Fake([[]]), []
+    got = read(api, 5, 7, sleep=slept.append)
+    check("C3: [] on every read past the bound: FILES_STATE=unlisted", got == ("unlisted", [], 5) and api.calls == 5 and slept == [7] * 4, (got, api.calls, slept))
     try:
         read(Fake([added], totals=[3000]), 2, 0, sleep=lambda s: None)
         check("a list that still differs from the total fails", False, "no error")

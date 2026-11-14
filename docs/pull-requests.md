@@ -94,7 +94,14 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    the change can have from its paths alone
    ([`policy/review-policy.default.yml`](../policy/review-policy.default.yml) plus
    the repository's `.github/review-policy.yml`; `policy.py --test` checks
-   its rules). Then Claude reviews it with
+   its rules). The files are read by
+   [`scripts/pr-files.py`](../scripts/pr-files.py) (#768): just after a pull
+   request is opened, GitHub can list none for a while, so the list is read
+   again, up to the policy's `files-wait` (12 reads 10 seconds apart; a
+   repository cannot shorten it), until it holds the pull request's files.
+   Two cases give floor high, and the review's footer says which: the diff
+   is really empty (the compare API says so, and nothing is waited for), or
+   the files could not be listed past the bound. Then Claude reviews it with
    the [review profiles](../review-profiles/) (general, and the kind's
    `kinds/<kind>/review-profile.md`) and the repository's `AGENTS.md`
    and `docs/architecture.md`: inline comments for blockers and majors (each a
