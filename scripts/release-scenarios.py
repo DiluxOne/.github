@@ -35,7 +35,11 @@ file is written in a commit GitHub signs, `createCommitOnBranch` (#709); a
 `push: <name>` writes scenarios/<id>/<name>.md on the head branch of the
 pull request it observes, the autopilot's for an issue, and `conflict`
 then lands that file, otherwise, on main, `behind` only a file of its own
-there, through a docs pull request of the scenario that merges: #698),
+there, through a docs pull request of the scenario that merges: #698;
+every text it writes there, and scenarios/<id>/pull.md a pull's, carries
+the run's id, `run_mark`, so none is what an earlier run merged into main,
+which would leave its pull request with no diff: #778, `scenario_text`;
+a `before`'s file says its `says` alone),
 `minutes` (its limit, 10 by default, 15 at most) and
 `expect` (`labels`, `absent`, `comments` (markers), `pull` (`closes`,
 `branch`, `title`, patterns; `false` for none that closes it, #713), `check` (name: conclusion, the name a
@@ -940,11 +944,37 @@ def backoff(e, tries, now=None):
     return min(POLL * 2 ** tries, 120)
 
 
-def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, types=None):
+def run_mark(env=None, now=None, rand=None):
+    """The id of this run of the lane (#778), which every text `play` writes
+    under scenarios/<id>/ carries: `GITHUB_RUN_ID-GITHUB_RUN_ATTEMPT` in the
+    lane (a re-run of the same run differs too), else, run locally, the
+    time with a random suffix. Pure but for `env`, `now` and `rand`."""
+    env = os.environ if env is None else env
+    if env.get("GITHUB_RUN_ID"):
+        return f"{env['GITHUB_RUN_ID']}-{env.get('GITHUB_RUN_ATTEMPT') or '1'}"
+    if rand is None:
+        import secrets
+        rand = secrets.token_hex(3)
+    return f"local-{int(time.time() if now is None else now)}-{rand}"
+
+
+def scenario_text(sid, name, where, run_id):
+    """The text `play` writes in scenarios/<sid>/<name>.md on `where` (the
+    pull request, or main), in the run `run_id` (#778): its own in each run,
+    so no run writes what an earlier one merged into main, which would leave
+    its pull request with no diff, and on the head another than on main, so
+    `conflict` conflicts. Pure."""
+    return f"{name} on {where}, scenario {sid}, run {run_id}\n"
+
+
+def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, types=None, run_id=None):
     """One scenario in `repo`: clears what an earlier run of it left
     (`clear`), opens what it opens (its `before` first), takes its steps,
     polls until its `expect` holds or `minutes` pass, then cleans up and
-    clears again. Returns {id, ok, why, run}."""
+    clears again. Every file it writes carries `run_id` (`run_mark` when
+    None, #778: `scenario_text`) but a `before`'s, which says its `says`.
+    Returns {id, ok, why, run}."""
+    run_id = run_id or run_mark()
     opens, made, closes = s.get("opens") or {}, [], None
     what = "pr" if "pull" in opens else "issue"
     spec = opens.get("pull") or opens.get("issue") or {}
@@ -1004,7 +1034,7 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
         made.append(("issue", n))
         branch = landing(sid, arg)
         fresh_branch(repo, branch, run)
-        write_file(repo, branch, path, f"{arg} on main\n" if content is None else content, run)
+        write_file(repo, branch, path, scenario_text(sid, arg, "main", run_id) if content is None else content, run)
         body = pull_text(body_of("pull", bodies) if "{issue}" in body_of("pull", bodies) else "{files}\n\nCloses #{issue}", n, [path])
         got = run("pr", "create", "--repo", repo, "--head", branch, "--title", f"docs: the scenario {sid} lands {arg} on main",
                   "--body-file", "-", input=marked(body, sid)).strip()
@@ -1053,7 +1083,7 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
                 writes("repo", "fork", repo, "--clone=false", "--default-branch-only")
                 target = f"{writes('api', 'user', '--jq', '.login').strip()}/{repo.split('/', 1)[1]}"
             fresh_branch(target, branch, writes)
-            write_file(target, branch, f"scenarios/{sid}/pull.md", sid, writes)
+            write_file(target, branch, f"scenarios/{sid}/pull.md", scenario_text(sid, "pull", "the pull request", run_id), writes)
             head = f"{target.split('/', 1)[0]}:{branch}" if target != repo else branch
             url = run("pr", "create", "--repo", repo, "--head", head, "--title", spec.get("title", f"test: {sid}"),
                       "--body-file", "-", input=marked(text, sid)).strip()
@@ -1084,7 +1114,7 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
                         head = ((seen or {}).get("pull") or {}).get("branch")
                         if not head:
                             return {"id": sid, "ok": False, "why": [failing or f"push {arg}: no pull request closes #{number} to push to"], "run": (seen or {}).get("run", "")}
-                    write_file(repo, head, path, f"{arg} on the pull request\n", run)
+                    write_file(repo, head, path, scenario_text(sid, arg, "the pull request", run_id), run)
                 if arg in LANDS:
                     why = land(arg, path)
                     if why:
@@ -1623,7 +1653,7 @@ def core_problems(scenarios, pack):
     return out
 
 
-def play_group(conf, gid, repo, ref, run=gh, sleep=time.sleep, minutes=20):
+def play_group(conf, gid, repo, ref, run=gh, sleep=time.sleep, minutes=20, run_id=None):
     """The scenarios of the group `gid` (one, #694), in its order, at
     `ref` (the callers already there), with the test identity's token (the
     ambient GH_TOKEN): their rows, or one failing row when `gid` is no
@@ -1632,11 +1662,12 @@ def play_group(conf, gid, repo, ref, run=gh, sleep=time.sleep, minutes=20):
     group = next((g for g in groups(scenarios) if g["id"] == gid), None)
     if group is None:
         return [{"id": gid, "ok": False, "why": [f"{gid} is no group of {SCENARIOS}"], "run": ""}]
-    by_id = {s.get("id"): s for s in scenarios}
-    return [play(by_id[sid], repo, ref, conf.get("bodies") or {}, run, sleep, minutes, types=conf.get("types") or {}) for sid in group["scenarios"]]
+    by_id, run_id = {s.get("id"): s for s in scenarios}, run_id or run_mark()
+    return [play(by_id[sid], repo, ref, conf.get("bodies") or {}, run, sleep, minutes, types=conf.get("types") or {}, run_id=run_id)
+            for sid in group["scenarios"]]
 
 
-def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20, central=None, callers=None, moved_out=None, record=None):
+def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20, central=None, callers=None, moved_out=None, record=None, run_id=None):
     """Every scenario at `ref`: the callers moved there first (a merged pull
     request, or no scenario plays and one failing `callers` row says why),
     and put back after, through another; a failure to put them back is a
@@ -1659,11 +1690,11 @@ def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20, cent
         return rows + put_back(repo, ref, moved, callers, central, sleep, minutes)
     if moved_out is not None:
         moved_out.extend(moved)
-    results = []
+    results, run_id = [], run_id or run_mark()
     try:
         for s in conf.get("scenarios") or []:
             if not only or s["id"] in only:
-                results.append(play(s, repo, ref, bodies, run, sleep, minutes, types=conf.get("types") or {}))
+                results.append(play(s, repo, ref, bodies, run, sleep, minutes, types=conf.get("types") or {}, run_id=run_id))
     finally:
         if moved_out is None:
             results.extend(put_back(repo, ref, moved, callers, central, sleep, minutes))
@@ -1836,6 +1867,23 @@ def commits(calls):
             adds = got["fileChanges"]["additions"]
             out.append((got["branch"]["repositoryNameWithOwner"], got["branch"]["branchName"], [a["path"] for a in adds],
                         {a["path"]: base64.b64decode(a["contents"]).decode() for a in adds}))
+    return out
+
+
+def stale_writes(writes, held, run_id):
+    """The texts among `writes` (`commits`) under scenarios/ that would
+    change nothing (#778): one some earlier state already `held` ({path:
+    [texts]}: what the test repository's main held, another run's), so its
+    pull request would have no diff, or one without `run_id`. Pure."""
+    out = []
+    for _, branch, _, files in writes:
+        for path, text in files.items():
+            if not path.startswith("scenarios/"):
+                continue
+            if text in (held.get(path) or ()):
+                out.append(f"{branch}: {path} says what was there already: {text.strip()!r}")
+            if run_id not in text:
+                out.append(f"{branch}: {path} does not carry the run's id {run_id}: {text.strip()!r}")
     return out
 
 
@@ -3151,6 +3199,43 @@ def self_test():
         diffs760[s["id"]] = (diff, unnamed(made[0] if made else "", diff))
     check("#760 C3: every path the faked createCommitOnBranch writes on the pull request's head, its diff, is named in the description its pr create received",
           diffs760, {"secret-760": (["scenarios/secret-760/pull.md", "scenarios/secret-760/secret.md"], []), "plain-760": (["scenarios/plain-760/pull.md"], [])})
+    # #778: a scenario's change is its own in each run, never what an
+    # earlier run merged into main, so its pull request has a diff.
+    by778 = {s["id"]: s for s in real["scenarios"]}
+
+    def replay778(s, run_id):
+        """The commits `play` makes for the scenario `s`, its `until`s
+        taken out (they only poll), in the run `run_id`."""
+        st, fake = pushed()
+        play(dict(s, steps=[x for x in s.get("steps") or [] if "until" not in x]), "o/t", "v7-next", real["bodies"], fake, lambda _: None, 1,
+             fork=fake, types=real.get("types") or {}, run_id=run_id)
+        return commits(st["io"])
+    four778 = ("draft-in-conflict", "ready-behind-main", "merge-queue", "low-risk-merges")
+    main778, stale778, wrote778 = {}, {}, {}
+    for sid in four778:
+        for _, branch, _, files in replay778(by778[sid], "7-1"):
+            for path, text in files.items():
+                main778.setdefault(path, []).append(text)
+        now = replay778(by778[sid], "8-1")
+        wrote778[sid] = sorted({p for _, _, paths, _ in now for p in paths})
+        stale778[sid] = stale_writes(now, main778, "8-1")
+    check("#778 C1: the four failing scenarios, replayed on a main that holds an earlier run's texts, each write what main does not hold",
+          (wrote778, {k: v for k, v in stale778.items() if v}),
+          ({"draft-in-conflict": ["scenarios/draft-in-conflict/conflict.md"], "ready-behind-main": ["scenarios/ready-behind-main/behind.md"],
+            "merge-queue": ["scenarios/merge-queue/pull.md"], "low-risk-merges": ["scenarios/low-risk-merges/pull.md"]}, {}))
+    conflict778 = [files for _, _, _, files in replay778(by778["draft-in-conflict"], "8-1")]
+    check("#778 C1: draft-in-conflict still conflicts: the head and main get two texts of the same file",
+          (len(conflict778), len({t for f in conflict778 for t in f.values()})), (2, 2))
+    check("#778 C1: stale_writes names a text main held already, and one with no run id",
+          stale_writes([("o/t", "b", ["scenarios/x/pull.md"], {"scenarios/x/pull.md": "x"})], {"scenarios/x/pull.md": ["x"]}, "8-1"),
+          ["b: scenarios/x/pull.md says what was there already: 'x'", "b: scenarios/x/pull.md does not carry the run's id 8-1: 'x'"])
+    check("#778 C1: run_mark is the lane's run id and attempt, else a local time with a random suffix, and play_group passes one to play",
+          (run_mark({"GITHUB_RUN_ID": "42", "GITHUB_RUN_ATTEMPT": "2"}), run_mark({}, now=5, rand="ab")), ("42-2", "local-5-ab"))
+    io778 = []
+    play_group({"scenarios": [by778["low-risk-merges"]], "bodies": real["bodies"], "types": real.get("types") or {}}, "low-risk-merges",
+               "o/t", "v7-next", described(io778), lambda _: None, 1, run_id="9-3")
+    check("#778 C1: play_group writes with the run id it is given",
+          ["run 9-3" in t for _, _, _, f in commits(io778) for t in f.values()], [True])
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
