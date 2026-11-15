@@ -41,3 +41,17 @@ def test_an_unlistable_change_is_a_high_floor_not_a_failed_job():
     for s in summary:
         assert s["env"]["REASONS"] == "${{ steps.policy.outputs.reasons }}"
         assert s["env"]["FLOOR"] == "${{ steps.policy.outputs.floor }}"
+
+
+def test_the_bound_is_data_not_the_workflow():
+    """C4: the bound is `files-wait` in the organisation's default policy,
+    which the step hands the script; the step itself has no retry count or
+    sleep."""
+    import re
+    default = yaml.safe_load((ROOT / "policy/review-policy.default.yml").read_text(encoding="utf-8"))
+    assert set(default["files-wait"]) == {"reads", "seconds"}
+    step = policy_step()
+    assert step["env"]["DEFAULT_POLICY"] == ".dx-central/policy/review-policy.default.yml"
+    run = step["run"]
+    assert "sleep" not in run and not re.search(r"\bseq\b|\bfor\b|\bwhile\b|\buntil\b", run)
+    assert "files-wait" in (ROOT / "scripts/pr-files.py").read_text(encoding="utf-8")

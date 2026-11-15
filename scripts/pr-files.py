@@ -9,7 +9,11 @@ the head commit from the event): when git sees a change the API does not
 list yet, the API is read again, a bounded number of times.
 
   pr-files.py          PR, GITHUB_REPOSITORY, BASE and HEAD (the pull
-                       request's base and head commits): prints the changed
+                       request's base and head commits), DEFAULT_POLICY
+                       (the organisation's review policy, whose
+                       `files-wait: {reads, seconds}` is the bound: without
+                       it, one read; a repository's policy cannot change
+                       it, it is a property of GitHub's API): prints the changed
                        files, one per line (a rename's old path too, so
                        moving a file out of a high-risk directory counts);
                        its messages go to stderr
@@ -38,6 +42,21 @@ import sys
 import time
 
 API_CAP = 3000
+
+
+def bound(path, log=lambda m: print(m, file=sys.stderr)):
+    """(reads, seconds) from `files-wait` in the policy at PATH; one read
+    when the key is missing or not a bound."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from policy import load_yaml
+    wait = (load_yaml(path) if path else {}).get("files-wait")
+    if wait is None:
+        return 1, 0
+    reads, seconds = (wait.get("reads"), wait.get("seconds", 0)) if isinstance(wait, dict) else (None, None)
+    if type(reads) is not int or reads < 1 or type(seconds) not in (int, float) or seconds < 0:
+        log(f"::warning::`files-wait` in {path} is not {{reads: 1 or more, seconds: 0 or more}}; the files are read once.")
+        return 1, 0
+    return reads, seconds
 
 
 def names(pages):
@@ -145,6 +164,21 @@ def self_test():
     check("C3: policy.py gives high and says why", floor_of(got[1]), ("high", "no changed files could be listed"))
     read, seen = fake(([[{"filename": "a.md"}]], 2))
     check("C3: a partial list is no list either", listing(read, ["a.md", "b.md"], 2, 0, sleep=lambda s: None, log=said.append), (0, []))
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        def bound_of(text):
+            path = os.path.join(tmp, "policy.yml")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            return bound(path, log=said.append)
+        check("C4: the reads and the delay come from `files-wait`", bound_of("files-wait:\n  reads: 4\n  seconds: 2\n"), (4, 2))
+        check("C4: a missing key means one read", bound_of("budget-usd: 3\n"), (1, 0))
+        check("C4: a bound that is not one means one read", [bound_of(t) for t in ("files-wait: 3\n", "files-wait:\n  reads: 0\n", "files-wait:\n  reads: 2\n  seconds: -1\n")], [(1, 0)] * 3)
+    here = os.path.dirname(os.path.abspath(__file__))
+    reads, seconds = bound(os.path.join(here, "..", "policy", "review-policy.default.yml"))
+    check("C4: the default policy waits about a minute", (reads > 1, 30 <= (reads - 1) * seconds <= 120), (True, True))
+    read, seen = fake(([], 0), (added, 1))
+    check("C4: with one read, nothing waits", (listing(read, ["docs/new.md"], 1, 10, sleep=slept.append, log=said.append), len(seen)), ((0, []), 1))
     read, _ = fake(([[{"filename": "b.md", "previous_filename": "a.md"}]], 1))
     check("a rename lists both its paths", listing(read, ["b.md"], 1, 0, sleep=slept.append, log=said.append), (0, ["b.md", "a.md"]))
     read, seen = fake(([[{"filename": f"f{i}"} for i in range(API_CAP)]], API_CAP + 5))
@@ -162,7 +196,8 @@ def main(argv):
         print(__doc__, file=sys.stderr)
         return 64
     e = os.environ.get
-    code, files = listing(gh_read(e("GITHUB_REPOSITORY", ""), e("PR", "")), git_changed(e("BASE", ""), e("HEAD", "HEAD")), 6, 10)
+    reads, seconds = bound(e("DEFAULT_POLICY", ""))
+    code, files = listing(gh_read(e("GITHUB_REPOSITORY", ""), e("PR", "")), git_changed(e("BASE", ""), e("HEAD", "HEAD")), reads, seconds)
     for f in files:
         print(f)
     return code
