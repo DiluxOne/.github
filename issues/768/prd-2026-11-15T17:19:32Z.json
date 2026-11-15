@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 768,
+  "prd_sha256": "7e592afa797b8df747d4a2bf8ace44c1034cb5bd502f4f1385a2ac05252c424f",
+  "prd": "### Problem\n\nA correct low-risk pull request is held as high risk, and waits on a person, only because its review started too soon after it was opened.\n\n### Scope\n\nclaude-review.yml's \"Policy floor (deterministic)\" step (and any other step that reads a pull request's files to decide), the bound as data, its tests, and docs/pull-requests.md where the floor is described. The step works while the engine's scripts it calls are still those of main (C5): a first attempt, #769, could not pass its own review because the step called a new script that main does not have yet.\n\n### Out of scope\n\nThe high-risk paths themselves. The release scenarios.\n\n### Acceptance criteria\n\nC1: Given a pull request whose head adds a file and whose files API returns `[]` for the first reads, when the policy step runs, then it waits and computes the floor from the file once it is listed.\nC2: Given a pull request whose diff is really empty, when the policy step runs, then it fails closed as today and says so.\nC3: Given a files list that still cannot be read past the bound, when the policy step gives up, then the floor is high and the pull request's review says the files could not be listed.\nC4: Given the bound, when it is read, then it comes from data, not a constant in the workflow.\nC5: Given a review whose workflow is the pull request's but whose engine scripts come from main (`central-ref: main`, as in DiluxOne/.github), when the policy step runs before the scripts this change adds reach main, then the step does not fail on a missing script: it falls back to today's file listing and says so in the log, so this change's own pull request passes its review.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-15T17:19:32Z",
+  "policy": "DiluxOne/.github@d1c544223630"
+}
