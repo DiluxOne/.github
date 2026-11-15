@@ -24,6 +24,10 @@ without saying so, so its count is checked against the pull request's own
     is printed, with a warning, and policy.py sets the floor high;
   - git sees a change the API does not list yet (none, or fewer than
     `changedFiles`): it reads again;
+  - the bound runs out with the list still empty or partial: nothing is
+    printed, with a warning that the files could not be listed, and
+    policy.py sets the floor high ("no changed files could be listed"),
+    which the review's summary prints;
   - the API is at its cap below `changedFiles`: waiting cannot fix that; it
     fails (exit 1), as the step did before.
 """
@@ -65,6 +69,7 @@ def listing(read, git_files, reads, seconds, sleep=time.sleep, log=lambda m: pri
         if n < reads:
             log(f"The files API lists {listed} of {total} changed files (git sees {'?' if git_files is None else len(git_files)}); reading again in {seconds}s ({n} of {reads}).")
             sleep(seconds)
+    log(f"::warning::The files API listed {listed} of {total} changed files after {reads} reads (git sees {'?' if git_files is None else len(git_files)}); the files could not be listed, and the floor is high.")
     return 0, []
 
 
@@ -132,6 +137,14 @@ def self_test():
     check("C2: policy.py gives high for that empty list", floor_of(got[1]), ("high", "no changed files could be listed"))
     read, seen = fake(([], 0), (added, 1))
     check("git that cannot tell is no empty diff: it waits", (listing(read, None, 6, 0, sleep=lambda s: None, log=said.append), len(seen)), ((0, ["docs/new.md"]), 2))
+    read, seen = fake(([], 0))
+    slept, said = [], []
+    got = listing(read, ["docs/new.md"], 3, 5, sleep=slept.append, log=said.append)
+    check("C3: still empty after the bound: it gives up, says the files could not be listed, lists nothing",
+          (got, len(seen), slept, "could not be listed" in said[-1]), ((0, []), 3, [5, 5], True))
+    check("C3: policy.py gives high and says why", floor_of(got[1]), ("high", "no changed files could be listed"))
+    read, seen = fake(([[{"filename": "a.md"}]], 2))
+    check("C3: a partial list is no list either", listing(read, ["a.md", "b.md"], 2, 0, sleep=lambda s: None, log=said.append), (0, []))
     read, _ = fake(([[{"filename": "b.md", "previous_filename": "a.md"}]], 1))
     check("a rename lists both its paths", listing(read, ["b.md"], 1, 0, sleep=slept.append, log=said.append), (0, ["b.md", "a.md"]))
     read, seen = fake(([[{"filename": f"f{i}"} for i in range(API_CAP)]], API_CAP + 5))
