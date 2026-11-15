@@ -76,6 +76,7 @@ import datetime
 import hashlib
 import json
 import os
+import random
 import re
 import subprocess
 import sys
@@ -534,35 +535,54 @@ def write(repo, path, obj, message):
     put(repo, path, obj, message)
 
 
-# Two writers at once (two issues accepted together, #561): the second
-# write's commit meets a branch head that just moved, and GitHub answers
-# 409, or 422 on a stale head. Each try reads the head anew; a path that
-# already exists is never written again.
-WRITE_TRIES = 5
+# Two writers at once (two issues accepted together, #561), or a burst of
+# them (the release lane accepts all its scenarios at once, #774): a write's
+# commit meets a branch head that just moved, and GitHub answers 409, or 422
+# on a stale head. Each try reads the head anew; a path that already exists
+# is never written again. The wait before a try is a random time up to an
+# exponential back-off (full jitter), so writers that collided spread out
+# instead of retrying together, and the tries are bounded by time, not by a
+# count, which a burst bigger than the count would run out of.
+WRITE_SECONDS = 300
+BACKOFF_BASE = 0.5
+BACKOFF_MAX = 20
 
 
-def put(repo, path, obj, message, api=None, nap=None):
+def backoff(n, rand=random.random):
+    """The wait before try n + 1: a random time in [0, min(BACKOFF_MAX,
+    BACKOFF_BASE * 2 ** (n - 1))]."""
+    return rand() * min(BACKOFF_MAX, BACKOFF_BASE * 2 ** min(n - 1, 32))
+
+
+def put(repo, path, obj, message, api=None, nap=None, rand=None, clock=None):
     """Write one receipt on the branch, retrying when the branch moved under
-    it (HTTP 409, or 422 on a sha or a conflict) up to WRITE_TRIES times
-    with a short back-off; never an overwrite: without a sha the API
-    refuses a path that exists, and a 422 for a path that exists ends
-    there. api and nap are for the self-test."""
+    it (HTTP 409, or 422 on a sha or a conflict) with a jittered back-off
+    until WRITE_SECONDS have passed; never an overwrite: without a sha the
+    API refuses a path that exists, and a 422 for a path that exists ends
+    there. api, nap, rand and clock are for the self-test."""
     api = api or gh
     nap = nap or time.sleep
+    rand = rand or random.random
+    clock = clock or time.monotonic
     # Never an overwrite: without a sha, the API refuses a path that exists.
     payload = {"message": message, "branch": BRANCH, "content": base64.b64encode((json.dumps(obj, indent=2) + "\n").encode()).decode()}
-    for n in range(1, WRITE_TRIES + 1):
+    start = clock()
+    n = 0
+    while True:
+        n += 1
         try:
             return api("-X", "PUT", f"repos/{repo}/contents/{path}", "--input", "-", data=payload)
         except RuntimeError as e:
             text = str(e)
             moved = "409" in text or ("422" in text and re.search(r"(?i)\bsha\b|conflict", text))
-            if not moved or n == WRITE_TRIES:
+            if not moved:
                 raise
             if "422" in text and exists(repo, path, api):
                 raise RuntimeError(f"{path} exists; a receipt is never overwritten") from e
-            nap(0.5 * 2 ** (n - 1))
-    return None
+            spent = clock() - start
+            if spent >= WRITE_SECONDS:
+                raise RuntimeError(f"{text}; the receipts branch kept moving for {int(spent)} s") from e
+            nap(backoff(n, rand))
 
 
 def exists(repo, path, api=None):
@@ -838,12 +858,58 @@ Normal
     check("#561 C5: a path that exists is never written again", ("never overwritten" in again, json.loads(base64.b64decode(branch_files["issues/8/prd-1.json"]))),
           (True, {"issue": 8}))
     always = lambda *a, data=None: (_ for _ in ()).throw(RuntimeError("gh: conflict (HTTP 409)"))
+    fake = [0.0]
+    tries10 = []
+
+    def counted(*a, data=None):
+        tries10.append(fake[0])
+        return always(*a, data=data)
     try:
-        put("o/r", "issues/10/prd-1.json", {}, "x", api=always, nap=lambda s: None)
+        put("o/r", "issues/10/prd-1.json", {}, "x", api=counted, nap=lambda s: fake.__setitem__(0, fake[0] + s),
+            rand=lambda: 1.0, clock=lambda: fake[0])
         capped = "written"
     except RuntimeError as e:
         capped = str(e)
-    check("#561 C5: a branch that keeps moving fails after the tries, said", "409" in capped, True)
+    check("#561 C5, #774: a branch that keeps moving fails once the bound passes, said",
+          ("409" in capped, f"kept moving for {int(fake[0])} s" in capped, fake[0] >= WRITE_SECONDS, fake[0] - tries10[-2] <= BACKOFF_MAX),
+          (True, True, True, True))
+    check("#774: the tries are bounded by time, not by five", len(tries10) > 5, True)
+    # #774: full jitter, each wait within [0, min(cap, base * 2 ** (n - 1))].
+    check("#774: the jitter stays within its window",
+          [(backoff(n, lambda: 0.0), backoff(n, lambda: 1.0)) for n in (1, 2, 3, 6, 7, 40)],
+          [(0.0, 0.5), (0.0, 1.0), (0.0, 2.0), (0.0, 16.0), (0.0, 20), (0.0, 20)])
+    check("#774: the default jitter is random within its window", all(0 <= backoff(3) <= 2.0 for _ in range(200)), True)
+    # #774: eight writers at once on a branch that takes one commit at a
+    # time and answers 409 to a write that meets another.
+    import threading
+    burst, head8 = {}, threading.Lock()
+
+    def one_at_a_time(*args, data=None):
+        path = next(a for a in args if a.startswith("repos/")).split("/contents/", 1)[1]
+        if not head8.acquire(blocking=False):
+            raise RuntimeError("gh: is at abc but expected def (HTTP 409)")
+        try:
+            time.sleep(0.005)
+            burst[path] = data["content"]
+        finally:
+            head8.release()
+        return {"content": {"path": path}}
+
+    paths8 = [f"issues/{n}/prd-2.json" for n in range(20, 28)]
+    gate8, lost = threading.Barrier(len(paths8)), []
+
+    def writer(p):
+        gate8.wait()
+        try:
+            put("o/r", p, {}, "seal", api=one_at_a_time, nap=lambda s: time.sleep(s * 0.02))
+        except RuntimeError as e:
+            lost.append(str(e))
+    writers = [threading.Thread(target=writer, args=(p,)) for p in paths8]
+    for t in writers:
+        t.start()
+    for t in writers:
+        t.join()
+    check("#774: writers that move the branch in a burst are all written", (sorted(burst), lost), (paths8, []))
     try:
         put("o/r", "issues/11/prd-1.json", {}, "x", api=lambda *a, data=None: (_ for _ in ()).throw(RuntimeError("gh: Bad credentials (HTTP 401)")), nap=lambda s: 1 / 0)
         other = "written"
