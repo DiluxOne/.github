@@ -383,6 +383,20 @@ files:
       read-by: [scripts/policy.py]
       issue: "#130, #361"
       says: The most lines a pull request from an author who is not trusted may change.
+    - key: files-wait.reads
+      org: any
+      repo: never
+      limit: at least 1; without the key, one read
+      read-by: [scripts/pr-files.py]
+      issue: "#768"
+      says: How many times the policy floor reads the files API before it gives up on a list git sees changed.
+    - key: files-wait.seconds
+      org: any
+      repo: never
+      limit: 0 or more seconds between two reads
+      read-by: [scripts/pr-files.py]
+      issue: "#768"
+      says: How long the policy floor waits between two reads of the files API.
     - key: docs-paths
       org: any
       repo: never
