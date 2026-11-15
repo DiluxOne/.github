@@ -73,15 +73,6 @@ claims:
   newcomer-claims: 1
   contributor-claims: 3
   open-prs: 2
-# A write to a repository's receipts branch (#763, scripts/receipts.py put()):
-# a write that meets a branch that just moved is retried, with an exponential
-# back-off and full jitter (a random wait up to base * 2^n, at most the
-# maximum, in seconds), until write-seconds have passed; then the seal fails,
-# said on the issue's board. A repository only lowers them.
-receipts:
-  write-seconds: 300
-  backoff-base-seconds: 0.5
-  backoff-max-seconds: 20
 budgets-usd:
   autopilot-spec: 3
   autopilot-work: 20

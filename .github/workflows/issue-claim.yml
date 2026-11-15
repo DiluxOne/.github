@@ -96,7 +96,6 @@ jobs:
       cancel-in-progress: false
     outputs:
       start: ${{ steps.claim.outputs.start || '[]' }}
-      seal: ${{ steps.claim.outputs.seal || '[]' }}
     steps:
       - name: App token
         id: bot
@@ -136,7 +135,6 @@ jobs:
     permissions: {}
     outputs:
       start: ${{ steps.daily.outputs.start || '[]' }}
-      seal: ${{ steps.daily.outputs.seal || '[]' }}
     steps:
       - name: App token
         id: bot
@@ -146,7 +144,7 @@ jobs:
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           # The daily list is on the organisation's .github.
           repositories: ${{ github.event.repository.name == '.github' && '.github' || format('{0},.github', github.event.repository.name) }}
-          permission-contents: read # the seal of a released bug's lane issue is the `seal` job's
+          permission-contents: write # the seal of a released bug's lane issue
           permission-issues: write
           permission-pull-requests: write
           permission-actions: read # the reproduction's run, which the lane checks
@@ -172,124 +170,11 @@ jobs:
           export POLICY_REF
           REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml" python3 .dx-central/scripts/claim.py daily
 
-  # The PRD of a released claim's lane issue (claim.py's `seal=`), in a job
-  # of its own (#763): every job that writes to the receipts branch is in one
-  # queue per repository, receipts-<repository>, so writers never race on
-  # its head (the claim's jobs, which run on every comment, stay out of it).
-  # GitHub keeps one job running and one pending in a group, and a third
-  # arrival cancels the pending one: then `seal-again` writes it, outside
-  # the queue, through put()'s retry (scripts/receipts.py).
-  seal:
-    name: Claims · the lane issues' seal
-    needs: [claim, daily]
-    if: "!cancelled() && (needs.claim.outputs.seal || needs.daily.outputs.seal || '[]') != '[]'"
-    concurrency:
-      group: receipts-${{ github.repository }}
-      cancel-in-progress: false
-    runs-on: ubuntu-latest # fresh: it holds the key
-    timeout-minutes: 10
-    permissions: {}
-    steps:
-      - name: App token
-        id: bot
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
-          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
-          repositories: ${{ github.event.repository.name }}
-          permission-contents: write # the seal on the receipts branch
-          permission-issues: write # the board
-
-      - name: The organisation's scripts and policy
-        env:
-          REF: ${{ inputs.central-ref || job.workflow_sha }}
-        run: |
-          set -euo pipefail
-          git clone -q --depth 1 --branch "$REF" https://github.com/DiluxOne/.github .dx-central 2>/dev/null \
-            || { git clone -q https://github.com/DiluxOne/.github .dx-central && git -C .dx-central checkout -q "$REF"; }
-          test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
-
-      - name: Seal the lane issues' PRDs
-        env:
-          GH_TOKEN: ${{ steps.bot.outputs.token }}
-          LANES: ${{ needs.claim.outputs.seal || needs.daily.outputs.seal || '[]' }}
-        run: |
-          set -euo pipefail
-          gh api "repos/$GITHUB_REPOSITORY/contents/.github/autonomy.yml" --jq .content 2>/dev/null | base64 -d > "$RUNNER_TEMP/repo-autonomy.yml" || : > "$RUNNER_TEMP/repo-autonomy.yml"
-          export REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml"
-          POLICY_REF=$(git -C .dx-central rev-parse --short=12 HEAD)
-          export POLICY_REF
-          # A seal that could not be written (#763): said on the lane
-          # issue's board, the others still sealed, and the job fails.
-          lost=""
-          for lane in $(printf '%s' "$LANES" | jq -r '.[]'); do
-            gh issue view "$lane" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/sealed.md"
-            failed=""
-            NUMBER=$lane BODY="$RUNNER_TEMP/sealed.md" ACCEPTED_BY="policy (lane bugfix-reproduced)" python3 .dx-central/scripts/receipts.py seal-prd || failed=--seal-failed
-            board=$(NUMBER=$lane BODY="$RUNNER_TEMP/sealed.md" python3 .dx-central/scripts/receipts.py board ${failed:+"$failed"})
-            gh issue comment "$lane" --repo "$GITHUB_REPOSITORY" --body "$board" >/dev/null
-            if [ -n "$failed" ]; then lost="$lost #$lane"; fi
-          done
-          if [ -n "$lost" ]; then echo "::error::The seal of${lost}'s PRD could not be written; the board says so."; exit 1; fi
-
-  # The seal's queue slot was taken by a later write (#763): the same steps,
-  # outside the queue; put() retries a moved head until its time bound.
-  seal-again:
-    name: Claims · the lane issues' seal, again
-    needs: [claim, daily, seal]
-    if: always() && needs.seal.result == 'cancelled'
-    runs-on: ubuntu-latest # fresh: it holds the key
-    timeout-minutes: 10
-    permissions: {}
-    steps:
-      - name: App token
-        id: bot
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
-          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
-          repositories: ${{ github.event.repository.name }}
-          permission-contents: write # the seal on the receipts branch
-          permission-issues: write # the board
-
-      - name: The organisation's scripts and policy
-        env:
-          REF: ${{ inputs.central-ref || job.workflow_sha }}
-        run: |
-          set -euo pipefail
-          git clone -q --depth 1 --branch "$REF" https://github.com/DiluxOne/.github .dx-central 2>/dev/null \
-            || { git clone -q https://github.com/DiluxOne/.github .dx-central && git -C .dx-central checkout -q "$REF"; }
-          test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
-
-      - name: Seal the lane issues' PRDs
-        env:
-          GH_TOKEN: ${{ steps.bot.outputs.token }}
-          LANES: ${{ needs.claim.outputs.seal || needs.daily.outputs.seal || '[]' }}
-        run: |
-          set -euo pipefail
-          gh api "repos/$GITHUB_REPOSITORY/contents/.github/autonomy.yml" --jq .content 2>/dev/null | base64 -d > "$RUNNER_TEMP/repo-autonomy.yml" || : > "$RUNNER_TEMP/repo-autonomy.yml"
-          export REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml"
-          POLICY_REF=$(git -C .dx-central rev-parse --short=12 HEAD)
-          export POLICY_REF
-          # A seal that could not be written (#763): said on the lane
-          # issue's board, the others still sealed, and the job fails.
-          lost=""
-          for lane in $(printf '%s' "$LANES" | jq -r '.[]'); do
-            gh issue view "$lane" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/sealed.md"
-            failed=""
-            NUMBER=$lane BODY="$RUNNER_TEMP/sealed.md" ACCEPTED_BY="policy (lane bugfix-reproduced)" python3 .dx-central/scripts/receipts.py seal-prd || failed=--seal-failed
-            board=$(NUMBER=$lane BODY="$RUNNER_TEMP/sealed.md" python3 .dx-central/scripts/receipts.py board ${failed:+"$failed"})
-            gh issue comment "$lane" --repo "$GITHUB_REPOSITORY" --body "$board" >/dev/null
-            if [ -n "$failed" ]; then lost="$lost #$lane"; fi
-          done
-          if [ -n "$lost" ]; then echo "::error::The seal of${lost}'s PRD could not be written; the board says so."; exit 1; fi
-
   # Every release ends here: the autopilot starts on what nobody holds now,
   # so no accepted issue is left without someone working it. autopilot.yml
   # decides again whether it may (accepted, ready, nobody holding it).
   autopilot:
-    # order: after the lane issues' seal (#763), which the autopilot reads as their acceptance.
-    needs: [claim, daily, seal, seal-again]
+    needs: [claim, daily]
     if: always() && (needs.claim.outputs.start || needs.daily.outputs.start || '[]') != '[]'
     strategy:
       fail-fast: false

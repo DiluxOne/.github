@@ -38,9 +38,7 @@ signed by GitHub and show as Verified.
                            sealed one; exit 0 when it did, 1 when not, 2
                            when the seal could not be read
   receipts.py board        the issue's board: one bot comment, kept up to date;
-                           its hidden state block (#564) carried forward. With
-                           --seal-failed (#763): the acceptance's seal could
-                           not be written, and its G2 row says so
+                           its hidden state block (#564) carried forward
   receipts.py state get [KEY]
                            the board's state (#564), or one key of it, as
                            JSON; exit 3 when the block was edited by hand
@@ -58,10 +56,7 @@ signed by GitHub and show as Verified.
 Environment: GH_TOKEN; GITHUB_REPOSITORY (owner/name); NUMBER (the issue);
 BODY (a file holding the issue's body); ACCEPTED_BY and ACCEPTED_HOW
 (seal-prd; `own-bug` for a maintainer's own Bug, #564); AUTHOR (own-bug); POLICY_REF
-(the commit of DiluxOne/.github whose policy applied); ORG_AUTONOMY and
-REPO_AUTONOMY (the policies whose `receipts:` bound a write's retry, #763:
-policy/autonomy.yml here, and the repository's .github/autonomy.yml, read
-from GitHub when REPO_AUTONOMY is not set); RECEIPTS_FIXTURE (a
+(the commit of DiluxOne/.github whose policy applied); RECEIPTS_FIXTURE (a
 directory standing in for the branch, and for the board's comment and the
 mentions, under comments/<n>/, for the self-test).
 
@@ -340,7 +335,7 @@ def rule_link(policy):
     return f"[the rule](https://github.com/DiluxOne/.github/blob/{ref}/policy/autonomy.yml)"
 
 
-def board_text(number, ready, last_seal, merged, autopilot=None, labels=(), held="", state=None, intact=True, raw_state="", seal_failed=False):
+def board_text(number, ready, last_seal, merged, autopilot=None, labels=(), held="", state=None, intact=True, raw_state=""):
     rows = ["| Gate | State |", "| --- | --- |"]
     rows.append(f"| G1 Issue ready | {'✓ the PRD follows the schema' if ready else '✗ see the G1 comment'} |")
     # A person holds it (#488, #561): a claim, an assignment, their own
@@ -348,11 +343,7 @@ def board_text(number, ready, last_seal, merged, autopilot=None, labels=(), held
     if held and not autopilot:
         rows.append(f"| Held | 🙋 {held}: the autopilot does not start |")
     lane = next((l[5:] for l in labels if l.startswith("lane:")), None)
-    if seal_failed:
-        # The seal of this acceptance could not be written (#763): an older
-        # seal, if any, is not this acceptance's, so it is not shown as one.
-        rows.append("| G2 Accepted | ✗ accepted, but the seal could not be written; a maintainer accepts it again (remove and add `accepted`) |")
-    elif last_seal:
+    if last_seal:
         by = last_seal.get("accepted_by") or ""
         # A lane seals as "policy (lane <name>)": it links the rule it followed (#188).
         if by.startswith("policy (lane "):
@@ -380,7 +371,7 @@ def board_text(number, ready, last_seal, merged, autopilot=None, labels=(), held
     # The state block, hidden (#564): carried as it was when it was edited
     # by hand, so a person's edit is never given a valid hash.
     block = raw_state if not intact else (state_block(state) if state else "")
-    mark = f"{SEAL_MARK}\n" if last_seal and not seal_failed else ""
+    mark = f"{SEAL_MARK}\n" if last_seal else ""
     return f"{BOARD}\n{mark}**The issue's board**\n\n" + "\n".join(rows) + f"\n\n{AI}" + (f"\n{block}" if block else "")
 
 
@@ -543,93 +534,35 @@ def write(repo, path, obj, message):
     put(repo, path, obj, message)
 
 
-# Two writers at once (two issues accepted together, #561), or twenty (#763):
-# a write's commit meets a branch head that just moved, and GitHub answers
-# 409, or 422 on a stale head. Each try reads the head anew, until a time
-# bound, with an exponential back-off and full jitter so the writers do not
-# retry in step; a path that already exists is never written again. The
-# bound and the back-off are data (#763): policy/autonomy.yml `receipts:`,
-# which a repository's .github/autonomy.yml only lowers; these for a key
-# it leaves out.
-DEFAULTS = {"write-seconds": 300, "backoff-base-seconds": 0.5, "backoff-max-seconds": 20}
+# Two writers at once (two issues accepted together, #561): the second
+# write's commit meets a branch head that just moved, and GitHub answers
+# 409, or 422 on a stale head. Each try reads the head anew; a path that
+# already exists is never written again.
+WRITE_TRIES = 5
 
 
-def limits(policy):
-    """The write's bound and back-off: the policy's `receipts:`, the
-    defaults for a key it leaves out."""
-    got = dict(DEFAULTS)
-    got.update({k: v for k, v in ((policy or {}).get("receipts") or {}).items() if k in DEFAULTS})
-    return got
-
-
-def repo_autonomy(repo):
-    """The path of the repository's .github/autonomy.yml: REPO_AUTONOMY when
-    the job has it, else read from GitHub into a temporary file; None when
-    it has none, or it cannot be read (then the organisation's apply)."""
-    if os.environ.get("REPO_AUTONOMY") or not repo:
-        return os.environ.get("REPO_AUTONOMY") or None
-    import tempfile
-    try:
-        got = gh(f"repos/{repo}/contents/.github/autonomy.yml")
-    except RuntimeError as e:
-        if "404" not in str(e):
-            print(f"::warning::The repository's .github/autonomy.yml could not be read ({str(e)[:120]}); the organisation's receipts limits apply.", file=sys.stderr)
-        return None
-    with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False, encoding="utf-8") as fh:
-        fh.write(base64.b64decode(got.get("content") or "").decode("utf-8", "replace"))
-    return fh.name
-
-
-def write_limits(repo):
-    """The limits in force for a write in `repo`: the organisation's policy
-    (ORG_AUTONOMY, else policy/autonomy.yml beside this script) merged with
-    the repository's own (autonomy.py merge(): lower only)."""
-    spec = importlib.util.spec_from_file_location("autonomy", os.path.join(HERE, "autonomy.py"))
-    autonomy = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(autonomy)
-    org_policy = autonomy.load(os.environ.get("ORG_AUTONOMY") or os.path.join(HERE, "..", "policy", "autonomy.yml"))
-    try:
-        mine = autonomy.load(repo_autonomy(repo))
-    except Exception as e:  # noqa: BLE001 — a repository's broken file never stops a seal
-        print(f"::warning::The repository's .github/autonomy.yml could not be read ({str(e)[:120]}); the organisation's receipts limits apply.", file=sys.stderr)
-        mine = {}
-    return limits(autonomy.merge(org_policy, mine if isinstance(mine, dict) else {}, repo))
-
-
-def put(repo, path, obj, message, api=None, nap=None, clock=None, rand=None, limits=None):
-    """Write one receipt on the branch, retrying while the branch moved
-    under it (HTTP 409, or 422 on a sha or a conflict) until `write-seconds`
-    have passed, sleeping a random time up to base * 2^n (at most
-    `backoff-max-seconds`); never an overwrite: without a sha the API
+def put(repo, path, obj, message, api=None, nap=None):
+    """Write one receipt on the branch, retrying when the branch moved under
+    it (HTTP 409, or 422 on a sha or a conflict) up to WRITE_TRIES times
+    with a short back-off; never an overwrite: without a sha the API
     refuses a path that exists, and a 422 for a path that exists ends
-    there. Past the bound it raises "the seal could not be written".
-    `limits` are write_limits(repo) unless given; api, nap, clock and rand
-    are for the self-test."""
-    import random
+    there. api and nap are for the self-test."""
     api = api or gh
     nap = nap or time.sleep
-    clock = clock or time.monotonic
-    rand = rand or random.random
-    cfg = limits if limits is not None else write_limits(repo)
-    start = clock()
     # Never an overwrite: without a sha, the API refuses a path that exists.
     payload = {"message": message, "branch": BRANCH, "content": base64.b64encode((json.dumps(obj, indent=2) + "\n").encode()).decode()}
-    n = 0
-    while True:
+    for n in range(1, WRITE_TRIES + 1):
         try:
             return api("-X", "PUT", f"repos/{repo}/contents/{path}", "--input", "-", data=payload)
         except RuntimeError as e:
             text = str(e)
             moved = "409" in text or ("422" in text and re.search(r"(?i)\bsha\b|conflict", text))
-            if not moved:
+            if not moved or n == WRITE_TRIES:
                 raise
             if "422" in text and exists(repo, path, api):
                 raise RuntimeError(f"{path} exists; a receipt is never overwritten") from e
-            spent = clock() - start
-            if spent >= cfg["write-seconds"]:
-                raise RuntimeError(f"the seal could not be written: the receipts branch kept moving for {int(spent)} s ({text})") from e
-            nap(rand() * min(cfg["backoff-max-seconds"], cfg["backoff-base-seconds"] * 2 ** n))
-            n += 1
+            nap(0.5 * 2 ** (n - 1))
+    return None
 
 
 def exists(repo, path, api=None):
@@ -674,9 +607,6 @@ def last_seal(repo, number):
 def self_test():
     import tempfile
     failed = 0
-    # No repository's own policy is read from GitHub here (#763): an empty one.
-    saved_repo_autonomy = os.environ.get("REPO_AUTONOMY")
-    os.environ["REPO_AUTONOMY"] = os.devnull
 
     def check(name, got, want):
         nonlocal failed
@@ -846,11 +776,6 @@ Normal
         check("cli: merged writes a receipt", run("merged").returncode, 0)
         check("cli: the board shows the receipt", "G7 Merged" in run("board").stdout, True)
         check("cli: verify-spec with no Spec seal fails", run("verify-spec").returncode, 1)
-        # C2 (#763): a seal that could not be written, on the board.
-        failed_board = run("board", "--seal-failed").stdout
-        check("C2 (#763) cli: board --seal-failed shows the ✗ G2 row, and no seal's mark",
-              ("| G2 Accepted | ✗ accepted, but the seal could not be written; a maintainer accepts it again (remove and add `accepted`) |" in failed_board,
-               SEAL_MARK in failed_board, SEAL_MARK in run("board").stdout), (True, False, True))
         # C5 (#564): whom it waits on, on the board, and one mention.
         wenv = dict(env, NUMBER="12", HELD="", WAITS_JSON=json.dumps({"who": "alice", "what": "complete the issue: the G1 comment says what is missing", "url": "https://github.com/o/r/issues/12"}))
         wrun = lambda *a, **kw: sp.run([sys.executable, os.path.abspath(__file__)] + list(a), env=dict(wenv, **kw), capture_output=True, text=True)
@@ -912,115 +837,13 @@ Normal
         again = str(e)
     check("#561 C5: a path that exists is never written again", ("never overwritten" in again, json.loads(base64.b64decode(branch_files["issues/8/prd-1.json"]))),
           (True, {"issue": 8}))
-    # C1 (#763): twenty writers at once on one branch, whose head moves on
-    # every other write; a fake clock and nap, so no time passes.
-    import threading
-    lock, heads, puts20, slept20 = threading.Lock(), {"n": 0}, [], []
-
-    def crowded_api(*args, data=None):
-        url = next(a for a in args if a.startswith("repos/"))
-        path = url.split("/contents/", 1)[1].split("?", 1)[0]
-        with lock:
-            if args[:2] != ("-X", "PUT"):
-                if path in branch20:
-                    return {"path": path}
-                raise RuntimeError("gh: Not Found (HTTP 404)")
-            heads["n"] += 1
-            if heads["n"] % 2:
-                raise RuntimeError("gh: is at abc but expected def (HTTP 409)")
-            if path in branch20:
-                raise RuntimeError('gh: Invalid request. "sha" wasn\'t supplied. (HTTP 422)')
-            branch20[path] = branch20.get(path, 0) + 1
-            puts20.append(path)
-            return {"content": {"path": path}}
-    branch20, errors20 = {}, []
-
-    def writer(i):
-        try:
-            put("o/r", f"issues/{i}/prd-1.json", {"issue": i}, f"seal #{i}", api=crowded_api, nap=slept20.append, clock=lambda: 0.0, rand=lambda: 0.5)
-        except RuntimeError as e:  # noqa: PERF203
-            errors20.append(str(e))
-    threads = [threading.Thread(target=writer, args=(i,)) for i in range(1, 21)]
-    [t.start() for t in threads]
-    [t.join() for t in threads]
-    check("C1 (#763): twenty writers at once, the head moving on every other write: every receipt is written, none twice",
-          (errors20, sorted(branch20) == sorted(f"issues/{i}/prd-1.json" for i in range(1, 21)), set(branch20.values()), len(puts20)), ([], True, {1}, 20))
-    check("C1 (#763): the back-off is jittered and capped", (all(0 <= x <= DEFAULTS["backoff-max-seconds"] for x in slept20), bool(slept20)), (True, True))
-    sleeps = []
-    t0 = [0.0]
-
-    def tick():
-        return t0[0]
-
-    def nap_tick(x):
-        sleeps.append(x)
-        t0[0] += 1
     always = lambda *a, data=None: (_ for _ in ()).throw(RuntimeError("gh: conflict (HTTP 409)"))
     try:
-        put("o/r", "issues/10/prd-1.json", {}, "x", api=always, nap=nap_tick, clock=tick, rand=lambda: 1.0)
+        put("o/r", "issues/10/prd-1.json", {}, "x", api=always, nap=lambda s: None)
         capped = "written"
     except RuntimeError as e:
         capped = str(e)
-    check("C1 (#763): a branch that keeps moving is retried until the time bound, not a count of tries",
-          (capped.startswith("the seal could not be written"), "409" in capped, len(sleeps), max(sleeps)),
-          (True, True, DEFAULTS["write-seconds"], DEFAULTS["backoff-max-seconds"]))
-    check("C1 (#763): the back-off grows from its base", sleeps[:3], [0.5, 1.0, 2.0])
-    # C4 (#763): the bound and the back-off are the policy's `receipts:`,
-    # lowered by a repository's own file; changing them changes when put()
-    # gives up. No count of tries is left in this script.
-    def gives_up(**env):
-        clock_, naps_ = [0.0], []
-        saved_env = {k: os.environ.get(k) for k in env}
-        os.environ.update(env)
-        try:
-            put("o/r", "issues/14/prd-1.json", {}, "x", api=always, nap=lambda x: (naps_.append(x), clock_.__setitem__(0, clock_[0] + 1)), clock=lambda: clock_[0], rand=lambda: 1.0)
-        except RuntimeError as e:
-            return (int(clock_[0]), max(naps_), str(e).startswith("the seal could not be written"))
-        finally:
-            for k, v in saved_env.items():
-                os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
-        return None
-    yaml_load = _yaml_loader()
-    with tempfile.TemporaryDirectory() as pd:
-        org_file, repo_file = os.path.join(pd, "org.yml"), os.path.join(pd, "repo.yml")
-        with open(os.path.join(HERE, "..", "policy", "autonomy.yml"), encoding="utf-8") as fh:
-            org_text = fh.read()
-        with open(org_file, "w", encoding="utf-8") as fh:
-            fh.write(re.sub(r"(?m)^  write-seconds: \d+$", "  write-seconds: 40", re.sub(r"(?m)^  backoff-max-seconds: \d+$", "  backoff-max-seconds: 3", org_text)))
-        with open(repo_file, "w", encoding="utf-8") as fh:
-            fh.write("receipts:\n  write-seconds: 12\n  backoff-max-seconds: 50\n")
-        if yaml_load:
-            org_pol = yaml_load(org_text)
-            check("C4 (#763): put()'s limits are policy/autonomy.yml's `receipts:`", (write_limits("o/r"), org_pol.get("receipts")), (limits(org_pol), DEFAULTS))
-            check("C4 (#763): changing the policy's bound and back-off changes when put() gives up; a repository lowers the bound, never raises the back-off",
-                  (gives_up(ORG_AUTONOMY=org_file), gives_up(ORG_AUTONOMY=org_file, REPO_AUTONOMY=repo_file)), ((40, 3, True), (12, 3, True)))
-        else:
-            print("skip the policy's limits (no PyYAML here)")
-    check("C4 (#763): a key the policy leaves out takes its default", limits({"receipts": {"write-seconds": 7}}), dict(DEFAULTS, **{"write-seconds": 7}))
-    src = open(os.path.abspath(__file__), encoding="utf-8").read()
-    check("C4 (#763): no count of tries, nor a bound in a constant, is left in put()", ("WRITE_" + "TRIES" in src, "WRITE_" + "LIMITS" in src, "DEFAULTS[" in src.split("def put(", 1)[1].split("\ndef ", 1)[0]), (False, False, False))
-    # C2 (#763): the cli, its write always meeting a moved head and its
-    # clock past the bound, exits non-zero with the reason in one line.
-    import io
-    import types
-    fake = {"t": 0.0}
-    saved = {k: globals()[k] for k in ("gh", "ensure_branch", "time")}
-    globals().update(gh=always, ensure_branch=lambda repo: None,
-                     time=types.SimpleNamespace(monotonic=lambda: fake["t"], sleep=lambda x: fake.update(t=fake["t"] + 400)))
-    err, env_saved = io.StringIO(), {k: os.environ.get(k) for k in ("RECEIPTS_FIXTURE", "GITHUB_REPOSITORY", "NUMBER", "BODY")}
-    os.environ.pop("RECEIPTS_FIXTURE", None)
-    os.environ.pop("BODY", None)
-    os.environ.update(GITHUB_REPOSITORY="o/r", NUMBER="13")
-    stderr, sys.stderr = sys.stderr, err
-    try:
-        rc = {m: main([m]) for m in ("seal-prd", "seal-spec")}
-    finally:
-        sys.stderr = stderr
-        globals().update(saved)
-        for k, v in env_saved.items():
-            os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
-    check("C2 (#763) cli: a seal that keeps meeting a moved head past the bound exits 1, and says the seal could not be written",
-          (rc, err.getvalue().count("error: the seal could not be written")), ({"seal-prd": 1, "seal-spec": 1}, 2))
+    check("#561 C5: a branch that keeps moving fails after the tries, said", "409" in capped, True)
     try:
         put("o/r", "issues/11/prd-1.json", {}, "x", api=lambda *a, data=None: (_ for _ in ()).throw(RuntimeError("gh: Bad credentials (HTTP 401)")), nap=lambda s: 1 / 0)
         other = "written"
@@ -1042,157 +865,11 @@ Normal
               (issues_wf["jobs"]["waiting"]["uses"], any("waiting.py update" in (st.get("run") or "") for st in upd["jobs"]["update"]["steps"]),
                "receipts.py\"), \"waits\"" in open(os.path.join(HERE, "waiting.py"), encoding="utf-8").read()),
               ("./.github/workflows/waiting-update.yml", True, True))
-        # C2 (#763): every step that seals fails loudly on a seal that could
-        # not be written: a PRD's seal writes the board with --seal-failed,
-        # a Spec's says it in the step's why= (the end rule posts it); both
-        # exit 1. The call itself is guarded, so `set -e` cannot end the
-        # step before the board.
-        unguarded, unsaid = [], []
-        for step_name, step in sealing_steps():
-            text = step.get("run") or ""
-            for line in (l.strip() for l in text.splitlines()):
-                if re.search(r"receipts\.py (seal-prd|seal-spec)\b", line) and not (line.startswith("if ! ") or "|| failed=--seal-failed" in line):
-                    unguarded.append(step_name)
-            said = ('board ${failed:+"$failed"}' in text and "--seal-failed" in text) if "seal-prd" in text else "why=" in text
-            if not (said and re.search(r"exit 1\b", text)):
-                unsaid.append(step_name)
-        check("C2 (#763) every sealing step guards the seal, says a failed one (board --seal-failed, or why=), and exits 1",
-              (len(sealing_steps()) >= 4, sorted(set(unguarded)), unsaid), (True, [], []))
-        # C3 (#763): the jobs that write receipts are queued in one group per
-        # repository, never cancelling one another; a slot a third arrival
-        # took is written by the fallback, through put()'s retry.
-        writers = writing_jobs()
-        check("C3 (#763) every job that writes receipts is in receipts-<repository>, cancel-in-progress false, or its fallback",
-              (queue_problems(writers), sorted(writers)),
-              ([], ["autopilot.yml:seal", "autopilot.yml:seal-again", "autopilot.yml:spec-seal", "autopilot.yml:spec-seal-again",
-                    "issue-accepted.yml:receipt", "issue-accepted.yml:receipt-again", "issue-accepted.yml:seal", "issue-accepted.yml:seal-again",
-                    "issue-claim.yml:seal", "issue-claim.yml:seal-again",
-                    "issue-repro.yml:seal", "issue-repro.yml:seal-again",
-                    "issue-triage.yml:own", "issue-triage.yml:own-again"]))
-        # C3 (#763): a script that seals itself makes the job that runs it a
-        # writer; each such script is in WRAPPERS, so the check above sees
-        # its jobs (claim.py hands its lane issues to a queued job instead).
-        check("C3 (#763) every script that runs receipts.py's writing modes is a known wrapper, its jobs checked above",
-              (sorted(wrapper_scripts()), WRITES.search('subprocess.run([sys.executable, os.path.join(HERE, "receipts.py"), "seal-prd"])') is not None,
-               WRITES.search('python3 "$here/receipts.py" seal-prd') is not None, WRITES.search("receipts.py board") is None),
-              (sorted(WRAPPERS), True, True, True))
-        q = {"group": QUEUE, "cancel-in-progress": False}
-        st = [{"run": "receipts.py seal-prd"}]
-        check("C3 (#763) the queue's check: a job outside it, one that cancels, a fallback with other steps, a queued job with none",
-              [len(queue_problems(j)) for j in (
-                  {"w:a": {"steps": st}, "w:b": {"concurrency": q, "steps": st}},
-                  {"w:a": {"concurrency": dict(q, **{"cancel-in-progress": True}), "steps": st}},
-                  {"w:a": {"concurrency": q, "steps": st}, "w:b": {"if": "always() && needs.a.result == 'cancelled'", "steps": st + st}},
-                  {"w:a": {"concurrency": q, "steps": st}, "w:b": {"if": "always() && needs.a.result == 'cancelled'", "steps": st}})],
-              [2, 2, 2, 0])
     except ImportError:
         print("skip the workflow's wiring (no PyYAML here)")
-    if saved_repo_autonomy is None:
-        os.environ.pop("REPO_AUTONOMY", None)
-    else:
-        os.environ["REPO_AUTONOMY"] = saved_repo_autonomy
     if not failed:
         print("all tests passed")
     return failed
-
-
-def _yaml_loader():
-    """PyYAML's safe_load, or None where it is not installed."""
-    try:
-        import yaml
-    except ImportError:
-        return None
-    return yaml.safe_load
-
-
-QUEUE = "receipts-${{ github.repository }}"
-
-
-# The scripts that write to the receipts branch by running receipts.py
-# seal-prd, seal-spec or merged themselves, with the mode that does (#763):
-# a job that runs one so is a writer too. wrapper_scripts() finds them in
-# scripts/, so a new one fails the self-test until it is listed here.
-WRAPPERS = {"triage-act.sh": r"own-bug"}
-# Scripts that run those modes only in their own self-test, on a fixture.
-TEST_ONLY = {"issue-gate.sh", "repro-lane.py"}
-WRITES = re.compile(r"receipts\.py[^\w\n]{0,8}(seal-prd|seal-spec|merged)\b")
-
-
-def wrapper_scripts():
-    """The scripts of scripts/ (receipts.py and TEST_ONLY aside) with a line
-    of code, not a comment, that runs receipts.py seal-prd, seal-spec or
-    merged."""
-    out = set()
-    for f in sorted(os.listdir(HERE)):
-        path = os.path.join(HERE, f)
-        if f == "receipts.py" or f in TEST_ONLY or not f.endswith((".py", ".sh")) or not os.path.isfile(path):
-            continue
-        for line in open(path, encoding="utf-8"):
-            if not line.lstrip().startswith("#") and WRITES.search(line):
-                out.add(f)
-    return out
-
-
-def writing_jobs():
-    """Every job of this repository's workflows that writes to the receipts
-    branch (a step that runs receipts.py seal-prd, seal-spec or merged, or a
-    WRAPPERS script in its writing mode), as {"<file>:<job>": job}."""
-    import yaml
-    wfdir = os.path.join(HERE, "..", ".github", "workflows")
-    out = {}
-    for f in sorted(os.listdir(wfdir)):
-        if not f.endswith((".yml", ".yaml")):
-            continue
-        wf = yaml.safe_load(open(os.path.join(wfdir, f), encoding="utf-8")) or {}
-        for name, job in (wf.get("jobs") or {}).items():
-            runs = [st.get("run") or "" for st in job.get("steps") or []]
-            if any(re.search(r"receipts\.py\"? (seal-prd|seal-spec|merged)\b", r) for r in runs) or \
-                    any(re.search(re.escape(w) + r"\"? " + mode + r"(?![\w-])", r) for r in runs for w, mode in WRAPPERS.items()):
-                out[f"{f}:{name}"] = job
-    return out
-
-
-def queue_problems(jobs):
-    """What keeps the writing jobs from one queue per repository (#763):
-    each is in the group receipts-<repository> with cancel-in-progress
-    false, or is the fallback of one that is: it runs only when that one
-    was cancelled (GitHub cancels a group's pending job when a third
-    arrives), with the very same steps; and every queued job has one."""
-    out, fallbacks = [], {}
-    for key, job in jobs.items():
-        group = job.get("concurrency") or {}
-        if isinstance(group, dict) and group.get("group") == QUEUE and group.get("cancel-in-progress") is False:
-            continue
-        m = re.search(r"needs\.([\w-]+)\.result == 'cancelled'", str(job.get("if") or ""))
-        of = f"{key.split(':')[0]}:{m.group(1)}" if m else ""
-        queued = jobs.get(of) or {}
-        if not m or (queued.get("concurrency") or {}).get("group") != QUEUE:
-            out.append(f"{key}: not in {QUEUE} with cancel-in-progress false, nor the fallback of a job that is")
-        elif queued.get("steps") != job.get("steps"):
-            out.append(f"{key}: its steps are not those of {of}, whose fallback it is")
-        else:
-            fallbacks[of] = key
-    for key, job in jobs.items():
-        if (job.get("concurrency") or {}).get("group") == QUEUE and key not in fallbacks:
-            out.append(f"{key}: no fallback for when a later write cancels it in the queue")
-    return out
-
-
-def sealing_steps():
-    """Every step of this repository's workflows that writes a seal or a
-    receipt (receipts.py seal-prd, seal-spec or merged), as (where, step)."""
-    import yaml
-    wfdir = os.path.join(HERE, "..", ".github", "workflows")
-    out = []
-    for f in sorted(os.listdir(wfdir)):
-        if not f.endswith((".yml", ".yaml")):
-            continue
-        wf = yaml.safe_load(open(os.path.join(wfdir, f), encoding="utf-8")) or {}
-        for job_name, job in (wf.get("jobs") or {}).items():
-            for i, step in enumerate(job.get("steps") or []):
-                if re.search(r"receipts\.py\"? (seal-prd|seal-spec)\b", step.get("run") or ""):
-                    out.append((f"{f}:{job_name}:{step.get('name') or i}", step))
-    return out
 
 
 def main(argv):
@@ -1203,18 +880,6 @@ def main(argv):
     number = int(os.environ.get("NUMBER", "0") or 0)
     body = open(os.environ["BODY"], encoding="utf-8").read() if os.environ.get("BODY") else ""
     policy_ref = os.environ.get("POLICY_REF")
-    try:
-        return act(mode, argv, repo, number, body, policy_ref)
-    except RuntimeError as e:
-        # A seal or a receipt that could not be written (#763) fails the
-        # job, said in one line; the step then writes the board that says so.
-        if mode not in ("seal-prd", "seal-spec", "merged"):
-            raise
-        print(f"error: {e}", file=sys.stderr)
-        return 1
-
-
-def act(mode, argv, repo, number, body, policy_ref):
     if mode == "seal-prd":
         at = now()
         s = seal(number, body, os.environ.get("ACCEPTED_BY", "?"), policy_ref, at, os.environ.get("ACCEPTED_HOW") or None)
@@ -1291,7 +956,7 @@ def act(mode, argv, repo, number, body, policy_ref):
             names = [n for n in list_dir(repo, f"issues/{number}") if n.startswith("merged-")]
             merged = read(repo, f"issues/{number}/{names[-1]}") if names else None
             return board_text(number, schema_mod.check(body)["ok"], last_seal(repo, number), merged, autopilot_state(repo, number),
-                              issue_labels(repo, number), holder(repo, number), st, intact, raw, "--seal-failed" in argv[1:])
+                              issue_labels(repo, number), holder(repo, number), st, intact, raw)
         if mode == "board":
             print(render(state))
             return 0
