@@ -241,13 +241,6 @@ files:
       read-by: [scripts/autonomy.py, scripts/claim.py]
       issue: "#488"
       says: A person's claim on an issue, its days and its limits.
-    - key: receipts.*
-      org: any
-      repo: lower-only
-      limit: a number of seconds above 0 and at most 3600
-      read-by: [scripts/autonomy.py, scripts/receipts.py]
-      issue: "#763"
-      says: How long a write to the receipts branch is retried, and its back-off.
     - key: constitution
       merge: add-only
       org: add-only

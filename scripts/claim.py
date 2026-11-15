@@ -32,10 +32,7 @@ dilux-bot's key and none of the repository's code).
 Both event and daily write `start=<JSON list of issues>` to GITHUB_OUTPUT:
 the issues the workflow starts the autopilot on (a released claim, a stalled
 pull request closed, an adopted one, the lane's issue of a claimed bug
-released), so no release leaves an issue held by nobody; and
-`seal=<JSON list of issues>`, the lane issues opened, whose PRD the
-workflow's `seal` job seals in the queue of the receipts branch's writers
-(#763): this script never writes the receipts branch itself.
+released), so no release leaves an issue held by nobody.
 
 The limits (days, claims per person, open pull requests) are data in
 policy/autonomy.yml `claims:`, which a repository's .github/autonomy.yml
@@ -876,11 +873,6 @@ def retire_test(body, when):
     return re.sub(r"<!-- " + re.escape(TEST_MARK) + r" \{.*?\} -->", f"~~Its claim~~ ended on {when}: the test is no longer the claimant's.", body or "")
 
 
-# The lane issues this run opened, whose PRD the workflow's queued `seal` job
-# seals (the `seal=` output): this script never writes the receipts branch.
-SEAL = []
-
-
 def lane_open(repo, number, test):
     """The `bugfix-reproduced` lane's issue for a claimed bug released, with
     the test it was sealed with (the reproduction's own run named, which the
@@ -903,9 +895,8 @@ def lane_open(repo, number, test):
     path = os.path.join(os.environ.get("RUNNER_TEMP", "/tmp"), f"lane-{lane}.md")
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(body)
-    # Its seal is written by issue-claim.yml's `seal` job, in the queue of
-    # the receipts branch's writers (#763), before the autopilot starts on it.
-    SEAL.append(lane)
+    subprocess.run([sys.executable, os.path.join(HERE, "receipts.py"), "seal-prd"], check=True,
+                   env=dict(os.environ, NUMBER=lane, BODY=path, ACCEPTED_BY="policy (lane bugfix-reproduced)"))
     gh("issue", "comment", str(number), "--repo", repo, "--body", f"The fix is #{lane}: the `bugfix-reproduced` lane took it with the same failing test, and the autopilot works it.\n\n{SIGN}")
     return lane
 
@@ -983,7 +974,6 @@ def main(argv):
     if os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
             fh.write(f"start={json.dumps(start)}\n")
-            fh.write(f"seal={json.dumps(sorted(set(SEAL)))}\n")
     if argv[:1] == ["daily"] and failed:
         print(f"::error::The daily run could not finish {len(failed)} of them: {', '.join(f'#{n}' for n in failed)}.")
         return 1
@@ -1163,40 +1153,6 @@ def self_test():
     close, why = pr_limit("ana", others, cfg)
     check("3a a third open pull request is closed, linking the other two", (close, all(u in why for u in others)), (True, True))
     check("3a a second is not", pr_limit("ana", others[:1], cfg), (False, ""))
-    # #763: a released claim's lane issue is opened here and sealed by the
-    # workflow's queued `seal` job (the `seal=` output), never from this
-    # script, whose jobs are outside the receipts branch's queue.
-    ran, calls = [], []
-
-    class Done:
-        def __init__(self, out=""):
-            self.returncode, self.stdout = 0, out
-
-    def fake_run(cmd, **kw):
-        ran.append(os.path.basename(cmd[1]) + " " + cmd[2])
-        return Done(json.dumps({"title": "t", "body": "b"}) if cmd[2] == "prd" else "accepted")
-
-    def fake_gh(*args, **kw):
-        calls.append(args[:2])
-        return "https://github.com/o/r/issues/90" if args[:2] == ("issue", "create") else "the body"
-
-    saved = (subprocess.run, globals()["gh"], os.environ.get("RUNNER_TEMP"))
-    import tempfile
-    with tempfile.TemporaryDirectory() as tmp:
-        os.environ["RUNNER_TEMP"] = tmp
-        subprocess.run, globals()["gh"] = fake_run, fake_gh
-        try:
-            del SEAL[:]
-            lane = lane_open("o/r", 7, sealed)
-        finally:
-            subprocess.run, globals()["gh"] = saved[0], saved[1]
-            if saved[2] is None:
-                os.environ.pop("RUNNER_TEMP", None)
-            else:
-                os.environ["RUNNER_TEMP"] = saved[2]
-    check("#763 a lane issue opened is handed to the queued seal job, and this script never runs receipts.py",
-          (lane, SEAL, [r for r in ran if r.startswith("receipts.py")]), ("90", ["90"], []))
-    del SEAL[:]
     if not failed:
         print("all tests passed")
     return failed
