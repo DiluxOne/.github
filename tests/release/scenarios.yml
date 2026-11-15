@@ -23,6 +23,10 @@
 # only under its own directory of the test repository, scenarios/<id>/ (its
 # fixed change too), and only core-one-at-a-time's is the core
 # (kinds/engine-test/pack.yml, #709), so none waits on another's change;
+# every text it writes there carries the run's id (#778: release-scenarios.py
+# run_mark, scenario_text), but a `before`'s file, which says its `says`, so
+# none is what an earlier run merged into main and every pull request has a
+# diff;
 # `partition` fails when two could write to the same part of the core, or
 # another scenario writes under it (`core_problems`). Every body a scenario
 # opens carries its `dx-scenario: <id>` mark first, so its next run closes

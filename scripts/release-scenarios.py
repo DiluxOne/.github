@@ -3236,6 +3236,38 @@ def self_test():
                "o/t", "v7-next", described(io778), lambda _: None, 1, run_id="9-3")
     check("#778 C1: play_group writes with the run id it is given",
           ["run 9-3" in t for _, _, _, f in commits(io778) for t in f.values()], [True])
+
+    def twice778():
+        """Every real scenario played twice, in the runs 101-1 and 202-1:
+        what stale_writes finds in each run's texts under scenarios/<id>/
+        (a `before`'s file aside, which says its `says`), the second's held
+        against the first's (what main held after it), and how many texts
+        were written."""
+        out, count = {}, 0
+        for s in real["scenarios"]:
+            fixed = {f"scenarios/{s['id']}/{b['lands']}.md" for b in s.get("before") or [] if "lands" in b}
+            runs = [[(r, b, [p for p in ps if p not in fixed], {p: t for p, t in fs.items() if p not in fixed and p.startswith(f"scenarios/{s['id']}/")})
+                     for r, b, ps, fs in replay778(s, run_id)] for run_id in ("101-1", "202-1")]
+            held = {}
+            for _, _, _, files in runs[0]:
+                for path, text in files.items():
+                    held.setdefault(path, []).append(text)
+            count += sum(len(f) for run in runs for _, _, _, f in run)
+            got = stale_writes(runs[0], {}, "101-1") + stale_writes(runs[1], held, "202-1")
+            if got:
+                out[s["id"]] = got
+        return out, count
+    stale_twice, count_twice = twice778()
+    check("#778 C2: every real scenario played twice writes, in each run, texts that carry its run id and differ from the other run's and from main's",
+          (count_twice > 10, stale_twice), (True, {}))
+    writer778 = scenario_text
+    try:
+        globals()["scenario_text"] = lambda sid, name, where, run_id: f"{name} on {where}\n"
+        stale_free, _ = twice778()
+    finally:
+        globals()["scenario_text"] = writer778
+    check("#778 C2: with a writer that leaves the run id out, the same check fails on the four scenarios that failed v7.14.0",
+          set(four778) <= set(stale_free), True)
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
