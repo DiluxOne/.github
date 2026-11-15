@@ -56,6 +56,9 @@ def listing(read, git_files, reads, seconds, sleep=time.sleep, log=lambda m: pri
         listed = sum(len(p) for p in pages)
         if listed and listed == total:
             return 0, names(pages)
+        if not listed and not total and git_files == []:
+            log("::warning::The pull request changes no file; the floor is high.")
+            return 0, []
         if listed >= API_CAP and listed < total:
             log(f"::error::The files API listed {listed} of the pull request's {total} changed files; the policy is not computed on a partial list.")
             return 1, []
@@ -100,12 +103,35 @@ def self_test():
             return answers[min(len(seen), len(answers)) - 1]
         return read, seen
 
+    def floor_of(files):
+        """policy.py's floor and reasons for FILES, with the default policy."""
+        import tempfile
+        here = os.path.dirname(os.path.abspath(__file__))
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "out")
+            env = dict(os.environ, DEFAULT_POLICY=os.path.join(here, "..", "policy", "review-policy.default.yml"),
+                       REPO_POLICY=os.path.join(tmp, "none.yml"), CHANGED_FILES="\n".join(files), GITHUB_OUTPUT=out,
+                       PR_AUTHOR="someone", GITHUB_REPOSITORY="DiluxOne/example")
+            for k in ("POLICY_LEVEL", "POLICY_MODE"):
+                env.pop(k, None)
+            subprocess.run([sys.executable, os.path.join(here, "policy.py")], env=env, check=True, capture_output=True)
+            kv = dict(l.split("=", 1) for l in open(out, encoding="utf-8").read().splitlines() if "=" in l)
+        return kv.get("floor"), kv.get("reasons")
+
     added = [[{"filename": "docs/new.md"}]]
     read, seen = fake(([], 0), ([], 0), (added, 1))
     slept, said = [], []
     got = listing(read, ["docs/new.md"], 6, 10, sleep=slept.append, log=said.append)
     check("C1: an added file the API lists only on its third read is the output, after waiting",
           (got, len(seen), slept), ((0, ["docs/new.md"]), 3, [10, 10]))
+    read, seen = fake(([], 0))
+    slept, said = [], []
+    got = listing(read, [], 6, 10, sleep=slept.append, log=said.append)
+    check("C2: git and the API both empty: no wait, the empty-diff warning, nothing listed",
+          (got, len(seen), slept, said), ((0, []), 1, [], ["::warning::The pull request changes no file; the floor is high."]))
+    check("C2: policy.py gives high for that empty list", floor_of(got[1]), ("high", "no changed files could be listed"))
+    read, seen = fake(([], 0), (added, 1))
+    check("git that cannot tell is no empty diff: it waits", (listing(read, None, 6, 0, sleep=lambda s: None, log=said.append), len(seen)), ((0, ["docs/new.md"]), 2))
     read, _ = fake(([[{"filename": "b.md", "previous_filename": "a.md"}]], 1))
     check("a rename lists both its paths", listing(read, ["b.md"], 1, 0, sleep=slept.append, log=said.append), (0, ["b.md", "a.md"]))
     read, seen = fake(([[{"filename": f"f{i}"} for i in range(API_CAP)]], API_CAP + 5))
