@@ -272,20 +272,10 @@ def self_test():
         check("wiring: the run job runs the test in the shared sandbox", any("repro-sandbox.sh run " in (s.get("run") or "") for s in jobs["run"]["steps"]), True)
         check("wiring: the report asks whether the lane is open before handing anything over", "lane-open bugfix-reproduced" in steps["open"]["run"], True)
         check("wiring: a failed read of the lane's open issues pushes nothing (fails closed)", ("if ! held=$(" in steps["report"]["run"], "exit 1" in steps["report"]["run"].split("if ! held=$(", 1)[1].split("\nfi\n", 1)[0]), (True, True))
-        lane_run = steps["lane"]["run"]
-        check("wiring: the lane's issue is accepted only by lane-accept, and only then handed on",
-              ("autonomy.py lane-accept" in lane_run, lane_run.index("lane-accept") < lane_run.index('echo "issue=$lane"')), (True, True))
-        check("wiring: the report hands the accepted issue to the seal and the autopilot job", jobs["report"]["outputs"]["lane-issue"], "${{ steps.lane.outputs.issue }}")
-        # #763: the seal job (or its fallback) seals the lane issue, in the
-        # receipts queue, before the autopilot starts on it.
-        sealed = lambda job: next(st["run"] for st in jobs[job]["steps"] if "receipts.py seal-prd" in (st.get("run") or ""))
-        check("wiring (#763): the lane issue's PRD is sealed by the seal job, as accepted by the lane",
-              [("lane-issue" in jobs[j]["if"] or "needs.seal.result == 'cancelled'" in jobs[j]["if"], 'ACCEPTED_BY="policy (lane bugfix-reproduced)"' in sealed(j)) for j in ("seal", "seal-again")],
-              [(True, True), (True, True)])
+        check("wiring: the lane's issue is accepted only by lane-accept, then sealed", ("autonomy.py lane-accept" in steps["lane"]["run"], steps["lane"]["run"].index("lane-accept") < steps["lane"]["run"].index("seal-prd")), (True, True))
+        check("wiring: the report hands the accepted issue to the autopilot job", jobs["report"]["outputs"]["lane-issue"], "${{ steps.lane.outputs.issue }}")
         ap = jobs["autopilot"]
-        check("wiring: the autopilot job starts only on that issue, sealed, in mode start",
-              (ap["needs"], "lane-issue" in ap["if"], "needs.seal.result == 'success' || needs.seal-again.result == 'success'" in ap["if"], ap["with"]["mode"], ap["uses"].split("@")[0]),
-              (["report", "seal", "seal-again"], True, True, "start", "DiluxOne/.github/.github/workflows/autopilot.yml"))
+        check("wiring: the autopilot job starts only on that issue, in mode start", (ap["needs"], "lane-issue" in ap["if"], ap["with"]["mode"], ap["uses"].split("@")[0]), ("report", True, "start", "DiluxOne/.github/.github/workflows/autopilot.yml"))
         failed_step = steps["The hand-off failed"]
         check("wiring: a hand-off that fails says so on the report, and closes the lane issue it opened",
               ("failure()" in failed_step["if"], "steps.lane.outputs.created" in failed_step["env"]["CREATED"], 'gh issue close "$CREATED"' in failed_step["run"],

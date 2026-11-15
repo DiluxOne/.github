@@ -25,15 +25,7 @@ def test_a_release_starts_the_autopilot_on_the_issue():
     ap = jobs["autopilot"]
     assert ap["uses"].startswith("DiluxOne/.github/.github/workflows/autopilot.yml@")
     assert ap["with"]["mode"] == "start" and ap["with"]["issue"] == "${{ matrix.issue }}"
-    # After the lane issues' seal (#763), which it reads as their acceptance.
-    assert set(ap["needs"]) == {"claim", "daily", "seal", "seal-again"} and ap["secrets"] == "inherit"
-    assert ap["if"].startswith("always() && ")
-    seal, again = jobs["seal"], jobs["seal-again"]
-    assert set(seal["needs"]) == {"claim", "daily"} and seal["concurrency"]["group"] == "receipts-${{ github.repository }}"
-    assert again["if"] == "always() && needs.seal.result == 'cancelled'" and "concurrency" not in again
-    for job in ("claim", "daily"):
-        assert f"needs.{job}.outputs.seal" in seal["if"]
-        assert jobs[job]["outputs"]["seal"].startswith(f"${{{{ steps.{job}.outputs.seal")
+    assert set(ap["needs"]) == {"claim", "daily"} and ap["secrets"] == "inherit"
     # Both the event (`/unclaim`, `/adopt`) and the daily run (a release, a
     # stalled pull request closed) hand their issues to it.
     for job in ("claim", "daily"):

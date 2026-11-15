@@ -635,13 +635,11 @@ A class on <html> and a cookie.
     wf_path = os.path.join(HERE, "..", ".github", "workflows", "issue-accepted.yml")
     try:
         import yaml
-        wf_jobs = yaml.safe_load(open(wf_path, encoding="utf-8"))["jobs"]
-        chk = next(st for st in wf_jobs["ready"]["steps"] if st.get("id") == "check")
-        # The seal is the seal job's (#763), only when the ready job says so.
+        ready = yaml.safe_load(open(wf_path, encoding="utf-8"))["jobs"]["ready"]["steps"]
+        chk = next(st for st in ready if st.get("id") == "check")
+        seal = next(st for st in ready if st.get("name", "").startswith("Seal the PRD"))
         check_("#287 wiring: not ready takes the label off, reads the conversation, and seals nothing",
-               ('--remove-label "$LABEL"' in chk["run"], "issue-schema.py conversation" in chk["run"],
-                "steps.check.outputs.ready == 'true'" in wf_jobs["ready"]["outputs"]["seal"], wf_jobs["seal"]["if"]),
-               (True, True, True, "needs.ready.outputs.seal == 'true'"))
+               ('--remove-label "$LABEL"' in chk["run"], "issue-schema.py conversation" in chk["run"], "steps.check.outputs.ready == 'true'" in seal.get("if", "")), (True, True, True))
     except ImportError:
         print("skip the ready job's wiring (no PyYAML here)")
     check_("#353 C1: a complete issue opened waits for the maintainer", g1_labels("opened", True), (["awaiting-acceptance"], ["incomplete"]))
@@ -715,8 +713,7 @@ A class on <html> and a cookie.
         job = wf["jobs"]["ready"]
         steps = job["steps"]
         chk = next(st for st in steps if st.get("id") == "check")
-        # The seal is the seal job's (#763), on the ready job's `seal`.
-        seal = {"if": job["outputs"]["seal"]}
+        seal = next(st for st in steps if st.get("name", "").startswith("Seal the PRD"))
         assign = next(st for st in steps if st.get("name", "").startswith("Assign it"))
         cond = " ".join(job["if"].split())
         check_("#353 wiring: the check runs on opened and edited, not on an accepted issue, never for a bot",
