@@ -132,6 +132,7 @@ jobs:
             --max-turns 80
             --max-budget-usd 2
             --allowedTools "Read,Glob,Grep"
+            --permission-mode dontAsk
             --json-schema '{"type":"object","additionalProperties":false,"required":["findings"],"properties":{"findings":{"type":"array","maxItems":20,"items":{"type":"object","additionalProperties":false,"required":["severity","file","title","security","detail"],"properties":{"severity":{"type":"string","enum":["blocker","major","minor"]},"file":{"type":"string","maxLength":300},"line":{"type":"integer"},"title":{"type":"string","maxLength":300},"security":{"type":"boolean"},"detail":{"type":"string","maxLength":3000}}}}}}'
 
       # The reviewed repository's issues only, after the agent: its Bug
@@ -212,6 +213,7 @@ jobs:
             --max-turns 5
             --max-budget-usd 0.5
             --allowedTools "Read"
+            --permission-mode dontAsk
             --json-schema '{"type":"object","additionalProperties":false,"required":["verdicts"],"properties":{"verdicts":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["i","safe"],"properties":{"i":{"type":"integer"},"safe":{"type":"boolean"}}}}}}'
 
       - name: The bugs and the list

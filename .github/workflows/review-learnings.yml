@@ -216,6 +216,7 @@ jobs:
             --max-turns 60
             --max-budget-usd ${{ steps.policy.outputs.budget }}
             --allowedTools "Read,Glob,Grep,Edit(review-profiles/*.md),Write(review-profiles/*.md),Edit(kinds/*/review-profile.md),Write(kinds/*/review-profile.md),Edit(work/*/.github/review-policy.yml),Write(work/*/.github/review-policy.yml),Edit(work/*/AGENTS.md),Write(work/*/AGENTS.md)"
+            --permission-mode dontAsk
             --json-schema '{"type":"object","additionalProperties":false,"required":["proposals"],"properties":{"proposals":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["repo","changes","why","if_approved"],"properties":{"repo":{"type":"string"},"changes":{"type":"string","maxLength":2000},"why":{"type":"string","maxLength":3000},"if_approved":{"type":"string","maxLength":1000}}}}}}'
 
       - name: Open the pull requests

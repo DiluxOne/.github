@@ -9,6 +9,14 @@ no secret but the model's (CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY),
 mint no App token, and its own token may write nothing. Every Claude step,
 with a shell or not, names its tools.
 
+And keeps that list strict (#793): from claude-code-action v1.0.273 a step
+that states no permission mode may run tools its --allowedTools does not
+list. So every Claude step states `--permission-mode default` or
+`--permission-mode dontAsk` (what the workflows here use: nothing may
+prompt in a headless run), or a --disallowedTools list; any other mode
+(bypassPermissions, acceptEdits, auto, plan, ...) or
+--dangerously-skip-permissions widens it and is refused, list or not.
+
     agent-keys.py [workflow.yml ...]   default: .github/workflows/*.yml
     agent-keys.py --test
 """
@@ -21,12 +29,28 @@ import yaml
 
 MODEL_SECRETS = {"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"}
 TOOLS = re.compile(r'--allowedTools\s+"([^"]*)"')
+MODES = {"default", "dontAsk"}
+MODE = re.compile(r'--permission-mode(?:\s+|=)["\']?([^\s"\']*)')
+DISALLOWED = re.compile(r'--disallowedTools(?:\s+|=)"[^"]*[^"\s][^"]*"')
 
 
 def tools(step):
     """The step's allowed tools, or None when it names none."""
     m = TOOLS.search(str((step.get("with") or {}).get("claude_args", "")))
     return [t.strip() for t in m.group(1).split(",")] if m else None
+
+
+def strictness(step):
+    """What is wrong with the step's permission mode, or None (#793)."""
+    args = str((step.get("with") or {}).get("claude_args", ""))
+    if "--dangerously-skip-permissions" in args:
+        return "skips its permissions (--dangerously-skip-permissions)"
+    wide = [m for m in MODE.findall(args) if m not in MODES]
+    if wide:
+        return f"states a permission mode that widens --allowedTools ({', '.join(wide)})"
+    if MODE.search(args) or DISALLOWED.search(args):
+        return None
+    return "states no permission mode (--permission-mode dontAsk or default) and no --disallowedTools"
 
 
 def writes(permissions):
@@ -45,6 +69,9 @@ def problems(workflow):
             continue
         shell = False
         for s in agents:
+            why = strictness(s)
+            if why:
+                out.append(f"{name}: the Claude step {s.get('name') or s.get('id') or ''!r} {why}")
             t = tools(s)
             if t is None:
                 out.append(f"{name}: the Claude step {s.get('name') or s.get('id') or ''!r} names no tools (--allowedTools)")
@@ -80,7 +107,7 @@ def self_test():
         print(("ok   " if got == want else "FAIL ") + label + ("" if got == want else f": got {got!r}, want {want!r}"))
         failed |= got != want
 
-    agent = lambda t: {"uses": "anthropics/claude-code-action@x", "with": {"claude_args": f'--model m\n--allowedTools "{t}"' if t is not None else "--model m"}}
+    agent = lambda t, extra="\n--permission-mode dontAsk": {"uses": "anthropics/claude-code-action@x", "with": {"claude_args": (f'--model m\n--allowedTools "{t}"' if t is not None else "--model m") + extra}}
     key = {"uses": "actions/create-github-app-token@x", "with": {"private-key": "${{ secrets.DILUX_BOT_PRIVATE_KEY }}"}}
     wf = lambda job, top=None: {"permissions": top or {}, "jobs": {"j": job}}
     check("a shell alone, reading: fine", problems(wf({"permissions": {"contents": "read"}, "steps": [agent("Bash,Read")]})), [])
@@ -99,6 +126,21 @@ def self_test():
            problems(wf({"permissions": {}, "steps": [{"env": {"K": "${{ format('{0}', secrets) }}"}}, agent("Bash")]}))),
           (["j: an agent with a shell shares the job with SVN_PASSWORD"], ["j: an agent with a shell shares the job with every secret"], ["j: an agent with a shell shares the job with every secret"]))
     check("no shell: a key in the job is allowed", problems(wf({"permissions": {"issues": "write"}, "steps": [key, agent("Read,Glob,Grep")]})), [])
+    # The permission mode keeps --allowedTools strict (#793).
+    reading = lambda extra: problems(wf({"permissions": {}, "steps": [agent("Read", extra)]}))
+    check("neither a mode nor --disallowedTools fails", reading(""),
+          ["j: the Claude step '' states no permission mode (--permission-mode dontAsk or default) and no --disallowedTools"])
+    check("--permission-mode dontAsk passes", reading("\n--permission-mode dontAsk"), [])
+    check("--permission-mode default passes", reading("\n--permission-mode default"), [])
+    check("--permission-mode=dontAsk passes", reading(" --permission-mode=dontAsk"), [])
+    check("--disallowedTools passes", reading('\n--disallowedTools "Bash,Write"'), [])
+    check("an empty --disallowedTools is no list", len(reading('\n--disallowedTools ""')), 1)
+    check("bypassPermissions fails", reading("\n--permission-mode bypassPermissions"),
+          ["j: the Claude step '' states a permission mode that widens --allowedTools (bypassPermissions)"])
+    check("acceptEdits fails, even with --disallowedTools", len(reading('\n--permission-mode acceptEdits\n--disallowedTools "Bash"')), 1)
+    check("a quoted wide mode fails", len(reading('\n--permission-mode "auto"')), 1)
+    check("a second, wider mode fails", len(reading("\n--permission-mode dontAsk\n--permission-mode plan")), 1)
+    check("--dangerously-skip-permissions fails", len(reading("\n--permission-mode dontAsk\n--dangerously-skip-permissions")), 1)
     print("all tests passed" if not failed else "FAILED")
     return 1 if failed else 0
 
@@ -113,7 +155,7 @@ def main(argv):
                 print(f"{path}: {p}")
                 bad = 1
     if not bad:
-        print("No agent with a shell shares a job with a key.")
+        print("No agent with a shell shares a job with a key, and every Claude step states a strict permission mode.")
     return bad
 
 

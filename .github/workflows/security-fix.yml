@@ -239,6 +239,7 @@ jobs:
             --max-turns 120
             --max-budget-usd ${{ needs.plan.outputs.budget || '10' }}
             --allowedTools "Bash,Read,Edit,Write,Glob,Grep"
+            --permission-mode dontAsk
 
       # The repository's own checks, in this job: they are its code, and
       # this job can write nothing.

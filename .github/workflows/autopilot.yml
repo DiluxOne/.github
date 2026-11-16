@@ -875,6 +875,7 @@ jobs:
             --max-turns 60
             --max-budget-usd ${{ needs.prep.outputs.budget-spec || '3' }}
             --allowedTools "Bash,Read,Write,Glob,Grep"
+            --permission-mode dontAsk
             --disallowedTools "Monitor"
 
       - name: What the agent left
@@ -1273,6 +1274,7 @@ jobs:
             --max-turns 150
             --max-budget-usd ${{ needs.prep.outputs.budget-work || (needs.prep.outputs.mode == 'fix' && '10' || '20') }}
             --allowedTools "Bash,Read,Edit,MultiEdit,Write,Glob,Grep"
+            --permission-mode dontAsk
             --disallowedTools "Monitor"
 
       - name: What the agent left

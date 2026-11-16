@@ -455,6 +455,7 @@ jobs:
             --max-turns 60
             --max-budget-usd ${{ steps.policy.outputs.budget || '3' }}
             --allowedTools "Read,Glob,Grep"
+            --permission-mode dontAsk
             --json-schema '{"type":"object","additionalProperties":false,"required":["risk","complexity","blocking","type","description_matches","summary","findings","lessons","resolved_threads"],"properties":{"risk":{"type":"string","enum":["low","medium","high"]},"type":{"type":"string","enum":["breaking","feat","fix","perf","refactor","style","docs","test","ci","build","chore","revert"]},"description_matches":{"type":"boolean"},"complexity":{"type":"string","enum":["low","medium","high"]},"blocking":{"type":"boolean"},"summary":{"type":"string","maxLength":1500},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","file","title"],"properties":{"severity":{"type":"string","enum":["blocker","major","minor"]},"file":{"type":"string"},"line":{"type":"integer"},"title":{"type":"string","maxLength":200},"pre_existing":{"type":"boolean"},"earlier":{"type":"boolean"},"detail":{"type":"string","maxLength":1500}}}},"lessons":{"type":"array","items":{"type":"string","maxLength":300}},"resolved_threads":{"type":"array","items":{"type":"string"}},"criteria":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","met","evidence"],"properties":{"id":{"type":"string","pattern":"^C[0-9]+$"},"met":{"type":"boolean"},"evidence":{"type":"string","maxLength":300}}}}}}'
 
       # Verification (#234): a second agent, in a fresh context, checks each
@@ -524,6 +525,7 @@ jobs:
             --max-turns 40
             --max-budget-usd 2
             --allowedTools "Read,Glob,Grep"
+            --permission-mode dontAsk
             --json-schema '{"type":"object","additionalProperties":false,"required":["verdicts"],"properties":{"verdicts":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["i","real","why"],"properties":{"i":{"type":"integer"},"real":{"type":"boolean"},"why":{"type":"string","maxLength":300}}}}}}'
 
       - name: Keep the verifier's answer for an automatic re-run

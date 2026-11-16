@@ -433,6 +433,7 @@ jobs:
             --max-turns 40
             --max-budget-usd 3
             --allowedTools "Read,Glob,Grep"
+            --permission-mode dontAsk
             --json-schema '{"type":"object","additionalProperties":false,"required":["safe","why","concerns"],"properties":{"safe":{"type":"boolean"},"why":{"type":"string","maxLength":600},"concerns":{"type":"array","items":{"type":"string","maxLength":300}}}}'
 
       - name: Keep the verdict

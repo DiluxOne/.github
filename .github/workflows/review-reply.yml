@@ -272,6 +272,7 @@ jobs:
             --max-turns 2
             --max-budget-usd 0.3
             --allowedTools ""
+            --permission-mode dontAsk
             --disallowedTools "Bash,Read,Write,Edit,MultiEdit,Glob,Grep,WebFetch,WebSearch,NotebookEdit,Task"
             --json-schema '{"type":"object","additionalProperties":false,"required":["points"],"properties":{"points":{"type":"array","maxItems":30,"items":{"type":"object","additionalProperties":false,"required":["i","argument"],"properties":{"i":{"type":"integer"},"argument":{"type":"string","maxLength":400}}}}}}'
 
@@ -544,6 +545,7 @@ jobs:
             --max-turns 25
             --max-budget-usd 1
             --allowedTools "Read,Glob,Grep"
+            --permission-mode dontAsk
             --json-schema '{"type":"object","additionalProperties":false,"required":["reply","resolve"],"properties":{"reply":{"type":"string","maxLength":4000},"resolve":{"type":"boolean"}}}'
 
       - name: Post the reply
