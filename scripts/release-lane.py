@@ -27,12 +27,15 @@ in the test repository; a breaking change waits on a person.
   release-lane.py act --plan F --results F --repo R [--run URL]
         does what `decide` says. A release, only while main is still the
         plan's `sha` (else `none`): the release pull request (CHANGELOG.md
-        from scripts/changelog.py build), merged, `vX.Y.Z` tagged at its
+        from scripts/changelog.py build, its commit made through the API
+        so GitHub signs it, scripts/api-commit.py, #780), merged, `vX.Y.Z` tagged at its
         merge commit when its parent is that `sha`, `vN` moved to it
         (lightweight: `git tag -f` and a force push of that ref alone), its
         GitHub Release published or, when engine-release.yml made it first,
         edited; JSON {moved_at, version, previous[, error]} on stdout, and
-        exit 1 when `vN` moved but the Release failed (the watch still runs)
+        exit 1 when `vN` moved but the Release failed (the watch still runs);
+        any other failure exits 1 with `::error::` and {do, error}, never
+        a traceback
   release-lane.py watch --repo R --version V --previous P --since ISO
                         [--minutes 30] [--every 120] [--org O] [--property P]
         for `--minutes` after `vN` moved, every `--every` seconds: the runs
@@ -184,7 +187,8 @@ def decide(p, results, lane_run=""):
 
 def release(p, repo, run=sh, sleep=time.sleep, minutes=60, root="."):
     """The release pull request, merged, the tag, the move and the Release,
-    of the commit the scenarios tried (the plan's `sha`) and nothing else:
+    of the commit the scenarios tried (the plan's `sha`) and nothing else,
+    the pull request's commit made through the API, which GitHub signs:
     main past it releases nothing (the next green run plans it again), and
     a release pull request merged on a main that moved meanwhile is tagged
     nowhere. Returns {moved_at, version, previous}, with `error` when the
@@ -204,8 +208,15 @@ def release(p, repo, run=sh, sleep=time.sleep, minutes=60, root="."):
     log = run("python3", os.path.join(HERE, "changelog.py"), "build", "--next", version, "--head", planned)
     with open(os.path.join(root, "CHANGELOG.md"), "w", encoding="utf-8") as fh:
         fh.write(log)
-    run("git", "-C", root, "commit", "-qam", f"chore: release {version}")
-    run("git", "-C", root, "push", "-f", "origin", f"HEAD:refs/heads/{branch}")
+    # The ruleset refuses `git commit` and a push of a branch (#780), as it
+    # does the candidate's (#610): the commit object is built here, then
+    # made again through the API (scripts/api-commit.py), which GitHub signs.
+    # --force rewrites a branch left by an earlier run onto the planned commit.
+    run("git", "-C", root, "add", "-u")
+    tree = run("git", "-C", root, "write-tree").strip()
+    commit = run("git", "-C", root, "commit-tree", tree, "-p", planned, "-m", f"chore: release {version}").strip()
+    run("git", "-C", root, "reset", "-q", "--soft", commit)
+    run(sys.executable, os.path.join(HERE, "api-commit.py"), "push", branch, "--onto", planned, "--force")
     url = run("gh", "pr", "create", "--repo", repo, "--base", "main", "--head", branch, "--title", pr["title"], "--body", pr["body"]).strip()
     number = url.rstrip("/").rsplit("/", 1)[-1]
     run("gh", "pr", "merge", number, "--repo", repo, "--squash", "--auto")
@@ -589,6 +600,15 @@ def self_test():
         d = act(p, passed, "O/.github", run=fake, sleep=lambda s: None, root=root)
         check("C4: all pass → release", d["do"], "release")
         check("C4: the release is built from the commit the scenarios tried", (fake.has("git", "-C", root, "checkout", "-B", "chore/release-v7.10.1", "p1"), bool([c for c in fake.named("changelog.py") if "build" in c and c[-1] == "p1"])), (True, True))
+        words = [[str(a) for a in c] for c in fake.calls]
+        check("C4: no release commit is made in the runner (#780)", [c for c in words if c[:1] == ["git"] and "commit" in c], [])
+        check("C4: no release branch is pushed from the runner (#780)", [c for c in words if c[:1] == ["git"] and "push" in c and any(a.startswith("refs/heads/") or a.startswith("HEAD:") for a in c)], [])
+        signed = [i for i, c in enumerate(words) if c[1:2] and c[1].endswith("api-commit.py")]
+        check("C4: the release commit goes through the API, onto the planned commit (#780)", [words[i][2:] for i in signed], [["push", "chore/release-v7.10.1", "--onto", "p1", "--force"]])
+        built = [i for i, c in enumerate(words) if any("changelog.py" in a for a in c) and "build" in c]
+        opened = [i for i, c in enumerate(words) if c[:3] == ["gh", "pr", "create"]]
+        check("C4: pushed after the CHANGELOG is written, before the pull request (#780)",
+              bool(signed and built and opened and built[0] < signed[0] < opened[0] and os.path.exists(os.path.join(root, "CHANGELOG.md"))), True)
         check("C4: the release pull request is merged", fake.has("gh", "pr", "merge", "700"), True)
         check("C4: vX.Y.Z is tagged at its merge commit, lightweight", (fake.has("git", "-C", root, "tag", "v7.10.1", "abc123"), fake.has("git", "-C", root, "push", "origin", "refs/tags/v7.10.1")), (True, True))
         tags = [c for c in fake.calls if c[3:4] == ("tag",)]
@@ -738,6 +758,31 @@ def self_test():
             ("act's groups in bash's GROUPS", lambda j: next(s for s in j["act"]["steps"] if s.get("id") == "act")["env"].update({"GROUPS": "x"}), "bash sets")):
         names = broken(change)
         check(f"C1: check_workflow fails a release-lane.yml with {how}", any(word in n for n in names), True)
+    # #780: a RuntimeError in act says why the lane stopped, never a traceback.
+    import contextlib
+    import io
+
+    def refused(*args, **kwargs):
+        raise RuntimeError("git push: refused by the ruleset")
+    real, out, err = globals()["act"], io.StringIO(), io.StringIO()
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "plan.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(p, fh)
+        results = os.path.join(tmp, "results.md")
+        with open(results, "w", encoding="utf-8") as fh:
+            fh.write(f"<!-- dx-scenarios {json.dumps(passed)} -->\n")
+        globals()["act"] = refused
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = main(["act", "--plan", path, "--results", results, "--repo", "O/.github"])
+        except Exception as e:  # what escapes would be the traceback
+            code = f"raised {e!r}"
+        finally:
+            globals()["act"] = real
+    check("act: a RuntimeError exits 1, says why on stderr, with no traceback (#780)",
+          (code, "::error::git push: refused by the ruleset" in err.getvalue(), "Traceback" in err.getvalue()), (1, True, False))
+    check("act: and its JSON names what it stopped doing", json.loads(out.getvalue() or "{}"), {"do": "release", "error": "git push: refused by the ruleset"})
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
@@ -786,7 +831,12 @@ def main(argv):
         print(json.dumps(decide(load(a.plan), results_of(a.results), a.run)))
         return 0
     if a.mode == "act":
-        d = act(load(a.plan), results_of(a.results), a.repo, lane_run=a.run)
+        p, results = load(a.plan), results_of(a.results)
+        try:
+            d = act(p, results, a.repo, lane_run=a.run)
+        except RuntimeError as err:
+            # The lane says why it stopped, never a traceback (#780).
+            d = {"do": decide(p, results, a.run)["do"], "error": str(err)}
         print(json.dumps(d))
         if d.get("error"):
             print(f"::error::{d['error']}", file=sys.stderr)
