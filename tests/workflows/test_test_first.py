@@ -368,3 +368,19 @@ def test_c7_the_testing_document_says_what_each_message_means_and_how_to_declare
     for said in ("A test that fails before the change is missing", "The test does not show the bug", "alters no behaviour the check tests",
                  "could not run", "fails at the base and passes at the head", "test-first:", "not-tests:", "way:"):
         assert said in text, said
+
+
+def test_c6_the_browser_way_runs_every_spec_its_pack_declares_as_a_test():
+    # The pack maps tests/e2e/**/*.spec.ts to the browser way, whose
+    # Playwright configuration must then find any of them, not only a
+    # reproduction's tests/e2e/repro/issue-<n>.spec.ts.
+    import re
+    ways = load("repro-ways")
+    pack = ways.read(str(ROOT / "kinds" / "wordpress-plugin" / "pack.yml"))
+    globs = [g for e in pack["test-first"]["tests"] if e["way"] == "browser" for g in e["paths"]]
+    config = (ROOT / "kinds" / "wordpress-plugin" / "playwright.dx-repro.config.ts").read_text(encoding="utf-8")
+    test_dir = re.search(r"const E2E = '\./([^']+)'", config).group(1)
+    match = re.search(r"testMatch: /(.+)/,", config).group(1)
+    for spec in ("tests/e2e/specs/login.spec.ts", "tests/e2e/repro/issue-69.spec.ts"):
+        assert any(TF.glob_match(spec, g) for g in globs), spec
+        assert spec.startswith(test_dir + "/") and re.search(match, spec), spec
