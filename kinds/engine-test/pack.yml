@@ -19,8 +19,11 @@ workflows: []
 pre-pr-tools: []
 
 # The shipped callers (workflow-templates/) the test repository has, which
-# scripts/install.py writes there, beside org-pull-request.yml, the
-# organisation's required workflow. A scenario plays only what these wire (scripts/release-scenarios.py
+# scripts/install.py and scripts/sync-repos.py callers write there (#748).
+# test-pull-request.yml is its pull-request pipeline, the jobs of
+# org-pull-request.yml, the required workflow, which runs at `v7` in every
+# other repository and leaves this one out ("org: required workflow"): its
+# calls are this repository's, so they move to the candidate. A scenario plays only what these wire (scripts/release-scenarios.py
 # coverage); every other caller is held to the engine statically
 # (scripts/caller-contract.py check). While the lane tries a candidate they
 # move to `v7-next` through a pull request the bot opens there and queues
@@ -32,6 +35,7 @@ pre-pr-tools: []
 callers:
   - issues.yml
   - pull-request-comments.yml
+  - test-pull-request.yml
 
 # No checks of its own to run, so no engines.
 adapters: []
@@ -39,13 +43,15 @@ adapters: []
 # The test identity (#563, the Spec's option A): a machine user, an outside
 # collaborator with write on the test repository only, whose fine-grained
 # token is the secret `secret` of the `release` environment of the
-# organisation's `.github`. It may accept issues in a repository of this
-# kind and nowhere else: scripts/deciders.py counts it only here, and the
-# daily drift check fails when it has more than read anywhere else. `{org}`
-# is the organisation's login, lowercased.
+# organisation's `.github`. Its login is written nowhere (#739): it is the
+# token's owner, which the release lane reads from GitHub (scripts/org.py
+# test-identity --from-token) and every other script takes from
+# DX_TEST_LOGIN (scripts/org.py test_identity). It may accept issues in a
+# repository of this kind and nowhere else: scripts/deciders.py counts it
+# only here, and the daily drift check fails when it has more than read
+# anywhere else.
 identity:
   secret: DX_TEST_TOKEN
-  login: "{org}-test-bot"
 
 # The autopilot in a fixed change that calls no model: for each criterion,
 # one file (`file`, `{n}` the issue's number, `{id}` the criterion's,
@@ -61,7 +67,8 @@ fixed-change:
 # writer would run, and runs it as any command way. It fails while
 # scenarios/<scenario>/greeting.md says "helo" (what `bug-reproduced` lands
 # on main first), so `bug-reproduced` gets `bug:confirmed` and
-# `bug-not-reproduced`, which lands none, stays `bug:unconfirmed`. One way
+# `bug-not-reproduced`, which lands its own saying "hello" (#764), stays
+# `bug:unconfirmed`. One way
 # for every layer: whatever the triage labels, a bug here never lacks one.
 repro:
   ways:
@@ -84,7 +91,8 @@ core:
   - "scenarios/core-one-at-a-time/**"
 
 # After each run of the scenarios, its issues are closed and locked, its pull
-# requests closed and their branches deleted (scripts/release-scenarios.py
+# requests closed and their branches deleted, and so are the pull requests
+# that close its issues, the autopilot's among them (scripts/release-scenarios.py
 # cleanup).
 cleanup: after-run
 

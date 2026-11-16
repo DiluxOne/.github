@@ -120,6 +120,9 @@ permissions: {}
 # every organisation sets (#568): config-overlay.sh stops the run without them.
 env:
   DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN }}
+  # The test identity, its token's owner (#739, scripts/org.py test_identity):
+  # it decides, and is trusted, in the test repository only.
+  DX_TEST_LOGIN: ${{ vars.DX_TEST_LOGIN }}
   DX_BOT_APP: ${{ vars.DX_BOT_APP }}
   DX_BOT_ID: ${{ vars.DX_BOT_ID }}
 
@@ -563,7 +566,7 @@ jobs:
         if: steps.who.outputs.rewrite != ''
         continue-on-error: true
         timeout-minutes: 5
-        uses: anthropics/claude-code-action@61a9c274fa7110a66dfafc1bbbced03833eb25fe # v1.0.269
+        uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
@@ -583,7 +586,7 @@ jobs:
         if: steps.who.outputs.others != ''
         continue-on-error: true
         timeout-minutes: 5
-        uses: anthropics/claude-code-action@61a9c274fa7110a66dfafc1bbbced03833eb25fe # v1.0.269
+        uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}

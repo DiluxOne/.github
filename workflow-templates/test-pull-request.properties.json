@@ -1,0 +1,8 @@
+{
+  "name": "Pull request, test repository (DiluxOne)",
+  "description": "The organisation's pull request pipeline for its test repository alone (org.yml test-repo), where the release lane moves it to the candidate's engine; every other repository runs it as the required workflow.",
+  "iconName": "octicon check",
+  "categories": [
+    "Automation"
+  ]
+}

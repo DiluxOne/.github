@@ -27,7 +27,9 @@ in the test repository; a breaking change waits on a person.
   release-lane.py act --plan F --results F --repo R [--run URL]
         does what `decide` says. A release, only while main is still the
         plan's `sha` (else `none`): the release pull request (CHANGELOG.md
-        from scripts/changelog.py build), merged, `vX.Y.Z` tagged at its
+        from scripts/changelog.py build, its commit made through the API
+        with GH_TOKEN by scripts/api-commit.py, so GitHub signs it, #780),
+        merged, `vX.Y.Z` tagged at its
         merge commit when its parent is that `sha`, `vN` moved to it
         (lightweight: `git tag -f` and a force push of that ref alone), its
         GitHub Release published or, when engine-release.yml made it first,
@@ -205,7 +207,11 @@ def release(p, repo, run=sh, sleep=time.sleep, minutes=60, root="."):
     with open(os.path.join(root, "CHANGELOG.md"), "w", encoding="utf-8") as fh:
         fh.write(log)
     run("git", "-C", root, "commit", "-qam", f"chore: release {version}")
-    run("git", "-C", root, "push", "-f", "origin", f"HEAD:refs/heads/{branch}")
+    # The ruleset refuses an unsigned commit on any branch (#610, #780): the
+    # commit is made again through the API with GH_TOKEN (scripts/api-
+    # commit.py), which GitHub signs, onto the planned commit, which is main
+    # on GitHub. It runs from the checkout, as candidate() does.
+    run(sys.executable, os.path.join(HERE, "api-commit.py"), "push", branch, "--onto", "HEAD~1", "--force")
     url = run("gh", "pr", "create", "--repo", repo, "--base", "main", "--head", branch, "--title", pr["title"], "--body", pr["body"]).strip()
     number = url.rstrip("/").rsplit("/", 1)[-1]
     run("gh", "pr", "merge", number, "--repo", repo, "--squash", "--auto")
@@ -479,6 +485,15 @@ def check_workflow(check, path=os.path.join(ROOT, ".github", "workflows", "relea
           [(t or {}).get("repositories") for t in used], ["${{ steps.test.outputs.repo }}"] * 2)
     check("workflow: every App token of the move and back jobs asks for checks: read and statuses: read (#627)",
           all(t.get("permission-checks") == "read" and t.get("permission-statuses") == "read" for t in minted), True)
+    # The test identity (#739): the move job checks DX_TEST_LOGIN against
+    # its token's owner before the callers move, so nothing plays when it differs.
+    msteps = jobs.get("move", {}).get("steps") or []
+    at = lambda pattern: next((i for i, st in enumerate(msteps) if re.search(pattern, str(st.get("run")))), None)
+    guard, moving = at(r"org\.py test-identity --check"), at(r"release-scenarios\.py move\b")
+    genv = (msteps[guard].get("env") or {}) if guard is not None else {}
+    check("#739 workflow: move checks DX_TEST_LOGIN against DX_TEST_TOKEN's owner before the callers move",
+          (guard is not None and moving is not None and guard < moving, genv.get("GH_TOKEN"), genv.get("DX_TEST_LOGIN")),
+          (True, "${{ secrets.DX_TEST_TOKEN }}", "${{ vars.DX_TEST_LOGIN }}"))
     # The groups play at once, each in its job, between the move and the back.
     play = jobs.get("play", {})
     check("workflow: play is a matrix over the move job's groups, and one group's failure cancels no other's",
@@ -581,6 +596,8 @@ def self_test():
         check("C4: all pass → release", d["do"], "release")
         check("C4: the release is built from the commit the scenarios tried", (fake.has("git", "-C", root, "checkout", "-B", "chore/release-v7.10.1", "p1"), bool([c for c in fake.named("changelog.py") if "build" in c and c[-1] == "p1"])), (True, True))
         check("C4: the release pull request is merged", fake.has("gh", "pr", "merge", "700"), True)
+        check("C4: no branch is pushed with git from release() (#780)", [c for c in fake.calls if c[:1] == ("git",) and "push" in c and any(a.startswith("refs/heads/") or a.startswith("HEAD:") for a in c)], [])
+        check("C4: the release commit goes through the API, signed (#780)", [list(c[2:]) for c in fake.calls if c[1:2] and c[1].endswith("api-commit.py")], [["push", "chore/release-v7.10.1", "--onto", "HEAD~1", "--force"]])
         check("C4: vX.Y.Z is tagged at its merge commit, lightweight", (fake.has("git", "-C", root, "tag", "v7.10.1", "abc123"), fake.has("git", "-C", root, "push", "origin", "refs/tags/v7.10.1")), (True, True))
         tags = [c for c in fake.calls if c[3:4] == ("tag",)]
         check("C4: no tag is annotated", any("-a" in c or "-m" in c or "-s" in c for c in tags), False)

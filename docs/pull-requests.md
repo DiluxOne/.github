@@ -94,7 +94,15 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    the change can have from its paths alone
    ([`policy/review-policy.default.yml`](../policy/review-policy.default.yml) plus
    the repository's `.github/review-policy.yml`; `policy.py --test` checks
-   its rules). Then Claude reviews it with
+   its rules). The paths come from GitHub's files API, checked against git
+   by [`scripts/pr-files.py`](../scripts/pr-files.py) (#768): a review
+   that starts as the pull request opens can find the API still listing
+   nothing, so while git sees a change the API does not list it reads
+   again, as `files-wait` in the default policy says (6 reads, 10 seconds
+   apart). A diff that really is empty is not waited for: the floor is
+   high, with a warning that it changes no file. A list still empty or
+   partial after the wait makes the floor high too, and the review's
+   summary says "no changed files could be listed". Then Claude reviews it with
    the [review profiles](../review-profiles/) (general, and the kind's
    `kinds/<kind>/review-profile.md`) and the repository's `AGENTS.md`
    and `docs/architecture.md`: inline comments for blockers and majors (each a
@@ -138,7 +146,9 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    failed before; the autopilot ran it only in the sandbox, where it must
    pass before the pull request is ready, and the pull request's own checks
    run it too); it is labelled `merged-by:policy`. While the review blocks,
-   the autopilot fixes and pushes, up to five rounds, then hands it to a
+   or a gate of the pipeline fails or the review ends without a verdict
+   (#741: a round from the failed jobs' log), the autopilot fixes and
+   pushes, up to five rounds, then hands it to a
    person (`needs-human`). A sync run's pull request (lane `org-sync`)
    merges by policy too ([`scripts/autonomy.py`](../scripts/autonomy.py)
    `lane-merge`) when the lane accepts its issue and every file it changes

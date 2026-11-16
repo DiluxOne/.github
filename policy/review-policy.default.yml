@@ -37,6 +37,17 @@ issue-gate:
 # branch of the same repository, never a fork (#361).
 max-changed-lines-untrusted: 600
 
+# How long the review's policy floor waits for GitHub's files API to list a
+# pull request git already sees changed (#768, scripts/pr-files.py): a
+# review that starts as the pull request opens can find the list still
+# empty. `reads` reads in all, `seconds` apart (about a minute); a list
+# still empty or partial after them makes the floor high. A property of
+# GitHub's API, not of a repository: the organisation's alone. Without this
+# key the list is read once.
+files-wait:
+  reads: 6
+  seconds: 10
+
 # What a pull request titled docs may change: shell `case` globs (`*` crosses
 # directories). The organisation's list only: a repository's own file cannot
 # widen it; a kind adds its own (`docs-paths:` in kinds/<kind>/surface.yml,

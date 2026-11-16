@@ -1,0 +1,13 @@
+# What the test repository's paths weigh (#764), beside the organisation's
+# lists (policy/review-policy.default.yml). No public surface and nothing
+# sensitive: it is no product (pack.yml), so the surface check finds nothing
+# here. scripts/policy.py and scripts/surface.py read it; kinds/README.md,
+# "Public surface".
+
+# Added to the organisation's high-risk paths when the review computes its
+# floor (scripts/policy.py, add-only): the release scenario
+# `high-risk-waits` changes only its own directory, which no other pattern
+# names, and expects `risk:high` and no merge from the path
+# (scripts/release-scenarios.py risk_problems). `**` crosses directories.
+high-risk:
+  - "scenarios/high-risk-waits/**"

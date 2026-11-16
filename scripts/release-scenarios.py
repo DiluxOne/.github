@@ -4,8 +4,9 @@ repository (org.yml `test-repo`, kind engine-test) at `v7-next` before `v7`
 moves, as data in tests/release/scenarios.yml.
 
 Every pair of a reusable workflow and an event the test repository's
-callers wire (its pack's `callers` among workflow-templates/*.yml, and
-org-pull-request.yml, the organisation's required workflow), but a
+callers wire (its pack's `callers` among workflow-templates/*.yml, its
+pull-request pipeline test-pull-request.yml among them: the required
+workflow, org-pull-request.yml, runs at `v7` everywhere else, #748), but a
 `schedule` no scenario can cause, and every
 transition of the autopilot's state machine (scripts/autopilot.py:
 `next_step`'s BOT_ACTIONS, its waits on PERSON_DECISIONS and BOT_WAITS, the
@@ -21,7 +22,8 @@ merges, unless main says it already: #707), `opens`
 (an `issue` or a `pull` with its `title`, `body` (a name of `bodies:` or the
 text), `labels`, and `fork: true` for one from a fork; a pull's `{issue}` in
 its body is the number of the issue it opens first, its `issue:` or a
-complete feature; an issue's `type`, else the Type its body's form gives,
+complete feature, and its `{files}` the files of its diff, one
+`` - `path` `` line each (#760: `pull_files`); an issue's `type`, else the Type its body's form gives,
 `types:` of the file, and its `comments`, posted before its labels: a
 `/claim` before `accepted`), `steps` (each one of
 `comment`, `label`, `unlabel`, `edit`, `push`, `dispatch`, and `until`,
@@ -33,7 +35,11 @@ file is written in a commit GitHub signs, `createCommitOnBranch` (#709); a
 `push: <name>` writes scenarios/<id>/<name>.md on the head branch of the
 pull request it observes, the autopilot's for an issue, and `conflict`
 then lands that file, otherwise, on main, `behind` only a file of its own
-there, through a docs pull request of the scenario that merges: #698),
+there, through a docs pull request of the scenario that merges: #698;
+every text it writes there, and scenarios/<id>/pull.md a pull's, carries
+the run's id, `run_mark`, so none is what an earlier run merged into main,
+which would leave its pull request with no diff: #778, `scenario_text`;
+a `before`'s file says its `says` alone),
 `minutes` (its limit, 10 by default, 15 at most) and
 `expect` (`labels`, `absent`, `comments` (markers), `pull` (`closes`,
 `branch`, `title`, patterns; `false` for none that closes it, #713), `check` (name: conclusion, the name a
@@ -60,14 +66,23 @@ after GitHub's back-off within the scenario's limit, then named.
         accepted, accepts before the triage's verdict or waits for no
         seal after it, or comments /claim after the acceptance,
         `autopilot_problems`; a body the schema refuses, a decision's
-        too, or a Bug's without a field bug_report.yml requires).
+        too, or a Bug's without a field bug_report.yml requires; #760: a
+        pull request whose description would not name every file of its
+        diff, its body with no `{files}`; #764: one that expects a
+        `risk:<level>` label no path it changes gets as its floor for kind
+        engine-test, the organisation's patterns and the kind's
+        surface.yml `high-risk` matched as scripts/policy.py matches them,
+        `risk_problems`).
         Every other pair a shipped caller wires is held to the
         engine statically, by scripts/caller-contract.py check; and
         what is wrong with the groups (`partition`): a scenario in no
         group or in two, two scenarios that could write to the same
         part of the test repository's core, a scenario that writes under
         it but expects no wait on it (#709), a group id unfit for an
-        artifact name
+        artifact name; and (#748, `pipeline_problems`) a pack with no
+        caller that wires the pull-request pipeline's jobs on
+        pull_request and merge_group, org-pull-request.yml among its
+        callers, and an engine call in one of them the lane cannot move
   release-scenarios.py plan
         prints each scenario's limit in minutes and how often it polls,
         [{id, minutes, poll}] as JSON; exits 1 naming a fixed wait or a
@@ -80,7 +95,11 @@ after GitHub's back-off within the scenario's limit, then named.
         the callers moved to the ref, as `run` does (with
         DX_CALLERS_TOKEN), what moved written to MOVED as soon as the
         pointing is over, and to FILE the failing `callers` row when they
-        did not reach it (exits 1 then: no group plays)
+        did not reach it, or (#748, `at_candidate`) one for each pipeline
+        there that would still run off the ref: its default branch still
+        requiring org-pull-request.yml (a `workflows` rule), or a
+        .github/workflows/*.yml calling the engine off the ref (exits 1
+        then: no group plays, and `back` puts back what moved)
   release-scenarios.py play --repo OWNER/NAME --group ID --out FILE
                             [--ref v7-next] [--minutes N]
         the group's scenarios, one after another in its order, with the
@@ -192,10 +211,61 @@ def pairs(root=ROOT, callers=CALLERS):
 UNPLAYABLE = ("schedule",)
 
 
+REQUIRED = ".github/workflows/org-pull-request.yml"
+
+
 def test_callers(pack):
     """The test repository's callers, as globs: its pack's `callers` among
-    the shipped ones, and org-pull-request.yml, which runs everywhere."""
-    return tuple(f"workflow-templates/{c}" for c in pack.get("callers") or []) + (".github/workflows/org-pull-request.yml",)
+    the shipped ones. The required workflow, org-pull-request.yml, runs
+    everywhere else, at `v7`: there, its pipeline is test-pull-request.yml's
+    (#748), which the lane moves to the candidate."""
+    return tuple(f"workflow-templates/{c}" for c in pack.get("callers") or [])
+
+
+def engine_calls(text, central):
+    """The lines of a caller that call the engine (`uses:` of a workflow of
+    `central`), as (number, line). Pure."""
+    pat = re.compile(r"^\s*-?\s*uses:\s*['\"]?" + re.escape(central) + r"/\.github/workflows/")
+    return [(i, line) for i, line in enumerate(text.split("\n"), 1) if pat.match(line)]
+
+
+def unmovable(text, central):
+    """The engine calls of a caller `at_ref` would not move (one that does
+    not match USES: quoted, with no ref, a step's), as "line N: ...". Pure."""
+    uses = re.compile(USES.format(re.escape(central)))
+    return [f"line {i}: {line.strip()!r}" for i, line in engine_calls(text, central) if not uses.match(line)]
+
+
+def off_ref(text, central, ref):
+    """The engine calls of a caller not at `ref`, as "line N: ...". Pure."""
+    uses = re.compile(USES.format(re.escape(central)))
+    return [f"line {i}: {line.strip()!r}" for i, line in engine_calls(text, central) if not ((m := uses.match(line)) and m.group(2) == ref)]
+
+
+def pipeline_problems(root, pack, central):
+    """What would leave a pipeline of the test repository at `v7` while the
+    lane plays the candidate (#748), statically: no caller of its pack's
+    that wires the pull-request pipeline's jobs on `pull_request` and
+    `merge_group` (every pair org-pull-request.yml wires), org-pull-request.yml
+    among its callers (the required workflow, whose calls are hard-wired to
+    `@v7`), and an engine call in one of its callers `at_ref` would not move.
+    Each names the file. Pure but for reading the files."""
+    out, callers = [], test_callers(pack)
+    named = [c for c in pack.get("callers") or [] if os.path.basename(str(c)) == os.path.basename(REQUIRED)]
+    if named:
+        out.append(f"kinds/engine-test/pack.yml `callers` names {named[0]}, the required workflow, which runs at `v7` with its calls hard-wired: "
+                   "the test repository runs the pipeline from test-pull-request.yml, which the lane moves")
+    want, have = pairs(root, (REQUIRED,)), pairs(root, callers)
+    events = {e for pattern in callers for path in glob.glob(os.path.join(root, pattern)) for e in caller_events(load_yaml(path))}
+    gaps = sorted(want - have) + [f"`{e}`" for e in ("pull_request", "merge_group") if e not in events]
+    if gaps:
+        out.append(f"kinds/engine-test/pack.yml `callers` has no caller that wires the pull-request pipeline ({', '.join(gaps[:4])}"
+                   f"{', …' if len(gaps) > 4 else ''}): its pull requests would run no candidate's pipeline; add test-pull-request.yml")
+    for pattern in callers:
+        for path in sorted(glob.glob(os.path.join(root, pattern))):
+            for line in unmovable(open(path, encoding="utf-8").read(), central):
+                out.append(f"{os.path.relpath(path, root)} {line}: an engine call the lane cannot move to the candidate (`uses: {central}/.github/workflows/<name>.yml@<ref>`)")
+    return out
 
 
 def played(root, pack):
@@ -210,7 +280,7 @@ def dispatchable(root, pack):
     """The test repository's callers a scenario can dispatch: its own, with
     `workflow_dispatch`."""
     out = set()
-    for pattern in test_callers(pack)[:-1]:
+    for pattern in test_callers(pack):
         for path in glob.glob(os.path.join(root, pattern)):
             if "workflow_dispatch" in caller_events(load_yaml(path)):
                 out.add(os.path.basename(path))
@@ -338,7 +408,10 @@ def preconditions(scenarios, bodies, pack, can_dispatch=(), passes=None, types=N
     and its pack declare none, so the bug gets `repro:no-way`), or a
     confirmed bug's issue expected to have a pull request that closes it
     (the reproduction's fix closes the lane's own issue, never the
-    report). Pure."""
+    report), and (#760) a pull request whose description, `pull_text` of
+    its body, would not name every file of its diff (`pull_files`), its
+    body with no `{files}` among them, or the one it lands on main
+    through, of the `pull` body. Pure."""
     import fnmatch
     out = []
     for s in scenarios:
@@ -371,6 +444,18 @@ def preconditions(scenarios, bodies, pack, can_dispatch=(), passes=None, types=N
         if passes and "issue" in opens and ("awaiting-acceptance" in (expect.get("labels") or []) or "incomplete" in (expect.get("absent") or [])):
             if not passes(body_of(opens["issue"].get("body"), bodies)):
                 out.append(f"scenario {sid}: expects its issue to await acceptance, but its body does not pass the issue schema")
+        if "pull" in opens:
+            # #760: a description that names none of its diff is never merged by policy.
+            body = body_of(opens["pull"].get("body"), bodies)
+            if "{files}" not in body:
+                out.append(f"scenario {sid}: its pull request's body has no `{{files}}`, so its description names none of the files it changes")
+            else:
+                missing = unnamed(pull_text(body, "1", pull_files(s)), pull_files(s))
+                if missing:
+                    out.append(f"scenario {sid}: its pull request's description does not name {', '.join(missing)}, which it changes")
+        lands = any("lands" in b for b in s.get("before") or []) or any(isinstance(st, dict) and st.get("push") in LANDS for st in s.get("steps") or [])
+        if lands and "{issue}" in bodies.get("pull", "") and "{files}" not in bodies["pull"]:
+            out.append(f"scenario {sid}: the `pull` body has no `{{files}}`, so the pull request it lands on main through names none of the files it changes")
         if "pull" in opens and (expect.get("pull") or {}).get("closes"):
             if "{issue}" not in body_of(opens["pull"].get("body"), bodies):
                 out.append(f"scenario {sid}: expects its pull request to close an issue, but its body names no `{{issue}}` it opens")
@@ -389,6 +474,36 @@ def preconditions(scenarios, bodies, pack, can_dispatch=(), passes=None, types=N
 
 def body_of(value, bodies):
     return bodies.get(value, value) if isinstance(value, str) else ""
+
+
+def pull_files(s):
+    """The files the pull request scenario `s` opens adds or edits (#760),
+    its diff, in order and once each: scenarios/<id>/pull.md, written when
+    it opens, then scenarios/<id>/<name>.md for each `push: <name>` but
+    `behind`, written on its head. [] for a scenario that opens none.
+    Pure."""
+    if "pull" not in (s.get("opens") or {}):
+        return []
+    sid, out = s.get("id"), [f"scenarios/{s.get('id')}/pull.md"]
+    for step in s.get("steps") or []:
+        if isinstance(step, dict) and "push" in step and str(step["push"]) != "behind":
+            path = f"scenarios/{sid}/{step['push']}.md"
+            if path not in out:
+                out.append(path)
+    return out
+
+
+def pull_text(body, issue, files):
+    """A scenario pull request's description (#760): `body` with `{issue}`
+    the number of the issue it closes and `{files}` one `` - `path` `` line
+    per file of its diff. Pure."""
+    return body.replace("{issue}", str(issue)).replace("{files}", "\n".join(f"- `{f}`" for f in files))
+
+
+def unnamed(text, files):
+    """The files of `files` the description `text` does not name (as
+    `` `path` ``). Pure."""
+    return [f for f in files if f"`{f}`" not in text]
 
 
 def check_named(name, checks):
@@ -829,11 +944,37 @@ def backoff(e, tries, now=None):
     return min(POLL * 2 ** tries, 120)
 
 
-def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, types=None):
+def run_mark(env=None, now=None, rand=None):
+    """The id of this run of the lane (#778), which every text `play` writes
+    under scenarios/<id>/ carries: `GITHUB_RUN_ID-GITHUB_RUN_ATTEMPT` in the
+    lane (a re-run of the same run differs too), else, run locally, the
+    time with a random suffix. Pure but for `env`, `now` and `rand`."""
+    env = os.environ if env is None else env
+    if env.get("GITHUB_RUN_ID"):
+        return f"{env['GITHUB_RUN_ID']}-{env.get('GITHUB_RUN_ATTEMPT') or '1'}"
+    if rand is None:
+        import secrets
+        rand = secrets.token_hex(3)
+    return f"local-{int(time.time() if now is None else now)}-{rand}"
+
+
+def scenario_text(sid, name, where, run_id):
+    """The text `play` writes in scenarios/<sid>/<name>.md on `where` (the
+    pull request, or main), in the run `run_id` (#778): its own in each run,
+    so no run writes what an earlier one merged into main, which would leave
+    its pull request with no diff, and on the head another than on main, so
+    `conflict` conflicts. Pure."""
+    return f"{name} on {where}, scenario {sid}, run {run_id}\n"
+
+
+def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, types=None, run_id=None):
     """One scenario in `repo`: clears what an earlier run of it left
     (`clear`), opens what it opens (its `before` first), takes its steps,
     polls until its `expect` holds or `minutes` pass, then cleans up and
-    clears again. Returns {id, ok, why, run}."""
+    clears again. Every file it writes carries `run_id` (`run_mark` when
+    None, #778: `scenario_text`) but a `before`'s, which says its `says`.
+    Returns {id, ok, why, run}."""
+    run_id = run_id or run_mark()
     opens, made, closes = s.get("opens") or {}, [], None
     what = "pr" if "pull" in opens else "issue"
     spec = opens.get("pull") or opens.get("issue") or {}
@@ -893,8 +1034,8 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
         made.append(("issue", n))
         branch = landing(sid, arg)
         fresh_branch(repo, branch, run)
-        write_file(repo, branch, path, f"{arg} on main\n" if content is None else content, run)
-        body = body_of("pull", bodies).replace("{issue}", n) if "{issue}" in body_of("pull", bodies) else f"Closes #{n}"
+        write_file(repo, branch, path, scenario_text(sid, arg, "main", run_id) if content is None else content, run)
+        body = pull_text(body_of("pull", bodies) if "{issue}" in body_of("pull", bodies) else "{files}\n\nCloses #{issue}", n, [path])
         got = run("pr", "create", "--repo", repo, "--head", branch, "--title", f"docs: the scenario {sid} lands {arg} on main",
                   "--body-file", "-", input=marked(body, sid)).strip()
         made.append(("pr", got.rstrip("/").rsplit("/", 1)[-1]))
@@ -928,7 +1069,8 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
             if "{issue}" in text:
                 closes = open_issue(repo, pull_issue(spec, sid), bodies, sid, run, sid, types)
                 made.append(("issue", closes))
-                text = text.replace("{issue}", closes)
+            # #760: its description names every file of its diff.
+            text = pull_text(text, closes, pull_files(s))
             branch, target = own, repo
             writes = run
             if spec.get("fork"):
@@ -941,7 +1083,7 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
                 writes("repo", "fork", repo, "--clone=false", "--default-branch-only")
                 target = f"{writes('api', 'user', '--jq', '.login').strip()}/{repo.split('/', 1)[1]}"
             fresh_branch(target, branch, writes)
-            write_file(target, branch, f"scenarios/{sid}/pull.md", sid, writes)
+            write_file(target, branch, f"scenarios/{sid}/pull.md", scenario_text(sid, "pull", "the pull request", run_id), writes)
             head = f"{target.split('/', 1)[0]}:{branch}" if target != repo else branch
             url = run("pr", "create", "--repo", repo, "--head", head, "--title", spec.get("title", f"test: {sid}"),
                       "--body-file", "-", input=marked(text, sid)).strip()
@@ -972,7 +1114,7 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
                         head = ((seen or {}).get("pull") or {}).get("branch")
                         if not head:
                             return {"id": sid, "ok": False, "why": [failing or f"push {arg}: no pull request closes #{number} to push to"], "run": (seen or {}).get("run", "")}
-                    write_file(repo, head, path, f"{arg} on the pull request\n", run)
+                    write_file(repo, head, path, scenario_text(sid, arg, "the pull request", run_id), run)
                 if arg in LANDS:
                     why = land(arg, path)
                     if why:
@@ -1030,9 +1172,7 @@ def observe(repo, what, number, run=gh):
         # #698: the pull request that closes it, from the issue's own
         # references (the newest), never a search per poll: the search API
         # allows 30 a minute, which every scenario at once shares.
-        refs = [r.get("number") for r in view.get("closedByPullRequestsReferences") or []
-                if f"github.com/{repo}/pull/".lower() in str(r.get("url") or f"github.com/{repo}/pull/").lower()]
-        refs = [r for r in refs if isinstance(r, int)]
+        refs = closing_pulls(repo, view)
         if refs:
             pull = json.loads(run("pr", "view", str(max(refs)), "--repo", repo, "--json", "number,body,headRefName,title") or "{}")
             seen["pull"] = {"body": pull.get("body"), "branch": pull.get("headRefName"), "title": pull.get("title"), "number": pull.get("number")}
@@ -1044,18 +1184,43 @@ def observe(repo, what, number, run=gh):
     return seen
 
 
+def closing_pulls(repo, view):
+    """The numbers of the pull requests in `repo` that close the issue
+    `view` (its `closedByPullRequestsReferences`); one in another
+    repository is never one of them. Pure."""
+    found = (view.get("closedByPullRequestsReferences") if isinstance(view, dict) else None) or []
+    refs = [r.get("number") for r in found if isinstance(r, dict)
+            and f"github.com/{repo}/pull/".lower() in str(r.get("url") or f"github.com/{repo}/pull/").lower()]
+    return [r for r in refs if isinstance(r, int)]
+
+
 def cleanup(repo, made, run=gh):
     """`cleanup: after-run`: its issues closed and locked, its pull requests
-    closed and their branches deleted. A failure here never hides a
-    result."""
+    closed and their branches deleted, and so are the pull requests that
+    close its issues (#784: the autopilot's, which carry no `dx-scenario`
+    mark for `clear` to find, and which the next run's core scenario would
+    wait on). A failure here never hides a result."""
     for what, number in made:
+        if what == "issue":
+            # #784: the pull requests that say `Closes #<issue>` for an
+            # issue the scenario opened are the scenario's own. Their own
+            # try: a view that fails never keeps the issue open.
+            try:
+                view = json.loads(run("issue", "view", number, "--repo", repo, "--json", "closedByPullRequestsReferences") or "{}")
+            except (RuntimeError, ValueError):
+                view = {}
+            for pull in closing_pulls(repo, view):
+                try:
+                    run("pr", "close", str(pull), "--repo", repo, "--delete-branch")
+                except RuntimeError:
+                    pass
         try:
             if what == "issue":
                 run("issue", "close", number, "--repo", repo)
                 run("issue", "lock", number, "--repo", repo)
             else:
                 run("pr", "close", number, "--repo", repo, "--delete-branch")
-        except RuntimeError:
+        except (RuntimeError, ValueError):
             pass
 
 
@@ -1274,11 +1439,42 @@ def read_moved(path, ref):
         return [], [{"id": "callers", "ok": False, "why": [f"could not read what moved to {ref}, the callers may be left there: {e}"], "run": ""}]
 
 
+def at_candidate(repo, ref, run=gh, central=None):
+    """What would still run a pipeline of the test repository off `ref` once
+    its callers moved (#748), as failing `callers` rows, each naming it: its
+    default branch's rules (`repos/{repo}/rules/branches/{default}`) still
+    carrying a `workflows` rule for org-pull-request.yml (the required
+    workflow, at `v7` with its calls hard-wired), and any
+    .github/workflows/*.yml there that still calls the engine off `ref`."""
+    import base64
+    if central is None:
+        central = central_of()
+    why = []
+    base = run("api", f"repos/{repo}", "--jq", ".default_branch").strip()
+    pages = json.loads(run("api", "--paginate", "--slurp", f"repos/{repo}/rules/branches/{base}?per_page=100") or "[]")
+    rules = [r for page in pages for r in (page if isinstance(page, list) else [page])] if isinstance(pages, list) else []
+    for r in rules:
+        for w in ((r.get("parameters") or {}).get("workflows") or []) if r.get("type") == "workflows" else []:
+            if os.path.basename(str(w.get("path") or "")) == os.path.basename(REQUIRED):
+                why.append(f"{repo}'s {base} still requires {REQUIRED} (a `workflows` rule of {r.get('ruleset_source') or 'a ruleset'}): its pull requests "
+                           f"run the pipeline at `v7`, not {ref}; `sync-repos.py rulesets` leaves it out once it has test-pull-request.yml")
+    for f in json.loads(run("api", f"repos/{repo}/contents/.github/workflows") or "[]"):
+        name = str(f.get("name", ""))
+        if not name.endswith(".yml"):
+            continue
+        got = json.loads(run("api", f"repos/{repo}/contents/.github/workflows/{name}") or "{}")
+        for line in off_ref(base64.b64decode(got.get("content") or "").decode(), central, ref):
+            why.append(f".github/workflows/{name} {line}: calls the engine off {ref} after the move")
+    return [{"id": "callers", "ok": False, "why": [w], "run": ""} for w in why]
+
+
 def move_callers(repo, ref, callers=gh, central=None, sleep=time.sleep, minutes=20, record=None):
     """The test repository's callers moved to `ref` (`point_callers`):
-    (what moved, []) once they are, else ([], one failing `callers` row that
-    says why). `record`, when given, is called with what moved as soon as
-    the pointing is over ([] when it failed cleanly)."""
+    (what moved, []) once they are and nothing would run a pipeline there
+    off `ref` (`at_candidate`, #748), else (what moved, the failing
+    `callers` rows that say why; [] moved when the pointing failed).
+    `record`, when given, is called with what moved as soon as the
+    pointing is over ([] when it failed cleanly)."""
     try:
         moved = point_callers(repo, ref, callers, central, sleep=sleep, minutes=minutes)
     except (RuntimeError, ValueError) as e:
@@ -1287,7 +1483,10 @@ def move_callers(repo, ref, callers=gh, central=None, sleep=time.sleep, minutes=
         return [], [{"id": "callers", "ok": False, "why": [f"the callers did not reach {ref}: {e}"], "run": ""}]
     if record:
         record(moved)
-    return moved, []
+    try:
+        return moved, at_candidate(repo, ref, callers, central)
+    except (RuntimeError, ValueError) as e:
+        return moved, [{"id": "callers", "ok": False, "why": [f"could not tell whether every pipeline of {repo} runs at {ref}: {e}"], "run": ""}]
 
 
 GROUP_ID = re.compile(r"[a-z0-9-]+")
@@ -1419,6 +1618,46 @@ def autopilot_problems(scenarios):
     return out
 
 
+RISKS = ("low", "medium", "high")
+
+
+def path_floor(path, high, low):
+    """The floor scripts/policy.py gives a pull request that changes `path`
+    alone: high when it matches `high`, low when it matches `low`, medium
+    otherwise, with policy.py's own `matches` (#764). Pure."""
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    import policy
+    return "high" if policy.matches(path, high) else "low" if policy.matches(path, low) else "medium"
+
+
+def risk_patterns(root=ROOT):
+    """The high-risk and low-risk-eligible patterns a pull request of the
+    test repository is weighed with (#764): the organisation's, and the
+    kind engine-test's `high-risk` (kinds/engine-test/surface.yml)."""
+    org = load_yaml(os.path.join(root, "policy", "review-policy.default.yml"))
+    kind = load_yaml(os.path.join(root, "kinds", "engine-test", "surface.yml"))
+    return (list(org.get("high-risk") or []) + list(kind.get("high-risk") or []), list(org.get("low-risk-eligible") or []))
+
+
+def risk_problems(scenarios, high, low):
+    """Every scenario that expects a `risk:<level>` label that no path it
+    changes (`pull_files`) gets as its floor (`path_floor`, #764): the
+    review's floor comes from the paths, so the label could never come from
+    them. Pure."""
+    out = []
+    for s in scenarios:
+        wants = [str(l).split(":", 1)[1] for l in ((s.get("expect") or {}).get("labels") or []) if str(l).startswith("risk:") and str(l).split(":", 1)[1] in RISKS]
+        files = pull_files(s)
+        floors = {f: path_floor(f, high, low) for f in files}
+        for level in wants:
+            if level not in floors.values():
+                shown = ", ".join(f"{f} ({v})" for f, v in floors.items()) or "none"
+                out.append(f"scenario {s.get('id') or '?'}: expects risk:{level}, but no path it changes has that floor for kind engine-test (its paths: {shown}); "
+                           f"add the path to kinds/engine-test/surface.yml `high-risk`, or change the expectation")
+    return out
+
+
 def core_problems(scenarios, pack):
     """Every scenario that writes under the test repository's core (`pack`'s
     `core`) but expects no wait on it (#709): its fixed change would make its
@@ -1437,7 +1676,7 @@ def core_problems(scenarios, pack):
     return out
 
 
-def play_group(conf, gid, repo, ref, run=gh, sleep=time.sleep, minutes=20):
+def play_group(conf, gid, repo, ref, run=gh, sleep=time.sleep, minutes=20, run_id=None):
     """The scenarios of the group `gid` (one, #694), in its order, at
     `ref` (the callers already there), with the test identity's token (the
     ambient GH_TOKEN): their rows, or one failing row when `gid` is no
@@ -1446,11 +1685,12 @@ def play_group(conf, gid, repo, ref, run=gh, sleep=time.sleep, minutes=20):
     group = next((g for g in groups(scenarios) if g["id"] == gid), None)
     if group is None:
         return [{"id": gid, "ok": False, "why": [f"{gid} is no group of {SCENARIOS}"], "run": ""}]
-    by_id = {s.get("id"): s for s in scenarios}
-    return [play(by_id[sid], repo, ref, conf.get("bodies") or {}, run, sleep, minutes, types=conf.get("types") or {}) for sid in group["scenarios"]]
+    by_id, run_id = {s.get("id"): s for s in scenarios}, run_id or run_mark()
+    return [play(by_id[sid], repo, ref, conf.get("bodies") or {}, run, sleep, minutes, types=conf.get("types") or {}, run_id=run_id)
+            for sid in group["scenarios"]]
 
 
-def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20, central=None, callers=None, moved_out=None, record=None):
+def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20, central=None, callers=None, moved_out=None, record=None, run_id=None):
     """Every scenario at `ref`: the callers moved there first (a merged pull
     request, or no scenario plays and one failing `callers` row says why),
     and put back after, through another; a failure to put them back is a
@@ -1465,14 +1705,19 @@ def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20, cent
     callers = callers or (callers_gh() if run is gh else run)
     moved, rows = move_callers(repo, ref, callers, central, sleep, minutes, record)
     if rows:
-        return rows
+        # What moved still goes back (#748: a pipeline off the ref plays no
+        # scenario, but the callers did move).
+        if moved_out is not None:
+            moved_out.extend(moved)
+            return rows
+        return rows + put_back(repo, ref, moved, callers, central, sleep, minutes)
     if moved_out is not None:
         moved_out.extend(moved)
-    results = []
+    results, run_id = [], run_id or run_mark()
     try:
         for s in conf.get("scenarios") or []:
             if not only or s["id"] in only:
-                results.append(play(s, repo, ref, bodies, run, sleep, minutes, types=conf.get("types") or {}))
+                results.append(play(s, repo, ref, bodies, run, sleep, minutes, types=conf.get("types") or {}, run_id=run_id))
     finally:
         if moved_out is None:
             results.extend(put_back(repo, ref, moved, callers, central, sleep, minutes))
@@ -1648,6 +1893,23 @@ def commits(calls):
     return out
 
 
+def stale_writes(writes, held, run_id):
+    """The texts among `writes` (`commits`) under scenarios/ that would
+    change nothing (#778): one some earlier state already `held` ({path:
+    [texts]}: what the test repository's main held, another run's), so its
+    pull request would have no diff, or one without `run_id`. Pure."""
+    out = []
+    for _, branch, _, files in writes:
+        for path, text in files.items():
+            if not path.startswith("scenarios/"):
+                continue
+            if text in (held.get(path) or ()):
+                out.append(f"{branch}: {path} says what was there already: {text.strip()!r}")
+            if run_id not in text:
+                out.append(f"{branch}: {path} does not carry the run's id {run_id}: {text.strip()!r}")
+    return out
+
+
 def org_key(path, pack):
     """The part of the test repository's core `path` touches
     (scripts/org.py core_key)."""
@@ -1712,7 +1974,7 @@ def fixture_problems(conf, issue_check, pull_check, release_check=None, bug_fiel
         specs = [b.get("issue") or {} for b in s.get("before") or []] + ([opens["issue"]] if "issue" in opens else [])
         if "pull" in opens:
             specs.append((opens["pull"].get("issue") or {"body": "complete-feature"}))
-            text = body_of(opens["pull"].get("body"), bodies).replace("{issue}", "1")
+            text = pull_text(body_of(opens["pull"].get("body"), bodies), "1", pull_files(s))
             for wrong in pull_check(opens["pull"].get("title", f"test: {sid}"), branch_of(s), marked(text, sid), "1" if "{issue}" in body_of(opens["pull"].get("body"), bodies) else None):
                 out.append(f"scenario {sid}: its pull request: {wrong}")
         specs += [{"body": st["edit"]} for st in s.get("steps") or [] if isinstance(st, dict) and "edit" in st]
@@ -1781,20 +2043,30 @@ def lane_problems(lane):
     return []
 
 
+def central_of():
+    sys.path.insert(0, HERE)
+    import org
+    return org.CENTRAL
+
+
 def problems(conf, root=ROOT):
     """What `coverage` names: every played pair and transition with no
     scenario, every scenario its setup cannot make hold, what is wrong
-    with the groups (`partition`), and with the lane's `play` job
-    (`lane_problems`, #707)."""
+    with the groups (`partition`), with the lane's `play` job
+    (`lane_problems`, #707), and with the test repository's pipeline
+    (`pipeline_problems`, #748), and every risk label the paths cannot
+    give (`risk_problems`, #764)."""
     pack = test_pack(root)
     scenarios = conf.get("scenarios") or []
     return (coverage(scenarios, played(root, pack) | transitions(root), conf.get("statically") or {})
             + preconditions(scenarios, conf.get("bodies") or {}, pack, dispatchable(root, pack), schema_passes(root), conf.get("types") or {},
                             test_repro(root))
             + lane_problems(load_yaml(os.path.join(root, LANE)))
+            + pipeline_problems(root, pack, central_of())
             + partition(scenarios, groups(scenarios), pack)
             + timing(scenarios)
             + autopilot_problems(scenarios)
+            + risk_problems(scenarios, *risk_patterns(root))
             + fixture_problems(conf, engine_post(root).issue, engine_post(root).pull, engine_post(root).release,
                                form_required(load_yaml(os.path.join(root, BUG_FORM)))))
 
@@ -2028,12 +2300,12 @@ def self_test():
     pr_fixed = {"id": "p", "opens": {"pull": {"body": "pull"}}, "expect": {"pull": {"closes": True}}}
     core_alone = {"id": "c", "opens": {"issue": {"labels": ["accepted"]}}, "expect": {"labels": [CORE_LABEL]}}
     check("preconditions: a pull request that closes a fixed number never holds; one that closes the issue it opens does",
-          (preconditions([pr_fixed], {"pull": "Closes #1"}, pack),
-           preconditions([dict(pr_fixed, opens={"pull": {"body": "pull", "issue": {"body": "f", "labels": ["accepted"]}}})], {"pull": "## What changes\n\nX.\n\n## Why\n\nCloses #{issue}"}, pack)),
+          (preconditions([pr_fixed], {"pull": "{files}\n\nCloses #1"}, pack),
+           preconditions([dict(pr_fixed, opens={"pull": {"body": "pull", "issue": {"body": "f", "labels": ["accepted"]}}})], {"pull": "## What changes\n\n{files}\n\n## Why\n\nCloses #{issue}"}, pack)),
           (["scenario p: expects its pull request to close an issue, but its body names no `{issue}` it opens"], []))
     old_pull = {"id": "q", "opens": {"pull": {"title": "feat: x", "body": "pull"}}, "expect": {"pull": {"closes": True}}}
     check("#698 preconditions: a pull request that closes an issue it does not open accepted, a body without the template's sections, a title its issue's Type refuses",
-          preconditions([old_pull], {"pull": "A change.\n\nCloses #{issue}"}, pack, types={"complete-feature": "Task"}),
+          preconditions([old_pull], {"pull": "{files}\n\nCloses #{issue}"}, pack, types={"complete-feature": "Task"}),
           ["scenario q: its pull request closes an issue it does not open accepted (its `issue:` with `labels: [accepted]`), so the accepted-issue gate fails it",
            "scenario q: its pull request's body has no `What changes` section, which the conventions check asks of a person's",
            "scenario q: its pull request's body has no `Why` section, which the conventions check asks of a person's",
@@ -2067,8 +2339,32 @@ def self_test():
           preconditions([{"id": "b", "opens": {"issue": {"body": "bug"}}, "expect": {"labels": ["bug:confirmed"], "pull": {"closes": True}}}], {}, rpack, repro=True),
           ["scenario b: expects bug:confirmed and a pull request that closes its issue, but the reproduction's fix closes the issue the bugfix-reproduced lane opens, never the report"])
     check("#707: the bug that reproduces lands the greeting its fixed test reads, under its own directory, and its body names it",
-          ([b for b in bugs[0].get("before") or [] if "lands" in b], "scenarios/bug-reproduced/greeting.md" in real["bodies"][bugs[0]["opens"]["issue"]["body"]],
-           [b for b in bugs[1].get("before") or [] if "lands" in b]), ([{"lands": "greeting", "says": "helo"}], True, []))
+          ([b for b in bugs[0].get("before") or [] if "lands" in b], "scenarios/bug-reproduced/greeting.md" in real["bodies"][bugs[0]["opens"]["issue"]["body"]]),
+          ([{"lands": "greeting", "says": "helo"}], True))
+    # #764 C3: the bug that does not reproduce lands its greeting right, and
+    # its report's steps read it; the fixed reproduction passes on it.
+    import importlib.util
+    import tempfile
+    ways_spec = importlib.util.spec_from_file_location("repro_ways", os.path.join(HERE, "repro-ways.py"))
+    ways = importlib.util.module_from_spec(ways_spec)
+    ways_spec.loader.exec_module(ways)
+
+    def repro_on(sid, says):
+        """kinds/engine-test/repro-fixed.py, as issue 7 of scenario `sid`
+        gets it, run where scenarios/<sid>/greeting.md says `says`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "scenarios", sid))
+            with open(os.path.join(tmp, "scenarios", sid, "greeting.md"), "w", encoding="utf-8") as fh:
+                fh.write(f"{says}\n")
+            ways.write_fixed(os.path.join(ROOT, "kinds", "engine-test", "repro-fixed.py"), os.path.join(tmp, "tests", "repro", "test_issue_7.py"), 7, scenario_mark(sid))
+            return subprocess.run([sys.executable, "-I", os.path.join("tests", "repro", "test_issue_7.py")], cwd=tmp, capture_output=True, text=True).returncode
+    lands = [b for b in bugs[1].get("before") or [] if "lands" in b]
+    steps = real["bodies"][bugs[1]["opens"]["issue"]["body"]].split("### Steps to reproduce", 1)[1].split("###", 1)[0]
+    check("#764 C3: the real bug-not-reproduced lands its greeting saying something other than helo, its steps read it on main, and the fixed reproduction passes on it",
+          ([b["lands"] for b in lands], [b["says"] for b in lands if "helo" not in str(b["says"]).split()], "`scenarios/bug-not-reproduced/greeting.md` on `main`" in steps,
+           [repro_on("bug-not-reproduced", b["says"]) for b in lands]),
+          (["greeting"], [lands[0]["says"]] if lands else ["?"], True, [0]))
+    check("#764 C3: and the same reproduction fails where it says helo, as bug-reproduced lands it", repro_on("bug-reproduced", "helo"), 1)
     check("#707 saw: a failing row names its labels and the bot's newest comment's first line that is no marker, table-safe",
           (saw({"labels": ["b", "a"], "said": ["old", "<!-- dx-board -->\n\nThe seal | was `refused`.\nmore"]}), saw({})),
           ("saw labels a, b; the bot's newest comment: The seal ' was 'refused'.", NONE))
@@ -2100,6 +2396,35 @@ def self_test():
     res = run_all(scen, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=3, central="O/.github")
     check("run: a scenario whose expect holds passes, one whose does not fails, named", [(r["id"], r["ok"], r["why"]) for r in res], [("a", True, []), ("b", False, ["no label accepted", "saw labels awaiting-acceptance; the bot's newest comment: none"])])
     check("run: its issues are closed and locked after it", sum(1 for c in calls if c[:2] in (("issue", "close"), ("issue", "lock"))), 4)
+    ccalls = []
+
+    def cfake(*args, input=None):
+        ccalls.append(args)
+        if args[:2] == ("issue", "view"):
+            return json.dumps({"closedByPullRequestsReferences": [{"number": 12, "url": "https://github.com/o/t/pull/12"}, {"number": 30, "url": "https://github.com/x/y/pull/30"}]})
+        return ""
+    cleanup("o/t", [("issue", "5")], cfake)
+    check("#784 cleanup: the pull request that closes its issue (no mark) is closed, one in another repository left alone, then the issue closed and locked",
+          [c for c in ccalls if c[:1] in (("pr",), ("issue",)) and c[1] != "view"],
+          [("pr", "close", "12", "--repo", "o/t", "--delete-branch"), ("issue", "close", "5", "--repo", "o/t"), ("issue", "lock", "5", "--repo", "o/t")])
+    check("#784 cleanup: a view that is not JSON never hides a result", cleanup("o/t", [("issue", "5")], lambda *a, input=None: "not json"), None)
+
+    def vfake(answer):
+        seen = []
+
+        def fake(*args, input=None):
+            seen.append(args)
+            if args[:2] == ("issue", "view"):
+                if answer is None:
+                    raise RuntimeError("gh: HTTP 502")
+                return answer
+            return ""
+        return seen, fake
+    for name, answer in (("not JSON", "not json"), ("that fails", None)):
+        seen, fake_ = vfake(answer)
+        cleanup("o/t", [("issue", "5")], fake_)
+        check(f"#784 cleanup: a view {name} still has the issue closed and locked",
+              [c for c in seen if c[1] != "view"], [("issue", "close", "5", "--repo", "o/t"), ("issue", "lock", "5", "--repo", "o/t")])
     pcalls_ = []
 
     def prfake(*args, input=None):
@@ -2510,6 +2835,76 @@ def self_test():
           ([c for c in fresh if c[:2] == ("pr", "merge")], [c for c in fresh if "--auto" in c], any(c[:2] == ("pr", "checks") for c in fresh)),
           ([("pr", "merge", "21", "--repo", "o/t", "--squash", "--match-head-commit", "head-21")], [], True))
     check("#622: put_back with nothing moved does nothing", put_back("o/t", "v7-next", [], lambda *a, input=None: 1 / 0), [])
+    # #748 C1: the test repository's pull-request caller, the shipped
+    # template as it is, moves with the others.
+    import yaml
+    shipped = open(os.path.join(ROOT, "workflow-templates", "test-pull-request.yml"), encoding="utf-8").read()
+    shipped = shipped.replace("DiluxOne/.github/", "O/.github/")
+    st, fake = repo_fake()
+    st["main"]["test-pull-request.yml"] = shipped
+    moved, rows = move_callers("o/t", "v7-next", fake, "O/.github", lambda s: None, 3)
+    jobs = yaml.safe_load(st["main"]["test-pull-request.yml"])["jobs"]
+    check("#748 C1: after point_callers, every engine call of test-pull-request.yml's review, auto-merge and autopilot-fix jobs is at @v7-next",
+          (rows, sorted(m["name"] for m in moved), {j: jobs[j]["uses"].rsplit("@", 1)[1] for j in ("review", "auto-merge", "autopilot-fix")}),
+          ([], ["issues.yml", "test-pull-request.yml"], {"review": "v7-next", "auto-merge": "v7-next", "autopilot-fix": "v7-next"}))
+    check("#748 C3: and put back after, as it was, with the others",
+          (put_back("o/t", "v7-next", moved, fake, "O/.github", lambda s: None, 3), st["main"]["test-pull-request.yml"] == shipped, st["main"]["issues.yml"] == caller),
+          ([], True, True))
+    # #748 C4: what would leave a pipeline there at v7, refused and named.
+    def rules_fake(rules, tamper=None):
+        st, fake = repo_fake()
+        st["main"]["test-pull-request.yml"] = shipped
+
+        def with_rules(*a, input=None):
+            if a[:3] == ("api", "--paginate", "--slurp") and a[3].startswith("repos/o/t/rules/branches/main"):
+                return json.dumps([rules])
+            got = fake(*a, input=input)
+            if tamper and a[:2] == ("pr", "view") and st["main"].get("test-pull-request.yml", "").count("@v7-next") > 0:
+                tamper(st)
+            return got
+        return st, with_rules
+    required_rule = {"type": "workflows", "ruleset_source_type": "Organization", "ruleset_source": "DiluxOne", "ruleset_id": 3,
+                     "parameters": {"workflows": [{"path": ".github/workflows/org-pull-request.yml", "repository_id": 1, "ref": "refs/tags/v7"}]}}
+    st, fake = rules_fake([{"type": "pull_request"}, required_rule])
+    got = run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=3, central="O/.github")
+    check("#748 C4: move refuses a test repository whose default branch still requires org-pull-request.yml, naming the rule, plays nothing, and puts the callers back",
+          ([(r["id"], r["ok"]) for r in got], "org-pull-request.yml" in got[0]["why"][0] and "`workflows` rule" in got[0]["why"][0],
+           any(c[:2] == ("issue", "create") for c in st["calls"]), st["main"]["test-pull-request.yml"] == shipped),
+          ([("callers", False)], True, False, True))
+
+    def left_behind(st):
+        st["main"]["test-pull-request.yml"] = st["main"]["test-pull-request.yml"].replace("claude-review.yml@v7-next", "claude-review.yml@v7", 1)
+    st, fake = rules_fake([{"type": "pull_request"}], left_behind)
+    moved_rows = move_callers("o/t", "v7-next", fake, "O/.github", lambda s: None, 3)
+    check("#748 C4: move refuses a caller still off the ref after the move, naming the file and the line",
+          ([m["name"] for m in moved_rows[0]], [r["why"] for r in moved_rows[1]]),
+          (["issues.yml", "test-pull-request.yml"],
+           [[".github/workflows/test-pull-request.yml line " + str(st["main"]["test-pull-request.yml"].split("\n").index("    uses: O/.github/.github/workflows/claude-review.yml@v7") + 1)
+             + ": 'uses: O/.github/.github/workflows/claude-review.yml@v7': calls the engine off v7-next after the move"]]))
+    st, fake = rules_fake([{"type": "pull_request"}, dict(required_rule, parameters={"workflows": [{"path": ".github/workflows/other.yml"}]})])
+    check("#748 C4: every caller at the ref and no required pull-request workflow left: move passes",
+          move_callers("o/t", "v7-next", fake, "O/.github", lambda s: None, 3)[1], [])
+    with tempfile.TemporaryDirectory() as root:
+        os.makedirs(os.path.join(root, "workflow-templates"))
+        os.makedirs(os.path.join(root, ".github", "workflows"))
+        open(os.path.join(root, REQUIRED), "w").write(
+            "on:\n  pull_request:\n  merge_group:\njobs:\n  review:\n    if: github.event_name == 'pull_request'\n    uses: O/.github/.github/workflows/claude-review.yml@v7\n")
+        open(os.path.join(root, "workflow-templates", "issues.yml"), "w").write("on:\n  issues:\njobs:\n  t:\n    uses: O/.github/.github/workflows/issue-triage.yml@v7\n")
+        open(os.path.join(root, "workflow-templates", "test-pull-request.yml"), "w").write(open(os.path.join(root, REQUIRED)).read())
+        open(os.path.join(root, "workflow-templates", "quoted.yml"), "w").write(
+            "on:\n  issues:\njobs:\n  t:\n    uses: \"O/.github/.github/workflows/issue-triage.yml@v7\"\n")
+        check("#748 C4: the pack's callers with test-pull-request.yml pass", pipeline_problems(root, {"callers": ["issues.yml", "test-pull-request.yml"]}, "O/.github"), [])
+        got = pipeline_problems(root, {"callers": ["issues.yml"]}, "O/.github")
+        check("#748 C4: a pack with no caller that wires the pull-request pipeline is refused, naming what it lacks",
+              (len(got), "no caller that wires the pull-request pipeline" in got[0], "claude-review.yml:pull_request" in got[0], "`merge_group`" in got[0]), (1, True, True, True))
+        got = pipeline_problems(root, {"callers": ["issues.yml", "test-pull-request.yml", "org-pull-request.yml"]}, "O/.github")
+        check("#748 C4: org-pull-request.yml among the test repository's callers is refused, named", [l.split(",")[0] for l in got],
+              ["kinds/engine-test/pack.yml `callers` names org-pull-request.yml"])
+        got = pipeline_problems(root, {"callers": ["quoted.yml", "test-pull-request.yml"]}, "O/.github")
+        check("#748 C4: an engine call the lane cannot move is refused, naming the file and the line",
+              got, ["workflow-templates/quoted.yml line 5: 'uses: \"O/.github/.github/workflows/issue-triage.yml@v7\"': an engine call the lane cannot move to the candidate "
+                    "(`uses: O/.github/.github/workflows/<name>.yml@<ref>`)"])
+    check("#748 C4: the shipped pack passes", pipeline_problems(ROOT, test_pack(), central_of()), [])
     st, fake = repo_fake()
     moved = []
     run_all(one, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=3, central="O/.github", moved_out=moved)
@@ -2651,13 +3046,14 @@ def self_test():
         check("C3: merge's command writes the table release-lane.py reads, and exits 1 on a failing row",
               (rc, [r["id"] for r in read_results(out) if not r["ok"]], lane.decide(plan, read_results(out))["scenario"]), (1, ["b", "play"], "b"))
     # #713: the autopilot's result read once it is there.
-    def sealing():
+    def sealing(pull=True):
         """A test repository whose triage answers issue 9 on its second view
         (`awaiting-acceptance`), whose acceptance after that seals it a view
-        later and has the autopilot label it two views after the seal, and
-        an acceptance before the triage never seals (the autopilot calls it
-        unsealed); a `/claim` before the acceptance claims it, after it is
-        refused."""
+        later and, with `pull`, has the autopilot open its pull request 12
+        that closes it two views after the seal, never labelling the issue
+        `autopilot` (#764), and an acceptance before the triage never seals
+        (the autopilot calls it unsealed); a `/claim` before the acceptance
+        claims it, after it is refused."""
         st = {"labels": [], "comments": [], "views": 0, "calls": [], "at": None}
 
         def fake(*a, input=None):
@@ -2691,16 +3087,24 @@ def self_test():
                         st["comments"].append("The autopilot did not run: the issue's PRD is not the one sealed when it was accepted (unsealed).")
                 if isinstance(st["at"], int) and st["views"] == st["at"] + 1:
                     st["comments"].append(f"{SEAL}\nsealed")
-                if isinstance(st["at"], int) and st["views"] == st["at"] + 3:
-                    st["labels"].append("autopilot")
-                return json.dumps({"labels": [{"name": l} for l in st["labels"]], "comments": [{"body": c, "author": {"login": "dilux-bot"}} for c in st["comments"]]})
+                if pull and isinstance(st["at"], int) and st["views"] == st["at"] + 3:
+                    st["pull"] = 12
+                refs = [{"number": st["pull"], "url": f"https://github.com/o/t/pull/{st['pull']}"}] if st.get("pull") else []
+                return json.dumps({"labels": [{"name": l} for l in st["labels"]], "comments": [{"body": c, "author": {"login": "dilux-bot"}} for c in st["comments"]],
+                                   "closedByPullRequestsReferences": refs})
+            if a[:2] == ("pr", "view") and st.get("pull"):
+                return json.dumps({"number": st["pull"], "body": "Closes #9", "headRefName": "feat/9-a-greeting", "title": "feat: a greeting"})
             return "[]"
         return st, fake
     by713 = {s["id"]: s for s in real["scenarios"]}
     st, fake = sealing()
     got = play(by713["accepted-spec"], "o/t", "v7-next", real["bodies"], fake, lambda s: None, 15, types=real["types"])
-    check("#713 C2: the real accepted-spec, against a repository that seals only after the triage, passes once the autopilot labels it",
-          (got["ok"], got["why"], st["at"] >= 2, "autopilot" in st["labels"]), (True, [], True, True))
+    check("#764 C1: the real accepted-spec, against a repository that seals only after the triage, passes once the autopilot opens its pull request, with no `autopilot` label",
+          (got["ok"], got["why"], st["at"] >= 2, st.get("pull"), "autopilot" in st["labels"]), (True, [], True, 12, False))
+    st, fake = sealing(pull=False)
+    got = play(dict(by713["accepted-spec"], minutes=1), "o/t", "v7-next", real["bodies"], fake, lambda s: None, 1, types=real["types"])
+    check("#764 C1: the same repository whose autopilot opens no pull request fails it, named",
+          (got["ok"], any("does not say Closes #9" in w for w in got["why"]), any(SEAL in c for c in st["comments"])), (False, True, True))
     st, fake = sealing()
     early = dict(by713["accepted-spec"], steps=[{"label": "accepted"}], minutes=1)
     got = play(early, "o/t", "v7-next", real["bodies"], fake, lambda s: None, 1, types=real["types"])
@@ -2720,6 +3124,30 @@ def self_test():
     check("#713 C2: the real file: every scenario that reads the autopilot's result waits for it, each within 15 minutes",
           (autopilot_problems(real["scenarios"]), sorted(reads), {limit(by713[i]) for i in reads}),
           ([], sorted(["accepted-spec", "spec-to-draft", "core-one-at-a-time", "decision-sub-issues", "prd-edited-after-acceptance", "question-answered", "stop-hint-continue", "draft-in-conflict", "ready-behind-main"]), {15}))
+    # #764 C2: high-risk-waits's floor is high from the path it changes.
+    hrw = by713["high-risk-waits"]
+    rhigh, rlow = risk_patterns()
+    check("#764 C2: the real high-risk-waits expects risk:high and no merge, and its path gets the high floor",
+          ("risk:high" in hrw["expect"].get("labels", []), hrw["expect"].get("merged"), pull_files(hrw), [path_floor(f, rhigh, rlow) for f in pull_files(hrw)], risk_problems([hrw], rhigh, rlow)),
+          (True, False, ["scenarios/high-risk-waits/pull.md"], ["high"], []))
+    # #764 C4: a risk label the paths it changes cannot give is named.
+    def risky(sid, level, pushes=()):
+        return {"id": sid, "opens": {"pull": {"title": "docs: x", "body": "pull"}}, "steps": [{"push": p} for p in pushes], "expect": {"labels": [f"risk:{level}"]}}
+    fake_high, fake_low = ["kit/**", "scenarios/hot/**"], ["**/*.md"]
+    check("#764 C4: risk_problems names a scenario that expects risk:high with no high path, and passes one with a path in the kind's high-risk",
+          ([p.split(":")[0] for p in risk_problems([risky("cold", "high"), risky("hot", "high")], fake_high, fake_low)],
+           "scenarios/cold/pull.md (low)" in "".join(risk_problems([risky("cold", "high")], fake_high, fake_low))),
+          (["scenario cold"], True))
+    check("#764 C4: and the same for risk:low and risk:medium",
+          ([p.split(":")[0] for p in risk_problems([risky("hot", "low"), risky("cold", "low"), risky("cold", "medium"), risky("med", "medium")], fake_high, ["scenarios/cold/**"])],
+           risk_problems([risky("mixed", "medium", ["x"])], fake_high, ["scenarios/mixed/pull.md"])),
+          (["scenario hot", "scenario cold"], []))
+    check("#764 C4: a scenario that expects no risk label is never named, and one that expects one but changes no path always is",
+          [p.split(":")[0] for p in risk_problems([{"id": "a", "expect": {"labels": ["accepted"]}}, {"id": "b", "opens": {"issue": {}}, "expect": {"labels": ["risk:high"]}}], fake_high, fake_low)],
+          ["scenario b"])
+    check("#764 C4: the real file: problems() names nothing, and the kind engine-test's high-risk is what policy.py reads",
+          (problems(real), risk_patterns()[0][-1:], load_yaml(os.path.join(ROOT, "kinds", "engine-test", "surface.yml")).get("high-risk")),
+          ([], ["scenarios/high-risk-waits/**"], ["scenarios/high-risk-waits/**"]))
     check("#713 C2: core-one-at-a-time accepts its `before` issue after its triage, and waits for its seal",
           (by713["core-one-at-a-time"]["before"][0]["issue"].get("labels"), [p for p in autopilot_problems([by713["core-one-at-a-time"]])],
            preconditions([by713["core-one-at-a-time"]], real["bodies"], rpack)), (None, [], []))
@@ -2768,6 +3196,130 @@ def self_test():
           (dec["opens"]["issue"].get("labels"), dec["steps"][:2]), (None, [{"until": {"labels": ["awaiting-acceptance"]}}, {"label": "accepted"}]))
     check("#713 C5: decision-sub-issues expects what a decision gets in the test repository, accepted and sealed, waiting until its seal",
           (dec["steps"][2:], dec["expect"]), ([{"until": {"comments": [SEAL]}}], {"labels": ["accepted"], "comments": [SEAL]}))
+    # #760: a scenario pull request's description names every file of its diff.
+
+    def described(io):
+        """A test repository that records every `gh` call (args, input)."""
+        def fake(*a, input=None):
+            io.append((a, input))
+            if a[:2] == ("issue", "create"):
+                return "https://github.com/o/t/issues/11\n"
+            if a[:2] == ("pr", "create"):
+                return "https://github.com/o/t/pull/12\n"
+            if a[:2] in (("pr", "view"), ("issue", "view")):
+                return "{}"
+            if a[-1:] in ((".sha",), (".login",)):
+                return "me\n"
+            return "[]"
+        return fake
+    pulls760 = [s for s in real["scenarios"] if "pull" in (s.get("opens") or {})]
+    gaps760 = {}
+    for s in pulls760:
+        io = []
+        play(s, "o/t", "v7-next", real["bodies"], described(io), lambda _: None, 1, fork=described(io), types=real.get("types") or {})
+        made = [i for a, i in io if a[:2] == ("pr", "create")]
+        gaps760[s["id"]] = unnamed(made[0] if made else "", pull_files(s)) or (not made and ["no pr create"]) or []
+    check("#760 C1: every real scenario that opens a pull request names each file of pull_files in the description play passes to pr create",
+          (len(pulls760) > 0, {k: v for k, v in gaps760.items() if v}), (True, {}))
+    check("#760 C1: pull_files is pull.md, then each push but behind, once",
+          (pull_files({"id": "p", "opens": {"pull": {}}, "steps": [{"push": "secret"}, {"push": "behind"}, {"push": "secret"}, {"label": "x"}]}),
+           pull_files({"id": "i", "opens": {"issue": {}}, "steps": [{"push": "conflict"}]})), (["scenarios/p/pull.md", "scenarios/p/secret.md"], []))
+    st, fake = pushed()
+    play({"id": "p", "opens": {"issue": {"title": "feat: x", "body": "f"}}, "steps": [{"push": "conflict"}], "expect": {}}, "o/t", "v7-next",
+         dict(real["bodies"], f="f"), fake, lambda s: None, 1)
+    landed = [i for a, i in st["io"] if a[:2] == ("pr", "create")]
+    check("#760 C1: the pull request land opens to main names the path it writes, with the real `pull` body",
+          (len(landed), unnamed(landed[0] if landed else "", ["scenarios/p/conflict.md"])), (1, []))
+    bare = {"id": "bare-760", "opens": {"pull": {"title": "docs: x", "body": "pull", "issue": {"body": "task", "labels": ["accepted"]}}}, "expect": {}}
+    nofiles = "## What changes\n\nA change of the scenarios.\n\n## Why\n\nCloses #{issue}"
+    lands760 = {"id": "lands-760", "opens": {"issue": {"body": "task"}}, "steps": [{"push": "behind"}], "expect": {}}
+    check("#760 C2: preconditions names a scenario whose pull request's body has no {files}, and one that lands through such a `pull` body",
+          (preconditions([bare], {"pull": nofiles}, rpack, types={}), preconditions([lands760], {"pull": nofiles}, rpack, types={})),
+          (["scenario bare-760: its pull request's body has no `{files}`, so its description names none of the files it changes"],
+           ["scenario lands-760: the `pull` body has no `{files}`, so the pull request it lands on main through names none of the files it changes"]))
+    check("#760 C2: the real file's scenarios' descriptions name their changes",
+          [p for p in preconditions(real["scenarios"], real["bodies"], rpack, dispatchable(ROOT, rpack), types=real.get("types") or {}) if "{files}" in p or "does not name" in p], [])
+    check("#760 C2: coverage fails on a scenario whose pull request's description would name no change, naming it",
+          any(p.startswith("scenario bare-760:") and "{files}" in p for p in problems(dict(real, scenarios=real["scenarios"] + [bare], bodies=dict(real["bodies"], pull=nofiles)))), True)
+    diffs760 = {}
+    for s in ({"id": "secret-760", "opens": {"pull": {"title": "feat: x", "body": "pull"}}, "steps": [{"push": "secret"}], "expect": {}},
+              {"id": "plain-760", "opens": {"pull": {"title": "docs: x", "body": "pull"}}, "expect": {}}):
+        io = []
+        play(s, "o/t", "v7-next", real["bodies"], described(io), lambda _: None, 1)
+        diff = [p for _, branch, paths, _ in commits(io) if branch == branch_of(s) for p in paths]
+        made = [i for a, i in io if a[:2] == ("pr", "create")]
+        diffs760[s["id"]] = (diff, unnamed(made[0] if made else "", diff))
+    check("#760 C3: every path the faked createCommitOnBranch writes on the pull request's head, its diff, is named in the description its pr create received",
+          diffs760, {"secret-760": (["scenarios/secret-760/pull.md", "scenarios/secret-760/secret.md"], []), "plain-760": (["scenarios/plain-760/pull.md"], [])})
+    # #778: a scenario's change is its own in each run, never what an
+    # earlier run merged into main, so its pull request has a diff.
+    by778 = {s["id"]: s for s in real["scenarios"]}
+
+    def replay778(s, run_id):
+        """The commits `play` makes for the scenario `s`, its `until`s
+        taken out (they only poll), in the run `run_id`."""
+        st, fake = pushed()
+        play(dict(s, steps=[x for x in s.get("steps") or [] if "until" not in x]), "o/t", "v7-next", real["bodies"], fake, lambda _: None, 1,
+             fork=fake, types=real.get("types") or {}, run_id=run_id)
+        return commits(st["io"])
+    four778 = ("draft-in-conflict", "ready-behind-main", "merge-queue", "low-risk-merges")
+    main778, stale778, wrote778 = {}, {}, {}
+    for sid in four778:
+        for _, branch, _, files in replay778(by778[sid], "7-1"):
+            for path, text in files.items():
+                main778.setdefault(path, []).append(text)
+        now = replay778(by778[sid], "8-1")
+        wrote778[sid] = sorted({p for _, _, paths, _ in now for p in paths})
+        stale778[sid] = stale_writes(now, main778, "8-1")
+    check("#778 C1: the four failing scenarios, replayed on a main that holds an earlier run's texts, each write what main does not hold",
+          (wrote778, {k: v for k, v in stale778.items() if v}),
+          ({"draft-in-conflict": ["scenarios/draft-in-conflict/conflict.md"], "ready-behind-main": ["scenarios/ready-behind-main/behind.md"],
+            "merge-queue": ["scenarios/merge-queue/pull.md"], "low-risk-merges": ["scenarios/low-risk-merges/pull.md"]}, {}))
+    conflict778 = [files for _, _, _, files in replay778(by778["draft-in-conflict"], "8-1")]
+    check("#778 C1: draft-in-conflict still conflicts: the head and main get two texts of the same file",
+          (len(conflict778), len({t for f in conflict778 for t in f.values()})), (2, 2))
+    check("#778 C1: stale_writes names a text main held already, and one with no run id",
+          stale_writes([("o/t", "b", ["scenarios/x/pull.md"], {"scenarios/x/pull.md": "x"})], {"scenarios/x/pull.md": ["x"]}, "8-1"),
+          ["b: scenarios/x/pull.md says what was there already: 'x'", "b: scenarios/x/pull.md does not carry the run's id 8-1: 'x'"])
+    check("#778 C1: run_mark is the lane's run id and attempt, else a local time with a random suffix, and play_group passes one to play",
+          (run_mark({"GITHUB_RUN_ID": "42", "GITHUB_RUN_ATTEMPT": "2"}), run_mark({}, now=5, rand="ab")), ("42-2", "local-5-ab"))
+    io778 = []
+    play_group({"scenarios": [by778["low-risk-merges"]], "bodies": real["bodies"], "types": real.get("types") or {}}, "low-risk-merges",
+               "o/t", "v7-next", described(io778), lambda _: None, 1, run_id="9-3")
+    check("#778 C1: play_group writes with the run id it is given",
+          ["run 9-3" in t for _, _, _, f in commits(io778) for t in f.values()], [True])
+
+    def twice778():
+        """Every real scenario played twice, in the runs 101-1 and 202-1:
+        what stale_writes finds in each run's texts under scenarios/<id>/
+        (a `before`'s file aside, which says its `says`), the second's held
+        against the first's (what main held after it), and how many texts
+        were written."""
+        out, count = {}, 0
+        for s in real["scenarios"]:
+            fixed = {f"scenarios/{s['id']}/{b['lands']}.md" for b in s.get("before") or [] if "lands" in b}
+            runs = [[(r, b, [p for p in ps if p not in fixed], {p: t for p, t in fs.items() if p not in fixed and p.startswith(f"scenarios/{s['id']}/")})
+                     for r, b, ps, fs in replay778(s, run_id)] for run_id in ("101-1", "202-1")]
+            held = {}
+            for _, _, _, files in runs[0]:
+                for path, text in files.items():
+                    held.setdefault(path, []).append(text)
+            count += sum(len(f) for run in runs for _, _, _, f in run)
+            got = stale_writes(runs[0], {}, "101-1") + stale_writes(runs[1], held, "202-1")
+            if got:
+                out[s["id"]] = got
+        return out, count
+    stale_twice, count_twice = twice778()
+    check("#778 C2: every real scenario played twice writes, in each run, texts that carry its run id and differ from the other run's and from main's",
+          (count_twice > 10, stale_twice), (True, {}))
+    writer778 = scenario_text
+    try:
+        globals()["scenario_text"] = lambda sid, name, where, run_id: f"{name} on {where}\n"
+        stale_free, _ = twice778()
+    finally:
+        globals()["scenario_text"] = writer778
+    check("#778 C2: with a writer that leaves the run id out, the same check fails on the four scenarios that failed v7.14.0",
+          set(four778) <= set(stale_free), True)
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 

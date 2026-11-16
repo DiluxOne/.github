@@ -17,12 +17,13 @@ def test_the_test_identity_is_a_trusted_author_in_the_test_repository_only(monke
     monkeypatch.chdir(ROOT)
     policy = load("policy")
     org = load("org")
-    login = org.test_pack()["identity"]["login"]
-    assert login
+    # #739: the test identity is its token's owner, DX_TEST_LOGIN.
+    login = "someone-else"
+    test_repo = f"{org.ORG}/{org.test_repo(org._conf)}"
     default = str(ROOT / "policy" / "review-policy.default.yml")
 
-    _, in_test_repo = policy.run_case(default, "kind: engine-test\n", ["docs/a.md"], PR_AUTHOR=login)
-    _, elsewhere = policy.run_case(default, "kind: wordpress-plugin\n", ["docs/a.md"], PR_AUTHOR=login)
+    _, in_test_repo = policy.run_case(default, "kind: engine-test\n", ["docs/a.md"], PR_AUTHOR=login, DX_TEST_LOGIN=login, GITHUB_REPOSITORY=test_repo)
+    _, elsewhere = policy.run_case(default, "kind: wordpress-plugin\n", ["docs/a.md"], PR_AUTHOR=login, DX_TEST_LOGIN=login, GITHUB_REPOSITORY=f"{org.ORG}/plugin")
 
     assert in_test_repo.get("trusted") == "true"
     assert elsewhere.get("trusted") == "false"

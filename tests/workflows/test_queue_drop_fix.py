@@ -43,9 +43,13 @@ def test_nothing_else_of_the_pipeline_runs_on_dequeued():
     jobs = workflow("org-pull-request.yml")["jobs"]
     for name in ("conventions", "assignee", "wake-vm", "review"):
         assert "github.event.action != 'dequeued'" in jobs[name]["if"], name
-    # Those wait for the review, which is skipped then.
+    # Those wait for the review (autopilot-fix for the conventions too,
+    # #741), which are skipped then: neither failed nor blocked.
     for name in ("auto-merge", "autopilot-fix"):
-        assert jobs[name]["needs"] in ("review", ["review"]), name
+        needs = jobs[name]["needs"]
+        needs = [needs] if isinstance(needs, str) else needs
+        assert "review" in needs, name
+        assert set(needs) <= {"conventions", "review"}, name
 
 
 def prep_step(step_id):

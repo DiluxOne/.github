@@ -98,7 +98,7 @@ Limits that always cut: rounds per pull request (5), runs per issue (5), what on
 | Publishing a version | Never | Always |
 | Reverting what broke the default branch | Within its lane | The rest |
 
-The review sets the risk, and a pull request cannot lower it: the high-risk paths are in the organisation's policy and in each repository's.
+The review sets the risk, and a pull request cannot lower it: the high-risk paths are in the organisation's policy, in each repository's, and in its kind's `surface.yml` (#764).
 
 **The golden rule:** autonomy cannot widen itself. The autonomy policy and the rules always need a person to accept and merge them, with one exception: a bug the reproduction confirmed in them is accepted and fixed like any other reproduced bug, and its fix merges on its own only when it widens no permission, lane or limit (no lane added or opened up, no merge cap or ceiling raised, no protected path removed, no workflow permission or secret granted). Code checks that, comparing the change's base with its head, not the review; a fix that widens anything, or that the check cannot read, waits for a person. Only the policies are data the check reads whole; a fix to the code or the words that apply them (a script, a rule, a workflow's steps) is accepted and made by the autopilot all the same, and a person merges it, since no check can compare what code means.
 
