@@ -1172,9 +1172,7 @@ def observe(repo, what, number, run=gh):
         # #698: the pull request that closes it, from the issue's own
         # references (the newest), never a search per poll: the search API
         # allows 30 a minute, which every scenario at once shares.
-        refs = [r.get("number") for r in view.get("closedByPullRequestsReferences") or []
-                if f"github.com/{repo}/pull/".lower() in str(r.get("url") or f"github.com/{repo}/pull/").lower()]
-        refs = [r for r in refs if isinstance(r, int)]
+        refs = closing_pulls(repo, view)
         if refs:
             pull = json.loads(run("pr", "view", str(max(refs)), "--repo", repo, "--json", "number,body,headRefName,title") or "{}")
             seen["pull"] = {"body": pull.get("body"), "branch": pull.get("headRefName"), "title": pull.get("title"), "number": pull.get("number")}
@@ -1186,18 +1184,43 @@ def observe(repo, what, number, run=gh):
     return seen
 
 
+def closing_pulls(repo, view):
+    """The numbers of the pull requests in `repo` that close the issue
+    `view` (its `closedByPullRequestsReferences`); one in another
+    repository is never one of them. Pure."""
+    found = (view.get("closedByPullRequestsReferences") if isinstance(view, dict) else None) or []
+    refs = [r.get("number") for r in found if isinstance(r, dict)
+            and f"github.com/{repo}/pull/".lower() in str(r.get("url") or f"github.com/{repo}/pull/").lower()]
+    return [r for r in refs if isinstance(r, int)]
+
+
 def cleanup(repo, made, run=gh):
     """`cleanup: after-run`: its issues closed and locked, its pull requests
-    closed and their branches deleted. A failure here never hides a
-    result."""
+    closed and their branches deleted, and so are the pull requests that
+    close its issues (#784: the autopilot's, which carry no `dx-scenario`
+    mark for `clear` to find, and which the next run's core scenario would
+    wait on). A failure here never hides a result."""
     for what, number in made:
+        if what == "issue":
+            # #784: the pull requests that say `Closes #<issue>` for an
+            # issue the scenario opened are the scenario's own. Their own
+            # try: a view that fails never keeps the issue open.
+            try:
+                view = json.loads(run("issue", "view", number, "--repo", repo, "--json", "closedByPullRequestsReferences") or "{}")
+            except (RuntimeError, ValueError):
+                view = {}
+            for pull in closing_pulls(repo, view):
+                try:
+                    run("pr", "close", str(pull), "--repo", repo, "--delete-branch")
+                except RuntimeError:
+                    pass
         try:
             if what == "issue":
                 run("issue", "close", number, "--repo", repo)
                 run("issue", "lock", number, "--repo", repo)
             else:
                 run("pr", "close", number, "--repo", repo, "--delete-branch")
-        except RuntimeError:
+        except (RuntimeError, ValueError):
             pass
 
 
@@ -2373,6 +2396,35 @@ def self_test():
     res = run_all(scen, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=3, central="O/.github")
     check("run: a scenario whose expect holds passes, one whose does not fails, named", [(r["id"], r["ok"], r["why"]) for r in res], [("a", True, []), ("b", False, ["no label accepted", "saw labels awaiting-acceptance; the bot's newest comment: none"])])
     check("run: its issues are closed and locked after it", sum(1 for c in calls if c[:2] in (("issue", "close"), ("issue", "lock"))), 4)
+    ccalls = []
+
+    def cfake(*args, input=None):
+        ccalls.append(args)
+        if args[:2] == ("issue", "view"):
+            return json.dumps({"closedByPullRequestsReferences": [{"number": 12, "url": "https://github.com/o/t/pull/12"}, {"number": 30, "url": "https://github.com/x/y/pull/30"}]})
+        return ""
+    cleanup("o/t", [("issue", "5")], cfake)
+    check("#784 cleanup: the pull request that closes its issue (no mark) is closed, one in another repository left alone, then the issue closed and locked",
+          [c for c in ccalls if c[:1] in (("pr",), ("issue",)) and c[1] != "view"],
+          [("pr", "close", "12", "--repo", "o/t", "--delete-branch"), ("issue", "close", "5", "--repo", "o/t"), ("issue", "lock", "5", "--repo", "o/t")])
+    check("#784 cleanup: a view that is not JSON never hides a result", cleanup("o/t", [("issue", "5")], lambda *a, input=None: "not json"), None)
+
+    def vfake(answer):
+        seen = []
+
+        def fake(*args, input=None):
+            seen.append(args)
+            if args[:2] == ("issue", "view"):
+                if answer is None:
+                    raise RuntimeError("gh: HTTP 502")
+                return answer
+            return ""
+        return seen, fake
+    for name, answer in (("not JSON", "not json"), ("that fails", None)):
+        seen, fake_ = vfake(answer)
+        cleanup("o/t", [("issue", "5")], fake_)
+        check(f"#784 cleanup: a view {name} still has the issue closed and locked",
+              [c for c in seen if c[1] != "view"], [("issue", "close", "5", "--repo", "o/t"), ("issue", "lock", "5", "--repo", "o/t")])
     pcalls_ = []
 
     def prfake(*args, input=None):
