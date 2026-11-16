@@ -157,6 +157,10 @@ archived and not excluded in repos.yml:
             repos.yml `repro:` or its own .github/review-policy.yml), with
             the way its stack proposes (policy/repro-stacks.yml); not one
             repos.yml says has none by design (`repro: {NAME: false}`).
+            And every repository that declares no `test-first:` (#734: its
+            kind's pack, repos.yml or its own policy), whose `fix` and
+            `feat` pull requests the "Test first" check fails until it
+            does (scripts/test-first.py).
             And every repository whose default branch's Makefile has no
             `pre-pr` target, the one check before a pull request (#479,
             scripts/pre-pr.py); not one repos.yml says has none by design
@@ -2240,6 +2244,17 @@ def repro_gap(conf, name, own, propose):
             f"its bugs stay unconfirmed and the autopilot does not start on them; {how}")
 
 
+def test_first_gap(conf, name, own):
+    """#734: what the audit says of a repository that declares no
+    `test-first:` (its kind's pack, repos.yml, its own policy `own`, as
+    scripts/test-first.py merges them); None when it declares one."""
+    tf = _script("test_first", "test-first.py")
+    if tf.declared(conf, name, own or {}, os.path.join(CENTRAL, "kinds")):
+        return None
+    return ("declares no `test-first:` (repos.yml, or its .github/review-policy.yml): the \"Test first\" check fails its `fix` and "
+            "`feat` pull requests until it says where its tests are and which reproduction way runs them (scripts/test-first.py)")
+
+
 def pre_pr_gap(conf, name, makefile):
     """#479: what the audit says of a repository whose Makefile (`makefile`,
     its text, None for none) has no `pre-pr` target; None when it has one or
@@ -3005,6 +3020,10 @@ def drift(repo, conf, labels, block, current=0):
             return None
     # One repos.yml does not list is said above; its way, once it is.
     gap = repro_gap(conf, repo["name"], policy, propose) if entry is not None else None
+    if gap:
+        found.append(gap)
+    # #734: where its tests are, for the "Test first" check.
+    gap = test_first_gap(conf, repo["name"], policy) if entry is not None else None
     if gap:
         found.append(gap)
     # #479: the one check before a pull request, `make pre-pr`.
@@ -3835,6 +3854,8 @@ def dependabot_test(check, conf, labels, block):
         state["policy"] = "kind: wordpress-plugin\n"
         check("#377 C3: drift() lists a repository that declares no way (no kind, no repro:), and says what to declare",
               any("declares no way to reproduce a bug" in l for l in lines_n), lines_n)
+        check("#734 B1: drift() lists a repository that declares no test-first, and not one whose kind's pack does",
+              (any("declares no `test-first:`" in l for l in lines_n), any("declares no `test-first:`" in l for l in lines_u)), (True, False))
         # #479 C1: the one check before a pull request.
         globals()["listed"] = lambda name: {"kinds": [{"kind": "wordpress-plugin", "paths": ["**"]}]}
         pre_pr_lines = {}
@@ -4422,6 +4443,13 @@ def ai_plugin_drift_test(check, conf, labels, block):
             globals()["gh"], ORG, ORG_RULESETS = saved_gh, saved_org, saved_rs
     adopted = {**conf, "repro": {"dilux-agentic-workflow": {"ways": {"pytest": way}}, "diluxone-mermaid": {"ways": {"pytest": way}}},
                "projects": {"dilux-agentic-workflow": 14, "diluxone-mermaid": 15, "diluxone-plugins-ai": 15}}
+    # #734: the catalog has no kind, so no pack declares its tests: in step
+    # once repos.yml declares a `test-first:` for it, and listed until then.
+    got = lines_for("diluxone-plugins-ai", adopted)
+    check("#734 B1: the catalog, of no kind, with no `test-first:` in repos.yml, is listed",
+          any("declares no `test-first:`" in l for l in got), got)
+    catalog = {**adopted["repos"]["diluxone-plugins-ai"], "test-first": {"tests": [{"paths": ["tests/**/test_*.py"], "way": "pytest"}]}}
+    adopted = {**adopted, "repos": {**adopted["repos"], "diluxone-plugins-ai": catalog}}
     for name in trees:
         got = lines_for(name, adopted)
         check(f"C9 (#552): the drift check lists nothing for {name}, in step", got == [], got)

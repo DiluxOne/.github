@@ -81,6 +81,19 @@ repro:
       junit: "build/repro-{n}.xml"
       minutes: 5
 
+# The "Test first" check (#734, scripts/test-first.py, kinds/README.md): a
+# test is a Python file under tests/repro/, run by the fixed way. A
+# scenario's file (`fixed-change`'s scenarios/<scenario>/<n>.md) is never
+# one, so a scenario's `feat` pull request has its "Test first" red; no
+# scenario's `expect` reads it, and the `pipeline` check decides on the
+# organisation's gates alone (org.yml `pipeline-gates`).
+test-first:
+  setup: []
+  tests:
+    - paths: ["tests/repro/test_*.py"]
+      way: fixed
+  not-tests: ["scenarios/**"]
+
 # Its own core (org.yml `core` names the engine's paths, which no change
 # here touches): the directory of `core-one-at-a-time` alone (#709). A fixed
 # change writes under scenarios/<its scenario>/, so only that scenario's two

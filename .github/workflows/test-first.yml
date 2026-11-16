@@ -1,0 +1,138 @@
+name: Test first
+
+# Reusable. The "Test first" check (#734, rules/test-first.md): a `fix` or
+# `feat` pull request carries a test that fails at its base and passes at
+# its head; the review checks the rule too. Every other type (`docs`,
+# `style`, `ci`, `chore`, `refactor`, ...) passes, running nothing, and says
+# why. scripts/test-first.py decides, and says what each case means.
+#
+# Where a repository's tests are and how they run is data, never written
+# here: its `test-first:` declaration (its kind's pack, kinds/<kind>/pack.yml,
+# then repos.yml under its name, then its own .github/review-policy.yml),
+# read from the base commit, so a pull request cannot exempt itself. Each
+# test is run by a reproduction way of the same declaration's `repro:`
+# (scripts/repro-ways.py), through the reproduction's sandboxes
+# (scripts/repro-sandbox.sh, scripts/repro-run.sh run-ref with TEST_REF):
+# once against the base's tree with the head's test in its own place, once
+# at the head.
+#
+#   plan  reads the title (through env:), the files the pull request adds or
+#         changes and the declaration; runs nothing of the pull request's.
+#         It fails when a `fix` or `feat` pull request carries no test (a
+#         release scenario, a fixture or an expected output is never one),
+#         or the repository declares no `test-first:`, saying how to.
+#   run   the tests, on GitHub's fresh runner (the sandboxes refuse a
+#         self-hosted one: a fork's tests are untrusted code), no secret, a
+#         read-only token not kept in the checkout; the declaration's
+#         `setup` first, with the network, before the organisation's
+#         scripts are checked out. Its verdict and each test's outcome at
+#         the base and at the head go to the job summary.
+#
+#   Called by org-pull-request.yml, the organisation's required pipeline
+#   (and workflow-templates/test-pull-request.yml, job for job with it),
+#   and by this repository's own pull-request.yml and
+#   pull-request-edited.yml (a title edit changes the type).
+
+on:
+  workflow_call:
+    inputs:
+      central-ref:
+        description: The ref of DiluxOne/.github whose scripts run. Empty (the default) means the very commit this workflow runs from, job.workflow_sha (#287).
+        type: string
+        default: ''
+      declaration-at-base:
+        description: Read the packs (kinds/) and repos.yml from the pull request's base commit too, not from the organisation's checkout. For DiluxOne/.github, whose pull request could change them.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Test first
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      result: ${{ steps.plan.outputs.result }}
+      type: ${{ steps.plan.outputs.type }}
+      tests: ${{ steps.plan.outputs.tests }}
+      setup: ${{ steps.plan.outputs.setup }}
+      base: ${{ steps.plan.outputs.base }}
+      head: ${{ steps.plan.outputs.head }}
+    steps:
+      # The merge of the pull request into its base: its first parent is the
+      # base, itself the head as it would merge.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
+          path: .dx-central
+          persist-credentials: false
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+      - name: What the check runs
+        id: plan
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          CENTRAL: .dx-central
+          DECLARATION_AT_BASE: ${{ inputs.declaration-at-base && '1' || '' }}
+        run: |
+          set -euo pipefail
+          BASE=$(git rev-parse HEAD^1) HEAD=$(git rev-parse HEAD)
+          { echo "base=$BASE"; echo "head=$HEAD"; } >> "$GITHUB_OUTPUT"
+          BASE=$BASE HEAD=$HEAD python3 .dx-central/scripts/test-first.py plan
+
+  run:
+    name: Test first (the tests, no secrets)
+    needs: plan
+    if: needs.plan.outputs.result == 'run'
+    # Untrusted code (a fork's tests): GitHub's fresh runner only.
+    runs-on: ubuntu-latest
+    # Each test's way bounds its setup and run (`minutes`); this is the
+    # job's outer limit.
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      # The repository's own dev tools, as its declaration says, while no
+      # test is in place and before the organisation's scripts are here.
+      - name: Setup (the declaration's)
+        env:
+          SETUP: ${{ needs.plan.outputs.setup }}
+        run: |
+          set -euo pipefail
+          jq -r '.[]' <<<"$SETUP" | while IFS= read -r cmd; do
+            [ -n "$cmd" ] || continue
+            echo "::group::$cmd"
+            bash -c "$cmd" </dev/null
+            echo "::endgroup::"
+          done
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
+          path: .dx-central
+          persist-credentials: false
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+      - name: Each test at the base and at the head
+        env:
+          TESTS: ${{ needs.plan.outputs.tests }}
+          TYPE: ${{ needs.plan.outputs.type }}
+          BASE: ${{ needs.plan.outputs.base }}
+          HEAD: ${{ needs.plan.outputs.head }}
+          CENTRAL: .dx-central
+        run: python3 .dx-central/scripts/test-first.py run

@@ -33,7 +33,13 @@
 #                                         against a clean copy of REF's tree
 #                                         (git archive), never the working
 #                                         tree, with the working tree's
-#                                         vendor/; same output
+#                                         vendor/; same output. TEST_REF
+#                                         (#734, the "Test first" check,
+#                                         scripts/test-first.py): the ref
+#                                         the test is read from (default
+#                                         REF), any tests/**/*.php, mounted
+#                                         read-only at its own path, over
+#                                         REF's copy of the same class
 #   repro-sandbox.sh verdict RC FILE      the verdict alone, from PHPUnit's
 #                                         exit code and output
 #   repro-sandbox.sh --test               self-test (fixtures, no Docker)
@@ -100,8 +106,15 @@ run() {
   chmod -R a+rX "$scratch"
   out="$scratch/phpunit.txt"
   # The mount points, so Docker never has to create one inside the
-  # read-only checkout. Empty folders: git does not see them.
+  # read-only checkout. Empty folders: git does not see them. A test at its
+  # own path (REPRO_AT, #734) needs its file there too.
   mkdir -p tests/Unit/Repro build
+  local target="tests/Unit/Repro/$name"
+  if [ -n "${REPRO_AT:-}" ]; then
+    target=$REPRO_AT
+    mkdir -p "$(dirname "$target")"
+    [ -e "$target" ] || : > "$target"
+  fi
   # The checkout's .git is hidden behind an empty folder: where a checkout
   # kept its token (the autopilot's), the test never sees it.
   local hide=()
@@ -109,9 +122,9 @@ run() {
   docker pull --quiet "php:${php}-cli" >/dev/null
   set +e
   local box
-  mapfile -t box < <(box_flags "$scratch")
+  mapfile -t box < <(box_flags "$scratch" "${REPRO_AT:-}")
   docker run "${box[@]}" "${hide[@]}" "${tools[@]}" -w /app "php:${php}-cli" \
-    timeout 300 php vendor/bin/phpunit --no-coverage --do-not-cache-result "tests/Unit/Repro/$name" > "$out" 2>&1
+    timeout 300 php vendor/bin/phpunit --no-coverage --do-not-cache-result "$target" > "$out" 2>&1
   rc=$?
   set -e
   if [ "$rc" -ge 125 ] && [ "$rc" -le 127 ]; then echo "::warning::The container did not run the test (exit $rc)."; fi
@@ -148,25 +161,42 @@ tree_at() {
 # copy, never the working tree), with the working tree's vendor/ (installed
 # by the caller from the repository's own Composer files).
 run_ref() {
-  local ref=$1 path=$2 tmp tree rc=0 work=$PWD
-  case "$path" in tests/Unit/Repro/*Test.php) ;; *) echo "::error::Not a reproduction test: $path" >&2; return 2 ;; esac
+  local ref=$1 path=$2 tmp tree rc=0 work=$PWD at=
+  if [ -n "${TEST_REF:-}" ]; then
+    # #734: any test of the repository, at its own path.
+    if ! at_path_ok "$path"; then echo "::error::Not a test path: $path" >&2; return 2; fi
+    at=$path
+  else
+    case "$path" in tests/Unit/Repro/*Test.php) ;; *) echo "::error::Not a reproduction test: $path" >&2; return 2 ;; esac
+  fi
   tmp=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/repro-test.XXXXXX")
   tree=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/repro-tree.XXXXXX")
-  git show "$ref:$path" > "$tmp"
+  git show "${TEST_REF:-$ref}:$path" > "$tmp"
   tree_at "$ref" "$tree"
   chmod -R a+rX "$tree"
-  (cd "$tree" && REPRO_VENDOR="$work/vendor" run "$tmp" "$(basename "$path")") || rc=$?
+  (cd "$tree" && REPRO_AT=$at REPRO_VENDOR="$work/vendor" run "$tmp" "$(basename "$path")") || rc=$?
   rm -rf "$tmp" "$tree"
   return "$rc"
 }
 
+# A test's own path in the tree (#734): relative, under tests/, a .php
+# file, and nothing a shell or Docker reads as more than a path.
+at_path_ok() {
+  case "$1" in tests/*.php) ;; *) return 1 ;; esac
+  case "$1" in *..* | *//* | *[!A-Za-z0-9_./-]*) return 1 ;; esac
+  return 0
+}
+
 # The container both runs of the test go in, one flag a line: no network,
-# a read-only root and checkout, the test read-only in its folder, and
-# nothing writable but /tmp and an empty build/ (#443).
+# a read-only root and checkout, the test read-only in its folder (or, AT,
+# the file alone at its own path, #734), and nothing writable but /tmp and
+# an empty build/ (#443).
 box_flags() {
+  local mount="$1/test:/app/tests/Unit/Repro:ro"
+  if [ -n "${2:-}" ]; then mount="$1/test/$(basename "$2"):/app/$2:ro"; fi
   printf '%s\n' --rm --network none --read-only --tmpfs /tmp --tmpfs /app/build:mode=1777 \
     --cap-drop ALL --security-opt no-new-privileges --user "$(id -u):$(id -g)" --memory 1g --pids-limit 256 \
-    -v "$PWD:/app:ro" -v "$1/test:/app/tests/Unit/Repro:ro"
+    -v "$PWD:/app:ro" -v "$mount"
 }
 
 self_test() {
@@ -217,6 +247,12 @@ self_test() {
   else
     echo "skip the container case (no Docker or no php image here)"
   fi
+  # #734: with TEST_REF, a test at its own path, mounted alone over it.
+  got=$(box_flags /s tests/Unit/Fields/FieldsTest.php | tail -1)
+  if [ "$got" = "/s/test/FieldsTest.php:/app/tests/Unit/Fields/FieldsTest.php:ro" ]; then echo "ok   #734 a test at its own path is mounted alone, read-only, over its place"; else echo "FAIL #734 the mount at its own path: $got"; fail=1; fi
+  if at_path_ok tests/Unit/Fields/FieldsTest.php && ! at_path_ok src/evil.php && ! at_path_ok tests/../x.php && ! at_path_ok 'tests/a b.php' && ! at_path_ok tests/x.js; then
+    echo "ok   #734 TEST_REF takes a .php file under tests/ and nothing else"; else echo "FAIL #734 the paths TEST_REF takes"; fail=1; fi
+  if (TEST_REF=HEAD run_ref HEAD "src/evil.php" >/dev/null 2>&1); then echo "FAIL #734 run-ref with TEST_REF refuses a path outside tests/"; fail=1; else echo "ok   #734 run-ref with TEST_REF refuses a path outside tests/"; fi
   # The guards that keep the file where it belongs.
   if (run_ref HEAD "src/evil.php" >/dev/null 2>&1); then echo "FAIL run-ref refuses a path outside tests/Unit/Repro"; fail=1; else echo "ok   run-ref refuses a path outside tests/Unit/Repro"; fi
   if (run "$dir/out" "../x.php" >/dev/null 2>&1); then echo "FAIL run refuses a name with a path in it"; fail=1; else echo "ok   run refuses a name with a path in it"; fi

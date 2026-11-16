@@ -82,7 +82,10 @@ GITHUB_ONLY = ("plugin-release-wp.yml", "plugin-publish-wp.yml", "svn-auth-check
                "nightly-review.yml",
                # It holds dilux-bot's key on a fork's pull request
                # (pull_request_target, #488): a fresh runner.
-               "issue-claim.yml")
+               "issue-claim.yml",
+               # It runs a pull request's tests (#734), a fork's included:
+               # a fresh runner.
+               "test-first.yml")
 
 # A job that holds a key beside an agent's work, in a workflow that is
 # otherwise shared (autopilot.yml's prep, draft and apply, #287): a fresh

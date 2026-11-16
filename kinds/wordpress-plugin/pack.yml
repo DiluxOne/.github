@@ -251,6 +251,22 @@ repro:
   # loads, the repository's own (`smoke: [tests/e2e/specs/smoke.spec.ts]`).
   smoke: []
 
+# The "Test first" check (#734, scripts/test-first.py, kinds/README.md): a
+# fix or a feature's pull request carries a test that fails at its base and
+# passes at its head. A PHPUnit test under tests/Unit runs in the unit way's
+# sandbox, with the dev tools `setup` installs; a Playwright spec under
+# tests/e2e through the browser way, on wp-env. A fixture or a screenshot is
+# never a test.
+test-first:
+  setup:
+    - composer install --no-interaction --prefer-dist --no-progress
+  tests:
+    - paths: ["tests/Unit/**/*Test.php"]
+      way: unit
+    - paths: ["tests/e2e/**/*.spec.ts"]
+      way: browser
+  not-tests: ["tests/**/fixtures/**", "tests/**/*-snapshots/**"]
+
 release:
   publishes-to: wordpress.org
   workflow: plugin-release-wp.yml

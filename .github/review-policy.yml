@@ -108,3 +108,16 @@ repro:
           instead, as a logic bug.
         - A plain `assert` on what the report expected, so the test FAILS while the bug is there.
         - Small: one or two test functions, named after the expectation.
+
+# The "Test first" check (#734, scripts/test-first.py): a fix or a feature
+# here carries a pytest test under tests/ that fails at the base and passes
+# at the head, run by the `python` way above. A script's own `--test` case
+# cannot run at the base apart from its code, so it alone is no test here.
+# The release scenarios, fixtures, the reproduction's examples and the
+# review's evaluation set are never a test. Read from the base commit.
+test-first:
+  setup: []
+  tests:
+    - paths: ["tests/repro/**/test_*.py", "tests/workflows/test_*.py"]
+      way: python
+  not-tests: ["tests/release/**", "tests/**/fixtures/**", "scripts/fixtures/**", "tests/examples/**", "evals/**"]

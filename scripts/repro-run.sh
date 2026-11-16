@@ -39,7 +39,12 @@
 #                              (installed by the caller, as the run job of
 #                              issue-repro.yml does) and its .dx-central/
 #                              (#409); SPEC or REPRO_SPEC,
-#                              THEME or REPRO_THEME. The bugfix-reproduced
+#                              THEME or REPRO_THEME; TEST_REF (default REF),
+#                              the ref the test file is read from, placed at
+#                              its own path over REF's copy: the "Test
+#                              first" check (#734, scripts/test-first.py)
+#                              runs a pull request's test at its base. The
+#                              bugfix-reproduced
 #                              lane (#397): the autopilot against its fix,
 #                              and gate G7 at the pull request's head
 #                              (auto-merge.yml), as repro-sandbox.sh run-ref
@@ -220,7 +225,7 @@ run_ref() {
   tmp=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/repro-test.XXXXXX")
   tree=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/repro-tree.XXXXXX")
   [ -n "$dir" ] || { dir="$tree.out"; keep=no; }
-  git show "$ref:$path" > "$tmp"
+  git show "${TEST_REF:-$ref}:$path" > "$tmp"
   git archive --format=tar "$ref" | tar -x -C "$tree"
   # Out of the tree until the way's setup is done, as in the reproduction.
   rm -f "$tree/$path"
@@ -280,6 +285,16 @@ self_test() {
   if [ "$got" = "outcome=passed" ]; then echo "ok   #397 run-ref runs the committed test against REF's tree, out of it during setup, no .git"; else echo "FAIL #397 run-ref ($got)"; fail=1; fi
   got=$(DX_REPRO_UNCONFINED=1 SPEC=$(jq -c '.run = ("grep -qx uncommitted src/code.txt; exit 1")' <<<"$spec_ref") GITHUB_OUTPUT='' run_ref HEAD tests/repro/issue-1.spec.ts 2>/dev/null | grep '^outcome=' | tail -1)
   if [ "$got" = "outcome=broken" ]; then echo "ok   #397 run-ref never sees the working tree's uncommitted change"; else echo "FAIL #397 run-ref saw the working tree ($got)"; fail=1; fi
+  # #734: TEST_REF, the test of another commit (the head) against REF's
+  # tree (the base), placed at its own path over REF's copy.
+  local base_sha
+  base_sha=$(git rev-parse HEAD)
+  printf 'changed\n' > src/code.txt && printf 'y\n' > tests/repro/issue-1.spec.ts
+  git add -A && git -c commit.gpgsign=false -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@t commit -qm "fix: head"
+  got=$(DX_REPRO_UNCONFINED=1 TEST_REF=HEAD SPEC=$(jq -c '.run = ("grep -qx committed src/code.txt && grep -qx y tests/repro/issue-1.spec.ts && " + .run)' <<<"$spec_ref") GITHUB_OUTPUT='' run_ref "$base_sha" tests/repro/issue-1.spec.ts 2>/dev/null | grep '^outcome=' | tail -1)
+  if [ "$got" = "outcome=passed" ]; then echo "ok   #734 TEST_REF: the head's test runs against the base's tree, at its own path"; else echo "FAIL #734 TEST_REF ($got)"; fail=1; fi
+  git reset -q --hard "$base_sha"
+  printf 'uncommitted\n' > src/code.txt
   # #421: a file the runner's user cannot remove stays in the tree, and the
   # run still ends with its verdict and exit 0.
   got=$(DX_REPRO_UNCONFINED=1 SPEC=$(jq -c '.run = "mkdir -p build/locked && : > build/locked/f && chmod 500 build/locked && " + .run' <<<"$spec_ref") GITHUB_OUTPUT='' bash "$HERE/repro-run.sh" run-ref HEAD tests/repro/issue-1.spec.ts 2>/dev/null; echo "rc=$?")

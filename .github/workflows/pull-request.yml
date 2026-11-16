@@ -36,6 +36,18 @@ jobs:
       actions: read # the run that opened a lane's issue (policy/autonomy.yml)
     uses: ./.github/workflows/conventions.yml
 
+  # The "Test first" check (#734, test-first.yml), as org-pull-request.yml
+  # runs it everywhere else: here the declaration (.github/review-policy.yml
+  # `test-first:`) and the packs are read from the base commit, so a pull
+  # request cannot change what counts as a test for itself.
+  test-first:
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/test-first.yml
+    with:
+      declaration-at-base: true
+
   actionlint:
     name: actionlint
     runs-on: ubuntu-latest
@@ -59,8 +71,9 @@ jobs:
         # requests off the VM (#167), or with the choice an earlier job of
         # the run made (autopilot.yml's `where`); the release, the credentials
         # check and the reproduction handle secrets or code written from an
-        # issue's text and always stay on GitHub's fresh runners, and so does
-        # the wake-up of the VM (#154), which cannot wait for the VM it starts.
+        # issue's text and always stay on GitHub's fresh runners, and so do
+        # the wake-up of the VM (#154), which cannot wait for the VM it starts,
+        # and the "Test first" check (#734), which runs a pull request's tests.
         run: python3 scripts/runner-route.py check
       - name: No merge-conflict markers
         # A rebase resolved by hand can leave a conflict's markers (diff3's
@@ -129,6 +142,7 @@ jobs:
       - run: python3 scripts/repro-lane.py --test
       - run: python3 scripts/repro-ways.py --test
       - run: bash scripts/repro-run.sh --test
+      - run: python3 scripts/test-first.py --test
       - run: python3 scripts/no-widening.py --test
       # The tests under tests/ (#376): the reproduction ways' examples, the
       # reproductions kept as regression tests, and the workflows' wiring,
