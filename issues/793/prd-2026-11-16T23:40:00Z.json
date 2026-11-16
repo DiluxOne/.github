@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 793,
+  "prd_sha256": "0a8f690c6599f963166d81d1d2ba45f47807a3c61a61e5fda542d99dca00b3d0",
+  "prd": "### Problem\n\nThe organisation cannot take claude-code-action's updates (Dependabot's #790 is blocked), and taking them as they are would widen what the agent may do in steps that read untrusted text.\n\n### Scope\n\n- Every step that calls anthropics/claude-code-action states its permission mode explicitly (`--permission-mode default`, or `dontAsk` where nothing may prompt) or a `--disallowedTools` list, so `--allowedTools` stays strict under v1.0.273 and later.\n- A check in the scripts' self-tests that fails when a step calling claude-code-action states neither.\n- The bump of anthropics/claude-code-action to the latest version, in the same pull request; #790 is closed by it.\n\n### Out of scope\n\n- Changing which tools each step may use.\n\n### Acceptance criteria\n\n- C1: Given every `uses: anthropics/claude-code-action` step in .github/workflows/, when the self-test reads its `claude_args`, then each states `--permission-mode` or `--disallowedTools`, and the self-test fails on a step that states neither.\n- C2: Given the pull request, when its checks run, then anthropics/claude-code-action is pinned to its latest version in every step, with the version in a comment, and the review's evaluation (review-eval.yml) passes.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-16T23:40:00Z",
+  "policy": "DiluxOne/.github@653f4037c2a9"
+}
