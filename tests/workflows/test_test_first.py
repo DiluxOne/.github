@@ -254,3 +254,93 @@ def test_c5_the_cli_passes_a_docs_pull_request_with_its_reason_in_the_summary(fr
     planned = subprocess.run(["python3", str(ROOT / "scripts" / "test-first.py"), "plan"], env=env, capture_output=True, text=True)
     assert planned.returncode == 0 and "result=pass" in planned.stdout.splitlines()
     assert "a `docs` pull request alters no behaviour the check tests: no test is run" in summary.read_text(encoding="utf-8")
+
+
+KINDS = sorted(p.name for p in (ROOT / "kinds").iterdir() if (p / "pack.yml").is_file())
+TOOLS = ("php", "pytest", "playwright", "composer", "npm", "npx", "node", "wp-env", "jest", "vitest", "dotnet", "cargo", "go test")
+
+
+@pytest.mark.parametrize("name", ["scripts/test-first.py", ".github/workflows/test-first.yml"])
+def test_c6_nothing_specific_to_a_kind_in_the_script_or_the_workflow(name):
+    import re
+    text = (ROOT / name).read_text(encoding="utf-8").lower()
+    for kind in KINDS:
+        assert kind not in text, (name, kind)
+    assert not re.search(r"kinds/[a-z0-9]", text), name
+    for tool in TOOLS:
+        assert not re.search(rf"(?<![a-z-]){re.escape(tool)}(?![a-z-])", text), (name, tool)
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_c6_every_pack_declares_its_tests_by_a_way_of_its_own_repro(kind):
+    ways = load("repro-ways")
+    pack = ways.read(str(ROOT / "kinds" / kind / "pack.yml"))
+    decl = TF.merged(pack.get("test-first"))
+    assert decl is not None, kind
+    assert TF.problems(decl, ways.merged(pack, {})["ways"]) == [], kind
+
+
+def test_c6_this_repository_declares_its_tests_too():
+    ways = load("repro-ways")
+    policy = ways.read(str(ROOT / ".github" / "review-policy.yml"))
+    decl = TF.merged(policy.get("test-first"))
+    assert decl is not None
+    assert TF.problems(decl, ways.merged({}, policy)["ways"]) == []
+    assert TF.tests_of(decl, ["tests/repro/test_issue_734.py", "tests/workflows/test_test_first.py", "tests/release/scenarios.yml"]) == [
+        ("tests/repro/test_issue_734.py", "python"), ("tests/workflows/test_test_first.py", "python")]
+
+
+@pytest.mark.parametrize("kind, files, want", [
+    ("wordpress-plugin", ["tests/Unit/Fields/FieldsTest.php", "tests/e2e/specs/login.spec.ts", "tests/Unit/fixtures/DataTest.php", "includes/a.php"],
+     [("tests/Unit/Fields/FieldsTest.php", "unit", True), ("tests/e2e/specs/login.spec.ts", "browser", False)]),
+    ("ai-agent-plugin", ["tests/hooks/test_guard.py", "tests/fixtures/test_in.py", "hooks/guard.py"], [("tests/hooks/test_guard.py", "unit", False)]),
+    ("engine-test", ["tests/repro/test_issue_9.py", "scenarios/queue/9.md"], [("tests/repro/test_issue_9.py", "fixed", False)]),
+])
+def test_c6_a_repository_of_a_kind_gets_its_test_paths_and_ways_from_its_pack(fresh, kind, files, want):
+    ways = load("repro-ways")
+    pack = ways.read(str(ROOT / "kinds" / kind / "pack.yml"))
+    base = fresh.commit({".github/review-policy.yml": f"kind: {kind}\n"}, "chore: base")
+    head = fresh.commit({f: "x\n" for f in files}, "fix: a")
+    plan = TF.plan(str(fresh.path), str(ROOT), "fix: a", base, head, "none-such", 7)
+    assert plan["result"] == "run", plan["message"]
+    assert [(t["test"], t["way"], bool(t["sandbox"])) for t in plan["tests"]] == want
+    for t in plan["tests"]:
+        way = ways.merged(pack, {})["ways"][t["way"]]
+        # The way's own command, filled for this test: nothing the check adds.
+        if not t["sandbox"]:
+            assert t["spec"]["run"] == way["run"].replace("{test}", t["test"]).replace("{n}", "7")
+            assert t["spec"]["test"] == t["test"]
+    assert plan["setup"] == (pack["test-first"].get("setup") or [])
+
+
+def test_c6_a_repository_adds_its_own_test_paths_over_its_packs(fresh):
+    own = "kind: ai-agent-plugin\ntest-first:\n  tests:\n    - paths: ['spec/**/*_test.py']\n      way: unit\n"
+    base = fresh.commit({".github/review-policy.yml": own}, "chore: base")
+    head = fresh.commit({"spec/a_test.py": "x\n", "tests/test_b.py": "x\n"}, "feat: a")
+    plan = TF.plan(str(fresh.path), str(ROOT), "feat: a", base, head, "none-such", 7)
+    assert [t["test"] for t in plan["tests"]] == ["spec/a_test.py", "tests/test_b.py"]
+
+
+def test_c6_a_way_of_no_repro_is_said(fresh):
+    bad = "repro: {ways: {}}\ntest-first:\n  tests:\n    - paths: ['tests/**']\n      way: nope\n"
+    base = fresh.commit({".github/review-policy.yml": bad}, "chore: base")
+    head = fresh.commit({"tests/test_b.py": "x\n"}, "fix: a")
+    plan = TF.plan(str(fresh.path), str(ROOT), "fix: a", base, head, "none-such", 7)
+    assert plan["result"] == "fail" and "is no way of its `repro:`" in plan["message"]
+
+
+def test_c6_b1_a_fix_in_a_repository_with_no_declaration_fails_saying_how_to_declare_one(fresh):
+    base = fresh.commit({".github/review-policy.yml": "high-risk: []\n"}, "chore: base")
+    head = fresh.commit({"tests/test_b.py": "x\n"}, "fix: a")
+    plan = TF.plan(str(fresh.path), str(ROOT), "fix: a", base, head, "none-such", 7)
+    assert plan["result"] == "fail"
+    assert "declares no `test-first:`" in plan["message"] and "`tests`" in plan["message"] and "`not-tests`" in plan["message"]
+
+
+def test_c6_policy_self_test_holds_every_pack_to_a_declaration():
+    text = (ROOT / "scripts" / "policy.py").read_text(encoding="utf-8")
+    assert "test-first" in text
+    got = subprocess.run(["python3", str(ROOT / "scripts" / "policy.py"), "--test"], capture_output=True, text=True)
+    assert got.returncode == 0, got.stdout[-2000:]
+    for kind in KINDS:
+        assert f"ok   pack {kind}: it declares its tests (test-first)" in got.stdout

@@ -679,6 +679,12 @@ def settings_tests():
         for wf in pack.get("workflows") or []:
             check(f"pack {kind}: its workflow {wf} exists", os.path.isfile(os.path.join(CENTRAL, ".github", "workflows", wf)))
         check(f"pack {kind}: its review profile exists", os.path.isfile(os.path.join(CENTRAL, "kinds", kind, "review-profile.md")))
+        # #734: where its tests are, for the "Test first" check, each run by
+        # a reproduction way of its own `repro:` (scripts/test-first.py).
+        tf = pack.get("test-first")
+        ways = ((pack.get("repro") or {}).get("ways") or {}) if isinstance(pack.get("repro"), dict) else {}
+        check(f"pack {kind}: it declares its tests (test-first)", isinstance(tf, dict) and bool(tf.get("tests"))
+              and all(isinstance(e, dict) and e.get("paths") and e.get("way") in ways for e in tf["tests"]), tf)
     return failed
 
 
