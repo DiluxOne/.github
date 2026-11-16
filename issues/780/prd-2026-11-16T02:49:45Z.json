@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 780,
+  "prd_sha256": "e00ea21a163914a21261472c524e88556be7d0658b25ea993327b9a01dda43b1",
+  "prd": "### Problem\n\nA release candidate that passes every scenario still cannot be released, because the release pull request's commit is made with `git commit` and pushed with `git push`, which the organisation's ruleset refuses. The lane also crashes with a traceback instead of saying why it stopped.\n\n### Scope\n\n- `release()` in scripts/release-lane.py makes the release pull request's commit through the API (scripts/api-commit.py, #190), so GitHub signs it, as the candidate's commit to `v7-next` already is.\n- A test in scripts/release-lane.py `--test` that would have caught it.\n\n### Out of scope\n\n- Changing the organisation's rulesets or what the scenarios check.\n\n### Acceptance criteria\n\n- C1: Given a candidate whose scenarios all pass, when the release lane runs `release()`, then the branch `chore/release-<version>` is created by scripts/api-commit.py push with `--onto` the planned commit (no `git push` to it), and scripts/release-lane.py `--test` fails if `release()` pushes with git.\n- C2: Given v7.14.0's candidate with the fix, when the release lane runs, then its release pull request is opened and merged, v7.14.0 is tagged and `v7` moves.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-16T02:49:45Z",
+  "policy": "DiluxOne/.github@58cf1158d98c"
+}
