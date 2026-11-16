@@ -663,7 +663,11 @@ jobs:
           # only ever replaces a type:* label it set itself.
           gh api "repos/$GITHUB_REPOSITORY/issues/$PR/timeline" --paginate > "$RUNNER_TEMP/timeline.json"
           current=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(startswith("type:"))] | join(",")')
-          type=$(bash .dx-central/scripts/review-type.sh "$type" "$BOT" "$RUNNER_TEMP/timeline.json" "$current" --diff "$KIND" "$BASE" "$SHA")
+          # This workflow and the central scripts can come from different
+          # refs: --diff only when the central review-type.sh knows it.
+          bound=()
+          if grep -q -- '--diff' .dx-central/scripts/review-type.sh; then bound=(--diff "$KIND" "$BASE" "$SHA"); fi
+          type=$(bash .dx-central/scripts/review-type.sh "$type" "$BOT" "$RUNNER_TEMP/timeline.json" "$current" "${bound[@]}")
           if [ "$type" != "$(jq -r '.type // "chore"' <<<"$OUT")" ]; then
             echo "The type applied is $type (a person's type:* label, or the review's docs on files that are not documentation); the review's reading ($(jq -r .type <<<"$OUT")) is recorded."
           fi
@@ -818,7 +822,10 @@ jobs:
           set -euo pipefail
           GH_TOKEN=$TIMELINE_TOKEN gh api "repos/$GITHUB_REPOSITORY/issues/$PR/timeline" --paginate > "$RUNNER_TEMP/timeline.json"
           labels=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(startswith("type:"))] | join(",")')
-          TYPE=$(bash .dx-central/scripts/review-type.sh "$REVIEW_TYPE" "$BOT" "$RUNNER_TEMP/timeline.json" "$labels" --diff "$KIND" "$BASE" "$SHA")
+          # --diff only when the central review-type.sh knows it (another ref).
+          bound=()
+          if grep -q -- '--diff' .dx-central/scripts/review-type.sh; then bound=(--diff "$KIND" "$BASE" "$SHA"); fi
+          TYPE=$(bash .dx-central/scripts/review-type.sh "$REVIEW_TYPE" "$BOT" "$RUNNER_TEMP/timeline.json" "$labels" "${bound[@]}")
           current=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json title --jq .title)
           title=$current
           if [ "$AUTHOR_TYPE" = Bot ] && [[ "$BRANCH" == dependabot/* ]]; then
