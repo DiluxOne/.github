@@ -13,8 +13,45 @@
 #     TIMELINE  a file with the pull request's issue timeline, as
 #               `gh api .../timeline --paginate` writes it (one or more arrays)
 #     LABELS    its type:* labels now, comma-separated
+#   review-type.sh TYPE BOT TIMELINE LABELS --diff KIND BASE HEAD
+#               the same, with the review's docs bounded by the diff (#720):
+#               when a file of BASE...HEAD is outside the docs paths
+#               conventions.sh holds a docs title to (`surface.py
+#               --docs-paths KIND`), the review's docs becomes chore. A
+#               person's type:* label still wins; the conventions check then
+#               tells them. An empty KIND: the organisation's paths alone,
+#               and the review's type kept when they or the diff cannot be
+#               read (a named kind fails instead).
 #   review-type.sh --test                     self-test
 set -euo pipefail
+
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
+# The review's type, docs only when every changed file is documentation by
+# the conventions check's own paths and its own `case` match.
+bounded() {
+  local type=$1 kind=$2 base=$3 head=$4 globs files f g is_doc
+  [ "$type" = docs ] || { echo "$type"; return 0; }
+  # A named kind whose paths or diff cannot be read fails; with no kind (a
+  # repository that declares none), the review's type is kept instead.
+  # --no-renames: a code file renamed into a .md is the code file deleted.
+  if ! globs=$(python3 "$here/surface.py" --docs-paths "$kind") \
+    || ! files=$(git diff --no-renames --name-only "${base}...${head}"); then
+    [ -z "$kind" ] || return 1
+    echo "review-type.sh: the docs paths or the diff could not be read; the review's $type is kept." >&2
+    echo "$type"; return 0
+  fi
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    is_doc=false
+    while IFS= read -r g; do
+      # shellcheck disable=SC2254 # the glob is the point.
+      [ -n "$g" ] && case "$f" in $g) is_doc=true; break ;; esac
+    done <<<"$globs"
+    [ "$is_doc" = true ] || { echo chore; return 0; }
+  done <<<"$files"
+  echo docs
+}
 
 decide() {
   local type=$1 bot=$2 timeline=$3 labels=$4 human
@@ -59,6 +96,40 @@ self_test() {
   printf '[{"event":"labeled","label":{"name":"type:docs"},"actor":null}]' > "$dir/ghost.json"
   check "a label by a deleted account (no actor) is still a person's" docs feat "$bot" "$dir/ghost.json" type:docs
   check "no labels yet" feat feat "$bot" "$dir/bot.json" ""
+  # The review's docs, bounded by the docs paths (#720), on a repository of
+  # its own: a doc and a test, docs only, and a kind's own docs path.
+  local repo=$dir/repo
+  git init -q "$repo"
+  git -C "$repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m base
+  git -C "$repo" branch -q base
+  git -C "$repo" checkout -q -b docsonly
+  mkdir -p "$repo/docs"; echo a > "$repo/docs/a.md"; echo b > "$repo/README.md"
+  git -C "$repo" add -A; git -C "$repo" -c user.name=t -c user.email=t@t commit -q -m docs
+  git -C "$repo" checkout -q -b withtest
+  mkdir -p "$repo/tests"; echo t > "$repo/tests/test_a.py"
+  git -C "$repo" add -A; git -C "$repo" -c user.name=t -c user.email=t@t commit -q -m test
+  git -C "$repo" checkout -q -b readme base
+  echo r > "$repo/readme.txt"
+  git -C "$repo" add -A; git -C "$repo" -c user.name=t -c user.email=t@t commit -q -m readme
+  in_repo() { (cd "$repo" && bash "$here/review-type.sh" "$@"); }
+  check2() {
+    local name=$1 want=$2 got
+    got=$(in_repo "${@:3}" 2>/dev/null) || got="(failed)"
+    if [ "$got" = "$want" ]; then echo "ok   $name"; else echo "FAIL $name: got '$got', want '$want'"; fails=$((fails + 1)); fi
+  }
+  check2 "#720: the review's docs with a doc and a test is chore" chore docs "$bot" "$dir/bot.json" "" --diff "" base withtest
+  check2 "#720: the review's docs with docs only stays docs" docs docs "$bot" "$dir/bot.json" "" --diff "" base docsonly
+  check2 "#720: a kind's own docs path (readme.txt) is docs" docs docs "$bot" "$dir/bot.json" "" --diff wordpress-plugin base readme
+  check2 "#720: readme.txt is not docs for a kind without it" chore docs "$bot" "$dir/bot.json" "" --diff "" base readme
+  check2 "#720: a type that is not docs is untouched" test test "$bot" "$dir/bot.json" "" --diff "" base withtest
+  check2 "#720: a person's type:docs label still stands" docs feat "$bot" "$dir/pages.json" type:docs --diff "" base withtest
+  if in_repo docs "$bot" "$dir/bot.json" "" --diff nosuch base withtest >/dev/null 2>&1; then echo "FAIL #720: an unreadable kind passed"; fails=$((fails + 1)); else echo "ok   #720: an unreadable kind fails"; fi
+  check2 "#720: no kind and an unreadable diff keep the review's type" docs docs "$bot" "$dir/bot.json" "" --diff "" base nosuchref
+  if in_repo docs "$bot" "$dir/bot.json" "" --diff wordpress-plugin base nosuchref >/dev/null 2>&1; then echo "FAIL #720: a named kind with an unreadable diff passed"; fails=$((fails + 1)); else echo "ok   #720: a named kind with an unreadable diff fails"; fi
+  # The workflow and the central script can come from different refs: the
+  # workflow passes --diff only when the script names it.
+  if grep -q -- '--diff' "${BASH_SOURCE[0]}"; then echo "ok   the workflow's probe finds --diff"; else echo "FAIL the workflow's probe does not find --diff"; fails=$((fails + 1)); fi
+  if in_repo docs "$bot" "$dir/bot.json" "" --diff "" base 2>/dev/null; then echo "FAIL usage: --diff without HEAD accepted"; fails=$((fails + 1)); else echo "ok   usage: --diff needs KIND BASE HEAD"; fi
   if bash "${BASH_SOURCE[0]}" feat 2>/dev/null; then echo "FAIL usage: three arguments accepted"; fails=$((fails + 1)); else echo "ok   usage: wrong arguments exit non-zero"; fi
   echo 'not json' > "$dir/bad.json"
   if decide feat "$bot" "$dir/bad.json" "" 2>/dev/null; then echo "FAIL an unreadable timeline passed"; fails=$((fails + 1)); else echo "ok   an unreadable timeline fails"; fi
@@ -67,5 +138,11 @@ self_test() {
 }
 
 if [ "${1:-}" = --test ]; then self_test; exit; fi
-[ $# -eq 4 ] || { echo "usage: review-type.sh TYPE BOT TIMELINE LABELS | --test" >&2; exit 2; }
-decide "$@"
+usage="usage: review-type.sh TYPE BOT TIMELINE LABELS [--diff KIND BASE HEAD] | --test"
+if [ $# -eq 8 ] && [ "$5" = --diff ]; then
+  type=$(bounded "$1" "$6" "$7" "$8")
+  decide "$type" "$2" "$3" "$4"
+else
+  [ $# -eq 4 ] || { echo "$usage" >&2; exit 2; }
+  decide "$@"
+fi
