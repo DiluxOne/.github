@@ -16,8 +16,10 @@ then the organisation's repos.yml (under its name), then its own
 `tests` and `not-tests` added to), read from the BASE commit, so a pull
 request cannot exempt itself:
 
-  setup      commands run at the head's checkout, with the network, before
-             any test is in place (the repository's own dev tools)
+  setup      commands run at the BASE's checkout, with the network, before
+             any test is in place (the repository's own dev tools; never
+             the head's manifests, whose install scripts would run outside
+             any sandbox in the job that gives the verdict)
   tests      [{paths: [globs], way: <name>}]: a file under one of `paths`
              is a test, run by the reproduction way `way` of the same
              declaration's `repro:` (scripts/repro-ways.py): its sandbox,

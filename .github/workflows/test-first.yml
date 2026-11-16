@@ -24,9 +24,14 @@ name: Test first
 #   run   the tests, on GitHub's fresh runner (the sandboxes refuse a
 #         self-hosted one: a fork's tests are untrusted code), no secret, a
 #         read-only token not kept in the checkout; the declaration's
-#         `setup` first, with the network, before the organisation's
-#         scripts are checked out. Its verdict and each test's outcome at
-#         the base and at the head go to the job summary.
+#         `setup` first, with the network, on the BASE's checkout, before
+#         the organisation's scripts are checked out: an installer runs its
+#         manifest's own scripts, and the head's
+#         would run outside any sandbox in the job that gives the verdict,
+#         free to forge it (GITHUB_ENV, GITHUB_PATH, the files later steps
+#         read). The tests read the base and the head from git, never from
+#         the working tree. Its verdict and each test's outcome at the base
+#         and at the head go to the job summary.
 #
 #   Called by org-pull-request.yml, the organisation's required pipeline
 #   (and workflow-templates/test-pull-request.yml, job for job with it),
@@ -108,12 +113,16 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
       # The repository's own dev tools, as its declaration says, while no
-      # test is in place and before the organisation's scripts are here.
-      - name: Setup (the declaration's)
+      # test is in place and before the organisation's scripts are here, on
+      # the base's checkout: never the head's manifests, whose scripts would
+      # run unconfined in the job that gives the verdict.
+      - name: Setup (the declaration's, at the base)
         env:
           SETUP: ${{ needs.plan.outputs.setup }}
+          BASE: ${{ needs.plan.outputs.base }}
         run: |
           set -euo pipefail
+          git checkout --quiet --detach "$BASE"
           jq -r '.[]' <<<"$SETUP" | while IFS= read -r cmd; do
             [ -n "$cmd" ] || continue
             echo "::group::$cmd"

@@ -25,7 +25,7 @@ Where tests are and how they run is data: `test-first:` in its kind's pack (`kin
 
 ```yaml
 test-first:
-  setup: [composer install --no-interaction --prefer-dist --no-progress]   # its dev tools, with the network, before any test is in place
+  setup: [composer install --no-interaction --prefer-dist --no-progress]   # its dev tools, with the network, on the base's checkout, before any test is in place
   tests:
     - paths: ["tests/Unit/**/*Test.php"]   # a file under these is a test
       way: unit                            # run by this way of its `repro:`

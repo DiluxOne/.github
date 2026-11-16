@@ -384,3 +384,26 @@ def test_c6_the_browser_way_runs_every_spec_its_pack_declares_as_a_test():
     for spec in ("tests/e2e/specs/login.spec.ts", "tests/e2e/repro/issue-69.spec.ts"):
         assert any(TF.glob_match(spec, g) for g in globs), spec
         assert spec.startswith(test_dir + "/") and re.search(match, spec), spec
+
+
+def test_the_setup_runs_on_the_bases_checkout_never_the_heads():
+    """Review of #791: an installer runs its manifest's scripts, so the
+    head's setup would run unconfined in the job that gives the verdict,
+    free to forge it. The setup step checks the base out before anything
+    of the declaration's runs, and the tests read both commits from git."""
+    import yaml
+    wf = yaml.safe_load((ROOT / ".github" / "workflows" / "test-first.yml").read_text(encoding="utf-8"))
+    steps = wf["jobs"]["run"]["steps"]
+    setup = [s for s in steps if "SETUP" in (s.get("env") or {})]
+    assert len(setup) == 1
+    step = setup[0]
+    assert step["env"]["BASE"] == "${{ needs.plan.outputs.base }}"
+    script = step["run"]
+    assert script.index('git checkout --quiet --detach "$BASE"') < script.index('bash -c "$cmd"')
+    # Nothing checks the head out again before the verdict.
+    after = steps[steps.index(step) + 1:]
+    assert not any("git checkout" in (s.get("run") or "") for s in after)
+    assert not any((s.get("with") or {}).get("ref") in ("${{ needs.plan.outputs.head }}",) for s in after)
+    # The checkout before the setup is the merge commit with its base: no
+    # step before the setup runs anything.
+    assert all("run" not in s for s in steps[:steps.index(step)])
