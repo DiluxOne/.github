@@ -118,3 +118,39 @@ def test_c1_the_cli_writes_the_verdict_to_the_job_summary(fresh, tmp_path, monke
     said = summary.read_text(encoding="utf-8")
     assert "`tests/unit/test_calc.py` fails at the base and passes at the head" in said
     assert "| `tests/unit/test_calc.py` | reproduced | passed |" in said
+
+
+@pytest.mark.parametrize("kind", ["fix", "feat", "fix!", "feat!"])
+def test_c2_a_fix_or_feat_with_no_added_or_changed_test_fails_saying_the_test_is_missing(fresh, kind):
+    base = fresh.commit({".github/review-policy.yml": POLICY, "src/__init__.py": "", "src/calc.py": BUGGY}, "chore: base")
+    head = fresh.commit({"src/calc.py": FIXED, "README.md": "adds\n"}, f"{kind}: add adds")
+    ok, message, plan, results = check(fresh, f"{kind}: add adds", base, head)
+    assert not ok and plan["result"] == "fail"
+    assert results == [] and plan["tests"] == []
+    assert message.startswith("A test that fails before the change is missing: ")
+    # Where tests go, so the author knows what to write.
+    assert "`tests/**/test_*.py`" in message
+
+
+def test_c2_a_deleted_test_is_no_test(fresh):
+    base = fresh.commit({".github/review-policy.yml": POLICY, "src/__init__.py": "", "src/calc.py": BUGGY, "tests/unit/test_calc.py": TEST},
+                        "chore: base")
+    fresh.git("rm", "-q", "tests/unit/test_calc.py")
+    head = fresh.commit({"src/calc.py": FIXED}, "fix: add adds")
+    ok, message, _, _ = check(fresh, "fix: add adds", base, head)
+    assert not ok and message.startswith("A test that fails before the change is missing: ")
+
+
+def test_c2_the_cli_fails_the_plan_with_the_message(fresh):
+    base = fresh.commit({".github/review-policy.yml": POLICY, "src/__init__.py": "", "src/calc.py": BUGGY}, "chore: base")
+    head = fresh.commit({"src/calc.py": FIXED}, "feat: add adds")
+    env = {**os.environ, "DIR": str(fresh.path), "CENTRAL": str(ROOT), "TITLE": "feat: add adds", "BASE": base, "HEAD": head}
+    planned = subprocess.run(["python3", str(ROOT / "scripts" / "test-first.py"), "plan"], env=env, capture_output=True, text=True)
+    assert planned.returncode == 1
+    assert "result=fail" in planned.stdout.splitlines()
+    assert "::error::A test that fails before the change is missing: " in planned.stdout
+
+
+def test_c2_a_feat_whose_test_passes_at_the_base_fails_as_missing():
+    ok, message = TF.verdict("feat", [{"test": "tests/unit/test_x.py", "base": "passed", "head": "passed"}])
+    assert not ok and message.startswith("A test that fails before the change is missing: ")
