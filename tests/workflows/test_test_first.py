@@ -154,3 +154,38 @@ def test_c2_the_cli_fails_the_plan_with_the_message(fresh):
 def test_c2_a_feat_whose_test_passes_at_the_base_fails_as_missing():
     ok, message = TF.verdict("feat", [{"test": "tests/unit/test_x.py", "base": "passed", "head": "passed"}])
     assert not ok and message.startswith("A test that fails before the change is missing: ")
+
+
+def test_c3_a_fix_whose_added_test_also_passes_at_the_base_fails_saying_it_does_not_show_the_bug(fresh):
+    base = fresh.commit({".github/review-policy.yml": POLICY, "src/__init__.py": "", "src/calc.py": BUGGY}, "chore: base")
+    # A test of what the bug does not touch: it passes before the fix too.
+    beside = TEST.replace("assert add(1, 2) == 3", "assert add(0, 0) == 0")
+    head = fresh.commit({"src/calc.py": FIXED, "tests/unit/test_calc.py": beside}, "fix: add adds")
+    ok, message, plan, results = check(fresh, "fix: add adds", base, head)
+    assert plan["result"] == "run"
+    assert results == [{"test": "tests/unit/test_calc.py", "base": "passed", "head": "passed"}]
+    assert not ok
+    assert message.startswith("The test does not show the bug: `tests/unit/test_calc.py` also passes at the base")
+
+
+def test_c3_a_fix_whose_test_only_breaks_at_the_base_is_named_the_same_way(fresh):
+    base = fresh.commit({".github/review-policy.yml": POLICY, "src/__init__.py": "", "src/calc.py": BUGGY}, "chore: base")
+    # It imports what the fix adds: at the base it breaks, it fails no assertion.
+    breaks = TEST.replace("from src.calc import add", "from src.calc import add, ADDS")
+    head = fresh.commit({"src/calc.py": FIXED + "ADDS = True\n", "tests/unit/test_calc.py": breaks}, "fix: add adds")
+    ok, message, _, results = check(fresh, "fix: add adds", base, head)
+    assert results == [{"test": "tests/unit/test_calc.py", "base": "broken", "head": "passed"}]
+    assert not ok and message.startswith("The test does not show the bug: `tests/unit/test_calc.py`")
+
+
+def test_c3_a_test_that_fails_at_the_head_fails_the_check_naming_it(fresh):
+    base = fresh.commit({".github/review-policy.yml": POLICY, "src/__init__.py": "", "src/calc.py": BUGGY}, "chore: base")
+    head = fresh.commit({"tests/unit/test_calc.py": TEST}, "fix: add adds")
+    ok, message, _, results = check(fresh, "fix: add adds", base, head)
+    assert results == [{"test": "tests/unit/test_calc.py", "base": "reproduced", "head": "reproduced"}]
+    assert not ok and "`tests/unit/test_calc.py` does not pass at the head" in message
+
+
+def test_c3_a_test_that_could_not_run_never_passes():
+    ok, message = TF.verdict("fix", [{"test": "t.py", "base": "limit", "head": "passed"}])
+    assert not ok and "could not run" in message
