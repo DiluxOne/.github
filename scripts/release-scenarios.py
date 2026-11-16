@@ -1201,16 +1201,21 @@ def cleanup(repo, made, run=gh):
     mark for `clear` to find, and which the next run's core scenario would
     wait on). A failure here never hides a result."""
     for what, number in made:
+        if what == "issue":
+            # #784: the pull requests that say `Closes #<issue>` for an
+            # issue the scenario opened are the scenario's own. Their own
+            # try: a view that fails never keeps the issue open.
+            try:
+                view = json.loads(run("issue", "view", number, "--repo", repo, "--json", "closedByPullRequestsReferences") or "{}")
+            except (RuntimeError, ValueError):
+                view = {}
+            for pull in closing_pulls(repo, view):
+                try:
+                    run("pr", "close", str(pull), "--repo", repo, "--delete-branch")
+                except RuntimeError:
+                    pass
         try:
             if what == "issue":
-                # #784: the pull requests that say `Closes #<issue>` for an
-                # issue the scenario opened are the scenario's own.
-                view = json.loads(run("issue", "view", number, "--repo", repo, "--json", "closedByPullRequestsReferences") or "{}")
-                for pull in closing_pulls(repo, view):
-                    try:
-                        run("pr", "close", str(pull), "--repo", repo, "--delete-branch")
-                    except RuntimeError:
-                        pass
                 run("issue", "close", number, "--repo", repo)
                 run("issue", "lock", number, "--repo", repo)
             else:
@@ -2403,6 +2408,23 @@ def self_test():
           [c for c in ccalls if c[:1] in (("pr",), ("issue",)) and c[1] != "view"],
           [("pr", "close", "12", "--repo", "o/t", "--delete-branch"), ("issue", "close", "5", "--repo", "o/t"), ("issue", "lock", "5", "--repo", "o/t")])
     check("#784 cleanup: a view that is not JSON never hides a result", cleanup("o/t", [("issue", "5")], lambda *a, input=None: "not json"), None)
+
+    def vfake(answer):
+        seen = []
+
+        def fake(*args, input=None):
+            seen.append(args)
+            if args[:2] == ("issue", "view"):
+                if answer is None:
+                    raise RuntimeError("gh: HTTP 502")
+                return answer
+            return ""
+        return seen, fake
+    for name, answer in (("not JSON", "not json"), ("that fails", None)):
+        seen, fake_ = vfake(answer)
+        cleanup("o/t", [("issue", "5")], fake_)
+        check(f"#784 cleanup: a view {name} still has the issue closed and locked",
+              [c for c in seen if c[1] != "view"], [("issue", "close", "5", "--repo", "o/t"), ("issue", "lock", "5", "--repo", "o/t")])
     pcalls_ = []
 
     def prfake(*args, input=None):
