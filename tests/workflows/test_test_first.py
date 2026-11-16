@@ -189,3 +189,33 @@ def test_c3_a_test_that_fails_at_the_head_fails_the_check_naming_it(fresh):
 def test_c3_a_test_that_could_not_run_never_passes():
     ok, message = TF.verdict("fix", [{"test": "t.py", "base": "limit", "head": "passed"}])
     assert not ok and "could not run" in message
+
+
+@pytest.mark.parametrize("edited", ["tests/release/scenarios.yml", "tests/unit/fixtures/test_input.py", "tests/unit/expected/test_out.py"])
+def test_c4_a_fix_that_only_edits_a_scenario_a_fixture_or_an_expected_output_fails_as_c2(fresh, edited):
+    base = fresh.commit({".github/review-policy.yml": POLICY, "src/__init__.py": "", "src/calc.py": BUGGY}, "chore: base")
+    head = fresh.commit({"src/calc.py": FIXED, edited: "scenarios: []\n"}, "fix: add adds")
+    ok, message, plan, results = check(fresh, "fix: add adds", base, head)
+    assert not ok and plan["result"] == "fail" and results == []
+    assert message.startswith("A test that fails before the change is missing: ")
+
+
+@pytest.mark.parametrize("edited", ["tests/release/scenarios.yml", "tests/workflows/fixtures/thing/test_x.py", "scripts/fixtures/x/test_y.py",
+                                    "tests/examples/test_logic.py", "evals/cases/test_case.py"])
+def test_c4_this_repositorys_declaration_never_counts_a_scenario_or_a_fixture(fresh, edited):
+    # This repository's own `test-first:` (#779: a fix that edited
+    # tests/release/scenarios.yml alone).
+    policy = (ROOT / ".github" / "review-policy.yml").read_text(encoding="utf-8")
+    base = fresh.commit({".github/review-policy.yml": policy, "scripts/x.py": "A = 1\n"}, "chore: base")
+    head = fresh.commit({"scripts/x.py": "A = 2\n", edited: "x\n"}, "fix: x")
+    ok, message, plan, _ = check(fresh, "fix: x", base, head)
+    assert not ok and plan["result"] == "fail"
+    assert message.startswith("A test that fails before the change is missing: ")
+    assert "never a test" in message
+
+
+def test_c4_beside_a_real_test_a_fixture_is_not_run(fresh):
+    base = fresh.commit({".github/review-policy.yml": POLICY, "src/__init__.py": "", "src/calc.py": BUGGY}, "chore: base")
+    head = fresh.commit({"src/calc.py": FIXED, "tests/unit/test_calc.py": TEST, "tests/unit/fixtures/test_data.py": "x\n"}, "fix: add adds")
+    plan = TF.plan(str(fresh.path), str(ROOT), "fix: add adds", base, head, "none-such", 7)
+    assert [t["test"] for t in plan["tests"]] == ["tests/unit/test_calc.py"]
