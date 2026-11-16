@@ -10,7 +10,8 @@ name: Pull request (organisation)
 # hard-wired to `@v7` and so could never try a candidate. Keep its `on:` and
 # jobs and that template's in step (tests/workflows/test_test_repo_pipeline.py):
 # the conventions with the accepted-issue gate, then the Claude review and
-# the auto-merge decision; beside them, the issues it closes go to its
+# the auto-merge decision; beside them, the "Test first" check (test-first.yml,
+# #734: a fix or a feature's test fails at the base and passes at the head), the issues it closes go to its
 # author when a member of the organisation (pull-request-assignee.yml, #73);
 # and, in a private repository, a call that starts the organisation's VM its
 # jobs wait for, instead of leaving them to runner-vm.yml's schedule
