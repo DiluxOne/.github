@@ -2,8 +2,9 @@ name: Pull request edited
 
 # When the title or the description changes: the conventions, the review (which
 # spends nothing on a commit it already read; it re-checks that the description
-# still matches the code) and the auto-merge decision. Nothing else: the suites
-# gave the code its verdict already and keep it. Same job ids as pull-request.yml
+# still matches the code) and the auto-merge decision, and, when the title
+# changed, the "Test first" check (#734), as the type decides it. Nothing else:
+# the suites gave the code its verdict already and keep it. Same job ids as pull-request.yml
 # so the rulesets see one set of checks.
 
 on:
@@ -23,6 +24,15 @@ jobs:
     uses: ./.github/workflows/conventions.yml
     with:
       retired-names: ''
+
+  # The title's type decides whether a test must fail at the base (#734).
+  test-first:
+    if: github.event.changes.title
+    permissions:
+      contents: read
+    uses: ./.github/workflows/test-first.yml
+    with:
+      declaration-at-base: true
 
   # The issues it closes go to its author, when a member (#73). The
   # script is read from main, like the review's: a pull request's own

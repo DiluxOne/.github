@@ -384,7 +384,7 @@ scenarios:
 
   # The review, the required checks and the merge queue.
   - id: review-changes-asked
-    covers: [conventions.yml:pull_request, claude-review.yml:pull_request, autopilot.yml:pull_request, pull-request-assignee.yml:pull_request, runner-wake.yml:pull_request, waiting-update.yml:pull_request]
+    covers: [conventions.yml:pull_request, claude-review.yml:pull_request, autopilot.yml:pull_request, pull-request-assignee.yml:pull_request, runner-wake.yml:pull_request, waiting-update.yml:pull_request, test-first.yml:pull_request]
     opens: {pull: {title: "feat: a greeting with a secret", body: pull, issue: {title: "feat: a greeting with a secret", body: complete-feature, labels: [accepted]}}}
     steps: [{push: secret}]
     expect: {check: {conventions: success}}

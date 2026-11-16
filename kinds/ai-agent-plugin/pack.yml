@@ -125,6 +125,17 @@ repro:
         assert what the reporter expected, so it FAILS while the bug is there. No network, no
         secrets, no coding agent, nothing outside the repository.
 
+# The "Test first" check (#734, scripts/test-first.py, kinds/README.md): a
+# fix or a feature's pull request carries a pytest test that fails at its
+# base and passes at its head, run by the unit way. A fixture is never a
+# test.
+test-first:
+  setup: []
+  tests:
+    - paths: ["tests/**/test_*.py"]
+      way: unit
+  not-tests: ["tests/**/fixtures/**"]
+
 # How a version of this kind is released (#82; kinds/README.md). A person
 # accepts the issue "Release X.Y.Z"; the release pull request is then this
 # `prepare` command run on the default branch (every tool's manifest at the

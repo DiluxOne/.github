@@ -44,6 +44,18 @@ jobs:
       actions: read # the run that opened a lane's issue (policy/autonomy.yml)
     uses: DiluxOne/.github/.github/workflows/conventions.yml@v7
 
+  # The "Test first" check (#734, test-first.yml): a `fix` or `feat` pull
+  # request carries a test that fails at its base and passes at its head,
+  # where its declaration (`test-first:`, its kind's pack) says tests are.
+  # On a fork's too: its tests run on GitHub's fresh runner, sandboxed, with
+  # no secret. An edit runs it again only when it changes the title (the
+  # type).
+  test-first:
+    if: github.event_name == 'pull_request' && github.event.action != 'dequeued' && github.repository != 'DiluxOne/.github' && (github.event.action != 'edited' || github.event.changes.title)
+    permissions:
+      contents: read
+    uses: DiluxOne/.github/.github/workflows/test-first.yml@v7
+
   # The issues it closes go to its author, when a member of the
   # organisation (#73); on open, reopen, ready and a changed description.
   assignee:

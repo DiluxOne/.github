@@ -612,6 +612,13 @@ files:
       read-by: [scripts/repro-ways.py]
       issue: "#377"
       says: How a bug of the kind is reproduced.
+    - key: test-first
+      org: any
+      repo: any
+      limit: "read from the pull request's base; a repository's own adds tests and not-tests (scripts/test-first.py)"
+      read-by: [scripts/test-first.py, scripts/sync-repos.py]
+      issue: "#734"
+      says: Where the kind's tests are, which reproduction way runs each, and what is never a test, for the "Test first" check.
     - key: release.publishes-to
       org: any
       repo: never
