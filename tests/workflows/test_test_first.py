@@ -344,3 +344,27 @@ def test_c6_policy_self_test_holds_every_pack_to_a_declaration():
     assert got.returncode == 0, got.stdout[-2000:]
     for kind in KINDS:
         assert f"ok   pack {kind}: it declares its tests (test-first)" in got.stdout
+
+
+@pytest.mark.parametrize("doc", ["rules/test-first.md", "docs/testing-and-quality.md", "docs/model.md"])
+def test_c7_each_document_says_the_check_enforces_test_first_and_the_review_checks_it_too(doc):
+    text = (ROOT / doc).read_text(encoding="utf-8")
+    said = " ".join(line for line in text.splitlines() if '"Test first" check' in line)
+    assert said, doc
+    assert "enforced by the \"Test first\" check" in said, doc
+    assert "the review checks it too" in said or "which the review checks too" in said, doc
+
+
+def test_c7_the_rule_is_held_by_the_review_and_the_check():
+    import yaml
+    head = (ROOT / "rules" / "test-first.md").read_text(encoding="utf-8").split("---\n")[1]
+    assert yaml.safe_load(head)["enforced_by"] == ["review", {"check": "test-first"}]
+    got = subprocess.run(["python3", str(ROOT / "scripts" / "rules.py"), "check"], capture_output=True, text=True)
+    assert got.returncode == 0, got.stdout + got.stderr
+
+
+def test_c7_the_testing_document_says_what_each_message_means_and_how_to_declare():
+    text = (ROOT / "docs" / "testing-and-quality.md").read_text(encoding="utf-8")
+    for said in ("A test that fails before the change is missing", "The test does not show the bug", "alters no behaviour the check tests",
+                 "could not run", "fails at the base and passes at the head", "test-first:", "not-tests:", "way:"):
+        assert said in text, said

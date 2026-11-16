@@ -27,9 +27,9 @@ What the rule asks, and why, in plain paragraphs.
 
 ## The rules
 
-| Rule | Level | Applies to |
-| --- | --- | --- |
-| [test-first](test-first.md) | mandatory | everything |
-| [front-no-credentials](front-no-credentials.md) | mandatory | the front end |
+| Rule | Level | Applies to | Enforced by |
+| --- | --- | --- | --- |
+| [test-first](test-first.md) | mandatory | everything | the "Test first" check ([`test-first.yml`](../.github/workflows/test-first.yml), #734), and the review checks it too |
+| [front-no-credentials](front-no-credentials.md) | mandatory | the front end | the review |
 
 A rule is added, changed or removed by a pull request a maintainer merges: like the autonomy policy, the rules never change on their own.
