@@ -2,7 +2,7 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
-## [7.14.0](https://github.com/DiluxOne/.github/releases/tag/v7.14.0) · 2026-11-07
+## [7.14.0](https://github.com/DiluxOne/.github/releases/tag/v7.14.0) · 2026-11-16
 
 ### Features
 
@@ -10,10 +10,46 @@ Every version of the engine (the workflows, scripts, policy and kinds other repo
 
 ### Fixes
 
+- the bug reproduced from #784 ([#786](https://github.com/DiluxOne/.github/pull/786))
+- the bug reproduced from #780 ([#782](https://github.com/DiluxOne/.github/pull/782))
+- release candidate v7.14.0 fails scenario draft-in-conflict ([#779](https://github.com/DiluxOne/.github/pull/779))
+- a review that starts too soon sees no files and says high risk ([#777](https://github.com/DiluxOne/.github/pull/777))
+- the bug reproduced from #774 ([#776](https://github.com/DiluxOne/.github/pull/776))
+- issues accepted together lose their PRD seal ([#765](https://github.com/DiluxOne/.github/pull/765))
+- three release scenarios expect what their fixture never makes ([#766](https://github.com/DiluxOne/.github/pull/766))
+- release scenarios' pull requests describe no change ([#761](https://github.com/DiluxOne/.github/pull/761))
+- the callers sync ignores extra template jobs in needs ([#758](https://github.com/DiluxOne/.github/pull/758))
+- the test repository's pipeline check fails on a cancelled view ([#755](https://github.com/DiluxOne/.github/pull/755))
+- the release lane tests the pull-request path at v7, not v7-next ([#749](https://github.com/DiluxOne/.github/pull/749))
+- an autopilot pull request whose checks fail is never fixed ([#746](https://github.com/DiluxOne/.github/pull/746))
+- the test identity is the pack's login, not its token's owner ([#743](https://github.com/DiluxOne/.github/pull/743))
+- the bug reproduced from #727 ([#737](https://github.com/DiluxOne/.github/pull/737))
+- the bug reproduced from #726 ([#730](https://github.com/DiluxOne/.github/pull/730))
+- the bug reproduced from #715 ([#717](https://github.com/DiluxOne/.github/pull/717))
+- release candidate v7.14.0 fails scenario accepted-spec ([#714](https://github.com/DiluxOne/.github/pull/714))
+- release scenarios wait in core, look duplicate and commit unsigned ([#710](https://github.com/DiluxOne/.github/pull/710))
+- release candidate v7.14.0 fails scenario accepted-spec ([#708](https://github.com/DiluxOne/.github/pull/708))
+- release candidate v7.14.0 fails scenario accepted-spec ([#700](https://github.com/DiluxOne/.github/pull/700))
+- release lane fails, runs in series, and posts malformed issues ([#695](https://github.com/DiluxOne/.github/pull/695))
+- the release lane times out in the scenarios and opens no bug ([#691](https://github.com/DiluxOne/.github/pull/691))
 - the callers sync opens pull requests that cannot merge ([#684](https://github.com/DiluxOne/.github/pull/684))
 - the pre-pr job has no gettext and loops fix rounds on it ([#685](https://github.com/DiluxOne/.github/pull/685))
 - the pre-pr failure excerpt shows the log's tail, not the error ([#680](https://github.com/DiluxOne/.github/pull/680))
 - sync-repos callers adds new callers with template placeholders ([#676](https://github.com/DiluxOne/.github/pull/676))
+
+### CI
+
+- **deps:** Bump anthropics/claude-code-action from 1.0.269 to 1.0.271 ([#732](https://github.com/DiluxOne/.github/pull/732))
+- **deps:** Bump the github-actions group across 1 directory with 5 updates ([#697](https://github.com/DiluxOne/.github/pull/697))
+- the release lane plays its scenarios in parallel ([#693](https://github.com/DiluxOne/.github/pull/693))
+
+### Maintenance
+
+- release v7.14.0 ([#687](https://github.com/DiluxOne/.github/pull/687))
+
+### Reverts
+
+- fix: issues accepted together lose their PRD seal (#765) ([#773](https://github.com/DiluxOne/.github/pull/773))
 
 ## [7.13.5](https://github.com/DiluxOne/.github/releases/tag/v7.13.5) · 2026-11-06
 
