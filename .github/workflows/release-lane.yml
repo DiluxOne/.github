@@ -31,7 +31,8 @@ name: Release lane
 # when engine-release.yml, on the tag's push, made it first). The candidate's
 # token has `workflows`: its commit rewrites workflow files, and it makes
 # that commit through the API (scripts/api-commit.py), so GitHub signs it,
-# as the organisation's ruleset requires on every branch. A scenario that fails: nothing is tagged, `v7` stays, and a
+# as the organisation's ruleset requires on every branch; so is the release
+# pull request's commit (CHANGELOG.md), made by `act` the same way (#780). A scenario that fails: nothing is tagged, `v7` stays, and a
 # bug names the scenario and its run; so does a scenarios job that runs out
 # of time (the play step at 20 minutes, the job at 30), whose bug names
 # the timeout (#690): only a run a person cancelled stays silent. A breaking change (`!`): the scenarios
@@ -423,6 +424,9 @@ jobs:
       - name: What the scenarios say
         id: act
         env:
+          # scripts/api-commit.py makes the release pull request's commit
+          # through the API, which GitHub signs (the ruleset refuses an
+          # unsigned one, #780); CHANGELOG.md needs no `workflows`.
           GH_TOKEN: ${{ steps.app.outputs.token }}
           PLAN: ${{ needs.plan.outputs.plan }}
           SCENARIO_GROUPS: ${{ needs.move.outputs.groups }}
