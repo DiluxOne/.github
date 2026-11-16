@@ -219,3 +219,38 @@ def test_c4_beside_a_real_test_a_fixture_is_not_run(fresh):
     head = fresh.commit({"src/calc.py": FIXED, "tests/unit/test_calc.py": TEST, "tests/unit/fixtures/test_data.py": "x\n"}, "fix: add adds")
     plan = TF.plan(str(fresh.path), str(ROOT), "fix: add adds", base, head, "none-such", 7)
     assert [t["test"] for t in plan["tests"]] == ["tests/unit/test_calc.py"]
+
+
+@pytest.mark.parametrize("kind", ["docs", "style", "ci", "chore", "refactor", "test"])
+def test_c5_a_pull_request_of_another_type_passes_without_running_tests_and_says_why(fresh, monkeypatch, kind):
+    base = fresh.commit({".github/review-policy.yml": POLICY, "src/__init__.py": "", "src/calc.py": BUGGY}, "chore: base")
+    head = fresh.commit({"README.md": "words\n", "tests/unit/test_calc.py": TEST}, f"{kind}: words")
+
+    def never(*args, **kwargs):
+        raise AssertionError("a test ran")
+    monkeypatch.setattr(TF, "run_one", never)
+    monkeypatch.setattr(TF, "declaration", never)
+    ok, message, plan, results = check(fresh, f"{kind}: words", base, head)
+    assert ok and plan["result"] == "pass" and plan["tests"] == [] and results == []
+    assert message == (f"Test first: a `{kind}` pull request alters no behaviour the check tests: no test is run "
+                       "(only `fix` and `feat` pull requests carry a test that fails before the change).")
+
+
+def test_c5_the_workflow_runs_the_tests_only_when_the_plan_says_so():
+    import yaml
+    wf = yaml.safe_load((ROOT / ".github" / "workflows" / "test-first.yml").read_text(encoding="utf-8"))
+    assert wf["jobs"]["run"]["needs"] == "plan"
+    assert wf["jobs"]["run"]["if"] == "needs.plan.outputs.result == 'run'"
+    # The plan writes its message to the job summary, the pass's included.
+    assert "GITHUB_STEP_SUMMARY" in (ROOT / "scripts" / "test-first.py").read_text(encoding="utf-8")
+
+
+def test_c5_the_cli_passes_a_docs_pull_request_with_its_reason_in_the_summary(fresh, tmp_path):
+    base = fresh.commit({".github/review-policy.yml": POLICY, "src/__init__.py": "", "src/calc.py": BUGGY}, "chore: base")
+    head = fresh.commit({"README.md": "words\n"}, "docs: words")
+    summary = tmp_path / "summary.md"
+    env = {**os.environ, "DIR": str(fresh.path), "CENTRAL": str(ROOT), "TITLE": "docs: words", "BASE": base, "HEAD": head,
+           "GITHUB_STEP_SUMMARY": str(summary)}
+    planned = subprocess.run(["python3", str(ROOT / "scripts" / "test-first.py"), "plan"], env=env, capture_output=True, text=True)
+    assert planned.returncode == 0 and "result=pass" in planned.stdout.splitlines()
+    assert "a `docs` pull request alters no behaviour the check tests: no test is run" in summary.read_text(encoding="utf-8")
