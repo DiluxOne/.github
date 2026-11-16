@@ -610,6 +610,9 @@ def self_test():
         check("C4: pushed after the CHANGELOG is written, before the pull request (#780)",
               bool(signed and built and opened and built[0] < signed[0] < opened[0] and os.path.exists(os.path.join(root, "CHANGELOG.md"))), True)
         check("C4: the release pull request is merged", fake.has("gh", "pr", "merge", "700"), True)
+        steps = [("api-commit.py", "push"), ("gh", "pr", "create"), ("gh", "pr", "merge"), ("tag", "v7.10.1"), ("tag", "-f", "v7"), ("refs/tags/v7",)]
+        at = [next((i for i, c in enumerate(words) if all(w in c or any(a.endswith(w) for a in c) for w in step)), -1) for step in steps]
+        check("C4: after the signed push, opened, merged, tagged and v7 moved, in that order (#780)", -1 not in at and at == sorted(at), True)
         check("C4: vX.Y.Z is tagged at its merge commit, lightweight", (fake.has("git", "-C", root, "tag", "v7.10.1", "abc123"), fake.has("git", "-C", root, "push", "origin", "refs/tags/v7.10.1")), (True, True))
         tags = [c for c in fake.calls if c[3:4] == ("tag",)]
         check("C4: no tag is annotated", any("-a" in c or "-m" in c or "-s" in c for c in tags), False)
