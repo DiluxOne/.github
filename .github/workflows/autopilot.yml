@@ -851,7 +851,7 @@ jobs:
         id: spec
         if: needs.prep.outputs.fixed != 'true'
         timeout-minutes: 20
-        uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
+        uses: anthropics/claude-code-action@4d75e5f390ee76b2e09c1980ecc99ff3a2e088c8 # v1.0.275
         env:
           DX_IO: ${{ github.workspace }}/.dx-io
           NUMBER: ${{ needs.prep.outputs.issue }}
@@ -1229,7 +1229,7 @@ jobs:
         if: needs.prep.outputs.fixed != 'true'
         # Under the job's timeout: what it committed still goes on.
         timeout-minutes: 75
-        uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
+        uses: anthropics/claude-code-action@4d75e5f390ee76b2e09c1980ecc99ff3a2e088c8 # v1.0.275
         env:
           DX_IO: ${{ github.workspace }}/.dx-io
           DX_BASE: ${{ steps.task.outputs.base }}
