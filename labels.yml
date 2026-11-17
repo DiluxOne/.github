@@ -2,6 +2,13 @@
 # repository. scripts/sync-repos.py creates them or brings their colour and
 # description in line; it never deletes a label a repository added.
 #
+# Retired by #801: `bug:unconfirmed`, `layer:logic`, `layer:browser`,
+# `layer:cli`, `layer:api`, `layer:workflow`, `could-not-reproduce` and
+# `repro:no-way`. The reproduction's step and its layer are on the issue's
+# board (scripts/receipts.py, the state's `repro`); found nothing is
+# `needs-info`, no way is `needs-human`. `sync-repos.py retire-labels` moves
+# an open issue's to its board; the definitions stay, for closed issues.
+#
 # The issue's kind is not a label: it is the native issue Type (Feature,
 # Bug, Task, Docs, set at the organisation). The type:* labels below are on
 # pull requests only, where the review sets them from the diff.
@@ -47,7 +54,6 @@
 - {name: reverted, color: "B60205", description: "Reverted: the default branch went red after it merged"}
 
 # The issue triage (issue-triage.yml).
-- {name: "bug:unconfirmed", color: "D93F0B", description: "A bug report: a reproduction starts on its own (repro:run starts one by hand)"}
 - {name: needs-info, color: "E4E669", description: "Waiting for versions, steps or logs"}
 - {name: spike, color: "FBCA04", description: "A person asks for a read-only investigation before deciding"}
 - {name: by-design, color: "BFDADC", description: "Works as documented, or a known limitation"}
@@ -57,20 +63,11 @@
 - {name: question, color: "D876E3", description: "A usage question; the support channel has it"}
 - {name: security, color: "B60205", description: "A vulnerability report; a person merges its fix"}
 - {name: duplicate, color: "CFD3D7", description: "An open issue already covers it"}
-# Where a defect shows (#352, #376): the reproduction uses the way the
-# repository declares for it (scripts/repro-ways.py).
-- {name: "layer:logic", color: "C5DEF5", description: "Where the defect shows: the reproduction uses the way the repository declares for it"}
-- {name: "layer:browser", color: "C5DEF5", description: "Where the defect shows: the reproduction uses the way the repository declares for it"}
-- {name: "layer:cli", color: "C5DEF5", description: "Where the defect shows: the reproduction uses the way the repository declares for it"}
-- {name: "layer:api", color: "C5DEF5", description: "Where the defect shows: the reproduction uses the way the repository declares for it"}
-- {name: "layer:workflow", color: "C5DEF5", description: "Where the defect shows: the reproduction uses the way the repository declares for it"}
 
 # The reproduction (issue-repro.yml).
 - {name: "repro:run", color: "FBCA04", description: "A maintainer asks for a reproduction attempt"}
 - {name: "repro:again", color: "FBCA04", description: "Ask for another reproduction attempt"}
 - {name: "bug:confirmed", color: "B60205", description: "Reproduced by a failing test"}
-- {name: could-not-reproduce, color: "FBCA04", description: "The reproduction attempt found nothing"}
-- {name: "repro:no-way", color: "D4C5F9", description: "No way this repository declares can reproduce this bug; the comment says why"}
 
 # The review, on pull requests (claude-review.yml).
 - {name: "risk:low", color: "0E8A16", description: "Set by the Claude review"}

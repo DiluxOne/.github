@@ -387,7 +387,9 @@ def empty_sections(body, sections=SECTIONS):
 DRAFT_KINDS = {"Bug": "fix", "Feature": "feat", "Docs": "docs"}
 
 
-BUG_VERDICTS = ("bug:confirmed", "bug:unconfirmed")
+# A bug's verdict, as labels (#801): confirmed, or found nothing. Where it
+# waits otherwise is on the issue's board, never a label.
+BUG_VERDICTS = ("bug:confirmed", "needs-info")
 
 
 def preconditions(scenarios, bodies, pack, can_dispatch=(), passes=None, types=None, repro=None):
@@ -403,9 +405,10 @@ def preconditions(scenarios, bodies, pack, can_dispatch=(), passes=None, types=N
     empty, or whose title's type the closed issue's Type refuses (`types`,
     each body's form's), and an issue whose Type makes the autopilot name
     its draft otherwise than its `expect` (scripts/autopilot.py TYPES), and
-    (#707) a bug's verdict (`bug:confirmed`, `bug:unconfirmed`) expected in a
-    test repository with no way to reproduce it (`repro` False: repos.yml
-    and its pack declare none, so the bug gets `repro:no-way`), or a
+    (#707) a bug's verdict (`bug:confirmed`, or `needs-info` when it found
+    nothing, #801) expected in a test repository with no way to reproduce
+    it (`repro` False: repos.yml and its pack declare none, so the bug gets
+    `needs-human`), or a
     confirmed bug's issue expected to have a pull request that closes it
     (the reproduction's fix closes the lane's own issue, never the
     report), and (#760) a pull request whose description, `pull_text` of
@@ -419,7 +422,7 @@ def preconditions(scenarios, bodies, pack, can_dispatch=(), passes=None, types=N
         verdicts = [v for v in BUG_VERDICTS if v in (expect.get("labels") or [])]
         if verdicts and repro is False:
             out.append(f"scenario {sid}: expects {', '.join(verdicts)}, but the test repository has no way to reproduce a bug "
-                       f"(repos.yml and its pack declare none), so it gets repro:no-way")
+                       f"(repos.yml and its pack declare none), so it gets needs-human")
         if "bug:confirmed" in verdicts and "issue" in opens and (expect.get("pull") or {}).get("closes"):
             out.append(f"scenario {sid}: expects bug:confirmed and a pull request that closes its issue, but the reproduction's fix closes "
                        f"the issue the bugfix-reproduced lane opens, never the report")
