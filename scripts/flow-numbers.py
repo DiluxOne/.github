@@ -48,9 +48,9 @@ QUERY = """query($q: String!, $after: String) {
     nodes { ... on PullRequest {
       number mergedAt
       author { login }
-      repository { name isPrivate }
+      repository { name nameWithOwner isPrivate }
       labels(first: 50) { nodes { name } }
-      comments(last: 20) { nodes { author { login } body } }
+      comments(first: 20) { totalCount nodes { author { login } body } } lastComments: comments(last: 20) { nodes { author { login } body } }
       closingIssuesReferences(first: 5) { nodes { createdAt } }
     } }
   }
@@ -68,16 +68,18 @@ def _receipts():
 _RC = []
 
 
-def runs_of(p, labels):
+def runs_of(p, labels, read_all=None):
     """A merged pull request's runs: the `runs` on its board, dilux-bot's
-    own comment (#802, receipts.py parse_state); else its run and free
-    labels."""
+    own comment (#802, receipts.py graphql_board: among its first and last
+    comments, else all of the bot's, read_all for the self-test); else its
+    run and free labels."""
     if not _RC:
         _RC.append(_receipts())
     rc = _RC[0]
-    boards = [c.get("body") or "" for c in ((p.get("comments") or {}).get("nodes") or [])
-              if c and ((c.get("author") or {}).get("login") or "") in BOT_LOGINS and (c.get("body") or "").startswith(rc.BOARD)]
-    state, intact = rc.parse_state(boards[-1]) if boards else ({}, True)
+    if read_all is None:
+        repo, number = ((p.get("repository") or {}).get("nameWithOwner"), p.get("number"))
+        read_all = (lambda: [b for _, b in rc.bot_comments(repo, number)]) if repo and number else None
+    state, intact = rc.graphql_board(p, BOT_LOGINS, read_all)
     if intact and isinstance(state.get("runs"), list):
         return sum(1 for r in state["runs"] if isinstance(r, dict) and isinstance(r.get("n"), int))
     return sum(1 for l in labels if RUN_RE.match(l))

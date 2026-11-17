@@ -73,5 +73,41 @@ def test_c3_the_weeks_runs_are_the_same_from_the_board_as_from_the_labels():
     assert [r["runs"] for r in rows] == [3, 6, 1]
     assert moved == rows
     assert flow.numbers({"prs": moved}) == flow.numbers({"prs": rows})
-    assert "comments(last: 20) { nodes { author { login } body } }" in flow.QUERY
-    assert "comments(last: 20) { nodes { author { login } body } }" in waiting.FIELDS
+    assert rc.COMMENTS_GQL in flow.QUERY
+    assert waiting.FIELDS.count(rc.COMMENTS_GQL) == 3
+
+
+def busy(item, board):
+    """The item as GraphQL reads it with 60 comments, its board the 21st:
+    in neither the first 20 nor the last 20."""
+    item = copy.deepcopy(item)
+    chatter = [{"author": {"login": "ana"}, "body": f"comment {k}"} for k in range(60)]
+    item["comments"] = {"totalCount": 60, "nodes": chatter[:20]}
+    item["lastComments"] = {"nodes": chatter[40:]}
+    return item, [f"{rc.BOARD}\nthe board\n" + rc.state_block(board)]
+
+
+def test_a_board_past_the_comments_read_is_read_from_all_of_the_bots():
+    fx = fixture()
+    asked = next(i for i in fx["issues"] if "autopilot:waiting" in [l["name"] for l in i["labels"]["nodes"]])
+    moved = migrated(asked)
+    item, bodies = busy(moved, {"asked": True})
+    calls = []
+    read = lambda: calls.append(1) or bodies
+    assert waiting.board_of(item, read) == ({"asked": True}, True)
+    assert waiting.board_of(item, read) == ({"asked": True}, True)
+    assert len(calls) == 1, "all of the bot's comments are read once"
+    assert waiting.issue_blocker(item) == waiting.issue_blocker(moved)
+    # found among those read: nothing more is read
+    assert waiting.board_of(moved, lambda: 1 / 0)[0].get("asked")
+    # an item with no more comments than read has no board: nothing is read
+    few, _ = busy(moved, {"asked": True})
+    few["comments"]["totalCount"] = 20
+    assert waiting.board_of(few, lambda: 1 / 0) == ({}, True)
+
+
+def test_the_weeks_runs_from_a_board_past_the_comments_read():
+    p = {"number": 4, "mergedAt": "2026-11-10T00:00:00Z", "author": {"login": "dilux-bot"}, "repository": {"name": "r", "isPrivate": False},
+         "labels": {"nodes": [{"name": "autopilot"}]}, "closingIssuesReferences": {"nodes": []}}
+    item, bodies = busy(p, {"runs": [{"n": 1, "free": False}, {"n": 2, "free": True}]})
+    assert flow.runs_of(item, ["autopilot"], lambda: bodies) == 2

@@ -50,7 +50,8 @@ ever waited on for their own step, and a maintainer never for theirs (rule
 mentions that person once per waiting step: the step is the action and when
 it began (the label that started it, when the question was asked, or the
 head commit of a pull request). The board is read from the bot's own
-comment only, the last 20 of each item's (#802); an item not migrated yet
+comment only (#802): among the first and last 20 of each item's, else
+from all of the bot's comments on it; an item not migrated yet
 is read from its old labels (`autopilot:waiting`, `autopilot:round-N`).
 
 The issue is public: a private repository's items are counted under what
@@ -90,7 +91,7 @@ FIELDS = """__typename
         repository { name nameWithOwner isPrivate }
         labels(first: 30) { nodes { name } }
         assignees(first: 5) { nodes { login } }
-        comments(last: 20) { nodes { author { login } body } }
+        comments(first: 20) { totalCount nodes { author { login } body } } lastComments: comments(last: 20) { nodes { author { login } body } }
         timelineItems(itemTypes: [LABELED_EVENT], last: 30) { nodes { ... on LabeledEvent { createdAt label { name } } } }
       }
       ... on PullRequest {
@@ -99,11 +100,12 @@ FIELDS = """__typename
         repository { name nameWithOwner isPrivate }
         labels(first: 30) { nodes { name } }
         reviewThreads(first: 100) { nodes { isResolved } }
-        comments(last: 20) { nodes { author { login } body } }
+        comments(first: 20) { totalCount nodes { author { login } body } } lastComments: comments(last: 20) { nodes { author { login } body } }
         commits(last: 1) { nodes { commit { oid statusCheckRollup { state contexts(first: 100) {
           pageInfo { hasNextPage }
           nodes { __typename ... on CheckRun { name conclusion status } ... on StatusContext { context state } } } } } } }
-        closingIssuesReferences(first: 10) { nodes { number labels(first: 30) { nodes { name } } comments(last: 20) { nodes { author { login } body } } } }
+        closingIssuesReferences(first: 10) { nodes { number repository { nameWithOwner } labels(first: 30) { nodes { name } }
+          comments(first: 20) { totalCount nodes { author { login } body } } lastComments: comments(first: 20) { totalCount nodes { author { login } body } } lastComments: comments(last: 20) { nodes { author { login } body } } } }
       }"""
 QUERY = """query($q: String!, $after: String) {
   search(query: $q, type: ISSUE, first: 50, after: $after) {
@@ -196,16 +198,20 @@ def rounds_cap():
 _RECEIPTS = []
 
 
-def board_of(item):
+def board_of(item, read_all=None):
     """(state, intact) of the item's board (#802): dilux-bot's own last
-    `dx-board` comment among those read, parsed by receipts.py; none is an
-    empty state, and a comment by anyone else is never the board."""
+    `dx-board` comment, parsed by receipts.py (graphql_board); none is an
+    empty state, and a comment by anyone else is never the board. Its
+    first and last comments are read with the item; when the board is in
+    neither, all of the bot's comments are read (read_all, for the
+    self-test; else receipts.py bot_comments, from the item's repository)."""
     if not _RECEIPTS:
         _RECEIPTS.append(_receipts())
     rc = _RECEIPTS[0]
-    found = [c.get("body") or "" for c in ((item.get("comments") or {}).get("nodes") or [])
-             if c and ((c.get("author") or {}).get("login") or "") in BOT_LOGINS and (c.get("body") or "").startswith(rc.BOARD)]
-    return rc.parse_state(found[-1]) if found else ({}, True)
+    if read_all is None:
+        repo, number = ((item.get("repository") or {}).get("nameWithOwner"), item.get("number"))
+        read_all = (lambda: [b for _, b in rc.bot_comments(repo, number)]) if repo and number else None
+    return rc.graphql_board(item, BOT_LOGINS, read_all)
 
 
 def asked(item, state=None):

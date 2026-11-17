@@ -260,6 +260,35 @@ def parse_state(body):
     return data, True
 
 
+# What a GraphQL reader (waiting.py, flow-numbers.py) asks of an item's
+# comments to find its board (#802): the first and the last 20, and how
+# many there are. The board is written early and edited in place, so it is
+# usually among the first; one that is in neither window is read from all
+# of dilux-bot's comments (graphql_board's read_all).
+COMMENTS_GQL = ("comments(first: 20) { totalCount nodes { author { login } body } } "
+                "lastComments: comments(last: 20) { nodes { author { login } body } }")
+
+
+def graphql_board(item, bots, read_all=None):
+    """(state, intact) of the item's board, dilux-bot's own last `dx-board`
+    comment (a comment by anyone else is never the board), from the
+    comments COMMENTS_GQL read. When none is among them and the item has
+    more comments than were read, read_all() gives the bodies of all of the
+    bot's comments, kept on the item so it is read once. No board is an
+    empty state."""
+    first = item.get("comments") or {}
+    nodes = list(first.get("nodes") or []) + list(((item.get("lastComments") or {}).get("nodes")) or [])
+    found = [c.get("body") or "" for c in nodes
+             if c and ((c.get("author") or {}).get("login") or "") in bots and (c.get("body") or "").startswith(BOARD)]
+    total = first.get("totalCount")
+    if not found and read_all is not None and isinstance(total, int) and total > len(first.get("nodes") or []):
+        bodies = list(read_all())
+        item["comments"] = {"totalCount": len(bodies), "nodes": [{"author": {"login": bots[0]}, "body": b} for b in bodies]}
+        item.pop("lastComments", None)
+        found = [b for b in bodies if b.startswith(BOARD)]
+    return parse_state(found[-1]) if found else ({}, True)
+
+
 # The flow's counts and waits (#802), once labels: on a pull request's board,
 # `runs` ([{"n": N, "free": bool}], every run of the autopilot on it; those
 # not free count towards autopilot-runs) and `rounds` (the fix rounds
@@ -887,6 +916,18 @@ Normal
           (True, {"rounds": 4, "runs": [{"n": 1, "free": False}]}))
     check("#802 the core's comment names the pull request it waits for", (core_of([(1, "<!-- dx-autopilot-core -->\nwaits for #12: x")]), core_of([(1, "#3: x")])), (12, None))
     check("#802 a key set to nothing is removed", set_keys({"a": 1, "b": 2}, {"a": None, "c": 3}), {"b": 2, "c": 3})
+    # #802: a GraphQL reader's board, past the comments it read.
+    bots, chat = ("dilux-bot",), [{"author": {"login": "ana"}, "body": "x"}] * 20
+    board_c = BOARD + "\n" + state_block({"asked": True})
+    far, reads = {"comments": {"totalCount": 60, "nodes": chat}, "lastComments": {"nodes": chat}}, []
+    read = lambda: reads.append(1) or ["hi", board_c]
+    check("#802 a board in neither window is read from all of the bot's comments, once",
+          (graphql_board(far, bots, read), graphql_board(far, bots, read), len(reads)), (({"asked": True}, True), ({"asked": True}, True), 1))
+    near = {"comments": {"totalCount": 60, "nodes": chat}, "lastComments": {"nodes": [{"author": {"login": "dilux-bot"}, "body": board_c}]}}
+    check("#802 one among those read is read with no more; a person's is never the board; few comments, nothing more to read",
+          (graphql_board(near, bots, lambda: 1 / 0), graphql_board({"comments": {"nodes": [{"author": {"login": "mallory"}, "body": board_c}]}}, bots),
+           graphql_board({"comments": {"totalCount": 20, "nodes": chat}}, bots, lambda: 1 / 0)),
+          (({"asked": True}, True), ({}, True), ({}, True)))
     wb = board_text(7, True, s, None, state=st)
     check("C5 the board names whom it waits on, the action and its link, mentioning nobody",
           ("| Waits on | `alice`: answer --> <b> ([link](https://github.com/o/r/issues/7)) |" in wb, "@alice" in wb), (True, False))
