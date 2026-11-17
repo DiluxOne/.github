@@ -7,7 +7,7 @@ name: Issues
 # scripts/caller-contract.py check): the caller and the engine are read
 # from the same commit, so a change to both never fails here between its
 # merge and the release (#589): the triage when an issue opens, the reproduction of a report the
-# triage calls a bug (or that a maintainer labels repro:run; with no unit
+# triage calls a bug, its step and layer on the issue's board (#801) (or that a maintainer labels repro:run; with no unit
 # tests here it ends green and the report waits for a person), the issue
 # schema checked when a person opens or edits an issue not accepted yet
 # (awaiting-acceptance or incomplete, #353), and, when a person accepts
