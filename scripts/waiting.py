@@ -105,7 +105,7 @@ FIELDS = """__typename
           pageInfo { hasNextPage }
           nodes { __typename ... on CheckRun { name conclusion status } ... on StatusContext { context state } } } } } } }
         closingIssuesReferences(first: 10) { nodes { number repository { nameWithOwner } labels(first: 30) { nodes { name } }
-          comments(first: 20) { totalCount nodes { author { login } body } } lastComments: comments(first: 20) { totalCount nodes { author { login } body } } lastComments: comments(last: 20) { nodes { author { login } body } } } }
+          comments(first: 20) { totalCount nodes { author { login } body } } lastComments: comments(last: 20) { nodes { author { login } body } } } }
       }"""
 QUERY = """query($q: String!, $after: String) {
   search(query: $q, type: ISSUE, first: 50, after: $after) {

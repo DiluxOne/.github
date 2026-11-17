@@ -75,6 +75,11 @@ def test_c3_the_weeks_runs_are_the_same_from_the_board_as_from_the_labels():
     assert flow.numbers({"prs": moved}) == flow.numbers({"prs": rows})
     assert rc.COMMENTS_GQL in flow.QUERY
     assert waiting.FIELDS.count(rc.COMMENTS_GQL) == 3
+    # #811: each item asks for its comments once; an alias asked twice
+    # with other arguments is a query GitHub refuses whole.
+    for query in (waiting.FIELDS, flow.QUERY):
+        assert query.count("comments(first: 20)") == query.count(rc.COMMENTS_GQL)
+        assert query.count("lastComments:") == query.count(rc.COMMENTS_GQL)
 
 
 def busy(item, board):
