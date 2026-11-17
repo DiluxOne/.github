@@ -5580,6 +5580,20 @@ def self_test():
     adopt_test(check, conf, labels, block_file)
     retire_test(check, labels)
     delete_retired_test(check)
+    # C2 (#805): this repository sets only labels labels.yml lists; a
+    # workflow that sets one it does not list fails, named with its file.
+    misuse = label_misuse(CENTRAL)
+    check("#805 C2: no workflow, template or script sets a label labels.yml does not list", misuse == [], "\n".join(misuse))
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        os.makedirs(os.path.join(tmp, ".github", "workflows"))
+        with open(os.path.join(tmp, "labels.yml"), "w", encoding="utf-8") as fh:
+            fh.write("labels:\n  - {name: accepted, color: 0E8A16}\nretired: []\n")
+        with open(os.path.join(tmp, ".github", "workflows", "x.yml"), "w", encoding="utf-8") as fh:
+            fh.write("jobs:\n  a:\n    steps:\n      - run: gh issue edit 1 --add-label not-a-label --add-label accepted\n")
+        got = label_misuse(tmp)
+        check("#805 C2: a workflow that sets an unlisted label is named with its file and line",
+              got == [".github/workflows/x.yml:4: sets label not-a-label, which labels.yml does not list"], got)
     required_split_test(check)
     security_visibility_test(check)
     conventions_test(check, block_file)

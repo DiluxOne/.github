@@ -206,25 +206,12 @@ def test_a_continue_the_sweep_could_not_ask_for_leaves_the_wait_and_no_catchup(t
     assert "gh issue edit 7 --repo o/r --add-label autopilot:continue" in w.log.read_text()
 
 
-OLD_SCRIPTS = "if grep -q '^FLOW_KEYS' .dx-central/scripts/receipts.py"
-
-
 def test_c1_no_workflow_or_script_adds_the_seven_labels():
-    """The scripts add none; a workflow adds one only in the branch it takes
-    with scripts older than #802 (central-ref before it, or main's scripts
-    while this change is not merged), which keep the flow in labels."""
+    """None adds them: the flow is on the board, and a board that cannot be
+    written fails the step instead of falling back on a label (#805)."""
     adds = lambda text: [a for a in re.findall(r"(?:--add-label|label create)[ \"']+(autopilot:[a-z-]+)", text) if SEVEN.search(a)]
-    for path in (ROOT / "scripts/autopilot.py", ROOT / "scripts/receipts.py"):
+    for path in (ROOT / "scripts/autopilot.py", ROOT / "scripts/receipts.py", *(ROOT / ".github/workflows").glob("*.yml")):
         assert adds(path.read_text(encoding="utf-8")) == [], path.name
-    for path in (ROOT / ".github/workflows").glob("*.yml"):
-        wf = yaml.safe_load(path.read_text(encoding="utf-8"))
-        for job in (wf.get("jobs") or {}).values():
-            for s in job.get("steps") or []:
-                run = s.get("run") or ""
-                if adds(run):
-                    flow = "grep -q '^FLOW_KEYS' .dx-central/scripts/receipts.py"
-                    assert flow in run, (path.name, s.get("name"))
-                    assert run.index(flow) < min(run.index(a) for a in adds(run)), (path.name, s.get("name"))
     labels = yaml.safe_load((ROOT / "labels.yml").read_text(encoding="utf-8"))
     names = [l["name"] for l in (labels if isinstance(labels, list) else labels.get("labels", []))]
     assert [n for n in names if SEVEN.search(n)] == []
@@ -278,24 +265,23 @@ def reply_with(tmp_path, receipts, labels_say):
     return done, log.read_text()
 
 
-def test_an_answer_is_kept_when_the_migration_could_not_move_the_question(tmp_path):
-    """migrate fails (a board edited by hand, or GitHub down): the label it
-    could not move still waits, and the answer still brings the autopilot
-    back, in the labels when the board cannot be written."""
+def test_an_answer_whose_board_cannot_be_written_fails_and_says_so(tmp_path):
+    """#805: migrate fails and the board cannot be written: the label it
+    could not move still waits, but the answer goes in no label: the job
+    fails and says the board could not be written, and adds no continue."""
     receipts = ("FLOW_KEYS = ()\nimport sys\n"
                 "if sys.argv[1:2] == ['migrate']: sys.exit(3)\n"
                 "if sys.argv[1:3] == ['state', 'get']: print('null'); sys.exit(3)\n"
-                "if sys.argv[1:3] == ['state', 'set']: sys.exit(3)\n")
+                "if sys.argv[1:3] == ['state', 'set']: print('gh: HTTP 502', file=sys.stderr); sys.exit(1)\n")
     done, calls = reply_with(tmp_path, receipts, "true")
-    assert done.returncode == 0, done.stdout + done.stderr
-    assert "--add-label autopilot:answered --add-label autopilot:continue --remove-label autopilot:waiting" in calls
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert "board could not be written" in done.stdout and "HTTP 502" in done.stdout, done.stdout
+    assert "--add-label" not in calls and "autopilot:answered" not in calls
 
 
-def test_with_scripts_older_than_802_an_answer_goes_in_the_labels(tmp_path):
-    done, calls = reply_with(tmp_path, "# before #802\nimport sys\nsys.exit(64)\n", "true")
-    assert done.returncode == 0, done.stdout + done.stderr
-    assert "migrate" not in calls and "state " not in calls
-    assert "--add-label autopilot:answered --add-label autopilot:continue --remove-label autopilot:waiting" in calls
+def test_the_answer_step_has_no_branch_for_scripts_older_than_802():
+    reply = step("review-reply.yml", "answer", "back")["run"]
+    assert "FLOW_KEYS" not in reply and "autopilot:answered" not in reply
 
 
 def test_an_answer_on_a_board_edited_by_hand_fails_with_what_to_restore(tmp_path):
