@@ -178,6 +178,20 @@ archived and not excluded in repos.yml:
             repository, an organisation ruleset with no `ref_name`, and a
             required workflow at a ref other than the current major.
 
+  retire-labels  the reproduction's retired labels (#801: `bug:unconfirmed`,
+            `layer:*`, `could-not-reproduce`, `repro:no-way`) off every
+            open issue of each repository repos.yml lists, at most 100 per
+            label: what each said goes on the issue's board first, its
+            state's `repro` (scripts/receipts.py migrate), and is read back;
+            only then `could-not-reproduce` becomes `needs-info` and
+            `repro:no-way` `needs-human`, and the retired labels come off,
+            one call each. An issue whose board does not take it (edited by
+            hand, or a token that cannot write dilux-bot's comment: run it
+            with the App's) keeps its labels and is listed. A step the new
+            flow already wrote on the board stays. Run again, it changes
+            only what still carries one. The label definitions stay. Not in
+            `all`.
+
   i18n      a WordPress plugin's translations in the form that merges
             (#452, scripts/plugin-i18n.sh): languages/*.pot and *.po with
             no source references and sorted, no committed .mo (removed, and
@@ -186,6 +200,7 @@ archived and not excluded in repos.yml:
             Not in `all`.
 
   sync-repos.py <labels|settings|security|rulesets|files|dependabot|pre-pr|own-checks|merge-queue|callers|project|i18n|all> [--repo NAME ...] [--dry-run]
+  sync-repos.py retire-labels [--repo NAME ...] [--dry-run]
   sync-repos.py adopt --repo NAME [--dry-run]
   sync-repos.py pending
   sync-repos.py check [--repo NAME ...] [--report FILE]
@@ -272,6 +287,70 @@ def sync_labels(repo, labels, dry):
         name, color, desc = str(label["name"]), str(label["color"]), str(label.get("description", ""))
         gh("label", "create", name, "--repo", f"{ORG}/{repo['name']}", "--color", color, "--description", desc, "--force")
     print(f"  {len(labels)} labels in step")
+
+
+# The reproduction's retired labels (#801) and how their meaning becomes the
+# board's state: scripts/receipts.py, RETIRED and migrate().
+_rspec = importlib.util.spec_from_file_location("receipts_retire", os.path.join(HERE, "receipts.py"))
+receipts = importlib.util.module_from_spec(_rspec)
+_rspec.loader.exec_module(receipts)
+RETIRED_LABELS = receipts.RETIRED
+
+
+def board_state(full, number, *args):
+    """receipts.py state ARGS on issue NUMBER of FULL: (exit code, stdout)."""
+    out = subprocess.run([sys.executable, os.path.join(HERE, "receipts.py"), "state", *args], capture_output=True, text=True,
+                         env=dict(os.environ, GITHUB_REPOSITORY=full, NUMBER=str(number)))
+    return out.returncode, out.stdout
+
+
+def retire_labels(repo, dry, run=None, state=None):
+    """C3 (#801): every open issue of REPO that carries a retired label gets
+    their meaning on its board first (receipts.py migrate, `state set
+    repro=...`), read back from the bot's board; only then `needs-info` or
+    `needs-human` is added and each retired label removed, one call per
+    label (#267). An issue whose state could not be written or read back
+    (its board edited by hand, or a token that cannot write the bot's
+    comment) keeps its labels and is listed. The label definitions stay:
+    closed issues keep their history. Returns (changed, [(number, why)])."""
+    run, state = run or gh, state or board_state
+    full = f"{ORG}/{repo['name']}"
+    issues = {}
+    for label in RETIRED_LABELS:
+        rows = json.loads(run("issue", "list", "--repo", full, "--state", "open", "--label", label, "--limit", "100", "--json", "number,labels").stdout or "[]")
+        for row in rows:
+            issues[int(row["number"])] = [str(l["name"]) for l in row.get("labels") or []]
+    changed, skipped = [], []
+    for n in sorted(issues):
+        rc, now = state(full, n, "get", "repro")
+        if rc != 0:
+            skipped.append((n, "its board's state could not be read (edited by hand?)"))
+            continue
+        repro, add, remove = receipts.migrate(issues[n], json.loads(now or "null"))
+        if not remove:
+            continue
+        if dry:
+            print(f"  #{n}: would write repro={json.dumps(repro, sort_keys=True)}" + (f", add {', '.join(add)}" if add else "") + f", remove {', '.join(remove)}")
+            continue
+        rc, _ = state(full, n, "set", "repro=" + json.dumps(repro, ensure_ascii=False))
+        back = state(full, n, "get", "repro") if rc == 0 else (rc, "")
+        if rc != 0 or back[0] != 0 or json.loads(back[1] or "null") != repro:
+            skipped.append((n, "its board did not take the state (edited by hand, or not the bot's board: run it with the App's token)"))
+            continue
+        try:
+            for label in add:
+                run("issue", "edit", str(n), "--repo", full, "--add-label", label)
+            for label in remove:
+                run("issue", "edit", str(n), "--repo", full, "--remove-label", label)
+        except RuntimeError as exc:
+            skipped.append((n, f"its labels could not change: {str(exc)[:200]}"))
+            continue
+        changed.append(n)
+        print(f"  #{n}: repro {repro.get('step') or '(no step)'} on its board" + (f", {', '.join(add)} added" if add else "") + f", {', '.join(remove)} removed")
+    for n, why in skipped:
+        print(f"  #{n}: skipped, its labels kept: {why}")
+    print(f"  {len(changed)} issues moved to their board, {len(skipped)} skipped" + (" (dry run)" if dry else ""))
+    return changed, skipped
 
 
 # Who of the outside contributors needs a maintainer's approval before their
@@ -3547,7 +3626,8 @@ def callers_test(check, conf):
         globals()["gh"], ORG = saved_gh, saved_org
     names = {a[2] for a in made if a[:2] == ("label", "create") and "o/dilux-agentic-workflow" in a}
     check("C3 (#552): `labels` gives DAW every label, the triage's, the acceptance's and the autopilot's among them",
-          names == {str(l["name"]) for l in labels} and {"needs-triage", "bug:unconfirmed", "awaiting-acceptance", "accepted", "autopilot", "autopilot:continue"} <= names, sorted(names))
+          names == {str(l["name"]) for l in labels} and {"needs-triage", "needs-info", "needs-human", "awaiting-acceptance", "accepted", "autopilot", "autopilot:continue"} <= names
+          and not set(RETIRED_LABELS) & names, sorted(names))
     # #320: a repository at a major whose migration is only the callers
     # moves to the current one in the same issue and pull request.
     files.clear()
@@ -4778,6 +4858,77 @@ def placeholder_guard_test(check, conf):
           (written, prs, f"o/{name}: .github/workflows/pull-request-comments.yml not written: it still says \"Fill in\"" in said) == ({}, [], True), said)
 
 
+def retire_labels_test(check):
+    """C3 (#801): `retire-labels` against a stand-in for gh and for
+    receipts.py's state, every call logged in order."""
+    import contextlib
+    import io
+
+    class Out:
+        def __init__(self, stdout="", returncode=0):
+            self.stdout, self.returncode = stdout, returncode
+
+    def run(issues, boards=None, refuse=(), echo_wrong=(), dry=False, refuse_set=()):
+        calls, boards = [], dict(boards or {})
+
+        def fake_gh(*args, **kwargs):
+            calls.append(("gh",) + args)
+            if args[:2] == ("issue", "list"):
+                label = args[args.index("--label") + 1]
+                return Out(json.dumps([{"number": n, "labels": [{"name": l} for l in ls]} for n, ls in issues.items() if label in ls]))
+            if args[:2] == ("issue", "edit"):
+                n, flag, label = int(args[2]), args[5], args[6]
+                issues[n] = [l for l in issues[n] if l != label] if flag == "--remove-label" else issues[n] + [label]
+            return Out("")
+
+        def fake_state(full, n, *args):
+            calls.append(("state", n) + args)
+            if n in refuse or (n in refuse_set and args[0] == "set"):
+                return 3, ""
+            if args[0] == "set":
+                boards[n] = json.loads(args[1].split("=", 1)[1]) if n not in echo_wrong else None
+                return 0, ""
+            return 0, json.dumps(boards.get(n))
+        said = io.StringIO()
+        with contextlib.redirect_stdout(said):
+            got = retire_labels({"name": "r"}, dry, run=fake_gh, state=fake_state)
+        return calls, issues, boards, got, said.getvalue()
+
+    issues = {1: ["bug:unconfirmed", "layer:browser"], 2: ["could-not-reproduce", "layer:cli", "bug:unconfirmed"], 3: ["repro:no-way"], 4: ["needs-info"]}
+    calls, after, boards, (changed, skipped), said = run({k: list(v) for k, v in issues.items()})
+    check("C3 (#801): every retired label is looked for, open issues only, at most 100 each",
+          sorted(c[c.index("--label") + 1] for c in calls if c[1:3] == ("issue", "list")) == sorted(RETIRED_LABELS)
+          and all("--state" in c and c[c.index("--state") + 1] == "open" and c[c.index("--limit") + 1] == "100" for c in calls if c[1:3] == ("issue", "list")), calls)
+    first = lambda n, pred: next((i for i, c in enumerate(calls) if pred(c) and str(n) in map(str, c)), None)
+    order_ok = all(first(n, lambda c: c[:1] == ("state",) and c[2] == "set") is not None
+                   and first(n, lambda c: c[:1] == ("state",) and c[2] == "set") < min(i for i, c in enumerate(calls) if c[1:3] == ("issue", "edit") and c[3] == str(n))
+                   for n in (1, 2, 3))
+    check("C3 (#801): the state is written, and read back, before any label is added or removed", order_ok, calls)
+    check("C3 (#801): the board says what the labels said",
+          (boards[1]["step"], boards[1]["layer"], boards[2]["step"], boards[2]["layer"], boards[3]["step"]) == ("waiting", "browser", "not-reproduced", "cli", "no-way"), boards)
+    check("C3 (#801): needs-info and needs-human are added, the retired labels removed, one per call",
+          (after[1], sorted(after[2]), after[3], after[4]) == ([], ["needs-info"], ["needs-human"], ["needs-info"])
+          and all(len([a for a in c if a in ("--add-label", "--remove-label")]) == 1 for c in calls if c[1:3] == ("issue", "edit")), (after, calls))
+    check("C3 (#801): an issue with no retired label is left alone", not any(c[:2] == ("state", 4) for c in calls) and (changed, skipped) == ([1, 2, 3], []), (changed, skipped))
+    calls, after, boards, (changed, skipped), said = run({1: ["bug:unconfirmed", "layer:cli"], 2: ["repro:no-way"]}, refuse=(1,))
+    check("C3 (#801): a board that refuses the state keeps its labels, and is listed",
+          (after[1], [n for n, _ in skipped], changed, after[2], "#1" in said) == (["bug:unconfirmed", "layer:cli"], [1], [2], ["needs-human"], True), (after, skipped, said))
+    calls, after, boards, (changed, skipped), said = run({1: ["repro:no-way", "layer:cli"]}, refuse_set=(1,))
+    check("C3 (#801): a refused state set leaves the labels, nothing added",
+          (after[1], [n for n, _ in skipped], any(c[1:3] == ("issue", "edit") for c in calls)) == (["repro:no-way", "layer:cli"], [1], False), (after, calls))
+    calls, after, boards, (changed, skipped), said = run({1: ["could-not-reproduce"]}, echo_wrong=(1,))
+    check("C3 (#801): a state that does not read back (not the bot's board) keeps the labels",
+          (after[1], [n for n, _ in skipped]) == (["could-not-reproduce"], [1]), (after, skipped))
+    calls, after, boards, (changed, skipped), said = run({1: ["bug:unconfirmed"], 2: ["repro:no-way", "layer:api"]}, dry=True)
+    check("C3 (#801): --dry-run changes nothing and says what it would do",
+          (not any(c[1:3] == ("issue", "edit") or (c[0] == "state" and c[2] == "set") for c in calls), after, boards, "would" in said)
+          == (True, {1: ["bug:unconfirmed"], 2: ["repro:no-way", "layer:api"]}, {}, True), (calls, said))
+    calls, after, boards, (changed, skipped), said = run({5: ["bug:unconfirmed", "layer:cli"]}, boards={5: {"step": "confirmed", "layer": "browser"}})
+    check("C3 (#801): a step the new flow already wrote stays; only the labels come off",
+          (boards[5], after[5]) == ({"step": "confirmed", "layer": "browser"}, []), (boards, after))
+    check("C3 (#801): it is a mode of its own, never part of `all`", "retire-labels" in MODES and "retire-labels" not in ADOPT, MODES)
+
+
 def self_test():
     failed = 0
     # The runs below write through a stand-in for gh, never a real clone:
@@ -5244,16 +5395,21 @@ def self_test():
           len(late_known) == 2 and "value=off" in late_known[0] and "DELETE" in late_known[1], late_known)
     check("#187: `files` runs the shared files alone", runs["files"] == ["files"], runs["files"])
     check("#187: `dependabot` runs the Dependabot file alone", runs["dependabot"] == ["dependabot"], runs["dependabot"])
+    retire_labels_test(check)
     check("#479 C1: `pre-pr` runs the make pre-pr files alone, and `all` does not", runs["pre-pr"] == ["pre-pr"] and "pre-pr" not in runs["all"], runs)
     if not failed:
         print("all tests passed")
     return 1 if failed else 0
 
 
+MODES = ("labels", "settings", "security", "rulesets", "files", "dependabot", "pre-pr", "own-checks", "merge-queue", "callers", "project", "i18n",
+         "all", "adopt", "pending", "check", "retire-labels")
+
+
 def main(argv):
     if argv == ["--test"]:
         return self_test()
-    if not argv or argv[0] not in ("labels", "settings", "security", "rulesets", "files", "dependabot", "pre-pr", "own-checks", "merge-queue", "callers", "project", "i18n", "all", "adopt", "pending", "check"):
+    if not argv or argv[0] not in MODES:
         print(__doc__)
         return 64
     what, rest = argv[0], argv[1:]
@@ -5318,9 +5474,15 @@ def main(argv):
         print(text)
         print(f"{dirty} repositories out of step.")
         return 0
+    if what == "retire-labels":
+        # Each repository repos.yml lists (#801).
+        repos = [r for r in repos if listed(r["name"]) is not None]
     for repo in repos:
         print(f"{ORG}/{repo['name']}")
         try:
+            if what == "retire-labels":
+                retire_labels(repo, dry)
+                continue
             if what == "adopt":
                 adopt(repo, conf, labels, block, every, dry)
                 continue

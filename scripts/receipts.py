@@ -354,6 +354,45 @@ def repro_row(repro):
     return "| Reproduction | " + " · ".join(parts) + " |"
 
 
+# The labels the reproduction kept before #801, retired: what each meant
+# goes into the state (migrate), sync-repos.py retire-labels takes them off.
+RETIRED = ("bug:unconfirmed", "could-not-reproduce", "repro:no-way") + tuple(f"layer:{l}" for l in LAYERS)
+
+
+def migrate(labels, current=None, at=None):
+    """(the board's `repro`, the labels to add, the labels to remove) for an
+    issue whose LABELS carry retired ones; (None, [], []) when none does.
+    `bug:unconfirmed` is `waiting`; `layer:X`, layer X; `could-not-reproduce`,
+    `not-reproduced` and `needs-info`; `repro:no-way`, `no-way` and
+    `needs-human`; a `bug:confirmed` one's, `confirmed`. CURRENT, the board's
+    `repro` now: a step already there was written since, by the new flow, so
+    it stays and nothing is added; a layer already there stays. Pure."""
+    labels = [l for l in labels if isinstance(l, str)]
+    remove = [l for l in labels if l in RETIRED]
+    if not remove:
+        return None, [], []
+    current = dict(current) if isinstance(current, dict) else {}
+    layer = next((l[6:] for l in remove if l.startswith("layer:")), None)
+    repro, add = {}, []
+    if "repro:no-way" in labels:
+        repro = {"step": "no-way", "reason": "no way this repository declares reproduces it (the repro:no-way label, before #801): its comment says why"}
+        add = ["needs-human"]
+    elif "could-not-reproduce" in labels:
+        repro = {"step": "not-reproduced", "reason": "the reproduction found nothing (the could-not-reproduce label, before #801): its comment says why"}
+        add = ["needs-info"]
+    elif "bug:confirmed" in labels:
+        repro = {"step": "confirmed"}
+    elif "bug:unconfirmed" in labels:
+        repro = {"step": "waiting"}
+    if current.get("step"):
+        repro, add = current, []
+    else:
+        repro = dict(current, **repro, at=at or now())
+    if layer and not repro.get("layer"):
+        repro["layer"] = layer
+    return repro, add, remove
+
+
 def autopilot_row(a):
     """The autopilot's row: its pull request, the run, criteria done of total."""
     if not a:
@@ -797,6 +836,24 @@ Normal
           + clean("it needs a | browser\ntest, ask @alice " + "x" * 300) + " |")
     check("C2 (#801) clean() is what makes it so", ("|" in clean("a | b"), "@" in clean("@a"), "\n" in clean("a\nb"), len(clean("x" * 300))), (False, False, False, 200))
     check("C2 (#801) found nothing and no way say whom they wait on", ("more information" in repro_row({"step": "not-reproduced"}), "a person" in repro_row({"step": "no-way"})), (True, True))
+    # C3 (#801): the retired labels' meaning, as the board's state.
+    check("C3 (#801) the retired labels are the eight", sorted(RETIRED),
+          sorted(["bug:unconfirmed", "could-not-reproduce", "repro:no-way"] + [f"layer:{l}" for l in LAYERS]))
+    check("C3 (#801) bug:unconfirmed and its layer: it waits, on that layer",
+          migrate(["bug:unconfirmed", "layer:browser", "accepted"], at="t"), ({"step": "waiting", "layer": "browser", "at": "t"}, [], ["bug:unconfirmed", "layer:browser"]))
+    m = migrate(["layer:cli", "could-not-reproduce", "bug:unconfirmed"], at="t")
+    check("C3 (#801) could-not-reproduce: not reproduced, needs-info, the reason said",
+          (m[0]["step"], m[0]["layer"], bool(m[0]["reason"]), m[1], m[2]), ("not-reproduced", "cli", True, ["needs-info"], ["layer:cli", "could-not-reproduce", "bug:unconfirmed"]))
+    m = migrate(["repro:no-way", "layer:workflow"], at="t")
+    check("C3 (#801) repro:no-way: no way, needs-human, the reason said",
+          (m[0]["step"], m[0]["layer"], bool(m[0]["reason"]), m[1], m[2]), ("no-way", "workflow", True, ["needs-human"], ["repro:no-way", "layer:workflow"]))
+    check("C3 (#801) a layer alone: the layer, no step", migrate(["layer:api"], at="t"), ({"layer": "api", "at": "t"}, [], ["layer:api"]))
+    check("C3 (#801) a confirmed bug's layer: confirmed", migrate(["bug:confirmed", "layer:logic"], at="t")[0], {"step": "confirmed", "layer": "logic", "at": "t"})
+    check("C3 (#801) no retired label: nothing to do", migrate(["bug:confirmed", "needs-info", "layer:screen"]), (None, [], []))
+    check("C3 (#801) a step already on the board is newer: it stays, only the labels come off",
+          migrate(["bug:unconfirmed", "could-not-reproduce", "layer:cli"], {"step": "confirmed", "reason": "r", "at": "s"}, at="t"),
+          ({"step": "confirmed", "reason": "r", "at": "s", "layer": "cli"}, [], ["bug:unconfirmed", "could-not-reproduce", "layer:cli"]))
+    check("C3 (#801) and a layer already there stays", migrate(["layer:cli"], {"layer": "browser"}, at="t")[0], {"layer": "browser", "at": "t"})
     check("C1 (#801) a layer that is none of the layers is not shown", "evil" in repro_row({"step": "waiting", "layer": "evil`|x"}), False)
     rb = board_text(7, True, None, None, state={"repro": {"step": "not-reproduced", "layer": "cli", "reason": "it passes"}})
     check("C1 (#801) the board carries the row", "| Reproduction | ✗ not reproduced: it waits for more information · layer `cli` · it passes |" in rb, True)
