@@ -170,3 +170,45 @@ def test_c2_the_check_runs_in_the_scripts_test():
     text = (ROOT / "scripts" / "sync-repos.py").read_text(encoding="utf-8")
     test = text[text.index("def self_test("):]
     assert "label_misuse(CENTRAL)" in test
+
+
+def test_c3_a_retired_label_on_an_open_issue_is_kept_and_the_issue_named():
+    sr = sync_repos()
+    have = ["accepted", "bug:unconfirmed", "needs-triage"]
+    calls = []
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        failed = sr.delete_retired_labels({"name": "r"}, False, run=fake_gh(have, {"bug:unconfirmed": [7]}, calls))
+    assert failed == 0
+    assert ("label", "delete", "bug:unconfirmed", "--repo", "DiluxOne/r", "--yes") not in calls
+    assert "bug:unconfirmed" in have and "needs-triage" not in have
+    assert "label bug:unconfirmed kept: still on #7 (open)" in out.getvalue()
+    asked = [c for c in calls if c[0] == "api" and "labels=bug%3Aunconfirmed" in " ".join(c)]
+    assert asked and all("state=open" in " ".join(c) for c in asked)
+
+
+def test_c3_an_open_pull_request_keeps_it_too_and_every_carrier_is_named():
+    sr = sync_repos()
+    have = ["merged-by:policy"]
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        sr.delete_retired_labels({"name": "r"}, False, run=fake_gh(have, {"merged-by:policy": [12, 3]}, []))
+    assert have == ["merged-by:policy"]
+    assert "label merged-by:policy kept: still on #3, #12 (open)" in out.getvalue()
+
+
+def test_c3_a_call_that_fails_keeps_the_label_and_is_counted():
+    sr = sync_repos()
+    have = ["bug", "enhancement"]
+    calls = []
+    base = fake_gh(have, {}, calls)
+
+    def run(*args, **k):
+        if args[:3] == ("label", "delete", "bug"):
+            raise RuntimeError("gh label delete bug: HTTP 502")
+        return base(*args, **k)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        failed = sr.delete_retired_labels({"name": "r"}, False, run=run)
+    assert failed == 1 and have == ["bug"]
+    assert "label bug kept: it could not be deleted" in out.getvalue()

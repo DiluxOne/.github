@@ -5238,6 +5238,35 @@ def retire_labels_test(check):
     check("C3 (#801): it is a mode of its own, never part of `all`", "retire-labels" in MODES and "retire-labels" not in ADOPT, MODES)
 
 
+def delete_retired_test(check):
+    """#805 C1, C3: the retired labels deleted against a stand-in for gh,
+    one an open item carries kept and named, a repository's own left."""
+    import contextlib
+    import io
+    import urllib.parse
+
+    class Out:
+        def __init__(self, stdout):
+            self.stdout, self.returncode, self.stderr = stdout, 0, ""
+    have, calls = ["accepted", "bug", "autopilot:run-2", "bug:unconfirmed", "help wanted"], []
+
+    def fake(*args, **_):
+        calls.append(args)
+        if args[:2] == ("label", "list"):
+            return Out(json.dumps([{"name": n} for n in have]))
+        if args[:2] == ("label", "delete"):
+            have.remove(args[2])
+            return Out("")
+        name = urllib.parse.unquote(args[-1].split("labels=", 1)[1].split("&", 1)[0])
+        return Out(json.dumps([[{"number": 7}]] if name == "bug:unconfirmed" else [[]]))
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        failed = delete_retired_labels({"name": "r"}, False, run=fake, retired=read_labels()["retired"])
+    check("#805 C1: the retired labels are deleted, labels.yml's and the repository's own left",
+          (failed, have), (0, ["accepted", "bug:unconfirmed", "help wanted"]))
+    check("#805 C3: one an open item carries is kept, and the item named", "label bug:unconfirmed kept: still on #7 (open)" in out.getvalue(), True)
+
+
 def retire_test(check, labels):
     """#803, C3: the labels the issue's Type or `needs-human` now say,
     retired from the open issues against a stand-in for gh: the Type set
@@ -5550,6 +5579,7 @@ def self_test():
     ai_plugin_drift_test(check, conf, labels, block_file)
     adopt_test(check, conf, labels, block_file)
     retire_test(check, labels)
+    delete_retired_test(check)
     required_split_test(check)
     security_visibility_test(check)
     conventions_test(check, block_file)
