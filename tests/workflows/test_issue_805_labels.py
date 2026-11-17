@@ -118,3 +118,55 @@ def test_c1_the_drift_check_lists_a_retired_label_left():
     sr = sync_repos()
     lines = sr.retired_drift(["accepted", "bug", "autopilot:run-2"], sr.read_labels()["retired"])
     assert len(lines) == 2 and "`bug`" in lines[0] and "`autopilot:run-2`" in lines[1]
+
+
+def tree(tmp_path, files):
+    (tmp_path / "labels.yml").write_text(yaml.safe_dump({"labels": [{"name": "accepted", "color": "0E8A16"}], "retired": []}), encoding="utf-8")
+    for rel, text in files.items():
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    return tmp_path
+
+
+def test_c2_a_workflow_that_sets_an_unlisted_label_is_named_with_its_file(tmp_path):
+    sr = sync_repos()
+    root = tree(tmp_path, {".github/workflows/x.yml": "jobs:\n  a:\n    steps:\n      - run: |\n          gh issue edit 1 --add-label not-a-label\n          gh issue edit 1 --add-label accepted\n"})
+    found = sr.label_misuse(str(root))
+    assert len(found) == 1 and found[0].startswith(".github/workflows/x.yml:5:") and "not-a-label" in found[0]
+
+
+def test_c2_every_way_to_set_a_label_is_seen_and_removing_or_listing_is_not(tmp_path):
+    sr = sync_repos()
+    root = tree(tmp_path, {
+        "scripts/a.sh": 'gh label create "made:up" --force\ngh issue create --title t --label "x:one,accepted"\n'
+                        'gh api repos/o/r/issues -f "labels[]=x:two"\ngh issue edit 1 --remove-label gone\n'
+                        'gh issue list --label listed\ngh search issues --label searched\n'
+                        'gh issue create --title t \\\n  --label x:three\n'
+                        'if [ "${1:-}" = "--test" ]; then\n  gh issue edit 1 --add-label in-its-test\nfi\n',
+        "scripts/b.py": 'X_LABEL = "x:four"\n\n\ndef main():\n    gh("issue", "edit", "1", "--add-label", X_LABEL)\n'
+                        '    gh("issue", "list", "--label", "listed")\n    gh("issue", "edit", "1", "--remove-label", "gone")\n\n\n'
+                        'def self_test():\n    gh("issue", "edit", "1", "--add-label", "in-its-test")\n',
+        "workflow-templates/t.yml": "jobs:\n  a:\n    steps:\n      - run: gh pr edit 1 --add-label=x:five\n",
+        "scripts/fixtures/f.sh": "gh issue edit 1 --add-label in-a-fixture\n",
+    })
+    found = sr.label_misuse(str(root))
+    names = sorted(f.split("sets label ", 1)[1].split(",", 1)[0] for f in found)
+    assert names == ["made:up", "x:five", "x:four", "x:one", "x:three", "x:two"], found
+
+
+def test_c2_a_label_built_from_a_variable_the_check_does_not_know_fails(tmp_path):
+    sr = sync_repos()
+    root = tree(tmp_path, {"scripts/a.sh": 'gh issue edit 1 --add-label "$what"\n'})
+    found = sr.label_misuse(str(root))
+    assert len(found) == 1 and found[0].startswith("scripts/a.sh:1:") and "$what" in found[0]
+
+
+def test_c2_this_repository_sets_only_labels_it_lists():
+    assert sync_repos().label_misuse(str(ROOT)) == []
+
+
+def test_c2_the_check_runs_in_the_scripts_test():
+    text = (ROOT / "scripts" / "sync-repos.py").read_text(encoding="utf-8")
+    test = text[text.index("def self_test("):]
+    assert "label_misuse(CENTRAL)" in test

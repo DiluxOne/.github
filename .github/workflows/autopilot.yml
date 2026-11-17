@@ -753,26 +753,9 @@ jobs:
           RUNS: ${{ steps.what.outputs.runs }}
         run: |
           set -euo pipefail
-          if grep -q '^FLOW_KEYS' .dx-central/scripts/receipts.py; then
-            NUMBER="$ISSUE" BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/autopilot.py count
-            exit 0
-          fi
-          # Scripts older than #802 (no `count`): the run or round in a label,
-          # free by the issue's labels, as they were.
-          answered=false; catchup=false
-          if [ "$MODE" = continue ] && [ -n "$ISSUE" ]; then
-            answered=$(gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | index("autopilot:answered") != null')
-            [ "$answered" != true ] || gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label "autopilot:answered" >/dev/null
-            catchup=$(gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | index("autopilot:catchup") != null')
-            [ "$catchup" != true ] || gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label "autopilot:catchup" >/dev/null
-          fi
-          if [ "$MODE" = fix ]; then l="autopilot:round-$ROUND"; d="The autopilot's review rounds on this pull request"
-          else
-            l=$(N="$RUNS" ANSWERED="$answered" CATCHUP="$catchup" python3 .dx-central/scripts/autopilot.py run-label)
-            d="The autopilot's runs on this pull request"; [ "$answered" != true ] && [ "$catchup" != true ] || d="The autopilot's runs on this pull request that do not count towards its cap"
-          fi
-          gh label create "$l" --repo "$GITHUB_REPOSITORY" --color C5DEF5 --description "$d" 2>/dev/null || true
-          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label "$l" >/dev/null
+          # On the issue's board (#802), never in a label (#805: every
+          # caller's scripts have the board's flow).
+          NUMBER="$ISSUE" BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/autopilot.py count
 
       # What the agent reads, written here: its task, the Spec, the pull
       # request's body and, for a fix round, the review's own words.
@@ -1155,14 +1138,9 @@ jobs:
           url=$(gh pr create --repo "$GITHUB_REPOSITORY" --draft --base "$(gh repo view "$GITHUB_REPOSITORY" --json defaultBranchRef --jq .defaultBranchRef.name)" \
             --head "$branch" --title "$(jq -r .title "$RUNNER_TEMP/draft.json")" --body-file "$RUNNER_TEMP/draft.md" --label autopilot)
           pr=${url##*/}
-          # Its first run, counted on its board (#802); in a label with
-          # scripts older than #802.
-          if grep -q '^FLOW_KEYS' .dx-central/scripts/receipts.py; then
-            PR="$pr" MODE=start RUNS=1 python3 .dx-central/scripts/autopilot.py count
-          else
-            gh label create "autopilot:run-1" --repo "$GITHUB_REPOSITORY" --color C5DEF5 --description "The autopilot's runs on this pull request" 2>/dev/null || true
-            gh pr edit "$pr" --repo "$GITHUB_REPOSITORY" --add-label "autopilot:run-1" >/dev/null
-          fi
+          # Its first run, counted on its board (#802), never in a label
+          # (#805: every caller's scripts have the board's flow).
+          PR="$pr" MODE=start RUNS=1 python3 .dx-central/scripts/autopilot.py count
           { echo "pr=$pr"; echo "branch=$branch"; } >> "$GITHUB_OUTPUT"
           AUTOPILOT_RUN="$RUN_URL" python3 .dx-central/scripts/autopilot.py board
           echo "Draft pull request #$pr opened for #$NUMBER: $url"

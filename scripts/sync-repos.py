@@ -363,6 +363,134 @@ def delete_retired_labels(repo, dry, run=None, retired=None):
     return failures
 
 
+_sspec = importlib.util.spec_from_file_location("settings_lines", os.path.join(HERE, "settings.py"))
+settings_lines = importlib.util.module_from_spec(_sspec)
+_sspec.loader.exec_module(settings_lines)
+
+# A label set from a variable (#805), by the file it is set in and the text
+# as it is written there: the labels it can take (a name ending in `*` is
+# every listed label that starts so; `|` is the "name|colour|description"
+# list in the same file, each name checked). A variable not here fails the
+# check, so a new label cannot slip in through one.
+DYNAMIC_LABELS = {
+    (".github/workflows/claude-review.yml", "$l"): ("risk:*", "complexity:*"),
+    (".github/workflows/claude-review.yml", "type:$t"): ("type:*",),
+    (".github/workflows/claude-review.yml", "$missing"): ("risk:*", "complexity:*", "type:*"),
+    (".github/workflows/issue-accepted.yml", "$ln"): ("|",),
+    # scripts/issue-schema.py g1-labels.
+    (".github/workflows/issue-accepted.yml", "$add"): ("awaiting-acceptance", "incomplete"),
+    (".github/workflows/issue-repro.yml", "$name"): ("|",),
+    (".github/workflows/security-patch.yml", "$name"): ("|",),
+    # plan()'s ("label", CLAIMED).
+    ("scripts/claim.py", "$act[1]"): ("claimed",),
+    ("scripts/claim.py", "$LIST"): ("run:claims",),
+    # release-issue.py's LANE_LABEL.
+    ("scripts/release-lane.py", "$l"): ("lane:release",),
+    # tests/release/scenarios.yml, its issues' `labels`.
+    ("scripts/release-scenarios.py", "$l"): ("accepted", "bug:confirmed", "claimed", "lane:release", "needs-info", "incomplete", "awaiting-acceptance"),
+    ("scripts/revert.py", "$name"): ("revert", "reverted"),
+    # labels_for(): the run's kind, the caller's LABELS, needs-human.
+    ("scripts/run-issue.sh", "run:$kind"): ("run:*",),
+    ("scripts/run-issue.sh", "$labels"): ("run:*", "lane:platform", "needs-human"),
+    # labels.yml's own, the list this check reads.
+    ("scripts/sync-repos.py", "$name"): ("*",),
+    # receipts.migrate()'s, and RETIRED_FOR_LABEL's.
+    ("scripts/sync-repos.py", "$label"): ("needs-info", "needs-human"),
+    ("scripts/sync-repos.py", "$new"): ("needs-human",),
+    ("scripts/triage-act.sh", "$name"): ("|",),
+    # act()'s verdicts.
+    ("scripts/triage-act.sh", "$label"): ("by-design", "pro-feature", "planned", "exists-in-pro", "question", "duplicate", "security"),
+}
+# The ways a label is set: added to an issue or pull request, created, or
+# opened with one. Removing, listing or searching a label is not setting it.
+_TOKEN = r"(\"[^\"]*\"|'[^']*'|[^\s;)|&\"'`]+)"
+_SETS = [re.compile(r"--add-label[= ]+" + _TOKEN), re.compile(r"\blabel create +" + _TOKEN), re.compile(r"labels\[\]=" + _TOKEN)]
+_CREATE_WITH = re.compile(r"--label[= ]+" + _TOKEN)
+_PY_ARG = r"\s*(f?\"[^\"]*\"|f?'[^']*'|[A-Za-z_]\w*(?:\[\d+\])?)"
+_PY_SETS = [re.compile(r"[\"']--add-label[\"'],"+ _PY_ARG), re.compile(r"[\"']label[\"'],\s*[\"']create[\"'],"+ _PY_ARG)]
+_PY_CREATE_WITH = re.compile(r"[\"']--label[\"'],"+ _PY_ARG)
+_TRIPLE = re.compile(r"[\"' ]([a-z][\w:-]*)\|[0-9A-Fa-f]{6}\|")
+
+
+def label_files(root):
+    """The files label_misuse reads: the workflows, the templates and the
+    scripts (never their fixtures)."""
+    out = []
+    for folder, pattern in ((".github/workflows", "*.yml"), ("workflow-templates", "*.yml"), ("scripts", "*")):
+        base = os.path.join(root, folder)
+        if os.path.isdir(base):
+            out += sorted(f"{folder}/{n}" for n in os.listdir(base) if fnmatch.fnmatch(n, pattern) and os.path.isfile(os.path.join(base, n)))
+    return out
+
+
+def label_sets(rel, text):
+    """[(line, the label as written)] that the file REL sets, outside its
+    comments and its own test (settings.skipped_lines)."""
+    skip = settings_lines.skipped_lines(rel, text)
+    lines = text.split("\n")
+    # The file's own constants: NAME = "value" in Python, NAME=value in shell.
+    consts = dict(re.findall(r"(?m)^([A-Z][A-Z0-9_]*) *= *[\"']([^\"'\n]*)[\"'] *$", text) if rel.endswith(".py") else
+                  re.findall(r"(?m)^([A-Z][A-Z0-9_]*)=[\"']?([\w:.-]+)[\"']?$", text))
+    found = []
+    n = 0
+    while n < len(lines):
+        first, logical = n + 1, lines[n]
+        while logical.endswith("\\") and n + 1 < len(lines):
+            n += 1
+            logical = logical[:-1] + " " + lines[n].strip()
+        n += 1
+        if first in skip:
+            continue
+        hits = [m.group(1) for r in _SETS for m in r.finditer(logical)]
+        if re.search(r"\b(issue|pr) create\b", logical):
+            hits += [m.group(1) for m in _CREATE_WITH.finditer(logical)]
+        py = [m.group(1) for r in _PY_SETS for m in r.finditer(logical)]
+        if re.search(r"[\"'](issue|pr)[\"'],\s*[\"']create[\"']", logical):
+            py += [m.group(1) for m in _PY_CREATE_WITH.finditer(logical)]
+        for token in hits:
+            token = token[1:-1] if token[:1] in "\"'" and token[-1:] == token[:1] else token
+            token = re.sub(r"^\$\{?([A-Z][A-Z0-9_]*)\}?$", lambda m: consts.get(m.group(1), m.group(0)), token)
+            found += [(first, t) for t in token.split(",") if t]
+        for token in py:
+            if token[:1] in "\"'":
+                found.append((first, token[1:-1]))
+            elif token.startswith("f"):
+                filled = re.sub(r"\{([A-Z][A-Z0-9_]*)\}", lambda m: consts.get(m.group(1), m.group(0)), token[2:-1])
+                found.append((first, filled if "{" not in filled else "$" + token))
+            else:
+                found.append((first, consts.get(token, "$" + token)))
+        found += [(first, m.group(1)) for m in _TRIPLE.finditer(logical)]
+    return found
+
+
+def label_misuse(root):
+    """C2 (#805): every place a workflow, a template or a script sets a label
+    that labels.yml does not list (`labels` or `security-repo`), as
+    `<file>:<line>: sets label <name>, ...`. A label built from a variable is
+    checked through DYNAMIC_LABELS; one it does not know is listed too."""
+    lists = read_labels(os.path.join(root, "labels.yml"))
+    listed = {str(l["name"]) for l in lists["labels"] + lists["security-repo"]}
+    out = []
+    for rel in label_files(root):
+        try:
+            text = open(os.path.join(root, rel), encoding="utf-8").read()
+        except (UnicodeDecodeError, OSError):
+            continue
+        for line, name in label_sets(rel, text):
+            if not re.search(r"[$`{]", name):
+                if name not in listed:
+                    out.append(f"{rel}:{line}: sets label {name}, which labels.yml does not list")
+                continue
+            can = DYNAMIC_LABELS.get((rel, name))
+            if can is None:
+                out.append(f"{rel}:{line}: sets label {name}, built from a variable the check does not know (name its values in DYNAMIC_LABELS)")
+                continue
+            for want in can:
+                if want != "|" and not any(fnmatch.fnmatchcase(l, want) for l in listed):
+                    out.append(f"{rel}:{line}: sets label {name}, which can be {want}, which labels.yml does not list")
+    return out
+
+
 def sync_labels(repo, labels, dry):
     labels = labels_for(repo, labels)
     if dry:
