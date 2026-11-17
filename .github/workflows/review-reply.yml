@@ -80,7 +80,7 @@ env:
 jobs:
   # A maintainer's answer to the autopilot's question (#247, guided mode):
   # a comment by someone with write access on an issue waiting for one
-  # (`autopilot:waiting`), or on its pull request, brings the autopilot back
+  # (`asked` on its board, #802), or on its pull request, brings the autopilot back
   # (`autopilot:continue`, added by dilux-bot, which issue-triage.yml
   # accepts). The autopilot reads the answer itself, from the comments.
   # So does a maintainer's hint after the autopilot stopped or ended
@@ -138,9 +138,39 @@ jobs:
             issue=$(gh pr view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // empty')
           fi
           [ -n "$issue" ] || exit 0
-          waiting=$(gh issue view "$issue" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | index("autopilot:waiting") != null')
+          # The question waits on the issue's board (#802); one that cannot
+          # be read fails the job, never read as no question. One edited by
+          # hand (exit 3) cannot say: when nothing else waits, an answer from
+          # who decides fails the job with what to restore (as waiting.py
+          # says), never dropped as no question. An issue an older run
+          # labelled `autopilot:waiting` is migrated first; scripts older
+          # than #802 (central-ref before it) keep the question in that label.
+          flow=false; ! grep -q '^FLOW_KEYS' .dx-central/scripts/receipts.py || flow=true
+          waiting=false; edited=false
+          if [ "$flow" = true ]; then
+            NUMBER="$issue" python3 .dx-central/scripts/receipts.py migrate >/dev/null 2> "$RUNNER_TEMP/migrate.err" \
+              || echo "::warning::#$issue's old labels could not be moved onto its board: $(head -c 200 "$RUNNER_TEMP/migrate.err")"
+            rc=0; asked=$(NUMBER="$issue" python3 .dx-central/scripts/receipts.py state get asked 2> "$RUNNER_TEMP/board.err") || rc=$?
+            case $rc in
+              0) ;;
+              3) asked=null; edited=true ;;
+              *) echo "::error::#$issue's board could not be read: $(head -c 200 "$RUNNER_TEMP/board.err")"; exit 1 ;;
+            esac
+            case $asked in null|false|'""') ;; *) waiting=true ;; esac
+          fi
+          # The label still there (older scripts, or a migration that could
+          # not move it) still waits: an answer is never dropped for it.
+          label_waits=$(gh issue view "$issue" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | index("autopilot:waiting") != null')
+          [ "$label_waits" != true ] || waiting=true
           stopped=""
           pr=""
+          nothing() {
+            if [ "$edited" = true ] && NUMBER="$issue" PR="$pr" python3 .dx-central/scripts/deciders.py may answer "$LOGIN" >/dev/null; then
+              echo "::error::#$issue's board was edited by hand, so whether the autopilot asks cannot be read: restore the bot's last board (its comment's history has it), then answer again."
+              exit 1
+            fi
+            exit 0
+          }
           if [ "$waiting" != true ]; then
             # A hint after a stop (#561): where the stop was said.
             if [ "$IS_PR" = true ]; then
@@ -152,12 +182,12 @@ jobs:
             fi
             if [ -n "$pr" ]; then kind="pr"; stopped=$pr; else kind="issue"; stopped=$issue; fi
             labels=$(gh "$kind" view "$stopped" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | join(",")')
-            case ",$labels," in *,needs-human,*) ;; *) exit 0 ;; esac
-            if [ "$kind" = pr ]; then case ",$labels," in *,autopilot,*) ;; *) exit 0 ;; esac; fi
+            case ",$labels," in *,needs-human,*) ;; *) nothing ;; esac
+            if [ "$kind" = pr ]; then case ",$labels," in *,autopilot,*) ;; *) nothing ;; esac; fi
             # The board's mention (its dx-mention marker) always comes
             # after the stop: it never hides it (#647).
             last=$(gh api "repos/$GITHUB_REPOSITORY/issues/$stopped/comments" --paginate --jq '.[] | select(.user.login == env.DX_BOT_LOGIN and (.body | contains("<!-- dx-mention ") | not)) | .body | split("\n")[0]' | tail -n 1)
-            case $last in "<!-- dx-autopilot-stop -->"*|"<!-- dx-autopilot-silent -->"*) ;; *) exit 0 ;; esac
+            case $last in "<!-- dx-autopilot-stop -->"*|"<!-- dx-autopilot-silent -->"*) ;; *) nothing ;; esac
           fi
           # Only those `who-decides` allows answer (#588,
           # scripts/deciders.py); anyone else, the issue's author included,
@@ -173,9 +203,6 @@ jobs:
             exit 0
           fi
           gh label create "autopilot:continue" --repo "$GITHUB_REPOSITORY" --color 1D76DB --force --description "On an issue: the autopilot continues its draft pull request, or starts it" >/dev/null 2>&1 || true
-          # The run the answer starts does not count towards the autopilot's
-          # cap (#479): autopilot.yml labels it free.
-          gh label create "autopilot:answered" --repo "$GITHUB_REPOSITORY" --color 1D76DB --force --description "On an issue: a maintainer answered the autopilot's question; the run it starts does not count" >/dev/null 2>&1 || true
           if [ -n "$stopped" ]; then
             # needs-human first: the continue's run stays out of a pull
             # request that still carries it.
@@ -184,7 +211,20 @@ jobs:
             echo "$LOGIN answered the stop; the autopilot goes on with #$issue."
             exit 0
           fi
-          gh issue edit "$issue" --repo "$GITHUB_REPOSITORY" --add-label "autopilot:answered" --add-label "autopilot:continue" --remove-label "autopilot:waiting" >/dev/null
+          # The run the answer starts does not count towards the autopilot's
+          # cap (#479): `answered` on the issue's board (#802), set before the
+          # continue, so the run the label starts reads it. With scripts
+          # older than #802, or a board that cannot be written, the labels as
+          # before: the run's own migration moves `autopilot:answered` onto
+          # the board when it can, and the answer is never dropped.
+          if [ "$flow" = true ] && NUMBER="$issue" python3 .dx-central/scripts/receipts.py state set answered=true asked=; then
+            [ "$label_waits" != true ] || gh issue edit "$issue" --repo "$GITHUB_REPOSITORY" --remove-label "autopilot:waiting" >/dev/null
+            gh issue edit "$issue" --repo "$GITHUB_REPOSITORY" --add-label "autopilot:continue" >/dev/null
+          else
+            [ "$flow" != true ] || echo "::warning::#$issue's board could not be written: the answer goes in the labels."
+            gh label create "autopilot:answered" --repo "$GITHUB_REPOSITORY" --color 1D76DB --force --description "On an issue: a maintainer answered the autopilot's question; the run it starts does not count" >/dev/null 2>&1 || true
+            gh issue edit "$issue" --repo "$GITHUB_REPOSITORY" --add-label "autopilot:answered" --add-label "autopilot:continue" --remove-label "autopilot:waiting" >/dev/null
+          fi
           echo "$LOGIN answered; the autopilot goes on with #$issue."
 
   # The others' opinions (#287), on their own: a summary waiting here never

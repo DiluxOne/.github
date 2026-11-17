@@ -9,8 +9,10 @@ its body up to date in DiluxOne/.github).
                   apart
   merge queue     its groups' runs that week (merge_group): how many failed,
                   the share, and the median minutes a run took
-  autopilot runs  per merged autopilot pull request, its runs (the
-                  autopilot:run-N and autopilot:free-N labels, #479 C5),
+  autopilot runs  per merged autopilot pull request, its runs (the `runs`
+                  on its board, #802, read from dilux-bot's own comment;
+                  on one merged before, or whose board was edited by hand,
+                  its autopilot:run-N and autopilot:free-N labels, #479 C5),
                   median and average
   flaky tests     the tests the queue's E2E jobs reported flaky (a warning
                   titled "Flaky test", scripts/flaky.py), each once
@@ -46,12 +48,52 @@ QUERY = """query($q: String!, $after: String) {
     nodes { ... on PullRequest {
       number mergedAt
       author { login }
-      repository { name isPrivate }
+      repository { name nameWithOwner isPrivate }
       labels(first: 50) { nodes { name } }
+      comments(first: 20) { totalCount nodes { author { login } body } } lastComments: comments(last: 20) { nodes { author { login } body } }
       closingIssuesReferences(first: 5) { nodes { createdAt } }
     } }
   }
 }"""
+
+
+def _receipts():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("receipts", os.path.join(HERE, "receipts.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_RC = []
+
+
+def runs_of(p, labels, read_all=None):
+    """A merged pull request's runs: the `runs` on its board, dilux-bot's
+    own comment (#802, receipts.py graphql_board: among its first and last
+    comments, else all of the bot's, read_all for the self-test); else its
+    run and free labels."""
+    if not _RC:
+        _RC.append(_receipts())
+    rc = _RC[0]
+    if read_all is None:
+        repo, number = ((p.get("repository") or {}).get("nameWithOwner"), p.get("number"))
+        read_all = (lambda: [b for _, b in rc.bot_comments(repo, number)]) if repo and number else None
+    state, intact = rc.graphql_board(p, BOT_LOGINS, read_all)
+    if intact and isinstance(state.get("runs"), list):
+        return sum(1 for r in state["runs"] if isinstance(r, dict) and isinstance(r.get("n"), int))
+    return sum(1 for l in labels if RUN_RE.match(l))
+
+
+def pr_row(p):
+    """One merged pull request, as the search gives it, as numbers() reads
+    it. Pure but for loading receipts.py."""
+    labels = [l["name"] for l in (p.get("labels") or {}).get("nodes") or []]
+    issues = sorted(i["createdAt"] for i in (p.get("closingIssuesReferences") or {}).get("nodes") or [])
+    return {"repo": p["repository"]["name"], "private": p["repository"]["isPrivate"], "number": p["number"], "mergedAt": p["mergedAt"],
+            "issueCreatedAt": issues[0] if issues else None,
+            "autopilot": "autopilot" in labels and (p.get("author") or {}).get("login") in BOT_LOGINS,
+            "runs": runs_of(p, labels)}
 
 
 def parse(ts):
@@ -149,12 +191,7 @@ def fetch(owner, now):
         for p in page["nodes"]:
             if not p:
                 continue
-            labels = [l["name"] for l in p["labels"]["nodes"]]
-            issues = sorted(i["createdAt"] for i in p["closingIssuesReferences"]["nodes"])
-            prs.append({"repo": p["repository"]["name"], "private": p["repository"]["isPrivate"], "number": p["number"], "mergedAt": p["mergedAt"],
-                        "issueCreatedAt": issues[0] if issues else None,
-                        "autopilot": "autopilot" in labels and (p.get("author") or {}).get("login") in BOT_LOGINS,
-                        "runs": sum(1 for l in labels if RUN_RE.match(l))})
+            prs.append(pr_row(p))
         if not page["pageInfo"]["hasNextPage"]:
             break
         after = page["pageInfo"]["endCursor"]
@@ -201,6 +238,25 @@ def self_test():
                  "- diluxone-users-wordpress: `tests/e2e/login.spec.ts:14`", "- 1 in private repositories"):
         check(f"C8 the body says: {what}", what in body, True)
     check("C8 a private repository's flaky test is counted, never named", "secret" in body, False)
+    # #802 C3: the same pull requests, their run labels migrated onto the
+    # bot's board, give the same numbers.
+    rc = _receipts()
+
+    def node(p, board):
+        labels = ["autopilot"] + [f"autopilot:{'free' if k % 2 else 'run'}-{k}" for k in range(1, (p.get("runs") or 0) + 1)]
+        comments = []
+        if board:
+            comments = [{"author": {"login": "mallory"}, "body": rc.BOARD + "\n" + rc.state_block({"runs": []})},
+                        {"author": {"login": org.APP}, "body": rc.BOARD + "\n" + rc.state_block(rc.state_from_labels(labels, {}))}]
+            labels = [l for l in labels if not rc.old_labels([l])]
+        return {"number": p["number"], "mergedAt": p["mergedAt"], "author": {"login": org.APP if p.get("autopilot") else "ana"},
+                "repository": {"name": p["repo"], "isPrivate": p["private"]}, "labels": {"nodes": [{"name": l} for l in labels]},
+                "comments": {"nodes": comments}, "closingIssuesReferences": {"nodes": [{"createdAt": p["issueCreatedAt"]}] if p.get("issueCreatedAt") else []}}
+    from_labels = [pr_row(node(p, False)) for p in fx["prs"]]
+    from_board = [pr_row(node(p, True)) for p in fx["prs"]]
+    check("C3 (#802) the runs from the bot's board are those of the labels, a person's comment never counted",
+          ([r["runs"] for r in from_board], from_board == from_labels), ([p.get("runs") or 0 for p in fx["prs"]], True))
+    check("C3 (#802) and the week's numbers are the same", numbers(dict(fx, prs=from_board)) == numbers(dict(fx, prs=from_labels)) == numbers(fx), True)
     empty = render(numbers({}), parse(fx["now"]))
     check("C8 an empty week says so", ("No group ran this week." in empty, "No autopilot pull request merged" in empty, "| The autopilot's | 0 | – | – |" in empty), (True, True, True))
     print("all tests passed" if not fails else f"{len(fails)} failed")

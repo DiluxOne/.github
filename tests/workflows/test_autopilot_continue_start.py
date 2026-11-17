@@ -22,9 +22,11 @@ def step(job, key):
     return next(s for s in JOBS[job]["steps"] if s.get("id") == key or s.get("name") == key)
 
 
-def what(tmp_path, body, open_pr=None, state="OPEN"):
+def what(tmp_path, body, open_pr=None, state="OPEN", central=ROOT):
     """The step's outputs and the gh calls it made, for an issue (#7) whose
-    closing pull request, when given, is an open `autopilot` one."""
+    closing pull request, when given, is an open `autopilot` one; the
+    organisation's scripts at `central` (the head's, by default)."""
+    (tmp_path / ".dx-central").symlink_to(central)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log = tmp_path / "calls.log"
@@ -49,7 +51,9 @@ def what(tmp_path, body, open_pr=None, state="OPEN"):
     (bin_dir / "python3").write_text(
         "#!/bin/bash\n"
         f'echo "python3 $*" >> "{log}"\n'
-        'case "$2" in next-run) echo 2 ;; continue-as) echo continue ;; esac\n')
+        # next-run: from the board (#802), or, with scripts older than it,
+        # the number alone, from LABELS.
+        'case "$2" in next-run) if [ -n "${LABELS:-}" ]; then echo 2; else printf "runs=2\\nround=1\\n"; fi ;; continue-as) echo continue ;; esac\n')
     for f in ("gh", "python3"):
         (bin_dir / f).chmod(0o755)
     out = tmp_path / "out"
@@ -77,7 +81,8 @@ def test_c1_a_continue_with_no_pull_request_starts(tmp_path, body, spec):
     assert out["issue"] == "7"
     assert "pr" not in out and "branch" not in out
     assert out.get("spec") == spec
-    assert "--remove-label autopilot:answered" in calls
+    # #802: the answer is cleared on the issue's board.
+    assert "receipts.py state set answered=" in calls
     # The start reads the repository's way to reproduce a bug (#377).
     assert "review-policy.yml" in calls
 
@@ -85,7 +90,7 @@ def test_c1_a_continue_with_no_pull_request_starts(tmp_path, body, spec):
 def test_c1_a_closed_issue_starts_nothing(tmp_path):
     out, calls = what(tmp_path, PRD, state="CLOSED")
     assert out == {"go": "false"}
-    assert "autopilot:answered" not in calls
+    assert "answered=" not in calls
 
 
 def test_c1_the_jobs_key_on_the_mode_prep_decided():
@@ -137,8 +142,30 @@ def test_c2_a_continue_with_an_open_pull_request_resumes_it(tmp_path, body):
     assert out["runs"] == "2"
     assert "spec" not in out
     # The answer's label stays for the Count step, which frees the run (#479).
-    assert "autopilot:answered" not in calls
+    assert "answered" not in calls
     assert "review-policy.yml" not in calls
+
+
+def old_central(tmp_path):
+    """The organisation's scripts as they were before #802 (main's, until
+    this change merges): receipts.py with no FLOW_KEYS."""
+    central = tmp_path / "old-central"
+    (central / "scripts").mkdir(parents=True, exist_ok=True)
+    (central / "scripts/receipts.py").write_text("# before #802\n")
+    return central
+
+
+def test_with_scripts_older_than_802_a_continue_reads_its_labels(tmp_path):
+    """Main's scripts have no `migrate`, no board `next-run`: the step keeps
+    to the labels, as it did, until this change merges."""
+    (tmp_path / "a").mkdir()
+    out, calls = what(tmp_path / "a", PRD + SPEC, open_pr="9", central=old_central(tmp_path))
+    assert (out["mode"], out["runs"], out["round"]) == ("continue", "2", "1")
+    assert "migrate" not in calls
+    (tmp_path / "b").mkdir()
+    out, calls = what(tmp_path / "b", PRD, central=old_central(tmp_path))
+    assert out["mode"] == "start"
+    assert "--remove-label autopilot:answered" in calls and "state set" not in calls
 
 
 def test_c2_a_continue_keeps_its_own_path():

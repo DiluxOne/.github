@@ -142,6 +142,22 @@ def test_a_pass_lets_ready_through_and_the_run_ends_ready(tmp_path, monkeypatch)
         assert calls == [], prepr
 
 
+def fake_boards(ap, monkeypatch, boards):
+    """The boards' states (#802), in memory: board_state and set_board."""
+    boards = {k: dict(v) for k, v in boards.items()}
+
+    def put(repo, number, item="issue", body=None, **keys):
+        st = boards.setdefault(str(number), {})
+        for k, v in keys.items():
+            if v is None:
+                st.pop(k, None)
+            else:
+                st[k] = v
+    monkeypatch.setattr(ap, "board_state", lambda repo, number, item="issue": (dict(boards.get(str(number), {})), True))
+    monkeypatch.setattr(ap, "set_board", put)
+    return boards
+
+
 CHECKLIST = "<!-- dx-checklist -->\n- [x] **C1** a\n- [x] **C2** b\n<!-- /dx-checklist -->\n"
 
 
@@ -163,7 +179,7 @@ def test_a_failing_verify_keeps_the_draft_and_brings_a_free_fix_round_with_its_o
     # and the continue, on a pull request that is still a draft.
     tail = tmp_path / "tail.txt"
     tail.write_text("FAILED tests/test_x.py::test_it - AssertionError\n")
-    labels = ["autopilot", "autopilot:run-1", "autopilot:run-2"]
+    boards = fake_boards(ap, monkeypatch, {"8": {"runs": [{"n": 1, "free": False}, {"n": 2, "free": False}]}})
     calls = []
 
     def fake_gh(*args, input_text=None):
@@ -171,8 +187,7 @@ def test_a_failing_verify_keeps_the_draft_and_brings_a_free_fix_round_with_its_o
         return json.dumps({"comments": []}) if args[1] == "view" else ""
 
     monkeypatch.setattr(ap, "gh", fake_gh)
-    monkeypatch.setattr(ap, "pr_json", lambda repo, pr, fields: {"body": CHECKLIST, "isDraft": True, "headRefOid": "abc",
-                                                                 "labels": [{"name": l} for l in labels]})
+    monkeypatch.setattr(ap, "pr_json", lambda repo, pr, fields: {"body": CHECKLIST, "isDraft": True, "headRefOid": "abc", "labels": [{"name": "autopilot"}]})
     monkeypatch.setattr(ap, "refresh_board", lambda repo, number: None)
     monkeypatch.setattr(ap.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "", ""))
     monkeypatch.setattr(ap.autonomy, "policy_in_force", lambda: {"autopilot-runs": 5})
@@ -190,12 +205,12 @@ def test_a_failing_verify_keeps_the_draft_and_brings_a_free_fix_round_with_its_o
     assert len(comments) == 1
     body = comments[0][comments[0].index("--body") + 1]
     assert body.startswith(ap.PREPR_MARK) and "FAILED tests/test_x.py::test_it" in body
-    assert ["pr", "edit", "8", "--repo", "o/r", "--remove-label", "autopilot:run-2", "--add-label", "autopilot:free-2"] in calls
+    assert boards["8"]["runs"] == [{"n": 1, "free": False}, {"n": 2, "free": True}]
     assert ["issue", "edit", "7", "--repo", "o/r", "--add-label", "autopilot:continue"] in calls
     # Not ready, and no needs-human.
     assert not any("ready" in c[:2] for c in calls) and not any("needs-human" in c for c in calls)
-    # The free label is not counted by the runs cap.
-    assert ap.run_numbers(["autopilot:run-1", "autopilot:free-2"]) == (3, 1)
+    # The free run is not counted by the runs cap.
+    assert ap.run_numbers(boards["8"]) == (3, 1)
     # The next run's prep writes that comment's tail for the agent, and its
     # prompt asks to fix it first.
     io_dir = tmp_path / "io"
@@ -388,7 +403,7 @@ def test_a_command_the_runner_lacks_is_an_engine_failure_from_verify_to_the_end(
         assert ap.apply_outbox(str(outbox), "o/r", "7", "8") == 0
     assert finished == [] and "prepr=engine" in gh_out.read_text()
     monkeypatch.setattr(ap, "main", real_main)
-    labels = ["autopilot", "autopilot:run-1", "autopilot:run-2"]
+    boards = fake_boards(ap, monkeypatch, {"8": {"runs": [{"n": 1, "free": False}, {"n": 2, "free": False}]}})
     calls = []
 
     def fake_gh(*args, input_text=None):
@@ -396,8 +411,7 @@ def test_a_command_the_runner_lacks_is_an_engine_failure_from_verify_to_the_end(
         return json.dumps({"comments": []}) if args[1] == "view" else ""
 
     monkeypatch.setattr(ap, "gh", fake_gh)
-    monkeypatch.setattr(ap, "pr_json", lambda repo, pr, fields: {"body": CHECKLIST, "isDraft": True, "headRefOid": "abc",
-                                                                 "labels": [{"name": l} for l in labels]})
+    monkeypatch.setattr(ap, "pr_json", lambda repo, pr, fields: {"body": CHECKLIST, "isDraft": True, "headRefOid": "abc", "labels": [{"name": "autopilot"}]})
     monkeypatch.setattr(ap, "refresh_board", lambda repo, number: None)
     monkeypatch.setattr(ap.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "", ""))
     monkeypatch.setattr(ap.autonomy, "policy_in_force", lambda: {"autopilot-runs": 5})
@@ -420,7 +434,7 @@ def test_a_command_the_runner_lacks_is_an_engine_failure_from_verify_to_the_end(
     # No fix round, a person has it, and the run is free.
     assert not any("autopilot:continue" in c for c in calls)
     assert ["pr", "edit", "8", "--repo", "o/r", "--add-label", "needs-human"] in calls
-    assert ["pr", "edit", "8", "--repo", "o/r", "--remove-label", "autopilot:run-2", "--add-label", "autopilot:free-2"] in calls
+    assert boards["8"]["runs"][-1] == {"n": 2, "free": True}
 
 
 def end_after(ap, tmp_path, monkeypatch, before_tail, tail_text_now):
@@ -436,8 +450,8 @@ def end_after(ap, tmp_path, monkeypatch, before_tail, tail_text_now):
         return json.dumps({"comments": [earlier]}) if args[1] == "view" else ""
 
     monkeypatch.setattr(ap, "gh", fake_gh)
-    monkeypatch.setattr(ap, "pr_json", lambda repo, pr, fields: {"body": CHECKLIST, "isDraft": True, "headRefOid": "abc",
-                                                                 "labels": [{"name": l} for l in ("autopilot", "autopilot:run-1", "autopilot:free-2", "autopilot:run-3")]})
+    monkeypatch.setattr(ap, "pr_json", lambda repo, pr, fields: {"body": CHECKLIST, "isDraft": True, "headRefOid": "abc", "labels": [{"name": "autopilot"}]})
+    fake_boards(ap, monkeypatch, {"8": {"runs": [{"n": 1, "free": False}, {"n": 2, "free": True}, {"n": 3, "free": False}]}})
     monkeypatch.setattr(ap, "refresh_board", lambda repo, number: None)
     monkeypatch.setattr(ap.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "", ""))
     monkeypatch.setattr(ap.autonomy, "policy_in_force", lambda: {"autopilot-runs": 5})

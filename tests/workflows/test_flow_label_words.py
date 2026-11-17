@@ -103,9 +103,12 @@ def test_a_maintainers_answer_after_a_stop_brings_the_autopilot_back():
     spec = importlib.util.spec_from_file_location("autopilot_c7", ROOT / "scripts/autopilot.py")
     ap = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(ap)
-    assert f'"{ap.STOP}"*|"{ap.SILENT}"*) ;; *) exit 0 ;;' in run
+    # `nothing` exits 0, but on a board edited by hand with a decider's
+    # answer, which it fails with what to restore (#811).
+    assert f'"{ap.STOP}"*|"{ap.SILENT}"*) ;; *) nothing ;;' in run
+    assert run.index("nothing() {") < run.index("exit 0\n          }", run.index("nothing() {"))
     assert 'select(.user.login == env.DX_BOT_LOGIN and (.body | contains("<!-- dx-mention ") | not))' in run
-    assert '*,needs-human,*) ;; *) exit 0 ;;' in run and '*,autopilot,*) ;; *) exit 0 ;;' in run
+    assert '*,needs-human,*) ;; *) nothing ;;' in run and '*,autopilot,*) ;; *) nothing ;;' in run
     off = run.index('labels/needs-human" >/dev/null')
     assert off < run.index('--add-label "autopilot:continue" >/dev/null', off)
     # Only a decider's answer, after scripts/deciders.py (#588); a stop asked no
