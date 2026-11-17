@@ -791,6 +791,12 @@ Normal
     check("C1 (#801) the Spec's steps, every one", sorted(REPRO_STEPS), sorted(["waiting", "confirmed", "not-reproduced", "no-way", "no-verdict", "broken", "blocked"]))
     check("C1 (#801) a step it does not know is said as not started", repro_row({"step": "x|y"}), "| Reproduction | · not started |")
     check("C1 (#801) no reproduction, no row; nor for a value that is no state", (repro_row(None), repro_row({}), repro_row("waiting")), (None, None, None))
+    check("C2 (#801) the row names the reason, cleaned: one line, no pipe, no mention, bounded",
+          repro_row({"step": "no-way", "layer": "browser", "reason": "it needs a | browser\ntest, ask @alice " + "x" * 300}),
+          "| Reproduction | 🙋 no way this repository declares reproduces it: a person takes it · layer `browser` · "
+          + clean("it needs a | browser\ntest, ask @alice " + "x" * 300) + " |")
+    check("C2 (#801) clean() is what makes it so", ("|" in clean("a | b"), "@" in clean("@a"), "\n" in clean("a\nb"), len(clean("x" * 300))), (False, False, False, 200))
+    check("C2 (#801) found nothing and no way say whom they wait on", ("more information" in repro_row({"step": "not-reproduced"}), "a person" in repro_row({"step": "no-way"})), (True, True))
     check("C1 (#801) a layer that is none of the layers is not shown", "evil" in repro_row({"step": "waiting", "layer": "evil`|x"}), False)
     rb = board_text(7, True, None, None, state={"repro": {"step": "not-reproduced", "layer": "cli", "reason": "it passes"}})
     check("C1 (#801) the board carries the row", "| Reproduction | ✗ not reproduced: it waits for more information · layer `cli` · it passes |" in rb, True)

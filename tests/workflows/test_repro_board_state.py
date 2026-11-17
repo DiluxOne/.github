@@ -92,3 +92,136 @@ def test_c1_the_report_knows_the_layer_it_ran_for():
     report = step(steps("issue-repro.yml", "report"), "Labels, branch, pull request, comment")
     assert report["env"]["LAYER"] == "${{ needs.write.outputs.layer }}"
     assert "repro_state() {" in report["run"] and "receipts.py state set" in report["run"]
+
+
+# C2: the report step's script, run with stand-ins for gh and for the
+# scripts it calls (receipts.py, api-commit.py) in a .dx-central of its own,
+# every call logged in order.
+import json  # noqa: E402
+import hashlib  # noqa: E402
+import os  # noqa: E402
+import subprocess  # noqa: E402
+
+FAKE_GH = r"""#!/usr/bin/env bash
+printf 'gh %s\n' "$*" | tr '\n' ' ' >> "$CALLS"; echo >> "$CALLS"
+case "$*" in
+  "issue view "*'index("claimed")'*) echo false ;;
+  "pr create "*) echo https://github.com/o/r/pull/9 ;;
+esac
+exit 0
+"""
+FAKE_RECEIPTS = r"""import json, os, sys
+open(os.environ["CALLS"], "a").write("receipts " + " ".join(sys.argv[1:]) + "\n")
+if sys.argv[1:3] == ["state", "get"]:
+    print(os.environ.get("BEFORE") or "null")
+sys.exit(int(os.environ.get("STATE_RC", "0")) if sys.argv[1:3] == ["state", "set"] else 0)
+"""
+
+
+def report(tmp_path, **env):
+    """The calls the report step makes for an outcome: [(kind, text)], and
+    each board state it set, parsed."""
+    the_step = step(steps("issue-repro.yml", "report"), "Labels, branch, pull request, comment")
+    run = the_step["run"]
+    work, temp, bindir = tmp_path / "work", tmp_path / "temp", tmp_path / "bin"
+    for d in (work / ".dx-central/scripts", temp / "written", temp / "output", bindir):
+        d.mkdir(parents=True)
+    (bindir / "gh").write_text(FAKE_GH)
+    (bindir / "gh").chmod(0o755)
+    (work / ".dx-central/scripts/receipts.py").write_text(FAKE_RECEIPTS)
+    (work / ".dx-central/scripts/api-commit.py").write_text("")
+    (temp / "written/test").write_text("def test_x():\n    assert False\n")
+    calls = tmp_path / "calls"
+    calls.write_text("")
+    git = lambda *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=work, check=True, capture_output=True)
+    git("init", "-q")
+    (work / ".gitignore").write_text(".dx-central/\n")
+    git("add", ".gitignore")
+    git("commit", "-q", "-m", "init")
+    # Every key of the step's env is set, empty when the event leaves it so.
+    base = {key: "" for key in the_step["env"]}
+    base |= {"PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}", "HOME": str(tmp_path), "CALLS": str(calls),
+            "GITHUB_REPOSITORY": "o/r", "GITHUB_SERVER_URL": "https://github.com", "GITHUB_RUN_ID": "1",
+            "RUNNER_TEMP": str(temp), "GITHUB_OUTPUT": str(tmp_path / "out"), "NUMBER": "7", "MODEL": "m",
+            "SUMMARY": "the save | button @x\nfails", "WROTE": "true", "AGENT": "success", "RUN_RESULT": "success",
+            "OUTCOME": "passed", "TEST": "tests/repro/test_issue_7.py", "NOUN": "unit test", "LAYER": "cli",
+            "SHA256": hashlib.sha256((temp / "written/test").read_bytes()).hexdigest(), "BOT": "dilux-bot[bot]",
+            "BT": "`", "DX_BOT_APP": "dilux-bot"}
+    out = subprocess.run(["bash", "-c", run], cwd=work, env={**base, **env}, capture_output=True, text=True)
+    assert out.returncode == 0, out.stdout + out.stderr
+    lines = calls.read_text().splitlines()
+    states = [json.loads(l.split("repro=", 1)[1]) for l in lines if l.startswith("receipts state set repro=")]
+    return lines, states, out.stdout
+
+
+def added(lines, label):
+    return [i for i, l in enumerate(lines) if l.startswith("gh issue edit 7 ") and f"--add-label {label} " in l + " "]
+
+
+def removed(lines, label):
+    return [i for i, l in enumerate(lines) if l.startswith("gh issue edit 7 ") and f"--remove-label {label} " in l + " "]
+
+
+def set_at(lines, step_):
+    return [i for i, l in enumerate(lines) if l.startswith("receipts state set repro=") and json.loads(l.split("repro=", 1)[1]).get("step") == step_]
+
+
+FOUND_NOTHING = {
+    "a passing test": {},
+    "no test written": {"WROTE": "false"},
+    "a browser test that read a stylesheet twice": {"REJECTED": "css", "BROWSER": "browser", "LABEL": "repro:retry", "SENDER_LOGIN": "dilux-bot[bot]"},
+}
+
+
+def test_c2_each_found_nothing_branch_adds_needs_info_with_its_step_and_reason_on_the_board(tmp_path):
+    for i, (name, env) in enumerate(FOUND_NOTHING.items()):
+        lines, states, _ = report(tmp_path / str(i), **env)
+        assert added(lines, "needs-info"), (name, lines)
+        assert set_at(lines, "not-reproduced") and set_at(lines, "not-reproduced")[0] < added(lines, "needs-info")[0], (name, lines)
+        last = states[-1]
+        assert last["step"] == "not-reproduced" and last["reason"].strip() and last["at"], (name, last)
+        assert last["layer"] == ("browser" if env.get("REJECTED") else "cli"), (name, last)
+        assert not added(lines, "needs-human"), name
+
+
+def test_c2_no_way_in_the_report_adds_needs_human_with_its_step_and_reason(tmp_path):
+    lines, states, _ = report(tmp_path, REJECTED="css", BROWSER="")
+    assert added(lines, "needs-human") and set_at(lines, "no-way")[0] < added(lines, "needs-human")[0], lines
+    assert states[-1]["step"] == "no-way" and "browser test" in states[-1]["reason"] and states[-1]["layer"] == "browser"
+    assert not added(lines, "needs-info")
+
+
+def test_c2_no_way_before_any_model_adds_needs_human_with_its_step_and_reason():
+    no_way = step(steps("issue-repro.yml", "write"), "No way reproduces it")["run"]
+    assert no_way.index("receipts.py state set") < no_way.index("--add-label needs-human")
+    assert "{step: \"no-way\", layer: $layer, reason: ($reason | .[0:300]), at: $at}" in no_way
+    assert '--arg reason "$WHY"' in no_way, "the reason is repro-ways.py's why, through env and jq"
+
+
+def test_c2_a_confirmed_run_takes_off_only_the_labels_the_reproduction_put_there(tmp_path):
+    for i, (before, off) in enumerate([("not-reproduced", "needs-info"), ("no-way", "needs-human"), ("waiting", None), ("", None)]):
+        lines, states, _ = report(tmp_path / str(i), OUTCOME="reproduced", BEFORE=json.dumps({"step": before, "layer": "cli"}) if before else "")
+        assert states[-1]["step"] == "confirmed" and added(lines, "bug:confirmed"), lines
+        took = {l for l in ("needs-info", "needs-human") if removed(lines, l)}
+        assert took == ({off} if off else set()), (before, took)
+
+
+def test_c2_the_triggers_still_come_off_and_repro_no_way_is_no_longer_read(tmp_path):
+    lines, _, _ = report(tmp_path)
+    for trigger in ("repro:run", "repro:again", "repro:retry"):
+        assert removed(lines, trigger), trigger
+    assert not any("repro:no-way" in l or "could-not-reproduce" in l or "bug:unconfirmed" in l for l in lines)
+
+
+def test_c2_a_board_that_refuses_the_state_is_said_and_the_run_goes_on(tmp_path):
+    lines, _, out = report(tmp_path, STATE_RC="3")
+    assert "did not take the reproduction's step (not-reproduced)" in out
+    assert added(lines, "needs-info") and any(l.startswith("gh issue comment 7 ") for l in lines)
+
+
+def test_c2_the_other_outcomes_say_their_step(tmp_path):
+    cases = {"no-verdict": {"OUTCOME": "limit"}, "broken": {"OUTCOME": "broken", "LABEL": "repro:retry", "SENDER_LOGIN": "dilux-bot[bot]"}}
+    for i, (want, env) in enumerate(cases.items()):
+        lines, states, _ = report(tmp_path / str(i), **env)
+        assert states[-1]["step"] == want and states[-1]["reason"], (want, states)
+        assert not added(lines, "needs-info") and not added(lines, "needs-human"), want

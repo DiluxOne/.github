@@ -1127,6 +1127,13 @@ jobs:
             python3 .dx-central/scripts/api-commit.py push "$branch" --onto HEAD~1 --force
             gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label bug:confirmed >/dev/null
             repro_state confirmed "$test fails on main"
+            # An earlier outcome's label comes off (#801), only when the
+            # board said the reproduction put it there: a `needs-info` or a
+            # `needs-human` a person or another step added stays.
+            case $before in
+              not-reproduced) gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label needs-info >/dev/null 2>&1 || true;;
+              no-way) gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label needs-human >/dev/null 2>&1 || true;;
+            esac
             # A claimed bug (#488): the person fixes it, with this test.
             # No lane issue and no draft: the next step seals the test on
             # the report, starts the claim's clock and names the branch. If
