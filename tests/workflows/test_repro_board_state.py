@@ -206,6 +206,49 @@ def test_c2_a_confirmed_run_takes_off_only_the_labels_the_reproduction_put_there
         assert took == ({off} if off else set()), (before, took)
 
 
+def test_c2_any_later_outcome_takes_off_the_label_the_earlier_step_owned(tmp_path):
+    # The review on #813: an earlier step's label left behind goes stale,
+    # and the stale sweep closes a `needs-info` issue.
+    board = lambda step_: json.dumps({"step": step_, "layer": "cli"})
+    cases = [
+        ("no-way -> not-reproduced", "no-way", {}, "needs-human", "needs-info"),
+        ("no-way -> no-verdict", "no-way", {"OUTCOME": "limit"}, "needs-human", None),
+        ("not-reproduced -> no-verdict", "not-reproduced", {"OUTCOME": "limit"}, "needs-info", None),
+        ("not-reproduced -> broken", "not-reproduced", {"OUTCOME": "broken", "LABEL": "repro:retry", "SENDER_LOGIN": "dilux-bot[bot]"}, "needs-info", None),
+        ("not-reproduced -> no-way", "not-reproduced", {"REJECTED": "css", "BROWSER": ""}, "needs-info", "needs-human"),
+    ]
+    for i, (name, before, env, off, on) in enumerate(cases):
+        lines, _, _ = report(tmp_path / str(i), BEFORE=board(before), **env)
+        assert removed(lines, off), (name, lines)
+        if on:
+            assert added(lines, on) and not removed(lines, on), (name, lines)
+
+
+def test_c2_the_same_step_again_keeps_its_label(tmp_path):
+    lines, _, _ = report(tmp_path, BEFORE=json.dumps({"step": "not-reproduced", "layer": "cli"}))
+    assert added(lines, "needs-info") and not removed(lines, "needs-info"), lines
+
+
+def test_c2_not_reproduced_then_no_verdict_then_confirmed_leaves_no_needs_info(tmp_path):
+    # The board's step after each run is the next run's `before`.
+    first, states, _ = report(tmp_path / "a", BEFORE=json.dumps({"step": "not-reproduced", "layer": "cli"}), OUTCOME="limit")
+    assert removed(first, "needs-info"), first
+    second, _, _ = report(tmp_path / "b", BEFORE=json.dumps(states[-1]), OUTCOME="reproduced")
+    assert added(second, "bug:confirmed") and not added(second, "needs-info"), second
+
+
+def test_c2_a_refused_board_takes_no_label_off(tmp_path):
+    lines, _, _ = report(tmp_path, BEFORE=json.dumps({"step": "no-way", "layer": "cli"}), STATE_RC="3")
+    assert not removed(lines, "needs-human"), lines
+
+
+def test_c2_no_way_before_any_model_takes_off_an_earlier_needs_info():
+    no_way = step(steps("issue-repro.yml", "write"), "No way reproduces it")["run"]
+    assert "state get repro" in no_way
+    assert no_way.index("receipts.py state set") < no_way.index("--remove-label needs-info")
+    assert '[ "$before" != not-reproduced ] || gh issue edit' in no_way
+
+
 def test_c2_the_triggers_still_come_off_and_repro_no_way_is_no_longer_read(tmp_path):
     lines, _, _ = report(tmp_path)
     for trigger in ("repro:run", "repro:again", "repro:retry"):

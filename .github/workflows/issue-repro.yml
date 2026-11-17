@@ -92,9 +92,10 @@ name: Issue reproduction
 # `no-verdict`, `broken`, `blocked`), the layer and the reason, which the
 # board's Reproduction row shows (scripts/receipts.py). A person acts on
 # `needs-info` (it found nothing: more information settles it) and
-# `needs-human` (no way reproduces it); a later confirmed run takes them off
-# only when the board says the reproduction put them there. A board edited
-# by hand takes no state: said, and the run goes on.
+# `needs-human` (no way reproduces it); a later run with any other outcome
+# takes them off, only when the board says the reproduction put them there
+# (`not-reproduced` owns `needs-info`, `no-way` owns `needs-human`). A board
+# edited by hand takes no state: said, and the run goes on.
 #
 # The report is untrusted, so the test written from it is untrusted code,
 # and it is kept away from every secret by construction, in three jobs:
@@ -371,10 +372,15 @@ jobs:
           set -euo pipefail
           # The outcome on the board (#801), with its reason, first; then
           # the label a person acts on. A board edited by hand refuses it:
-          # said, and the rest goes on (no label stands in for it).
+          # said, and the rest goes on (no label stands in for it). An
+          # earlier `not-reproduced` run's `needs-info` comes off with it.
+          before=$(python3 .dx-central/scripts/receipts.py state get repro 2>/dev/null | jq -r 'if type == "object" then .step // "" else "" end' 2>/dev/null) || before=""
           repro=$(jq -cn --arg layer "$LAYER" --arg reason "$WHY" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{step: "no-way", layer: $layer, reason: ($reason | .[0:300]), at: $at}')
-          python3 .dx-central/scripts/receipts.py state set "repro=$repro" >/dev/null \
-            || echo "::warning::#$NUMBER's board did not take the reproduction's step (no-way)."
+          if python3 .dx-central/scripts/receipts.py state set "repro=$repro" >/dev/null; then
+            [ "$before" != not-reproduced ] || gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label needs-info >/dev/null 2>&1 || true
+          else
+            echo "::warning::#$NUMBER's board did not take the reproduction's step (no-way)."
+          fi
           gh label create needs-human --repo "$GITHUB_REPOSITORY" --color D93F0B --description "The autopilot handed this over to a person" >/dev/null 2>&1 || true
           gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label needs-human >/dev/null
           # The way its stack proposes, when one is recognised (#377).
@@ -674,7 +680,7 @@ jobs:
           # The label that started it goes, so adding repro:again later is
           # a new event; one label per call (#267).
           for l in repro:run repro:again repro:retry repro:unblocked; do gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$l" >/dev/null 2>&1 || true; done
-          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '<!-- dx-repro-broke -->\nThe reproduction broke before it could write a test: a step of its own failed (%s), not the report. It stays %s, and a person takes it from here (%s); %s tries again once it is fixed.\n\n<sub>🤖 Issue reproduction</sub>' "$RUN_URL" "${BT}bug:unconfirmed${BT}" "${BT}needs-human${BT}" "${BT}repro:again${BT}")" >/dev/null
+          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '<!-- dx-repro-broke -->\nThe reproduction broke before it could write a test: a step of its own failed (%s), not the report. It is not confirmed, and a person takes it from here (%s); %s tries again once it is fixed.\n\n<sub>🤖 Issue reproduction</sub>' "$RUN_URL" "${BT}needs-human${BT}" "${BT}repro:again${BT}")" >/dev/null
 
   run:
     name: Run the test (no secrets)
@@ -937,17 +943,29 @@ jobs:
           # The reproduction's state on the issue's board (#801): its step,
           # the layer it ran for and the reason, in place of the labels it
           # kept. The step before this run says whether a `needs-info` or
-          # `needs-human` is the reproduction's own (`not-reproduced`,
-          # `no-way`). A board edited by hand refuses it (exit 3): said, and
-          # the run goes on; no label stands in for it.
+          # `needs-human` is the reproduction's own (`not-reproduced` owns
+          # `needs-info`, `no-way` owns `needs-human`): whenever the board
+          # takes a different step, the label the earlier one owned comes
+          # off, whatever the new outcome, so none is left behind for the
+          # stale sweep to close the issue by; one a person or another step
+          # added stays. A board edited by hand refuses it (exit 3): said,
+          # the label stays with the step the board still shows, and the
+          # run goes on; no label stands in for it.
           layer=${LAYER:-logic}
           before=$(python3 .dx-central/scripts/receipts.py state get repro 2>/dev/null | jq -r 'if type == "object" then .step // "" else "" end' 2>/dev/null) || before=""
           repro_state() {
-            local st
+            local st owned=""
             st=$(jq -cn --arg step "$1" --arg layer "$layer" --arg reason "${2:-}" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               '{step: $step, layer: $layer, reason: ($reason | .[0:300]), at: $at} | with_entries(select(.value != ""))')
-            python3 .dx-central/scripts/receipts.py state set "repro=$st" >/dev/null \
-              || echo "::warning::#$NUMBER's board did not take the reproduction's step ($1): edited by hand, or not written."
+            if ! python3 .dx-central/scripts/receipts.py state set "repro=$st" >/dev/null; then
+              echo "::warning::#$NUMBER's board did not take the reproduction's step ($1): edited by hand, or not written."
+              return 0
+            fi
+            if [ "$before" != "$1" ]; then
+              case $before in not-reproduced) owned=needs-info;; no-way) owned=needs-human;; esac
+              [ -z "$owned" ] || gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$owned" >/dev/null 2>&1 || true
+            fi
+            before=$1
           }
           sign="<sub>🤖 AI reproduction · $MODEL (Anthropic)${COST:+ · \$$COST}</sub>"
           test=$TEST; noun=${NOUN:-unit test}
@@ -1126,14 +1144,8 @@ jobs:
             # Through the API, so GitHub signs the commit (#190).
             python3 .dx-central/scripts/api-commit.py push "$branch" --onto HEAD~1 --force
             gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label bug:confirmed >/dev/null
+            # An earlier outcome's label comes off with it (#801, repro_state).
             repro_state confirmed "$test fails on main"
-            # An earlier outcome's label comes off (#801), only when the
-            # board said the reproduction put it there: a `needs-info` or a
-            # `needs-human` a person or another step added stays.
-            case $before in
-              not-reproduced) gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label needs-info >/dev/null 2>&1 || true;;
-              no-way) gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label needs-human >/dev/null 2>&1 || true;;
-            esac
             # A claimed bug (#488): the person fixes it, with this test.
             # No lane issue and no draft: the next step seals the test on
             # the report, starts the claim's clock and names the branch. If
