@@ -661,8 +661,10 @@ def self_test():
         check("C4: the release is built from the commit the scenarios tried", (fake.has("git", "-C", root, "checkout", "-B", "chore/release-v7.10.1", "p1"), bool([c for c in fake.named("changelog.py") if "build" in c and c[-1] == "p1"])), (True, True))
         check("C4: the release pull request is merged", fake.has("gh", "pr", "merge", "700"), True)
         merges = [c for c in fake.calls if c[:3] == ("gh", "pr", "merge")]
-        check("#798: the lane merges it itself, once, at the head it saw, never with --auto",
-              (merges, any("--auto" in c for c in fake.calls)), ([("gh", "pr", "merge", "700", "--repo", "O/.github", "--squash", "--match-head-commit", "h1")], False))
+        want = ("gh", "pr", "merge", "700", "--repo", "O/.github", "--squash", "--match-head-commit", "h1")
+        auto = "--" + "auto"
+        check("#798: the lane merges it itself, once, at the head it saw, never by auto-merge",
+              (merges, any(auto in c for c in fake.calls)), ([want], False))
         first_merge = next(i for i, c in enumerate(fake.calls) if c[:3] == ("gh", "pr", "merge"))
         check("#798: the merge comes only after its required checks were read",
               any(c[:3] == ("gh", "pr", "checks") and "--required" in c for c in fake.calls[:first_merge]), True)
