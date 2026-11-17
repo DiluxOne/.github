@@ -22,10 +22,11 @@
                             person merges it, 2 when it is neither lane's
                             (auto-merge.yml then decides it as any other)
   autonomy.py migrate-policy-labels [--apply]
-                            move what the policy's labels said (lane:<a lane
-                            that accepts by policy> with accepted-by:policy,
-                            merged-by:policy) onto each repository's
-                            receipts, then take them off (#804;
+                            move what the policy's labels said
+                            (accepted-by:policy beside lane:<a lane that
+                            accepts by policy>, merged-by:policy) onto each
+                            repository's receipts, then take those two off,
+                            lane:* staying (#804;
                             scripts/policy-receipts.py, which says how); a
                             dry run unless --apply
   autonomy.py --test        self-test

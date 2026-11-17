@@ -61,7 +61,7 @@ For the team of the central repository (`.github`). Each phase is a sub-issue of
 
 ### Phase 3 · The policy base
 
-- **Today:** these already exist: the lanes in `policy/autonomy.yml`, the gate that accepts a lane's label after `autonomy.py` verifies it (and rejects any other bot's), the `accepted-by:policy` and `merged-by:policy` labels, the weekly issue #118 "Decided by policy", `autopilot-rounds: 5` and the `DX_AUTOPILOT` switch. What is below is missing.
+- **Today:** these already exist: the lanes in `policy/autonomy.yml`, the gate that accepts a lane's label after `autonomy.py` verifies it (and rejects any other bot's), what the policy decided on the receipts (the lane and merge decisions, #804; once the `accepted-by:policy` and `merged-by:policy` labels), the weekly issue #118 "Decided by policy", `autopilot-rounds: 5` and the `DX_AUTOPILOT` switch. What is below is missing.
 - **Delivers:**
   - A schema for `policy/autonomy.yml`, with a default risk (medium) and a ceiling (high), majors on auto, security fixes with a 4-hour veto (dropped in phase 9: a person merges every security fix), a budget per issue, 2 jobs in parallel and 30 minutes per spike.
   - `.github/policy.yml` in each repository, with a check that does not let it pass the organisation's ceiling.
@@ -463,7 +463,7 @@ Any automatic decision is answered in three clicks: the issue's board says what 
 | What was decided on its own this week? | The weekly issue "Decided by policy" (#118) in `.github`, with everything accepted and merged by policy in the organisation |
 | Who changed the policy? | The history of `policy/autonomy.yml`: each change is a pull request a maintainer merged, by the golden rule |
 
-Everything stays in GitHub: comments, checks and labels (`accepted-by:policy`, `merged-by:policy`). There is no separate system to maintain.
+Everything stays in GitHub: comments, checks, labels, and the receipts branch, where what the policy decided in a person's place is recorded (#804, once the labels `accepted-by:policy` and `merged-by:policy`). There is no separate system to maintain.
 
 ## PRD, Spec and receipts
 

@@ -22,14 +22,17 @@ repository of repos.yml but its `exclude` list:
     force is that lane; its merge decision in force is for its head) gets
     no new record: a second run writes nothing and takes nothing off.
 
-The labels it moves (the Spec's choice (a)): `lane:<name>` of every lane
-whose `accept` is `policy` in policy/autonomy.yml, together with
-`accepted-by:policy`, and `merged-by:policy` on a pull request. A lane a
-person accepts (`lane:release`, `lane:adopt`) keeps its label: it routes,
-and proves no decision by policy. `accepted-by:policy` with no such lane (a
-release plan, a milestone), a policy lane's label without it (a lane that
-refused) and `merged-by:policy` on an issue prove no lane's decision: they
-stay, and the run lists them.
+The labels it moves, as the maintainer answered: `accepted-by:policy` on an
+issue whose one `lane:<name>` is a lane that accepts by policy in
+policy/autonomy.yml, and `merged-by:policy` on a pull request. The lane's
+label stays: it routes (security-patch.yml and sync-repos.py add it, the
+`if:` routes fire on it), and autonomy.py reads its LabeledEvent as the
+lane's evidence. A planned release (`lane:release`, opened by dilux-bot,
+`accepted-by:policy` added by dilux-bot) gets the plan's lane decision by
+policy/autonomy.yml#planned-release, which release-issue.py verify now
+reads. `accepted-by:policy` with neither (a lane that refused, more than
+one lane) and `merged-by:policy` on an issue prove no decision: they stay,
+unless the receipts already hold a lane in force, and the run lists them.
 
   policy-receipts.py migrate [--apply]
                            a dry run unless --apply: says what it would
@@ -76,7 +79,11 @@ def policy_lanes(policy):
 
 
 def labels_to_find(lanes):
-    return [f"lane:{n}" for n in lanes] + [ACCEPTED, MERGED]
+    return [ACCEPTED, MERGED]
+
+
+PLANNED_RULE = "policy/autonomy.yml#planned-release"
+BOTS = {org.APP, org.BOT, f"{org.APP}[bot]", f"app/{org.APP}"}
 
 
 def proofs(item, lanes):
@@ -91,15 +98,17 @@ def proofs(item, lanes):
             left.append(f"{label} on a pull request proves no lane's decision")
         return found, left
     mine = sorted(n for n in lanes if f"lane:{n}" in labels)
-    if len(mine) == 1 and ACCEPTED in labels:
-        found.append(("lane", mine[0], [f"lane:{mine[0]}", ACCEPTED]))
-    elif len(mine) > 1:
+    adder = ((item.get("events") or {}).get(ACCEPTED) or {}).get("by") or ""
+    if ACCEPTED in labels and len(mine) == 1:
+        found.append(("lane", mine[0], [ACCEPTED]))
+    elif ACCEPTED in labels and len(mine) > 1:
         left.append("two policy lanes: " + ", ".join(f"lane:{n}" for n in mine))
-    elif mine:
-        # Its lane did not accept it, unless a run took ACCEPTED off and
-        # failed before this one: the receipts say which (migrate_item).
-        found.append(("rest", mine[0], [f"lane:{mine[0]}"]))
+    elif ACCEPTED in labels and "lane:release" in labels and item.get("author") in BOTS and adder in BOTS:
+        # A planned release (#247): the plan's acceptance.
+        found.append(("plan", "release", [ACCEPTED]))
     elif ACCEPTED in labels:
+        # No lane that accepts by policy, unless the receipts hold one in
+        # force already (migrate_item).
         found.append(("rest", None, [ACCEPTED]))
     if MERGED in labels:
         left.append(f"{MERGED} on an issue proves no merge")
@@ -111,15 +120,16 @@ def evidence(item, labels):
     return {"migrated": {l: events.get(l) for l in labels}}
 
 
-def lane_record(item, lane, labels, policy_ref, run):
+def lane_record(item, lane, labels, policy_ref, run, rule=None):
     """The lane decision a migrated issue gets: when, and by whom, its lane's
-    acceptance (`accepted-by:policy`) was labelled."""
+    acceptance (`accepted-by:policy`) was labelled; its evidence the lane's
+    label's last event too, the label that stays."""
     events = item.get("events") or {}
-    ev = events.get(ACCEPTED) or events.get(f"lane:{lane}") or {}
+    ev = events.get(ACCEPTED) or {}
     at = ev.get("at") or item.get("created_at")
-    rec = receipts.lane_decision(item["number"], lane, policy_ref, at, run, evidence(item, labels))
+    rec = receipts.lane_decision(item["number"], lane, policy_ref, at, run, evidence(item, [f"lane:{lane}"] + list(labels)), rule=rule)
     rec["decided_by"] = ev.get("by") or "?"
-    rec["migrated_from"] = f"lane:{lane}"
+    rec["migrated_from"] = ACCEPTED
     return rec
 
 
@@ -161,15 +171,15 @@ def migrate_item(io, repo, item, lanes, apply):
     for kind, lane, labels in found:
         what = ", ".join(labels)
         if kind == "rest":
-            # What a run that failed half-way left: one of the two labels,
-            # taken off once the receipts hold that lane's acceptance.
+            # accepted-by:policy with no policy lane's label: taken off only
+            # when the receipts already hold a policy lane's acceptance.
             try:
                 in_force = receipts.lane_in_force(io.lane_decisions(repo, n))
             except Exception as e:  # noqa: BLE001
                 out.append(("failed", f"{name}: its receipts could not be read ({e}); {what} stays"))
                 continue
-            if not in_force or (lane and in_force.get("lane") != lane) or (not lane and in_force.get("lane") not in lanes):
-                why = f"lane:{lane} without {ACCEPTED}: its lane did not accept it" if lane else f"{ACCEPTED} with no lane that accepts by policy"
+            if not in_force or in_force.get("lane") not in lanes:
+                why = f"{ACCEPTED} with no lane that accepts by policy"
                 out.append(("left", f"{name}: {why}; its label stays"))
             elif not is_open:
                 out.append(("proven", f"{name} ({item.get('state')}): already on its receipts; {what} kept"))
@@ -185,18 +195,18 @@ def migrate_item(io, repo, item, lanes, apply):
                 out.append(("migrated", f"{name}: {what} taken off, already on its receipts"))
             continue
         try:
-            if kind == "lane":
+            if kind in ("lane", "plan"):
                 in_force = receipts.lane_in_force(io.lane_decisions(repo, n))
-                have = bool(in_force and in_force.get("lane") == lane)
+                have = bool(in_force and in_force.get("lane") == lane and (kind == "lane" or in_force.get("rule") == PLANNED_RULE))
             else:
                 have = bool(receipts.merge_in_force(io.merge_decisions(repo, n), item.get("head")))
         except Exception as e:  # noqa: BLE001 — unread is never "already proven"
             out.append(("failed", f"{name}: its receipts could not be read ({e}); {', '.join(labels)} stay"))
             continue
         if not have:
-            if kind == "lane":
-                at = ((item.get("events") or {}).get(ACCEPTED) or (item.get("events") or {}).get(labels[0]) or {}).get("at") or item.get("created_at")
-                rec = lane_record(item, lane, labels, io.policy_at(at), io.run())
+            if kind in ("lane", "plan"):
+                at = ((item.get("events") or {}).get(ACCEPTED) or {}).get("at") or item.get("created_at")
+                rec = lane_record(item, lane, labels, io.policy_at(at), io.run(), PLANNED_RULE if kind == "plan" else None)
                 path = f"issues/{n}/lane-{io.now()}.json"
             else:
                 if not item.get("head"):
@@ -259,7 +269,7 @@ def migrate(io, repos, lanes, since, apply):
 
 # --- GitHub ------------------------------------------------------------------
 
-ITEM_FIELDS = """number state createdAt labels(first:50){nodes{name}}
+ITEM_FIELDS = """number state createdAt author{login} labels(first:50){nodes{name}}
 timelineItems(itemTypes:[LABELED_EVENT],last:100){nodes{... on LabeledEvent{createdAt label{name} actor{login}}}}"""
 SEARCH = ("query($q:String!,$after:String){search(query:$q,type:ISSUE,first:50,after:$after){pageInfo{hasNextPage endCursor}"
           "nodes{__typename ... on Issue{" + ITEM_FIELDS + "} ... on PullRequest{" + ITEM_FIELDS
@@ -277,7 +287,7 @@ def item_of(node):
     names = lambda n: [l.get("name") for l in ((n.get("labels") or {}).get("nodes") or [])]
     return {"number": node["number"], "is_pr": node.get("__typename") == "PullRequest",
             "state": (node.get("state") or "").lower() if node.get("state") == "OPEN" else "closed",
-            "created_at": node.get("createdAt"), "labels": names(node), "events": events, "head": node.get("headRefOid"),
+            "created_at": node.get("createdAt"), "author": (node.get("author") or {}).get("login"), "labels": names(node), "events": events, "head": node.get("headRefOid"),
             "closes": [{"number": c["number"], "labels": names(c)} for c in ((node.get("closingIssuesReferences") or {}).get("nodes") or [])]}
 
 
@@ -419,8 +429,7 @@ def self_test():
                         "adopt": {"accept": "human"}, "org-sync": {"accept": "policy"}}}
     lanes = policy_lanes(policy)
     check("the lanes that accept by policy, from the policy", lanes, ["bugfix-reproduced", "org-sync", "platform"])
-    check("the labels it looks for", labels_to_find(lanes),
-          ["lane:bugfix-reproduced", "lane:org-sync", "lane:platform", ACCEPTED, MERGED])
+    check("the labels it looks for: only the policy's two; a lane's label is no decision", labels_to_find(lanes), [ACCEPTED, MERGED])
     R = "DiluxOne/x"
 
     def issue(n, labels, state="open", closed_at=None):
@@ -445,11 +454,11 @@ def self_test():
         r = next(i for i, e in enumerate(fake.log) if e[0] == "read" and e[2].startswith(path))
         rm = [i for i, e in enumerate(fake.log) if e[0] == "remove" and e[2] == n]
         check(f"C3: #{n} written, read back, then its labels taken off", bool(rm) and w < r < min(rm), True)
-    check("C3: the labels it moved are off, the others stay", [i["labels"] for i in items], [["type:task"], []])
+    check("C3: the labels it moved are off; the lane's label, which routes, and the others stay", [i["labels"] for i in items], [["lane:platform", "type:task"], []])
     lane = receipts.lane_in_force(fake.lane_decisions(R, 1))
     check("C3: the lane decision names the lane, the rule, who and when",
           (lane["lane"], lane["rule"], lane["decided"], lane["decided_by"], lane["at"], lane["migrated_from"], lane["policy"]),
-          ("platform", "policy/autonomy.yml#lanes.platform", "policy", "dilux-bot", "2026-11-11T09:00:00Z", "lane:platform", "DiluxOne/.github@" + "a" * 40))
+          ("platform", "policy/autonomy.yml#lanes.platform", "policy", "dilux-bot", "2026-11-11T09:00:00Z", ACCEPTED, "DiluxOne/.github@" + "a" * 40))
     check("C3: its evidence is the labels' last adders", lane["evidence"]["migrated"][ACCEPTED], {"by": "dilux-bot", "at": "2026-11-11T09:00:00Z"})
     merge = receipts.merge_in_force(fake.merge_decisions(R, 2), "c0ffee")
     check("C3: the merge decision is for its head, by its issue's lane",
@@ -509,15 +518,15 @@ def self_test():
     fake = Fake([issue(13, ["lane:platform", ACCEPTED])],
                 {f"{R}/issues/13/lane-2026-11-16T00:00:00Z.json": receipts.lane_decision(13, "platform", "b", "2026-11-16T00:00:00Z", None, None)})
     migrate(fake, [R], lanes, "2026-11-10", True)
-    check("C3: already proven: no new record, labels off",
-          ([e for e in fake.log if e[0] == "write"], fake.items_[0]["labels"]), ([], []))
+    check("C3: already proven: no new record, accepted-by:policy off, the lane's label kept",
+          ([e for e in fake.log if e[0] == "write"], fake.items_[0]["labels"]), ([], ["lane:platform"]))
     withdrawn = receipts.lane_decision(14, "platform", "b", "2026-11-16T00:00:00Z", None, None, "withdrawn")
     fake = Fake([issue(14, ["lane:platform", ACCEPTED])], {f"{R}/issues/14/lane-2026-11-16T00:00:00Z.json": withdrawn})
     migrate(fake, [R], lanes, "2026-11-10", True)
     check("C3: a withdrawn decision is no proof: a record is written", len([e for e in fake.log if e[0] == "write"]), 1)
 
-    # A run that took one label off and failed on the other: the next one
-    # takes the rest off, from the receipts.
+    # A run that wrote the record and failed to take the label off: the
+    # next one takes it off, from the receipts.
     class HalfOff(Fake):
         def remove_label(self, repo, n, label):
             if label == ACCEPTED and not getattr(self, "healed", False):
@@ -526,16 +535,30 @@ def self_test():
     fake = HalfOff([issue(15, ["lane:platform", ACCEPTED])])
     lines, bad = migrate(fake, [R], lanes, "2026-11-10", True)
     check("C3: a label that could not be taken off fails the run, its record kept",
-          (bad, fake.items_[0]["labels"], len(fake.lane_decisions(R, 15))), (True, [ACCEPTED], 1))
+          (bad, fake.items_[0]["labels"], len(fake.lane_decisions(R, 15))), (True, ["lane:platform", ACCEPTED], 1))
     fake.healed = True
     fake.log.clear()
     lines, bad = migrate(fake, [R], lanes, "2026-11-10", True)
-    check("C3: the next run takes the rest off and writes nothing",
+    check("C3: the next run takes it off and writes nothing",
+          (bad, fake.items_[0]["labels"], [e for e in fake.log if e[0] == "write"]), (False, ["lane:platform"], []))
+    # accepted-by:policy alone, whose receipts hold a policy lane in force: taken off.
+    fake = Fake([issue(16, [ACCEPTED])], {f"{R}/issues/16/lane-2026-11-16T00:00:00Z.json": receipts.lane_decision(16, "org-sync", "b", "2026-11-16T00:00:00Z", None, None)})
+    lines, bad = migrate(fake, [R], lanes, "2026-11-10", True)
+    check("C3: accepted-by:policy alone, a policy lane in force on the receipts: taken off, nothing written",
           (bad, fake.items_[0]["labels"], [e for e in fake.log if e[0] == "write"]), (False, [], []))
+    # A planned release in flight (#247): the plan's decision, then the label off; lane:release stays.
+    plan = dict(issue(17, ["lane:release", ACCEPTED]), author="dilux-bot")
+    fake = Fake([plan])
+    lines, bad = migrate(fake, [R], lanes, "2026-11-10", True)
+    got = fake.lane_decisions(R, 17)
+    check("C3: a planned release gets the plan's lane decision before accepted-by:policy comes off",
+          (bad, plan["labels"], [(d["lane"], d["rule"], d["migrated_from"], d["decided_by"]) for d in got]),
+          (False, ["lane:release"], [("release", PLANNED_RULE, ACCEPTED, "dilux-bot")]))
+    check("C3: a planned release the receipts already hold writes nothing more", (migrate(Fake([dict(plan, labels=["lane:release", ACCEPTED])], dict(fake.files)), [R], lanes, "2026-11-10", True)[1]), False)
 
     # What proves no lane's decision stays, and is said.
     cases = [(issue(20, [ACCEPTED, "lane:release"]), "no lane that accepts by policy"),
-             (issue(21, ["lane:platform"]), "its lane did not accept it"),
+             (dict(issue(21, [ACCEPTED, "lane:release"]), author="someone"), "no lane that accepts by policy"),
              (issue(22, ["lane:platform", "lane:org-sync", ACCEPTED]), "two policy lanes"),
              (issue(23, [MERGED]), "proves no merge"),
              (pull(24, [ACCEPTED]), "on a pull request proves no lane's decision")]
@@ -552,7 +575,7 @@ def self_test():
                                         {"createdAt": "t2", "label": {"name": MERGED}, "actor": {"login": "dilux-bot"}}, {}]},
             "closingIssuesReferences": {"nodes": [{"number": 29, "labels": {"nodes": [{"name": "lane:org-sync"}]}}]}}
     check("item_of: the label's last adder, the head, the issues it closes", item_of(node),
-          {"number": 30, "is_pr": True, "state": "closed", "created_at": "t0", "labels": [MERGED],
+          {"number": 30, "is_pr": True, "state": "closed", "created_at": "t0", "author": None, "labels": [MERGED],
            "events": {MERGED: {"by": "dilux-bot", "at": "t2"}}, "head": "abc", "closes": [{"number": 29, "labels": ["lane:org-sync"]}]})
     check("item_of: an open issue", item_of({"__typename": "Issue", "number": 1, "state": "OPEN"})["state"], "open")
     check("adopted: repos.yml's repositories but its exclude list",

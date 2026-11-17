@@ -4,11 +4,13 @@ name: The policy's labels onto the receipts
 # a person's place, once kept in labels anyone with write access could add or
 # take off, onto each repository's receipts branch, which only dilux-bot
 # writes (scripts/receipts.py). In every repository of repos.yml but its
-# exclude list, every open issue and pull request carrying `lane:<a lane that
-# accepts by policy>` with `accepted-by:policy`, or `merged-by:policy`, gets
-# the matching lane or merge decision, written from the label's last
+# exclude list, every open issue carrying `accepted-by:policy` beside
+# `lane:<a lane that accepts by policy>` (or a planned release's
+# `lane:release`), and every open pull request carrying `merged-by:policy`,
+# gets the matching lane or merge decision, written from the label's last
 # LabeledEvent (who, when, the policy's commit in force then); the record is
-# read back, and only then is the label taken off. One closed in the last
+# read back, and only then is the policy's label taken off. `lane:*` stays:
+# it routes, and autonomy.py reads its event as the lane's evidence. One closed in the last
 # seven days gets its record and keeps its labels, so the weekly digest
 # (autonomy-digest.yml) still lists that week. A write or read-back that
 # fails leaves the label on and fails the run; a second run does nothing
@@ -21,10 +23,10 @@ name: The policy's labels onto the receipts
 # and pull requests write, to take the labels off; contents write, for the
 # receipts branches), the same reach org-drift.yml's sync has.
 #
-# Apply it once the lanes' readers and writers (scripts/autonomy.py,
-# auto-merge.yml, issue-accepted.yml and the others #804's Spec names) read
-# and write the receipts: while they still read the labels, an open item
-# whose label it took off is decided by a person, never by policy.
+# Apply it once this change is on main: from then on the writers
+# (auto-merge.yml, issue-accepted.yml, issue-repro.yml, runner-image.yml,
+# claim.py, milestones.py, sync-repos.py) write the receipts and the readers
+# (the receipt job, release-issue.py verify, the digest) read them.
 
 on:
   workflow_dispatch:

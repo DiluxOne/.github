@@ -248,9 +248,10 @@ def wait_verdict(get, tries, sleep):
 
 
 # --- what the policy decided in a person's place (#804; pure, tested) -------
-# Once labels (`lane:*`, `accepted-by:policy`, `merged-by:policy`) anyone
-# with write access could add or take off; now records on the receipts
-# branch, which only dilux-bot writes, append-only: the last one is in force.
+# Once labels (`accepted-by:policy`, `merged-by:policy`) anyone with write
+# access could add or take off; now records on the receipts branch, which
+# only dilux-bot writes, append-only: the last one is in force. A lane's
+# label (`lane:*`) stays, to route; it decides nothing here.
 
 LANE_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,49}$")
 RULE_TEXT = re.compile(r"^[A-Za-z0-9._/#-]{1,200}$")
