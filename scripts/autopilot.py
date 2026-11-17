@@ -3541,6 +3541,10 @@ Clamp the value in Sum::add.
               (rc, went, out, "gh issue comment 7" in calls, "could not tell whether the fix" in calls), (0, False, "go=false\n", True, True))
         rc, went, calls, out = taken_gate("continue", 1)
         check("#807 C1 a continue does not ask: it already has its pull request", (rc, went, out, calls), (0, True, "", ""))
+        rc, went, calls, out = taken_gate("start", 0)
+        check("#807 C3 nothing took it: the step goes on, to `lane` and `may-start` as today",
+              (rc, went, out, "autopilot.py board" in calls, "gh " in calls, at("autopilot.py taken") < at("autopilot.py lane") < at("autopilot.py may-start")),
+              (0, True, "", False, False, True))
         cap = int(autonomy.policy_in_force().get("autopilot-rounds", 3))
         failing = [{"id": 11, "name": "Scripts (self-tests)", "conclusion": "failure"}]
         rc, calls, out = gate(cap + 1, failing)
@@ -3648,6 +3652,10 @@ Clamp the value in Sum::add.
     check("#807 C2 taken: the first time, it comments on the report with the links", (rc, len(posted), posted and posted[0][2], posted and "[#21](" in posted[0][-1]), (1, 1, "7", True))
     check("#807 C2 taken: dilux-bot's marker already there, it posts nothing", taken_cmd([mine]), (1, []))
     check("#807 C2 taken: a marker in a person's comment does not count", len(taken_cmd([{**mine, "user": {"login": "mallory"}}])[1]), 1)
+    # #807 C3: nothing took it, the autopilot starts as it does today.
+    check("#807 C3 taken_by: no lane issue for the report and no open pull request that closes it is nothing",
+          (taken_by(7, [], []), taken_by(7, [{**lane807, "title": "The bug reproduced from #8"}], [{**pr807, "state": "CLOSED"}])), ({}, {}))
+    check("#807 C3 taken: nothing took it, exit 0 and no comment", (taken_cmd([], lanes=()), taken_cmd([], lanes=({**lane807, "title": "The bug reproduced from #8"},))), ((0, []), (0, [])))
     # C10: an adopted pull request's author is a co-author of every commit
     # the autopilot pushes from it.
     rec = {"pr": 41, "author": "ana", "author_id": 77, "sha": "c" * 40, "branch": "feat/7-adopted-41", "by": "soydiloreto"}
