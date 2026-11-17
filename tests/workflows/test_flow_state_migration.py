@@ -137,3 +137,16 @@ def test_c2_a_run_migrates_its_own_items_before_it_counts():
     reply = yaml.safe_load((ROOT / ".github/workflows/review-reply.yml").read_text(encoding="utf-8"))["jobs"]["answer"]["steps"]
     back = next(s for s in reply if s.get("id") == "back")["run"]
     assert back.index("receipts.py migrate") < back.index("state get asked")
+
+
+def test_c2_a_fixture_without_labels_gets_no_call_log(tmp_path):
+    """The call log is the migration's world only: another script's fixture
+    (triage-act.sh's seals, which must stay empty when nothing is sealed) is
+    left as its test made it."""
+    fx = tmp_path / "fx"
+    fx.mkdir()
+    env = dict(os.environ, RECEIPTS_FIXTURE=str(fx), GITHUB_REPOSITORY="o/r", NUMBER="7")
+    done = subprocess.run([sys.executable, str(RECEIPTS), "state", "get", "asked"], env=env,
+                          capture_output=True, text=True, timeout=60)
+    assert done.returncode in (0, 1), done.stdout + done.stderr
+    assert not (fx / "calls.log").exists()

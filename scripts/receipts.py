@@ -320,9 +320,12 @@ def state_from_labels(labels, state, core=None):
 
 def fixture_log(line):
     """Under RECEIPTS_FIXTURE, what was read, written and taken off, in
-    order (calls.log), for the self-test and the migration's test."""
-    if os.environ.get("RECEIPTS_FIXTURE"):
-        with open(os.path.join(os.environ["RECEIPTS_FIXTURE"], "calls.log"), "a", encoding="utf-8") as f:
+    order (calls.log), for the self-test and the migration's test. Only a
+    fixture that holds the items' labels (labels/, the migration's world)
+    gets the log: any other fixture is left as its test made it."""
+    fx = os.environ.get("RECEIPTS_FIXTURE")
+    if fx and os.path.isdir(os.path.join(fx, "labels")):
+        with open(os.path.join(fx, "calls.log"), "a", encoding="utf-8") as f:
             f.write(line + "\n")
 
 
