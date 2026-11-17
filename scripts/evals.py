@@ -107,6 +107,42 @@ RUBRIC = ("Pass when the reply answers the last comment of the thread on its own
 JUDGE_SCHEMA = '{"type":"object","additionalProperties":false,"required":["pass","why"],"properties":{"pass":{"type":"boolean"},"why":{"type":"string","maxLength":600}}}'
 
 
+# What a case of each step holds beside `id`, `repo` and `expect` (C1).
+FIELDS = {"triage": ["issue", "title", "body", "base", "others"], "repro": ["issue", "base", "merged", "test", "layer"],
+          "spec": ["issue", "pr", "base", "merged"], "autopilot": ["issue", "pr", "base", "merged", "tests"],
+          "review": ["pr", "title", "base", "head"], "reply": ["pr", "base", "head", "thread", "rubric"]}
+SHA = re.compile(r"[0-9a-f]{40}")
+
+
+def problems(step, cases):
+    """What is wrong with a step's cases, [] when nothing: each has its id
+    (once), a repository of the organisation, its step's fields, refs that
+    are commits, an `expect` its grade reads, and a rubric only on reply."""
+    out, seen = [], set()
+    for c in cases if isinstance(cases, list) else []:
+        cid = c.get("id") if isinstance(c, dict) else None
+        if not cid or cid in seen:
+            out.append(f"{step}: a case with no id, or twice: {cid!r}")
+            continue
+        seen.add(cid)
+        if not re.fullmatch(re.escape(org.ORG) + r"/[A-Za-z0-9._-]+", str(c.get("repo") or "")):
+            out.append(f"{cid}: repo {c.get('repo')!r} is not one of {org.ORG}'s")
+        out += [f"{cid}: no {f}" for f in FIELDS[step] if f not in c]
+        out += [f"{cid}: {r} is not a commit" for r in ("base", "head", "merged") if r in c and not SHA.fullmatch(str(c[r]))]
+        if ("rubric" in c) != (step == "reply") or (step == "reply" and not str(c.get("rubric") or "").strip()):
+            out.append(f"{cid}: a rubric only on reply, and there always")
+        e = c.get("expect")
+        ok = {"triage": isinstance(e, dict) and {"category", "duplicate_of", "exists_in_pro"} <= set(e) and bool(e.get("category")),
+              "repro": e == "reproduced", "spec": isinstance(e, dict) and bool(e.get("files")) and 0 < e.get("min_recall", 0) <= 1,
+              "autopilot": e == "pass" and bool(c.get("tests")), "review": e in ("flag", "clean") and (e == "clean" or bool(c.get("path"))),
+              "reply": e == "resolved" and bool(c.get("thread"))}[step]
+        if not ok:
+            out.append(f"{cid}: expect {e!r} is not what the {step} grade reads")
+    if not isinstance(cases, list):
+        out.append(f"{step}: cases.json is not a list")
+    return out
+
+
 def cases_file(step):
     return os.path.join(EVALS, step, "cases.json")
 
@@ -983,6 +1019,21 @@ def self_test():
           (tc["expect"], [o["number"] for o in tc["others"]], tc["base"]), ({"category": "duplicate", "duplicate_of": 2, "exists_in_pro": False}, [2], "abc"))
     check("triage cases: none without a bot's record", triage_case("o/r", issue, [{"user": {"type": "User"}, "body": rec[0]["body"]}], issues, "abc"), None)
     check("round robin: round the repositories", [c["id"] for c in round_robin([[{"id": "a1"}, {"id": "a2"}], [{"id": "b1"}]], 2)], ["a1", "b1"])
+
+    # A set's shape (C1).
+    good = {"id": "o#1:repro", "repo": f"{org.ORG}/x", "issue": 1, "base": "a" * 40, "merged": "b" * 40, "test": "t.py", "layer": "logic", "expect": "reproduced"}
+    check("problems: a good case has none; another organisation's, a missing field, a ref that is not a commit, a rubric, a wrong expect, each one",
+          (problems("repro", [good]), len(problems("repro", [{**good, "repo": "x/y"}])), problems("repro", [{k: v for k, v in good.items() if k != "test"}]),
+           problems("repro", [{**good, "base": "main"}]), problems("repro", [{**good, "rubric": "r"}]), problems("repro", [{**good, "expect": "pass"}]),
+           problems("repro", [good, good])),
+          ([], 1, ["o#1:repro: no test"], ["o#1:repro: base is not a commit"], ["o#1:repro: a rubric only on reply, and there always"],
+           ["o#1:repro: expect 'pass' is not what the repro grade reads"], ["repro: a case with no id, or twice: 'o#1:repro'"]))
+    check("problems: the reply's case needs its rubric", any("rubric" in p for p in problems("reply", [{"id": "r", "repo": f"{org.ORG}/x", "pr": 1, "base": "a" * 40,
+                                                                                                 "head": "b" * 40, "thread": [{}], "expect": "resolved"}])), True)
+    for step in STEPS:
+        if os.path.exists(cases_file(step)):
+            with open(cases_file(step), encoding="utf-8") as fh:
+                check(f"problems: evals/{step}/cases.json is well formed", problems(step, json.load(fh)), [])
 
     # The git-derived sets, on a repository made here.
     with tempfile.TemporaryDirectory() as d:

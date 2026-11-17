@@ -1,0 +1,81 @@
+[
+  {
+    "id": "DiluxOne/.github#672:autopilot",
+    "repo": "DiluxOne/.github",
+    "issue": 672,
+    "pr": 674,
+    "title": "feat: the daily drift check brings workflow callers in step by itself (#674)",
+    "base": "845800de02bd47f2c109da837f094492b4b18ac2",
+    "merged": "0e30df911de3dec5ad346c4e0b8dfc5189f85779",
+    "tests": [
+      "tests/workflows/test_org_drift_callers.py"
+    ],
+    "expect": "pass"
+  },
+  {
+    "id": "DiluxOne/.github#679:autopilot",
+    "repo": "DiluxOne/.github",
+    "issue": 679,
+    "pr": 680,
+    "title": "fix: the pre-pr failure excerpt shows the log's tail, not the error (#680)",
+    "base": "0e30df911de3dec5ad346c4e0b8dfc5189f85779",
+    "merged": "0283f93e842c127abedcd92cd374b0bdc465ed62",
+    "tests": [
+      "tests/workflows/test_autopilot_prepr_after_agent.py"
+    ],
+    "expect": "pass"
+  },
+  {
+    "id": "DiluxOne/.github#690:autopilot",
+    "repo": "DiluxOne/.github",
+    "issue": 690,
+    "pr": 691,
+    "title": "fix: the release lane times out in the scenarios and opens no bug (#691)",
+    "base": "bea3700106cb22ac95a8231c08effc753c2757e5",
+    "merged": "ef56bd994ac63510404aa7b222945b30882e63bd",
+    "tests": [
+      "tests/workflows/test_release_lane_wiring.py"
+    ],
+    "expect": "pass"
+  },
+  {
+    "id": "DiluxOne/.github#741:autopilot",
+    "repo": "DiluxOne/.github",
+    "issue": 741,
+    "pr": 746,
+    "title": "fix: an autopilot pull request whose checks fail is never fixed (#746)",
+    "base": "24dea17a3351be9af76d2affd6a47b1a084f3f56",
+    "merged": "545af68294f0bfd34942ddf845538c5c287d6343",
+    "tests": [
+      "tests/workflows/test_autopilot_rounds.py",
+      "tests/workflows/test_queue_drop_fix.py"
+    ],
+    "expect": "pass"
+  },
+  {
+    "id": "DiluxOne/.github#754:autopilot",
+    "repo": "DiluxOne/.github",
+    "issue": 754,
+    "pr": 755,
+    "title": "fix: the test repository's pipeline check fails on a cancelled view (#755)",
+    "base": "4622926a53d6e9bf5fa3dd58551ff1d7b2a1f76e",
+    "merged": "249f2515eb76012b639c7def870def1952b43a5c",
+    "tests": [
+      "tests/workflows/test_test_repo_pipeline.py"
+    ],
+    "expect": "pass"
+  },
+  {
+    "id": "DiluxOne/.github#768:autopilot",
+    "repo": "DiluxOne/.github",
+    "issue": 768,
+    "pr": 777,
+    "title": "fix: a review that starts too soon sees no files and says high risk (#777)",
+    "base": "cfdb1807dbaca22f91de77de4d12aa5c10000b2b",
+    "merged": "fc8c4cfe8e96c299e7cd92a7528b013d454ff53d",
+    "tests": [
+      "tests/workflows/test_policy_floor_files_wiring.py"
+    ],
+    "expect": "pass"
+  }
+]

@@ -1,0 +1,172 @@
+[
+  {
+    "id": "DiluxOne/.github#669:spec",
+    "repo": "DiluxOne/.github",
+    "issue": 669,
+    "pr": 670,
+    "title": "fix: a merge outside .github leaves autopilot PRs in conflict for up to an hour (#670)",
+    "base": "83f8a0d2700ee089af71a2ce3712ac4db0c48dd5",
+    "merged": "f142617e3dad0d11424b66b833c49e6afec99157",
+    "expect": {
+      "files": [
+        ".github/workflows/autopilot-sweep.yml",
+        ".github/workflows/issues.yml",
+        ".github/workflows/pull-request.yml",
+        "docs/workflows.md",
+        "scripts/sync-repos.py",
+        "tests/release/scenarios.yml",
+        "tests/workflows/test_autopilot_main_merge.py",
+        "tests/workflows/test_autopilot_sweep_draft.py",
+        "tests/workflows/test_autopilot_sweep_on_merge.py",
+        "workflow-templates/issues.yml"
+      ],
+      "min_recall": 0.5
+    }
+  },
+  {
+    "id": "DiluxOne/.github#672:spec",
+    "repo": "DiluxOne/.github",
+    "issue": 672,
+    "pr": 674,
+    "title": "feat: the daily drift check brings workflow callers in step by itself (#674)",
+    "base": "845800de02bd47f2c109da837f094492b4b18ac2",
+    "merged": "0e30df911de3dec5ad346c4e0b8dfc5189f85779",
+    "expect": {
+      "files": [
+        ".github/workflows/org-drift.yml",
+        "docs/adopting.md",
+        "docs/maintaining.md",
+        "docs/workflows.md",
+        "scripts/sync-repos.py",
+        "tests/workflows/test_org_drift_callers.py"
+      ],
+      "min_recall": 0.5
+    }
+  },
+  {
+    "id": "DiluxOne/.github#673:spec",
+    "repo": "DiluxOne/.github",
+    "issue": 673,
+    "pr": 675,
+    "title": "fix: run make pre-pr after the agent, in a job of its own (#675)",
+    "base": "f142617e3dad0d11424b66b833c49e6afec99157",
+    "merged": "c2dfd08512d8c835c7c94b67b791da43bef3928d",
+    "expect": {
+      "files": [
+        ".github/workflows/autopilot.yml",
+        "CONTRIBUTING.md",
+        "docs/agents.md",
+        "docs/workflows.md",
+        "scripts/autopilot.py",
+        "tests/workflows/test_autopilot_foreground_wiring.py",
+        "tests/workflows/test_autopilot_prepr_after_agent.py"
+      ],
+      "min_recall": 0.5
+    }
+  },
+  {
+    "id": "DiluxOne/.github#679:spec",
+    "repo": "DiluxOne/.github",
+    "issue": 679,
+    "pr": 680,
+    "title": "fix: the pre-pr failure excerpt shows the log's tail, not the error (#680)",
+    "base": "0e30df911de3dec5ad346c4e0b8dfc5189f85779",
+    "merged": "0283f93e842c127abedcd92cd374b0bdc465ed62",
+    "expect": {
+      "files": [
+        ".github/workflows/autopilot.yml",
+        "docs/workflows.md",
+        "scripts/autopilot.py",
+        "tests/workflows/test_autopilot_prepr_after_agent.py"
+      ],
+      "min_recall": 0.5
+    }
+  },
+  {
+    "id": "DiluxOne/.github#690:spec",
+    "repo": "DiluxOne/.github",
+    "issue": 690,
+    "pr": 691,
+    "title": "fix: the release lane times out in the scenarios and opens no bug (#691)",
+    "base": "bea3700106cb22ac95a8231c08effc753c2757e5",
+    "merged": "ef56bd994ac63510404aa7b222945b30882e63bd",
+    "expect": {
+      "files": [
+        ".github/workflows/release-lane.yml",
+        "docs/versioning.md",
+        "scripts/release-lane.py",
+        "tests/workflows/test_release_lane_wiring.py"
+      ],
+      "min_recall": 0.5
+    }
+  },
+  {
+    "id": "DiluxOne/.github#741:spec",
+    "repo": "DiluxOne/.github",
+    "issue": 741,
+    "pr": 746,
+    "title": "fix: an autopilot pull request whose checks fail is never fixed (#746)",
+    "base": "24dea17a3351be9af76d2affd6a47b1a084f3f56",
+    "merged": "545af68294f0bfd34942ddf845538c5c287d6343",
+    "expect": {
+      "files": [
+        ".github/workflows/autopilot.yml",
+        ".github/workflows/org-pull-request.yml",
+        ".github/workflows/pull-request.yml",
+        "docs/pull-requests.md",
+        "docs/workflows.md",
+        "scripts/autopilot.py",
+        "scripts/fixtures/waiting.json",
+        "scripts/waiting.py",
+        "tests/workflows/test_autopilot_rounds.py",
+        "tests/workflows/test_queue_drop_fix.py"
+      ],
+      "min_recall": 0.5
+    }
+  },
+  {
+    "id": "DiluxOne/.github#754:spec",
+    "repo": "DiluxOne/.github",
+    "issue": 754,
+    "pr": 755,
+    "title": "fix: the test repository's pipeline check fails on a cancelled view (#755)",
+    "base": "4622926a53d6e9bf5fa3dd58551ff1d7b2a1f76e",
+    "merged": "249f2515eb76012b639c7def870def1952b43a5c",
+    "expect": {
+      "files": [
+        "docs/configuration.md",
+        "docs/workflows.md",
+        "org.yml",
+        "policy/settings-schema.yml",
+        "scripts/org.py",
+        "scripts/sync-repos.py",
+        "tests/workflows/test_test_repo_pipeline.py",
+        "workflow-templates/test-pull-request.yml"
+      ],
+      "min_recall": 0.5
+    }
+  },
+  {
+    "id": "DiluxOne/.github#768:spec",
+    "repo": "DiluxOne/.github",
+    "issue": 768,
+    "pr": 777,
+    "title": "fix: a review that starts too soon sees no files and says high risk (#777)",
+    "base": "cfdb1807dbaca22f91de77de4d12aa5c10000b2b",
+    "merged": "fc8c4cfe8e96c299e7cd92a7528b013d454ff53d",
+    "expect": {
+      "files": [
+        ".github/workflows/claude-review.yml",
+        ".github/workflows/pull-request.yml",
+        "docs/configuration.md",
+        "docs/pull-requests.md",
+        "policy/review-policy.default.yml",
+        "policy/settings-schema.yml",
+        "scripts/policy.py",
+        "scripts/pr-files.py",
+        "tests/workflows/test_policy_floor_files_wiring.py"
+      ],
+      "min_recall": 0.5
+    }
+  }
+]

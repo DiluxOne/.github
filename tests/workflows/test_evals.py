@@ -190,3 +190,29 @@ def test_the_docs_say_how_the_ai_is_measured():
     quality = (ROOT / "docs" / "testing-and-quality.md").read_text(encoding="utf-8")
     assert "## How the AI is measured" in quality and "`evals.py collect <step> [N]`" in quality and "`evals.py baseline <step> FILE`" in quality
     assert "review-eval.yml)" not in (ROOT / "docs" / "workflows.md").read_text(encoding="utf-8")
+
+
+# The sets (C1): real cases of the organisation's public repositories, each
+# in its step's shape. The triage's and the reply's come from the API (the
+# collect job of evals.yml), the baselines from a whole paid run.
+
+def public_names():
+    raw = (ROOT / "repos.yml").read_text(encoding="utf-8")
+    repos = yaml.safe_load(raw)["repos"]
+    private = {name for name in repos if any(l.strip().startswith(f"{name}:") and "private" in l.split("#", 1)[-1] for l in raw.splitlines() if "#" in l)}
+    return set(repos) - private
+
+
+def test_every_set_there_is_holds_real_cases_in_its_steps_shape():
+    ev = load("evals")
+    names = public_names()
+    assert "security" not in names and ".github" in names
+    found = [s for s in STEPS if (ROOT / "evals" / s / "cases.json").exists()]
+    assert {"repro", "spec", "autopilot", "review"} <= set(found)
+    for step in found:
+        cases = json.loads((ROOT / "evals" / step / "cases.json").read_text(encoding="utf-8"))
+        assert len(cases) >= 6, step
+        assert ev.problems(step, cases) == [], step
+        for c in cases:
+            assert c["repo"].split("/", 1)[1] in names, c["id"]
+            assert ("rubric" in c) == (step == "reply"), c["id"]
