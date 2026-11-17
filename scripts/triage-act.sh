@@ -10,9 +10,12 @@
 # author does not have to delete anything. If the move fails, the issue is
 # locked and the author asked to report it privately, as before.
 #
-# A defect gets the layer it shows in as a label too, `layer:<logic|browser|
-# cli|api|workflow>` (#352; `workflow`, a CI workflow's wiring, #376), which
-# the reproduction reads; one already there stays.
+# A defect gets the layer it shows in, `logic`, `browser`, `cli`, `api` or
+# `workflow` (#352; `workflow`, a CI workflow's wiring, #376), which the
+# reproduction reads; one already there stays. Since #801 it is on the
+# issue's board, not a label: a bug to reproduce gets no label, and its
+# board's state says `repro` `{"step": "waiting", "layer": ...}`
+# (receipts.py state set; RECEIPTS_FIXTURE in the self-test).
 #
 # Environment: VERDICT (JSON: category, layer, exists_in_pro, duplicate_of), REPLY
 # and SUMMARY (the public text; an empty reply posts a plain one), PRIVATE
@@ -25,7 +28,7 @@
 # A maintainer's own Bug (C2, #564) is not an outside reporter's report:
 # `own-bug` runs before the triage, and when the issue's Type is Bug and its
 # author's role on the repository is maintain or admin, nothing classifies
-# it, no `bug:unconfirmed` nor `layer:` goes on, and no reproduction starts
+# it, no reproduction's state goes on its board, and no reproduction starts
 # (the autopilot's test-first still writes its failing test). Complete (G1,
 # scripts/issue-schema.py), and its author one `who-decides` lets add
 # `accepted` (#624, deciders.py may accepted, which the autopilot asks
@@ -158,13 +161,14 @@ own_accept() {
 }
 
 act() {
-  local category label reply record dup kind
+  local category label reply record dup kind here
+  here=$(dirname "${BASH_SOURCE[0]}")
   if ! printf '%s' "${VERDICT:-}" | jq -e .category >/dev/null 2>&1; then
     echo "::warning::No classification came back; the issue stays as it is for a human."
     gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label needs-triage >/dev/null 2>&1 || true
     return 0
   fi
-  for l in "bug:unconfirmed|D93F0B|A bug report: a reproduction starts on its own (repro:run starts one by hand)" "needs-info|E4E669|Waiting for versions, steps or logs" "by-design|BFDADC|Works as documented, or a known limitation" "pro-feature|5319E7|Needs the paid service or add-on" "planned|0E8A16|Already planned" "exists-in-pro|5319E7|A paid product already has it" "question|D876E3|A usage question; the support channel has it" "security|B60205|A vulnerability report; a person merges its fix" "enhancement|A2EEEF|New feature or request" "duplicate|CFD3D7|An open issue already covers it" "needs-triage|E4E669|Not looked at yet"; do
+  for l in "needs-info|E4E669|Waiting for versions, steps or logs" "by-design|BFDADC|Works as documented, or a known limitation" "pro-feature|5319E7|Needs the paid service or add-on" "planned|0E8A16|Already planned" "exists-in-pro|5319E7|A paid product already has it" "question|D876E3|A usage question; the support channel has it" "security|B60205|A vulnerability report; a person merges its fix" "enhancement|A2EEEF|New feature or request" "duplicate|CFD3D7|An open issue already covers it" "needs-triage|E4E669|Not looked at yet"; do
     IFS='|' read -r name color desc <<<"$l"
     gh label create "$name" --repo "$GITHUB_REPOSITORY" --color "$color" --description "$desc" --force >/dev/null
   done
@@ -175,12 +179,12 @@ act() {
   # reproduction carries it in; it waits for a person's acceptance like any
   # request. Any other Type someone set is never changed, and neither is one
   # a maintainer set (#341): only a reporter's (the form's) or a bot's Bug.
-  # A Bug a maintainer set is kept and labelled bug:unconfirmed (#496),
-  # never as the request the classifier read: the labels and the layer
-  # follow the Type it keeps, the record still says what was read. Only the
-  # label changes: the triage's `bug` output (repro-trigger.sh bug) still
-  # reads the category, so no reproduction starts on its own; the reply
-  # says a maintainer starts it with repro:run.
+  # A Bug a maintainer set is kept and waits for its reproduction (#496,
+  # on the board since #801), never labelled as the request the classifier
+  # read: the labels and the layer follow the Type it keeps, the record
+  # still says what was read. The triage's `bug` output (repro-trigger.sh
+  # bug) still reads the category, so no reproduction starts on its own;
+  # the reply says a maintainer starts it with repro:run.
   case $category in
     bug_unconfirmed|needs_info) kind=Bug;;
     # In a private repository the issue is the report (#194): a Bug.
@@ -192,7 +196,8 @@ act() {
   have=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" --jq '.type.name // ""' 2>/dev/null || true)
   if [ "$have" = Bug ] && [ "$kind" = Feature ] && set_by_maintainer; then kind=""; kept=yes; effective=bug_unconfirmed; fi
   case $effective in
-    bug_unconfirmed) label="bug:unconfirmed";;
+    # A bug to reproduce gets no label (#801): its board says it waits.
+    bug_unconfirmed) label="";;
     needs_info) label="needs-info";;
     by_design) label="by-design";;
     pro_feature) label="pro-feature";;
@@ -203,20 +208,32 @@ act() {
     security) label="security";;
     *) echo "::warning::Unknown category '$category'; the issue waits for a person."; label="needs-triage";;
   esac
-  gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "$label" --remove-label needs-triage >/dev/null 2>&1 || gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "$label" >/dev/null
-  # Where a defect shows (#352): the reproduction reads it to pick the way
-  # the repository declares for that layer (scripts/repro-ways.py). Added
-  # before the reproduction starts; one a person set already stays.
-  local layer
+  if [ -z "$label" ]; then
+    gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label needs-triage >/dev/null 2>&1 || true
+  else
+    gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "$label" --remove-label needs-triage >/dev/null 2>&1 || gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "$label" >/dev/null
+  fi
+  # Where a defect shows (#352), and that its reproduction waits (#801): on
+  # the issue's board, its state's `repro` key (receipts.py state set),
+  # never a label. The reproduction reads the layer to pick the way the
+  # repository declares for it (scripts/repro-ways.py). Written before the
+  # reproduction starts; a layer already on the board stays. A board edited
+  # by hand refuses it: said, and the triage goes on (the layer is then
+  # `logic`, as with none).
+  local layer step="" kept_layer repro
   layer=$(jq -r '.layer // ""' <<<"$VERDICT")
-  case "$effective:$layer" in
-    bug_unconfirmed:logic | bug_unconfirmed:browser | bug_unconfirmed:cli | bug_unconfirmed:api | bug_unconfirmed:workflow | \
-    needs_info:logic | needs_info:browser | needs_info:cli | needs_info:api | needs_info:workflow)
-      if ! gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name' 2>/dev/null | grep -q '^layer:'; then
-        gh label create "layer:$layer" --repo "$GITHUB_REPOSITORY" --color C5DEF5 --description "Where the defect shows: the reproduction uses the way the repository declares for it" --force >/dev/null 2>&1 || true
-        gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "layer:$layer" >/dev/null 2>&1 || echo "::warning::Could not label #$NUMBER layer:$layer."
-      fi ;;
-  esac
+  [ "$effective" != bug_unconfirmed ] || step=waiting
+  if [ "$effective" = bug_unconfirmed ] || [ "$effective" = needs_info ]; then
+    kept_layer=$(python3 "$here/receipts.py" state get repro 2>/dev/null | jq -r 'if type == "object" then .layer // "" else "" end' 2>/dev/null || true)
+    [ -z "$kept_layer" ] || layer=$kept_layer
+    case $layer in logic | browser | cli | api | workflow) ;; *) layer="";; esac
+    if [ -n "$step$layer" ]; then
+      repro=$(jq -cn --arg step "$step" --arg layer "$layer" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{at: $at} + (if $step == "" then {} else {step: $step} end) + (if $layer == "" then {} else {layer: $layer} end)')
+      python3 "$here/receipts.py" state set "repro=$repro" >/dev/null 2>&1 \
+        || echo "::warning::#$NUMBER's board did not take the reproduction's state (edited by hand, or not written): its layer reads as logic."
+    fi
+  fi
   if [ -n "$kind" ] && { [ -z "$have" ] || { [ "$have" = Bug ] && [ "$kind" = Feature ]; }; }; then
     if gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/$NUMBER" -f type="$kind" >/dev/null 2>&1; then
       [ -z "$have" ] || retyped=yes
@@ -230,7 +247,7 @@ act() {
   # security report's has its own words below.
   [ "$category" = security ] || reply="$(next_steps "$category")"$'\n\n'"$reply"
   if [ -n "$kept" ]; then
-    reply="$reply"$'\n\n'"A maintainer set this issue's Type to Bug, so it stays a Bug, labelled bug:unconfirmed. Its reproduction does not start on its own: a maintainer starts it with the repro:run label."
+    reply="$reply"$'\n\n'"A maintainer set this issue's Type to Bug, so it stays a Bug, and the issue's board shows its reproduction waiting. It does not start on its own: a maintainer starts it with the repro:run label."
   fi
   if [ -n "$retyped" ]; then
     reply="$reply"$'\n\n'"This reads as a request for something new rather than a defect, so its Type is now Feature: a maintainer decides whether to accept it."
@@ -283,7 +300,7 @@ act() {
     gh issue lock "$NUMBER" --repo "$GITHUB_REPOSITORY" --reason off_topic >/dev/null \
       || echo "::warning::#$NUMBER could not be locked: a maintainer locks it and hides the details."
   fi
-  echo "Issue #$NUMBER: $category ($label)${COST:+, \$$COST}."
+  echo "Issue #$NUMBER: $category (${label:-its reproduction waits, on the board})${COST:+, \$$COST}."
 }
 
 # The issue, moved into the security repository (GitHub keeps its comments
@@ -308,12 +325,28 @@ if [ "${1:-}" = "--test" ]; then
   fail=0
   log=$(mktemp)
   # A stand-in for gh that records every call, one line each.
-  gh() { printf '%s\n' "$*" | tr '\n' ' ' >> "$log"; echo >> "$log"; case "$*" in "issue view 7 "*) [ -z "${HAS_LAYER:-}" ] || echo layer:browser;; "issue view 3 "*) echo OPEN;; "issue view 4 "*) echo CLOSED;; "api repos/o/r/issues/7 --jq .node_id") echo I_7;; "api repos/o/r/issues/7 --jq"*) echo "${HAS_TYPE:-}";; "api repos/o/sec --jq .node_id") echo R_1;; "api graphql -f query=query"*) [ -z "${GQL_FAILS:-}" ] || return 1; echo "${TYPE_BY:-}";; "api repos/o/r/collaborators/"*) [ -z "${PERM_FAILS:-}" ] || return 1; echo "${PERM:-read}";; "api graphql "*) [ -z "${MOVE_FAILS:-}" ] || return 1; echo 12;; "issue lock "*) [ -z "${LOCK_FAILS:-}" ] || return 1;; esac; }
+  gh() { printf '%s\n' "$*" | tr '\n' ' ' >> "$log"; echo >> "$log"; case "$*" in "issue view 3 "*) echo OPEN;; "issue view 4 "*) echo CLOSED;; "api repos/o/r/issues/7 --jq .node_id") echo I_7;; "api repos/o/r/issues/7 --jq"*) echo "${HAS_TYPE:-}";; "api repos/o/sec --jq .node_id") echo R_1;; "api graphql -f query=query"*) [ -z "${GQL_FAILS:-}" ] || return 1; echo "${TYPE_BY:-}";; "api repos/o/r/collaborators/"*) [ -z "${PERM_FAILS:-}" ] || return 1; echo "${PERM:-read}";; "api graphql "*) [ -z "${MOVE_FAILS:-}" ] || return 1; echo 12;; "issue lock "*) [ -z "${LOCK_FAILS:-}" ] || return 1;; esac; }
+  # The board (#801) is a fixture directory: receipts.py writes it there.
+  board=$(mktemp -d)
+  export AUTOPILOT_JSON=null LABELS_JSON='[]' HELD=''
   t() {
     local name=$1 want=$2
     : > "$log"
-    ( NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m act >/dev/null 2>&1 ) || true
+    ( NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m RECEIPTS_FIXTURE=$board act >/dev/null 2>&1 ) || true
     if grep -qE -- "$want" "$log"; then echo "ok   $name"; else echo "FAIL $name: no call matching $want in"; cat "$log"; fail=1; fi
+  }
+  # r NAME WANT [SEED]: act on a fresh board (SEED: a state already on it,
+  # or `hand` for one edited by hand), then WANT, the board's `repro` with
+  # its `at` left out (`null` when none, `refused` when it cannot be read).
+  r() {
+    local name=$1 want=$2 got
+    : > "$log"; rm -rf "$board"; board=$(mktemp -d)
+    [ -z "${3:-}" ] || RECEIPTS_FIXTURE=$board NUMBER=7 GITHUB_REPOSITORY=o/r python3 "$(dirname "${BASH_SOURCE[0]}")/receipts.py" state set "repro=$3" >/dev/null
+    [ "${3:-}" != '{"hand":1}' ] || sed -i 's/"hand":1/"hand":2/' "$board/comments/7/board.md"
+    ( NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m RECEIPTS_FIXTURE=$board act >/dev/null 2>&1 ) || true
+    got=$(RECEIPTS_FIXTURE=$board NUMBER=7 GITHUB_REPOSITORY=o/r python3 "$(dirname "${BASH_SOURCE[0]}")/receipts.py" state get repro 2>/dev/null | jq -c 'if type == "object" then del(.at) else . end') || got=refused
+    if [ "$got" = "$want" ] && ! grep -qE -- "--add-label [^ ]*(bug:unconfirmed|layer:|could-not-reproduce|repro:no-way)" "$log"; then echo "ok   $name"
+    else echo "FAIL $name: the board's repro is $got, want $want; the calls:"; cat "$log"; fail=1; fi
   }
   VERDICT='{"category":"needs_info"}' REPLY="Which version?" SUMMARY=s t "a verdict labels the issue" "issue edit 7 --repo o/r --add-label needs-info"
   VERDICT='{"category":"needs_info"}' REPLY="Which version?" SUMMARY=s t "and posts the reply with the AI line" "issue comment 7 .*Which version\?.*AI triage · m"
@@ -340,20 +373,20 @@ if [ "${1:-}" = "--test" ]; then
   HAS_TYPE=Bug TYPE_BY=alice PERM=read VERDICT='{"category":"enhancement"}' REPLY=x SUMMARY=s t "#341 a Bug the reporter set is still retyped" "api -X PATCH repos/o/r/issues/7 -f type=Feature"
   HAS_TYPE=Bug TYPE_BY=bot VERDICT='{"category":"enhancement"}' REPLY=x SUMMARY=s t "#341 and so is one a bot set" "api -X PATCH repos/o/r/issues/7 -f type=Feature"
   HAS_TYPE=Bug TYPE_BY="" VERDICT='{"category":"enhancement"}' REPLY=x SUMMARY=s t "#341 and one with no Type event (the form's at opening)" "api -X PATCH repos/o/r/issues/7 -f type=Feature"
-  # #496: and it is labelled as the bug its maintainer says it is, never as a request.
+  # #496: and it waits for its reproduction as the bug its maintainer says
+  # it is, never labelled as a request; on the board (#801), with no label.
   for v in '{"category":"enhancement"}' '{"category":"planned"}' '{"category":"pro_feature"}' '{"category":"enhancement","exists_in_pro":true}'; do
-    : > "$log"; ( VERDICT=$v REPLY=x SUMMARY=s HAS_TYPE=Bug TYPE_BY=boss PERM=write NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m act >/dev/null 2>&1 ) || true
-    if grep -q -- "--add-label bug:unconfirmed" "$log" && ! grep -qE -- "--add-label [^ ]*(enhancement|exists-in-pro|planned|pro-feature)" "$log"; then echo "ok   #496 a maintainer's Bug read as $v is labelled bug:unconfirmed"; else echo "FAIL #496 a maintainer's Bug read as $v is labelled bug:unconfirmed, and only that:"; cat "$log"; fail=1; fi
+    VERDICT=$v REPLY=x SUMMARY=s HAS_TYPE=Bug TYPE_BY=boss PERM=write r "#496 C1 (#801) a maintainer's Bug read as $v waits for its reproduction on the board" '{"step":"waiting"}'
+    if ! grep -qE -- "--add-label [^ ]*(enhancement|exists-in-pro|planned|pro-feature)" "$log"; then echo "ok   #496 and is labelled as no request"; else echo "FAIL #496 a maintainer's Bug read as $v is labelled as a request:"; cat "$log"; fail=1; fi
   done
-  HAS_TYPE=Bug TYPE_BY=boss PERM=write VERDICT='{"category":"enhancement","layer":"cli"}' REPLY=x SUMMARY=s t "#496 and gets the layer the verdict names" "issue edit 7 --repo o/r --add-label layer:cli"
+  HAS_TYPE=Bug TYPE_BY=boss PERM=write VERDICT='{"category":"enhancement","layer":"cli"}' REPLY=x SUMMARY=s r "#496 C1 (#801) and gets the layer the verdict names, on the board" '{"layer":"cli","step":"waiting"}'
   HAS_TYPE=Bug TYPE_BY=boss PERM=write VERDICT='{"category":"enhancement"}' REPLY=x SUMMARY=s t "#496 the record still says what the classifier read" '"category":"enhancement"'
-  HAS_TYPE=Bug TYPE_BY=boss PERM=write VERDICT='{"category":"planned"}' REPLY=x SUMMARY=s t "#496 the reply says the Bug is kept and repro:run starts its reproduction" "it stays a Bug, labelled bug:unconfirmed. Its reproduction does not start on its own: a maintainer starts it with the repro:run label."
+  HAS_TYPE=Bug TYPE_BY=boss PERM=write VERDICT='{"category":"planned"}' REPLY=x SUMMARY=s t "#496 C1 (#801) the reply says the Bug is kept, its board shows it waiting, and repro:run starts it" "it stays a Bug, and the issue's board shows its reproduction waiting. It does not start on its own: a maintainer starts it with the repro:run label."
   : > "$log"; ( VERDICT='{"category":"enhancement"}' REPLY=x SUMMARY=s HAS_TYPE=Bug TYPE_BY=alice PERM=read NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m act >/dev/null 2>&1 ) || true
   if grep -q "starts it with the repro:run label" "$log"; then echo "FAIL #496 a retyped Bug's reply does not mention repro:run"; fail=1; else echo "ok   #496 a retyped Bug's reply does not mention repro:run"; fi
   HAS_TYPE=Bug TYPE_BY=alice PERM=read VERDICT='{"category":"enhancement"}' REPLY=x SUMMARY=s t "#496 a reporter's Bug is still labelled enhancement" "issue edit 7 --repo o/r --add-label enhancement"
   for fails in GQL_FAILS PERM_FAILS; do
-    : > "$log"; ( export "$fails=1"; VERDICT='{"category":"enhancement"}' REPLY=x SUMMARY=s HAS_TYPE=Bug TYPE_BY=boss NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m act >/dev/null 2>&1 ) || true
-    if grep -q -- "--add-label bug:unconfirmed" "$log"; then echo "ok   #496 a read that fails ($fails) labels the kept Bug bug:unconfirmed"; else echo "FAIL #496 a read that fails ($fails) labels the kept Bug bug:unconfirmed"; fail=1; fi
+    ( export "$fails=1"; VERDICT='{"category":"enhancement"}' REPLY=x SUMMARY=s HAS_TYPE=Bug TYPE_BY=boss r "#496 C1 (#801) a read that fails ($fails) keeps the Bug waiting for its reproduction" '{"step":"waiting"}' ) || fail=1
   done
   for fails in GQL_FAILS PERM_FAILS; do
     : > "$log"; if ( export "$fails=1"; VERDICT='{"category":"enhancement"}' REPLY=x SUMMARY=s HAS_TYPE=Bug TYPE_BY=boss NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m act >/dev/null 2>&1; grep -q "type=Feature" "$log" ); then echo "FAIL #341 a read that fails ($fails) keeps the Type"; fail=1; else echo "ok   #341 a read that fails ($fails) keeps the Type"; fi
@@ -374,13 +407,19 @@ if [ "${1:-}" = "--test" ]; then
   : > "$log"; ( PRIVATE=true VERDICT='{"category":"security"}' REPLY="report it privately" SUMMARY=s NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER="" MODEL=m act >/dev/null 2>&1 ) || true
   if grep -q "issue comment 7 .*@$(python3 "$(dirname "${BASH_SOURCE[0]}")/org.py" maintainers | head -n 1)" "$log"; then echo "ok   #568 without a maintainer given, org.yml's are mentioned"; else echo "FAIL #568 without a maintainer given, org.yml's are mentioned"; fail=1; fi
   : > "$log"; if ( PRIVATE=true VERDICT='{"category":"security"}' REPLY="report it privately" SUMMARY=s NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m act >/dev/null 2>&1; grep -qE "issue lock|issue comment .*report it privately" "$log" ); then echo "FAIL #194 nor locked, nor sent to private reporting"; fail=1; else echo "ok   #194 nor locked, nor sent to private reporting"; fi
-  # #352: the layer the defect shows in, as a label the reproduction reads.
-  VERDICT='{"category":"bug_unconfirmed","layer":"browser"}' REPLY=x SUMMARY=s t "#352 a browser bug gets layer:browser" "issue edit 7 --repo o/r --add-label layer:browser"
-  VERDICT='{"category":"bug_unconfirmed","layer":"logic"}' REPLY=x SUMMARY=s t "#352 a logic bug gets layer:logic" "issue edit 7 --repo o/r --add-label layer:logic"
-  VERDICT='{"category":"bug_unconfirmed","layer":"workflow"}' REPLY=x SUMMARY=s t "#376 a bug in a workflow's wiring gets layer:workflow" "issue edit 7 --repo o/r --add-label layer:workflow"
-  : > "$log"; if ( VERDICT='{"category":"enhancement","layer":"browser"}' REPLY=x SUMMARY=s NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m act >/dev/null 2>&1; grep -q "add-label layer:" "$log" ); then echo "FAIL #352 a request gets no layer"; fail=1; else echo "ok   #352 a request gets no layer"; fi
-  : > "$log"; if ( VERDICT='{"category":"bug_unconfirmed","layer":"screen"}' REPLY=x SUMMARY=s NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m act >/dev/null 2>&1; grep -q "add-label layer:" "$log" ); then echo "FAIL #352 an unknown layer is no label"; fail=1; else echo "ok   #352 an unknown layer is no label"; fi
-  : > "$log"; if ( HAS_LAYER=1 VERDICT='{"category":"bug_unconfirmed","layer":"logic"}' REPLY=x SUMMARY=s NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m act >/dev/null 2>&1; grep -q "add-label layer:logic" "$log" ); then echo "FAIL #352 a layer a person set stays"; fail=1; else echo "ok   #352 a layer a person set stays"; fi
+  # #352: the layer the defect shows in, which the reproduction reads; on
+  # the board (#801), never as a label, and no bug:unconfirmed.
+  VERDICT='{"category":"bug_unconfirmed","layer":"browser"}' REPLY=x SUMMARY=s r "#352 C1 (#801) a browser bug waits on the board, layer browser" '{"layer":"browser","step":"waiting"}'
+  VERDICT='{"category":"bug_unconfirmed","layer":"logic"}' REPLY=x SUMMARY=s r "#352 C1 (#801) a logic bug, layer logic" '{"layer":"logic","step":"waiting"}'
+  VERDICT='{"category":"bug_unconfirmed","layer":"workflow"}' REPLY=x SUMMARY=s r "#376 C1 (#801) a bug in a workflow's wiring, layer workflow" '{"layer":"workflow","step":"waiting"}'
+  VERDICT='{"category":"needs_info","layer":"api"}' REPLY=x SUMMARY=s r "#352 C1 (#801) a report missing something keeps its layer for later, waiting on nothing yet" '{"layer":"api"}'
+  VERDICT='{"category":"enhancement","layer":"browser"}' REPLY=x SUMMARY=s r "#352 C1 (#801) a request gets no reproduction" 'null'
+  VERDICT='{"category":"bug_unconfirmed","layer":"screen"}' REPLY=x SUMMARY=s r "#352 C1 (#801) an unknown layer is none" '{"step":"waiting"}'
+  VERDICT='{"category":"bug_unconfirmed","layer":"logic"}' REPLY=x SUMMARY=s r "#352 C1 (#801) a layer already on the board stays" '{"layer":"browser","step":"waiting"}' '{"layer":"browser"}'
+  VERDICT='{"category":"bug_unconfirmed","layer":"logic"}' REPLY=x SUMMARY=s r "C1 (#801) a board edited by hand is left as it is, and no label stands in for it" 'refused' '{"hand":1}'
+  if grep -q "issue comment 7 .*What happens next" "$log"; then echo "ok   C1 (#801) and the triage goes on: its reply is posted"; else echo "FAIL C1 (#801) a board edited by hand stops the triage:"; cat "$log"; fail=1; fi
+  VERDICT='{"category":"bug_unconfirmed","layer":"cli"}' REPLY=x SUMMARY=s t "C1 (#801) a bug report still loses needs-triage" "issue edit 7 --repo o/r --remove-label needs-triage"
+  if ! grep -q "label create bug:unconfirmed" "$log"; then echo "ok   C1 (#801) bug:unconfirmed is no longer created"; else echo "FAIL C1 (#801) bug:unconfirmed is still created"; fail=1; fi
   # C2 (#564): a maintainer's own Bug is accepted with its writing.
   prd=$(mktemp); printf '### Problem\n\nIt breaks.\n\n### Scope\n\n- Fix it.\n\n### Out of scope\n\n- Nothing.\n\n### Acceptance criteria\n\n- C1: Given a page, when it loads, then it does not break.\n\n### Criticality\n\nNormal\n' > "$prd"
   half=$(mktemp); printf '### Problem\n\nIt breaks.\n' > "$half"
@@ -437,7 +476,7 @@ if [ "${1:-}" = "--test" ]; then
   done
   VERDICT='' REPLY=x SUMMARY=s t "no verdict waits for a person" "--add-label needs-triage"
   VERDICT='{"category":"nonsense"}' REPLY=x SUMMARY=s t "an unknown category waits for a person" "--add-label needs-triage"
-  rm -f "$log"
+  rm -rf "$log" "$board"
   [ "$fail" -eq 0 ] && echo "all tests passed"
   exit "$fail"
 fi

@@ -66,6 +66,12 @@ stands (whom it waits on, who was mentioned for which step), with a
 SHA-256 of its content. It is read only from dilux-bot's own board comment;
 a block whose hash does not match was edited by hand and reads as the most
 restrictive state: nothing is set on it and nobody is mentioned from it.
+Its `repro` key (#801) is where a bug's reproduction stands, in place of
+the labels it kept: {"step", "layer", "reason", "at"}, `step` one of
+REPRO_STEPS, `layer` one of repro-ways.py's LAYERS; the triage writes it
+(`waiting`), the reproduction reads its layer and writes each outcome, and
+the board shows it as its Reproduction row (repro_row). `state set` with no
+BODY reads the issue's own body for the board's G1 row.
 
 The board's marks: it starts with `<!-- dx-board -->`, by which it is found;
 once the issue's acceptance is sealed, its second line is `<!-- dx-prd-seal -->`
@@ -317,6 +323,37 @@ def announce(state, waits, bodies, put, post):
     return text
 
 
+# The reproduction's state (#801): the board's `repro` key, {"step", "layer",
+# "reason", "at"}, in place of the labels it used to keep. Each step, as the
+# board's Reproduction row says it. The layers are repro-ways.py's LAYERS
+# (the self-test keeps them in step).
+REPRO_STEPS = {
+    "waiting": ("⏳", "waits to run"),
+    "confirmed": ("✓", "reproduced by a failing test"),
+    "not-reproduced": ("✗", "not reproduced: it waits for more information"),
+    "no-way": ("🙋", "no way this repository declares reproduces it: a person takes it"),
+    "no-verdict": ("…", "no verdict: its environment did not reach one"),
+    "broken": ("⚠", "the test did not run (not a verdict)"),
+    "blocked": ("⛔", "blocked by a bug in the repository's test setup"),
+}
+LAYERS = ("logic", "browser", "cli", "api", "workflow")
+
+
+def repro_row(repro):
+    """The board's Reproduction row: the step in words, the layer and the
+    reason (cleaned: it comes from the model or repro-ways, shaped by the
+    issue's text). None when the reproduction has no state."""
+    if not isinstance(repro, dict) or not repro:
+        return None
+    icon, words = REPRO_STEPS.get(repro.get("step"), ("·", "not started"))
+    parts = [f"{icon} {words}"]
+    if repro.get("layer") in LAYERS:
+        parts.append(f"layer `{repro['layer']}`")
+    if clean(repro.get("reason")):
+        parts.append(clean(repro.get("reason")))
+    return "| Reproduction | " + " · ".join(parts) + " |"
+
+
 def autopilot_row(a):
     """The autopilot's row: its pull request, the run, criteria done of total."""
     if not a:
@@ -343,6 +380,11 @@ def board_text(number, ready, last_seal, merged, autopilot=None, labels=(), held
     # open pull request that closes it; the autopilot does not start.
     if held and not autopilot:
         rows.append(f"| Held | 🙋 {held}: the autopilot does not start |")
+    # Where the reproduction stands (#801), from the state, never from a
+    # state edited by hand.
+    row = repro_row((state or {}).get("repro")) if intact else None
+    if row:
+        rows.append(row)
     lane = next((l[5:] for l in labels if l.startswith("lane:")), None)
     if last_seal:
         by = last_seal.get("accepted_by") or ""
@@ -410,6 +452,16 @@ def issue_labels(repo, number):
     out = subprocess.run(["gh", "issue", "view", str(number), "--repo", repo, "--json", "labels", "--jq", "[.labels[].name]"],
                          capture_output=True, text=True)
     return json.loads(out.stdout) if out.returncode == 0 and out.stdout.strip() else []
+
+
+def issue_body(repo, number):
+    """The issue's body, read from GitHub; "" under RECEIPTS_FIXTURE or when
+    it cannot be read: the board's G1 row then says less, never fails."""
+    if os.environ.get("RECEIPTS_FIXTURE"):
+        return ""
+    out = subprocess.run(["gh", "issue", "view", str(number), "--repo", repo, "--json", "body", "--jq", ".body"],
+                         capture_output=True, text=True)
+    return out.stdout if out.returncode == 0 else ""
 
 
 def autopilot_state(repo, number):
@@ -728,6 +780,22 @@ Normal
     check("C5 its state is carried, hidden, at the end", wb.rstrip().endswith(blk), True)
     check("C5 a role is named as one", waits_row({"role": "a maintainer", "what": "accept it", "url": "https://github.com/o/r/issues/7"}), "| Waits on | a maintainer: accept it ([link](https://github.com/o/r/issues/7)) |")
     check("C5 a link that is not GitHub's is not linked", "evil" in (waits_row({"who": "alice", "what": "x", "url": "https://evil.example"}) or ""), False)
+    # C1 (#801): the reproduction's step, its layer and its outcome, on the board.
+    check("C1 (#801) the Reproduction row shows the step and the layer",
+          repro_row({"step": "waiting", "layer": "browser"}), "| Reproduction | ⏳ waits to run · layer `browser` |")
+    check("C1 (#801) and the outcome, with its reason",
+          repro_row({"step": "confirmed", "layer": "logic", "reason": "the test fails on main", "at": "t"}),
+          "| Reproduction | ✓ reproduced by a failing test · layer `logic` · the test fails on main |")
+    check("C1 (#801) every step reads in words", all(repro_row({"step": st}) == f"| Reproduction | {icon} {words} |" and words != st
+                                                     for st, (icon, words) in REPRO_STEPS.items()), True)
+    check("C1 (#801) the Spec's steps, every one", sorted(REPRO_STEPS), sorted(["waiting", "confirmed", "not-reproduced", "no-way", "no-verdict", "broken", "blocked"]))
+    check("C1 (#801) a step it does not know is said as not started", repro_row({"step": "x|y"}), "| Reproduction | · not started |")
+    check("C1 (#801) no reproduction, no row; nor for a value that is no state", (repro_row(None), repro_row({}), repro_row("waiting")), (None, None, None))
+    check("C1 (#801) a layer that is none of the layers is not shown", "evil" in repro_row({"step": "waiting", "layer": "evil`|x"}), False)
+    rb = board_text(7, True, None, None, state={"repro": {"step": "not-reproduced", "layer": "cli", "reason": "it passes"}})
+    check("C1 (#801) the board carries the row", "| Reproduction | ✗ not reproduced: it waits for more information · layer `cli` · it passes |" in rb, True)
+    check("C1 (#801) a state edited by hand shows no reproduction", "Reproduction" in board_text(7, True, None, None, state={}, intact=False,
+                                                                                          raw_state='<!-- dx-state v1 {"repro":{"step":"waiting"}} -->'), False)
     tb = board_text(7, True, s, None, state={}, intact=False, raw_state=blk.replace('"runs":2', '"runs":0'))
     check("#564 a state edited by hand is said, kept as it was, and names nobody", ("edited by hand" in tb, '"runs":0' in tb, "Waits on" in tb), (True, True, False))
     w = {"who": "alice", "what": "complete the issue", "url": "https://github.com/o/r/issues/7"}
@@ -922,6 +990,10 @@ Normal
         import yaml
         wf = yaml.safe_load(open(os.path.join(HERE, "..", ".github", "workflows", "issue-accepted.yml"), encoding="utf-8"))
         runs = {name: json.dumps(job) for name, job in wf["jobs"].items() if "receipts.py" in json.dumps(job)}
+        rw_spec = importlib.util.spec_from_file_location("repro_ways_layers", os.path.join(HERE, "repro-ways.py"))
+        rw = importlib.util.module_from_spec(rw_spec)
+        rw_spec.loader.exec_module(rw)
+        check("C1 (#801) the board's layers are repro-ways.py's", LAYERS, rw.LAYERS)
         check("#306 every job that runs receipts.py checks the scripts out whole", sorted(n for n, t in runs.items() if "git init -q .dx-central" not in t), [])
         # C5 (#564): every event of an issue puts whom it waits on on its
         # board (waiting.py update, which hands it to `waits` here).
@@ -1021,7 +1093,10 @@ def main(argv):
                 return pr_board_text(st, intact, raw)
             names = [n for n in list_dir(repo, f"issues/{number}") if n.startswith("merged-")]
             merged = read(repo, f"issues/{number}/{names[-1]}") if names else None
-            return board_text(number, schema_mod.check(body)["ok"], last_seal(repo, number), merged, autopilot_state(repo, number),
+            # A caller that writes only the state (#801: the triage, the
+            # reproduction) gives no BODY: the issue's own is read.
+            text = body if os.environ.get("BODY") else issue_body(repo, number)
+            return board_text(number, schema_mod.check(text)["ok"], last_seal(repo, number), merged, autopilot_state(repo, number),
                               issue_labels(repo, number), holder(repo, number), st, intact, raw)
         if mode == "board":
             print(render(state))

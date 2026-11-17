@@ -2,8 +2,9 @@ name: Issue reproduction
 
 # Reusable. Claude writes ONE test that fails if a reported bug exists; then
 # the test runs, and the outcome is reported. Which test is the repository's
-# to say (#352, scripts/repro-ways.py): the triage labels the layer the bug
-# shows in (`layer:logic|browser|cli|api|workflow`, logic when none), and
+# to say (#352, scripts/repro-ways.py): the triage puts the layer the bug
+# shows in (logic, browser, cli, api or workflow; logic when none) on the
+# issue's board, its state's `repro` (#801, scripts/receipts.py), and
 # the repository's kind (kinds/<kind>/pack.yml, `repro:`), the
 # organisation's repos.yml `repro:` for it (#377) and its own
 # .github/review-policy.yml declare a way for each layer: a PHP unit test
@@ -12,8 +13,8 @@ name: Issue reproduction
 # command that writes a JUnit report (DiluxOne/.github's own: a pytest test
 # of a script, or one that reads a workflow's file, #376). No stack is
 # assumed: a layer with no way declared, or a way whose `needs` are missing,
-# builds nothing, before any model runs: `bug:unconfirmed` becomes
-# `repro:no-way`, and the comment says why and how to declare a way, with
+# builds nothing, before any model runs: the issue gets `needs-human`, its
+# board says `no-way` and why, and the comment says how to declare a way, with
 # the way the repository's stack proposes (policy/repro-stacks.yml, #377).
 # A way may name a fixed test instead (`fixed`, #707): the engine's test
 # repository's, which calls no model; it is copied in place of the writer's
@@ -22,8 +23,8 @@ name: Issue reproduction
 # the run and `needs-human`, never silence (#393). The rest of this header
 # names the unit way's files; another way's are its own.
 # It starts in two ways (scripts/repro-trigger.sh decides which):
-#   trigger `triage`  the triage classified the report as a bug
-#                     (`bug:unconfirmed`), on the event that opened it;
+#   trigger `triage`  the triage classified the report as a bug (its board
+#                     says the reproduction waits), on the event that opened it;
 #   trigger `label`   a person who can write to the repository labels the
 #                     issue `repro:run` (or `repro:again` for another try).
 # A label a bot adds starts nothing, and so does one added by someone with
@@ -74,18 +75,26 @@ name: Issue reproduction
 #                      the repository's own test setup failed around the
 #                      test (or its teardown, when the test reached no
 #                      verdict of its own), or setup and run took longer than
-#                      its `minutes`: `bug:unconfirmed` stays and the
+#                      its `minutes`: the board says `no-verdict` and the
 #                      comment says why; it is never a test written wrong.
-#   a stylesheet read as text (#352) -> the test is discarded, the issue
-#                      gets `layer:browser` and one more attempt as a
-#                      browser test (`repro:no-way` when there is no
+#   a stylesheet read as text (#352) -> the test is discarded, the board's
+#                      layer becomes `browser` and it gets one more attempt
+#                      as a browser test (`needs-human` when there is no
 #                      browser way): how a page looks is never a unit test.
-#   the test passes -> label `could-not-reproduce`, the test is pushed to a
+#   the test passes -> label `needs-info`, the test is pushed to a
 #                      branch, and the comment asks the reporter for what
 #                      would settle it; when the report named an older
 #                      version, it says that the current code (the
 #                      development build `dev-tag`) may already have the fix
 #                      and asks to try it.
+# Every outcome is on the issue's board too (#801): the state's `repro`,
+# its step (`waiting`, `confirmed`, `not-reproduced`, `no-way`,
+# `no-verdict`, `broken`, `blocked`), the layer and the reason, which the
+# board's Reproduction row shows (scripts/receipts.py). A person acts on
+# `needs-info` (it found nothing: more information settles it) and
+# `needs-human` (no way reproduces it); a later confirmed run takes them off
+# only when the board says the reproduction put them there. A board edited
+# by hand takes no state: said, and the run goes on.
 #
 # The report is untrusted, so the test written from it is untrusted code,
 # and it is kept away from every secret by construction, in three jobs:
@@ -262,7 +271,7 @@ jobs:
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }}
           permission-metadata: read
-          permission-issues: read # the issue's layer, as labelled now
+          permission-issues: read # the issue's layer, on its board now
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -311,10 +320,11 @@ jobs:
           SENDER_LOGIN: ${{ github.event.sender.login }}
         run: bash .dx-central/scripts/repro-trigger.sh decide
 
-      # The layer the bug shows in (the triage's `layer:` label, read now:
-      # the event's labels are older than the triage that ran just before)
-      # and the way this repository reproduces it (#352): its kind's pack and
-      # its own .github/review-policy.yml, never a tool fixed here.
+      # The layer the bug shows in (#801: on the issue's board, the state's
+      # `repro` the triage wrote just before; `logic` when none, or when the
+      # board was edited by hand) and the way this repository reproduces it
+      # (#352): its kind's pack and its own .github/review-policy.yml, never
+      # a tool fixed here.
       - name: The way to reproduce
         id: way
         if: steps.start.outputs.go == 'yes'
@@ -324,17 +334,19 @@ jobs:
           CENTRAL: .dx-central
         run: |
           set -euo pipefail
-          layer=$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(startswith("layer:")) | ltrimstr("layer:")][0] // "logic"' 2>/dev/null || echo logic)
+          layer=$(python3 .dx-central/scripts/receipts.py state get repro 2>/dev/null | jq -r 'if type == "object" then .layer // "logic" else "logic" end' 2>/dev/null) || layer=logic
+          case $layer in logic | browser | cli | api | workflow) ;; *) layer=logic;; esac
           LAYER=$layer python3 .dx-central/scripts/repro-ways.py resolve
 
       # No way can reproduce it (#376): the repository declares none for the
       # bug's layer (no stack is assumed), its settings are not valid, or
       # its way's `needs` are missing. Said before any model runs, and never
-      # left hanging: `bug:unconfirmed` becomes `repro:no-way`, and the
-      # comment says why and how to declare a way (scripts/repro-ways.py,
-      # `why`), with the way the repository's stack proposes when one is
-      # recognised (`proposed`, #377). `repro:again` tries again once one
-      # is declared.
+      # left hanging: the board says `no-way` with the reason (#801), the
+      # issue gets `needs-human`, and the comment says why and how to declare
+      # a way (scripts/repro-ways.py, `why`), with the way the repository's
+      # stack proposes when one is recognised (`proposed`, #377).
+      # `repro:again` tries again once one is declared. The token reads
+      # contents for the board's seal row.
       - name: App token (the issue's comment)
         id: say
         if: steps.start.outputs.go == 'yes' && steps.way.outputs.ready != 'yes'
@@ -343,6 +355,7 @@ jobs:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }}
+          permission-contents: read # the board's seal row
           permission-issues: write
 
       - name: No way reproduces it
@@ -356,14 +369,18 @@ jobs:
           BT: '`'
         run: |
           set -euo pipefail
-          gh label create repro:no-way --repo "$GITHUB_REPOSITORY" --color D4C5F9 --description "No way this repository declares can reproduce this bug; the comment says why" --force >/dev/null 2>&1 || true
-          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label repro:no-way >/dev/null
-          # One label per call: gh refuses the whole edit when one is missing (#267).
-          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label bug:unconfirmed >/dev/null 2>&1 || true
+          # The outcome on the board (#801), with its reason, first; then
+          # the label a person acts on. A board edited by hand refuses it:
+          # said, and the rest goes on (no label stands in for it).
+          repro=$(jq -cn --arg layer "$LAYER" --arg reason "$WHY" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{step: "no-way", layer: $layer, reason: ($reason | .[0:300]), at: $at}')
+          python3 .dx-central/scripts/receipts.py state set "repro=$repro" >/dev/null \
+            || echo "::warning::#$NUMBER's board did not take the reproduction's step (no-way)."
+          gh label create needs-human --repo "$GITHUB_REPOSITORY" --color D93F0B --description "The autopilot handed this over to a person" >/dev/null 2>&1 || true
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label needs-human >/dev/null
           # The way its stack proposes, when one is recognised (#377).
           proposed=""
           if [ -n "$PROPOSED" ]; then proposed=$(printf '\n\n%syaml\n%s%s' "$BT$BT$BT" "$PROPOSED" "$BT$BT$BT"); fi
-          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'No reproduction can run for this %s bug: %s.%s\n\nNo test was written, so the report is labelled %s instead of waiting as %s. A person will look at it, and %s tries again once a way is declared.\n\n<sub>🤖 Issue reproduction</sub>' "$LAYER" "$WHY" "$proposed" "${BT}repro:no-way${BT}" "${BT}bug:unconfirmed${BT}" "${BT}repro:again${BT}")" >/dev/null
+          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'No reproduction can run for this %s bug: %s.%s\n\nNo test was written, so the report is labelled %s, and its board says why. A person will look at it, and %s tries again once a way is declared.\n\n<sub>🤖 Issue reproduction</sub>' "$LAYER" "$WHY" "$proposed" "${BT}needs-human${BT}" "${BT}repro:again${BT}")" >/dev/null
           echo "::notice::No way reproduces this $LAYER bug: $WHY"
 
       - name: Daily cap
@@ -599,7 +616,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/handover"
           # A test that reads a stylesheet as text reproduces nothing of how
           # a page looks (#352): discarded, and the report asks for a browser
-          # test (layer:browser), here or by a person.
+          # test (the board's layer becomes browser, #801), here or by a person.
           rejected=""
           if [ -f "$test" ] && ! why=$(python3 .dx-central/scripts/repro-ways.py lint "$test"); then
             echo "::warning::The test is discarded: $why"; rm -f "$test"; rejected=css
@@ -903,17 +920,35 @@ jobs:
           NOUN: ${{ needs.write.outputs.noun }}
           REJECTED: ${{ needs.write.outputs.rejected }}
           BROWSER: ${{ needs.write.outputs.browser }}
+          LAYER: ${{ needs.write.outputs.layer }}
           BOT: ${{ steps.bot.outputs.app-slug }}[bot]
           BT: '`'
         run: |
           set -euo pipefail
-          for l in "bug:confirmed|B60205|Reproduced by a failing test" "could-not-reproduce|FBCA04|The reproduction attempt found nothing" "repro:run|FBCA04|A maintainer asks for a reproduction attempt" "repro:again|FBCA04|Ask for another reproduction attempt"; do
+          for l in "bug:confirmed|B60205|Reproduced by a failing test" "repro:run|FBCA04|A maintainer asks for a reproduction attempt" "repro:again|FBCA04|Ask for another reproduction attempt"; do
             IFS='|' read -r name color desc <<<"$l"
             gh label create "$name" --repo "$GITHUB_REPOSITORY" --color "$color" --description "$desc" --force >/dev/null
           done
+          # Created when missing, never rewritten: labels.yml has their words.
+          gh label create needs-info --repo "$GITHUB_REPOSITORY" --color E4E669 --description "Waiting for versions, steps or logs" >/dev/null 2>&1 || true
+          gh label create needs-human --repo "$GITHUB_REPOSITORY" --color D93F0B --description "The autopilot handed this over to a person" >/dev/null 2>&1 || true
           # One label per call: gh refuses the whole edit when one is missing (#267).
-          # A way exists now, so an earlier `repro:no-way` no longer holds (#376).
-          for l in repro:run repro:again repro:retry repro:no-way; do gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$l" >/dev/null 2>&1 || true; done
+          for l in repro:run repro:again repro:retry; do gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$l" >/dev/null 2>&1 || true; done
+          # The reproduction's state on the issue's board (#801): its step,
+          # the layer it ran for and the reason, in place of the labels it
+          # kept. The step before this run says whether a `needs-info` or
+          # `needs-human` is the reproduction's own (`not-reproduced`,
+          # `no-way`). A board edited by hand refuses it (exit 3): said, and
+          # the run goes on; no label stands in for it.
+          layer=${LAYER:-logic}
+          before=$(python3 .dx-central/scripts/receipts.py state get repro 2>/dev/null | jq -r 'if type == "object" then .step // "" else "" end' 2>/dev/null) || before=""
+          repro_state() {
+            local st
+            st=$(jq -cn --arg step "$1" --arg layer "$layer" --arg reason "${2:-}" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              '{step: $step, layer: $layer, reason: ($reason | .[0:300]), at: $at} | with_entries(select(.value != ""))')
+            python3 .dx-central/scripts/receipts.py state set "repro=$st" >/dev/null \
+              || echo "::warning::#$NUMBER's board did not take the reproduction's step ($1): edited by hand, or not written."
+          }
           sign="<sub>🤖 AI reproduction · $MODEL (Anthropic)${COST:+ · \$$COST}</sub>"
           test=$TEST; noun=${NOUN:-unit test}
           code_main="${BT}main${BT}"; code_test="${BT}${test}${BT}"; fence="${BT}${BT}${BT}"; code_again="${BT}repro:again${BT}"
@@ -950,17 +985,18 @@ jobs:
               gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label repro:retry >/dev/null
               echo "The agent stopped ($AGENT); retrying once."; exit 0
             fi
+            repro_state no-verdict "the attempt to write a test stopped before it finished, twice (the tooling, not the report)"
             gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'The attempt to write a test stopped before it finished again (the tooling, not this report), so there is no verdict. A person will look; %s tries again. The run is in %s.\n\n%s' "$code_again" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$sign")" >/dev/null
             echo "The agent stopped ($AGENT); no verdict."; exit 0
           fi
           # A test that read a stylesheet as text was discarded (#352): this is
-          # a browser bug. Labelled so; tried once more as one when the
-          # repository has a browser way, otherwise it waits for a person.
+          # a browser bug, its layer `browser` on the board (#801); tried once
+          # more as one when the repository has a browser way, otherwise it
+          # waits for a person.
           if [ "$REJECTED" = css ]; then
-            gh label create "layer:browser" --repo "$GITHUB_REPOSITORY" --color C5DEF5 --force --description "Where the defect shows: the reproduction uses the way the repository declares for it" >/dev/null 2>&1 || true
-            for l in layer:logic layer:cli layer:api layer:workflow; do gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$l" >/dev/null 2>&1 || true; done
-            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label layer:browser >/dev/null
+            layer=browser
             if [ -n "$BROWSER" ] && { [ "$LABEL" != repro:retry ] || [ "$SENDER_LOGIN" != "$BOT" ]; }; then
+              repro_state waiting "a test read a stylesheet as text: tried once more as a browser test"
               gh label create "repro:retry" --repo "$GITHUB_REPOSITORY" --color FBCA04 --force --description "The reproduction tries once more with the first test's error" >/dev/null 2>&1 || true
               gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '<!-- dx-repro-retry -->\nThe test I wrote read a stylesheet as text, which proves nothing about how a page looks, so it was discarded. This is a browser bug: I try once more with a browser test.\n\n%s' "$sign")" >/dev/null
               gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label repro:retry >/dev/null 2>&1 || true
@@ -968,32 +1004,37 @@ jobs:
               echo "CSS read as text; retrying as a browser test."; exit 0
             fi
             if [ -n "$BROWSER" ]; then
+              # Found nothing (#801): `needs-info`, the board says why.
               why="this needs a browser test, and the attempt I had for one read a stylesheet as text again. A person will look; ${BT}repro:again${BT} tries once more"
-              gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label could-not-reproduce >/dev/null
+              repro_state not-reproduced "a browser test read a stylesheet as text, twice"
+              gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label needs-info >/dev/null
             else
-              # No way can reproduce it here (#376): said with its label, not
-              # left as bug:unconfirmed.
-              why="this needs a browser test, and this repository declares no way to run one (${BT}repro.ways${BT} in its .github/review-policy.yml or its kind's pack), so it is labelled ${BT}repro:no-way${BT}. A person will look"
-              gh label create repro:no-way --repo "$GITHUB_REPOSITORY" --color D4C5F9 --description "No way this repository declares can reproduce this bug; the comment says why" --force >/dev/null 2>&1 || true
-              gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label repro:no-way >/dev/null
-              gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label bug:unconfirmed >/dev/null 2>&1 || true
+              # No way can reproduce it here (#376): `needs-human` (#801),
+              # the board says why.
+              why="this needs a browser test, and this repository declares no way to run one (${BT}repro.ways${BT} in its .github/review-policy.yml or its kind's pack), so it is labelled ${BT}needs-human${BT}. A person will look"
+              repro_state no-way "it needs a browser test, and this repository declares no way to run one"
+              gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label needs-human >/dev/null
             fi
             gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'The test I wrote read a stylesheet as text, which proves nothing about how a page looks, so it was discarded: %s.\n\n%s' "$why" "$sign")" >/dev/null
             echo "CSS read as text; no further attempt."; exit 0
           fi
           if [ "$WROTE" != true ]; then
-            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label could-not-reproduce >/dev/null
+            # Found nothing (#801): `needs-info`, the board says why.
+            repro_state not-reproduced "no test could be written: ${SUMMARY:-no reason given}"
+            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label needs-info >/dev/null
             gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'I tried to turn this report into a %s and could not: %s\n\nWhat would settle it: %s\n\n%s' "$noun" "${SUMMARY:-no test could be written}" "$needs" "$sign")" >/dev/null
             echo "No test written."; exit 0
           fi
           if [ "$RUN_RESULT" != success ]; then
+            repro_state no-verdict "the job that runs the test did not finish ($RUN_RESULT)"
             gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'I wrote a %s for this, but the job that runs it did not finish (%s: the tooling, not the test), so there is no verdict. A person will look; the run is in %s.\n\n%s' "$noun" "$RUN_RESULT" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$sign")" >/dev/null
             echo "Run job $RUN_RESULT."; exit 0
           fi
           if [ "$OUTCOME" = limit ]; then
             reason=$(head -c 600 "$RUNNER_TEMP/output/reason.txt" 2>/dev/null | tr -d '`' || true)
-            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label bug:unconfirmed >/dev/null 2>&1 || true
-            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'I wrote a %s for this, but it could not reach a verdict: %s The report stays %s; a person will look, and %s tries again. The run is in %s.\n\n%s' "$noun" "${reason:-its environment did not come up in time.}" "${BT}bug:unconfirmed${BT}" "$code_again" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$sign")" >/dev/null
+            # No verdict (#801): the board says so, no label.
+            repro_state no-verdict "${reason:-its environment did not come up in time.}"
+            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'I wrote a %s for this, but it could not reach a verdict: %s The report stays unconfirmed, its board says why; a person will look, and %s tries again. The run is in %s.\n\n%s' "$noun" "${reason:-its environment did not come up in time.}" "$code_again" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$sign")" >/dev/null
             echo "No verdict: $reason"; exit 0
           fi
           if [ "$OUTCOME" = broken ] || [ -z "$OUTCOME" ]; then
@@ -1029,7 +1070,8 @@ jobs:
                 blocker_id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$blocker" --jq .id || true)
                 [ -n "$blocker_id" ] && gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$NUMBER/dependencies/blocked_by" -F issue_id="$blocker_id" >/dev/null \
                   || echo "::warning::Could not record #$blocker as blocking #$NUMBER."
-                gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label repro:blocked --remove-label could-not-reproduce >/dev/null 2>&1 || gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label repro:blocked >/dev/null
+                gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label repro:blocked >/dev/null
+                repro_state blocked "blocked by #$blocker, a bug in the repository's unit setup"
                 gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'The test I wrote did not run, and the cause is the repository'"'"'s unit setup, not this report: #%s. It blocks this reproduction; once it is fixed and closed, this one runs again on its own.\n\n%s' "$blocker" "$sign")" >/dev/null
                 echo "Blocked by #$blocker."; exit 0
               fi
@@ -1047,7 +1089,8 @@ jobs:
             fi
             gh label create "repro:broken" --repo "$GITHUB_REPOSITORY" --color FBCA04 --force --description "The reproduction test did not run (not a verdict); repro:again tries once more" >/dev/null 2>&1 || true
             gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label repro:broken >/dev/null
-            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'I wrote a %s for this but it did not run cleanly twice (the test was written wrong, not a verdict), so it proves nothing yet and the report stays %s. %s\n\n%s' "$noun" "${BT}bug:unconfirmed${BT}" "$SUMMARY" "$sign")" >/dev/null
+            repro_state broken "the test did not run cleanly twice (written wrong, not a verdict)"
+            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'I wrote a %s for this but it did not run cleanly twice (the test was written wrong, not a verdict), so it proves nothing yet and the report stays unconfirmed. %s\n\n%s' "$noun" "$SUMMARY" "$sign")" >/dev/null
             echo "Broken test."; exit 0
           fi
           # The file must be the one the write job produced: artifacts can be
@@ -1082,7 +1125,8 @@ jobs:
             g commit -q -m "test(repro): failing test for #$NUMBER" -m "Written by the reproduction job from the report in #$NUMBER; it fails on main, which confirms the bug. The fix goes in on top of it." -m "🤖 AI-generated · $MODEL (Anthropic)"
             # Through the API, so GitHub signs the commit (#190).
             python3 .dx-central/scripts/api-commit.py push "$branch" --onto HEAD~1 --force
-            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label bug:confirmed --remove-label bug:unconfirmed >/dev/null
+            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label bug:confirmed >/dev/null
+            repro_state confirmed "$test fails on main"
             # A claimed bug (#488): the person fixes it, with this test.
             # No lane issue and no draft: the next step seals the test on
             # the report, starts the claim's clock and names the branch. If
@@ -1108,7 +1152,9 @@ jobs:
             g commit -q -m "test(repro): attempt for #$NUMBER" -m "Written by the reproduction job from the report in #$NUMBER; it passes on main, so the report could not be reproduced this way." -m "🤖 AI-generated · $MODEL (Anthropic)"
             # Through the API, so GitHub signs the commit (#190).
             python3 .dx-central/scripts/api-commit.py push "$branch" --onto HEAD~1 --force
-            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label could-not-reproduce >/dev/null
+            # Found nothing (#801): `needs-info`, the board says why.
+            repro_state not-reproduced "$test passes on main: ${SUMMARY:-the report could not be reproduced this way}"
+            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label needs-info >/dev/null
             gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'I could not reproduce this. I wrote a %s from the report (%s, on the branch %s) and it passes on %s: %s%s\n\nWhat would help: %s\n\nIf you add that here, a maintainer can ask for another attempt (the %s label).\n\n%s' "$noun" "$code_test" "${BT}${branch}${BT}" "$code_main" "$SUMMARY" "$since" "$needs" "$code_again" "$sign")" >/dev/null
             echo "Not reproduced."
           fi

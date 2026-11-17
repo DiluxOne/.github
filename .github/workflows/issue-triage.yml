@@ -11,15 +11,17 @@ name: Issue triage
 # issue, never promises a fix and never gives a date. The `low` reviewer of
 # the policy (the low-risk reviewer) does this work.
 #
-#   bug:unconfirmed       a bug report with enough to try to reproduce it
-#                         (issue-repro.yml starts on its own; repro:run starts
-#                         one by hand; a reproduced one goes to the autopilot
-#                         through the bugfix-reproduced lane, #84)
+#   (no label)            a bug report with enough to try to reproduce it:
+#                         its board says the reproduction waits (#801, the
+#                         state's `repro`; issue-repro.yml starts on its own;
+#                         repro:run starts one by hand; a reproduced one goes
+#                         to the autopilot through the bugfix-reproduced
+#                         lane, #84)
 #   needs-info            a bug report missing versions, steps or logs: the
 #                         reply asks for them. A report with steps made on an
 #                         older version (an older release, or a development
 #                         build older than the current pre-release) is still
-#                         bug:unconfirmed: a reproduction runs on the
+#                         a bug to reproduce: a reproduction runs on the
 #                         current code and its reply says whether it is still
 #                         there, instead of asking the reporter to update
 #   by-design             works as documented, or a known limitation
@@ -38,8 +40,8 @@ name: Issue triage
 #                         its fix (policy/autonomy.yml, person-merges)
 #
 # The nightly review's own Bug issue, opened by dilux-bot with its marker
-# (#247), is not classified again: it is labelled `bug:unconfirmed` and its
-# reproduction starts, as for any bug report.
+# (#247), is not classified again: its board says its reproduction waits
+# and it starts, as for any bug report.
 #
 # It never adds `accepted`: only a person accepts an issue, and the
 # accepted-issue gate (scripts/issue-gate.sh) ignores a label a bot added,
@@ -52,8 +54,8 @@ name: Issue triage
 # reply says so (#84): no reproduction starts, no `fix` can close it, and it
 # waits for a person like any request (scripts/triage-act.sh). A Type a
 # maintainer set is never changed (#341). A defect also gets the layer it
-# shows in, `layer:logic`, `layer:browser`, `layer:cli`, `layer:api` or
-# `layer:workflow` (a CI workflow's wiring, #376) (#352), knowing nothing
+# shows in, on its board (#801): `logic`, `browser`, `cli`, `api` or
+# `workflow` (a CI workflow's wiring, #376) (#352), knowing nothing
 # of the repository's tools: the reproduction uses the way the repository
 # declares for that layer (scripts/repro-ways.py).
 #
@@ -129,7 +131,7 @@ on:
         type: string
         default: ''
     outputs:
-      # true when the verdict is a bug worth a reproduction (bug:unconfirmed),
+      # true when the verdict is a bug worth a reproduction (bug_unconfirmed),
       # whether or not the classifier read a paid roadmap (#247): the caller
       # starts one on its own.
       bug:
@@ -163,8 +165,7 @@ env:
 jobs:
   # A maintainer's own Bug (C2, #564): a Bug whose author's role on the
   # repository is maintain or admin is not an outside reporter's report. It
-  # is never classified: no `bug:unconfirmed`, no `layer:`, no reproduction
-  # (repro:no-way never comes). Complete (G1), and its author one
+  # is never classified: no reproduction, so nothing of one on its board. Complete (G1), and its author one
   # `who-decides` lets add `accepted` (#624, scripts/deciders.py), it is
   # accepted with its writing: its PRD sealed in its author's name on the
   # receipts branch, `accepted`, the board, and the autopilot starts below
@@ -603,9 +604,11 @@ jobs:
   # setup that blocks a reproduction (issue-repro.yml), and the release
   # lane's bug, a scenario that failed or a release the watch moved back
   # (#694, scripts/release-lane.py, Type Bug). It
-  # is already a classified bug report, so no classifier runs: it gets
-  # `bug:unconfirmed`, and the reproduction starts on it as on any bug the
-  # triage finds. Any other issue a bot opens is never triaged.
+  # is already a classified bug report, so no classifier runs: its board
+  # says its reproduction waits (#801, the state's `repro`, no label), and
+  # the reproduction starts on it as on any bug the triage finds. The token
+  # reads contents for the board's seal row. Any other issue a bot opens is
+  # never triaged.
   nightly:
     name: A nightly review's bug
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
@@ -621,17 +624,31 @@ jobs:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }}
+          permission-contents: read # the board's seal row
           permission-issues: write
 
-      - name: Label it a bug to reproduce
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
+          path: .dx-central
+          persist-credentials: false
+
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+
+      - name: Its reproduction waits, on its board
         id: mark
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           NUMBER: ${{ github.event.issue.number }}
         run: |
           set -euo pipefail
-          gh label create "bug:unconfirmed" --repo "$GITHUB_REPOSITORY" --color D93F0B --description "A bug report: a reproduction starts on its own (repro:run starts one by hand)" --force >/dev/null
-          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "bug:unconfirmed" >/dev/null
+          # No label (#801): the board's state says it waits. A board edited
+          # by hand refuses it, said; the reproduction starts all the same.
+          repro=$(jq -cn --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{step: "waiting", at: $at}')
+          python3 .dx-central/scripts/receipts.py state set "repro=$repro" >/dev/null \
+            || echo "::warning::#$NUMBER's board did not take the reproduction's state; it runs all the same."
           gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/$NUMBER" -f type=Bug >/dev/null || echo "::warning::Could not set #$NUMBER's Type to Bug."
           echo "bug=true" >> "$GITHUB_OUTPUT"
 
