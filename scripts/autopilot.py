@@ -134,6 +134,12 @@
                              without a verdict (#741, the jobs of the run
                              GITHUB_RUN_ID): exit 0 (a check round), 1 (a
                              review round), 2 when unread
+  autopilot.py superseded    whether a newer run of the pipeline supersedes
+                             the run GITHUB_RUN_ID (#820): the pull request's
+                             head moved past RUN_HEAD, or its review was
+                             cancelled and a newer run exists; exit 0 (it
+                             waits for the newer run's review), 1 (not
+                             superseded), 2 when unread
   autopilot.py rounds-spent  the comment at the rounds cap (MAX; CHECKS
                              `true` on a check round, #741)
   autopilot.py reply ID TEXT reply in a review thread of the pull request (the
@@ -191,6 +197,7 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -2179,6 +2186,25 @@ def checks_failed(jobs, comments, head, bot=None):
     return failed
 
 
+def superseded(run_id, run_head, pr_head, review_conclusion, newer_runs):
+    """Why a newer run of the pipeline supersedes the run `run_id` (#820),
+    or "" when nothing does: the pull request's head moved past the commit
+    the run checked (`run_head`; a push starts a newer run), or the run's
+    review was cancelled and a newer run of the same workflow exists (its
+    own round acts on its review). A review that failed on its own, at the
+    current head, is never superseded. Pure."""
+    if run_head and pr_head and run_head != pr_head:
+        return f"the pull request's head moved from {run_head[:7]} to {pr_head[:7]}"
+    try:
+        run_id = int(run_id)
+    except (TypeError, ValueError):
+        return ""
+    newer = sorted(int(r["id"]) for r in newer_runs or [] if str(r.get("id", "")).isdigit() and int(r["id"]) > run_id)
+    if review_conclusion == "cancelled" and newer:
+        return f"its review was cancelled by a newer run ({newer[-1]})"
+    return ""
+
+
 def checks_log_text(pr, logs):
     """What the agent reads of the failed checks at the head (#741). Pure."""
     return failed_log_text(f"Why the checks of #{pr} failed", "The checks below failed at the pull request's head: a gate of the pipeline, "
@@ -2546,6 +2572,11 @@ A class on html.
              {"id": 14, "name": "Scripts on macOS (the contributor's tools)", "conclusion": "failure"},
              {"id": 15, "name": "Plugin tests / PHP 8.3", "conclusion": "failure"},
              {"id": 16, "name": "autopilot-fix / Autopilot (fix) · may it run · #8", "conclusion": None}]
+    check("#820: a run is superseded when the head moved past it, or its review was cancelled and a newer run exists; never a review that failed on its own",
+          [bool(superseded(*a)) for a in (("5", "a", "b", "failure", []), ("5", "a", "a", "cancelled", [{"id": 6}, {"id": 5}]),
+                                          ("5", "a", "a", "cancelled", [{"id": 5}, {"id": 4}]), ("5", "a", "a", "failure", [{"id": 6}]),
+                                          ("5", "", "b", "success", []), ("x", "a", "a", "cancelled", [{"id": 6}]))],
+          [True, True, False, False, False, False])
     check("#741 C1: a check round reads the pipeline's failed gates, never a job of the repository's own, one that passed or one still running",
           ([j["id"] for j in checks_failed(cjobs, [], "h1")], checks_failed(cjobs[1:2], [], "h1"), checks_failed([], [], "h1"),
            [fix_job(n) for n in ("conventions / Docs (links and names)", "review / Claude review", "actionlint", "Scripts (self-tests)", "reviewer", "actionlint-x")]),
@@ -3845,7 +3876,10 @@ def review_push(repo, pr, call=None):
     runs the review, runs on a push to a pull request, not on it being
     marked ready or edited, and it skips a draft: without a push after the
     draft, the review never runs. Same tree as the head, so every test and
-    the reproduction's proof still hold."""
+    the reproduction's proof still hold. Only when the round has no commit
+    of its own left to push: otherwise `finish ready` makes the same empty
+    commit locally and pushes it with the agent's commits, in one push, so
+    one review run starts (#820)."""
     call = call or gh
     head = json.loads(call("api", f"repos/{repo}/pulls/{pr}", "--jq", "{sha: .head.sha, ref: .head.ref}"))
     tree = call("api", f"repos/{repo}/git/commits/{head['sha']}", "--jq", ".tree.sha").strip()
@@ -3853,6 +3887,60 @@ def review_push(repo, pr, call=None):
                "-f", f"parents[]={head['sha']}", "--jq", ".sha").strip()
     call("api", "-X", "PATCH", f"repos/{repo}/git/refs/heads/{head['ref']}", "-f", f"sha={sha}")
     return sha
+
+
+def api_push(branch):
+    """The local commits the branch lacks on GitHub, made again through the
+    API so GitHub signs them (api-commit.py, #190). Returns its exit code."""
+    out = subprocess.run([sys.executable, os.path.join(HERE, "api-commit.py"), "push", branch], capture_output=True, text=True)
+    print((out.stdout + out.stderr).strip())
+    return out.returncode
+
+
+def unpushed(branch):
+    """The local commits not yet on GitHub's branch (origin/BRANCH..HEAD),
+    newest first, as (sha, subject), only when HEAD builds on it; [] when
+    there is no such branch or nothing to push (#820)."""
+    if not branch:
+        return []
+    base = subprocess.run(["git", "merge-base", "--is-ancestor", f"origin/{branch}", "HEAD"], capture_output=True)
+    if base.returncode != 0:
+        return []
+    out = subprocess.run(["git", "log", "--format=%H %s", f"origin/{branch}..HEAD"], capture_output=True, text=True)
+    return [tuple(l.split(" ", 1)) if " " in l else (l, "") for l in out.stdout.splitlines() if l.strip()] if out.returncode == 0 else []
+
+
+def wait_shown(repo, pr, sha, tries=30, pause=2):
+    """Whether the pull request lists the commit sha (#287): it shows a push
+    a few seconds after the branch moves. A minute at most."""
+    for _ in range(tries):
+        try:
+            if sha in gh("api", f"repos/{repo}/pulls/{pr}/commits", "--paginate", "--jq", ".[].sha").split():
+                return True
+        except RuntimeError:
+            pass
+        time.sleep(pause)
+    return False
+
+
+def push_branch(repo, pr, number):
+    """`push`: the local commits onto the branch, signed (api_push), with
+    the co-author trailer of an adopted pull request (#488)."""
+    branch = os.environ.get("BRANCH") or pr_json(repo, pr, "headRefName")["headRefName"]
+    if number:
+        rec = adopted_record(issue_comments(repo, number))
+        if rec:
+            n = add_trailer(f"origin/{branch}", co_author(rec))
+            print(f"{n} commit(s) carry {co_author(rec)} (adopted #{rec['pr']}).")
+    return api_push(branch)
+
+
+def ready_in_outbox(path, verdict):
+    """Whether the outbox holds a `ready` that goes (#820): its commits are
+    then pushed once, with the ready commit, after the pull request is
+    marked ready. Pure but for reading the file."""
+    intents, _ = read_outbox(path)
+    return any(it["kind"] == "ready" and ready_goes(it, verdict) for it in intents)
 
 
 def sandbox_outcome(output):
@@ -4431,6 +4519,25 @@ def apply_outbox(path, repo, number, pr, kinds=None):
         intents = [it for it in intents if it["kind"] in kinds]
     if rejected:
         print(f"::warning::{rejected} line(s) of the outbox were not intents; ignored.")
+    # #820: the workflow left the agent's commits to the ready's one push
+    # (`ready-goes`); a ready refused here still pushes them, after.
+    held = [it for it in intents if it["kind"] == "ready" and ready_goes(it, verdict_of(os.environ.get("PREPR")))]
+    try:
+        return _apply_intents(intents, repo, number, pr)
+    finally:
+        branch = os.environ.get("BRANCH", "")
+        if held and unpushed(branch):
+            print("The pull request is not ready: the agent's commits are pushed without the ready commit.")
+            try:
+                rc = push_branch(repo, pr, number)
+            except (RuntimeError, OSError, ValueError, KeyError) as err:
+                print(f"::warning::{str(err)[:300]}")
+                rc = 1
+            if rc != 0:
+                print("::warning::The agent's commits could not be pushed.")
+
+
+def _apply_intents(intents, repo, number, pr):
     failed = 0
     for it in intents:
         kind, text = it["kind"], scrub(it.get("text", ""))
@@ -4544,6 +4651,31 @@ def failed_checks_of(repo, pr):
     pages = json.loads(gh("api", f"repos/{repo}/actions/runs/{run}/jobs?per_page=100", "--paginate", "--slurp") or "[]")
     jobs = [j for page in pages for j in page.get("jobs") or []]
     return checks_failed(jobs, issue_comments(repo, pr), pr_json(repo, pr, "headRefOid")["headRefOid"])
+
+
+def superseded_of(repo, pr):
+    """superseded() with its inputs read from the API (#820): the PR's
+    head, the jobs of the run GITHUB_RUN_ID, and the runs of its workflow
+    for the PR's branch. Raises when one could not be read."""
+    run = os.environ.get("GITHUB_RUN_ID", "")
+    if not run:
+        raise RuntimeError("no GITHUB_RUN_ID")
+    head = pr_json(repo, pr, "headRefOid")["headRefOid"]
+    run_head = os.environ.get("RUN_HEAD", "")
+    if run_head and head and run_head != head:
+        return superseded(run, run_head, head, None, [])
+    pages = json.loads(gh("api", f"repos/{repo}/actions/runs/{run}/jobs?per_page=100", "--paginate", "--slurp") or "[]")
+    jobs = [j for page in pages for j in page.get("jobs") or []]
+    review = next((j.get("conclusion") for j in jobs if str(j.get("name") or "").startswith(REVIEW_JOB)), None)
+    if review != "cancelled":
+        return ""
+    this = json.loads(gh("api", f"repos/{repo}/actions/runs/{run}"))
+    branch = urllib.parse.quote(str(this["head_branch"]), safe="")
+    # The newest runs come first: one page holds any newer than this one.
+    listed = json.loads(gh("api", f"repos/{repo}/actions/workflows/{this['workflow_id']}/runs?branch={branch}&per_page=30"))
+    event = this.get("event")
+    runs = [r for r in listed.get("workflow_runs") or [] if not event or r.get("event") == event]
+    return superseded(run, run_head, head, review, runs)
 
 
 def stop_comment(why):
@@ -4710,17 +4842,14 @@ def main(argv):
     if argv[:1] == ["push"]:
         # The agent's commits, made again through the API so GitHub signs
         # them (#190); the local branch then points at GitHub's commits.
-        branch = os.environ.get("BRANCH") or pr_json(repo, pr, "headRefName")["headRefName"]
         # An adopted pull request (#488): every commit pushed carries
         # Co-authored-by for its author, read from the issue's record.
-        if number:
-            rec = adopted_record(issue_comments(repo, number))
-            if rec:
-                n = add_trailer(f"origin/{branch}", co_author(rec))
-                print(f"{n} commit(s) carry {co_author(rec)} (adopted #{rec['pr']}).")
-        out = subprocess.run([sys.executable, os.path.join(HERE, "api-commit.py"), "push", branch], capture_output=True, text=True)
-        print((out.stdout + out.stderr).strip())
-        return out.returncode
+        return push_branch(repo, pr, number)
+    if argv[:1] == ["ready-goes"]:
+        # #820: exit 0 when the outbox's `ready` goes (PREPR, `verify`'s
+        # verdict): the workflow then leaves the push to `finish ready`,
+        # one push with the ready commit; 1 when not.
+        return 0 if ready_in_outbox(argv[1] if len(argv) > 1 else "", verdict_of(os.environ.get("PREPR"))) else 1
     if argv[:1] == ["decision"]:
         # A decision the PRD left open, logged on the pull request (#193).
         new = add_decision(pr_json(repo, pr, "body")["body"], " ".join(argv[1:]), datetime.date.today().isoformat())
@@ -4734,6 +4863,9 @@ def main(argv):
         cid = argv[1] if len(argv) > 1 else ""
         body = pr_json(repo, pr, "body")["body"]
         msgs = [l for l in gh("api", f"repos/{repo}/pulls/{pr}/commits", "--paginate", "--jq", '.[].commit.message | split("\\n")[0]').split("\n") if l.strip()]
+        # #820: and the agent's commits not yet pushed, which a ready round
+        # pushes once, with the ready commit (checked to build on the branch).
+        msgs += [subject for _, subject in unpushed(os.environ.get("BRANCH", ""))]
         new = tick(body, cid, msgs)
         if new is None:
             print(f"No: no commit on #{pr} names {cid} yet (or {cid} is not on the checklist). Commit and push it first.")
@@ -4784,14 +4916,21 @@ def main(argv):
             if need and not test:
                 print(f"Not ready: {need}.")
                 return 1
+            # #820: the agent's commits not yet pushed go in one push with
+            # the ready commit, after the pull request is marked ready.
+            ahead = unpushed(os.environ.get("BRANCH", ""))
             if test:
-                # The test at the pull request's head must be the one that
-                # failed, as G7 will ask. That it passes there is the agent's
-                # proof in the sandbox (agent_helper), and the pull
-                # request's own checks run it again with the suite; nothing
-                # from the branch runs in this job, which holds the key.
-                pushed = pr_json(repo, pr, "headRefOid")["headRefOid"]
-                subprocess.run(["git", "fetch", "-q", "origin", pushed], capture_output=True)
+                # The test at the commit about to be the pull request's head
+                # must be the one that failed, as G7 will ask. That it passes
+                # there is the agent's proof in the sandbox (agent_helper),
+                # and the pull request's own checks run it again with the
+                # suite; nothing from the branch runs in this job, which
+                # holds the key.
+                if ahead:
+                    pushed = ahead[0][0]
+                else:
+                    pushed = pr_json(repo, pr, "headRefOid")["headRefOid"]
+                    subprocess.run(["git", "fetch", "-q", "origin", pushed], capture_output=True)
                 blob = subprocess.run(["git", "show", f"{pushed}:{test}"], capture_output=True)
                 if blob.returncode != 0 or hashlib.sha256(blob.stdout).hexdigest() != repro.evidence(issue.get("body") or "")["sha256"]:
                     print(f"Not ready: the reproduction test {test} at {pushed[:12]} is not the one that failed (its SHA-256 differs from the sealed PRD's).")
@@ -4799,12 +4938,30 @@ def main(argv):
                 ev = repro.evidence(issue.get("body") or "")
                 again = (f"and gate G7 runs it again the `{ev['way']}` way it was written, at the head, before it merges"
                          if ev.get("spec") else "and this pull request's checks run it with the rest of the suite")
-                text = text.rstrip() + f"\n\nThe reproduction test `{test}` at {pushed[:12]}, the pull request's head, is the one that failed on the default branch (its SHA-256 is the sealed PRD's). The agent ran it in the sandbox (a clean copy of its commit; no network, no secrets) before finishing, {again}.\n"
+                where = "the agent's last commit, pushed with the ready commit" if ahead else "the pull request's head"
+                text = text.rstrip() + f"\n\nThe reproduction test `{test}` at {pushed[:12]}, {where}, is the one that failed on the default branch (its SHA-256 is the sealed PRD's). The agent ran it in the sandbox (a clean copy of its commit; no network, no secrets) before finishing, {again}.\n"
             set_body(repo, pr, set_tested(body, text))
             gh("pr", "ready", str(pr), "--repo", repo)
             try:
-                review_push(repo, pr)
-            except (RuntimeError, OSError, ValueError, KeyError) as exc:
+                if ahead:
+                    # One push: the agent's commits and the empty ready
+                    # commit on top (#820), so one review run starts.
+                    subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", READY_COMMIT], check=True, capture_output=True)
+                    try:
+                        if push_branch(repo, pr, number) != 0:
+                            raise RuntimeError("api-commit.py could not push the branch")
+                    except (RuntimeError, OSError, ValueError, KeyError):
+                        # The ready commit goes only with the ready: `apply`
+                        # pushes the agent's commits without it.
+                        if unpushed(os.environ.get("BRANCH", "")):
+                            subprocess.run(["git", "reset", "-q", "--soft", "HEAD~1"], capture_output=True)
+                        raise
+                    head = git_out("rev-parse", "HEAD")
+                    if not wait_shown(repo, pr, head):
+                        print(f"::warning::#{pr} does not show {head} after a minute.")
+                else:
+                    review_push(repo, pr)
+            except (RuntimeError, OSError, ValueError, KeyError, subprocess.CalledProcessError) as exc:
                 # Ready without that push is never reviewed: back to a draft,
                 # so finishing again (or a continue run) redoes both.
                 gh("pr", "ready", str(pr), "--repo", repo, "--undo")
@@ -4917,6 +5074,16 @@ def main(argv):
             return 2
         print(", ".join(f"{j.get('name')} ({j.get('html_url')})" for j in failed) or "no check of the pipeline failed at its head")
         return 0 if failed else 1
+    if argv[:1] == ["superseded"]:
+        # #820: exit 0 when a newer run supersedes this one (the fix round
+        # waits for its review), 1 when not, 2 when it could not be read.
+        try:
+            why = superseded_of(repo, pr)
+        except (RuntimeError, ValueError, KeyError, TypeError) as err:
+            print(f"whether a newer run supersedes this one could not be read ({str(err)[:200]})")
+            return 2
+        print(why or "no newer run supersedes this one")
+        return 0 if why else 1
     if argv[:1] == ["rounds-spent"]:
         # MAX, the rounds cap; CHECKS, true on a check round (#741).
         print(rounds_spent(os.environ.get("MAX", "3"), os.environ.get("CHECKS") == "true"))
