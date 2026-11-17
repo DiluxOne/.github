@@ -113,12 +113,20 @@ jobs:
           REPO: ${{ inputs.repo }}
         run: |
           set -euo pipefail
+          # Scripts older than #802 (a REF before it) have no migration.
+          grep -q '^FLOW_KEYS' .dx-central/scripts/receipts.py || { echo "The scripts at this ref keep the flow in labels: nothing to move."; exit 0; }
           if [ -n "$REPO" ]; then where=(--repo "$REPO"); else where=(--owner "$OWNER"); fi
-          gh search prs "${where[@]}" --state open --label autopilot --limit 100 --json repository,number \
-            --jq '.[] | "\(.repository.nameWithOwner) \(.number) pr"' > "$RUNNER_TEMP/old.txt"
+          # Search gives 1000 at most: a list that reaches it is said, and
+          # the rest are caught by the runs themselves (autopilot.yml
+          # migrates its own items) or the next sweep.
+          full() { [ "$(wc -l < "$1")" -lt 1000 ] || echo "::warning::$2: the search gave its 1000 at most; the rest wait for the next sweep."; }
+          gh search prs "${where[@]}" --state open --label autopilot --limit 1000 --json repository,number \
+            --jq '.[] | "\(.repository.nameWithOwner) \(.number) pr"' > "$RUNNER_TEMP/found.txt"
+          full "$RUNNER_TEMP/found.txt" "the autopilot's open pull requests"; cat "$RUNNER_TEMP/found.txt" > "$RUNNER_TEMP/old.txt"
           for wait in waiting answered catchup core-wait; do
-            gh search issues "${where[@]}" --state open --label "autopilot:$wait" --limit 100 --json repository,number \
-              --jq '.[] | "\(.repository.nameWithOwner) \(.number) issue"' >> "$RUNNER_TEMP/old.txt"
+            gh search issues "${where[@]}" --state open --label "autopilot:$wait" --limit 1000 --json repository,number \
+              --jq '.[] | "\(.repository.nameWithOwner) \(.number) issue"' > "$RUNNER_TEMP/found.txt"
+            full "$RUNNER_TEMP/found.txt" "the open issues labelled autopilot:$wait"; cat "$RUNNER_TEMP/found.txt" >> "$RUNNER_TEMP/old.txt"
           done
           sort -u "$RUNNER_TEMP/old.txt" > "$RUNNER_TEMP/old-items.txt"
           while read -r repo n item <&3; do
@@ -134,6 +142,9 @@ jobs:
           REPO: ${{ inputs.repo }}
         run: |
           set -euo pipefail
+          # Scripts older than #802 (a REF before it) keep the catch-up and
+          # the wait for the core in labels.
+          flow=false; ! grep -q '^FLOW_KEYS' .dx-central/scripts/receipts.py || flow=true
           if [ -n "$REPO" ]; then where=(--repo "$REPO"); else where=(--owner "$OWNER"); fi
           gh search prs "${where[@]}" --state open --label autopilot --limit 100 --json repository,number \
             --jq '.[] | "\(.repository.nameWithOwner) \(.number)"' > "$RUNNER_TEMP/prs.txt"
@@ -162,7 +173,11 @@ jobs:
                 gh label create "autopilot:continue" --repo "$repo" --color 1D76DB --force --description "On an issue: the autopilot continues its draft pull request, or starts it" >/dev/null 2>&1 || true
                 # The run it starts only catches up with another merge: free
                 # (#563), `catchup` on the issue's board (#802), set first.
-                if ! GITHUB_REPOSITORY="$repo" NUMBER="$issue" python3 .dx-central/scripts/receipts.py state set catchup=true; then
+                if [ "$flow" != true ]; then
+                  gh label create "autopilot:catchup" --repo "$repo" --color 1D76DB --force --description "On an issue: the run the continue starts only catches up with another merge; it does not count" >/dev/null 2>&1 || true
+                  gh issue edit "$issue" --repo "$repo" --add-label "autopilot:catchup" >/dev/null \
+                    || { echo "::warning::$repo#$issue: its catch-up could not be labelled; no continue."; continue; }
+                elif ! GITHUB_REPOSITORY="$repo" NUMBER="$issue" python3 .dx-central/scripts/receipts.py state set catchup=true; then
                   echo "::warning::$repo#$issue: its board could not be written; no continue."; continue
                 fi
                 gh issue edit "$issue" --repo "$repo" --add-label "autopilot:continue" >/dev/null \
@@ -170,18 +185,25 @@ jobs:
             esac
           done 3< "$RUNNER_TEMP/prs.txt"
           # The issues that wait for a pull request on the core (#563): the
-          # accepted open ones whose board says `core_wait` (#802).
-          gh search issues "${where[@]}" --state open --label accepted --limit 100 --json repository,number \
+          # accepted open ones whose board says `core_wait` (#802), up to
+          # the 1000 search gives, a list that reaches it said.
+          waiting_on=accepted; [ "$flow" = true ] || waiting_on=autopilot:core-wait
+          gh search issues "${where[@]}" --state open --label "$waiting_on" --limit 1000 --json repository,number \
             --jq '.[] | "\(.repository.nameWithOwner) \(.number)"' > "$RUNNER_TEMP/core.txt"
+          [ "$(wc -l < "$RUNNER_TEMP/core.txt")" -lt 1000 ] || echo "::warning::The open accepted issues: the search gave its 1000 at most; an issue past them waiting on the core waits for the next sweep."
           while read -r repo n <&3; do
             [ -n "$repo" ] || continue
-            waits=$(GITHUB_REPOSITORY="$repo" NUMBER="$n" python3 .dx-central/scripts/receipts.py state get core_wait 2>/dev/null) || { echo "::warning::$repo#$n: its board could not be read."; continue; }
-            case $waits in null|false) continue ;; esac
+            if [ "$flow" = true ]; then
+              waits=$(GITHUB_REPOSITORY="$repo" NUMBER="$n" python3 .dx-central/scripts/receipts.py state get core_wait 2>/dev/null) || { echo "::warning::$repo#$n: its board could not be read."; continue; }
+              case $waits in null|false) continue ;; esac
+            fi
             gh issue view "$n" --repo "$repo" --json body --jq .body > "$RUNNER_TEMP/body.md" || continue
             busy=$(GITHUB_REPOSITORY="$repo" BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/autopilot.py core-wait) || { echo "::warning::$repo#$n: the core could not be checked."; continue; }
             if [ -n "$busy" ]; then echo "$repo#$n: still waits for #$busy"; continue; fi
             echo "$repo#$n: the core is free: it starts"
-            if ! GITHUB_REPOSITORY="$repo" NUMBER="$n" BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/receipts.py state set core_wait=; then
+            if [ "$flow" != true ]; then
+              gh issue edit "$n" --repo "$repo" --remove-label "autopilot:core-wait" >/dev/null || { echo "::warning::$repo#$n: its wait could not be taken off; no continue."; continue; }
+            elif ! GITHUB_REPOSITORY="$repo" NUMBER="$n" BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/receipts.py state set core_wait=; then
               echo "::warning::$repo#$n: its board could not be written; no continue."; continue
             fi
             gh label create "autopilot:continue" --repo "$repo" --color 1D76DB --force --description "On an issue: the autopilot continues its draft pull request, or starts it" >/dev/null 2>&1 || true

@@ -160,16 +160,31 @@ def test_c1_the_flow_walked_through_keeps_its_counts_and_waits_on_the_boards(tmp
     assert board(w.fx, 7)["core_wait"] == 5
     assert set(board(w.fx, 8)) >= {"runs", "rounds"}
 
-    # No step added, or created, any of the seven labels.
+    # No step added, or created, any of the seven labels (a step may still
+    # look for one an older run left, to keep its answer).
     said = w.log.read_text().splitlines() + calls
-    assert [c for c in said if SEVEN.search(c)] == []
+    assert [c for c in said if SEVEN.search(c) and re.search(r"--add-label|label create|labels -f|labels/", c)] == []
+
+
+OLD_SCRIPTS = "if grep -q '^FLOW_KEYS' .dx-central/scripts/receipts.py"
 
 
 def test_c1_no_workflow_or_script_adds_the_seven_labels():
-    for path in [*(ROOT / ".github/workflows").glob("*.yml"), ROOT / "scripts/autopilot.py", ROOT / "scripts/receipts.py"]:
-        text = path.read_text(encoding="utf-8")
-        adds = re.findall(r"(?:--add-label|label create)[ \"']+(autopilot:[a-z-]+)", text)
-        assert [a for a in adds if SEVEN.search(a)] == [], path.name
+    """The scripts add none; a workflow adds one only in the branch it takes
+    with scripts older than #802 (central-ref before it, or main's scripts
+    while this change is not merged), which keep the flow in labels."""
+    adds = lambda text: [a for a in re.findall(r"(?:--add-label|label create)[ \"']+(autopilot:[a-z-]+)", text) if SEVEN.search(a)]
+    for path in (ROOT / "scripts/autopilot.py", ROOT / "scripts/receipts.py"):
+        assert adds(path.read_text(encoding="utf-8")) == [], path.name
+    for path in (ROOT / ".github/workflows").glob("*.yml"):
+        wf = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for job in (wf.get("jobs") or {}).values():
+            for s in job.get("steps") or []:
+                run = s.get("run") or ""
+                if adds(run):
+                    flow = "grep -q '^FLOW_KEYS' .dx-central/scripts/receipts.py"
+                    assert flow in run, (path.name, s.get("name"))
+                    assert run.index(flow) < min(run.index(a) for a in adds(run)), (path.name, s.get("name"))
     labels = yaml.safe_load((ROOT / "labels.yml").read_text(encoding="utf-8"))
     names = [l["name"] for l in (labels if isinstance(labels, list) else labels.get("labels", []))]
     assert [n for n in names if SEVEN.search(n)] == []
@@ -185,7 +200,7 @@ def test_c1_an_answer_on_a_board_that_cannot_be_read_fails_and_is_never_read_as_
     root = tmp_path / "r"
     (root / ".dx-central/scripts").mkdir(parents=True)
     # receipts.py stood in: its read fails (exit 1, not 3: not edited by hand).
-    (root / ".dx-central/scripts/receipts.py").write_text("import sys\nprint('gh: HTTP 502', file=sys.stderr)\nsys.exit(1 if sys.argv[1:2] == ['state'] else 0)\n")
+    (root / ".dx-central/scripts/receipts.py").write_text("FLOW_KEYS = ()\nimport sys\nprint('gh: HTTP 502', file=sys.stderr)\nsys.exit(1 if sys.argv[1:2] == ['state'] else 0)\n")
     bin_dir = root / "bin"
     bin_dir.mkdir()
     log = root / "calls.log"
@@ -197,3 +212,47 @@ def test_c1_an_answer_on_a_board_that_cannot_be_read_fails_and_is_never_read_as_
                           capture_output=True, text=True, timeout=120, cwd=root)
     assert done.returncode == 1 and "board could not be read: gh: HTTP 502" in done.stdout + done.stderr
     assert "autopilot:continue" not in (log.read_text() if log.exists() else "")
+
+
+def reply_with(tmp_path, receipts, labels_say):
+    """review-reply's answer step, with receipts.py and gh stood in: gh says
+    `labels_say` when asked whether the issue still carries autopilot:waiting."""
+    root = tmp_path / "r"
+    (root / ".dx-central/scripts").mkdir(parents=True)
+    (root / ".dx-central/scripts/receipts.py").write_text(receipts)
+    bin_dir = root / "bin"
+    bin_dir.mkdir()
+    log = root / "calls.log"
+    (bin_dir / "gh").write_text(f'#!/bin/bash\necho "gh $*" >> "{log}"\ncase "$*" in *index*autopilot:waiting*) echo {labels_say} ;; esac\n')
+    (bin_dir / "gh").chmod(0o755)
+    (bin_dir / "python3").write_text(
+        "#!/bin/bash\n"
+        f'echo "python3 $*" >> "{log}"\n'
+        'case "$1" in *deciders.py) echo "boss decides"; exit 0 ;; esac\n'
+        f'exec "{sys.executable}" "$@"\n')
+    (bin_dir / "python3").chmod(0o755)
+    reply = step("review-reply.yml", "answer", "back")["run"]
+    done = subprocess.run(["bash", "-c", reply], env=dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", RUNNER_TEMP=str(root), GITHUB_REPOSITORY="o/r",
+                                                          NUMBER="7", IS_PR="false", LOGIN="boss", GITHUB_OUTPUT=str(root / "out")),
+                          capture_output=True, text=True, timeout=120, cwd=root)
+    return done, log.read_text()
+
+
+def test_an_answer_is_kept_when_the_migration_could_not_move_the_question(tmp_path):
+    """migrate fails (a board edited by hand, or GitHub down): the label it
+    could not move still waits, and the answer still brings the autopilot
+    back, in the labels when the board cannot be written."""
+    receipts = ("FLOW_KEYS = ()\nimport sys\n"
+                "if sys.argv[1:2] == ['migrate']: sys.exit(3)\n"
+                "if sys.argv[1:3] == ['state', 'get']: print('null'); sys.exit(3)\n"
+                "if sys.argv[1:3] == ['state', 'set']: sys.exit(3)\n")
+    done, calls = reply_with(tmp_path, receipts, "true")
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "--add-label autopilot:answered --add-label autopilot:continue --remove-label autopilot:waiting" in calls
+
+
+def test_with_scripts_older_than_802_an_answer_goes_in_the_labels(tmp_path):
+    done, calls = reply_with(tmp_path, "# before #802\nimport sys\nsys.exit(64)\n", "true")
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "migrate" not in calls and "state " not in calls
+    assert "--add-label autopilot:answered --add-label autopilot:continue --remove-label autopilot:waiting" in calls

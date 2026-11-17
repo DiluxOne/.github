@@ -101,6 +101,19 @@ def test_c2_a_count_already_on_the_board_is_never_lowered():
     assert rc.old_labels(["autopilot", "autopilot:continue", "autopilot:run-1", "autopilot:waiting", "autopilot:round-x"]) == ["autopilot:run-1", "autopilot:waiting"]
 
 
+def test_an_item_with_no_old_label_migrates_on_a_board_edited_by_hand(tmp_path):
+    """Nothing to move, whatever its board: a run on an item whose board a
+    person edited is not stopped by the migration."""
+    fx, env = world(tmp_path)
+    rc = load("receipts_c2_noop", "receipts.py")
+    (fx / "labels" / "9.json").write_text(json.dumps(["autopilot"]))
+    (fx / "comments" / "9").mkdir(parents=True)
+    (fx / "comments" / "9" / "board.md").write_text(rc.pr_board_text({"runs": [{"n": 1, "free": False}]}).replace('"free":false', '"free":true'))
+    done = migrate(env, 9, "pr")
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "write " not in ((fx / "calls.log").read_text() if (fx / "calls.log").exists() else "")
+
+
 def test_c2_a_board_edited_by_hand_keeps_its_labels(tmp_path):
     fx, env = world(tmp_path)
     rc = load("receipts_c2_tamper", "receipts.py")
@@ -131,9 +144,11 @@ def test_c2_a_run_migrates_its_own_items_before_it_counts():
     issue before it reads the next run, and stops when it cannot."""
     prep = yaml.safe_load((ROOT / ".github/workflows/autopilot.yml").read_text(encoding="utf-8"))["jobs"]["prep"]["steps"]
     run = next(s for s in prep if s.get("id") == "what")["run"]
-    mig = run.index('NUMBER="$PR" ITEM=pr python3 .dx-central/scripts/receipts.py migrate\n')
-    assert mig < run.index("autopilot.py next-run")
-    assert run.index('NUMBER="$ISSUE" python3 .dx-central/scripts/receipts.py migrate\n') < run.index("autopilot.py next-run")
+    board_next = run.index('PR="$PR" python3 .dx-central/scripts/autopilot.py next-run')
+    assert run.index('NUMBER="$1" ITEM="$2" python3 .dx-central/scripts/receipts.py migrate') < board_next
+    assert run.index('migrate "$PR" pr\n') < board_next and run.index('migrate "$ISSUE" issue\n') < board_next
+    # A board edited by hand (3) does not stop the run; any other failure does.
+    assert '3) echo "::warning::' in run and '*) exit "$rc"' in run
     reply = yaml.safe_load((ROOT / ".github/workflows/review-reply.yml").read_text(encoding="utf-8"))["jobs"]["answer"]["steps"]
     back = next(s for s in reply if s.get("id") == "back")["run"]
     assert back.index("receipts.py migrate") < back.index("state get asked")

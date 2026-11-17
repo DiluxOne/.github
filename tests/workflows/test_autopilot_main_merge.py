@@ -78,8 +78,11 @@ def test_a_catch_up_run_is_counted_free():
     walks it)."""
     wf = yaml.safe_load((ROOT / ".github/workflows/autopilot.yml").read_text(encoding="utf-8"))
     count = next(s for job in wf["jobs"].values() for s in job.get("steps", []) if s.get("name") == "Count the round or the run")
-    assert 'python3 .dx-central/scripts/autopilot.py count' in count["run"]
-    assert "autopilot:catchup" not in count["run"]
+    run = count["run"]
+    assert 'python3 .dx-central/scripts/autopilot.py count' in run
+    # The label only on the branch scripts older than #802 take (no `count`).
+    flow = "if grep -q '^FLOW_KEYS' .dx-central/scripts/receipts.py; then"
+    assert run.index(flow) < run.index("autopilot.py count") < run.index("exit 0") < run.index("autopilot:catchup")
 
 
 def test_the_hourly_sweep_still_covers_every_repository():

@@ -53,7 +53,8 @@ signed by GitHub and show as Verified.
                            answered, catchup, core-wait; ITEM=pr for a pull
                            request) written onto its board, never lowering a
                            count there, read back, and only then taken off;
-                           refused (exit 3) on a board edited by hand
+                           with no old label, nothing to do (exit 0), on any
+                           board; refused (exit 3) on a board edited by hand
   receipts.py waits        whom the item waits on now (WAITS_JSON: who, a
                            login or a list of them, or role; what; url;
                            step; ITEM=pr for a pull request's board), on the board's
@@ -1262,8 +1263,15 @@ def main(argv):
         if mode == "board":
             print(render(state))
             return 0
+        old = old_labels(item_labels(repo, number)) if mode == "migrate" else []
+        if mode == "migrate" and not old:
+            # Nothing to move, whatever the board: an item with no old label
+            # is never stopped by a board edited by hand (#802).
+            print(f"#{number}: no old label of the flow")
+            return 0
         if not intact:
-            print("The board's state was edited by hand: nothing is set on it, nobody is mentioned.", file=sys.stderr)
+            print("The board's state was edited by hand: nothing is set on it, nobody is mentioned"
+                  + (" (its old labels stay on it)" if old else "") + ".", file=sys.stderr)
             return 3
         if mode == "state" and argv[1:2] == ["set"]:
             changes = {}
@@ -1278,11 +1286,7 @@ def main(argv):
         if mode == "migrate":
             # #802: the flow's old labels onto the board: written, read
             # back and compared, and only then taken off. Once more, it
-            # finds none and does nothing.
-            old = old_labels(item_labels(repo, number))
-            if not old:
-                print(f"#{number}: no old label of the flow")
-                return 0
+            # finds none and does nothing (above).
             core = core_of(comments) if "autopilot:core-wait" in old else None
             cid, st = fresh()
             want = state_from_labels(old, st, core)
