@@ -230,7 +230,7 @@ def test_the_docs_say_how_the_ai_is_measured():
 
 # The sets (C1): real cases of the organisation's public repositories, each
 # in its step's shape. The triage's and the reply's come from the API (the
-# collect job of evals.yml), the baselines from a whole paid run.
+# collect job of evals.yml), the baselines from a paid run.
 
 def public_names():
     raw = (ROOT / "repos.yml").read_text(encoding="utf-8")
@@ -259,3 +259,54 @@ def test_a_step_with_no_set_says_how_to_collect_it(tmp_path, capsys):
     ev.EVALS = str(tmp_path)
     assert ev.main(["run", "triage"]) == 1
     assert "evals.py collect triage" in capsys.readouterr().err
+
+
+# One set never holds a pull request for hours (#735, the maintainer's
+# answer): every job of evals.yml has its limit, 30 minutes for the
+# autopilot's set and 15 for the rest, and the runner ends inside it.
+
+def test_every_job_of_evals_yml_has_its_limit():
+    jobs = workflow("evals.yml")["jobs"]
+    assert all("timeout-minutes" in job for job in jobs.values()), [n for n, j in jobs.items() if "timeout-minutes" not in j]
+    assert jobs["eval"]["timeout-minutes"] == "${{ matrix.step == 'autopilot' && 30 || 15 }}"
+    assert jobs["steps"]["timeout-minutes"] <= 15 and jobs["collect"]["timeout-minutes"] == 15
+    ev = load("evals")
+    assert {s: ev.STEPS[s]["job"] for s in STEPS} == {s: 30 if s == "autopilot" else 15 for s in STEPS}
+
+
+def test_a_set_ends_within_its_job_and_leaves_the_cases_it_did_not_reach(tmp_path, monkeypatch):
+    ev = load("evals")
+    ev.EVALS = str(tmp_path)
+    (tmp_path / "autopilot").mkdir()
+    (tmp_path / "autopilot" / "cases.json").write_text(json.dumps([{"id": str(i), "expect": "pass"} for i in range(6)]))
+    clock = [0.0]
+    monkeypatch.setattr(ev, "clock", lambda: clock[0])
+    seen = []
+
+    def replay(case, work):
+        seen.append(ev.case_seconds(ev.STEPS["autopilot"]["minutes"]))
+        clock[0] += 10 * 60
+        return True
+
+    monkeypatch.setitem(ev.REPLAYS, "autopilot", replay)
+    results = ev.run_step("autopilot")
+    assert [r["ok"] for r in results][:2] == [True, True] and results[-1]["ok"] is None
+    assert clock[0] <= 30 * 60 and all(0 < s <= 30 * 60 for s in seen)
+    assert seen[0] < ev.STEPS["autopilot"]["minutes"] * 60
+
+
+def test_a_baseline_from_a_run_within_the_limit_counts_what_it_did_not_reach(tmp_path):
+    ev = load("evals")
+    ev.EVALS = str(tmp_path)
+    run = tmp_path / "results.json"
+    run.write_text(json.dumps([{"id": str(i), "expect": "pass", "ok": True if i < 2 else None} for i in range(6)]))
+    assert ev.main(["baseline", "autopilot", str(run)]) == 0
+    base = json.loads((tmp_path / "autopilot" / "baseline.json").read_text())
+    assert base == {"passed": 2, "cases": 2, "unreplayed": 4}
+    same = [{"id": str(i), "expect": "pass", "ok": True if i < 2 else None} for i in range(6)]
+    fewer = [{"id": str(i), "expect": "pass", "ok": None} for i in range(6)]
+    assert ev.gate("autopilot", same, base)[0] == 0
+    assert ev.gate("autopilot", fewer, base)[0] == 1
+    review = tmp_path / "review.json"
+    review.write_text(json.dumps([{"id": "a", "expect": "flag", "ok": None}, {"id": "b", "expect": "clean", "ok": True}]))
+    assert ev.main(["baseline", "review", str(review)]) == 1

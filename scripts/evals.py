@@ -5,7 +5,7 @@ A step is the engine's use of a model: the triage, the reproduction, the
 Spec, the autopilot's work, the review and the review's reply. Each has a
 set of real cases from the organisation's public repositories (a private
 one's code would show in this public repository's logs), in
-evals/<step>/cases.json, and the score of its last whole run in
+evals/<step>/cases.json, and the score of its last run in
 evals/<step>/baseline.json. A pull request that changes what a step reads
 (its paths in STEPS, policy/autonomy.yml, its own evals/<step>/) runs that
 step's set again, with the prompts as they stand in the checkout, and fails
@@ -51,8 +51,9 @@ wherever an outcome can be checked by a program:
   evals.py score STEP FILE     the results in FILE against STEP's baseline:
                                a table on stdout, exit 1 when worse, or when
                                there is no baseline (no gate never passes)
-  evals.py baseline STEP FILE  write the results in FILE as STEP's baseline,
-                               only from a whole run
+  evals.py baseline STEP FILE  write the results in FILE as STEP's baseline:
+                               the review's only from a whole run, another
+                               step's from one cut at its job's limit too
   evals.py collect STEP [N]    write evals/STEP/cases.json: N cases
                                (default STEPS' `cases`: 6 of each kind for
                                the review, 6 for the autopilot, 8 otherwise)
@@ -69,6 +70,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -80,25 +82,34 @@ GIT_URL = "https://github.com/{repo}"  # where a case's repository is cloned fro
 EVALS = os.path.join(ROOT, "evals")
 
 # The steps, one entry each: how many cases `collect` takes, what counts for
-# it (beside EVERY and its own evals/<step>/**), how long one case may take
-# (the set must end within its job's timeout), and the workflow step whose
+# it (beside EVERY and its own evals/<step>/**), how long one case may take,
+# the minutes of its job in evals.yml (`job`: the set ends within them, the
+# cases it did not reach left not replayed), and the workflow step whose
 # claude_args a replay uses (what ships, read from the workflow).
 STEPS = {
-    "triage": {"cases": 8, "paths": [".github/workflows/issue-triage.yml", "scripts/triage-brief.sh"], "minutes": 10,
+    "triage": {"cases": 8, "job": 15, "paths": [".github/workflows/issue-triage.yml", "scripts/triage-brief.sh"], "minutes": 10,
                "workflow": ".github/workflows/issue-triage.yml", "step": "Classify"},
-    "repro": {"cases": 8, "paths": [".github/workflows/issue-repro.yml", "scripts/repro-ways.py"], "minutes": 25,
+    "repro": {"cases": 8, "job": 15, "paths": [".github/workflows/issue-repro.yml", "scripts/repro-ways.py"], "minutes": 25,
               "workflow": ".github/workflows/issue-repro.yml", "step": "Write the test (the repository's way)"},
-    "spec": {"cases": 8, "paths": [".github/workflows/autopilot.yml", "scripts/autopilot.py"], "minutes": 20,
+    "spec": {"cases": 8, "job": 15, "paths": [".github/workflows/autopilot.yml", "scripts/autopilot.py"], "minutes": 20,
              "workflow": ".github/workflows/autopilot.yml", "step": "Claude writes the Spec"},
-    "autopilot": {"cases": 6, "paths": [".github/workflows/autopilot.yml", "scripts/autopilot.py"], "minutes": 45,
+    "autopilot": {"cases": 6, "job": 30, "paths": [".github/workflows/autopilot.yml", "scripts/autopilot.py"], "minutes": 45,
                   "workflow": ".github/workflows/autopilot.yml", "step": "Claude works"},
     # The paths review-eval.yml listed (#234).
-    "review": {"cases": 6, "paths": ["review-profiles/**", "kinds/*/review-profile.md", "kinds/*/rules.yml", "policy/review-policy.default.yml",
+    "review": {"cases": 6, "job": 15, "paths": ["review-profiles/**", "kinds/*/review-profile.md", "kinds/*/rules.yml", "policy/review-policy.default.yml",
                          "scripts/review-brief.sh", "scripts/local-review.sh", "scripts/review-verify.py", "scripts/review-count.py",
                          ".github/workflows/claude-review.yml"], "minutes": 15},
-    "reply": {"cases": 8, "paths": [".github/workflows/review-reply.yml", "scripts/autopilot.py"], "minutes": 15,
+    "reply": {"cases": 8, "job": 15, "paths": [".github/workflows/review-reply.yml", "scripts/autopilot.py"], "minutes": 15,
               "workflow": ".github/workflows/review-reply.yml", "step": "Reply"},
 }
+# Of a job's minutes, what is not the runner's (the checkout, the CLI, the
+# score and the artifact), and what a case keeps after its model for its
+# grade (the tests, the judge): a case starts only with both ahead of it.
+SETUP_MINUTES = 4
+GRADE_MINUTES = 5
+DEADLINE = None  # when the running set must end (clock()), or None
+clock = time.monotonic
+
 # What every step reads: its model and AI settings.
 EVERY = ["policy/autonomy.yml"]
 
@@ -321,8 +332,10 @@ def worse_passed(now, base):
     why = []
     if now["passed"] < base.get("passed", 0) - SLACK:
         why.append(f"{now['passed']} of {now['cases']} cases did what they expect, the baseline {base.get('passed', 0)} of {base.get('cases', 0)}")
-    if now["unreplayed"] > SLACK:
-        why.append(f"{now['unreplayed']} cases could not be replayed")
+    # A baseline from a run cut at its job's limit says how many it did not
+    # reach (#735): more than that, by more than one, is worse.
+    if now["unreplayed"] > base.get("unreplayed", 0) + SLACK:
+        why.append(f"{now['unreplayed']} cases could not be replayed, the baseline {base.get('unreplayed', 0)}")
     return "; ".join(why)
 
 
@@ -484,11 +497,23 @@ def policy_of(d, level=None):
         return kv(out.read())
 
 
+def left():
+    """The seconds the running set has left, or None with no deadline."""
+    return None if DEADLINE is None else DEADLINE - clock()
+
+
+def case_seconds(minutes):
+    """How long a model may take on one case: its step's minutes, cut so
+    that its grade still ends within the job (at least one minute)."""
+    rest = left()
+    return minutes * 60 if rest is None else max(60, min(minutes * 60, int(rest) - GRADE_MINUTES * 60))
+
+
 def claude(prompt, d, args, minutes):
     """The model's structured answer (or its last result), never its
     transcript; None when it gave none in time."""
     try:
-        got = run(["claude", "-p", "--output-format", "json", *args], input=prompt, cwd=d, env=no_tokens(), timeout=minutes * 60)
+        got = run(["claude", "-p", "--output-format", "json", *args], input=prompt, cwd=d, env=no_tokens(), timeout=case_seconds(minutes))
     except subprocess.TimeoutExpired:
         return None
     try:
@@ -648,7 +673,7 @@ def replay_review(case, work):
     try:
         # One case never holds the run: 15 minutes, then it is unreviewed.
         run(["bash", os.path.join(ROOT, "scripts", "local-review.sh"), "--base", case["base"], "--full", "--title", case["title"]],
-            cwd=d, timeout=STEPS["review"]["minutes"] * 60)
+            cwd=d, timeout=case_seconds(STEPS["review"]["minutes"]))
     except subprocess.TimeoutExpired:
         return None
     try:
@@ -688,11 +713,20 @@ REPLAYS = {"triage": replay_triage, "repro": replay_repro, "spec": replay_spec, 
 
 
 def run_step(step):
+    """Every case of STEP, within its job's minutes: a case with no time
+    left for its model and its grade is not replayed (ok None), and the
+    results are printed before the job's limit, never lost to it."""
+    global DEADLINE
     with open(cases_file(step), encoding="utf-8") as fh:
         cases = json.load(fh)
     work = tempfile.mkdtemp(prefix=f"dx-eval-{step}-")
+    DEADLINE = clock() + (STEPS[step]["job"] - SETUP_MINUTES) * 60
     results = []
     for c in cases:
+        if left() < (GRADE_MINUTES + 2) * 60:
+            print(f"  {c['id']}: not reached within the job's {STEPS[step]['job']} minutes", file=sys.stderr)
+            results.append({"id": c["id"], "expect": c["expect"], "ok": None})
+            continue
         try:
             ok = REPLAYS[step](c, work)
         except (OSError, ValueError, KeyError, subprocess.SubprocessError) as err:
@@ -956,6 +990,25 @@ def self_test():
     check("paths: the union of every step's, each once", (len(all_paths()), len(set(all_paths())), all(any(p in paths_of(s) for s in STEPS) for p in all_paths())),
           (len(set(p for s in STEPS for p in paths_of(s))), len(set(all_paths())), True))
 
+    # Each set ends within its job's limit (#735).
+    global DEADLINE
+    check("job: the autopilot's set 30 minutes, every other 15", {s: STEPS[s]["job"] for s in STEPS},
+          {s: 30 if s == "autopilot" else 15 for s in STEPS})
+    saved = DEADLINE
+    try:
+        DEADLINE = None
+        no_limit = case_seconds(45)
+        DEADLINE = clock() + 26 * 60
+        cut = case_seconds(45)
+        DEADLINE = clock() + 30
+        last = case_seconds(45)
+    finally:
+        DEADLINE = saved
+    check("job: a case's model is cut to leave its grade time, never under a minute", (no_limit, 21 * 60 - 1 <= cut <= 21 * 60, last), (45 * 60, True, 60))
+    check("job: a cut run's baseline holds the next run to as many not replayed",
+          (worse_passed({"passed": 2, "cases": 2, "unreplayed": 4}, {"passed": 2, "cases": 2, "unreplayed": 4}),
+           bool(worse_passed({"passed": 0, "cases": 0, "unreplayed": 6}, {"passed": 2, "cases": 2, "unreplayed": 4}))), ("", True))
+
     # Each step's grade (C3).
     tcase = {"expect": {"category": "duplicate", "duplicate_of": 12, "exists_in_pro": False}}
     check("triage: the record's category, duplicate_of and exists_in_pro, all three",
@@ -1179,8 +1232,12 @@ def main(argv):
         sc, _, _, missing = scorer(step)
         now = sc(results)
         if argv[0] == "baseline":
-            if now[missing]:
-                print(f"evals.py: {now[missing]} cases of {step} were not replayed; a baseline is written only from a whole run", file=sys.stderr)
+            # The review's baseline is a whole run's (review-eval.py's rule);
+            # another step's may be a run cut at its job's limit, which it
+            # records (`unreplayed`), as long as it replayed one case.
+            if (now[missing] and step == "review") or not now.get("cases", 1):
+                print(f"evals.py: {now[missing]} cases of {step} were not replayed; a baseline is written only from a whole run"
+                      + ("" if step == "review" else " or one that replayed a case"), file=sys.stderr)
                 return 1
             write_json(baseline_file(step), now)
             print(json.dumps(now))

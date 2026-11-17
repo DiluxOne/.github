@@ -24,7 +24,10 @@ name: AI evaluation
 #
 # A change that should move a score writes the new baseline from this run's
 # results (the artifact): `scripts/evals.py baseline <step> FILE`, in the
-# same pull request, which a person merges. The triage's and the reply's
+# same pull request, which a person merges. Each set runs within its job's
+# limit (30 minutes for the autopilot's, 15 for the rest): the cases it did
+# not reach count as not replayed, and a baseline from such a run records
+# them, so the next run is held to as many. The triage's and the reply's
 # cases come from the API: the collect job, which calls no model and reads
 # with this job's own token, runs by hand with `collect` and on a pull
 # request from a branch of this repository while either cases file is
@@ -132,7 +135,10 @@ jobs:
     needs: steps
     if: needs.steps.outputs.steps != '' && needs.steps.outputs.steps != '[]'
     runs-on: ubuntu-latest
-    timeout-minutes: 330
+    # One set never holds a pull request for hours (#735): the autopilot's
+    # 30 minutes, every other 15. evals.py ends inside them (STEPS' `job`),
+    # the cases it did not reach left not replayed.
+    timeout-minutes: ${{ matrix.step == 'autopilot' && 30 || 15 }}
     permissions:
       contents: read
       issues: read
@@ -190,7 +196,7 @@ jobs:
     needs: steps
     if: always() && ((github.event_name == 'workflow_dispatch' && inputs.collect) || needs.steps.outputs.collect == 'true')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     permissions:
       contents: read
       issues: read
