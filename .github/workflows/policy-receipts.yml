@@ -20,6 +20,11 @@ name: The policy's labels onto the receipts
 # with dilux-bot's App token over the organisation's repositories (issues
 # and pull requests write, to take the labels off; contents write, for the
 # receipts branches), the same reach org-drift.yml's sync has.
+#
+# Apply it once the lanes' readers and writers (scripts/autonomy.py,
+# auto-merge.yml, issue-accepted.yml and the others #804's Spec names) read
+# and write the receipts: while they still read the labels, an open item
+# whose label it took off is decided by a person, never by policy.
 
 on:
   workflow_dispatch:

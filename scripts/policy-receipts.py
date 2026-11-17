@@ -96,9 +96,11 @@ def proofs(item, lanes):
     elif len(mine) > 1:
         left.append("two policy lanes: " + ", ".join(f"lane:{n}" for n in mine))
     elif mine:
-        left.append(f"lane:{mine[0]} without {ACCEPTED}: its lane did not accept it")
+        # Its lane did not accept it, unless a run took ACCEPTED off and
+        # failed before this one: the receipts say which (migrate_item).
+        found.append(("rest", mine[0], [f"lane:{mine[0]}"]))
     elif ACCEPTED in labels:
-        left.append(f"{ACCEPTED} with no lane that accepts by policy")
+        found.append(("rest", None, [ACCEPTED]))
     if MERGED in labels:
         left.append(f"{MERGED} on an issue proves no merge")
     return found, left
@@ -157,6 +159,31 @@ def migrate_item(io, repo, item, lanes, apply):
     out = [("left", f"{name}: {why}; its label stays") for why in left]
     is_open = item.get("state") == "open"
     for kind, lane, labels in found:
+        what = ", ".join(labels)
+        if kind == "rest":
+            # What a run that failed half-way left: one of the two labels,
+            # taken off once the receipts hold that lane's acceptance.
+            try:
+                in_force = receipts.lane_in_force(io.lane_decisions(repo, n))
+            except Exception as e:  # noqa: BLE001
+                out.append(("failed", f"{name}: its receipts could not be read ({e}); {what} stays"))
+                continue
+            if not in_force or (lane and in_force.get("lane") != lane) or (not lane and in_force.get("lane") not in lanes):
+                why = f"lane:{lane} without {ACCEPTED}: its lane did not accept it" if lane else f"{ACCEPTED} with no lane that accepts by policy"
+                out.append(("left", f"{name}: {why}; its label stays"))
+            elif not is_open:
+                out.append(("proven", f"{name} ({item.get('state')}): already on its receipts; {what} kept"))
+            elif not apply:
+                out.append(("would", f"{name}: already on its receipts; would take off {what}"))
+            else:
+                try:
+                    for label in labels:
+                        io.remove_label(repo, n, label)
+                except Exception as e:  # noqa: BLE001
+                    out.append(("failed", f"{name}: on its receipts, but {what} could not be taken off ({e})"))
+                    continue
+                out.append(("migrated", f"{name}: {what} taken off, already on its receipts"))
+            continue
         try:
             if kind == "lane":
                 in_force = receipts.lane_in_force(io.lane_decisions(repo, n))
@@ -166,7 +193,6 @@ def migrate_item(io, repo, item, lanes, apply):
         except Exception as e:  # noqa: BLE001 — unread is never "already proven"
             out.append(("failed", f"{name}: its receipts could not be read ({e}); {', '.join(labels)} stay"))
             continue
-        what = ", ".join(labels)
         if not have:
             if kind == "lane":
                 at = ((item.get("events") or {}).get(ACCEPTED) or (item.get("events") or {}).get(labels[0]) or {}).get("at") or item.get("created_at")
@@ -489,6 +515,23 @@ def self_test():
     fake = Fake([issue(14, ["lane:platform", ACCEPTED])], {f"{R}/issues/14/lane-2026-11-16T00:00:00Z.json": withdrawn})
     migrate(fake, [R], lanes, "2026-11-10", True)
     check("C3: a withdrawn decision is no proof: a record is written", len([e for e in fake.log if e[0] == "write"]), 1)
+
+    # A run that took one label off and failed on the other: the next one
+    # takes the rest off, from the receipts.
+    class HalfOff(Fake):
+        def remove_label(self, repo, n, label):
+            if label == ACCEPTED and not getattr(self, "healed", False):
+                raise RuntimeError("HTTP 502")
+            super().remove_label(repo, n, label)
+    fake = HalfOff([issue(15, ["lane:platform", ACCEPTED])])
+    lines, bad = migrate(fake, [R], lanes, "2026-11-10", True)
+    check("C3: a label that could not be taken off fails the run, its record kept",
+          (bad, fake.items_[0]["labels"], len(fake.lane_decisions(R, 15))), (True, [ACCEPTED], 1))
+    fake.healed = True
+    fake.log.clear()
+    lines, bad = migrate(fake, [R], lanes, "2026-11-10", True)
+    check("C3: the next run takes the rest off and writes nothing",
+          (bad, fake.items_[0]["labels"], [e for e in fake.log if e[0] == "write"]), (False, [], []))
 
     # What proves no lane's decision stays, and is said.
     cases = [(issue(20, [ACCEPTED, "lane:release"]), "no lane that accepts by policy"),
