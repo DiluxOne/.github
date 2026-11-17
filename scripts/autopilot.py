@@ -4947,9 +4947,15 @@ def main(argv):
                     # One push: the agent's commits and the empty ready
                     # commit on top (#820), so one review run starts.
                     subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", READY_COMMIT], check=True, capture_output=True)
-                    if push_branch(repo, pr, number) != 0:
-                        subprocess.run(["git", "reset", "-q", "--soft", "HEAD~1"], capture_output=True)
-                        raise RuntimeError("api-commit.py could not push the branch")
+                    try:
+                        if push_branch(repo, pr, number) != 0:
+                            raise RuntimeError("api-commit.py could not push the branch")
+                    except (RuntimeError, OSError, ValueError, KeyError):
+                        # The ready commit goes only with the ready: `apply`
+                        # pushes the agent's commits without it.
+                        if unpushed(os.environ.get("BRANCH", "")):
+                            subprocess.run(["git", "reset", "-q", "--soft", "HEAD~1"], capture_output=True)
+                        raise
                     head = git_out("rev-parse", "HEAD")
                     if not wait_shown(repo, pr, head):
                         print(f"::warning::#{pr} does not show {head} after a minute.")

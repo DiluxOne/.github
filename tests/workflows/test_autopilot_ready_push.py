@@ -182,3 +182,19 @@ def test_c2_a_ready_refused_still_pushes_the_agents_commits_once(world):
     assert "ready" not in events
     assert state["pushes"] == [["fix: the thing (C1)"]]
     assert git(work, "rev-parse", f"origin/{BRANCH}") == git(work, "rev-parse", "HEAD")
+
+
+def test_c2_a_failed_push_undoes_the_ready_and_leaves_no_ready_commit(world, monkeypatch):
+    ap, events, state, work = world["ap"], world["events"], world["state"], world["work"]
+    tries = []
+
+    def failing_push(branch):
+        tries.append(git(work, "log", "-1", "--format=%s"))
+        return 1
+
+    monkeypatch.setattr(ap, "api_push", failing_push)
+    assert ap.apply_outbox(str(world["outbox"]), REPO, "7", "9") == 1
+    assert events.index("ready") < events.index("ready-undo")
+    # The ready's push carried the ready commit; the retry after it, not.
+    assert tries == ["chore: ready for review", "fix: the thing (C1)"]
+    assert git(work, "log", "-1", "--format=%s") == "fix: the thing (C1)"
