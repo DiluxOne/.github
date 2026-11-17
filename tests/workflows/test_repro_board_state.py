@@ -84,6 +84,8 @@ def test_c1_the_tokens_that_write_the_board_read_its_seal():
     write = steps("issue-repro.yml", "write")
     say = next(s for s in write if s.get("id") == "say")["with"]
     assert say["permission-contents"] == "read" and say["permission-issues"] == "write"
+    broke = next(s for s in write if s.get("id") == "broke")["with"]
+    assert broke["permission-contents"] == "read" and broke["permission-issues"] == "write"
     report = steps("issue-repro.yml", "report")
     assert next(s for s in report if s.get("id") == "bot")["with"]["permission-contents"] == "write"
 
@@ -118,10 +120,10 @@ sys.exit(int(os.environ.get("STATE_RC", "0")) if sys.argv[1:3] == ["state", "set
 """
 
 
-def report(tmp_path, **env):
-    """The calls the report step makes for an outcome: [(kind, text)], and
-    each board state it set, parsed."""
-    the_step = step(steps("issue-repro.yml", "report"), "Labels, branch, pull request, comment")
+def report(tmp_path, where=("report", "Labels, branch, pull request, comment"), **env):
+    """The calls a step (the report's, by default) makes for an outcome:
+    [(kind, text)], and each board state it set, parsed."""
+    the_step = step(steps("issue-repro.yml", where[0]), where[1])
     run = the_step["run"]
     work, temp, bindir = tmp_path / "work", tmp_path / "temp", tmp_path / "bin"
     for d in (work / ".dx-central/scripts", temp / "written", temp / "output", bindir):
@@ -247,6 +249,26 @@ def test_c2_no_way_before_any_model_takes_off_an_earlier_needs_info():
     assert "state get repro" in no_way
     assert no_way.index("receipts.py state set") < no_way.index("--remove-label needs-info")
     assert '[ "$before" != not-reproduced ] || gh issue edit' in no_way
+
+
+BROKE = ("write", "The reproduction broke")
+
+
+def test_c2_a_broken_run_says_its_step_on_the_board_before_needs_human(tmp_path):
+    # The review on #813: the broke step added needs-human with no board
+    # step, so an earlier not-reproduced run's needs-info stayed, stale.
+    lines, states, _ = report(tmp_path, where=BROKE, BEFORE=json.dumps({"step": "not-reproduced", "layer": "cli"}))
+    assert states and states[-1]["step"] == "broken" and states[-1]["reason"] and states[-1]["layer"] == "cli", states
+    assert set_at(lines, "broken")[0] < added(lines, "needs-human")[0], lines
+    assert removed(lines, "needs-info"), lines
+
+
+def test_c2_a_broken_run_keeps_a_needs_info_it_did_not_own_and_a_refused_board_takes_nothing_off(tmp_path):
+    lines, _, _ = report(tmp_path / "a", where=BROKE, BEFORE=json.dumps({"step": "waiting", "layer": "cli"}))
+    assert not removed(lines, "needs-info") and added(lines, "needs-human"), lines
+    lines, _, out = report(tmp_path / "b", where=BROKE, BEFORE=json.dumps({"step": "not-reproduced"}), STATE_RC="3")
+    assert not removed(lines, "needs-info") and added(lines, "needs-human"), lines
+    assert "did not take the reproduction's step (broken)" in out
 
 
 def test_c2_the_triggers_still_come_off_and_repro_no_way_is_no_longer_read(tmp_path):
