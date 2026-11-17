@@ -94,3 +94,14 @@ def test_c1_the_board_shows_the_triage_row():
     failed = r.board_text(7, True, None, None, state={"triage": {"ran": False, "why": "cap"}})
     assert "| Triage | ✗ could not run (cap): a maintainer re-runs the job or triages it by hand |" in failed
     assert "| Triage |" not in r.board_text(7, True, None, None, state={})
+
+
+def test_c2_an_answered_spike_needs_human():
+    """C2: what waits on a person says `needs-human`, never `needs:maintainer`."""
+    spike = workflow("issue-triage.yml")["jobs"]["spike"]
+    answer = next(s for s in spike["steps"] if s.get("name") == "The answer, on the issue")
+    assert "--add-label needs-human --remove-label spike" in answer["run"]
+    for name in ("issue-triage.yml", "runner-image.yml", "autonomy-digest.yml"):
+        for job_name, s in runs(workflow(name)):
+            assert "needs:maintainer" not in s["run"], f"{name} {job_name} / {s.get('name')}"
+    assert "needs:maintainer" not in (ROOT / "scripts" / "run-issue.sh").read_text(encoding="utf-8").split("self_test() {", 1)[0]

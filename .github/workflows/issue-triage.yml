@@ -852,7 +852,7 @@ jobs:
   # an agent investigates it read-only, for at most 30 minutes, and says on
   # the issue whether to do it (as a bug, a minor change or a feature),
   # clarify it, or discard it. It writes nothing and decides nothing: the
-  # issue gets `needs:maintainer`, and a maintainer decides what follows.
+  # issue gets `needs-human`, and a maintainer decides what follows.
   spike:
     name: Spike
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
@@ -935,8 +935,8 @@ jobs:
             text=$(printf '<!-- dx-spike -->\n**Spike: no answer.** The investigation ended without one (its run: %s/%s/actions/runs/%s). A maintainer decides what follows.\n\n🤖 AI-generated · Claude (Anthropic), a read-only spike' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
           fi
           gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$text" >/dev/null
-          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label needs:maintainer --remove-label spike >/dev/null \
-            || echo "::warning::The spike's answer is on the issue, but its labels could not change (needs:maintainer, spike)."
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label needs-human --remove-label spike >/dev/null \
+            || echo "::warning::The spike's answer is on the issue, but its labels could not change (needs-human, spike)."
 
   stale:
     name: Close needs-info issues nobody answered

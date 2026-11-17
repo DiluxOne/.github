@@ -28,10 +28,9 @@
 - {name: "autopilot:catchup", color: "1D76DB", description: "On an issue: the run the continue starts only catches up with another merge; it does not count"}
 - {name: "autopilot:core-wait", color: "C5DEF5", description: "On an issue: the autopilot waits for another pull request on the engine's core"}
 - {name: needs-human, color: "D93F0B", description: "The autopilot handed this over to a person"}
-- {name: "needs:maintainer", color: "D93F0B", description: "Waits on a maintainer's decision"}
 
 # One issue per run of the bots' recurring work (scripts/run-issue.sh, #188):
-# closed when the run needed no one, open with needs:maintainer when it did.
+# closed when the run needed no one, open with needs-human when it did.
 - {name: "run:runner-image", color: "C5DEF5", description: "A build of the runner image (runner-image.yml)"}
 - {name: "run:autonomy-digest", color: "C5DEF5", description: "A week's decisions by policy (autonomy-digest.yml)"}
 - {name: "run:claims", color: "C5DEF5", description: "The daily list of claims (issue-claim.yml), one comment per repository"}
