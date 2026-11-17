@@ -62,7 +62,9 @@ mentions, under comments/<n>/, for the self-test).
 
 The board's state (#564): one hidden block in the board's comment,
 `<!-- dx-state v1 {...} -->`, JSON holding what the flow counts and where it
-stands (whom it waits on, who was mentioned for which step), with a
+stands (whom it waits on, who was mentioned for which step, whether the
+triage ran, #803: `triage`, {"ran": true, "verdict", "at"} or
+{"ran": false, "why"}, shown as the board's Triage row), with a
 SHA-256 of its content. It is read only from dilux-bot's own board comment;
 a block whose hash does not match was edited by hand and reads as the most
 restrictive state: nothing is set on it and nobody is mentioned from it.
@@ -405,6 +407,23 @@ def autopilot_row(a):
     return "| Autopilot | " + " · ".join(parts) + " |"
 
 
+# What the triage's verdict (its category) reads as on the board (#803).
+TRIAGE_VERDICTS = {"bug_unconfirmed": "bug:unconfirmed", "needs_info": "needs-info", "by_design": "by-design",
+                   "pro_feature": "pro-feature", "planned": "planned", "enhancement": "a feature request",
+                   "question": "question", "duplicate": "duplicate", "security": "security"}
+
+
+def triage_row(t):
+    """The triage's row (#803): whether it ran, when, and its verdict, from
+    the state's `triage` key; none before the triage wrote it."""
+    if not isinstance(t, dict):
+        return None
+    if t.get("ran") is True:
+        v = str(t.get("verdict") or "")
+        return f"| Triage | ✓ ran at {clean(t.get('at'))}: {TRIAGE_VERDICTS.get(v) or clean(v)} |"
+    return f"| Triage | ✗ could not run ({clean(t.get('why') or 'unknown')}): a maintainer re-runs the job or triages it by hand |"
+
+
 def rule_link(policy):
     """A link to the autonomy policy as a decision read it: at its commit
     ("DiluxOne/.github@<ref>", as seals and receipts keep it), else main."""
@@ -415,6 +434,10 @@ def rule_link(policy):
 def board_text(number, ready, last_seal, merged, autopilot=None, labels=(), held="", state=None, intact=True, raw_state=""):
     rows = ["| Gate | State |", "| --- | --- |"]
     rows.append(f"| G1 Issue ready | {'✓ the PRD follows the schema' if ready else '✗ see the G1 comment'} |")
+    # Whether the triage ran (#803): the board says it, no label does.
+    row = triage_row((state or {}).get("triage")) if intact else None
+    if row:
+        rows.append(row)
     # A person holds it (#488, #561): a claim, an assignment, their own
     # open pull request that closes it; the autopilot does not start.
     if held and not autopilot:
@@ -859,6 +882,11 @@ Normal
     check("C1 (#801) the board carries the row", "| Reproduction | ✗ not reproduced: it waits for more information · layer `cli` · it passes |" in rb, True)
     check("C1 (#801) a state edited by hand shows no reproduction", "Reproduction" in board_text(7, True, None, None, state={}, intact=False,
                                                                                           raw_state='<!-- dx-state v1 {"repro":{"step":"waiting"}} -->'), False)
+    check("#803 the board says the triage ran, when, and its verdict",
+          triage_row({"ran": True, "verdict": "needs_info", "at": "2026-11-17T00:00:00Z"}), "| Triage | ✓ ran at 2026-11-17T00:00:00Z: needs-info |")
+    check("#803 or that it could not run, and what a maintainer does",
+          triage_row({"ran": False, "why": "failed"}), "| Triage | ✗ could not run (failed): a maintainer re-runs the job or triages it by hand |")
+    check("#803 no triage key, no row; a verdict's text is cleaned", (triage_row(None), "@" in triage_row({"ran": True, "verdict": "@x|y", "at": "t"})), (None, False))
     tb = board_text(7, True, s, None, state={}, intact=False, raw_state=blk.replace('"runs":2', '"runs":0'))
     check("#564 a state edited by hand is said, kept as it was, and names nobody", ("edited by hand" in tb, '"runs":0' in tb, "Waits on" in tb), (True, True, False))
     w = {"who": "alice", "what": "complete the issue", "url": "https://github.com/o/r/issues/7"}

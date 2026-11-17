@@ -17,7 +17,7 @@ name: Runner image
 # --version, after checking that php-builder's prebuilt 8.3 to 8.5 find every
 # library they link against in the image (#145). Only a build that passes is
 # promoted, and only while DX_AUTOPILOT is not off (off, the build is tested
-# and its issue waits on a person with needs:maintainer): tagged :stable
+# and its issue waits on a person with needs-human): tagged :stable
 # (what the VM pulls on boot) and with its date and run (:YYYY-MM-DD.<run>, to go back to). A failed build leaves
 # :stable as it was. On a pull request it builds and tests, and pushes
 # nothing.
@@ -26,7 +26,7 @@ name: Runner image
 # plan (#78). Each build is its own issue of this repository, labelled
 # `run:runner-image` (scripts/run-issue.sh, #188): a promoted one says its
 # versions and digest and closes as completed; a failed one stays open with
-# `needs:maintainer`, as a `platform` lane issue (accepted by policy), until
+# `needs-human`, as a `platform` lane issue (accepted by policy), until
 # a person or the lane fixes the image, or the next build that passes closes
 # it. The closed issues are the record of
 # every build. The package must be public once (package settings) so the VM
