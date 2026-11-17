@@ -1,0 +1,201 @@
+name: AI evaluation
+
+# Not reusable. Every AI step is measured before a change to it merges
+# (#735, after the review's own evaluation, #234): the triage, the
+# reproduction, the Spec, the autopilot's work, the review and the review's
+# reply. Each step's set, evals/<step>/cases.json (real cases of the public
+# repositories), is replayed with the prompts, workflows and policy of this
+# pull request and scored against evals/<step>/baseline.json by
+# scripts/evals.py, which grades each case deterministically wherever a
+# program can (a model judges only the reply's words, with the case's
+# rubric). Worse than the baseline by more than one case fails the step's
+# check, "AI evaluation (<step>)", and its table in the job summary says
+# which cases.
+#
+# Which steps a pull request runs is computed by `evals.py steps` from its
+# files: the paths below are their union (`evals.py paths`; a test holds
+# them equal), so a pull request that touches none runs nothing, and one
+# that touches one step's paths runs that step alone.
+#
+# Paid: each case is one model run, or more. It runs only when a pull
+# request from a branch of this repository touches a step (a fork's code
+# never runs with the keys), and by hand. Private repositories are never
+# cases: their code would show in this public repository's logs.
+#
+# A change that should move a score writes the new baseline from this run's
+# results (the artifact): `scripts/evals.py baseline <step> FILE`, in the
+# same pull request, which a person merges. The triage's and the reply's
+# cases come from the API: run this workflow by hand with `collect`, which
+# calls no model and reads with this job's own token, and commit the
+# artifact's cases.json files.
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/issue-triage.yml
+      - scripts/triage-brief.sh
+      - policy/autonomy.yml
+      - evals/triage/**
+      - .github/workflows/issue-repro.yml
+      - scripts/repro-ways.py
+      - evals/repro/**
+      - .github/workflows/autopilot.yml
+      - scripts/autopilot.py
+      - evals/spec/**
+      - evals/autopilot/**
+      - review-profiles/**
+      - kinds/*/review-profile.md
+      - kinds/*/rules.yml
+      - policy/review-policy.default.yml
+      - scripts/review-brief.sh
+      - scripts/local-review.sh
+      - scripts/review-verify.py
+      - scripts/review-count.py
+      - .github/workflows/claude-review.yml
+      - evals/review/**
+      - .github/workflows/review-reply.yml
+      - evals/reply/**
+  workflow_dispatch:
+    inputs:
+      step:
+        description: The step whose set runs (all, every one)
+        type: choice
+        options: [all, triage, repro, spec, autopilot, review, reply]
+        default: all
+      collect:
+        description: Collect the triage's and the reply's cases instead (no model, read-only)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evals-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  steps:
+    name: The steps this change runs
+    if: (github.event_name == 'workflow_dispatch' && !inputs.collect) || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      steps: ${{ steps.list.outputs.steps }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: The changed files, and the steps they run
+        id: list
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          STEP: ${{ inputs.step }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          DEFAULT_POLICY: policy/review-policy.default.yml
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = workflow_dispatch ] && [ "$STEP" = all ]; then
+            python3 scripts/evals.py steps policy/autonomy.yml > "$RUNNER_TEMP/steps.txt"
+          elif [ "$EVENT" = workflow_dispatch ]; then
+            python3 scripts/evals.py steps "evals/$STEP/cases.json" > "$RUNNER_TEMP/steps.txt"
+          else
+            python3 scripts/pr-files.py | python3 scripts/evals.py steps > "$RUNNER_TEMP/steps.txt"
+          fi
+          echo "steps=$(jq -Rnc '[inputs | select(length > 0)]' < "$RUNNER_TEMP/steps.txt")" >> "$GITHUB_OUTPUT"
+          echo "Steps: $(tr '\n' ' ' < "$RUNNER_TEMP/steps.txt")"
+
+  eval:
+    name: AI evaluation (${{ matrix.step }})
+    needs: steps
+    if: needs.steps.outputs.steps != '' && needs.steps.outputs.steps != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    permissions:
+      contents: read
+      issues: read
+    strategy:
+      fail-fast: false
+      matrix:
+        step: ${{ fromJSON(needs.steps.outputs.steps) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: The Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code@2.1.302
+
+      - name: Replay every case
+        env:
+          STEP: ${{ matrix.step }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
+          # Reads the cases' public issues; evals.py never hands it to a model.
+          GH_TOKEN: ${{ github.token }}
+          DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN }}
+          DX_BOT_ID: ${{ vars.DX_BOT_ID }}
+        run: |
+          set -euo pipefail
+          git config --global user.name "$DX_BOT_LOGIN"
+          git config --global user.email "$DX_BOT_ID+$DX_BOT_LOGIN@users.noreply.github.com"
+          python3 scripts/evals.py run "$STEP" > "$RUNNER_TEMP/results.json"
+
+      - name: Score against the baseline
+        env:
+          STEP: ${{ matrix.step }}
+        run: |
+          set -uo pipefail
+          python3 scripts/evals.py score "$STEP" "$RUNNER_TEMP/results.json" | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "${PIPESTATUS[0]}"
+
+      - name: Keep the results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: evals-${{ matrix.step }}
+          path: ${{ runner.temp }}/results.json
+          retention-days: 30
+
+  # The cases only the API holds (#735): the triage's records and the
+  # reply's threads, from the public repositories. No model, no secret:
+  # this job's own token, read-only; the cases leave as an artifact, and a
+  # pull request commits them.
+  collect:
+    name: Collect the triage's and the reply's cases
+    if: github.event_name == 'workflow_dispatch' && inputs.collect
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Collect
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/evals.py collect triage
+          python3 scripts/evals.py collect reply
+
+      - name: Keep the cases
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: evals-collected
+          path: |
+            evals/triage/cases.json
+            evals/reply/cases.json
+          retention-days: 30
