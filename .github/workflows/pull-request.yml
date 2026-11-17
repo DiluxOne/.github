@@ -209,6 +209,7 @@ jobs:
       - run: npm ci --prefix scripts/stylelint --ignore-scripts --no-audit --no-fund
       - run: python3 scripts/design-lint.py --test
       - run: python3 scripts/receipts.py --test
+      - run: python3 scripts/policy-receipts.py --test
       - run: python3 scripts/autopilot.py --test
       - run: python3 scripts/deciders.py --test
       - run: python3 scripts/revert.py --test

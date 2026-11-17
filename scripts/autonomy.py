@@ -21,6 +21,13 @@
                             merges on its own: exit 0 when it does, 1 when a
                             person merges it, 2 when it is neither lane's
                             (auto-merge.yml then decides it as any other)
+  autonomy.py migrate-policy-labels [--apply]
+                            move what the policy's labels said (lane:<a lane
+                            that accepts by policy> with accepted-by:policy,
+                            merged-by:policy) onto each repository's
+                            receipts, then take them off (#804;
+                            scripts/policy-receipts.py, which says how); a
+                            dry run unless --apply
   autonomy.py --test        self-test
 
 Environment:
@@ -2151,6 +2158,12 @@ def main():
         for line in found:
             print(line)
         return 1 if found else 0
+    if mode == "migrate-policy-labels":
+        # #804: the migration is its own script, with its own --test.
+        spec = importlib.util.spec_from_file_location("policy_receipts", os.path.join(HERE, "policy-receipts.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.main(["migrate"] + sys.argv[2:])
     var = os.environ.get("DX_AUTOPILOT", "")
     if mode == "lane-open":
         name = sys.argv[2] if len(sys.argv) > 2 else ""

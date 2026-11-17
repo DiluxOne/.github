@@ -1,0 +1,75 @@
+name: The policy's labels onto the receipts
+
+# Not reusable, and by hand only (#804, C3): moves what the policy decided in
+# a person's place, once kept in labels anyone with write access could add or
+# take off, onto each repository's receipts branch, which only dilux-bot
+# writes (scripts/receipts.py). In every repository of repos.yml but its
+# exclude list, every open issue and pull request carrying `lane:<a lane that
+# accepts by policy>` with `accepted-by:policy`, or `merged-by:policy`, gets
+# the matching lane or merge decision, written from the label's last
+# LabeledEvent (who, when, the policy's commit in force then); the record is
+# read back, and only then is the label taken off. One closed in the last
+# seven days gets its record and keeps its labels, so the weekly digest
+# (autonomy-digest.yml) still lists that week. A write or read-back that
+# fails leaves the label on and fails the run; a second run does nothing
+# more. It is scripts/autonomy.py's `migrate-policy-labels` verb, which runs
+# scripts/policy-receipts.py; see its header for what stays and why.
+#
+# A dry run unless `apply` is ticked: it says what it would write and take
+# off, and changes nothing. It runs only on main, never on a fork's code,
+# with dilux-bot's App token over the organisation's repositories (issues
+# and pull requests write, to take the labels off; contents write, for the
+# receipts branches), the same reach org-drift.yml's sync has.
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Write the records and take the labels off (unticked: a dry run)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: policy-receipts
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    name: The policy's labels onto the receipts
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: App token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-issues: write
+          permission-pull-requests: write
+          permission-contents: write # each repository's receipts branch
+          permission-metadata: read
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # the policy's commit in force when each label was added
+
+      - name: Move the labels onto the receipts
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          OWNER: ${{ github.repository_owner }}
+          APPLY: ${{ inputs.apply }}
+        run: |
+          set -euo pipefail
+          args=()
+          [ "$APPLY" != "true" ] || args+=(--apply)
+          rc=0
+          python3 scripts/autonomy.py migrate-policy-labels "${args[@]}" | tee "$RUNNER_TEMP/migrate.txt" || rc=$?
+          { echo '```'; cat "$RUNNER_TEMP/migrate.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
