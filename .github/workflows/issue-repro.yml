@@ -962,7 +962,7 @@ jobs:
               return 0
             fi
             if [ "$before" != "$1" ]; then
-              case $before in not-reproduced) owned=needs-info;; no-way) owned=needs-human;; esac
+              case $before in not-reproduced) owned="needs-info";; no-way) owned="needs-human";; esac
               [ -z "$owned" ] || gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$owned" >/dev/null 2>&1 || true
             fi
             before=$1
