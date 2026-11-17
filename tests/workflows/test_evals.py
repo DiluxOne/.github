@@ -139,3 +139,36 @@ def test_the_scripts_give_the_prompts_filled():
     assert rep.startswith("You try to reproduce a reported bug in o/r, issue #7.\nIt is a logic bug") and "Write ONE Python test at tests/repro/test_issue_7.py." in rep
     rr = subprocess.run([sys.executable, str(ROOT / "scripts" / "autopilot.py"), "prompt", "reply"], env=env, capture_output=True, text=True).stdout
     assert rr.startswith("You are the code reviewer for o/r, pull request #12.") and ".dx-central/review-profiles/general.md," in rr
+
+
+# C3: the runner's self-test, run by the scripts job, and the review's set
+# graded as review-eval.py graded it.
+
+def test_the_runner_tests_itself_offline_in_the_scripts_job():
+    got = evals("--test")
+    assert got.returncode == 0, got.stdout[-2000:]
+    for name in ("steps:", "triage:", "repro:", "spec:", "autopilot:", "reply:", "review verdict:", "review score:", "review worse:"):
+        assert f"ok   {name}" in got.stdout, name
+    runs = [s.get("run", "") for s in workflow("pull-request.yml")["jobs"]["scripts"]["steps"]]
+    assert "python3 scripts/evals.py --test" in runs and "python3 scripts/review-eval.py --test" in runs
+
+
+def test_the_review_gives_review_eval_pys_results_on_its_old_fixtures():
+    ev, wrapper = load("evals"), load("review-eval")
+    case_f = {"expect": "flag", "path": "a.php"}
+    assert ev.verdict(case_f, {"findings": [{"severity": "major", "file": "a.php"}]}) is True
+    assert ev.verdict(case_f, {"findings": [{"severity": "minor", "file": "a.php"}, {"severity": "major", "file": "b.php"},
+                                            {"severity": "blocker", "file": "a.php", "pre_existing": True}]}) is False
+    assert ev.verdict({"expect": "clean"}, {"findings": [{"severity": "major"}]}) is False
+    assert ev.verdict(case_f, None) is None
+    res = [{"id": "1", "expect": "flag", "ok": True}, {"id": "2", "expect": "flag", "ok": False},
+           {"id": "3", "expect": "clean", "ok": False}, {"id": "4", "expect": "clean", "ok": None}]
+    now = ev.score(res)
+    assert now == {"found": 1, "flag": 2, "blocked": 1, "clean": 1, "unreviewed": 1}
+    assert ev.worse(now, {"found": 2, "flag": 2, "blocked": 0}) == ""
+    assert ev.worse({**now, "found": 0}, {"found": 2, "flag": 2, "blocked": 0}).startswith("it found 0 of 2")
+    assert ev.SLACK == 1
+    for name in ("verdict", "score", "worse", "table", "cases_from", "pick"):
+        assert getattr(wrapper, name) is getattr(wrapper.evals, name)
+    cases = json.loads((ROOT / "evals" / "review" / "cases.json").read_text(encoding="utf-8"))
+    assert len(cases) == 12 and all("rubric" not in c for c in cases)
