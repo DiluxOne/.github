@@ -24,7 +24,7 @@ And keeps the action's own guard (v1.0.273 and later): on a pull request
 whose author has no write access, `restrict_untrusted_prs` denies the
 commands that run code from the checkout. Its author is never trusted when
 it is a bot, so the autopilot's two steps (autopilot.yml's `spec` and
-`work`) turn it off only when the pull request is dilux-bot's own, the
+`work`) turn it off only when the pull request is the bot's own, the
 exact expression BOT_ONLY; any other value there, and the input set to
 anything but "true" in any other step, is refused.
 
@@ -47,7 +47,7 @@ USES = re.compile(r'^\s*(?:-\s+)?uses:\s*["\']?([^\s"\'#]*anthropics/claude-code
 SHA = re.compile(r"[0-9a-f]{40}")
 VERSION = re.compile(r"v\d+\.\d+\.\d+")
 # The one value the autopilot's steps may give restrict_untrusted_prs:
-# "false" only on a pull request (or a comment on one) that dilux-bot opened.
+# "false" only on a pull request (or a comment on one) that the bot (vars.DX_BOT_LOGIN) opened.
 BOT_ONLY = ("${{ vars.DX_BOT_LOGIN != '' && (github.event.pull_request.user.login"
             " || (github.event.issue.pull_request && github.event.issue.user.login))"
             " == vars.DX_BOT_LOGIN && 'false' || 'true' }}")
@@ -85,8 +85,8 @@ def untrusted(path, step):
     if where in BOT_STEPS and value == BOT_ONLY:
         return None
     if where in BOT_STEPS:
-        return "turns off restrict_untrusted_prs other than on dilux-bot's own pull request (BOT_ONLY)"
-    return "turns off restrict_untrusted_prs, which only the autopilot's spec and work steps may, on dilux-bot's pull request"
+        return "turns off restrict_untrusted_prs other than on the bot's own pull request (BOT_ONLY)"
+    return "turns off restrict_untrusted_prs, which only the autopilot's spec and work steps may, on the bot's own pull request"
 
 
 def pins(texts):
