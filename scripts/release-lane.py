@@ -783,6 +783,18 @@ def self_test():
         err = _raises(lambda: release(p, "O/.github", run=fake, sleep=lambda s: None, root=root))
         check("#798 C2: a close that fails is still an error that says why, nothing tagged",
               ("could not be closed" in str(err) and "its head is `h9`" in str(err), [c for c in fake.calls if c[3:4] == ("tag",)]), (True, []))
+        # #798 C3: v7.15.0's candidate, every scenario passing, its release
+        # pull request risk:high, is released with no person's step.
+        p715 = dict(plan({"last": "7.14.1", "next": "7.15.0", "bump": "minor", "pending": True}, ["feat: a check proves every fix with a test that fails before it (#791)"]), sha="p1")
+        fake = merged(branch="chore/release-v7.15.0", **{"gh release view": missing})
+        d = act(p715, passed, "O/.github", run=fake, sleep=lambda s: None, root=root)
+        check("#798 C3: v7.15.0's candidate goes through act() with no person's step: tagged at the merge commit, v7 moved, no release issue, no --auto",
+              ((p715["version"], p715["previous"], p715["breaking"]), d["do"], d.get("version"), "error" in d,
+               fake.has("git", "-C", root, "tag", "v7.15.0", "abc123"), fake.has("git", "-C", root, "push", "origin", "refs/tags/v7.15.0"),
+               fake.has("git", "-C", root, "tag", "-f", "v7", "abc123^{commit}"), fake.has("git", "-C", root, "push", "-f", "origin", "refs/tags/v7"),
+               fake.has("gh", "issue", "create"), [c for c in fake.calls if c[:3] == ("gh", "pr", "merge") and "--auto" in c],
+               fake.has("gh", "pr", "merge", "700", "--repo", "O/.github", "--squash", "--match-head-commit", "h1"), fake.has("gh", "pr", "close")),
+              (("v7.15.0", "v7.14.1", False), "release", "v7.15.0", False, True, True, True, True, False, [], True, False))
         # Main moved past the commit the scenarios tried.
         fake = merged(main="p2")
         d = act(p, passed, "O/.github", run=fake, sleep=lambda s: None, root=root)
