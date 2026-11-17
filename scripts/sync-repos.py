@@ -292,47 +292,70 @@ def retire_labels(repo, dry):
     back, and only then the label removed; a Type already set is kept
     (#341) and the label removed; `bug` and `enhancement` together with no
     Type are left alone, and said. `needs:maintainer`: `needs-human` added,
-    then `needs:maintainer` removed. A call that fails stops the repository
-    (raised), so a PATCH that fails never loses a label. Idempotent: once no
-    open issue carries them, it only reads."""
+    then `needs:maintainer` removed. A call that fails stops that issue (or,
+    for a list, that label), so a PATCH that fails never loses a label; it
+    is said and counted, and the other issues and the repository's other
+    steps go on (a best-effort cleanup never gates them). Returns the
+    number of failures. Idempotent: once no open issue carries them, it
+    only reads."""
     import urllib.parse
     full = f"{ORG}/{repo['name']}"
     retired = list(RETIRED_FOR_TYPE) + list(RETIRED_FOR_LABEL)
     if dry:
         print(f"  would retire {', '.join(retired)} from the open issues that carry them")
-        return
+        return 0
     found = {}
+    failures = 0
     for name in retired:
-        pages = json.loads(gh("api", "--paginate", "--slurp",
-                              f"repos/{full}/issues?state=open&labels={urllib.parse.quote(name, safe='')}&per_page=100").stdout or "[]")
+        try:
+            pages = json.loads(gh("api", "--paginate", "--slurp",
+                                  f"repos/{full}/issues?state=open&labels={urllib.parse.quote(name, safe='')}&per_page=100").stdout or "[]")
+        except (RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
+            failures += 1
+            print(f"  retiring {name} failed: the open issues could not be listed: {exc}")
+            continue
         for issue in (i for page in pages for i in page):
             if "pull_request" in issue:
                 continue
             found[int(issue["number"])] = ((issue.get("type") or {}).get("name") or "", [str(l["name"]) for l in issue.get("labels") or []])
     done = 0
     for number, (kind, names) in sorted(found.items()):
-        n = str(number)
-        typed = [l for l in RETIRED_FOR_TYPE if l in names]
-        if typed and not kind and len(typed) > 1:
-            print(f"  #{number}: carries {' and '.join(typed)} and has no Type; left for a person to type")
-            typed = []
-        elif typed and not kind:
-            want = RETIRED_FOR_TYPE[typed[0]]
-            gh("api", "-X", "PATCH", f"repos/{full}/issues/{n}", "-f", f"type={want}")
-            got = gh("api", f"repos/{full}/issues/{n}", "--jq", '.type.name // ""').stdout.strip()
-            if got != want:
-                raise RuntimeError(f"#{number}'s Type reads {got or 'none'} after it was set to {want}: {typed[0]} kept")
-            print(f"  #{number}: Type {want}")
-        for label in typed:
-            gh("issue", "edit", n, "--repo", full, "--remove-label", label)
-            print(f"  #{number}: {label} removed")
-        for old, new in RETIRED_FOR_LABEL.items():
-            if old in names:
-                gh("issue", "edit", n, "--repo", full, "--add-label", new)
-                gh("issue", "edit", n, "--repo", full, "--remove-label", old)
-                print(f"  #{number}: {old} moved to {new}")
-        done += 1
-    print(f"  retired labels: {done} open issues looked at")
+        try:
+            done += retire_one(full, number, kind, names)
+        except (RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
+            failures += 1
+            print(f"  #{number}: retiring its labels failed: {exc}")
+    print(f"  retired labels: {done} open issues changed, {failures} failed")
+    return failures
+
+
+def retire_one(full, number, kind, names):
+    """retire_labels for one open issue; raises on a call that fails.
+    1 when it changed the issue, 0 when it left it alone."""
+    n = str(number)
+    changed = 0
+    typed = [l for l in RETIRED_FOR_TYPE if l in names]
+    if typed and not kind and len(typed) > 1:
+        print(f"  #{number}: carries {' and '.join(typed)} and has no Type; left for a person to type")
+        typed = []
+    elif typed and not kind:
+        want = RETIRED_FOR_TYPE[typed[0]]
+        gh("api", "-X", "PATCH", f"repos/{full}/issues/{n}", "-f", f"type={want}")
+        got = gh("api", f"repos/{full}/issues/{n}", "--jq", '.type.name // ""').stdout.strip()
+        if got != want:
+            raise RuntimeError(f"#{number}'s Type reads {got or 'none'} after it was set to {want}: {typed[0]} kept")
+        print(f"  #{number}: Type {want}")
+    for label in typed:
+        gh("issue", "edit", n, "--repo", full, "--remove-label", label)
+        print(f"  #{number}: {label} removed")
+        changed = 1
+    for old, new in RETIRED_FOR_LABEL.items():
+        if old in names:
+            gh("issue", "edit", n, "--repo", full, "--add-label", new)
+            gh("issue", "edit", n, "--repo", full, "--remove-label", old)
+            print(f"  #{number}: {old} moved to {new}")
+            changed = 1
+    return changed
 
 
 # Who of the outside contributors needs a maintainer's approval before their
@@ -4860,8 +4883,10 @@ def retire_test(check, labels):
         4: {"type": "", "labels": ["bug", "enhancement"]},
         5: {"type": "", "labels": ["needs:maintainer", "run:runner-image"]},
         6: {"type": "", "labels": ["enhancement"]},
+        7: {"type": "", "labels": ["enhancement"]},
     }
     calls = []
+    unlisted = set()
 
     def fake(*args, check=True, input_text=None):
         calls.append(args)
@@ -4869,6 +4894,8 @@ def retire_test(check, labels):
         if args[:2] == ("api", "--paginate") and "/issues?" in joined:
             import urllib.parse
             want = urllib.parse.unquote(joined.split("labels=", 1)[1].split("&", 1)[0])
+            if want in unlisted:
+                raise RuntimeError("gh api: HTTP 410 Issues are disabled")
             rows = [{"number": n, "type": ({"name": i["type"]} if i["type"] else None), "labels": [{"name": x} for x in i["labels"]]}
                     for n, i in issues.items() if want in i["labels"]]
             rows.append({"number": 99, "pull_request": {}, "type": None, "labels": [{"name": want}]})
@@ -4896,13 +4923,22 @@ def retire_test(check, labels):
         globals().update(gh=fake, ORG="o")
         with contextlib.redirect_stdout(io.StringIO()) as out:
             try:
-                retire_labels({"name": "r"}, False)
+                failed_count = retire_labels({"name": "r"}, False)
                 raised = None
             except RuntimeError as exc:
-                raised = str(exc)
+                failed_count, raised = None, str(exc)
         with contextlib.redirect_stdout(io.StringIO()) as dry_out:
             n_calls = len(calls)
-            retire_labels({"name": "r"}, True)
+            dry_count = retire_labels({"name": "r"}, True)
+        # A list that fails (issues disabled, #803 review): said and
+        # counted, and the other labels' issues still retired.
+        issues.update({8: {"type": "", "labels": ["bug"]}, 9: {"type": "", "labels": ["enhancement"]}})
+        unlisted.add("bug")
+        with contextlib.redirect_stdout(io.StringIO()) as list_out:
+            try:
+                list_failed = retire_labels({"name": "r"}, False)
+            except RuntimeError as exc:
+                list_failed = f"raised: {exc}"
     finally:
         globals()["gh"], globals()["ORG"] = saved
     j = [" ".join(c) for c in calls]
@@ -4919,11 +4955,18 @@ def retire_test(check, labels):
     check("#803 C3: needs:maintainer moves to needs-human, added before the old one goes",
           (issues[5], -1 < at("issue edit 5 --repo o/r --add-label needs-human") < at("issue edit 5 --repo o/r --remove-label needs:maintainer")),
           ({"type": "", "labels": ["run:runner-image", "needs-human"]}, True))
-    check("#803 C3: a PATCH that fails keeps the label, and the run says it failed",
-          (issues[6]["labels"], bool(raised and "422" in raised)), (["enhancement"], True))
+    check("#803 C3: a PATCH that fails keeps the label, and the run says it failed and counts it, without raising",
+          (issues[6]["labels"], raised, failed_count, "#6: retiring its labels failed" in out.getvalue() and "422" in out.getvalue()),
+          (["enhancement"], None, 1, True))
+    check("#803: an issue after the one that failed is still retired", issues[7], {"type": "Feature", "labels": []})
+    check("#803: an issue it left alone is not counted as changed",
+          "5 open issues changed, 1 failed" in out.getvalue(), out.getvalue())
+    check("#803: a label whose issues cannot be listed is said and counted, and the other labels' issues still retired",
+          (list_failed, issues[8], issues[9], "retiring bug failed" in list_out.getvalue()),
+          (2, {"type": "", "labels": ["bug"]}, {"type": "Feature", "labels": []}, True))
     check("#803 C3: a pull request is never touched, nor a repository's label deleted",
           (any(" 99 " in c + " " or "/99" in c for c in j), any("label delete" in c or "-X DELETE" in c for c in j)), (False, False))
-    check("#803 C3: a dry run reads nothing and says what it would do", (len(calls) == n_calls, "would" in dry_out.getvalue()), (True, True))
+    check("#803 C3: a dry run reads nothing and says what it would do", (len(calls) == n_calls, "would" in dry_out.getvalue(), dry_count), (True, True, 0))
 
 
 def self_test():
@@ -5290,8 +5333,24 @@ def self_test():
             with contextlib.redirect_stdout(io.StringIO()):
                 main([command, "--dry-run"])
             runs[command] = list(ran)
+        # #803 review: a label cleanup that fails gates none of `all`'s
+        # other steps, and the run still fails.
+        ran.clear()
+        real_gh = globals()["gh"]
+
+        def no_issues(*a, **k):
+            raise RuntimeError("gh api: HTTP 410 Issues are disabled")
+        globals()["gh"] = no_issues
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as all_out:
+                all_code = main(["all"])
+        finally:
+            globals()["gh"] = real_gh
+        runs["all, its cleanup failing"] = (list(ran), all_code, "retiring" in all_out.getvalue())
     finally:
         globals().update(saved)
+    check("#803: `all` with a label cleanup that fails still runs settings, files, own checks and the merge queue, and fails",
+          runs["all, its cleanup failing"], (["labels", "settings", "files", "own-checks", "merge-queue"], 1, True))
     check("#187: `all` runs labels, settings, the shared files, own checks and the merge queue, not the Dependabot file", runs["all"] == ["labels", "settings", "files", "own-checks", "merge-queue"], runs["all"])
     # #451: where the merge queue goes, and when it waits.
     check("#451: a repository's exception wins over org.yml", queue_mode("a", {"merge-queue": {"a": "off"}}, {"merge-queue": "on"}), "off")
@@ -5475,7 +5534,9 @@ def main(argv):
                 continue
             if what in ("labels", "all"):
                 sync_labels(repo, labels, dry)
-                retire_labels(repo, dry)
+                # Best effort (#803): its failures are counted, never raised,
+                # so the repository's other steps still run.
+                failures += retire_labels(repo, dry)
             if what in ("settings", "all"):
                 sync_settings(repo, conf, dry)
             if what == "security":
