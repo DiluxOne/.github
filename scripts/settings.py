@@ -154,9 +154,18 @@ def merge(engine, theirs, settings, path=()):
     return copy.deepcopy(theirs)
 
 
+def as_shape(rel, engine, theirs):
+    """An organisation's labels.yml still a list (before #805) is its
+    `labels:`, so the engine's other lists stay. Pure."""
+    if rel == "labels.yml" and isinstance(engine, dict) and isinstance(theirs, list):
+        return {"labels": theirs}
+    return theirs
+
+
 def overlay(engine_file, org_file, rel=None, conf=None):
     rel = rel or os.path.relpath(os.path.abspath(engine_file), ROOT)
     engine, theirs = load(engine_file), load(org_file)
+    theirs = as_shape(rel, engine, theirs)
     # An empty file of the organisation's sets nothing.
     return engine if theirs is None else merge(engine, theirs, entries(conf if conf is not None else schema(), rel))
 
@@ -453,9 +462,12 @@ def self_test():
                 {"org": "Acme", "bot": {"app": "acme-bot"}}, orgs)
     check("identity keys are never kept from the engine's", got, {"org": "Acme", "bot": {"app": "acme-bot"}, "attribution": "warn"})
     labels = entries(conf, "labels.yml")
-    got = merge([{"name": "accepted", "color": "0E8A16"}, {"name": "claimed", "color": "5319E7"}],
-                [{"name": "accepted", "description": "Acme's"}, {"name": "acme:own", "color": "000000"}], labels)
-    check("labels merge by name", got, [{"name": "accepted", "color": "0E8A16", "description": "Acme's"}, {"name": "claimed", "color": "5319E7"}, {"name": "acme:own", "color": "000000"}])
+    engine_labels = {"labels": [{"name": "accepted", "color": "0E8A16"}, {"name": "claimed", "color": "5319E7"}], "retired": [{"name": "bug", "now": "Type"}]}
+    got = merge(engine_labels, {"labels": [{"name": "accepted", "description": "Acme's"}, {"name": "acme:own", "color": "000000"}]}, labels)
+    check("labels merge by name", got, {"labels": [{"name": "accepted", "color": "0E8A16", "description": "Acme's"}, {"name": "claimed", "color": "5319E7"}, {"name": "acme:own", "color": "000000"}],
+                                        "retired": [{"name": "bug", "now": "Type"}]})
+    check("#805: an organisation's labels.yml still a list is its `labels:`, the engine's retired kept",
+          merge(engine_labels, as_shape("labels.yml", engine_labels, [{"name": "acme:own", "color": "000000"}]), labels)["retired"], [{"name": "bug", "now": "Type"}])
     check("a kind's pack has its rules", rule(entries(conf, "kinds/web-app/pack.yml"), ["release", "publishes-to"]).get("org"), "any")
     # C4: the schema covers every key of the engine's files, and the docs.
     check("C4: the engine's files, the schema, the scripts and the docs agree", problems(ROOT), [])

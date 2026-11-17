@@ -738,7 +738,7 @@ A class on <html> and a cookie.
                ("contains(github.event.issue.labels.*.name, 'lane:release')" in labeled,
                 "needs.ready" not in closed),
                (True, True))
-        labels = {l["name"] for l in yaml.safe_load(open(os.path.join(ROOT, "labels.yml"), encoding="utf-8"))}
+        labels = {l["name"] for l in yaml.safe_load(open(os.path.join(ROOT, "labels.yml"), encoding="utf-8"))["labels"]}
         check_("#353: labels.yml holds both labels", {"awaiting-acceptance", "incomplete"} <= labels, True)
     except ImportError:
         print("skip the #353 wiring (no PyYAML here)")

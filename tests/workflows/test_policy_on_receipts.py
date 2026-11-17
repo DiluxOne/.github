@@ -77,7 +77,7 @@ def test_no_workflow_or_script_sets_a_policy_label():
 
 
 def test_labels_yml_no_longer_defines_them():
-    names = {l["name"] for l in yaml.safe_load((ROOT / "labels.yml").read_text(encoding="utf-8"))}
+    names = {l["name"] for l in yaml.safe_load((ROOT / "labels.yml").read_text(encoding="utf-8"))["labels"]}
     assert not names & set(POLICY_LABELS)
     assert {"lane:release", "lane:platform", "lane:bugfix-reproduced", "lane:org-sync"} <= names
 

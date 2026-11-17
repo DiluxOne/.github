@@ -1,18 +1,30 @@
 # Every label the organisation's workflows and people use, the same in every
-# repository. scripts/sync-repos.py creates them or brings their colour and
-# description in line; it never deletes a label a repository added.
+# repository, and only those (#805, the last part of #618): a step or a
+# counter of the flow is never a label, it is on the issue's board
+# (scripts/receipts.py). Three lists:
 #
-# Retired by #801: `bug:unconfirmed`, `layer:logic`, `layer:browser`,
-# `layer:cli`, `layer:api`, `layer:workflow`, `could-not-reproduce` and
-# `repro:no-way`. The reproduction's step and its layer are on the issue's
-# board (scripts/receipts.py, the state's `repro`); found nothing is
-# `needs-info`, no way is `needs-human`. `sync-repos.py retire-labels` moves
-# an open issue's to its board; the definitions stay, for closed issues.
+#   labels         every repository's. scripts/sync-repos.py creates each one
+#                  or brings its colour and description in line.
+#   security-repo  only the security repository's (org.yml `security`): its
+#                  intake and its patches' steps. The sync gives them to it
+#                  alone.
+#   retired        the labels parts 1 to 4 of #618 took out, each with where
+#                  its state is now (`now`); a name ending in `*` is every
+#                  label that starts with what comes before it. The sync
+#                  deletes them from every repository it syncs, once no open
+#                  issue or pull request carries one (it says which does, and
+#                  keeps the label). Deleting a label takes it off the closed
+#                  items too: their state is on their receipts and boards.
+#
+# A label a repository added for itself is never deleted. And a script or a
+# workflow may set only a label listed here: `sync-repos.py --test` fails on
+# one that is not (label_misuse), naming the label and the file.
 #
 # The issue's kind is not a label: it is the native issue Type (Feature,
 # Bug, Task, Docs, set at the organisation). The type:* labels below are on
 # pull requests only, where the review sets them from the diff.
 
+labels:
 # The maintainer's decision: a pull request may close this issue.
 - {name: accepted, color: "0E8A16", description: "A maintainer accepted this issue; a pull request may close it"}
 # Gate G1 before the decision (#353): checked when the issue opens and every
@@ -23,15 +35,13 @@
 # The autonomy policy (policy/autonomy.yml): a lane's issue. What was
 # decided by policy rather than by a person is on the receipts (#804:
 # scripts/receipts.py lane-decision and merge-decision; the weekly summary
-# lists them from there), no longer `accepted-by:policy` or
-# `merged-by:policy`: scripts/policy-receipts.py moves an open item's onto
-# its receipts, and the sync never deletes a label a repository has, so a
-# closed item keeps its own.
+# lists them from there).
 - {name: "lane:platform", color: "1D76DB", description: "The organisation's own machinery, kept current by a weekly job"}
 - {name: "lane:bugfix-reproduced", color: "1D76DB", description: "A bug the reproduction confirmed with a failing test"}
 - {name: "lane:org-sync", color: "1D76DB", description: "Opened by scripts/sync-repos.py to bring this repository in line with DiluxOne/.github"}
 - {name: "lane:adopt", color: "1D76DB", description: "Adopt <repository>: a maintainer accepting it adds it to repos.yml and adopts it (org-adopt.yml)"}
 - {name: "lane:release", color: "1D76DB", description: "Release X.Y.Z: a person accepting it is the decision to publish"}
+- {name: "lane:security-carry", color: "0E8A16", description: "A released security patch's fix, carried into the default branch"}
 - {name: autopilot, color: "1D76DB", description: "Opened by the autopilot from an accepted issue"}
 - {name: "autopilot:continue", color: "1D76DB", description: "On an issue: the autopilot continues its draft pull request, or starts it"}
 - {name: needs-human, color: "D93F0B", description: "The autopilot handed this over to a person"}
@@ -68,6 +78,14 @@
 - {name: "repro:run", color: "FBCA04", description: "A maintainer asks for a reproduction attempt"}
 - {name: "repro:again", color: "FBCA04", description: "Ask for another reproduction attempt"}
 - {name: "bug:confirmed", color: "B60205", description: "Reproduced by a failing test"}
+- {name: "repro:retry", color: "FBCA04", description: "The reproduction tries once more with the first test's error"}
+- {name: "repro:blocked", color: "B60205", description: "The reproduction waits for a bug in the repository's test setup it is blocked by"}
+- {name: "repro:unblocked", color: "0E8A16", description: "What blocked the reproduction is fixed: it runs again"}
+- {name: "repro:broken", color: "FBCA04", description: "The reproduction test did not run (not a verdict); repro:again tries once more"}
+
+# The nightly review (nightly-review.yml): what it found, in the repository's
+# issues.
+- {name: "found-by:dilux-ai", color: "5319E7", description: "Found by DiluxOne's automated review"}
 
 # The review, on pull requests (claude-review.yml).
 - {name: "risk:low", color: "0E8A16", description: "Set by the Claude review"}
@@ -100,3 +118,45 @@
 - {name: composer, color: "885630", description: "Updates a Composer package"}
 - {name: docker, color: "2496ED", description: "Updates a Docker image"}
 - {name: "ci:weekly", color: "B60205", description: "The weekly run failed"}
+
+# The security repository's alone (org.yml `security`).
+security-repo:
+- {name: "security:intake", color: "B60205", description: "A vulnerability moved here from a public issue: its advisory opens next"}
+- {name: "security:unvetted", color: "FBCA04", description: "A draft advisory not confirmed yet: triaged like a report, never patched"}
+- {name: "patch:ready", color: "FBCA04", description: "A security patch is ready and waits for a maintainer's patch:go"}
+- {name: "patch:go", color: "0E8A16", description: "A maintainer approves the security patch as announced"}
+- {name: "patch:failed", color: "B60205", description: "The security patch did not get ready"}
+- {name: "patch:pushed", color: "0E8A16", description: "The security patch is pushed for release"}
+- {name: "patch:released", color: "0E8A16", description: "The security patch is released"}
+- {name: "patch:not-released", color: "C5DEF5", description: "No released version holds it: its fix goes into the default branch"}
+
+# Retired by parts 1 to 4 of #618: the sync deletes them (see the top).
+retired:
+# #801: the reproduction's step and its layer are on the issue's board (its
+# state's `repro`); found nothing is `needs-info`, no way is `needs-human`.
+- {name: "bug:unconfirmed", now: "the issue's board, its state's repro (#801)"}
+- {name: "layer:logic", now: "the issue's board, its state's repro layer (#801)"}
+- {name: "layer:browser", now: "the issue's board, its state's repro layer (#801)"}
+- {name: "layer:cli", now: "the issue's board, its state's repro layer (#801)"}
+- {name: "layer:api", now: "the issue's board, its state's repro layer (#801)"}
+- {name: "layer:workflow", now: "the issue's board, its state's repro layer (#801)"}
+- {name: "could-not-reproduce", now: "the issue's board, its state's repro; needs-info (#801)"}
+- {name: "repro:no-way", now: "the issue's board, its state's repro; needs-human (#801)"}
+# #803: the issue's kind is its Type; a person's turn is needs-human; the
+# triage's run is the board's `triage` key.
+- {name: "enhancement", now: "the issue's Type, Feature (#803)"}
+- {name: "bug", now: "the issue's Type, Bug (#803)"}
+- {name: "needs:maintainer", now: "needs-human (#803)"}
+- {name: "needs-triage", now: "the issue's board, its state's triage (#803)"}
+# #804: what was decided by policy is on the receipts.
+- {name: "accepted-by:policy", now: "the receipts, lane-decision (#804)"}
+- {name: "merged-by:policy", now: "the receipts, merge-decision (#804)"}
+# #802 and #811: the autopilot's flow is on the issue's board.
+- {name: "autopilot:answered", now: "the issue's board, its state's answered (#802)"}
+- {name: "autopilot:catchup", now: "the issue's board, its state's catchup (#802)"}
+- {name: "autopilot:core-wait", now: "the issue's board, its state's core_wait (#802)"}
+- {name: "autopilot:waiting", now: "the issue's board, its state's asked (#802)"}
+- {name: "autopilot:run-*", now: "the issue's board, its state's runs (#802, #811)"}
+- {name: "autopilot:free-*", now: "the issue's board, its state's runs, each one's free (#802, #811)"}
+- {name: "autopilot:round-*", now: "the issue's board, its state's rounds (#802, #811)"}
+- {name: "autopilot:waiting-*", now: "the issue's board, its state's asked (#802, #811)"}

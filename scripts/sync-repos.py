@@ -283,7 +283,88 @@ def with_block(agents, block):
     return block + "\n" + agents
 
 
+def read_labels(path=None):
+    """labels.yml (#805) as {"labels", "security-repo", "retired"}, each a
+    list: the labels every repository has, those the security repository
+    alone has, and the retired ones the sync deletes. A list (the shape
+    before #805, an organisation's own file) is its `labels`."""
+    data = load_yaml(path or os.path.join(CENTRAL, "labels.yml"))
+    if isinstance(data, list):
+        data = {"labels": data}
+    if not isinstance(data, dict):
+        raise ValueError("labels.yml: a mapping of `labels`, `security-repo` and `retired`")
+    return {key: list(data.get(key) or []) for key in ("labels", "security-repo", "retired")}
+
+
+def is_security_repo(name):
+    """Whether NAME is org.yml's `security` repository (#805)."""
+    return bool(org.SECURITY) and org.SECURITY == f"{ORG}/{name}"
+
+
+def labels_for(repo, labels):
+    """The labels REPO is to have: LABELS, and labels.yml's `security-repo`
+    ones when it is the security repository."""
+    return list(labels) + (read_labels()["security-repo"] if is_security_repo(repo["name"]) else [])
+
+
+def is_retired(name, retired):
+    """Whether label NAME is in RETIRED (labels.yml's `retired:`): its name,
+    or a prefix when the entry's name ends in `*`."""
+    for entry in retired:
+        r = str(entry["name"])
+        if (r.endswith("*") and name.startswith(r[:-1])) or name == r:
+            return True
+    return False
+
+
+def retired_drift(names, retired):
+    """The drift check's lines (#805): a retired label still in the repository."""
+    return [f"label `{n}` is retired and still here (`sync-repos.py labels` deletes it once no open issue or pull request carries it)"
+            for n in names if is_retired(n, retired)]
+
+
+def delete_retired_labels(repo, dry, run=None, retired=None):
+    """`labels`, after retire_labels (#805): each label of REPO that
+    labels.yml's `retired:` names is deleted, unless an open issue or pull
+    request still carries it: then it is kept and the sync says which ones
+    (the migrations, or a person, take it off first; the next sync deletes
+    it). A call that fails keeps that label, is said and counted; the other
+    labels go on. A label the repository added for itself is never touched.
+    Returns the number of failures. Idempotent."""
+    import urllib.parse
+    run = run or gh
+    retired = read_labels()["retired"] if retired is None else retired
+    full = f"{ORG}/{repo['name']}"
+    try:
+        have = [str(l["name"]) for l in json.loads(run("label", "list", "--repo", full, "--limit", "1000", "--json", "name").stdout or "[]")]
+    except (RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
+        print(f"  deleting the retired labels failed: the labels could not be listed: {exc}")
+        return 1
+    failures = deleted = kept = 0
+    for name in (n for n in have if is_retired(n, retired)):
+        try:
+            pages = json.loads(run("api", "--paginate", "--slurp",
+                                   f"repos/{full}/issues?state=open&labels={urllib.parse.quote(name, safe='')}&per_page=100").stdout or "[]")
+            carriers = sorted({int(i["number"]) for page in pages for i in page})
+            if carriers:
+                kept += 1
+                print(f"  label {name} kept: still on {', '.join(f'#{n}' for n in carriers)} (open)")
+                continue
+            if dry:
+                print(f"  would delete {name}")
+                continue
+            run("label", "delete", name, "--repo", full, "--yes")
+            deleted += 1
+            print(f"  label {name} deleted")
+        except (RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
+            failures += 1
+            print(f"  label {name} kept: it could not be deleted: {str(exc)[:200]}")
+    print(f"  retired labels: {deleted} deleted, {kept} kept, {failures} failed" + (" (dry run)" if dry else ""))
+    return failures
+
+
 def sync_labels(repo, labels, dry):
+    labels = labels_for(repo, labels)
     if dry:
         print(f"  would set {len(labels)} labels")
         return
@@ -961,7 +1042,7 @@ def adopt(repo, conf, labels, block, every, dry):
     if listed(repo["name"]) is None:
         raise ValueError(f"{repo['name']} is not in repos.yml `repos:`: add its entry first (the Adopt issue's pull request)")
     for part in ADOPT:
-        {"labels": lambda: sync_labels(repo, labels, dry),
+        {"labels": lambda: (sync_labels(repo, labels, dry), delete_retired_labels(repo, dry)),
          "settings": lambda: sync_settings(repo, conf, dry),
          "security": lambda: sync_security(repo, conf, dry),
          "rulesets": lambda: sync_rulesets([repo], every, dry),
@@ -3268,13 +3349,14 @@ def drift(repo, conf, labels, block, current=0):
             except (RuntimeError, ValueError) as exc:
                 found.append(f"the checks its merge queue waits for could not be read: {str(exc)[:160]}")
     have = {l["name"]: l for l in json.loads(gh("label", "list", "--repo", full, "--limit", "1000", "--json", "name,color,description").stdout)}
-    for label in labels:
+    for label in labels_for(repo, labels):
         name = str(label["name"])
         mine = have.get(name)
         if mine is None:
             found.append(f"label `{name}` is missing")
         elif mine["color"].upper() != str(label["color"]).upper() or (mine.get("description") or "") != str(label.get("description", "")):
             found.append(f"label `{name}` has another colour or description")
+    found += retired_drift(sorted(have), read_labels()["retired"])
     data = json.loads(gh("api", f"repos/{full}").stdout)
     for key, value in (conf.get("settings") or {}).items():
         # A token that cannot see a setting says nothing about it: not drift.
@@ -3712,7 +3794,7 @@ def callers_test(check, conf):
            placeholder_lines({".github/workflows/issues.yml": raw_issues.replace("https://example.com/support", "https://mine.example")}, conf, "x")) == ([], []), filled)
     # Its labels: every label of labels.yml, those the triage, the acceptance
     # and the autopilot set among them.
-    labels = load_yaml(os.path.join(CENTRAL, "labels.yml"))
+    labels = read_labels()["labels"]
     made = []
     globals()["gh"], ORG = (lambda *a, **k: made.append(a) or Out("")), "o"
     try:
@@ -4234,11 +4316,13 @@ def adopt_test(check, conf, labels, block):
         return Out("{}")
     ran = []
     stubs = {"sync_labels": "labels", "sync_settings": "settings", "sync_own_checks": "own-checks", "sync_merge_queue": "merge-queue"}
-    saved = {n: globals()[n] for n in list(stubs) + ["gh", "listed", "open_change", "sync_callers", "sync_files", "ORG", "ORG_RULESETS", "org_commit"]}
+    saved = {n: globals()[n] for n in list(stubs) + ["gh", "listed", "open_change", "sync_callers", "sync_files", "ORG", "ORG_RULESETS", "org_commit", "delete_retired_labels"]}
     real_files = globals()["sync_files"]
+    retired_deleted = []
     try:
         for n, part in stubs.items():
             globals()[n] = (lambda part: lambda *a, **k: ran.append(part))(part)
+        globals()["delete_retired_labels"] = lambda r, dry, **k: retired_deleted.append((r["name"], ran[-1:])) or 0
         globals()["sync_callers"] = lambda r, c, dry: ran.append("callers") or opened.append("callers")
         globals()["sync_files"] = lambda r, c, b, dry, part="files": ran.append(part) or opened.append(part)
         globals().update(gh=fake, ORG="o", ORG_RULESETS=[named], listed=lambda n: cfg["repos"].get(n))
@@ -4249,6 +4333,7 @@ def adopt_test(check, conf, labels, block):
     finally:
         globals().update(saved)
     eq("#562 C1: adopt runs every part, in order", ran, ["labels", "settings", "files", "callers", "pre-pr", "dependabot", "own-checks", "merge-queue"])
+    eq("#805 C1: adopt deletes the retired labels right after creating labels.yml's", retired_deleted, [("new", ["labels"])])
     eq("#562 C1: it writes the property, on every adopted repository before the rulesets move to it", state["values"], {"old": "true", "new": "true"})
     want_calls = [
         "api orgs/o/code-security/configurations?per_page=100", "api repos/o/new/code-security-configuration", "api repos/o/new",
@@ -5201,7 +5286,7 @@ def self_test():
             check(f"a broken block fails: {name}", False, "no error")
         except ValueError:
             check(f"a broken block fails: {name}", True)
-    labels = load_yaml(os.path.join(CENTRAL, "labels.yml"))
+    labels = read_labels()["labels"]
     names = [str(l["name"]) for l in labels]
     check("labels.yml: every label has a name, a colour and no repeat", all(re.fullmatch(r"[0-9A-F]{6}", str(l["color"])) for l in labels) and len(names) == len(set(names)), names)
     check("labels.yml: accepted is there", "accepted" in names)
@@ -5638,7 +5723,7 @@ def main(argv):
     dry = "--dry-run" in rest
     only = [rest[i + 1] for i, a in enumerate(rest) if a == "--repo" and i + 1 < len(rest)]
     conf = load_yaml(os.path.join(CENTRAL, "repos.yml"))
-    labels = load_yaml(os.path.join(CENTRAL, "labels.yml"))
+    labels = read_labels()["labels"]
     block = open(os.path.join(CENTRAL, "agents-block.md"), encoding="utf-8").read()
     failures = 0
     repos = repositories(only, conf.get("exclude") or [])
@@ -5713,6 +5798,9 @@ def main(argv):
                 # Best effort (#803): its failures are counted, never raised,
                 # so the repository's other steps still run.
                 failures += retire_labels(repo, dry)
+                # Then the retired labels themselves (#805), those no open
+                # item carries any more; the same best effort.
+                failures += delete_retired_labels(repo, dry)
             if what in ("settings", "all"):
                 sync_settings(repo, conf, dry)
             if what == "security":
