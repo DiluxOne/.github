@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 804,
+  "prd_sha256": "845d4cce95c6d11e0c980387fb1b826f325839eba04c65af6a32170eb781b8ec",
+  "prd": "### Problem\n\nPart 4 of #618. Which lane an issue took (`lane:*`) and what the policy decided in a person's place (`accepted-by:policy`, `merged-by:policy`) live in labels, and the weekly digest reads them there, so the policy's proof is a label anyone with write access can add or remove.\n\n### Scope\n\n- The lane and the policy's acceptance and merge are written to the issue's receipt and board (scripts/receipts.py), with who decided, when and by which rule of policy/autonomy.yml.\n- scripts/autonomy.py, scripts/policy-digest.sh, the autonomy digest, scripts/needed-a-person.py and every script and workflow that reads or sets these labels read and write the receipt instead.\n- Every open issue and pull request that carries one of these labels gets its proof on its receipt before the label is removed from it.\n\n### Out of scope\n\n- The other parts of #618, each its own sub-issue, done one at a time in the core in the order #618 gives.\n- The classification labels (`type:*`, `complexity:*`, `risk:*`, `version:*`, Dependabot's) and the bot's trigger labels, which stay.\n\n### Acceptance criteria\n\n- C1: Given an issue a lane of policy/autonomy.yml accepts and merges, when its labels are read, then none is `lane:*`, `accepted-by:policy` or `merged-by:policy`, and its receipt names the lane, the rule, and when it was accepted and merged.\n- C2: Given the weekly autonomy digest, when it runs after the migration, then it lists the same decisions by policy from the receipts as it did from the labels.\n- C3: Given an open issue that carries one of these labels, when the migration runs, then its proof is on its receipt before the label is removed.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-17T00:22:07Z",
+  "policy": "DiluxOne/.github@653f4037c2a9"
+}
