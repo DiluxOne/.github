@@ -408,7 +408,8 @@ def autopilot_row(a):
 
 
 # What the triage's verdict (its category) reads as on the board (#803).
-TRIAGE_VERDICTS = {"bug_unconfirmed": "bug:unconfirmed", "needs_info": "needs-info", "by_design": "by-design",
+# A bug to reproduce has no label since #801: its words, not the retired one.
+TRIAGE_VERDICTS = {"bug_unconfirmed": "a bug to reproduce", "needs_info": "needs-info", "by_design": "by-design",
                    "pro_feature": "pro-feature", "planned": "planned", "enhancement": "a feature request",
                    "question": "question", "duplicate": "duplicate", "security": "security"}
 
@@ -886,6 +887,7 @@ Normal
           triage_row({"ran": True, "verdict": "needs_info", "at": "2026-11-17T00:00:00Z"}), "| Triage | ✓ ran at 2026-11-17T00:00:00Z: needs-info |")
     check("#803 or that it could not run, and what a maintainer does",
           triage_row({"ran": False, "why": "failed"}), "| Triage | ✗ could not run (failed): a maintainer re-runs the job or triages it by hand |")
+    check("#801 a bug's verdict names no retired label", any(v in RETIRED for v in TRIAGE_VERDICTS.values()), False)
     check("#803 no triage key, no row; a verdict's text is cleaned", (triage_row(None), "@" in triage_row({"ran": True, "verdict": "@x|y", "at": "t"})), (None, False))
     tb = board_text(7, True, s, None, state={}, intact=False, raw_state=blk.replace('"runs":2', '"runs":0'))
     check("#564 a state edited by hand is said, kept as it was, and names nobody", ("edited by hand" in tb, '"runs":0' in tb, "Waits on" in tb), (True, True, False))
