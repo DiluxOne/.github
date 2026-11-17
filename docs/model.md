@@ -108,6 +108,37 @@ Everything decided without a maintainer comes from one file, `policy/autonomy.ym
 
 The gate ignores any label a bot adds, except a lane's label, and that only when the issue's history shows it was opened by the workflow and the author the lane names. A sub-issue needs no label: it is accepted while its parent stays open, or was closed as completed, and accepted by a person, if a member of the organisation opened it and did not edit it after linking it.
 
+## Labels
+
+A label says what a person decided, or classifies an item; a step or a counter of the flow is never a label: it is on the issue's board (`scripts/receipts.py`) or on the receipts (#618, #805). [`labels.yml`](../labels.yml) lists every label that stays, and only those: `accepted`, `awaiting-acceptance`, `incomplete`, `lane:platform`, `lane:bugfix-reproduced`, `lane:org-sync`, `lane:adopt`, `lane:release`, `lane:security-carry`, `autopilot`, `autopilot:continue`, `needs-human`, `run:runner-image`, `run:autonomy-digest`, `run:claims`, `run:waiting`, `run:flow-numbers`, `claimed`, `claim:long`, `good first issue`, `revert`, `reverted`, `needs-info`, `spike`, `by-design`, `pro-feature`, `planned`, `exists-in-pro`, `question`, `security`, `duplicate`, `repro:run`, `repro:again`, `bug:confirmed`, `repro:retry`, `repro:blocked`, `repro:unblocked`, `repro:broken`, `found-by:dilux-ai`, `risk:low`, `risk:medium`, `risk:high`, `complexity:low`, `complexity:medium`, `complexity:high`, `review:full`, `type:breaking`, `type:feat`, `type:fix`, `type:perf`, `type:refactor`, `type:style`, `type:docs`, `type:test`, `type:ci`, `type:build`, `type:chore`, `type:revert`, `version:major`, `version:minor`, `version:patch`, `dependencies`, `github-actions`, `npm`, `composer`, `docker`, `ci:weekly`; and, in the security repository alone, `security:intake`, `security:unvetted`, `patch:ready`, `patch:go`, `patch:failed`, `patch:pushed`, `patch:released`, `patch:not-released`. A script or workflow sets no other: `scripts/sync-repos.py --test` fails on one that does, naming the label and the file.
+
+The retired labels, and where each one's state is now. The label sync deletes them from every repository, except one still on an open issue or pull request, which it names and keeps until the migrations or a person take it off:
+
+| Retired label | Its state is now |
+|---|---|
+| `bug:unconfirmed` | the issue's board, its state's repro (#801) |
+| `layer:logic` | the issue's board, its state's repro layer (#801) |
+| `layer:browser` | the issue's board, its state's repro layer (#801) |
+| `layer:cli` | the issue's board, its state's repro layer (#801) |
+| `layer:api` | the issue's board, its state's repro layer (#801) |
+| `layer:workflow` | the issue's board, its state's repro layer (#801) |
+| `could-not-reproduce` | the issue's board, its state's repro; needs-info (#801) |
+| `repro:no-way` | the issue's board, its state's repro; needs-human (#801) |
+| `enhancement` | the issue's Type, Feature (#803) |
+| `bug` | the issue's Type, Bug (#803) |
+| `needs:maintainer` | needs-human (#803) |
+| `needs-triage` | the issue's board, its state's triage (#803) |
+| `accepted-by:policy` | the receipts, lane-decision (#804) |
+| `merged-by:policy` | the receipts, merge-decision (#804) |
+| `autopilot:answered` | the issue's board, its state's answered (#802) |
+| `autopilot:catchup` | the issue's board, its state's catchup (#802) |
+| `autopilot:core-wait` | the issue's board, its state's core_wait (#802) |
+| `autopilot:waiting` | the issue's board, its state's asked (#802) |
+| `autopilot:run-*` | the issue's board, its state's runs (#802, #811) |
+| `autopilot:free-*` | the issue's board, its state's runs, each one's free (#802, #811) |
+| `autopilot:round-*` | the issue's board, its state's rounds (#802, #811) |
+| `autopilot:waiting-*` | the issue's board, its state's asked (#802, #811) |
+
 ## Where each rule lives
 
 Three layers: the organisation (its `.github` repository), the kind, the repository. What is below adds or restricts; it never loosens what is above, except up to the ceiling the organisation sets. Beneath them all are the engine's defaults (DiluxOne/.github): an organisation's file overrides only the keys it sets and keeps the engine's for every other, and never drops an engine safeguard (#568). Every setting, its default, who may change it and its limit: [configuration](configuration.md).
