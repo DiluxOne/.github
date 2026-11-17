@@ -105,3 +105,11 @@ def test_c2_an_answered_spike_needs_human():
         for job_name, s in runs(workflow(name)):
             assert "needs:maintainer" not in s["run"], f"{name} {job_name} / {s.get('name')}"
     assert "needs:maintainer" not in (ROOT / "scripts" / "run-issue.sh").read_text(encoding="utf-8").split("self_test() {", 1)[0]
+
+
+def test_c3_the_forms_set_no_bug_or_enhancement_label():
+    """C3: the forms set the issue's Type, which says what the labels did."""
+    for name, kind in (("bug_report.yml", "Bug"), ("feature_request.yml", "Feature")):
+        form = yaml.safe_load((ROOT / ".github/ISSUE_TEMPLATE" / name).read_text(encoding="utf-8"))
+        assert form.get("type") == kind, name
+        assert not {"bug", "enhancement"} & set(form.get("labels") or []), name

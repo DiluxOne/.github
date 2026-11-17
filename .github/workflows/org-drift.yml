@@ -1,8 +1,8 @@
 name: Repositories in step
 
 # Every day, and by hand, it first brings every repository in step on its
-# own (#189), as dilux-bot: the labels (labels.yml, through the API) and the
-# shared files (CODEOWNERS, the AGENTS.md block), each repository's as an
+# own (#189), as dilux-bot: the labels (labels.yml, through the API, and the
+# retired ones taken off the open issues, #803) and the shared files (CODEOWNERS, the AGENTS.md block), each repository's as an
 # issue and a pull request of the org-sync lane, which the autonomy policy
 # accepts and merges when they hold only what main holds here
 # (scripts/sync-repos.py labels and files), and opens the sub-issue of every

@@ -7,7 +7,11 @@ there. What it does not, this script brings to every repository that is not
 archived and not excluded in repos.yml:
 
   labels    labels.yml: creates each label or brings its colour and
-            description in line; never deletes one.
+            description in line; never deletes one. Then (#803) the open
+            issues lose the labels retired from it: `enhancement` and `bug`
+            (their Type set from them first when they have none, a Type
+            already set kept) and `needs:maintainer` (moved to
+            `needs-human`).
   settings  repos.yml `settings` and `security` (Dependabot's alerts and
             security updates among them, and, on a public repository, every
             outside contributor's workflow runs approved by a maintainer,
@@ -272,6 +276,63 @@ def sync_labels(repo, labels, dry):
         name, color, desc = str(label["name"]), str(label["color"]), str(label.get("description", ""))
         gh("label", "create", name, "--repo", f"{ORG}/{repo['name']}", "--color", color, "--description", desc, "--force")
     print(f"  {len(labels)} labels in step")
+
+
+# The labels an open issue no longer needs (#803): `enhancement` and `bug`,
+# which its native Type says (set from them when it has none), and
+# `needs:maintainer`, merged into `needs-human`. Taken off the issues only:
+# a repository's label is never deleted, as `labels` never deletes one.
+RETIRED_FOR_TYPE = {"enhancement": "Feature", "bug": "Bug"}
+RETIRED_FOR_LABEL = {"needs:maintainer": "needs-human"}
+
+
+def retire_labels(repo, dry):
+    """`labels`, after sync_labels (#803): each open issue carrying a
+    retired label loses it. With no Type, the label's Type is set, read
+    back, and only then the label removed; a Type already set is kept
+    (#341) and the label removed; `bug` and `enhancement` together with no
+    Type are left alone, and said. `needs:maintainer`: `needs-human` added,
+    then `needs:maintainer` removed. A call that fails stops the repository
+    (raised), so a PATCH that fails never loses a label. Idempotent: once no
+    open issue carries them, it only reads."""
+    import urllib.parse
+    full = f"{ORG}/{repo['name']}"
+    retired = list(RETIRED_FOR_TYPE) + list(RETIRED_FOR_LABEL)
+    if dry:
+        print(f"  would retire {', '.join(retired)} from the open issues that carry them")
+        return
+    found = {}
+    for name in retired:
+        pages = json.loads(gh("api", "--paginate", "--slurp",
+                              f"repos/{full}/issues?state=open&labels={urllib.parse.quote(name, safe='')}&per_page=100").stdout or "[]")
+        for issue in (i for page in pages for i in page):
+            if "pull_request" in issue:
+                continue
+            found[int(issue["number"])] = ((issue.get("type") or {}).get("name") or "", [str(l["name"]) for l in issue.get("labels") or []])
+    done = 0
+    for number, (kind, names) in sorted(found.items()):
+        n = str(number)
+        typed = [l for l in RETIRED_FOR_TYPE if l in names]
+        if typed and not kind and len(typed) > 1:
+            print(f"  #{number}: carries {' and '.join(typed)} and has no Type; left for a person to type")
+            typed = []
+        elif typed and not kind:
+            want = RETIRED_FOR_TYPE[typed[0]]
+            gh("api", "-X", "PATCH", f"repos/{full}/issues/{n}", "-f", f"type={want}")
+            got = gh("api", f"repos/{full}/issues/{n}", "--jq", '.type.name // ""').stdout.strip()
+            if got != want:
+                raise RuntimeError(f"#{number}'s Type reads {got or 'none'} after it was set to {want}: {typed[0]} kept")
+            print(f"  #{number}: Type {want}")
+        for label in typed:
+            gh("issue", "edit", n, "--repo", full, "--remove-label", label)
+            print(f"  #{number}: {label} removed")
+        for old, new in RETIRED_FOR_LABEL.items():
+            if old in names:
+                gh("issue", "edit", n, "--repo", full, "--add-label", new)
+                gh("issue", "edit", n, "--repo", full, "--remove-label", old)
+                print(f"  #{number}: {old} moved to {new}")
+        done += 1
+    print(f"  retired labels: {done} open issues looked at")
 
 
 # Who of the outside contributors needs a maintainer's approval before their
@@ -4778,6 +4839,93 @@ def placeholder_guard_test(check, conf):
           (written, prs, f"o/{name}: .github/workflows/pull-request-comments.yml not written: it still says \"Fill in\"" in said) == ({}, [], True), said)
 
 
+def retire_test(check, labels):
+    """#803, C3: the labels the issue's Type or `needs-human` now say,
+    retired from the open issues against a stand-in for gh: the Type set
+    and read back before the label goes, a Type someone set kept, an issue
+    with both labels and no Type left alone, `needs:maintainer` moved to
+    `needs-human`, a PATCH that fails keeping the label; and labels.yml
+    creates neither `enhancement` nor `bug`."""
+    names = {str(l["name"]) for l in labels}
+    check("#803 C3: labels.yml creates neither enhancement nor bug, nor needs:maintainer nor needs-triage",
+          not names & {"enhancement", "bug", "needs:maintainer", "needs-triage"} and "needs-human" in names, sorted(names))
+
+    class Out:
+        def __init__(self, stdout="", returncode=0, stderr=""):
+            self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
+    issues = {
+        1: {"type": "", "labels": ["enhancement"]},
+        2: {"type": "", "labels": ["bug", "help wanted"]},
+        3: {"type": "Task", "labels": ["bug"]},
+        4: {"type": "", "labels": ["bug", "enhancement"]},
+        5: {"type": "", "labels": ["needs:maintainer", "run:runner-image"]},
+        6: {"type": "", "labels": ["enhancement"]},
+    }
+    calls = []
+
+    def fake(*args, check=True, input_text=None):
+        calls.append(args)
+        joined = " ".join(args)
+        if args[:2] == ("api", "--paginate") and "/issues?" in joined:
+            import urllib.parse
+            want = urllib.parse.unquote(joined.split("labels=", 1)[1].split("&", 1)[0])
+            rows = [{"number": n, "type": ({"name": i["type"]} if i["type"] else None), "labels": [{"name": x} for x in i["labels"]]}
+                    for n, i in issues.items() if want in i["labels"]]
+            rows.append({"number": 99, "pull_request": {}, "type": None, "labels": [{"name": want}]})
+            return Out(json.dumps([rows]))
+        if args[:3] == ("api", "-X", "PATCH"):
+            n = int(args[3].rsplit("/", 1)[1])
+            if n == 6:
+                raise RuntimeError("gh api: HTTP 422")
+            issues[n]["type"] = args[5].split("=", 1)[1]
+            return Out("{}")
+        if args[:1] == ("api",) and "/issues/" in joined:
+            return Out(issues[int(args[1].rsplit("/", 1)[1])]["type"] + "\n")
+        if args[:2] == ("issue", "edit"):
+            n = int(args[2])
+            if "--remove-label" in args:
+                issues[n]["labels"].remove(args[args.index("--remove-label") + 1])
+            if "--add-label" in args:
+                issues[n]["labels"].append(args[args.index("--add-label") + 1])
+            return Out("")
+        raise AssertionError(f"an unexpected call: {joined}")
+    saved = globals()["gh"], ORG
+    import contextlib
+    import io
+    try:
+        globals().update(gh=fake, ORG="o")
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            try:
+                retire_labels({"name": "r"}, False)
+                raised = None
+            except RuntimeError as exc:
+                raised = str(exc)
+        with contextlib.redirect_stdout(io.StringIO()) as dry_out:
+            n_calls = len(calls)
+            retire_labels({"name": "r"}, True)
+    finally:
+        globals()["gh"], globals()["ORG"] = saved
+    j = [" ".join(c) for c in calls]
+
+    def at(text):
+        return next((i for i, c in enumerate(j) if text in c), -1)
+    check("#803 C3: an issue with no Type gets Feature for enhancement, read back, then the label goes",
+          (issues[1], -1 < at("-X PATCH repos/o/r/issues/1 -f type=Feature") < at("api repos/o/r/issues/1 --jq") < at("issue edit 1 --repo o/r --remove-label enhancement")),
+          ({"type": "Feature", "labels": []}, True))
+    check("#803 C3: and Bug for bug, its other labels kept", issues[2], {"type": "Bug", "labels": ["help wanted"]})
+    check("#803 C3: a Type someone set is kept, and the label goes", (issues[3], at("PATCH repos/o/r/issues/3")), ({"type": "Task", "labels": []}, -1))
+    check("#803 C3: an issue with both labels and no Type is left alone, and said",
+          (issues[4], at("issues/4 -f type"), "#4" in out.getvalue()), ({"type": "", "labels": ["bug", "enhancement"]}, -1, True))
+    check("#803 C3: needs:maintainer moves to needs-human, added before the old one goes",
+          (issues[5], -1 < at("issue edit 5 --repo o/r --add-label needs-human") < at("issue edit 5 --repo o/r --remove-label needs:maintainer")),
+          ({"type": "", "labels": ["run:runner-image", "needs-human"]}, True))
+    check("#803 C3: a PATCH that fails keeps the label, and the run says it failed",
+          (issues[6]["labels"], bool(raised and "422" in raised)), (["enhancement"], True))
+    check("#803 C3: a pull request is never touched, nor a repository's label deleted",
+          (any(" 99 " in c + " " or "/99" in c for c in j), any("label delete" in c or "-X DELETE" in c for c in j)), (False, False))
+    check("#803 C3: a dry run reads nothing and says what it would do", (len(calls) == n_calls, "would" in dry_out.getvalue()), (True, True))
+
+
 def self_test():
     failed = 0
     # The runs below write through a stand-in for gh, never a real clone:
@@ -4982,6 +5130,7 @@ def self_test():
     dependabot_test(check, conf, labels, block_file)
     ai_plugin_drift_test(check, conf, labels, block_file)
     adopt_test(check, conf, labels, block_file)
+    retire_test(check, labels)
     required_split_test(check)
     security_visibility_test(check)
     conventions_test(check, block_file)
@@ -5326,6 +5475,7 @@ def main(argv):
                 continue
             if what in ("labels", "all"):
                 sync_labels(repo, labels, dry)
+                retire_labels(repo, dry)
             if what in ("settings", "all"):
                 sync_settings(repo, conf, dry)
             if what == "security":

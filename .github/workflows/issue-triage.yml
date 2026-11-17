@@ -26,8 +26,9 @@ name: Issue triage
 #   pro-feature           needs the paid service or add-on the roadmap names,
 #                         or belongs to the paid add-on's private roadmap
 #   planned               a request the roadmap already plans
-#   enhancement           a feature request (+ exists-in-pro when the roadmap
-#                         says a paid product already has it)
+#   enhancement           a feature request: no label, its Feature Type says
+#                         it (#803; exists-in-pro when the roadmap says a
+#                         paid product already has it)
 #   question              a usage question: the reply points at support
 #   duplicate             the reply links the original
 #   security              a vulnerability posted in public: the reply asks for
