@@ -68,7 +68,7 @@ def test_one_repositorys_sweep_gets_a_token_for_it_alone():
 def test_a_conflict_continues_its_issue_free():
     run = step("Bring each one in step")["run"]
     cont = run[run.index("continue)"):run.index("esac")]
-    assert 'gh issue edit "$issue" --repo "$repo" --add-label "autopilot:catchup" --add-label "autopilot:continue"' in cont
+    assert cont.index('receipts.py state set catchup=true') < cont.index('gh issue edit "$issue" --repo "$repo" --add-label "autopilot:continue"')
 
 
 def test_one_only_behind_main_gets_main_merged_in_at_its_head():

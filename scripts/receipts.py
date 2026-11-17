@@ -43,9 +43,18 @@ signed by GitHub and show as Verified.
                            the board's state (#564), or one key of it, as
                            JSON; exit 3 when the block was edited by hand
   receipts.py state set KEY=JSON...
-                           those keys set in the board's state, the board
-                           rewritten; refused (exit 3) on a block edited by
-                           hand
+                           those keys set in the board's state (KEY= removes
+                           one), the board rewritten; refused (exit 3) on a
+                           block edited by hand. ITEM=pr for a pull
+                           request's board; with no BODY, an issue's body is
+                           read from GitHub
+  receipts.py migrate      the flow's old labels on the item (#802:
+                           autopilot:run-N, free-N, round-N, waiting,
+                           answered, catchup, core-wait; ITEM=pr for a pull
+                           request) written onto its board, never lowering a
+                           count there, read back, and only then taken off;
+                           with no old label, nothing to do (exit 0), on any
+                           board; refused (exit 3) on a board edited by hand
   receipts.py waits        whom the item waits on now (WAITS_JSON: who, a
                            login or a list of them, or role; what; url;
                            step; ITEM=pr for a pull request's board), on the board's
@@ -65,7 +74,9 @@ The board's state (#564): one hidden block in the board's comment,
 stands (whom it waits on, who was mentioned for which step, whether the
 triage ran, #803: `triage`, {"ran": true, "verdict", "at"} or
 {"ran": false, "why"}, shown as the board's Triage row), with a
-SHA-256 of its content. It is read only from dilux-bot's own board comment;
+SHA-256 of its content. The flow's counts and waits live there (#802, once
+labels; FLOW_KEYS): a pull request's `runs` and `rounds`, an issue's `asked`,
+`answered`, `catchup` and `core_wait`. It is read only from dilux-bot's own board comment;
 a block whose hash does not match was edited by hand and reads as the most
 restrictive state: nothing is set on it and nobody is mentioned from it.
 Its `repro` key (#801) is where a bug's reproduction stands, in place of
@@ -254,6 +265,143 @@ def parse_state(body):
         return {}, False
     data.pop("sha256")
     return data, True
+
+
+# What a GraphQL reader (waiting.py, flow-numbers.py) asks of an item's
+# comments to find its board (#802): the first and the last 20, and how
+# many there are. The board is written early and edited in place, so it is
+# usually among the first; one that is in neither window is read from all
+# of dilux-bot's comments (graphql_board's read_all).
+COMMENTS_GQL = ("comments(first: 20) { totalCount nodes { author { login } body } } "
+                "lastComments: comments(last: 20) { nodes { author { login } body } }")
+
+
+def graphql_board(item, bots, read_all=None):
+    """(state, intact) of the item's board, dilux-bot's own last `dx-board`
+    comment (a comment by anyone else is never the board), from the
+    comments COMMENTS_GQL read. When none is among them and the item has
+    more comments than were read, read_all() gives the bodies of all of the
+    bot's comments, kept on the item so it is read once. No board is an
+    empty state."""
+    first = item.get("comments") or {}
+    nodes = list(first.get("nodes") or []) + list(((item.get("lastComments") or {}).get("nodes")) or [])
+    found = [c.get("body") or "" for c in nodes
+             if c and ((c.get("author") or {}).get("login") or "") in bots and (c.get("body") or "").startswith(BOARD)]
+    total = first.get("totalCount")
+    if not found and read_all is not None and isinstance(total, int) and total > len(first.get("nodes") or []):
+        bodies = list(read_all())
+        item["comments"] = {"totalCount": len(bodies), "nodes": [{"author": {"login": bots[0]}, "body": b} for b in bodies]}
+        item.pop("lastComments", None)
+        found = [b for b in bodies if b.startswith(BOARD)]
+    return parse_state(found[-1]) if found else ({}, True)
+
+
+# The flow's counts and waits (#802), once labels: on a pull request's board,
+# `runs` ([{"n": N, "free": bool}], every run of the autopilot on it; those
+# not free count towards autopilot-runs) and `rounds` (the fix rounds
+# already run); on an issue's, `asked` (when the autopilot's question was
+# asked, while it waits for the answer), `answered` (a maintainer answered
+# it: the run that starts is free), `catchup` (the sweep's continue only
+# catches up with another merge: free too) and `core_wait` (the pull
+# request on the engine's core it waits for).
+FLOW_KEYS = ("runs", "rounds", "asked", "answered", "catchup", "core_wait")
+
+
+def set_keys(state, changes):
+    """The state with `changes` applied: a key set to None is removed. Pure."""
+    out = dict(state)
+    for k, v in changes.items():
+        if v is None:
+            out.pop(k, None)
+        else:
+            out[k] = v
+    return out
+
+
+# The labels that held them before (#802), which `migrate` moves onto the
+# boards and takes off.
+OLD_RE = re.compile(r"^autopilot:(?:(run|free|round)-([0-9]+)|(waiting|answered|catchup|core-wait))$")
+
+
+def old_labels(labels):
+    """The flow's old labels among `labels`. Pure."""
+    return [str(l) for l in labels or [] if OLD_RE.match(str(l))]
+
+
+def state_from_labels(labels, state, core=None):
+    """The board's state once the old labels' meaning is on it (#802):
+    merged into `state`, never lowering what is already there (a run
+    counted on either counts; the higher rounds). `core`, the pull request
+    an issue labelled `core-wait` waits for, when its comment says. Pure."""
+    out = dict(state or {})
+    runs = {r["n"]: dict(r) for r in out.get("runs") or [] if isinstance(r, dict) and isinstance(r.get("n"), int)}
+    rounds = int(out.get("rounds") or 0) if str(out.get("rounds") or 0).isdigit() else 0
+    for label in old_labels(labels):
+        kind, n, wait = OLD_RE.match(label).groups()
+        if kind in ("run", "free"):
+            free = kind == "free"
+            runs[int(n)] = {"n": int(n), "free": bool(runs[int(n)].get("free")) and free if int(n) in runs else free}
+        elif kind == "round":
+            rounds = max(rounds, int(n))
+        elif wait == "waiting":
+            out["asked"] = out.get("asked") or True
+        elif wait == "core-wait":
+            out["core_wait"] = out.get("core_wait") or core or True
+        else:
+            out[wait] = True
+    if runs:
+        out["runs"] = [runs[n] for n in sorted(runs)]
+    if rounds:
+        out["rounds"] = rounds
+    return out
+
+
+def fixture_log(line):
+    """Under RECEIPTS_FIXTURE, what was read, written and taken off, in
+    order (calls.log), for the self-test and the migration's test. Only a
+    fixture that holds the items' labels (labels/, the migration's world)
+    gets the log: any other fixture is left as its test made it."""
+    fx = os.environ.get("RECEIPTS_FIXTURE")
+    if fx and os.path.isdir(os.path.join(fx, "labels")):
+        with open(os.path.join(fx, "calls.log"), "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+
+
+def item_labels(repo, number):
+    """The item's labels, for the migration: raised when they cannot be
+    read, never taken for none (under RECEIPTS_FIXTURE, labels/<n>.json)."""
+    if os.environ.get("RECEIPTS_FIXTURE"):
+        path = os.path.join(os.environ["RECEIPTS_FIXTURE"], "labels", f"{number}.json")
+        return json.load(open(path, encoding="utf-8")) if os.path.exists(path) else []
+    out = subprocess.run(["gh", "api", f"repos/{repo}/issues/{number}", "--jq", "[.labels[].name]"], capture_output=True, text=True)
+    if out.returncode != 0:
+        raise RuntimeError(f"#{number}'s labels could not be read: {out.stderr.strip()[:200]}")
+    return json.loads(out.stdout or "[]")
+
+
+def remove_label(repo, number, label):
+    fixture_log(f"unlabel {number} {label}")
+    if os.environ.get("RECEIPTS_FIXTURE"):
+        path = os.path.join(os.environ["RECEIPTS_FIXTURE"], "labels", f"{number}.json")
+        left = [l for l in json.load(open(path, encoding="utf-8")) if l != label]
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(left, f)
+        return
+    from urllib.parse import quote
+    try:
+        gh("-X", "DELETE", f"repos/{repo}/issues/{number}/labels/{quote(label, safe='')}")
+    except RuntimeError as e:
+        if "404" not in str(e):  # already off
+            raise
+
+
+def core_of(comments):
+    """The pull request the autopilot's comment on the core names (`#N:`), or None."""
+    for _, b in reversed(comments or []):
+        m = re.search(r"#([0-9]+):", b) if b.startswith("<!-- dx-autopilot-core -->") else None
+        if m:
+            return int(m.group(1))
+    return None
 
 
 def clean(text):
@@ -518,13 +666,15 @@ def issue_labels(repo, number):
 
 
 def issue_body(repo, number):
-    """The issue's body, read from GitHub; "" under RECEIPTS_FIXTURE or when
-    it cannot be read: the board's G1 row then says less, never fails."""
+    """The issue's body, read from GitHub; raised when it cannot be read:
+    a board drawn from no body would say the issue is incomplete; ""
+    under RECEIPTS_FIXTURE."""
     if os.environ.get("RECEIPTS_FIXTURE"):
         return ""
-    out = subprocess.run(["gh", "issue", "view", str(number), "--repo", repo, "--json", "body", "--jq", ".body"],
-                         capture_output=True, text=True)
-    return out.stdout if out.returncode == 0 else ""
+    out = subprocess.run(["gh", "api", f"repos/{repo}/issues/{number}", "--jq", ".body // \"\""], capture_output=True, text=True)
+    if out.returncode != 0:
+        raise RuntimeError(f"the issue's body could not be read: {out.stderr.strip()[:200]}")
+    return out.stdout
 
 
 def autopilot_state(repo, number):
@@ -555,6 +705,7 @@ def bot_comments(repo, number):
     in order; under RECEIPTS_FIXTURE, comments/<n>/board.md and the
     mentions. A read that fails is raised, never taken for none."""
     if os.environ.get("RECEIPTS_FIXTURE"):
+        fixture_log(f"read {number}")
         base = os.path.join(os.environ["RECEIPTS_FIXTURE"], "comments", str(number))
         out = []
         if os.path.exists(os.path.join(base, "mentions.md")):
@@ -579,6 +730,7 @@ def board_comment(repo, number, comments=None):
 def put_board(repo, number, cid, text):
     """The board's comment written: edited when it exists, else created."""
     if os.environ.get("RECEIPTS_FIXTURE"):
+        fixture_log(f"write {number}")
         path = os.path.join(os.environ["RECEIPTS_FIXTURE"], "comments", str(number), "board.md")
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
@@ -837,6 +989,31 @@ Normal
     check("#564 no block is an empty state", parse_state("<!-- dx-board -->\nrows"), ({}, True))
     check("#564 a block edited by hand is not intact", parse_state(blk.replace('"runs":2', '"runs":0')), ({}, False))
     check("#564 nor is one that does not parse", parse_state("<!-- dx-state v1 {nope -->"), ({}, False))
+    # #802 C2: the flow's old labels, onto the board.
+    was = ["autopilot", "autopilot:run-1", "autopilot:free-2", "autopilot:run-3", "autopilot:round-2", "autopilot:waiting", "autopilot:core-wait"]
+    check("#802 C2 the old labels are the flow's seven, never `autopilot` or its continue",
+          old_labels(was + ["autopilot:continue", "autopilot:run-x", "autopilot:waiting-x"]), was[1:])
+    moved = state_from_labels(was, {"waits": {"role": "the autopilot"}}, 5)
+    check("#802 C2 their state: every run, the rounds, the question and the core, beside what was there",
+          moved, {"waits": {"role": "the autopilot"}, "runs": [{"n": 1, "free": False}, {"n": 2, "free": True}, {"n": 3, "free": False}],
+                  "rounds": 2, "asked": True, "core_wait": 5})
+    check("#802 C2 merged again, nothing changes; a count already higher is never lowered",
+          (state_from_labels(was, moved, 5) == moved, state_from_labels(["autopilot:round-1", "autopilot:free-1"], {"rounds": 4, "runs": [{"n": 1, "free": False}]})),
+          (True, {"rounds": 4, "runs": [{"n": 1, "free": False}]}))
+    check("#802 the core's comment names the pull request it waits for", (core_of([(1, "<!-- dx-autopilot-core -->\nwaits for #12: x")]), core_of([(1, "#3: x")])), (12, None))
+    check("#802 a key set to nothing is removed", set_keys({"a": 1, "b": 2}, {"a": None, "c": 3}), {"b": 2, "c": 3})
+    # #802: a GraphQL reader's board, past the comments it read.
+    bots, chat = ("dilux-bot",), [{"author": {"login": "ana"}, "body": "x"}] * 20
+    board_c = BOARD + "\n" + state_block({"asked": True})
+    far, reads = {"comments": {"totalCount": 60, "nodes": chat}, "lastComments": {"nodes": chat}}, []
+    read = lambda: reads.append(1) or ["hi", board_c]
+    check("#802 a board in neither window is read from all of the bot's comments, once",
+          (graphql_board(far, bots, read), graphql_board(far, bots, read), len(reads)), (({"asked": True}, True), ({"asked": True}, True), 1))
+    near = {"comments": {"totalCount": 60, "nodes": chat}, "lastComments": {"nodes": [{"author": {"login": "dilux-bot"}, "body": board_c}]}}
+    check("#802 one among those read is read with no more; a person's is never the board; few comments, nothing more to read",
+          (graphql_board(near, bots, lambda: 1 / 0), graphql_board({"comments": {"nodes": [{"author": {"login": "mallory"}, "body": board_c}]}}, bots),
+           graphql_board({"comments": {"totalCount": 20, "nodes": chat}}, bots, lambda: 1 / 0)),
+          (({"asked": True}, True), ({}, True), ({}, True)))
     wb = board_text(7, True, s, None, state=st)
     check("C5 the board names whom it waits on, the action and its link, mentioning nobody",
           ("| Waits on | `alice`: answer --> <b> ([link](https://github.com/o/r/issues/7)) |" in wb, "@alice" in wb), (True, False))
@@ -1174,42 +1351,94 @@ def main(argv):
         write(repo, f"issues/{number}/merged-{r['at']}.json", r, f"Receipt for #{number}")
         print(json.dumps(r))
         return 0
-    if mode in ("board", "state", "waits"):
+    if mode in ("board", "state", "waits", "migrate"):
         comments = bot_comments(repo, number)
         cid, current = board_comment(repo, number, comments)
         state, intact = parse_state(current)
         m = STATE_RE.search(current or "")
         raw = m.group(0) if m and not intact else ""
-
-        def render(st):
-            if os.environ.get("ITEM") == "pr":
-                return pr_board_text(st, intact, raw)
-            names = [n for n in list_dir(repo, f"issues/{number}") if n.startswith("merged-")]
-            merged = read(repo, f"issues/{number}/{names[-1]}") if names else None
-            # A caller that writes only the state (#801: the triage, the
-            # reproduction) gives no BODY: the issue's own is read.
-            text = body if os.environ.get("BODY") else issue_body(repo, number)
-            return board_text(number, schema_mod.check(text)["ok"], last_seal(repo, number), merged, autopilot_state(repo, number),
-                              issue_labels(repo, number), holder(repo, number), st, intact, raw)
-        if mode == "board":
-            print(render(state))
-            return 0
+        is_pr = os.environ.get("ITEM") == "pr"
         if mode == "state" and argv[1:2] == ["get"]:
             print(json.dumps(state.get(argv[2]) if len(argv) > 2 else state))
             return 0 if intact else 3
+        if not is_pr and not os.environ.get("BODY") and repo and not os.environ.get("RECEIPTS_FIXTURE"):
+            # #802: a writer with no copy of the issue's body (the sweep,
+            # the review's reply) still draws its G1 row right.
+            body = issue_body(repo, number)
+        # What the issue's board shows besides its state, read once, before
+        # the state is read again just ahead of the write (#802): a writer
+        # that sets its own keys then loses no other writer's.
+        ctx = []
+
+        def gather():
+            names = [n for n in list_dir(repo, f"issues/{number}") if n.startswith("merged-")]
+            return (schema_mod.check(body)["ok"], last_seal(repo, number), read(repo, f"issues/{number}/{names[-1]}") if names else None,
+                    autopilot_state(repo, number), issue_labels(repo, number), holder(repo, number))
+
+        def render(st):
+            if is_pr:
+                return pr_board_text(st, intact, raw)
+            ready, seal_, merged, auto, labels, held = ctx[0]
+            return board_text(number, ready, seal_, merged, auto, labels, held, st, intact, raw)
+        if not is_pr and mode != "migrate":
+            ctx.append(gather())
+
+        def fresh():
+            """(comment id, state) read again, just before a write."""
+            c, text = board_comment(repo, number)
+            st, ok = parse_state(text)
+            if not ok:
+                raise RuntimeError("the board's state was edited by hand while it was being written")
+            return c, st
+        if mode == "board":
+            print(render(state))
+            return 0
+        old = old_labels(item_labels(repo, number)) if mode == "migrate" else []
+        if mode == "migrate" and not old:
+            # Nothing to move, whatever the board: an item with no old label
+            # is never stopped by a board edited by hand (#802).
+            print(f"#{number}: no old label of the flow")
+            return 0
         if not intact:
-            print("The board's state was edited by hand: nothing is set on it, nobody is mentioned.", file=sys.stderr)
+            print("The board's state was edited by hand: nothing is set on it, nobody is mentioned"
+                  + (" (its old labels stay on it)" if old else "") + ".", file=sys.stderr)
             return 3
         if mode == "state" and argv[1:2] == ["set"]:
+            changes = {}
             for pair in argv[2:]:
                 key, _, value = pair.partition("=")
-                state[key] = json.loads(value) if value else None
+                changes[key] = json.loads(value) if value else None
+            cid, state = fresh()
+            state = set_keys(state, changes)
             put_board(repo, number, cid, render(state))
+            print(f"#{number}'s board: " + json.dumps(changes, sort_keys=True))
+            return 0
+        if mode == "migrate":
+            # #802: the flow's old labels onto the board: written, read
+            # back and compared, and only then taken off. Once more, it
+            # finds none and does nothing (above).
+            core = core_of(comments) if "autopilot:core-wait" in old else None
+            cid, st = fresh()
+            want = state_from_labels(old, st, core)
+            if want != st:
+                if not is_pr:
+                    ctx.append(gather())
+                put_board(repo, number, cid, render(want))
+            back, ok = parse_state(board_comment(repo, number)[1])
+            if not ok or any(back.get(k) != want.get(k) for k in FLOW_KEYS):
+                print(f"#{number}'s board does not hold what its labels said: they stay on it.", file=sys.stderr)
+                return 1
+            for label in old:
+                remove_label(repo, number, label)
+            print(f"#{number}: {', '.join(old)} moved onto its board: " + json.dumps({k: back[k] for k in FLOW_KEYS if k in back}, sort_keys=True))
             return 0
         if mode == "waits":
             waits = json.loads(os.environ.get("WAITS_JSON") or "null")
-            text = announce(state, waits, [b for _, b in comments],
-                            lambda st: put_board(repo, number, cid, render(st)),
+
+            def put_waits(st):
+                c, now_ = fresh()
+                put_board(repo, number, c, render(set_keys(now_, {"waits": st.get("waits"), "mentioned": st.get("mentioned")})))
+            text = announce(state, waits, [b for _, b in comments], put_waits,
                             lambda t: post_comment(repo, number, t))
             print(f"#{number} waits on {(waits or {}).get('who') or (waits or {}).get('role') or 'nobody'}" + ("; mentioned" if text else ""))
             return 0

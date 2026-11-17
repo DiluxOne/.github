@@ -56,7 +56,7 @@ def what(tmp_path, draft, merge, body=LEFT, record=None):
     (bin_dir / "python3").write_text(
         "#!/bin/bash\n"
         f'echo "python3 $*" >> "{log}"\n'
-        f'case "$2" in next-run) echo 2 ;; next-step) exec "{sys.executable}" "{ROOT / "scripts/autopilot.py"}" next-step ;; esac\n')
+        f'case "$2" in next-run) printf "runs=2\\nround=1\\n" ;; next-step) exec "{sys.executable}" "{ROOT / "scripts/autopilot.py"}" next-step ;; esac\n')
     for f in ("gh", "python3"):
         (bin_dir / f).chmod(0o755)
     out = tmp_path / "out"

@@ -55,10 +55,12 @@ def answer(tmp_path, comments, pr=False):
     # Who decides: the maintainer does.
     (tmp_path / ".dx-central/scripts").mkdir(parents=True)
     (tmp_path / ".dx-central/scripts/deciders.py").write_text("print('decides')\n")
+    # The issue's board (#802): no question waits on it.
+    (tmp_path / ".dx-central/scripts/receipts.py").write_text("import sys\nprint('null' if sys.argv[1:3] == ['state', 'get'] else '')\n")
     out = tmp_path / "out"
     out.write_text("")
     env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", GITHUB_OUTPUT=str(out),
-               GITHUB_REPOSITORY="o/r", DX_BOT_LOGIN=BOT, NUMBER="9" if pr else "7", IS_PR=str(pr).lower(), LOGIN="maintainer")
+               GITHUB_REPOSITORY="o/r", RUNNER_TEMP=str(tmp_path), DX_BOT_LOGIN=BOT, NUMBER="9" if pr else "7", IS_PR=str(pr).lower(), LOGIN="maintainer")
     done = subprocess.run(["bash", "-c", step()], env=env, capture_output=True, text=True, timeout=60, cwd=tmp_path)
     assert done.returncode == 0, done.stderr
     return log.read_text()

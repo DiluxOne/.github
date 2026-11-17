@@ -9,8 +9,10 @@ pull request pipelines) and swept once a day (waiting-digest.yml).
 What blocks a pull request, read from GitHub, the first that applies:
 
   needs-human          a person has it (`needs-human`)         the maintainer
-  its question         the autopilot asked (`autopilot:waiting` on the issue
-                       it closes)                               the maintainer
+  its board edited     the state on its board, or on an issue it closes,
+                       was edited by hand (#802)               the maintainer
+  its question         the autopilot asked (`asked` on the board of the
+                       issue it closes, #802)                   the maintainer
   an acceptance        an issue it closes is not `accepted`   the maintainer
   a failed check       a check of its head failed             its author
                        (a cancelled check run is not a failed one, #713:
@@ -20,7 +22,7 @@ What blocks a pull request, read from GitHub, the first that applies:
                        its work's): a check the pipeline fixes failed
                        (fix_check: actionlint and the scripts only in the
                        central repository) and rounds are left
-                       (its autopilot:round-N below autopilot-rounds):
+                       (`rounds` on its board below autopilot-rounds):
                        the autopilot's fix round              the autopilot
                        its rounds are spent                   the maintainer
                        only a check no fix round re-runs (a
@@ -34,7 +36,8 @@ What blocks a pull request, read from GitHub, the first that applies:
 And an issue (#564), the first that applies:
 
   needs-human          a person has it                         the maintainer
-  its question         the autopilot asked (`autopilot:waiting`) the maintainer
+  its board edited     its board's state was edited by hand the maintainer
+  its question         the autopilot asked (`asked` on its board) the maintainer
   the claimed work     a person claimed it (`claimed`)         the claimant
   completing it        `incomplete`: the G1 comment says what  its author
   the answer           `needs-info`: the triage asked          its author
@@ -45,7 +48,11 @@ And an issue (#564), the first that applies:
 ever waited on for their own step, and a maintainer never for theirs (rule
 7). The item's board (scripts/receipts.py waits) names whom it waits on and
 mentions that person once per waiting step: the step is the action and when
-it began (the label that started it, or the head commit of a pull request).
+it began (the label that started it, when the question was asked, or the
+head commit of a pull request). The board is read from the bot's own
+comment only (#802): among the first and last 20 of each item's, else
+from all of the bot's comments on it; an item not migrated yet
+is read from its old labels (`autopilot:waiting`, `autopilot:round-N`).
 
 The issue is public: a private repository's items are counted under what
 blocks them, never named.
@@ -84,6 +91,7 @@ FIELDS = """__typename
         repository { name nameWithOwner isPrivate }
         labels(first: 30) { nodes { name } }
         assignees(first: 5) { nodes { login } }
+        comments(first: 20) { totalCount nodes { author { login } body } } lastComments: comments(last: 20) { nodes { author { login } body } }
         timelineItems(itemTypes: [LABELED_EVENT], last: 30) { nodes { ... on LabeledEvent { createdAt label { name } } } }
       }
       ... on PullRequest {
@@ -92,10 +100,12 @@ FIELDS = """__typename
         repository { name nameWithOwner isPrivate }
         labels(first: 30) { nodes { name } }
         reviewThreads(first: 100) { nodes { isResolved } }
+        comments(first: 20) { totalCount nodes { author { login } body } } lastComments: comments(last: 20) { nodes { author { login } body } }
         commits(last: 1) { nodes { commit { oid statusCheckRollup { state contexts(first: 100) {
           pageInfo { hasNextPage }
           nodes { __typename ... on CheckRun { name conclusion status } ... on StatusContext { context state } } } } } } }
-        closingIssuesReferences(first: 10) { nodes { number labels(first: 30) { nodes { name } } } }
+        closingIssuesReferences(first: 10) { nodes { number repository { nameWithOwner } labels(first: 30) { nodes { name } }
+          comments(first: 20) { totalCount nodes { author { login } body } } lastComments: comments(last: 20) { nodes { author { login } body } } } }
       }"""
 QUERY = """query($q: String!, $after: String) {
   search(query: $q, type: ISSUE, first: 50, after: $after) {
@@ -168,6 +178,7 @@ def checks_state(rollup):
 FIX_CHECKS = ("conventions /", "review /", "actionlint", "Scripts (self-tests)")
 CENTRAL_ONLY = ("actionlint", "Scripts (self-tests)")
 FIX_ROUND, ROUNDS_SPENT, NOT_RERUN = "the autopilot's fix round", "its checks fail after its rounds", "a check no fix round runs again"
+BOARD_EDITED = "its board edited by hand"
 
 
 def fix_check(name, repo=None):
@@ -184,9 +195,39 @@ def rounds_cap():
     return int(autonomy.load(os.path.join(HERE, "..", "policy", "autonomy.yml")).get("autopilot-rounds", 3))
 
 
-def rounds_spent(labels):
-    """The highest autopilot:round-N label: the fix rounds already run. Pure."""
-    return max([int(l.rsplit("-", 1)[1]) for l in labels if re.fullmatch(r"autopilot:round-\d+", l)] or [0])
+_RECEIPTS = []
+
+
+def board_of(item, read_all=None):
+    """(state, intact) of the item's board (#802): dilux-bot's own last
+    `dx-board` comment, parsed by receipts.py (graphql_board); none is an
+    empty state, and a comment by anyone else is never the board. Its
+    first and last comments are read with the item; when the board is in
+    neither, all of the bot's comments are read (read_all, for the
+    self-test; else receipts.py bot_comments, from the item's repository)."""
+    if not _RECEIPTS:
+        _RECEIPTS.append(_receipts())
+    rc = _RECEIPTS[0]
+    if read_all is None:
+        repo, number = ((item.get("repository") or {}).get("nameWithOwner"), item.get("number"))
+        read_all = (lambda: [b for _, b in rc.bot_comments(repo, number)]) if repo and number else None
+    return rc.graphql_board(item, BOT_LOGINS, read_all)
+
+
+def asked(item, state=None):
+    """Whether the autopilot's question waits on the item: `asked` on its
+    board (#802), or the label an item not migrated yet carries. Pure."""
+    state = board_of(item)[0] if state is None else state
+    return bool(state.get("asked")) or "autopilot:waiting" in names(item.get("labels"))
+
+
+def rounds_spent(labels, state=None):
+    """The fix rounds already run: `rounds` on the pull request's board
+    (#802), or the highest autopilot:round-N label of one not migrated
+    yet. Pure."""
+    old = max([int(l.rsplit("-", 1)[1]) for l in labels if re.fullmatch(r"autopilot:round-\d+", l)] or [0])
+    on_board = (state or {}).get("rounds")
+    return max(old, on_board if isinstance(on_board, int) else 0)
 
 
 def blocker(pr, rounds=None):
@@ -198,7 +239,12 @@ def blocker(pr, rounds=None):
     issues = (pr.get("closingIssuesReferences") or {}).get("nodes") or []
     if "needs-human" in labels:
         return "needs-human", MAINTAINER
-    if any("autopilot:waiting" in names(i.get("labels")) for i in issues):
+    board, intact = board_of(pr)
+    boards = [board_of(i) for i in issues]
+    # #802: a board edited by hand reads as the most restrictive state.
+    if not intact or not all(ok for _, ok in boards):
+        return BOARD_EDITED, MAINTAINER
+    if any(asked(i, st) for i, (st, _) in zip(issues, boards)):
         return "its question", MAINTAINER
     if any("accepted" not in names(i.get("labels")) for i in issues):
         return "an acceptance", MAINTAINER
@@ -216,7 +262,7 @@ def blocker(pr, rounds=None):
         repo = (pr.get("repository") or {}).get("nameWithOwner") or None
         if not any(fix_check(n, repo) for n in failed_checks(rollup)):
             return NOT_RERUN, MAINTAINER
-        if rounds_spent(labels) >= (rounds_cap() if rounds is None else rounds):
+        if rounds_spent(labels, board) >= (rounds_cap() if rounds is None else rounds):
             return ROUNDS_SPENT, MAINTAINER
         return FIX_ROUND, AUTOPILOT
     open_threads = sum(1 for t in ((pr.get("reviewThreads") or {}).get("nodes") or []) if not t.get("isResolved"))
@@ -238,7 +284,10 @@ def issue_blocker(issue):
         return None
     if "needs-human" in labels:
         return "needs-human", MAINTAINER
-    if "autopilot:waiting" in labels:
+    board, intact = board_of(issue)
+    if not intact:
+        return BOARD_EDITED, MAINTAINER
+    if asked(issue, board):
         return "its question", MAINTAINER
     if "claimed" in labels:
         return "the claimed work", CLAIMANT
@@ -256,6 +305,7 @@ def issue_blocker(issue):
 # What the person does, said on the board and in the mention.
 ACTIONS = {
     "needs-human": "a person takes it from here (`needs-human`): read why and decide",
+    BOARD_EDITED: "the state on its board was edited by hand, so the autopilot counts nothing from it: restore the bot's last board (the comment's history has it)",
     "its question": "answer the autopilot's question",
     "an acceptance": "accept it (the `accepted` label) or say why not",
     "a failed check": "fix the failed check",
@@ -300,6 +350,10 @@ def step_of(item, what):
     if is_pr(item):
         commits = (item.get("commits") or {}).get("nodes") or []
         return f"{what}@{((commits[-1] if commits else {}).get('commit') or {}).get('oid') or ''}"
+    when = board_of(item)[0].get("asked") if what == "its question" else None
+    if isinstance(when, str) and when:
+        # #802: when the question was asked, on the board.
+        return f"{what}@{when}"
     label = {"needs-human": "needs-human", "its question": "autopilot:waiting", "the claimed work": "claimed", "completing it": "incomplete",
              "the answer": "needs-info", "an acceptance": "awaiting-acceptance", "the autopilot's work": "accepted"}.get(what, "")
     times = [e.get("createdAt") for e in ((item.get("timelineItems") or {}).get("nodes") or []) if (e.get("label") or {}).get("name") == label]
@@ -560,6 +614,32 @@ def self_test():
     puts.clear()
     update("o/r", 5, boss, read=lambda: dict(acc, state="CLOSED"), put=lambda *a: puts.append(a))
     check("C3 a closed item waits on nobody", puts[0][3], None)
+    # #802 C3: the same items, their old labels migrated onto the bot's
+    # board (receipts.py migrate), wait the same way.
+    def migrated(node):
+        node = json.loads(json.dumps(node))
+        for it in [node] + list(((node.get("closingIssuesReferences") or {}).get("nodes") or [])):
+            old = rc.old_labels(names(it.get("labels")))
+            it["labels"] = {"nodes": [{"name": n} for n in names(it.get("labels")) if n not in old]}
+            if old:
+                it["comments"] = {"nodes": [{"author": {"login": org.APP}, "body": f"{rc.BOARD}\nrows\n" + rc.state_block(rc.state_from_labels(old, {}))}]}
+        return node
+    moved = [migrated(i) for i in items]
+    check("C3 (#802) the fixtures carry the old labels the migration moves", sum(1 for i, m in zip(items, moved) if i != m) >= 4, True)
+    check("C3 (#802) from the board, the same waits as from the labels",
+          [(item_blocker(m), waits_of(m, boss)) for m in moved], [(item_blocker(i), waits_of(i, boss)) for i in items])
+    question = next(m for m in moved if not is_pr(m) and board_of(m)[0].get("asked"))
+    forged = json.loads(json.dumps(question))
+    forged["comments"]["nodes"][0]["author"]["login"] = "mallory"
+    check("C3 (#802) a board a person wrote is not the bot's: it asks nothing", issue_blocker(forged) == issue_blocker(question), False)
+    edited = json.loads(json.dumps(question))
+    edited["comments"]["nodes"][0]["body"] = edited["comments"]["nodes"][0]["body"].replace('"asked":true', '"asked":false')
+    check("C3 (#802) a board edited by hand waits on the maintainer, to restore it", (issue_blocker(edited), "restore" in action(issue_blocker(edited)[0])),
+          ((BOARD_EDITED, MAINTAINER), True))
+    check("C3 (#802) the rounds from the board, or from an item's old labels", (rounds_spent([], {"rounds": 3}), rounds_spent(["autopilot:round-4"], {"rounds": 3}), rounds_spent([], None)), (3, 4, 0))
+    check("C3 (#802) a question's step is when it was asked, on the board",
+          step_of({"comments": {"nodes": [{"author": {"login": org.APP}, "body": f"{rc.BOARD}\n" + rc.state_block({"asked": "2026-11-01T00:00:00Z"})}]}}, "its question"),
+          "its question@2026-11-01T00:00:00Z")
     print("all tests passed" if not fails else f"{len(fails)} failed")
     return 1 if fails else 0
 

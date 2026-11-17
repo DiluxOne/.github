@@ -1361,6 +1361,48 @@
   },
   {
    "__typename": "Issue",
+   "number": 1207,
+   "title": "the autopilot asked, on its board",
+   "url": "https://github.com/DiluxOne/diluxone-users-wordpress/issues/1207",
+   "createdAt": "2026-10-29T08:00:00Z",
+   "author": {
+    "login": "someone"
+   },
+   "repository": {
+    "name": "diluxone-users-wordpress",
+    "nameWithOwner": "DiluxOne/diluxone-users-wordpress",
+    "isPrivate": false
+   },
+   "labels": {
+    "nodes": [
+     {
+      "name": "accepted"
+     }
+    ]
+   },
+   "assignees": {
+    "nodes": []
+   },
+   "timelineItems": {
+    "nodes": []
+   },
+   "want": [
+    "its question",
+    "the maintainer"
+   ],
+   "comments": {
+    "nodes": [
+     {
+      "author": {
+       "login": "dilux-bot"
+      },
+      "body": "<!-- dx-board -->\n**The issue's board**\n\n<!-- dx-state v1 {\"asked\":\"2026-10-30T09:00:00Z\",\"sha256\":\"71dd0adf7d32e0e342efc92f3135aa674003794557f5708765e1134624aea7b1\"} -->"
+     }
+    ]
+   }
+  },
+  {
+   "__typename": "Issue",
    "number": 208,
    "title": "a person has it",
    "url": "https://github.com/DiluxOne/diluxone-users-wordpress/issues/208",
