@@ -123,3 +123,17 @@ def test_c2_the_sweep_migrates_every_open_item_before_it_reads_a_board():
         assert label in run
     assert mig["env"]["GH_TOKEN"] == "${{ steps.bot.outputs.token }}"
     assert re.search(r"\$\{\{[^}]*\}\}", run) is None
+
+
+def test_c2_a_run_migrates_its_own_items_before_it_counts():
+    """A run between the deploy and the next sweep never counts from a board
+    that lacks what the labels said: prep migrates its pull request and its
+    issue before it reads the next run, and stops when it cannot."""
+    prep = yaml.safe_load((ROOT / ".github/workflows/autopilot.yml").read_text(encoding="utf-8"))["jobs"]["prep"]["steps"]
+    run = next(s for s in prep if s.get("id") == "what")["run"]
+    mig = run.index('NUMBER="$PR" ITEM=pr python3 .dx-central/scripts/receipts.py migrate\n')
+    assert mig < run.index("autopilot.py next-run")
+    assert run.index('NUMBER="$ISSUE" python3 .dx-central/scripts/receipts.py migrate\n') < run.index("autopilot.py next-run")
+    reply = yaml.safe_load((ROOT / ".github/workflows/review-reply.yml").read_text(encoding="utf-8"))["jobs"]["answer"]["steps"]
+    back = next(s for s in reply if s.get("id") == "back")["run"]
+    assert back.index("receipts.py migrate") < back.index("state get asked")

@@ -138,9 +138,17 @@ jobs:
             issue=$(gh pr view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // empty')
           fi
           [ -n "$issue" ] || exit 0
-          # The question waits on the issue's board (#802); a board that
-          # cannot be read, or was edited by hand, waits for no answer.
-          asked=$(NUMBER="$issue" python3 .dx-central/scripts/receipts.py state get asked 2>/dev/null) || asked=null
+          # The question waits on the issue's board (#802); one edited by
+          # hand waits for no answer (exit 3); one that cannot be read fails
+          # the job, never read as no question. An issue an older run
+          # labelled `autopilot:waiting` is migrated first.
+          NUMBER="$issue" python3 .dx-central/scripts/receipts.py migrate >/dev/null 2>&1 || true
+          rc=0; asked=$(NUMBER="$issue" python3 .dx-central/scripts/receipts.py state get asked 2> "$RUNNER_TEMP/board.err") || rc=$?
+          case $rc in
+            0) ;;
+            3) asked=null ;;
+            *) echo "::error::#$issue's board could not be read: $(head -c 200 "$RUNNER_TEMP/board.err")"; exit 1 ;;
+          esac
           waiting=false; case $asked in null|false|'""') ;; *) waiting=true ;; esac
           stopped=""
           pr=""

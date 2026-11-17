@@ -179,3 +179,21 @@ def test_c1_a_board_edited_by_hand_reads_as_the_cap_reached():
     ap = autopilot()
     ok, why = ap.may_continue([], "<!-- dx-checklist -->\n- [ ] **C1** x\n<!-- /dx-checklist -->\n", ap.run_numbers({}, intact=False)[1], 5)
     assert not ok and "cap is 5" in why
+
+
+def test_c1_an_answer_on_a_board_that_cannot_be_read_fails_and_is_never_read_as_no_question(tmp_path):
+    root = tmp_path / "r"
+    (root / ".dx-central/scripts").mkdir(parents=True)
+    # receipts.py stood in: its read fails (exit 1, not 3: not edited by hand).
+    (root / ".dx-central/scripts/receipts.py").write_text("import sys\nprint('gh: HTTP 502', file=sys.stderr)\nsys.exit(1 if sys.argv[1:2] == ['state'] else 0)\n")
+    bin_dir = root / "bin"
+    bin_dir.mkdir()
+    log = root / "calls.log"
+    (bin_dir / "gh").write_text(f'#!/bin/bash\necho "gh $*" >> "{log}"\n')
+    (bin_dir / "gh").chmod(0o755)
+    reply = step("review-reply.yml", "answer", "back")["run"]
+    done = subprocess.run(["bash", "-c", reply], env=dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", RUNNER_TEMP=str(root), GITHUB_REPOSITORY="o/r",
+                                                          NUMBER="7", IS_PR="false", LOGIN="boss", GITHUB_OUTPUT=str(root / "out")),
+                          capture_output=True, text=True, timeout=120, cwd=root)
+    assert done.returncode == 1 and "board could not be read: gh: HTTP 502" in done.stdout + done.stderr
+    assert "autopilot:continue" not in (log.read_text() if log.exists() else "")

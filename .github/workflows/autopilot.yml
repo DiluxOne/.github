@@ -380,6 +380,12 @@ jobs:
             [ "$MODE" = continue ] || ISSUE=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // empty')
             branch=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json headRefName --jq .headRefName)
             labels=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | join(",")')
+            # An item a run of the engine before #802 labelled, which the
+            # hourly sweep has not migrated yet, is migrated first: its runs
+            # are never counted from a board that lacks them. One that cannot
+            # be migrated stops the run.
+            NUMBER="$PR" ITEM=pr python3 .dx-central/scripts/receipts.py migrate
+            [ -z "$ISSUE" ] || NUMBER="$ISSUE" python3 .dx-central/scripts/receipts.py migrate
             # The next run follows every run, counted or free (#479), and the
             # next round every round, both from the pull request's board
             # (#802): `runs=` and `round=`.
