@@ -72,11 +72,12 @@ name: Issue triage
 # At most `max-per-day` issues in 24 hours get an AI triage, counted with
 # GitHub's issue search (every issue opened, a bot's too, so the count errs
 # high; a just-opened issue may not be indexed yet, so it can also err low by
-# a few); past that, or when the count fails, an issue gets needs-triage and
-# waits for a person. The runs go on the subscription, so the cap (10000)
-# only stops a flood, not a busy day. A classifier that fails (#658) leaves
-# the issue needs-triage and one comment that says so, with the run's link:
-# a maintainer re-runs the job or triages it by hand. The brief and the labelling
+# a few); past that, or when the count fails, an issue waits for a person,
+# and its board says the triage could not run (#803: no label says it). The
+# runs go on the subscription, so the cap (10000) only stops a flood, not a
+# busy day. A classifier that fails (#658) leaves the same on its board, and
+# one comment that says so, with the run's link: a maintainer re-runs the job
+# or triages it by hand. The brief and the labelling
 # are scripts/triage-brief.sh and scripts/triage-act.sh, shared by both jobs.
 #
 # On a schedule, the same workflow closes `needs-info` issues nobody answered
@@ -121,7 +122,7 @@ on:
         type: number
         default: 14
       max-per-day:
-        description: Triage runs in 24 hours at most (one per issue a person opens, counted as it opens); past that, an issue gets needs-triage and waits for a person.
+        description: Triage runs in 24 hours at most (one per issue a person opens, counted as it opens); past that, an issue waits for a person, and its board says the triage could not run.
         type: number
         default: 10000
       central-ref:
@@ -277,12 +278,14 @@ jobs:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           MAX: ${{ inputs.max-per-day }}
           NUMBER: ${{ github.event.issue.number }}
+          MAINTAINER: ${{ inputs.maintainer }}
+          BODY_TEXT: ${{ github.event.issue.body }}
         # The issues opened in the last 24 hours (the search's total), this one
         # aside, stand for
         # the triage runs before it: a failed classification counts too, and
         # a bot's issue (which starts none) as well, so the count errs high.
         # When GitHub cannot say, the issue waits for a person: the cap
-        # fails closed.
+        # fails closed. Its board says so (#803), and waits on a maintainer.
         run: |
           set -euo pipefail
           since=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)
@@ -293,9 +296,9 @@ jobs:
           fi
           if [ "$n" -ge "$MAX" ]; then
             echo "::warning::$n issues opened in the last 24 hours before this one (the limit is $MAX); #$NUMBER waits for a person."
-            gh label create needs-triage --repo "$GITHUB_REPOSITORY" --color E4E669 --description "Not looked at yet" --force >/dev/null
-            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label needs-triage >/dev/null
             echo "over=true" >> "$GITHUB_OUTPUT"
+            printf '%s' "$BODY_TEXT" > "$RUNNER_TEMP/body.md"
+            BODY="$RUNNER_TEMP/body.md" bash .dx-central/scripts/triage-act.sh unrun cap
           else
             echo "$n issues opened in the last 24 hours before this one (limit $MAX)."
           fi
@@ -551,14 +554,17 @@ jobs:
           PRIVATE: ${{ github.event.repository.private }}
           MODEL: ${{ steps.policy.outputs.model }}
           COST: ${{ steps.verdict.outputs.cost }}
+          BODY_TEXT: ${{ github.event.issue.body }}
         run: |
           set -euo pipefail
           REPLY=$(jq -r '.reply // ""' <<<"${OUT:-null}" 2>/dev/null || true)
           SUMMARY=$(jq -r '.summary // ""' <<<"${OUT:-null}" 2>/dev/null || true)
-          REPLY=$REPLY SUMMARY=$SUMMARY bash .dx-central/scripts/triage-act.sh
+          printf '%s' "$BODY_TEXT" > "$RUNNER_TEMP/body.md"
+          BODY="$RUNNER_TEMP/body.md" REPLY=$REPLY SUMMARY=$SUMMARY bash .dx-central/scripts/triage-act.sh
 
       # A Classify that failed (#658) is said on the issue, never left
-      # silent: `needs-triage` and one comment, its marker keeping a re-run
+      # silent: its board says so and waits on a maintainer (#803,
+      # triage-act.sh unrun), and one comment, its marker keeping a re-run
       # that fails again from posting another (unless the comments cannot be
       # read: a second comment beats none), with the run's link. No label
       # starts the triage again: a maintainer re-runs the job or triages it
@@ -568,10 +574,12 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           NUMBER: ${{ github.event.issue.number }}
+          MAINTAINER: ${{ inputs.maintainer }}
+          BODY_TEXT: ${{ github.event.issue.body }}
         run: |
           set -euo pipefail
-          gh label create needs-triage --repo "$GITHUB_REPOSITORY" --color E4E669 --description "Not looked at yet" --force >/dev/null || true
-          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label needs-triage >/dev/null || echo "::warning::Could not label #$NUMBER needs-triage."
+          printf '%s' "$BODY_TEXT" > "$RUNNER_TEMP/body.md"
+          BODY="$RUNNER_TEMP/body.md" bash .dx-central/scripts/triage-act.sh unrun failed || echo "::warning::#$NUMBER's board could not say the triage did not run."
           marker='<!-- dx-triage-failed -->'
           if ! said=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '.[] | select(.user.login == env.DX_BOT_LOGIN) | .body'); then
             echo "::warning::Could not read #$NUMBER's comments; posting the comment anyway."; said=""
@@ -580,8 +588,7 @@ jobs:
             echo "#$NUMBER already says the triage could not run."; exit 0
           fi
           run="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          BT='`'
-          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '%s\n**The triage could not run** on this issue, so it has no answer yet and waits as %s. A maintainer can re-run the job or triage it by hand; the run is in %s.\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)' "$marker" "${BT}needs-triage${BT}" "$run")" >/dev/null
+          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '%s\n**The triage could not run** on this issue, so it has no answer yet; its board says so. A maintainer can re-run the job or triage it by hand; the run is in %s.\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)' "$marker" "$run")" >/dev/null
 
       # What this run spent (#694): its runner minutes and the model's
       # tokens, numbers only (this run may have read the paid roadmap).
@@ -831,13 +838,15 @@ jobs:
           PRIVATE: ${{ github.event.repository.private }}
           MODEL: ${{ needs.triage.outputs.model }}
           COST: ${{ needs.triage.outputs.cost }}
+          BODY_TEXT: ${{ github.event.issue.body }}
         run: |
           set -euo pipefail
           REPLY=$FIXED; SUMMARY=$CATEGORY
           if [ -n "$WRITTEN" ] && jq -e .reply <<<"$WRITTEN" >/dev/null 2>&1; then
             REPLY=$(jq -r .reply <<<"$WRITTEN"); SUMMARY=$(jq -r '.summary // ""' <<<"$WRITTEN")
           fi
-          REPLY=$REPLY SUMMARY=$SUMMARY bash .dx-central/scripts/triage-act.sh
+          printf '%s' "$BODY_TEXT" > "$RUNNER_TEMP/body.md"
+          BODY="$RUNNER_TEMP/body.md" REPLY=$REPLY SUMMARY=$SUMMARY bash .dx-central/scripts/triage-act.sh
 
   # A spike (#193, scripts/spike.py): when a person labels an issue `spike`,
   # an agent investigates it read-only, for at most 30 minutes, and says on

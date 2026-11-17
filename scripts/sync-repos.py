@@ -3547,7 +3547,7 @@ def callers_test(check, conf):
         globals()["gh"], ORG = saved_gh, saved_org
     names = {a[2] for a in made if a[:2] == ("label", "create") and "o/dilux-agentic-workflow" in a}
     check("C3 (#552): `labels` gives DAW every label, the triage's, the acceptance's and the autopilot's among them",
-          names == {str(l["name"]) for l in labels} and {"needs-triage", "bug:unconfirmed", "awaiting-acceptance", "accepted", "autopilot", "autopilot:continue"} <= names, sorted(names))
+          names == {str(l["name"]) for l in labels} and {"bug:unconfirmed", "awaiting-acceptance", "accepted", "autopilot", "autopilot:continue"} <= names and "needs-triage" not in names, sorted(names))
     # #320: a repository at a major whose migration is only the callers
     # moves to the current one in the same issue and pull request.
     files.clear()

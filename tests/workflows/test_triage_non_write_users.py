@@ -85,9 +85,12 @@ def run_said(tmp_path, comments, read_fails=False):
         encoding="utf-8",
     )
     gh.chmod(0o755)
+    # The step runs this repository's scripts, as the job's .dx-central.
+    (tmp_path / ".dx-central").symlink_to(ROOT)
     env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", NUMBER="7", GITHUB_REPOSITORY="o/r",
-               GITHUB_SERVER_URL="https://github.com", GITHUB_RUN_ID="42", DX_BOT_LOGIN="dilux-bot[bot]")
-    subprocess.run(["bash", "-c", script], env=env, check=True, capture_output=True)
+               GITHUB_SERVER_URL="https://github.com", GITHUB_RUN_ID="42", DX_BOT_LOGIN="dilux-bot[bot]",
+               RUNNER_TEMP=str(tmp_path), BODY_TEXT="### Problem\n\nIt breaks.\n", MAINTAINER="boss", HELD="")
+    subprocess.run(["bash", "-c", script], env=env, check=True, capture_output=True, cwd=tmp_path)
     return [b for b in posted.read_text(encoding="utf-8").split("\0") if b] if posted.exists() else []
 
 
@@ -105,14 +108,15 @@ def test_a_failed_classify_leaves_a_comment(tmp_path):
     assert step(triage, "claude").get("continue-on-error") is True
     assert "steps.claude.outcome == 'failure'" in said["if"] and "!cancelled()" in said["if"]
     assert said["env"]["GH_TOKEN"] == "${{ steps.bot.outputs.token }}"
-    # One comment, with the run's link, and the existing label, no new one.
+    # One comment, with the run's link; its board says it, no label (#803).
     first = run_said(tmp_path / "a", "")
     assert len(first) == 1
     assert "The triage could not run" in first[0]
     assert "https://github.com/o/r/actions/runs/42" in first[0]
     assert first[0].startswith("<!-- dx-triage-failed -->")
-    assert "needs-triage" in first[0] and "AI-generated" in first[0]
-    assert "--add-label needs-triage" in said["run"]
+    assert "its board says so" in first[0] and "AI-generated" in first[0]
+    assert "needs-triage" not in first[0] and "--add-label" not in said["run"]
+    assert "triage-act.sh unrun failed" in said["run"]
     assert "autopilot:" not in said["run"] and "repro:run" not in said["run"]
     # A re-run that fails again says nothing more.
     assert run_said(tmp_path / "b", "earlier\n" + first[0]) == []
