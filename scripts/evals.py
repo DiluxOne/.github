@@ -76,6 +76,7 @@ sys.path.insert(0, HERE)
 import org  # noqa: E402  the organisation, from org.yml (#191)
 
 SLACK = 1
+GIT_URL = "https://github.com/{repo}"  # where a case's repository is cloned from
 EVALS = os.path.join(ROOT, "evals")
 
 # The steps, one entry each: how many cases `collect` takes, what counts for
@@ -388,12 +389,22 @@ def bare(env=None):
     return {k: v for k, v in no_tokens(env).items() if k not in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")}
 
 
-def checkout(case, ref, work):
-    """The case's repository at REF, clean, with a copy of this checkout as
-    its .dx-central/ (as the workflows have it); None when it cannot be."""
+def central_in(d):
+    """A copy of this checkout as D's .dx-central/ (as the workflows have
+    it), never the sets' answers, and D's .dx-io/, both out of git."""
+    shutil.rmtree(os.path.join(d, ".dx-central"), ignore_errors=True)
+    shutil.copytree(ROOT, os.path.join(d, ".dx-central"), ignore=shutil.ignore_patterns(".git", ".dx-io", ".dx-central", "evals"), symlinks=True)
+    os.makedirs(os.path.join(d, ".dx-io"), exist_ok=True)
+    with open(os.path.join(d, ".git", "info", "exclude"), "a", encoding="utf-8") as fh:
+        fh.write("\n.dx-central/\n.dx-io/\n")
+
+
+def checkout(case, ref, work, central=True):
+    """The case's repository at REF, clean, with its .dx-central/ (none for
+    the review, which never had one); None when it cannot be."""
     d = os.path.join(work, case["repo"].replace("/", "_"))
     git = lambda *a: run(["git", "-C", d, *a])
-    if not os.path.isdir(d) and run(["git", "clone", "-q", f"https://github.com/{case['repo']}", d]).returncode != 0:
+    if not os.path.isdir(d) and run(["git", "clone", "-q", GIT_URL.format(repo=case["repo"]), d]).returncode != 0:
         return None
     for r in {ref, case.get("merged") or ref}:
         if git("cat-file", "-e", r + "^{commit}").returncode != 0:
@@ -401,11 +412,30 @@ def checkout(case, ref, work):
     if git("checkout", "-q", "-f", "--detach", ref).returncode != 0:
         return None
     git("clean", "-qffdx")
-    shutil.copytree(ROOT, os.path.join(d, ".dx-central"), ignore=shutil.ignore_patterns(".git", ".dx-io", "evals"), symlinks=True)
-    os.makedirs(os.path.join(d, ".dx-io"), exist_ok=True)
-    with open(os.path.join(d, ".git", "info", "exclude"), "a", encoding="utf-8") as fh:
-        fh.write("\n.dx-central/\n.dx-io/\n")
+    if central:
+        central_in(d)
     return d
+
+
+def fresh(case, work):
+    """The case's base tree alone, in a new repository of one commit: an
+    agent with a shell finds no later commit there, the merged answer
+    among them. (path, its one commit), or None."""
+    src = checkout(case, case["base"], work, central=False)
+    if src is None:
+        return None
+    d = os.path.join(work, "case-" + re.sub(r"[^A-Za-z0-9]+", "-", case["id"]))
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(d)
+    archive = subprocess.run(["git", "-C", src, "archive", "--format=tar", case["base"]], capture_output=True)
+    if archive.returncode != 0 or subprocess.run(["tar", "-x", "-C", d], input=archive.stdout).returncode != 0:
+        return None
+    git = lambda *a: run(["git", "-C", d, "-c", "user.name=eval", "-c", "user.email=eval@localhost", *a])
+    git("init", "-q")
+    git("add", "-A")
+    git("commit", "-qm", "base")
+    central_in(d)
+    return d, git("rev-parse", "HEAD").stdout.strip()
 
 
 def issue_of(case):
@@ -548,10 +578,10 @@ def replay_repro(case, work):
 
 def replay_spec(case, work):
     ap, schema = load("autopilot"), load("issue-schema")
-    d = checkout(case, case["base"], work)
-    issue = issue_of(case)
-    if d is None or issue is None:
+    got, issue = fresh(case, work), issue_of(case)
+    if got is None or issue is None:
         return None
+    d = got[0]
     prd = schema.part_text(issue["body"], "prd")
     prompt = ap.prompt_spec(case["repo"], str(case["issue"]), prd, None, issue["type"], "full")
     claude(prompt, d, shipped("spec", {"needs.prep.outputs.budget-spec || '3'": "3"}), STEPS["spec"]["minutes"])
@@ -562,24 +592,34 @@ def replay_spec(case, work):
 
 def replay_autopilot(case, work):
     ap, schema, tf = load("autopilot"), load("issue-schema"), load("test-first")
-    d = checkout(case, case["base"], work)
-    issue = issue_of(case)
-    if d is None or issue is None:
+    got, issue = fresh(case, work), issue_of(case)
+    if got is None or issue is None:
         return None
-    central = os.path.join(d, ".dx-central")
+    d, first = got
     branch = f"eval/{case['issue']}"
     run(["git", "-C", d, "checkout", "-q", "-B", branch])
     with open(os.path.join(d, ".dx-io", "spec.md"), "w", encoding="utf-8") as fh:
         fh.write(schema.part_text(issue["body"], "spec"))
     open(os.path.join(d, ".dx-io", "pr.md"), "w").close()
     prompt = ap.prompt_work(case["repo"], str(case["issue"]), "0", branch, schema.part_text(issue["body"], "prd"),
-                            ap.left_criteria(issue["body"], ""), False, None, "full", "", ap.kind_notes(d, central), False)
+                            ap.left_criteria(issue["body"], ""), False, None, "full", "", ap.kind_notes(d, os.path.join(d, ".dx-central")), False)
     claude(prompt, d, shipped("autopilot", {"needs.prep.outputs.budget-work || (needs.prep.outputs.mode == 'fix' && '10' || '20')": "20"}),
            STEPS["autopilot"]["minutes"])
-    git = lambda *a: run(["git", "-C", d, "-c", "user.name=eval", "-c", "user.email=eval@localhost", *a])
-    git("add", "-A")
-    git("commit", "-qm", "eval: what the agent left")
-    head = git("rev-parse", "HEAD").stdout.strip()
+    ident = ["-c", "user.name=eval", "-c", "user.email=eval@localhost"]
+    run(["git", "-C", d, "add", "-A"])
+    run(["git", "-C", d, *ident, "commit", "-qm", "eval: what the agent left"])
+    patch = subprocess.run(["git", "-C", d, "diff", "--binary", first, "HEAD"], capture_output=True).stdout
+    # What the agent changed, onto the base in the case's own clone, where
+    # the merged pull request's tests are.
+    src = checkout(case, case["base"], work)
+    if src is None:
+        return None
+    central = os.path.join(src, ".dx-central")
+    if patch and subprocess.run(["git", "-C", src, "apply", "--index", "-"], input=patch).returncode != 0:
+        return False
+    run(["git", "-C", src, *ident, "commit", "-q", "--allow-empty", "-m", "eval: the agent's change"])
+    head = run(["git", "-C", src, "rev-parse", "HEAD"]).stdout.strip()
+    d = src
     own = case["repo"] == f"{org.ORG}/.github"
     plan = tf.plan(d, central, "feat: eval", case["base"], case["merged"], case["repo"].split("/")[1], str(case["issue"]), own)
     tests = [t for t in plan["tests"] if t["test"] in case["tests"]]
@@ -593,7 +633,7 @@ def replay_autopilot(case, work):
 
 
 def replay_review(case, work):
-    d = checkout(case, case["base"], work)
+    d = checkout(case, case["base"], work, central=False)
     if d is None:
         return None
     git = lambda *a: run(["git", "-C", d, *a])
@@ -1057,6 +1097,20 @@ def self_test():
               ([(c["issue"], c["pr"], c["expect"]) for c in sp], [(c["issue"], c["tests"], c["expect"]) for c in au]),
               ([(11, 12, {"files": ["scripts/b.py", "tests/test_b.py"], "min_recall": 0.5})], [(11, ["tests/test_b.py"], "pass")]))
         check("git cases: a case's base is its commit's parent", rp[0]["base"] == g("rev-parse", rp[0]["merged"] + "^").stdout.strip(), True)
+        global GIT_URL
+        saved, GIT_URL = GIT_URL, d
+        try:
+            with tempfile.TemporaryDirectory() as work:
+                got = fresh({"id": "o/r#11:autopilot", "repo": "o/r", "base": au[0]["base"], "merged": au[0]["merged"]}, work)
+                fd = got[0]
+                log = run(["git", "-C", fd, "log", "--all", "--format=%s"]).stdout.split("\n")
+                check("fresh: the base tree alone, one commit, no later one to read the answer from; its .dx-central/ without the sets",
+                      (log[:1], len([l for l in log if l]), os.path.exists(os.path.join(fd, "tests", "test_b.py")),
+                       open(os.path.join(fd, "scripts", "b.py")).read(), os.path.isdir(os.path.join(fd, ".dx-central", "scripts")),
+                       os.path.exists(os.path.join(fd, ".dx-central", "evals")), run(["git", "-C", fd, "status", "--porcelain"]).stdout),
+                      (["base"], 1, False, "2", True, False, ""))
+        finally:
+            GIT_URL = saved
 
     # The replays read the workflows as they ship.
     check("shipped: the triage's claude_args, filled, its schema the full one",
