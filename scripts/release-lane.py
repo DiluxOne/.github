@@ -268,7 +268,7 @@ def merge_when_checked(repo, number, run=sh, sleep=time.sleep, minutes=60):
     waited for until it merged. Returns the merge commit. Raises on a
     required check that fails or is cancelled, a pull request that closes,
     a head that moves, or `minutes` running out, naming what it waited on."""
-    head, waited, queued, why = "", 0, False, "its checks did not finish"
+    head, waited, queued, why, settled = "", 0, False, "its checks did not finish", None
     while True:
         view = json.loads(run("gh", "pr", "view", number, "--repo", repo, "--json", "mergedAt,mergeCommit,state,headRefOid,statusCheckRollup") or "{}")
         if view.get("mergedAt"):
@@ -287,11 +287,17 @@ def merge_when_checked(repo, number, run=sh, sleep=time.sleep, minutes=60):
             rollup = view.get("statusCheckRollup") or []
             pending = [c.get("name") or c.get("context") for c in rollup if (c.get("status") or c.get("state") or "").upper() not in DONE]
             pending += [c.get("name") for c in required if c.get("bucket") not in ("pass", "skipping")]
-            if rollup and not pending:
+            # No required check reported may only mean GitHub has not
+            # registered them yet: a finished rollup is trusted then only
+            # when the next poll finds the same one, still with none.
+            done = sorted(str(c.get("name") or c.get("context")) for c in rollup) if rollup and not pending else None
+            if done is not None and (required or done == settled):
                 run("gh", "pr", "merge", number, "--repo", repo, "--squash", "--match-head-commit", head)
                 queued, why = True, "it did not merge from the merge queue"
             else:
-                why = f"its check {pending[0]} did not finish" if pending else "it reported no check"
+                settled = done if not required else None
+                why = (f"its check {pending[0]} did not finish" if pending
+                       else "it reported no required check yet" if done is not None else "it reported no check")
         if waited >= minutes * 60:
             raise RuntimeError(f"the release pull request #{number} did not merge in {minutes} minutes: {why}; nothing tagged")
         sleep(30)
@@ -741,6 +747,33 @@ def self_test():
         err = _raises(lambda: release(p, "O/.github", run=fake, sleep=lambda s: None, minutes=1, root=root))
         check("#798: queued but never merged: one merge call, the timeout says the merge queue, tags nothing",
               (len([c for c in fake.calls if c[:3] == ("gh", "pr", "merge")]), "merge queue" in str(err), tagged(fake)), (1, True, []))
+        # No required check reported yet: a finished rollup waits one poll.
+        late = iter([lambda argv: json.dumps([]), lambda argv: json.dumps([{"name": "ci", "bucket": "pending"}]),
+                     lambda argv: json.dumps([{"name": "ci", "bucket": "pass"}])])
+        fake = opened(lambda argv: next(late)(argv), rollup=[{"name": "lint", "status": "COMPLETED"}], merge_at=4)
+        d = act(p, passed, "O/.github", run=fake, sleep=lambda s: None, root=root)
+        merges = [i for i, c in enumerate(fake.calls) if c[:3] in (("gh", "pr", "merge"), ("gh", "pr", "checks"))]
+        check("#800: no required check yet and a finished rollup: no merge until the required one registers and passes",
+              (d["do"], [fake.calls[i][2] for i in merges]), ("release", ["checks", "checks", "checks", "merge"]))
+        fake = opened(json.dumps([]), rollup=[{"name": "lint", "status": "COMPLETED"}], merge_at=3)
+        d = act(p, passed, "O/.github", run=fake, sleep=lambda s: None, root=root)
+        steps = [c[2] for c in fake.calls if c[:3] in (("gh", "pr", "merge"), ("gh", "pr", "checks"))]
+        check("#800: none required, the same finished rollup on two polls: merged once, on the second",
+              (d["do"], steps), ("release", ["checks", "checks", "merge"]))
+        grown = iter([[{"name": "lint", "status": "COMPLETED"}], [{"name": "lint", "status": "COMPLETED"}, {"name": "pipeline", "status": "COMPLETED"}]])
+        fake = opened(json.dumps([]), rollup=[], merge_at=99)
+        rollups = []
+
+        def view(argv):
+            rollups.append(1)
+            r = next(grown, None) or [{"name": "lint", "status": "COMPLETED"}, {"name": "pipeline", "status": "COMPLETED"}]
+            if fake.has("gh", "pr", "merge"):
+                return json.dumps({"mergedAt": "2026-11-02T10:00:00Z", "mergeCommit": {"oid": "abc123"}, "state": "MERGED"})
+            return json.dumps({"mergedAt": None, "state": "OPEN", "headRefOid": "h1", "statusCheckRollup": r})
+        fake.answers["gh pr view"] = view
+        d = act(p, passed, "O/.github", run=fake, sleep=lambda s: None, root=root)
+        check("#800: a rollup that grows between polls is not settled: merged only once it stays the same",
+              (d["do"], len(rollups)), ("release", 4))
         fake = Fake()
         check("a plan with no commit releases nothing", ("no commit" in str(_raises(lambda: release(dict(p, sha=""), "O/.github", run=fake, root=root))), fake.calls), (True, []))
         # engine-release.yml made the Release first.
