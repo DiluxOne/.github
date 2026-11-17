@@ -340,7 +340,9 @@ def coverage(scenarios, wanted, statically=None):
     return out
 
 
-CORE_LABEL, CORE_MARK = "autopilot:core-wait", "<!-- dx-autopilot-core -->"
+# The autopilot's comment on an issue that waits for the core (#563): its
+# wait itself is on the issue's board (`core_wait`, #802), no label.
+CORE_MARK = "<!-- dx-autopilot-core -->"
 
 
 def needed_type(title):
@@ -1176,12 +1178,25 @@ def observe(repo, what, number, run=gh):
         if refs:
             pull = json.loads(run("pr", "view", str(max(refs)), "--repo", repo, "--json", "number,body,headRefName,title") or "{}")
             seen["pull"] = {"body": pull.get("body"), "branch": pull.get("headRefName"), "title": pull.get("title"), "number": pull.get("number")}
-    seen["waiting"] = any(l in seen["labels"] for l in ("needs-human", "autopilot:waiting", "awaiting-acceptance"))
+    # #802: the autopilot's question waits on the item's board (`asked`).
+    seen["waiting"] = any(l in seen["labels"] for l in ("needs-human", "awaiting-acceptance")) or bool(board_state(seen["said"]).get("asked"))
     runs = json.loads(run("run", "list", "--repo", repo, "--limit", "20", "--json", "url,status") or "[]")
     seen["run"] = runs[0]["url"] if runs else ""
     # Nothing queued or in progress in the test repository (#694: `hopeless`).
     seen["idle"] = not any(str(r.get("status") or "").lower() in RUNNING for r in runs)
     return seen
+
+
+def board_state(said):
+    """The state on the bot's board among its comments `said` (#802,
+    scripts/receipts.py parse_state); {} with none, or one edited by hand."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("receipts_board", os.path.join(HERE, "receipts.py"))
+    receipts = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(receipts)
+    boards = [b for b in said or [] if str(b).startswith(receipts.BOARD)]
+    state, intact = receipts.parse_state(boards[-1]) if boards else ({}, True)
+    return state if intact else {}
 
 
 def closing_pulls(repo, view):
@@ -1556,10 +1571,10 @@ def partition(scenarios, gs, pack=None):
 
 
 def waits_on_core(s):
-    """Whether scenario `s` expects to wait on the core (`autopilot:core-wait`
-    or its comment's mark). Pure."""
+    """Whether scenario `s` expects to wait on the core (its comment's
+    mark). Pure."""
     expect = s.get("expect") or {}
-    return CORE_LABEL in (expect.get("labels") or []) or CORE_MARK in (expect.get("comments") or [])
+    return CORE_MARK in (expect.get("comments") or [])
 
 
 SEAL = "<!-- dx-prd-seal -->"
@@ -1567,11 +1582,11 @@ SEAL = "<!-- dx-prd-seal -->"
 
 def needs_autopilot(want):
     """Whether the expectation `want`, on an issue, needs the autopilot's
-    result (#713): its seal, the `autopilot` or core-wait label, its comment
-    on the core, or its pull request. Pure."""
+    result (#713): its seal, the `autopilot` label, its comment on the
+    core, or its pull request. Pure."""
     want = want or {}
     return (any(m in (want.get("comments") or []) for m in (SEAL, CORE_MARK))
-            or any(l in (want.get("labels") or []) for l in ("autopilot", CORE_LABEL)) or bool(want.get("pull")))
+            or "autopilot" in (want.get("labels") or []) or bool(want.get("pull")))
 
 
 def autopilot_problems(scenarios):
@@ -1662,7 +1677,7 @@ def core_problems(scenarios, pack):
     """Every scenario that writes under the test repository's core (`pack`'s
     `core`) but expects no wait on it (#709): its fixed change would make its
     issue wait on another's open pull request (scripts/autopilot.py
-    core_busy), so only the one scenario that expects `autopilot:core-wait`
+    core_busy), so only the one scenario that expects the wait on the core
     writes there. Pure."""
     out = []
     for s in scenarios:
@@ -2147,11 +2162,11 @@ def self_test():
           (["scenarios/x/*", "scenarios/x/*.md"], {None}, {""}))
     shared = {"fixed-change": {"file": "scenarios/{n}.md"}, "core": ["scenarios/*"]}
     check("C2: partition fails when two scenarios could write to the same core path (a fixed change outside their own directory)",
-          partition([{"id": "a", "expect": {"labels": [CORE_LABEL]}}, {"id": "b", "expect": {"labels": [CORE_LABEL]}}], groups([{"id": "a"}, {"id": "b"}]), shared),
+          partition([{"id": "a", "expect": {"comments": [CORE_MARK]}}, {"id": "b", "expect": {"comments": [CORE_MARK]}}], groups([{"id": "a"}, {"id": "b"}]), shared),
           ["scenario b: writes scenarios/*.md, on the core of the test repository scenario a writes too, so one would wait on the other"])
     per_dir = {"fixed-change": {"file": "scenarios/{scenario}/{n}.md"}, "core": ["scenarios/*/**"]}
     check("#709 C1: core_problems names a scenario that writes under the core but expects no wait on it, and partition with it",
-          (core_problems([{"id": "a", "expect": {}}, {"id": "w", "expect": {"labels": [CORE_LABEL]}}], per_dir), partition([{"id": "a"}], groups([{"id": "a"}]), per_dir),
+          (core_problems([{"id": "a", "expect": {}}, {"id": "w", "expect": {"comments": [CORE_MARK]}}], per_dir), partition([{"id": "a"}], groups([{"id": "a"}]), per_dir),
            core_problems(real["scenarios"], rpack)),
           (["scenario a: writes scenarios/a/*, under the test repository's core (scenarios/*/**), but expects no wait on it, so its issue could wait on another's change"],
            ["scenario a: writes scenarios/a/*, under the test repository's core (scenarios/*/**), but expects no wait on it, so its issue could wait on another's change"], []))
@@ -2298,7 +2313,14 @@ def self_test():
           ["scenario b: expects its issue to await acceptance, but its body does not pass the issue schema"])
     pack = {"fixed-change": {"file": "scenarios/{n}-{id}.md"}, "core": ["scenarios/*"]}
     pr_fixed = {"id": "p", "opens": {"pull": {"body": "pull"}}, "expect": {"pull": {"closes": True}}}
-    core_alone = {"id": "c", "opens": {"issue": {"labels": ["accepted"]}}, "expect": {"labels": [CORE_LABEL]}}
+    core_alone = {"id": "c", "opens": {"issue": {"labels": ["accepted"]}}, "expect": {"comments": [CORE_MARK]}}
+    import importlib.util
+    _rs = importlib.util.spec_from_file_location("receipts_802", os.path.join(HERE, "receipts.py"))
+    rc802 = importlib.util.module_from_spec(_rs)
+    _rs.loader.exec_module(rc802)
+    asked_board = f"{rc802.BOARD}\nrows\n" + rc802.state_block({"asked": "2026-11-01T00:00:00Z"})
+    check("#802: the autopilot's question waits on the bot's board, never on a person's comment that looks like it, nor on one edited by hand",
+          (bool(board_state(["x", asked_board]).get("asked")), board_state([]), board_state([asked_board.replace("2026", "2027")])), (True, {}, {}))
     check("preconditions: a pull request that closes a fixed number never holds; one that closes the issue it opens does",
           (preconditions([pr_fixed], {"pull": "{files}\n\nCloses #1"}, pack),
            preconditions([dict(pr_fixed, opens={"pull": {"body": "pull", "issue": {"body": "f", "labels": ["accepted"]}}})], {"pull": "## What changes\n\n{files}\n\n## Why\n\nCloses #{issue}"}, pack)),

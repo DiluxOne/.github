@@ -43,9 +43,11 @@ signed by GitHub and show as Verified.
                            the board's state (#564), or one key of it, as
                            JSON; exit 3 when the block was edited by hand
   receipts.py state set KEY=JSON...
-                           those keys set in the board's state, the board
-                           rewritten; refused (exit 3) on a block edited by
-                           hand
+                           those keys set in the board's state (KEY= removes
+                           one), the board rewritten; refused (exit 3) on a
+                           block edited by hand. ITEM=pr for a pull
+                           request's board; with no BODY, an issue's body is
+                           read from GitHub
   receipts.py waits        whom the item waits on now (WAITS_JSON: who, a
                            login or a list of them, or role; what; url;
                            step; ITEM=pr for a pull request's board), on the board's
@@ -63,7 +65,9 @@ mentions, under comments/<n>/, for the self-test).
 The board's state (#564): one hidden block in the board's comment,
 `<!-- dx-state v1 {...} -->`, JSON holding what the flow counts and where it
 stands (whom it waits on, who was mentioned for which step), with a
-SHA-256 of its content. It is read only from dilux-bot's own board comment;
+SHA-256 of its content. The flow's counts and waits live there (#802, once
+labels; FLOW_KEYS): a pull request's `runs` and `rounds`, an issue's `asked`,
+`answered`, `catchup` and `core_wait`. It is read only from dilux-bot's own board comment;
 a block whose hash does not match was edited by hand and reads as the most
 restrictive state: nothing is set on it and nobody is mentioned from it.
 
@@ -248,6 +252,28 @@ def parse_state(body):
     return data, True
 
 
+# The flow's counts and waits (#802), once labels: on a pull request's board,
+# `runs` ([{"n": N, "free": bool}], every run of the autopilot on it; those
+# not free count towards autopilot-runs) and `rounds` (the fix rounds
+# already run); on an issue's, `asked` (when the autopilot's question was
+# asked, while it waits for the answer), `answered` (a maintainer answered
+# it: the run that starts is free), `catchup` (the sweep's continue only
+# catches up with another merge: free too) and `core_wait` (the pull
+# request on the engine's core it waits for).
+FLOW_KEYS = ("runs", "rounds", "asked", "answered", "catchup", "core_wait")
+
+
+def set_keys(state, changes):
+    """The state with `changes` applied: a key set to None is removed. Pure."""
+    out = dict(state)
+    for k, v in changes.items():
+        if v is None:
+            out.pop(k, None)
+        else:
+            out[k] = v
+    return out
+
+
 def clean(text):
     """A short text for a table cell: no pipes, no mentions, one line."""
     return re.sub(r"\s+", " ", str(text or "")).replace("|", "/").replace("@", "＠").strip()[:200]
@@ -410,6 +436,15 @@ def issue_labels(repo, number):
     out = subprocess.run(["gh", "issue", "view", str(number), "--repo", repo, "--json", "labels", "--jq", "[.labels[].name]"],
                          capture_output=True, text=True)
     return json.loads(out.stdout) if out.returncode == 0 and out.stdout.strip() else []
+
+
+def issue_body(repo, number):
+    """The issue's body, read from GitHub; raised when it cannot be read:
+    a board drawn from no body would say the issue is incomplete."""
+    out = subprocess.run(["gh", "api", f"repos/{repo}/issues/{number}", "--jq", ".body // \"\""], capture_output=True, text=True)
+    if out.returncode != 0:
+        raise RuntimeError(f"the issue's body could not be read: {out.stderr.strip()[:200]}")
+    return out.stdout
 
 
 def autopilot_state(repo, number):
@@ -1015,33 +1050,59 @@ def main(argv):
         state, intact = parse_state(current)
         m = STATE_RE.search(current or "")
         raw = m.group(0) if m and not intact else ""
-
-        def render(st):
-            if os.environ.get("ITEM") == "pr":
-                return pr_board_text(st, intact, raw)
-            names = [n for n in list_dir(repo, f"issues/{number}") if n.startswith("merged-")]
-            merged = read(repo, f"issues/{number}/{names[-1]}") if names else None
-            return board_text(number, schema_mod.check(body)["ok"], last_seal(repo, number), merged, autopilot_state(repo, number),
-                              issue_labels(repo, number), holder(repo, number), st, intact, raw)
-        if mode == "board":
-            print(render(state))
-            return 0
+        is_pr = os.environ.get("ITEM") == "pr"
         if mode == "state" and argv[1:2] == ["get"]:
             print(json.dumps(state.get(argv[2]) if len(argv) > 2 else state))
             return 0 if intact else 3
+        if not is_pr and not os.environ.get("BODY") and repo and not os.environ.get("RECEIPTS_FIXTURE"):
+            # #802: a writer with no copy of the issue's body (the sweep,
+            # the review's reply) still draws its G1 row right.
+            body = issue_body(repo, number)
+        # What the issue's board shows besides its state, read once, before
+        # the state is read again just ahead of the write (#802): a writer
+        # that sets its own keys then loses no other writer's.
+        ctx = None
+        if not is_pr:
+            names = [n for n in list_dir(repo, f"issues/{number}") if n.startswith("merged-")]
+            ctx = (schema_mod.check(body)["ok"], last_seal(repo, number), read(repo, f"issues/{number}/{names[-1]}") if names else None,
+                   autopilot_state(repo, number), issue_labels(repo, number), holder(repo, number))
+
+        def render(st):
+            if is_pr:
+                return pr_board_text(st, intact, raw)
+            ready, seal_, merged, auto, labels, held = ctx
+            return board_text(number, ready, seal_, merged, auto, labels, held, st, intact, raw)
+
+        def fresh():
+            """(comment id, state) read again, just before a write."""
+            c, text = board_comment(repo, number)
+            st, ok = parse_state(text)
+            if not ok:
+                raise RuntimeError("the board's state was edited by hand while it was being written")
+            return c, st
+        if mode == "board":
+            print(render(state))
+            return 0
         if not intact:
             print("The board's state was edited by hand: nothing is set on it, nobody is mentioned.", file=sys.stderr)
             return 3
         if mode == "state" and argv[1:2] == ["set"]:
+            changes = {}
             for pair in argv[2:]:
                 key, _, value = pair.partition("=")
-                state[key] = json.loads(value) if value else None
+                changes[key] = json.loads(value) if value else None
+            cid, state = fresh()
+            state = set_keys(state, changes)
             put_board(repo, number, cid, render(state))
+            print(f"#{number}'s board: " + json.dumps(changes, sort_keys=True))
             return 0
         if mode == "waits":
             waits = json.loads(os.environ.get("WAITS_JSON") or "null")
-            text = announce(state, waits, [b for _, b in comments],
-                            lambda st: put_board(repo, number, cid, render(st)),
+
+            def put_waits(st):
+                c, now_ = fresh()
+                put_board(repo, number, c, render(set_keys(now_, {"waits": st.get("waits"), "mentioned": st.get("mentioned")})))
+            text = announce(state, waits, [b for _, b in comments], put_waits,
                             lambda t: post_comment(repo, number, t))
             print(f"#{number} waits on {(waits or {}).get('who') or (waits or {}).get('role') or 'nobody'}" + ("; mentioned" if text else ""))
             return 0

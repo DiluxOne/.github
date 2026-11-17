@@ -37,7 +37,7 @@
 # issues read as duplicates.
 #
 # A scenario that reads the autopilot's result on an issue (its seal, the
-# `autopilot` or core-wait label, its pull request) opens that issue plain,
+# `autopilot` label, its comment on the core, its pull request) opens that issue plain,
 # waits `until` the triage's verdict (`awaiting-acceptance`), accepts it
 # then, so the acceptance seals the triaged body as a maintainer's would,
 # and waits `until` the seal before the autopilot's result (#713:
@@ -292,7 +292,7 @@ scenarios:
     steps: [{until: {of: before, labels: [awaiting-acceptance]}}, {label: accepted, of: before}, {until: {of: before, comments: ["<!-- dx-prd-seal -->"]}},
             {until: {of: before, pull: {closes: true, body: "\\[x\\] \\*\\*C1\\*\\*"}}},
             {until: {labels: [awaiting-acceptance]}}, {label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}}]
-    expect: {comments: ["<!-- dx-autopilot-core -->"], labels: [autopilot:core-wait]}
+    expect: {comments: ["<!-- dx-autopilot-core -->"]}
   - id: prd-edited-after-acceptance
     covers: [next_step:wait:answer]
     minutes: 15
@@ -353,7 +353,7 @@ scenarios:
     opens: {issue: {title: "feat: a greeting, asked", body: complete-feature}}
     steps: [{until: {labels: [awaiting-acceptance]}}, {label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}},
             {until: {pull: {closes: true}}}, {comment: "Option 1."}]
-    expect: {absent: [autopilot:waiting, autopilot:continue], pull: {closes: true}}
+    expect: {absent: [autopilot:continue], pull: {closes: true}}
   - id: stop-hint-continue
     covers: []
     minutes: 15

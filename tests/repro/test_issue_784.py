@@ -5,7 +5,7 @@ A scenario's issue is accepted and the autopilot opens its pull request
 made, but only its issues and the pull requests it opened itself, and `clear`
 finds only bodies that carry the mark, so the autopilot's pull request, which
 changes scenarios/core-one-at-a-time/ (the test repository's core), stays open.
-The next run's `core-one-at-a-time` then waits on it (`autopilot:core-wait`,
+The next run's `core-one-at-a-time` then waits on it (`core_wait` on its board,
 "waits for #1233") and its pull request never says Closes. Nothing runs: `play`
 gets a recording fake in place of `gh`.
 """

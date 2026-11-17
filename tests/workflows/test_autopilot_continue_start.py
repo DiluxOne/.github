@@ -49,7 +49,7 @@ def what(tmp_path, body, open_pr=None, state="OPEN"):
     (bin_dir / "python3").write_text(
         "#!/bin/bash\n"
         f'echo "python3 $*" >> "{log}"\n'
-        'case "$2" in next-run) echo 2 ;; continue-as) echo continue ;; esac\n')
+        'case "$2" in next-run) printf "runs=2\\nround=1\\n" ;; continue-as) echo continue ;; esac\n')
     for f in ("gh", "python3"):
         (bin_dir / f).chmod(0o755)
     out = tmp_path / "out"
@@ -77,7 +77,8 @@ def test_c1_a_continue_with_no_pull_request_starts(tmp_path, body, spec):
     assert out["issue"] == "7"
     assert "pr" not in out and "branch" not in out
     assert out.get("spec") == spec
-    assert "--remove-label autopilot:answered" in calls
+    # #802: the answer is cleared on the issue's board.
+    assert "receipts.py state set answered=" in calls
     # The start reads the repository's way to reproduce a bug (#377).
     assert "review-policy.yml" in calls
 
@@ -85,7 +86,7 @@ def test_c1_a_continue_with_no_pull_request_starts(tmp_path, body, spec):
 def test_c1_a_closed_issue_starts_nothing(tmp_path):
     out, calls = what(tmp_path, PRD, state="CLOSED")
     assert out == {"go": "false"}
-    assert "autopilot:answered" not in calls
+    assert "answered=" not in calls
 
 
 def test_c1_the_jobs_key_on_the_mode_prep_decided():
@@ -137,7 +138,7 @@ def test_c2_a_continue_with_an_open_pull_request_resumes_it(tmp_path, body):
     assert out["runs"] == "2"
     assert "spec" not in out
     # The answer's label stays for the Count step, which frees the run (#479).
-    assert "autopilot:answered" not in calls
+    assert "answered" not in calls
     assert "review-policy.yml" not in calls
 
 

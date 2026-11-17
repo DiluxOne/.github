@@ -54,7 +54,7 @@ name: Autopilot
 #                   instead, as `mode: start` does, through its gates: the
 #                   agent writes the Spec, or, with one already on the
 #                   issue, the draft opens from it (G3, sealed). It counts
-#                   no run, and takes `autopilot:answered` off the issue.
+#                   no run, and clears `answered` on the issue's board.
 #                   The agent runs every command in the foreground: the run
 #                   ends when it stops, and nothing wakes it, so its steps
 #                   have no Monitor and no background runs (#482,
@@ -89,7 +89,7 @@ name: Autopilot
 # check passed at that head, `verify` is skipped. On a failure or a time-out
 # the pull request stays a draft: dilux-bot comments what failed (make's
 # failure lines and those before them, wherever they are in the log, #679)
-# and the output's last lines (dx-autopilot-prepr), the run is labelled `autopilot:free-N`, and the
+# and the output's last lines (dx-autopilot-prepr), the run is free on the pull request's board (#802), and the
 # continue's agent reads them in .dx-io/pre-pr.md and fixes them first, while
 # its free runs stay within the cap (scripts/autopilot.py end_verdict).
 # Before the agent, and before `verify`'s `make pre-pr`, both jobs install
@@ -152,7 +152,8 @@ name: Autopilot
 # A run never ends in silence (scripts/autopilot.py end): the pull request is
 # ready for review, or the agent said where it stopped and why (a comment and
 # `needs-human`), or, in `guided` mode (policy/autonomy.yml, autopilot-mode,
-# #247), it asked a maintainer a question and waits (`autopilot:waiting`):
+# #247), it asked a maintainer a question and waits (`asked` on the issue's
+# board, #802):
 # their answer, in their own words, brings it back (review-reply.yml) and
 # reaches its prompt; or the run continues; otherwise this workflow says so
 # itself, adds `needs-human` and fails. Every run writes a readable account
@@ -369,7 +370,7 @@ jobs:
                 echo "#$ISSUE is closed and no pull request of the autopilot's closes it: nothing to continue."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
               fi
               echo "No open autopilot pull request closes #$ISSUE: this continue starts it."
-              gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label "autopilot:answered" >/dev/null 2>&1 || true
+              NUMBER="$ISSUE" python3 .dx-central/scripts/receipts.py state set answered= >/dev/null || echo "::warning::#$ISSUE's board: its answer could not be cleared."
               MODE=start; started_by_continue=true
             fi
           fi
@@ -379,10 +380,11 @@ jobs:
             [ "$MODE" = continue ] || ISSUE=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // empty')
             branch=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json headRefName --jq .headRefName)
             labels=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | join(",")')
-            last() { tr ',' '\n' <<<"$labels" | sed -n "s/^autopilot:$1-\([0-9]*\)\$/\1/p" | sort -n | tail -1; }
-            # The next run follows every run, counted or free (#479).
-            round=$(( $(last round) + 1 )); runs=$(LABELS="$labels" python3 .dx-central/scripts/autopilot.py next-run)
-            { echo "pr=$PR"; echo "branch=$branch"; echo "round=$round"; echo "runs=$runs"; } >> "$GITHUB_OUTPUT"
+            # The next run follows every run, counted or free (#479), and the
+            # next round every round, both from the pull request's board
+            # (#802): `runs=` and `round=`.
+            { echo "pr=$PR"; echo "branch=$branch"; } >> "$GITHUB_OUTPUT"
+            PR="$PR" python3 .dx-central/scripts/autopilot.py next-run >> "$GITHUB_OUTPUT"
           else
             echo "runs=1" >> "$GITHUB_OUTPUT"
           fi
@@ -659,15 +661,17 @@ jobs:
           if [ -n "$PR" ]; then echo "head=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid)" >> "$GITHUB_OUTPUT"; fi
 
       # Counted before the agent runs: a round or run that fails or times out
-      # after pushing still counts, so the caps hold. By the mode it was
-      # called with: a continue's fix round (#504) is a run. A continue that
-      # a maintainer's answer to the autopilot's own question started
-      # (review-reply.yml adds autopilot:answered beside the continue) is
-      # free: labelled autopilot:free-N, it does not count (#479); so is one
-      # that only catches up with another merge (autopilot-sweep.yml adds
-      # autopilot:catchup beside its continue on a conflict, #563). The end
-      # rule frees a run whose runner was lost, or whose `make pre-pr` did not
-      # pass in full after the agent's step (#673).
+      # after pushing still counts, so the caps hold. On the pull request's
+      # board (#802, scripts/autopilot.py count): a fix round's number in
+      # `rounds`, a run's entry in `runs`. By the mode it was called with: a
+      # continue's fix round (#504) is a run. A continue that a maintainer's
+      # answer to the autopilot's own question started (review-reply.yml
+      # sets `answered` on the issue's board before the continue) is free:
+      # it does not count (#479); so is one that only catches up with
+      # another merge (autopilot-sweep.yml sets `catchup` before its
+      # continue on a conflict, #563); each is read once, and cleared. The
+      # end rule frees a run whose runner was lost, or whose `make pre-pr`
+      # did not pass in full after the agent's step (#673).
       - name: Count the round or the run
         if: steps.may.outputs.go == 'true' && steps.what.outputs.mode != 'start'
         env:
@@ -679,22 +683,7 @@ jobs:
           RUNS: ${{ steps.what.outputs.runs }}
         run: |
           set -euo pipefail
-          answered=false; catchup=false
-          if [ "$MODE" = continue ] && [ -n "$ISSUE" ]; then
-            answered=$(gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | index("autopilot:answered") != null')
-            [ "$answered" != true ] || gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label "autopilot:answered" >/dev/null
-            # A run that only catches up with another merge (#563: the
-            # sweep's continue on a conflict) is free too.
-            catchup=$(gh issue view "$ISSUE" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | index("autopilot:catchup") != null')
-            [ "$catchup" != true ] || gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-label "autopilot:catchup" >/dev/null
-          fi
-          if [ "$MODE" = fix ]; then l="autopilot:round-$ROUND"; d="The autopilot's review rounds on this pull request"
-          else
-            l=$(N="$RUNS" ANSWERED="$answered" CATCHUP="$catchup" python3 .dx-central/scripts/autopilot.py run-label)
-            d="The autopilot's runs on this pull request"; [ "$answered" != true ] && [ "$catchup" != true ] || d="The autopilot's runs on this pull request that do not count towards its cap"
-          fi
-          gh label create "$l" --repo "$GITHUB_REPOSITORY" --color C5DEF5 --description "$d" 2>/dev/null || true
-          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label "$l" >/dev/null
+          NUMBER="$ISSUE" BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/autopilot.py count
 
       # What the agent reads, written here: its task, the Spec, the pull
       # request's body and, for a fix round, the review's own words.
@@ -760,7 +749,7 @@ jobs:
           # of what it touches, its acceptor or every writer, each with
           # write access), checked now. Who could not be read decides
           # nothing: the run goes on with no answer.
-          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "autopilot:waiting" >/dev/null 2>&1 || true
+          python3 .dx-central/scripts/receipts.py state set asked= >/dev/null || echo "::warning::#$NUMBER's board: its question could not be cleared."
           { gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments'; gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments'; } \
             | jq -s 'add | map({body, createdAt, author: {login: .author.login}})' > "$RUNNER_TEMP/comments.json"
           jq -r '.[].author.login' "$RUNNER_TEMP/comments.json" | sort -u \
@@ -1073,8 +1062,8 @@ jobs:
           url=$(gh pr create --repo "$GITHUB_REPOSITORY" --draft --base "$(gh repo view "$GITHUB_REPOSITORY" --json defaultBranchRef --jq .defaultBranchRef.name)" \
             --head "$branch" --title "$(jq -r .title "$RUNNER_TEMP/draft.json")" --body-file "$RUNNER_TEMP/draft.md" --label autopilot)
           pr=${url##*/}
-          gh label create "autopilot:run-1" --repo "$GITHUB_REPOSITORY" --color C5DEF5 --description "The autopilot's runs on this pull request" 2>/dev/null || true
-          gh pr edit "$pr" --repo "$GITHUB_REPOSITORY" --add-label "autopilot:run-1" >/dev/null
+          # Its first run, counted on its board (#802).
+          PR="$pr" MODE=start RUNS=1 python3 .dx-central/scripts/autopilot.py count
           { echo "pr=$pr"; echo "branch=$branch"; } >> "$GITHUB_OUTPUT"
           AUTOPILOT_RUN="$RUN_URL" python3 .dx-central/scripts/autopilot.py board
           echo "Draft pull request #$pr opened for #$NUMBER: $url"
