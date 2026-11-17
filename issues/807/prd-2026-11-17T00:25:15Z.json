@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 807,
+  "prd_sha256": "49e875bb7b26786facaaa88f8ccc20f38e51c7a4b1613014befdd1a15369ab87",
+  "prd": "### Problem\n\nAccepting a bug the reproduction already confirmed starts a second autopilot on the same fix, so two pull requests compete for one bug, the reviews are paid twice, and a person has to close one of them.\n\n### Scope\n\n- Before the autopilot starts on an accepted issue, it checks whether the `bugfix-reproduced` lane already took it (an open \"The bug reproduced from #N\" issue) or an open pull request already closes it, and then does not start.\n- The bot's answer on the report, once, linking where the fix already is.\n- A test that would have caught it, in the autopilot's `--test` or a reproduction test.\n\n### Out of scope\n\n- Who may add `accepted`, and what the reproduction lane does.\n\n### Acceptance criteria\n\n- C1: Given a bug whose reproduction opened \"The bug reproduced from #N\" and whose fix pull request is open, when a maintainer adds `accepted` to #N, then no second autopilot run starts and no second pull request is opened.\n- C2: Given that case, when the acceptance is skipped, then the bot comments once on #N with the links to the lane's issue and its pull request.\n- C3: Given an accepted issue with no lane issue and no open pull request closing it, when the autopilot runs, then it starts as it does today.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-17T00:25:15Z",
+  "policy": "DiluxOne/.github@653f4037c2a9b5a369f436f84361062fa855ffa4",
+  "how": "own-bug"
+}
