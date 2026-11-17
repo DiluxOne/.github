@@ -64,7 +64,8 @@ class World:
             f'echo "gh $*" >> "{self.log}"\n'
             'case "$*" in\n'
             "  'search prs'*) echo 'o/r 8' ;;\n"
-            "  'search issues'*) ;;\n"
+            "  *'--add-label autopilot:continue'*) [ -z \"${FAIL_CONTINUE-}\" ] || exit 1 ;;\n"
+            "  'search issues'*) [ -z \"${CORE_WAITS-}\" ] || echo 'o/r 7' ;;\n"
             "  *'search/issues'*) [ \"${TOTAL-0}\" = fail ] && exit 1; echo \"${TOTAL-0}\" ;;\n"
             f"  *'pr view 8'*number,isDraft*) cat \"{tmp_path / 'pr.json'}\" ;;\n"
             "  *'--json labels'*) echo '[]' ;;\n"
@@ -184,6 +185,27 @@ def test_the_sweep_fails_when_the_search_for_the_core_waits_gave_less_than_it_fo
     assert "label:\"accepted\" repo:o/r" in w.log.read_text()
 
 
+def test_a_continue_the_sweep_could_not_ask_for_leaves_the_wait_and_no_catchup(tmp_path):
+    """#811: the sweep writes the board before it asks for the continue; when
+    the continue cannot be asked for, the wait for the core goes back on the
+    board (the next sweep starts it), the catch-up comes off (a later
+    continue may be a counted run) and the step fails."""
+    w = World(tmp_path)
+    w.run("python3 .dx-central/scripts/receipts.py state set core_wait=5", NUMBER="7")
+    assert board(w.fx, 7)["core_wait"] == 5
+    run = step("autopilot-sweep.yml", "sweep", "Bring each one in step")["run"]
+    done = subprocess.run(["bash", "-c", run], env=dict(w.env, OWNER="o", REPO="", TOTAL="1", CORE_WAITS="1", FAIL_CONTINUE="1"),
+                          capture_output=True, text=True, timeout=120, cwd=w.tmp)
+    assert done.returncode != 0 and "could not be asked for on o/r#7 o/r#7" in done.stdout, done.stdout + done.stderr
+    st = board(w.fx, 7)
+    assert st.get("core_wait") == 5 and "catchup" not in st, st
+    # The next sweep, the continue asked for: the wait comes off.
+    w.run(run, OWNER="o", REPO="", TOTAL="1", CORE_WAITS="1")
+    st = board(w.fx, 7)
+    assert "core_wait" not in st and st.get("catchup") is True, st
+    assert "gh issue edit 7 --repo o/r --add-label autopilot:continue" in w.log.read_text()
+
+
 OLD_SCRIPTS = "if grep -q '^FLOW_KEYS' .dx-central/scripts/receipts.py"
 
 
@@ -274,3 +296,19 @@ def test_with_scripts_older_than_802_an_answer_goes_in_the_labels(tmp_path):
     assert done.returncode == 0, done.stdout + done.stderr
     assert "migrate" not in calls and "state " not in calls
     assert "--add-label autopilot:answered --add-label autopilot:continue --remove-label autopilot:waiting" in calls
+
+
+def test_an_answer_on_a_board_edited_by_hand_fails_with_what_to_restore(tmp_path):
+    """#811: an issue's board edited by hand (exit 3) cannot say whether the
+    autopilot asks; with nothing else waiting, an answer from who decides
+    fails the job with what to restore (waiting.py says the same), never
+    dropped as no question. A board that says no question still exits quietly."""
+    edited = ("FLOW_KEYS = ()\nimport sys\n"
+              "if sys.argv[1:3] == ['state', 'get']: print('null'); sys.exit(3)\n")
+    done, calls = reply_with(tmp_path / "a", edited, "false")
+    assert done.returncode == 1 and "edited by hand" in done.stdout and "restore" in done.stdout, done.stdout + done.stderr
+    assert "--add-label" not in calls
+    intact = ("FLOW_KEYS = ()\nimport sys\n"
+              "if sys.argv[1:3] == ['state', 'get']: print('null')\n")
+    done, calls = reply_with(tmp_path / "b", intact, "false")
+    assert done.returncode == 0 and "edited by hand" not in done.stdout, done.stdout + done.stderr
