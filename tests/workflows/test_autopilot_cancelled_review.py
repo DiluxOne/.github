@@ -91,3 +91,20 @@ def test_c1_a_cancelled_review_at_the_same_head_waits_for_the_newer_run(tmp_path
     assert out == "go=false\n"
     assert "needs-human" not in calls
 
+
+def test_c3_a_review_that_failed_on_its_own_starts_its_round(tmp_path):
+    calls, out, _ = gate(tmp_path, review="failure", run_head="aaa", pr_head="aaa", runs=[5])
+    assert out == "go=true\n"
+    assert "needs-human" not in calls
+
+
+def test_c3_a_review_that_failed_on_its_own_stops_at_the_cap(tmp_path):
+    calls, out, _ = gate(tmp_path, review="failure", run_head="aaa", pr_head="aaa", runs=[5], round_=6)
+    assert out == "go=false\n"
+    assert "gh pr edit 9 --repo o/r --add-label needs-human" in calls
+    assert "spent its 5 rounds" in calls
+
+
+def test_c3_a_cancelled_review_with_no_newer_run_goes_on(tmp_path):
+    calls, out, _ = gate(tmp_path, review="cancelled", run_head="aaa", pr_head="aaa", runs=[5])
+    assert out == "go=true\n"
