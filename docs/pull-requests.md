@@ -19,8 +19,8 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    the fingerprint of the files the run wrote, which its pull request's
    files must give again, from the run's branch, touching only the paths
    that kind of run writes; never in this repository. `issue-accepted.yml`
-   says on the issue when a lane accepts it, with `accepted-by:policy`, and
-   the gate asks again on the pull request.
+   says on the issue when a lane accepts it, with the lane's decision on the
+   receipts (#804), and the gate asks again on the pull request.
    A sub-issue of an issue a person accepted is accepted by the
    `delegated` lane (#189): its parent open, or closed as completed, and accepted by a person, the
    sub-issue opened by a member of the organisation (or dilux-bot) and not
@@ -35,9 +35,9 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    issue its PRD is sealed (its SHA-256 on the repository's `receipts`
    branch, [`scripts/receipts.py`](../scripts/receipts.py)); a PRD edited
    after that fails the gate until a maintainer accepts it again, and so does
-   a seal that cannot be read. An issue a lane accepted carries
-   `accepted-by:policy`; its gate checks its origin instead of a person's
-   label. A reproduced bug is the first lane that reaches the autopilot
+   a seal that cannot be read. An issue a lane accepted has its
+   lane decision on the receipts (#804); its gate checks its origin instead
+   of a person's label. A reproduced bug is the first lane that reaches the autopilot
    (#84): when the reproduction's test fails, dilux-bot opens an issue of
    its own for the fix (`lane:bugfix-reproduced`), whose PRD is fixed text
    and the reproduction's facts, never the report's words, with that test,
@@ -145,7 +145,7 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    reproduction test is in it with the SHA-256 the PRD sealed (the test that
    failed before; the autopilot ran it only in the sandbox, where it must
    pass before the pull request is ready, and the pull request's own checks
-   run it too); it is labelled `merged-by:policy`. While the review blocks,
+   run it too); its merge decision is written to the receipts (#804). While the review blocks,
    or a gate of the pipeline fails or the review ends without a verdict
    (#741: a round from the failed jobs' log), the autopilot fixes and
    pushes, up to five rounds, then hands it to a

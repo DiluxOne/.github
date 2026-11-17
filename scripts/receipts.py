@@ -31,7 +31,39 @@ signed by GitHub and show as Verified.
                            merged-again issue gets another): PRD and Spec hashes, the
                            pull request, its head commit, its checks, the
                            review's verdict, the criteria, the policy's commit,
-                           who accepted and who merged
+                           who accepted and who merged: "policy" only from
+                           the pull request's last merge decision, for the
+                           head that merged (#804), never from a label; with
+                           the lane in force, its rule, when it accepted and
+                           the merge's rule
+  receipts.py lane-decision
+                           a lane's decision on the issue (#804;
+                           issues/<n>/lane-<UTC>.json): LANE accepted it by
+                           policy (DECIDED=policy, the default), with the
+                           rule (policy/autonomy.yml#lanes.<LANE>), the
+                           policy's commit, when, the run (RUN, else this
+                           run's URL), EVIDENCE_JSON and RULE when another
+                           rule decided (a planned release's
+                           policy/autonomy.yml#planned-release); DECIDED=withdrawn
+                           when the lane later refused it (nothing is
+                           written when no lane is in force)
+  receipts.py merge-decision
+                           the policy's decision to merge pull request PR at
+                           HEAD by RULE (the lane's `merge`, or the review
+                           policy's auto-merge; pulls/<pr>/merge-<UTC>.json),
+                           or DECIDED=withdrawn (nothing is written when no
+                           decision is in force)
+  receipts.py lane [get]   the lane in force, as JSON: exit 0 with it, 1
+                           (null) with none or a withdrawn one, 2 when the
+                           receipts could not be read (never taken as a lane)
+  receipts.py decisions --since YYYY-MM-DD
+                           what the policy decided, for the weekly digest
+                           (#804): one JSON line per issue a lane accepted
+                           since then, and per pull request whose last merge
+                           decision is the policy's (from a week earlier:
+                           the reader keeps what merged since, at the head
+                           decided); exit 2 when the receipts could not be
+                           read (never an empty week)
   receipts.py own-bug      whether the last seal accepted a maintainer's own
                            Bug with its writing (#564): sealed so, by the
                            issue's author (AUTHOR), and the PRD still the
@@ -215,17 +247,124 @@ def wait_verdict(get, tries, sleep):
     return v
 
 
-def receipt(number, body, last_seal, pr, checks, policy_ref, at):
+# --- what the policy decided in a person's place (#804; pure, tested) -------
+# Once labels (`accepted-by:policy`, `merged-by:policy`) anyone with write
+# access could add or take off; now records on the receipts branch, which
+# only dilux-bot writes, append-only: the last one is in force. A lane's
+# label (`lane:*`) stays, to route; it decides nothing here.
+
+LANE_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,49}$")
+RULE_TEXT = re.compile(r"^[A-Za-z0-9._/#-]{1,200}$")
+DECIDED = ("policy", "withdrawn")
+
+
+def valid_lane(name):
+    return bool(LANE_NAME.match(name or ""))
+
+
+def valid_rule(rule):
+    return bool(RULE_TEXT.match(rule or ""))
+
+
+def policy_at(policy_ref):
+    return f"DiluxOne/.github@{policy_ref}" if policy_ref else None
+
+
+def lane_decision(number, lane, policy_ref, at, run, evidence, decided="policy", rule=None):
+    """A lane's decision on an issue (issues/<n>/lane-<UTC>.json): the lane
+    accepted it by policy, or `withdrawn` when the lane later refused it.
+    RULE is the lane's own unless another rule of the policy decided (a
+    planned release: policy/autonomy.yml#planned-release)."""
+    return {"kind": "lane-decision", "issue": number, "lane": lane, "decided_by": "policy", "decided": decided,
+            "rule": rule or f"policy/autonomy.yml#lanes.{lane}", "policy": policy_at(policy_ref), "at": at, "run": run, "evidence": evidence}
+
+
+def merge_decision(pr, decided, rule, head, policy_ref, at, run):
+    """The policy's decision to merge a pull request at HEAD
+    (pulls/<pr>/merge-<UTC>.json), or `withdrawn` when it no longer does."""
+    return {"kind": "merge-decision", "pull_request": pr, "decided": decided, "rule": rule, "head": head,
+            "policy": policy_at(policy_ref), "at": at, "run": run}
+
+
+def lane_in_force(decisions):
+    """The last lane decision, when it accepted; None when there is none or
+    the last one withdrew it."""
+    last = decisions[-1] if decisions else None
+    return last if last and last.get("decided") == "policy" else None
+
+
+def merge_in_force(decisions, head):
+    """The last merge decision, when it is the policy's and for HEAD, the
+    head that merged; None otherwise: a decision for another head, or one
+    withdrawn, is no merge by policy."""
+    last = decisions[-1] if decisions else None
+    return last if last and head and last.get("decided") == "policy" and last.get("head") == head else None
+
+
+# How far before SINCE `decisions` looks for a merge decision: the policy
+# decides a merge before the merge queue merges it, and the digest keeps
+# only what merged since SINCE, at the head decided.
+MERGE_LOOKBACK_DAYS = 7
+
+
+def decision_rows(paths, read_one, since):
+    """What the policy decided, for the weekly digest (#804): from PATHS (the
+    receipts branch's files) and READ_ONE (a path's record), one row per
+    issue whose last lane decision accepted it on or after SINCE
+    ({"kind": "accepted", "number", "lane", "rule", "policy", "at"}) and one
+    per pull request whose last merge decision is the policy's, made on or
+    after SINCE less MERGE_LOOKBACK_DAYS ({"kind": "merged", "number",
+    "head", "rule", "policy", "at"}): whether and when it merged, at which
+    head, is the reader's to check. A record's name carries the time it was
+    written, never before its `at`, so only the recent ones are read."""
+    prefixes = {"issues": "lane-", "pulls": "merge-"}
+    last = {}
+    for path in paths:
+        parts = path.split("/")
+        if len(parts) != 3 or parts[0] not in prefixes or not parts[1].isdigit():
+            continue
+        top, n, name = parts
+        if not (name.startswith(prefixes[top]) and name.endswith(".json")):
+            continue
+        key = (top, int(n))
+        if key not in last or name > last[key]:
+            last[key] = name
+    day = datetime.date.fromisoformat(since[:10])
+    floors = {"issues": since, "pulls": (day - datetime.timedelta(days=MERGE_LOOKBACK_DAYS)).isoformat()}
+    rows = []
+    for (top, n), name in sorted(last.items()):
+        floor = floors[top]
+        if name[len(prefixes[top]):-len(".json")] < floor:
+            continue
+        d = read_one(f"{top}/{n}/{name}")
+        if d.get("decided") != "policy" or (d.get("at") or "") < floor:
+            continue
+        if top == "issues":
+            rows.append({"kind": "accepted", "number": n, "lane": d.get("lane"), "rule": d.get("rule"), "policy": d.get("policy"), "at": d.get("at")})
+        else:
+            rows.append({"kind": "merged", "number": n, "head": d.get("head"), "rule": d.get("rule"), "policy": d.get("policy"), "at": d.get("at")})
+    return rows
+
+
+def receipt(number, body, last_seal, pr, checks, policy_ref, at, lane=None, merge=None):
+    """The merge receipt. LANE is the lane decision in force, MERGE the pull
+    request's last merge decision: merged by policy only when that decision
+    is the policy's and for the head that merged (#804), never from a label."""
     labels = [l for l in pr.get("labels", [])]
     pick = lambda prefix: next((l.split(":", 1)[1] for l in labels if l.startswith(prefix + ":")), None)
     result = schema_mod.check(body, "spec" if schema_mod.part_text(body, "spec") else "prd")
+    lane = lane_in_force([lane] if lane else [])
+    merge = merge_in_force([merge] if merge else [], pr.get("head"))
     return {
         "kind": "merge-receipt", "issue": number, "at": at,
         "prd_sha256": prd_hash(body), "prd_matches_seal": verdict(body, last_seal) == "match",
         "spec_sha256": spec_hash(body),
         "accepted_by": (last_seal or {}).get("accepted_by"),
         "pull_request": pr.get("number"), "head_commit": pr.get("head"), "merge_commit": pr.get("merge"),
-        "merged_by": "policy" if "merged-by:policy" in labels else pr.get("merged_by"),
+        "merged_by": "policy" if merge else pr.get("merged_by"),
+        "lane": (lane or {}).get("lane"), "lane_rule": (lane or {}).get("rule"), "lane_policy": (lane or {}).get("policy"),
+        "accepted_at": (lane or {}).get("at"),
+        "merged_rule": (merge or {}).get("rule"), "merged_policy": (merge or {}).get("policy"),
         "review": {"risk": pick("risk"), "complexity": pick("complexity"), "type": pick("type")},
         "checks": checks,
         "criteria": result.get("criteria", []),
@@ -580,7 +719,14 @@ def rule_link(policy):
     return f"[the rule](https://github.com/DiluxOne/.github/blob/{ref}/policy/autonomy.yml)"
 
 
-def board_text(number, ready, last_seal, merged, autopilot=None, labels=(), held="", state=None, intact=True, raw_state=""):
+def rule_named(rule, policy):
+    """A rule by its name, linked at its commit when it is the autonomy
+    policy's (#804); another one (the review policy's) is named only."""
+    name = f"`{rule}`" if valid_rule(rule) else "`?`"
+    return f"{name} ({rule_link(policy)})" if (rule or "").startswith("policy/autonomy.yml") else name
+
+
+def board_text(number, ready, last_seal, merged, autopilot=None, labels=(), held="", state=None, intact=True, raw_state="", lane=None):
     rows = ["| Gate | State |", "| --- | --- |"]
     rows.append(f"| G1 Issue ready | {'✓ the PRD follows the schema' if ready else '✗ see the G1 comment'} |")
     # Whether the triage ran (#803): the board says it, no label does.
@@ -596,7 +742,11 @@ def board_text(number, ready, last_seal, merged, autopilot=None, labels=(), held
     row = repro_row((state or {}).get("repro")) if intact else None
     if row:
         rows.append(row)
-    lane = next((l[5:] for l in labels if l.startswith("lane:")), None)
+    # The lane in force (#804), from its decision on the receipts, never
+    # from a label.
+    lane = lane_in_force([lane] if lane else [])
+    if lane:
+        rows.append(f"| Lane | `{clean(lane.get('lane'))}` by policy, {rule_named(lane.get('rule'), lane.get('policy'))}, accepted at {clean(lane.get('at'))} |")
     if last_seal:
         by = last_seal.get("accepted_by") or ""
         # A lane seals as "policy (lane <name>)": it links the rule it followed (#188).
@@ -606,17 +756,23 @@ def board_text(number, ready, last_seal, merged, autopilot=None, labels=(), held
         elif last_seal.get("how") == OWN_BUG:
             by = f"{by}, their own Bug, accepted with its writing,"
         rows.append(f"| G2 Accepted | ✓ by {by} at {last_seal.get('at')}; PRD sealed `{last_seal.get('prd_sha256', '')[:12]}` |")
-    elif lane and "accepted-by:policy" in labels:
+    elif lane:
         # Every automatic decision links the rule it followed (#188).
-        rows.append(f"| G2 Accepted | ✓ by policy, lane `{lane}` ({rule_link(None)}) |")
+        rows.append(f"| G2 Accepted | ✓ by policy, lane `{clean(lane.get('lane'))}` ({rule_link(lane.get('policy'))}) at {clean(lane.get('at'))} |")
     else:
         rows.append("| G2 Accepted | not sealed |")
     row = autopilot_row(autopilot)
     if row:
         rows.append(row)
     if merged:
-        by = f"policy ({rule_link(merged.get('policy'))})" if merged.get("merged_by") == "policy" else merged.get("merged_by")
-        rows.append(f"| G7 Merged | ✓ #{merged.get('pull_request')} by {by}; receipt in `receipts/issues/{number}/merged-{merged.get('at')}.json` |")
+        if merged.get("merged_by") != "policy":
+            by = merged.get("merged_by")
+        elif merged.get("merged_rule"):
+            # #804: the rule the merge decision followed, at its commit.
+            by = f"policy, {rule_named(merged.get('merged_rule'), merged.get('merged_policy') or merged.get('policy'))},"
+        else:
+            by = f"policy ({rule_link(merged.get('policy'))})"
+        rows.append(f"| G7 Merged | ✓ #{merged.get('pull_request')} by {by} at {merged.get('at')}; receipt in `receipts/issues/{number}/merged-{merged.get('at')}.json` |")
     if not intact:
         rows.append("| State | ✗ the board's state was edited by hand: the bot sets nothing on it and mentions nobody; a maintainer restores it |")
     row = waits_row((state or {}).get("waits")) if intact else None
@@ -879,11 +1035,52 @@ def list_dir(repo, path):
         raise
 
 
+def tree_paths(repo):
+    """Every file on the receipts branch, in one read (#804); [] when the
+    branch does not exist. Any other failure, or a listing GitHub cut short,
+    is raised: never taken for "nothing decided"."""
+    if os.environ.get("RECEIPTS_FIXTURE"):
+        base = os.environ["RECEIPTS_FIXTURE"]
+        return sorted(os.path.relpath(os.path.join(d, f), base).replace(os.sep, "/") for d, _, fs in os.walk(base) for f in fs)
+    try:
+        tree = gh(f"repos/{repo}/git/trees/{BRANCH}?recursive=1")
+    except RuntimeError as e:
+        if "404" in str(e) or "Not Found" in str(e):
+            return []
+        raise
+    if tree.get("truncated"):
+        raise RuntimeError(f"{repo}'s receipts are too many to list in one read")
+    return [e["path"] for e in tree.get("tree", []) if e.get("type") == "blob"]
+
+
 def read(repo, path):
     if os.environ.get("RECEIPTS_FIXTURE"):
         with open(os.path.join(os.environ["RECEIPTS_FIXTURE"], path), encoding="utf-8") as f:
             return json.load(f)
     return json.loads(base64.b64decode(gh(f"repos/{repo}/contents/{path}?ref={BRANCH}")["content"]))
+
+
+def decisions(repo, path, prefix):
+    """The records under PATH whose names start with PREFIX, oldest first;
+    a read that fails is raised, never taken for none."""
+    return [read(repo, f"{path}/{n}") for n in list_dir(repo, path) if n.startswith(prefix)]
+
+
+def lane_decisions(repo, number):
+    return decisions(repo, f"issues/{number}", "lane-")
+
+
+def merge_decisions(repo, pr):
+    return decisions(repo, f"pulls/{pr}", "merge-")
+
+
+def run_url():
+    """The run writing a record: RUN, else this workflow run's URL."""
+    if os.environ.get("RUN"):
+        return os.environ["RUN"]
+    if os.environ.get("GITHUB_RUN_ID"):
+        return f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ.get('GITHUB_REPOSITORY', '')}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+    return None
 
 
 def last_seal(repo, number):
@@ -954,8 +1151,28 @@ Normal
     check("a receipt names who accepted", r["accepted_by"], "soydiloreto")
     check("a receipt lists the criteria", r["criteria"], ["C1"])
     pr2 = dict(pr, labels=pr["labels"] + ["merged-by:policy"])
-    check("merged by policy says so", receipt(7, body, s, pr2, {}, None, "t")["merged_by"], "policy")
     b = board_text(7, True, s, r)
+    # C2 (#804): the digest's rows, from the receipts alone.
+    recs = {
+        "issues/1/lane-2026-10-05T10:00:00Z.json": lane_decision(1, "platform", "abc", "2026-10-05T10:00:00Z", None, None),
+        "issues/4/lane-2026-10-05T10:00:00Z.json": lane_decision(4, "platform", "abc", "2026-10-05T10:00:00Z", None, None),
+        "issues/4/lane-2026-10-06T10:00:00Z.json": lane_decision(4, "platform", "abc", "2026-10-06T10:00:00Z", None, None, "withdrawn"),
+        "issues/5/lane-2026-09-20T10:00:00Z.json": lane_decision(5, "platform", "abc", "2026-09-20T10:00:00Z", None, None),
+        "issues/1/prd-2026-10-05T10:00:00Z.json": {},
+        "pulls/9/merge-2026-09-30T10:00:00Z.json": merge_decision(9, "policy", "r", "h9", "abc", "2026-09-30T10:00:00Z", None),
+        "pulls/8/merge-2026-09-20T10:00:00Z.json": merge_decision(8, "policy", "r", "h8", "abc", "2026-09-20T10:00:00Z", None),
+        "pulls/7/merge-2026-10-05T10:00:00Z.json": merge_decision(7, "withdrawn", "r", "h7", "abc", "2026-10-05T10:00:00Z", None),
+        "README.md": {},
+    }
+    reads = []
+    rows = decision_rows(sorted(recs), lambda p: reads.append(p) or recs[p], "2026-10-04")
+    check("C2 (#804): the issues a lane accepted since SINCE, and the merge decisions in force from a week before",
+          [(r["kind"], r["number"]) for r in rows], [("accepted", 1), ("merged", 9)])
+    check("C2 (#804): a row names the lane, the rule, the policy's commit and when",
+          (rows[0]["lane"], rows[0]["rule"], rows[0]["policy"], rows[0]["at"], rows[1]["head"]),
+          ("platform", "policy/autonomy.yml#lanes.platform", "DiluxOne/.github@abc", "2026-10-05T10:00:00Z", "h9"))
+    check("C2 (#804): only the last record of each item, and only recent ones, are read", sorted(reads),
+          ["issues/1/lane-2026-10-05T10:00:00Z.json", "issues/4/lane-2026-10-06T10:00:00Z.json", "pulls/7/merge-2026-10-05T10:00:00Z.json", "pulls/9/merge-2026-09-30T10:00:00Z.json"])
     check("the board starts with its marker", b.startswith(BOARD), True)
     check("the board shows the seal", "PRD sealed" in b and s["prd_sha256"][:12] in b, True)
     check("#715: a sealed board carries the seal's mark, after the board's", b.startswith(f"{BOARD}\n{SEAL_MARK}\n"), True)
@@ -965,8 +1182,6 @@ Normal
     check("C6: the board links the pull request and the run, with the progress", ("[#12](https://github.com/o/r/pull/12)" in ab, "[the run](https://github.com/o/r/actions/runs/9)" in ab, "1 of 3 criteria" in ab), (True, True, True))
     check("C6: a person's pull request says so", "a person has it" in board_text(7, True, s, None, dict(a, needs_human=True)), True)
     check("C6: no autopilot, no row", "Autopilot" in board_text(7, True, s, None, None), False)
-    lb = board_text(7, True, None, None, None, ["lane:platform", "accepted-by:policy"])
-    check("#188: a lane's acceptance names the lane and links its rule", "✓ by policy, lane `platform` ([the rule](https://github.com/DiluxOne/.github/blob/main/policy/autonomy.yml))" in lb, True)
     ls = seal(7, body, "policy (lane bugfix-reproduced)", "def456", "t")
     check("#188: a lane's sealed acceptance links the rule at its commit", "✓ by policy (lane bugfix-reproduced), [the rule](https://github.com/DiluxOne/.github/blob/def456/policy/autonomy.yml) at t" in board_text(7, True, ls, None), True)
     ob = seal(7, body, "boss", "abc123", "t", OWN_BUG)
@@ -978,9 +1193,51 @@ Normal
     check("C2 (#564): the board says it was the author's own Bug", "✓ by boss, their own Bug, accepted with its writing, at t" in board_text(7, True, ob, None), True)
     check("#188: a person whose login starts with policy is a person", "policyfoo at" in board_text(7, True, seal(7, body, "policyfoo", "x", "t"), None), True)
     check("#188: a lane's label alone is no acceptance", "not sealed" in board_text(7, True, None, None, None, ["lane:platform"]), True)
-    mb = board_text(7, True, s, receipt(7, body, s, pr2, {}, "abc123", "t"))
+    mb = board_text(7, True, s, dict(receipt(7, body, s, pr, {}, "abc123", "t"), merged_by="policy"))
     check("#188: a merge by policy links the rule at the commit it read", "by policy ([the rule](https://github.com/DiluxOne/.github/blob/abc123/policy/autonomy.yml))" in mb, True)
-    check("#188: a person's merge names the person", "by soydiloreto;" in b, True)
+    check("#188: a person's merge names the person", "by soydiloreto at" in b, True)
+    # C1 (#804): the lane and the policy's merge, on the receipts, never in a label.
+    ld = lane_decision(7, "platform", "def456", "2026-11-01T00:00:00Z", "https://github.com/o/r/actions/runs/1", {"author": "dilux-bot"})
+    check("C1 (#804) a lane decision names the lane, who decided, the rule and the policy's commit",
+          (ld["kind"], ld["issue"], ld["lane"], ld["decided_by"], ld["decided"], ld["rule"], ld["policy"], ld["at"], ld["run"], ld["evidence"]),
+          ("lane-decision", 7, "platform", "policy", "policy", "policy/autonomy.yml#lanes.platform", "DiluxOne/.github@def456",
+           "2026-11-01T00:00:00Z", "https://github.com/o/r/actions/runs/1", {"author": "dilux-bot"}))
+    wd = lane_decision(7, "platform", "def456", "2026-11-02T00:00:00Z", None, None, "withdrawn")
+    md = merge_decision(12, "policy", "policy/autonomy.yml#lanes.platform.merge", "h1", "def456", "2026-11-03T00:00:00Z", "https://github.com/o/r/actions/runs/2")
+    check("C1 (#804) a merge decision names the pull request, the rule, the head and the policy's commit",
+          (md["kind"], md["pull_request"], md["decided"], md["rule"], md["head"], md["policy"], md["at"]),
+          ("merge-decision", 12, "policy", "policy/autonomy.yml#lanes.platform.merge", "h1", "DiluxOne/.github@def456", "2026-11-03T00:00:00Z"))
+    check("C1 (#804) the lane in force is the last decision; a withdrawn one leaves none",
+          (lane_in_force([ld]) == ld, lane_in_force([ld, wd]), lane_in_force([]), lane_in_force([wd, ld]) == ld), (True, None, None, True))
+    check("C1 (#804) a merge by policy is the last decision, for the head that merged",
+          (merge_in_force([md], "h1") == md, merge_in_force([md], "h2"), merge_in_force([md, dict(md, decided="withdrawn")], "h1"),
+           merge_in_force([], "h1"), merge_in_force([md], None)), (True, None, None, None, None))
+    plain = dict(pr, merged_by="dilux-bot")
+    lr = receipt(7, body, ls, plain, {}, "abc123", "2026-11-04T00:00:00Z", ld, md)
+    check("C1 (#804) the merge receipt says policy from the decision, with the lane, its rule, when it was accepted and the merge's rule",
+          (lr["merged_by"], lr["lane"], lr["lane_rule"], lr["accepted_at"], lr["merged_rule"]),
+          ("policy", "platform", "policy/autonomy.yml#lanes.platform", "2026-11-01T00:00:00Z", "policy/autonomy.yml#lanes.platform.merge"))
+    check("C1 (#804) a head that does not match, or a withdrawn decision, gives no policy",
+          (receipt(7, body, ls, dict(plain, head="h2"), {}, None, "t", ld, md)["merged_by"],
+           receipt(7, body, ls, plain, {}, None, "t", ld, dict(md, decided="withdrawn"))["merged_by"],
+           receipt(7, body, ls, plain, {}, None, "t", None, None)["merged_by"]), ("dilux-bot", "dilux-bot", "dilux-bot"))
+    check("C1 (#804) a label says nothing: merged-by:policy with no decision is the person who merged",
+          receipt(7, body, s, pr2, {}, None, "t")["merged_by"], "soydiloreto")
+    check("C1 (#804) with no lane, the receipt has none", [receipt(7, body, s, pr, {}, None, "t")[k] for k in ("lane", "lane_rule", "accepted_at", "merged_rule")],
+          [None, None, None, None])
+    lb2 = board_text(7, True, ls, lr, lane=ld)
+    check("C1 (#804) the board names the lane, the rule at its commit, and when it was accepted",
+          "| Lane | `platform` by policy, `policy/autonomy.yml#lanes.platform` ([the rule](https://github.com/DiluxOne/.github/blob/def456/policy/autonomy.yml)), accepted at 2026-11-01T00:00:00Z |" in lb2, True)
+    check("C1 (#804) and when it merged, by which rule",
+          "✓ #12 by policy, `policy/autonomy.yml#lanes.platform.merge` ([the rule](https://github.com/DiluxOne/.github/blob/def456/policy/autonomy.yml)), at 2026-11-04T00:00:00Z;" in lb2, True)
+    check("C1 (#804) the labels say nothing on the board: no lane decision, no lane row and no acceptance by policy",
+          ("Lane" in board_text(7, True, None, None, None, ["lane:platform", "accepted-by:policy"]),
+           "not sealed" in board_text(7, True, None, None, None, ["lane:platform", "accepted-by:policy"])), (False, True))
+    check("C1 (#804) a lane decision alone accepts on the board, with its rule",
+          "✓ by policy, lane `platform` ([the rule](https://github.com/DiluxOne/.github/blob/def456/policy/autonomy.yml)) at 2026-11-01T00:00:00Z" in board_text(7, True, None, None, lane=ld), True)
+    check("C1 (#804) a merge rule outside the policy is named, not linked",
+          "by policy, `.github/review-policy.yml#auto-merge`, at" in board_text(7, True, s, dict(lr, merged_rule=".github/review-policy.yml#auto-merge")), True)
+    check("C1 (#804) a lane name or a rule that is not plain is refused", (valid_lane("platform"), valid_lane("a|b"), valid_lane(""), valid_rule("x`y")), (True, False, False, False))
     # #564: the board's state, hidden, hashed, carried; whom it waits on.
     st = {"runs": 2, "waits": {"who": "alice", "what": "answer --> <b>", "url": "https://github.com/o/r/issues/7"}}
     blk = state_block(st)
@@ -1164,6 +1421,38 @@ Normal
             f.write("{not json")
         r10 = sp.run([sys.executable, os.path.abspath(__file__), "verify-prd"], env=dict(env, NUMBER="10"), capture_output=True, text=True)
         check("cli: a seal that cannot be read exits 2", r10.returncode, 2)
+        # C1 (#804): the lane and the merge decisions through the CLI, read back by `lane get` and `merged`.
+        lenv = dict(env, NUMBER="20", LANE="platform", POLICY_REF="def456", RUN="https://github.com/o/r/actions/runs/3")
+        lrun = lambda *a, **kw: sp.run([sys.executable, os.path.abspath(__file__)] + list(a), env=dict(lenv, **kw), capture_output=True, text=True)
+        check("C1 (#804) cli: an issue with no lane decision has no lane (exit 1, null)", (lrun("lane", "get").returncode, lrun("lane", "get").stdout.strip()), (1, "null"))
+        check("C1 (#804) cli: lane-decision writes it, and lane get reads it",
+              (lrun("lane-decision").returncode, json.loads(lrun("lane", "get").stdout or "null").get("lane"), lrun("lane").returncode), (0, "platform", 0))
+        check("C1 (#804) cli: a lane that is not plain is refused", lrun("lane-decision", LANE="x|y", NUMBER="21").returncode, 64)
+        check("C1 (#804) cli: a planned release names the rule that decided it, and a rule that is not plain is refused",
+              (json.loads(lrun("lane-decision", LANE="release", NUMBER="230", RULE="policy/autonomy.yml#planned-release").stdout)["rule"],
+               lrun("lane-decision", LANE="release", NUMBER="231", RULE="a rule; rm").returncode), ("policy/autonomy.yml#planned-release", 64))
+        time.sleep(1.1)
+        check("C1 (#804) cli: a withdrawn decision leaves no lane", (lrun("lane-decision", DECIDED="withdrawn", LANE="").returncode, lrun("lane", "get").returncode), (0, 1))
+        check("C1 (#804) cli: nothing to withdraw writes nothing", (lrun("lane-decision", DECIDED="withdrawn", NUMBER="22").returncode, os.path.isdir(os.path.join(d, "issues/22"))), (0, False))
+        time.sleep(1.1)
+        lrun("lane-decision")
+        menv = dict(PR="12", HEAD="h1", RULE="policy/autonomy.yml#lanes.platform.merge")
+        check("C1 (#804) cli: merge-decision writes it under the pull request", (lrun("merge-decision", **menv).returncode, len(os.listdir(os.path.join(d, "pulls/12")))), (0, 1))
+        check("C1 (#804) cli: a merge decision needs its pull request and its head", (lrun("merge-decision", PR="", HEAD="h1").returncode, lrun("merge-decision", PR="13", HEAD="").returncode), (64, 64))
+        mr = json.loads(lrun("merged", PR_JSON=json.dumps(dict(pr, merged_by="dilux-bot"))).stdout)
+        check("C1 (#804) cli: the merge receipt names the lane, its rule, when accepted, and policy from the decision",
+              (mr["merged_by"], mr["lane"], mr["lane_rule"], bool(mr["accepted_at"]), mr["merged_rule"]),
+              ("policy", "platform", "policy/autonomy.yml#lanes.platform", True, "policy/autonomy.yml#lanes.platform.merge"))
+        time.sleep(1.1)
+        check("C1 (#804) cli: withdrawn, the next receipt says who merged", (lrun("merge-decision", DECIDED="withdrawn", PR="12", HEAD="h1").returncode,
+              json.loads(lrun("merged", PR_JSON=json.dumps(dict(pr, merged_by="dilux-bot"))).stdout)["merged_by"]), (0, "dilux-bot"))
+        check("C1 (#804) cli: nothing to withdraw on a pull request writes nothing", (lrun("merge-decision", DECIDED="withdrawn", PR="14", HEAD="h").returncode, os.path.isdir(os.path.join(d, "pulls/14"))), (0, False))
+        lb20 = lrun("board", LABELS_JSON='["lane:org-sync", "accepted-by:policy"]').stdout
+        check("C1 (#804) cli: the board shows the lane from its decision, never from a label", ("`platform` by policy" in lb20, "org-sync" in lb20), (True, False))
+        os.makedirs(os.path.join(d, "issues/23"))
+        with open(os.path.join(d, "issues/23/lane-x.json"), "w") as f:
+            f.write("{not json")
+        check("C1 (#804) cli: a lane that cannot be read exits 2, never read as a lane", lrun("lane", "get", NUMBER="23").returncode, 2)
         del os.environ["RECEIPTS_FIXTURE"]
     # #561 C5: two writers at once, each answered 409 once by a branch that
     # moved, then written; a path that exists is never written again.
@@ -1264,7 +1553,8 @@ Normal
         rw = importlib.util.module_from_spec(rw_spec)
         rw_spec.loader.exec_module(rw)
         check("C1 (#801) the board's layers are repro-ways.py's", LAYERS, rw.LAYERS)
-        check("#306 every job that runs receipts.py checks the scripts out whole", sorted(n for n, t in runs.items() if "git init -q .dx-central" not in t), [])
+        whole = lambda t: "git init -q .dx-central" in t or ('"repository": "DiluxOne/.github"' in t and '"path": ".dx-central"' in t)
+        check("#306 every job that runs receipts.py checks the scripts out whole", sorted(n for n, t in runs.items() if not whole(t)), [])
         # C5 (#564): every event of an issue puts whom it waits on on its
         # board (waiting.py update, which hands it to `waits` here).
         issues_wf = yaml.safe_load(open(os.path.join(HERE, "..", ".github", "workflows", "issues.yml"), encoding="utf-8"))
@@ -1347,9 +1637,78 @@ def main(argv):
     if mode == "merged":
         pr = json.loads(os.environ.get("PR_JSON", "{}"))
         checks = json.loads(os.environ.get("CHECKS_JSON", "{}"))
-        r = receipt(number, body, last_seal(repo, number), pr, checks, policy_ref, now())
+        # #804: the lane in force and the pull request's last merge
+        # decision, from the receipts; a read that fails stops it, never a
+        # receipt that would say less than what was decided.
+        lane_lanes = lane_decisions(repo, number)
+        merges = merge_decisions(repo, pr["number"]) if pr.get("number") else []
+        r = receipt(number, body, last_seal(repo, number), pr, checks, policy_ref, now(),
+                    lane_in_force(lane_lanes), merges[-1] if merges else None)
         write(repo, f"issues/{number}/merged-{r['at']}.json", r, f"Receipt for #{number}")
         print(json.dumps(r))
+        return 0
+    if mode == "lane-decision":
+        decided = os.environ.get("DECIDED") or "policy"
+        lane = os.environ.get("LANE", "")
+        if decided == "withdrawn" and number > 0:
+            # Only a lane in force is withdrawn; LANE may be left out.
+            in_force = lane_in_force(lane_decisions(repo, number))
+            if not in_force:
+                print(f"#{number}: no lane in force, nothing to withdraw")
+                return 0
+            lane = lane or in_force["lane"]
+        rule = os.environ.get("RULE") or None
+        if decided not in DECIDED or not valid_lane(lane) or number <= 0 or (rule and not valid_rule(rule)):
+            print("lane-decision needs NUMBER, a plain LANE, DECIDED policy or withdrawn, and a plain RULE when one is given", file=sys.stderr)
+            return 64
+        evidence = json.loads(os.environ.get("EVIDENCE_JSON") or "null")
+        at = now()
+        d = lane_decision(number, lane, policy_ref, at, run_url(), evidence, decided, rule)
+        write(repo, f"issues/{number}/lane-{at}.json", d, f"Lane {lane} for #{number}: {decided}")
+        print(json.dumps(d))
+        return 0
+    if mode == "merge-decision":
+        decided = os.environ.get("DECIDED") or "policy"
+        pr_n = int(os.environ["PR"]) if os.environ.get("PR", "").isdigit() else 0
+        head, rule = os.environ.get("HEAD", ""), os.environ.get("RULE", "")
+        if decided not in DECIDED or pr_n <= 0 or not re.match(r"^[0-9a-zA-Z]{1,64}$", head) or (decided == "policy" and not valid_rule(rule)):
+            print("merge-decision needs PR, HEAD, DECIDED policy or withdrawn, and a plain RULE when it is the policy's", file=sys.stderr)
+            return 64
+        if decided == "withdrawn":
+            last = merge_decisions(repo, pr_n)
+            if not last or last[-1].get("decided") != "policy":
+                print(f"#{pr_n}: no merge decision in force, nothing to withdraw")
+                return 0
+            rule = rule or last[-1].get("rule")
+        at = now()
+        d = merge_decision(pr_n, decided, rule or None, head, policy_ref, at, run_url())
+        write(repo, f"pulls/{pr_n}/merge-{at}.json", d, f"Merge of #{pr_n}: {decided}")
+        print(json.dumps(d))
+        return 0
+    if mode == "lane":
+        # The lane in force, as JSON: exit 0 with it, 1 (null) with none,
+        # 2 when the receipts cannot be read, never taken as a lane.
+        try:
+            in_force = lane_in_force(lane_decisions(repo, number))
+        except Exception as e:  # noqa: BLE001
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+        print(json.dumps(in_force))
+        return 0 if in_force else 1
+    if mode == "decisions":
+        # The rows the weekly digest reads (#804), one JSON line each; exit
+        # 2 when the receipts cannot be read, never an empty week.
+        since = argv[2] if argv[1:2] == ["--since"] and len(argv) > 2 else ""
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", since):
+            print("decisions needs --since YYYY-MM-DD", file=sys.stderr)
+            return 64
+        try:
+            rows = decision_rows(tree_paths(repo), lambda p: read(repo, p), since)
+        except Exception as e:  # noqa: BLE001
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+        for row in rows:
+            print(json.dumps(dict(row, repository=repo), sort_keys=True))
         return 0
     if mode in ("board", "state", "waits", "migrate"):
         comments = bot_comments(repo, number)
@@ -1373,13 +1732,13 @@ def main(argv):
         def gather():
             names = [n for n in list_dir(repo, f"issues/{number}") if n.startswith("merged-")]
             return (schema_mod.check(body)["ok"], last_seal(repo, number), read(repo, f"issues/{number}/{names[-1]}") if names else None,
-                    autopilot_state(repo, number), issue_labels(repo, number), holder(repo, number))
+                    autopilot_state(repo, number), issue_labels(repo, number), holder(repo, number), lane_in_force(lane_decisions(repo, number)))
 
         def render(st):
             if is_pr:
                 return pr_board_text(st, intact, raw)
-            ready, seal_, merged, auto, labels, held = ctx[0]
-            return board_text(number, ready, seal_, merged, auto, labels, held, st, intact, raw)
+            ready, seal_, merged, auto, labels, held, lane = ctx[0]
+            return board_text(number, ready, seal_, merged, auto, labels, held, st, intact, raw, lane)
         if not is_pr and mode != "migrate":
             ctx.append(gather())
 

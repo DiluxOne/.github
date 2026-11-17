@@ -1,5 +1,5 @@
 {
-  "_about": "Pull requests as scripts/needed-a-person.py reads them from the GraphQL search, and the reasons each must get (#143). `base` is merged by a person in a public repository; each case replaces the fields it names.",
+  "_about": "Pull requests as scripts/needed-a-person.py reads them from the GraphQL search, and the reasons each must get (#143). `base` is merged by a person in a public repository; each case replaces the fields it names. `lane` is the lane in force on its issue's receipts (#804), which fetch() sets.",
   "now": "2026-10-15T09:41:00Z",
   "base": {
     "number": 1,
@@ -43,7 +43,8 @@
           "body": "### Criticality\n\nNormal\n",
           "labels": {
             "nodes": []
-          }
+          },
+          "number": 2
         }
       ]
     },
@@ -71,7 +72,8 @@
           }
         }
       ]
-    }
+    },
+    "headRefOid": "h1"
   },
   "cases": [
     {
@@ -608,12 +610,9 @@
             {
               "body": "### Criticality\n\nNormal\n",
               "labels": {
-                "nodes": [
-                  {
-                    "name": "lane:platform"
-                  }
-                ]
-              }
+                "nodes": []
+              },
+              "number": 2
             }
           ]
         },
@@ -627,7 +626,8 @@
               "body": "<!-- dx-review -->\n### Claude review · risk **medium**\n\n<!-- dx-review-record {\"risk\":\"medium\",\"complexity\":\"high\",\"floor\":\"low\",\"blocking\":false,\"findings\":[]} -->"
             }
           ]
-        }
+        },
+        "lane": "platform"
       },
       "want": [
         "risk-cap:platform"
@@ -652,12 +652,9 @@
             {
               "body": "### Criticality\n\nNormal\n",
               "labels": {
-                "nodes": [
-                  {
-                    "name": "lane:org-sync"
-                  }
-                ]
-              }
+                "nodes": []
+              },
+              "number": 2
             }
           ]
         },
@@ -671,7 +668,8 @@
               "body": "<!-- dx-review -->\n### Claude review · risk **high**\n\n<!-- dx-review-record {\"risk\":\"high\",\"complexity\":\"low\",\"floor\":\"low\",\"blocking\":false,\"findings\":[]} -->"
             }
           ]
-        }
+        },
+        "lane": "org-sync"
       },
       "want": [
         "unknown"

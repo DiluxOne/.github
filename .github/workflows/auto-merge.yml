@@ -56,14 +56,17 @@ name: Auto-merge
 # `constitution-merge`, and only when the change widens no permission, lane
 # or limit (scripts/no-widening.py, merge base against head, #397);
 # anything it widens or cannot tell, a person merges.
-# It is labelled `merged-by:policy`. Auto-merge is switched off before that
-# decision, so a failure leaves nothing set to merge.
+# Its merge decision is written to the receipts (scripts/receipts.py
+# merge-decision, #804: the lane's `merge` rule, the head, the policy's commit),
+# never a label, before auto-merge is enabled; one in force is withdrawn first.
+# Auto-merge is switched off before that decision, so a failure leaves
+# nothing set to merge.
 #
 # A revert dilux-bot opened when a merge turned the default branch red
 # (gate G8, revert-on-red.yml: label `revert`, a `revert/` branch) is decided
 # by scripts/revert.py decide: only within the `platform` lane of
 # policy/autonomy.yml (its repositories and caps, no protected path, the
-# review not blocking, its description true), labelled `merged-by:policy`;
+# review not blocking, its description true), its merge decision on the receipts;
 # otherwise its issue says why it waits and the action with its URL, in one
 # comment kept up to date.
 #
@@ -76,7 +79,7 @@ name: Auto-merge
 # caller job a template's job but the repository's own inputs); no job
 # changes its permissions or the secrets it passes (high risk: a person);
 # the review does not block, its description is true, and risk and
-# complexity are within the lane's caps. It is labelled `merged-by:policy`.
+# complexity are within the lane's caps. Its merge decision goes on the receipts.
 # Never in DiluxOne/.github, and nothing while DX_AUTOPILOT is off.
 #
 # A release pull request (#247: it closes one issue `Release X.Y.Z` with
@@ -85,7 +88,7 @@ name: Auto-merge
 # the pull request is dilux-bot's single commit on its base, whose tree is
 # exactly what the kind's command makes of that base for the version
 # (scripts/release-issue.py argv, run again here on a clone); the review does
-# not block and its description is true. It is labelled `merged-by:policy`.
+# not block and its description is true. Its merge decision goes on the receipts.
 # Anything short of that, a person merges it.
 #
 # The dilux-bot App enables it, so the resulting push to main triggers the
@@ -310,8 +313,13 @@ jobs:
           echo "handled=true" >> "$GITHUB_OUTPUT"
           # Off first: if anything below fails, nothing stays set to merge.
           gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --disable-auto >/dev/null 2>&1 || true
-          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label merged-by:policy >/dev/null 2>&1 || true
           { git init -q "$RUNNER_TEMP/central" && git -C "$RUNNER_TEMP/central" fetch -q --depth 1 https://github.com/DiluxOne/.github "$CENTRAL_REF" && git -C "$RUNNER_TEMP/central" checkout -q FETCH_HEAD && { test ! -f "$RUNNER_TEMP/central"/scripts/config-overlay.sh || bash "$RUNNER_TEMP/central"/scripts/config-overlay.sh "$RUNNER_TEMP/central"; }; }
+          # #804: the policy's merge decision is on the receipts, never a
+          # label: one in force is withdrawn before this is decided again,
+          # and a withdrawal that fails stops here, auto-merge already off.
+          export POLICY_REF; POLICY_REF=$(git -C "$RUNNER_TEMP/central" rev-parse HEAD)
+          DECIDED=withdrawn HEAD="$HEAD" python3 "$RUNNER_TEMP/central/scripts/receipts.py" merge-decision >/dev/null \
+            || { echo "::error::#$PR's merge decision could not be withdrawn on the receipts; a human merges this one."; exit 1; }
           issues=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences --jq '[.closingIssuesReferences[].number] | join(" ")')
           if [ "$(wc -w <<<"$issues")" -ne 1 ]; then echo "A human merges this one: it closes ${issues:-no issue}, not exactly one."; exit 0; fi
           issue=$issues
@@ -424,10 +432,12 @@ jobs:
             | jq -c --arg head "$HEAD" 'select(.sha == $head)' > "$RUNNER_TEMP/review-record.json" 2>/dev/null || : > "$RUNNER_TEMP/review-record.json"
           export CRITERIA_VERDICT="$RUNNER_TEMP/review-record.json"
           if why=$(python3 "$RUNNER_TEMP/central/scripts/autopilot.py" decide); then
+            # The decision on the receipts first (#804): a write that fails
+            # enables nothing.
+            DECIDED=policy HEAD="$HEAD" RULE="policy/autonomy.yml#lanes.$LANE.merge" python3 "$RUNNER_TEMP/central/scripts/receipts.py" merge-decision >/dev/null
             body=$(python3 "$RUNNER_TEMP/central/scripts/credits.py" body "$GITHUB_REPOSITORY" "$PR")
             # Tied to the head decided on: a later push merges nothing until it is decided again.
             gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --auto ${METHOD:+"$METHOD"} --match-head-commit "$HEAD" --body "$body"
-            gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label merged-by:policy >/dev/null
             echo "Auto-merge enabled by policy: $why."
           else
             echo "A human merges this one: $why."
@@ -469,8 +479,13 @@ jobs:
           echo "handled=true" >> "$GITHUB_OUTPUT"
           # Off first: if anything below fails, nothing stays set to merge.
           gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --disable-auto >/dev/null 2>&1 || true
-          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label merged-by:policy >/dev/null 2>&1 || true
           { git init -q "$RUNNER_TEMP/central" && git -C "$RUNNER_TEMP/central" fetch -q --depth 1 https://github.com/DiluxOne/.github "$CENTRAL_REF" && git -C "$RUNNER_TEMP/central" checkout -q FETCH_HEAD && { test ! -f "$RUNNER_TEMP/central"/scripts/config-overlay.sh || bash "$RUNNER_TEMP/central"/scripts/config-overlay.sh "$RUNNER_TEMP/central"; }; }
+          # #804: the policy's merge decision is on the receipts, never a
+          # label: one in force is withdrawn before this is decided again,
+          # and a withdrawal that fails stops here, auto-merge already off.
+          export POLICY_REF; POLICY_REF=$(git -C "$RUNNER_TEMP/central" rev-parse HEAD)
+          DECIDED=withdrawn HEAD="$HEAD_SHA" python3 "$RUNNER_TEMP/central/scripts/receipts.py" merge-decision >/dev/null \
+            || { echo "::error::#$PR's merge decision could not be withdrawn on the receipts; a human merges this one."; exit 1; }
           # Every file, renames by their old path too, so a protected path
           # cannot leave by a rename.
           gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/files"
@@ -495,9 +510,11 @@ jobs:
           fi
           why=${why:-the G8 decision could not be made}
           if [ "$ok" = true ]; then
+            # The decision on the receipts first (#804): a write that fails
+            # enables nothing.
+            DECIDED=policy HEAD="$HEAD_SHA" RULE="policy/autonomy.yml#lanes.platform.merge" python3 "$RUNNER_TEMP/central/scripts/receipts.py" merge-decision >/dev/null
             body=$(python3 "$RUNNER_TEMP/central/scripts/credits.py" body "$GITHUB_REPOSITORY" "$PR")
             gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --auto ${METHOD:+"$METHOD"} --match-head-commit "$HEAD_SHA" --body "$body"
-            gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label merged-by:policy >/dev/null
             echo "Auto-merge enabled by policy: $why."
           else
             echo "A human merges this one: $why."
@@ -588,7 +605,13 @@ jobs:
           # or a person merges it.
           echo "handled=true" >> "$GITHUB_OUTPUT"
           gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --disable-auto >/dev/null 2>&1 || true
-          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label merged-by:policy >/dev/null 2>&1 || true
+          { git init -q "$RUNNER_TEMP/central" && git -C "$RUNNER_TEMP/central" fetch -q --depth 1 https://github.com/DiluxOne/.github "$CENTRAL_REF" && git -C "$RUNNER_TEMP/central" checkout -q FETCH_HEAD && { test ! -f "$RUNNER_TEMP/central"/scripts/config-overlay.sh || bash "$RUNNER_TEMP/central"/scripts/config-overlay.sh "$RUNNER_TEMP/central"; }; }
+          # #804: the policy's merge decision is on the receipts, never a
+          # label: one in force is withdrawn before this is decided again,
+          # and a withdrawal that fails stops here, auto-merge already off.
+          export POLICY_REF; POLICY_REF=$(git -C "$RUNNER_TEMP/central" rev-parse HEAD)
+          DECIDED=withdrawn HEAD="$HEAD_SHA" python3 "$RUNNER_TEMP/central/scripts/receipts.py" merge-decision >/dev/null \
+            || { echo "::error::#$PR's merge decision could not be withdrawn on the receipts; a human merges this one."; exit 1; }
           person() { echo "A human merges this one: $1."; exit 0; }
           [ "$(tr '[:upper:]' '[:lower:]' <<<"${DX_AUTOPILOT:-}")" != off ] || person "DX_AUTOPILOT is off"
           [ "$PR_AUTHOR" = "$DX_BOT_LOGIN" ] || person "the release pull request was not opened by $DX_BOT_LOGIN"
@@ -598,7 +621,6 @@ jobs:
           [ "$(wc -l <<<"$commits")" -eq 1 ] || person "it has more than one commit"
           IFS=$'\t' read -r sha author nparents base <<<"$commits"
           if [ "$sha" != "$HEAD_SHA" ] || [ "$author" != "$DX_BOT_LOGIN" ] || [ "$nparents" != 1 ]; then person "its commit is not $DX_BOT_LOGIN's single commit at the head"; fi
-          { git init -q "$RUNNER_TEMP/central" && git -C "$RUNNER_TEMP/central" fetch -q --depth 1 https://github.com/DiluxOne/.github "$CENTRAL_REF" && git -C "$RUNNER_TEMP/central" checkout -q FETCH_HEAD && { test ! -f "$RUNNER_TEMP/central"/scripts/config-overlay.sh || bash "$RUNNER_TEMP/central"/scripts/config-overlay.sh "$RUNNER_TEMP/central"; }; }
           # The decision: the release issue accepted by a person with the
           # admin or maintain role, or by a maintainer's plan.
           VERSION="$version" LABEL=accepted python3 "$RUNNER_TEMP/central/scripts/release-issue.py" verify > "$RUNNER_TEMP/verify.json" || true
@@ -619,10 +641,12 @@ jobs:
           made=$(git write-tree)
           want=$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$HEAD_SHA" --jq .tree.sha)
           [ "$made" = "$want" ] || person "its tree is not what the release command makes of the base ($made, not $want)"
+          # The decision on the receipts first (#804): a write that fails
+          # enables nothing.
+          DECIDED=policy HEAD="$HEAD_SHA" RULE="policy/autonomy.yml#lanes.release.merge" python3 "$RUNNER_TEMP/central/scripts/receipts.py" merge-decision >/dev/null
           body=$(python3 "$RUNNER_TEMP/central/scripts/credits.py" body "$GITHUB_REPOSITORY" "$PR")
           # Tied to the head proved: a later push merges nothing until it is proved again.
           gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --auto ${METHOD:+"$METHOD"} --match-head-commit "$HEAD_SHA" --body "$body"
-          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label merged-by:policy >/dev/null
           echo "Auto-merge enabled: release $version, $(jq -r .why "$RUNNER_TEMP/verify.json"), and its tree is the release command's."
 
       # A sync run's pull request (lane org-sync, #155: scripts/sync-repos.py
@@ -654,8 +678,8 @@ jobs:
           issues=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences --jq '[.closingIssuesReferences[].number] | join(" ")')
           if [ "$(wc -w <<<"$issues")" -ne 1 ]; then echo "handled=false" >> "$GITHUB_OUTPUT"; exit 0; fi
           # Only an issue with a lane's label is worth asking the policy about.
-          lanes=$(gh issue view "$issues" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(startswith("lane:"))] | length' 2>/dev/null || echo 0)
-          if [ "$lanes" = 0 ]; then echo "handled=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          lane=$(gh issue view "$issues" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(startswith("lane:")) | ltrimstr("lane:")] | first // ""' 2>/dev/null || true)
+          if [ -z "$lane" ]; then echo "handled=false" >> "$GITHUB_OUTPUT"; exit 0; fi
           { git init -q "$RUNNER_TEMP/central" && git -C "$RUNNER_TEMP/central" fetch -q --depth 1 https://github.com/DiluxOne/.github "$CENTRAL_REF" && git -C "$RUNNER_TEMP/central" checkout -q FETCH_HEAD && { test ! -f "$RUNNER_TEMP/central"/scripts/config-overlay.sh || bash "$RUNNER_TEMP/central"/scripts/config-overlay.sh "$RUNNER_TEMP/central"; }; }
           # The repository's own autonomy policy: none only when the file is
           # not there; a read that fails otherwise leaves the merge to a person.
@@ -674,12 +698,19 @@ jobs:
           echo "handled=true" >> "$GITHUB_OUTPUT"
           # Off first: whatever the verdict, nothing stays set to merge from before.
           gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --disable-auto >/dev/null 2>&1 || true
-          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label merged-by:policy >/dev/null 2>&1 || true
+          # #804: the policy's merge decision is on the receipts, never a
+          # label: one in force is withdrawn before this is decided again,
+          # and a withdrawal that fails stops here, auto-merge already off.
+          export POLICY_REF; POLICY_REF=$(git -C "$RUNNER_TEMP/central" rev-parse HEAD)
+          DECIDED=withdrawn HEAD="$HEAD_SHA" python3 "$RUNNER_TEMP/central/scripts/receipts.py" merge-decision >/dev/null \
+            || { echo "::error::#$PR's merge decision could not be withdrawn on the receipts; a human merges this one."; exit 1; }
           if [ "$rc" = 0 ]; then
+            # The decision on the receipts first (#804): a write that fails
+            # enables nothing.
+            DECIDED=policy HEAD="$HEAD_SHA" RULE="policy/autonomy.yml#lanes.$lane.merge" python3 "$RUNNER_TEMP/central/scripts/receipts.py" merge-decision >/dev/null
             body=$(python3 "$RUNNER_TEMP/central/scripts/credits.py" body "$GITHUB_REPOSITORY" "$PR")
             # Tied to the head decided on: a later push merges nothing until it is decided again.
             gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --auto ${METHOD:+"$METHOD"} --match-head-commit "$HEAD_SHA" --body "$body"
-            gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label merged-by:policy >/dev/null
             echo "Auto-merge enabled by policy: $why."
           elif [ "$rc" = 1 ]; then
             echo "A human merges this one: $why."

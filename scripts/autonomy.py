@@ -21,6 +21,14 @@
                             merges on its own: exit 0 when it does, 1 when a
                             person merges it, 2 when it is neither lane's
                             (auto-merge.yml then decides it as any other)
+  autonomy.py migrate-policy-labels [--apply]
+                            move what the policy's labels said
+                            (accepted-by:policy beside lane:<a lane that
+                            accepts by policy>, merged-by:policy) onto each
+                            repository's receipts, then take those two off,
+                            lane:* staying (#804;
+                            scripts/policy-receipts.py, which says how); a
+                            dry run unless --apply
   autonomy.py --test        self-test
 
 Environment:
@@ -1460,12 +1468,19 @@ def self_test():
             failed = 1
 
     org = load(os.path.join(HERE, "..", "policy", "autonomy.yml"))
-    # issue-accepted.yml's lane job fetches autonomy.py alone: whatever it
-    # imports from this directory must be fetched with it.
+    # issue-accepted.yml's lane job runs autonomy.py: whatever it imports
+    # from this directory must be there with it, and org.yml. Since #804 it
+    # checks the scripts out whole (it runs receipts.py too); a list of
+    # files fetched must name them all.
     with open(os.path.join(HERE, "..", ".github", "workflows", "issue-accepted.yml"), encoding="utf-8") as fh:
-        fetched = next((l for l in fh if "for f in scripts/autonomy.py" in l), "")
+        text = fh.read()
+    lane_job = text[text.index("\n  lane:\n"):]
+    lane_job = lane_job[:lane_job.index("\n  decision:\n")] if "\n  decision:\n" in lane_job else lane_job
+    whole = "git init -q .dx-central && git -C .dx-central fetch -q --depth 1 https://github.com/DiluxOne/.github" in lane_job
+    fetched = next((l for l in lane_job.splitlines() if "for f in scripts/autonomy.py" in l), "")
     local = sorted(set(re.findall(r"^import (\w+)", open(__file__, encoding="utf-8").read(), re.M)) & {f[:-3] for f in os.listdir(HERE) if f.endswith(".py")})
-    check("#191: the lane job fetches what autonomy.py imports from here, and org.yml", (all(f"scripts/{m}.py" in fetched for m in local), "org.yml" in fetched), (True, True))
+    check("#191: the lane job has what autonomy.py imports from here, and org.yml",
+          whole or (all(f"scripts/{m}.py" in fetched for m in local) and "org.yml" in fetched), True)
     check("#488 claims: a repository lowers a limit, never raises it",
           [merge(org, {"claims": {"release-days": 5}})["claims"]["release-days"], merge(org, {"claims": {"release-days": 50}})["claims"]["release-days"]], [5, 10])
     check("#488 claims: an unknown key or a day count that is not a number", [problems({**org, "claims": {"x": 1}}) != [], problems({**org, "claims": {"remind-days": "7"}}) != []], [True, True])
@@ -2151,6 +2166,12 @@ def main():
         for line in found:
             print(line)
         return 1 if found else 0
+    if mode == "migrate-policy-labels":
+        # #804: the migration is its own script, with its own --test.
+        spec = importlib.util.spec_from_file_location("policy_receipts", os.path.join(HERE, "policy-receipts.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.main(["migrate"] + sys.argv[2:])
     var = os.environ.get("DX_AUTOPILOT", "")
     if mode == "lane-open":
         name = sys.argv[2] if len(sys.argv) > 2 else ""

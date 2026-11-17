@@ -47,6 +47,7 @@ def _load(name, file):
 
 autonomy = _load("autonomy", "autonomy.py")
 autopilot = _load("autopilot", "autopilot.py")
+receipts = _load("receipts", "receipts.py")
 
 BOT = org.APP
 WEEKS = 4
@@ -145,13 +146,10 @@ def clean_review(pr):
 
 
 def lane_of(pr):
-    """The lane an autopilot pull request is decided by: its issue's
-    `lane:<name>` label, else the lane of an issue a person accepted."""
-    for issue in nodes(pr.get("closingIssuesReferences")):
-        for lab in nodes(issue.get("labels")):
-            if (lab.get("name") or "").startswith("lane:"):
-                return lab["name"][5:]
-    return autopilot.LANE
+    """The lane an autopilot pull request is decided by: the lane in force on
+    its issue's receipts (#804; from_receipts sets it), else the lane of an
+    issue a person accepted. A label never says it."""
+    return pr.get("lane") or autopilot.LANE
 
 
 def above(level, cap):
@@ -242,7 +240,7 @@ def needed(pr):
     None otherwise (merged by policy or by GitHub's auto-merge, or not done)."""
     labels = {lab.get("name") for lab in nodes(pr.get("labels"))}
     if pr.get("mergedAt"):
-        if "merged-by:policy" in labels:
+        if pr.get("mergedByPolicy"):
             return None
         merger = pr.get("mergedBy") or {}
         return "merged" if merger.get("__typename") == "User" else None
@@ -259,6 +257,50 @@ def needed(pr):
     if "needs-human" in labels or review_record(pr) or pr.get("isCrossRepository"):
         return "waiting"
     return None
+
+
+def from_receipts(prs, since, rows_of, lane_of_issue):
+    """What the receipts say of each pull request (#804), set on it: a merged
+    one is `mergedByPolicy` when its repository's last merge decision for it
+    is the policy's, at the head that merged (ROWS_OF, receipts.py's
+    decision rows since SINCE, read once per repository); an autopilot one
+    gets its issue's `lane` in force (LANE_OF_ISSUE). Receipts that cannot be
+    read leave it a person's merge and the default lane, and are returned,
+    [(repository, public)], for the digest to say so."""
+    rows, unread = {}, set()
+    for pr in prs:
+        repo = (pr.get("repository") or {}).get("nameWithOwner") or ""
+        if not repo:
+            continue
+        if pr.get("mergedAt"):
+            if repo not in rows:
+                try:
+                    rows[repo] = rows_of(repo, since)
+                except Exception:  # noqa: BLE001  said in the digest, never "by policy"
+                    rows[repo] = []
+                    unread.add((repo, public(pr)))
+            heads = {r.get("number"): r.get("head") for r in rows[repo] if r.get("kind") == "merged"}
+            pr["mergedByPolicy"] = bool(pr.get("headRefOid")) and heads.get(pr.get("number")) == pr.get("headRefOid")
+        if login(pr.get("author")) == f"{BOT}[bot]":
+            for issue in nodes(pr.get("closingIssuesReferences")):
+                try:
+                    lane = lane_of_issue(repo, issue.get("number"))
+                except Exception:  # noqa: BLE001
+                    unread.add((repo, public(pr)))
+                    lane = None
+                if lane:
+                    pr["lane"] = lane
+                    break
+    return sorted(unread)
+
+
+def unread_note(unread):
+    """The digest's line for receipts that could not be read: public
+    repositories named, private ones only counted."""
+    named = [r for r, pub in unread if pub]
+    hidden = sum(1 for _, pub in unread if not pub)
+    which = ", ".join(named) + (f"{', and ' if named else ''}{hidden} private" if hidden else "")
+    return f"The receipts of {which} could not be read: a merge by policy there may be listed as a person's." if unread else ""
 
 
 def label(reason):
@@ -322,7 +364,7 @@ def public(pr):
     return ((pr.get("repository") or {}).get("visibility") or "") == "PUBLIC"
 
 
-def digest(prs, pol, now):
+def digest(prs, pol, now, unread=()):
     rows = []
     seen = set()
     for pr in prs:
@@ -401,6 +443,8 @@ def digest(prs, pol, now):
     out += props or [f"None: no reason stopped {PROPOSE_AT} or more pull requests whose review found no blocker or major in {WEEKS} weeks."]
     # How many proposals, for autonomy-digest.yml: a week with one waits on
     # a person (#188). An HTML comment, so the issue shows nothing of it.
+    if unread:
+        out += ["", unread_note(unread)]
     out += ["", f"<!-- dx-proposals: {len(props)} -->"]
     return "\n".join(out) + "\n"
 
@@ -411,14 +455,14 @@ query($q: String!, $endCursor: String) {
     issueCount
     pageInfo { hasNextPage endCursor }
     nodes { ... on PullRequest {
-      number title url state isDraft mergedAt isCrossRepository additions deletions changedFiles
+      number title url state isDraft mergedAt headRefOid isCrossRepository additions deletions changedFiles
       repository { nameWithOwner visibility }
       author { __typename login }
       mergedBy { __typename login }
       autoMergeRequest { enabledAt }
       labels(first: 50) { nodes { name } }
       files(first: 100) { nodes { path additions deletions } }
-      closingIssuesReferences(first: 5) { nodes { body labels(first: 20) { nodes { name } } } }
+      closingIssuesReferences(first: 5) { nodes { number body labels(first: 20) { nodes { name } } } }
       early: comments(first: 50) { nodes { author { __typename login } body } }
       comments(last: 50) { nodes { author { __typename login } body } }
       commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
@@ -453,9 +497,22 @@ def parse_search(out, q):
     return prs
 
 
+def receipt_rows(repo, since):
+    return receipts.decision_rows(receipts.tree_paths(repo), lambda p: receipts.read(repo, p), since)
+
+
+def issue_lane(repo, number):
+    if not number:
+        return None
+    return (receipts.lane_in_force(receipts.lane_decisions(repo, number)) or {}).get("lane")
+
+
 def fetch(owner, now):
+    """The pull requests, and the repositories whose receipts could not be
+    read (#804: merged by policy is what the receipts say, never a label)."""
     since = (now - datetime.timedelta(days=7 * WEEKS)).strftime("%Y-%m-%d")
-    return search(f"org:{owner} is:pr is:merged merged:>={since} -label:merged-by:policy") + search(f"org:{owner} is:pr is:open draft:false")
+    prs = search(f"org:{owner} is:pr is:merged merged:>={since}") + search(f"org:{owner} is:pr is:open draft:false")
+    return prs, from_receipts(prs, since, receipt_rows, issue_lane)
 
 
 def self_test():
@@ -492,10 +549,41 @@ def self_test():
     cases = {c["name"]: c for c in fx["cases"]}
     size_case = "size cap (its failing conventions check is not a gate of its own)"
     mine = pr(cases["high risk from the review"], url="u-person", title="A person merged it")
-    by_policy = pr(cases["high risk from the review"], url="u-policy", title="Merged by policy", labels={"nodes": [{"name": "merged-by:policy"}]})
+    by_policy = pr(cases["high risk from the review"], url="u-policy", title="Merged by policy", number=5, headRefOid="h5")
     by_app = pr(cases["high risk from the review"], url="u-app", title="Auto-merged", mergedBy={"__typename": "Bot", "login": BOT})
     nothing = pr(cases["no reason recorded"], url="u-none", title="Nothing recorded")
-    out = digest([mine, by_policy, by_app, nothing], pol, now)
+    # C2 (#804): merged by policy is what the receipts say, never a label.
+    repo = by_policy["repository"]["nameWithOwner"]
+    # A pull request merged by policy in the window before the migration
+    # (label_only) has the record the migration wrote from its label, which
+    # covers this whole window (policy-receipts.py DAYS = 7 * WEEKS); a label
+    # on one with no decision for its head (other_head) is never read.
+    decided = {repo: [{"kind": "merged", "number": 5, "head": "h5"}, {"kind": "merged", "number": 6, "head": "old"}, {"kind": "accepted", "number": 1},
+                      {"kind": "merged", "number": 7, "head": "h7"}]}
+    other_head = pr(cases["high risk from the review"], url="u-other-head", title="Decided at another head", number=6, headRefOid="new",
+                    labels={"nodes": [{"name": "merged-by:policy"}]})
+    label_only = pr(cases["high risk from the review"], url="u-label", title="Migrated from its label", number=7, headRefOid="h7",
+                    mergedAt=(now - datetime.timedelta(days=7 * WEEKS - 2)).strftime("%Y-%m-%dT%H:%M:%SZ"), labels={"nodes": [{"name": "merged-by:policy"}]})
+    seen_since = []
+    unread = from_receipts([mine, by_policy, by_app, nothing, other_head, label_only], "2026-09-17",
+                           lambda r, since: seen_since.append(since) or decided[r], lambda r, n: None)
+    check("C2 (#804): the receipts are read once per repository, from four weeks back", (seen_since, unread), (["2026-09-17"], []))
+    out = digest([mine, by_policy, by_app, nothing, other_head, label_only], pol, now)
+    check("C2 (#804): a pull request with a policy merge decision is not listed", "Merged by policy" in out, False)
+    check("C2 (#804): a decision for another head is a person's merge, whatever its label", "Decided at another head" in out, True)
+    check("C2 (#804): one merged by policy weeks back, its label migrated, is the policy's", "Migrated from its label" in out, False)
+    bot_pr = pr(cases["over a lane's cap"], url="u-lane")
+    bot_pr.pop("lane")
+    from_receipts([bot_pr], "2026-09-17", lambda r, since: [], lambda r, n: "platform" if n == 2 else None)
+    check("C2 (#804): an autopilot pull request's lane is its issue's lane in force on the receipts", (bot_pr["lane"], classify(bot_pr, pol)), ("platform", ["risk-cap:platform"]))
+
+    def broken(*_):
+        raise RuntimeError("HTTP 502")
+    secret_pr = pr(cases["no reason recorded"], url="u-s", repository={"nameWithOwner": "DiluxOne/secret", "visibility": "PRIVATE"})
+    bad = from_receipts([dict(mine), secret_pr], "2026-09-17", broken, broken)
+    check("C2 (#804): receipts that cannot be read are reported, a private repository only counted",
+          (sorted(bad), "secret" in unread_note(bad), "DiluxOne/diluxone-offload-wordpress" in unread_note(bad), "1 private" in unread_note(bad)),
+          ([("DiluxOne/diluxone-offload-wordpress", True), ("DiluxOne/secret", False)], False, True, True))
     check("C1: a pull request a person merged is listed with its reason", "`A person merged it` (u-person), merged: high risk" in out, True)
     check("C1: one with no recorded reason says unknown", "`Nothing recorded` (u-none), merged: unknown" in out, True)
     check("C1: merged by policy is not listed", "Merged by policy" in out, False)
@@ -581,7 +669,8 @@ def main(argv):
         print(__doc__, file=sys.stderr)
         return 64
     now = parse_time(os.environ["NOW"]) if os.environ.get("NOW") else datetime.datetime.now(datetime.timezone.utc)
-    sys.stdout.write(digest(fetch(os.environ["OWNER"], now), policy(), now))
+    prs, unread = fetch(os.environ["OWNER"], now)
+    sys.stdout.write(digest(prs, policy(), now, unread))
     return 0
 
 

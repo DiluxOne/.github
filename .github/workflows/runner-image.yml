@@ -210,11 +210,13 @@ jobs:
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }}
           permission-issues: write
+          permission-contents: write # the platform lane's decision on the receipts (#804)
 
       - name: Record the build
         if: always() && github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token || github.token }}
+          BOT: ${{ steps.bot.outputs.token != '' }}
           OUTCOME: ${{ steps.promote.outcome }}
           SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
           AUTOPILOT: ${{ vars.DX_AUTOPILOT }}
@@ -242,5 +244,13 @@ jobs:
             # that dilux-bot opened it from this run, named in the body.
             # shellcheck disable=SC2016 # backticks in the Markdown of the issue, not commands.
             printf 'Not promoted; :stable stayed as it was. Fixing the image is work of the `platform` lane (policy/autonomy.yml): accepted by policy, no person needed to accept it. It closes when the fix merges, or when a later build passes.\n\nRun: %s\n\n<!-- dx-lane: platform run: %s -->\n\n%s\n' "$RUN_URL" "$RUN_URL" "$ai" |
-              NEEDS=1 LABELS="lane:platform,accepted-by:policy" bash scripts/run-issue.sh open runner-image "Runner image, run $RUN: build failed"
+              NEEDS=1 LABELS="lane:platform" bash scripts/run-issue.sh open runner-image "Runner image, run $RUN: build failed" > "$RUNNER_TEMP/issue"
+            # The lane's decision on the receipts (#804), never a label; only
+            # dilux-bot writes them, so without its key there is none.
+            if [ "$BOT" = true ]; then
+              evidence=$(jq -cn --arg run "$RUN_URL" '{run: $run}')
+              NUMBER=$(cat "$RUNNER_TEMP/issue") LANE=platform DECIDED=policy POLICY_REF="$GITHUB_SHA" EVIDENCE_JSON="$evidence" python3 scripts/receipts.py lane-decision >/dev/null
+            else
+              echo "::warning::No App key: #$(cat "$RUNNER_TEMP/issue") has no lane decision on the receipts; a person accepts it."
+            fi
           fi
