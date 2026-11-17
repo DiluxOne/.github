@@ -258,7 +258,7 @@ jobs:
         if: steps.others.outputs.prompt != ''
         continue-on-error: true
         timeout-minutes: 5
-        uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
+        uses: anthropics/claude-code-action@cc98b3ae241b0fcfb6a42a2690751afffecb4452 # v1.0.278
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
@@ -272,6 +272,7 @@ jobs:
             --max-turns 2
             --max-budget-usd 0.3
             --allowedTools ""
+            --permission-mode dontAsk
             --disallowedTools "Bash,Read,Write,Edit,MultiEdit,Glob,Grep,WebFetch,WebSearch,NotebookEdit,Task"
             --json-schema '{"type":"object","additionalProperties":false,"required":["points"],"properties":{"points":{"type":"array","maxItems":30,"items":{"type":"object","additionalProperties":false,"required":["i","argument"],"properties":{"i":{"type":"integer"},"argument":{"type":"string","maxLength":400}}}}}}'
 
@@ -517,7 +518,7 @@ jobs:
         if: steps.pr.outputs.run == 'true'
         continue-on-error: true
         timeout-minutes: 10
-        uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
+        uses: anthropics/claude-code-action@cc98b3ae241b0fcfb6a42a2690751afffecb4452 # v1.0.278
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
@@ -544,6 +545,7 @@ jobs:
             --max-turns 25
             --max-budget-usd 1
             --allowedTools "Read,Glob,Grep"
+            --permission-mode dontAsk
             --json-schema '{"type":"object","additionalProperties":false,"required":["reply","resolve"],"properties":{"reply":{"type":"string","maxLength":4000},"resolve":{"type":"boolean"}}}'
 
       - name: Post the reply
