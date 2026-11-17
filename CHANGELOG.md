@@ -2,6 +2,16 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [7.15.1](https://github.com/DiluxOne/.github/releases/tag/v7.15.1) · 2026-11-17
+
+### Fixes
+
+- accepting a bug already reproduced opens a second pull request ([#809](https://github.com/DiluxOne/.github/pull/809))
+
+### CI
+
+- claude steps keep a strict tool list on claude-code-action 1.0.27… ([#795](https://github.com/DiluxOne/.github/pull/795))
+
 ## [7.15.0](https://github.com/DiluxOne/.github/releases/tag/v7.15.0) · 2026-11-17
 
 ### Features
@@ -14,6 +24,7 @@ Every version of the engine (the workflows, scripts, policy and kinds other repo
 
 ### Maintenance
 
+- release v7.15.0 ([#808](https://github.com/DiluxOne/.github/pull/808))
 - release v7.15.0 ([#794](https://github.com/DiluxOne/.github/pull/794))
 
 ## [7.14.1](https://github.com/DiluxOne/.github/releases/tag/v7.14.1) · 2026-11-16
