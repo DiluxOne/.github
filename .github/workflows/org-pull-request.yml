@@ -27,7 +27,10 @@ name: Pull request (organisation)
 # only a push does: not an edit, and not a draft marked ready, so the
 # autopilot pushes an empty commit once it marks one ready (#269). The `on:`
 # types below still list them for this repository; elsewhere they gave no run
-# (DiluxOne/diluxone-users-wordpress#62: marked ready, then edited).
+# (DiluxOne/diluxone-users-wordpress#62: marked ready, then edited). Where it
+# runs on them (the test repository's caller), the review skips an autopilot
+# pull request marked ready: the push that follows, the agent's last commits
+# with that empty commit on top, starts the one review (#820).
 #
 # A repository's own checks of its kind (a WordPress plugin's Plugin Check
 # and suites, its release) stay in its own workflow; the review does not
@@ -108,7 +111,9 @@ jobs:
     # order: the conventions gate passes first, so no review is paid for a
     # pull request it refuses.
     needs: [conventions]
-    if: github.event_name == 'pull_request' && github.event.action != 'dequeued' && github.repository != 'DiluxOne/.github'
+    # #820: not when an autopilot pull request is marked ready: the push
+    # that follows, with the ready commit, starts the one review.
+    if: github.event_name == 'pull_request' && github.event.action != 'dequeued' && github.repository != 'DiluxOne/.github' && !(github.event.action == 'ready_for_review' && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN)
     permissions:
       contents: read
       pull-requests: write
