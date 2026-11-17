@@ -1553,7 +1553,8 @@ Normal
         rw = importlib.util.module_from_spec(rw_spec)
         rw_spec.loader.exec_module(rw)
         check("C1 (#801) the board's layers are repro-ways.py's", LAYERS, rw.LAYERS)
-        check("#306 every job that runs receipts.py checks the scripts out whole", sorted(n for n, t in runs.items() if "git init -q .dx-central" not in t), [])
+        whole = lambda t: "git init -q .dx-central" in t or ('"repository": "DiluxOne/.github"' in t and '"path": ".dx-central"' in t)
+        check("#306 every job that runs receipts.py checks the scripts out whole", sorted(n for n, t in runs.items() if not whole(t)), [])
         # C5 (#564): every event of an issue puts whom it waits on on its
         # board (waiting.py update, which hands it to `waits` here).
         issues_wf = yaml.safe_load(open(os.path.join(HERE, "..", ".github", "workflows", "issues.yml"), encoding="utf-8"))
