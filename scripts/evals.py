@@ -1167,6 +1167,9 @@ def main(argv):
         print(f"{len(cases)} cases in {cases_file(argv[1])}")
         return 0
     if argv[:1] == ["run"] and len(argv) == 2:
+        if not os.path.exists(cases_file(argv[1])):
+            print(f"evals.py: {argv[1]} has no set yet: write evals/{argv[1]}/cases.json with `evals.py collect {argv[1]}`", file=sys.stderr)
+            return 1
         print(json.dumps(run_step(argv[1]), indent=2))
         return 0
     if argv[:1] in (["score"], ["baseline"]) and len(argv) == 3:

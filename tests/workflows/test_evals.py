@@ -216,3 +216,10 @@ def test_every_set_there_is_holds_real_cases_in_its_steps_shape():
         for c in cases:
             assert c["repo"].split("/", 1)[1] in names, c["id"]
             assert ("rubric" in c) == (step == "reply"), c["id"]
+
+
+def test_a_step_with_no_set_says_how_to_collect_it(tmp_path, capsys):
+    ev = load("evals")
+    ev.EVALS = str(tmp_path)
+    assert ev.main(["run", "triage"]) == 1
+    assert "evals.py collect triage" in capsys.readouterr().err
