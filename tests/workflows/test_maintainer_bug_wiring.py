@@ -1,5 +1,5 @@
 """A maintainer's own Bug (C2, #564): the triage never classifies it (so no
-`bug:unconfirmed`, no `layer:`, no reproduction and so no `repro:no-way`);
+reproduction, and nothing of one on its board's state, #801);
 complete, it is accepted with its writing, sealed in its author's name, and
 the autopilot starts on it; the G1 check leaves it to the triage. Both the
 triage and the autopilot accept it only for an author `who-decides` lets
@@ -74,3 +74,9 @@ def test_own_accept_asks_who_decides_before_it_seals():
     assert ask < body.index("ACCEPTED_HOW=own-bug") < body.index("--add-label accepted") < body.index('echo "accepted=true"')
     refused = body[ask:body.index("ACCEPTED_HOW=own-bug")]
     assert 'echo "accepted=false"' in refused and "return 0" in refused
+
+
+def test_its_board_carries_no_reproduction():
+    act = (ROOT / "scripts/triage-act.sh").read_text(encoding="utf-8")
+    own = act[act.index("own_accept() {"):act.index("\nact() {")]
+    assert "state set" not in own and "repro=" not in own

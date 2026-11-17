@@ -75,7 +75,7 @@ test_all() {
   check "C3 a bug the triage has not classified starts nothing" no triage issues opened "" User "" ""
   # C4: a label a bot adds is the only trigger, so it starts nothing.
   check "C4 repro:run added by a bot starts nothing" no label issues labeled repro:run Bot write ""
-  check "C4 bug:unconfirmed added by a bot starts nothing" no triage issues labeled "bug:unconfirmed" Bot "" true
+  check "C4 a label added by a bot starts nothing" no triage issues labeled "bug" Bot "" true
   check "C4 a bot that opens a bug report starts nothing" no triage issues opened "" Bot "" true
   # #247: the nightly review's Bug issue, and only that, on the event that opened it.
   check "#247 the nightly review's bug starts a reproduction" yes triage issues opened "" Bot "" true true
@@ -96,7 +96,7 @@ test_all() {
   check "repro:run from a triager starts nothing" no label issues labeled repro:run User triage ""
   check "repro:run whose permission could not be read starts nothing" no label issues labeled repro:run User unknown ""
   check "repro:run from a stranger starts nothing" no label issues labeled repro:run User none ""
-  check "a bug label added by a writer does not start one" no label issues labeled bug:unconfirmed User write ""
+  check "a bug label added by a writer does not start one" no label issues labeled bug User write ""
   check "a re-triage on a label event does not start one" no triage issues labeled "" User "" true
   check "a closed issue starts nothing" no triage issues closed "" User "" true
   check "a pull request event starts nothing" no triage pull_request opened "" User "" true
