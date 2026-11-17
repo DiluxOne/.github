@@ -29,7 +29,11 @@ in the test repository; a breaking change waits on a person.
         plan's `sha` (else `none`): the release pull request (CHANGELOG.md
         from scripts/changelog.py build, its commit made through the API
         with GH_TOKEN by scripts/api-commit.py, so GitHub signs it, #780),
-        merged, `vX.Y.Z` tagged at its
+        merged by the lane, never by auto-merge (#798), once GitHub says it
+        changes CHANGELOG.md alone, its head is that commit onto the plan's
+        `sha` and its required checks passed (`gh pr merge --squash
+        --match-head-commit`), or else closed with a comment that says why
+        and nothing tagged; `vX.Y.Z` tagged at its
         merge commit when its parent is that `sha`, `vN` moved to it
         (lightweight: `git tag -f` and a force push of that ref alone), its
         GitHub Release published or, when engine-release.yml made it first,
@@ -65,10 +69,23 @@ CANDIDATE = "release-candidate"
 MARK = "<!-- dx-release-lane -->"
 
 
+AI_LINE = "🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
+POLL = 30
+
+
+class ShError(RuntimeError):
+    """A command that exited non-zero, with what it printed: `gh pr checks`
+    exits 8 while a check is pending and 1 when one failed, JSON and all."""
+
+    def __init__(self, message, stdout="", stderr=""):
+        super().__init__(message)
+        self.stdout, self.stderr = stdout, stderr
+
+
 def sh(*argv, input=None, env=None):
     out = subprocess.run(list(argv), capture_output=True, text=True, input=input, env=env)
     if out.returncode:
-        raise RuntimeError(f"{' '.join(argv[:3])}: {(out.stderr or out.stdout).strip()}")
+        raise ShError(f"{' '.join(argv[:3])}: {(out.stderr or out.stdout).strip()}", out.stdout, out.stderr)
     return out.stdout
 
 
@@ -184,14 +201,21 @@ def decide(p, results, lane_run=""):
     return {"do": "release", "version": p["version"]}
 
 
-def release(p, repo, run=sh, sleep=time.sleep, minutes=60, root="."):
+def release(p, repo, run=sh, sleep=time.sleep, minutes=60, root=".", lane_run=""):
     """The release pull request, merged, the tag, the move and the Release,
     of the commit the scenarios tried (the plan's `sha`) and nothing else:
     main past it releases nothing (the next green run plans it again), and
     a release pull request merged on a main that moved meanwhile is tagged
-    nowhere. Returns {moved_at, version, previous}, with `error` when the
-    Release could not be published after `vN` moved (the watch still runs);
-    or {do: none, why} when main moved."""
+    nowhere. The lane merges its release pull request itself, never by
+    auto-merge (#798: the CHANGELOG.md floor makes it `risk:high`, and the
+    auto-merge decision turns auto-merge off on it): once GitHub says it
+    changes CHANGELOG.md alone, its head is the lane's commit onto the
+    planned one (`release_ready`) and its required checks passed, with
+    `gh pr merge --squash --match-head-commit`. One it gives up on before
+    it merged is closed with a comment that says why (`give_up`), and
+    nothing is tagged. Returns {moved_at, version, previous}, with `error`
+    when the Release could not be published after `vN` moved (the watch
+    still runs); or {do: none, why} when main moved."""
     version, major, planned = p["version"], p["major"], p.get("sha") or ""
     if not planned:
         raise RuntimeError("the plan names no commit: nothing is released that the scenarios did not try")
@@ -210,21 +234,16 @@ def release(p, repo, run=sh, sleep=time.sleep, minutes=60, root="."):
     # The ruleset refuses an unsigned commit on any branch (#610, #780): the
     # commit is made again through the API with GH_TOKEN (scripts/api-
     # commit.py), which GitHub signs, onto the planned commit, which is main
-    # on GitHub. It runs from the checkout, as candidate() does.
-    run(sys.executable, os.path.join(HERE, "api-commit.py"), "push", branch, "--onto", "HEAD~1", "--force")
+    # on GitHub. It runs from the checkout, as candidate() does, and says
+    # the sha GitHub gave it: the only head the lane merges.
+    said = run(sys.executable, os.path.join(HERE, "api-commit.py"), "push", branch, "--onto", "HEAD~1", "--force")
+    m = re.search(rf"{re.escape(branch)} is at (\w+) on GitHub", said or "")
+    commit = m.group(1) if m else ""
     url = run("gh", "pr", "create", "--repo", repo, "--base", "main", "--head", branch, "--title", pr["title"], "--body", pr["body"]).strip()
     number = url.rstrip("/").rsplit("/", 1)[-1]
-    run("gh", "pr", "merge", number, "--repo", repo, "--squash", "--auto")
-    sha, waited = "", 0
-    while not sha:
-        view = json.loads(run("gh", "pr", "view", number, "--repo", repo, "--json", "mergedAt,mergeCommit,state") or "{}")
-        if view.get("mergedAt"):
-            sha = (view.get("mergeCommit") or {}).get("oid", "")
-            break
-        if view.get("state") == "CLOSED" or waited >= minutes * 60:
-            raise RuntimeError(f"the release pull request #{number} did not merge")
-        sleep(30)
-        waited += 30
+    if not commit:
+        give_up(repo, number, "scripts/api-commit.py did not say the commit it made, so the lane cannot tell its head", run, lane_run)
+    sha = merge_release(repo, number, commit, planned, run, sleep, minutes, lane_run)
     run("git", "-C", root, "fetch", "-q", "origin", sha)
     parent = run("git", "-C", root, "rev-parse", f"{sha}^").strip()
     if parent != planned:
@@ -240,6 +259,96 @@ def release(p, repo, run=sh, sleep=time.sleep, minutes=60, root="."):
     except RuntimeError as err:
         out["error"] = f"{major} moved to {version}, but its Release could not be published: {err}"
     return out
+
+
+def release_ready(view, commit, head, planned):
+    """Why the release pull request may not merge, "" when it may: `view`
+    is `gh pr view --json headRefOid,baseRefName,files,state`, `commit`
+    `gh api repos/R/commits/<head>`, `head` the sha scripts/api-commit.py
+    said it made, `planned` the plan's. It must be open onto main, change
+    CHANGELOG.md alone, and its head must be the lane's commit, whose only
+    parent is the planned one. Pure."""
+    if view.get("state") != "OPEN":
+        return f"it is {str(view.get('state') or 'unknown').lower()}, not open"
+    if view.get("baseRefName") != "main":
+        return f"its base is `{view.get('baseRefName')}`, not main"
+    files = [f.get("path") for f in view.get("files") or []]
+    if files != ["CHANGELOG.md"]:
+        other = [f for f in files if f != "CHANGELOG.md"]
+        return f"changes {', '.join(f'`{f}`' for f in other)}, not CHANGELOG.md alone" if other else "changes nothing, not CHANGELOG.md alone"
+    got = view.get("headRefOid") or ""
+    if not head or got != head:
+        return f"its head is `{got[:12]}`, not the lane's commit `{head[:12]}` onto `{planned[:12]}`"
+    parents = [c.get("sha") for c in (commit or {}).get("parents") or []]
+    if parents != [planned]:
+        return f"its head's parent is {', '.join(f'`{c[:12]}`' for c in parents) or 'none'}, not the planned commit `{planned[:12]}`"
+    return ""
+
+
+def required_checks(repo, number, run=sh):
+    """The release pull request's required checks, [{name, bucket}]: none
+    yet while GitHub reports none (a pull request just opened), whatever
+    `gh pr checks` exits with while one is pending (8) or failed (1)."""
+    try:
+        return json.loads(run("gh", "pr", "checks", number, "--repo", repo, "--required", "--json", "name,bucket") or "[]")
+    except ShError as e:
+        if e.stdout.strip():
+            return json.loads(e.stdout)
+        if "no required checks reported" in e.stderr or "no checks reported" in e.stderr:
+            return []
+        raise
+
+
+def merge_release(repo, number, head, planned, run=sh, sleep=time.sleep, minutes=60, lane_run=""):
+    """The release pull request merged by the lane, at `head`, and its merge
+    commit's sha. Gives up (`give_up`: closed with why, then raised) on one
+    `release_ready` refuses, a required check that fails or is cancelled, a
+    merge GitHub refuses, or `minutes` running out."""
+    view = json.loads(run("gh", "pr", "view", number, "--repo", repo, "--json", "headRefOid,baseRefName,files,state") or "{}")
+    commit = json.loads(run("gh", "api", f"repos/{repo}/commits/{head}") or "{}") if head else {}
+    why = release_ready(view, commit, head, (planned or ""))
+    if why:
+        give_up(repo, number, why, run, lane_run)
+    waited, merging = 0, False
+    while True:
+        if not merging:
+            checks = required_checks(repo, number, run)
+            bad = [c for c in checks if c.get("bucket") in ("fail", "cancel")]
+            if bad:
+                give_up(repo, number, f"required check `{bad[0].get('name')}` {'failed' if bad[0].get('bucket') == 'fail' else 'was cancelled'}", run, lane_run)
+            pending = [c.get("name") for c in checks if c.get("bucket") not in ("pass", "skipping")]
+            if checks and not pending:
+                try:
+                    run("gh", "pr", "merge", number, "--repo", repo, "--squash", "--match-head-commit", head)
+                except RuntimeError as err:
+                    give_up(repo, number, f"GitHub refused to merge it: {err}", run, lane_run)
+                merging = True
+            else:
+                late = f"its required check `{pending[0]}` did not pass" if pending else "GitHub reported no required check"
+        if merging:
+            done = json.loads(run("gh", "pr", "view", number, "--repo", repo, "--json", "mergedAt,mergeCommit,state") or "{}")
+            if done.get("mergedAt"):
+                return (done.get("mergeCommit") or {}).get("oid", "")
+            if done.get("state") == "CLOSED":
+                raise RuntimeError(f"the release pull request #{number} closed unmerged: nothing tagged")
+            late = "it did not merge from the merge queue"
+        if waited >= minutes * 60:
+            give_up(repo, number, f"{late} in {minutes} minutes", run, lane_run)
+        sleep(POLL)
+        waited += POLL
+
+
+def give_up(repo, number, why, run=sh, lane_run=""):
+    """The release pull request the lane gives up on, before it merged,
+    closed with a comment that says why (its mark, the reason, the lane's
+    run, the AI line), then an error: nothing is tagged, `vN` stays."""
+    body = (f"{MARK}\nThe release lane gives up on this release pull request and closes it: {why}. Nothing is tagged, and the major tag did not move."
+            + (f"\n\nThe lane's run: {lane_run}" if lane_run else "") + f"\n\n{AI_LINE}")
+    try:
+        run("gh", "pr", "close", number, "--repo", repo, "--delete-branch", "--comment", body)
+    except RuntimeError as err:
+        raise RuntimeError(f"the release pull request #{number} did not merge ({why}), and could not be closed: {err}")
+    raise RuntimeError(f"the release pull request #{number} did not merge: {why}; it is closed, nothing tagged")
 
 
 def release_pull(p):
@@ -305,7 +414,7 @@ def act(p, results, repo, run=sh, sleep=time.sleep, root=".", lane_run=""):
         engine_post().refuse("release", ri["title"], ri["labels"])
         run("gh", "issue", "create", "--repo", repo, "--title", ri["title"], "--body", ri["body"], *sum((["--label", l] for l in ri["labels"]), []))
     elif d["do"] == "release":
-        d.update(release(p, repo, run, sleep, root=root))
+        d.update(release(p, repo, run, sleep, root=root, lane_run=lane_run))
     return d
 
 
@@ -586,16 +695,47 @@ def self_test():
         def missing(argv):
             raise RuntimeError("release not found")
 
-        def merged(parent="p1", main="p1", **more):
-            return Fake({"rev-parse origin/main": main + "\n", "rev-parse abc123^": parent + "\n",
-                         "gh pr create": "https://github.com/O/.github/pull/700\n",
-                         "gh pr view": json.dumps({"mergedAt": "2026-11-02T10:00:00Z", "mergeCommit": {"oid": "abc123"}, "state": "MERGED"}),
-                         "changelog.py build": "# Changelog\n", "changelog.py notes": "notes\n", **more})
+        def merged(parent="p1", main="p1", branch="chore/release-v7.10.1", pending=1, **more):
+            """A release pull request, `risk:high` as the CHANGELOG.md floor
+            makes it, that changes CHANGELOG.md alone, at the head the
+            api-commit sha `h1` onto `p1`, whose required checks are
+            pending for `pending` polls, then pass."""
+            polls = {"checks": 0}
+
+            def checks(argv):
+                polls["checks"] += 1
+                return json.dumps([{"name": "review", "bucket": "pending" if polls["checks"] <= pending else "pass"}, {"name": "conventions", "bucket": "pass"}])
+            answers = {"rev-parse origin/main": main + "\n", "rev-parse abc123^": parent + "\n",
+                       "api-commit.py push": f"{branch} is at h1 on GitHub, signed by GitHub.\n",
+                       "gh pr create": "https://github.com/O/.github/pull/700\n",
+                       "headRefOid,baseRefName,files,state": json.dumps({"headRefOid": "h1", "baseRefName": "main", "state": "OPEN",
+                                                                         "labels": [{"name": "risk:high"}], "files": [{"path": "CHANGELOG.md"}]}),
+                       "repos/O/.github/commits/h1": json.dumps({"sha": "h1", "parents": [{"sha": "p1"}]}),
+                       "gh pr checks": checks,
+                       "mergedAt,mergeCommit,state": json.dumps({"mergedAt": "2026-11-02T10:00:00Z", "mergeCommit": {"oid": "abc123"}, "state": "MERGED"}),
+                       "changelog.py build": "# Changelog\n", "changelog.py notes": "notes\n"}
+            answers.update(more)
+            return Fake(answers)
         fake = merged(**{"gh release view": missing})
-        d = act(p, passed, "O/.github", run=fake, sleep=lambda s: None, root=root)
+        slept = []
+        d = act(p, passed, "O/.github", run=fake, sleep=slept.append, root=root)
         check("C4: all pass → release", d["do"], "release")
         check("C4: the release is built from the commit the scenarios tried", (fake.has("git", "-C", root, "checkout", "-B", "chore/release-v7.10.1", "p1"), bool([c for c in fake.named("changelog.py") if "build" in c and c[-1] == "p1"])), (True, True))
         check("C4: the release pull request is merged", fake.has("gh", "pr", "merge", "700"), True)
+        # #798 C1: the lane merges its `risk:high` release pull request itself,
+        # never by auto-merge, which the auto-merge decision turns off on it.
+        merges = [c for c in fake.calls if c[:3] == ("gh", "pr", "merge")]
+        check("#798 C1: a risk:high release pull request is merged by the lane, at the api-commit sha, never with --auto",
+              (merges, [c for c in merges if "--auto" in c]), ([("gh", "pr", "merge", "700", "--repo", "O/.github", "--squash", "--match-head-commit", "h1")], []))
+        at = lambda match: next((i for i, c in enumerate(fake.calls) if match(c)), None)
+        order = [at(lambda c: c[:3] == ("gh", "pr", "view") and "headRefOid,baseRefName,files,state" in c),
+                 at(lambda c: c[:3] == ("gh", "api", "repos/O/.github/commits/h1")),
+                 at(lambda c: c[:3] == ("gh", "pr", "checks") and "--required" in c),
+                 at(lambda c: c[:3] == ("gh", "pr", "merge"))]
+        check("#798 C1: it reads the files and the head, the head's parent, then the required checks, before it merges",
+              None not in order and order == sorted(order), True)
+        check("#798 C1: a required check still pending is waited on, then the merge",
+              (len([c for c in fake.calls[:order[3] or 0] if c[:3] == ("gh", "pr", "checks")]), bool(slept)), (2, True))
         check("C4: no branch is pushed with git from release() (#780)", [c for c in fake.calls if c[:1] == ("git",) and "push" in c and any(a.startswith("refs/heads/") or a.startswith("HEAD:") for a in c)], [])
         check("C4: the release commit goes through the API, signed (#780)", [list(c[2:]) for c in fake.calls if c[1:2] and c[1].endswith("api-commit.py")], [["push", "chore/release-v7.10.1", "--onto", "HEAD~1", "--force"]])
         check("C4: vX.Y.Z is tagged at its merge commit, lightweight", (fake.has("git", "-C", root, "tag", "v7.10.1", "abc123"), fake.has("git", "-C", root, "push", "origin", "refs/tags/v7.10.1")), (True, True))

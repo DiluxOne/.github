@@ -26,7 +26,12 @@ name: Release lane
 # in its own, on its own core, #694), and only when all rows of the
 # one table `act` merges from them pass (a group that left no results, a
 # scenario with no row or a job that did not succeed is a failing row),
-# and main is still the commit they tried, merges the release pull request, tags vX.Y.Z at its merge
+# and main is still the commit they tried, merges the release pull request
+# itself, never by auto-merge, which the CHANGELOG.md floor (risk:high) keeps
+# off it (#798): once GitHub says it changes CHANGELOG.md alone, its head is
+# the lane's commit onto the planned one and its required checks passed, with
+# `gh pr merge --squash --match-head-commit` (one it gives up on is closed with
+# a comment that says why, and nothing is tagged), tags vX.Y.Z at its merge
 # commit, moves `v7` (lightweight) and publishes the Release (or edits it
 # when engine-release.yml, on the tag's push, made it first). The candidate's
 # token has `workflows`: its commit rewrites workflow files, and it makes
