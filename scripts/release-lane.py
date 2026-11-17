@@ -333,7 +333,7 @@ def merge_release(repo, number, head, planned, run=sh, sleep=time.sleep, minutes
                 raise RuntimeError(f"the release pull request #{number} closed unmerged: nothing tagged")
             late = "it did not merge from the merge queue"
         if waited >= minutes * 60:
-            give_up(repo, number, f"{late} in {minutes} minutes", run, lane_run)
+            give_up(repo, number, f"{late} in {minutes} minute{'' if minutes == 1 else 's'}", run, lane_run)
         sleep(POLL)
         waited += POLL
 
@@ -745,6 +745,44 @@ def self_test():
         check("C4: its GitHub Release is published", fake.has("gh", "release", "create", "v7.10.1"), True)
         check("C4: no person's step: no release issue", fake.has("gh", "issue", "create"), False)
         check("C4: what the watch needs", (d["version"], d["previous"], "error" in d), ("v7.10.1", "v7.10.0", False))
+        # #798 C2: a release pull request the lane gives up on is closed,
+        # with a comment that says why, and nothing is tagged.
+        view = json.loads(fake.answers["headRefOid,baseRefName,files,state"])
+        refused = lambda argv: (_ for _ in ()).throw(ShError("gh pr merge 700: Pull request is not mergeable: review required", "", "review required"))
+        for how, more, minutes, word in (
+                ("a file other than CHANGELOG.md", {"headRefOid,baseRefName,files,state": json.dumps(dict(view, files=[{"path": "CHANGELOG.md"}, {"path": ".github/x.yml"}]))}, 60, "changes `.github/x.yml`, not CHANGELOG.md alone"),
+                ("a head other than the lane's commit", {"headRefOid,baseRefName,files,state": json.dumps(dict(view, headRefOid="h9"))}, 60, "its head is `h9`, not the lane's commit `h1` onto `p1`"),
+                ("a head whose parent is not the planned commit", {"repos/O/.github/commits/h1": json.dumps({"sha": "h1", "parents": [{"sha": "p0"}]})}, 60, "parent is `p0`, not the planned commit `p1`"),
+                ("a failed required check", {"gh pr checks": json.dumps([{"name": "review", "bucket": "fail"}, {"name": "conventions", "bucket": "pass"}])}, 60, "required check `review` failed"),
+                ("the wait timing out", {"gh pr checks": json.dumps([{"name": "review", "bucket": "pending"}])}, 1, "required check `review` did not pass in 1 minute"),
+                ("a merge GitHub refuses", {"gh pr merge": refused}, 60, "GitHub refused to merge it: gh pr merge 700: Pull request is not mergeable"),
+        ):
+            fake = merged(pending=0, **more)
+            err = _raises(lambda: release(p, "O/.github", run=fake, sleep=lambda s: None, minutes=minutes, root=root, lane_run="https://github.com/O/.github/actions/runs/7"))
+            closed = [c for c in fake.calls if c[:4] == ("gh", "pr", "close", "700")]
+            comment = closed[0][closed[0].index("--comment") + 1] if closed and "--comment" in closed[0] else ""
+            merged_calls = [c for c in fake.calls if c[:3] == ("gh", "pr", "merge")]
+            check(f"#798 C2: {how}: {'not merged' if how == 'a merge GitHub refuses' else 'no merge'}, closed with a comment that names why, nothing tagged, v7 not moved, an error",
+                  (merged_calls if how != "a merge GitHub refuses" else [], len(closed), word in comment, comment.startswith(MARK), "actions/runs/7" in comment, comment.endswith(AI_LINE),
+                   [c for c in fake.calls if c[3:4] == ("tag",)], fake.has("git", "-C", root, "push", "-f", "origin", "refs/tags/v7"), word in str(err)),
+                  ([], 1, True, True, True, True, [], False, True))
+        check("#798 C2: a merge GitHub refuses was tried once, at the lane's head", [c[-1] for c in merged_calls], ["h1"])
+        pending8 = lambda argv: (_ for _ in ()).throw(ShError("gh pr checks 700: exit 8", json.dumps([{"name": "review", "bucket": "pending"}]), ""))
+        none_yet = lambda argv: (_ for _ in ()).throw(ShError("gh pr checks 700", "", "no required checks reported on the 'chore/release-v7.10.1' branch"))
+        check("#798 C2: `gh pr checks` exiting 8 while a check is pending, or 1 before any is reported, is read, not raised",
+              (required_checks("O/.github", "700", Fake({"gh pr checks": pending8})), required_checks("O/.github", "700", Fake({"gh pr checks": none_yet}))),
+              ([{"name": "review", "bucket": "pending"}], []))
+        fake = merged(pending=0, **{"gh pr checks": "[]"})
+        err = _raises(lambda: release(p, "O/.github", run=fake, sleep=lambda s: None, minutes=1, root=root))
+        check("#798 C2: no required check reported at all is never taken for green", (fake.has("gh", "pr", "merge"), "reported no required check" in str(err)), (False, True))
+        fake = merged(**{"api-commit.py push": "pushed\n"})
+        err = _raises(lambda: release(p, "O/.github", run=fake, sleep=lambda s: None, root=root))
+        check("#798 C2: a head the lane cannot tell is never merged", (fake.has("gh", "pr", "merge"), fake.has("gh", "pr", "close", "700"), "cannot tell its head" in str(err)), (False, True, True))
+        fake = merged(**{"gh pr close": lambda argv: (_ for _ in ()).throw(ShError("gh pr close 700: closed already"))})
+        fake.answers["headRefOid,baseRefName,files,state"] = json.dumps(dict(view, headRefOid="h9"))
+        err = _raises(lambda: release(p, "O/.github", run=fake, sleep=lambda s: None, root=root))
+        check("#798 C2: a close that fails is still an error that says why, nothing tagged",
+              ("could not be closed" in str(err) and "its head is `h9`" in str(err), [c for c in fake.calls if c[3:4] == ("tag",)]), (True, []))
         # Main moved past the commit the scenarios tried.
         fake = merged(main="p2")
         d = act(p, passed, "O/.github", run=fake, sleep=lambda s: None, root=root)
