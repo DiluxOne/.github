@@ -106,6 +106,12 @@
                              pull request (GitHub's link) opened before the
                              autopilot started (STARTED, or its own pull
                              request); exit 1 with why, 2 when unread
+  autopilot.py taken         whether the fix is already on its way (#807, on a
+                             start): dilux-bot's open "The bug reproduced
+                             from #N" issue of the `bugfix-reproduced` lane,
+                             or an open pull request that closes the issue;
+                             exit 1 with where (the issue told once, with
+                             the links), 2 when unread
   autopilot.py scrub FILE    redact tokens and keys in a transcript, in place
   autopilot.py decide        whether a pull request the autopilot opened may
                              merge on its own (gate G7); prints why; exit 0
@@ -452,6 +458,63 @@ def read_holder(repo, number):
            for p in i["closedByPullRequestsReferences"]["nodes"]]
     ours = sorted(p["created"] for p in prs if p["state"] == "OPEN" and "autopilot" in p["labels"] and p["author_type"] == "Bot")
     return issue, prs, (ours[0] if ours else os.environ.get("STARTED", ""))
+
+
+# A fix already on its way (#807): the `bugfix-reproduced` lane's own issue
+# for the report (scripts/repro-lane.py opens it, dilux-bot, with that
+# title) or an open pull request that closes the report. The autopilot does
+# not start a second one; asked on a start only, never mid-run.
+REPRO_LANE_LABEL, TAKEN_MARK = "lane:bugfix-reproduced", "dx-autopilot-taken"
+TAKEN_QUERY = """query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issues(first: 100, states: OPEN, labels: ["lane:bugfix-reproduced"], orderBy: {field: CREATED_AT, direction: DESC}) {
+      nodes { number url title state author { login }
+        closedByPullRequestsReferences(first: 20, includeClosedPrs: false) { nodes { number url state } } }
+    }
+    issue(number: $number) {
+      closedByPullRequestsReferences(first: 20, includeClosedPrs: false) { nodes { number url state } }
+    }
+  }
+}"""
+
+
+def taken_by(number, lanes, prs):
+    """Where the fix of #number already is (#807), or {}. Pure. `lanes`: the
+    open issues labelled lane:bugfix-reproduced (number, url, title, state,
+    author, prs: those that close it); only dilux-bot's titled exactly "The
+    bug reproduced from #<number>" count, so nothing a person writes takes
+    the issue from the autopilot. `prs`: the open pull requests that close
+    #number by GitHub's link, whoever wrote them. Returns {lane, prs}: the
+    lane's issue and its open pull requests, else the pull requests."""
+    links = lambda ps: [{"number": p["number"], "url": p.get("url", "")} for p in ps or [] if p.get("state", "OPEN") == "OPEN"]
+    title = f"The bug reproduced from #{number}"
+    for lane in lanes or []:
+        if lane.get("state", "OPEN") == "OPEN" and lane.get("title") == title and lane.get("author") in BOT_LOGINS:
+            return {"lane": {"number": lane["number"], "url": lane.get("url", "")}, "prs": links(lane.get("prs"))}
+    found = links(prs)
+    return {"lane": None, "prs": found} if found else {}
+
+
+def taken_why(found):
+    """The one line that says where the fix already is (#807)."""
+    prs = " and ".join(f"[#{p['number']}]({p['url']})" for p in found["prs"])
+    if found.get("lane"):
+        lane = found["lane"]
+        return (f"[#{lane['number']}]({lane['url']}), the `bugfix-reproduced` lane's issue for this report"
+                + (f", and its pull request {prs}" if prs else ""))
+    return f"the pull request {prs}, which closes this issue"
+
+
+def read_taken(repo, number):
+    """(number, lanes, prs) for taken_by, read from GitHub in one query."""
+    owner, name = repo.split("/", 1)
+    data = json.loads(gh("api", "graphql", "-f", f"query={TAKEN_QUERY}", "-F", f"owner={owner}", "-F", f"name={name}", "-F", f"number={number}"))
+    if data.get("errors"):
+        raise RuntimeError(json.dumps(data["errors"])[:300])
+    r = data["data"]["repository"]
+    lanes = [{"number": i["number"], "url": i["url"], "title": i["title"], "state": i["state"], "author": (i.get("author") or {}).get("login") or "",
+              "prs": i["closedByPullRequestsReferences"]["nodes"]} for i in r["issues"]["nodes"]]
+    return number, lanes, r["issue"]["closedByPullRequestsReferences"]["nodes"]
 
 
 def bug_gate(issue_type, lane, declared, proposal, repo):
@@ -3437,6 +3500,33 @@ Clamp the value in Sum::add.
                 r = subprocess.run(["bash", "-c", fix_gate], cwd=d, capture_output=True, text=True, env=env)
                 read = lambda f: open(os.path.join(d, f), encoding="utf-8").read() if os.path.exists(os.path.join(d, f)) else ""
                 return r.returncode, read("calls"), read("out")
+        # #807 C1: prep asks `taken` after `holder`, before the lane and the
+        # spec, on a start only, and a non-zero exit ends it with go=false.
+        at = lambda s: may_run.find(s)
+        check("#807 C1 prep asks `taken` after `holder`, before the lane (and so before the spec job, which needs prep's go)",
+              (at("autopilot.py holder") < at("autopilot.py taken"), 0 <= at("autopilot.py taken") < at("autopilot.py lane"),
+               "needs.prep.outputs.go == 'true'" in json.dumps(jobs["spec"].get("if", ""))), (True, True, True))
+        taken_block = may_run[may_run.find("# Taken elsewhere (#807)"):may_run.find("# Who accepted it")] if at("# Taken elsewhere (#807)") >= 0 else "exit 9"
+        def taken_gate(as_, rc):
+            with tempfile.TemporaryDirectory() as d:
+                for tool, body in (("python3", 'printf \'%s\\n\' "python3 $*" >> calls\ncase "$*" in *" taken"*) echo "the fix is already on its way: #20"; exit "$TAKEN_RC" ;; esac\n'),
+                                   ("gh", 'printf \'%s\\n\' "gh $*" >> calls\n')):
+                    with open(os.path.join(d, tool), "w", encoding="utf-8") as fh:
+                        fh.write("#!/bin/sh\n" + body)
+                    os.chmod(os.path.join(d, tool), 0o755)
+                out = os.path.join(d, "out")
+                env = dict(os.environ, PATH=d + os.pathsep + os.environ.get("PATH", ""), GITHUB_OUTPUT=out, GITHUB_REPOSITORY="o/r", ISSUE="7", AS=as_, TAKEN_RC=str(rc))
+                r = subprocess.run(["bash", "-c", "set -euo pipefail\n" + taken_block + "\necho went-on"], cwd=d, capture_output=True, text=True, env=env)
+                read = lambda f: open(os.path.join(d, f), encoding="utf-8").read() if os.path.exists(os.path.join(d, f)) else ""
+                return r.returncode, "went-on" in r.stdout, read("calls"), read("out")
+        rc, went, calls, out = taken_gate("start", 1)
+        check("#807 C1 a start the fix already took ends with go=false, refreshes the board and goes no further",
+              (rc, went, out, "autopilot.py taken" in calls, "autopilot.py board" in calls, "gh issue comment" in calls), (0, False, "go=false\n", True, True, False))
+        rc, went, calls, out = taken_gate("start", 2)
+        check("#807 C1 a read that fails ends with go=false too, and says so on the issue",
+              (rc, went, out, "gh issue comment 7" in calls, "could not tell whether the fix" in calls), (0, False, "go=false\n", True, True))
+        rc, went, calls, out = taken_gate("continue", 1)
+        check("#807 C1 a continue does not ask: it already has its pull request", (rc, went, out, calls), (0, True, "", ""))
         cap = int(autonomy.policy_in_force().get("autopilot-rounds", 3))
         failing = [{"id": 11, "name": "Scripts (self-tests)", "conclusion": "failure"}]
         rc, calls, out = gate(cap + 1, failing)
@@ -3486,6 +3576,24 @@ Clamp the value in Sum::add.
     check("C6 holder reads GitHub's closing link, never a text search of the pull requests",
           ("closedByPullRequestsReferences(first: 20, includeClosedPrs: false)" in HOLDER_QUERY, "search" in HOLDER_QUERY), (True, False))
     check("C6 the run that steps aside says so", held_comment("a person claimed it (`claimed`)").startswith("The autopilot steps aside: a person claimed it"), True)
+    # #807 C1: a fix already on its way (the `bugfix-reproduced` lane's own
+    # issue for the report, dilux-bot's, open, with its pull request, or an
+    # open pull request that closes the report) starts no second autopilot.
+    taken_of = globals().get("taken_by") or (lambda *a: "taken_by is missing")
+    lane807 = {"number": 20, "url": "https://github.com/o/r/issues/20", "title": "The bug reproduced from #7", "state": "OPEN", "author": BOT_LOGINS[0],
+               "prs": [{"number": 21, "url": "https://github.com/o/r/pull/21", "state": "OPEN"}, {"number": 19, "url": "https://github.com/o/r/pull/19", "state": "CLOSED"}]}
+    pr807 = {"number": 40, "url": "https://github.com/o/r/pull/40", "state": "OPEN"}
+    check("#807 C1 taken_by: dilux-bot's open lane issue for the report, with its open pull request",
+          taken_of(7, [lane807], []), {"lane": {"number": 20, "url": "https://github.com/o/r/issues/20"}, "prs": [{"number": 21, "url": "https://github.com/o/r/pull/21"}]})
+    check("#807 C1 taken_by: an open pull request that closes the report, whoever wrote it",
+          (taken_of(7, [], [pr807]), taken_of("7", [], [pr807, {**pr807, "number": 41, "state": "CLOSED"}])),
+          ({"lane": None, "prs": [{"number": 40, "url": "https://github.com/o/r/pull/40"}]},) * 2)
+    check("#807 C1 taken_by: a person's issue with the lane's title, a closed lane issue, another report's lane issue do not count",
+          [taken_of(7, [l], []) for l in ({**lane807, "author": "mallory"}, {**lane807, "state": "CLOSED"}, {**lane807, "title": "The bug reproduced from #70"},
+                                           {**lane807, "title": "The bug reproduced from #17"}, {**lane807, "title": "Re: The bug reproduced from #7"})], [{}] * 5)
+    check("#807 C1 the read takes the lane's open issues by label and the closing links, never a text search",
+          ("lane:bugfix-reproduced" in globals().get("TAKEN_QUERY", ""), globals().get("TAKEN_QUERY", "").count("closedByPullRequestsReferences(first: 20, includeClosedPrs: false)"),
+           "search" in globals().get("TAKEN_QUERY", "search")), (True, 2, False))
     # C10: an adopted pull request's author is a co-author of every commit
     # the autopilot pushes from it.
     rec = {"pr": 41, "author": "ana", "author_id": 77, "sha": "c" * 40, "branch": "feat/7-adopted-41", "by": "soydiloreto"}
@@ -4638,6 +4746,21 @@ def main(argv):
             return 2
         print(why or "nobody holds it")
         return 1 if why else 0
+    if argv[:1] == ["taken"]:
+        # Whether the fix is already on its way (#807): exit 0 when nothing
+        # took the issue, 1 when the reproduction lane's issue or an open
+        # pull request did (where, on stdout), 2 when it could not be read,
+        # which the workflow takes as taken: it fails closed.
+        try:
+            found = taken_by(*read_taken(repo, number))
+        except (RuntimeError, OSError, ValueError, KeyError, TypeError) as err:
+            print(f"whether the fix of #{number} is already on its way could not be read ({str(err)[:200]})")
+            return 2
+        if not found:
+            print("nothing else took it")
+            return 0
+        print(f"the fix is already on its way: {taken_why(found)}")
+        return 1
     if argv[:1] == ["queue-failed"]:
         # #479: exit 0 when the last merge group PR was in failed a check
         # (the queue dropped it on one), 1 when not (a conflict, a person
