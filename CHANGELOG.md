@@ -2,6 +2,13 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [7.16.0](https://github.com/DiluxOne/.github/releases/tag/v7.16.0) · 2026-11-17
+
+### Features
+
+- the reproduction's steps leave the labels ([#813](https://github.com/DiluxOne/.github/pull/813))
+- the triage keeps its verdicts and drops its steps ([#812](https://github.com/DiluxOne/.github/pull/812))
+
 ## [7.15.1](https://github.com/DiluxOne/.github/releases/tag/v7.15.1) · 2026-11-17
 
 ### Fixes
@@ -11,6 +18,10 @@ Every version of the engine (the workflows, scripts, policy and kinds other repo
 ### CI
 
 - claude steps keep a strict tool list on claude-code-action 1.0.27… ([#795](https://github.com/DiluxOne/.github/pull/795))
+
+### Maintenance
+
+- release v7.15.1 ([#814](https://github.com/DiluxOne/.github/pull/814))
 
 ## [7.15.0](https://github.com/DiluxOne/.github/releases/tag/v7.15.0) · 2026-11-17
 
