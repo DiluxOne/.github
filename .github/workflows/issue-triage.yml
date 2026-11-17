@@ -410,7 +410,7 @@ jobs:
         env:
           DX_FULL_SCHEMA: '{"type":"object","additionalProperties":false,"required":["category","reply","summary","language"],"properties":{"language":{"type":"string","enum":["en","es","pt","other"]},"category":{"type":"string","enum":["bug_unconfirmed","needs_info","by_design","pro_feature","planned","enhancement","question","duplicate","security"]},"layer":{"type":"string","enum":["logic","browser","cli","api","workflow"]},"exists_in_pro":{"type":"boolean"},"duplicate_of":{"type":"integer"},"missing":{"type":"array","items":{"type":"string","maxLength":120}},"reply":{"type":"string","maxLength":2500},"summary":{"type":"string","maxLength":300}}}'
           DX_PAID_SCHEMA: '{"type":"object","additionalProperties":false,"required":["category","language"],"properties":{"language":{"type":"string","enum":["en","es","pt","other"]},"category":{"type":"string","enum":["bug_unconfirmed","needs_info","by_design","pro_feature","planned","enhancement","question","duplicate","security"]},"layer":{"type":"string","enum":["logic","browser","cli","api","workflow"]},"exists_in_pro":{"type":"boolean"},"duplicate_of":{"type":"integer"}}}'
-        uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
+        uses: anthropics/claude-code-action@cc98b3ae241b0fcfb6a42a2690751afffecb4452 # v1.0.278
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
@@ -434,6 +434,7 @@ jobs:
             --max-turns 12
             --max-budget-usd 0.5
             --allowedTools "Read,Glob,Grep"
+            --permission-mode dontAsk
             --json-schema '${{ steps.brief.outputs.paid == 'true' && env.DX_PAID_SCHEMA || env.DX_FULL_SCHEMA }}'
 
       # Kept for an automatic re-run of this run (#694), never when the
@@ -722,7 +723,7 @@ jobs:
         if: steps.fixed.outputs.write == 'true'
         continue-on-error: true
         timeout-minutes: 6
-        uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
+        uses: anthropics/claude-code-action@cc98b3ae241b0fcfb6a42a2690751afffecb4452 # v1.0.278
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
@@ -749,6 +750,7 @@ jobs:
             --max-turns 8
             --max-budget-usd 0.3
             --allowedTools "Read,Glob,Grep"
+            --permission-mode dontAsk
             --json-schema '{"type":"object","additionalProperties":false,"required":["reply","summary"],"properties":{"reply":{"type":"string","maxLength":2500},"summary":{"type":"string","maxLength":300}}}'
 
       # Where a vulnerability posted here is moved (#287, org.yml security),
@@ -837,7 +839,7 @@ jobs:
         id: claude
         continue-on-error: true
         timeout-minutes: 30
-        uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
+        uses: anthropics/claude-code-action@cc98b3ae241b0fcfb6a42a2690751afffecb4452 # v1.0.278
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
@@ -861,6 +863,7 @@ jobs:
             --max-turns 40
             --max-budget-usd 2
             --allowedTools "Read,Glob,Grep"
+            --permission-mode dontAsk
             --json-schema '{"type":"object","additionalProperties":false,"required":["outcome","type","findings","next"],"properties":{"outcome":{"type":"string","enum":["do","clarify","discard"]},"type":{"type":"string","enum":["bug","minor","feature","none"]},"findings":{"type":"string","maxLength":3000},"next":{"type":"string","maxLength":800}}}'
       - name: App token
         id: bot

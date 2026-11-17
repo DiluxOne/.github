@@ -478,7 +478,7 @@ jobs:
         if: steps.cap.outputs.run == 'true' && steps.way.outputs.sandbox == 'php-unit' && steps.way.outputs.fixed == ''
         continue-on-error: true
         timeout-minutes: 15
-        uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
+        uses: anthropics/claude-code-action@cc98b3ae241b0fcfb6a42a2690751afffecb4452 # v1.0.278
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
@@ -498,6 +498,7 @@ jobs:
             --max-turns 60
             --max-budget-usd 2
             --allowedTools "Read,Glob,Grep,Write(tests/Unit/Repro/**),Edit(tests/Unit/Repro/**)"
+            --permission-mode dontAsk
             --json-schema '{"type":"object","additionalProperties":false,"required":["wrote_test","summary","needs_from_reporter"],"properties":{"wrote_test":{"type":"boolean"},"summary":{"type":"string","maxLength":1200},"needs_from_reporter":{"type":"string","maxLength":600},"reported_version":{"type":"string","maxLength":40}}}'
 
       # Any other way the repository declares for the bug's layer (#352): a
@@ -508,7 +509,7 @@ jobs:
         if: steps.cap.outputs.run == 'true' && steps.way.outputs.sandbox != 'php-unit' && steps.way.outputs.fixed == ''
         continue-on-error: true
         timeout-minutes: 15
-        uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
+        uses: anthropics/claude-code-action@cc98b3ae241b0fcfb6a42a2690751afffecb4452 # v1.0.278
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
@@ -525,6 +526,7 @@ jobs:
             --max-turns 60
             --max-budget-usd 2
             --allowedTools "Read,Glob,Grep,Write(${{ steps.way.outputs.dir }}/**),Edit(${{ steps.way.outputs.dir }}/**)"
+            --permission-mode dontAsk
             --json-schema '{"type":"object","additionalProperties":false,"required":["wrote_test","summary","needs_from_reporter"],"properties":{"wrote_test":{"type":"boolean"},"summary":{"type":"string","maxLength":1200},"needs_from_reporter":{"type":"string","maxLength":600},"reported_version":{"type":"string","maxLength":40},"theme":{"type":"string","maxLength":60}}}'
 
       # A way whose test no model writes (#707, repro-ways.py `fixed`: the
@@ -743,7 +745,7 @@ jobs:
       - name: Diagnose
         id: diag
         continue-on-error: true
-        uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
+        uses: anthropics/claude-code-action@cc98b3ae241b0fcfb6a42a2690751afffecb4452 # v1.0.278
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
@@ -774,6 +776,7 @@ jobs:
             --max-turns 30
             --max-budget-usd 1
             --allowedTools "Read,Glob,Grep"
+            --permission-mode dontAsk
             --json-schema '{"type":"object","additionalProperties":false,"required":["cause"],"properties":{"cause":{"type":"string","enum":["harness","test"]},"title":{"type":"string","maxLength":120},"detail":{"type":"string","maxLength":3000}}}'
 
   report:

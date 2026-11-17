@@ -851,7 +851,7 @@ jobs:
         id: spec
         if: needs.prep.outputs.fixed != 'true'
         timeout-minutes: 20
-        uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
+        uses: anthropics/claude-code-action@cc98b3ae241b0fcfb6a42a2690751afffecb4452 # v1.0.278
         env:
           DX_IO: ${{ github.workspace }}/.dx-io
           NUMBER: ${{ needs.prep.outputs.issue }}
@@ -870,11 +870,18 @@ jobs:
           bot_id: ${{ vars.DX_BOT_ID }}
           allowed_bots: ${{ vars.DX_BOT_APP }}
           prompt: ${{ steps.task.outputs.prompt }}
+          # The action denies the commands that run the checkout's code on a
+          # pull request whose author it cannot trust, and a bot is never
+          # trusted, so `make pre-pr` could not run on dilux-bot's own draft.
+          # Off only there; on anyone else's pull request it stays on (#793,
+          # scripts/agent-keys.py BOT_ONLY).
+          restrict_untrusted_prs: ${{ vars.DX_BOT_LOGIN != '' && (github.event.pull_request.user.login || (github.event.issue.pull_request && github.event.issue.user.login)) == vars.DX_BOT_LOGIN && 'false' || 'true' }}
           claude_args: |
             --model claude-opus-5-5
             --max-turns 60
             --max-budget-usd ${{ needs.prep.outputs.budget-spec || '3' }}
             --allowedTools "Bash,Read,Write,Glob,Grep"
+            --permission-mode dontAsk
             --disallowedTools "Monitor"
 
       - name: What the agent left
@@ -1229,7 +1236,7 @@ jobs:
         if: needs.prep.outputs.fixed != 'true'
         # Under the job's timeout: what it committed still goes on.
         timeout-minutes: 75
-        uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
+        uses: anthropics/claude-code-action@cc98b3ae241b0fcfb6a42a2690751afffecb4452 # v1.0.278
         env:
           DX_IO: ${{ github.workspace }}/.dx-io
           DX_BASE: ${{ steps.task.outputs.base }}
@@ -1268,11 +1275,18 @@ jobs:
           bot_id: ${{ vars.DX_BOT_ID }}
           allowed_bots: ${{ vars.DX_BOT_APP }}
           prompt: ${{ steps.task.outputs.prompt }}
+          # The action denies the commands that run the checkout's code on a
+          # pull request whose author it cannot trust, and a bot is never
+          # trusted, so `make pre-pr` could not run on dilux-bot's own draft.
+          # Off only there; on anyone else's pull request it stays on (#793,
+          # scripts/agent-keys.py BOT_ONLY).
+          restrict_untrusted_prs: ${{ vars.DX_BOT_LOGIN != '' && (github.event.pull_request.user.login || (github.event.issue.pull_request && github.event.issue.user.login)) == vars.DX_BOT_LOGIN && 'false' || 'true' }}
           claude_args: |
             --model claude-opus-5-5
             --max-turns 150
             --max-budget-usd ${{ needs.prep.outputs.budget-work || (needs.prep.outputs.mode == 'fix' && '10' || '20') }}
             --allowedTools "Bash,Read,Edit,MultiEdit,Write,Glob,Grep"
+            --permission-mode dontAsk
             --disallowedTools "Monitor"
 
       - name: What the agent left

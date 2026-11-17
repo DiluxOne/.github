@@ -26,7 +26,9 @@ name: Release lane
 # in its own, on its own core, #694), and only when all rows of the
 # one table `act` merges from them pass (a group that left no results, a
 # scenario with no row or a job that did not succeed is a failing row),
-# and main is still the commit they tried, merges the release pull request, tags vX.Y.Z at its merge
+# and main is still the commit they tried, merges the release pull request
+# itself once its checks pass (never by auto-merge, which never merges a
+# CHANGELOG.md-only pull request, `risk:high`, #798), tags vX.Y.Z at its merge
 # commit, moves `v7` (lightweight) and publishes the Release (or edits it
 # when engine-release.yml, on the tag's push, made it first). The candidate's
 # token has `workflows`: its commit rewrites workflow files, and it makes
@@ -394,7 +396,11 @@ jobs:
       previous: ${{ steps.act.outputs.previous }}
       moved_at: ${{ steps.act.outputs.moved_at }}
     steps:
-      - name: App token (contents, pull requests and issues, this repository)
+      # The lane merges its release pull request itself once its checks
+      # pass, never by auto-merge, which never merges a CHANGELOG.md-only
+      # pull request (`risk:high`, #798): it reads those checks with this
+      # token, as the move job does in the test repository (#627, #644).
+      - name: App token (contents, pull requests, issues, checks, statuses and actions, this repository)
         id: app
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -405,6 +411,9 @@ jobs:
           permission-contents: write # the release pull request, the tags, the Release
           permission-pull-requests: write
           permission-issues: write
+          permission-checks: read
+          permission-statuses: read
+          permission-actions: read
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

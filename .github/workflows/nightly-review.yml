@@ -118,7 +118,7 @@ jobs:
         id: agent
         timeout-minutes: 40
         continue-on-error: true # the list says the night found nothing new
-        uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
+        uses: anthropics/claude-code-action@cc98b3ae241b0fcfb6a42a2690751afffecb4452 # v1.0.278
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
@@ -132,6 +132,7 @@ jobs:
             --max-turns 80
             --max-budget-usd 2
             --allowedTools "Read,Glob,Grep"
+            --permission-mode dontAsk
             --json-schema '{"type":"object","additionalProperties":false,"required":["findings"],"properties":{"findings":{"type":"array","maxItems":20,"items":{"type":"object","additionalProperties":false,"required":["severity","file","title","security","detail"],"properties":{"severity":{"type":"string","enum":["blocker","major","minor"]},"file":{"type":"string","maxLength":300},"line":{"type":"integer"},"title":{"type":"string","maxLength":300},"security":{"type":"boolean"},"detail":{"type":"string","maxLength":3000}}}}}}'
 
       # The reviewed repository's issues only, after the agent: its Bug
@@ -201,7 +202,7 @@ jobs:
         if: steps.cand.outputs.second != ''
         continue-on-error: true
         timeout-minutes: 10
-        uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
+        uses: anthropics/claude-code-action@cc98b3ae241b0fcfb6a42a2690751afffecb4452 # v1.0.278
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
@@ -212,6 +213,7 @@ jobs:
             --max-turns 5
             --max-budget-usd 0.5
             --allowedTools "Read"
+            --permission-mode dontAsk
             --json-schema '{"type":"object","additionalProperties":false,"required":["verdicts"],"properties":{"verdicts":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["i","safe"],"properties":{"i":{"type":"integer"},"safe":{"type":"boolean"}}}}}}'
 
       - name: The bugs and the list
