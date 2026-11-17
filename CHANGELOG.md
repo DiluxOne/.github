@@ -2,11 +2,21 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [7.18.0](https://github.com/DiluxOne/.github/releases/tag/v7.18.0) · 2026-11-17
+
+### Features
+
+- labels.yml lists only the labels that stay ([#826](https://github.com/DiluxOne/.github/pull/826))
+
 ## [7.17.1](https://github.com/DiluxOne/.github/releases/tag/v7.17.1) · 2026-11-17
 
 ### Fixes
 
 - the autopilot's own last pushes cancel its review ([#821](https://github.com/DiluxOne/.github/pull/821))
+
+### Maintenance
+
+- release v7.17.1 ([#825](https://github.com/DiluxOne/.github/pull/825))
 
 ## [7.17.0](https://github.com/DiluxOne/.github/releases/tag/v7.17.0) · 2026-11-17
 
