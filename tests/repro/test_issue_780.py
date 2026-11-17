@@ -26,8 +26,13 @@ def test_the_release_branch_is_made_through_api_commit_and_never_pushed_with_git
     answers = {
         "rev-parse origin/main": PLANNED + "\n",
         f"rev-parse {'b' * 40}^": PLANNED + "\n",
+        "api-commit.py push": f"chore/release-v7.14.0 is at {'c' * 40} on GitHub, signed by GitHub.\n",
         "gh pr create": "https://github.com/O/.github/pull/700\n",
-        "gh pr view": json.dumps({"mergedAt": "2026-11-16T10:00:00Z", "mergeCommit": {"oid": "b" * 40}, "state": "MERGED"}),
+        # #798: the lane checks its release pull request, then merges it itself.
+        "headRefOid,baseRefName,files,state": json.dumps({"headRefOid": "c" * 40, "baseRefName": "main", "state": "OPEN", "files": [{"path": "CHANGELOG.md"}]}),
+        f"commits/{'c' * 40}": json.dumps({"sha": "c" * 40, "parents": [{"sha": PLANNED}]}),
+        "gh pr checks": json.dumps([{"name": "review", "bucket": "pass"}]),
+        "mergedAt,mergeCommit,state": json.dumps({"mergedAt": "2026-11-16T10:00:00Z", "mergeCommit": {"oid": "b" * 40}, "state": "MERGED"}),
         "changelog.py build": "# Changelog\n",
         "changelog.py notes": "notes\n",
     }
