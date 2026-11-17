@@ -23,6 +23,11 @@ counts, read from the issue's timeline, never from its text.
                             (a checkout of the repository), as a JSON list:
                             what auto-merge.yml runs again on the release
                             pull request's base to prove its tree (#247)
+  release-issue.py planned-mode
+                            the organisation's `planned-release` now: auto
+                            or confirm (confirm while DX_AUTOPILOT is off),
+                            which the release job reads before it waits for
+                            a plan's decision on the receipts (#804)
   release-issue.py --test   self-test
 
 Environment:
@@ -420,6 +425,9 @@ def main(argv):
                           os.environ.get("CENTRAL_PATH") or central)
         print(json.dumps(result, indent=2))
         return 0 if result["ok"] else 1
+    if argv[:1] == ["planned-mode"]:
+        print(planned_mode())
+        return 0
     if argv[:1] == ["verify"]:
         version = os.environ.get("VERSION", "")
         fixture = os.environ.get("RELEASE_ISSUES_JSON")
@@ -700,6 +708,9 @@ def self_test():
         fh_.write("planned-release: auto\n")
     check("#287: DX_AUTOPILOT=off makes a planned release confirm", (planned_mode(fh_.name, "OFF"), planned_mode(fh_.name, ""), planned_mode(fh_.name, "on")), ("confirm", "auto", "auto"))
     os.unlink(fh_.name)
+    import subprocess as sp
+    pm = lambda v: sp.run([sys.executable, os.path.abspath(__file__), "planned-mode"], env=dict(os.environ, DX_AUTOPILOT=v), capture_output=True, text=True).stdout.strip()
+    check("C1 (#804) cli: planned-mode says what the release job waits on: confirm while DX_AUTOPILOT is off", pm("off"), "confirm")
     post = importlib.util.module_from_spec(spec_ := importlib.util.spec_from_file_location("engine_post", os.path.join(HERE, "engine-post.py")))
     spec_.loader.exec_module(post)
     ri = engine_issue("7.15.0", "feat!: x", "https://github.com/O/.github/actions/runs/1")

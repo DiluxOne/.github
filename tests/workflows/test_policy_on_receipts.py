@@ -105,7 +105,10 @@ def test_the_planned_release_starts_on_lane_release_and_reads_the_receipts():
     assert s["env"]["PLANNED"] == "${{ github.event.label.name == 'lane:release' }}"
     run = code(s["run"])
     planned = run.index('if [ "$PLANNED" = true ]')
-    assert "receipts.py lane get" in run[planned:planned + 600] and "policy/autonomy.yml#planned-release" in run[planned:planned + 600]
+    block = run[planned:run.index("\nfi", planned)]
+    assert "release-issue.py planned-mode" in block and "receipts.py lane get" in block and "policy/autonomy.yml#planned-release" in block
+    # It waits for milestones.py's decision, a bounded while, and a read that fails stops it.
+    assert "for _ in $(seq 1 18)" in block and "sleep 10" in block and 'if [ "$rc" = 2 ]' in block
     # Before anything is said or opened.
     assert planned < run.index("DX_AUTOPILOT") and planned < run.index("next-version.py")
 
@@ -116,3 +119,13 @@ def test_the_receipt_and_the_report_route_on_the_lane_decision():
     assert "steps.receipt.outputs.lane == 'bugfix-reproduced'" in close["if"]
     run = code(step(job, "Write the receipt")["run"])
     assert run.index("receipts.py lane get") < run.index("receipts.py merged")
+
+
+def test_a_lane_decisions_evidence_is_read_before_its_prefix_assignments():
+    # Bash shows a command's earlier prefix assignments to its later ones:
+    # `NUMBER=$lane EVIDENCE_JSON="$(... $NUMBER ...)"` would name the lane's
+    # issue as the report. The evidence is read first, on its own line.
+    for wf in ("issue-repro.yml", "issue-accepted.yml", "runner-image.yml"):
+        for line in code((ROOT / ".github/workflows" / wf).read_text(encoding="utf-8")).splitlines():
+            if "receipts.py lane-decision" in line or line.rstrip().endswith("\\"):
+                assert 'EVIDENCE_JSON="$(' not in line or "NUMBER=" not in line.split("EVIDENCE_JSON")[0] and "LANE=" not in line.split("EVIDENCE_JSON")[0], (wf, line)

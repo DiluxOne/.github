@@ -1263,8 +1263,8 @@ jobs:
             POLICY_REF=$(git -C .dx-central rev-parse --short=12 HEAD)
             export POLICY_REF
             # The lane's decision on the receipts (#804), never a label.
-            NUMBER=$lane LANE=bugfix-reproduced DECIDED=policy EVIDENCE_JSON="$(jq -cn --arg why "$why" --arg report "$NUMBER" --arg run "$RUN_URL" '{why: $why, report: ($report | tonumber), run: $run}')" \
-              python3 .dx-central/scripts/receipts.py lane-decision >/dev/null
+            evidence=$(jq -cn --arg why "$why" --arg report "$NUMBER" --arg run "$RUN_URL" '{why: $why, report: ($report | tonumber), run: $run}')
+            NUMBER=$lane LANE=bugfix-reproduced DECIDED=policy EVIDENCE_JSON="$evidence" python3 .dx-central/scripts/receipts.py lane-decision >/dev/null
             gh issue view "$lane" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/sealed.md"
             NUMBER=$lane BODY="$RUNNER_TEMP/sealed.md" ACCEPTED_BY="policy (lane bugfix-reproduced)" python3 .dx-central/scripts/receipts.py seal-prd
             board=$(NUMBER=$lane BODY="$RUNNER_TEMP/sealed.md" python3 .dx-central/scripts/receipts.py board)

@@ -763,12 +763,12 @@ jobs:
     timeout-minutes: 10
     # A person accepts a release issue (#82): the release pull request, as
     # the header says. Or the plan accepted it (#247): dilux-bot opened it on
-    # its version's milestone, wrote the plan's acceptance to the receipts
-    # and only then added `lane:release` (scripts/milestones.py,
-    # `planned-release: auto`, #804); the step reads that decision back, and
-    # stops without a word on a bot's release issue the plan did not accept
-    # (in `confirm` it opens with the label); publishing checks the planner's
-    # role again (scripts/release-issue.py verify). Everything goes
+    # its version's milestone with `lane:release`, which starts this job, and
+    # wrote the plan's acceptance to the receipts (scripts/milestones.py,
+    # `planned-release: auto`, #804); the step waits for that decision and
+    # reads it, and stops without a word on a bot's release issue the plan
+    # did not accept; publishing checks the planner's role again
+    # (scripts/release-issue.py verify). Everything goes
     # through dilux-bot's token, so the caller's grants are not touched; no
     # code of the repository runs, only the organisation's scripts on its files.
     if: >-
@@ -842,13 +842,22 @@ jobs:
             else gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$body" >/dev/null; fi
           }
           # The plan's acceptance is on the receipts (#804), never a label:
-          # without it, a bot's release issue waits for a person's `accepted`.
+          # milestones.py writes it once the issue it opened with
+          # `lane:release` is whole, so in `auto` this waits for it (up to
+          # three minutes); without it, a bot's release issue waits for a
+          # person's `accepted`, and nothing is said.
           if [ "$PLANNED" = true ]; then
-            rc=0; decision=$(python3 .dx-central/scripts/receipts.py lane get) || rc=$?
-            if [ "$rc" = 2 ]; then echo "::error::#$NUMBER's receipts could not be read; a person accepts it."; exit 1; fi
-            if [ "$(jq -r 'select(. != null) | select(.lane == "release") | .rule' <<<"$decision")" != "policy/autonomy.yml#planned-release" ]; then
-              echo "#$NUMBER: not accepted by the plan; a person accepts it."; exit 0
+            if [ "$(python3 .dx-central/scripts/release-issue.py planned-mode)" != auto ]; then
+              echo "#$NUMBER: planned releases are confirmed by a person (planned-release is not auto)."; exit 0
             fi
+            found=""
+            for _ in $(seq 1 18); do
+              rc=0; decision=$(python3 .dx-central/scripts/receipts.py lane get) || rc=$?
+              if [ "$rc" = 2 ]; then echo "::error::#$NUMBER's receipts could not be read; a person accepts it."; exit 1; fi
+              if [ "$(jq -r 'select(. != null) | select(.lane == "release") | .rule' <<<"$decision")" = "policy/autonomy.yml#planned-release" ]; then found=1; break; fi
+              sleep 10
+            done
+            [ -n "$found" ] || { echo "#$NUMBER: not accepted by the plan; a person accepts it."; exit 0; }
           fi
           if [ "$(tr '[:upper:]' '[:lower:]' <<<"${DX_AUTOPILOT:-}")" = off ]; then
             say "**No release pull request:** the organisation's \`DX_AUTOPILOT\` is off, which stops every autonomous action. A maintainer prepares it by hand (the kind's command, \`scripts/release-markers.sh prepare\` for a plugin) in a pull request that closes this issue."
@@ -986,8 +995,8 @@ jobs:
           # The decision on the receipts (#804), never a label: a write that
           # fails stops here, before the comment says it was accepted.
           if [ "$act" = accept ]; then
-            LANE="${LANE#lane:}" DECIDED=policy POLICY_REF="$POLICY_SHA" EVIDENCE_JSON="$(jq -c --arg label "$LANE" --arg by "$SENDER" '{label: $label, labelled_by: $by, verdict: .act}' "$RUNNER_TEMP/verdict.json")" \
-              python3 .dx-central/scripts/receipts.py lane-decision >/dev/null
+            evidence=$(jq -c --arg label "$LANE" --arg by "$SENDER" '{label: $label, labelled_by: $by, verdict: .act}' "$RUNNER_TEMP/verdict.json")
+            LANE="${LANE#lane:}" DECIDED=policy POLICY_REF="$POLICY_SHA" EVIDENCE_JSON="$evidence" python3 .dx-central/scripts/receipts.py lane-decision >/dev/null
           else
             LANE="" DECIDED=withdrawn POLICY_REF="$POLICY_SHA" python3 .dx-central/scripts/receipts.py lane-decision >/dev/null
           fi

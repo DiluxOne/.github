@@ -248,8 +248,8 @@ jobs:
             # The lane's decision on the receipts (#804), never a label; only
             # dilux-bot writes them, so without its key there is none.
             if [ "$BOT" = true ]; then
-              NUMBER=$(cat "$RUNNER_TEMP/issue") LANE=platform DECIDED=policy POLICY_REF="$GITHUB_SHA" EVIDENCE_JSON="$(jq -cn --arg run "$RUN_URL" '{run: $run}')" \
-                python3 scripts/receipts.py lane-decision >/dev/null
+              evidence=$(jq -cn --arg run "$RUN_URL" '{run: $run}')
+              NUMBER=$(cat "$RUNNER_TEMP/issue") LANE=platform DECIDED=policy POLICY_REF="$GITHUB_SHA" EVIDENCE_JSON="$evidence" python3 scripts/receipts.py lane-decision >/dev/null
             else
               echo "::warning::No App key: #$(cat "$RUNNER_TEMP/issue") has no lane decision on the receipts; a person accepts it."
             fi
