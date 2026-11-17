@@ -504,6 +504,9 @@ jobs:
           # not an input, so the caller on main never names an input the
           # released major lacks.
           QUEUE: ${{ github.event_name == 'pull_request' && github.event.action == 'dequeued' }}
+          # #820: the commit the calling run checked, so a fix round knows
+          # when a newer run superseded it.
+          RUN_HEAD: ${{ github.event.pull_request.head.sha }}
           # At its cap the autopilot hands the issue to people (#488).
           OPEN_TO_CLAIM: "The autopilot reached its cap on this issue, and its pull request waits for a person: anyone may `/claim` this issue to finish it with their own code (CONTRIBUTING.md). It is on the daily list of claims until someone does.\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
         run: |
@@ -664,6 +667,17 @@ jobs:
             fi
           fi
           if [ "$MODE" = fix ]; then
+            # #820: a run a newer one superseded (the pull request's head
+            # moved, or its review was cancelled by a newer run) is no failed
+            # review: it waits for the newer run's review, whose own round
+            # acts on it. No round counted, no comment, no label. A read that
+            # fails (exit 2) goes on as before.
+            if [ "${QUEUE:-}" != true ]; then
+              rc=0; why=$(python3 .dx-central/scripts/autopilot.py superseded) || rc=$?
+              if [ "$rc" -eq 0 ]; then
+                echo "#$PR waits for the newer run's review: $why"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+              fi
+            fi
             max=$(python3 .dx-central/scripts/autonomy.py policy | jq -r '."autopilot-rounds" // 3')
             if [ "$ROUND" -gt "$max" ]; then
               gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label needs-human >/dev/null || true

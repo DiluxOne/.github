@@ -38,6 +38,8 @@ def run(tmp_path, round_):
         # #741: no check of the pipeline failed (a review round), and the
         # comment at the cap is autopilot.py's own.
         "  checks-failed) exit 1 ;;\n"
+        # #820: no newer run superseded this one.
+        "  superseded) exit 1 ;;\n"
         f"  rounds-spent) exec {sys.executable} {ROOT / 'scripts/autopilot.py'} rounds-spent ;;\nesac\n")
     (bin_dir / "gh").write_text(f'#!/bin/bash\necho "gh $*" >> "{log}"\nexit 0\n')
     for f in ("python3", "gh"):

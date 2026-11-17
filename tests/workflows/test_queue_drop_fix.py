@@ -74,7 +74,7 @@ def gate(tmp_path, round_, queue, failed):
     (bin_dir / "python3").write_text(
         "#!/bin/bash\n"
         f'echo "python3 $*" >> "{log}"\n'
-        f"case \"$2\" in policy) echo '{policy}' ;; queue-failed) echo 'Plugin tests (u)'; exit {0 if failed else 1} ;; esac\n")
+        f"case \"$2\" in policy) echo '{policy}' ;; queue-failed) echo 'Plugin tests (u)'; exit {0 if failed else 1} ;; superseded) exit 1 ;; esac\n")
     (bin_dir / "gh").write_text(f'#!/bin/bash\necho "gh $*" >> "{log}"\nexit 0\n')
     for f in ("python3", "gh"):
         (bin_dir / f).chmod(0o755)

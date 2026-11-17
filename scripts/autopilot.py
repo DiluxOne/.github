@@ -134,6 +134,12 @@
                              without a verdict (#741, the jobs of the run
                              GITHUB_RUN_ID): exit 0 (a check round), 1 (a
                              review round), 2 when unread
+  autopilot.py superseded    whether a newer run of the pipeline supersedes
+                             the run GITHUB_RUN_ID (#820): the pull request's
+                             head moved past RUN_HEAD, or its review was
+                             cancelled and a newer run exists; exit 0 (it
+                             waits for the newer run's review), 1 (not
+                             superseded), 2 when unread
   autopilot.py rounds-spent  the comment at the rounds cap (MAX; CHECKS
                              `true` on a check round, #741)
   autopilot.py reply ID TEXT reply in a review thread of the pull request (the
@@ -191,6 +197,7 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -2179,6 +2186,25 @@ def checks_failed(jobs, comments, head, bot=None):
     return failed
 
 
+def superseded(run_id, run_head, pr_head, review_conclusion, newer_runs):
+    """Why a newer run of the pipeline supersedes the run `run_id` (#820),
+    or "" when nothing does: the pull request's head moved past the commit
+    the run checked (`run_head`; a push starts a newer run), or the run's
+    review was cancelled and a newer run of the same workflow exists (its
+    own round acts on its review). A review that failed on its own, at the
+    current head, is never superseded. Pure."""
+    if run_head and pr_head and run_head != pr_head:
+        return f"the pull request's head moved from {run_head[:7]} to {pr_head[:7]}"
+    try:
+        run_id = int(run_id)
+    except (TypeError, ValueError):
+        return ""
+    newer = sorted(int(r["id"]) for r in newer_runs or [] if str(r.get("id", "")).isdigit() and int(r["id"]) > run_id)
+    if review_conclusion == "cancelled" and newer:
+        return f"its review was cancelled by a newer run ({newer[-1]})"
+    return ""
+
+
 def checks_log_text(pr, logs):
     """What the agent reads of the failed checks at the head (#741). Pure."""
     return failed_log_text(f"Why the checks of #{pr} failed", "The checks below failed at the pull request's head: a gate of the pipeline, "
@@ -2546,6 +2572,11 @@ A class on html.
              {"id": 14, "name": "Scripts on macOS (the contributor's tools)", "conclusion": "failure"},
              {"id": 15, "name": "Plugin tests / PHP 8.3", "conclusion": "failure"},
              {"id": 16, "name": "autopilot-fix / Autopilot (fix) · may it run · #8", "conclusion": None}]
+    check("#820: a run is superseded when the head moved past it, or its review was cancelled and a newer run exists; never a review that failed on its own",
+          [bool(superseded(*a)) for a in (("5", "a", "b", "failure", []), ("5", "a", "a", "cancelled", [{"id": 6}, {"id": 5}]),
+                                          ("5", "a", "a", "cancelled", [{"id": 5}, {"id": 4}]), ("5", "a", "a", "failure", [{"id": 6}]),
+                                          ("5", "", "b", "success", []), ("x", "a", "a", "cancelled", [{"id": 6}]))],
+          [True, True, False, False, False, False])
     check("#741 C1: a check round reads the pipeline's failed gates, never a job of the repository's own, one that passed or one still running",
           ([j["id"] for j in checks_failed(cjobs, [], "h1")], checks_failed(cjobs[1:2], [], "h1"), checks_failed([], [], "h1"),
            [fix_job(n) for n in ("conventions / Docs (links and names)", "review / Claude review", "actionlint", "Scripts (self-tests)", "reviewer", "actionlint-x")]),
@@ -4546,6 +4577,31 @@ def failed_checks_of(repo, pr):
     return checks_failed(jobs, issue_comments(repo, pr), pr_json(repo, pr, "headRefOid")["headRefOid"])
 
 
+def superseded_of(repo, pr):
+    """superseded() with its inputs read from the API (#820): the PR's
+    head, the jobs of the run GITHUB_RUN_ID, and the runs of its workflow
+    for the PR's branch. Raises when one could not be read."""
+    run = os.environ.get("GITHUB_RUN_ID", "")
+    if not run:
+        raise RuntimeError("no GITHUB_RUN_ID")
+    head = pr_json(repo, pr, "headRefOid")["headRefOid"]
+    run_head = os.environ.get("RUN_HEAD", "")
+    if run_head and head and run_head != head:
+        return superseded(run, run_head, head, None, [])
+    pages = json.loads(gh("api", f"repos/{repo}/actions/runs/{run}/jobs?per_page=100", "--paginate", "--slurp") or "[]")
+    jobs = [j for page in pages for j in page.get("jobs") or []]
+    review = next((j.get("conclusion") for j in jobs if str(j.get("name") or "").startswith(REVIEW_JOB)), None)
+    if review != "cancelled":
+        return ""
+    this = json.loads(gh("api", f"repos/{repo}/actions/runs/{run}"))
+    branch = urllib.parse.quote(str(this["head_branch"]), safe="")
+    # The newest runs come first: one page holds any newer than this one.
+    listed = json.loads(gh("api", f"repos/{repo}/actions/workflows/{this['workflow_id']}/runs?branch={branch}&per_page=30"))
+    event = this.get("event")
+    runs = [r for r in listed.get("workflow_runs") or [] if not event or r.get("event") == event]
+    return superseded(run, run_head, head, review, runs)
+
+
 def stop_comment(why):
     return f"{STOP}\n**The autopilot stopped here.** {why.strip()}\n\nA person takes it from here (`needs-human`): a maintainer's answer here, a hint in words, brings it back, or they take it over.\n\n{AI_LINE}"
 
@@ -4917,6 +4973,16 @@ def main(argv):
             return 2
         print(", ".join(f"{j.get('name')} ({j.get('html_url')})" for j in failed) or "no check of the pipeline failed at its head")
         return 0 if failed else 1
+    if argv[:1] == ["superseded"]:
+        # #820: exit 0 when a newer run supersedes this one (the fix round
+        # waits for its review), 1 when not, 2 when it could not be read.
+        try:
+            why = superseded_of(repo, pr)
+        except (RuntimeError, ValueError, KeyError, TypeError) as err:
+            print(f"whether a newer run supersedes this one could not be read ({str(err)[:200]})")
+            return 2
+        print(why or "no newer run supersedes this one")
+        return 0 if why else 1
     if argv[:1] == ["rounds-spent"]:
         # MAX, the rounds cap; CHECKS, true on a check round (#741).
         print(rounds_spent(os.environ.get("MAX", "3"), os.environ.get("CHECKS") == "true"))
