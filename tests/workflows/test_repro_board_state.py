@@ -225,3 +225,60 @@ def test_c2_the_other_outcomes_say_their_step(tmp_path):
         lines, states, _ = report(tmp_path / str(i), **env)
         assert states[-1]["step"] == want and states[-1]["reason"], (want, states)
         assert not added(lines, "needs-info") and not added(lines, "needs-human"), want
+
+
+# C3: a migrated `could-not-reproduce` issue is `needs-info` now, and its
+# reproduction's comment may be old. The stale sweep counts the wait from
+# when `needs-info` was last added (the maintainer's answer on #813), read
+# from the issue's events, so a migrated issue is not closed the next day.
+FAKE_STALE_GH = r"""#!/usr/bin/env bash
+printf 'gh %s\n' "$*" | tr '\n' ' ' >> "$CALLS"; echo >> "$CALLS"
+case "$*" in
+  "issue list "*) echo 7 ;;
+  "api repos/o/r/issues/7/comments"*) printf '%s' "$COMMENTS" ;;
+  "api repos/o/r/issues/7/events"*) printf '%s' "$EVENTS" ;;
+esac
+exit 0
+"""
+
+
+def stale(tmp_path, comments, events):
+    the_step = steps("issue-triage.yml", "stale")[-1]
+    bindir = tmp_path / "bin"
+    bindir.mkdir(parents=True)
+    (bindir / "gh").write_text(FAKE_STALE_GH)
+    (bindir / "gh").chmod(0o755)
+    calls = tmp_path / "calls"
+    calls.write_text("")
+    env = {"PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}", "HOME": str(tmp_path), "CALLS": str(calls),
+           "GITHUB_REPOSITORY": "o/r", "DAYS": "14", "BOT": "dilux-bot[bot]",
+           "COMMENTS": json.dumps(comments), "EVENTS": json.dumps(events)}
+    out = subprocess.run(["bash", "-c", the_step["run"]], cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert out.returncode == 0, out.stdout + out.stderr
+    return calls.read_text().splitlines()
+
+
+def closed(lines):
+    return any(l.startswith("gh issue close 7 ") for l in lines)
+
+
+OLD, RECENT = "2020-01-01T00:00:00Z", "2999-01-01T00:00:00Z"
+BOT_ASKED_LONG_AGO = [{"user": {"login": "dilux-bot[bot]"}, "created_at": OLD}]
+
+
+def labeled(name, at):
+    return {"event": "labeled", "label": {"name": name}, "created_at": at}
+
+
+def test_c3_the_stale_sweep_counts_the_wait_from_when_needs_info_was_last_added(tmp_path):
+    # Migrated today, the bot's comment years old: not closed.
+    assert not closed(stale(tmp_path / "a", BOT_ASKED_LONG_AGO, [labeled("needs-info", OLD), labeled("bug", OLD), labeled("needs-info", RECENT)]))
+    # Added long ago and nobody answered: closed, as before.
+    assert closed(stale(tmp_path / "b", BOT_ASKED_LONG_AGO, [labeled("needs-info", OLD), labeled("bug", RECENT)]))
+    # When it was added cannot be read: the issue is left open.
+    assert not closed(stale(tmp_path / "c", BOT_ASKED_LONG_AGO, []))
+
+
+def test_c3_an_answer_still_takes_needs_info_off(tmp_path):
+    lines = stale(tmp_path, [{"user": {"login": "reporter"}, "created_at": OLD}], [labeled("needs-info", OLD)])
+    assert any(l.startswith("gh issue edit 7 ") and "--remove-label needs-info" in l for l in lines) and not closed(lines)

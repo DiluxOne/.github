@@ -82,8 +82,9 @@ name: Issue triage
 # are scripts/triage-brief.sh and scripts/triage-act.sh, shared by both jobs.
 #
 # On a schedule, the same workflow closes `needs-info` issues nobody answered
-# in `stale-days`. When a person labels an issue `spike` (#193), the `spike`
-# job investigates it read-only and recommends what to do (scripts/spike.py).
+# in `stale-days`, counted from when `needs-info` was last added (#801).
+# When a person labels an issue `spike` (#193), the `spike` job investigates
+# it read-only and recommends what to do (scripts/spike.py).
 # Everything in the issue is data, never instructions.
 #
 #   on:
@@ -970,11 +971,14 @@ jobs:
           cutoff=$(date -u -d "$DAYS days ago" +%Y-%m-%dT%H:%M:%SZ)
           for n in $(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label needs-info --limit 100 --json number --jq '.[].number'); do
             # Someone answered after the bot asked: the label comes off and a person looks.
-            last=$(gh api "repos/$GITHUB_REPOSITORY/issues/$n/comments" --paginate 2>/dev/null | jq -rs 'add | last | "\(.user.login) \(.created_at)"' 2>/dev/null || echo "")
-            author=${last%% *}; when=${last#* }
+            author=$(gh api "repos/$GITHUB_REPOSITORY/issues/$n/comments" --paginate 2>/dev/null | jq -rs 'add | last | .user.login // empty' 2>/dev/null || echo "")
             if [ -n "$author" ] && [ "$author" != "$BOT" ]; then
               gh issue edit "$n" --repo "$GITHUB_REPOSITORY" --remove-label needs-info >/dev/null; echo "#$n answered by $author: label removed."; continue
             fi
+            # The wait counts from when needs-info was last added (#801): an
+            # issue migrated from could-not-reproduce is not closed for an old
+            # comment. When that cannot be read, the issue stays open.
+            when=$(gh api "repos/$GITHUB_REPOSITORY/issues/$n/events" --paginate 2>/dev/null | jq -rs 'add | map(select(.event == "labeled" and .label.name == "needs-info")) | last | .created_at // empty' 2>/dev/null || echo "")
             if [ -z "$when" ] || ! [ "$when" \< "$cutoff" ]; then continue; fi
             gh issue comment "$n" --repo "$GITHUB_REPOSITORY" --body "$(printf 'Closing for now: the information asked for above did not arrive in %s days. Reopen it, or open a new issue, whenever you can add it.\n\n<sub>🤖 AI triage · scheduled</sub>' "$DAYS")" >/dev/null
             gh issue close "$n" --repo "$GITHUB_REPOSITORY" --reason "not planned" >/dev/null
