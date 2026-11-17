@@ -25,9 +25,10 @@ name: AI evaluation
 # A change that should move a score writes the new baseline from this run's
 # results (the artifact): `scripts/evals.py baseline <step> FILE`, in the
 # same pull request, which a person merges. The triage's and the reply's
-# cases come from the API: run this workflow by hand with `collect`, which
-# calls no model and reads with this job's own token, and commit the
-# artifact's cases.json files.
+# cases come from the API: the collect job, which calls no model and reads
+# with this job's own token, runs by hand with `collect` and on a pull
+# request from a branch of this repository while either cases file is
+# missing; commit its artifact's cases.json files.
 
 on:
   pull_request:
@@ -85,6 +86,7 @@ jobs:
       pull-requests: read
     outputs:
       steps: ${{ steps.list.outputs.steps }}
+      collect: ${{ steps.missing.outputs.collect }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -112,6 +114,18 @@ jobs:
           fi
           echo "steps=$(jq -Rnc '[inputs | select(length > 0)]' < "$RUNNER_TEMP/steps.txt")" >> "$GITHUB_OUTPUT"
           echo "Steps: $(tr '\n' ' ' < "$RUNNER_TEMP/steps.txt")"
+
+      # While either set the API holds is missing, the collect job gathers
+      # it on this pull request too (#735), so that the next commit adds it.
+      - name: Whether a set the API holds is missing
+        id: missing
+        run: |
+          set -euo pipefail
+          if [ -f evals/triage/cases.json ] && [ -f evals/reply/cases.json ]; then
+            echo "collect=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "collect=true" >> "$GITHUB_OUTPUT"
+          fi
 
   eval:
     name: AI evaluation (${{ matrix.step }})
@@ -168,10 +182,13 @@ jobs:
   # The cases only the API holds (#735): the triage's records and the
   # reply's threads, from the public repositories. No model, no secret:
   # this job's own token, read-only; the cases leave as an artifact, and a
-  # pull request commits them.
+  # pull request commits them. It runs by hand with `collect`, and on a
+  # pull request from a branch of this repository while either cases file
+  # is missing (the steps job says so).
   collect:
     name: Collect the triage's and the reply's cases
-    if: github.event_name == 'workflow_dispatch' && inputs.collect
+    needs: steps
+    if: always() && ((github.event_name == 'workflow_dispatch' && inputs.collect) || needs.steps.outputs.collect == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

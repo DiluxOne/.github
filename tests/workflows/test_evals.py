@@ -81,7 +81,7 @@ def test_the_workflow_runs_the_steps_the_files_name_one_check_each():
     first = wf["jobs"]["steps"]
     assert "secrets." not in json.dumps(first)
     assert "head.repo.full_name == github.repository" in first["if"]
-    run = first["steps"][-1]["run"]
+    run = next(s for s in first["steps"] if s.get("id") == "list")["run"]
     assert "scripts/pr-files.py | python3 scripts/evals.py steps" in run
     job = wf["jobs"]["eval"]
     assert job["name"] == "AI evaluation (${{ matrix.step }})"
@@ -95,6 +95,42 @@ def test_the_workflow_runs_the_steps_the_files_name_one_check_each():
     assert not (ROOT / ".github" / "workflows" / "review-eval.yml").exists()
     collect = wf["jobs"]["collect"]
     assert "secrets." not in json.dumps(collect) and set(collect["permissions"].values()) == {"read"}
+
+
+def test_a_branchs_pull_request_collects_the_sets_the_api_holds_while_one_is_missing(tmp_path):
+    # The maintainer's answer on #735: the collect job also runs on a pull
+    # request from a branch of this repository when either cases file is
+    # missing, with no model and a read-only token, and uploads its artifact.
+    wf = workflow("evals.yml")
+    first = wf["jobs"]["steps"]
+    check = next(s for s in first["steps"] if s.get("id") == "missing")
+    assert "${{" not in check["run"]
+    assert first["outputs"]["collect"] == "${{ steps.missing.outputs.collect }}"
+    collect = wf["jobs"]["collect"]
+    assert collect["needs"] == "steps"
+    assert "needs.steps.outputs.collect == 'true'" in collect["if"]
+    assert "github.event_name == 'workflow_dispatch' && inputs.collect" in collect["if"]
+    assert "npm install" not in json.dumps(collect) and "secrets." not in json.dumps(collect)
+    assert set(collect["permissions"].values()) == {"read"}
+    upload = collect["steps"][-1]
+    assert upload["with"]["name"] == "evals-collected"
+    env = {**check.get("env", {}), "GITHUB_OUTPUT": str(tmp_path / "out")}
+
+    def said(present):
+        for s in ("triage", "reply"):
+            p = tmp_path / "evals" / s / "cases.json"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.unlink(missing_ok=True)
+            if s in present:
+                p.write_text("[]")
+        (tmp_path / "out").write_text("")
+        subprocess.run(["bash", "-c", check["run"]], cwd=tmp_path, env={**os.environ, **env}, check=True)
+        return (tmp_path / "out").read_text().strip()
+
+    assert said({"triage", "reply"}) == "collect=false"
+    assert said({"triage"}) == "collect=true"
+    assert said({"reply"}) == "collect=true"
+    assert said(set()) == "collect=true"
 
 
 def test_score_exits_1_when_worse_than_the_baseline(tmp_path):
