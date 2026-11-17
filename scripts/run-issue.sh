@@ -3,7 +3,8 @@
 # build (runner-image.yml) and the week's decisions by policy
 # (autonomy-digest.yml). Each run opens its own issue, labelled `run:<kind>`;
 # it closes as completed when the run needs no one, and stays open with
-# `needs:maintainer` when it does. The closed issues are the record and the
+# `needs-human` when it does (#803: the label it had before is moved to
+# `needs-human` on the issues still open, by scripts/sync-repos.py). The closed issues are the record and the
 # statistics: `is:issue label:run:<kind>` lists every run, and the open ones
 # are what waits on a person.
 #
@@ -28,13 +29,13 @@
 # come from labels.yml, which the sync brings to every repository.
 set -euo pipefail
 
-# The labels for a run's issue: its kind's, the caller's, and needs:maintainer
+# The labels for a run's issue: its kind's, the caller's, and needs-human
 # when it needs a person. $1 kind, $2 extra labels (comma-separated), $3 1
 # when it needs a person.
 labels_for() {
   local out="run:$1"
   [ -z "$2" ] || out+=",$2"
-  [ "$3" != 1 ] || out+=",needs:maintainer"
+  [ "$3" != 1 ] || out+=",needs-human"
   printf '%s' "$out"
 }
 
@@ -59,7 +60,7 @@ build_result() {
 
 settle_runs() {
   local kind=$1 url=$2 n
-  for n in $(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label "run:$kind" --label needs:maintainer --limit 100 --json number --jq '.[].number'); do
+  for n in $(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label "run:$kind" --label needs-human --limit 100 --json number --jq '.[].number'); do
     gh issue close "$n" --repo "$GITHUB_REPOSITORY" --reason completed --comment "A later run needed no one: $url" >/dev/null
   done
 }
@@ -77,7 +78,7 @@ self_test() {
   GITHUB_REPOSITORY=o/r
 
   check "labels: the kind's alone" "$(labels_for runner-image "" 0)" "run:runner-image"
-  check "labels: with the caller's and needs:maintainer" "$(labels_for runner-image "lane:platform,accepted-by:policy" 1)" "run:runner-image,lane:platform,accepted-by:policy,needs:maintainer"
+  check "labels: with the caller's and needs-human (#803)" "$(labels_for runner-image "lane:platform,accepted-by:policy" 1)" "run:runner-image,lane:platform,accepted-by:policy,needs-human"
 
   : > "$log"
   got=$(printf 'All good.\n' | NEEDS=0 open_run runner-image "Runner image, run 7: promoted")
@@ -87,7 +88,8 @@ self_test() {
 
   : > "$log"
   printf 'Failed.\n' | NEEDS=1 LABELS="lane:platform" open_run runner-image "Runner image, run 8: build failed" >/dev/null
-  check "a run that needs a person: labelled needs:maintainer" "$(grep -c -- '--label run:runner-image,lane:platform,needs:maintainer ' "$log")" 1
+  check "a run that needs a person: labelled needs-human (#803)" "$(grep -c -- '--label run:runner-image,lane:platform,needs-human ' "$log")" 1
+  check "#803 never needs:maintainer" "$(grep -c 'needs:maintainer' "$log")" 0
   check "a run that needs a person: stays open" "$(grep -c '^issue close' "$log")" 0
   check "only the kind's label is created when missing" "$(grep -c '^label create run:runner-image ' "$log"):$(grep -c '^label create' "$log")" "1:1"
 
@@ -99,7 +101,7 @@ self_test() {
 
   : > "$log"
   settle_runs runner-image "https://github.com/o/r/actions/runs/9"
-  check "settle: asks for the kind's open issues that wait on a person" "$(grep -c -- '^issue list --repo o/r --state open --label run:runner-image --label needs:maintainer ' "$log")" 1
+  check "settle: asks for the kind's open issues that wait on a person" "$(grep -c -- '^issue list --repo o/r --state open --label run:runner-image --label needs-human ' "$log")" 1
   check "settle: closes each as completed, naming the run" "$(grep -c -- '--reason completed --comment A later run needed no one: https://github.com/o/r/actions/runs/9$' "$log")" 2
 
   unset -f gh

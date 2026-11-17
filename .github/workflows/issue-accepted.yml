@@ -27,7 +27,8 @@ name: Issue accepted
 # `incomplete` one takes the label off with a comment that mentions who
 # added it and says what is missing. A maintainer's answer to an open
 # comment is read on the next edit or acceptance, not on its own. The
-# acceptance removes `needs-triage`: a person has looked at the issue. It
+# acceptance removes an old `needs-triage`, which nothing sets any more
+# (#803: the board says whether the triage ran). It
 # assigns the issue to the person who accepted it, unless it has an assignee
 # already (#73; scripts/issue-assignee.sh): with the bot's key, like the
 # comment. A lane's issue, accepted by policy and never labelled by a
@@ -408,7 +409,7 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s' "$BODY_TEXT" > "$RUNNER_TEMP/body.md"
-          # A person accepted it, so it was looked at: needs-triage goes.
+          # An old needs-triage goes (#803: nothing sets it any more).
           gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label needs-triage >/dev/null 2>&1 || true
           BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/receipts.py seal-prd
           board=$(BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/receipts.py board)

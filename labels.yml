@@ -28,10 +28,9 @@
 - {name: "autopilot:catchup", color: "1D76DB", description: "On an issue: the run the continue starts only catches up with another merge; it does not count"}
 - {name: "autopilot:core-wait", color: "C5DEF5", description: "On an issue: the autopilot waits for another pull request on the engine's core"}
 - {name: needs-human, color: "D93F0B", description: "The autopilot handed this over to a person"}
-- {name: "needs:maintainer", color: "D93F0B", description: "Waits on a maintainer's decision"}
 
 # One issue per run of the bots' recurring work (scripts/run-issue.sh, #188):
-# closed when the run needed no one, open with needs:maintainer when it did.
+# closed when the run needed no one, open with needs-human when it did.
 - {name: "run:runner-image", color: "C5DEF5", description: "A build of the runner image (runner-image.yml)"}
 - {name: "run:autonomy-digest", color: "C5DEF5", description: "A week's decisions by policy (autonomy-digest.yml)"}
 - {name: "run:claims", color: "C5DEF5", description: "The daily list of claims (issue-claim.yml), one comment per repository"}
@@ -48,7 +47,6 @@
 - {name: reverted, color: "B60205", description: "Reverted: the default branch went red after it merged"}
 
 # The issue triage (issue-triage.yml).
-- {name: needs-triage, color: "E4E669", description: "Not looked at yet"}
 - {name: "bug:unconfirmed", color: "D93F0B", description: "A bug report: a reproduction starts on its own (repro:run starts one by hand)"}
 - {name: needs-info, color: "E4E669", description: "Waiting for versions, steps or logs"}
 - {name: spike, color: "FBCA04", description: "A person asks for a read-only investigation before deciding"}
@@ -58,7 +56,6 @@
 - {name: exists-in-pro, color: "5319E7", description: "A paid product already has it"}
 - {name: question, color: "D876E3", description: "A usage question; the support channel has it"}
 - {name: security, color: "B60205", description: "A vulnerability report; a person merges its fix"}
-- {name: enhancement, color: "A2EEEF", description: "New feature or request"}
 - {name: duplicate, color: "CFD3D7", description: "An open issue already covers it"}
 # Where a defect shows (#352, #376): the reproduction uses the way the
 # repository declares for it (scripts/repro-ways.py).

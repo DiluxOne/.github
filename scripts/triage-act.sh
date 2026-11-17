@@ -19,8 +19,15 @@
 # (true in a private repository: a security report stays as the issue), NUMBER,
 # MAINTAINER (who a security report mentions; else org.yml `maintainers`),
 # MODEL, COST (optional), GITHUB_REPOSITORY, GH_TOKEN; AUTHOR (the
-# issue's author), SECURITY_REPO and SECURITY_TOKEN (optional). A verdict
-# with no category labels the issue needs-triage and stops.
+# issue's author), SECURITY_REPO and SECURITY_TOKEN (optional); BODY (a file
+# holding the issue's body, for the board's G1 row). Whether the triage ran
+# is on the issue's board (#803), never a label: the `triage` key of its
+# state (receipts.py state set), {"ran": true, "verdict", "at"} once a
+# verdict is applied, {"ran": false, "why"} when none could be (`cap`,
+# `failed`, `no-verdict`, `unknown`), and then the board waits on the
+# maintainers, mentioned once (receipts.py waits). A verdict with no
+# category says so on the board and stops; `unrun <why>` says it for the
+# workflow's own fallbacks (over the cap, a classifier that failed).
 #
 # A maintainer's own Bug (C2, #564) is not an outside reporter's report:
 # `own-bug` runs before the triage, and when the issue's Type is Bug and its
@@ -48,6 +55,7 @@
 #   triage-act.sh                 act
 #   triage-act.sh own-bug         a maintainer's own Bug: accept it, or not
 #   triage-act.sh own-bug-check   whether the issue is one (yes|no)
+#   triage-act.sh unrun <why>     the board says the triage could not run
 #   triage-act.sh --test          self-test, with a stand-in for gh
 set -euo pipefail
 
@@ -104,6 +112,36 @@ board_upsert() {
   else gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$board" >/dev/null; fi
 }
 
+# The triage's outcome, on the board's state (#803): $1 the `triage` key's
+# JSON. A triage that ran clears the board's wait on a triage that had not
+# (a maintainer's re-run), and no other. A board that cannot be written is
+# said; the triage goes on.
+triage_state() {
+  local receipts extra="" w
+  receipts="$(dirname "${BASH_SOURCE[0]}")/receipts.py"
+  if [ "$(jq -r .ran <<<"$1")" = true ]; then
+    w=$(python3 "$receipts" state get waits 2>/dev/null) || w=null
+    [ "$(jq -r 'if type == "object" then .step // "" else "" end' <<<"$w" 2>/dev/null)" != triage ] || extra="waits=null"
+  fi
+  python3 "$receipts" state set "triage=$1" ${extra:+"$extra"} >/dev/null \
+    || echo "::warning::#$NUMBER's board could not say whether the triage ran."
+}
+
+# A triage that could not run (#803; $1: cap, failed, no-verdict, unknown):
+# said on the board, which then waits on the maintainers (MAINTAINER, else
+# org.yml's), mentioned once, with the run's link.
+unrun() {
+  local why=$1 who url base=${GITHUB_SERVER_URL:-https://github.com}
+  triage_state "$(jq -cn --arg why "$why" '{ran: false, why: $why}')"
+  who=${MAINTAINER:-$(python3 "$(dirname "${BASH_SOURCE[0]}")/org.py" maintainers 2>/dev/null || true)}
+  url="$base/$GITHUB_REPOSITORY/issues/$NUMBER"
+  [ -z "${GITHUB_RUN_ID:-}" ] || url="$base/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+  WAITS_JSON=$(jq -cn --arg who "$who" --arg url "$url" \
+    '{who: [$who | splits("[[:space:]]+") | select(test("^[A-Za-z0-9-]{1,39}$"))], what: "the triage could not run: re-run its job or triage the issue by hand", url: $url, step: "triage"}') \
+    python3 "$(dirname "${BASH_SOURCE[0]}")/receipts.py" waits >/dev/null \
+    || echo "::warning::#$NUMBER's board could not say whom it waits on."
+}
+
 own_accept() {
   local out=${GITHUB_OUTPUT:-/dev/null} here ready reply
   here=$(dirname "${BASH_SOURCE[0]}")
@@ -147,7 +185,7 @@ own_accept() {
   fi
   gh label create accepted --repo "$GITHUB_REPOSITORY" --color 0E8A16 --description "A maintainer accepted it: the autopilot may start" >/dev/null 2>&1 || true
   gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label accepted >/dev/null
-  for l in awaiting-acceptance incomplete needs-triage; do
+  for l in awaiting-acceptance incomplete; do
     gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label "$l" >/dev/null 2>&1 || true
   done
   echo "accepted=true" >> "$out"
@@ -161,10 +199,10 @@ act() {
   local category label reply record dup kind
   if ! printf '%s' "${VERDICT:-}" | jq -e .category >/dev/null 2>&1; then
     echo "::warning::No classification came back; the issue stays as it is for a human."
-    gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label needs-triage >/dev/null 2>&1 || true
+    unrun no-verdict
     return 0
   fi
-  for l in "bug:unconfirmed|D93F0B|A bug report: a reproduction starts on its own (repro:run starts one by hand)" "needs-info|E4E669|Waiting for versions, steps or logs" "by-design|BFDADC|Works as documented, or a known limitation" "pro-feature|5319E7|Needs the paid service or add-on" "planned|0E8A16|Already planned" "exists-in-pro|5319E7|A paid product already has it" "question|D876E3|A usage question; the support channel has it" "security|B60205|A vulnerability report; a person merges its fix" "enhancement|A2EEEF|New feature or request" "duplicate|CFD3D7|An open issue already covers it" "needs-triage|E4E669|Not looked at yet"; do
+  for l in "bug:unconfirmed|D93F0B|A bug report: a reproduction starts on its own (repro:run starts one by hand)" "needs-info|E4E669|Waiting for versions, steps or logs" "by-design|BFDADC|Works as documented, or a known limitation" "pro-feature|5319E7|Needs the paid service or add-on" "planned|0E8A16|Already planned" "exists-in-pro|5319E7|A paid product already has it" "question|D876E3|A usage question; the support channel has it" "security|B60205|A vulnerability report; a person merges its fix" "duplicate|CFD3D7|An open issue already covers it"; do
     IFS='|' read -r name color desc <<<"$l"
     gh label create "$name" --repo "$GITHUB_REPOSITORY" --color "$color" --description "$desc" --force >/dev/null
   done
@@ -197,13 +235,21 @@ act() {
     by_design) label="by-design";;
     pro_feature) label="pro-feature";;
     planned) label="planned";;
-    enhancement) label="enhancement"; [ "$(jq -r '.exists_in_pro // false' <<<"$VERDICT")" = true ] && label="enhancement,exists-in-pro";;
+    # A request carries its Feature Type (#803), no label of its own.
+    enhancement) label=""; [ "$(jq -r '.exists_in_pro // false' <<<"$VERDICT")" = true ] && label="exists-in-pro";;
     question) label="question";;
     duplicate) label="duplicate";;
     security) label="security";;
-    *) echo "::warning::Unknown category '$category'; the issue waits for a person."; label="needs-triage";;
+    *) echo "::warning::Unknown category '$category'; the issue waits for a person."; label="";;
   esac
-  gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "$label" --remove-label needs-triage >/dev/null 2>&1 || gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "$label" >/dev/null
+  [ -z "$label" ] || gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "$label" >/dev/null
+  # Whether the triage ran, on the board (#803): before a security report
+  # moves, so the board moves with it.
+  case $effective in
+    bug_unconfirmed | needs_info | by_design | pro_feature | planned | enhancement | question | duplicate | security)
+      triage_state "$(jq -cn --arg v "$effective" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{ran: true, verdict: $v, at: $at}')" ;;
+    *) unrun unknown ;;
+  esac
   # Where a defect shows (#352): the reproduction reads it to pick the way
   # the repository declares for that layer (scripts/repro-ways.py). Added
   # before the reproduction starts; one a person set already stays.
@@ -307,6 +353,9 @@ move_private() {
 if [ "${1:-}" = "--test" ]; then
   fail=0
   log=$(mktemp)
+  # The board in a fixture (receipts.py): never GitHub's.
+  boards=$(mktemp -d)
+  export RECEIPTS_FIXTURE=$boards AUTOPILOT_JSON=null LABELS_JSON='[]' HELD=''
   # A stand-in for gh that records every call, one line each.
   gh() { printf '%s\n' "$*" | tr '\n' ' ' >> "$log"; echo >> "$log"; case "$*" in "issue view 7 "*) [ -z "${HAS_LAYER:-}" ] || echo layer:browser;; "issue view 3 "*) echo OPEN;; "issue view 4 "*) echo CLOSED;; "api repos/o/r/issues/7 --jq .node_id") echo I_7;; "api repos/o/r/issues/7 --jq"*) echo "${HAS_TYPE:-}";; "api repos/o/sec --jq .node_id") echo R_1;; "api graphql -f query=query"*) [ -z "${GQL_FAILS:-}" ] || return 1; echo "${TYPE_BY:-}";; "api repos/o/r/collaborators/"*) [ -z "${PERM_FAILS:-}" ] || return 1; echo "${PERM:-read}";; "api graphql "*) [ -z "${MOVE_FAILS:-}" ] || return 1; echo 12;; "issue lock "*) [ -z "${LOCK_FAILS:-}" ] || return 1;; esac; }
   t() {
@@ -318,7 +367,8 @@ if [ "${1:-}" = "--test" ]; then
   VERDICT='{"category":"needs_info"}' REPLY="Which version?" SUMMARY=s t "a verdict labels the issue" "issue edit 7 --repo o/r --add-label needs-info"
   VERDICT='{"category":"needs_info"}' REPLY="Which version?" SUMMARY=s t "and posts the reply with the AI line" "issue comment 7 .*Which version\?.*AI triage · m"
   VERDICT='{"category":"pro_feature"}' REPLY="" SUMMARY=pro_feature t "an empty reply posts a plain one" "Thanks! A maintainer will take a look"
-  VERDICT='{"category":"enhancement","exists_in_pro":true}' REPLY=x SUMMARY=s t "a paid product's feature gets both labels" "--add-label enhancement,exists-in-pro"
+  VERDICT='{"category":"enhancement","exists_in_pro":true}' REPLY=x SUMMARY=s t "#803 a paid product's feature gets exists-in-pro alone" "--add-label exists-in-pro $"
+  : > "$log"; if ( VERDICT='{"category":"enhancement"}' REPLY=x SUMMARY=s NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m act >/dev/null 2>&1; grep -qE -- "--add-label|label create enhancement" "$log" ); then echo "FAIL #803 a request gets no label: its Feature Type carries it"; cat "$log"; fail=1; else echo "ok   #803 a request gets no label: its Feature Type carries it"; fi
   VERDICT='{"category":"duplicate","duplicate_of":3}' REPLY=x SUMMARY=s t "a duplicate names the original" "Duplicate of #3"
   VERDICT='{"category":"duplicate","duplicate_of":4}' REPLY=x SUMMARY=s t "a closed original is not named" "issue comment 7 --repo o/r --body .*as it moves\.  x  <sub>"
   VERDICT='{"category":"duplicate","duplicate_of":31337}' REPLY=x SUMMARY=s t "a number that is no open issue names nothing" "issue comment 7 --repo o/r --body .*as it moves\.  x  <sub>"
@@ -350,7 +400,7 @@ if [ "${1:-}" = "--test" ]; then
   HAS_TYPE=Bug TYPE_BY=boss PERM=write VERDICT='{"category":"planned"}' REPLY=x SUMMARY=s t "#496 the reply says the Bug is kept and repro:run starts its reproduction" "it stays a Bug, labelled bug:unconfirmed. Its reproduction does not start on its own: a maintainer starts it with the repro:run label."
   : > "$log"; ( VERDICT='{"category":"enhancement"}' REPLY=x SUMMARY=s HAS_TYPE=Bug TYPE_BY=alice PERM=read NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m act >/dev/null 2>&1 ) || true
   if grep -q "starts it with the repro:run label" "$log"; then echo "FAIL #496 a retyped Bug's reply does not mention repro:run"; fail=1; else echo "ok   #496 a retyped Bug's reply does not mention repro:run"; fi
-  HAS_TYPE=Bug TYPE_BY=alice PERM=read VERDICT='{"category":"enhancement"}' REPLY=x SUMMARY=s t "#496 a reporter's Bug is still labelled enhancement" "issue edit 7 --repo o/r --add-label enhancement"
+  HAS_TYPE=Bug TYPE_BY=alice PERM=read VERDICT='{"category":"enhancement"}' REPLY=x SUMMARY=s t "#496 a reporter's Bug read as a request is retyped Feature" "api -X PATCH repos/o/r/issues/7 -f type=Feature"
   for fails in GQL_FAILS PERM_FAILS; do
     : > "$log"; ( export "$fails=1"; VERDICT='{"category":"enhancement"}' REPLY=x SUMMARY=s HAS_TYPE=Bug TYPE_BY=boss NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m act >/dev/null 2>&1 ) || true
     if grep -q -- "--add-label bug:unconfirmed" "$log"; then echo "ok   #496 a read that fails ($fails) labels the kept Bug bug:unconfirmed"; else echo "FAIL #496 a read that fails ($fails) labels the kept Bug bug:unconfirmed"; fail=1; fi
@@ -435,9 +485,21 @@ if [ "${1:-}" = "--test" ]; then
   for doc in README.md CONTRIBUTING.md agents-block.md AGENTS.md; do
     if tr '\n' ' ' < "$root/$doc" | tr -s ' ' | grep -qF "$NEXT"; then echo "ok   C5 $doc says the same"; else echo "FAIL C5 $doc does not open with what happens next, in the triage's words"; fail=1; fi
   done
-  VERDICT='' REPLY=x SUMMARY=s t "no verdict waits for a person" "--add-label needs-triage"
-  VERDICT='{"category":"nonsense"}' REPLY=x SUMMARY=s t "an unknown category waits for a person" "--add-label needs-triage"
-  rm -f "$log"
+  # #803: whether the triage ran is on the board, never a label.
+  tb() { # $1 name, $2 the triage key wanted (jq), then the verdict
+    local name=$1 want=$2 got
+    rm -rf "${boards:?}"/comments; : > "$log"
+    ( NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m GITHUB_RUN_ID=42 VERDICT=$3 REPLY=x SUMMARY=s act >/dev/null 2>&1 ) || true
+    got=$(python3 -c 'import re,sys,json; m=re.search(r"<!-- dx-state v1 (.*?) -->", open(sys.argv[1]).read()); print(json.dumps(json.loads(m.group(1)).get("triage")))' "$boards/comments/7/board.md" 2>/dev/null || echo none)
+    if [ "$(jq -c "$want" <<<"$got" 2>/dev/null)" = true ] && ! grep -q needs-triage "$log"; then echo "ok   #803 $name"; else echo "FAIL #803 $name: $got"; cat "$log"; fail=1; fi
+  }
+  tb "a verdict: the board says the triage ran, with it" '.ran == true and .verdict == "needs_info" and (.at | test("^[0-9]{4}-"))' '{"category":"needs_info"}'
+  tb "no verdict: the board says it could not run" '. == {"ran": false, "why": "no-verdict"}' ''
+  tb "an unknown category: the same" '. == {"ran": false, "why": "unknown"}' '{"category":"nonsense"}'
+  if grep -q "| Waits on | \`boss\`: the triage could not run" "$boards/comments/7/board.md" && grep -q "^@boss: the triage could not run.*actions/runs/42" "$boards/comments/7/mentions.md"; then echo "ok   #803 and it waits on a maintainer, mentioned once, with the run"; else echo "FAIL #803 and it waits on a maintainer, mentioned once, with the run"; cat "$boards"/comments/7/*; fail=1; fi
+  ( NUMBER=7 GITHUB_REPOSITORY=o/r MAINTAINER=boss MODEL=m VERDICT='{"category":"by_design"}' REPLY=x SUMMARY=s act >/dev/null 2>&1 ) || true
+  if grep -q "| Triage | ✓ ran at .*: by-design |" "$boards/comments/7/board.md" && ! grep -q "| Waits on |" "$boards/comments/7/board.md"; then echo "ok   #803 a re-run that triages it clears the triage's wait"; else echo "FAIL #803 a re-run that triages it clears the triage's wait"; cat "$boards/comments/7/board.md"; fail=1; fi
+  rm -f "$log"; rm -rf "$boards"
   [ "$fail" -eq 0 ] && echo "all tests passed"
   exit "$fail"
 fi
@@ -445,5 +507,6 @@ fi
 case "${1:-}" in
   own-bug) own_accept ;;
   own-bug-check) own_bug ;;
+  unrun) unrun "${2:-failed}" ;;
   *) act ;;
 esac
