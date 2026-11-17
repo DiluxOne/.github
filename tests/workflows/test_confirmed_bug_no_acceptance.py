@@ -25,7 +25,8 @@ def test_g1_leaves_a_confirmed_report_alone_on_open_and_edit():
 
 def test_the_reproduction_takes_the_waiting_labels_off_when_it_confirms():
     text = (ROOT / ".github/workflows/issue-repro.yml").read_text(encoding="utf-8")
-    start = text.index('--add-label bug:confirmed --remove-label bug:unconfirmed')
+    # #801: `bug:unconfirmed` is no longer set, so it is not taken off.
+    start = text.index('--add-label bug:confirmed >/dev/null')
     lane = text.index('if [ "$LANE_OPEN" = yes ]', start)
     # Not before the lane is known to be open: with it closed, the report
     # still waits for a maintainer.

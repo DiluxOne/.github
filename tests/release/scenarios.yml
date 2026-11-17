@@ -338,13 +338,13 @@ scenarios:
     minutes: 15
     before: [{lands: greeting, says: helo}]
     opens: {issue: {title: "fix: the greeting says helo", body: bug}}
-    expect: {labels: [bug:confirmed], absent: [repro:no-way]}
+    expect: {labels: [bug:confirmed], absent: [needs-human]}
   - id: bug-not-reproduced
     covers: []
     minutes: 15
     before: [{lands: greeting, says: hello}]
     opens: {issue: {title: "fix: something failed once", body: bug-not-reproduced}}
-    expect: {labels: [bug:unconfirmed, could-not-reproduce], absent: [bug:confirmed, repro:no-way]}
+    expect: {labels: [needs-info], absent: [bug:confirmed, needs-human]}
 
   # The autopilot's questions, stops and hints.
   - id: question-answered
