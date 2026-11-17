@@ -36,6 +36,34 @@ Each `way` is a reproduction way of the same declaration's `repro:` ([`scripts/r
 
 ## In this repository
 
-A fix or a feature here comes with a pytest test under `tests/repro/` or `tests/workflows/`, run by the `python` way of `.github/review-policy.yml`. A script's own `--test` case cannot run at the base apart from the script's code, so a self-test case alone fails the check; keep adding them, beside the pytest. The release scenarios (`tests/release/`), fixtures, the reproduction's examples (`tests/examples/`) and the review's evaluation set (`evals/`) are never a test.
+A fix or a feature here comes with a pytest test under `tests/repro/` or `tests/workflows/`, run by the `python` way of `.github/review-policy.yml`. A script's own `--test` case cannot run at the base apart from the script's code, so a self-test case alone fails the check; keep adding them, beside the pytest. The release scenarios (`tests/release/`), fixtures, the reproduction's examples (`tests/examples/`) and the AI's evaluation sets (`evals/`) are never a test.
 
 The scripts job of `pull-request.yml` runs every script's `--test` and the whole of `tests/` with pytest; `make pre-pr` runs what the pull request and the merge queue run.
+
+## How the AI is measured
+
+Every step of the engine that calls a model has an evaluation set (#735): real cases from the organisation's public repositories, replayed with the prompts, workflows and policy of the pull request, and scored against the step's last whole run. A change to the AI is then known to improve or worsen the flow before it merges, instead of being found out by a person and a paid run. One runner does it all, [`scripts/evals.py`](../scripts/evals.py), and one workflow gates it, [`evals.yml`](../.github/workflows/evals.yml) (it replaced `review-eval.yml`; [`scripts/review-eval.py`](../scripts/review-eval.py) is a wrapper over the runner's review step).
+
+Each step's set is data: `evals/<step>/cases.json` (each case's `id`, `repo`, refs, `expect`, and the step's own fields) and `evals/<step>/baseline.json` (the score of the last whole run). A case is graded by a program wherever its outcome can be checked; a model judges only where the outcome is words, with the case's `rubric`.
+
+| Step | The paths that run its set | A case | It passes when |
+| --- | --- | --- | --- |
+| `triage` | `.github/workflows/issue-triage.yml`, `scripts/triage-brief.sh` (the Classify prompt, `triage-brief.sh prompt classify`) | an issue with dilux-bot's triage record, the issues open then, the commit then | the classifier, on the public brief alone, gives the record's `category`, `duplicate_of` and `exists_in_pro` |
+| `repro` | `.github/workflows/issue-repro.yml`, `scripts/repro-ways.py` (the "Write the test" prompts, `repro-ways.py prompt`) | a `bugfix-reproduced` issue, the test that reproduced it, its `base` | the test the agent writes fails at the base on an assertion (`reproduced`, as the "Test first" check reads it), through the same sandboxes |
+| `spec` | `.github/workflows/autopilot.yml`, `scripts/autopilot.py` (`autopilot.py prompt spec`) | an accepted issue whose merged pull request changed tests | the PRD and the Spec pass `issue-schema.py`, and `### Spec: files` names at least `min_recall` of the files the merged pull request changed |
+| `autopilot` | `.github/workflows/autopilot.yml`, `scripts/autopilot.py` (`autopilot.py prompt work`) | the same kind of issue, with the merged pull request's `tests` | those tests pass on the tree the agent leaves |
+| `review` | `review-profiles/**`, `kinds/*/review-profile.md`, `kinds/*/rules.yml`, `policy/review-policy.default.yml`, `scripts/review-brief.sh`, `scripts/local-review.sh`, `scripts/review-verify.py`, `scripts/review-count.py`, `.github/workflows/claude-review.yml` | a `flag` commit (a blocker or major the review raised, then fixed) or a `clean` one (no thread) | it raises a blocker or major on the flagged file again; it does not block the clean one |
+| `reply` | `.github/workflows/review-reply.yml`, `scripts/autopilot.py` (`autopilot.py prompt reply`) | a review thread someone answered with a mention, then resolved, cut at the mention | the reply resolves it, and a model judging with the case's `rubric` finds no further change asked |
+
+`policy/autonomy.yml` (the models and AI settings) runs every set, and `evals/<step>/**` runs its own. `evals.py steps` maps a pull request's files to the steps they run and `evals.py paths` prints the union, which is `evals.yml`'s `paths:` (a test holds them equal): a pull request that touches none of them runs no set, one that touches one step's runs that step alone, each as a check "AI evaluation (<step>)". The check fails when the score is worse than the baseline by more than one case (a model does not answer the same twice), when more than one case could not be replayed, or when there is no baseline: no gate never passes quietly. The table of cases goes to the job summary, the results to an artifact for 30 days.
+
+The prompts the sets measure are the ones that ship: each lives in a script the workflow calls (`triage-brief.sh prompt classify`, `repro-ways.py prompt`, `autopilot.py prompt spec|work|reply`), and a replay reads the step's `claude_args` (model, tools, turns, budget, schema) from its workflow. A case runs on its repository at its ref, with no GitHub token in the model's environment; each has a time limit, and a fork's pull request never runs the sets (they hold the model's keys).
+
+### Adding a case, and moving a baseline
+
+- `evals.py collect <step> [N]` writes `evals/<step>/cases.json` from history: git for `repro`, `spec` and `autopilot` (reproduced issues and their tests; squashed pull requests that closed an issue and changed a test), the API for `triage`, `review` and `reply` (dilux-bot's triage records; the review's threads). Only public, non-archived repositories of `repos.yml` give cases. `evals.yml` run by hand with `collect` collects the triage's and the reply's with its own read-only token and no model, and leaves them as an artifact to commit.
+- A case added by hand follows its step's shape (the table above, and the cases already in its file). It is reviewed like code, in a pull request a person merges.
+- `evals.py baseline <step> FILE` writes the baseline from a run's results (the check's artifact), only from a whole run. A change that should move a score writes it in the same pull request, visible in the diff.
+- `evals.py run <step>` and `evals.py score <step> FILE` run and score a set by hand; `evals.py --test` checks the mapping and every grade, offline, in the scripts job.
+
+A new step is one entry in `STEPS` of `scripts/evals.py` (its paths, its replay, its grade) and one folder under `evals/`.

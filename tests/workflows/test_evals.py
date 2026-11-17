@@ -172,3 +172,21 @@ def test_the_review_gives_review_eval_pys_results_on_its_old_fixtures():
         assert getattr(wrapper, name) is getattr(wrapper.evals, name)
     cases = json.loads((ROOT / "evals" / "review" / "cases.json").read_text(encoding="utf-8"))
     assert len(cases) == 12 and all("rubric" not in c for c in cases)
+
+
+# C4: the docs say how the AI is measured, which paths run which set, and
+# how a case is added.
+
+def test_the_docs_say_how_the_ai_is_measured():
+    ev = load("evals")
+    for doc in ("docs/model.md", "docs/testing-and-quality.md", "docs/workflows.md"):
+        text = (ROOT / doc).read_text(encoding="utf-8")
+        assert "scripts/evals.py" in text and "evals.yml" in text, doc
+        for step in STEPS:
+            for path in ev.STEPS[step]["paths"] + ev.EVERY:
+                assert f"`{path}`" in text, (doc, step, path)
+        assert "evals/<step>/" in text, doc
+        assert "collect" in text and "baseline" in text, doc
+    quality = (ROOT / "docs" / "testing-and-quality.md").read_text(encoding="utf-8")
+    assert "## How the AI is measured" in quality and "`evals.py collect <step> [N]`" in quality and "`evals.py baseline <step> FILE`" in quality
+    assert "review-eval.yml)" not in (ROOT / "docs" / "workflows.md").read_text(encoding="utf-8")
