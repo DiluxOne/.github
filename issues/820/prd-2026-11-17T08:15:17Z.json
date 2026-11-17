@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 820,
+  "prd_sha256": "83d9a2d07b90d60c65a77484d2ed69bd2f56ccebda092b587bbdd2ccaa2cec62",
+  "prd": "### Problem\n\nA review cancelled by the autopilot's own last pushes is read as a failed review, so the autopilot hands the pull request to a person who only has to re-run it, several times a night.\n\n### Scope\n\n- The autopilot's stop step tells a review cancelled by a newer run from a failed one, and waits for the newer run.\n- The autopilot's round ends with a single push that includes the ready commit.\n- A test that would have caught it.\n\n### Out of scope\n\n- The review's own concurrency group and what the review checks.\n\n### Acceptance criteria\n\n- C1: Given an autopilot pull request whose review run was cancelled by a newer run of the same pull request, when the autopilot reads the review's result, then it does not stop with `needs-human` and waits for the newer run's review.\n- C2: Given the autopilot ending a round, when it marks the pull request ready, then its last commits reach the branch in one push and one review run starts.\n- C3: Given a review that fails on its own (not cancelled), when the autopilot reads it, then it stops as it does today.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-17T08:15:17Z",
+  "policy": "DiluxOne/.github@51ce3c566ee15b0437c43b247f11e0c6234e8340",
+  "how": "own-bug"
+}
