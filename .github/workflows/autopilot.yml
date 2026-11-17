@@ -146,6 +146,10 @@ name: Autopilot
 # and the run says so (verdict `held`). Started by issue-claim.yml after a
 # maintainer's `/adopt`, the draft's branch starts at the adopted head they
 # read, and every commit pushed carries `Co-authored-by` for its author.
+# A fix already on its way (#807, scripts/autopilot.py taken, on a start
+# only): dilux-bot's open "The bug reproduced from #N" issue of the
+# `bugfix-reproduced` lane, or an open pull request that closes the issue,
+# and `prep` starts no second one; the issue is told once, with the links.
 # When it hands a pull request to a person at its cap, the issue says anyone
 # may `/claim` it.
 #
@@ -504,6 +508,25 @@ jobs:
           🤖 AI-generated · Claude Opus 5.5 (Anthropic)" >/dev/null || true
             fi
             echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Taken elsewhere (#807): on a start, a fix already on its way (the
+          # `bugfix-reproduced` lane's own issue for this report, or an open
+          # pull request that closes it) starts no second one; the issue
+          # says so once, with the links. A continue has its pull request.
+          # A read that fails stops it too, and says so.
+          if [ "$AS" = start ]; then
+            rc=0
+            taken=$(NUMBER="$ISSUE" python3 .dx-central/scripts/autopilot.py taken) || rc=$?
+            if [ "$rc" -ne 0 ]; then
+              echo "The autopilot does not start: $taken"
+              [ "$rc" -ne 1 ] || NUMBER="$ISSUE" python3 .dx-central/scripts/autopilot.py board
+              if [ "$rc" -eq 2 ]; then
+                gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "The autopilot did not run: $taken, so it could not tell whether the fix is already on its way. A maintainer accepts it again (remove and add \`accepted\`) to try once more.
+
+          🤖 AI-generated · Claude Opus 5.5 (Anthropic)" >/dev/null || true
+              fi
+              echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+            fi
           fi
           # Who accepted it, read from GitHub's history (never from a label
           # alone): a lane's own issue that lane accepts is worked under the
