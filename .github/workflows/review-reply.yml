@@ -143,23 +143,19 @@ jobs:
           # hand (exit 3) cannot say: when nothing else waits, an answer from
           # who decides fails the job with what to restore (as waiting.py
           # says), never dropped as no question. An issue an older run
-          # labelled `autopilot:waiting` is migrated first; scripts older
-          # than #802 (central-ref before it) keep the question in that label.
-          flow=false; ! grep -q '^FLOW_KEYS' .dx-central/scripts/receipts.py || flow=true
+          # labelled `autopilot:waiting` is migrated first.
           waiting=false; edited=false
-          if [ "$flow" = true ]; then
-            NUMBER="$issue" python3 .dx-central/scripts/receipts.py migrate >/dev/null 2> "$RUNNER_TEMP/migrate.err" \
-              || echo "::warning::#$issue's old labels could not be moved onto its board: $(head -c 200 "$RUNNER_TEMP/migrate.err")"
-            rc=0; asked=$(NUMBER="$issue" python3 .dx-central/scripts/receipts.py state get asked 2> "$RUNNER_TEMP/board.err") || rc=$?
-            case $rc in
-              0) ;;
-              3) asked=null; edited=true ;;
-              *) echo "::error::#$issue's board could not be read: $(head -c 200 "$RUNNER_TEMP/board.err")"; exit 1 ;;
-            esac
-            case $asked in null|false|'""') ;; *) waiting=true ;; esac
-          fi
-          # The label still there (older scripts, or a migration that could
-          # not move it) still waits: an answer is never dropped for it.
+          NUMBER="$issue" python3 .dx-central/scripts/receipts.py migrate >/dev/null 2> "$RUNNER_TEMP/migrate.err" \
+            || echo "::warning::#$issue's old labels could not be moved onto its board: $(head -c 200 "$RUNNER_TEMP/migrate.err")"
+          rc=0; asked=$(NUMBER="$issue" python3 .dx-central/scripts/receipts.py state get asked 2> "$RUNNER_TEMP/board.err") || rc=$?
+          case $rc in
+            0) ;;
+            3) asked=null; edited=true ;;
+            *) echo "::error::#$issue's board could not be read: $(head -c 200 "$RUNNER_TEMP/board.err")"; exit 1 ;;
+          esac
+          case $asked in null|false|'""') ;; *) waiting=true ;; esac
+          # The label still there (a migration that could not move it)
+          # still waits: an answer is never dropped for it.
           label_waits=$(gh issue view "$issue" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | index("autopilot:waiting") != null')
           [ "$label_waits" != true ] || waiting=true
           stopped=""
@@ -213,18 +209,15 @@ jobs:
           fi
           # The run the answer starts does not count towards the autopilot's
           # cap (#479): `answered` on the issue's board (#802), set before the
-          # continue, so the run the label starts reads it. With scripts
-          # older than #802, or a board that cannot be written, the labels as
-          # before: the run's own migration moves `autopilot:answered` onto
-          # the board when it can, and the answer is never dropped.
-          if [ "$flow" = true ] && NUMBER="$issue" python3 .dx-central/scripts/receipts.py state set answered=true asked=; then
-            [ "$label_waits" != true ] || gh issue edit "$issue" --repo "$GITHUB_REPOSITORY" --remove-label "autopilot:waiting" >/dev/null
-            gh issue edit "$issue" --repo "$GITHUB_REPOSITORY" --add-label "autopilot:continue" >/dev/null
-          else
-            [ "$flow" != true ] || echo "::warning::#$issue's board could not be written: the answer goes in the labels."
-            gh label create "autopilot:answered" --repo "$GITHUB_REPOSITORY" --color 1D76DB --force --description "On an issue: a maintainer answered the autopilot's question; the run it starts does not count" >/dev/null 2>&1 || true
-            gh issue edit "$issue" --repo "$GITHUB_REPOSITORY" --add-label "autopilot:answered" --add-label "autopilot:continue" --remove-label "autopilot:waiting" >/dev/null
+          # continue, so the run the label starts reads it. A board that
+          # cannot be written fails the job and says so (#805): the answer
+          # stays on the issue, and no label carries it.
+          if ! NUMBER="$issue" python3 .dx-central/scripts/receipts.py state set answered=true asked= 2> "$RUNNER_TEMP/board.err"; then
+            echo "::error::#$issue's board could not be written, so the answer was not taken: $(head -c 200 "$RUNNER_TEMP/board.err"). Answer again once GitHub writes it."
+            exit 1
           fi
+          [ "$label_waits" != true ] || gh issue edit "$issue" --repo "$GITHUB_REPOSITORY" --remove-label "autopilot:waiting" >/dev/null
+          gh issue edit "$issue" --repo "$GITHUB_REPOSITORY" --add-label "autopilot:continue" >/dev/null
           echo "$LOGIN answered; the autopilot goes on with #$issue."
 
   # The others' opinions (#287), on their own: a summary waiting here never

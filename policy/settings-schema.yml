@@ -663,13 +663,29 @@ files:
       says: Where the version in production is read, when it is not the last GitHub release.
 
   # The labels of every repository (scripts/sync-repos.py): an
-  # organisation's are merged with the engine's by name.
+  # organisation's are merged with the engine's by name, list by list.
   labels.yml:
-    - key: "."
+    - key: labels
       by: name
       org: any
       repo: never
       limit: a label the engine's workflows use keeps its name
       read-by: [scripts/sync-repos.py]
-      issue: "#78, #564"
-      says: Every label the organisation's workflows and people use, with its colour and description.
+      issue: "#78, #564, #805"
+      says: Every label the organisation's workflows and people use, with its colour and description; a script or workflow sets no other.
+    - key: security-repo
+      by: name
+      org: any
+      repo: never
+      limit: a label the engine's security workflows use keeps its name
+      read-by: [scripts/sync-repos.py]
+      issue: "#805"
+      says: The labels only the security repository (org.yml `security`) has, with their colour and description.
+    - key: retired
+      by: name
+      org: any
+      repo: never
+      limit: never a label the engine's workflows still set
+      read-by: [scripts/sync-repos.py]
+      issue: "#805"
+      says: The retired labels, each with where its state is now (`now`); the sync deletes them where no open issue or pull request carries one. A name ending in `*` is a prefix.

@@ -283,7 +283,216 @@ def with_block(agents, block):
     return block + "\n" + agents
 
 
+def read_labels(path=None):
+    """labels.yml (#805) as {"labels", "security-repo", "retired"}, each a
+    list: the labels every repository has, those the security repository
+    alone has, and the retired ones the sync deletes. A list (the shape
+    before #805, an organisation's own file) is its `labels`."""
+    data = load_yaml(path or os.path.join(CENTRAL, "labels.yml"))
+    if isinstance(data, list):
+        data = {"labels": data}
+    if not isinstance(data, dict):
+        raise ValueError("labels.yml: a mapping of `labels`, `security-repo` and `retired`")
+    return {key: list(data.get(key) or []) for key in ("labels", "security-repo", "retired")}
+
+
+def is_security_repo(name):
+    """Whether NAME is org.yml's `security` repository (#805)."""
+    return bool(org.SECURITY) and org.SECURITY == f"{ORG}/{name}"
+
+
+def labels_for(repo, labels):
+    """The labels REPO is to have: LABELS, and labels.yml's `security-repo`
+    ones when it is the security repository."""
+    return list(labels) + (read_labels()["security-repo"] if is_security_repo(repo["name"]) else [])
+
+
+def is_retired(name, retired):
+    """Whether label NAME is in RETIRED (labels.yml's `retired:`): its name,
+    or a prefix when the entry's name ends in `*`."""
+    for entry in retired:
+        r = str(entry["name"])
+        if (r.endswith("*") and name.startswith(r[:-1])) or name == r:
+            return True
+    return False
+
+
+def retired_drift(names, retired):
+    """The drift check's lines (#805): a retired label still in the repository."""
+    return [f"label `{n}` is retired and still here (`sync-repos.py labels` deletes it once no open issue or pull request carries it)"
+            for n in names if is_retired(n, retired)]
+
+
+def delete_retired_labels(repo, dry, run=None, retired=None):
+    """`labels`, after retire_labels (#805): each label of REPO that
+    labels.yml's `retired:` names is deleted, unless an open issue or pull
+    request still carries it: then it is kept and the sync says which ones
+    (the migrations, or a person, take it off first; the next sync deletes
+    it). A call that fails keeps that label, is said and counted; the other
+    labels go on. A label the repository added for itself is never touched.
+    Returns the number of failures. Idempotent."""
+    import urllib.parse
+    run = run or gh
+    retired = read_labels()["retired"] if retired is None else retired
+    full = f"{ORG}/{repo['name']}"
+    try:
+        have = [str(l["name"]) for l in json.loads(run("label", "list", "--repo", full, "--limit", "1000", "--json", "name").stdout or "[]")]
+    except (RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
+        print(f"  deleting the retired labels failed: the labels could not be listed: {exc}")
+        return 1
+    failures = deleted = kept = 0
+    for name in (n for n in have if is_retired(n, retired)):
+        try:
+            pages = json.loads(run("api", "--paginate", "--slurp",
+                                   f"repos/{full}/issues?state=open&labels={urllib.parse.quote(name, safe='')}&per_page=100").stdout or "[]")
+            carriers = sorted({int(i["number"]) for page in pages for i in page})
+            if carriers:
+                kept += 1
+                print(f"  label {name} kept: still on {', '.join(f'#{n}' for n in carriers)} (open)")
+                continue
+            if dry:
+                print(f"  would delete {name}")
+                continue
+            run("label", "delete", name, "--repo", full, "--yes")
+            deleted += 1
+            print(f"  label {name} deleted")
+        except (RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
+            failures += 1
+            print(f"  label {name} kept: it could not be deleted: {str(exc)[:200]}")
+    print(f"  retired labels: {deleted} deleted, {kept} kept, {failures} failed" + (" (dry run)" if dry else ""))
+    return failures
+
+
+_sspec = importlib.util.spec_from_file_location("settings_lines", os.path.join(HERE, "settings.py"))
+settings_lines = importlib.util.module_from_spec(_sspec)
+_sspec.loader.exec_module(settings_lines)
+
+# A label set from a variable (#805), by the file it is set in and the text
+# as it is written there: the labels it can take (a name ending in `*` is
+# every listed label that starts so; `|` is the "name|colour|description"
+# list in the same file, each name checked). A variable not here fails the
+# check, so a new label cannot slip in through one.
+DYNAMIC_LABELS = {
+    (".github/workflows/claude-review.yml", "$l"): ("risk:*", "complexity:*"),
+    (".github/workflows/claude-review.yml", "type:$t"): ("type:*",),
+    (".github/workflows/claude-review.yml", "$missing"): ("risk:*", "complexity:*", "type:*"),
+    (".github/workflows/issue-accepted.yml", "$ln"): ("|",),
+    # scripts/issue-schema.py g1-labels.
+    (".github/workflows/issue-accepted.yml", "$add"): ("awaiting-acceptance", "incomplete"),
+    (".github/workflows/issue-repro.yml", "$name"): ("|",),
+    (".github/workflows/security-patch.yml", "$name"): ("|",),
+    # plan()'s ("label", CLAIMED).
+    ("scripts/claim.py", "$act[1]"): ("claimed",),
+    ("scripts/claim.py", "$LIST"): ("run:claims",),
+    # release-issue.py's LANE_LABEL.
+    ("scripts/release-lane.py", "$l"): ("lane:release",),
+    # tests/release/scenarios.yml, its issues' `labels`.
+    ("scripts/release-scenarios.py", "$l"): ("accepted", "bug:confirmed", "claimed", "lane:release", "needs-info", "incomplete", "awaiting-acceptance"),
+    ("scripts/revert.py", "$name"): ("revert", "reverted"),
+    # labels_for(): the run's kind, the caller's LABELS, needs-human.
+    ("scripts/run-issue.sh", "run:$kind"): ("run:*",),
+    ("scripts/run-issue.sh", "$labels"): ("run:*", "lane:platform", "needs-human"),
+    # labels.yml's own, the list this check reads.
+    ("scripts/sync-repos.py", "$name"): ("*",),
+    # receipts.migrate()'s, and RETIRED_FOR_LABEL's.
+    ("scripts/sync-repos.py", "$label"): ("needs-info", "needs-human"),
+    ("scripts/sync-repos.py", "$new"): ("needs-human",),
+    ("scripts/triage-act.sh", "$name"): ("|",),
+    # act()'s verdicts.
+    ("scripts/triage-act.sh", "$label"): ("by-design", "pro-feature", "planned", "exists-in-pro", "question", "duplicate", "security"),
+}
+# The ways a label is set: added to an issue or pull request, created, or
+# opened with one. Removing, listing or searching a label is not setting it.
+_TOKEN = r"(\"[^\"]*\"|'[^']*'|[^\s;)|&\"'`]+)"
+_SETS = [re.compile(r"--add-label[= ]+" + _TOKEN), re.compile(r"\blabel create +" + _TOKEN), re.compile(r"labels\[\]=" + _TOKEN)]
+_CREATE_WITH = re.compile(r"--label[= ]+" + _TOKEN)
+_PY_ARG = r"\s*(f?\"[^\"]*\"|f?'[^']*'|[A-Za-z_]\w*(?:\[\d+\])?)"
+_PY_SETS = [re.compile(r"[\"']--add-label[\"'],"+ _PY_ARG), re.compile(r"[\"']label[\"'],\s*[\"']create[\"'],"+ _PY_ARG)]
+_PY_CREATE_WITH = re.compile(r"[\"']--label[\"'],"+ _PY_ARG)
+_TRIPLE = re.compile(r"[\"' ]([a-z][\w:-]*)\|[0-9A-Fa-f]{6}\|")
+
+
+def label_files(root):
+    """The files label_misuse reads: the workflows, the templates and the
+    scripts (never their fixtures)."""
+    out = []
+    for folder, pattern in ((".github/workflows", "*.yml"), ("workflow-templates", "*.yml"), ("scripts", "*")):
+        base = os.path.join(root, folder)
+        if os.path.isdir(base):
+            out += sorted(f"{folder}/{n}" for n in os.listdir(base) if fnmatch.fnmatch(n, pattern) and os.path.isfile(os.path.join(base, n)))
+    return out
+
+
+def label_sets(rel, text):
+    """[(line, the label as written)] that the file REL sets, outside its
+    comments and its own test (settings.skipped_lines)."""
+    skip = settings_lines.skipped_lines(rel, text)
+    lines = text.split("\n")
+    # The file's own constants: NAME = "value" in Python, NAME=value in shell.
+    consts = dict(re.findall(r"(?m)^([A-Z][A-Z0-9_]*) *= *[\"']([^\"'\n]*)[\"'] *$", text) if rel.endswith(".py") else
+                  re.findall(r"(?m)^([A-Z][A-Z0-9_]*)=[\"']?([\w:.-]+)[\"']?$", text))
+    found = []
+    n = 0
+    while n < len(lines):
+        first, logical = n + 1, lines[n]
+        while logical.endswith("\\") and n + 1 < len(lines):
+            n += 1
+            logical = logical[:-1] + " " + lines[n].strip()
+        n += 1
+        if first in skip:
+            continue
+        hits = [m.group(1) for r in _SETS for m in r.finditer(logical)]
+        if re.search(r"\b(issue|pr) create\b", logical):
+            hits += [m.group(1) for m in _CREATE_WITH.finditer(logical)]
+        py = [m.group(1) for r in _PY_SETS for m in r.finditer(logical)]
+        if re.search(r"[\"'](issue|pr)[\"'],\s*[\"']create[\"']", logical):
+            py += [m.group(1) for m in _PY_CREATE_WITH.finditer(logical)]
+        for token in hits:
+            token = token[1:-1] if token[:1] in "\"'" and token[-1:] == token[:1] else token
+            token = re.sub(r"^\$\{?([A-Z][A-Z0-9_]*)\}?$", lambda m: consts.get(m.group(1), m.group(0)), token)
+            found += [(first, t) for t in token.split(",") if t]
+        for token in py:
+            if token[:1] in "\"'":
+                found.append((first, token[1:-1]))
+            elif token.startswith("f"):
+                filled = re.sub(r"\{([A-Z][A-Z0-9_]*)\}", lambda m: consts.get(m.group(1), m.group(0)), token[2:-1])
+                found.append((first, filled if "{" not in filled else "$" + token))
+            else:
+                found.append((first, consts.get(token, "$" + token)))
+        found += [(first, m.group(1)) for m in _TRIPLE.finditer(logical)]
+    return found
+
+
+def label_misuse(root):
+    """C2 (#805): every place a workflow, a template or a script sets a label
+    that labels.yml does not list (`labels` or `security-repo`), as
+    `<file>:<line>: sets label <name>, ...`. A label built from a variable is
+    checked through DYNAMIC_LABELS; one it does not know is listed too."""
+    lists = read_labels(os.path.join(root, "labels.yml"))
+    listed = {str(l["name"]) for l in lists["labels"] + lists["security-repo"]}
+    out = []
+    for rel in label_files(root):
+        try:
+            text = open(os.path.join(root, rel), encoding="utf-8").read()
+        except (UnicodeDecodeError, OSError):
+            continue
+        for line, name in label_sets(rel, text):
+            if not re.search(r"[$`{]", name):
+                if name not in listed:
+                    out.append(f"{rel}:{line}: sets label {name}, which labels.yml does not list")
+                continue
+            can = DYNAMIC_LABELS.get((rel, name))
+            if can is None:
+                out.append(f"{rel}:{line}: sets label {name}, built from a variable the check does not know (name its values in DYNAMIC_LABELS)")
+                continue
+            for want in can:
+                if want != "|" and not any(fnmatch.fnmatchcase(l, want) for l in listed):
+                    out.append(f"{rel}:{line}: sets label {name}, which can be {want}, which labels.yml does not list")
+    return out
+
+
 def sync_labels(repo, labels, dry):
+    labels = labels_for(repo, labels)
     if dry:
         print(f"  would set {len(labels)} labels")
         return
@@ -961,7 +1170,7 @@ def adopt(repo, conf, labels, block, every, dry):
     if listed(repo["name"]) is None:
         raise ValueError(f"{repo['name']} is not in repos.yml `repos:`: add its entry first (the Adopt issue's pull request)")
     for part in ADOPT:
-        {"labels": lambda: sync_labels(repo, labels, dry),
+        {"labels": lambda: (sync_labels(repo, labels, dry), delete_retired_labels(repo, dry)),
          "settings": lambda: sync_settings(repo, conf, dry),
          "security": lambda: sync_security(repo, conf, dry),
          "rulesets": lambda: sync_rulesets([repo], every, dry),
@@ -3268,13 +3477,14 @@ def drift(repo, conf, labels, block, current=0):
             except (RuntimeError, ValueError) as exc:
                 found.append(f"the checks its merge queue waits for could not be read: {str(exc)[:160]}")
     have = {l["name"]: l for l in json.loads(gh("label", "list", "--repo", full, "--limit", "1000", "--json", "name,color,description").stdout)}
-    for label in labels:
+    for label in labels_for(repo, labels):
         name = str(label["name"])
         mine = have.get(name)
         if mine is None:
             found.append(f"label `{name}` is missing")
         elif mine["color"].upper() != str(label["color"]).upper() or (mine.get("description") or "") != str(label.get("description", "")):
             found.append(f"label `{name}` has another colour or description")
+    found += retired_drift(sorted(have), read_labels()["retired"])
     data = json.loads(gh("api", f"repos/{full}").stdout)
     for key, value in (conf.get("settings") or {}).items():
         # A token that cannot see a setting says nothing about it: not drift.
@@ -3712,7 +3922,7 @@ def callers_test(check, conf):
            placeholder_lines({".github/workflows/issues.yml": raw_issues.replace("https://example.com/support", "https://mine.example")}, conf, "x")) == ([], []), filled)
     # Its labels: every label of labels.yml, those the triage, the acceptance
     # and the autopilot set among them.
-    labels = load_yaml(os.path.join(CENTRAL, "labels.yml"))
+    labels = read_labels()["labels"]
     made = []
     globals()["gh"], ORG = (lambda *a, **k: made.append(a) or Out("")), "o"
     try:
@@ -4234,11 +4444,13 @@ def adopt_test(check, conf, labels, block):
         return Out("{}")
     ran = []
     stubs = {"sync_labels": "labels", "sync_settings": "settings", "sync_own_checks": "own-checks", "sync_merge_queue": "merge-queue"}
-    saved = {n: globals()[n] for n in list(stubs) + ["gh", "listed", "open_change", "sync_callers", "sync_files", "ORG", "ORG_RULESETS", "org_commit"]}
+    saved = {n: globals()[n] for n in list(stubs) + ["gh", "listed", "open_change", "sync_callers", "sync_files", "ORG", "ORG_RULESETS", "org_commit", "delete_retired_labels"]}
     real_files = globals()["sync_files"]
+    retired_deleted = []
     try:
         for n, part in stubs.items():
             globals()[n] = (lambda part: lambda *a, **k: ran.append(part))(part)
+        globals()["delete_retired_labels"] = lambda r, dry, **k: retired_deleted.append((r["name"], ran[-1:])) or 0
         globals()["sync_callers"] = lambda r, c, dry: ran.append("callers") or opened.append("callers")
         globals()["sync_files"] = lambda r, c, b, dry, part="files": ran.append(part) or opened.append(part)
         globals().update(gh=fake, ORG="o", ORG_RULESETS=[named], listed=lambda n: cfg["repos"].get(n))
@@ -4249,6 +4461,7 @@ def adopt_test(check, conf, labels, block):
     finally:
         globals().update(saved)
     eq("#562 C1: adopt runs every part, in order", ran, ["labels", "settings", "files", "callers", "pre-pr", "dependabot", "own-checks", "merge-queue"])
+    eq("#805 C1: adopt deletes the retired labels right after creating labels.yml's", retired_deleted, [("new", ["labels"])])
     eq("#562 C1: it writes the property, on every adopted repository before the rulesets move to it", state["values"], {"old": "true", "new": "true"})
     want_calls = [
         "api orgs/o/code-security/configurations?per_page=100", "api repos/o/new/code-security-configuration", "api repos/o/new",
@@ -5025,6 +5238,35 @@ def retire_labels_test(check):
     check("C3 (#801): it is a mode of its own, never part of `all`", "retire-labels" in MODES and "retire-labels" not in ADOPT, MODES)
 
 
+def delete_retired_test(check):
+    """#805 C1, C3: the retired labels deleted against a stand-in for gh,
+    one an open item carries kept and named, a repository's own left."""
+    import contextlib
+    import io
+    import urllib.parse
+
+    class Out:
+        def __init__(self, stdout):
+            self.stdout, self.returncode, self.stderr = stdout, 0, ""
+    have, calls = ["accepted", "bug", "autopilot:run-2", "bug:unconfirmed", "help wanted"], []
+
+    def fake(*args, **_):
+        calls.append(args)
+        if args[:2] == ("label", "list"):
+            return Out(json.dumps([{"name": n} for n in have]))
+        if args[:2] == ("label", "delete"):
+            have.remove(args[2])
+            return Out("")
+        name = urllib.parse.unquote(args[-1].split("labels=", 1)[1].split("&", 1)[0])
+        return Out(json.dumps([[{"number": 7}]] if name == "bug:unconfirmed" else [[]]))
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        failed = delete_retired_labels({"name": "r"}, False, run=fake, retired=read_labels()["retired"])
+    check("#805 C1: the retired labels are deleted, labels.yml's and the repository's own left",
+          (failed, have), (0, ["accepted", "bug:unconfirmed", "help wanted"]))
+    check("#805 C3: one an open item carries is kept, and the item named", "label bug:unconfirmed kept: still on #7 (open)" in out.getvalue(), True)
+
+
 def retire_test(check, labels):
     """#803, C3: the labels the issue's Type or `needs-human` now say,
     retired from the open issues against a stand-in for gh: the Type set
@@ -5201,7 +5443,7 @@ def self_test():
             check(f"a broken block fails: {name}", False, "no error")
         except ValueError:
             check(f"a broken block fails: {name}", True)
-    labels = load_yaml(os.path.join(CENTRAL, "labels.yml"))
+    labels = read_labels()["labels"]
     names = [str(l["name"]) for l in labels]
     check("labels.yml: every label has a name, a colour and no repeat", all(re.fullmatch(r"[0-9A-F]{6}", str(l["color"])) for l in labels) and len(names) == len(set(names)), names)
     check("labels.yml: accepted is there", "accepted" in names)
@@ -5337,6 +5579,21 @@ def self_test():
     ai_plugin_drift_test(check, conf, labels, block_file)
     adopt_test(check, conf, labels, block_file)
     retire_test(check, labels)
+    delete_retired_test(check)
+    # C2 (#805): this repository sets only labels labels.yml lists; a
+    # workflow that sets one it does not list fails, named with its file.
+    misuse = label_misuse(CENTRAL)
+    check("#805 C2: no workflow, template or script sets a label labels.yml does not list", misuse == [], "\n".join(misuse))
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        os.makedirs(os.path.join(tmp, ".github", "workflows"))
+        with open(os.path.join(tmp, "labels.yml"), "w", encoding="utf-8") as fh:
+            fh.write("labels:\n  - {name: accepted, color: 0E8A16}\nretired: []\n")
+        with open(os.path.join(tmp, ".github", "workflows", "x.yml"), "w", encoding="utf-8") as fh:
+            fh.write("jobs:\n  a:\n    steps:\n      - run: gh issue edit 1 --add-label not-a-label --add-label accepted\n")
+        got = label_misuse(tmp)
+        check("#805 C2: a workflow that sets an unlisted label is named with its file and line",
+              got == [".github/workflows/x.yml:4: sets label not-a-label, which labels.yml does not list"], got)
     required_split_test(check)
     security_visibility_test(check)
     conventions_test(check, block_file)
@@ -5638,7 +5895,7 @@ def main(argv):
     dry = "--dry-run" in rest
     only = [rest[i + 1] for i, a in enumerate(rest) if a == "--repo" and i + 1 < len(rest)]
     conf = load_yaml(os.path.join(CENTRAL, "repos.yml"))
-    labels = load_yaml(os.path.join(CENTRAL, "labels.yml"))
+    labels = read_labels()["labels"]
     block = open(os.path.join(CENTRAL, "agents-block.md"), encoding="utf-8").read()
     failures = 0
     repos = repositories(only, conf.get("exclude") or [])
@@ -5713,6 +5970,9 @@ def main(argv):
                 # Best effort (#803): its failures are counted, never raised,
                 # so the repository's other steps still run.
                 failures += retire_labels(repo, dry)
+                # Then the retired labels themselves (#805), those no open
+                # item carries any more; the same best effort.
+                failures += delete_retired_labels(repo, dry)
             if what in ("settings", "all"):
                 sync_settings(repo, conf, dry)
             if what == "security":

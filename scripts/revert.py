@@ -462,6 +462,13 @@ def read_item(planned):
         "pr": pr["number"], "pr_title": pr.get("title", ""), "pr_url": pr["html_url"], "private": is_private(r)}
 
 
+def labels_yml():
+    """labels.yml's labels every repository has (#805: its `labels:`; a
+    list before it)."""
+    data = autonomy.read_yaml(os.path.join(HERE, "..", "labels.yml"))
+    return (data.get("labels") or []) if isinstance(data, dict) else (data or [])
+
+
 def ensure_label(repo, name):
     try:
         api(f"repos/{repo}/labels/{name}")
@@ -469,7 +476,7 @@ def ensure_label(repo, name):
     except RuntimeError as e:
         if "404" not in str(e) and "Not Found" not in str(e):
             raise
-    spec = next((l for l in autonomy.read_yaml(os.path.join(HERE, "..", "labels.yml")) if l.get("name") == name), {})
+    spec = next((l for l in labels_yml() if l.get("name") == name), {})
     gh("label", "create", name, "--repo", repo, "--color", spec.get("color", "B60205"), "--description", spec.get("description", ""))
 
 
@@ -966,7 +973,7 @@ def self_test():
     g8 = am[am.index("name: A revert pull request (G8)"):am.index("name: A sync run's pull request")]
     check("auto-merge.yml: only a missing .github/autonomy.yml reads as none; any other failure leaves it to a person",
           ("|| : >" not in g8, "grep -qE '404|Not Found'" in g8, 'if [ "$read_ok" = false ]; then' in g8), (True, True, True))
-    check("the labels exist in labels.yml", {"revert", "reverted"} <= {l.get("name") for l in autonomy.read_yaml(os.path.join(HERE, "..", "labels.yml"))}, True)
+    check("the labels exist in labels.yml", {"revert", "reverted"} <= {l.get("name") for l in labels_yml()}, True)
 
     if not failed:
         print("all tests passed")

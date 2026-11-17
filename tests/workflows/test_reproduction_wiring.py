@@ -44,7 +44,7 @@ def test_the_triage_can_choose_the_workflow_layer():
 
 
 def test_the_labels_exist_everywhere():
-    names = {label["name"] for label in load("labels.yml")}
+    names = {label["name"] for label in load("labels.yml")["labels"]}
     assert {"needs-info", "needs-human", "bug:confirmed", "repro:run", "repro:again"} <= names
 
 

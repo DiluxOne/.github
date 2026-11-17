@@ -80,9 +80,8 @@ def test_a_catch_up_run_is_counted_free():
     count = next(s for job in wf["jobs"].values() for s in job.get("steps", []) if s.get("name") == "Count the round or the run")
     run = count["run"]
     assert 'python3 .dx-central/scripts/autopilot.py count' in run
-    # The label only on the branch scripts older than #802 take (no `count`).
-    flow = "if grep -q '^FLOW_KEYS' .dx-central/scripts/receipts.py; then"
-    assert run.index(flow) < run.index("autopilot.py count") < run.index("exit 0") < run.index("autopilot:catchup")
+    # Never in a label (#805): the branch scripts older than #802 took is gone.
+    assert "autopilot:" not in run and "--add-label" not in run
 
 
 def test_the_hourly_sweep_still_covers_every_repository():
