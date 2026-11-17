@@ -42,7 +42,9 @@ signed by GitHub and show as Verified.
                            policy (DECIDED=policy, the default), with the
                            rule (policy/autonomy.yml#lanes.<LANE>), the
                            policy's commit, when, the run (RUN, else this
-                           run's URL) and EVIDENCE_JSON; DECIDED=withdrawn
+                           run's URL), EVIDENCE_JSON and RULE when another
+                           rule decided (a planned release's
+                           policy/autonomy.yml#planned-release); DECIDED=withdrawn
                            when the lane later refused it (nothing is
                            written when no lane is in force)
   receipts.py merge-decision
@@ -267,11 +269,13 @@ def policy_at(policy_ref):
     return f"DiluxOne/.github@{policy_ref}" if policy_ref else None
 
 
-def lane_decision(number, lane, policy_ref, at, run, evidence, decided="policy"):
+def lane_decision(number, lane, policy_ref, at, run, evidence, decided="policy", rule=None):
     """A lane's decision on an issue (issues/<n>/lane-<UTC>.json): the lane
-    accepted it by policy, or `withdrawn` when the lane later refused it."""
+    accepted it by policy, or `withdrawn` when the lane later refused it.
+    RULE is the lane's own unless another rule of the policy decided (a
+    planned release: policy/autonomy.yml#planned-release)."""
     return {"kind": "lane-decision", "issue": number, "lane": lane, "decided_by": "policy", "decided": decided,
-            "rule": f"policy/autonomy.yml#lanes.{lane}", "policy": policy_at(policy_ref), "at": at, "run": run, "evidence": evidence}
+            "rule": rule or f"policy/autonomy.yml#lanes.{lane}", "policy": policy_at(policy_ref), "at": at, "run": run, "evidence": evidence}
 
 
 def merge_decision(pr, decided, rule, head, policy_ref, at, run):
@@ -1423,6 +1427,9 @@ Normal
         check("C1 (#804) cli: lane-decision writes it, and lane get reads it",
               (lrun("lane-decision").returncode, json.loads(lrun("lane", "get").stdout or "null").get("lane"), lrun("lane").returncode), (0, "platform", 0))
         check("C1 (#804) cli: a lane that is not plain is refused", lrun("lane-decision", LANE="x|y", NUMBER="21").returncode, 64)
+        check("C1 (#804) cli: a planned release names the rule that decided it, and a rule that is not plain is refused",
+              (json.loads(lrun("lane-decision", LANE="release", NUMBER="230", RULE="policy/autonomy.yml#planned-release").stdout)["rule"],
+               lrun("lane-decision", LANE="release", NUMBER="231", RULE="a rule; rm").returncode), ("policy/autonomy.yml#planned-release", 64))
         time.sleep(1.1)
         check("C1 (#804) cli: a withdrawn decision leaves no lane", (lrun("lane-decision", DECIDED="withdrawn", LANE="").returncode, lrun("lane", "get").returncode), (0, 1))
         check("C1 (#804) cli: nothing to withdraw writes nothing", (lrun("lane-decision", DECIDED="withdrawn", NUMBER="22").returncode, os.path.isdir(os.path.join(d, "issues/22"))), (0, False))
@@ -1648,12 +1655,13 @@ def main(argv):
                 print(f"#{number}: no lane in force, nothing to withdraw")
                 return 0
             lane = lane or in_force["lane"]
-        if decided not in DECIDED or not valid_lane(lane) or number <= 0:
-            print("lane-decision needs NUMBER, a plain LANE and DECIDED policy or withdrawn", file=sys.stderr)
+        rule = os.environ.get("RULE") or None
+        if decided not in DECIDED or not valid_lane(lane) or number <= 0 or (rule and not valid_rule(rule)):
+            print("lane-decision needs NUMBER, a plain LANE, DECIDED policy or withdrawn, and a plain RULE when one is given", file=sys.stderr)
             return 64
         evidence = json.loads(os.environ.get("EVIDENCE_JSON") or "null")
         at = now()
-        d = lane_decision(number, lane, policy_ref, at, run_url(), evidence, decided)
+        d = lane_decision(number, lane, policy_ref, at, run_url(), evidence, decided, rule)
         write(repo, f"issues/{number}/lane-{at}.json", d, f"Lane {lane} for #{number}: {decided}")
         print(json.dumps(d))
         return 0

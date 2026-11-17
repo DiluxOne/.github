@@ -880,9 +880,8 @@ def lane_open(repo, number, test):
     env = dict(os.environ, REPORT=str(number), RUN_URL=test.get("run", ""), SHA256=test["sha256"], BASE=test.get("base", ""),
                WAY=test.get("way", ""), SPEC=test.get("spec", ""), NOUN=test.get("noun", ""), THEME=test.get("theme", ""))
     out = json.loads(subprocess.run([sys.executable, os.path.join(HERE, "repro-lane.py"), "prd"], capture_output=True, text=True, env=env, check=True).stdout)
-    for name, color, desc in (("lane:bugfix-reproduced", "1D76DB", "A bug the reproduction confirmed with a failing test"),
-                              ("accepted-by:policy", "0E8A16", "Accepted by a lane of the autonomy policy, not by a person")):
-        gh("label", "create", name, "--repo", repo, "--color", color, "--description", desc, "--force", check=False)
+    gh("label", "create", "lane:bugfix-reproduced", "--repo", repo, "--color", "1D76DB", "--description",
+       "A bug the reproduction confirmed with a failing test", "--force", check=False)
     url = gh("issue", "create", "--repo", repo, "--title", out["title"], "--body", out["body"], "--label", "lane:bugfix-reproduced").strip()
     lane = url.rsplit("/", 1)[-1]
     gh("api", "-X", "PATCH", f"repos/{repo}/issues/{lane}", "-f", "type=Bug", check=False)
@@ -890,7 +889,10 @@ def lane_open(repo, number, test):
     if ok.returncode != 0:
         gh("issue", "comment", lane, "--repo", repo, "--body", f"No lane accepted this issue ({ok.stdout.strip()}), so it waits for a maintainer.\n\n{SIGN}")
         return None
-    gh("issue", "edit", lane, "--repo", repo, "--add-label", "accepted-by:policy")
+    # The lane's decision on the receipts (#804), never a label.
+    subprocess.run([sys.executable, os.path.join(HERE, "receipts.py"), "lane-decision"], check=True, capture_output=True, text=True,
+                   env=dict(os.environ, GITHUB_REPOSITORY=repo, NUMBER=lane, LANE="bugfix-reproduced", DECIDED="policy",
+                            EVIDENCE_JSON=json.dumps({"why": ok.stdout.strip(), "report": number, "run": test.get("run", "")})))
     body = gh("issue", "view", lane, "--repo", repo, "--json", "body", "--jq", ".body")
     path = os.path.join(os.environ.get("RUNNER_TEMP", "/tmp"), f"lane-{lane}.md")
     with open(path, "w", encoding="utf-8") as fh:

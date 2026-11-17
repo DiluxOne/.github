@@ -8,9 +8,11 @@ the issue "Release X.Y.Z" on the milestone, as dilux-bot, with the Release
 form's label and Type, and closes a milestone that was done but still open.
 With `planned-release: auto` (policy/autonomy.yml) approving the plan was
 approving the release: when the milestone's creator has the admin or
-maintain role, dilux-bot marks the issue `accepted-by:policy`, which opens
-the release pull request, and scripts/release-issue.py verify approves it as
-that person's. With `confirm` (the default) a person accepts the issue, the
+maintain role, dilux-bot writes the plan's acceptance to the repository's
+receipts (#804: a lane decision for `release` by
+policy/autonomy.yml#planned-release, never a label), then adds `lane:release`,
+which opens the release pull request, and scripts/release-issue.py verify
+approves it as that person's. With `confirm` (the default) a person accepts the issue, the
 last click. Nothing opens for a milestone not named as a version, one
 closed long ago, one with no issue, one whose release issue exists (in any
 state) or whose version is already tagged.
@@ -210,7 +212,9 @@ def open_due(full, now, io=None, mode="confirm"):
         "titles": lambda: {i["title"] for i in lines("api", f"repos/{full}/issues?state=all&per_page=100", "--paginate", "--jq",
                                                        '.[] | select(.title | startswith("Release ")) | {title} | @json')},
         "tags": lambda: set(gh("api", f"repos/{full}/tags?per_page=100", "--paginate", "--jq", ".[].name").split()),
-        "open": lambda version, m, auto: gh("issue", "create", "--repo", full, "--title", f"Release {version}", "--label", "lane:release",
+        # In auto, `lane:release` comes last (accept): it starts the release.
+        "open": lambda version, m, auto: gh("issue", "create", "--repo", full, "--title", f"Release {version}",
+                                            *(() if auto else ("--label", "lane:release")),
                                             "--milestone", m["title"], "--body", body(version, m, auto)).strip(),
         "type": lambda url: gh("api", "-X", "PATCH", f"repos/{full}/issues/{url.rsplit('/', 1)[-1]}", "-f", "type=Task"),
         "role": lambda login: gh("api", f"repos/{full}/collaborators/{login}/permission", "--jq", ".role_name").strip(),
@@ -220,7 +224,8 @@ def open_due(full, now, io=None, mode="confirm"):
                                   '.[] | {number, state_reason: (if .pull_request then (if .pull_request.merged_at then "completed" else "not merged" end) else .state_reason end), closed_by: (.closed_by.login // "")} | @json'),
         "removed": lambda m: [e["actor"] for e in lines("api", f"repos/{full}/issues/events?per_page=100", "--paginate", "--jq",
                                                        f'.[] | select(.event == "demilestoned" and .milestone.title == {json.dumps(m["title"])}) | {{actor: (.actor.login // "")}} | @json')],
-        "accept": lambda url: gh("issue", "edit", url, "--add-label", "accepted-by:policy"),
+        "decide": lambda url, creator, version: plan_decision(full, int(url.rsplit("/", 1)[-1]), creator, version),
+        "label": lambda url: gh("issue", "edit", url, "--add-label", "lane:release"),
         "close": lambda m: gh("api", "-X", "PATCH", f"repos/{full}/milestones/{m['number']}", "-f", "state=closed"),
         # What merged since the last version (#287): every pull request
         # merged into the default branch after it, with the issues it closes.
@@ -273,12 +278,40 @@ def open_due(full, now, io=None, mode="confirm"):
         if done(m):
             io["close"](m)
         if auto:
-            # Last, once the issue is whole: this label opens the release pull
-            # request (issue-accepted.yml).
-            io["accept"](url)
+            # Last, once the issue is whole: the plan's acceptance on the
+            # receipts (#804), then the label that opens the release pull
+            # request (issue-accepted.yml). The label goes on even when the
+            # write fails: the issue is then one a person accepts, and the
+            # run fails, so it is seen.
+            try:
+                io["decide"](url, creator, version)
+            finally:
+                io["label"](url)
         print(f"  {full}: Release {version}, {url}{' (accepted by the plan of ' + creator + ')' if auto else ''}")
         opened.append(version)
     return opened
+
+
+def plan_decision(full, number, creator, version):
+    """The plan's acceptance of release issue NUMBER, on FULL's receipts
+    (#804): a lane decision for `release` by the planned-release rule, with
+    the milestone's creator and version as its evidence, read back."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("receipts", os.path.join(HERE, "receipts.py"))
+    receipts = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(receipts)
+    at = receipts.now()
+    rec = receipts.lane_decision(number, "release", os.environ.get("POLICY_REF") or os.environ.get("GITHUB_SHA"), at,
+                                 receipts.run_url(), {"planner": creator, "milestone": version}, rule=PLANNED_RULE)
+    receipts.write(full, f"issues/{number}/lane-{at}.json", rec, f"Release #{number}: accepted by the plan")
+    got = receipts.lane_in_force(receipts.lane_decisions(full, number))
+    if not got or got.get("rule") != PLANNED_RULE:
+        raise RuntimeError(f"{full}#{number}: the plan's acceptance could not be read back from the receipts")
+    return rec
+
+
+# The rule a planned release is accepted by (release-issue.py reads it).
+PLANNED_RULE = "policy/autonomy.yml#planned-release"
 
 
 def self_test():
@@ -303,7 +336,7 @@ def self_test():
     typed = []
     io = {"milestones": lambda: ms, "titles": lambda: {"Release 1.3.0"}, "tags": lambda: {"1.2.0"},
           "open": lambda v, mm, auto: opened.append(v) or f"https://github.com/o/r/issues/{len(opened)}", "type": typed.append,
-          "role": lambda who: "admin", "accept": lambda url: None, "close": lambda mm: None,
+          "role": lambda who: "admin", "decide": lambda url, c, v: None, "label": lambda url: None, "close": lambda mm: None,
           "issues": lambda mm: [], "removed": lambda mm: []}
     import contextlib
     import io as _io
@@ -314,7 +347,7 @@ def self_test():
     # #247: a milestone done is due while still open; auto accepts a planner's.
     d = {"title": "1.6.0", "state": "open", "open_issues": 0, "closed_issues": 3, "number": 7, "html_url": "u", "creator": {"login": "boss"}}
     check("due: an open version milestone with every issue closed is due", [v for v, _ in due([d, {**d, "title": "1.7.0", "open_issues": 1}, {**d, "title": "1.8.0", "closed_issues": 0}], set(), set(), now)], ["1.6.0"])
-    seen = {"accept": [], "close": [], "auto": []}
+    seen = {"accept": [], "close": [], "auto": [], "label": []}
     def run(mode, role, issues=None, removed=(), ms=None, merged=(), released=""):
         for k in seen:
             seen[k] = []
@@ -324,13 +357,48 @@ def self_test():
             return role if who == "boss" else {"bot": None}.get(who, "write")
         io2 = {"milestones": lambda: [ms or d], "titles": lambda: set(), "tags": lambda: set(),
                "open": lambda v, mm, auto: seen["auto"].append(auto) or "https://github.com/o/r/issues/5", "type": lambda url: None,
-               "role": role_fn, "accept": seen["accept"].append, "close": lambda mm: seen["close"].append(mm["number"]),
+               "role": role_fn, "decide": lambda url, c, v: seen["accept"].append((url, c, v)), "label": seen["label"].append,
+               "close": lambda mm: seen["close"].append(mm["number"]),
                "issues": lambda mm: issues if issues is not None else [{"number": 1, "state_reason": "completed", "closed_by": "dilux-bot[bot]"}],
                "removed": lambda mm: list(removed), "merged": lambda: list(merged), "released": lambda: released}
         with contextlib.redirect_stdout(_io.StringIO()):
             open_due("o/r", now, io2, mode)
         return (seen["auto"], len(seen["accept"]), seen["close"])
     check("#247 auto: a maintainer's plan is accepted by policy, and the done milestone closes", run("auto", "maintain"), ([True], 1, [7]))
+    # #804: the plan's acceptance is on the receipts, then `lane:release` starts the release; never accepted-by:policy.
+    run("auto", "maintain")
+    check("C1 (#804) auto: the decision names the issue, the planner and the version, then lane:release goes on",
+          (seen["accept"], seen["label"]), ([("https://github.com/o/r/issues/5", "boss", "1.6.0")], ["https://github.com/o/r/issues/5"]))
+    run("confirm", "admin")
+    check("C1 (#804) confirm: no decision and no label added after (the issue opens with lane:release)", (seen["accept"], seen["label"]), ([], []))
+    order = []
+    def failing_decide(url, c, v):
+        order.append("decide")
+        raise RuntimeError("HTTP 502")
+    io3 = {"milestones": lambda: [d], "titles": lambda: set(), "tags": lambda: set(), "open": lambda v, mm, auto: "https://github.com/o/r/issues/6",
+           "type": lambda url: None, "role": lambda who: "admin", "decide": failing_decide, "label": lambda url: order.append("label"),
+           "close": lambda mm: None, "issues": lambda mm: [{"number": 1, "state_reason": "completed", "closed_by": "dilux-bot[bot]"}],
+           "removed": lambda mm: [], "merged": lambda: [], "released": lambda: ""}
+    try:
+        with contextlib.redirect_stdout(_io.StringIO()):
+            open_due("o/r", now, io3, "auto")
+        raised = False
+    except RuntimeError:
+        raised = True
+    check("C1 (#804) auto: a decision that fails still labels the issue (a person accepts it) and fails the run", (order, raised), (["decide", "label"], True))
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        old_env = dict(os.environ)
+        os.environ.update(RECEIPTS_FIXTURE=tmp, POLICY_REF="abc123")
+        try:
+            rec = plan_decision("o/r", 5, "boss", "1.6.0")
+            names = os.listdir(os.path.join(tmp, "issues", "5"))
+        finally:
+            os.environ.clear()
+            os.environ.update(old_env)
+    check("C1 (#804) plan_decision: a lane decision for release by the planned-release rule, on the receipts",
+          (rec["lane"], rec["rule"], rec["decided"], rec["evidence"], rec["policy"], len(names), names[0].startswith("lane-")),
+          ("release", "policy/autonomy.yml#planned-release", "policy", {"planner": "boss", "milestone": "1.6.0"}, "DiluxOne/.github@abc123", 1, True))
     check("#247 auto: a writer's plan waits for a person", run("auto", "write"), ([False], 0, [7]))
     check("#247 confirm: a person accepts, the last click", run("confirm", "admin"), ([False], 0, [7]))
     check("#247 auto: an issue closed as not planned, or closed by a writer, waits for a person",

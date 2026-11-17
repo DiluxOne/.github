@@ -55,9 +55,9 @@ name: Issue accepted
 # and the GitHub release are the record.
 #
 # A reproduced bug's issue, which the `bugfix-reproduced` lane accepted
-# (`accepted-by:policy`; its PRD sealed by issue-repro.yml, which opened it,
-# #84), gets its receipt when it closes as completed, as an accepted one
-# does. Other lanes' issues are not sealed and get none yet.
+# (its lane decision on the receipts, #804, and its PRD sealed by
+# issue-repro.yml, which opened it, #84), gets its receipt when it closes as
+# completed, as an accepted one does. Other lanes' issues are not sealed and get none yet.
 #
 # When a lane's label (`lane:<name>`) is added to an issue, by a person or a
 # bot, the `lane` job asks the autonomy policy whether that lane accepts it
@@ -67,7 +67,8 @@ name: Issue accepted
 # lane a person accepts, or one whose own workflow labels its issues
 # (platform, bugfix-reproduced), is left alone. For a sync lane it says so on the issue, in
 # one comment kept up to date that links the policy at the commit it read,
-# and adds `accepted-by:policy` when the lane accepts it (removes it when
+# and writes the lane's decision to the receipts when the lane accepts it
+# (scripts/receipts.py lane-decision, #804; one in force is withdrawn when
 # not), which is what the weekly "Decided by policy" issues list. It decides
 # nothing the gate relies on: the pull request's gate asks the policy again
 # (scripts/issue-gate.sh). This is how a sync run's issue (lane org-sync,
@@ -667,9 +668,11 @@ jobs:
     # When an accepted issue closes as completed by a merged pull request: the
     # receipt (#81), committed to the receipts branch, and the board updated.
     # A reproduced bug's issue (`lane:bugfix-reproduced`, #84) gets its
-    # receipt too: its PRD was sealed when the lane accepted it. Other lanes'
-    # issues (the platform's) are not sealed and get none yet.
-    if: github.event_name == 'issues' && github.event.action == 'closed' && github.event.issue.state_reason == 'completed' && (contains(github.event.issue.labels.*.name, inputs.label) || (contains(github.event.issue.labels.*.name, 'accepted-by:policy') && contains(github.event.issue.labels.*.name, 'lane:bugfix-reproduced'))) && !contains(github.event.issue.labels.*.name, 'lane:release')
+    # receipt too: its PRD was sealed when the lane accepted it. Its label
+    # only routes here (#804): the step reads the lane decision in force on
+    # the receipts, and without one, writes nothing. Other lanes' issues
+    # (the platform's) are not sealed and get none yet.
+    if: github.event_name == 'issues' && github.event.action == 'closed' && github.event.issue.state_reason == 'completed' && (contains(github.event.issue.labels.*.name, inputs.label) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && contains(github.event.issue.labels.*.name, 'lane:bugfix-reproduced'))) && !contains(github.event.issue.labels.*.name, 'lane:release')
     permissions: {}
     steps:
       - name: The scripts
@@ -704,9 +707,17 @@ jobs:
           BODY_TEXT: ${{ github.event.issue.body }}
           NUMBER: ${{ github.event.issue.number }}
           POLICY_REF: ${{ steps.central.outputs.ref }}
+          ACCEPTED: ${{ contains(github.event.issue.labels.*.name, inputs.label) }}
         run: |
           set -euo pipefail
           printf '%s' "$BODY_TEXT" > "$RUNNER_TEMP/body.md"
+          # The lane in force, from the receipts (#804), never a label; a
+          # read that fails stops here, never taken for none.
+          rc=0; decision=$(python3 .dx-central/scripts/receipts.py lane get) || rc=$?
+          if [ "$rc" = 2 ]; then echo "::error::#$NUMBER's receipts could not be read."; exit 1; fi
+          lane=$(jq -r 'select(. != null) | .lane // empty' <<<"$decision")
+          echo "lane=$lane" >> "$GITHUB_OUTPUT"
+          if [ "$ACCEPTED" != true ] && [ "$lane" != bugfix-reproduced ]; then echo "No lane accepted #$NUMBER on the receipts: no receipt."; exit 0; fi
           # The merged pull request that closed it.
           # shellcheck disable=SC2016 # GraphQL variables, not shell ones.
           pr=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){timelineItems(itemTypes:[CLOSED_EVENT],last:1){nodes{... on ClosedEvent{closer{... on PullRequest{number merged headRefOid mergeCommit{oid} mergedBy{login} labels(first:30){nodes{name}}}}}}}}}}' \
@@ -726,11 +737,12 @@ jobs:
           if [ -n "$id" ]; then gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$board" >/dev/null
           else gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$board" >/dev/null; fi
       # A reproduced bug's fix merged (#271): the report it came from is
-      # closed as completed, naming the pull request. The report's number is
+      # closed as completed, naming the pull request, when the lane in force
+      # on the receipts is bugfix-reproduced (#804). The report's number is
       # read from the lane issue's sealed PRD (repro-lane.py evidence), never
       # from its title, and only on an issue dilux-bot opened for the lane.
       - name: Close the report it came from
-        if: steps.receipt.outputs.pr != '' && github.event.issue.user.login == vars.DX_BOT_LOGIN && contains(github.event.issue.labels.*.name, 'lane:bugfix-reproduced') && contains(github.event.issue.labels.*.name, 'accepted-by:policy')
+        if: steps.receipt.outputs.pr != '' && github.event.issue.user.login == vars.DX_BOT_LOGIN && steps.receipt.outputs.lane == 'bugfix-reproduced'
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           BODY_TEXT: ${{ github.event.issue.body }}
@@ -751,15 +763,18 @@ jobs:
     timeout-minutes: 10
     # A person accepts a release issue (#82): the release pull request, as
     # the header says. Or the plan accepted it (#247): dilux-bot opened it on
-    # its version's milestone and marked it `accepted-by:policy`
-    # (scripts/milestones.py, `planned-release: auto`); publishing checks the
-    # planner's role again (scripts/release-issue.py verify). Everything goes
+    # its version's milestone, wrote the plan's acceptance to the receipts
+    # and only then added `lane:release` (scripts/milestones.py,
+    # `planned-release: auto`, #804); the step reads that decision back, and
+    # stops without a word on a bot's release issue the plan did not accept
+    # (in `confirm` it opens with the label); publishing checks the planner's
+    # role again (scripts/release-issue.py verify). Everything goes
     # through dilux-bot's token, so the caller's grants are not touched; no
     # code of the repository runs, only the organisation's scripts on its files.
     if: >-
       github.event_name == 'issues' && github.event.action == 'labeled' && contains(github.event.issue.labels.*.name, 'lane:release') &&
       ((github.event.label.name == inputs.label && github.event.sender.type != 'Bot') ||
-       (github.event.label.name == 'accepted-by:policy' && github.event.sender.login == vars.DX_BOT_LOGIN && github.event.issue.user.login == vars.DX_BOT_LOGIN && github.event.issue.milestone != null))
+       (github.event.label.name == 'lane:release' && github.event.sender.login == vars.DX_BOT_LOGIN && github.event.issue.user.login == vars.DX_BOT_LOGIN && github.event.issue.milestone != null))
     permissions: {}
     concurrency:
       group: release-pr-${{ github.repository }}
@@ -812,7 +827,7 @@ jobs:
           DX_AUTOPILOT: ${{ vars.DX_AUTOPILOT }}
           SENDER: ${{ github.event.sender.login }}
           # On the planned path (#247) the decision is the milestone's planner's.
-          PLANNED: ${{ github.event.label.name == 'accepted-by:policy' }}
+          PLANNED: ${{ github.event.label.name == 'lane:release' }}
           PLANNER: ${{ github.event.issue.milestone.creator.login }}
         run: |
           set -euo pipefail
@@ -826,6 +841,15 @@ jobs:
             if [ -n "$id" ]; then gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$body" >/dev/null
             else gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$body" >/dev/null; fi
           }
+          # The plan's acceptance is on the receipts (#804), never a label:
+          # without it, a bot's release issue waits for a person's `accepted`.
+          if [ "$PLANNED" = true ]; then
+            rc=0; decision=$(python3 .dx-central/scripts/receipts.py lane get) || rc=$?
+            if [ "$rc" = 2 ]; then echo "::error::#$NUMBER's receipts could not be read; a person accepts it."; exit 1; fi
+            if [ "$(jq -r 'select(. != null) | select(.lane == "release") | .rule' <<<"$decision")" != "policy/autonomy.yml#planned-release" ]; then
+              echo "#$NUMBER: not accepted by the plan; a person accepts it."; exit 0
+            fi
+          fi
           if [ "$(tr '[:upper:]' '[:lower:]' <<<"${DX_AUTOPILOT:-}")" = off ]; then
             say "**No release pull request:** the organisation's \`DX_AUTOPILOT\` is off, which stops every autonomous action. A maintainer prepares it by hand (the kind's command, \`scripts/release-markers.sh prepare\` for a plugin) in a pull request that closes this issue."
             exit 0
@@ -915,7 +939,8 @@ jobs:
           base="https://raw.githubusercontent.com/DiluxOne/.github/$sha"
           # autonomy.py reads the organisation from org.yml, through org.py (#191);
           # the overlay merges with settings.py by the schema (#568).
-          for f in scripts/autonomy.py scripts/org.py scripts/repos_conf.py scripts/settings.py org.yml policy/autonomy.yml policy/settings-schema.yml; do curl -fsSL --retry 3 "$base/$f" -o ".dx-central/$f"; done
+          # receipts.py writes the lane's decision (#804), with issue-schema.py, which it loads.
+          for f in scripts/autonomy.py scripts/org.py scripts/repos_conf.py scripts/settings.py scripts/receipts.py scripts/issue-schema.py org.yml policy/autonomy.yml policy/settings-schema.yml; do curl -fsSL --retry 3 "$base/$f" -o ".dx-central/$f"; done
           # The organisation's configuration over those (#197); a ref from
           # before the overlay has none.
           code=$(curl -sSL --retry 3 -w '%{http_code}' "$base/scripts/config-overlay.sh" -o .dx-central/scripts/config-overlay.sh || echo 000)
@@ -932,7 +957,7 @@ jobs:
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }}
           permission-issues: write
-          permission-contents: read # the repository's own .github/autonomy.yml
+          permission-contents: write # the repository's own .github/autonomy.yml, and the lane's decision on its receipts (#804)
 
       - name: Ask the policy, and say so on the issue
         env:
@@ -940,6 +965,7 @@ jobs:
           BOT_TOKEN: ${{ steps.bot.outputs.token }}
           NUMBER: ${{ github.event.issue.number }}
           LANE: ${{ github.event.label.name }}
+          SENDER: ${{ github.event.sender.login }}
           DX_AUTOPILOT: ${{ vars.DX_AUTOPILOT }}
           POLICY_SHA: ${{ steps.central.outputs.sha }}
         run: |
@@ -963,10 +989,13 @@ jobs:
           text=$(jq -r .comment "$RUNNER_TEMP/verdict.json")
           echo "$text"
           export GH_TOKEN=$BOT_TOKEN
+          # The decision on the receipts (#804), never a label: a write that
+          # fails stops here, before the comment says it was accepted.
           if [ "$act" = accept ]; then
-            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label accepted-by:policy >/dev/null
+            LANE="${LANE#lane:}" DECIDED=policy POLICY_REF="$POLICY_SHA" EVIDENCE_JSON="$(jq -c --arg label "$LANE" --arg by "$SENDER" '{label: $label, labelled_by: $by, verdict: .act}' "$RUNNER_TEMP/verdict.json")" \
+              python3 .dx-central/scripts/receipts.py lane-decision >/dev/null
           else
-            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label accepted-by:policy >/dev/null 2>&1 || true
+            LANE="" DECIDED=withdrawn POLICY_REF="$POLICY_SHA" python3 .dx-central/scripts/receipts.py lane-decision >/dev/null
           fi
           body="<!-- dx-lane-verdict -->"$'\n'"$text"$'\n\n'"🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
           id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" --paginate --jq '.[] | select(.user.type == "Bot" and (.user.login | startswith(env.DX_BOT_APP)) and (.body | startswith("<!-- dx-lane-verdict -->"))) | .id' | tail -1)

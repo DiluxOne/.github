@@ -46,8 +46,8 @@ name: Issue reproduction
 #                      the way it runs in, #397), never the report's words,
 #                      whatever the test's way; the lane accepts it
 #                      as GitHub's history shows it (scripts/autonomy.py
-#                      lane-accept), it is labelled `accepted-by:policy`
-#                      and sealed, and the `autopilot` job works it
+#                      lane-accept), its decision is on the receipts
+#                      (#804) and its PRD sealed, and the `autopilot` job works it
 #                      (autopilot.yml): the fix must make that test pass,
 #                      as written and run the way it was written, through
 #                      every gate. When the lane is
@@ -1224,8 +1224,8 @@ jobs:
       # its specification. The lane accepts it only as GitHub's history
       # shows it (scripts/autonomy.py lane-accept: opened and labelled by
       # dilux-bot, from this run of issue-repro.yml), never on the label
-      # alone. Then it gets `accepted-by:policy`, its PRD is sealed on the
-      # receipts branch as accepted by the policy, and the autopilot job
+      # alone. Then the lane's decision is written to the receipts branch
+      # (#804), its PRD is sealed there as accepted by the policy, and the autopilot job
       # below takes it. If the lane refuses, the issue waits for a person's
       # `accepted`, like any other.
       - name: Hand it to the bugfix-reproduced lane
@@ -1251,10 +1251,7 @@ jobs:
         run: |
           set -euo pipefail
           sign="<sub>🤖 AI reproduction · $MODEL (Anthropic)${COST:+ · \$$COST}</sub>"
-          for l in "lane:bugfix-reproduced|1D76DB|A bug the reproduction confirmed with a failing test" "accepted-by:policy|0E8A16|Accepted by a lane of the autonomy policy, not by a person"; do
-            IFS='|' read -r name color desc <<<"$l"
-            gh label create "$name" --repo "$GITHUB_REPOSITORY" --color "$color" --description "$desc" --force >/dev/null
-          done
+          gh label create lane:bugfix-reproduced --repo "$GITHUB_REPOSITORY" --color 1D76DB --description "A bug the reproduction confirmed with a failing test" --force >/dev/null
           # The commit the test failed on: the one every job of this run checked out.
           REPORT=$NUMBER BASE=$GITHUB_SHA python3 .dx-central/scripts/repro-lane.py prd > "$RUNNER_TEMP/lane.json"
           jq -r .body "$RUNNER_TEMP/lane.json" > "$RUNNER_TEMP/lane.md"
@@ -1263,10 +1260,12 @@ jobs:
           echo "created=$lane" >> "$GITHUB_OUTPUT"
           gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/$lane" -f type=Bug >/dev/null 2>&1 || echo "::warning::Could not set #$lane's Type to Bug."
           if why=$(NUMBER=$lane python3 .dx-central/scripts/autonomy.py lane-accept); then
-            gh issue edit "$lane" --repo "$GITHUB_REPOSITORY" --add-label accepted-by:policy >/dev/null
-            gh issue view "$lane" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/sealed.md"
             POLICY_REF=$(git -C .dx-central rev-parse --short=12 HEAD)
             export POLICY_REF
+            # The lane's decision on the receipts (#804), never a label.
+            NUMBER=$lane LANE=bugfix-reproduced DECIDED=policy EVIDENCE_JSON="$(jq -cn --arg why "$why" --arg report "$NUMBER" --arg run "$RUN_URL" '{why: $why, report: ($report | tonumber), run: $run}')" \
+              python3 .dx-central/scripts/receipts.py lane-decision >/dev/null
+            gh issue view "$lane" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/sealed.md"
             NUMBER=$lane BODY="$RUNNER_TEMP/sealed.md" ACCEPTED_BY="policy (lane bugfix-reproduced)" python3 .dx-central/scripts/receipts.py seal-prd
             board=$(NUMBER=$lane BODY="$RUNNER_TEMP/sealed.md" python3 .dx-central/scripts/receipts.py board)
             gh issue comment "$lane" --repo "$GITHUB_REPOSITORY" --body "$board" >/dev/null

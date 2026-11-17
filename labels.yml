@@ -20,15 +20,18 @@
 - {name: awaiting-acceptance, color: "FBCA04", description: "The issue follows the schema; it waits for a maintainer's decision"}
 - {name: incomplete, color: "D4C5F9", description: "The issue does not follow the schema yet; a comment says what is missing"}
 
-# The autonomy policy (policy/autonomy.yml): a lane's issue, and what was
-# decided by policy rather than by a person (the weekly summary lists them).
+# The autonomy policy (policy/autonomy.yml): a lane's issue. What was
+# decided by policy rather than by a person is on the receipts (#804:
+# scripts/receipts.py lane-decision and merge-decision; the weekly summary
+# lists them from there), no longer `accepted-by:policy` or
+# `merged-by:policy`: scripts/policy-receipts.py moves an open item's onto
+# its receipts, and the sync never deletes a label a repository has, so a
+# closed item keeps its own.
 - {name: "lane:platform", color: "1D76DB", description: "The organisation's own machinery, kept current by a weekly job"}
 - {name: "lane:bugfix-reproduced", color: "1D76DB", description: "A bug the reproduction confirmed with a failing test"}
 - {name: "lane:org-sync", color: "1D76DB", description: "Opened by scripts/sync-repos.py to bring this repository in line with DiluxOne/.github"}
 - {name: "lane:adopt", color: "1D76DB", description: "Adopt <repository>: a maintainer accepting it adds it to repos.yml and adopts it (org-adopt.yml)"}
 - {name: "lane:release", color: "1D76DB", description: "Release X.Y.Z: a person accepting it is the decision to publish"}
-- {name: "accepted-by:policy", color: "0E8A16", description: "Accepted by a lane of the autonomy policy, not by a person"}
-- {name: "merged-by:policy", color: "0E8A16", description: "Merged by the autonomy policy, not by a person"}
 - {name: autopilot, color: "1D76DB", description: "Opened by the autopilot from an accepted issue"}
 - {name: "autopilot:continue", color: "1D76DB", description: "On an issue: the autopilot continues its draft pull request, or starts it"}
 - {name: needs-human, color: "D93F0B", description: "The autopilot handed this over to a person"}

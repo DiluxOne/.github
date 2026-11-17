@@ -1212,6 +1212,17 @@ def git_branch(full, default, branch, wanted, message_form, git=run_git, workdir
             shutil.rmtree(work, ignore_errors=True)
 
 
+def withdraw_lane(full, number):
+    """The lane's decision in force on FULL#NUMBER withdrawn on its receipts
+    (#804: scripts/receipts.py lane-decision, never a label); nothing is
+    written when none is in force. One that fails is said, never fatal: the
+    lane's label is gone, so the pull request's gate refuses it anyway."""
+    out = subprocess.run([sys.executable, os.path.join(HERE, "receipts.py"), "lane-decision"], capture_output=True, text=True,
+                         env=dict(os.environ, GITHUB_REPOSITORY=full, NUMBER=str(number), LANE="", DECIDED="withdrawn"))
+    if out.returncode != 0:
+        print(f"::warning::{full}#{number}: its lane decision could not be withdrawn on the receipts ({(out.stderr or out.stdout).strip()[:200]})")
+
+
 def open_change(repo, default, wanted, title, body, branch_form, pr_title, pr_body, message_form, mode=None):
     """An issue (Type Task) and a pull request that closes it, writing
     `wanted` ({path: content}) on the branch branch_form.format(<issue>),
@@ -1231,7 +1242,8 @@ def open_change(repo, default, wanted, title, body, branch_form, pr_title, pr_bo
         # Its marker is another run's (other files, another commit): the lane
         # would refuse it, so it says so now and a person accepts it.
         if marker is None or marker not in (found[0].get("body") or ""):
-            gh("issue", "edit", number, "--repo", full, "--remove-label", f"lane:{LANE}", "--remove-label", "accepted-by:policy", check=False)
+            gh("issue", "edit", number, "--repo", full, "--remove-label", f"lane:{LANE}", check=False)
+            withdraw_lane(full, number)
         else:
             lane = True
     else:
@@ -5378,7 +5390,8 @@ def self_test():
         return fake_gh
     wanted = {".github/CODEOWNERS": "* @soydiloreto\n"}
     global ORG_COMMIT
-    saved_gh, saved_org, saved_commit = globals()["gh"], ORG, ORG_COMMIT
+    saved_gh, saved_org, saved_commit, saved_withdraw = globals()["gh"], ORG, ORG_COMMIT, globals()["withdraw_lane"]
+    globals()["withdraw_lane"] = lambda full, number: calls.append(("withdraw", full, str(number)))
     try:
         ORG, ORG_COMMIT = "o", (sha, None)
         globals()["gh"] = recorder()
@@ -5411,8 +5424,9 @@ def self_test():
         calls.clear()
         globals()["gh"] = recorder(found=[{"number": 7, "title": "T", "body": f"Body.\n\n{mine.replace(sha, 'f' * 40)}"}])
         open_change({"name": "r"}, "main", wanted, "T", "Body.", "chore/{}-org-shared-files", "chore: t", "## What", "chore: {}", mode="files")
-        check("org-sync: an older run's issue loses the lane and accepted-by:policy",
-              any("--remove-label" in c and "accepted-by:policy" in c for c in calls) and not any("--add-label" in c for c in calls), calls)
+        check("org-sync: an older run's issue loses the lane, and its lane decision is withdrawn on the receipts (#804)",
+              any("--remove-label" in c and "lane:org-sync" in c for c in calls) and ("withdraw", "o/r", "7") in calls
+              and not any("--add-label" in c or "accepted-by:policy" in c for c in calls), calls)
         calls.clear()
         globals()["gh"] = recorder()
         open_change({"name": "r"}, "main", dict(wanted, **{DEPENDABOT: "version: 2\n"}), "T", "Body.", "chore/{}-org-shared-files", "chore: t", "## What", "chore: {}", mode="files")
@@ -5427,7 +5441,7 @@ def self_test():
         create = next(c for c in calls if c[:2] == ("issue", "create"))
         check("org-sync: a checkout not merged into main marks nothing", "dx-lane" not in create[create.index("--body") + 1] and not any("lane:org-sync" in c for c in calls), calls)
     finally:
-        globals()["gh"], ORG, ORG_COMMIT = saved_gh, saved_org, saved_commit
+        globals()["gh"], ORG, ORG_COMMIT, globals()["withdraw_lane"] = saved_gh, saved_org, saved_commit, saved_withdraw
 
     # #452: what a plugin's languages/ needs to merge.
     upper = lambda text: text.upper()  # noqa: E731  a stand-in form

@@ -257,30 +257,28 @@ def judge(node, label):
 
 # A planned release (#247): the bot opens "Release X.Y.Z" when its version's
 # milestone is done, and in `planned-release: auto` (policy/autonomy.yml) it
-# marks it accepted by policy. Approving the plan was approving the release:
-# the person is whoever created the milestone, and their role is read now.
-PLANNED_LABEL = "accepted-by:policy"
+# writes the plan's acceptance to the receipts (#804: a lane decision for
+# `release` by PLANNED_RULE, never a label anyone with write access could
+# add), then adds `lane:release`, which starts the release pull request.
+# Approving the plan was approving the release: the person is whoever
+# created the milestone, and their role is read now.
+PLANNED_RULE = "policy/autonomy.yml#planned-release"
 BOT_LOGINS = (org.APP, org.BOT, f"app/{org.APP}")
 
 
-def planned(node, version):
-    """(ok, why, by, at) for a release issue the plan accepted."""
+def planned(node, version, decision):
+    """(ok, why, by, at) for a release issue the plan accepted. DECISION is
+    the issue's lane decision in force, from the receipts (None when there
+    is none)."""
     n = node.get("number")
     # A release cancelled by closing its issue is no release, planned or not.
     if node.get("state") == "CLOSED" and node.get("stateReason") != "COMPLETED":
         return False, f"#{n} was closed as {str(node.get('stateReason') or 'not completed').lower().replace('_', ' ')}", None, None
     labels = [l.get("name") for l in (node.get("labels") or {}).get("nodes") or []]
-    if PLANNED_LABEL not in labels or LANE_LABEL not in labels:
+    if LANE_LABEL not in labels or not decision or decision.get("lane") != "release" or decision.get("rule") != PLANNED_RULE:
         return False, f"#{n} is not accepted by the plan", None, None
     if ((node.get("author") or {}).get("login") or "") not in BOT_LOGINS:
-        return False, f"#{n} carries `{PLANNED_LABEL}` but was not opened by the bot for a milestone", None, None
-    events = (node.get("timelineItems") or {}).get("nodes") or []
-    last = None
-    for e in events:
-        if e.get("__typename") in ("LabeledEvent", "UnlabeledEvent") and (e.get("label") or {}).get("name") == PLANNED_LABEL:
-            last = e
-    if not last or last.get("__typename") != "LabeledEvent" or ((last.get("actor") or {}).get("login") or "") not in BOT_LOGINS:
-        return False, f"#{n}'s `{PLANNED_LABEL}` was not added by the bot", None, None
+        return False, f"#{n} is accepted by the plan but was not opened by the bot for a milestone", None, None
     ms = node.get("milestone") or {}
     if (ms.get("title") or "").strip().lstrip("v") != version:
         return False, f"#{n} is not on the milestone {version}", None, None
@@ -288,7 +286,10 @@ def planned(node, version):
     # last issue closes; one still open was not done when it was accepted.
     if ms.get("state") != "CLOSED":
         return False, f"#{n}'s milestone {version} is not done", None, None
-    at = last.get("createdAt") or ""
+    at = decision.get("at") or ""
+    if not at:
+        return False, f"#{n}'s acceptance by the plan says not when", None, None
+    events = (node.get("timelineItems") or {}).get("nodes") or []
     for e in events:
         if e.get("__typename") == "RenamedTitleEvent" and (e.get("createdAt") or "") >= at:
             return False, f"#{n}'s title changed after the plan accepted it", None, None
@@ -312,10 +313,12 @@ def planned_mode(path=None, autopilot_var=None):
     return mode if mode in ("auto", "confirm") else "confirm"
 
 
-def verify(answer, version, label="accepted", role_of=None, mode=None, plan_holds=None):
+def verify(answer, version, label="accepted", role_of=None, mode=None, plan_holds=None, plan_of=None):
     """Whether a person approved releasing `version`. `role_of(login)` is
     that person's role_name on the repository now, or None when it could not
-    be read (which approves nothing)."""
+    be read (which approves nothing). `plan_of(number)` is the issue's lane
+    decision in force on the receipts, or None; one that raises could not be
+    read, and approves nothing (#804)."""
     if not isinstance(answer, dict) or answer.get("errors") or not isinstance(((answer.get("data") or {}).get("repository") or {}).get("issues"), dict):
         why = json.dumps(answer.get("errors"))[:300] if isinstance(answer, dict) and answer.get("errors") else "no answer"
         return {"ok": False, "unreadable": True, "version": version, "why": f"the release issues could not be read ({why}); the caller's release job needs `issues: read`"}
@@ -329,7 +332,11 @@ def verify(answer, version, label="accepted", role_of=None, mode=None, plan_hold
     for node in mine:
         ok, why, by, at = judge(node, label)
         if not ok and mode == "auto":
-            pok, pwhy, pby, pat = planned(node, version)
+            try:
+                decision = plan_of(node.get("number")) if plan_of else None
+            except Exception as exc:  # noqa: BLE001  unreadable approves nothing
+                decision, why = None, f"#{node.get('number')}'s receipts could not be read ({str(exc)[:200]}), so the plan approves nothing"
+            pok, pwhy, pby, pat = planned(node, version, decision)
             # Only the plan ships (#287): read again now, since something
             # may have merged after the plan was accepted.
             if pok and plan_holds:
@@ -446,7 +453,15 @@ def main(argv):
             except (RuntimeError, ValueError, KeyError) as exc:
                 return False, f"what merged since the last version could not be read ({str(exc)[:200]})"
             return (False, "merged outside the plan: " + ", ".join(f"#{n}" for n in outside[:10])) if outside else (True, "")
-        result = verify(answer, version, os.environ.get("LABEL") or "accepted", role_of, plan_holds=None if fixture else plan_holds)
+        def plan_of(number):
+            # The plan's acceptance, from the receipts (#804).
+            import importlib.util as iu
+            spec = iu.spec_from_file_location("receipts", os.path.join(HERE, "receipts.py"))
+            rc = iu.module_from_spec(spec)
+            spec.loader.exec_module(rc)
+            repo = os.environ.get("GITHUB_REPOSITORY", "/")
+            return rc.lane_in_force(rc.lane_decisions(repo, number))
+        result = verify(answer, version, os.environ.get("LABEL") or "accepted", role_of, plan_holds=None if fixture else plan_holds, plan_of=plan_of)
         print(json.dumps(result, indent=2))
         return 0 if result["ok"] else (2 if result.get("unreadable") else 1)
     print(__doc__, file=sys.stderr)
@@ -543,9 +558,12 @@ def self_test():
     def answer(*nodes):
         return {"data": {"repository": {"issues": {"nodes": list(nodes)}}}}
 
-    def vfy(a, version, label="accepted", roles=None, mode="confirm"):
+    PLAN = {"kind": "lane-decision", "issue": 12, "lane": "release", "decided_by": "policy", "decided": "policy",
+            "rule": PLANNED_RULE, "at": "2026-10-02T10:00:00Z"}
+
+    def vfy(a, version, label="accepted", roles=None, mode="confirm", plan=PLAN):
         roles = {"soydiloreto": "admin"} if roles is None else roles
-        return verify(a, version, label, lambda who: roles.get(who), mode)
+        return verify(a, version, label, lambda who: roles.get(who), mode, plan_of=plan if callable(plan) else (lambda n: plan))
 
     def ev(kind, at, label="accepted", who="User", **extra):
         e = {"__typename": kind, "createdAt": at, "actor": {"__typename": who, "login": "dilux-bot" if who == "Bot" else "soydiloreto"}}
@@ -593,8 +611,8 @@ def self_test():
             check("#247 argv: a kind that publishes nothing has none", True, True)
     # #247: a planned release, accepted by the plan.
     def plan_node(author="dilux-bot", ms_title="1.2.0", creator="soydiloreto", added_by="Bot", extra=(), ms_state="CLOSED"):
-        n = node(labels=("lane:release", "accepted-by:policy"),
-                 events=[ev("LabeledEvent", "2026-10-02T10:00:00Z", label="accepted-by:policy", who=added_by), *extra])
+        n = node(labels=("lane:release",),
+                 events=[ev("LabeledEvent", "2026-10-02T10:00:00Z", label="lane:release", who=added_by), *extra])
         n["author"] = {"login": author}
         n["milestone"] = {"title": ms_title, "state": ms_state, "creator": {"login": creator}} if ms_title else None
         return n
@@ -602,15 +620,28 @@ def self_test():
     check("#247 planned: the bot's issue on the version's milestone, in auto, approves it as its planner", (r["ok"], r["by"]), (True, "soydiloreto"))
     check("#247 planned: in confirm it approves nothing", vfy(answer(plan_node()), "1.2.0")["ok"], False)
     check("#287 planned: a milestone still open was not done, and approves nothing", vfy(answer(plan_node(ms_state="OPEN")), "1.2.0", mode="auto")["ok"], False)
-    held = verify(answer(plan_node()), "1.2.0", role_of=lambda who: "admin", mode="auto", plan_holds=lambda v: (False, "merged outside the plan: #9"))
+    held = verify(answer(plan_node()), "1.2.0", role_of=lambda who: "admin", mode="auto", plan_holds=lambda v: (False, "merged outside the plan: #9"), plan_of=lambda n: PLAN)
     check("#287 planned: something merged outside the plan since it was accepted sends it back to a person", (held["ok"], "#9" in held["why"]), (False, True))
     check("#287 planned: a person's acceptance is not held by the plan", verify(answer(node()), "1.2.0", role_of=lambda who: "admin", mode="auto", plan_holds=lambda v: (False, "x"))["ok"], True)
     closed = plan_node(); closed["state"], closed["stateReason"] = "CLOSED", "NOT_PLANNED"
     check("#247 planned: a release cancelled by closing it as not planned approves nothing", vfy(answer(closed), "1.2.0", mode="auto")["ok"], False)
     check("#247 planned: a planner who is not admin or maintain approves nothing", vfy(answer(plan_node()), "1.2.0", roles={"soydiloreto": "write"}, mode="auto")["ok"], False)
-    check("#247 planned: not opened by the bot, another milestone, no milestone, the label by a person: nothing",
-          [vfy(answer(n), "1.2.0", mode="auto")["ok"] for n in (plan_node(author="someone"), plan_node(ms_title="1.3.0"), plan_node(ms_title=None), plan_node(added_by="User"))],
+    check("#247 planned: not opened by the bot, another milestone, no milestone: nothing",
+          [vfy(answer(n), "1.2.0", mode="auto")["ok"] for n in (plan_node(author="someone"), plan_node(ms_title="1.3.0"), plan_node(ms_title=None))],
+          [False] * 3)
+    # #804: the plan's acceptance is its lane decision on the receipts, never a label.
+    check("C1 (#804) planned: with no decision on the receipts, or one by another rule or lane, the plan approves nothing",
+          [vfy(answer(plan_node()), "1.2.0", mode="auto", plan=p)["ok"] for p in
+           (None, dict(PLAN, rule="policy/autonomy.yml#lanes.release"), dict(PLAN, lane="platform"), dict(PLAN, at=""))],
           [False] * 4)
+    check("C1 (#804) planned: the old label, without the decision, approves nothing",
+          vfy(answer(dict(plan_node(), labels={"nodes": [{"name": "lane:release"}, {"name": "accepted-by:policy"}]})), "1.2.0", mode="auto", plan=None)["ok"], False)
+    def unreadable(n):
+        raise RuntimeError("HTTP 502")
+    r = vfy(answer(plan_node()), "1.2.0", mode="auto", plan=unreadable)
+    check("C1 (#804) planned: receipts that cannot be read approve nothing, and say so", (r["ok"], "receipts could not be read" in r["why"]), (False, True))
+    r = vfy(answer(plan_node()), "1.2.0", mode="auto")
+    check("C1 (#804) planned: accepted when the decision says, by the milestone's creator", (r["ok"], r["by"], r["at"]), (True, "soydiloreto", PLAN["at"]))
     check("#247 planned: a title changed after the plan accepted it approves nothing",
           vfy(answer(plan_node(extra=[ev("RenamedTitleEvent", "2026-10-03T10:00:00Z", previousTitle="Release 1.1.0", currentTitle="Release 1.2.0")])), "1.2.0", mode="auto")["ok"], False)
     r = vfy(answer(node(number=3, state="CLOSED", reason="NOT_PLANNED"), node(number=9)), "1.2.0")

@@ -3132,7 +3132,7 @@ Clamp the value in Sum::add.
                 "timelineItems": {"nodes": [{"__typename": "LabeledEvent", "label": {"name": l}, "actor": {"__typename": t, "login": who}} for l, t, who in events]}}
 
     run42 = {"id": 42, "path": ".github/workflows/issues.yml", "referenced_workflows": [{"path": "DiluxOne/.github/.github/workflows/issue-repro.yml@refs/tags/v5"}]}
-    lane_issue = gql(["lane:bugfix-reproduced", "accepted-by:policy"], [("lane:bugfix-reproduced", "Bot", "dilux-bot")])
+    lane_issue = gql(["lane:bugfix-reproduced"], [("lane:bugfix-reproduced", "Bot", "dilux-bot")])
     check("#84 lane: a reproduction's own issue is worked under its lane", which_lane(pol, lane_issue, run42, "DiluxOne/x", "")[0], REPRO)
     check("#84 lane: a person's accepted issue, under human-issue", which_lane(pol, gql(["accepted"], [("accepted", "User", "soydiloreto")], author="someone", body=prd), None, "DiluxOne/x", "")[0], LANE)
     sub = gql(["accepted"], [("accepted", "User", "soydiloreto")], author="someone", body=prd)
@@ -3300,7 +3300,7 @@ Clamp the value in Sum::add.
           ("never widen a permission, a lane or a limit" in psw, "a path under .github/, policy/, scripts/ or kinds/" in ps558,
            "a file under .github/workflows/" in ps558, "a person merges" in ps558), (True, False, True, True))
     check("#84 a person's issue gets none of it", any("repro-sandbox" in p for p in (prompt_spec("o/r", 7, "x"), prompt_work("o/r", 7, 5, "b", "x", [], False), prompt_fix("o/r", 9, 1, 3))), False)
-    lbl = [f"lane:{REPRO}", "accepted-by:policy"]
+    lbl = [f"lane:{REPRO}"]
     check("#84 finish: a reproduced bug needs its sealed test to pass", repro_needed(lane_spec, lbl, "match"), ("", test12))
     check("#84 finish: a person's issue needs none", repro_needed(spec, ["accepted"], "match"), ("", ""))
     check("#84 finish: dropping the lane's label does not skip it (the PRD names the test)", repro_needed(lane_spec, [], "match"), ("", test12))

@@ -78,7 +78,7 @@ self_test() {
   GITHUB_REPOSITORY=o/r
 
   check "labels: the kind's alone" "$(labels_for runner-image "" 0)" "run:runner-image"
-  check "labels: with the caller's and needs-human (#803)" "$(labels_for runner-image "lane:platform,accepted-by:policy" 1)" "run:runner-image,lane:platform,accepted-by:policy,needs-human"
+  check "labels: with the caller's and needs-human (#803)" "$(labels_for runner-image "lane:platform" 1)" "run:runner-image,lane:platform,needs-human"
 
   : > "$log"
   got=$(printf 'All good.\n' | NEEDS=0 open_run runner-image "Runner image, run 7: promoted")
