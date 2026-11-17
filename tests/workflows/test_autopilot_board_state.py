@@ -65,6 +65,7 @@ class World:
             'case "$*" in\n'
             "  'search prs'*) echo 'o/r 8' ;;\n"
             "  'search issues'*) ;;\n"
+            "  *'search/issues'*) [ \"${TOTAL-0}\" = fail ] && exit 1; echo \"${TOTAL-0}\" ;;\n"
             f"  *'pr view 8'*number,isDraft*) cat \"{tmp_path / 'pr.json'}\" ;;\n"
             "  *'--json labels'*) echo '[]' ;;\n"
             "  *'--json body'*) echo body ;;\n"
@@ -164,6 +165,23 @@ def test_c1_the_flow_walked_through_keeps_its_counts_and_waits_on_the_boards(tmp
     # look for one an older run left, to keep its answer).
     said = w.log.read_text().splitlines() + calls
     assert [c for c in said if SEVEN.search(c) and re.search(r"--add-label|label create|labels -f|labels/", c)] == []
+
+
+def test_the_sweep_fails_when_the_search_for_the_core_waits_gave_less_than_it_found(tmp_path):
+    """#811: search gives 1000 at most; an accepted issue past them that
+    waits on the core is never started, so the step says so and fails
+    (after starting those it read), as it does when the count is unread."""
+    w = World(tmp_path)
+    run = step("autopilot-sweep.yml", "sweep", "Bring each one in step")["run"]
+    for total, why in (("1500", "found 1500"), ("fail", "could not be counted")):
+        done = subprocess.run(["bash", "-c", run], env=dict(w.env, OWNER="o", REPO="", TOTAL=total), capture_output=True, text=True,
+                              timeout=120, cwd=w.tmp)
+        assert done.returncode != 0 and why in done.stdout, done.stdout + done.stderr
+        # the pull requests were still brought in step first
+        assert "o/r#8: continue" in done.stdout
+    assert 'search/issues -f q=is:issue is:open label:"accepted" user:o -f per_page=1' in w.log.read_text()
+    w.run(run, OWNER="o", REPO="o/r", TOTAL="0")
+    assert "label:\"accepted\" repo:o/r" in w.log.read_text()
 
 
 OLD_SCRIPTS = "if grep -q '^FLOW_KEYS' .dx-central/scripts/receipts.py"
