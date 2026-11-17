@@ -15,9 +15,10 @@ repository of repos.yml but its `exclude` list:
     label); the record is read back, and only then is the label taken off.
     A write or a read-back that fails leaves the label on, and the run says
     so (exit 1);
-  - every one closed in the last DAYS days (7) gets its record too and
-    keeps its labels, so the first weekly digest after the migration still
-    lists that week's decisions;
+  - every one closed in the last DAYS days (28: needed-a-person.py's WEEKS
+    weeks, the longest window a digest reads) gets its record too and
+    keeps its labels, so the digests after the migration still list the
+    decisions of the weeks they read;
   - an item whose receipts already hold the proof (its lane decision in
     force is that lane; its merge decision in force is for its head) gets
     no new record: a second run writes nothing and takes nothing off.
@@ -46,7 +47,7 @@ Run by autonomy.py's `migrate-policy-labels` verb, from
 Environment: GH_TOKEN (dilux-bot's App token: issues and pull requests
 write, contents write for the receipts branches); OWNER (default the
 organisation of org.yml); REPOS (names, space-separated; default every
-repository of repos.yml but its exclude list); DAYS (default 7).
+repository of repos.yml but its exclude list).
 """
 import datetime
 import importlib.util
@@ -63,10 +64,16 @@ import org  # noqa: E402
 _spec = importlib.util.spec_from_file_location("receipts", os.path.join(HERE, "receipts.py"))
 receipts = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(receipts)
+_spec = importlib.util.spec_from_file_location("needed_a_person", os.path.join(HERE, "needed-a-person.py"))
+needed = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(needed)
 
 ACCEPTED = "accepted-by:policy"
 MERGED = "merged-by:policy"
-DAYS = 7
+# The closed items it records: the window needed-a-person.py reads (WEEKS),
+# so no pull request merged by policy in it counts as a person's merge for
+# want of a record; the weekly digest's week is within it.
+DAYS = 7 * needed.WEEKS
 REVIEW_RULE = ".github/review-policy.yml#auto-merge"
 
 
@@ -430,6 +437,7 @@ def self_test():
     lanes = policy_lanes(policy)
     check("the lanes that accept by policy, from the policy", lanes, ["bugfix-reproduced", "org-sync", "platform"])
     check("the labels it looks for: only the policy's two; a lane's label is no decision", labels_to_find(lanes), [ACCEPTED, MERGED])
+    check("C2: the closed items it records cover the digest's whole window (needed-a-person.py's WEEKS)", DAYS, 7 * needed.WEEKS)
     R = "DiluxOne/x"
 
     def issue(n, labels, state="open", closed_at=None):
@@ -596,8 +604,7 @@ def main(argv):
     lanes = policy_lanes(autonomy.load(os.path.join(root, "policy", "autonomy.yml")))
     owner = os.environ.get("OWNER") or org.ORG
     names = os.environ.get("REPOS", "").split() or adopted(autonomy.load(os.path.join(root, "repos.yml")))
-    days = int(os.environ.get("DAYS") or DAYS)
-    since = (datetime.datetime.now(datetime.timezone.utc).date() - datetime.timedelta(days=days)).isoformat()
+    since = (datetime.datetime.now(datetime.timezone.utc).date() - datetime.timedelta(days=DAYS)).isoformat()
     print(("Moving" if apply else "Dry run: would move") + f" {', '.join(labels_to_find(lanes))} onto the receipts, in {len(names)} repositories, open or closed since {since}.")
     lines, failed = migrate(GitHub(root), [f"{owner}/{n}" for n in names], lanes, since, apply)
     for line in lines:

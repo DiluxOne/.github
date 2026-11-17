@@ -11,8 +11,9 @@ name: The policy's labels onto the receipts
 # LabeledEvent (who, when, the policy's commit in force then); the record is
 # read back, and only then is the policy's label taken off. `lane:*` stays:
 # it routes, and autonomy.py reads its event as the lane's evidence. One closed in the last
-# seven days gets its record and keeps its labels, so the weekly digest
-# (autonomy-digest.yml) still lists that week. A write or read-back that
+# 28 days (needed-a-person.py's four weeks, the longest window a digest
+# reads) gets its record and keeps its labels, so the digests
+# (autonomy-digest.yml, needed-a-person.py) still list those weeks. A write or read-back that
 # fails leaves the label on and fails the run; a second run does nothing
 # more. It is scripts/autonomy.py's `migrate-policy-labels` verb, which runs
 # scripts/policy-receipts.py; see its header for what stays and why.

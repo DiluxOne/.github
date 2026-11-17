@@ -554,16 +554,24 @@ def self_test():
     nothing = pr(cases["no reason recorded"], url="u-none", title="Nothing recorded")
     # C2 (#804): merged by policy is what the receipts say, never a label.
     repo = by_policy["repository"]["nameWithOwner"]
-    decided = {repo: [{"kind": "merged", "number": 5, "head": "h5"}, {"kind": "merged", "number": 6, "head": "old"}, {"kind": "accepted", "number": 1}]}
-    other_head = pr(cases["high risk from the review"], url="u-other-head", title="Decided at another head", number=6, headRefOid="new")
-    label_only = pr(cases["high risk from the review"], url="u-label", title="Only a label", number=7, labels={"nodes": [{"name": "merged-by:policy"}]})
+    # A pull request merged by policy in the window before the migration
+    # (label_only) has the record the migration wrote from its label, which
+    # covers this whole window (policy-receipts.py DAYS = 7 * WEEKS); a label
+    # on one with no decision for its head (other_head) is never read.
+    decided = {repo: [{"kind": "merged", "number": 5, "head": "h5"}, {"kind": "merged", "number": 6, "head": "old"}, {"kind": "accepted", "number": 1},
+                      {"kind": "merged", "number": 7, "head": "h7"}]}
+    other_head = pr(cases["high risk from the review"], url="u-other-head", title="Decided at another head", number=6, headRefOid="new",
+                    labels={"nodes": [{"name": "merged-by:policy"}]})
+    label_only = pr(cases["high risk from the review"], url="u-label", title="Migrated from its label", number=7, headRefOid="h7",
+                    mergedAt=(now - datetime.timedelta(days=7 * WEEKS - 2)).strftime("%Y-%m-%dT%H:%M:%SZ"), labels={"nodes": [{"name": "merged-by:policy"}]})
     seen_since = []
     unread = from_receipts([mine, by_policy, by_app, nothing, other_head, label_only], "2026-09-17",
                            lambda r, since: seen_since.append(since) or decided[r], lambda r, n: None)
     check("C2 (#804): the receipts are read once per repository, from four weeks back", (seen_since, unread), (["2026-09-17"], []))
     out = digest([mine, by_policy, by_app, nothing, other_head, label_only], pol, now)
     check("C2 (#804): a pull request with a policy merge decision is not listed", "Merged by policy" in out, False)
-    check("C2 (#804): a decision for another head, or a label alone, is a person's merge", ("Decided at another head" in out, "Only a label" in out), (True, True))
+    check("C2 (#804): a decision for another head is a person's merge, whatever its label", "Decided at another head" in out, True)
+    check("C2 (#804): one merged by policy weeks back, its label migrated, is the policy's", "Migrated from its label" in out, False)
     bot_pr = pr(cases["over a lane's cap"], url="u-lane")
     bot_pr.pop("lane")
     from_receipts([bot_pr], "2026-09-17", lambda r, since: [], lambda r, n: "platform" if n == 2 else None)
