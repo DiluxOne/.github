@@ -4,8 +4,10 @@ name: Decided by policy
 # organisation that the autonomy policy (policy/autonomy.yml) accepted or
 # merged instead of a person during the last seven days, as an issue of its
 # own in this repository, labelled `run:autonomy-digest` (scripts/run-issue.sh,
-# #188): issues labelled `accepted-by:policy` when they were opened, and
-# pull requests labelled `merged-by:policy` when they merged. Each public one
+# #188): issues a lane accepted, and pull requests merged whose last merge
+# decision was the policy's, for the head that merged, both read from each
+# repository's receipts (scripts/receipts.py `decisions`, #804), never from a
+# label; a repository whose receipts could not be read is said. Each public one
 # is a line with its repository, title and link; private ones are only
 # counted, because the issue is public. A week with nothing says so. This is
 # how the maintainer sees, in one place, what proceeded without them.
@@ -56,6 +58,7 @@ jobs:
           permission-pull-requests: read
           permission-metadata: read
           permission-checks: read # the head's checks, for a failed gate
+          permission-contents: read # each repository's receipts branch (#804)
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -54,6 +54,14 @@ signed by GitHub and show as Verified.
   receipts.py lane [get]   the lane in force, as JSON: exit 0 with it, 1
                            (null) with none or a withdrawn one, 2 when the
                            receipts could not be read (never taken as a lane)
+  receipts.py decisions --since YYYY-MM-DD
+                           what the policy decided, for the weekly digest
+                           (#804): one JSON line per issue a lane accepted
+                           since then, and per pull request whose last merge
+                           decision is the policy's (from a week earlier:
+                           the reader keeps what merged since, at the head
+                           decided); exit 2 when the receipts could not be
+                           read (never an empty week)
   receipts.py own-bug      whether the last seal accepted a maintainer's own
                            Bug with its writing (#564): sealed so, by the
                            issue's author (AUTHOR), and the PRD still the
@@ -286,6 +294,51 @@ def merge_in_force(decisions, head):
     withdrawn, is no merge by policy."""
     last = decisions[-1] if decisions else None
     return last if last and head and last.get("decided") == "policy" and last.get("head") == head else None
+
+
+# How far before SINCE `decisions` looks for a merge decision: the policy
+# decides a merge before the merge queue merges it, and the digest keeps
+# only what merged since SINCE, at the head decided.
+MERGE_LOOKBACK_DAYS = 7
+
+
+def decision_rows(paths, read_one, since):
+    """What the policy decided, for the weekly digest (#804): from PATHS (the
+    receipts branch's files) and READ_ONE (a path's record), one row per
+    issue whose last lane decision accepted it on or after SINCE
+    ({"kind": "accepted", "number", "lane", "rule", "policy", "at"}) and one
+    per pull request whose last merge decision is the policy's, made on or
+    after SINCE less MERGE_LOOKBACK_DAYS ({"kind": "merged", "number",
+    "head", "rule", "policy", "at"}): whether and when it merged, at which
+    head, is the reader's to check. A record's name carries the time it was
+    written, never before its `at`, so only the recent ones are read."""
+    prefixes = {"issues": "lane-", "pulls": "merge-"}
+    last = {}
+    for path in paths:
+        parts = path.split("/")
+        if len(parts) != 3 or parts[0] not in prefixes or not parts[1].isdigit():
+            continue
+        top, n, name = parts
+        if not (name.startswith(prefixes[top]) and name.endswith(".json")):
+            continue
+        key = (top, int(n))
+        if key not in last or name > last[key]:
+            last[key] = name
+    day = datetime.date.fromisoformat(since[:10])
+    floors = {"issues": since, "pulls": (day - datetime.timedelta(days=MERGE_LOOKBACK_DAYS)).isoformat()}
+    rows = []
+    for (top, n), name in sorted(last.items()):
+        floor = floors[top]
+        if name[len(prefixes[top]):-len(".json")] < floor:
+            continue
+        d = read_one(f"{top}/{n}/{name}")
+        if d.get("decided") != "policy" or (d.get("at") or "") < floor:
+            continue
+        if top == "issues":
+            rows.append({"kind": "accepted", "number": n, "lane": d.get("lane"), "rule": d.get("rule"), "policy": d.get("policy"), "at": d.get("at")})
+        else:
+            rows.append({"kind": "merged", "number": n, "head": d.get("head"), "rule": d.get("rule"), "policy": d.get("policy"), "at": d.get("at")})
+    return rows
 
 
 def receipt(number, body, last_seal, pr, checks, policy_ref, at, lane=None, merge=None):
@@ -977,6 +1030,24 @@ def list_dir(repo, path):
         raise
 
 
+def tree_paths(repo):
+    """Every file on the receipts branch, in one read (#804); [] when the
+    branch does not exist. Any other failure, or a listing GitHub cut short,
+    is raised: never taken for "nothing decided"."""
+    if os.environ.get("RECEIPTS_FIXTURE"):
+        base = os.environ["RECEIPTS_FIXTURE"]
+        return sorted(os.path.relpath(os.path.join(d, f), base).replace(os.sep, "/") for d, _, fs in os.walk(base) for f in fs)
+    try:
+        tree = gh(f"repos/{repo}/git/trees/{BRANCH}?recursive=1")
+    except RuntimeError as e:
+        if "404" in str(e) or "Not Found" in str(e):
+            return []
+        raise
+    if tree.get("truncated"):
+        raise RuntimeError(f"{repo}'s receipts are too many to list in one read")
+    return [e["path"] for e in tree.get("tree", []) if e.get("type") == "blob"]
+
+
 def read(repo, path):
     if os.environ.get("RECEIPTS_FIXTURE"):
         with open(os.path.join(os.environ["RECEIPTS_FIXTURE"], path), encoding="utf-8") as f:
@@ -1076,6 +1147,27 @@ Normal
     check("a receipt lists the criteria", r["criteria"], ["C1"])
     pr2 = dict(pr, labels=pr["labels"] + ["merged-by:policy"])
     b = board_text(7, True, s, r)
+    # C2 (#804): the digest's rows, from the receipts alone.
+    recs = {
+        "issues/1/lane-2026-10-05T10:00:00Z.json": lane_decision(1, "platform", "abc", "2026-10-05T10:00:00Z", None, None),
+        "issues/4/lane-2026-10-05T10:00:00Z.json": lane_decision(4, "platform", "abc", "2026-10-05T10:00:00Z", None, None),
+        "issues/4/lane-2026-10-06T10:00:00Z.json": lane_decision(4, "platform", "abc", "2026-10-06T10:00:00Z", None, None, "withdrawn"),
+        "issues/5/lane-2026-09-20T10:00:00Z.json": lane_decision(5, "platform", "abc", "2026-09-20T10:00:00Z", None, None),
+        "issues/1/prd-2026-10-05T10:00:00Z.json": {},
+        "pulls/9/merge-2026-09-30T10:00:00Z.json": merge_decision(9, "policy", "r", "h9", "abc", "2026-09-30T10:00:00Z", None),
+        "pulls/8/merge-2026-09-20T10:00:00Z.json": merge_decision(8, "policy", "r", "h8", "abc", "2026-09-20T10:00:00Z", None),
+        "pulls/7/merge-2026-10-05T10:00:00Z.json": merge_decision(7, "withdrawn", "r", "h7", "abc", "2026-10-05T10:00:00Z", None),
+        "README.md": {},
+    }
+    reads = []
+    rows = decision_rows(sorted(recs), lambda p: reads.append(p) or recs[p], "2026-10-04")
+    check("C2 (#804): the issues a lane accepted since SINCE, and the merge decisions in force from a week before",
+          [(r["kind"], r["number"]) for r in rows], [("accepted", 1), ("merged", 9)])
+    check("C2 (#804): a row names the lane, the rule, the policy's commit and when",
+          (rows[0]["lane"], rows[0]["rule"], rows[0]["policy"], rows[0]["at"], rows[1]["head"]),
+          ("platform", "policy/autonomy.yml#lanes.platform", "DiluxOne/.github@abc", "2026-10-05T10:00:00Z", "h9"))
+    check("C2 (#804): only the last record of each item, and only recent ones, are read", sorted(reads),
+          ["issues/1/lane-2026-10-05T10:00:00Z.json", "issues/4/lane-2026-10-06T10:00:00Z.json", "pulls/7/merge-2026-10-05T10:00:00Z.json", "pulls/9/merge-2026-09-30T10:00:00Z.json"])
     check("the board starts with its marker", b.startswith(BOARD), True)
     check("the board shows the seal", "PRD sealed" in b and s["prd_sha256"][:12] in b, True)
     check("#715: a sealed board carries the seal's mark, after the board's", b.startswith(f"{BOARD}\n{SEAL_MARK}\n"), True)
@@ -1593,6 +1685,21 @@ def main(argv):
             return 2
         print(json.dumps(in_force))
         return 0 if in_force else 1
+    if mode == "decisions":
+        # The rows the weekly digest reads (#804), one JSON line each; exit
+        # 2 when the receipts cannot be read, never an empty week.
+        since = argv[2] if argv[1:2] == ["--since"] and len(argv) > 2 else ""
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", since):
+            print("decisions needs --since YYYY-MM-DD", file=sys.stderr)
+            return 64
+        try:
+            rows = decision_rows(tree_paths(repo), lambda p: read(repo, p), since)
+        except Exception as e:  # noqa: BLE001
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+        for row in rows:
+            print(json.dumps(dict(row, repository=repo), sort_keys=True))
+        return 0
     if mode in ("board", "state", "waits", "migrate"):
         comments = bot_comments(repo, number)
         cid, current = board_comment(repo, number, comments)
