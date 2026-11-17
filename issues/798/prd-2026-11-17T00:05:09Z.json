@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 798,
+  "prd_sha256": "4d6c898c6ad1656dbf3288facd7d3f7b3016f376da475fcc3b1d58eee540b64e",
+  "prd": "### Problem\n\nA release candidate that passes every scenario is still not released, because the lane leaves the merge of its own release pull request to auto-merge, which never merges a pull request the CHANGELOG.md floor makes high risk. Every release then waits on a person, and one merged after the lane gave up is tagged nowhere.\n\n### Scope\n\n- `release()` in scripts/release-lane.py merges its release pull request itself once it checks, from GitHub, that the pull request changes only CHANGELOG.md, that its head is the lane's commit onto the planned commit, and that its required checks passed.\n- When the lane gives up on its release pull request, it closes it with a comment that says why.\n- A test in scripts/release-lane.py `--test` that would have caught it.\n\n### Out of scope\n\n- The review's floor for CHANGELOG.md on any other pull request.\n- What the scenarios check.\n\n### Acceptance criteria\n\n- C1: Given a candidate whose scenarios all pass and a release pull request labelled `risk:high`, when `release()` runs, then it merges that pull request without `--auto` after checking its files, its head and its required checks, and scripts/release-lane.py `--test` fails if it waits on auto-merge.\n- C2: Given a release pull request that changes a file other than CHANGELOG.md, or whose head is not the lane's commit, when `release()` runs, then it does not merge it, closes it with a comment naming why, and nothing is tagged.\n- C3: Given v7.15.0's candidate with the fix, when the release lane runs, then v7.15.0 is tagged and `v7` moves with no person's step.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-17T00:05:09Z",
+  "policy": "DiluxOne/.github@653f4037c2a9"
+}
