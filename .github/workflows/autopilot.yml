@@ -146,6 +146,10 @@ name: Autopilot
 # and the run says so (verdict `held`). Started by issue-claim.yml after a
 # maintainer's `/adopt`, the draft's branch starts at the adopted head they
 # read, and every commit pushed carries `Co-authored-by` for its author.
+# A fix already on its way (#807, scripts/autopilot.py taken, on a start
+# only): dilux-bot's open "The bug reproduced from #N" issue of the
+# `bugfix-reproduced` lane, or an open pull request that closes the issue,
+# and `prep` starts no second one; the issue is told once, with the links.
 # When it hands a pull request to a person at its cap, the issue says anyone
 # may `/claim` it.
 #
