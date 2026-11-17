@@ -505,6 +505,20 @@ def taken_why(found):
     return f"the pull request {prs}, which closes this issue"
 
 
+def taken_comment(found):
+    """The report's one comment when its acceptance is skipped (#807): the
+    marker, where the fix already is, linked, and the AI line."""
+    return (f"<!-- {TAKEN_MARK} -->\nThe fix is already on its way: {taken_why(found)}. "
+            f"The autopilot does not start a second one.\n\n{AI_LINE}")
+
+
+def taken_told(comments):
+    """Whether dilux-bot already said so on the issue (its marker); a marker
+    in anyone else's comment is never read."""
+    return any(((c.get("user") or c.get("author") or {}).get("login") in BOT_LOGINS)
+               and (c.get("body") or "").startswith(f"<!-- {TAKEN_MARK} -->") for c in comments or [])
+
+
 def read_taken(repo, number):
     """(number, lanes, prs) for taken_by, read from GitHub in one query."""
     owner, name = repo.split("/", 1)
@@ -3594,6 +3608,46 @@ Clamp the value in Sum::add.
     check("#807 C1 the read takes the lane's open issues by label and the closing links, never a text search",
           ("lane:bugfix-reproduced" in globals().get("TAKEN_QUERY", ""), globals().get("TAKEN_QUERY", "").count("closedByPullRequestsReferences(first: 20, includeClosedPrs: false)"),
            "search" in globals().get("TAKEN_QUERY", "search")), (True, 2, False))
+    # #807 C2: the skipped acceptance says so once on the report, with the
+    # links to the lane's issue and its pull request.
+    comment_of = globals().get("taken_comment") or (lambda found: "")
+    tc = comment_of(taken_by(7, [lane807], []))
+    check("#807 C2 taken_comment: the marker, the lane's issue and its pull request, linked, and the AI line",
+          (tc.startswith(f"<!-- {TAKEN_MARK} -->"), "[#20](https://github.com/o/r/issues/20)" in tc, "[#21](https://github.com/o/r/pull/21)" in tc,
+           "does not start a second one" in tc, tc.rstrip().endswith(AI_LINE)), (True, True, True, True, True))
+    check("#807 C2 taken_comment: a lane with no pull request yet links its issue alone; a pull request alone is linked",
+          ("pull request" in comment_of(taken_by(7, [{**lane807, "prs": []}], [])), "[#40](https://github.com/o/r/pull/40)" in comment_of(taken_by(7, [], [pr807]))), (False, True))
+    import contextlib, io
+    def taken_cmd(comments, lanes=(lane807,), prs=()):
+        posted = []
+        def fake_gh(*args, input_text=None):
+            if args[:2] == ("api", "graphql"):
+                return json.dumps({"data": {"repository": {
+                    "issues": {"nodes": [{**{k: v for k, v in l.items() if k not in ("prs", "author")}, "author": {"login": l["author"]},
+                                          "closedByPullRequestsReferences": {"nodes": l["prs"]}} for l in lanes]},
+                    "issue": {"closedByPullRequestsReferences": {"nodes": list(prs)}}}}})
+            if args[0] == "api" and args[1].endswith("/issues/7/comments"):
+                return json.dumps([comments])
+            if args[:2] == ("issue", "comment"):
+                posted.append(args)
+                return ""
+            raise RuntimeError(f"unexpected gh {args}")
+        saved, env = globals()["gh"], {k: os.environ.get(k) for k in ("GITHUB_REPOSITORY", "NUMBER")}
+        globals()["gh"] = fake_gh
+        os.environ.update(GITHUB_REPOSITORY="o/r", NUMBER="7")
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = main(["taken"])
+        finally:
+            globals()["gh"] = saved
+            for k, v in env.items():
+                os.environ.pop(k, None) if v is None else os.environ.update({k: v})
+        return rc, posted
+    mine = {"user": {"login": BOT_LOGINS[1]}, "body": f"<!-- {TAKEN_MARK} -->\nThe fix is already on its way."}
+    rc, posted = taken_cmd([])
+    check("#807 C2 taken: the first time, it comments on the report with the links", (rc, len(posted), posted and posted[0][2], posted and "[#21](" in posted[0][-1]), (1, 1, "7", True))
+    check("#807 C2 taken: dilux-bot's marker already there, it posts nothing", taken_cmd([mine]), (1, []))
+    check("#807 C2 taken: a marker in a person's comment does not count", len(taken_cmd([{**mine, "user": {"login": "mallory"}}])[1]), 1)
     # C10: an adopted pull request's author is a co-author of every commit
     # the autopilot pushes from it.
     rec = {"pr": 41, "author": "ana", "author_id": 77, "sha": "c" * 40, "branch": "feat/7-adopted-41", "by": "soydiloreto"}
@@ -4760,6 +4814,13 @@ def main(argv):
             print("nothing else took it")
             return 0
         print(f"the fix is already on its way: {taken_why(found)}")
+        # Said once on the issue (C2): a second acceptance, or a re-run, adds
+        # no second comment. A comment that fails still stops the start.
+        try:
+            if not taken_told(issue_comments(repo, number)):
+                gh("issue", "comment", str(number), "--repo", repo, "--body", taken_comment(found))
+        except (RuntimeError, ValueError) as err:
+            print(f"::warning::The issue was not told where the fix is: {str(err)[:200]}")
         return 1
     if argv[:1] == ["queue-failed"]:
         # #479: exit 0 when the last merge group PR was in failed a check
