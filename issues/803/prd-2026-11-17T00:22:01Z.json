@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 803,
+  "prd_sha256": "d29e24a64704c6316015720f7ce38562707845678713ba4fa994428cc6c955b7",
+  "prd": "### Problem\n\nPart 3 of #618. The triage marks a step no one acts on (`needs-triage`, which the triage itself removes minutes later), `needs:maintainer` says the same as `needs-human`, and GitHub's default `enhancement` and `bug` repeat what the native issue Type already says.\n\n### Scope\n\n- `needs-triage` is no longer set: the board says whether the triage has run.\n- `needs:maintainer` merges into `needs-human` (scripts/run-issue.sh and the workflows that set it).\n- `enhancement` and `bug` are no longer set nor created by scripts/sync-repos.py, and are removed from the issues that carry them once their Type is set.\n- The triage's verdicts stay as labels: `by-design`, `duplicate`, `question`, `planned`, `pro-feature`, `exists-in-pro`, `spike`, `needs-info`.\n\n### Out of scope\n\n- The other parts of #618, each its own sub-issue, done one at a time in the core in the order #618 gives.\n- The classification labels (`type:*`, `complexity:*`, `risk:*`, `version:*`, Dependabot's) and the bot's trigger labels, which stay.\n\n### Acceptance criteria\n\n- C1: Given a new issue, when the triage runs, then it never carries `needs-triage`, and its board says the triage ran.\n- C2: Given a recurring run that needs a person, when scripts/run-issue.sh opens its issue, then it carries `needs-human`, not `needs:maintainer`.\n- C3: Given an open issue that carries `enhancement` or `bug`, when the migration runs, then its native Type is set to Feature or Bug before the label is removed, and scripts/sync-repos.py no longer creates either label.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-17T00:22:01Z",
+  "policy": "DiluxOne/.github@653f4037c2a9"
+}
