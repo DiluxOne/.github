@@ -40,7 +40,6 @@ on:
       - evals/triage/**
       - .github/workflows/issue-repro.yml
       - scripts/repro-ways.py
-      - scripts/repro-brief.sh
       - evals/repro/**
       - .github/workflows/autopilot.yml
       - scripts/autopilot.py

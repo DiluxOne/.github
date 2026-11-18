@@ -102,7 +102,7 @@ TYPE_OF = {"feat": "Feature", "fix": "Bug", "docs": "Docs"}
 _LOADED = {}
 # The helpers the grades and replays load: loaded once, before any agent
 # runs (preload), so what an agent leaves on disk is never what grades it.
-HELPERS = {"issue_schema": "issue-schema.py", "test_first": "test-first.py", "repro_ways": "repro-ways.py", "autopilot": "autopilot.py"}
+HELPERS = {"issue_schema": "issue-schema.py", "test_first": "test-first.py", "autopilot": "autopilot.py"}
 
 
 def _load(name, file):
@@ -194,7 +194,7 @@ def grade_reply(case, got):
 STEPS = {
     "triage": {"paths": (".github/workflows/issue-triage.yml", "scripts/triage-brief.sh"),
                "fields": ("issue",), "judge": False, "grade": grade_triage, "minutes": 8},
-    "repro": {"paths": (".github/workflows/issue-repro.yml", "scripts/repro-ways.py", "scripts/repro-brief.sh"),
+    "repro": {"paths": (".github/workflows/issue-repro.yml", "scripts/repro-ways.py"),
               "fields": ("issue", "base", "test"), "judge": False, "grade": grade_repro, "minutes": 15},
     "spec": {"paths": (".github/workflows/autopilot.yml", "scripts/autopilot.py"),
              "fields": ("issue", "base", "type", "files"), "judge": False, "grade": grade_spec, "minutes": 15},
@@ -515,17 +515,6 @@ def ask(prompt, args, cwd, step, root=ROOT):
     return result
 
 
-def policy_model(tree):
-    """The model and effort the step's policy gives (policy.py, high floor)."""
-    out = os.path.join(tree, ".dx-io", "policy.out")
-    os.makedirs(os.path.dirname(out), exist_ok=True)
-    env = {**os.environ, "DEFAULT_POLICY": os.path.join(ROOT, "policy", "review-policy.default.yml"),
-           "REPO_POLICY": os.path.join(tree, ".github", "review-policy.yml"), "POLICY_LEVEL": "high", "GITHUB_OUTPUT": out}
-    subprocess.run([sys.executable, os.path.join(HERE, "policy.py")], cwd=tree, env=env, capture_output=True, text=True)
-    pairs = dict(line.split("=", 1) for line in open(out, encoding="utf-8").read().splitlines() if "=" in line) if os.path.exists(out) else {}
-    return pairs.get("model", ""), pairs.get("effort", "")
-
-
 def commit_all(tree, message):
     git(tree, "add", "-A", "--", ".", ":!.dx-central", ":!.dx-io")
     git(tree, "-c", "user.name=evals", "-c", "user.email=evals@localhost", "commit", "-q", "--allow-empty", "-m", message)
@@ -542,51 +531,6 @@ def run_test(tree, case, base, test, ref, test_ref, out_dir, title):
     if not entry:
         return None
     return tf.run_one(tree, ROOT, entry, ref, test_ref, out_dir)
-
-
-def replay_repro(case, work):
-    got = checkout(case, work)
-    issue = issue_of(case) if got else None
-    if not issue:
-        return None
-    tree, base = got
-    rw = _load("repro_ways", "repro-ways.py")
-    old = os.environ.get("REPO")
-    os.environ["REPO"] = case["repo"].split("/")[-1]
-    try:
-        way = rw.resolve(tree, ROOT, case.get("layer") or "logic", str(case["issue"]))
-    finally:
-        if old is None:
-            os.environ.pop("REPO", None)
-        else:
-            os.environ["REPO"] = old
-    if not way.get("way") or way.get("fixed"):
-        return None
-    env = {**os.environ, "GITHUB_REPOSITORY": case["repo"], "NUMBER": str(case["issue"]), "TITLE": issue.get("title") or "",
-           "BODY": issue.get("body") or "", "LABEL": "", "SENDER_LOGIN": "", "SANDBOX": way["sandbox"], "LAYER": way["layer"],
-           "TEST": way["test"], "NOUN": way["noun"], "CENTRAL": ".dx-central"}
-    os.makedirs(os.path.join(tree, os.path.dirname(way["test"])), exist_ok=True)
-    brief = subprocess.run(["bash", os.path.join(HERE, "repro-brief.sh")], cwd=tree, env=env, capture_output=True, text=True)
-    if brief.returncode != 0:
-        return None
-    with open(os.path.join(tree, ".dx-central", "brief.md"), "w", encoding="utf-8") as fh:
-        fh.write(brief.stdout)
-    prompt = rw.prompt(way["sandbox"], case["repo"], case["issue"], way["layer"], way["noun"], way["test"])
-    model, effort = policy_model(tree)
-    step = "claude" if way["sandbox"] == "php-unit" else "claude_way"
-    try:
-        args = claude_args("issue-repro.yml", "write", step, {"steps.policy.outputs.model": model, "steps.policy.outputs.effort": effort,
-                                                             "steps.way.outputs.dir": way["dir"]})
-    except KeyError as e:
-        print(f"  {case['id']}: {e}", file=sys.stderr)
-        return None
-    if ask(prompt, args, tree, "repro") is None:
-        return None
-    if not os.path.isfile(os.path.join(tree, way["test"])):
-        return {"wrote": False}
-    written = commit_all(tree, f"test: the reproduction of #{case['issue']}")
-    outcome = run_test(tree, case, base, way["test"], base, written, os.path.join(work, "out", case["id"].replace("/", "_")), "fix: replay")
-    return {"wrote": True, "outcome": outcome}
 
 
 def autopilot_args(step_id, budget):
@@ -688,8 +632,9 @@ def replay_review(case, work):
         return None
 
 
-# Triage's and reply's replays come with their sets (from GitHub).
-REPLAYS = {"repro": replay_repro, "spec": replay_spec, "autopilot": replay_autopilot, "review": replay_review}
+# Triage's and reply's replays come with their sets (from GitHub), and
+# repro's with its set, in their own issue (#735's follow-up).
+REPLAYS = {"spec": replay_spec, "autopilot": replay_autopilot, "review": replay_review}
 
 
 def run(step, cases, work):
@@ -867,12 +812,13 @@ def self_test():
     check("merge: the cases' order, a case no job gave not replayed",
           merge([{"id": "1", "expect": "passed"}, {"id": "2", "expect": {"category": "bug"}}, {"id": "3", "expect": "passed"}], [[res[2]], [res[0]]]),
           [res[0], {"id": "2", "expect": "record", "ok": None}, res[2]])
-    m = matrix(["repro"])
+    m = matrix(["spec"])
     check("matrix: one job per case of the step, each with its step's time and the job's",
-          ([x["case"] for x in m] == [c["id"] for c in load_cases("repro")], {x["minutes"] for x in m}, [x["n"] for x in m] == list(range(len(m)))),
-          (True, {STEPS["repro"]["minutes"] + JOB_MINUTES}, True))
+          ([x["case"] for x in m] == [c["id"] for c in load_cases("spec")], {x["minutes"] for x in m}, [x["n"] for x in m] == list(range(len(m)))),
+          (True, {STEPS["spec"]["minutes"] + JOB_MINUTES}, True))
     check("table: says what failed", "**failed**" in table("repro", res, now, {}) and "could not replay" in table("repro", res, now, {}), True)
-    check("run: a step with no replay yet leaves every case unreplayed", [r["ok"] for r in run("reply", [{"id": "x", "expect": "resolved"}], "/nonexistent")], [None])
+    check("run: a step with no replay yet leaves every case unreplayed", [[r["ok"] for r in run(s, [{"id": "x", "expect": "resolved"}], "/nonexistent")] for s in ("repro", "reply")], [[None], [None]])
+    check("steps: a step with no set is listed by its paths, never run", (steps_of([".github/workflows/issue-repro.yml"]), steps_of([".github/workflows/issue-repro.yml"], with_set=True)), (["repro"], []))
 
     # Collecting from git: the reproduced bugs, the accepted issues.
     commits = [{"sha": "m1", "parent": "p1", "subject": "fix: the bug reproduced from #41 (#42)", "body": "Closes #43.", "files": ["scripts/a.py", "tests/repro/test_issue_41.py"]},

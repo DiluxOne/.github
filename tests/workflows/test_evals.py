@@ -12,8 +12,9 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 SIX = ("triage", "repro", "spec", "autopilot", "review", "reply")
 # The sets this pull request carries; triage's and reply's come from
-# GitHub, in their own issue (the maintainer's answer on #735).
-WITH_SETS = ("repro", "spec", "autopilot", "review")
+# GitHub, and repro's with its replay's fix, in their own issue (the
+# maintainer's answers on #735).
+WITH_SETS = ("spec", "autopilot", "review")
 
 
 def evals():
@@ -129,7 +130,7 @@ def test_c2_a_path_maps_to_its_steps(path, want):
 
 def test_c2_the_steps_listed_are_those_with_a_set():
     mod = evals()
-    assert mod.steps_of(["policy/autonomy.yml"], with_set=True) == list(WITH_SETS[:3]) + ["review"]
+    assert mod.steps_of(["policy/autonomy.yml"], with_set=True) == list(WITH_SETS)
     assert mod.steps_of([".github/workflows/issue-triage.yml"], with_set=True) == []
 
 
@@ -217,18 +218,18 @@ def test_c2_no_baseline_and_a_case_not_replayed_still_fails(tmp_path):
 
 def test_c2_each_case_is_replayed_in_a_job_of_its_own(tmp_path):
     import subprocess
-    out = subprocess.run(["python3", str(ROOT / "scripts" / "evals.py"), "matrix"], input="repro\nspec\n", capture_output=True, text=True, check=True).stdout
+    out = subprocess.run(["python3", str(ROOT / "scripts" / "evals.py"), "matrix"], input="spec\nautopilot\n", capture_output=True, text=True, check=True).stdout
     matrix = json.loads(out)
-    cases = {s: json.loads((ROOT / "evals" / s / "cases.json").read_text(encoding="utf-8")) for s in ("repro", "spec")}
-    assert [(m["step"], m["case"]) for m in matrix] == [(s, c["id"]) for s in ("repro", "spec") for c in cases[s]]
+    cases = {s: json.loads((ROOT / "evals" / s / "cases.json").read_text(encoding="utf-8")) for s in ("spec", "autopilot")}
+    assert [(m["step"], m["case"]) for m in matrix] == [(s, c["id"]) for s in ("spec", "autopilot") for c in cases[s]]
     assert all(isinstance(m["n"], int) and m["minutes"] > evals().STEPS[m["step"]]["minutes"] for m in matrix)
     # The step's jobs merge their results in the cases' order; a case whose
     # job left none is not replayed, by its name.
     one = tmp_path / "one.json"
-    one.write_text(json.dumps([{"id": cases["repro"][1]["id"], "expect": "failed", "ok": True}]), encoding="utf-8")
-    merged = json.loads(subprocess.run(["python3", str(ROOT / "scripts" / "evals.py"), "merge", "repro", str(one)], capture_output=True, text=True, check=True).stdout)
-    assert [r["id"] for r in merged] == [c["id"] for c in cases["repro"]]
-    assert [r["ok"] for r in merged] == [None, True, None, None, None, None]
+    one.write_text(json.dumps([{"id": cases["spec"][1]["id"], "expect": "failed", "ok": True}]), encoding="utf-8")
+    merged = json.loads(subprocess.run(["python3", str(ROOT / "scripts" / "evals.py"), "merge", "spec", str(one)], capture_output=True, text=True, check=True).stdout)
+    assert [r["id"] for r in merged] == [c["id"] for c in cases["spec"]]
+    assert [r["ok"] for r in merged] == [None, True] + [None] * (len(cases["spec"]) - 2)
     wf = yaml.safe_load((ROOT / ".github" / "workflows" / "evals.yml").read_text(encoding="utf-8"))
     replay = [j for j in wf["jobs"].values() if "matrix.case" in str(j.get("name"))]
     assert replay and "matrix.minutes" in str(replay[0]["timeout-minutes"])
