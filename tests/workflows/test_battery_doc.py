@@ -4,6 +4,7 @@ mention there."""
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -47,3 +48,14 @@ def test_c1_the_earlier_mentions_link_to_it():
     assert before[first - 1] == "[" and before[first:].startswith("battery](#the-battery)"), "the intro links it"
     row = next(line for line in before.splitlines() if line.startswith("| `workflows` |"))
     assert "(#the-battery)" in row, "the `workflows` row links it"
+
+
+@pytest.mark.parametrize("page", ["configuration.md", "adopting.md", "maintaining.md"])
+def test_c2_the_first_battery_on_each_page_links_to_it(page):
+    text = (ROOT / "docs" / page).read_text(encoding="utf-8")
+    match = re.search(r"battery", text, re.I)
+    assert match, f"docs/{page} no longer says battery"
+    rest = text[match.start():]
+    assert text[match.start() - 1] == "[" and re.match(r"battery\]\(\.\./kinds/README\.md#the-battery\)", rest, re.I), (
+        f"the first 'battery' of docs/{page} does not link to ../kinds/README.md#the-battery"
+    )
