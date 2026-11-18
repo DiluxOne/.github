@@ -1378,9 +1378,14 @@ jobs:
           # #832 C3: what the agent changed and did not commit (its turn
           # limit came after a test passed and before its commit) is
           # committed here, ticking nothing, so it is on the branch for the
-          # continue run. Not in the middle of a merge, and never a workflow
-          # outside the engine, which the apply job refuses.
-          if [ -n "$START" ] && ! git rev-parse -q --verify MERGE_HEAD > /dev/null; then
+          # continue run. Not in the middle of a merge, never a workflow
+          # outside the engine, which the apply job refuses, and not once the
+          # agent reached its end (credits, ready, a question, a stop): what
+          # is left then is its own notes (the credits' file, "How I tested
+          # it"), never a criterion's work.
+          ended=false
+          if [ -f .dx-io/outbox.jsonl ] && jq -e -s 'any(.[]; .kind == "credits" or .kind == "ready" or .kind == "ask" or .kind == "stop")' .dx-io/outbox.jsonl > /dev/null 2>&1; then ended=true; fi
+          if [ -n "$START" ] && [ "$ended" != true ] && ! git rev-parse -q --verify MERGE_HEAD > /dev/null; then
             if [ "$ENGINE" = true ]; then git add -A -- . || true
             else git add -A -- . ':(exclude).github/workflows' || true; fi
             if ! git diff --cached --quiet; then

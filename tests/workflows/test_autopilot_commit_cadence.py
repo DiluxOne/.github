@@ -42,7 +42,7 @@ def git(repo, *args):
     return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True).stdout.strip()
 
 
-def run_left(tmp_path, engine="false", change=None):
+def run_left(tmp_path, engine="false", change=None, outbox=""):
     repo = tmp_path / "repo"
     repo.mkdir()
     git(repo, "init", "-q", "-b", "fix/7-x")
@@ -66,6 +66,7 @@ def run_left(tmp_path, engine="false", change=None):
     (repo / ".dx-central/scripts").mkdir(parents=True)
     (repo / ".dx-central/scripts/autopilot.py").write_text("import sys\nprint('false' if sys.argv[1:] == ['verify', 'need'] else '')\nsys.exit(1 if sys.argv[1:] == ['work-log'] else 0)\n")
     (repo / ".dx-io").mkdir()
+    (repo / ".dx-io/outbox.jsonl").write_text(outbox)
     out = tmp_path / "out"
     out.write_text("")
     env = dict(os.environ, START=start, WORK_LOG="", WORK_STARTED="", DX_IO=str(repo / ".dx-io"), GITHUB_OUTPUT=str(out), ENGINE=engine)
@@ -123,3 +124,20 @@ def test_nothing_left_is_no_commit(tmp_path):
 
 def test_the_step_knows_the_engine():
     assert "github.repository" in str(left()["env"].get("ENGINE", ""))
+
+
+def test_notes_left_after_the_agent_reached_its_end_stay_out(tmp_path):
+    # It wrote the credits and finished: a file left then is its own notes.
+    def change(r):
+        (r / "tested.md").write_text("How I tested it\n")
+    for i, outbox in enumerate(('{"kind": "tick", "id": "C1"}\n{"kind": "credits", "text": ""}\n', '{"kind": "stop", "text": "x"}\n')):
+        (tmp_path / str(i)).mkdir()
+        repo, start = run_left(tmp_path / str(i), change=change, outbox=outbox)
+        subjects, _ = bundled(repo, start)
+        assert subjects == ["fix: one (C1)"]
+
+
+def test_a_tick_alone_is_not_the_end(tmp_path):
+    repo, start = run_left(tmp_path, outbox='{"kind": "tick", "id": "C1"}\n')
+    subjects, _ = bundled(repo, start)
+    assert subjects[0] == SUBJECT
