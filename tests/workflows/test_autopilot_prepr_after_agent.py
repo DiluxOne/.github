@@ -481,7 +481,7 @@ def test_a_fix_round_that_fails_as_the_round_before_stops_and_says_so(tmp_path, 
     assert ["pr", "edit", "8", "--repo", "o/r", "--add-label", "needs-human"] in calls
     # review-reply.yml resumes on an answer after a comment whose first line is the stop's.
     reply = (ROOT / ".github/workflows/review-reply.yml").read_text(encoding="utf-8")
-    assert f'"{ap.STOP}"*' in reply and body.split("\n")[0] == ap.STOP
+    assert f'startswith("{ap.STOP}")' in reply and body.split("\n")[0] == ap.STOP
 
 
 def test_a_fix_round_that_fails_another_way_continues(tmp_path, monkeypatch):
