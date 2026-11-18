@@ -67,6 +67,9 @@ def answer(tmp_path, comments, labelled_by=BOT, event="pull_request_review_comme
     (tmp_path / ".dx-central/scripts").mkdir(parents=True)
     (tmp_path / ".dx-central/scripts/deciders.py").write_text("print('decides')\n")
     (tmp_path / ".dx-central/scripts/receipts.py").write_text("import sys\nprint('null' if sys.argv[1:3] == ['state', 'get'] else '')\n")
+    # How the run ended (#696): the real script's run-end.
+    (tmp_path / ".dx-central/scripts/autopilot.py").write_text(
+        f"import runpy, sys\nsys.path.insert(0, {str(ROOT / 'scripts')!r})\nrunpy.run_path({str(ROOT / 'scripts/autopilot.py')!r}, run_name='__main__')\n")
     out = tmp_path / "out"
     out.write_text("")
     # The step's env, as the event gives it: a review comment has no
