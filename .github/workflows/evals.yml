@@ -1,0 +1,162 @@
+name: AI evaluation
+
+# Not reusable. Every AI step is measured (#735): a change to a step (its
+# workflow, the prompts it reads, its model in policy/autonomy.yml, its set
+# under evals/<step>/) is scored before it merges. scripts/evals.py says
+# which paths count for which step (`evals.py steps`), and this workflow's
+# `paths:` are their union (tests/workflows/test_evals.py holds them equal):
+# a pull request that touches none runs nothing, and one that touches one
+# step's paths runs that step's set alone. Each case of
+# evals/<step>/cases.json, a real one of the public repositories, is
+# replayed with the step as this pull request has it (`evals.py run`) and
+# graded deterministically where a grade exists, then scored against
+# evals/<step>/baseline.json (`evals.py score`): worse by more than one case
+# fails the check "AI evaluation (<step>)", and the table says which cases.
+# It replaces review-eval.yml: the review is one of the steps, its set,
+# baseline and slack unchanged.
+#
+# Paid: each case is one model run (the autopilot's, a whole work round).
+# It runs only on a pull request from a branch of this repository (a fork's
+# code never runs with the keys), and by hand for one step. The first job
+# lists the steps with no secret; private repositories are never cases.
+#
+# A change that should move a score, or a new set whose baseline is
+# pending, writes the baseline from this run's results (the artifact):
+# `scripts/evals.py baseline <step> FILE`, in the same pull request, which
+# a person merges.
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/issue-triage.yml
+      - scripts/triage-brief.sh
+      - policy/autonomy.yml
+      - evals/triage/**
+      - .github/workflows/issue-repro.yml
+      - scripts/repro-ways.py
+      - scripts/repro-brief.sh
+      - evals/repro/**
+      - .github/workflows/autopilot.yml
+      - scripts/autopilot.py
+      - evals/spec/**
+      - evals/autopilot/**
+      - review-profiles/**
+      - kinds/*/review-profile.md
+      - kinds/*/rules.yml
+      - policy/review-policy.default.yml
+      - scripts/review-brief.sh
+      - scripts/local-review.sh
+      - scripts/review-verify.py
+      - scripts/review-count.py
+      - .github/workflows/claude-review.yml
+      - evals/review/**
+      - .github/workflows/review-reply.yml
+      - evals/reply/**
+  workflow_dispatch:
+    inputs:
+      step:
+        description: The step whose set runs
+        required: true
+        type: choice
+        options:
+          - triage
+          - repro
+          - spec
+          - autopilot
+          - review
+          - reply
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evals-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  steps:
+    name: Which steps
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      steps: ${{ steps.list.outputs.steps }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: The steps the change touches
+        id: list
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          STEP: ${{ inputs.step }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          DEFAULT_POLICY: policy/review-policy.default.yml
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = workflow_dispatch ]; then
+            printf '%s\n' "$STEP" > "$RUNNER_TEMP/steps.txt"
+          else
+            python3 scripts/pr-files.py | python3 scripts/evals.py steps > "$RUNNER_TEMP/steps.txt"
+          fi
+          steps=$(jq -Rnc '[inputs | select(length > 0)]' < "$RUNNER_TEMP/steps.txt")
+          echo "steps=$steps" >> "$GITHUB_OUTPUT"
+          echo "Steps to evaluate: $steps" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  eval:
+    name: AI evaluation (${{ matrix.step }})
+    needs: steps
+    if: needs.steps.outputs.steps != '[]' && needs.steps.outputs.steps != '' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        step: ${{ fromJSON(needs.steps.outputs.steps) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: The Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code@2.1.302
+
+      # The issues of the cases are public: the job's own token reads them.
+      # The model never gets it (evals.py drops it from the CLI's
+      # environment).
+      - name: Replay every case
+        env:
+          STEP: ${{ matrix.step }}
+          GH_TOKEN: ${{ github.token }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
+          DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN }}
+          DX_BOT_ID: ${{ vars.DX_BOT_ID }}
+        run: |
+          set -euo pipefail
+          git config --global user.name "$DX_BOT_LOGIN"
+          git config --global user.email "$DX_BOT_ID+$DX_BOT_LOGIN@users.noreply.github.com"
+          python3 scripts/evals.py run "$STEP" > "$RUNNER_TEMP/results.json"
+
+      - name: Score against the baseline
+        env:
+          STEP: ${{ matrix.step }}
+        run: |
+          set -uo pipefail
+          python3 scripts/evals.py score "$STEP" "$RUNNER_TEMP/results.json" | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "${PIPESTATUS[0]}"
+
+      - name: Keep the results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: evals-${{ matrix.step }}
+          path: ${{ runner.temp }}/results.json
+          retention-days: 30
