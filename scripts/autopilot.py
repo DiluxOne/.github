@@ -1366,6 +1366,39 @@ def edit_starts(step, board):
     return bool((board or {}).get("shape_refused")) and (step or {}).get("action") == "spec" and (step or {}).get("as") == "start"
 
 
+# A review finding someone who decides settled in a comment (#699 C5):
+# review-reply.yml's reply carries this hidden mark, naming the finding and
+# the answer's link; claude-review.yml reuses no verdict older than one, and
+# hands the settled findings to the brief.
+SETTLED_MARK = re.compile(r"<!-- dx-settled (\{.*?\}) -->")
+
+
+def settled_mark(finding, answer):
+    """The hidden mark of a settled finding. Pure: no `--` in it, so it
+    cannot close the comment early."""
+    clean = lambda t: re.sub(r"-{2,}", "-", str(t or "")).replace("<", "‹").replace(">", "›")[:300]
+    return "<!-- dx-settled " + json.dumps({"finding": clean(finding), "answer": clean(answer)}, ensure_ascii=False) + " -->"
+
+
+def settlements(comments, since, bot):
+    """The findings settled after `since` (an ISO time; "" for all), from
+    the marks in the bot's own comments only (anyone can type one), oldest
+    first: [{finding, answer, at}]. `comments`: as the REST API lists them,
+    the conversation's and the review threads'. Pure."""
+    out = []
+    for c in sorted(comments or [], key=lambda c: str(c.get("created_at") or "")):
+        if (c.get("user") or {}).get("login") != bot or str(c.get("created_at") or "") <= (since or ""):
+            continue
+        for raw in SETTLED_MARK.findall(str(c.get("body") or "")):
+            try:
+                got = json.loads(raw)
+            except ValueError:
+                continue
+            if isinstance(got, dict) and got.get("finding"):
+                out.append({"finding": str(got["finding"]), "answer": str(got.get("answer") or ""), "at": str(c.get("created_at") or "")})
+    return out
+
+
 # Whom a pull request waits on, as its board says (scripts/waiting.py
 # AUTOPILOT, receipts.py waits): the autopilot.
 WAITS_ON_AUTOPILOT = "the autopilot"
@@ -3234,6 +3267,11 @@ A class on html.
           [hint_of(["autopilot"], True, {"role": WAITS_ON_AUTOPILOT}, ""), hint_of(["autopilot", "needs-human"], True, None, "stop"),
            hint_of(["autopilot"], True, {"role": "the maintainer"}, ""), hint_of(["autopilot", "needs-human"], True, {"role": WAITS_ON_AUTOPILOT}, "cap"),
            hint_of(["autopilot"], False, {"role": WAITS_ON_AUTOPILOT}, "")], ["waits", "stop", "", "", ""])
+    c5 = [{"user": {"login": "b"}, "body": settled_mark("a --> x", "u"), "created_at": "2026-11-08T11:00:00Z"},
+          {"user": {"login": "m"}, "body": settled_mark("forged", "u"), "created_at": "2026-11-08T12:00:00Z"}]
+    check("#699 C5: a settled finding's mark reads back from the bot's own comments since the verdict, never closing early",
+          ([x["finding"] for x in settlements(c5, "2026-11-08T10:00:00Z", "b")], settlements(c5, "2026-11-08T11:00:00Z", "b"), settled_mark("a --> x", "u").count("-->")),
+          (["a -› x"], [], 1))
     c2 = {"issue": {"state": "OPEN", "labels": ["accepted"]}, "lane": "human-issue", "may_start": [True, "ready"], "seal": "match"}
     check("#699 C2: next-step on an edited accepted issue that passes now starts it, once refused for its shape",
           (edit_starts(next_step(c2), {"shape_refused": "t"}), edit_starts(next_step(c2), {}), edit_starts(next_step(dict(c2, seal="changed")), {"shape_refused": "t"}),
@@ -5598,6 +5636,15 @@ def main(argv):
         step = next_step(state if isinstance(state, dict) else {})
         print(step_comment(step), file=sys.stderr)
         print(json.dumps(step))
+        return 0
+    if argv[:1] == ["settled-mark"] and len(argv) == 3:
+        print(settled_mark(argv[1], argv[2]))
+        return 0
+    if argv[:1] == ["settlements"]:
+        # #699 C5: COMMENTS (a file: the REST API's comments, conversation
+        # and threads), SINCE, BOT: the findings settled since, as JSON.
+        comments = json.load(open(os.environ["COMMENTS"], encoding="utf-8")) if os.environ.get("COMMENTS") and os.path.exists(os.environ["COMMENTS"]) else []
+        print(json.dumps(settlements(comments if isinstance(comments, list) else [], os.environ.get("SINCE", ""), os.environ.get("BOT", ""))))
         return 0
     if argv[:1] == ["hint"]:
         # #699 C4: LABELS (comma-separated), AUTHOR_IS_BOT, WAITS (the
