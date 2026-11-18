@@ -47,6 +47,8 @@ def answer(tmp_path, comments, pr=False):
         "  *closedByPullRequestsReferences*) ;;\n"
         "  'pr view 9 '*'--json labels'*) echo autopilot,needs-human ;;\n"
         "  *'--json labels'*) echo needs-human,bug ;;\n"
+        # #832: needs-human was last added by dilux-bot.
+        f"  *'/events'*) echo '{BOT}' ;;\n"
         "  *'/comments'*)\n"
         '    while [ $# -gt 0 ]; do [ "$1" = --jq ] && { shift; q=$1; }; shift; done\n'
         f'    jq -r "$q" "{tmp_path / "comments.json"}" ;;\n'
@@ -77,12 +79,12 @@ def test_a_mention_does_not_hide_the_stop(tmp_path):
 
 
 def test_no_stop_no_continue(tmp_path):
-    # The last of dilux-bot's comments but the mentions is no stop: nothing
-    # changes, with a mention after it or without one, and a stop before it
-    # is over.
+    # No stop among dilux-bot's comments: nothing changes. (A stop with a
+    # later comment of the bot's after it still holds, #832:
+    # tests/workflows/test_review_reply_stop_answer.py.)
     for i, comments in enumerate((
-            [(BOT, "<!-- dx-autopilot-stop -->\nStopped."), (BOT, "<!-- dx-board -->\nThe board"), (BOT, MENTION)],
-            [(BOT, "<!-- dx-autopilot-silent -->\nSilent."), (BOT, "A question")],
+            [(BOT, "<!-- dx-board -->\nThe board"), (BOT, MENTION)],
+            [(BOT, "A question")],
             [(BOT, MENTION)],
             [("someone", "<!-- dx-autopilot-stop -->\nA quote"), (BOT, MENTION)])):
         run = tmp_path / str(i)
