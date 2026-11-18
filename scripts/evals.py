@@ -25,11 +25,16 @@ deterministically wherever a grade exists:
              the thread is resolved, and no further change is asked
 
 A step's score is the share of cases that pass (the review's: bugs found
-and clean pull requests blocked). evals.yml fails a change whose score is
-worse than the step's baseline by more than one case (a model does not
-answer the same twice), or with more than one case that could not be
-replayed. A step whose baseline is pending fails until `baseline` writes
-it from a whole run: no baseline is no gate, and never passes quietly.
+and clean pull requests blocked). evals.yml replays each case in a job of
+its own (`matrix`, `run STEP CASE`), so every case gets its job's whole
+time, and merges a step's results (`merge`). It fails a change whose score
+is worse than the step's baseline by more than one case (a model does not
+answer the same twice). A case left not replayed is the runner's failure,
+never the step's score: it fails the check with the case's name (the
+review keeps its slack of one, as review-eval.yml had it). A step with no
+baseline (missing, or pending) passes with a warning and prints the whole
+run's results, what `baseline` reads, between the lines
+`--- baseline STEP ---` and `--- end ---`, for a person to commit.
 
   evals.py steps FILE...       the steps whose paths the files touch, one per
                                line (only those with a set)
@@ -39,8 +44,14 @@ it from a whole run: no baseline is no gate, and never passes quietly.
                                (the reproduced bugs; the accepted issues whose
                                merged pull request changed tests); review
                                from its threads on GitHub (GH_TOKEN, read)
-  evals.py run STEP            replay every case; results on stdout (JSON)
-                               (the Claude Code CLI, git, gh, the checkout)
+  evals.py run STEP [CASE]     replay every case, or the one whose id is
+                               CASE; results on stdout (JSON) (the Claude
+                               Code CLI, git, gh, the checkout)
+  evals.py matrix [STEP...]    the replay jobs of the steps (args or stdin):
+                               [{step, case, n, minutes}] on stdout (JSON)
+  evals.py merge STEP FILE...  the step's results from its jobs' FILEs, in
+                               the cases' order; a case none has, not
+                               replayed
   evals.py score STEP FILE     the results in FILE against the baseline: a
                                table on stdout, exit 1 when worse
   evals.py baseline STEP FILE  write the results in FILE as the baseline
@@ -248,9 +259,37 @@ def worse(step, now, base):
         return "; ".join(why)
     if base.get("cases") and now["passed"] < base["passed"] - SLACK:
         why.append(f"{now['passed']} of {now['cases']} cases passed, the baseline {base['passed']} of {base['cases']}")
-    if now["unrun"] > SLACK:
-        why.append(f"{now['unrun']} cases could not be replayed")
     return "; ".join(why)
+
+
+def unreplayed(step, results):
+    """The cases the runner left not replayed, by name, when that fails the
+    runner (every step's but the review's, which keeps its slack)."""
+    return [] if step == "review" else [r["id"] for r in results if r["ok"] is None]
+
+
+# A replay job's time: the step's limit for its one case, and the job's own
+# (the checkout, the CLI, the case's tests).
+JOB_MINUTES = 30
+
+
+def load_cases(step, root=ROOT):
+    with open(os.path.join(root, "evals", step, "cases.json"), encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def matrix(steps, root=ROOT):
+    """One replay job per case of each step: the matrix evals.yml runs."""
+    return [{"step": s, "case": c["id"], "n": n, "minutes": STEPS[s]["minutes"] + JOB_MINUTES}
+            for s in steps for n, c in enumerate(load_cases(s, root))]
+
+
+def merge(cases, parts):
+    """The results of the step's jobs, in its cases' order; a case no job
+    gave is not replayed (its job ran out of time, or never ran)."""
+    got = {r["id"]: r for part in parts for r in part}
+    return [got.get(c["id"]) or {"id": c["id"], "expect": c["expect"] if isinstance(c["expect"], str) else "record", "ok": None}
+            for c in cases]
 
 
 def table(step, results, now, base):
@@ -823,7 +862,15 @@ def self_test():
     now = score("autopilot", res)
     check("score: passed, cases replayed, not replayed", now, {"passed": 1, "cases": 2, "unrun": 1})
     check("worse: one case of slack", (worse("spec", now, {"passed": 2, "cases": 2}), worse("spec", now, {"passed": 3, "cases": 3}).startswith("1 of 2 cases passed")), ("", True))
-    check("worse: more than one case not replayed", "could not be replayed" in worse("spec", {"passed": 4, "cases": 4, "unrun": 2}, {"passed": 4, "cases": 6}), True)
+    check("unreplayed: a case not replayed fails the runner by its name; the review keeps its slack",
+          (unreplayed("spec", res), unreplayed("review", [{"id": "r", "expect": "flag", "ok": None}])), (["3"], []))
+    check("merge: the cases' order, a case no job gave not replayed",
+          merge([{"id": "1", "expect": "passed"}, {"id": "2", "expect": {"category": "bug"}}, {"id": "3", "expect": "passed"}], [[res[2]], [res[0]]]),
+          [res[0], {"id": "2", "expect": "record", "ok": None}, res[2]])
+    m = matrix(["repro"])
+    check("matrix: one job per case of the step, each with its step's time and the job's",
+          ([x["case"] for x in m] == [c["id"] for c in load_cases("repro")], {x["minutes"] for x in m}, [x["n"] for x in m] == list(range(len(m)))),
+          (True, {STEPS["repro"]["minutes"] + JOB_MINUTES}, True))
     check("table: says what failed", "**failed**" in table("repro", res, now, {}) and "could not replay" in table("repro", res, now, {}), True)
     check("run: a step with no replay yet leaves every case unreplayed", [r["ok"] for r in run("reply", [{"id": "x", "expect": "resolved"}], "/nonexistent")], [None])
 
@@ -906,11 +953,29 @@ def main(argv):
         write_json(path, cases)
         print(f"{len(cases)} cases in {path}")
         return 0
-    if argv[:1] == ["run"] and len(argv) == 2 and argv[1] in STEPS:
+    if argv[:1] == ["run"] and len(argv) in (2, 3) and argv[1] in STEPS:
         import tempfile
-        with open(os.path.join(EVALS, argv[1], "cases.json"), encoding="utf-8") as fh:
-            cases = json.load(fh)
+        cases = load_cases(argv[1])
+        if len(argv) == 3:
+            cases = [c for c in cases if c["id"] == argv[2]]
+            if not cases:
+                print(f"evals.py: {argv[1]} has no case {argv[2]}", file=sys.stderr)
+                return 1
         print(json.dumps(run(argv[1], cases, tempfile.mkdtemp(prefix="dx-eval-")), indent=2))
+        return 0
+    if argv[:1] == ["matrix"]:
+        steps = argv[1:] or [line.strip() for line in sys.stdin if line.strip()]
+        if any(s not in STEPS or not has_set(s) for s in steps):
+            print(f"evals.py: not a step with a set: {steps}", file=sys.stderr)
+            return 1
+        print(json.dumps(matrix(steps)))
+        return 0
+    if argv[:1] == ["merge"] and len(argv) >= 2 and argv[1] in STEPS:
+        parts = []
+        for f in argv[2:]:
+            with open(f, encoding="utf-8") as fh:
+                parts.append(json.load(fh))
+        print(json.dumps(merge(load_cases(argv[1]), parts), indent=2))
         return 0
     if argv[:1] in (["score"], ["baseline"]) and len(argv) == 3 and argv[1] in STEPS:
         step = argv[1]
@@ -931,11 +996,25 @@ def main(argv):
                 base = json.load(fh)
         except (OSError, ValueError):
             base = {}
-        if set(base) != set(now):
-            # No baseline is no gate: that fails, it never passes quietly.
-            print(table(step, results, now, {}))
-            print(f"\n**No baseline** for {step} at {baseline}: write one from a whole run with `evals.py baseline {step} FILE`.")
+        missing = unreplayed(step, results)
+        if missing:
+            # The runner's failure, not the step's: no score is read from it.
+            print(table(step, results, now, base if set(base) == set(now) else {}))
+            print(f"\n**The runner did not replay** {len(missing)} of {len(results)} cases of {step}, so it is not scored: "
+                  + ", ".join(f"`{m}`" for m in missing) + ".")
             return 1
+        if set(base) != set(now):
+            # No baseline yet: no gate, said aloud, and this run proposes one.
+            print(table(step, results, now, {}))
+            print(f"\n**No baseline** for {step} at evals/{step}/baseline.json: this run passes with a warning. "
+                  f"Its whole results follow; saved as FILE, `evals.py baseline {step} FILE` writes the baseline.\n")
+            print("```")
+            print(f"--- baseline {step} ---")
+            print(json.dumps(results, indent=2))
+            print("--- end ---")
+            print("```")
+            print(f"::warning::No baseline for {step}: the run passes, and proposes its results as the baseline (between '--- baseline {step} ---' and '--- end ---').", file=sys.stderr)
+            return 0
         print(table(step, results, now, base))
         why = worse(step, now, base)
         if why:

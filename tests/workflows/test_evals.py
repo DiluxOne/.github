@@ -63,7 +63,7 @@ def test_c1_each_set_has_its_baseline(step):
     mod = evals()
     base = json.loads((ROOT / "evals" / step / "baseline.json").read_text(encoding="utf-8"))
     # Either a whole run's score, or pending its first paid run (which
-    # fails the gate until `evals.py baseline` writes it, never passes it).
+    # passes with a warning and proposes its results, until `evals.py baseline` writes it).
     if "pending" in base:
         assert set(base) == {"pending"} and isinstance(base["pending"], str) and base["pending"]
     else:
@@ -148,7 +148,8 @@ def test_c2_evals_yml_runs_the_listed_steps_with_the_runner():
     jobs = wf["jobs"]
     assert "evals.py steps" in text and "evals.py run" in text and "evals.py score" in text
     run = [j for j in jobs.values() if "strategy" in j][0]
-    assert "fromJSON" in str(run["strategy"]["matrix"])
+    assert all("head.repo.full_name == github.repository" in str(j.get("if")) for j in jobs.values())
+    assert all("fromJSON" in str(j["strategy"]["matrix"]) for j in jobs.values() if "strategy" in j)
     # A fork's code never runs with the keys.
     assert "head.repo.full_name == github.repository" in str(run.get("if"))
     assert wf["permissions"] == {"contents": "read"}
@@ -166,7 +167,8 @@ def run_score(tmp_path, step, results, base):
     (root / "policy").mkdir()
     shutil.copy(ROOT / "policy" / "issue-schema.yml", root / "policy" / "issue-schema.yml")
     (root / "evals" / step).mkdir(parents=True)
-    (root / "evals" / step / "baseline.json").write_text(json.dumps(base), encoding="utf-8")
+    if base is not None:
+        (root / "evals" / step / "baseline.json").write_text(json.dumps(base), encoding="utf-8")
     res = root / "results.json"
     res.write_text(json.dumps(results), encoding="utf-8")
     return subprocess.run(["python3", str(root / "scripts" / "evals.py"), "score", step, str(res)], capture_output=True, text=True)
@@ -183,12 +185,53 @@ def test_c2_score_fails_when_worse_than_the_baseline(tmp_path):
     assert run_score(tmp_path, "autopilot", results(4, 2), base).returncode == 0, "one case of slack"
     got = run_score(tmp_path, "autopilot", results(3, 3), base)
     assert got.returncode == 1 and "Worse than the baseline" in got.stdout
-    assert run_score(tmp_path, "autopilot", results(4, 0, 2), base).returncode == 1, "two cases not replayed"
 
 
-def test_c2_a_pending_baseline_fails(tmp_path):
-    got = run_score(tmp_path, "spec", results(6, 0), {"pending": "first run"})
-    assert got.returncode == 1 and "No baseline" in got.stdout
+def test_c2_a_case_not_replayed_fails_the_runner_with_its_name(tmp_path):
+    base = {"passed": 5, "cases": 6, "unrun": 0}
+    got = run_score(tmp_path, "repro", results(5, 0, 1), base)
+    assert got.returncode == 1 and "The runner did not replay" in got.stdout and "c0" in got.stdout
+    assert "Worse than the baseline" not in got.stdout, "a runner's failure is not the step's score"
+
+
+def baseline_block(step, text):
+    start, end = f"--- baseline {step} ---\n", "\n--- end ---"
+    assert start in text and end in text.split(start, 1)[1], text
+    return json.loads(text.split(start, 1)[1].split(end, 1)[0])
+
+
+@pytest.mark.parametrize("base", [None, {"pending": "first run"}])
+def test_c2_no_baseline_passes_with_a_warning_and_proposes_one(tmp_path, base):
+    res = results(5, 1)
+    got = run_score(tmp_path, "spec", res, base)
+    assert got.returncode == 0, got.stdout + got.stderr
+    assert "::warning::" in got.stderr and "No baseline" in got.stdout
+    # The block is the whole run's results, what `evals.py baseline` reads.
+    assert baseline_block("spec", got.stdout) == res
+
+
+def test_c2_no_baseline_and_a_case_not_replayed_still_fails(tmp_path):
+    got = run_score(tmp_path, "spec", results(5, 0, 1), None)
+    assert got.returncode == 1 and "The runner did not replay" in got.stdout and "--- baseline" not in got.stdout
+
+
+def test_c2_each_case_is_replayed_in_a_job_of_its_own(tmp_path):
+    import subprocess
+    out = subprocess.run(["python3", str(ROOT / "scripts" / "evals.py"), "matrix"], input="repro\nspec\n", capture_output=True, text=True, check=True).stdout
+    matrix = json.loads(out)
+    cases = {s: json.loads((ROOT / "evals" / s / "cases.json").read_text(encoding="utf-8")) for s in ("repro", "spec")}
+    assert [(m["step"], m["case"]) for m in matrix] == [(s, c["id"]) for s in ("repro", "spec") for c in cases[s]]
+    assert all(isinstance(m["n"], int) and m["minutes"] > evals().STEPS[m["step"]]["minutes"] for m in matrix)
+    # The step's jobs merge their results in the cases' order; a case whose
+    # job left none is not replayed, by its name.
+    one = tmp_path / "one.json"
+    one.write_text(json.dumps([{"id": cases["repro"][1]["id"], "expect": "failed", "ok": True}]), encoding="utf-8")
+    merged = json.loads(subprocess.run(["python3", str(ROOT / "scripts" / "evals.py"), "merge", "repro", str(one)], capture_output=True, text=True, check=True).stdout)
+    assert [r["id"] for r in merged] == [c["id"] for c in cases["repro"]]
+    assert [r["ok"] for r in merged] == [None, True, None, None, None, None]
+    wf = yaml.safe_load((ROOT / ".github" / "workflows" / "evals.yml").read_text(encoding="utf-8"))
+    replay = [j for j in wf["jobs"].values() if "matrix.case" in str(j.get("name"))]
+    assert replay and "matrix.minutes" in str(replay[0]["timeout-minutes"])
 
 
 def test_c2_the_review_scores_as_before(tmp_path):
