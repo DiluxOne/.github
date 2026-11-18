@@ -671,14 +671,16 @@ EVENT_KEYS = ("hands", "bot_labeled")
 
 
 def by_hand(expect, seen):
-    """Each label a person (anyone but the bot) added or removed that
-    `expect`'s `hands` does not allow (#699), from `seen`'s label events:
-    ["<who> added the label <l> by hand"]. [] without `hands`. Pure."""
+    """Each label a person added or removed that `expect`'s `hands` does
+    not allow (#699), from `seen`'s label events: ["<who> added the label
+    <l> by hand"]. A person is an actor that is no bot at all (`person`):
+    another App such as github-actions[bot] moves no label by hand, though
+    it is not the bot `bot_labeled` asks for. [] without `hands`. Pure."""
     if "hands" not in expect:
         return []
     allowed = set(expect.get("hands") or [])
     return [f"{e.get('actor') or 'someone'} {'added' if e.get('event') == 'labeled' else 'removed'} the label {e.get('label')} by hand"
-            for e in seen.get("label_events") or [] if not e.get("bot") and e.get("label") not in allowed]
+            for e in seen.get("label_events") or [] if e.get("person", not e.get("bot")) and e.get("label") not in allowed]
 
 
 # Every wait polls its state (#694): never a fixed sleep. Every scenario
@@ -1343,18 +1345,28 @@ def waits_role(said):
 
 def label_events(repo, numbers, run=gh):
     """The label events of the issues or pull requests `numbers` (#699),
-    oldest first: [{event, label, actor, bot}], `bot` when dilux-bot moved
-    it."""
+    oldest first: [{event, label, actor, bot, person}], `bot` when
+    dilux-bot moved it, `person` when no bot did (`person_actor`)."""
     out = []
     for n in numbers:
         text = run("api", f"repos/{repo}/issues/{n}/events", "--paginate", "--jq",
-                   '.[] | select(.event == "labeled" or .event == "unlabeled") | {event, label: .label.name, actor: .actor.login}') or ""
+                   '.[] | select(.event == "labeled" or .event == "unlabeled") | {event, label: .label.name, actor: .actor.login, type: .actor.type}') or ""
         for line in text.splitlines():
             got = json.loads(line) if line.strip() else []
             for e in got if isinstance(got, list) else [got]:
                 if isinstance(e, dict):
-                    out.append({**e, "bot": bot_login(e.get("actor"))})
+                    out.append({**e, "bot": bot_login(e.get("actor")), "person": person_actor(e.get("actor"), e.get("type"))})
     return out
+
+
+def person_actor(login, kind=None):
+    """Whether the actor `login` (of GitHub's `type` `kind`) is a person
+    (#699): no bot of any App (dilux-bot, github-actions[bot], app/x,
+    a `Bot` type). Pure."""
+    name = str(login or "")
+    if not name or str(kind or "") == "Bot" or name.endswith("[bot]") or name.startswith("app/") or bot_login(name):
+        return False
+    return True
 
 
 def board_state(said):
@@ -3633,6 +3645,11 @@ def self_test():
            holds({"bot_labeled": ["autopilot:continue"], "rerun": True}, {"label_events": ev699[:1]})[:2]),
           ([], ["tester removed the label needs-human by hand"], ["tester removed the label needs-human by hand"],
            ["the bot never added autopilot:continue", "no run on its head ran again"]))
+    other699 = ev699 + [{"event": "labeled", "label": "risk:low", "actor": "github-actions[bot]", "bot": False, "person": False}]
+    check("#699 C7: another App's label is no person's hand, nor the bot's; a person is no bot of any kind",
+          (holds({"hands": ["accepted"]}, {"label_events": other699}), holds({"bot_labeled": ["risk:low"]}, {"label_events": other699})[:1],
+           [person_actor(a, t) for a, t in (("tester", "User"), ("github-actions[bot]", "Bot"), ("github-actions[bot]", None), ("app/renovate", None), ("dilux-bot", None), ("", None), ("someone", "Bot"))]),
+          ([], ["the bot never added risk:low"], [True, False, False, False, False, False, False]))
     check("#699 C7: the poll budget counts a head's runs only for a check or a re-run, and a poll of the label events for `bot_labeled`",
           [poll_budget([s]) // (3600 // POLL) for s in ({"opens": {"pull": {}}}, {"opens": {"pull": {}}, "expect": {"rerun": True}},
                                                         {"opens": {"pull": {}}, "steps": [{"until": {"check": {"c": "failure"}}}]}, {"opens": {"issue": {}}, "expect": {"bot_labeled": ["x"]}})],
