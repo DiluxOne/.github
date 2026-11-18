@@ -213,14 +213,18 @@ conversation; the bot edits the block and says what changed.
 
 Nothing runs twice for one change. An edit of the title or the description
 re-runs only the conventions, the review (free on a commit it already
-read) and the auto-merge decision, never the suites. A push to `main` runs
+read; on one it has not, it waits while an older run's review of that
+commit is running and reuses its verdict, and with none running, the
+push's review skipped on a draft or cancelled, it reviews the commit
+itself, #832) and the auto-merge decision, never the suites. A push to `main` runs
 the slow suites only when it must: the job verifies that the commit is the
 squash merge of a pull request of this repository, that its tree is the
 one that pull request's checks ran on and that every check there passed;
 any doubt runs everything. A pull request whose base branch changed after
 its last push fails the conventions on every edit until a push runs the
-suites against the new base. The conventions read the labels as they are
-when they run, not as the event carried them, so a re-run sees the
+suites against the new base. The conventions read the title and the
+labels as they are when they run (the title for its check and the
+accepted-issue gate, #832), not as the event carried them, so a re-run sees the
 `type:*` label the review set since; they compare the title's type with it
 once the review has read the commit (the review App's last record names
 it) or has reached its cap, so a push that changes the title waits for the

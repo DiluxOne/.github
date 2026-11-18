@@ -178,13 +178,42 @@ jobs:
           mode=$(python3 .dx-central/scripts/org.py attribution)
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
 
+      - name: The title, the labels and the review's comments, as they are now
+        id: live
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          EVENT_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        # The event carries the labels of the moment it fired, and a re-run
+        # replays that event: a type:* label the review changed since would
+        # read as the old one. Ask for them now, and for the comments, where
+        # the review's last record says which commit it read. The title too
+        # (#832): a re-run, or a run that starts late, checks the title the
+        # pull request has now, for the title check and the accepted-issue
+        # gate; read with a delimiter of its own, as it is anyone's text.
+        run: |
+          if title=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq .title) && [ -n "$title" ]; then
+            eof="DX_$(openssl rand -hex 16)"
+            { echo "title<<$eof"; printf '%s\n' "$title"; echo "$eof"; } >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Could not read the pull request's title (the caller's job needs pull-requests: read); the event's title is checked, and a re-run may check a title edited since."
+          fi
+          if labels=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/labels" --jq '[.[].name] | join(",")') \
+             && gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate > "$RUNNER_TEMP/comments.json"; then
+            echo "labels=$labels" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Could not read the pull request's labels and comments (the caller's job needs pull-requests: read); the event's labels are used, and a re-run may see a type:* label the review has changed since."
+            echo "labels=$EVENT_LABELS" >> "$GITHUB_OUTPUT"
+            echo '[]' > "$RUNNER_TEMP/comments.json"
+          fi
+
       - name: An accepted issue
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           REQUIRED: ${{ steps.gate.outputs.required }}
           LABEL: ${{ steps.gate.outputs.label }}
-          TITLE: ${{ github.event.pull_request.title }}
+          TITLE: ${{ steps.live.outputs.title || github.event.pull_request.title }}
           AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
           # An issue a lane of the autonomy policy accepts passes too
           # (policy/autonomy.yml, the repository's own file from the base
@@ -197,32 +226,12 @@ jobs:
           git show "$BASE:.github/autonomy.yml" > "$RUNNER_TEMP/repo-autonomy.yml" 2>/dev/null || : > "$RUNNER_TEMP/repo-autonomy.yml"
           REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml" bash .dx-central/scripts/issue-gate.sh
 
-      - name: The labels and the review's comments, as they are now
-        id: live
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-          EVENT_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
-        # The event carries the labels of the moment it fired, and a re-run
-        # replays that event: a type:* label the review changed since would
-        # read as the old one. Ask for them now, and for the comments, where
-        # the review's last record says which commit it read.
-        run: |
-          if labels=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/labels" --jq '[.[].name] | join(",")') \
-             && gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate > "$RUNNER_TEMP/comments.json"; then
-            echo "labels=$labels" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::Could not read the pull request's labels and comments (the caller's job needs pull-requests: read); the event's labels are used, and a re-run may see a type:* label the review has changed since."
-            echo "labels=$EVENT_LABELS" >> "$GITHUB_OUTPUT"
-            echo '[]' > "$RUNNER_TEMP/comments.json"
-          fi
-
       - name: Check branch, title and commits
         env:
           # Through env, never interpolated into the script: a title is
           # attacker-controlled text.
           BRANCH: ${{ github.head_ref }}
-          TITLE: ${{ github.event.pull_request.title }}
+          TITLE: ${{ steps.live.outputs.title || github.event.pull_request.title }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD_REF: ${{ github.event.pull_request.head.sha }}
           MAX_HEADER: ${{ inputs.max-header }}

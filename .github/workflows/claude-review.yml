@@ -112,7 +112,8 @@ jobs:
     name: Claude review
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     # An edit may wait for its push's review, which itself can take the 30
-    # minutes a review job has: an edit's job gets longer to outlast it.
+    # minutes a review job has: an edit's job gets longer to outlast it, and
+    # only that wait uses the extra 30 (#832).
     timeout-minutes: ${{ github.event.action == 'edited' && 60 || 30 }}
     if: >-
       github.event_name == 'pull_request' &&
@@ -122,9 +123,10 @@ jobs:
     # commit a second apart, and a cancelled run leaves a cancelled check on
     # the commit that blocks the merge even when the other run passed. So an
     # edit runs in a group of its own run: it cancels nothing and nothing
-    # cancels it (it spends nothing: it reuses the verdict on a commit the
-    # review read, and waits for the push's review of one it has not, then
-    # reuses that; with no such review it fails). A push
+    # cancels it (it spends nothing on a commit the review read: it reuses
+    # the verdict; on one it has not, it waits while an older run's review
+    # of it is running, then reuses that, and with none running, the push's
+    # review skipped or cancelled, it reviews the commit itself, #832). A push
     # still cancels the review of the push before it, whose check sits on an
     # older commit and blocks nothing.
     concurrency:
@@ -154,6 +156,8 @@ jobs:
           permission-contents: read
           permission-pull-requests: write
           permission-issues: write
+          # An edit's run reads whether a review of the head is running (#832).
+          permission-checks: read
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -248,6 +252,50 @@ jobs:
           # Labels are read live, not from the event, so `review:full` works on a re-run too.
           FULL_LABEL=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | index("review:full") != null')
 
+          # An edit on a commit the review has no verdict of (#832 C4): it
+          # waits only while an older run's review of that commit is queued
+          # or in progress (a check run of the review job's name on the head,
+          # read with the App token, from a run before this one, so two
+          # edits a second apart do not wait for each other), and reuses
+          # that run's verdict, paying for no second review. With none
+          # running (the push's review was skipped on a draft, or
+          # cancelled), it reviews the commit itself, full or incremental as
+          # a push's run would, within a push's 30 minutes.
+          if [ "$ACTION" = edited ] && [ "$FULL_LABEL" != true ] \
+             && ! { [ "$last" = "$HEAD" ] && [ "$has_verdict" = yes ]; } \
+             && ! { [ -n "$last" ] && [ "$count" -ge "$MAX_AUTO" ] && [ "$has_verdict" = yes ]; }; then
+            # Up to 30 minutes, as long as a push's review job can run,
+            # polled every 15 seconds (#694); the edit's job has 60.
+            polls=0
+            while :; do
+              # shellcheck disable=SC2016 # jq, not shell.
+              if ! running=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD/check-runs" --paginate \
+                   --jq '[.check_runs[] | select((.name == "Claude review" or (.name | endswith(" / Claude review"))) and .status != "completed")
+                          | ((.details_url // "") | capture("/runs/(?<id>[0-9]+)") | .id | tonumber) // 0
+                          | select(. < (env.GITHUB_RUN_ID | tonumber))] | length' | awk '{n += $1} END {print n + 0}'); then
+                echo "::warning::The check runs of ${HEAD:0:7} could not be read; reviewing it here."
+                running=0
+              fi
+              record=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
+                | jq -r --arg bot "$BOT" '.[] | select(.user.login == $bot and (.body | startswith("<!-- dx-review -->"))) | .body' \
+                | grep -oP '<!-- dx-review-record \K.*(?= -->)' | tail -1 || true)
+              printf '%s' "${record:-null}" | jq . > "$RUNNER_TEMP/previous.json" 2>/dev/null || echo null > "$RUNNER_TEMP/previous.json"
+              last=$(jq -r '.sha // empty' "$RUNNER_TEMP/previous.json")
+              count=$(jq -r '.count // 0' "$RUNNER_TEMP/previous.json")
+              has_verdict=$(jq -r 'if .risk and .complexity and (.blocking != null) then "yes" else "no" end' "$RUNNER_TEMP/previous.json")
+              if [ "$last" = "$HEAD" ] && [ "$has_verdict" = yes ]; then break; fi
+              if [ "$running" -eq 0 ]; then
+                echo "No review of ${HEAD:0:7} is running: this edit's run reviews it."
+                break
+              fi
+              if [ "$polls" -ge 120 ]; then
+                echo "::error::A review of ${HEAD:0:7} is still running after 30 minutes; re-run this check once it ends."
+                exit 1
+              fi
+              polls=$((polls + 1))
+              sleep 15
+            done
+          fi
           mode=full; range=""
           if [ "$FULL_LABEL" = true ]; then
             mode=full
@@ -255,31 +303,6 @@ jobs:
             mode=reuse
           elif [ -n "$last" ] && [ "$count" -ge "$MAX_AUTO" ] && [ "$has_verdict" = yes ]; then
             mode=capped
-          elif [ "$ACTION" = edited ]; then
-            # An edit on a commit its push's run is still reviewing: it pays
-            # for no second review. It waits for that run's record of this
-            # commit and reuses its verdict (the edited description is then
-            # compared with the one the review read), and fails when none
-            # comes: a green check without a verdict would replace the push
-            # run's own under the same name.
-            # Up to 50 minutes: longer than a push's review job (30) can run,
-            # polled every 15 seconds (#694).
-            for _ in $(seq 1 200); do
-              sleep 15
-              record=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
-                | jq -r --arg bot "$BOT" '.[] | select(.user.login == $bot and (.body | startswith("<!-- dx-review -->"))) | .body' \
-                | grep -oP '<!-- dx-review-record \K.*(?= -->)' | tail -1 || true)
-              printf '%s' "${record:-null}" | jq . > "$RUNNER_TEMP/previous.json" 2>/dev/null || echo null > "$RUNNER_TEMP/previous.json"
-              if [ "$(jq -r '.sha // empty' "$RUNNER_TEMP/previous.json")" = "$HEAD" ] \
-                 && [ "$(jq -r 'if .risk and .complexity and (.blocking != null) then "yes" else "no" end' "$RUNNER_TEMP/previous.json")" = yes ]; then
-                mode=reuse; break
-              fi
-            done
-            if [ "$mode" != reuse ]; then
-              echo "::error::No review of ${HEAD:0:7} came from its push within 50 minutes; push again, or re-run that review."
-              exit 1
-            fi
-            last=$HEAD; count=$(jq -r '.count // 0' "$RUNNER_TEMP/previous.json")
           elif [ -n "$last" ] && git cat-file -e "$last^{commit}" 2>/dev/null \
                && git merge-base --is-ancestor "$last" "$HEAD" \
                && [ -z "$(git rev-list --merges "$last..$HEAD")" ]; then
