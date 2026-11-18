@@ -1343,6 +1343,29 @@ def sweep_step(pr, issue_labels=(), runs=0, cap=5):
     return "", step["why"]
 
 
+# The autopilot's refusal of an accepted issue for its shape (#699 C2): said
+# once on the issue with this mark, and noted on its board (`shape_refused`)
+# so an edit that makes it pass starts it (issue-triage.yml `edit-start`).
+SHAPE_MARK = "<!-- dx-autopilot-shape -->"
+
+
+def shape_refusal(why):
+    """The comment of a start refused for the issue's shape. Pure."""
+    return (f"{SHAPE_MARK}\n**The autopilot does not start:** {why}.\n\n"
+            "Fix the issue's text (the sections, nothing outside them): an edit that makes it pass starts it, with no label. "
+            "An edit that changes the PRD that was accepted takes the acceptance back, and it needs `accepted` again.\n\n"
+            "🤖 AI-generated · Claude Opus 5.5 (Anthropic)")
+
+
+def edit_starts(step, board):
+    """Whether an edit of an accepted issue starts the autopilot (#699 C2).
+    Pure. `step`: next-step's answer from the issue's state now; `board`: its
+    board's state. Only an issue the autopilot refused for its shape, which
+    next-step now starts from nothing (G1 passes, the seal matches, no Spec,
+    no pull request, nobody holds it): any other edit starts nothing."""
+    return bool((board or {}).get("shape_refused")) and (step or {}).get("action") == "spec" and (step or {}).get("as") == "start"
+
+
 def step_comment(step):
     """One line for the run's summary and the Decisions (#561)."""
     what = step["action"] + (f" ({step['how']})" if step.get("how") else "") + (f" for {step['for']}, on {step['who']}" if step["action"] == "wait" else "")
@@ -3138,6 +3161,10 @@ A class on html.
         {"pr": {**rpr, "dequeued": True, "queue_failed": True}, "round": 4}, {"pr": {**rpr, "record": blk("h")}}, {"pr": {**rpr, "record": blk("h")}, "round": 4},
         {"pr": {**rpr, "record": {"sha": "h", "blocking": False, "findings": []}}}, {"pr": {**rpr, "record": blk("old")}},
         {"pr": {**rpr, "checks_failed": True, "record": blk("old")}}, {"pr": {**rpr, "checks_failed": True}, "round": 4})]
+    c2 = {"issue": {"state": "OPEN", "labels": ["accepted"]}, "lane": "human-issue", "may_start": [True, "ready"], "seal": "match"}
+    check("#699 C2: next-step on an edited accepted issue that passes now starts it, once refused for its shape",
+          (edit_starts(next_step(c2), {"shape_refused": "t"}), edit_starts(next_step(c2), {}), edit_starts(next_step(dict(c2, seal="changed")), {"shape_refused": "t"}),
+           edit_starts(next_step(dict(c2, spec=True)), {"shape_refused": "t"}), shape_refusal("w").startswith(SHAPE_MARK)), (True, False, False, False, True))
     check("#561 C7: every state next-step reads is in the table",
           sorted(set((s["action"], s.get("how") or s.get("for") or s.get("as")) for s in steps7)), sorted(set(w for _, _, w in table)))
     check("#561 C7: every action is the bot's, a wait on a person's decision, or nothing",
@@ -5477,6 +5504,20 @@ def main(argv):
         step = next_step(state if isinstance(state, dict) else {})
         print(step_comment(step), file=sys.stderr)
         print(json.dumps(step))
+        return 0
+    if argv[:1] == ["edit-starts"]:
+        # next-step's answer on stdin, the issue's board in BOARD (JSON):
+        # exit 0 when the edit starts the autopilot (#699 C2), 1 otherwise.
+        try:
+            step, board = json.load(sys.stdin), json.loads(os.environ.get("BOARD") or "{}")
+        except ValueError as err:
+            print(f"edit-starts needs next-step's JSON on stdin and the board in BOARD ({err})", file=sys.stderr)
+            return 64
+        ok = edit_starts(step if isinstance(step, dict) else {}, board if isinstance(board, dict) else {})
+        print("the edit starts it" if ok else "the edit starts nothing: " + str((step or {}).get("why") or "not refused for its shape"))
+        return 0 if ok else 1
+    if argv[:1] == ["shape-refusal"]:
+        print(shape_refusal(os.environ.get("WHY") or "the issue is not ready (G1)"))
         return 0
     if argv[:1] == ["criteria-edit"]:
         # With the key, in prep, before the work's prompt (#561 C3): a

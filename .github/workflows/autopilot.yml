@@ -604,7 +604,22 @@ jobs:
 
           <sub>🤖 Autopilot</sub>" >/dev/null || true
             fi
+            # Refused for its shape (G1) on a start (#699 C2): said on the
+            # issue, and noted on its board (`shape_refused`), so an edit
+            # that makes it pass starts it with no label (issue-triage.yml
+            # `edit-start`).
+            if [ "$rc" -eq 1 ] && [ "$AS" = start ] && [[ "$why" == "the issue is not ready (G1)"* ]]; then
+              WHY="$why" python3 .dx-central/scripts/autopilot.py shape-refusal > "$RUNNER_TEMP/shape.md"
+              gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/shape.md" >/dev/null || true
+              NUMBER="$ISSUE" python3 .dx-central/scripts/receipts.py state set "shape_refused=\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"" >/dev/null \
+                || echo "::warning::#$ISSUE's board: its refusal could not be noted, so an edit will not start it."
+            fi
             echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # It starts: a refusal noted before is spent, so a later edit
+          # starts no second run.
+          if [ "$AS" = start ] && [ -n "$(NUMBER="$ISSUE" python3 .dx-central/scripts/receipts.py state get shape_refused 2>/dev/null | jq -r '. // empty' 2>/dev/null)" ]; then
+            NUMBER="$ISSUE" python3 .dx-central/scripts/receipts.py state set shape_refused= >/dev/null || true
           fi
           # A reproduced bug: the test that failed, its SHA-256 and the
           # branch that holds it, from the sealed PRD (scripts/repro-lane.py);
