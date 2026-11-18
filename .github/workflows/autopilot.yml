@@ -832,8 +832,11 @@ jobs:
             COMMENTS="$RUNNER_TEMP/comments.json" DECIDERS="$RUNNER_TEMP/deciders.txt" SINCE="$since" python3 .dx-central/scripts/autopilot.py settled > "$SETTLED"
           }
           if [ "$MODE" = start ]; then
-            gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments | map({body, createdAt, author: {login: .author.login}})' > "$RUNNER_TEMP/comments.json"
-            settle
+            if gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments | map({body, createdAt, author: {login: .author.login}})' > "$RUNNER_TEMP/comments.json"; then
+              settle
+            else
+              echo "::warning::#$NUMBER's comments could not be read: the Spec reads no answer."
+            fi
           fi
           # The test repository (#563): its Spec is the fixed change's,
           # queued here as the agent would have, and the work writes it.
