@@ -361,7 +361,7 @@ jobs:
           # conversation (#699 C5), as settled threads, so the review does
           # not raise them again.
           if [ -f "$RUNNER_TEMP/settlement-comments.json" ] && grep -q '^def settlements' .dx-central/scripts/autopilot.py; then
-            COMMENTS="$RUNNER_TEMP/settlement-comments.json" SINCE="" BOT="$SLUG[bot]" python3 .dx-central/scripts/autopilot.py settlements \
+            COMMENTS="$RUNNER_TEMP/settlement-comments.json" SINCE="" BOT="${SLUG}[bot]" python3 .dx-central/scripts/autopilot.py settlements \
               | jq -s '.[0] + [.[1][] | {path: null, line: null, finding: .finding, replies: [{author: "settled by someone who decides", body: .answer}]}]' "$RUNNER_TEMP/settled-threads.json" - \
               > "$RUNNER_TEMP/settled-all.json" && mv "$RUNNER_TEMP/settled-all.json" "$RUNNER_TEMP/settled-threads.json"
           fi

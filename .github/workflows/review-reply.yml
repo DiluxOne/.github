@@ -723,7 +723,8 @@ jobs:
         run: |
           set -euo pipefail
           issue=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // empty')
-          if ! NUMBER="${issue:-$PR}" PR="$PR" python3 .dx-central/scripts/deciders.py may answer "$LOGIN"; then
+          number=${issue:-$PR}
+          if ! NUMBER="$number" PR="$PR" python3 .dx-central/scripts/deciders.py may answer "$LOGIN"; then
             echo "$LOGIN does not decide here: the review is not run again."; exit 0
           fi
           HEAD=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid)
