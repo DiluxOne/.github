@@ -1102,19 +1102,22 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
     sid, own = s["id"], branch_of(s)
     left = [min(minutes, limit(s)) * 60]
 
-    def look(on, want=None, events=False):
+    def look(on, want=None, closes=None):
         """`on` observed, a transient `gh` error (#698: a rate limit, a
         5xx) retried after its back-off within the scenario's time, never a
         failure at once: (what was seen, None), or (None, why) once its time
         ran out with `gh` still failing. The runs on a pull request's head
-        only when `want` reads them (`heads`, #699), and the label events
-        with `events`."""
+        only when `want` reads them (`heads`, #699), and its label events,
+        and its pull request's, when `want` reads them (`EVENT_KEYS`) and
+        the rest of it holds."""
         tries = 0
+        rest = {k: v for k, v in (want or {}).items() if k not in EVENT_KEYS}
         while True:
             try:
                 seen = observe(repo, on[0], on[1], run, heads(want))
-                if events:
-                    # Its own, and an issue's pull request's too.
+                if closes:
+                    seen["closes"] = closes
+                if rest != (want or {}) and not holds(rest, seen):
                     pull = (seen.get("pull") or {}).get("number")
                     seen["label_events"] = label_events(repo, [on[1]] + ([str(pull)] if on[0] == "issue" and pull else []), run)
                 return seen, None
@@ -1133,24 +1136,12 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
         holds ([]), can no longer hold (#694: `hopeless`), or the
         scenario's time is up: (what was seen, why not)."""
         idle, last = False, {}
-        rest = {k: v for k, v in expect.items() if k not in EVENT_KEYS}
         while True:
-            seen, failing = look(on, expect)
+            seen, failing = look(on, expect, closes)
             if failing:
                 return last, [failing]
             last = seen
-            if closes:
-                seen["closes"] = closes
             why = holds(expect, seen)
-            if rest != expect and not holds(rest, seen):
-                # #699: the label events, read once the rest holds.
-                seen, failing = look(on, expect, True)
-                if failing:
-                    return last, [failing]
-                last = seen
-                if closes:
-                    seen["closes"] = closes
-                why = holds(expect, seen)
             if not why:
                 return seen, []
             lost = hopeless(expect, seen, idle and seen.get("idle"))
