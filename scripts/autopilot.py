@@ -1366,6 +1366,28 @@ def edit_starts(step, board):
     return bool((board or {}).get("shape_refused")) and (step or {}).get("action") == "spec" and (step or {}).get("as") == "start"
 
 
+# Whom a pull request waits on, as its board says (scripts/waiting.py
+# AUTOPILOT, receipts.py waits): the autopilot.
+WAITS_ON_AUTOPILOT = "the autopilot"
+
+
+def hint_of(labels, author_is_bot, waits, ended):
+    """What a comment of someone who decides is on an autopilot pull request
+    (#699 C4, review-reply.yml): "stop", a hint after its stop or silent end
+    (#561: `needs-human` comes off); "waits", a hint on one whose board
+    says it waits on the autopilot, stopped or not; "" otherwise, a reply to
+    the review. Pure. `waits`: its board's `waits`; `ended`: run-end's
+    answer, read under `needs-human`."""
+    labels = list(labels or [])
+    if "autopilot" not in labels or not author_is_bot:
+        return ""
+    if "needs-human" in labels:
+        return "stop" if ended in ("stop", "silent") else ""
+    if isinstance(waits, dict) and waits.get("role") == WAITS_ON_AUTOPILOT:
+        return "waits"
+    return ""
+
+
 def step_comment(step):
     """One line for the run's summary and the Decisions (#561)."""
     what = step["action"] + (f" ({step['how']})" if step.get("how") else "") + (f" for {step['for']}, on {step['who']}" if step["action"] == "wait" else "")
@@ -3208,6 +3230,10 @@ A class on html.
            "title \"<the new title>\"" in prompt_fix("o/r", "8", 1, 3, checks=True, conventions="title\tx\ncommit\ty\n"),
            "PR=8 " in prompt_fix("o/r", "8", 1, 3, checks=True, conventions="title\tx\n"), "reword" in conventions_note("commit\ty\n")),
           (True, False, False, "", True, True, True))
+    check("#699 C4: a decider's comment on an autopilot pull request that waits on the autopilot is a hint, stopped or not",
+          [hint_of(["autopilot"], True, {"role": WAITS_ON_AUTOPILOT}, ""), hint_of(["autopilot", "needs-human"], True, None, "stop"),
+           hint_of(["autopilot"], True, {"role": "the maintainer"}, ""), hint_of(["autopilot", "needs-human"], True, {"role": WAITS_ON_AUTOPILOT}, "cap"),
+           hint_of(["autopilot"], False, {"role": WAITS_ON_AUTOPILOT}, "")], ["waits", "stop", "", "", ""])
     c2 = {"issue": {"state": "OPEN", "labels": ["accepted"]}, "lane": "human-issue", "may_start": [True, "ready"], "seal": "match"}
     check("#699 C2: next-step on an edited accepted issue that passes now starts it, once refused for its shape",
           (edit_starts(next_step(c2), {"shape_refused": "t"}), edit_starts(next_step(c2), {}), edit_starts(next_step(dict(c2, seal="changed")), {"shape_refused": "t"}),
@@ -5572,6 +5598,15 @@ def main(argv):
         step = next_step(state if isinstance(state, dict) else {})
         print(step_comment(step), file=sys.stderr)
         print(json.dumps(step))
+        return 0
+    if argv[:1] == ["hint"]:
+        # #699 C4: LABELS (comma-separated), AUTHOR_IS_BOT, WAITS (the
+        # board's, JSON), ENDED (run-end's): prints stop, waits or nothing.
+        try:
+            waits = json.loads(os.environ.get("WAITS") or "null")
+        except ValueError:
+            waits = None
+        print(hint_of([l for l in (os.environ.get("LABELS") or "").split(",") if l], os.environ.get("AUTHOR_IS_BOT") == "true", waits, os.environ.get("ENDED", "")))
         return 0
     if argv[:1] == ["edit-starts"]:
         # next-step's answer on stdin, the issue's board in BOARD (JSON):

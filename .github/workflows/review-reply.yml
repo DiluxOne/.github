@@ -94,7 +94,11 @@ jobs:
   # `needs-human` off and brings it back, a run that counts. A maintainer
   # who takes it over removes `autopilot` first, or adds `needs-human`
   # themselves; a stop for the runs or rounds cap ends in a comment of its
-  # own (`dx-autopilot-cap`), and stays with a person.
+  # own (`dx-autopilot-cap`), and stays with a person. A hint needs no stop
+  # (#699 C4): on an autopilot pull request dilux-bot opened whose board
+  # says it waits on the autopilot (its `waits`, scripts/waiting.py), a
+  # comment of someone who decides brings it back too, with no
+  # `needs-human` to take off (autopilot.py hint).
   answer:
     name: The autopilot's answer
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
@@ -169,6 +173,7 @@ jobs:
           [ "$label_waits" != true ] || waiting=true
           stopped=""
           pr=""
+          hint=""
           nothing() {
             if [ "$edited" = true ] && NUMBER="$issue" PR="$pr" python3 .dx-central/scripts/deciders.py may answer "$LOGIN" >/dev/null; then
               echo "::error::#$issue's board was edited by hand, so whether the autopilot asks cannot be read: restore the bot's last board (its comment's history has it), then answer again."
@@ -187,20 +192,35 @@ jobs:
             fi
             if [ -n "$pr" ]; then kind="pr"; stopped=$pr; else kind="issue"; stopped=$issue; fi
             labels=$(gh "$kind" view "$stopped" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | join(",")')
-            case ",$labels," in *,needs-human,*) ;; *) nothing ;; esac
-            if [ "$kind" = pr ]; then case ",$labels," in *,autopilot,*) ;; *) nothing ;; esac; fi
             # How its last run ended with a person (#696, autopilot.py
             # run-end): found past every other comment of the bot's (a G2
             # "Acceptance withdrawn", its board, its mention, the review's
             # summary, a reply, #647, #832), so none hides the stop. A cap
-            # end stays with a person. It holds only while `needs-human` was
-            # last added by dilux-bot: a maintainer who added it to take over
-            # keeps it.
-            ended=$(gh api "repos/$GITHUB_REPOSITORY/issues/$stopped/comments" --paginate --jq '.[] | {body, createdAt: .created_at, author: {login: .user.login}}' \
-              | python3 .dx-central/scripts/autopilot.py run-end)
-            case $ended in stop|silent) ;; *) nothing ;; esac
-            by=$(gh api "repos/$GITHUB_REPOSITORY/issues/$stopped/events" --paginate --jq '.[] | select(.event == "labeled" and .label.name == "needs-human") | .actor.login' | tail -n 1)
-            [ "$by" = "$DX_BOT_LOGIN" ] || { echo "needs-human was added by ${by:-someone unknown}, not by the autopilot: it stays with a person."; nothing; }
+            # end stays with a person. Read only under `needs-human`.
+            ended=""
+            case ",$labels," in *,needs-human,*)
+              ended=$(gh api "repos/$GITHUB_REPOSITORY/issues/$stopped/comments" --paginate --jq '.[] | {body, createdAt: .created_at, author: {login: .user.login}}' \
+                | python3 .dx-central/scripts/autopilot.py run-end) ;;
+            esac
+            # A hint (#699 C4, autopilot.py hint): after a stop, or on an
+            # autopilot pull request whose board says it waits on the
+            # autopilot (ITEM=pr, its `waits`, and dilux-bot its author),
+            # stopped or not. Anything else is a reply to the review.
+            author_is_bot=true; waits=null
+            if [ "$kind" = pr ] && [ -z "$ended" ]; then
+              author=$(gh pr view "$stopped" --repo "$GITHUB_REPOSITORY" --json author --jq .author.login)
+              case $author in "$DX_BOT_LOGIN"|"${DX_BOT_LOGIN%\[bot\]}"|app/"${DX_BOT_LOGIN%\[bot\]}") ;; *) author_is_bot=false ;; esac
+              waits=$(ITEM=pr NUMBER="$stopped" python3 .dx-central/scripts/receipts.py state get waits 2>/dev/null) || waits=null
+            fi
+            [ "$kind" = pr ] || labels="autopilot,$labels"
+            hint=$(LABELS="$labels" AUTHOR_IS_BOT="$author_is_bot" WAITS="$waits" ENDED="$ended" python3 .dx-central/scripts/autopilot.py hint)
+            case $hint in stop|waits) ;; *) nothing ;; esac
+            if [ "$hint" = stop ]; then
+              # It holds only while `needs-human` was last added by
+              # dilux-bot: a maintainer who added it to take over keeps it.
+              by=$(gh api "repos/$GITHUB_REPOSITORY/issues/$stopped/events" --paginate --jq '.[] | select(.event == "labeled" and .label.name == "needs-human") | .actor.login' | tail -n 1)
+              [ "$by" = "$DX_BOT_LOGIN" ] || { echo "needs-human was added by ${by:-someone unknown}, not by the autopilot: it stays with a person."; nothing; }
+            fi
           fi
           # Only those `who-decides` allows answer (#588,
           # scripts/deciders.py); anyone else, the issue's author included,
@@ -217,11 +237,14 @@ jobs:
           fi
           gh label create "autopilot:continue" --repo "$GITHUB_REPOSITORY" --color 1D76DB --force --description "On an issue: the autopilot continues its draft pull request, or starts it" >/dev/null 2>&1 || true
           if [ -n "$stopped" ]; then
-            # needs-human first: the continue's run stays out of a pull
-            # request that still carries it.
-            gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/$stopped/labels/needs-human" >/dev/null
+            # needs-human first, after a stop: the continue's run stays out
+            # of a pull request that still carries it. A hint on one that
+            # waits on the autopilot (#699 C4) has none to take off.
+            if [ "$hint" = stop ]; then
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/$stopped/labels/needs-human" >/dev/null
+            fi
             gh issue edit "$issue" --repo "$GITHUB_REPOSITORY" --add-label "autopilot:continue" >/dev/null
-            echo "$LOGIN answered the stop; the autopilot goes on with #$issue."
+            echo "$LOGIN gave a hint ($hint); the autopilot goes on with #$issue."
             exit 0
           fi
           # The run the answer starts does not count towards the autopilot's
