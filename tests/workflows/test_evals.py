@@ -227,3 +227,60 @@ def test_c4_testing_and_quality_says_which_paths_run_which_set_and_how_a_case_is
 def test_c4_no_page_links_the_removed_review_eval_yml():
     for path in [*ROOT.glob("*.md"), *ROOT.glob("docs/**/*.md"), *ROOT.glob("kinds/**/*.md")]:
         assert "workflows/review-eval.yml" not in path.read_text(encoding="utf-8"), path
+
+
+# The autopilot's replay against real git trees: the agent's tree is one
+# commit of its own, the merged pull request comes from the real history.
+
+POLICY = """test-first:
+  setup: []
+  tests:
+    - paths: ["tests/**/test_*.py"]
+      way: py
+  not-tests: []
+repro:
+  ways:
+    py:
+      layer: logic
+      test: tests/repro/test_issue_{n}.py
+      run: python3 -m pytest {test}
+      minutes: 2
+"""
+
+
+def git_in(path, *args):
+    import subprocess
+    return subprocess.run(["git", *args], cwd=path, check=True, capture_output=True, text=True).stdout.strip()
+
+
+def commit_in(path, files, message):
+    for name, text in files.items():
+        (path / name).parent.mkdir(parents=True, exist_ok=True)
+        (path / name).write_text(text, encoding="utf-8")
+    git_in(path, "add", "-A")
+    git_in(path, "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", message)
+    return git_in(path, "rev-parse", "HEAD")
+
+
+def test_c2_the_autopilot_replay_plans_the_merged_tests_from_the_real_base(tmp_path, monkeypatch):
+    monkeypatch.setenv("REPO", "Acme/none-such")
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    files = {".github/review-policy.yml": POLICY, "src/calc.py": "A = 1\n"}
+    real = tmp_path / "real"
+    real.mkdir()
+    git_in(real, "init", "-q", ".")
+    base = commit_in(real, files, "chore: base")
+    merge = commit_in(real, {"src/calc.py": "A = 2\n", "tests/unit/test_calc.py": "def test_a():\n    pass\n"}, "feat: a (#9)")
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    git_in(tree, "init", "-q", ".")
+    commit_in(tree, files, "the base, as one commit")
+    head = commit_in(tree, {"src/calc.py": "A = 2\n"}, "chore: what the agent left")
+    ev = evals()
+    tf = ev._load("test_first", "test-first.py")
+    ran = []
+    monkeypatch.setattr(tf, "run_one", lambda root, central, entry, ref, test_ref, out: ran.append((entry["test"], ref, test_ref)) or "passed")
+    case = {"id": "Acme/none-such#9:autopilot", "repo": "Acme/none-such", "issue": 9, "base": base, "merge": merge, "tests": ["tests/unit/test_calc.py"]}
+    got = ev.merged_tests(str(tree), case, str(real), head, str(tmp_path / "out"))
+    assert got == {"tests/unit/test_calc.py": "passed"}
+    assert ran == [("tests/unit/test_calc.py", head, merge)]

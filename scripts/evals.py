@@ -584,7 +584,7 @@ def replay_autopilot(case, work):
     issue = issue_of(case) if got else None
     if not issue:
         return None
-    tree, base = got
+    tree = got[0]
     ap = _load("autopilot", "autopilot.py")
     body = issue.get("body") or ""
     prd = ap.schema.part_text(body, "prd")
@@ -605,11 +605,20 @@ def replay_autopilot(case, work):
     head = commit_all(tree, "chore: what the agent left")
     # Only now the merged commit comes in, for its tests: the agent is done.
     clone = clone_of(case, work, case["merge"])
-    if not clone or git(tree, "fetch", "-q", clone, case["merge"]).returncode != 0:
+    if not clone:
         return None
-    out = os.path.join(work, "out", case["id"].replace("/", "_"))
-    # The merged pull request's tests, as merged, against the agent's tree.
-    return {t: run_test(tree, case, base, t, head, case["merge"], os.path.join(out, str(i)), "feat: replay") for i, t in enumerate(case["tests"])}
+    return merged_tests(tree, case, clone, head, os.path.join(work, "out", case["id"].replace("/", "_")))
+
+
+def merged_tests(tree, case, clone, head, out):
+    """The merged pull request's tests, as merged, against the agent's tree
+    (HEAD): {test: outcome}, or None when the merge cannot be fetched. The
+    plan diffs the case's real base with the merge, both of the fetched
+    history: the tree's own one-commit base shares no commit with it, and
+    `base...merge` needs a merge base (#830)."""
+    if git(tree, "fetch", "-q", clone, case["merge"]).returncode != 0:
+        return None
+    return {t: run_test(tree, case, case["base"], t, head, case["merge"], os.path.join(out, str(i)), "feat: replay") for i, t in enumerate(case["tests"])}
 
 
 def replay_review(case, work):
@@ -872,7 +881,14 @@ def self_test():
             os.environ["PATH"] = old_path
     preload()
     check("preload: the grades' helpers are loaded once, before any agent", (set(_LOADED) >= set(HELPERS), _load("issue_schema", "issue-schema.py") is _LOADED["issue_schema"]), (True, True))
-    check("claude_args: the autopilot's budgets are known", (autopilot_args("spec", "3")[:2], "--max-turns" in autopilot_args("work", "20")), (["--model", autopilot_args("spec", "3")[1]], True))
+    spec_args, work_args = autopilot_args("spec", "3"), autopilot_args("work", "20")
+
+    def flag(args, name):
+        return args[args.index(name) + 1] if name in args else None
+    check("claude_args: the autopilot's budgets are known",
+          (flag(spec_args, "--max-budget-usd"), flag(work_args, "--max-budget-usd"), (flag(spec_args, "--model") or "").startswith("claude-"),
+           (flag(work_args, "--model") or "").startswith("claude-"), "--max-turns" in work_args),
+          ("3", "20", True, True, True))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
