@@ -48,6 +48,8 @@ def answer(tmp_path, comments, pr=False):
         "  *closedByPullRequestsReferences*) ;;\n"
         "  'pr view 9 '*'--json labels'*) echo autopilot,needs-human ;;\n"
         "  *'--json labels'*) echo needs-human,bug ;;\n"
+        # #832: needs-human was last added by dilux-bot.
+        f"  *'/events'*) echo '{BOT}' ;;\n"
         "  *'/comments'*)\n"
         '    while [ $# -gt 0 ]; do [ "$1" = --jq ] && { shift; q=$1; }; shift; done\n'
         f'    jq -r "$q" "{tmp_path / "comments.json"}" ;;\n'
@@ -95,7 +97,9 @@ def test_the_board_and_a_g2_withdrawal_do_not_hide_the_stop(tmp_path):
 
 
 def test_no_stop_no_continue(tmp_path):
-    # No stop of dilux-bot's, or a cap end after it: nothing changes.
+    # No stop of dilux-bot's, or a cap end after it: nothing changes. (A
+    # stop with a later comment of the bot's after it still holds, #832:
+    # tests/workflows/test_review_reply_stop_answer.py.)
     for i, comments in enumerate((
             [(BOT, "<!-- dx-autopilot-stop -->\nStopped."), (BOT, "<!-- dx-autopilot-cap -->\nThe autopilot spent its 3 rounds."), (BOT, MENTION)],
             [(BOT, "<!-- dx-board -->\nThe board"), (BOT, "A question")],

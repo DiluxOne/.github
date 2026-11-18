@@ -30,7 +30,9 @@ name: Release lane
 # itself once its checks pass (never by auto-merge, which never merges a
 # CHANGELOG.md-only pull request, `risk:high`, #798), tags vX.Y.Z at its merge
 # commit, moves `v7` (lightweight) and publishes the Release (or edits it
-# when engine-release.yml, on the tag's push, made it first). The candidate's
+# when engine-release.yml, on the tag's push, made it first), then closes
+# the lane's open reports of an earlier candidate's failure, naming the
+# version released (a close that fails is a warning, #832). The candidate's
 # token has `workflows`: its commit rewrites workflow files, and it makes
 # that commit through the API (scripts/api-commit.py), so GitHub signs it,
 # as the organisation's ruleset requires on every branch; so is the release
