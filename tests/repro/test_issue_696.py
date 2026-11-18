@@ -77,3 +77,16 @@ def test_a_scenario_plays_the_stop_the_edit_the_answer_and_the_new_acceptance():
     assert verbs.index("edit") < verbs.index("comment") < len(verbs) - 1 - verbs[::-1].index("label")
     assert {"needs-human", "autopilot:continue"} <= set(s["expect"]["absent"])
     assert s["expect"]["count"] == {"<!-- dx-autopilot-stop -->": 1}
+
+
+def test_every_path_and_setting_of_the_model_names_a_scenario_that_exists():
+    spec = importlib.util.spec_from_file_location("release_scenarios_696", ROOT / "scripts" / "release-scenarios.py")
+    rs = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rs)
+    paths = getattr(rs, "paths", None)
+    assert paths is not None, "no table maps the paths docs/model.md describes to the scenarios that play them"
+    doc = ROOT / "docs/paths.md"
+    assert doc.exists(), "docs/ has no table of the paths"
+    ids = {s["id"] for s in yaml.safe_load((ROOT / "tests/release/scenarios.yml").read_text(encoding="utf-8"))["scenarios"]}
+    assert paths(doc.read_text(encoding="utf-8"), ids) == []
+    assert paths("| Path or setting | Scenarios |\n| --- | --- |\n| A stop answered | `no-such-scenario` |\n", ids) != []

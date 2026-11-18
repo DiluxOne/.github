@@ -74,7 +74,10 @@ after GitHub's back-off within the scenario's limit, then named.
         `risk:<level>` label no path it changes gets as its floor for kind
         engine-test, the organisation's patterns and the kind's
         surface.yml `high-risk` matched as scripts/policy.py matches them,
-        `risk_problems`).
+        `risk_problems`; #696: a path docs/model.md describes, or a
+        setting that changes one, with no row in docs/paths.md, a row
+        that names no scenario, or one that names a scenario that is not
+        here, `paths`).
         Every other pair a shipped caller wires is held to the
         engine statically, by scripts/caller-contract.py check; and
         what is wrong with the groups (`partition`): a scenario in no
@@ -2080,6 +2083,51 @@ def lane_problems(lane):
     return []
 
 
+# The table of paths (#696): every path docs/model.md describes, and every
+# setting that changes one, names the scenarios that play it.
+PATHS_DOC = os.path.join("docs", "paths.md")
+REQUIRED_PATHS = (
+    # The paths.
+    "A person's bug to its merge", "A reproduced bug merged by policy", "A feature accepted and built", "A claim and its release",
+    "A stop answered", "An edit after acceptance and the new acceptance", "The release and its watch",
+    # The settings that change them.
+    "Acceptance by policy", "`who-decides`", "A claim", "Merge on its own or by a person", "Its `ceiling`")
+
+
+def paths(table_text, scenario_ids, required=REQUIRED_PATHS):
+    """What is wrong with the table of paths (#696, docs/paths.md): a row
+    of `required` it lacks, a row that names no scenario (its cell, the
+    ids in backticks), and an id it names that is no scenario of
+    `scenario_ids`. [] when it all holds. Pure."""
+    out, rows = [], {}
+    for line in (table_text or "").splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")] if line.strip().startswith("|") else []
+        if len(cells) < 2 or re.fullmatch(r"[-: ]+", cells[0]) or cells[0] == "Path or setting":
+            continue
+        rows[cells[0]] = re.findall(r"`([a-z0-9-]+)`", cells[1])
+    for name in required:
+        if name not in rows:
+            out.append(f"{PATHS_DOC} has no row for {name}")
+    for name, ids in rows.items():
+        if not ids:
+            out.append(f"{PATHS_DOC}: {name} names no scenario")
+        for i in ids:
+            if i not in scenario_ids:
+                out.append(f"{PATHS_DOC}: {name} names {i}, which is no scenario of {SCENARIOS}")
+    return out
+
+
+def paths_problems(conf, root=ROOT):
+    """`paths` of the repository's table against its scenarios; one table
+    that cannot be read is named."""
+    try:
+        with open(os.path.join(root, PATHS_DOC), encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return [f"{PATHS_DOC} cannot be read: every path of docs/model.md names its scenarios there"]
+    return paths(text, {s.get("id") for s in conf.get("scenarios") or []})
+
+
 def central_of():
     sys.path.insert(0, HERE)
     import org
@@ -2092,7 +2140,8 @@ def problems(conf, root=ROOT):
     with the groups (`partition`), with the lane's `play` job
     (`lane_problems`, #707), and with the test repository's pipeline
     (`pipeline_problems`, #748), and every risk label the paths cannot
-    give (`risk_problems`, #764)."""
+    give (`risk_problems`, #764), and every path or setting of the table of
+    paths that names no scenario that exists (`paths`, #696)."""
     pack = test_pack(root)
     scenarios = conf.get("scenarios") or []
     return (coverage(scenarios, played(root, pack) | transitions(root), conf.get("statically") or {})
@@ -2104,6 +2153,7 @@ def problems(conf, root=ROOT):
             + timing(scenarios)
             + autopilot_problems(scenarios)
             + risk_problems(scenarios, *risk_patterns(root))
+            + paths_problems(conf, root)
             + fixture_problems(conf, engine_post(root).issue, engine_post(root).pull, engine_post(root).release,
                                form_required(load_yaml(os.path.join(root, BUG_FORM)))))
 
@@ -2444,6 +2494,32 @@ def self_test():
            (c1.get("expect") or {}).get("count"), {"needs-human", "autopilot:continue"} <= set((c1.get("expect") or {}).get("absent") or []),
            "the fixed change asks first" in (real.get("bodies") or {}).get(c1.get("opens", {}).get("issue", {}).get("body"), "")),
           (["until", "comment", "label"], 2, True, {stop696: 1}, True, True))
+    # #696 C2: the table of paths (docs/paths.md) names, for every path
+    # docs/model.md describes and every setting that changes it, scenarios
+    # that exist.
+    ids696 = {s["id"] for s in real["scenarios"]}
+    with open(os.path.join(ROOT, PATHS_DOC), encoding="utf-8") as fh:
+        doc696 = fh.read()
+    check("#696 C2 paths: docs/paths.md against tests/release/scenarios.yml: every path and setting has a row, and every row names scenarios that exist",
+          paths(doc696, ids696), [])
+    rows696 = "| Path or setting | Scenarios |\n| --- | --- |\n" + "".join(f"| {p} | `accepted-spec` |\n" for p in REQUIRED_PATHS)
+    check("#696 C2 paths: a table with every row, each naming a scenario, holds", paths(rows696, {"accepted-spec"}), [])
+    missing696 = rows696.replace(f"| {REQUIRED_PATHS[0]} | `accepted-spec` |\n", "")
+    check("#696 C2 paths fixture: a missing row is named", paths(missing696, {"accepted-spec"}), [f"{PATHS_DOC} has no row for {REQUIRED_PATHS[0]}"])
+    unknown696 = rows696.replace(f"| {REQUIRED_PATHS[1]} | `accepted-spec` |", f"| {REQUIRED_PATHS[1]} | `accepted-spec`, `no-such-scenario` |")
+    check("#696 C2 paths fixture: an unknown scenario is named", paths(unknown696, {"accepted-spec"}),
+          [f"{PATHS_DOC}: {REQUIRED_PATHS[1]} names no-such-scenario, which is no scenario of {SCENARIOS}"])
+    empty696 = rows696.replace(f"| {REQUIRED_PATHS[2]} | `accepted-spec` |", f"| {REQUIRED_PATHS[2]} |  |")
+    check("#696 C2 paths fixture: an empty cell is named", paths(empty696, {"accepted-spec"}), [f"{PATHS_DOC}: {REQUIRED_PATHS[2]} names no scenario"])
+    check("#696 C2 paths: the required rows are docs/model.md's paths and the settings that change them",
+          {"A person's bug to its merge", "A reproduced bug merged by policy", "A feature accepted and built", "A claim and its release", "A stop answered",
+           "An edit after acceptance and the new acceptance", "The release and its watch", "Acceptance by policy", "`who-decides`", "A claim",
+           "Merge on its own or by a person", "Its `ceiling`"} == set(REQUIRED_PATHS), True)
+    with tempfile.TemporaryDirectory() as root696:
+        os.makedirs(os.path.join(root696, "docs"))
+        open(os.path.join(root696, PATHS_DOC), "w").write(missing696)
+        check("#696 C2 coverage reads the table: a row missing there fails `coverage`", paths_problems({"scenarios": [{"id": "accepted-spec"}]}, root696),
+              [f"{PATHS_DOC} has no row for {REQUIRED_PATHS[0]}"])
     calls = []
 
     def fake(*args, input=None):
