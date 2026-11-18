@@ -19,7 +19,7 @@
                              unticked criteria, one commit each (a new issue,
                              or a run that continues one)
   autopilot.py prompt fix    the agent's task for a review that blocked
-  autopilot.py fixed [spec|work]
+  autopilot.py fixed [spec|work|title]
                              the test repository's fixed change (#563, its
                              pack's `autopilot: fixed-change`): its file's
                              pattern, or nothing where a model is called;
@@ -29,7 +29,10 @@
                              (#696: `spec` stops instead, as a model asking
                              would, on a PRD with the pack's
                              `fixed-change.ask` phrase and no answer in
-                             SETTLED)
+                             SETTLED); `title` writes the draft's title
+                             (ISSUE_TYPE, ISSUE_TITLE) for a fix round,
+                             which answers a title's conventions error
+                             with it (#699)
   autopilot.py run-end       how the last run ended with a person (#696):
                              `stop`, `silent`, `cap` or nothing, from the
                              comments on stdin (JSON), past every other
@@ -825,6 +828,17 @@ def title_type(title, kind):
     return (f"{t}{scope}{bang}" if fits else f"{kind}{scope}"), subject
 
 
+def draft_title(issue_type, title):
+    """The draft's title (#561 C6): the issue's, as a Conventional Commit
+    of the type its Type allows (`title_type`), 72 characters at most.
+    Pure."""
+    kind = TYPES.get((issue_type or "").strip().lower(), "chore")
+    prefix, subject = title_type(title, kind)
+    subject = subject[:1].lower() + subject[1:]
+    head = f"{prefix}: {subject}"
+    return head[:71].rstrip() + "…" if len(head) > 72 else head
+
+
 def draft(number, issue_type, title, body):
     """The branch, title and body of the draft pull request, before any code.
     ValueError when the issue yields no criterion: a draft with an empty
@@ -832,12 +846,8 @@ def draft(number, issue_type, title, body):
     if not criteria(body):
         raise ValueError(NO_CRITERIA)
     kind = TYPES.get((issue_type or "").strip().lower(), "chore")
-    prefix, subject = title_type(title, kind)
-    subject = subject[:1].lower() + subject[1:]
-    title = subject
-    head = f"{prefix}: {subject}"
-    if len(head) > 72:
-        head = head[:71].rstrip() + "…"
+    head = draft_title(issue_type, title)
+    title = title_type(title, kind)[1]
     approach = dict(schema.parse(body)[0]).get("Spec: approach", "").strip()
     text = f"""## 📝 What changes
 
@@ -1170,12 +1180,29 @@ def fixed_spec(pattern, number, ids, scenario=""):
             "### Spec: architecture\n\nUnder the fixed change's directory, as every scenario's.\n")
 
 
+# The draft's title, which prep writes for the fixed change's fix round
+# (#699 C3: `fixed title`).
+FIXED_TITLE = "fixed-title.txt"
+
+
+def read_text(path):
+    """The text of the file at `path`, or "" when there is none."""
+    return open(path, encoding="utf-8").read() if path and os.path.exists(path) else ""
+
+
 def fixed_work(io, pattern, number, mode):
     """The work of the fixed change, in the work job's tree, through the
     agent's own helpers (the outbox): each unticked criterion's file
     written, committed and ticked, then the run finished ready. A review
     round has no fixed answer: it stops. Returns the exit code."""
     if mode == "fix":
+        # #699 C3: a failed conventions check of the title alone, which the
+        # fixed change answers with the draft's own title (prep's
+        # FIXED_TITLE); any other round has no fixed answer.
+        rows = [l.split("\t", 1)[0] for l in read_text(os.path.join(io, CONVENTIONS_LOG)).splitlines() if l.strip()]
+        title = read_text(os.path.join(io, FIXED_TITLE)).strip()
+        if rows and set(rows) == {"title"} and title_ok(title):
+            return agent_helper(["title", title], io)
         return agent_helper(["finish", "stop", "The test repository's fixed change does not answer a review: a person reads it."], io)
     pr_file = os.path.join(io, "pr.md")
     pr_body = open(pr_file, encoding="utf-8").read() if os.path.exists(pr_file) else ""
@@ -3268,6 +3295,9 @@ A class on html.
            "title \"<the new title>\"" in prompt_fix("o/r", "8", 1, 3, checks=True, conventions="title\tx\ncommit\ty\n"),
            "PR=8 " in prompt_fix("o/r", "8", 1, 3, checks=True, conventions="title\tx\n"), "reword" in conventions_note("commit\ty\n")),
           (True, False, False, "", True, True, True))
+    check("#699 C3: the draft's title, which the fixed change gives back, is the one draft() opens with",
+          (draft_title("Feature", "feat: a greeting [conventions-fix]"), draft_title("Feature", "a greeting"), draft("7", "Bug", "Fix: The thing", "### Acceptance criteria\n\n- C1: Given a, when b, then c.\n")["title"]),
+          ("feat: a greeting [conventions-fix]", "feat: a greeting", "fix: the thing"))
     check("#699 C4: a decider's comment on an autopilot pull request that waits on the autopilot is a hint, stopped or not",
           [hint_of(["autopilot"], True, {"role": WAITS_ON_AUTOPILOT}, ""), hint_of(["autopilot", "needs-human"], True, None, "stop"),
            hint_of(["autopilot"], True, {"role": "the maintainer"}, ""), hint_of(["autopilot", "needs-human"], True, {"role": WAITS_ON_AUTOPILOT}, "cap"),
@@ -3383,6 +3413,20 @@ A class on html.
             with _cl563.redirect_stdout(_io563.StringIO()):
                 fixed_work(io563, "scenarios/{n}-{id}.md", 12, "fix")
             check("#563: a review round on the fixed change stops for a person", [i["kind"] for i in read_outbox(os.path.join(io563, OUTBOX))[0]], ["stop"])
+            # #699 C3/C7: a failed conventions check of the title alone gets
+            # the draft's title back; one with a commit's error still stops.
+            got699 = []
+            for errors, title in (("title\tno type\n", "feat: a greeting [conventions-fix]\n"), ("title\tx\ncommit\ty\n", "feat: a greeting\n"), ("title\tx\n", "")):
+                open(os.path.join(io563, OUTBOX), "w").close()
+                open(os.path.join(io563, CONVENTIONS_LOG), "w").write(errors)
+                open(os.path.join(io563, FIXED_TITLE), "w").write(title)
+                with _cl563.redirect_stdout(_io563.StringIO()):
+                    fixed_work(io563, "scenarios/{n}-{id}.md", 12, "fix")
+                got699.append([(i["kind"], i.get("text", "")[:40] if i["kind"] == "title" else "") for i in read_outbox(os.path.join(io563, OUTBOX))[0]])
+            for name in (CONVENTIONS_LOG, FIXED_TITLE):
+                os.remove(os.path.join(io563, name))
+            check("#699 C3: the fixed change's fix round of a title's conventions error sets the draft's title; with a commit's error, or no title, it stops",
+                  got699, [[("title", "feat: a greeting [conventions-fix]")], [("stop", "")], [("stop", "")]])
         finally:
             os.chdir(here563)
             os.environ.pop("DX_BASE", None)
@@ -5066,6 +5110,10 @@ def _apply_intents(intents, repo, number, pr):
                 continue
             gh("pr", "edit", str(pr), "--repo", repo, "--title", title)
             print("The title is set.")
+            # #699 C3: a round that only retitled still did its work (`end`).
+            if os.environ.get("GITHUB_OUTPUT"):
+                with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+                    fh.write("retitled=true\n")
             continue
         argv = {"decision": ["decision", text], "tick": ["tick", it.get("id", "")], "ask": ["finish", "ask", text],
                 "stop": ["finish", "stop", text]}.get(kind)
@@ -5240,6 +5288,12 @@ def main(argv):
             return 0
         if argv[1:] == ["work"]:
             return fixed_work(io, pattern, number, os.environ.get("MODE", ""))
+        if argv[1:] == ["title"]:
+            # #699 C3: the draft's title, from ISSUE_TYPE and ISSUE_TITLE,
+            # for the fixed change's fix round of a failed conventions check.
+            with open(os.path.join(io, FIXED_TITLE), "w", encoding="utf-8") as fh:
+                fh.write(draft_title(os.environ.get("ISSUE_TYPE", ""), os.environ.get("ISSUE_TITLE", "")) + "\n")
+            return 0
         return 64
     if os.environ.get(IO_ENV) and argv[:1] and argv[0] in AGENT_COMMANDS:
         return agent_helper(argv, os.environ[IO_ENV])
@@ -5827,6 +5881,9 @@ def main(argv):
             draft_ = info["isDraft"]
             done, total = progress(info["body"])
             pushed = bool(os.environ.get("HEAD_BEFORE")) and info["headRefOid"] != os.environ.get("HEAD_BEFORE")
+            # #699 C3: a fix round of a failed conventions check that set
+            # the title alone pushed nothing, and did its work.
+            pushed = pushed or (mode == "fix" and os.environ.get("RETITLED") == "true")
             # #479: a run whose runner was lost does not count: its entry on
             # the board (#802) becomes a free one.
             lost = mode != "fix" and not stopped and not asked and runner_lost(os.environ.get("WORK_RESULT", ""), os.environ.get("AGENT_OUTCOME", ""))

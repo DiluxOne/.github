@@ -901,6 +901,14 @@ jobs:
             if [ -s "$RUNNER_TEMP/conventions/conventions-errors.tsv" ]; then
               cp "$RUNNER_TEMP/conventions/conventions-errors.tsv" "$DX_IO/conventions-errors.tsv"
               echo "conventions=true" >> "$GITHUB_OUTPUT"
+              # The test repository's fixed change answers a title's error
+              # with the draft's own title (#699 C7: its scenario).
+              if [ -n "$fixed" ]; then
+                ISSUE_TYPE=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" --jq '.type.name // ""') \
+                  && ISSUE_TITLE=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" --jq .title) \
+                  && ISSUE_TYPE="$ISSUE_TYPE" ISSUE_TITLE="$ISSUE_TITLE" python3 .dx-central/scripts/autopilot.py fixed title \
+                  || echo "::warning::#$NUMBER's title could not be read: the fixed change answers no title."
+              fi
             fi
             CONFLICTS="${CONFLICTS:-false}" python3 .dx-central/scripts/autopilot.py prompt fix > "$DX_IO/prompt.md"
             exit 0
@@ -1830,6 +1838,8 @@ jobs:
           RUNS: ${{ needs.prep.outputs.runs }}
           STARTED: ${{ needs.prep.outputs.started }}
           HEAD_BEFORE: ${{ needs.prep.outputs.mode == 'fix' && needs.prep.outputs.head || '' }}
+          # #699 C3: a fix round that set the title alone did its work.
+          RETITLED: ${{ steps.applied.outputs.retitled }}
           WORK_OUTCOME: ${{ needs.work.outputs.outcome || needs.work.result }}
           # #479: a work job that failed without its agent's outcome lost its
           # runner, and the run does not count.

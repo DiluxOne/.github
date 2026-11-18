@@ -14,7 +14,10 @@ MERGE_HOWS of `merge-main`, and what `sweep_step` returns), has a scenario
 that covers it, but a transition the file's `statically:` names with the
 test that holds it, which no scenario can cause there (#707). A scenario: `id`, `covers` (pairs `<workflow>:<event>`,
 transitions `next_step:<action>`, `next_step:wait:<for>`,
-`next_step:merge-main:<how>`, `sweep_step:<what>`), `before` (issues it
+`next_step:merge-main:<how>`, `sweep_step:<what>`, and the steps of the
+flow no person moves, `flow:<name>`, one per name of the file's `flows:`
+(#699), each played with no label moved by hand but the acceptance, its
+`expect`'s `hands`, `hands_problems`), `before` (issues it
 opens first and keeps open until it ends, each `{issue: {...}}`, and files
 of its own it lands on main first, each `{lands: <name>, says: <text>}`:
 scenarios/<id>/<name>.md, through a docs pull request of the scenario that
@@ -26,7 +29,9 @@ complete feature, and its `{files}` the files of its diff, one
 `` - `path` `` line each (#760: `pull_files`); an issue's `type`, else the Type its body's form gives,
 `types:` of the file, and its `comments`, posted before its labels: a
 `/claim` before `accepted`), `steps` (each one of
-`comment`, `label`, `unlabel`, `edit`, `push`, `dispatch`, and `until`,
+`comment`, `label`, `unlabel`, `edit`, `push`, `dispatch`, `retitle` (the
+title of the pull request it observes, an issue's the autopilot's, #699),
+and `until`,
 an `expect` polled every 50 seconds (#726: every scenario at once shares
 the test identity's 5000 requests an hour) on its issue or pull request, or with
 `of: before` on its first `before` issue, never a fixed wait: #694; a
@@ -43,10 +48,16 @@ a `before`'s file says its `says` alone),
 `minutes` (its limit, 10 by default, 15 at most) and
 `expect` (`labels`, `absent`, `comments` (markers), `count` ({marker:
 n}, how many comments carry it, #696), `pull` (`closes`,
-`branch`, `title`, patterns; `false` for none that closes it, #713), `check` (name: conclusion, the name a
+`branch`, `title`, `draft`, `waits` (whom its board says it waits on,
+#699), patterns; `false` for none that closes it, #713), `check` (name: conclusion, the name a
 check run's caller's job or its own: `check_named`, #709), `merged`,
 `waiting`, `state` (OPEN or CLOSED, #696: a bug's issue its merged fix
-closed)). Every scenario is a group of its own (`groups`, #694), and
+closed), and (#699) `hands` (the labels a person may add or remove: any
+other label event of anyone but the bot, on its issue or its pull
+request, fails it), `bot_labeled` (labels the bot added) and `rerun` (a
+run on the pull request's head ran again), read from the label events
+once the rest holds). A `push: token` writes a fake token (#699 C5).
+Every scenario is a group of its own (`groups`, #694), and
 the lane plays the groups at once, one job each, on GitHub's runners,
 never DX_RUNNER_HEAVY, where the test repository's own jobs run
 (`lane_problems`, #707): each writes only under
@@ -310,16 +321,28 @@ def transitions(root=ROOT):
     return out
 
 
+# What `statically:` may hold instead of a scenario: a transition, or a
+# step of the flow (#699, `flows`).
+STATIC = ("next_step:", "sweep_step:", "flow:")
+
+
+def flows(conf):
+    """The steps of the flow no person moves (#699): `flow:<name>` for each
+    of the file's `flows:`. Pure."""
+    return {f"flow:{k}" for k in (conf.get("flows") or {})}
+
+
 def coverage(scenarios, wanted, statically=None):
     """What has no scenario, and what a scenario covers that is not wanted:
     ["... has no scenario"]. `statically` (the file's `statically:`, #707)
-    names each transition no scenario can cause in the test repository,
-    with what holds it instead: it is covered by that, never by a scenario
-    as well, and must be a transition with its reason. Pure."""
+    names each transition (or step of the flow, #699) no scenario can cause
+    in the test repository, with what holds it instead: it is covered by
+    that, never by a scenario as well, and must be a transition or a flow
+    with its reason. Pure."""
     covered, out, seen = set(), [], set()
     statically = statically or {}
     for w, why in sorted(statically.items()):
-        if not str(w).startswith(("next_step:", "sweep_step:")) or w not in wanted:
+        if not str(w).startswith(STATIC) or w not in wanted:
             out.append(f"statically: {w} is no transition of the state machine")
         elif not str(why or "").strip():
             out.append(f"statically: {w} says no test that holds it")
@@ -340,8 +363,38 @@ def coverage(scenarios, wanted, statically=None):
             elif c in statically:
                 out.append(f"scenario {sid}: covers {c}, which `statically:` says no scenario can cause")
     for w in sorted(wanted - covered - set(statically)):
-        kind = "the transition" if w.startswith(("next_step:", "sweep_step:")) else "the pair"
+        kind = "the flow" if w.startswith("flow:") else "the transition" if w.startswith(("next_step:", "sweep_step:")) else "the pair"
         out.append(f"{kind} {w} has no scenario in {SCENARIOS}")
+    return out
+
+
+# The labels a person may add or remove in a scenario that plays a step of
+# the flow (#699): the acceptance, which is a maintainer's decision; every
+# other label is the bot's to move.
+HANDS = ("accepted",)
+LABEL_VERBS = ("label", "unlabel")
+
+
+def hands_problems(scenarios):
+    """Every scenario that covers a `flow:` and moves a label by hand
+    (#699): it says no `hands` in its `expect` (the labels a person may add
+    or remove, which `holds` reads from the label events), names one past
+    HANDS, or takes a `label`/`unlabel` step, or opens something labelled,
+    with a label its `hands` does not name. Pure."""
+    out = []
+    for s in scenarios:
+        if not any(str(c).startswith("flow:") for c in s.get("covers") or []):
+            continue
+        sid, hands = s.get("id") or "?", (s.get("expect") or {}).get("hands")
+        if not isinstance(hands, list):
+            out.append(f"scenario {sid}: plays a step of the flow with no `hands` in its `expect`, so a label a person moved would not fail it")
+            continue
+        out += [f"scenario {sid}: its `hands` names {h}, which is the bot's to move (a person may move only {', '.join(HANDS)})" for h in hands if h not in HANDS]
+        opens = s.get("opens") or {}
+        spec = opens.get("issue") or opens.get("pull") or {}
+        moved = [l for l in (spec.get("labels") or []) + ((spec.get("issue") or {}).get("labels") or [])]
+        moved += [str(st[v]) for st in s.get("steps") or [] if isinstance(st, dict) for v in LABEL_VERBS if v in st]
+        out += [f"scenario {sid}: moves the label {l} by hand, which its `hands` does not name" for l in moved if l not in hands]
     return out
 
 
@@ -583,7 +636,7 @@ def holds(expect, seen):
             want = seen.get("closes") or seen.get("number")
             if not re.search(rf"Closes #{re.escape(str(want))}\b", pull.get("body") or ""):
                 out.append(f"the pull request does not say Closes #{want}")
-        elif not re.search(str(pattern), str(pull.get(key) or "")):
+        elif not re.search(str(pattern), "" if pull.get(key) is None else str(pull.get(key))):
             out.append(f"the pull request's {key} is not {pattern}")
     for name, conclusion in (expect.get("check") or {}).items():
         got = check_named(name, seen.get("checks"))
@@ -602,7 +655,30 @@ def holds(expect, seen):
     # #696: the issue's or the pull request's state (CLOSED once its fix merged).
     if "state" in expect and str(seen.get("state") or "").upper() != str(expect["state"]).upper():
         out.append(f"its state is {seen.get('state') or 'unknown'}, not {expect['state']}")
+    # #699: the label events, read once the rest holds (`EVENT_KEYS`).
+    out += by_hand(expect, seen)
+    if "bot_labeled" in expect:
+        added = {e.get("label") for e in seen.get("label_events") or [] if e.get("bot") and e.get("event") == "labeled"}
+        out += [f"the bot never added {label}" for label in expect.get("bot_labeled") or [] if label not in added]
+    if expect.get("rerun") and not seen.get("rerun"):
+        out.append("no run on its head ran again")
     return out + [saw(seen)] if out else out
+
+
+# The keys of `expect` read from the label events (#699), which `play`
+# reads only once the rest of its `expect` holds.
+EVENT_KEYS = ("hands", "bot_labeled")
+
+
+def by_hand(expect, seen):
+    """Each label a person (anyone but the bot) added or removed that
+    `expect`'s `hands` does not allow (#699), from `seen`'s label events:
+    ["<who> added the label <l> by hand"]. [] without `hands`. Pure."""
+    if "hands" not in expect:
+        return []
+    allowed = set(expect.get("hands") or [])
+    return [f"{e.get('actor') or 'someone'} {'added' if e.get('event') == 'labeled' else 'removed'} the label {e.get('label')} by hand"
+            for e in seen.get("label_events") or [] if not e.get("bot") and e.get("label") not in allowed]
 
 
 # Every wait polls its state (#694): never a fixed sleep. Every scenario
@@ -642,6 +718,8 @@ def hopeless(expect, seen, settled=False):
         got = sum(1 for c in seen.get("comments") or [] if marker in str(c))
         if isinstance(n, int) and got > n:
             out.append(f"{got} comments with {marker} already, past {n}")
+    # #699: a label a person moved stays moved.
+    out += by_hand(expect, seen)
     if expect.get("check") and seen.get("held"):
         out.append(f"the fork's run waits for approval to run workflows from forks ({', '.join(seen['held'])})")
     if settled:
@@ -661,12 +739,25 @@ def scenario_plan(scenarios):
     return [{"id": s.get("id"), "minutes": limit(s), "poll": POLL} for s in scenarios]
 
 
+def heads(want):
+    """Whether the expectation `want` reads the runs on a pull request's
+    head (#699): a `check` (#709: one GitHub holds for approval) or a
+    `rerun`. Pure."""
+    return bool((want or {}).get("check") or (want or {}).get("rerun"))
+
+
 def poll_budget(scenarios):
     """The `gh` calls an hour every scenario polling at once makes (#726):
     each one's calls a poll, as `observe` makes them (2 for an issue: its
-    view and the runs; 3 for a pull request: its view, the runs of its head
-    and the runs), every POLL seconds. Pure."""
-    return sum((3 if "pull" in (s.get("opens") or {}) else 2) * 3600 // POLL for s in scenarios)
+    view and the runs; for a pull request 2, and 3 when it waits on a check
+    or a re-run, `heads`: its view, the runs of its head and the runs; one
+    more for an `expect` with `bot_labeled`, whose label events are read
+    each poll once the rest holds, #699), every POLL seconds. Pure."""
+    def calls(s):
+        wants = [s.get("expect") or {}] + [st.get("until") or {} for st in s.get("steps") or [] if isinstance(st, dict)]
+        n = 3 if "pull" in (s.get("opens") or {}) and any(heads(w) for w in wants) else 2
+        return n + (1 if "bot_labeled" in (s.get("expect") or {}) else 0)
+    return sum(calls(s) * 3600 // POLL for s in scenarios)
 
 
 def timing(scenarios):
@@ -991,7 +1082,10 @@ def scenario_text(sid, name, where, run_id):
     so no run writes what an earlier one merged into main, which would leave
     its pull request with no diff, and on the head another than on main, so
     `conflict` conflicts. Pure."""
-    return f"{name} on {where}, scenario {sid}, run {run_id}\n"
+    text = f"{name} on {where}, scenario {sid}, run {run_id}\n"
+    # #699 C5: `token` carries one, a fake no service issues, which the
+    # test repository's review profile blocks on.
+    return text + (f"DX_API_TOKEN=dxfake_{re.sub(r'[^A-Za-z0-9]', '', str(run_id))}\n" if name == "token" else "")
 
 
 def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, types=None, run_id=None):
@@ -1008,15 +1102,22 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
     sid, own = s["id"], branch_of(s)
     left = [min(minutes, limit(s)) * 60]
 
-    def look(on):
+    def look(on, want=None, events=False):
         """`on` observed, a transient `gh` error (#698: a rate limit, a
         5xx) retried after its back-off within the scenario's time, never a
         failure at once: (what was seen, None), or (None, why) once its time
-        ran out with `gh` still failing."""
+        ran out with `gh` still failing. The runs on a pull request's head
+        only when `want` reads them (`heads`, #699), and the label events
+        with `events`."""
         tries = 0
         while True:
             try:
-                return observe(repo, on[0], on[1], run), None
+                seen = observe(repo, on[0], on[1], run, heads(want))
+                if events:
+                    # Its own, and an issue's pull request's too.
+                    pull = (seen.get("pull") or {}).get("number")
+                    seen["label_events"] = label_events(repo, [on[1]] + ([str(pull)] if on[0] == "issue" and pull else []), run)
+                return seen, None
             except GhError as e:
                 if not transient(e):
                     raise
@@ -1032,14 +1133,24 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
         holds ([]), can no longer hold (#694: `hopeless`), or the
         scenario's time is up: (what was seen, why not)."""
         idle, last = False, {}
+        rest = {k: v for k, v in expect.items() if k not in EVENT_KEYS}
         while True:
-            seen, failing = look(on)
+            seen, failing = look(on, expect)
             if failing:
                 return last, [failing]
             last = seen
             if closes:
                 seen["closes"] = closes
             why = holds(expect, seen)
+            if rest != expect and not holds(rest, seen):
+                # #699: the label events, read once the rest holds.
+                seen, failing = look(on, expect, True)
+                if failing:
+                    return last, [failing]
+                last = seen
+                if closes:
+                    seen["closes"] = closes
+                why = holds(expect, seen)
             if not why:
                 return seen, []
             lost = hopeless(expect, seen, idle and seen.get("idle"))
@@ -1129,6 +1240,16 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
                 run(what, "edit", number, "--repo", repo, "--body-file", "-", input=marked(body_of(arg, bodies), sid))
             elif verb == "dispatch":
                 run("workflow", "run", str(arg), "--repo", repo, "--ref", "main")
+            elif verb == "retitle":
+                # #699: the title of the pull request it observes (an
+                # issue's, the autopilot's), as a person would edit it.
+                target = number
+                if what == "issue":
+                    seen, failing = look((what, number))
+                    target = ((seen or {}).get("pull") or {}).get("number")
+                    if not target:
+                        return {"id": sid, "ok": False, "why": [failing or f"retitle: no pull request closes #{number} to retitle"], "run": (seen or {}).get("run", "")}
+                run("pr", "edit", str(target), "--repo", repo, "--title", str(arg))
             elif verb == "push":
                 # #698: on the head branch of the pull request it observes
                 # (an issue's, the autopilot's), never a branch of its own
@@ -1177,8 +1298,13 @@ def bot_login(login):
     return bool(name) and name in {str(org.APP), str(org.BOT).removesuffix("[bot]")}
 
 
-def observe(repo, what, number, run=gh):
-    fields = "labels,comments,body,state" + (",mergedAt,statusCheckRollup,headRefName,headRefOid,title" if what == "pr" else ",closedByPullRequestsReferences")
+def observe(repo, what, number, run=gh, head_runs=True):
+    """What a poll sees of the issue or pull request `number`: its labels,
+    comments, state and, for a pull request (its own, or the one that closes
+    the issue), its body, branch, title, whether it is a draft and whom its
+    board says it waits on (#699); with `head_runs`, the runs on its head:
+    those GitHub holds (#709) and whether one ran again (#699: `rerun`)."""
+    fields = "labels,comments,body,state" + (",mergedAt,statusCheckRollup,headRefName,headRefOid,title,isDraft" if what == "pr" else ",closedByPullRequestsReferences")
     # A `gh` that fails raises GhError; `play` retries a transient one.
     view = json.loads(run(what, "view", number, "--repo", repo, "--json", fields) or "{}")
     seen = {"number": number, "labels": [l.get("name") for l in view.get("labels") or []],
@@ -1186,23 +1312,28 @@ def observe(repo, what, number, run=gh):
             # The bot's own comments, oldest first (#707: `saw`).
             "said": [c.get("body", "") for c in view.get("comments") or [] if bot_login((c.get("author") or {}).get("login"))]}
     if what == "pr":
-        seen["pull"] = {"body": view.get("body"), "branch": view.get("headRefName"), "title": view.get("title")}
+        seen["pull"] = {"body": view.get("body"), "branch": view.get("headRefName"), "title": view.get("title"), "number": number,
+                        "draft": bool(view.get("isDraft")), "waits": waits_role(seen["said"])}
         seen["merged"] = bool(view.get("mergedAt"))
         seen["checks"] = {c.get("name"): (c.get("conclusion") or "").lower() for c in view.get("statusCheckRollup") or []}
         # #709: a run on its head that GitHub holds for a maintainer's
         # approval (a fork's): it never reports until a person allows it.
-        seen["held"] = []
-        if view.get("headRefOid"):
-            head = json.loads(run("run", "list", "--repo", repo, "--commit", str(view["headRefOid"]), "--json", "url,status,conclusion") or "[]")
+        seen["held"], seen["rerun"] = [], False
+        if view.get("headRefOid") and head_runs:
+            head = json.loads(run("run", "list", "--repo", repo, "--commit", str(view["headRefOid"]), "--json", "url,status,conclusion,attempt") or "[]")
             seen["held"] = [str(r.get("url") or "") for r in head if "action_required" in (str(r.get("status") or "").lower(), str(r.get("conclusion") or "").lower())]
+            # #699 C5: a run on the same head that ran again (a re-run).
+            seen["rerun"] = any(int(r.get("attempt") or 1) > 1 for r in head)
     else:
         # #698: the pull request that closes it, from the issue's own
         # references (the newest), never a search per poll: the search API
         # allows 30 a minute, which every scenario at once shares.
         refs = closing_pulls(repo, view)
         if refs:
-            pull = json.loads(run("pr", "view", str(max(refs)), "--repo", repo, "--json", "number,body,headRefName,title") or "{}")
-            seen["pull"] = {"body": pull.get("body"), "branch": pull.get("headRefName"), "title": pull.get("title"), "number": pull.get("number")}
+            pull = json.loads(run("pr", "view", str(max(refs)), "--repo", repo, "--json", "number,body,headRefName,title,isDraft,comments") or "{}")
+            said = [c.get("body", "") for c in pull.get("comments") or [] if bot_login((c.get("author") or {}).get("login"))]
+            seen["pull"] = {"body": pull.get("body"), "branch": pull.get("headRefName"), "title": pull.get("title"), "number": pull.get("number"),
+                            "draft": bool(pull.get("isDraft")), "waits": waits_role(said)}
     # #802: the autopilot's question waits on the item's board (`asked`).
     seen["waiting"] = any(l in seen["labels"] for l in ("needs-human", "awaiting-acceptance")) or bool(board_state(seen["said"]).get("asked"))
     runs = json.loads(run("run", "list", "--repo", repo, "--limit", "20", "--json", "url,status") or "[]")
@@ -1210,6 +1341,29 @@ def observe(repo, what, number, run=gh):
     # Nothing queued or in progress in the test repository (#694: `hopeless`).
     seen["idle"] = not any(str(r.get("status") or "").lower() in RUNNING for r in runs)
     return seen
+
+
+def waits_role(said):
+    """Whom the pull request's board, among the bot's comments `said`, says
+    it waits on (#699: its `waits`' role, scripts/waiting.py), or ""."""
+    waits = board_state(said).get("waits")
+    return str(waits.get("role") or "") if isinstance(waits, dict) else ""
+
+
+def label_events(repo, numbers, run=gh):
+    """The label events of the issues or pull requests `numbers` (#699),
+    oldest first: [{event, label, actor, bot}], `bot` when dilux-bot moved
+    it."""
+    out = []
+    for n in numbers:
+        text = run("api", f"repos/{repo}/issues/{n}/events", "--paginate", "--jq",
+                   '.[] | select(.event == "labeled" or .event == "unlabeled") | {event, label: .label.name, actor: .actor.login}') or ""
+        for line in text.splitlines():
+            got = json.loads(line) if line.strip() else []
+            for e in got if isinstance(got, list) else [got]:
+                if isinstance(e, dict):
+                    out.append({**e, "bot": bot_login(e.get("actor"))})
+    return out
 
 
 def board_state(said):
@@ -2146,7 +2300,8 @@ def problems(conf, root=ROOT):
     paths that names no scenario that exists (`paths`, #696)."""
     pack = test_pack(root)
     scenarios = conf.get("scenarios") or []
-    return (coverage(scenarios, played(root, pack) | transitions(root), conf.get("statically") or {})
+    return (coverage(scenarios, played(root, pack) | transitions(root) | flows(conf), conf.get("statically") or {})
+            + hands_problems(scenarios)
             + preconditions(scenarios, conf.get("bodies") or {}, pack, dispatchable(root, pack), schema_passes(root), conf.get("types") or {},
                             test_repro(root))
             + lane_problems(load_yaml(os.path.join(root, LANE)))
@@ -2259,8 +2414,8 @@ def self_test():
           (timing(real["scenarios"]), {p["poll"] for p in plan_real}, max(p["minutes"] for p in plan_real) <= 15, len(plan_real) == len(real["scenarios"]),
            [st for s in real["scenarios"] for st in s.get("steps") or [] if "wait" in st]), ([], {50}, True, True, []))
     check("#726: the real plan, every scenario polling at once, stays under the test identity's rate limit; a plan of many scenarios is refused",
-          (poll_budget(real["scenarios"]) < RATE_LIMIT, poll_budget([{"opens": {"issue": {}}}, {"opens": {"pull": {}}}]),
-           timing([{"id": f"s{i}", "opens": {"pull": {}}} for i in range(30)])),
+          (poll_budget(real["scenarios"]) < RATE_LIMIT, poll_budget([{"opens": {"issue": {}}}, {"opens": {"pull": {}}, "expect": {"check": {"c": "success"}}}]),
+           timing([{"id": f"s{i}", "opens": {"pull": {}}, "expect": {"check": {"c": "success"}}} for i in range(30)])),
           (True, 360, ["the plan's 30 scenarios poll GitHub 6480 times an hour, every 50 seconds, past the test identity's 5000"]))
     check("C3: timing names a fixed wait, an empty `until` and a limit past 15 minutes",
           timing([{"id": "w", "steps": [{"wait": 60}, {"until": {"of": "before"}}], "minutes": 16}]),
@@ -2756,7 +2911,7 @@ def self_test():
     st, fake = searchless()
     got = play({"id": "s", "opens": {"issue": {"title": "feat: x", "body": "f"}}, "expect": {"pull": {"closes": True, "branch": "^feat/"}}}, "o/t", "v7-next", {"f": "f"}, fake, st["sleeps"].append, 1)
     check("#698: observe finds the issue's pull request from its references (the newest of its repository), with no search per poll",
-          (got["ok"], [c for c in st["calls"] if c[:2] == ("pr", "list") and "Closes" in " ".join(map(str, c))], ("pr", "view", "12", "--repo", "o/t", "--json", "number,body,headRefName,title") in st["calls"]),
+          (got["ok"], [c for c in st["calls"] if c[:2] == ("pr", "list") and "Closes" in " ".join(map(str, c))], ("pr", "view", "12", "--repo", "o/t", "--json", "number,body,headRefName,title,isDraft,comments") in st["calls"]),
           (True, [], True))
     st, fake = searchless(fail=2)
     got = play({"id": "s", "opens": {"issue": {"title": "feat: x", "body": "f"}}, "expect": {"pull": {"closes": True}}}, "o/t", "v7-next", {"f": "f"}, fake, st["sleeps"].append, 1)
@@ -3268,7 +3423,8 @@ def self_test():
              and any(needs_autopilot(w) for w in [s.get("expect")] + [st_["until"] for st_ in s.get("steps") or [] if "until" in st_])]
     check("#713 C2: the real file: every scenario that reads the autopilot's result waits for it, each within 15 minutes",
           (autopilot_problems(real["scenarios"]), sorted(reads), {limit(by713[i]) for i in reads}),
-          ([], sorted(["accepted-spec", "spec-to-draft", "core-one-at-a-time", "decision-sub-issues", "prd-edited-after-acceptance", "question-answered", "stop-hint-continue", "draft-in-conflict", "ready-behind-main", "bug-by-person-merges", "stop-answered", "stop-edited-reaccepted-answered"]), {15}))
+          ([], sorted(["accepted-spec", "spec-to-draft", "core-one-at-a-time", "decision-sub-issues", "prd-edited-after-acceptance", "question-answered", "stop-hint-continue", "draft-in-conflict", "ready-behind-main", "bug-by-person-merges", "stop-answered", "stop-edited-reaccepted-answered",
+                     "marker-g1-start", "conventions-fix", "hint-no-needs-human"]), {15}))
     # #764 C2: high-risk-waits's floor is high from the path it changes.
     hrw = by713["high-risk-waits"]
     rhigh, rlow = risk_patterns()
@@ -3465,6 +3621,71 @@ def self_test():
         globals()["scenario_text"] = writer778
     check("#778 C2: with a writer that leaves the run id out, the same check fails on the four scenarios that failed v7.14.0",
           set(four778) <= set(stale_free), True)
+    # #699: the steps of the flow no person moves, each played or held.
+    wanted699 = {"flow:a", "flow:b", "next_step:spec"}
+    s699 = {"id": "p", "covers": ["flow:a", "next_step:spec"], "opens": {"issue": {}}, "expect": {"hands": ["accepted"]}}
+    check("#699 C7: a flow with no scenario fails, named; `statically:` may hold a flow, with its test",
+          (coverage([s699], wanted699), coverage([s699], wanted699, {"flow:b": "x.py --test"}), coverage([s699], wanted699, {"flow:c": "x"})),
+          ([f"the flow flow:b has no scenario in {SCENARIOS}"], [], ["statically: flow:c is no transition of the state machine", f"the flow flow:b has no scenario in {SCENARIOS}"]))
+    check("#699 C7: a scenario of the flow says its `hands`, names only the acceptance, and moves no other label",
+          hands_problems([{"id": "n", "covers": ["flow:a"], "expect": {}}, {"id": "w", "covers": ["flow:a"], "expect": {"hands": ["needs-human"]}},
+                          {"id": "l", "covers": ["flow:a"], "opens": {"pull": {"issue": {"labels": ["accepted"]}}}, "steps": [{"label": "autopilot:continue"}, {"unlabel": "needs-human"}], "expect": {"hands": ["accepted"]}},
+                          {"id": "x", "covers": ["next_step:spec"], "steps": [{"label": "risk:low"}], "expect": {}}, s699]),
+          ["scenario n: plays a step of the flow with no `hands` in its `expect`, so a label a person moved would not fail it",
+           "scenario w: its `hands` names needs-human, which is the bot's to move (a person may move only accepted)",
+           "scenario l: moves the label autopilot:continue by hand, which its `hands` does not name", "scenario l: moves the label needs-human by hand, which its `hands` does not name"])
+    ev699 = [{"event": "labeled", "label": "accepted", "actor": "tester", "bot": False}, {"event": "labeled", "label": "autopilot:continue", "actor": "dilux-bot[bot]", "bot": True}]
+    hand699 = ev699 + [{"event": "unlabeled", "label": "needs-human", "actor": "tester", "bot": False}]
+    check("#699 C7: holds reads the label events: a label a person moved past `hands` fails, and can no longer hold; the bot's label and a re-run hold",
+          (holds({"hands": ["accepted"], "bot_labeled": ["autopilot:continue"], "rerun": True}, {"label_events": ev699, "rerun": True}),
+           holds({"hands": ["accepted"]}, {"label_events": hand699})[:1], hopeless({"hands": ["accepted"]}, {"label_events": hand699}),
+           holds({"bot_labeled": ["autopilot:continue"], "rerun": True}, {"label_events": ev699[:1]})[:2]),
+          ([], ["tester removed the label needs-human by hand"], ["tester removed the label needs-human by hand"],
+           ["the bot never added autopilot:continue", "no run on its head ran again"]))
+    check("#699 C7: the poll budget counts a head's runs only for a check or a re-run, and a poll of the label events for `bot_labeled`",
+          [poll_budget([s]) // (3600 // POLL) for s in ({"opens": {"pull": {}}}, {"opens": {"pull": {}}, "expect": {"rerun": True}},
+                                                        {"opens": {"pull": {}}, "steps": [{"until": {"check": {"c": "failure"}}}]}, {"opens": {"issue": {}}, "expect": {"bot_labeled": ["x"]}})],
+          [2, 3, 3, 3])
+
+    def fake699(log, board=None, attempt=1):
+        def fake(*a, input=None):
+            log.append(a)
+            if a[:2] == ("issue", "create"):
+                return "https://github.com/o/t/issues/9\n"
+            if a[:2] == ("issue", "view"):
+                return json.dumps({"labels": [{"name": "accepted"}], "comments": [], "state": "OPEN", "closedByPullRequestsReferences": [{"number": 12}]})
+            if a[:3] == ("pr", "view", "12"):
+                said = [{"body": board, "author": {"login": "dilux-bot[bot]"}}] if board else []
+                return json.dumps({"number": 12, "body": "Closes #9", "headRefName": "feat/9-x", "title": "feat: x", "isDraft": False, "comments": said})
+            if a[:1] == ("api",) and str(a[1]).endswith("/events"):
+                return "\n".join(json.dumps({k: e[k] for k in ("event", "label", "actor")}) for e in ev699) + "\n"
+            return "[]"
+        return fake
+    import importlib.util as _ilu
+    _rs = _ilu.spec_from_file_location("receipts699", os.path.join(HERE, "receipts.py"))
+    _rc = _ilu.module_from_spec(_rs)
+    _rs.loader.exec_module(_rc)
+    board699 = _rc.BOARD + "\n" + _rc.state_block({"waits": {"role": "the autopilot", "what": "fix the failed check"}})
+    log699 = []
+    got699 = play({"id": "s", "opens": {"issue": {"title": "feat: x", "body": "f"}},
+                   "steps": [{"retitle": "x"}, {"until": {"pull": {"waits": "^the autopilot$", "draft": "^False$"}}}],
+                   "expect": {"bot_labeled": ["autopilot:continue"], "hands": ["accepted"]}}, "o/t", "v7-next", {"f": "f"}, fake699(log699, board699), lambda s: None, 1)
+    check("#699 C7: play retitles the issue's pull request, waits on its board's role, and reads the label events of the issue and its pull request",
+          (got699["ok"], ("pr", "edit", "12", "--repo", "o/t", "--title", "x") in log699,
+           sorted(a[1] for a in log699 if a[:1] == ("api",) and str(a[1]).endswith("/events"))),
+          (True, True, ["repos/o/t/issues/12/events", "repos/o/t/issues/9/events"]))
+    log699 = []
+    play({"id": "s", "opens": {"issue": {"title": "feat: x", "body": "f"}}, "expect": {"labels": ["never"], "hands": ["accepted"]}}, "o/t", "v7-next", {"f": "f"}, fake699(log699), lambda s: None, 1)
+    check("#699 C7: the label events are read only once the rest of the expectation holds",
+          [a for a in log699 if a[:1] == ("api",) and str(a[1]).endswith("/events")], [])
+    check("#699 C5: a `token` push writes a fake token with the run's id; any other the scenario's text alone",
+          (scenario_text("s", "token", "the pull request", "7-1").splitlines()[1], scenario_text("s", "note", "main", "7-1").count("\n")), ("DX_API_TOKEN=dxfake_71", 1))
+    flows_real = flows(real)
+    check("#699 C7: the real file: each step of the flow is played by a scenario that moves no label but the acceptance, or held by its test, C2 and C6",
+          (sorted(flows_real), sorted(c for s in real["scenarios"] for c in s.get("covers") or [] if c.startswith("flow:")),
+           sorted(k for k in real.get("statically") or {} if k.startswith("flow:")), hands_problems(real["scenarios"])),
+          (sorted(f"flow:{f}" for f in ("marker-g1-start", "edit-starts", "conventions-fix", "hint-no-needs-human", "settled-rerun", "release-bug-reproduced")),
+           ["flow:conventions-fix", "flow:hint-no-needs-human", "flow:marker-g1-start", "flow:settled-rerun"], ["flow:edit-starts", "flow:release-bug-reproduced"], []))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 

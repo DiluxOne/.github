@@ -99,3 +99,17 @@ def test_a_reworded_branch_goes_with_a_lease_and_the_same_tree():
     step = step[:step.index("autopilot.py apply .dx-out/outbox.jsonl")]
     assert "REWORD" in step and 'git diff --quiet "origin/$BRANCH" "$new"' in step
     assert "api-commit.py push \"$BRANCH\" --force" in step and "lease" in step
+
+
+def test_a_round_that_only_retitles_ends_ready_and_the_test_repository_answers_it():
+    """#699 C7: the release scenario `conventions-fix` plays it: the fixed
+    change sets the draft's own title (prep's `fixed title`), and the end
+    rule takes the title it set for the round's work, not a silent end."""
+    steps = {s.get("id") or s.get("name"): s for s in wf("autopilot.yml")["jobs"]["apply"]["steps"]}
+    assert steps["end"]["env"]["RETITLED"] == "${{ steps.applied.outputs.retitled }}"
+    prep = "\n".join(str(s.get("run") or "") for s in wf("autopilot.yml")["jobs"]["prep"]["steps"])
+    assert "autopilot.py fixed title" in prep
+    source = (ROOT / "scripts" / "autopilot.py").read_text(encoding="utf-8")
+    assert 'fh.write("retitled=true\\n")' in source
+    assert 'pushed = pushed or (mode == "fix" and os.environ.get("RETITLED") == "true")' in source
+    assert autopilot.end_verdict("fix", "8", False, False, 1, 1, False, 1, 3, pushed=True) == "ready"
