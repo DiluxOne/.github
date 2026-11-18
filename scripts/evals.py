@@ -645,7 +645,124 @@ def write_json(path, data):
         fh.write("\n")
 
 
+def self_test():
+    failed = 0
+
+    def check(name, got, want):
+        nonlocal failed
+        print(("ok   " if got == want else "FAIL ") + name + ("" if got == want else f": got {got!r}, want {want!r}"))
+        failed |= got != want
+
+    # The mapping (C2): each step's paths, the common ones, none for the rest.
+    check("steps: a step's workflow is its step", steps_of([".github/workflows/issue-repro.yml"]), ["repro"])
+    check("steps: autopilot.yml and autopilot.py count for spec and autopilot", (steps_of([".github/workflows/autopilot.yml"]), steps_of(["scripts/autopilot.py"])),
+          (["spec", "autopilot"], ["spec", "autopilot"]))
+    check("steps: the review's paths, as review-eval.yml listed them", [steps_of([p]) for p in ("review-profiles/general.md", "kinds/x/review-profile.md", "kinds/x/rules.yml", "scripts/local-review.sh", ".github/workflows/claude-review.yml")],
+          [["review"]] * 5)
+    check("steps: policy/autonomy.yml counts for every step", steps_of(["policy/autonomy.yml"]), list(STEPS))
+    check("steps: a set counts for its step alone", (steps_of(["evals/review/cases.json"]), steps_of(["evals/spec/baseline.json"])), (["review"], ["spec"]))
+    check("steps: an unrelated path runs nothing", steps_of(["README.md", "scripts/sync-repos.py", "evals/README.md", "kinds/x/pack.yml"]), [])
+    check("steps: a glob's * stays in one folder", (matches("kinds/a/b/rules.yml", "kinds/*/rules.yml"), matches("review-profiles/a/b.md", "review-profiles/**")), (False, True))
+    check("steps: every path once in the union", len(all_paths()) == len(set(all_paths())) and set(all_paths()) >= set(REVIEW_PATHS), True)
+
+    # The review (#234), as review-eval.py had it, on its own fixtures.
+    bot = {"login": org.APP}
+    first = lambda oid: {"nodes": [{"author": bot, "body": "x\n<sub>🤖 AI review · m (Anthropic)</sub>", "originalCommit": {"oid": oid}}]}
+    prs = [{"number": 1, "title": "fix: a", "baseRefOid": "b1", "headRefOid": "h1", "isCrossRepository": False, "reviewThreads": {"nodes": [{"isOutdated": True, "path": "a.php", "resolvedBy": None, "comments": first("c1")}]}},
+           {"number": 2, "title": "feat: b", "baseRefOid": "b2", "headRefOid": "h2", "isCrossRepository": False, "reviewThreads": {"nodes": []}},
+           {"number": 3, "title": "fix: c", "baseRefOid": "b3", "headRefOid": "h3", "isCrossRepository": False, "reviewThreads": {"nodes": [{"isOutdated": False, "path": "c.php", "resolvedBy": {"login": "me"}, "comments": first("c3")}]}}]
+    flag, clean = cases_from("o/r", prs, 5)
+    check("review cases: a fixed finding is a flag case at the commit it was raised on", [(c["pr"], c["head"], c["path"]) for c in flag], [(1, "c1", "a.php")])
+    check("review cases: a pull request with no thread is clean at its last commit; a dismissed one is neither", [(c["pr"], c["head"]) for c in clean], [(2, "h2")])
+    fork = [{"number": 9, "title": "x", "baseRefOid": "b", "headRefOid": "h", "isCrossRepository": True, "reviewThreads": {"nodes": []}},
+            {"number": 8, "title": "y", "baseRefOid": "b", "headRefOid": "h", "reviewThreads": {"nodes": []}}]
+    check("review cases: never a fork's pull request, nor one that does not say", cases_from("o/r", fork, 5), ([], []))
+    picked = pick({"o/a": ([{"id": "a1"}, {"id": "a2"}], []), "o/b": ([{"id": "b1"}], [])}, 2)
+    check("review pick: round the repositories", [c["id"] for c in picked], ["a1", "b1"])
+    case_f = {"expect": "flag", "path": "a.php"}
+    check("review verdict: flag found on its file", verdict(case_f, {"findings": [{"severity": "major", "file": "a.php"}]}), True)
+    check("review verdict: flag missed (a minor, another file, a pre-existing one)", verdict(case_f, {"findings": [{"severity": "minor", "file": "a.php"}, {"severity": "major", "file": "b.php"}, {"severity": "blocker", "file": "a.php", "pre_existing": True}]}), False)
+    check("review verdict: clean kept clean; clean blocked", (verdict({"expect": "clean"}, {"findings": [{"severity": "minor"}]}), verdict({"expect": "clean"}, {"findings": [{"severity": "major"}]})), (True, False))
+    check("review verdict: no review is unknown", verdict(case_f, None), None)
+    res = [{"id": "1", "expect": "flag", "ok": True}, {"id": "2", "expect": "flag", "ok": False}, {"id": "3", "expect": "clean", "ok": False}, {"id": "4", "expect": "clean", "ok": None}]
+    now = score("review", res)
+    check("review score: found, blocked, unreviewed", now, {"found": 1, "flag": 2, "blocked": 1, "clean": 1, "unreviewed": 1})
+    check("review worse: within one case of the baseline is not worse", worse("review", now, {"found": 2, "flag": 2, "blocked": 0}), "")
+    check("review worse: two fewer bugs found is", worse("review", {**now, "found": 0}, {"found": 2, "flag": 2, "blocked": 0}).startswith("it found 0 of 2"), True)
+    check("review worse: two more clean ones blocked is", "it blocked 2" in worse("review", {**now, "blocked": 2}, {"found": 1, "flag": 2, "blocked": 0}), True)
+    check("review worse: more than one case unreviewed is", ("could not be reviewed" in worse("review", {"found": 1, "flag": 1, "blocked": 0, "clean": 8, "unreviewed": 2}, {"found": 1, "flag": 1}),
+                                                             worse("review", {"found": 1, "flag": 1, "blocked": 0, "clean": 9, "unreviewed": 1}, {"found": 1, "flag": 1})), (True, ""))
+    check("review table: says what was missed", "**missed**" in table("review", res, now, {}), True)
+    with open(os.path.join(EVALS, "review", "baseline.json"), encoding="utf-8") as fh:
+        check("review: its baseline has the score's shape, unchanged", set(json.load(fh)) == set(now), True)
+
+    # Every other step's grade.
+    t = {"expect": {"category": "duplicate", "duplicate_of": 12, "exists_in_pro": False}}
+    check("triage: the record's category, duplicate_of and exists_in_pro", (
+        grade_triage(t, {"category": "duplicate", "duplicate_of": 12, "layer": "logic"}), grade_triage(t, {"category": "duplicate", "duplicate_of": 13}),
+        grade_triage(t, {"category": "duplicate", "duplicate_of": 12, "exists_in_pro": True}), grade_triage(t, {"category": "enhancement"}),
+        grade_triage({"expect": {"category": "enhancement"}}, {"category": "enhancement", "duplicate_of": 0}), grade_triage(t, None)),
+        (True, False, False, False, True, None))
+    r = {"test": "tests/repro/test_issue_7.py"}
+    check("repro: the test fails at the base on an assertion; broken or passing is not; no run is unknown", (
+        grade_repro(r, {"wrote": True, "outcome": "reproduced"}), grade_repro(r, {"wrote": True, "outcome": "broken"}), grade_repro(r, {"wrote": True, "outcome": "passed"}),
+        grade_repro(r, {"wrote": False}), grade_repro(r, {"wrote": True, "outcome": "limit"}), grade_repro(r, None)),
+        (True, False, False, False, None, None))
+    prd = ("### Problem\n\nNo dark mode.\n\n### Scope\n\n- A toggle.\n\n### Out of scope\n\n- Themes.\n\n### Acceptance criteria\n\n"
+           "- C1: Given a visitor, when they press the toggle, then the page turns dark.\n\n### Criticality\n\nNormal\n\n")
+    spec = prd + "### Spec: approach\n\nA class.\n\n### Spec: files\n\n- header.php\n- assets/dark.css\n\n### Spec: tests\n\n- C1 → tests/e2e/toggle.spec.ts\n"
+    c = {"type": "Bug", "files": ["header.php", "assets/dark.css", "footer.php"]}
+    check("spec: the schema passes and the Spec names enough of the merged files", (
+        grade_spec(c, {"body": spec}), grade_spec({**c, "files": ["a.php", "b.php", "header.php"]}, {"body": spec}),
+        grade_spec(c, {"body": prd}), grade_spec({**c, "type": "Feature"}, {"body": spec}), grade_spec(c, None)),
+        (True, False, False, False, None))
+    check("spec: only the Spec's files section names a file", files_named(spec.replace("- header.php\n", "") + "\nheader.php\n", ["header.php"]), [])
+    a = {"tests": ["tests/a.py", "tests/b.py"]}
+    check("autopilot: every test of the merged pull request passes", (
+        grade_autopilot(a, {"tests/a.py": "passed", "tests/b.py": "passed"}), grade_autopilot(a, {"tests/a.py": "passed", "tests/b.py": "reproduced"}),
+        grade_autopilot(a, {"tests/a.py": "passed", "tests/b.py": "limit"}), grade_autopilot(a, {"tests/a.py": "passed"}), grade_autopilot(a, {})),
+        (True, False, None, None, None))
+    check("reply: the judge says resolved, with no further change asked", (
+        grade_reply({}, {"resolved": True, "more_asked": False}), grade_reply({}, {"resolved": True, "more_asked": True}),
+        grade_reply({}, {"resolved": False}), grade_reply({}, {"resolved": "yes"})), (True, False, False, None))
+
+    # The score of every other step, and its gate.
+    res = [{"id": "1", "expect": "passed", "ok": True}, {"id": "2", "expect": "passed", "ok": False}, {"id": "3", "expect": "passed", "ok": None}]
+    now = score("autopilot", res)
+    check("score: passed, cases replayed, not replayed", now, {"passed": 1, "cases": 2, "unrun": 1})
+    check("worse: one case of slack", (worse("spec", now, {"passed": 2, "cases": 2}), worse("spec", now, {"passed": 3, "cases": 3}).startswith("1 of 2 cases passed")), ("", True))
+    check("worse: more than one case not replayed", "could not be replayed" in worse("spec", {"passed": 4, "cases": 4, "unrun": 2}, {"passed": 4, "cases": 6}), True)
+    check("table: says what failed", "**failed**" in table("repro", res, now, {}) and "could not replay" in table("repro", res, now, {}), True)
+    check("run: a step with no replay yet leaves every case unreplayed", [r["ok"] for r in run("reply", [{"id": "x", "expect": "resolved"}], "/nonexistent")], [None])
+
+    # Collecting from git: the reproduced bugs, the accepted issues.
+    commits = [{"sha": "m1", "parent": "p1", "subject": "fix: the bug reproduced from #41 (#42)", "body": "Closes #43.", "files": ["scripts/a.py", "tests/repro/test_issue_41.py"]},
+               {"sha": "m2", "parent": "p2", "subject": "feat(x)!: b (#45)", "body": "Closes #44.", "files": ["scripts/b.py", "tests/workflows/test_b.py", "CHANGELOG.md"]},
+               {"sha": "m3", "parent": "p3", "subject": "fix: c (#46)", "body": "Closes #47.", "files": [f"s/{i}" for i in range(MAX_FILES)] + ["tests/workflows/test_c.py"]},
+               {"sha": "m4", "parent": "", "subject": "fix: d (#48)", "body": "Closes #49.", "files": ["s/d", "tests/workflows/test_d.py"]}]
+    check("collect: a reproduced bug's test, at the commit before its fix", [(c["issue"], c["base"], c["test"]) for c in cases_from_commits("repro", "o/r", commits, 6)],
+          [(41, "p1", "tests/repro/test_issue_41.py")])
+    check("collect: an accepted issue's change, not too big, with its parent", [(c["issue"], c["type"], c["files"]) for c in cases_from_commits("spec", "o/r", commits, 6)],
+          [(44, "Feature", ["scripts/b.py"])])
+    check("collect: N at most", len(cases_from_commits("autopilot", "o/r", commits * 3, 2)), 2)
+    check("claude_args: the workflow's arguments, its expressions filled", ("--allowedTools" in claude_args("issue-repro.yml", "write", "claude_way",
+          {"steps.policy.outputs.model": "m", "steps.policy.outputs.effort": "e", "steps.way.outputs.dir": "tests/repro"}),
+          "Write(tests/repro/**),Edit(tests/repro/**)" in " ".join(claude_args("issue-repro.yml", "write", "claude_way", {"steps.policy.outputs.model": "m", "steps.policy.outputs.effort": "e", "steps.way.outputs.dir": "tests/repro"}))),
+          (True, True))
+    try:
+        claude_args("issue-repro.yml", "write", "claude_way", {})
+        unknown = "no error"
+    except KeyError:
+        unknown = "KeyError"
+    check("claude_args: an expression it does not know fails the case, never a guess", unknown, "KeyError")
+    check("claude_args: the autopilot's budgets are known", (autopilot_args("spec", "3")[:2], "--max-turns" in autopilot_args("work", "20")), (["--model", autopilot_args("spec", "3")[1]], True))
+    print("all tests passed" if not failed else "some tests failed")
+    return 1 if failed else 0
+
+
 def main(argv):
+    if argv == ["--test"]:
+        return self_test()
     if argv[:1] == ["steps"]:
         files = argv[1:] or [line.strip() for line in sys.stdin if line.strip()]
         print("\n".join(steps_of(files, with_set=True)))
