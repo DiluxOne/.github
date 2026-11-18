@@ -1142,6 +1142,12 @@ jobs:
           # (#805: every caller's scripts have the board's flow).
           PR="$pr" MODE=start RUNS=1 python3 .dx-central/scripts/autopilot.py count
           { echo "pr=$pr"; echo "branch=$branch"; } >> "$GITHUB_OUTPUT"
+          # #832 C1: its draft open, its pull request now holds the core, so
+          # its start no longer holds the sweep's queue (6 hours at most).
+          if [ "$(python3 .dx-central/scripts/receipts.py state get core_started 2>/dev/null || echo null)" != null ]; then
+            python3 .dx-central/scripts/receipts.py state set core_started= >/dev/null \
+              || echo "::warning::#$NUMBER: its start on the core could not come off its board; the sweep lets it go within 6 hours."
+          fi
           AUTOPILOT_RUN="$RUN_URL" python3 .dx-central/scripts/autopilot.py board
           echo "Draft pull request #$pr opened for #$NUMBER: $url"
       - name: The work's task
