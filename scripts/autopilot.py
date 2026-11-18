@@ -539,7 +539,7 @@ TAKEN_QUERY = """query($owner: String!, $name: String!, $number: Int!) {
         closedByPullRequestsReferences(first: 20, includeClosedPrs: false) { nodes { number url state } } }
     }
     issue(number: $number) {
-      closedByPullRequestsReferences(first: 20, includeClosedPrs: false) { nodes { number url state } }
+      closedByPullRequestsReferences(first: 20, includeClosedPrs: false) { nodes { number url state author { login } labels(first: 20) { nodes { name } } } }
     }
   }
 }"""
@@ -551,15 +551,31 @@ def taken_by(number, lanes, prs):
     author, prs: those that close it); only dilux-bot's titled exactly "The
     bug reproduced from #<number>" count, so nothing a person writes takes
     the issue from the autopilot. `prs`: the open pull requests that close
-    #number by GitHub's link, whoever wrote them. Returns {lane, prs}: the
-    lane's issue and its open pull requests, else the pull requests."""
+    #number by GitHub's link, whoever wrote them, but the autopilot's own
+    for it (dilux-bot's, labelled `autopilot`, #696): that one is no second
+    fix, and the start goes on to `reaccepted`, which frees it after a stop,
+    and to the check that ends a start where a pull request already closes
+    the issue. Returns {lane, prs}: the lane's issue and its open pull
+    requests, else the pull requests."""
     links = lambda ps: [{"number": p["number"], "url": p.get("url", "")} for p in ps or [] if p.get("state", "OPEN") == "OPEN"]
     title = f"The bug reproduced from #{number}"
     for lane in lanes or []:
         if lane.get("state", "OPEN") == "OPEN" and lane.get("title") == title and lane.get("author") in BOT_LOGINS:
             return {"lane": {"number": lane["number"], "url": lane.get("url", "")}, "prs": links(lane.get("prs"))}
-    found = links(prs)
+    found = links([p for p in prs or [] if not autopilots_own(p)])
     return {"lane": None, "prs": found} if found else {}
+
+
+def autopilots_own(pr):
+    """Whether a pull request is the autopilot's own (#696): dilux-bot
+    opened it and it carries `autopilot`. Its author and labels as
+    `read_taken` gives them, or GraphQL's shape. Pure."""
+    author = pr.get("author")
+    author = (author or {}).get("login") if isinstance(author, dict) else author
+    labels = pr.get("labels") or []
+    labels = labels.get("nodes") or [] if isinstance(labels, dict) else labels
+    names = {l.get("name") if isinstance(l, dict) else l for l in labels}
+    return author in BOT_LOGINS and "autopilot" in names
 
 
 def taken_why(found):
@@ -3897,6 +3913,14 @@ Clamp the value in Sum::add.
     rc, posted = taken_cmd([])
     check("#807 C2 taken: the first time, it comments on the report with the links", (rc, len(posted), posted and posted[0][2], posted and "[#21](" in posted[0][-1]), (1, 1, "7", True))
     check("#807 C2 taken: dilux-bot's marker already there, it posts nothing", taken_cmd([mine]), (1, []))
+    own696 = {**pr807, "author": {"login": BOT_LOGINS[0]}, "labels": {"nodes": [{"name": "autopilot"}, {"name": "needs-human"}]}}
+    check("#696 C1 taken: the autopilot's own draft for the issue takes nothing, so a new acceptance reaches `reaccepted`, which frees it",
+          (taken_cmd([], lanes=(), prs=[own696]), taken_by(7, [], [own696])), ((0, []), {}))
+    check("#696 C1 taken_by: a pull request with `autopilot` a person opened, or dilux-bot's without it, still takes the issue",
+          [bool(taken_by(7, [], [p])) for p in ({**own696, "author": {"login": "mallory"}}, {**own696, "labels": {"nodes": [{"name": "needs-human"}]}},
+                                                {**own696, "author": None})], [True, True, True])
+    check("#696 C1 the read takes each closing pull request's author and labels, for autopilots_own",
+          "nodes { number url state author { login } labels(first: 20) { nodes { name } } }" in TAKEN_QUERY, True)
     check("#807 C2 taken: a marker in a person's comment does not count", len(taken_cmd([{**mine, "user": {"login": "mallory"}}])[1]), 1)
     # #807 C3: nothing took it, the autopilot starts as it does today.
     check("#807 C3 taken_by: no lane issue for the report and no open pull request that closes it is nothing",

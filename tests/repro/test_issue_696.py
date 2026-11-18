@@ -90,3 +90,31 @@ def test_every_path_and_setting_of_the_model_names_a_scenario_that_exists():
     ids = {s["id"] for s in yaml.safe_load((ROOT / "tests/release/scenarios.yml").read_text(encoding="utf-8"))["scenarios"]}
     assert paths(doc.read_text(encoding="utf-8"), ids) == []
     assert paths("| Path or setting | Scenarios |\n| --- | --- |\n| A stop answered | `no-such-scenario` |\n", ids) != []
+
+
+def test_a_new_acceptance_reaches_the_autopilots_own_stopped_draft():
+    # The review of #831: on a start, `taken` ran before `reaccepted` and
+    # counted the autopilot's own draft as a fix already on its way, so the
+    # draft it stopped on was never freed. Its own draft takes nothing; a
+    # person's pull request still does; and `reaccepted` runs before the
+    # check that ends a start where a pull request closes the issue.
+    ap = autopilot()
+    own = {"number": 9, "url": "https://github.com/o/r/pull/9", "state": "OPEN",
+           "author": {"login": ap.BOT_LOGINS[0]}, "labels": {"nodes": [{"name": "autopilot"}, {"name": "needs-human"}]}}
+    assert ap.taken_by(7, [], [own]) == {}, "the autopilot's own draft stops the start before `reaccepted` frees it"
+    assert ap.taken_by(7, [], [{**own, "author": {"login": "ana"}}]), "a person's pull request no longer takes the issue"
+    assert ap.taken_by(7, [], [own, {**own, "number": 10, "author": {"login": "ana"}}])["prs"] == [{"number": 10, "url": own["url"]}]
+    run = step_run("autopilot.yml", "prep", "may")
+    assert run.index("autopilot.py taken") < run.index("autopilot.py reaccepted") < run.index("closedByPullRequestsReferences | length")
+
+
+def test_a_runs_cap_end_is_written_by_cap_comment_and_no_failed_read_widens_settled():
+    # The review of #831: the runs cap's comment was inlined next to an
+    # unused `cap_comment`, and a failed read of the first `accepted` handed
+    # `settled` every comment, from before the acceptance too.
+    run = step_run("autopilot.yml", "prep", "may")
+    assert "autopilot.py cap-comment" in run, "the runs cap's comment does not come from cap_comment"
+    wf = yaml.safe_load((ROOT / ".github/workflows/autopilot.yml").read_text(encoding="utf-8"))
+    settle = next(s["run"] for job in wf["jobs"].values() for s in job.get("steps", []) if "autopilot.py settled" in s.get("run", ""))
+    body = settle[settle.index("settle() {"):]
+    assert '[ -n "$since" ] || return 0' in body[:body.index("autopilot.py settled")], "with no first `accepted`, settled reads every comment"

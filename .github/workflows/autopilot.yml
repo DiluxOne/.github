@@ -689,12 +689,16 @@ jobs:
             # runs cap, never against the rounds cap: the label asked for it.
             if ! why=$(AS="$AS" python3 .dx-central/scripts/autopilot.py may-continue); then
               echo "No continue: $why"
-              # A cap end, marked (#696: autopilot.py cap_comment), so it
-              # hides an older stop from review-reply.yml's answer.
-              [[ "$why" != *"cap is"* ]] || gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "<!-- dx-autopilot-cap -->
-          The autopilot does not continue: $why. A person takes it from here.
+              # A cap end, marked (#696: autopilot.py cap-comment), so it
+              # hides an older stop from review-reply.yml's answer; scripts
+              # older than it (`central-ref`) write the same words unmarked.
+              if [[ "$why" == *"cap is"* ]]; then
+                cap=$(python3 .dx-central/scripts/autopilot.py cap-comment "$why" 2>/dev/null) && [[ "$cap" == "<!-- dx-autopilot-cap -->"* ]] \
+                  || cap="The autopilot does not continue: $why. A person takes it from here.
 
-          🤖 AI-generated · Claude Opus 5.5 (Anthropic)" >/dev/null
+          🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
+                gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "$cap" >/dev/null
+              fi
               [[ "$why" != *"cap is"* ]] || gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label needs-human >/dev/null
               [[ "$why" != *"cap is"* ]] || gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "${OPEN_TO_CLAIM:-}" >/dev/null || true
               echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
@@ -821,12 +825,18 @@ jobs:
           # reach the prompt. Read here for a start, below for the work.
           export SETTLED="$RUNNER_TEMP/settled.md"
           : > "$SETTLED"
+          # A read of the events that fails, or finds no `accepted` (a
+          # delegated sub-issue nobody labelled, #575), reads no answer, with
+          # a warning: an empty `since` would hand the prompt every comment
+          # of theirs, from before the acceptance too.
           since=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/events" --paginate --jq '.[] | select(.event == "labeled" and .label.name == "accepted") | .created_at' | sort | sed -n 1p) || since=""
+          [ -n "$since" ] || echo "::warning::#$NUMBER's first \`accepted\` could not be read: the agent reads no settled answer."
           # A reproduced bug's fix reads its test alone, never the report's
           # conversation (#84).
           settle() {
             grep -q '^def settled' .dx-central/scripts/autopilot.py || return 0
             [ "${LANE:-}" != bugfix-reproduced ] || return 0
+            [ -n "$since" ] || return 0
             jq -r '.[].author.login' "$RUNNER_TEMP/comments.json" | sort -u \
               | python3 .dx-central/scripts/deciders.py list answer > "$RUNNER_TEMP/deciders.txt" || : > "$RUNNER_TEMP/deciders.txt"
             COMMENTS="$RUNNER_TEMP/comments.json" DECIDERS="$RUNNER_TEMP/deciders.txt" SINCE="$since" python3 .dx-central/scripts/autopilot.py settled > "$SETTLED"

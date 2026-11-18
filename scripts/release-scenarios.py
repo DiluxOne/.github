@@ -2104,7 +2104,9 @@ def paths(table_text, scenario_ids, required=REQUIRED_PATHS):
         cells = [c.strip() for c in line.strip().strip("|").split("|")] if line.strip().startswith("|") else []
         if len(cells) < 2 or re.fullmatch(r"[-: ]+", cells[0]) or cells[0] == "Path or setting":
             continue
-        rows[cells[0]] = re.findall(r"`([a-z0-9-]+)`", cells[1])
+        if cells[0] in rows:
+            out.append(f"{PATHS_DOC}: {cells[0]} has two rows")
+        rows[cells[0]] = rows.get(cells[0], []) + re.findall(r"`([a-z0-9-]+)`", cells[1])
     for name in required:
         if name not in rows:
             out.append(f"{PATHS_DOC} has no row for {name}")
@@ -2511,6 +2513,9 @@ def self_test():
           [f"{PATHS_DOC}: {REQUIRED_PATHS[1]} names no-such-scenario, which is no scenario of {SCENARIOS}"])
     empty696 = rows696.replace(f"| {REQUIRED_PATHS[2]} | `accepted-spec` |", f"| {REQUIRED_PATHS[2]} |  |")
     check("#696 C2 paths fixture: an empty cell is named", paths(empty696, {"accepted-spec"}), [f"{PATHS_DOC}: {REQUIRED_PATHS[2]} names no scenario"])
+    dup696 = rows696 + f"| {REQUIRED_PATHS[0]} | `no-such-scenario` |\n"
+    check("#696 C2 paths fixture: a row named twice is named, and neither row's scenarios is lost", paths(dup696, {"accepted-spec"}),
+          [f"{PATHS_DOC}: {REQUIRED_PATHS[0]} has two rows", f"{PATHS_DOC}: {REQUIRED_PATHS[0]} names no-such-scenario, which is no scenario of {SCENARIOS}"])
     check("#696 C2 paths: the required rows are docs/model.md's paths and the settings that change them",
           {"A person's bug to its merge", "A reproduced bug merged by policy", "A feature accepted and built", "A claim and its release", "A stop answered",
            "An edit after acceptance and the new acceptance", "The release and its watch", "Acceptance by policy", "`who-decides`", "A claim",
