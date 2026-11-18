@@ -41,10 +41,12 @@ the run's id, `run_mark`, so none is what an earlier run merged into main,
 which would leave its pull request with no diff: #778, `scenario_text`;
 a `before`'s file says its `says` alone),
 `minutes` (its limit, 10 by default, 15 at most) and
-`expect` (`labels`, `absent`, `comments` (markers), `pull` (`closes`,
+`expect` (`labels`, `absent`, `comments` (markers), `count` ({marker:
+n}, how many comments carry it, #696), `pull` (`closes`,
 `branch`, `title`, patterns; `false` for none that closes it, #713), `check` (name: conclusion, the name a
 check run's caller's job or its own: `check_named`, #709), `merged`,
-`waiting`). Every scenario is a group of its own (`groups`, #694), and
+`waiting`, `state` (OPEN or CLOSED, #696: a bug's issue its merged fix
+closed)). Every scenario is a group of its own (`groups`, #694), and
 the lane plays the groups at once, one job each, on GitHub's runners,
 never DX_RUNNER_HEAVY, where the test repository's own jobs run
 (`lane_problems`, #707): each writes only under
@@ -421,6 +423,11 @@ def preconditions(scenarios, bodies, pack, can_dispatch=(), passes=None, types=N
     out = []
     for s in scenarios:
         sid, expect, opens = s.get("id") or "?", s.get("expect") or {}, s.get("opens") or {}
+        # #696: `count` is {marker: how many comments carry it}.
+        count = expect.get("count")
+        if count is not None and (not isinstance(count, dict) or not count
+                                  or any(not isinstance(n, int) or isinstance(n, bool) or n < 0 for n in count.values())):
+            out.append(f"scenario {sid}: its expect's count is not {{marker: a whole number}}")
         verdicts = [v for v in BUG_VERDICTS if v in (expect.get("labels") or [])]
         if verdicts and repro is False:
             out.append(f"scenario {sid}: expects {', '.join(verdicts)}, but the test repository has no way to reproduce a bug "
@@ -584,6 +591,14 @@ def holds(expect, seen):
     for key in ("merged", "waiting"):
         if key in expect and bool(seen.get(key)) != bool(expect[key]):
             out.append(f"{key} is {bool(seen.get(key))}")
+    # #696: how many comments carry a marker (a stop said once, never twice).
+    for marker, n in (expect.get("count") or {}).items():
+        got = sum(1 for c in seen.get("comments") or [] if marker in str(c))
+        if got != n:
+            out.append(f"{got} comments with {marker}, not {n}")
+    # #696: the issue's or the pull request's state (CLOSED once its fix merged).
+    if "state" in expect and str(seen.get("state") or "").upper() != str(expect["state"]).upper():
+        out.append(f"its state is {seen.get('state') or 'unknown'}, not {expect['state']}")
     return out + [saw(seen)] if out else out
 
 
@@ -620,6 +635,10 @@ def hopeless(expect, seen, settled=False):
         got = check_named(name, seen.get("checks"))
         if got and got != conclusion:
             out.append(f"check {name} ended {got}, not {conclusion}")
+    for marker, n in (expect.get("count") or {}).items():
+        got = sum(1 for c in seen.get("comments") or [] if marker in str(c))
+        if isinstance(n, int) and got > n:
+            out.append(f"{got} comments with {marker} already, past {n}")
     if expect.get("check") and seen.get("held"):
         out.append(f"the fork's run waits for approval to run workflows from forks ({', '.join(seen['held'])})")
     if settled:
@@ -2405,6 +2424,26 @@ def self_test():
     check("holds: what holds is nothing", holds({"labels": ["autopilot"], "comments": ["<!-- dx-x -->"], "pull": {"closes": True, "branch": "^feat/4-"}, "check": {"g": "success"}, "merged": False}, seen), [])
     check("holds: what does not is named, and what it saw (#707)", holds({"labels": ["accepted"], "absent": ["autopilot"], "merged": True}, seen),
           ["no label accepted", "label autopilot still there", "merged is False", "saw labels autopilot, awaiting-acceptance; the bot's newest comment: none"])
+    # #696 C1: a stop said once, never twice: how many comments carry it.
+    stop696 = "<!-- dx-autopilot-stop -->"
+    once = {**seen, "comments": [f"{stop696}\nStopped.", "**Acceptance withdrawn (G2):**", "<!-- dx-board -->"]}
+    twice = {**once, "comments": once["comments"] + [f"{stop696}\nStopped again."]}
+    check("#696 C1 holds: count, once is once; twice is named; none is named", (holds({"count": {stop696: 1}}, once), holds({"count": {stop696: 1}}, twice)[0],
+          holds({"count": {stop696: 1}}, {**seen, "comments": []})[0]), ([], f"2 comments with {stop696}, not 1", f"0 comments with {stop696}, not 1"))
+    check("#696 C1 hopeless: a marker past its count can no longer hold; under it still may", (hopeless({"count": {stop696: 1}}, twice), hopeless({"count": {stop696: 1}}, {**seen, "comments": []})),
+          ([f"2 comments with {stop696} already, past 1"], []))
+    check("#696 holds: state, the issue its merged fix closed", (holds({"state": "CLOSED"}, {**seen, "state": "CLOSED"}), holds({"state": "CLOSED"}, {**seen, "state": "OPEN"})[0]),
+          ([], "its state is OPEN, not CLOSED"))
+    bad696 = [{"id": "c1", "opens": {"issue": {"title": "x", "body": "complete-feature"}}, "expect": {"count": c}} for c in ({"m": -1}, {"m": "one"}, [], {}, {"m": True})]
+    check("#696 C1 preconditions: count is {marker: a whole number}", [len(preconditions([b], real.get("bodies") or {}, {})) for b in bad696], [1, 1, 1, 1, 1])
+    check("#696 C1 preconditions: a whole number holds", preconditions([{**bad696[0], "expect": {"count": {"m": 1}}}], real.get("bodies") or {}, {}), [])
+    c1 = next((s for s in real["scenarios"] if s["id"] == "stop-edited-reaccepted-answered"), {})
+    verbs696 = [next(k for k in st if k != "of") for st in c1.get("steps") or []]
+    check("#696 C1: the scenario stops, is edited, answered and accepted again, in that order, and expects the stop once and no label left",
+          (verbs696[-3:], verbs696.count("label"), "edit" in verbs696 and verbs696.index("edit") < verbs696.index("comment"),
+           (c1.get("expect") or {}).get("count"), {"needs-human", "autopilot:continue"} <= set((c1.get("expect") or {}).get("absent") or []),
+           "the fixed change asks first" in (real.get("bodies") or {}).get(c1.get("opens", {}).get("issue", {}).get("body"), "")),
+          (["until", "comment", "label"], 2, True, {stop696: 1}, True, True))
     calls = []
 
     def fake(*args, input=None):
@@ -3148,7 +3187,7 @@ def self_test():
              and any(needs_autopilot(w) for w in [s.get("expect")] + [st_["until"] for st_ in s.get("steps") or [] if "until" in st_])]
     check("#713 C2: the real file: every scenario that reads the autopilot's result waits for it, each within 15 minutes",
           (autopilot_problems(real["scenarios"]), sorted(reads), {limit(by713[i]) for i in reads}),
-          ([], sorted(["accepted-spec", "spec-to-draft", "core-one-at-a-time", "decision-sub-issues", "prd-edited-after-acceptance", "question-answered", "stop-hint-continue", "draft-in-conflict", "ready-behind-main"]), {15}))
+          ([], sorted(["accepted-spec", "spec-to-draft", "core-one-at-a-time", "decision-sub-issues", "prd-edited-after-acceptance", "question-answered", "stop-hint-continue", "draft-in-conflict", "ready-behind-main", "bug-by-person-merges", "stop-answered", "stop-edited-reaccepted-answered"]), {15}))
     # #764 C2: high-risk-waits's floor is high from the path it changes.
     hrw = by713["high-risk-waits"]
     rhigh, rlow = risk_patterns()

@@ -60,6 +60,10 @@ identity:
 autopilot: fixed-change
 fixed-change:
   file: "scenarios/{scenario}/{n}.md"
+  # A PRD that carries this phrase makes the fixed Spec stop, as a model
+  # asking would, until someone who decides answers in a comment (#696,
+  # scripts/autopilot.py fixed_asks); every other PRD goes on as before.
+  ask: "the fixed change asks first"
 
 # Its bugs reproduced with a fixed test that calls no model either (#707,
 # scripts/repro-ways.py `fixed`): issue-repro.yml copies repro-fixed.py,
