@@ -183,6 +183,10 @@ The agent reads text anyone can write. No layer depends on the agent behaving we
 6. A reproduced bug's fix is accepted without the original report.
 7. The AI can only stop a gate, never skip one.
 
+## Measuring the AI
+
+A change to the AI is measured, not guessed (#735). Every AI step (the triage, the reproduction, the Spec, the autopilot's work, the review, the reply to a review thread) has its evaluation set of real cases under `evals/<step>/`, with the score of its last whole run. A pull request that changes a step (its workflow, the prompts it reads, its model in `policy/autonomy.yml`, its set) replays that step's cases through [`scripts/evals.py`](../scripts/evals.py) in [`evals.yml`](../.github/workflows/evals.yml), graded deterministically wherever a grade exists, and fails when the score is worse than the baseline. A person merges every change to a set or a baseline. Which paths run which set, and how a case is added: [testing and quality](testing-and-quality.md#how-the-ai-is-measured).
+
 ## Learnings
 
 The system learns from its receipts but does not change itself. The receipt records the findings (rounds, what the review flagged, escalations, reverts); a scheduled job finds what repeats (how often, and over how long, the policy sets) and opens a pull request to the rule it belongs to, with the receipts as evidence. A person decides; a closed proposal is recorded and not made again.

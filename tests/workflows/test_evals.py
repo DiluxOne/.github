@@ -197,3 +197,33 @@ def test_c2_the_review_scores_as_before(tmp_path):
            + [{"id": f"c{i}", "expect": "clean", "ok": True} for i in range(6)])
     got = run_score(tmp_path, "review", res, base)
     assert got.returncode == 1 and "it found 1 of 6 known bugs, the baseline 3 of 6" in got.stdout
+
+
+# C4: the docs say how the AI is measured, which paths run which set, and
+# how a case is added.
+
+DOCS = ("docs/model.md", "docs/testing-and-quality.md", "docs/workflows.md")
+
+
+@pytest.mark.parametrize("doc", DOCS)
+def test_c4_each_doc_names_the_runner_and_the_workflow(doc):
+    text = (ROOT / doc).read_text(encoding="utf-8")
+    assert "evals.py" in text and "evals.yml" in text, doc
+
+
+def test_c4_testing_and_quality_says_which_paths_run_which_set_and_how_a_case_is_added():
+    text = (ROOT / "docs" / "testing-and-quality.md").read_text(encoding="utf-8")
+    assert "## How the AI is measured" in text
+    section = text.split("## How the AI is measured", 1)[1]
+    mod = evals()
+    for step in SIX:
+        assert f"`{step}`" in section, step
+        for path in mod.STEPS[step]["paths"]:
+            assert path in section, f"{step}: {path}"
+    assert "policy/autonomy.yml" in section and "evals/<step>/" in section
+    assert "evals.py collect" in section and "evals.py baseline" in section
+
+
+def test_c4_no_page_links_the_removed_review_eval_yml():
+    for path in [*ROOT.glob("*.md"), *ROOT.glob("docs/**/*.md"), *ROOT.glob("kinds/**/*.md")]:
+        assert "workflows/review-eval.yml" not in path.read_text(encoding="utf-8"), path
