@@ -259,7 +259,22 @@ jobs:
           # org.yml `attribution` keeps it `warn` until the repositories
           # are in step.
           ATTRIBUTION: ${{ steps.attribution.outputs.mode }}
+          # Each error by what it is about (#699 C3), kept below for the
+          # autopilot's fix round.
+          ERRORS_FILE: ${{ runner.temp }}/conventions-errors.tsv
         run: bash .dx-central/scripts/conventions.sh
+
+      # What failed, for the autopilot's fix round on its own pull request
+      # (#699 C3): autopilot.yml, called by the same run, reads it into its
+      # inputs, so it fixes the title or the commits.
+      - name: Keep the errors for the fix round
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: conventions-errors
+          path: ${{ runner.temp }}/conventions-errors.tsv
+          if-no-files-found: ignore
+          retention-days: 3
 
   docs:
     name: Docs (links and names)
