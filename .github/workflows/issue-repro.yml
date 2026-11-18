@@ -228,8 +228,11 @@ jobs:
     timeout-minutes: 25
     # A cheap pre-filter only, so that an unrelated label never queues a run;
     # the decision is scripts/repro-trigger.sh.
+    # A release lane's bug with its run as the reproduction (#699 C6) is
+    # never tried: the `release-bug` job accepts it.
     if: >-
-      github.event_name == 'issues' && (
+      github.event_name == 'issues' &&
+      !(startsWith(github.event.issue.body, '<!-- dx-release-lane') && contains(github.event.issue.body, 'Reproduced by: https://github.com/')) && (
         (inputs.trigger == 'triage' && github.event.action == 'opened') ||
         (inputs.trigger == 'label' && github.event.action == 'labeled' &&
           ((github.event.sender.type != 'Bot' && (github.event.label.name == 'repro:run' || github.event.label.name == 'repro:again')) ||
@@ -1229,6 +1232,90 @@ jobs:
           gh label create needs-human --repo "$GITHUB_REPOSITORY" --color D93F0B --description "A person takes it from here" --force >/dev/null || true
           gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label needs-human >/dev/null || true
           gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf '%s\n\nThe failing test is on the branch %s. Handing the fix to the autopilot failed part-way (%s), so a maintainer takes it from here.\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)' "$(cat "$RUNNER_TEMP/reproduced.md" 2>/dev/null || echo Reproduced.)" "$BRANCH" "$RUN_URL")" >/dev/null
+
+  # A bug the release lane opens (#699 C6): dilux-bot's, its mark first and
+  # its run the reproduction (`Reproduced by: <run> scenario <id>` in its
+  # Problem, scripts/repro-lane.py scenario). No reproduction is tried, so
+  # no `could-not-reproduce`: it is labelled `lane:bugfix-reproduced`, the
+  # lane accepts it by policy (autonomy.py lane-accept: policy/autonomy.yml
+  # lists the release lane in its origin), its decision goes on the
+  # receipts, its PRD is sealed and the autopilot starts on it, as for a
+  # confirmed bug. With no test to check, a person merges its fix.
+  release-bug:
+    name: A release lane's bug, reproduced by its run
+    if: >-
+      github.event_name == 'issues' && inputs.trigger == 'label' && github.event.action == 'opened' &&
+      github.event.issue.user.login == vars.DX_BOT_LOGIN && startsWith(github.event.issue.body, '<!-- dx-release-lane') &&
+      contains(github.event.issue.body, 'Reproduced by: https://github.com/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      issue: ${{ steps.accept.outputs.issue }}
+    steps:
+      - name: App token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-actions: read # the run that opened it
+          permission-contents: write # the receipts
+          permission-issues: write
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
+          path: .dx-central
+          persist-credentials: false
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+      - name: Accept it by policy
+        id: accept
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          NUMBER: ${{ github.event.issue.number }}
+          DX_AUTOPILOT: ${{ vars.DX_AUTOPILOT }}
+          RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+          BT: '`'
+        run: |
+          set -euo pipefail
+          gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/sealed.md"
+          export BODY="$RUNNER_TEMP/sealed.md"
+          if ! ev=$(python3 .dx-central/scripts/repro-lane.py scenario); then
+            echo "#$NUMBER names no release scenario's run: it goes the way of any bug."; exit 0
+          fi
+          gh label create lane:bugfix-reproduced --repo "$GITHUB_REPOSITORY" --color 1D76DB --description "A bug the reproduction confirmed with a failing test" --force >/dev/null
+          gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label lane:bugfix-reproduced >/dev/null
+          if ! why=$(python3 .dx-central/scripts/autonomy.py lane-accept); then
+            echo "::warning::#$NUMBER: the lane does not accept it ($why); it waits for a maintainer."
+            gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'No lane accepted this bug (%s), so it waits for a maintainer: accepting it (%saccepted%s) hands it to the autopilot.\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)' "$why" "$BT" "$BT")" >/dev/null
+            exit 0
+          fi
+          POLICY_REF=$(git -C .dx-central rev-parse --short=12 HEAD)
+          export POLICY_REF
+          # The lane's decision on the receipts (#804), never a label.
+          evidence=$(jq -c --arg why "$why" --arg run "$RUN_URL" '{why: $why, run: $run, reproduced_by: .run, scenario: .scenario}' <<<"$ev")
+          LANE=bugfix-reproduced DECIDED=policy EVIDENCE_JSON="$evidence" python3 .dx-central/scripts/receipts.py lane-decision >/dev/null
+          ACCEPTED_BY="policy (lane bugfix-reproduced)" python3 .dx-central/scripts/receipts.py seal-prd
+          board=$(python3 .dx-central/scripts/receipts.py board)
+          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$board" >/dev/null
+          echo "issue=$NUMBER" >> "$GITHUB_OUTPUT"
+          echo "#$NUMBER: $why"
+
+  release-autopilot:
+    name: Autopilot on the release lane's bug
+    needs: release-bug
+    if: "!cancelled() && needs.release-bug.result == 'success' && needs.release-bug.outputs.issue != ''"
+    # The agent's jobs read the repository with the job's own token (#287).
+    permissions:
+      contents: read
+    uses: DiluxOne/.github/.github/workflows/autopilot.yml@v7
+    with:
+      mode: start
+      issue: ${{ needs.release-bug.outputs.issue }}
+      central-ref: ${{ inputs.central-ref }}
+    secrets: inherit
 
   # The fix of a reproduced bug the lane accepted: the autopilot, as when a
   # person accepts an issue (it reads the lane from GitHub again, and works

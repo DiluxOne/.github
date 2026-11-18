@@ -59,6 +59,7 @@
 #
 #   conventions.sh                          check (exit 1 on any broken rule)
 #   conventions.sh --dependabot-title <t>   print <t> shortened to MAX_HEADER
+#   conventions.sh --title <t>              check a title alone (exit 1 when not a header)
 #   conventions.sh --test                   self-test against a scratch repository
 set -euo pipefail
 
@@ -127,7 +128,20 @@ check() {
   fail=0
   dependabot=false
   [ "$AUTHOR_TYPE" = Bot ] && [[ "$BRANCH" == dependabot/* ]] && dependabot=true
-  error() { echo "::error::$1"; fail=1; }
+  # ERRORS_FILE (#699 C3): each error also goes there, one line, what it is
+  # about (title, commit, branch, other), a tab, then the error, for the
+  # autopilot's fix round (conventions.yml keeps it as an artifact).
+  error() {
+    echo "::error::$1"; fail=1
+    [ -n "${ERRORS_FILE:-}" ] || return 0
+    local about=other
+    case $1 in
+      "The pull request title"*|"The pull request is labelled"*|"The title"*|"This pull request is titled"*) about=title ;;
+      "Commit "*) about=commit ;;
+      "Branch "*) about=branch ;;
+    esac
+    printf '%s\t%s\n' "$about" "${1//$'\n'/ }" >> "$ERRORS_FILE"
+  }
   # $3, the length the header is held to: MAX_HEADER, or none.
   check_header() {
     if ! [[ "$2" =~ $HEADER_RE ]]; then
@@ -276,6 +290,18 @@ test_case() {
   rm -rf "$dir"
   if [ "$got" = "$want" ]; then echo "ok   $name"; else echo "FAIL $name (want $want, got $got)"; return 1; fi
 }
+
+# A title alone (#699 C3): the header rules every title is held to, before
+# the autopilot's fix round sets one on its pull request.
+if [ "${1:-}" = "--title" ]; then
+  TYPES='feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert'
+  t=${2:-}
+  if [[ "$t" =~ ^(${TYPES})(\([a-z0-9._/-]+\))?!?:\ [^\ ].*[^.]$ ]] && (( ${#t} <= ${MAX_HEADER:-100} )); then
+    echo "The title is a Conventional Commit header of ${#t} characters."; exit 0
+  fi
+  echo "::error::The title is not a Conventional Commit header of ${MAX_HEADER:-100} characters at most (\"type(scope): subject\", no trailing period): \"$t\""
+  exit 1
+fi
 
 if [ "${1:-}" = "--dependabot-title" ]; then
   dependabot_title "${2:-}"
