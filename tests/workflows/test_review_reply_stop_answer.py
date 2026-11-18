@@ -137,3 +137,26 @@ def test_c2_no_stop_no_continue(tmp_path):
         run.mkdir()
         calls = answer(run, comments)
         assert "labels/needs-human" not in calls and "autopilot:continue" not in calls, comments
+
+
+def runs(event_name, head="o/r", body="why?"):
+    """Whether the answer job's `if:` lets EVENT_NAME through, on o/r, for a
+    pull request whose head is HEAD: the expression, read as Python."""
+    import re
+    expr = " ".join(job()["if"].split())
+    ctx = {"github.event_name": event_name, "github.event.action": "created",
+           "github.event.sender.type": "User", "github.event.comment.body": body,
+           "github.repository": "o/r",
+           "github.event.pull_request.head.repo.full_name": head if event_name == "pull_request_review_comment" else None}
+    py = re.sub(r"\bgithub(\.[A-Za-z_]+)+", lambda m: repr(ctx[m.group(0)]), expr)
+    py = py.replace("&&", " and ").replace("||", " or ").replace("!=", "<>").replace("!", " not ").replace("<>", "!=")
+    py = re.sub(r"startsWith\(", "_starts(", py)
+    return eval(py, {"_starts": lambda a, b: (a or "").lower().startswith(b.lower())})
+
+
+def test_the_answer_job_leaves_a_fork_s_review_comment_out():
+    # A fork's pull request runs without secrets: the App token would fail.
+    assert runs("pull_request_review_comment", head="o/r")
+    assert not runs("pull_request_review_comment", head="fork/r")
+    assert runs("issue_comment")
+    assert not runs("issue_comment", body="/coauthor @x")
