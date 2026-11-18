@@ -358,6 +358,46 @@ def open_bug(repo, title, body, run=sh):
     run("gh", "api", f"repos/{repo}/issues", "-f", f"title={title}", "-f", f"body={body}", "-f", "type=Bug", "--jq", ".html_url")
 
 
+# A candidate's failure report, as decide() titles it.
+REPORT = re.compile(r"^fix: release candidate v(\d+)\.(\d+)\.(\d+) fails scenario ")
+
+
+def stale_reports(issues, version):
+    """The numbers of the open issues (as the issues API lists them) that
+    are the lane's report of a candidate's failure (its mark first, its
+    title) for a version at or below `version`, the one just released
+    (#832). A rollback's bug and the breaking release's issue are other
+    titles. Pure."""
+    released = tuple(int(n) for n in version.lstrip("v").split("."))
+    out = []
+    for i in issues:
+        m = REPORT.match(i.get("title") or "")
+        if m and (i.get("body") or "").startswith(MARK) and not i.get("pull_request") and tuple(int(n) for n in m.groups()) <= released:
+            out.append(i["number"])
+    return sorted(out)
+
+
+def close_reports(repo, version, run=sh, lane_run=""):
+    """Closes, as completed, the reports stale_reports() finds once
+    `version` is released, each with a comment naming it. Returns (closed,
+    warnings): nothing here fails a release."""
+    try:
+        pages_ = json.loads(run("gh", "api", f"repos/{repo}/issues?state=open&per_page=100", "--paginate", "--slurp") or "[]")
+    except (RuntimeError, ValueError) as err:
+        return [], [f"The open failure reports could not be listed, so none was closed: {err}"]
+    issues = [i for page in pages_ for i in (page if isinstance(page, list) else [page]) if isinstance(i, dict)]
+    comment = (f"Released as {version}, which passed every scenario: this candidate's failure no longer holds a release."
+               + (f"\n\nThe lane's run: {lane_run}" if lane_run else ""))
+    closed, warnings = [], []
+    for n in stale_reports(issues, version):
+        try:
+            run("gh", "issue", "close", str(n), "--repo", repo, "--reason", "completed", "--comment", comment)
+            closed.append(n)
+        except RuntimeError as err:
+            warnings.append(f"#{n}, a failure report {version} supersedes, could not be closed: {err}")
+    return closed, warnings
+
+
 def act(p, results, repo, run=sh, sleep=time.sleep, root=".", lane_run=""):
     d = decide(p, results, lane_run)
     if d["do"] == "bug":
@@ -368,6 +408,11 @@ def act(p, results, repo, run=sh, sleep=time.sleep, root=".", lane_run=""):
         run("gh", "issue", "create", "--repo", repo, "--title", ri["title"], "--body", ri["body"], *sum((["--label", l] for l in ri["labels"]), []))
     elif d["do"] == "release":
         d.update(release(p, repo, run, sleep, root=root))
+        # #832: its tag moved, so the earlier candidates' reports no longer hold.
+        if d.get("moved_at"):
+            d["closed"], warnings = close_reports(repo, d["version"], run, lane_run)
+            if warnings:
+                d["warnings"] = warnings
     return d
 
 
@@ -621,6 +666,16 @@ def self_test():
     check("plan: nothing pending, nothing released", plan(dict(nxt, pending=False, bump="none"), [])["release"], False)
     check("plan: a `!` is breaking", plan(dict(nxt, bump="minor", next="7.11.0"), ["feat!: a required input"])["breaking"], True)
     check("plan: a major label is breaking", plan(dict(nxt, bump="major", next="8.0.0"), [])["breaking"], True)
+
+    reports = [{"number": 1, "title": "fix: release candidate v7.9.0 fails scenario a", "body": MARK + "\n"},
+               {"number": 2, "title": "fix: release candidate v7.100.0 fails scenario a", "body": MARK + "\n"},
+               {"number": 3, "title": "fix: release candidate v7.9.1 fails scenario a", "body": "no mark\n"},
+               {"number": 4, "title": "fix: v7.9.0 rolled back after a failure in o/r", "body": MARK + "\n"}]
+    check("#832: a release supersedes the marked reports of candidates at or below it, compared as numbers",
+          (stale_reports(reports, "v7.10.1"), stale_reports(reports, "v7.100.0")), ([1], [1, 2]))
+    f = Fake({"issues?state=open": json.dumps([reports]), "gh issue close": lambda a: (_ for _ in ()).throw(RuntimeError("HTTP 403"))})
+    closed, warned = close_reports("O/.github", "v7.10.1", f, "https://run")
+    check("#832: a close that fails is a warning, never an error", (closed, len(warned)), ([], 1))
 
     central = "O/.github"
     text = "jobs:\n  a:\n    uses: O/.github/.github/workflows/autopilot.yml@v7\n  b:\n    uses: ./.github/workflows/x.yml\n"
@@ -954,6 +1009,8 @@ def main(argv):
     if a.mode == "act":
         d = act(load(a.plan), results_of(a.results), a.repo, lane_run=a.run)
         print(json.dumps(d))
+        for w in d.get("warnings", []):
+            print(f"::warning::{w}", file=sys.stderr)
         if d.get("error"):
             print(f"::error::{d['error']}", file=sys.stderr)
         return 1 if d.get("error") else 0

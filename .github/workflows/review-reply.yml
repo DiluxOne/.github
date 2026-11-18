@@ -85,18 +85,23 @@ jobs:
   # accepts). The autopilot reads the answer itself, from the comments.
   # So does a maintainer's hint after the autopilot stopped or ended
   # silent (#561): on its pull request still labelled `autopilot` (or on
-  # the issue, with none), labelled `needs-human` and whose last end with
-  # a person is that stop or silent end (#696, autopilot.py run-end: past
+  # the issue, with none), in the conversation or in a review thread
+  # (#832; a fork's pull request's review comment runs with no secrets,
+  # so the job leaves it out), labelled `needs-human` by dilux-bot and
+  # whose last end with a person is that stop or silent end (#696, autopilot.py run-end: past
   # every other comment of dilux-bot's, a G2 withdrawal, its board, its
-  # mention), the comment takes `needs-human`
-  # off and brings it back, a run that counts. A maintainer who takes it
-  # over removes `autopilot` first; a stop for the runs or rounds cap ends
-  # in a comment of its own (`dx-autopilot-cap`), and stays with a person.
+  # mention, the review's summary, a reply, #647, #832), the comment takes
+  # `needs-human` off and brings it back, a run that counts. A maintainer
+  # who takes it over removes `autopilot` first, or adds `needs-human`
+  # themselves; a stop for the runs or rounds cap ends in a comment of its
+  # own (`dx-autopilot-cap`), and stays with a person.
   answer:
     name: The autopilot's answer
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     if: >-
-      github.event_name == 'issue_comment' && github.event.action == 'created' && github.event.sender.type == 'User' &&
+      (github.event_name == 'issue_comment' ||
+       (github.event_name == 'pull_request_review_comment' && github.event.pull_request.head.repo.full_name == github.repository)) &&
+      github.event.action == 'created' && github.event.sender.type == 'User' &&
       !startsWith(github.event.comment.body, '/coauthor') && !startsWith(github.event.comment.body, '/uncoauthor')
     timeout-minutes: 5
     outputs:
@@ -130,8 +135,10 @@ jobs:
         id: back
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
-          NUMBER: ${{ github.event.issue.number }}
-          IS_PR: ${{ github.event.issue.pull_request != null }}
+          # A review comment in a thread (#832) has no `issue`: its pull
+          # request is read the same way.
+          NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          IS_PR: ${{ github.event.issue.pull_request != null || github.event.pull_request != null }}
           LOGIN: ${{ github.event.sender.login }}
         run: |
           set -euo pipefail
@@ -184,11 +191,16 @@ jobs:
             if [ "$kind" = pr ]; then case ",$labels," in *,autopilot,*) ;; *) nothing ;; esac; fi
             # How its last run ended with a person (#696, autopilot.py
             # run-end): found past every other comment of the bot's (a G2
-            # "Acceptance withdrawn", its board, its mention, #647), so none
-            # hides the stop. A cap end stays with a person.
+            # "Acceptance withdrawn", its board, its mention, the review's
+            # summary, a reply, #647, #832), so none hides the stop. A cap
+            # end stays with a person. It holds only while `needs-human` was
+            # last added by dilux-bot: a maintainer who added it to take over
+            # keeps it.
             ended=$(gh api "repos/$GITHUB_REPOSITORY/issues/$stopped/comments" --paginate --jq '.[] | {body, createdAt: .created_at, author: {login: .user.login}}' \
               | python3 .dx-central/scripts/autopilot.py run-end)
             case $ended in stop|silent) ;; *) nothing ;; esac
+            by=$(gh api "repos/$GITHUB_REPOSITORY/issues/$stopped/events" --paginate --jq '.[] | select(.event == "labeled" and .label.name == "needs-human") | .actor.login' | tail -n 1)
+            [ "$by" = "$DX_BOT_LOGIN" ] || { echo "needs-human was added by ${by:-someone unknown}, not by the autopilot: it stays with a person."; nothing; }
           fi
           # Only those `who-decides` allows answer (#588,
           # scripts/deciders.py); anyone else, the issue's author included,

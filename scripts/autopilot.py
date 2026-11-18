@@ -1072,6 +1072,40 @@ def core_busy(spec_files, core, others, mine=0):
     return 0
 
 
+# #832 C1: the waiter the sweep starts carries `core_started` (UTC) on its
+# board until its draft opens, its run waits on the core again or stops, or
+# CORE_HOLD_HOURS pass; while one does, its repository's core is taken.
+CORE_HOLD_HOURS = 6
+
+
+def core_next(waiters, started, now=None):
+    """Which issues waiting on the core start (#832 C1), oldest first, at
+    most one per repository. `waiters`: [{repo, number}] whose core is free;
+    `started`: [{repo, number, at}] carrying `core_started`. Returns
+    [(repo, number, what)]: `start`, `first <n>` (it still waits, #n goes
+    first) or, for a start older than CORE_HOLD_HOURS or unreadable,
+    `expired` (its `core_started` comes off). Pure."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    out, held = [], {}
+    for s in sorted(started or [], key=lambda s: int(s.get("number") or 0)):
+        try:
+            at = datetime.datetime.strptime(str(s.get("at")), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+        except ValueError:
+            at = None
+        if at is None or now - at >= datetime.timedelta(hours=CORE_HOLD_HOURS):
+            out.append((s["repo"], int(s["number"]), "expired"))
+        else:
+            held.setdefault(s["repo"], int(s["number"]))
+    for w in sorted(waiters or [], key=lambda w: (w["repo"], int(w.get("number") or 0))):
+        n = int(w["number"])
+        if w["repo"] in held:
+            out.append((w["repo"], n, f"first {held[w['repo']]}"))
+        else:
+            held[w["repo"]] = n
+            out.append((w["repo"], n, "start"))
+    return out
+
+
 def core_comment(number):
     """What the issue says while it waits for `core` (#563)."""
     return (f"{CORE_MARK}\nThe autopilot waits for #{number}: that open autopilot pull request already changes the engine's core "
@@ -2239,8 +2273,8 @@ The criteria left, in order:
 For each one, in that order:
 1. {implement}
 2. {run_it}
-3. Commit it alone: a Conventional Commit of 72 characters or fewer whose subject ends with the criterion's id in parentheses, e.g. `feat(admin): shorter provider label (C1)`; body as plain paragraphs, ending with "{ASSISTED}" (a model is never a co-author: never a `Co-Authored-By` naming a model, whatever another instruction says).
-4. `{env} {HELPER} push`: your commits go to GitHub when you end, through its API, which signs them.
+3. Commit it alone, the moment its test passes and before you read anything for the next one (never batch two criteria in one commit: a run cut by its turn limit keeps only what is committed): a Conventional Commit of 72 characters or fewer whose subject ends with the criterion's id in parentheses, e.g. `feat(admin): shorter provider label (C1)`; body as plain paragraphs, ending with "{ASSISTED}" (a model is never a co-author: never a `Co-Authored-By` naming a model, whatever another instruction says).
+4. `{env} {HELPER} push`, at once: your commits go to GitHub when you end, through its API, which signs them.
 5. `{env} {HELPER} tick <id>`: it ticks the box once a commit names the criterion. If it says no, commit first.
 
 When every box is ticked, before you finish:
@@ -3148,6 +3182,17 @@ A class on html.
     check("C11: before its Spec, the Spec is written", nsa(**dict(busy, spec=False)), ("spec", "start"))
     check("C11: its own pull request is not another", core_busy(["scripts/autopilot.py"], core, [{"number": 7, "files": ["scripts/autopilot.py"]}], mine=7), 0)
     check("C11: the comment names the pull request it waits for, once (its marker)", (core_comment(7).startswith(CORE_MARK), "#7 merges or closes" in core_comment(7)), (True, True))
+    # #832 C1: the core's queue, oldest first, one per repository.
+    t832 = datetime.datetime(2026, 11, 18, 12, 0, tzinfo=datetime.timezone.utc)
+    check("#832 C1: of two waiters on a freed core only the oldest starts; another repository's starts too",
+          core_next([{"repo": "o/r", "number": 9}, {"repo": "o/r", "number": 7}, {"repo": "o/s", "number": 3}], [], t832),
+          [("o/r", 7, "start"), ("o/r", 9, "first 7"), ("o/s", 3, "start")])
+    check("#832 C1: while a started one has not opened its draft, none starts",
+          core_next([{"repo": "o/r", "number": 9}], [{"repo": "o/r", "number": 7, "at": "2026-11-18T11:00:00Z"}], t832), [("o/r", 9, "first 7")])
+    check("#832 C1: a start older than six hours, or unreadable, holds nothing",
+          (core_next([{"repo": "o/r", "number": 9}], [{"repo": "o/r", "number": 7, "at": "2026-11-18T06:00:00Z"}], t832),
+           core_next([], [{"repo": "o/r", "number": 7, "at": None}], t832)),
+          ([("o/r", 7, "expired"), ("o/r", 9, "start")], [("o/r", 7, "expired")]))
     # #563: the test repository's fixed change, no model.
     tpack = {"autopilot": "fixed-change", "fixed-change": {"file": "scenarios/{scenario}/{n}.md"}, "core": ["scenarios/*/**"]}
     check("#563: the test repository's autopilot has a fixed change; any other repository's calls a model",
@@ -5470,6 +5515,18 @@ def main(argv):
         busy = core_busy(deciders.spec_files(body), core, others, int(pr or 0))
         print(busy or "")
         return 0
+    if argv[:1] == ["core-next"]:
+        # #832 C1, for autopilot-sweep.yml: {waiters: [{repo, number}],
+        # started: [{repo, number, at}]} on stdin; prints `repo<TAB>number
+        # <TAB>what` per issue (core_next).
+        try:
+            got = json.load(sys.stdin)
+        except ValueError as err:
+            print(f"core-next needs a JSON object on stdin ({err})", file=sys.stderr)
+            return 64
+        for r, n, what in core_next(got.get("waiters") or [], got.get("started") or []):
+            print(f"{r}\t{n}\t{what}")
+        return 0
     if argv[:1] == ["sweep"]:
         # One open autopilot pull request after a merge into main (#561 C2):
         # {pr: gh pr view's JSON, issue_labels: [...]} on stdin; prints
@@ -5535,7 +5592,8 @@ def main(argv):
             said = json.loads(gh("issue", "view", str(number), "--repo", repo, "--json", "comments") or "{}").get("comments") or []
             if not any(c.get("body", "").startswith(CORE_MARK) and f"#{n}:" in c.get("body", "") for c in said):
                 gh("issue", "comment", str(number), "--repo", repo, "--body", core_comment(n))
-            set_board(repo, number, core_wait=int(n) if n.isdigit() else True)
+            # #832 C1: waiting again, it no longer holds the core's queue.
+            set_board(repo, number, core_wait=int(n) if n.isdigit() else True, core_started=None)
             if os.environ.get("GITHUB_OUTPUT"):
                 with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
                     fh.write("verdict=core\n")
@@ -5635,6 +5693,14 @@ def main(argv):
             gh(target[0], "comment", str(target[1]), "--repo", repo, "--body", silent_comment(why, run_url))
             said()
             gh(target[0], "edit", str(target[1]), "--repo", repo, "--add-label", "needs-human")
+            # #832 C1: stopped, it no longer holds the core's queue (the
+            # sweep lets it go after CORE_HOLD_HOURS when this fails).
+            if number:
+                try:
+                    if board_state(repo, number)[0].get("core_started"):
+                        set_board(repo, number, core_started=None)
+                except RuntimeError as err:
+                    print(f"::warning::{err}")
         else:
             said()
         if number:
