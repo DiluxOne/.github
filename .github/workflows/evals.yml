@@ -102,7 +102,9 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$EVENT" = workflow_dispatch ]; then
-            printf '%s\n' "$STEP" > "$RUNNER_TEMP/steps.txt"
+            # A step with no set yet runs nothing, and says so.
+            : > "$RUNNER_TEMP/steps.txt"
+            if [ -f "evals/$STEP/cases.json" ]; then printf '%s\n' "$STEP" > "$RUNNER_TEMP/steps.txt"; else echo "::notice::$STEP has no set yet (evals/$STEP/cases.json)."; fi
           else
             python3 scripts/pr-files.py | python3 scripts/evals.py steps > "$RUNNER_TEMP/steps.txt"
           fi
@@ -115,7 +117,8 @@ jobs:
     needs: steps
     if: needs.steps.outputs.steps != '[]' && needs.steps.outputs.steps != '' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    # Six autopilot cases, 50 minutes each at most, and their tests.
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:

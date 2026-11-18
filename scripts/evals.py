@@ -162,19 +162,21 @@ def grade_reply(case, got):
 
 
 # Each step: the paths that count for it (with COMMON and evals/<step>/**),
-# the fields its cases carry, whether a model judges it, and its grade.
+# the fields its cases carry, whether a model judges it, its grade, and the
+# minutes one case may take (then it is not replayed: one case never holds
+# the run; the autopilot's is a whole work round).
 STEPS = {
     "triage": {"paths": (".github/workflows/issue-triage.yml", "scripts/triage-brief.sh"),
-               "fields": ("issue",), "judge": False, "grade": grade_triage},
+               "fields": ("issue",), "judge": False, "grade": grade_triage, "minutes": 8},
     "repro": {"paths": (".github/workflows/issue-repro.yml", "scripts/repro-ways.py", "scripts/repro-brief.sh"),
-              "fields": ("issue", "base", "test"), "judge": False, "grade": grade_repro},
+              "fields": ("issue", "base", "test"), "judge": False, "grade": grade_repro, "minutes": 15},
     "spec": {"paths": (".github/workflows/autopilot.yml", "scripts/autopilot.py"),
-             "fields": ("issue", "base", "type", "files"), "judge": False, "grade": grade_spec},
+             "fields": ("issue", "base", "type", "files"), "judge": False, "grade": grade_spec, "minutes": 15},
     "autopilot": {"paths": (".github/workflows/autopilot.yml", "scripts/autopilot.py"),
-                  "fields": ("issue", "base", "merge", "tests"), "judge": False, "grade": grade_autopilot},
-    "review": {"paths": REVIEW_PATHS, "fields": ("pr", "title", "base", "head"), "judge": False, "grade": verdict},
+                  "fields": ("issue", "base", "merge", "tests"), "judge": False, "grade": grade_autopilot, "minutes": 50},
+    "review": {"paths": REVIEW_PATHS, "fields": ("pr", "title", "base", "head"), "judge": False, "grade": verdict, "minutes": 15},
     "reply": {"paths": (".github/workflows/review-reply.yml",),
-              "fields": ("pr", "thread", "rubric"), "judge": True, "grade": grade_reply},
+              "fields": ("pr", "thread", "rubric"), "judge": True, "grade": grade_reply, "minutes": 10},
 }
 
 
@@ -337,35 +339,50 @@ def collect_review(n):
 
 # What the replay may hand the model: never a token.
 SECRET_ENV = ("GH_TOKEN", "GITHUB_TOKEN")
-CASE_MINUTES = 15
+# What of the organisation's checkout a replayed step sees as .dx-central.
+CENTRAL_PARTS = ("scripts", "policy", "kinds", "rules", "review-profiles", "design-systems", "org.yml", "repos.yml", "labels.yml", "agents-block.md")
 
 
 def git(repo_dir, *args):
     return subprocess.run(["git", "-C", repo_dir, *args], capture_output=True, text=True)
 
 
-def checkout(case, work, *refs):
-    """A fresh worktree of the case's repository at its base, with REFS
-    fetched; None when it cannot be had."""
-    repo_dir = os.path.join(work, case["repo"].replace("/", "_"))
-    if not os.path.isdir(repo_dir):
-        if subprocess.run(["git", "clone", "-q", "--no-checkout", f"https://github.com/{case['repo']}", repo_dir]).returncode != 0:
+def clone_of(case, work, *refs):
+    """The case's repository, cloned once per run, with REFS fetched."""
+    clone = os.path.join(work, case["repo"].replace("/", "_"))
+    if not os.path.isdir(clone):
+        if subprocess.run(["git", "clone", "-q", "--no-checkout", f"https://github.com/{case['repo']}", clone]).returncode != 0:
             return None
-    for ref in (case["base"], *refs):
-        if git(repo_dir, "cat-file", "-e", ref + "^{commit}").returncode != 0:
-            git(repo_dir, "fetch", "-q", "origin", ref)
-    tree = os.path.join(work, "trees", re.sub(r"[^A-Za-z0-9._-]", "_", case["id"]))
-    if git(repo_dir, "worktree", "add", "-q", "-f", "--detach", tree, case["base"]).returncode != 0:
+    for ref in refs:
+        if git(clone, "cat-file", "-e", ref + "^{commit}").returncode != 0:
+            git(clone, "fetch", "-q", "origin", ref)
+    return clone
+
+
+def checkout(case, work):
+    """(tree, its base commit) for the agent: the case's base as one commit
+    in a repository of its own, so no history after the base (the merged
+    change, the case's answer) is there to read; None when it cannot be had."""
+    clone = clone_of(case, work, case["base"])
+    if not clone:
         return None
+    tree = os.path.join(work, "trees", re.sub(r"[^A-Za-z0-9._-]", "_", case["id"]))
+    os.makedirs(tree)
+    archive = subprocess.run(["git", "-C", clone, "archive", case["base"]], capture_output=True)
+    if archive.returncode != 0 or git(tree, "init", "-q").returncode != 0:
+        return None
+    if subprocess.run(["tar", "-x", "-C", tree], input=archive.stdout).returncode != 0:
+        return None
+    base = commit_all(tree, f"the base of {case['id']}")
     # The step's helpers and brief live under .dx-central, as in its
-    # workflow: this checkout's, so the change under evaluation is what runs.
+    # workflow: this checkout's, so the change under evaluation is what runs;
+    # only what the steps read, never its tests nor its sets (the answers).
     os.makedirs(os.path.join(tree, ".dx-central"), exist_ok=True)
-    for name in os.listdir(ROOT):
-        if name not in (".git", ".dx-central", ".dx-io"):
-            dest = os.path.join(tree, ".dx-central", name)
-            if not os.path.lexists(dest):
-                os.symlink(os.path.join(ROOT, name), dest)
-    return tree
+    for name in CENTRAL_PARTS:
+        dest = os.path.join(tree, ".dx-central", name)
+        if os.path.exists(os.path.join(ROOT, name)) and not os.path.lexists(dest):
+            os.symlink(os.path.join(ROOT, name), dest)
+    return tree, base
 
 
 def issue_of(case):
@@ -397,13 +414,13 @@ def claude_args(workflow, job, step_id, values):
     return shlex.split(re.sub(r"\$\{\{\s*(.*?)\s*\}\}", fill, text))
 
 
-def ask(prompt, args, cwd):
-    """The Claude Code CLI on PROMPT in CWD with ARGS; its JSON result, or
-    None."""
+def ask(prompt, args, cwd, step):
+    """The Claude Code CLI on PROMPT in CWD with ARGS, within the step's
+    minutes; its JSON result, or None."""
     env = {k: v for k, v in os.environ.items() if k not in SECRET_ENV}
     try:
         got = subprocess.run(["claude", "-p", prompt, *args, "--output-format", "json"], cwd=cwd, env=env,
-                             capture_output=True, text=True, timeout=CASE_MINUTES * 60)
+                             capture_output=True, text=True, timeout=STEPS[step]["minutes"] * 60)
         return json.loads(got.stdout)
     except (subprocess.TimeoutExpired, ValueError):
         return None
@@ -426,11 +443,11 @@ def commit_all(tree, message):
     return git(tree, "rev-parse", "HEAD").stdout.strip()
 
 
-def run_test(tree, case, test, ref, test_ref, out_dir, title):
+def run_test(tree, case, base, test, ref, test_ref, out_dir, title):
     """TEST as committed at TEST_REF, run against REF's tree, through the
     way's sandbox (test-first.py); its outcome, or None."""
     tf = _load("test_first", "test-first.py")
-    plan = tf.plan(tree, ROOT, title, case["base"], test_ref, case["repo"].split("/")[-1], str(case["issue"]),
+    plan = tf.plan(tree, ROOT, title, base, test_ref, case["repo"].split("/")[-1], str(case["issue"]),
                    at_base=case["repo"] == f"{org.ORG}/.github")
     entry = next((t for t in plan.get("tests") or [] if t["test"] == test), None)
     if not entry:
@@ -439,12 +456,13 @@ def run_test(tree, case, test, ref, test_ref, out_dir, title):
 
 
 def replay_repro(case, work):
-    tree = checkout(case, work)
-    issue = issue_of(case) if tree else None
+    got = checkout(case, work)
+    issue = issue_of(case) if got else None
     if not issue:
         return None
+    tree, base = got
     rw = _load("repro_ways", "repro-ways.py")
-    os.environ.setdefault("REPO", case["repo"].split("/")[-1])
+    os.environ["REPO"] = case["repo"].split("/")[-1]
     way = rw.resolve(tree, ROOT, case.get("layer") or "logic", str(case["issue"]))
     if not way.get("way") or way.get("fixed"):
         return None
@@ -466,12 +484,12 @@ def replay_repro(case, work):
     except KeyError as e:
         print(f"  {case['id']}: {e}", file=sys.stderr)
         return None
-    if ask(prompt, args, tree) is None:
+    if ask(prompt, args, tree, "repro") is None:
         return None
     if not os.path.isfile(os.path.join(tree, way["test"])):
         return {"wrote": False}
     written = commit_all(tree, f"test: the reproduction of #{case['issue']}")
-    outcome = run_test(tree, case, way["test"], case["base"], written, os.path.join(work, "out", case["id"].replace("/", "_")), "fix: replay")
+    outcome = run_test(tree, case, base, way["test"], base, written, os.path.join(work, "out", case["id"].replace("/", "_")), "fix: replay")
     return {"wrote": True, "outcome": outcome}
 
 
@@ -481,10 +499,11 @@ def autopilot_args(step_id, budget):
 
 
 def replay_spec(case, work):
-    tree = checkout(case, work)
-    issue = issue_of(case) if tree else None
+    got = checkout(case, work)
+    issue = issue_of(case) if got else None
     if not issue:
         return None
+    tree = got[0]
     ap = _load("autopilot", "autopilot.py")
     prd = ap.schema.part_text(issue.get("body") or "", "prd")
     prompt = ap.prompt_spec(case["repo"], case["issue"], prd, None, case.get("type", ""))
@@ -494,7 +513,7 @@ def replay_spec(case, work):
     except KeyError as e:
         print(f"  {case['id']}: {e}", file=sys.stderr)
         return None
-    if ask(prompt, args, tree) is None:
+    if ask(prompt, args, tree, "spec") is None:
         return None
     try:
         spec = open(os.path.join(tree, ".dx-io", "spec.md"), encoding="utf-8").read()
@@ -504,10 +523,11 @@ def replay_spec(case, work):
 
 
 def replay_autopilot(case, work):
-    tree = checkout(case, work, case["merge"])
-    issue = issue_of(case) if tree else None
+    got = checkout(case, work)
+    issue = issue_of(case) if got else None
     if not issue:
         return None
+    tree, base = got
     ap = _load("autopilot", "autopilot.py")
     body = issue.get("body") or ""
     prd = ap.schema.part_text(body, "prd")
@@ -523,12 +543,16 @@ def replay_autopilot(case, work):
     except KeyError as e:
         print(f"  {case['id']}: {e}", file=sys.stderr)
         return None
-    if ask(prompt, args, tree) is None:
+    if ask(prompt, args, tree, "autopilot") is None:
         return None
     head = commit_all(tree, "chore: what the agent left")
+    # Only now the merged commit comes in, for its tests: the agent is done.
+    clone = clone_of(case, work, case["merge"])
+    if not clone or git(tree, "fetch", "-q", clone, case["merge"]).returncode != 0:
+        return None
     out = os.path.join(work, "out", case["id"].replace("/", "_"))
     # The merged pull request's tests, as merged, against the agent's tree.
-    return {t: run_test(tree, case, t, head, case["merge"], os.path.join(out, str(i)), "feat: replay") for i, t in enumerate(case["tests"])}
+    return {t: run_test(tree, case, base, t, head, case["merge"], os.path.join(out, str(i)), "feat: replay") for i, t in enumerate(case["tests"])}
 
 
 def replay_review(case, work):
@@ -549,7 +573,7 @@ def replay_review(case, work):
     try:
         # One case never holds the run: 15 minutes, then it is unreviewed.
         subprocess.run(["bash", os.path.join(HERE, "local-review.sh"), "--base", case["base"], "--full", "--title", case["title"]],
-                       cwd=repo_dir, capture_output=True, text=True, timeout=CASE_MINUTES * 60)
+                       cwd=repo_dir, capture_output=True, text=True, timeout=STEPS["review"]["minutes"] * 60)
     except subprocess.TimeoutExpired:
         return None
     try:
@@ -755,6 +779,7 @@ def self_test():
     except KeyError:
         unknown = "KeyError"
     check("claude_args: an expression it does not know fails the case, never a guess", unknown, "KeyError")
+    check("checkout: the replay's .dx-central holds no test and no set", [p for p in CENTRAL_PARTS if p.startswith(("tests", "evals", "."))], [])
     check("claude_args: the autopilot's budgets are known", (autopilot_args("spec", "3")[:2], "--max-turns" in autopilot_args("work", "20")), (["--model", autopilot_args("spec", "3")[1]], True))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
