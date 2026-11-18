@@ -43,6 +43,11 @@
 # and waits `until` the seal before the autopilot's result (#713:
 # release-scenarios.py autopilot_problems); a `/claim` comes before the
 # acceptance. A step with `of: before` acts on its first `before` issue.
+#
+# A step of the flow no person moves (#699, `flows:`) is played by a
+# scenario that covers `flow:<name>` and moves no label but the acceptance:
+# its `expect` says `hands`, which fails on any other label a person
+# added or removed (release-scenarios.py hands_problems, by_hand).
 
 # The bodies the scenarios open and edit with, by name.
 bodies:
@@ -227,6 +232,30 @@ bodies:
     ### Repositories
 
     name: diluxone-test
+  # #699 C1: a feature with the release lane's mark before its first
+  # section, after the scenario's own (`marked` puts that first), as the
+  # lane's #698 had it.
+  marked-feature: |
+    <!-- dx-release-lane -->
+    ### Problem
+
+    The test repository has no greeting.
+
+    ### Scope
+
+    - A greeting file.
+
+    ### Out of scope
+
+    - Anything else.
+
+    ### Acceptance criteria
+
+    - C1: Given the repository, when it is read, then it has a greeting.
+
+    ### Criticality
+
+    Normal
   # The Release form's (#694): its one section, and its label below.
   release: |
     ### Notes
@@ -276,6 +305,7 @@ bodies:
 # names its draft after it. An issue's own `type:` overrides it.
 types:
   complete-feature: Feature
+  marked-feature: Feature
   edited-feature: Feature
   asking-feature: Feature
   edited-asking-feature: Feature
@@ -283,6 +313,19 @@ types:
   bug-not-reproduced: Bug
   task: Task
   release: Task
+
+# The steps of the flow no person moves by hand (#699): each played by the
+# scenario that covers `flow:<name>`, with no `label` or `unlabel` step but
+# the acceptance and an `expect` that reads `hands:` (the labels a person
+# may add or remove; any other label event of a person, on its issue or its
+# pull request, fails it), or held by the test `statically:` names.
+flows:
+  marker-g1-start: "#699 C1: an issue with a marker the engine writes before its first section passes G1 and the autopilot's start alike"
+  edit-starts: "#699 C2: an accepted issue the autopilot refused for its shape starts once an edit makes it pass"
+  conventions-fix: "#699 C3: a failed conventions check on an autopilot pull request starts its fix round, which corrects the title"
+  hint-no-needs-human: "#699 C4: a hint of someone who decides brings back an autopilot pull request that waits on the autopilot, with no needs-human"
+  settled-rerun: "#699 C5: an answer of someone who decides that settles a review finding runs the review again on the same head"
+  release-bug-reproduced: "#699 C6: a bug the release lane opens is accepted by policy as reproduced"
 
 # The transitions no scenario can cause in the test repository, each with
 # the test that holds it instead (#707), as `schedule` is for the pairs:
@@ -292,7 +335,11 @@ types:
 # scenario can make it block on time, and its fixed change answers that
 # round with a stop for a person (never a bug's fix, which the
 # bugfix-reproduced lane writes through spec, draft and work).
+# A flow the same (#699): C2's shape refusal is a safety net once C1
+# holds, and C6's issue is dilux-bot's, which the test identity cannot open.
 statically:
+  flow:edit-starts: "scripts/autopilot.py --test: '#699 C2: next-step on an edited accepted issue that passes now starts it, once refused for its shape'; scripts/issue-schema.py --test; tests/workflows/test_edit_starts_autopilot.py"
+  flow:release-bug-reproduced: "scripts/release-lane.py --test and scripts/autonomy.py --test (#699 C6); tests/workflows/test_release_bug_reproduced.py"
   next_step:fix: "scripts/autopilot.py --test: next_step's case 'ready, the review blocks at its head' (fix), and '#563: a review round on the fixed change stops for a person'"
 
 scenarios:
@@ -515,3 +562,50 @@ scenarios:
     covers: []
     opens: {issue: {title: "feat: a greeting, with the adopted callers", body: complete-feature}}
     expect: {labels: [awaiting-acceptance]}
+
+  # #699: the steps of the flow no person moves (`flows:`). Each accepts
+  # its issue, as a maintainer would, and adds or removes no other label;
+  # `hands` fails on any other label a person added or removed.
+  # C1: the release lane's mark before the first section (#698 was refused
+  # for it): G1 passes, and so does the autopilot's start, which seals it
+  # and opens its pull request.
+  - id: marker-g1-start
+    covers: [flow:marker-g1-start]
+    minutes: 15
+    opens: {issue: {title: "feat: a greeting, marked", body: marked-feature}}
+    steps: [{until: {labels: [awaiting-acceptance]}}, {label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}}]
+    expect: {comments: ["<!-- dx-prd-seal -->"], absent: [incomplete, needs-human], pull: {closes: true}, hands: [accepted]}
+  # C3: the autopilot's ready pull request retitled with no type, then a
+  # push: its conventions check fails on the new commit, the fix round
+  # runs and the fixed change gives it back its title.
+  - id: conventions-fix
+    covers: [flow:conventions-fix]
+    minutes: 15
+    opens: {issue: {title: "feat: a greeting, retitled", body: complete-feature}}
+    steps: [{until: {labels: [awaiting-acceptance]}}, {label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}},
+            {until: {pull: {closes: true, draft: "^False$", body: "\\[x\\] \\*\\*C1\\*\\*"}}},
+            {retitle: "a greeting, retitled"}, {until: {pull: {title: "^a greeting"}}}, {push: retitled}]
+    expect: {pull: {closes: true, title: "^feat(\\(.+\\))?: "}, absent: [needs-human], hands: [accepted]}
+  # C4: the ready pull request retitled with no type, an edit that starts
+  # no fix round, so it waits on the autopilot with nothing running (#689);
+  # a hint of the test identity, who decides there, brings it back: the
+  # bot adds `autopilot:continue`.
+  - id: hint-no-needs-human
+    covers: [flow:hint-no-needs-human]
+    minutes: 15
+    opens: {issue: {title: "feat: a greeting, hinted", body: complete-feature}}
+    steps: [{until: {labels: [awaiting-acceptance]}}, {label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}},
+            {until: {pull: {closes: true, draft: "^False$", body: "\\[x\\] \\*\\*C1\\*\\*"}}},
+            {retitle: "a greeting, hinted"}, {until: {pull: {title: "^a greeting", waits: "^the autopilot$"}}},
+            {comment: "Hint: give the pull request back its type, feat."}]
+    expect: {bot_labeled: [autopilot:continue], hands: [accepted]}
+  # C5: a pull request whose file carries a token, which the review
+  # profile blocks on; the test identity, who decides there, settles it in
+  # a comment, and the review runs again on the same head.
+  - id: settled-rerun
+    covers: [flow:settled-rerun]
+    minutes: 15
+    opens: {pull: {title: "docs: a greeting with a token", body: pull, issue: {title: "docs: a greeting with a token", body: task, labels: [accepted]}}}
+    steps: [{push: token}, {until: {comments: ["<!-- dx-review -->"]}},
+            {comment: "@dilux-bot the token in scenarios/settled-rerun/token.md is this scenario's fake, which no service issues: settled, it stays."}]
+    expect: {rerun: true, hands: [accepted]}

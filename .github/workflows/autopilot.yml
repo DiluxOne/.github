@@ -322,6 +322,9 @@ jobs:
       # A continue that became a start on an issue whose Spec is already on
       # it (#535): `present`, and the Spec is not written again.
       spec: ${{ steps.what.outputs.spec }}
+      # A fix round after a failed conventions check (#699 C3): `true`, and
+      # the apply job pushes a reword of the branch's own commits.
+      conventions: ${{ steps.task.outputs.conventions }}
       lane: ${{ steps.may.outputs.lane }}
       repro-test: ${{ steps.may.outputs.repro-test }}
       repro-sha: ${{ steps.may.outputs.repro-sha }}
@@ -604,7 +607,22 @@ jobs:
 
           <sub>🤖 Autopilot</sub>" >/dev/null || true
             fi
+            # Refused for its shape (G1) on a start (#699 C2): said on the
+            # issue, and noted on its board (`shape_refused`), so an edit
+            # that makes it pass starts it with no label (issue-triage.yml
+            # `edit-start`).
+            if [ "$rc" -eq 1 ] && [ "$AS" = start ] && [[ "$why" == "the issue is not ready (G1)"* ]]; then
+              WHY="$why" python3 .dx-central/scripts/autopilot.py shape-refusal > "$RUNNER_TEMP/shape.md"
+              gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/shape.md" >/dev/null || true
+              NUMBER="$ISSUE" python3 .dx-central/scripts/receipts.py state set "shape_refused=\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"" >/dev/null \
+                || echo "::warning::#$ISSUE's board: its refusal could not be noted, so an edit will not start it."
+            fi
             echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # It starts: a refusal noted before is spent, so a later edit
+          # starts no second run.
+          if [ "$AS" = start ] && [ -n "$(NUMBER="$ISSUE" python3 .dx-central/scripts/receipts.py state get shape_refused 2>/dev/null | jq -r '. // empty' 2>/dev/null)" ]; then
+            NUMBER="$ISSUE" python3 .dx-central/scripts/receipts.py state set shape_refused= >/dev/null || true
           fi
           # A reproduced bug: the test that failed, its SHA-256 and the
           # branch that holds it, from the sealed PRD (scripts/repro-lane.py);
@@ -786,6 +804,15 @@ jobs:
           # caller's scripts have the board's flow).
           NUMBER="$ISSUE" BODY="$RUNNER_TEMP/body.md" python3 .dx-central/scripts/autopilot.py count
 
+      # A failed conventions check in the run that called this one (#699
+      # C3): its errors, by what each is about, for the fix round's prompt.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: steps.may.outputs.go == 'true' && steps.what.outputs.mode == 'fix'
+        continue-on-error: true
+        with:
+          name: conventions-errors
+          path: ${{ runner.temp }}/conventions
+
       # What the agent reads, written here: its task, the Spec, the pull
       # request's body and, for a fix round, the review's own words.
       - name: The agent's task
@@ -870,6 +897,19 @@ jobs:
           python3 .dx-central/scripts/next-version.py --repo "$GITHUB_REPOSITORY" --base "$BASE" --save-pulls "$DX_IO/pulls.json" \
             || { rm -f "$DX_IO/pulls.json"; echo "::warning::The pull requests could not be saved for next-version.py: a make pre-pr that runs it will fail."; }
           if [ "$MODE" = fix ]; then
+            # #699 C3: the conventions' errors, with the failed jobs' log.
+            if [ -s "$RUNNER_TEMP/conventions/conventions-errors.tsv" ]; then
+              cp "$RUNNER_TEMP/conventions/conventions-errors.tsv" "$DX_IO/conventions-errors.tsv"
+              echo "conventions=true" >> "$GITHUB_OUTPUT"
+              # The test repository's fixed change answers a title's error
+              # with the draft's own title (#699 C7: its scenario).
+              if [ -n "$fixed" ]; then
+                ISSUE_TYPE=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" --jq '.type.name // ""') \
+                  && ISSUE_TITLE=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER" --jq .title) \
+                  && ISSUE_TYPE="$ISSUE_TYPE" ISSUE_TITLE="$ISSUE_TITLE" python3 .dx-central/scripts/autopilot.py fixed title \
+                  || echo "::warning::#$NUMBER's title could not be read: the fixed change answers no title."
+              fi
+            fi
             CONFLICTS="${CONFLICTS:-false}" python3 .dx-central/scripts/autopilot.py prompt fix > "$DX_IO/prompt.md"
             exit 0
           fi
@@ -1162,7 +1202,9 @@ jobs:
           jq -r .body "$RUNNER_TEMP/draft.json" > "$RUNNER_TEMP/draft.md"
           # A branch left by an earlier, failed attempt is not reused.
           if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then branch="$branch-$GITHUB_RUN_ID"; fi
-          if [ "$LANE" = bugfix-reproduced ]; then
+          # A release lane's bug (#699 C6) has no reproduction branch: its
+          # draft starts as any other.
+          if [ "$LANE" = bugfix-reproduced ] && [ -n "$REPRO_BRANCH" ]; then
             # A reproduced bug's branch starts at current main with the
             # reproduction's own commits on top (#549): the failing test,
             # byte for byte the one the PRD sealed (its SHA-256), committed
@@ -1692,6 +1734,10 @@ jobs:
           BRANCH: ${{ needs.draft.outputs.branch || needs.prep.outputs.branch }}
           REPO_AUTONOMY: ${{ runner.temp }}/repo-autonomy.yml
           ENGINE: ${{ github.repository == format('{0}/.github', github.repository_owner) }}
+          # #699 C3: a fix round after a failed conventions check, as prep
+          # read it (never the agent's word), may reword its own commits.
+          REWORD_OK: ${{ needs.prep.outputs.mode == 'fix' && needs.prep.outputs.conventions == 'true' }}
+          DEFAULT: ${{ github.event.repository.default_branch }}
           # #673: `verify`'s verdict (pass, fail, timeout; lost when it ended
           # without one), empty when it did not run. When it ran, `ready`
           # goes through only on a pass; a deferred `ready` needs it.
@@ -1710,8 +1756,18 @@ jobs:
           if [ -f .dx-out/work.bundle ]; then
             git fetch -q .dx-out/work.bundle HEAD
             new=$(git rev-parse FETCH_HEAD)
+            REWORD=false
             if ! git merge-base --is-ancestor "origin/$BRANCH" "$new"; then
-              echo "::error::The agent's commits do not build on $BRANCH as GitHub has it: nothing is pushed."; exit 1
+              # #699 C3: a fix round after a failed conventions check may
+              # reword the branch's own commits, messages only: the same
+              # tree at the tip, on the same base. Any other rewrite is refused.
+              if [ "$REWORD_OK" = true ] && git diff --quiet "origin/$BRANCH" "$new" \
+                && [ "$(git merge-base "origin/$BRANCH" "origin/$DEFAULT")" = "$(git merge-base "$new" "origin/$DEFAULT")" ]; then
+                REWORD=true
+                echo "The agent reworded the branch's commits (the same tree): pushed with a lease."
+              else
+                echo "::error::The agent's commits do not build on $BRANCH as GitHub has it: nothing is pushed."; exit 1
+              fi
             fi
             # Read whole, then searched: a pipe into grep -q could end early
             # and, under pipefail, read as no match. What the agent's own
@@ -1723,6 +1779,16 @@ jobs:
               echo "::error::The agent's commits change .github/workflows: nothing is pushed."; exit 1
             fi
             git checkout -q -B "$BRANCH" "$new"
+            if [ "$REWORD" = true ]; then
+              # The lease: GitHub's branch is still the head this round
+              # read, or nothing is written over.
+              there=$(gh api "repos/$GITHUB_REPOSITORY/branches/$BRANCH" --jq .commit.sha)
+              if [ "$there" != "$(git rev-parse "origin/$BRANCH")" ]; then
+                echo "::error::$BRANCH moved on GitHub while the agent worked (the lease does not hold): nothing is pushed."; exit 1
+              fi
+              python3 .dx-central/scripts/api-commit.py push "$BRANCH" --force --onto "$(git merge-base "origin/$BRANCH" "origin/$DEFAULT")"
+              git fetch -q origin "$BRANCH"
+            fi
             # #820: a round that ends ready pushes once, after the pull
             # request is marked ready: `finish ready` (in `apply` below)
             # pushes these commits with the empty ready commit on top, so one
@@ -1772,6 +1838,8 @@ jobs:
           RUNS: ${{ needs.prep.outputs.runs }}
           STARTED: ${{ needs.prep.outputs.started }}
           HEAD_BEFORE: ${{ needs.prep.outputs.mode == 'fix' && needs.prep.outputs.head || '' }}
+          # #699 C3: a fix round that set the title alone did its work.
+          RETITLED: ${{ steps.applied.outputs.retitled }}
           WORK_OUTCOME: ${{ needs.work.outputs.outcome || needs.work.result }}
           # #479: a work job that failed without its agent's outcome lost its
           # runner, and the run does not count.

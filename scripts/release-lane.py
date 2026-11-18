@@ -151,13 +151,23 @@ def visible(text):
     return str(text).replace("<!--", "&lt;!--").replace("-->", "--&gt;")
 
 
-def bug_body(happened, reproduce, problem, scope, criterion, criticality="Critical"):
+# The lane's run, as GitHub names it: the reproduction of a bug it opens
+# (#699 C6), named in the `bugfix-reproduced` lane's mark.
+RUN_URL = re.compile(r"^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/actions/runs/[0-9]+$")
+REPRO_LANE = "bugfix-reproduced"
+
+
+def bug_body(happened, reproduce, problem, scope, criterion, criticality="Critical", lane_run=""):
     """A bug the lane opens itself (#694), in the issue schema's sections
     (policy/issue-schema.yml): its mark first, the report's (What happened?,
     Steps to reproduce), then the PRD's (Problem, Scope, Out of scope,
     Acceptance criteria, Criticality), so G1 passes it and it goes the
     reproduced-bug way, never `incomplete`. Pure."""
-    return (f"{MARK}\n### What happened?\n\n{happened}\n\n### Steps to reproduce\n\n{reproduce}\n\n### Problem\n\n{problem}\n\n### Scope\n\n"
+    # With the lane's run (#699 C6), the `bugfix-reproduced` lane's mark
+    # after the lane's own: the lane accepts it by policy, that run its
+    # reproduction (policy/autonomy.yml origin, the Problem's line).
+    lane = f"<!-- dx-lane: {REPRO_LANE} run: {lane_run} -->\n" if lane_run else ""
+    return (f"{MARK}\n{lane}### What happened?\n\n{happened}\n\n### Steps to reproduce\n\n{reproduce}\n\n### Problem\n\n{problem}\n\n### Scope\n\n"
             + "".join(f"- {item}\n" for item in scope)
             + "\n### Out of scope\n\n- Changing the gates or what they check.\n\n### Acceptance criteria\n\n"
             + f"- C1: {criterion}\n\n### Criticality\n\n{criticality}\n")
@@ -182,9 +192,11 @@ def decide(p, results, lane_run=""):
                     + "\n".join(lines) + (f"\n\nThe lane's run: {lane_run}" if lane_run else ""),
                     f"Run the release lane (.github/workflows/release-lane.yml) on {p['version']}'s candidate: it plays every scenario of tests/release/scenarios.yml "
                     f"in the test repository at `{p['major']}-next` (scripts/release-scenarios.py play).",
-                    f"The release candidate {p['version']} fails the release scenarios {ids}, so the lane releases nothing and `{p['major']}` stays where it is.",
+                    f"The release candidate {p['version']} fails the release scenarios {ids}, so the lane releases nothing and `{p['major']}` stays where it is."
+                    + (f"\nReproduced by: {lane_run} scenario `{first['id']}`." if lane_run and RUN_URL.match(lane_run) else ""),
                     [f"The cause of each failing scenario above ({ids}), in the engine or in the scenario's fixtures, fixed with a test that would have caught it."],
-                    f"Given {p['version']}'s candidate with the fix, when the release lane plays {ids} in the test repository, then each passes and the lane releases it.")}
+                    f"Given {p['version']}'s candidate with the fix, when the release lane plays {ids} in the test repository, then each passes and the lane releases it.",
+                    lane_run=lane_run if RUN_URL.match(lane_run or "") else "")}
     if p.get("breaking"):
         return {"do": "issue", "why": p.get("why", "")}
     return {"do": "release", "version": p["version"]}
@@ -866,8 +878,12 @@ def self_test():
             got = schema(d["body"])
             check(f"C4: the bug's body, {how}, passes issue-schema.py check", (got.returncode, got.stdout if got.returncode else ""), (0, ""))
         d = decide(p, quoting, "https://github.com/O/.github/actions/runs/7")
-        check("C4: the bug starts with its mark, names every failing scenario and the lane's run, and hides no marker it quotes",
-              (d["body"].startswith(MARK + "\n"), "`spec-to-draft`" in d["body"] and "`issue-complete`" in d["body"], "actions/runs/7" in d["body"], d["body"].count("<!--")), (True, True, True, 1))
+        check("C4: the bug starts with its mark, names every failing scenario and the lane's run, and hides no marker it quotes (its two marks aside, #699)",
+              (d["body"].startswith(MARK + "\n"), "`spec-to-draft`" in d["body"] and "`issue-complete`" in d["body"], "actions/runs/7" in d["body"], d["body"].count("<!--")), (True, True, True, 2))
+        check("#699 C6: the bug names the lane's run as its reproduction: the bugfix-reproduced lane's mark, and the Problem's line",
+              (d["body"].split("\n")[1], "\nReproduced by: https://github.com/O/.github/actions/runs/7 scenario `spec-to-draft`." in d["body"],
+               "dx-lane:" in decide(p, failing)["body"], "Reproduced by:" in decide(p, failing, "not a run")["body"]),
+              ("<!-- dx-lane: bugfix-reproduced run: https://github.com/O/.github/actions/runs/7 -->", True, False, False))
         # C7: a `!`, the scenarios pass.
         fake = Fake()
         pb = plan(dict(nxt, bump="minor", next="7.11.0"), ["feat(autopilot)!: a required input"])

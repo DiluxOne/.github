@@ -17,7 +17,10 @@ name: Claude review
 #      request meets it (G6, #193; kept in its record, read by G7).
 #   2. If the head commit was already reviewed (the description was edited, a
 #      check was re-run), the previous verdict is reused and Claude is not
-#      called at all.
+#      called at all, unless someone who decides settled one of its findings
+#      since (#699 C5, review-reply.yml's `dx-settled` mark, which also
+#      re-runs the review): then it reviews the head again, the settled
+#      findings in the brief with the settled threads.
 #   3. On a new push, Claude gets one brief file with everything: the diff
 #      since the last reviewed commit (or the whole PR the first time, or
 #      after a force-push, a rebase or a merge), the review profiles, the
@@ -241,13 +244,31 @@ jobs:
           # The last verdict lives in the bot's summary comment.
           # Only the bot's own comment counts: anyone can type the marker.
           # shellcheck disable=SC2016 # jq variable, not a shell one.
-          record=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
-            | jq -r --arg bot "$BOT" '.[] | select(.user.login == $bot and (.body | startswith("<!-- dx-review -->"))) | .body' \
+          gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate > "$RUNNER_TEMP/pr-comments.json"
+          record=$(jq -r --arg bot "$BOT" '.[] | select(.user.login == $bot and (.body | startswith("<!-- dx-review -->"))) | .body' "$RUNNER_TEMP/pr-comments.json" \
             | grep -oP '<!-- dx-review-record \K.*(?= -->)' | tail -1 || true)
           printf '%s' "${record:-null}" | jq . > "$RUNNER_TEMP/previous.json" 2>/dev/null || echo null > "$RUNNER_TEMP/previous.json"
           last=$(jq -r '.sha // empty' "$RUNNER_TEMP/previous.json")
           count=$(jq -r '.count // 0' "$RUNNER_TEMP/previous.json")
           has_verdict=$(jq -r 'if .risk and .complexity and (.blocking != null) then "yes" else "no" end' "$RUNNER_TEMP/previous.json")
+          # A finding someone who decides settled after the verdict (#699 C5,
+          # review-reply.yml's `dx-settled` mark, in the bot's own comments
+          # only): the verdict is not reused, the review reads it again.
+          # shellcheck disable=SC2016 # jq variable, not a shell one.
+          since=$(jq -r --arg bot "$BOT" '.[] | select(.user.login == $bot and (.body | startswith("<!-- dx-review -->"))) | .updated_at // empty' "$RUNNER_TEMP/pr-comments.json" | tail -1 || true)
+          # The conversation's comments and, when there is a verdict, the
+          # review threads' (a resolved thread's reply carries the mark too).
+          cp "$RUNNER_TEMP/pr-comments.json" "$RUNNER_TEMP/settlement-comments.json"
+          if [ -n "$since" ]; then
+            { cat "$RUNNER_TEMP/pr-comments.json"; gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/comments" --paginate 2>/dev/null || echo '[]'; } \
+              | jq -s 'add // []' > "$RUNNER_TEMP/settlement-comments.json" || cp "$RUNNER_TEMP/pr-comments.json" "$RUNNER_TEMP/settlement-comments.json"
+          fi
+          jq -s 'add // []' "$RUNNER_TEMP/settlement-comments.json" > "$RUNNER_TEMP/settlement-all.json" 2>/dev/null && mv "$RUNNER_TEMP/settlement-all.json" "$RUNNER_TEMP/settlement-comments.json" || echo '[]' > "$RUNNER_TEMP/settlement-comments.json"
+          settled_since=0
+          if [ -n "$since" ] && grep -q '^def settlements' .dx-central/scripts/autopilot.py; then
+            settled_since=$(COMMENTS="$RUNNER_TEMP/settlement-comments.json" SINCE="$since" BOT="$BOT" python3 .dx-central/scripts/autopilot.py settlements | jq length) || settled_since=0
+          fi
+          [ "$settled_since" = 0 ] || echo "$settled_since finding(s) settled since the last verdict: it is not reused."
 
           # Labels are read live, not from the event, so `review:full` works on a re-run too.
           FULL_LABEL=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | index("review:full") != null')
@@ -299,7 +320,7 @@ jobs:
           mode=full; range=""
           if [ "$FULL_LABEL" = true ]; then
             mode=full
-          elif [ "$last" = "$HEAD" ] && [ "$has_verdict" = yes ]; then
+          elif [ "$last" = "$HEAD" ] && [ "$has_verdict" = yes ] && [ "$settled_since" = 0 ]; then
             mode=reuse
           elif [ -n "$last" ] && [ "$count" -ge "$MAX_AUTO" ] && [ "$has_verdict" = yes ]; then
             mode=capped
@@ -336,6 +357,14 @@ jobs:
             | jq -s . > "$RUNNER_TEMP/threads.json"
           jq '[.[] | select(.isResolved | not) | del(.isResolved)]' "$RUNNER_TEMP/threads.json" > "$RUNNER_TEMP/open-threads.json"
           jq '[.[] | select(.isResolved) | del(.isResolved, .id)]' "$RUNNER_TEMP/threads.json" > "$RUNNER_TEMP/settled-threads.json"
+          # The findings with no thread someone who decides settled in the
+          # conversation (#699 C5), as settled threads, so the review does
+          # not raise them again.
+          if [ -f "$RUNNER_TEMP/settlement-comments.json" ] && grep -q '^def settlements' .dx-central/scripts/autopilot.py; then
+            COMMENTS="$RUNNER_TEMP/settlement-comments.json" SINCE="" BOT="${SLUG}[bot]" python3 .dx-central/scripts/autopilot.py settlements \
+              | jq -s '.[0] + [.[1][] | {path: null, line: null, finding: .finding, replies: [{author: "settled by someone who decides", body: .answer}]}]' "$RUNNER_TEMP/settled-threads.json" - \
+              > "$RUNNER_TEMP/settled-all.json" && mv "$RUNNER_TEMP/settled-all.json" "$RUNNER_TEMP/settled-threads.json"
+          fi
           echo "Bot threads: $(jq length "$RUNNER_TEMP/open-threads.json") open, $(jq length "$RUNNER_TEMP/settled-threads.json") settled."
 
       - name: Brief (one file with everything the reviewer needs)
