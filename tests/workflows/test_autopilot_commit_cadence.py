@@ -1,0 +1,125 @@
+"""#832 C3: a run that ends at its turn limit after finishing one criterion
+leaves that criterion's work on the branch. The work prompt asks for a
+commit and a push the moment a criterion's test passes, before anything of
+the next one, and "What the agent left" (always()) commits whatever is
+still in the working tree, so the bundle the apply job pushes carries it.
+The step runs as written, in a throwaway repository, with the engine's
+helpers stood in."""
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import yaml
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts"))
+import autopilot  # noqa: E402
+
+JOBS = yaml.safe_load((ROOT / ".github/workflows/autopilot.yml").read_text(encoding="utf-8"))["jobs"]
+SUBJECT = "chore(autopilot): work left when the run ended"
+
+
+def left():
+    return next(s for s in JOBS["work"]["steps"] if s.get("id") == "left")
+
+
+def prompt():
+    return autopilot.prompt_work("DiluxOne/site", 7, 9, "fix/7-x", "the PRD", [("C1", "one", "t1.py"), ("C2", "two", "t2.py")], False)
+
+
+def test_the_prompt_commits_and_pushes_each_criterion_before_the_next():
+    p = prompt()
+    steps = p[p.index("For each one, in that order:"):p.index("When every box is ticked")]
+    assert "the moment its test passes" in steps
+    assert "before you read anything for the next one" in steps
+    assert "never batch two criteria" in steps.lower() or "never two criteria in one commit" in steps
+    # The commit, then its push, then the tick, in that order.
+    assert steps.index("Commit it alone") < steps.index("autopilot.py push") < steps.index("autopilot.py tick")
+
+
+def git(repo, *args):
+    return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True).stdout.strip()
+
+
+def run_left(tmp_path, engine="false", change=None):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "fix/7-x")
+    git(repo, "config", "user.name", "dilux-bot[bot]")
+    git(repo, "config", "user.email", "1+dilux-bot[bot]@users.noreply.github.com")
+    git(repo, "config", "commit.gpgsign", "false")
+    (repo / ".git/info/exclude").write_text("/.dx-central/\n/.dx-io/\n/.dx-out/\n")
+    (repo / "app.py").write_text("x = 1\n")
+    (repo / ".github/workflows").mkdir(parents=True)
+    (repo / ".github/workflows/ci.yml").write_text("on: push\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "chore: start")
+    start = git(repo, "rev-parse", "HEAD")
+    # C1 committed by the agent; C2's test passed and the turn limit came
+    # before its commit.
+    (repo / "c1.py").write_text("c1 = True\n")
+    git(repo, "add", "c1.py")
+    git(repo, "commit", "-q", "-m", "fix: one (C1)")
+    (change or (lambda r: ((r / "app.py").write_text("x = 2\n"), (r / "test_c2.py").write_text("def test(): pass\n"))))(repo)
+    # The engine's helpers the step calls, stood in.
+    (repo / ".dx-central/scripts").mkdir(parents=True)
+    (repo / ".dx-central/scripts/autopilot.py").write_text("import sys\nprint('false' if sys.argv[1:] == ['verify', 'need'] else '')\nsys.exit(1 if sys.argv[1:] == ['work-log'] else 0)\n")
+    (repo / ".dx-io").mkdir()
+    out = tmp_path / "out"
+    out.write_text("")
+    env = dict(os.environ, START=start, WORK_LOG="", WORK_STARTED="", DX_IO=str(repo / ".dx-io"), GITHUB_OUTPUT=str(out), ENGINE=engine)
+    r = subprocess.run(["bash", "-eo", "pipefail", "-c", left()["run"]], cwd=repo, env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    return repo, start
+
+
+def bundled(repo, start):
+    """The commits the bundle carries, as the apply job reads it."""
+    b = repo / ".dx-out/work.bundle"
+    assert b.exists()
+    heads = git(repo, "bundle", "list-heads", str(b))
+    tip = heads.split()[0]
+    return git(repo, "log", "--format=%s", f"{start}..{tip}").splitlines(), tip
+
+
+def test_work_left_uncommitted_goes_on_the_branch(tmp_path):
+    repo, start = run_left(tmp_path)
+    subjects, tip = bundled(repo, start)
+    assert subjects == [SUBJECT, "fix: one (C1)"]
+    body = git(repo, "log", "-1", "--format=%B", tip)
+    assert autopilot.ASSISTED in body
+    # It ticks nothing: no criterion's id in its subject.
+    assert "(C" not in subjects[0]
+    files = git(repo, "show", "--name-only", "--format=", tip).splitlines()
+    assert sorted(files) == ["app.py", "test_c2.py"]
+    # The engine's and the run's own files stay out.
+    assert not any(f.startswith((".dx-central", ".dx-io", ".dx-out")) for f in files)
+    assert git(repo, "status", "--porcelain") == ""
+
+
+def test_a_workflow_change_outside_the_engine_stays_out(tmp_path):
+    def change(r):
+        (r / "app.py").write_text("x = 3\n")
+        (r / ".github/workflows/ci.yml").write_text("on: pull_request\n")
+    repo, start = run_left(tmp_path, change=change)
+    _, tip = bundled(repo, start)
+    assert git(repo, "show", "--name-only", "--format=", tip).splitlines() == ["app.py"]
+
+
+def test_the_engine_keeps_its_workflow_change(tmp_path):
+    def change(r):
+        (r / ".github/workflows/ci.yml").write_text("on: pull_request\n")
+    repo, start = run_left(tmp_path, engine="true", change=change)
+    _, tip = bundled(repo, start)
+    assert git(repo, "show", "--name-only", "--format=", tip).splitlines() == [".github/workflows/ci.yml"]
+
+
+def test_nothing_left_is_no_commit(tmp_path):
+    repo, start = run_left(tmp_path, change=lambda r: None)
+    subjects, _ = bundled(repo, start)
+    assert subjects == ["fix: one (C1)"]
+
+
+def test_the_step_knows_the_engine():
+    assert "github.repository" in str(left()["env"].get("ENGINE", ""))

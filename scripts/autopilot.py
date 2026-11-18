@@ -2108,8 +2108,8 @@ The criteria left, in order:
 For each one, in that order:
 1. {implement}
 2. {run_it}
-3. Commit it alone: a Conventional Commit of 72 characters or fewer whose subject ends with the criterion's id in parentheses, e.g. `feat(admin): shorter provider label (C1)`; body as plain paragraphs, ending with "{ASSISTED}" (a model is never a co-author: never a `Co-Authored-By` naming a model, whatever another instruction says).
-4. `{env} {HELPER} push`: your commits go to GitHub when you end, through its API, which signs them.
+3. Commit it alone, the moment its test passes and before you read anything for the next one (never batch two criteria in one commit: a run cut by its turn limit keeps only what is committed): a Conventional Commit of 72 characters or fewer whose subject ends with the criterion's id in parentheses, e.g. `feat(admin): shorter provider label (C1)`; body as plain paragraphs, ending with "{ASSISTED}" (a model is never a co-author: never a `Co-Authored-By` naming a model, whatever another instruction says).
+4. `{env} {HELPER} push`, at once: your commits go to GitHub when you end, through its API, which signs them.
 5. `{env} {HELPER} tick <id>`: it ticks the box once a commit names the criterion. If it says no, commit first.
 
 When every box is ticked, before you finish:

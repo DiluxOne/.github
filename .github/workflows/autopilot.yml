@@ -1369,9 +1369,26 @@ jobs:
           WORK_LOG: ${{ steps.work.outputs.execution_file }}
           WORK_STARTED: ${{ steps.task.outputs.at }}
           DX_IO: ${{ github.workspace }}/.dx-io
+          # The organisation's own repository, where a workflow change is the
+          # engine's to make (#498); anywhere else the apply job refuses it.
+          ENGINE: ${{ github.repository == format('{0}/.github', github.repository_owner) }}
         run: |
           mkdir -p .dx-out/transcript
           cp .dx-io/outbox.jsonl .dx-out/ 2>/dev/null || true
+          # #832 C3: what the agent changed and did not commit (its turn
+          # limit came after a test passed and before its commit) is
+          # committed here, ticking nothing, so it is on the branch for the
+          # continue run. Not in the middle of a merge, and never a workflow
+          # outside the engine, which the apply job refuses.
+          if [ -n "$START" ] && ! git rev-parse -q --verify MERGE_HEAD > /dev/null; then
+            if [ "$ENGINE" = true ]; then git add -A -- . || true
+            else git add -A -- . ':(exclude).github/workflows' || true; fi
+            if ! git diff --cached --quiet; then
+              git commit -q --no-verify -m "chore(autopilot): work left when the run ended" \
+                -m "The run ended before the agent committed this; the continue run picks it up." \
+                -m "Assisted-by: Claude Opus 5.5 (Anthropic)" || echo "::warning::The work left in the tree could not be committed."
+            fi
+          fi
           # Its new commits, as a bundle the next job pushes.
           if [ -n "$START" ] && [ "$(git rev-parse HEAD)" != "$START" ]; then
             git bundle create -q .dx-out/work.bundle "$START..HEAD" || echo "::warning::The commits could not be bundled."
