@@ -169,7 +169,9 @@ jobs:
 
   eval:
     name: AI evaluation (${{ matrix.step }})
-    needs: [steps, replay]
+    needs:
+      - steps
+      - replay  # order: it scores the evals-<step>-case-<n> artifacts the replay jobs upload.
     # It scores whatever its cases' jobs left: a job that ran out of time
     # leaves its case not replayed, which fails the check by its name.
     if: ${{ !cancelled() && needs.steps.result == 'success' && needs.steps.outputs.steps != '[]' && needs.steps.outputs.steps != '' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository) }}
