@@ -6,7 +6,7 @@ How a repository joins: its kind of project, what it adds of its own, and what t
 
 Nothing here is hard-wired to one stack. What is specific to a kind of
 project (its review profile, the rules its reviewers taught us, the settings
-of its gates, the workflows of its battery) lives in a pack under
+of its gates, the workflows of its [battery](../kinds/README.md#the-battery)) lives in a pack under
 [`kinds/`](../kinds/), as data, and a repository declares its kind with
 `kind:` in its `.github/review-policy.yml`. Every rejection a review sends
 back becomes one entry in the kind's `rules.yml`, with fixtures, never a new
