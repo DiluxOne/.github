@@ -395,7 +395,8 @@ def may_start(policy, body, autopilot_var, lane=LANE, no_way=""):
         return False, f"no lane named {lane} in the policy"
     if not conf.get("enabled", True):
         return False, f"the lane {lane} is off for this repository"
-    result = schema.check(body)
+    # G1, the same function issue-accepted.yml runs (#699).
+    result = schema.g1(body)
     if not result["ok"]:
         return False, "the issue is not ready (G1): " + "; ".join(result["errors"])
     if lane == REPRO and not repro.evidence(body):
