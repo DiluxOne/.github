@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 832,
+  "prd_sha256": "a6bbf354cbfdfc62f5c27e27f305a280dc8238eac345e3d05fdbd611a9a7fc2a",
+  "prd": "### Problem\n\nEach of these five gaps stops the flow until a person moves it by hand, which is what the engine is meant to avoid.\n\n### Scope\n\n- The core queue's release in .github/workflows/autopilot-sweep.yml and scripts/autopilot.py.\n- The answer path on pull requests in .github/workflows/review-reply.yml.\n- The autopilot's push cadence in its prompt and workflow.\n- The `edited` path of .github/workflows/claude-review.yml and the conventions check's title source.\n- The release lane's report closing in scripts/release-lane.py.\n- Tests under tests/workflows/ for each.\n\n### Out of scope\n\n- How many core issues may run at once (stays one).\n- The turn limit's value.\n- What the review and the release scenarios check.\n\n### Acceptance criteria\n\n- C1: Given two issues waiting with `autopilot:core-wait`, when the core is freed, then only the oldest starts, and the other starts when that one ends.\n- C2: Given the autopilot stopped with `needs-human` and a decider's answer on its pull request, when the answer is posted, then `needs-human` is gone and the autopilot resumes with no label added by a person.\n- C3: Given a run that ends at its turn limit after finishing one criterion, when it ends, then that criterion's work is on the branch.\n- C4: Given an autopilot pull request whose push review was skipped, when its title is edited, then a review runs on that commit within the job's normal time and the conventions check reads the current title.\n- C5: Given an open failure report for an earlier candidate, when a later version is released, then that report is closed with a comment naming the released version.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-18T17:39:06Z",
+  "policy": "DiluxOne/.github@735f1d138328edbe64d24cfd66a05d3ca16bd51d",
+  "how": "own-bug"
+}
