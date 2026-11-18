@@ -47,10 +47,12 @@ it from a whole run: no baseline is no gate, and never passes quietly.
   evals.py --test              self-test (offline)
 """
 import fnmatch
+import hashlib
 import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -86,11 +88,24 @@ CLOSES = re.compile(r"\bCloses #(\d+)")
 TYPE_OF = {"feat": "Feature", "fix": "Bug", "docs": "Docs"}
 
 
+_LOADED = {}
+# The helpers the grades and replays load: loaded once, before any agent
+# runs (preload), so what an agent leaves on disk is never what grades it.
+HELPERS = {"issue_schema": "issue-schema.py", "test_first": "test-first.py", "repro_ways": "repro-ways.py", "autopilot": "autopilot.py"}
+
+
 def _load(name, file):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, file))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    if name not in _LOADED:
+        spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, file))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _LOADED[name] = mod
+    return _LOADED[name]
+
+
+def preload():
+    for name, file in HELPERS.items():
+        _load(name, file)
 
 
 # The grades: (case, what the replay gave) -> True, False, or None when the
@@ -374,15 +389,40 @@ def checkout(case, work):
     if subprocess.run(["tar", "-x", "-C", tree], input=archive.stdout).returncode != 0:
         return None
     base = commit_all(tree, f"the base of {case['id']}")
-    # The step's helpers and brief live under .dx-central, as in its
-    # workflow: this checkout's, so the change under evaluation is what runs;
-    # only what the steps read, never its tests nor its sets (the answers).
-    os.makedirs(os.path.join(tree, ".dx-central"), exist_ok=True)
-    for name in CENTRAL_PARTS:
-        dest = os.path.join(tree, ".dx-central", name)
-        if os.path.exists(os.path.join(ROOT, name)) and not os.path.lexists(dest):
-            os.symlink(os.path.join(ROOT, name), dest)
+    copy_central(os.path.join(tree, ".dx-central"))
     return tree, base
+
+
+def copy_central(dest, root=ROOT):
+    """The step's helpers and brief, under .dx-central as in its workflow:
+    this checkout's, so the change under evaluation is what runs; only what
+    the steps read, never its tests nor its sets (the answers). A copy, never
+    a link: what the agent writes there stays in its tree (#830)."""
+    os.makedirs(dest, exist_ok=True)
+    for name in CENTRAL_PARTS:
+        src, to = os.path.join(root, name), os.path.join(dest, name)
+        if os.path.lexists(to):
+            continue
+        if os.path.isdir(src):
+            shutil.copytree(src, to, symlinks=False, ignore=shutil.ignore_patterns("__pycache__"))
+        elif os.path.isfile(src):
+            shutil.copyfile(src, to)
+
+
+def fingerprint(root=ROOT):
+    """A hash of every file of this checkout's parts the runner executes
+    after an agent (.dx-central's parts and the workflows)."""
+    h = hashlib.sha256()
+    for name in (*CENTRAL_PARTS, ".github"):
+        top = os.path.join(root, name)
+        paths = [top] if not os.path.isdir(top) else sorted(os.path.join(d, f) for d, _, fs in os.walk(top) for f in fs)
+        for path in paths:
+            h.update(path.encode() + b"\0")
+            try:
+                h.update(os.readlink(path).encode() if os.path.islink(path) else open(path, "rb").read())
+            except OSError:
+                h.update(b"-")
+    return h.hexdigest()
 
 
 def issue_of(case):
@@ -414,16 +454,26 @@ def claude_args(workflow, job, step_id, values):
     return shlex.split(re.sub(r"\$\{\{\s*(.*?)\s*\}\}", fill, text))
 
 
-def ask(prompt, args, cwd, step):
+def ask(prompt, args, cwd, step, root=ROOT):
     """The Claude Code CLI on PROMPT in CWD with ARGS, within the step's
-    minutes; its JSON result, or None."""
+    minutes; its JSON result, or None (no answer, or the CLI's error: a bad
+    token, a rate limit, which is "could not replay", never a failed case).
+    An agent that changed this checkout stops the whole run (SystemExit, not
+    caught per case): what runs next, with the keys, would be its code."""
     env = {k: v for k, v in os.environ.items() if k not in SECRET_ENV}
+    before = fingerprint(root)
     try:
         got = subprocess.run(["claude", "-p", prompt, *args, "--output-format", "json"], cwd=cwd, env=env,
                              capture_output=True, text=True, timeout=STEPS[step]["minutes"] * 60)
-        return json.loads(got.stdout)
+        result = json.loads(got.stdout)
     except (subprocess.TimeoutExpired, ValueError):
+        result = None
+    finally:
+        if fingerprint(root) != before:
+            raise SystemExit(f"evals.py: the {step} agent changed {root}; the run stops, nothing of it is graded")
+    if not isinstance(result, dict) or result.get("is_error"):
         return None
+    return result
 
 
 def policy_model(tree):
@@ -462,8 +512,15 @@ def replay_repro(case, work):
         return None
     tree, base = got
     rw = _load("repro_ways", "repro-ways.py")
+    old = os.environ.get("REPO")
     os.environ["REPO"] = case["repo"].split("/")[-1]
-    way = rw.resolve(tree, ROOT, case.get("layer") or "logic", str(case["issue"]))
+    try:
+        way = rw.resolve(tree, ROOT, case.get("layer") or "logic", str(case["issue"]))
+    finally:
+        if old is None:
+            os.environ.pop("REPO", None)
+        else:
+            os.environ["REPO"] = old
     if not way.get("way") or way.get("fixed"):
         return None
     env = {**os.environ, "GITHUB_REPOSITORY": case["repo"], "NUMBER": str(case["issue"]), "TITLE": issue.get("title") or "",
@@ -589,6 +646,8 @@ REPLAYS = {"repro": replay_repro, "spec": replay_spec, "autopilot": replay_autop
 
 def run(step, cases, work):
     results = []
+    if step in REPLAYS and cases:
+        preload()
     for c in cases:
         try:
             got = REPLAYS[step](c, work) if step in REPLAYS else None
@@ -780,6 +839,39 @@ def self_test():
         unknown = "KeyError"
     check("claude_args: an expression it does not know fails the case, never a guess", unknown, "KeyError")
     check("checkout: the replay's .dx-central holds no test and no set", [p for p in CENTRAL_PARTS if p.startswith(("tests", "evals", "."))], [])
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        root, dest, bin_dir = os.path.join(d, "root"), os.path.join(d, "tree", ".dx-central"), os.path.join(d, "bin")
+        os.makedirs(os.path.join(root, "scripts", "__pycache__"))
+        os.makedirs(bin_dir)
+        open(os.path.join(root, "scripts", "a.py"), "w").write("A = 1\n")
+        open(os.path.join(root, "org.yml"), "w").write("org: x\n")
+        copy_central(dest, root)
+        links = [os.path.join(dp, f) for dp, ds, fs in os.walk(dest) for f in fs + ds if os.path.islink(os.path.join(dp, f))]
+        open(os.path.join(dest, "scripts", "a.py"), "w").write("A = 2\n")
+        check("checkout: .dx-central is a copy, not links; what the agent writes there stays in its tree",
+              (links, open(os.path.join(root, "scripts", "a.py")).read(), os.path.isfile(os.path.join(dest, "org.yml")), os.path.exists(os.path.join(dest, "scripts", "__pycache__"))),
+              ([], "A = 1\n", True, False))
+        fake = os.path.join(bin_dir, "claude")
+        old_path = os.environ.get("PATH", "")
+        os.environ["PATH"] = bin_dir + os.pathsep + old_path
+        try:
+            def answer(text):
+                open(fake, "w").write("#!/bin/sh\n" + text)
+                os.chmod(fake, 0o755)
+                try:
+                    return ask("p", [], d, "spec", root)
+                except SystemExit as e:
+                    return "stopped" if "changed" in str(e) else str(e)
+            check("ask: the CLI's answer; its error (a bad token, a limit) or no JSON is could-not-replay", (
+                answer("echo '{\"result\": \"ok\"}'\n"), answer("echo '{\"is_error\": true, \"result\": \"401\"}'\n"), answer("echo oops\n")),
+                ({"result": "ok"}, None, None))
+            check("ask: an agent that writes to the runner's checkout stops the run",
+                  answer(f"echo 'A = 3' > {root}/scripts/a.py; echo '{{}}'\n"), "stopped")
+        finally:
+            os.environ["PATH"] = old_path
+    preload()
+    check("preload: the grades' helpers are loaded once, before any agent", (set(_LOADED) >= set(HELPERS), _load("issue_schema", "issue-schema.py") is _LOADED["issue_schema"]), (True, True))
     check("claude_args: the autopilot's budgets are known", (autopilot_args("spec", "3")[:2], "--max-turns" in autopilot_args("work", "20")), (["--model", autopilot_args("spec", "3")[1]], True))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
