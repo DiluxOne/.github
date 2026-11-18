@@ -26,7 +26,10 @@ the autopilot and G7 run the test exactly as the reproduction did.
   repro-lane.py evidence   the reproduction named in BODY's PRD (JSON:
                            report, test, sha256, branch; and, for a way that
                            is a command, way, spec and theme); exit 1 when
-                           it names none
+                           it names none. A release lane's bug (#699) gives
+                           its run and scenario, with no test nor branch
+  repro-lane.py scenario   the release scenario's run named in BODY's PRD
+                           (JSON: run, scenario, #699); exit 1 when none
   repro-lane.py --test     self-test
 
 Environment: BODY (a file holding the issue's body) for evidence.
@@ -168,6 +171,22 @@ Normal
     return {"title": f"The bug reproduced from #{report}", "body": body}
 
 
+# The second evidence form (#699 C6): a bug the release lane opens, its run
+# being the reproduction (scripts/release-lane.py writes the line in its
+# Problem). No test: the scenario that failed in that run is the evidence.
+SCENARIO_EVIDENCE = re.compile(r"^Reproduced by: (https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/actions/runs/[0-9]+) scenario `([a-z0-9-]+)`\.?$")
+
+
+def scenario_evidence(body):
+    """{run, scenario} from the PRD's Problem (#699 C6), or None. Read from
+    the PRD only, as evidence() is."""
+    problem = dict(schema.parse(body)[0]).get("Problem", "")
+    found = [m for m in (SCENARIO_EVIDENCE.match(line.strip()) for line in problem.split("\n")) if m]
+    if len(found) != 1:
+        return None
+    return {"run": found[0].group(1), "scenario": found[0].group(2)}
+
+
 def evidence(body):
     """{report, test, sha256, branch} from the PRD's Problem, or None; and,
     for a way that is a command (#397), its way, spec and theme. Read from
@@ -220,6 +239,13 @@ def self_test():
     check("the sealed part holds the evidence (a seal covers the hash)", sha in schema.part_text(p["body"], "prd"), True)
     check("C1 names the test, so the Spec's line for it is that path", "tests/Unit/Repro/Issue12Test.php" in p["body"].split("### Acceptance criteria", 1)[1], True)
     check("no evidence in a person's issue", evidence("### Problem\n\nIt breaks.\n"), None)
+    run = "https://github.com/DiluxOne/.github/actions/runs/77"
+    check("#699 C6: the release lane's run is the second evidence form, in the Problem only, once",
+          (scenario_evidence(f"### Problem\n\nIt fails.\nReproduced by: {run} scenario `edit-starts`.\n"),
+           scenario_evidence(f"### Scope\n\nReproduced by: {run} scenario `edit-starts`.\n"),
+           scenario_evidence(f"### Problem\n\nReproduced by: {run} scenario `a`.\nReproduced by: {run} scenario `b`.\n"),
+           evidence(f"### Problem\n\nReproduced by: {run} scenario `edit-starts`.\n")),
+          ({"run": run, "scenario": "edit-starts"}, None, None, None))
     check("no evidence when the test and the branch disagree", evidence(p["body"].replace("test/repro-issue-12", "test/repro-issue-13")), None)
     check("no evidence outside the Problem", evidence("### Scope\n\n" + "Reproduction test: `tests/Unit/Repro/Issue12Test.php`, SHA-256 `" + sha + "`, on the branch `test/repro-issue-12`."), None)
     check("no evidence for a path outside tests/Unit/Repro", evidence(p["body"].replace("tests/Unit/Repro/Issue12Test.php", "src/Issue12Test.php")), None)
@@ -310,9 +336,22 @@ def main(argv):
             print(err, file=sys.stderr)
             return 1
         return 0
+    if argv[:1] == ["scenario"]:
+        # #699 C6: the release lane's bug, its run the reproduction.
+        with open(os.environ["BODY"], encoding="utf-8") as fh:
+            ev = scenario_evidence(fh.read())
+        if not ev:
+            print("the PRD names no release scenario's run", file=sys.stderr)
+            return 1
+        print(json.dumps(ev))
+        return 0
     if argv[:1] == ["evidence"]:
         with open(os.environ["BODY"], encoding="utf-8") as fh:
-            ev = evidence(fh.read())
+            text = fh.read()
+        ev = evidence(text)
+        if not ev and scenario_evidence(text):
+            # #699 C6: no test, no branch: the release scenario's run.
+            ev = dict(scenario_evidence(text), test="", sha256="", branch="")
         if not ev:
             print("the PRD names no reproduction test", file=sys.stderr)
             return 1

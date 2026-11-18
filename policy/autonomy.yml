@@ -189,10 +189,13 @@ lanes:
   bugfix-reproduced:
     description: A reported bug that the reproduction confirmed with a failing test.
     accept: policy
+    # The release lane's own bug too (#699): dilux-bot opens it from a
+    # failed release scenario, its run is the reproduction (the Problem's
+    # `Reproduced by:` line), and with no test to check, a person merges it.
     origin:
-      workflows: [issue-repro.yml]
+      workflows: [issue-repro.yml, release-lane.yml]
     repositories: ["*"]
-    evidence: The failing test the reproduction wrote, named in the PRD with its SHA-256; the fix makes it pass in the sandbox, unchanged.
+    evidence: The failing test the reproduction wrote, named in the PRD with its SHA-256; the fix makes it pass in the sandbox, unchanged. For a bug the release lane opened, the lane's run and the scenario that failed in it (no test, so a person merges the fix).
     merge: {max-risk: medium, max-complexity: medium}
     constitution-merge: {max-risk: high, max-complexity: medium}
 

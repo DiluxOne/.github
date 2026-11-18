@@ -1194,7 +1194,9 @@ jobs:
           jq -r .body "$RUNNER_TEMP/draft.json" > "$RUNNER_TEMP/draft.md"
           # A branch left by an earlier, failed attempt is not reused.
           if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then branch="$branch-$GITHUB_RUN_ID"; fi
-          if [ "$LANE" = bugfix-reproduced ]; then
+          # A release lane's bug (#699 C6) has no reproduction branch: its
+          # draft starts as any other.
+          if [ "$LANE" = bugfix-reproduced ] && [ -n "$REPRO_BRANCH" ]; then
             # A reproduced bug's branch starts at current main with the
             # reproduction's own commits on top (#549): the failing test,
             # byte for byte the one the PRD sealed (its SHA-256), committed

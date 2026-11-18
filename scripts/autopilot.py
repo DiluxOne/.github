@@ -399,7 +399,8 @@ def may_start(policy, body, autopilot_var, lane=LANE, no_way=""):
     result = schema.g1(body)
     if not result["ok"]:
         return False, "the issue is not ready (G1): " + "; ".join(result["errors"])
-    if lane == REPRO and not repro.evidence(body):
+    # A release lane's bug (#699 C6): its run is the reproduction.
+    if lane == REPRO and not repro.evidence(body) and not repro.scenario_evidence(body):
         return False, f"the {REPRO} lane's issue names no reproduction test in its PRD"
     if no_way:
         return False, no_way
@@ -2054,6 +2055,10 @@ def decide(policy, body, risk, complexity, blocking, description_ok, files, head
         return False, f"the lane {lane_name} is off"
     if lane_name == REPRO:
         ev = repro.evidence(body)
+        if not ev and repro.scenario_evidence(body):
+            # #699 C6: a release lane's bug has no reproduction test G7 could
+            # check its fix against: a person merges it.
+            return False, "a release scenario's bug names no reproduction test to check the fix against: a person merges it"
         if not ev:
             return False, "the PRD names no reproduction test"
         if ev["test"] not in head_files or ev["test"] not in files:
@@ -4340,6 +4345,9 @@ def repro_needed(body, labels, seal):
         return "", ""
     if seal != "match":
         return f"the issue's PRD is not the one sealed ({seal or 'unread'}), so its reproduction test cannot be trusted", ""
+    if not ev and repro.scenario_evidence(body):
+        # #699 C6: a release lane's bug, reproduced by its run: no test to run.
+        return "", ""
     if not ev:
         return "the issue is a reproduced bug's, but its PRD names no reproduction test", ""
     return "", ev["test"]

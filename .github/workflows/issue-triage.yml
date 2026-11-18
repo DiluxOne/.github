@@ -622,7 +622,12 @@ jobs:
     name: A nightly review's bug
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     timeout-minutes: 5
-    if: github.event_name == 'issues' && github.event.action == 'opened' && github.event.issue.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.issue.body, '<!-- dx-nightly-finding') || startsWith(github.event.issue.body, '<!-- dx-repro-blocker') || startsWith(github.event.issue.body, '<!-- dx-release-lane'))
+    # Not a release lane's bug whose run is its reproduction (#699 C6):
+    # issue-repro.yml's `release-bug` accepts that one, with no attempt.
+    if: >-
+      github.event_name == 'issues' && github.event.action == 'opened' && github.event.issue.user.login == vars.DX_BOT_LOGIN &&
+      (startsWith(github.event.issue.body, '<!-- dx-nightly-finding') || startsWith(github.event.issue.body, '<!-- dx-repro-blocker') || startsWith(github.event.issue.body, '<!-- dx-release-lane')) &&
+      !(startsWith(github.event.issue.body, '<!-- dx-release-lane') && contains(github.event.issue.body, 'Reproduced by: https://github.com/'))
     outputs:
       bug: ${{ steps.mark.outputs.bug }}
     steps:
