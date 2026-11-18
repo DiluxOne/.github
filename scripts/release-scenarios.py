@@ -41,10 +41,12 @@ the run's id, `run_mark`, so none is what an earlier run merged into main,
 which would leave its pull request with no diff: #778, `scenario_text`;
 a `before`'s file says its `says` alone),
 `minutes` (its limit, 10 by default, 15 at most) and
-`expect` (`labels`, `absent`, `comments` (markers), `pull` (`closes`,
+`expect` (`labels`, `absent`, `comments` (markers), `count` ({marker:
+n}, how many comments carry it, #696), `pull` (`closes`,
 `branch`, `title`, patterns; `false` for none that closes it, #713), `check` (name: conclusion, the name a
 check run's caller's job or its own: `check_named`, #709), `merged`,
-`waiting`). Every scenario is a group of its own (`groups`, #694), and
+`waiting`, `state` (OPEN or CLOSED, #696: a bug's issue its merged fix
+closed)). Every scenario is a group of its own (`groups`, #694), and
 the lane plays the groups at once, one job each, on GitHub's runners,
 never DX_RUNNER_HEAVY, where the test repository's own jobs run
 (`lane_problems`, #707): each writes only under
@@ -72,7 +74,10 @@ after GitHub's back-off within the scenario's limit, then named.
         `risk:<level>` label no path it changes gets as its floor for kind
         engine-test, the organisation's patterns and the kind's
         surface.yml `high-risk` matched as scripts/policy.py matches them,
-        `risk_problems`).
+        `risk_problems`; #696: a path docs/model.md describes, or a
+        setting that changes one, with no row in docs/paths.md, a row
+        that names no scenario, or one that names a scenario that is not
+        here, `paths`).
         Every other pair a shipped caller wires is held to the
         engine statically, by scripts/caller-contract.py check; and
         what is wrong with the groups (`partition`): a scenario in no
@@ -421,6 +426,11 @@ def preconditions(scenarios, bodies, pack, can_dispatch=(), passes=None, types=N
     out = []
     for s in scenarios:
         sid, expect, opens = s.get("id") or "?", s.get("expect") or {}, s.get("opens") or {}
+        # #696: `count` is {marker: how many comments carry it}.
+        count = expect.get("count")
+        if count is not None and (not isinstance(count, dict) or not count
+                                  or any(not isinstance(n, int) or isinstance(n, bool) or n < 0 for n in count.values())):
+            out.append(f"scenario {sid}: its expect's count is not {{marker: a whole number}}")
         verdicts = [v for v in BUG_VERDICTS if v in (expect.get("labels") or [])]
         if verdicts and repro is False:
             out.append(f"scenario {sid}: expects {', '.join(verdicts)}, but the test repository has no way to reproduce a bug "
@@ -584,6 +594,14 @@ def holds(expect, seen):
     for key in ("merged", "waiting"):
         if key in expect and bool(seen.get(key)) != bool(expect[key]):
             out.append(f"{key} is {bool(seen.get(key))}")
+    # #696: how many comments carry a marker (a stop said once, never twice).
+    for marker, n in (expect.get("count") or {}).items():
+        got = sum(1 for c in seen.get("comments") or [] if marker in str(c))
+        if got != n:
+            out.append(f"{got} comments with {marker}, not {n}")
+    # #696: the issue's or the pull request's state (CLOSED once its fix merged).
+    if "state" in expect and str(seen.get("state") or "").upper() != str(expect["state"]).upper():
+        out.append(f"its state is {seen.get('state') or 'unknown'}, not {expect['state']}")
     return out + [saw(seen)] if out else out
 
 
@@ -620,6 +638,10 @@ def hopeless(expect, seen, settled=False):
         got = check_named(name, seen.get("checks"))
         if got and got != conclusion:
             out.append(f"check {name} ended {got}, not {conclusion}")
+    for marker, n in (expect.get("count") or {}).items():
+        got = sum(1 for c in seen.get("comments") or [] if marker in str(c))
+        if isinstance(n, int) and got > n:
+            out.append(f"{got} comments with {marker} already, past {n}")
     if expect.get("check") and seen.get("held"):
         out.append(f"the fork's run waits for approval to run workflows from forks ({', '.join(seen['held'])})")
     if settled:
@@ -2061,6 +2083,53 @@ def lane_problems(lane):
     return []
 
 
+# The table of paths (#696): every path docs/model.md describes, and every
+# setting that changes one, names the scenarios that play it.
+PATHS_DOC = os.path.join("docs", "paths.md")
+REQUIRED_PATHS = (
+    # The paths.
+    "A person's bug to its merge", "A reproduced bug merged by policy", "A feature accepted and built", "A claim and its release",
+    "A stop answered", "An edit after acceptance and the new acceptance", "The release and its watch",
+    # The settings that change them.
+    "Acceptance by policy", "`who-decides`", "A claim", "Merge on its own or by a person", "Its `ceiling`")
+
+
+def paths(table_text, scenario_ids, required=REQUIRED_PATHS):
+    """What is wrong with the table of paths (#696, docs/paths.md): a row
+    of `required` it lacks, a row that names no scenario (its cell, the
+    ids in backticks), and an id it names that is no scenario of
+    `scenario_ids`. [] when it all holds. Pure."""
+    out, rows = [], {}
+    for line in (table_text or "").splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")] if line.strip().startswith("|") else []
+        if len(cells) < 2 or re.fullmatch(r"[-: ]+", cells[0]) or cells[0] == "Path or setting":
+            continue
+        if cells[0] in rows:
+            out.append(f"{PATHS_DOC}: {cells[0]} has two rows")
+        rows[cells[0]] = rows.get(cells[0], []) + re.findall(r"`([a-z0-9-]+)`", cells[1])
+    for name in required:
+        if name not in rows:
+            out.append(f"{PATHS_DOC} has no row for {name}")
+    for name, ids in rows.items():
+        if not ids:
+            out.append(f"{PATHS_DOC}: {name} names no scenario")
+        for i in ids:
+            if i not in scenario_ids:
+                out.append(f"{PATHS_DOC}: {name} names {i}, which is no scenario of {SCENARIOS}")
+    return out
+
+
+def paths_problems(conf, root=ROOT):
+    """`paths` of the repository's table against its scenarios; one table
+    that cannot be read is named."""
+    try:
+        with open(os.path.join(root, PATHS_DOC), encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return [f"{PATHS_DOC} cannot be read: every path of docs/model.md names its scenarios there"]
+    return paths(text, {s.get("id") for s in conf.get("scenarios") or []})
+
+
 def central_of():
     sys.path.insert(0, HERE)
     import org
@@ -2073,7 +2142,8 @@ def problems(conf, root=ROOT):
     with the groups (`partition`), with the lane's `play` job
     (`lane_problems`, #707), and with the test repository's pipeline
     (`pipeline_problems`, #748), and every risk label the paths cannot
-    give (`risk_problems`, #764)."""
+    give (`risk_problems`, #764), and every path or setting of the table of
+    paths that names no scenario that exists (`paths`, #696)."""
     pack = test_pack(root)
     scenarios = conf.get("scenarios") or []
     return (coverage(scenarios, played(root, pack) | transitions(root), conf.get("statically") or {})
@@ -2085,6 +2155,7 @@ def problems(conf, root=ROOT):
             + timing(scenarios)
             + autopilot_problems(scenarios)
             + risk_problems(scenarios, *risk_patterns(root))
+            + paths_problems(conf, root)
             + fixture_problems(conf, engine_post(root).issue, engine_post(root).pull, engine_post(root).release,
                                form_required(load_yaml(os.path.join(root, BUG_FORM)))))
 
@@ -2405,6 +2476,55 @@ def self_test():
     check("holds: what holds is nothing", holds({"labels": ["autopilot"], "comments": ["<!-- dx-x -->"], "pull": {"closes": True, "branch": "^feat/4-"}, "check": {"g": "success"}, "merged": False}, seen), [])
     check("holds: what does not is named, and what it saw (#707)", holds({"labels": ["accepted"], "absent": ["autopilot"], "merged": True}, seen),
           ["no label accepted", "label autopilot still there", "merged is False", "saw labels autopilot, awaiting-acceptance; the bot's newest comment: none"])
+    # #696 C1: a stop said once, never twice: how many comments carry it.
+    stop696 = "<!-- dx-autopilot-stop -->"
+    once = {**seen, "comments": [f"{stop696}\nStopped.", "**Acceptance withdrawn (G2):**", "<!-- dx-board -->"]}
+    twice = {**once, "comments": once["comments"] + [f"{stop696}\nStopped again."]}
+    check("#696 C1 holds: count, once is once; twice is named; none is named", (holds({"count": {stop696: 1}}, once), holds({"count": {stop696: 1}}, twice)[0],
+          holds({"count": {stop696: 1}}, {**seen, "comments": []})[0]), ([], f"2 comments with {stop696}, not 1", f"0 comments with {stop696}, not 1"))
+    check("#696 C1 hopeless: a marker past its count can no longer hold; under it still may", (hopeless({"count": {stop696: 1}}, twice), hopeless({"count": {stop696: 1}}, {**seen, "comments": []})),
+          ([f"2 comments with {stop696} already, past 1"], []))
+    check("#696 holds: state, the issue its merged fix closed", (holds({"state": "CLOSED"}, {**seen, "state": "CLOSED"}), holds({"state": "CLOSED"}, {**seen, "state": "OPEN"})[0]),
+          ([], "its state is OPEN, not CLOSED"))
+    bad696 = [{"id": "c1", "opens": {"issue": {"title": "x", "body": "complete-feature"}}, "expect": {"count": c}} for c in ({"m": -1}, {"m": "one"}, [], {}, {"m": True})]
+    check("#696 C1 preconditions: count is {marker: a whole number}", [len(preconditions([b], real.get("bodies") or {}, {})) for b in bad696], [1, 1, 1, 1, 1])
+    check("#696 C1 preconditions: a whole number holds", preconditions([{**bad696[0], "expect": {"count": {"m": 1}}}], real.get("bodies") or {}, {}), [])
+    c1 = next((s for s in real["scenarios"] if s["id"] == "stop-edited-reaccepted-answered"), {})
+    verbs696 = [next(k for k in st if k != "of") for st in c1.get("steps") or []]
+    check("#696 C1: the scenario stops, is edited, answered and accepted again, in that order, and expects the stop once and no label left",
+          (verbs696[-3:], verbs696.count("label"), "edit" in verbs696 and verbs696.index("edit") < verbs696.index("comment"),
+           (c1.get("expect") or {}).get("count"), {"needs-human", "autopilot:continue"} <= set((c1.get("expect") or {}).get("absent") or []),
+           "the fixed change asks first" in (real.get("bodies") or {}).get(c1.get("opens", {}).get("issue", {}).get("body"), "")),
+          (["until", "comment", "label"], 2, True, {stop696: 1}, True, True))
+    # #696 C2: the table of paths (docs/paths.md) names, for every path
+    # docs/model.md describes and every setting that changes it, scenarios
+    # that exist.
+    ids696 = {s["id"] for s in real["scenarios"]}
+    with open(os.path.join(ROOT, PATHS_DOC), encoding="utf-8") as fh:
+        doc696 = fh.read()
+    check("#696 C2 paths: docs/paths.md against tests/release/scenarios.yml: every path and setting has a row, and every row names scenarios that exist",
+          paths(doc696, ids696), [])
+    rows696 = "| Path or setting | Scenarios |\n| --- | --- |\n" + "".join(f"| {p} | `accepted-spec` |\n" for p in REQUIRED_PATHS)
+    check("#696 C2 paths: a table with every row, each naming a scenario, holds", paths(rows696, {"accepted-spec"}), [])
+    missing696 = rows696.replace(f"| {REQUIRED_PATHS[0]} | `accepted-spec` |\n", "")
+    check("#696 C2 paths fixture: a missing row is named", paths(missing696, {"accepted-spec"}), [f"{PATHS_DOC} has no row for {REQUIRED_PATHS[0]}"])
+    unknown696 = rows696.replace(f"| {REQUIRED_PATHS[1]} | `accepted-spec` |", f"| {REQUIRED_PATHS[1]} | `accepted-spec`, `no-such-scenario` |")
+    check("#696 C2 paths fixture: an unknown scenario is named", paths(unknown696, {"accepted-spec"}),
+          [f"{PATHS_DOC}: {REQUIRED_PATHS[1]} names no-such-scenario, which is no scenario of {SCENARIOS}"])
+    empty696 = rows696.replace(f"| {REQUIRED_PATHS[2]} | `accepted-spec` |", f"| {REQUIRED_PATHS[2]} |  |")
+    check("#696 C2 paths fixture: an empty cell is named", paths(empty696, {"accepted-spec"}), [f"{PATHS_DOC}: {REQUIRED_PATHS[2]} names no scenario"])
+    dup696 = rows696 + f"| {REQUIRED_PATHS[0]} | `no-such-scenario` |\n"
+    check("#696 C2 paths fixture: a row named twice is named, and neither row's scenarios is lost", paths(dup696, {"accepted-spec"}),
+          [f"{PATHS_DOC}: {REQUIRED_PATHS[0]} has two rows", f"{PATHS_DOC}: {REQUIRED_PATHS[0]} names no-such-scenario, which is no scenario of {SCENARIOS}"])
+    check("#696 C2 paths: the required rows are docs/model.md's paths and the settings that change them",
+          {"A person's bug to its merge", "A reproduced bug merged by policy", "A feature accepted and built", "A claim and its release", "A stop answered",
+           "An edit after acceptance and the new acceptance", "The release and its watch", "Acceptance by policy", "`who-decides`", "A claim",
+           "Merge on its own or by a person", "Its `ceiling`"} == set(REQUIRED_PATHS), True)
+    with tempfile.TemporaryDirectory() as root696:
+        os.makedirs(os.path.join(root696, "docs"))
+        open(os.path.join(root696, PATHS_DOC), "w").write(missing696)
+        check("#696 C2 coverage reads the table: a row missing there fails `coverage`", paths_problems({"scenarios": [{"id": "accepted-spec"}]}, root696),
+              [f"{PATHS_DOC} has no row for {REQUIRED_PATHS[0]}"])
     calls = []
 
     def fake(*args, input=None):
@@ -3148,7 +3268,7 @@ def self_test():
              and any(needs_autopilot(w) for w in [s.get("expect")] + [st_["until"] for st_ in s.get("steps") or [] if "until" in st_])]
     check("#713 C2: the real file: every scenario that reads the autopilot's result waits for it, each within 15 minutes",
           (autopilot_problems(real["scenarios"]), sorted(reads), {limit(by713[i]) for i in reads}),
-          ([], sorted(["accepted-spec", "spec-to-draft", "core-one-at-a-time", "decision-sub-issues", "prd-edited-after-acceptance", "question-answered", "stop-hint-continue", "draft-in-conflict", "ready-behind-main"]), {15}))
+          ([], sorted(["accepted-spec", "spec-to-draft", "core-one-at-a-time", "decision-sub-issues", "prd-edited-after-acceptance", "question-answered", "stop-hint-continue", "draft-in-conflict", "ready-behind-main", "bug-by-person-merges", "stop-answered", "stop-edited-reaccepted-answered"]), {15}))
     # #764 C2: high-risk-waits's floor is high from the path it changes.
     hrw = by713["high-risk-waits"]
     rhigh, rlow = risk_patterns()

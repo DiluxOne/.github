@@ -2,7 +2,7 @@
 
 How work moves from an issue to a release in an organisation that runs on these workflows: who decides, what an agent does on its own, and what stops it. It holds for any kind of project; what one organisation or one kind of project sets lives in its data (`repos.yml`, `policy/`, `kinds/`), not here. An agent reads this from the link in its repository's `AGENTS.md`; the rules every change meets are in [`rules/`](../rules/README.md).
 
-Not all of it is built yet. What is, and in which order the rest comes, is the work plan: [docs/plans/autonomy.md](plans/autonomy.md).
+Not all of it is built yet. What is, and in which order the rest comes, is the work plan: [docs/plans/autonomy.md](plans/autonomy.md). Every path below, and every setting that changes one, is played whole by a scenario of the release lane before a version moves: [docs/paths.md](paths.md) (#696).
 
 ## In one paragraph
 

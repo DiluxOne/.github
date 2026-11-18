@@ -479,9 +479,10 @@ def test_a_fix_round_that_fails_as_the_round_before_stops_and_says_so(tmp_path, 
     assert body.startswith(ap.STOP + "\n" + ap.PREPR_MARK) and "same failure as the round before" in body and "stops rather than start another" in body
     assert not any("autopilot:continue" in c for c in calls)
     assert ["pr", "edit", "8", "--repo", "o/r", "--add-label", "needs-human"] in calls
-    # review-reply.yml resumes on an answer after a comment whose first line is the stop's.
+    # review-reply.yml resumes on an answer after a comment that run-end
+    # reads as the stop (#696).
     reply = (ROOT / ".github/workflows/review-reply.yml").read_text(encoding="utf-8")
-    assert f'"{ap.STOP}"*' in reply and body.split("\n")[0] == ap.STOP
+    assert "autopilot.py run-end" in reply and ap.run_end([{"body": body, "author": {"login": ap.BOT_LOGINS[1]}, "createdAt": "1"}]) == "stop"
 
 
 def test_a_fix_round_that_fails_another_way_continues(tmp_path, monkeypatch):

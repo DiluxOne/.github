@@ -105,9 +105,10 @@ def test_a_maintainers_answer_after_a_stop_brings_the_autopilot_back():
     spec.loader.exec_module(ap)
     # `nothing` exits 0, but on a board edited by hand with a decider's
     # answer, which it fails with what to restore (#811).
-    assert f'"{ap.STOP}"*|"{ap.SILENT}"*) ;; *) nothing ;;' in run
+    # #696: how it ended is run-end's, past every later comment of the bot's.
+    assert "| python3 .dx-central/scripts/autopilot.py run-end)" in run
+    assert 'case $ended in stop|silent) ;; *) nothing ;; esac' in run
     assert run.index("nothing() {") < run.index("exit 0\n          }", run.index("nothing() {"))
-    assert 'select(.user.login == env.DX_BOT_LOGIN and (.body | contains("<!-- dx-mention ") | not))' in run
     assert '*,needs-human,*) ;; *) nothing ;;' in run and '*,autopilot,*) ;; *) nothing ;;' in run
     off = run.index('labels/needs-human" >/dev/null')
     assert off < run.index('--add-label "autopilot:continue" >/dev/null', off)

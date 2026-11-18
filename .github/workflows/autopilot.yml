@@ -48,7 +48,14 @@ name: Autopilot
 #                   step (#673).
 #                   A maintainer's answer after a stop or a silent end
 #                   brings it back the same way: review-reply.yml takes
-#                   `needs-human` off and dilux-bot adds the continue (#561).
+#                   `needs-human` off and dilux-bot adds the continue (#561),
+#                   the stop found past the bot's later comments (#696,
+#                   autopilot.py run-end). A new `accepted` after a stop
+#                   (mode: start) takes `needs-human` off the issue and its
+#                   draft once the seal matches, and dilux-bot continues a
+#                   draft it freed (#696, autopilot.py reaccepted); the Spec
+#                   and the work read what those who decide settled in the
+#                   comments with the PRD (#696, autopilot.py settled).
 #                   A maintainer's answer that drops or changes a
 #                   criterion (`drop C3`, `change C3: <new text>`) is applied to
 #                   the checklist by the bot before the work (#561,
@@ -645,6 +652,21 @@ jobs:
           🤖 AI-generated · Claude Opus 5.5 (Anthropic)" >/dev/null || true
             echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
+          # A new acceptance after the autopilot's stop or silent end (#696):
+          # once its seal matches, `needs-human` comes off the issue and off
+          # its open autopilot pull request (autopilot.py reaccepted, where
+          # run-end says stop or silent there; a cap end keeps it). A draft
+          # it freed is continued by the bot, so nobody adds the continue;
+          # with none, the start goes on to the Spec or the draft.
+          if [ "$MODE" = start ] && [ "$AS" = start ] && [ "$LANE" = human-issue ] && grep -q '^def reaccept' .dx-central/scripts/autopilot.py; then
+            back=$(NUMBER="$ISSUE" python3 .dx-central/scripts/autopilot.py reaccepted)
+            if [ -n "$back" ]; then
+              gh label create "autopilot:continue" --repo "$GITHUB_REPOSITORY" --color 1D76DB --force --description "On an issue: the autopilot continues its draft pull request, or starts it" >/dev/null 2>&1 || true
+              gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --add-label "autopilot:continue" >/dev/null
+              echo "#$ISSUE was accepted again after the autopilot stopped on #$back: it continues there."
+              echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+          fi
           if [ "$AS" = start ]; then
             # Only the open pull requests GitHub lists as closing the issue
             # (closed ones are left out), never a text search, which matches
@@ -667,9 +689,16 @@ jobs:
             # runs cap, never against the rounds cap: the label asked for it.
             if ! why=$(AS="$AS" python3 .dx-central/scripts/autopilot.py may-continue); then
               echo "No continue: $why"
-              [[ "$why" != *"cap is"* ]] || gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "The autopilot does not continue: $why. A person takes it from here.
+              # A cap end, marked (#696: autopilot.py cap-comment), so it
+              # hides an older stop from review-reply.yml's answer; scripts
+              # older than it (`central-ref`) write the same words unmarked.
+              if [[ "$why" == *"cap is"* ]]; then
+                cap=$(python3 .dx-central/scripts/autopilot.py cap-comment "$why" 2>/dev/null) && [[ "$cap" == "<!-- dx-autopilot-cap -->"* ]] \
+                  || cap="The autopilot does not continue: $why. A person takes it from here.
 
-          🤖 AI-generated · Claude Opus 5.5 (Anthropic)" >/dev/null
+          🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
+                gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "$cap" >/dev/null
+              fi
               [[ "$why" != *"cap is"* ]] || gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label needs-human >/dev/null
               [[ "$why" != *"cap is"* ]] || gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "${OPEN_TO_CLAIM:-}" >/dev/null || true
               echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
@@ -787,6 +816,38 @@ jobs:
           set -euo pipefail
           export BODY="$RUNNER_TEMP/body.md" REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml" DX_IO="$GITHUB_WORKSPACE/.dx-io"
           mkdir -p "$DX_IO"
+          # What those who decide settled in the comments (#696, autopilot.py
+          # settled): every comment of theirs since the issue's first
+          # `accepted`, on the issue (and, for the work, its pull request),
+          # `/` commands left out, read with the PRD so the agent does not ask
+          # again what they answered. Who decides is `who-decides` (#588,
+          # deciders.py list answer), checked now; anyone else's words never
+          # reach the prompt. Read here for a start, below for the work.
+          export SETTLED="$RUNNER_TEMP/settled.md"
+          : > "$SETTLED"
+          # A read of the events that fails, or finds no `accepted` (a
+          # delegated sub-issue nobody labelled, #575), reads no answer, with
+          # a warning: an empty `since` would hand the prompt every comment
+          # of theirs, from before the acceptance too.
+          since=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/events" --paginate --jq '.[] | select(.event == "labeled" and .label.name == "accepted") | .created_at' | sort | sed -n 1p) || since=""
+          [ -n "$since" ] || echo "::warning::#$NUMBER's first \`accepted\` could not be read: the agent reads no settled answer."
+          # A reproduced bug's fix reads its test alone, never the report's
+          # conversation (#84).
+          settle() {
+            grep -q '^def settled' .dx-central/scripts/autopilot.py || return 0
+            [ "${LANE:-}" != bugfix-reproduced ] || return 0
+            [ -n "$since" ] || return 0
+            jq -r '.[].author.login' "$RUNNER_TEMP/comments.json" | sort -u \
+              | python3 .dx-central/scripts/deciders.py list answer > "$RUNNER_TEMP/deciders.txt" || : > "$RUNNER_TEMP/deciders.txt"
+            COMMENTS="$RUNNER_TEMP/comments.json" DECIDERS="$RUNNER_TEMP/deciders.txt" SINCE="$since" python3 .dx-central/scripts/autopilot.py settled > "$SETTLED"
+          }
+          if [ "$MODE" = start ]; then
+            if gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments | map({body, createdAt, author: {login: .author.login}})' > "$RUNNER_TEMP/comments.json"; then
+              settle
+            else
+              echo "::warning::#$NUMBER's comments could not be read: the Spec reads no answer."
+            fi
+          fi
           # The test repository (#563): its Spec is the fixed change's,
           # queued here as the agent would have, and the work writes it.
           fixed=$(python3 .dx-central/scripts/autopilot.py fixed)
@@ -831,6 +892,7 @@ jobs:
           jq -r '.[].author.login' "$RUNNER_TEMP/comments.json" | sort -u \
             | python3 .dx-central/scripts/deciders.py list answer > "$RUNNER_TEMP/deciders.txt" || : > "$RUNNER_TEMP/deciders.txt"
           COMMENTS="$RUNNER_TEMP/comments.json" DECIDERS="$RUNNER_TEMP/deciders.txt" python3 .dx-central/scripts/autopilot.py answers > "$RUNNER_TEMP/answers.md"
+          settle
           # #673: the last run's `make pre-pr` did not pass in full after its
           # step: the output's tail, from dilux-bot's own comment, in
           # .dx-io/pre-pr.md, which the prompt asks the agent to fix first.
