@@ -86,13 +86,14 @@ jobs:
   # So does a maintainer's hint after the autopilot stopped or ended
   # silent (#561): on its pull request still labelled `autopilot` (or on
   # the issue, with none), in the conversation or in a review thread
-  # (#832), labelled `needs-human` by dilux-bot and with a stop or silent
-  # end among dilux-bot's comments (its newest one; any later comment of
-  # the bot's, #647, #832, never hides it), the comment takes `needs-human`
-  # off and brings it back, a run that counts. A maintainer who takes it
-  # over removes `autopilot` first, or adds `needs-human` themselves; a
-  # stop for the runs or rounds cap ends in another comment, and stays with
-  # a person.
+  # (#832), labelled `needs-human` by dilux-bot and whose last end with a
+  # person is that stop or silent end (#696, autopilot.py run-end: past
+  # every other comment of dilux-bot's, a G2 withdrawal, its board, its
+  # mention, the review's summary, a reply, #647, #832), the comment takes
+  # `needs-human` off and brings it back, a run that counts. A maintainer
+  # who takes it over removes `autopilot` first, or adds `needs-human`
+  # themselves; a stop for the runs or rounds cap ends in a comment of its
+  # own (`dx-autopilot-cap`), and stays with a person.
   answer:
     name: The autopilot's answer
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
@@ -186,13 +187,16 @@ jobs:
             labels=$(gh "$kind" view "$stopped" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | join(",")')
             case ",$labels," in *,needs-human,*) ;; *) nothing ;; esac
             if [ "$kind" = pr ]; then case ",$labels," in *,autopilot,*) ;; *) nothing ;; esac; fi
-            # The stop is the newest of dilux-bot's comments that carries the
-            # stop or silent mark: a later one of its own (the board's
-            # mention, #647, the review's summary, a reply, #832) never hides
-            # it. It holds only while `needs-human` was last added by
-            # dilux-bot: a maintainer who added it to take over keeps it.
-            stop=$(gh api "repos/$GITHUB_REPOSITORY/issues/$stopped/comments" --paginate --jq '.[] | select(.user.login == env.DX_BOT_LOGIN) | .body | split("\n")[0] | select(startswith("<!-- dx-autopilot-stop -->") or startswith("<!-- dx-autopilot-silent -->"))' | tail -n 1)
-            [ -n "$stop" ] || nothing
+            # How its last run ended with a person (#696, autopilot.py
+            # run-end): found past every other comment of the bot's (a G2
+            # "Acceptance withdrawn", its board, its mention, the review's
+            # summary, a reply, #647, #832), so none hides the stop. A cap
+            # end stays with a person. It holds only while `needs-human` was
+            # last added by dilux-bot: a maintainer who added it to take over
+            # keeps it.
+            ended=$(gh api "repos/$GITHUB_REPOSITORY/issues/$stopped/comments" --paginate --jq '.[] | {body, createdAt: .created_at, author: {login: .user.login}}' \
+              | python3 .dx-central/scripts/autopilot.py run-end)
+            case $ended in stop|silent) ;; *) nothing ;; esac
             by=$(gh api "repos/$GITHUB_REPOSITORY/issues/$stopped/events" --paginate --jq '.[] | select(.event == "labeled" and .label.name == "needs-human") | .actor.login' | tail -n 1)
             [ "$by" = "$DX_BOT_LOGIN" ] || { echo "needs-human was added by ${by:-someone unknown}, not by the autopilot: it stays with a person."; nothing; }
           fi

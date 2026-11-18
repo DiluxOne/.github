@@ -1,8 +1,9 @@
-"""An answer after a stop (#647): review-reply.yml's answer step finds the
-stop or silent end in dilux-bot's last comment that is not the board's
-mention (its `dx-mention` marker), so the mention, which always comes after
-it, never hides it. The step runs as written, with gh stood in; the
-comments go through gh's own --jq, with jq."""
+"""An answer after a stop (#647, #696): review-reply.yml's answer step finds
+the stop or silent end past every later comment of dilux-bot's (the board's
+mention, its `dx-mention` marker, the board itself, a G2 "Acceptance
+withdrawn"), through scripts/autopilot.py run-end, so none of them hides it;
+a cap end (`dx-autopilot-cap`) does. The step runs as written, with gh stood
+in; the comments go through gh's own --jq, with jq, and the real run-end."""
 import json
 import os
 import subprocess
@@ -59,6 +60,9 @@ def answer(tmp_path, comments, pr=False):
     (tmp_path / ".dx-central/scripts/deciders.py").write_text("print('decides')\n")
     # The issue's board (#802): no question waits on it.
     (tmp_path / ".dx-central/scripts/receipts.py").write_text("import sys\nprint('null' if sys.argv[1:3] == ['state', 'get'] else '')\n")
+    # How the run ended (#696): the real script's run-end.
+    (tmp_path / ".dx-central/scripts/autopilot.py").write_text(
+        f"import runpy, sys\nsys.path.insert(0, {str(ROOT / 'scripts')!r})\nrunpy.run_path({str(ROOT / 'scripts/autopilot.py')!r}, run_name='__main__')\n")
     out = tmp_path / "out"
     out.write_text("")
     env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", GITHUB_OUTPUT=str(out),
@@ -78,13 +82,27 @@ def test_a_mention_does_not_hide_the_stop(tmp_path):
         assert "gh issue edit 7 --repo o/r --add-label autopilot:continue" in calls, end
 
 
+def test_the_board_and_a_g2_withdrawal_do_not_hide_the_stop(tmp_path):
+    # #696: the bot's board, its G2 "Acceptance withdrawn" and any other
+    # comment of its after the stop or the silent end never hide it.
+    for i, comments in enumerate((
+            [(BOT, "<!-- dx-autopilot-stop -->\nStopped."), (BOT, "<!-- dx-board -->\nThe board"), (BOT, MENTION)],
+            [(BOT, "<!-- dx-autopilot-stop -->\nStopped."), (BOT, "**Acceptance withdrawn (G2):** @ana edited the PRD."), (BOT, "<!-- dx-board -->\nThe board")],
+            [(BOT, "<!-- dx-autopilot-silent -->\nSilent."), (BOT, "A note")])):
+        run = tmp_path / str(i)
+        run.mkdir()
+        calls = answer(run, comments)
+        assert "gh api -X DELETE repos/o/r/issues/7/labels/needs-human" in calls, comments
+        assert "gh issue edit 7 --repo o/r --add-label autopilot:continue" in calls, comments
+
+
 def test_no_stop_no_continue(tmp_path):
-    # No stop among dilux-bot's comments: nothing changes. (A stop with a
-    # later comment of the bot's after it still holds, #832:
+    # No stop of dilux-bot's, or a cap end after it: nothing changes. (A
+    # stop with a later comment of the bot's after it still holds, #832:
     # tests/workflows/test_review_reply_stop_answer.py.)
     for i, comments in enumerate((
-            [(BOT, "<!-- dx-board -->\nThe board"), (BOT, MENTION)],
-            [(BOT, "A question")],
+            [(BOT, "<!-- dx-autopilot-stop -->\nStopped."), (BOT, "<!-- dx-autopilot-cap -->\nThe autopilot spent its 3 rounds."), (BOT, MENTION)],
+            [(BOT, "<!-- dx-board -->\nThe board"), (BOT, "A question")],
             [(BOT, MENTION)],
             [("someone", "<!-- dx-autopilot-stop -->\nA quote"), (BOT, MENTION)])):
         run = tmp_path / str(i)
