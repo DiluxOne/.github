@@ -1,0 +1,3 @@
+{
+  "pending": "no whole run yet: evals.yml fails this step until `evals.py baseline spec FILE` writes the score of its first whole run"
+}

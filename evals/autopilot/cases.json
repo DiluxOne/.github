@@ -1,0 +1,86 @@
+[
+  {
+    "id": "DiluxOne/.github#688:autopilot",
+    "repo": "DiluxOne/.github",
+    "issue": 688,
+    "pr": 829,
+    "base": "a539dce055e59884429f6470fe6b0826453f3428",
+    "merge": "735f1d138328edbe64d24cfd66a05d3ca16bd51d",
+    "tests": [
+      "tests/workflows/test_battery_doc.py"
+    ],
+    "expect": "passed"
+  },
+  {
+    "id": "DiluxOne/.github#805:autopilot",
+    "repo": "DiluxOne/.github",
+    "issue": 805,
+    "pr": 826,
+    "base": "68f0b0eee3c1618b4d26a676541f210c1aed0342",
+    "merge": "54a8377c9f12dcaa16b7459b7787c85f43be4216",
+    "tests": [
+      "tests/workflows/test_autopilot_board_state.py",
+      "tests/workflows/test_autopilot_main_merge.py",
+      "tests/workflows/test_issue_805_labels.py",
+      "tests/workflows/test_policy_on_receipts.py",
+      "tests/workflows/test_reproduction_wiring.py"
+    ],
+    "expect": "passed"
+  },
+  {
+    "id": "DiluxOne/.github#820:autopilot",
+    "repo": "DiluxOne/.github",
+    "issue": 820,
+    "pr": 821,
+    "base": "1fe64bd742a63d2d59a72dd90f8a0329ff0e7973",
+    "merge": "8953903118886bad464cf3841806c48828662ab9",
+    "tests": [
+      "tests/workflows/test_autopilot_cancelled_review.py",
+      "tests/workflows/test_autopilot_ready_push.py",
+      "tests/workflows/test_autopilot_rounds.py",
+      "tests/workflows/test_queue_drop_fix.py"
+    ],
+    "expect": "passed"
+  },
+  {
+    "id": "DiluxOne/.github#801:autopilot",
+    "repo": "DiluxOne/.github",
+    "issue": 801,
+    "pr": 813,
+    "base": "2d66d19e5a96180f7e9f24afd6e7eada1ec07f69",
+    "merge": "996754b454e9c32598b43aa9267cae518a464469",
+    "tests": [
+      "tests/repro/test_issue_496.py",
+      "tests/workflows/test_confirmed_bug_no_acceptance.py",
+      "tests/workflows/test_maintainer_bug_wiring.py",
+      "tests/workflows/test_repro_board_state.py",
+      "tests/workflows/test_reproduction_wiring.py"
+    ],
+    "expect": "passed"
+  },
+  {
+    "id": "DiluxOne/.github#803:autopilot",
+    "repo": "DiluxOne/.github",
+    "issue": 803,
+    "pr": 812,
+    "base": "395fb239eb1c0a8238c8fcce711eb20e5fabd1bf",
+    "merge": "2d66d19e5a96180f7e9f24afd6e7eada1ec07f69",
+    "tests": [
+      "tests/workflows/test_issue_803_labels.py",
+      "tests/workflows/test_triage_non_write_users.py"
+    ],
+    "expect": "passed"
+  },
+  {
+    "id": "DiluxOne/.github#807:autopilot",
+    "repo": "DiluxOne/.github",
+    "issue": 807,
+    "pr": 809,
+    "base": "19ef799dc1b7ad54d70cf399ec4cd8c135345b16",
+    "merge": "a7e0075a58083ef96e57bdc919492f8107f8e995",
+    "tests": [
+      "tests/repro/test_issue_807.py"
+    ],
+    "expect": "passed"
+  }
+]

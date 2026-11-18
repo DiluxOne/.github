@@ -1,0 +1,126 @@
+[
+  {
+    "id": "DiluxOne/.github#688:spec",
+    "repo": "DiluxOne/.github",
+    "issue": 688,
+    "pr": 829,
+    "base": "a539dce055e59884429f6470fe6b0826453f3428",
+    "type": "Task",
+    "files": [
+      "docs/adopting.md",
+      "docs/configuration.md",
+      "docs/maintaining.md",
+      "kinds/README.md",
+      "policy/settings-schema.yml"
+    ],
+    "expect": "named"
+  },
+  {
+    "id": "DiluxOne/.github#805:spec",
+    "repo": "DiluxOne/.github",
+    "issue": 805,
+    "pr": 826,
+    "base": "68f0b0eee3c1618b4d26a676541f210c1aed0342",
+    "type": "Feature",
+    "files": [
+      ".github/workflows/autopilot-sweep.yml",
+      ".github/workflows/autopilot.yml",
+      ".github/workflows/review-reply.yml",
+      "docs/adopting.md",
+      "docs/configuration.md",
+      "docs/model.md",
+      "docs/workflows.md",
+      "labels.yml",
+      "policy/settings-schema.yml",
+      "scripts/issue-schema.py",
+      "scripts/revert.py",
+      "scripts/settings.py",
+      "scripts/sync-repos.py"
+    ],
+    "expect": "named"
+  },
+  {
+    "id": "DiluxOne/.github#820:spec",
+    "repo": "DiluxOne/.github",
+    "issue": 820,
+    "pr": 821,
+    "base": "1fe64bd742a63d2d59a72dd90f8a0329ff0e7973",
+    "type": "Bug",
+    "files": [
+      ".github/workflows/autopilot.yml",
+      ".github/workflows/org-pull-request.yml",
+      ".github/workflows/pull-request.yml",
+      "docs/workflows.md",
+      "scripts/autopilot.py",
+      "workflow-templates/test-pull-request.yml"
+    ],
+    "expect": "named"
+  },
+  {
+    "id": "DiluxOne/.github#801:spec",
+    "repo": "DiluxOne/.github",
+    "issue": 801,
+    "pr": 813,
+    "base": "2d66d19e5a96180f7e9f24afd6e7eada1ec07f69",
+    "type": "Feature",
+    "files": [
+      ".github/workflows/issue-repro.yml",
+      ".github/workflows/issue-triage.yml",
+      ".github/workflows/issues.yml",
+      "docs/model.md",
+      "docs/workflows.md",
+      "kinds/README.md",
+      "kinds/engine-test/pack.yml",
+      "labels.yml",
+      "scripts/receipts.py",
+      "scripts/release-scenarios.py",
+      "scripts/repro-trigger.sh",
+      "scripts/repro-ways.py",
+      "scripts/sync-repos.py",
+      "scripts/triage-act.sh"
+    ],
+    "expect": "named"
+  },
+  {
+    "id": "DiluxOne/.github#803:spec",
+    "repo": "DiluxOne/.github",
+    "issue": 803,
+    "pr": 812,
+    "base": "395fb239eb1c0a8238c8fcce711eb20e5fabd1bf",
+    "type": "Feature",
+    "files": [
+      ".github/ISSUE_TEMPLATE/bug_report.yml",
+      ".github/ISSUE_TEMPLATE/feature_request.yml",
+      ".github/workflows/autonomy-digest.yml",
+      ".github/workflows/issue-accepted.yml",
+      ".github/workflows/issue-triage.yml",
+      ".github/workflows/org-drift.yml",
+      ".github/workflows/runner-image.yml",
+      "docs/adopting.md",
+      "docs/maintaining.md",
+      "docs/plans/autonomy.md",
+      "docs/workflows.md",
+      "labels.yml",
+      "scripts/receipts.py",
+      "scripts/run-issue.sh",
+      "scripts/sync-repos.py",
+      "scripts/triage-act.sh"
+    ],
+    "expect": "named"
+  },
+  {
+    "id": "DiluxOne/.github#807:spec",
+    "repo": "DiluxOne/.github",
+    "issue": 807,
+    "pr": 809,
+    "base": "19ef799dc1b7ad54d70cf399ec4cd8c135345b16",
+    "type": "Bug",
+    "files": [
+      ".github/workflows/autopilot.yml",
+      "docs/agents.md",
+      "docs/workflows.md",
+      "scripts/autopilot.py"
+    ],
+    "expect": "named"
+  }
+]
