@@ -20,7 +20,9 @@
 #      repository's own test setup (or its teardown, when the test reached
 #      no verdict) failed around the test, or setup and run took longer than
 #      the way's `minutes`: the environment, not the bug, so no verdict (its
-#      reason in DIR/reason.txt). The test is handed the site's addresses
+#      reason in DIR/reason.txt). A `runs-step` way's test that runs no step
+#      is broken whatever its report says, its reason in DIR/reason.txt and
+#      first in DIR/output-tail.txt (#841). The test is handed the site's addresses
 #      (WP_BASE_URL, WP_NETWORK_URL, WP_ENV_PORT, WP_ENV_TESTS_PORT) only
 #      when they are set, so the repository's configuration keeps its own
 #      defaults otherwise.
@@ -193,8 +195,15 @@ run() {
   else
     # What the report names the test by: the way's `case`, else its file.
     case=$(jq -r '.case // empty' <<<"$spec"); [ -n "$case" ] || case=$(basename "$test")
-    v=$(python3 "$HERE/repro-ways.py" verdict "$junit" "$case" "$(jq -r '.assertion // empty' <<<"$spec")")
+    v=$(python3 "$HERE/repro-ways.py" verdict "$junit" "$case" "$(jq -r '.assertion // empty' <<<"$spec")" 2>"$dir/verdict.err")
     cp -- "$junit" "$dir/junit.xml" 2>/dev/null || true
+    # Why the way's gate decided it (#841, "the test runs no step"): in
+    # reason.txt, and first in the tail, which the retry comment quotes.
+    if [ -s "$dir/verdict.err" ]; then
+      cp -- "$dir/verdict.err" "$dir/reason.txt"
+      { cat "$dir/verdict.err"; cat "$dir/output-tail.txt"; } > "$dir/output-tail.new" && mv -- "$dir/output-tail.new" "$dir/output-tail.txt"
+    fi
+    rm -f -- "$dir/verdict.err"
     if [ "$v" = environment ]; then
       limit "The repository's own test setup failed around the test (its setup or teardown project, before or after it): the environment, not the test or the report."
     else
@@ -261,6 +270,10 @@ self_test() {
   t "C8 a run past the way's minutes is no verdict (limit)" limit '{"run":"sleep 5","junit":"build/j.xml","minutes":0}'
   t "C8 a setup past the way's minutes is no verdict (limit)" limit '{"setup":["sleep 5"],"run":"true","junit":"build/j.xml","minutes":0}'
   if grep -q "longer than" "$d/out/reason.txt"; then echo "ok   C8 its reason names the time"; else echo "FAIL C8 its reason names the time"; fail=1; fi
+  # #841: a `runs-step` way's test that runs no step is broken whatever its
+  # report says, and the reason leads what the retry comment quotes.
+  t "#841 a runs-step way's test that runs no step is broken" broken "$(jq -nc --arg x "$fails" '{run: ("printf %s " + ($x|@sh) + " > build/j.xml; exit 1"), junit: "build/j.xml", minutes: 1, "runs-step": true, test: "tests/e2e/repro/issue-1.spec.ts"}')"
+  if head -c 2500 "$d/out/output-tail.txt" | grep -q "the test runs no step" && grep -q "the test runs no step" "$d/out/reason.txt"; then echo "ok   #841 its reason opens the output's tail and is in reason.txt"; else echo "FAIL #841 its reason opens the output's tail and is in reason.txt"; fail=1; fi
   t "a run that writes no report is broken" broken '{"run":"true","junit":"build/j.xml","minutes":1}'
   t "the test is in place when the command runs" passed "$(jq -nc --arg x "$pass" '{run: ("test -f tests/e2e/repro/issue-1.spec.ts && printf %s " + ($x|@sh) + " > build/j.xml"), junit: "build/j.xml", minutes: 1}')"
   t "but not while setup runs" limit '{"setup":["test ! -f tests/e2e/repro/issue-1.spec.ts && exit 9"],"run":"true","junit":"build/j.xml","minutes":1}'
