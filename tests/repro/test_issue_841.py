@@ -122,3 +122,31 @@ def test_a_workflow_test_that_runs_the_step_with_stubs_still_reproduces(tmp_path
     assert the_workflow_way().get("runs-step") is True, "the workflow way does not ask its test to run the step"
     verdict, why = lane_verdict(tmp_path, STUBBED)
     assert (verdict, why) == ("reproduced", ""), f"a test that runs the step and fails an assertion did not confirm the bug ({verdict}: {why})"
+
+
+MENTIONS_THE_SCRIPT = '''import subprocess
+
+
+def test_the_script_is_named():
+    assert subprocess.run(["bash", "-c", "echo scripts/fix-it.py"]).returncode == 1
+'''
+
+SHELL_RUNS_THE_SCRIPT = '''import subprocess
+
+
+def test_the_script_runs():
+    assert subprocess.run(["bash", "-e", "-c", "scripts/fix-it.py --go"]).returncode == 1
+'''
+
+
+def test_a_shell_string_that_only_names_the_script_runs_no_step(tmp_path):
+    (tmp_path / ".github" / "workflows").mkdir(parents=True)
+    (tmp_path / ".github" / "workflows" / "x.yml").write_text("jobs:\n  a:\n    steps:\n      - run: scripts/fix-it.py\n", encoding="utf-8")
+    verdict, why = lane_verdict(tmp_path, MENTIONS_THE_SCRIPT)
+    assert (verdict, "the test runs no step" in why) == ("broken", True), f"`echo scripts/fix-it.py` confirmed the bug ({verdict})"
+
+
+def test_a_shell_string_whose_command_is_the_script_reproduces(tmp_path):
+    (tmp_path / ".github" / "workflows").mkdir(parents=True)
+    (tmp_path / ".github" / "workflows" / "x.yml").write_text("jobs:\n  a:\n    steps:\n      - run: scripts/fix-it.py\n", encoding="utf-8")
+    assert lane_verdict(tmp_path, SHELL_RUNS_THE_SCRIPT) == ("reproduced", "")

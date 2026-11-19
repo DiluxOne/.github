@@ -118,7 +118,9 @@ repro:
           missing or wrong), its exit code, its output, the lines it wrote to `$GITHUB_OUTPUT`.
         - When the logic lives in a script under scripts/ that the step calls, run that script as a command
           the same way (`subprocess.run(["python3", "scripts/<name>.py", ...])`, its stubs on PATH): a test
-          that only calls its functions runs no step here.
+          that only calls its functions runs no step here. Name the script as its own argument, or as the
+          command of a shell string (`bash -c "scripts/<name>.sh ..."`); a string that only mentions it
+          (`bash -c "echo scripts/<name>.sh"`) runs no step.
         - A plain `assert` on what the report expected, so the test FAILS while the bug is there.
         - Small: one or two test functions, named after the expectation.
 

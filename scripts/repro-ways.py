@@ -47,8 +47,9 @@ A way is one entry of `repro.ways`:
   guide     what the writer must do and avoid, for this way
   runs-step true when the way's test must run a step (#841): a test that
             does not run the step's command (the `run:` it took from the
-            workflow, or a script a workflow of the repository calls)
-            through a call that runs a process (`subprocess.run`, `call`,
+            workflow, or a script a workflow of the repository calls,
+            as its own word or a shell string's command, never a name a
+            string only mentions) through a call that runs a process (`subprocess.run`, `call`,
             `check_call`, `check_output`, `Popen`, `os.system`, under any
             name) is broken, "the test runs no step", whatever its report
             says; one too deep to check is broken, saying so
@@ -477,6 +478,44 @@ def too_big(err):
 SCRIPT_FILE = re.compile(r"[\w.-]+\.(?:sh|bash|py|js|mjs|cjs|ts|rb|php|pl)(?![\w-])")
 
 
+# What runs a script given as its next word: a shell (whose -c takes a
+# command string) or an interpreter.
+SHELLS = {"bash", "sh"}
+INTERPRETERS = re.compile(r"(?:bash|sh|python[\d.]*|node|ruby|php|perl)")
+
+
+def runs_script(text, called):
+    """Whether the string TEXT, as a word or a shell command, runs one of the
+    scripts CALLED: its command (its first word, after a shell or an
+    interpreter and their flags, and inside a shell's -c string) is the
+    script itself. A name it only mentions (`echo scripts/x.sh`) runs
+    nothing (#841)."""
+    import shlex
+
+    def split(s):
+        try:
+            return shlex.split(s)
+        except ValueError:
+            return s.split()
+    words = split(text)
+    for _ in range(8):
+        if not words or not INTERPRETERS.fullmatch(os.path.basename(words[0])):
+            break
+        shell, words, command = os.path.basename(words[0]) in SHELLS, words[1:], False
+        while words and words[0][:1] in "-+" and len(words[0]) > 1:
+            flag, words = words[0], words[1:]
+            if shell and flag in ("-o", "+o") and words:
+                words = words[1:]
+            elif shell and not flag.startswith("--") and "c" in flag[1:]:
+                command = True
+        if command and words:
+            words = split(words[0])
+    if not words:
+        return False
+    first = words[0]
+    return any(m.group(0) in called and m.end() == len(first) for m in SCRIPT_FILE.finditer(first))
+
+
 def workflow_text(root):
     """Every workflow and action of the repository at ROOT, as one text: what
     a step's `run:` may call is named there."""
@@ -538,11 +577,26 @@ def step_names(tree, workflows):
                 and isinstance(n.args[0], ast.Constant) and n.args[0].value == "run"):
             return True
         if isinstance(n, ast.Constant) and isinstance(n.value, str):
-            return any(m.group(0) in called for m in SCRIPT_FILE.finditer(n.value))
+            return runs_script(n.value, called)
+        if isinstance(n, ast.JoinedStr):
+            # An f-string is one shell string: its placeholders stand for a word's part.
+            text = "".join(v.value if isinstance(v, ast.Constant) else "X" for v in n.values)
+            return runs_script(text, called)
         return False
 
+    def walk(expr):
+        """ast.walk, but an f-string's text is judged whole, not piece by piece."""
+        todo = [expr]
+        while todo:
+            n = todo.pop()
+            yield n
+            kids = list(ast.iter_child_nodes(n))
+            if isinstance(n, ast.JoinedStr):
+                kids = [v.value for v in n.values if isinstance(v, ast.FormattedValue)]
+            todo.extend(kids)
+
     def is_step(expr):
-        for n in ast.walk(expr):
+        for n in walk(expr):
             if seed(n) or (isinstance(n, ast.Name) and n.id in names):
                 return True
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in returning:
@@ -962,6 +1016,24 @@ def self_test():
               [runs_step(x, d) for x in (echo, echo_bash, other, env_only, aliased_echo)], [NO_STEP] * 5)
         check("#841 runs_step: the script a step calls, and the step's run through a helper, are the step",
               [runs_step(x, d) for x in (script, helper)], ["", ""])
+        # #841 (the maintainer's last round): a script's name in a shell
+        # string counts only when the string's command is the script.
+        mentions = [fixture(f"mentions_{i}.py", "import subprocess\nfrom pathlib import Path\nROOT = Path('.')\n\ndef test_x():\n    assert " + call + ".returncode == 1\n")
+                    for i, call in enumerate(("subprocess.run(['bash', '-c', 'echo scripts/fix-it.py'])",
+                                              "subprocess.run('echo scripts/fix-it.py', shell=True)",
+                                              "subprocess.run(['bash', '-c', f'echo {ROOT}/scripts/fix-it.py'])",
+                                              "subprocess.run(['bash', '-c', 'cat fix-it.py.bak'])"))]
+        check("#841 runs_step: a script's name a shell string only mentions runs no step", [runs_step(x, d) for x in mentions], [NO_STEP] * 4)
+        runs = [fixture(f"runs_{i}.py", "import subprocess\nfrom pathlib import Path\nROOT = Path('.')\n\ndef test_x():\n    assert " + call + ".returncode == 1\n")
+                for i, call in enumerate(("subprocess.run(['bash', '-c', 'scripts/fix-it.py --go'])",
+                                          "subprocess.run('bash -e -o pipefail scripts/fix-it.py', shell=True)",
+                                          "subprocess.run(['sh', '-ec', 'python3 -u .dx-central/scripts/fix-it.py --go'])",
+                                          "subprocess.run(['bash', '-c', f'{ROOT}/scripts/fix-it.py'])",
+                                          "subprocess.run(['bash', 'scripts/fix-it.py'])"))]
+        check("#841 runs_step: a shell string whose command is the script runs the step", [runs_step(x, d) for x in runs], [""] * 5)
+        check("#841 runs_script: the first word after bash/sh and their flags",
+              [runs_script(s, {"x.sh"}) for s in ("x.sh", "bash -x x.sh a", "sh -c 'x.sh'", "bash -c \"echo x.sh\"", "echo x.sh", "bash --norc x.sh", "", "bash -c")],
+              [True, True, True, False, False, True, False, False])
         check("#841 runs_step: an aliased module or a function imported by name is a process call",
               [runs_step(x, d) for x in (aliased, by_name, os_alias)], ["", "", ""])
         import ast as ast_mod
