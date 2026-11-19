@@ -130,7 +130,12 @@ class Clones:
             return all((self.git(repo, "cat-file", "-e", o + "^{commit}") or subprocess.CompletedProcess([], 1)).returncode == 0 for o in oids)
         if ok():
             return True
-        self.git(repo, "fetch", "-q", "origin", f"refs/pull/{pr}/head", *oids)
+        # The pull request's ref first (its commits after a squash merge),
+        # then the commits themselves.
+        if pr is not None:
+            self.git(repo, "fetch", "-q", "origin", f"refs/pull/{pr}/head")
+        if not ok():
+            self.git(repo, "fetch", "-q", "origin", *oids)
         return ok()
 
     def diff(self, repo, a, b, path):
@@ -254,7 +259,8 @@ def verdict(case, review):
     if case["expect"] == "flag":
         # The case's line, not its file: another line of the same file, or
         # a finding with no line, is a miss (C2, #844).
-        return any(f.get("file") == case["path"] and as_line(f.get("line")) == case.get("line") for f in serious)
+        line = as_line(case.get("line"))
+        return line is not None and any(f.get("file") == case["path"] and as_line(f.get("line")) == line for f in serious)
     return not serious
 
 
@@ -389,6 +395,7 @@ def self_test():
     check("pick: round the repositories", [c["id"] for c in picked], ["a1", "b1"])
     case_f = {"expect": "flag", "path": "a.php", "line": 3}
     check("verdict: flag found on its line", verdict(case_f, {"findings": [{"severity": "major", "file": "a.php", "line": 3}]}), True)
+    check("verdict: a case with no line finds nothing", verdict({"expect": "flag", "path": "a.php"}, {"findings": [{"severity": "major", "file": "a.php"}]}), False)
     check("verdict: another line of the file, or no line, is missed", (verdict(case_f, {"findings": [{"severity": "major", "file": "a.php", "line": 4}]}), verdict(case_f, {"findings": [{"severity": "major", "file": "a.php"}]})), (False, False))
     check("verdict: flag missed (a minor, another file, a pre-existing one)", verdict(case_f, {"findings": [{"severity": "minor", "file": "a.php"}, {"severity": "major", "file": "b.php"}, {"severity": "blocker", "file": "a.php", "pre_existing": True}]}), False)
     check("verdict: clean kept clean; clean blocked", (verdict({"expect": "clean"}, {"findings": [{"severity": "minor"}]}), verdict({"expect": "clean"}, {"findings": [{"severity": "major"}]})), (True, False))
