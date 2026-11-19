@@ -5,7 +5,7 @@
 says of it (#562, scripts/repos_conf.py): its kinds of project, each a pack
 in kinds/, over the paths it covers, with the roles of those paths, and its
 `project`, `design-system`, `repro`, `merge-queue`, `pre-pr`, `who-decides`,
-`dependabot` and `callers`. This checks it, and the rest of repos.yml against it:
+`dependabot`, `callers` and `required-checks`. This checks it, and the rest of repos.yml against it:
 
   - every kind has a pack in kinds/, every role is one of ROLES;
   - one repository's kinds never cover the same paths (a monorepo splits
@@ -17,7 +17,8 @@ in kinds/, over the paths it covers, with the roles of those paths, and its
     `repro` (#377) a `repro:` as its .github/review-policy.yml takes it,
     every way to the schema of scripts/repro-ways.py, or `false` (no way,
     by design), `dependabot` a map of ecosystems, `callers` a map of its
-    callers' inputs to their values;
+    callers' inputs to their values, `required-checks` (#842) a list of
+    check names, none twice;
   - the top-level maps keyed by repository that came before it (projects,
     design-system, repro, merge-queue, pre-pr, dependabot) are refused;
   - every repository `no-workflows` names is listed in `repos:`;
@@ -41,7 +42,7 @@ LEGACY = {"projects": "project", "design-system": "design-system", "dependabot":
           "merge-queue": "merge-queue", "pre-pr": "pre-pr"}
 # Who decides (#588, scripts/deciders.py): a repository's exception.
 WHO_DECIDES = ("codeowners", "acceptor", "writers")
-ATTRIBUTES = {"kinds", "project", "design-system", "repro", "merge-queue", "pre-pr", "who-decides", "dependabot", "callers"}
+ATTRIBUTES = {"kinds", "project", "design-system", "repro", "merge-queue", "pre-pr", "who-decides", "dependabot", "callers", "required-checks"}
 
 
 def load(path):
@@ -129,6 +130,10 @@ def attribute_problems(name, entry, systems):
         out.append(f"{where}.dependabot: a map of ecosystem to what it adds")
     if "callers" in entry and (not isinstance(entry["callers"], dict) or not all(isinstance(v, (str, bool, int)) for v in entry["callers"].values())):
         out.append(f"{where}.callers: a map of an input to its value")
+    checks = entry.get("required-checks")
+    if "required-checks" in entry and (not isinstance(checks, list) or not checks or not all(isinstance(c, str) and c for c in checks)
+                                       or len(set(checks)) != len(checks)):
+        out.append(f"{where}.required-checks: a list of check names, none twice")
     repro = entry.get("repro", False)
     if repro is False:  # none set, or no way by design
         return out
@@ -191,6 +196,9 @@ def self_test():
     check("#562 the callers' values are a map of input to value, and so are the defaults",
           (problems(with_b(callers={"slug": "b"}), kinds, systems), problems(with_b(callers=["slug"]), kinds, systems), problems(dict(good, callers={"defaults": {"dry-run": False}}), kinds, systems)),
           ([], ["repos.b.callers: a map of an input to its value"], []))
+    check("#842 required checks are a list of check names, none twice",
+          [problems(with_b(**{"required-checks": v}), kinds, systems) for v in (["a", "b / c"], "a", [], ["a", "a"], [""])],
+          [[]] + [["repos.b.required-checks: a list of check names, none twice"]] * 4)
     check("a design system that does not exist", problems(with_b(**{"design-system": "material"}), kinds, systems), ["repos.b.design-system: 'material' is not in design-systems/ (nor local)"])
     check("an unknown section", problems(dict(good, owners={}), kinds, systems), ["owners: not a section of repos.yml"])
     check("#451 a repository's merge queue: auto, on or off", (problems(with_b(**{"merge-queue": "off"}), kinds, systems), problems(with_b(**{"merge-queue": "sometimes"}), kinds, systems)),
