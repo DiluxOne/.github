@@ -7,7 +7,7 @@
 # shared libraries setup-php's prebuilt builds expect from GitHub's image.
 # Rebuilt every day and promoted to :stable only after a smoke test
 # (.github/workflows/runner-image.yml), which sets PHP up with setup-php.
-FROM ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
+FROM ubuntu:24.04@sha256:73b999393d07f2bf65a40373778a44dc9a6d54ad7718d29247d8ff9413c4d6a8
 
 # Filled by runner-image.yml with the latest release of actions/runner and the
 # SHA-256 GitHub publishes for it, and the latest Node.js LTS line.
