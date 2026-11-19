@@ -170,3 +170,10 @@ def test_c1_known_is_empty_and_the_tests_pass_it():
     assert got.returncode == 0, got.stdout + got.stderr
     assert "(0 files still listed in KNOWN)" in got.stdout
 
+
+def test_c2_none_of_the_23_files_slices():
+    assert len(CONVERTED) == 23
+    for rel in CONVERTED:
+        assert (ROOT / rel).is_file(), f"{rel} is gone"
+    got = run("--all", *CONVERTED)
+    assert got.returncode == 0, got.stdout + got.stderr
