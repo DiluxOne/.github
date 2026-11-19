@@ -45,10 +45,13 @@ A way is one entry of `repro.ways`:
   context   files the writer reads whole; list: globs it sees by name;
   example   a glob whose first match it reads as the house style
   guide     what the writer must do and avoid, for this way
-  runs-step true when the way's test must run a step (#841): a test with
-            no call that runs a process (`subprocess.run`, `call`,
-            `check_call`, `check_output`, `Popen`, `os.system`) is broken,
-            "the test runs no step", whatever its report says
+  runs-step true when the way's test must run a step (#841): a test that
+            does not run the step's command (the `run:` it took from the
+            workflow, or a script a workflow of the repository calls)
+            through a call that runs a process (`subprocess.run`, `call`,
+            `check_call`, `check_output`, `Popen`, `os.system`, under any
+            name) is broken, "the test runs no step", whatever its report
+            says; one too deep to check is broken, saying so
   shots     for a browser way, the command that runs a pull request's
             affected specs ({tests}) through the screenshot configuration
             (scripts/screenshots.py, #564)
@@ -76,9 +79,9 @@ LEVEL=pr): the pack's, then the repository's.
                           reproduced|passed|broken|environment from a JUnit
                           report, for the test file NAME (every case, when
                           no case names it nor any file: node:test's, #501);
-                          broken, its reason on stderr, when SPEC (the way's,
-                          JSON from resolve) has `runs-step` and its `test`
-                          runs no step (#841)
+                          broken, its reason on stderr after `dx-reason: `,
+                          when SPEC (the way's, JSON from resolve) has
+                          `runs-step` and its `test` runs no step (#841)
   repro-ways.py affected  the tests a pull request runs, from the changed
                           paths on stdin: JSON {"targeted", "tests", "repro",
                           "smoke"}
@@ -460,36 +463,149 @@ def lint(path):
 # and `os.system` (#841).
 PROCESS_CALLS = {"run", "call", "check_call", "check_output", "Popen"}
 NO_STEP = "the test runs no step"
+# How the verdict's own reason starts on stderr, so that only it, never
+# another line there, becomes the lane's reason (scripts/repro-run.sh).
+REASON = "dx-reason: "
 
 
-def runs_step(path):
-    """"" when the Python test at PATH calls something that runs a process
-    (subprocess's run, call, check_call, check_output or Popen, through the
-    module or imported by name, or os.system); "the test runs no step"
-    otherwise: it only reads files and asserts on their text, which
-    reproduces nothing (#841). A file that cannot be read or parsed is
-    pytest's to judge: ""."""
+def too_big(err):
+    """The reason a test the checker could not walk is refused (#841)."""
+    return f"the test could not be checked for a step it runs ({type(err).__name__}: it is nested too deep or too large)"
+
+
+# A script a step may call, by its file's name.
+SCRIPT_FILE = re.compile(r"[\w.-]+\.(?:sh|bash|py|js|mjs|cjs|ts|rb|php|pl)(?![\w-])")
+
+
+def workflow_text(root):
+    """Every workflow and action of the repository at ROOT, as one text: what
+    a step's `run:` may call is named there."""
+    import glob
+    pats = (".github/workflows/*.yml", ".github/workflows/*.yaml", "workflow-templates/*.yml", "workflow-templates/*.yaml",
+            ".github/actions/**/action.yml", ".github/actions/**/action.yaml", "action.yml", "action.yaml")
+    out = []
+    for pat in pats:
+        for f in sorted(glob.glob(os.path.join(root, pat), recursive=True)):
+            try:
+                out.append(open(f, encoding="utf-8", errors="replace").read())
+            except OSError:
+                pass
+    return "\n".join(out)
+
+
+def process_calls(tree):
+    """The calls in TREE that run a process: subprocess's run, call,
+    check_call, check_output or Popen and os.system, through the module
+    under any name (`import subprocess as sp`) or imported by name, under
+    any name (`from subprocess import run as r`)."""
+    import ast
+    modules, named = {"subprocess": "subprocess", "os": "os"}, set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name in ("subprocess", "os"):
+                    modules[a.asname or a.name] = a.name
+        elif isinstance(node, ast.ImportFrom) and node.module in ("subprocess", "os"):
+            want = PROCESS_CALLS if node.module == "subprocess" else {"system"}
+            named |= {a.asname or a.name for a in node.names if a.name in want}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and f.value.id in modules and (
+                f.attr in (PROCESS_CALLS if modules[f.value.id] == "subprocess" else {"system"})):
+            yield node
+        elif isinstance(f, ast.Name) and f.id in named:
+            yield node
+
+
+def step_names(tree, workflows):
+    """The names in TREE that hold the step's command (#841), followed
+    through assignments, a helper's parameters and its return value: what
+    the test took from a step (`step["run"]`, `.get("run")`), or a string
+    naming a script that a workflow of WORKFLOWS calls (`scripts/x.py`,
+    `ROOT / "scripts" / "x.py"`). Returns (is_step, names): is_step(node)
+    says whether an expression holds the step's command."""
+    import ast
+    called = {m.group(0) for m in SCRIPT_FILE.finditer(workflows)} if workflows else set()
+    funcs = {n.name: n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    names, returning = set(), set()
+
+    def seed(n):
+        if isinstance(n, ast.Subscript) and isinstance(n.slice, ast.Constant) and n.slice.value == "run":
+            return True
+        if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "get" and n.args
+                and isinstance(n.args[0], ast.Constant) and n.args[0].value == "run"):
+            return True
+        if isinstance(n, ast.Constant) and isinstance(n.value, str):
+            return any(m.group(0) in called for m in SCRIPT_FILE.finditer(os.path.basename(n.value.rstrip("/")) or n.value))
+        return False
+
+    def is_step(expr):
+        for n in ast.walk(expr):
+            if seed(n) or (isinstance(n, ast.Name) and n.id in names):
+                return True
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in returning:
+                return True
+        return False
+
+    def targets(t):
+        return [n.id for n in ast.walk(t) if isinstance(n, ast.Name)]
+
+    grew = True
+    while grew:
+        before = (len(names), len(returning))
+        for n in ast.walk(tree):
+            if isinstance(n, (ast.Assign, ast.AugAssign, ast.AnnAssign)) and n.value is not None and is_step(n.value):
+                for t in (n.targets if isinstance(n, ast.Assign) else [n.target]):
+                    names.update(targets(t))
+            elif isinstance(n, ast.NamedExpr) and is_step(n.value):
+                names.add(n.target.id)
+            elif isinstance(n, (ast.For, ast.AsyncFor, ast.comprehension)) and is_step(n.iter):
+                names.update(targets(n.target))
+            elif isinstance(n, ast.withitem) and n.optional_vars is not None and is_step(n.context_expr):
+                names.update(targets(n.optional_vars))
+            elif isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in funcs:
+                params = funcs[n.func.id].args
+                pos = [a.arg for a in params.posonlyargs + params.args]
+                for i, a in enumerate(n.args):
+                    if i < len(pos) and is_step(a):
+                        names.add(pos[i])
+                for k in n.keywords:
+                    if k.arg and is_step(k.value):
+                        names.add(k.arg)
+        for name, f in funcs.items():
+            if any(isinstance(r, ast.Return) and r.value is not None and is_step(r.value) for r in ast.walk(f)):
+                returning.add(name)
+        grew = (len(names), len(returning)) != before
+    return is_step
+
+
+def runs_step(path, root="."):
+    """"" when the Python test at PATH runs the step's command through a
+    process call (subprocess's run, call, check_call, check_output or Popen,
+    or os.system, under any name, see process_calls): the `run:` it took
+    from the workflow, or a script that a workflow of the repository at ROOT
+    calls (step_names). "the test runs no step" otherwise: one that only
+    reads files and asserts on their text, or runs some other command (`echo
+    hi`), reproduces nothing (#841). A file that cannot be read or parsed is
+    pytest's to judge: ""; one too deep or too large to walk (RecursionError,
+    MemoryError) is refused, saying so."""
     import ast
     try:
         with open(path, encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
     except (OSError, SyntaxError, ValueError):
         return ""
-    imported = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "subprocess":
-            imported |= {a.asname or a.name for a in node.names if a.name in PROCESS_CALLS}
-        elif isinstance(node, ast.ImportFrom) and node.module == "os":
-            imported |= {a.asname or a.name for a in node.names if a.name == "system"}
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        f = node.func
-        if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and (
-                (f.value.id == "subprocess" and f.attr in PROCESS_CALLS) or (f.value.id == "os" and f.attr == "system")):
-            return ""
-        if isinstance(f, ast.Name) and f.id in imported:
-            return ""
+    except (RecursionError, MemoryError) as err:
+        return too_big(err)
+    try:
+        is_step = step_names(tree, workflow_text(root))
+        for call in process_calls(tree):
+            if any(is_step(a) for a in call.args) or any(k.arg in (None, "args") and is_step(k.value) for k in call.keywords):
+                return ""
+    except (RecursionError, MemoryError) as err:
+        return too_big(err)
     return NO_STEP
 
 
@@ -811,18 +927,65 @@ def self_test():
         grep_only = os.path.join(d, "grep_only.py")
         open(grep_only, "w").write("import yaml\n\ndef test_x():\n    assert '--flag' in open('w.yml').read()\n")
         stubbed = os.path.join(d, "stubbed.py")
-        open(stubbed, "w").write("import subprocess\n\ndef test_x(tmp_path):\n    subprocess.run(['bash', '-c', 'gh x'])\n    assert False\n")
-        named = os.path.join(d, "named.py")
-        open(named, "w").write("from subprocess import Popen as P\n\ndef test_x():\n    P(['true']).wait()\n")
-        system = os.path.join(d, "system.py")
-        open(system, "w").write("import os\n\ndef test_x():\n    assert os.system('true') == 1\n")
-        mention = os.path.join(d, "mention.py")
-        open(mention, "w").write("import subprocess\n\ndef test_x():\n    assert 'subprocess.run' in open('w.yml').read()\n")
-        broken = os.path.join(d, "broken.py")
-        open(broken, "w").write("def test_x(:\n")
-        check("#841 runs_step: a call that runs a process runs a step; reading and mentioning one does not; a file that does not parse is pytest's",
-              [runs_step(x) for x in (grep_only, stubbed, named, system, mention, broken, os.path.join(d, "none.py"))],
+        open(stubbed, "w").write("import subprocess\nimport yaml\n\ndef test_x(tmp_path):\n    script = yaml.safe_load(open('w.yml'))['jobs']['a']['steps'][0]['run']\n"
+                                 "    subprocess.run(['bash', '-c', script])\n    assert False\n")
+
+        def fixture(name, text):
+            p = os.path.join(d, name)
+            open(p, "w").write(text)
+            return p
+        named = fixture("named.py", "from subprocess import Popen as P\n\ndef test_x(s):\n    P(['bash', '-c', s.get('run')]).wait()\n")
+        system = fixture("system.py", "import os\n\ndef test_x():\n    assert os.system('python3 scripts/fix-it.py') == 1\n")
+        mention = fixture("mention.py", "import subprocess\n\ndef test_x():\n    assert 'subprocess.run' in open('w.yml').read()\n")
+        broken = fixture("broken.py", "def test_x(:\n")
+        # #841 (the maintainer's round): the step's command, not any command.
+        echo = fixture("echo.py", "import subprocess\n\ndef test_x():\n    assert subprocess.run(['echo', 'hi']).returncode == 1\n")
+        echo_bash = fixture("echo_bash.py", "import subprocess\nimport yaml\n\ndef test_x():\n    wf = yaml.safe_load(open('w.yml'))['jobs']['a']['steps'][0]['run']\n"
+                            "    assert subprocess.run(['bash', '-c', 'echo hi']).returncode == 1\n")
+        script = fixture("script.py", "import subprocess, sys\nfrom pathlib import Path\nROOT = Path(__file__).parent\nSCRIPT = ROOT / 'scripts' / 'fix-it.py'\n\n"
+                         "def go(cmd, env):\n    return subprocess.run(cmd, env=env)\n\ndef test_x():\n    assert go([sys.executable, str(SCRIPT)], {}).returncode == 1\n")
+        other = fixture("other.py", "import subprocess\n\ndef test_x():\n    assert subprocess.run(['python3', 'scripts/not-called.py']).returncode == 1\n")
+        helper = fixture("helper.py", "import subprocess\nimport yaml\n\ndef step(name):\n    return next(s for s in yaml.safe_load(open('w.yml'))['steps'] if s['name'] == name)\n\n"
+                         "def run_step(script):\n    return subprocess.run(['bash', '-c', script])\n\ndef test_x():\n    assert run_step(step('a')['run']).returncode == 1\n")
+        env_only = fixture("env_only.py", "import subprocess\nimport yaml\n\ndef test_x():\n    s = yaml.safe_load(open('w.yml'))['steps'][0]\n"
+                           "    assert subprocess.run(['true'], env={'X': s['run']}).returncode == 1\n")
+        aliased = fixture("aliased.py", "import subprocess as sp\n\ndef test_x(step):\n    assert sp.run(['bash', '-c', step['run']]).returncode == 1\n")
+        by_name = fixture("by_name.py", "from subprocess import run\n\ndef test_x(step):\n    assert run(['bash', '-c', step['run']]).returncode == 1\n")
+        os_alias = fixture("os_alias.py", "import os as o\n\ndef test_x(step):\n    assert o.system(step['run']) == 1\n")
+        aliased_echo = fixture("aliased_echo.py", "import subprocess as sp\n\ndef test_x():\n    assert sp.run(['echo', 'hi']).returncode == 1\n")
+        os.makedirs(os.path.join(d, ".github", "workflows"), exist_ok=True)
+        open(os.path.join(d, ".github", "workflows", "w.yml"), "w").write("jobs:\n  a:\n    steps:\n      - run: python3 .dx-central/scripts/fix-it.py --go\n")
+        check("#841 runs_step: a call that runs the step runs a step; reading and mentioning one does not; a file that does not parse is pytest's",
+              [runs_step(x, d) for x in (grep_only, stubbed, named, system, mention, broken, os.path.join(d, "none.py"))],
               [NO_STEP, "", "", "", NO_STEP, "", ""])
+        check("#841 runs_step: echo hi is no step, nor a script no workflow calls, nor the step's run handed only as env",
+              [runs_step(x, d) for x in (echo, echo_bash, other, env_only, aliased_echo)], [NO_STEP] * 5)
+        check("#841 runs_step: the script a step calls, and the step's run through a helper, are the step",
+              [runs_step(x, d) for x in (script, helper)], ["", ""])
+        check("#841 runs_step: an aliased module or a function imported by name is a process call",
+              [runs_step(x, d) for x in (aliased, by_name, os_alias)], ["", "", ""])
+        import ast as ast_mod
+        real_parse = ast_mod.parse
+        for err in (RecursionError, MemoryError):
+            def boom(*a, _e=err, **k):
+                raise _e()
+            ast_mod.parse = boom
+            try:
+                got = runs_step(grep_only, d)
+                gated = judged(os.path.join(d, "none.xml"), "x", None, json.dumps({"runs-step": True, "test": grep_only}))
+            finally:
+                ast_mod.parse = real_parse
+            check(f"#841 a {err.__name__} from ast.parse is a refusal with its reason, not a crash",
+                  (err.__name__ in got, "could not be checked" in got, gated[0], gated[1] == got), (True, True, "broken", True))
+        deep = fixture("deep.py", "def test_x():\n    assert " + "-" * 200000 + "1\n")
+        try:
+            real_parse(open(deep).read())
+            want = ""
+        except (RecursionError, MemoryError) as err:
+            want = too_big(err)
+        except SyntaxError:
+            want = ""
+        check("#841 a test too deep for this Python's parser is refused with its reason, not a crash", runs_step(deep, d), want)
         p_xml = os.path.join(d, "p.xml")
         check("#841 C1 a grep-only workflow test is broken, the test runs no step, though its report failed an assertion",
               (failed_report, judged(p_xml, "test_issue_7.py", None, json.dumps({"runs-step": True, "test": grep_only}))),
@@ -1022,7 +1185,7 @@ def main():
     if len(args) in (3, 4) and args[0] == "verdict":
         got, why = judged(args[1], args[2], args[3] if len(args) == 4 and args[3] else None, os.environ.get("SPEC") or "")
         if why:
-            print(why, file=sys.stderr)
+            print(f"{REASON}{why}", file=sys.stderr)
         print(got)
         return 0
     if args == ["propose"]:
