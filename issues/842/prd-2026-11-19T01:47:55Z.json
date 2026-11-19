@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 842,
+  "prd_sha256": "6318feb9d96cacc3c121dd770e09a10e7fd5afd5b2028db02d0e98520bd1cd61",
+  "prd": "### Problem\n\nA pull request here can merge with its tests red, and \"every criterion met\" rests on a file's existence, not on a test that passed.\n\n### Scope\n\n- .github/workflows/pull-request.yml and the test-first job: run on every pull request.\n- The ruleset sync (scripts/sync-repos.py or where the rulesets are written): the two required checks, sent with the whole conditions (never a partial PUT).\n- scripts/autopilot.py `criteria_evidence` and G7's decision: the check's conclusion at the head, with `--test` cases.\n\n### Out of scope\n\n- The plugin repositories' required checks, which are sound.\n\n### Acceptance criteria\n\n- C1: Given a pull request to DiluxOne/.github whose `Scripts (self-tests)` or `Test first` is red, when it is ready, then it cannot merge, and a pull request with nothing for them to check sees both report success.\n- C2: Given a pull request whose Spec names a test for a criterion, when G7 decides, then the criterion is met only when that test file is in the pull request and the required check that runs it concluded success at the head.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-19T01:47:55Z",
+  "policy": "DiluxOne/.github@595c7cf1fc2aed863b96d30ceafbc37fdcea3f13",
+  "how": "own-bug"
+}
