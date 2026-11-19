@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 845,
+  "prd_sha256": "b04f56fceba0c65b2ee7e00362b3efb48ccafe85cd824ffffdf4370a8d0ad611",
+  "prd": "### Problem\n\nA feature can pass test first with a test that never asserted anything, and almost half of our own workflow tests break on a rewording while missing a broken behaviour.\n\n### Scope\n\n- scripts/test-first.py and its self-test.\n- tests/workflows/ and tests/repro/: the wording tests, worst first.\n- The check that refuses new literal-slicing tests.\n\n### Out of scope\n\n- Tests in the plugin repositories.\n\n### Acceptance criteria\n\n- C1: Given a `feat` pull request whose only new test errors at the base (ImportError), when test first checks it, then it does not count as failing first.\n- C2: Given a new test that slices a workflow file between two literals, when the scripts job runs, then it fails naming the test.\n- C3: Given tests/workflows, when the wording tests are counted as in this issue, then the ones that slice workflow text between literals are gone, each replaced by a behaviour test or deleted.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-19T01:48:06Z",
+  "policy": "DiluxOne/.github@595c7cf1fc2aed863b96d30ceafbc37fdcea3f13",
+  "how": "own-bug"
+}
