@@ -258,6 +258,11 @@ jobs:
     # (#257, scripts/needs-chain.py).
     needs: repro
     if: "!cancelled() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository"
+    # checks: the head's check runs, which G7 reads with the job's own token
+    # (#842): a criterion's test counts once its required check passed.
+    permissions:
+      contents: read
+      checks: read
     steps:
       - name: App token
         id: bot
@@ -284,7 +289,8 @@ jobs:
       # Critical issue, one labelled security, or a protected path, never new public surface for an
       # issue that is not a Feature (#193), never while the review blocks,
       # never before the review found every acceptance criterion met (G6),
-      # within the lane's caps, with a test for every criterion at the head.
+      # within the lane's caps, with a test for every criterion at the head
+      # whose required check concluded success there (#842).
       - name: An autopilot pull request
         id: autopilot
         env:
@@ -304,6 +310,11 @@ jobs:
           # for which issue; its report is read again below.
           REPRO_RUN: ${{ needs.repro.outputs.outcome }}
           REPRO_RUN_ISSUE: ${{ needs.repro.outputs.issue }}
+          # #842: the head's check runs (the job's token, `checks: read`),
+          # the base branch's rules, and the title's type.
+          CHECKS_TOKEN: ${{ github.token }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
           # Only a pull request dilux-bot opened and labelled autopilot;
@@ -431,6 +442,24 @@ jobs:
             | grep -oP '<!-- dx-review-record \K.*(?= -->)' | tail -1 \
             | jq -c --arg head "$HEAD" 'select(.sha == $head)' > "$RUNNER_TEMP/review-record.json" 2>/dev/null || : > "$RUNNER_TEMP/review-record.json"
           export CRITERIA_VERDICT="$RUNNER_TEMP/review-record.json"
+          # #842: a criterion is met only when the required check that runs
+          # its test concluded success at this head: the head's check runs
+          # (the latest per name is kept by autopilot.py), the base branch's
+          # rules (its required checks, and the workflow a rule requires,
+          # whose runs at the head say which checks are its jobs'), and the
+          # repository's test-first declaration at the base, which says
+          # which check runs which test. A read that fails is no check.
+          GH_TOKEN="$CHECKS_TOKEN" gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD/check-runs?per_page=100" --paginate 2>/dev/null \
+            | jq -c '.check_runs[] | {name, status, conclusion, id, started_at, check_suite: {id: .check_suite.id}}' > "$RUNNER_TEMP/head-checks" \
+            || : > "$RUNNER_TEMP/head-checks"
+          gh api "repos/$GITHUB_REPOSITORY/rules/branches/$(jq -rn --arg b "$BASE_REF" '$b | @uri')?per_page=100" --paginate 2>/dev/null \
+            | jq -c '.[]' > "$RUNNER_TEMP/required-checks" || : > "$RUNNER_TEMP/required-checks"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$HEAD&per_page=100" --paginate 2>/dev/null \
+            | jq -c '.workflow_runs[] | {path, check_suite_id}' > "$RUNNER_TEMP/head-runs" || : > "$RUNNER_TEMP/head-runs"
+          gh api "repos/$GITHUB_REPOSITORY/contents/.github/review-policy.yml?ref=$BASE" -H "Accept: application/vnd.github.raw" > "$RUNNER_TEMP/test-first-policy.yml" 2>/dev/null \
+            || : > "$RUNNER_TEMP/test-first-policy.yml"
+          export HEAD_CHECKS="$RUNNER_TEMP/head-checks" REQUIRED_CHECKS="$RUNNER_TEMP/required-checks" HEAD_RUNS="$RUNNER_TEMP/head-runs" \
+            TEST_FIRST_POLICY="$RUNNER_TEMP/test-first-policy.yml" TITLE HEAD
           if why=$(python3 "$RUNNER_TEMP/central/scripts/autopilot.py" decide); then
             # The decision on the receipts first (#804): a write that fails
             # enables nothing.
