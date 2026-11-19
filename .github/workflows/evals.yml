@@ -116,6 +116,9 @@ jobs:
             : > "$RUNNER_TEMP/steps.txt"
             if [ -f "evals/$STEP/cases.json" ]; then printf '%s\n' "$STEP" > "$RUNNER_TEMP/steps.txt"; else echo "::notice::$STEP has no set yet (evals/$STEP/cases.json)."; fi
           else
+            # No file listed is "could not tell" (this only runs when one
+            # matched `paths:`): evals.py steps then fails, and pipefail
+            # fails the check rather than skip every set.
             python3 scripts/pr-files.py | python3 scripts/evals.py steps > "$RUNNER_TEMP/steps.txt"
           fi
           steps=$(jq -Rnc '[inputs | select(length > 0)]' < "$RUNNER_TEMP/steps.txt")

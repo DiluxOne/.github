@@ -41,7 +41,8 @@ pending baseline, or any unreadable, invalid or wrongly shaped one, fails
 the check: it could not tell.
 
   evals.py steps FILE...       the steps whose paths the files touch, one per
-                               line (only those with a set)
+                               line (only those with a set); no file at all
+                               fails (the list could not be read)
   evals.py collect STEP [N]    write evals/STEP/cases.json: N cases (default
                                6; the review's, N of each kind). repro, spec
                                and autopilot from this checkout's git history
@@ -771,6 +772,15 @@ def self_test():
     check("steps: the review's paths, as review-eval.yml listed them", [steps_of([p]) for p in ("review-profiles/general.md", "kinds/x/review-profile.md", "kinds/x/rules.yml", "scripts/local-review.sh", ".github/workflows/claude-review.yml")],
           [["review"]] * 5)
     check("steps: policy/autonomy.yml counts for every step", steps_of(["policy/autonomy.yml"]), list(STEPS))
+    import contextlib
+    import io
+    with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+        stdin, sys.stdin = sys.stdin, io.StringIO("\n")
+        try:
+            empty = main(["steps"])
+        finally:
+            sys.stdin = stdin
+    check("steps: no changed file fails (the list could not be read), never selects nothing", empty, 1)
     check("steps: a set counts for its step alone", (steps_of(["evals/review/cases.json"]), steps_of(["evals/spec/baseline.json"])), (["review"], ["spec"]))
     check("steps: an unrelated path runs nothing", steps_of(["README.md", "scripts/sync-repos.py", "evals/README.md", "kinds/x/pack.yml"]), [])
     check("steps: a glob's * stays in one folder", (matches("kinds/a/b/rules.yml", "kinds/*/rules.yml"), matches("review-profiles/a/b.md", "review-profiles/**")), (False, True))
@@ -950,6 +960,12 @@ def main(argv):
         return self_test()
     if argv[:1] == ["steps"]:
         files = argv[1:] or [line.strip() for line in sys.stdin if line.strip()]
+        if not files:
+            # pr-files.py prints nothing when it could not list the files,
+            # and evals.yml only starts when one matched its `paths:`: no
+            # file is "could not tell", never "no step touched".
+            print("::error::evals.py steps: no changed files, could not tell which steps to evaluate", file=sys.stderr)
+            return 1
         print("\n".join(steps_of(files, with_set=True)))
         return 0
     if argv[:1] == ["collect"] and len(argv) in (2, 3) and argv[1] in STEPS:

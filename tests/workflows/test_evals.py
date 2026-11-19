@@ -361,3 +361,17 @@ def test_c2_the_autopilot_replay_plans_the_merged_tests_from_the_real_base(tmp_p
     got = ev.merged_tests(str(tree), case, str(real), head, str(tmp_path / "out"))
     assert got == {"tests/unit/test_calc.py": "passed"}
     assert ran == [("tests/unit/test_calc.py", head, merge)]
+
+
+def test_c2_an_empty_file_list_fails_steps_not_selects_nothing():
+    # pr-files.py prints nothing when it could not list the files; the
+    # workflow only starts when `paths:` matched one, so "none" is "could
+    # not tell", and the check must fail rather than score nothing.
+    import subprocess
+    import sys
+    out = subprocess.run([sys.executable, str(ROOT / "scripts" / "evals.py"), "steps"], input="\n", capture_output=True, text=True)
+    assert out.returncode == 1 and out.stdout == "" and "could not" in out.stderr
+    ok = subprocess.run([sys.executable, str(ROOT / "scripts" / "evals.py"), "steps"], input="README.md\n", capture_output=True, text=True)
+    assert ok.returncode == 0 and ok.stdout.strip() == ""
+    text = (ROOT / ".github" / "workflows" / "evals.yml").read_text(encoding="utf-8")
+    assert "set -euo pipefail" in text and "pr-files.py | python3 scripts/evals.py steps" in text
