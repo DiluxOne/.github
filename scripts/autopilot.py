@@ -3539,16 +3539,16 @@ A class on html.
            core_next([], [{"repo": "o/r", "number": 7, "at": None}], t832)),
           ([("o/r", 7, "expired"), ("o/r", 9, "start")], [("o/r", 7, "expired")]))
     # #563: the test repository's fixed change, no model.
-    tpack = {"autopilot": "fixed-change", "fixed-change": {"file": "scenarios/{scenario}/{n}.md"}, "core": ["scenarios/*/**"]}
+    tpack = {"autopilot": "fixed-change", "fixed-change": {"file": "scenarios/{scenario}/{n}.test.md"}, "core": ["scenarios/*/**"]}
     check("#563: the test repository's autopilot has a fixed change; any other repository's calls a model",
           (fixed_file({"org": "Acme"}, "Acme/acme-test", tpack), fixed_file({"org": "Acme"}, "Acme/plugin", tpack),
-           fixed_file({"org": "Acme"}, "Acme/acme-test", dict(tpack, autopilot="model"))), ("scenarios/{scenario}/{n}.md", "", ""))
-    check("#694: the real pack's fixed change, under its scenario's own directory", fixed_file({"org": "Acme"}, "Acme/acme-test"), "scenarios/{scenario}/{n}.md")
-    fspec = fixed_spec("scenarios/{scenario}/{n}.md", 12, ["C1"], scenario_of("<!-- dx-scenario: core-one -->\n### Problem\n"))
+           fixed_file({"org": "Acme"}, "Acme/acme-test", dict(tpack, autopilot="model"))), ("scenarios/{scenario}/{n}.test.md", "", ""))
+    check("#694: the real pack's fixed change, under its scenario's own directory", fixed_file({"org": "Acme"}, "Acme/acme-test"), "scenarios/{scenario}/{n}.test.md")
+    fspec = fixed_spec("scenarios/{scenario}/{n}.test.md", 12, ["C1"], scenario_of("<!-- dx-scenario: core-one -->\n### Problem\n"))
     import deciders as _dec563
     check("#694: the fixed Spec names its file under the scenario of the issue's mark, and the agent's helper takes it",
-          (_dec563.spec_files(fspec), spec_problem(fspec), scenario_of("no mark"), fixed_path("scenarios/{scenario}/{n}.md", 12, "C1")),
-          (["scenarios/core-one/12.md"], "", "", "scenarios/12/12.md"))
+          (_dec563.spec_files(fspec), spec_problem(fspec), scenario_of("no mark"), fixed_path("scenarios/{scenario}/{n}.test.md", 12, "C1")),
+          (["scenarios/core-one/12.test.md"], "", "", "scenarios/12/12.test.md"))
     check("#694: only an open pull request on the same scenario's core is waited for, never another scenario's",
           (core_busy(_dec563.spec_files(fspec), tpack["core"], [{"number": 7, "files": ["scenarios/other/7.md"]}, {"number": 9, "files": ["scenarios/core-one/11.md"]}]),
            core_busy(_dec563.spec_files(fspec), tpack["core"], [{"number": 7, "files": ["scenarios/other/7.md"]}])), (9, 0))
@@ -3560,7 +3560,7 @@ A class on html.
     d694 = draft(12, "Bug", "fix(core): the greeting says helo", prd563)
     check("C7: the draft pull request passes the conventions check a person's does, and closes its issue (engine-post.py)",
           post694.pull(d694["title"], d694["branch"], d694["body"], 12), [])
-    check("#563: the checklist reads the fixed Spec's tests", criteria(prd563)[0][2], "scenarios/core-one/12.md")
+    check("#563: the checklist reads the fixed Spec's tests", criteria(prd563)[0][2], "scenarios/core-one/12.test.md")
     import tempfile as _tf563, contextlib as _cl563, io as _io563
     with _tf563.TemporaryDirectory() as tree, _tf563.TemporaryDirectory() as io563:
         here563, io_env = os.getcwd(), os.environ.pop(IO_ENV, None)
@@ -4478,7 +4478,7 @@ Clamp the value in Sum::add.
             open(os.path.join(d, "settled.md"), "w").write(answered)
             saved = {k: globals()[k] for k in ("fixed_file", "fixed_ask")}
             env = {k: os.environ.get(k) for k in ("GITHUB_REPOSITORY", "NUMBER", "BODY", "SETTLED", IO_ENV)}
-            globals().update(fixed_file=lambda *a, **k: "scenarios/{scenario}/{n}.md", fixed_ask=lambda *a, **k: "ask first")
+            globals().update(fixed_file=lambda *a, **k: "scenarios/{scenario}/{n}.test.md", fixed_ask=lambda *a, **k: "ask first")
             os.environ.update({"GITHUB_REPOSITORY": "o/t", "NUMBER": "7", "BODY": os.path.join(d, "body.md"), "SETTLED": os.path.join(d, "settled.md"),
                                IO_ENV: os.path.join(d, "io")})
             try:
